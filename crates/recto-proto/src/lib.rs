@@ -32,6 +32,11 @@ pub const MIN_SCALE: f32 = 1.0 / 64.0;
 pub const MAX_SCALE: f32 = 64.0;
 /// The most characters one page may return. The busiest page measured has under 20,000.
 pub const MAX_PAGE_CHARS: u32 = 2_000_000;
+/// The most one region may hold. A 3024 x 1964 viewport is 24 MiB, so this covers it with about a third over for margin, and a larger view takes more passes. Region size
+/// drives a heavy page's peak: on the USGS map at 4x, 32 MiB peaks at 465 MiB and 64 MiB at 613, past the 512 MiB limit.
+pub const MAX_REGION_BYTES: u64 = 32 * 1024 * 1024;
+/// The most tiles one region may hold, which caps its reply.
+pub const MAX_REGION_TILES: u32 = 1024;
 /// The most pages a document may claim. PDF's own implementation limit on indirect objects, which a page needs one of.
 pub const MAX_PAGE_COUNT: u32 = 8_388_607;
 /// The longest password accepted on the wire.
@@ -67,6 +72,10 @@ pub enum Kind {
     TextRequest = 8,
     Text = 9,
     Failed = 10,
+    /// The answer to a region: a tile reply, plus what each tile in it holds.
+    Region = 11,
+    TraitsRequest = 12,
+    Traits = 13,
 }
 
 impl Kind {
@@ -82,6 +91,9 @@ impl Kind {
             8 => Self::TextRequest,
             9 => Self::Text,
             10 => Self::Failed,
+            11 => Self::Region,
+            12 => Self::TraitsRequest,
+            13 => Self::Traits,
             _ => return Err(ProtoError("unknown frame kind")),
         })
     }
@@ -99,6 +111,9 @@ impl Kind {
             Self::TextRequest => TEXT_JOB_LEN as u32,
             Self::Text => MAX_FRAME,
             Self::Failed => FAILED_LEN as u32,
+            Self::Region => (TILE_REPLY_LEN + 4 + MAX_REGION_TILES as usize * REGION_KIND_LEN) as u32,
+            Self::TraitsRequest => SIZE_REQUEST_LEN as u32,
+            Self::Traits => PAGE_TRAITS_LEN as u32,
         }
     }
 }
@@ -247,9 +262,11 @@ pub struct RenderJob {
     pub scale: f32,
     pub rect: TileRect,
     pub stride: u32,
+    /// Zero for one tile. Otherwise `rect` is a region, cut into a grid of tiles this size from the page's origin, each reported separately.
+    pub tile_edge: u32,
 }
 
-pub const RENDER_JOB_LEN: usize = 8 + 4 + 4 + 4 + 16 + 4 + 1;
+pub const RENDER_JOB_LEN: usize = 8 + 4 + 4 + 4 + 16 + 4 + 4 + 1;
 
 impl RenderJob {
     /// The bytes this job needs in its surface.
@@ -262,7 +279,14 @@ impl RenderJob {
         if !(MIN_SCALE..=MAX_SCALE).contains(&self.scale) {
             return Err(ProtoError("scale out of range"));
         }
-        check_dimensions(self.rect.width, self.rect.height, self.stride)
+        check_dimensions(self.rect.width, self.rect.height, self.stride)?;
+        if self.tile_edge != 0 {
+            check_region(self.rect, self.tile_edge)?;
+            if self.bytes_needed() > MAX_REGION_BYTES {
+                return Err(ProtoError("region larger than the cap"));
+            }
+        }
+        Ok(())
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -271,7 +295,7 @@ impl RenderJob {
         p.extend_from_slice(&self.job_id.to_le_bytes());
         p.extend_from_slice(&self.page.to_le_bytes());
         p.extend_from_slice(&self.scale.to_le_bytes());
-        for value in [self.rect.x, self.rect.y, self.rect.width, self.rect.height, self.stride] {
+        for value in [self.rect.x, self.rect.y, self.rect.width, self.rect.height, self.stride, self.tile_edge] {
             p.extend_from_slice(&value.to_le_bytes());
         }
         p.push(PixelFormat::Bgrx8 as u8);
@@ -287,6 +311,7 @@ impl RenderJob {
             scale: r.f32()?,
             rect: TileRect { x: r.u32()?, y: r.u32()?, width: r.u32()?, height: r.u32()? },
             stride: r.u32()?,
+            tile_edge: r.u32()?,
         };
         if r.u8()? != PixelFormat::Bgrx8 as u8 {
             return Err(ProtoError("unknown pixel format"));
@@ -310,6 +335,32 @@ fn check_dimensions(width: u32, height: u32, stride: u32) -> Result<(), ProtoErr
     Ok(())
 }
 
+fn check_region(rect: TileRect, edge: u32) -> Result<(), ProtoError> {
+    if edge > MAX_TILE_EDGE {
+        return Err(ProtoError("tile edge out of range"));
+    }
+    if !rect.x.is_multiple_of(edge) || !rect.y.is_multiple_of(edge) {
+        return Err(ProtoError("region not on the tile grid"));
+    }
+    if u64::from(rect.width.div_ceil(edge)) * u64::from(rect.height.div_ceil(edge)) > u64::from(MAX_REGION_TILES) {
+        return Err(ProtoError("region has too many tiles"));
+    }
+    Ok(())
+}
+
+/// The tiles of a region, left to right and top to bottom, each as a rectangle of the page. The last in a row or column may be short. Both sides use this one rule.
+pub fn region_tiles(rect: TileRect, edge: u32) -> impl Iterator<Item = TileRect> {
+    let edge = edge.max(1);
+    let rows = rect.height.div_ceil(edge);
+    let columns = rect.width.div_ceil(edge);
+    (0..rows).flat_map(move |row| {
+        (0..columns).map(move |column| {
+            let (dx, dy) = (column * edge, row * edge);
+            TileRect { x: rect.x + dx, y: rect.y + dy, width: edge.min(rect.width - dx), height: edge.min(rect.height - dy) }
+        })
+    })
+}
+
 /// What a finished tile holds. A blank tile needs no surface and a grey one a quarter of it: platform report, §2.5.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TileKind {
@@ -318,6 +369,22 @@ pub enum TileKind {
     /// Red, green and blue are equal in every pixel.
     Grey,
     Colour,
+}
+
+/// What two pieces hold together. Two different blanks aren't one blank, and a coloured blank beside a grey piece is colour.
+pub fn merge_kinds(a: TileKind, b: TileKind) -> TileKind {
+    let has_colour = |kind: TileKind| match kind {
+        TileKind::Colour => true,
+        TileKind::Grey => false,
+        TileKind::Blank { rgb } => (rgb >> 16) & 0xFF != (rgb >> 8) & 0xFF || (rgb >> 8) & 0xFF != rgb & 0xFF,
+    };
+    if a == b {
+        a
+    } else if has_colour(a) || has_colour(b) {
+        TileKind::Colour
+    } else {
+        TileKind::Grey
+    }
 }
 
 /// How a job ended.
@@ -401,6 +468,72 @@ pub fn validate_tile(job: &RenderJob, reply: &TileReply, surface_len: u64) -> Re
     Ok(())
 }
 
+/// One tile's entry in a region reply: a code, and a blank tile's colour.
+const REGION_KIND_LEN: usize = 5;
+
+/// The answer to a region job: what any tile reply says about the whole, and what each tile holds, in [`region_tiles`] order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegionReply {
+    pub tile: TileReply,
+    pub kinds: Vec<TileKind>,
+}
+
+impl RegionReply {
+    pub fn encode(&self) -> Vec<u8> {
+        let tile = self.tile.encode();
+        let mut p = Vec::with_capacity(TILE_REPLY_LEN + 4 + self.kinds.len() * REGION_KIND_LEN);
+        p.extend_from_slice(&tile[HEADER_LEN..]);
+        p.extend_from_slice(&(self.kinds.len() as u32).to_le_bytes());
+        for kind in &self.kinds {
+            let (code, rgb) = match *kind {
+                TileKind::Blank { rgb } => (1, rgb),
+                TileKind::Grey => (2, 0),
+                TileKind::Colour => (3, 0),
+            };
+            p.push(code);
+            p.extend_from_slice(&rgb.to_le_bytes());
+        }
+        frame(Kind::Region, &p)
+    }
+
+    /// Checks lengths before allocating, and every entry as it goes.
+    pub fn decode(payload: &[u8]) -> Result<Self, ProtoError> {
+        let (head, rest) = payload.split_at_checked(TILE_REPLY_LEN).ok_or(ProtoError("payload too short"))?;
+        let tile = TileReply::decode(head)?;
+        let mut r = Reader(rest);
+        let count = r.u32()?;
+        if count > MAX_REGION_TILES {
+            return Err(ProtoError("region has too many tiles"));
+        }
+        if r.0.len() != count as usize * REGION_KIND_LEN {
+            return Err(ProtoError("region length differs from its count"));
+        }
+        let mut kinds = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            kinds.push(match (r.u8()?, r.u32()?) {
+                (1, rgb) if rgb <= 0x00FF_FFFF => TileKind::Blank { rgb },
+                (2, 0) => TileKind::Grey,
+                (3, 0) => TileKind::Colour,
+                _ => return Err(ProtoError("unknown tile kind")),
+            });
+        }
+        Ok(Self { tile, kinds })
+    }
+}
+
+/// Checks a region reply against its job and surface, before anyone reads a pixel: everything a tile reply must satisfy, and one kind per tile in the grid.
+pub fn validate_region(job: &RenderJob, reply: &RegionReply, surface_len: u64) -> Result<(), ProtoError> {
+    validate_tile(job, &reply.tile, surface_len)?;
+    if job.tile_edge == 0 {
+        return Err(ProtoError("a region reply to a single tile"));
+    }
+    let expected = if reply.tile.status == TileStatus::Cancelled { 0 } else { region_tiles(job.rect, job.tile_edge).count() };
+    if reply.kinds.len() != expected {
+        return Err(ProtoError("region has the wrong number of tiles"));
+    }
+    Ok(())
+}
+
 /// Asks for one page's size.
 pub const SIZE_REQUEST_LEN: usize = 8;
 
@@ -416,6 +549,39 @@ pub fn decode_size_request(payload: &[u8]) -> Result<(u32, u32), ProtoError> {
     let request = (r.u32()?, r.u32()?);
     r.end()?;
     Ok(request)
+}
+
+pub fn encode_traits_request(job_id: u32, page: u32) -> Vec<u8> {
+    let mut p = [0; SIZE_REQUEST_LEN];
+    p[..4].copy_from_slice(&job_id.to_le_bytes());
+    p[4..].copy_from_slice(&page.to_le_bytes());
+    frame(Kind::TraitsRequest, &p)
+}
+
+/// What decides how a page is best drawn. From a hostile file, and it only ever chooses between two ways of drawing that are both capped, so it's checked for form alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageTraits {
+    pub job_id: u32,
+    /// The largest image on the page, in source pixels, as far as the look went.
+    pub largest_image_pixels: u64,
+}
+
+pub const PAGE_TRAITS_LEN: usize = 12;
+
+impl PageTraits {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut p = [0; PAGE_TRAITS_LEN];
+        p[..4].copy_from_slice(&self.job_id.to_le_bytes());
+        p[4..].copy_from_slice(&self.largest_image_pixels.to_le_bytes());
+        frame(Kind::Traits, &p)
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<Self, ProtoError> {
+        let mut r = Reader(payload);
+        let traits = Self { job_id: r.u32()?, largest_image_pixels: r.u64()? };
+        r.end()?;
+        Ok(traits)
+    }
 }
 
 /// A page's size in points, after its rotation. What the file says, so it's checked by [`validate_page_size`].

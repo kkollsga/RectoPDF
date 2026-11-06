@@ -3,7 +3,7 @@
 use crate::transport::{Frame, FrameReader, ReadError};
 use crate::{control, exit_code};
 use recto_platform::isolate::{self, Channel, ChildExit, ChildProcess, Handle, IdleRule, SharedMemory, Wait};
-use recto_proto::{self as proto, CharBox, CharRecord, FailCode, Kind, PageSize, ProtoError, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus, device_size};
+use recto_proto::{self as proto, CharBox, CharRecord, FailCode, Kind, PageSize, ProtoError, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus, device_size};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -371,7 +371,7 @@ struct Worker {
     child: ChildProcess,
     channel: Channel,
     reader: FrameReader,
-    /// Text and drawing jobs finished. Asking a page's size doesn't count: it leaves nothing behind that could explain a later failure.
+    /// Text and drawing jobs finished. Asking a page's size or what's on it doesn't count: that leaves nothing behind that could explain a later failure.
     jobs_done: u32,
     /// This worker's own hard limit.
     limit: u64,
@@ -426,17 +426,19 @@ pub struct TileRequest {
 }
 
 /// A tile that's been validated. Its pixels are in the surface the call was given.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Tile {
     pub kind: TileKind,
     /// Time inside the worker, from the worker: for reports, not decisions.
     pub render_us: u32,
     /// Set when the surface holds a lower-resolution version rather than what was asked for.
     pub low_res: Option<LowRes>,
+    /// For a region: what each tile holds, in [`recto_proto::region_tiles`] order. Empty for one tile, or if `low_res` is set, when `kind` covers all of it.
+    pub region_kinds: Vec<TileKind>,
 }
 
 /// How a tile call ended, short of failure.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TileResult {
     Done(Tile),
     /// The generation went stale. The surface holds nothing useful.
@@ -492,6 +494,8 @@ pub struct DocRenderer {
     page_count: Option<u32>,
     next_job: u32,
     remembered: Vec<PageMemory>,
+    /// Each page's largest image in source pixels, for those asked about.
+    traits: Vec<(u32, u64)>,
     /// Why opening the file failed, if it's something trying again wouldn't change. The descriptor is fixed, so its bytes are too.
     open_failure: Option<RenderFailure>,
     /// The page the worker last worked on, while its footprint is past the retirement line. It goes before the next job for any other page.
@@ -517,6 +521,7 @@ impl DocRenderer {
             page_count: None,
             next_job: 0,
             remembered: Vec::new(),
+            traits: Vec::new(),
             open_failure: None,
             retire_after_page: None,
             stats: RenderStats::default(),
@@ -617,6 +622,51 @@ impl DocRenderer {
         self.draw(request, surface, WhenLowRes::Draw)
     }
 
+    /// The largest image on a page in source pixels. Remembered per page, up to a cap. If looking at the page stops a worker, that's noted as drawing would have noted it,
+    /// and the answer is zero.
+    pub fn largest_image_pixels(&mut self, page: u32) -> Result<u64, RenderFailure> {
+        if let Some(&(_, pixels)) = self.traits.iter().find(|(known, _)| *known == page) {
+            return Ok(pixels);
+        }
+        if self.page_draw_state(page) != PageDrawState::Sharp {
+            return Ok(0);
+        }
+        let job_id = self.next_job_id();
+        let frame = proto::encode_traits_request(job_id, page);
+        // Loads this page, which is what the next job for it needs anyway, so it leaves nothing that could explain that job failing.
+        let reply = self.run_job(job_id, page, false, WorkerClass::Normal, None, &[], &frame, |reply| match reply.kind {
+            Kind::Traits => {
+                let traits = proto::PageTraits::decode(&reply.payload)?;
+                if traits.job_id == job_id { Ok(traits.largest_image_pixels) } else { Err(ProtoError("traits answer a different job")) }
+            }
+            _ => Err(ProtoError("the wrong kind of reply to a traits request")),
+        });
+        let pixels = match reply {
+            Ok(pixels) => pixels,
+            Err(JobFailure::Stopped(KillReason::MemoryLimit)) => {
+                self.remember(page).draw = PageDrawState::NeedsHeavy;
+                0
+            }
+            Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, reason)),
+            Err(failure) => return Err(failure.into()),
+        };
+        if self.traits.len() >= MAX_FAILED_PAGES {
+            self.traits.remove(0);
+        }
+        self.traits.push((page, pixels));
+        Ok(pixels)
+    }
+
+    /// Draws a region of the page in one pass, cut into tiles of `tile_edge` for the caller to hand out. Cheaper than one pass per tile whenever several tiles are needed: see
+    /// `docs/ENGINEERING.md`. Goes down the same sequence as a tile, is cancelled by generation like one, and is limited to [`recto_proto::MAX_REGION_BYTES`], so its surface is
+    /// part of what the worker's memory limit sees. Rows sit `request.stride` apart in `surface`.
+    pub fn render_region(&mut self, request: &TileRequest, tile_edge: u32, surface: &Surface) -> Result<TileResult, RenderFailure> {
+        if tile_edge == 0 {
+            return Err(RenderFailure::BadRequest);
+        }
+        self.draw_with(request, surface, WhenLowRes::Draw, tile_edge)
+    }
+
     /// As [`Self::render_tile`], for whole-page drawing, which can't paste one low-resolution strip among sharp ones. Instead of drawing that version, it fails with
     /// [`RenderFailure::LowResOnly`], and the caller starts the page again at that scale with [`Self::render_low_res_pass`].
     pub fn render_exact(&mut self, request: &TileRequest, surface: &Surface) -> Result<TileResult, RenderFailure> {
@@ -628,16 +678,20 @@ impl DocRenderer {
         if let PageDrawState::Failed(reason) = self.page_draw_state(request.page) {
             return Err(RenderFailure::PageFailed { page: request.page, reason });
         }
-        match self.draw_once(request, surface, WorkerClass::Normal) {
+        match self.draw_once(request, surface, WorkerClass::Normal, 0) {
             Err(JobFailure::Stopped(reason)) => Err(self.give_up_drawing(request.page, reason)),
             other => other_result(other),
         }
     }
 
     fn draw(&mut self, request: &TileRequest, surface: &Surface, when_low_res: WhenLowRes) -> Result<TileResult, RenderFailure> {
+        self.draw_with(request, surface, when_low_res, 0)
+    }
+
+    fn draw_with(&mut self, request: &TileRequest, surface: &Surface, when_low_res: WhenLowRes, tile_edge: u32) -> Result<TileResult, RenderFailure> {
         let page = request.page;
         // Checked before anything else, so a request that can't be met starts no process.
-        let check = RenderJob { generation: request.generation, job_id: 0, page, scale: request.scale, rect: request.rect, stride: request.stride };
+        let check = RenderJob { generation: request.generation, job_id: 0, page, scale: request.scale, rect: request.rect, stride: request.stride, tile_edge };
         check.check().map_err(|_| RenderFailure::BadRequest)?;
         if check.bytes_needed() > surface.len() as u64 {
             return Err(RenderFailure::BadRequest);
@@ -651,7 +705,7 @@ impl DocRenderer {
             match self.page_draw_state(page) {
                 PageDrawState::Failed(reason) => return Err(RenderFailure::PageFailed { page, reason }),
                 PageDrawState::LowResOnly => return self.low_res(request, surface, when_low_res, LowResWhy::TooHeavy),
-                PageDrawState::Sharp => match self.draw_once(request, surface, WorkerClass::Normal) {
+                PageDrawState::Sharp => match self.draw_once(request, surface, WorkerClass::Normal, tile_edge) {
                     Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.remember(page).draw = PageDrawState::NeedsHeavy,
                     Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, reason)),
                     other => return other_result(other),
@@ -665,7 +719,7 @@ impl DocRenderer {
                     if !already_heavy && !recto_platform::memory_free_percent().is_some_and(|free| free >= self.policy.heavy_min_free_percent) {
                         return self.low_res(request, surface, when_low_res, LowResWhy::MemoryTight);
                     }
-                    match self.draw_once(request, surface, WorkerClass::Heavy) {
+                    match self.draw_once(request, surface, WorkerClass::Heavy, tile_edge) {
                         Err(JobFailure::HeavyBusy) => return self.low_res(request, surface, when_low_res, LowResWhy::HeavyBusy),
                         Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.remember(page).draw = PageDrawState::LowResOnly,
                         Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, reason)),
@@ -694,7 +748,7 @@ impl DocRenderer {
         let bottom = (request.rect.y.saturating_add(request.rect.height)).div_ceil(LOW_RES_DIVISOR).clamp(y + 1, full_height);
         let rect = TileRect { x, y, width: right - x, height: bottom - y };
         let smaller = TileRequest { rect, scale, ..*request };
-        match self.draw_once(&smaller, surface, WorkerClass::Normal) {
+        match self.draw_once(&smaller, surface, WorkerClass::Normal, 0) {
             Ok(TileResult::Done(tile)) => {
                 self.stats.low_res_tiles += 1;
                 Ok(TileResult::Done(Tile { low_res: Some(LowRes { scale, rect, why }), ..tile }))
@@ -705,7 +759,7 @@ impl DocRenderer {
     }
 
     /// One job, in one class of worker. A stopped worker comes back as [`JobFailure::Stopped`], for the sequence to decide on.
-    fn draw_once(&mut self, request: &TileRequest, surface: &Surface, class: WorkerClass) -> Result<TileResult, JobFailure> {
+    fn draw_once(&mut self, request: &TileRequest, surface: &Surface, class: WorkerClass, tile_edge: u32) -> Result<TileResult, JobFailure> {
         let job = RenderJob {
             generation: request.generation,
             job_id: self.next_job_id(),
@@ -713,6 +767,7 @@ impl DocRenderer {
             scale: request.scale,
             rect: request.rect,
             stride: request.stride,
+            tile_edge,
         };
         job.check().map_err(|_| RenderFailure::BadRequest)?;
         if job.bytes_needed() > surface.len() as u64 {
@@ -721,23 +776,31 @@ impl DocRenderer {
         let frame = job.encode();
         let surface_len = surface.len() as u64;
         let control = self.control.clone();
-        let reply = self.run_job(job.job_id, request.page, true, class, Some(request.generation), &[surface.handle()], &frame, |reply| match reply.kind {
-            Kind::Tile => {
-                let tile = TileReply::decode(&reply.payload)?;
-                proto::validate_tile(&job, &tile, surface_len)?;
-                // The host's word moves first, so a worker can't honestly see a cancel the host hasn't made.
-                if tile.status == TileStatus::Cancelled && !control.is_stale(job.generation) {
-                    return Err(ProtoError("a job cancelled that nobody cancelled"));
+        let reply = self.run_job(job.job_id, request.page, true, class, Some(request.generation), &[surface.handle()], &frame, |reply| {
+            let (tile, kinds) = match (reply.kind, tile_edge) {
+                (Kind::Tile, 0) => {
+                    let tile = TileReply::decode(&reply.payload)?;
+                    proto::validate_tile(&job, &tile, surface_len)?;
+                    (tile, Vec::new())
                 }
-                Ok(tile)
+                (Kind::Region, 1..) => {
+                    let region = RegionReply::decode(&reply.payload)?;
+                    proto::validate_region(&job, &region, surface_len)?;
+                    (region.tile, region.kinds)
+                }
+                _ => return Err(ProtoError("the wrong kind of reply to a tile")),
+            };
+            // The host's word moves first, so a worker can't honestly see a cancel the host hasn't made.
+            if tile.status == TileStatus::Cancelled && !control.is_stale(job.generation) {
+                return Err(ProtoError("a job cancelled that nobody cancelled"));
             }
-            _ => Err(ProtoError("the wrong kind of reply to a tile")),
+            Ok((tile, kinds))
         });
         match reply {
-            Ok(tile) => Ok(match tile.status {
+            Ok((tile, region_kinds)) => Ok(match tile.status {
                 // Cancelled while it was finishing. The caller moved on, so this tile must never reach the screen.
                 TileStatus::Done(_) if self.control.is_stale(request.generation) => TileResult::Cancelled { worker_killed: false },
-                TileStatus::Done(kind) => TileResult::Done(Tile { kind, render_us: tile.render_us, low_res: None }),
+                TileStatus::Done(kind) => TileResult::Done(Tile { kind, render_us: tile.render_us, low_res: None, region_kinds }),
                 TileStatus::Cancelled => TileResult::Cancelled { worker_killed: false },
             }),
             Err(JobFailure::StaleKilled) => Ok(TileResult::Cancelled { worker_killed: true }),

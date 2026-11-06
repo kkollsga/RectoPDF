@@ -28,7 +28,10 @@ mod budget;
 mod host;
 pub mod transport;
 
-pub use budget::{BUDGET_MAX_TIME, BudgetOptions, BudgetReport, OutputCaps, PageDrawn, PageEvent, PageSample, STRIP_MAX_BYTES, draw_whole_page, measure_budget, page_device_size};
+pub use budget::{
+    BUDGET_MAX_TIME, BudgetOptions, BudgetReport, DrawStrategy, OutputCaps, PageDrawn, PageEvent, PageSample, STRIP_MAX_BYTES, ViewportOptions, ViewportStep, draw_whole_page, measure_budget,
+    measure_viewport, page_device_size, plan_regions,
+};
 pub use host::{CancelHandle, DocRenderer, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy, RenderFailure, RenderStats, ServiceConfig, Surface, Tile, TileRequest, TileResult};
 pub use recto_proto::{CharRecord, TileKind, TileRect, TILE_EDGE};
 

@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 /// The most one strip of a page may hold. Whole-page drawing costs more memory the larger each piece is, and takes longer the smaller it is. Measured on the USGS map at
 /// 4x: 64 MiB strips peak at 613 MiB in 1.5 s, 16 MiB at 450 in 3.4 s, 8 MiB at 423 in 5.6 s, 1 MiB at 405 in 38 s. At 2x, 8 MiB is 371 MiB in 0.7 s, no slower than
-/// 64 MiB. A letter page at 2x is 7.7 MiB, so an ordinary page stays one strip. Memory first, so 8 MiB, which keeps every page measured under the normal limit.
+/// 64 MiB. A letter page at 2x is 7.7 MiB, so an ordinary page stays one strip. Memory first, so 8 MiB, which keeps every page measured under the normal limit. A page past
+/// [`REGION_MIN_IMAGE_PIXELS`] uses [`recto_proto::MAX_REGION_BYTES`] instead.
 pub const STRIP_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 /// What drawing one whole page may cost. Without these, a tiny PDF asking for a huge scale costs minutes and gigabytes, and each strip staying under its own
@@ -101,7 +102,9 @@ fn strips(
     sink: &mut impl FnMut(PageEvent<'_>) -> Result<(), RenderFailure>,
 ) -> Result<u64, RenderFailure> {
     let stride = width.checked_mul(BYTES_PER_PIXEL).ok_or(RenderFailure::TooLargeAtThisScale)?;
-    let strip_rows = (STRIP_MAX_BYTES / u64::from(stride)).clamp(1, u64::from(recto_proto::MAX_TILE_EDGE)) as u32;
+    // A page with a huge image pays per pass, so it gets the largest piece the limits allow, as tiles do. The USGS map at 4x: 1.97 s at 32 MiB against 5.6 s at 8 MiB.
+    let piece = if doc.largest_image_pixels(page).unwrap_or(0) >= REGION_MIN_IMAGE_PIXELS { recto_proto::MAX_REGION_BYTES } else { STRIP_MAX_BYTES };
+    let strip_rows = (piece / u64::from(stride)).clamp(1, u64::from(recto_proto::MAX_TILE_EDGE)) as u32;
     let strip_bytes = u64::from(stride) * u64::from(strip_rows.min(height));
     if surface.as_ref().is_none_or(|memory| (memory.len() as u64) < strip_bytes) {
         *surface = Some(SharedMemory::create(strip_bytes as usize).map_err(|_| RenderFailure::Unavailable)?);
@@ -262,27 +265,347 @@ fn draw_tiles(doc: &mut DocRenderer, page: u32, scale: f32, surface: &mut Option
     let caps = OutputCaps::default();
     let (width, height) = page_device_size(doc, page, scale, &caps)?;
     let deadline = Instant::now() + caps.max_time;
-    let stride = TILE_EDGE * BYTES_PER_PIXEL;
-    let tile_bytes = u64::from(stride) * u64::from(TILE_EDGE);
-    if surface.as_ref().is_none_or(|memory| (memory.len() as u64) < tile_bytes) {
-        *surface = Some(SharedMemory::create(tile_bytes as usize).map_err(|_| RenderFailure::Unavailable)?);
-    }
-    let Some(memory) = surface.as_ref() else { return Err(RenderFailure::Unavailable) };
+    let grid: Vec<(u32, u32)> = (0..height.div_ceil(TILE_EDGE)).flat_map(|row| (0..width.div_ceil(TILE_EDGE)).map(move |column| (column, row))).collect();
     let mut render_us = 0;
-    for y in (0..height).step_by(TILE_EDGE as usize) {
-        for x in (0..width).step_by(TILE_EDGE as usize) {
-            if Instant::now() >= deadline {
-                return Err(RenderFailure::TookTooLong);
-            }
-            let rect = TileRect { x, y, width: TILE_EDGE.min(width - x), height: TILE_EDGE.min(height - y) };
-            match doc.render_tile(&TileRequest { page, rect, scale, stride, generation: 0 }, memory)? {
-                TileResult::Done(tile) => {
-                    render_us += u64::from(tile.render_us);
+    // The same choice the app will make, so this measures what a whole page in tiles will really cost.
+    let passes = if doc.largest_image_pixels(page).unwrap_or(0) >= REGION_MIN_IMAGE_PIXELS {
+        plan_regions(&grid, (width, height)).into_iter().map(|rect| (rect, TILE_EDGE)).collect()
+    } else {
+        grid.iter().map(|&place| (tile_rect(place, (width, height)), 0)).collect::<Vec<_>>()
+    };
+    for (rect, tile_edge) in passes {
+        if Instant::now() >= deadline {
+            return Err(RenderFailure::TookTooLong);
+        }
+        let stride = if tile_edge == 0 { TILE_EDGE * BYTES_PER_PIXEL } else { rect.width * BYTES_PER_PIXEL };
+        let bytes = u64::from(stride) * u64::from(rect.height.max(TILE_EDGE));
+        if surface.as_ref().is_none_or(|memory| (memory.len() as u64) < bytes) {
+            *surface = Some(SharedMemory::create(bytes as usize).map_err(|_| RenderFailure::Unavailable)?);
+        }
+        let Some(memory) = surface.as_ref() else { return Err(RenderFailure::Unavailable) };
+        let request = TileRequest { page, rect, scale, stride, generation: 0 };
+        let result = if tile_edge == 0 { doc.render_tile(&request, memory)? } else { doc.render_region(&request, tile_edge, memory)? };
+        match result {
+            TileResult::Done(tile) => {
+                render_us += u64::from(tile.render_us);
+                if tile.region_kinds.is_empty() {
                     count(report, tile.kind);
                 }
-                TileResult::Cancelled { .. } => return Err(RenderFailure::Unavailable),
+                for kind in tile.region_kinds {
+                    count(report, kind);
+                }
             }
+            TileResult::Cancelled { .. } => return Err(RenderFailure::Unavailable),
         }
     }
     Ok(render_us)
+}
+
+/// How a viewport's tiles get drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawStrategy {
+    /// One render pass per 512 px tile.
+    PerTile,
+    /// One render pass per region of up to [`recto_proto::MAX_REGION_BYTES`], with tiles handed out of it.
+    Region,
+    /// Whichever suits each page: see [`REGION_MIN_IMAGE_PIXELS`].
+    Auto,
+}
+
+/// Pages with an image of at least this many source pixels draw in regions, and others per tile. Measured over 369 pages of bench100, at 2x in a 3024 x 1964 window, total
+/// time per tile against region, and mean peak:
+///
+/// | Largest image | Pages | ms per tile | ms region | Peak MiB per tile | Peak MiB region |
+/// |---|---:|---:|---:|---:|---:|
+/// | None | 208 | 8,149 | 7,789 | 11 | 26 |
+/// | Under 1 Mpx | 51 | 4,419 | 4,108 | 24 | 40 |
+/// | 1 to 4 Mpx | 51 | 9,658 | 12,879 | 43 | 103 |
+/// | 4 to 10 Mpx | 38 | 39,066 | 60,402 | 120 | 280 |
+/// | 10 to 20 Mpx | 17 | 3,640 | 3,812 | 90 | 125 |
+/// | Over 20 Mpx | 4 | 12,509 | 2,740 | 235 | 316 |
+///
+/// So regions pay only for images past 20 Mpx, where they're 4.6 times faster. Below that they cost more memory, and between 1 and 20 Mpx more time as well, because PDFium's
+/// buffers for transparency and shadings grow with the area drawn. Text pages gain 4% and pay 15 MiB, so memory first: they stay per tile.
+pub const REGION_MIN_IMAGE_PIXELS: u64 = 20_000_000;
+
+/// A simulated window onto a run of pages stacked top to bottom, as the reader lays them out.
+#[derive(Clone, Copy, Debug)]
+pub struct ViewportOptions {
+    pub first_page: u32,
+    pub scale: f32,
+    pub width: u32,
+    pub height: u32,
+    /// Tiles beyond the visible area to draw, on each side.
+    pub margin_tiles: u32,
+    pub strategy: DrawStrategy,
+}
+
+/// One step of the simulation: what it needed and what it cost.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewportStep {
+    pub name: &'static str,
+    pub micros: u64,
+    pub tiles: u32,
+    pub passes: u32,
+    pub blank: u32,
+    pub grey: u32,
+    pub colour: u32,
+    pub low_res: u32,
+    pub failed: u32,
+    /// The worker's highest footprint so far.
+    pub peak_footprint_bytes: u64,
+}
+
+/// A tile of a page at a scale, by its place in the grid.
+type TilePlace = (u32, u32, u32);
+
+/// Measures what a reader does: the first view of a page (worker start included), one scroll step of a quarter of the window, and one zoom step of 1.5x.
+pub fn measure_viewport(doc: &mut DocRenderer, options: ViewportOptions) -> Result<Vec<ViewportStep>, RenderFailure> {
+    let mut sizes: Vec<(u32, f32, f32)> = Vec::new();
+    let mut cached: std::collections::HashSet<TilePlace> = std::collections::HashSet::new();
+    let mut surface: Option<SharedMemory> = None;
+    let mut hand_out = vec![0u8; (TILE_EDGE * TILE_EDGE * BYTES_PER_PIXEL) as usize];
+    let mut steps = Vec::new();
+    let quarter = u64::from(options.height / 4);
+    let zoomed = options.scale * 1.5;
+    for (name, scale, top) in [("first_view", options.scale, 0u64), ("scroll", options.scale, quarter), ("zoom", zoomed, (quarter as f64 * 1.5) as u64)] {
+        if steps.is_empty() {
+            cached.clear();
+        }
+        if name == "zoom" {
+            // A new scale needs all new tiles.
+            cached.clear();
+        }
+        let started = Instant::now();
+        let mut step = ViewportStep { name, micros: 0, tiles: 0, passes: 0, blank: 0, grey: 0, colour: 0, low_res: 0, failed: 0, peak_footprint_bytes: 0 };
+        let places = visible_places(doc, &options, scale, top, &mut sizes)?;
+        for (page, columns, rows, width, height) in places {
+            let needed: Vec<(u32, u32)> = rows
+                .clone()
+                .flat_map(|row| columns.clone().map(move |column| (column, row)))
+                .filter(|&(column, row)| cached.insert((page, column, row)))
+                .collect();
+            if needed.is_empty() {
+                continue;
+            }
+            step.tiles += needed.len() as u32;
+            let use_regions = match options.strategy {
+                DrawStrategy::PerTile => false,
+                DrawStrategy::Region => true,
+                // More than one tile, or there's nothing to gain, and a page known to be worth it.
+                DrawStrategy::Auto => needed.len() > 1 && doc.largest_image_pixels(page).unwrap_or(0) >= REGION_MIN_IMAGE_PIXELS,
+            };
+            if use_regions {
+                draw_regions(doc, page, scale, &needed, (width, height), &mut surface, &mut hand_out, &mut step);
+            } else {
+                draw_per_tile(doc, page, scale, &needed, (width, height), &mut surface, &mut step);
+            }
+        }
+        step.micros = started.elapsed().as_micros() as u64;
+        step.peak_footprint_bytes = doc.stats().peak_footprint_bytes.max(doc.worker_footprint().unwrap_or(0));
+        steps.push(step);
+    }
+    Ok(steps)
+}
+
+/// The pages in view from `top` of the stack, each with the grid columns and rows that show, margin included.
+#[allow(clippy::type_complexity)]
+fn visible_places(
+    doc: &mut DocRenderer,
+    options: &ViewportOptions,
+    scale: f32,
+    top: u64,
+    sizes: &mut Vec<(u32, f32, f32)>,
+) -> Result<Vec<(u32, std::ops::Range<u32>, std::ops::Range<u32>, u32, u32)>, RenderFailure> {
+    let total = doc.page_count()?;
+    let bottom = top + u64::from(options.height);
+    let mut places = Vec::new();
+    let mut page_top = 0u64;
+    let mut page = options.first_page;
+    while page < total && page_top < bottom {
+        let (width_points, height_points) = match sizes.iter().find(|size| size.0 == page) {
+            Some(size) => (size.1, size.2),
+            None => {
+                let size = doc.page_size(page)?;
+                sizes.push((page, size.0, size.1));
+                size
+            }
+        };
+        let (width, height) = device_size(width_points, height_points, scale).map_err(|_| RenderFailure::TooLargeAtThisScale)?;
+        let page_bottom = page_top + u64::from(height);
+        if page_bottom > top {
+            let in_top = top.saturating_sub(page_top) as u32;
+            let in_bottom = (bottom - page_top).min(u64::from(height)) as u32;
+            let margin = options.margin_tiles;
+            let rows = (in_top / TILE_EDGE).saturating_sub(margin)..(in_bottom.div_ceil(TILE_EDGE) + margin).min(height.div_ceil(TILE_EDGE));
+            let columns = 0..(options.width.min(width).div_ceil(TILE_EDGE) + margin).min(width.div_ceil(TILE_EDGE));
+            places.push((page, columns, rows, width, height));
+        }
+        page_top = page_bottom;
+        page += 1;
+    }
+    Ok(places)
+}
+
+fn tile_rect((column, row): (u32, u32), (width, height): (u32, u32)) -> TileRect {
+    let (x, y) = (column * TILE_EDGE, row * TILE_EDGE);
+    TileRect { x, y, width: TILE_EDGE.min(width - x), height: TILE_EDGE.min(height - y) }
+}
+
+fn count_step(step: &mut ViewportStep, kind: TileKind) {
+    match kind {
+        TileKind::Blank { .. } => step.blank += 1,
+        TileKind::Grey => step.grey += 1,
+        TileKind::Colour => step.colour += 1,
+    }
+}
+
+fn draw_per_tile(doc: &mut DocRenderer, page: u32, scale: f32, needed: &[(u32, u32)], size: (u32, u32), surface: &mut Option<SharedMemory>, step: &mut ViewportStep) {
+    let stride = TILE_EDGE * BYTES_PER_PIXEL;
+    let bytes = (stride * TILE_EDGE) as usize;
+    if surface.as_ref().is_none_or(|memory| memory.len() < bytes) {
+        *surface = SharedMemory::create(bytes).ok();
+    }
+    let Some(memory) = surface.as_ref() else {
+        step.failed += needed.len() as u32;
+        return;
+    };
+    for &place in needed {
+        step.passes += 1;
+        match doc.render_tile(&TileRequest { page, rect: tile_rect(place, size), scale, stride, generation: 0 }, memory) {
+            Ok(TileResult::Done(tile)) => {
+                step.low_res += u32::from(tile.low_res.is_some());
+                count_step(step, tile.kind);
+            }
+            _ => step.failed += 1,
+        }
+    }
+}
+
+/// The cheapest way to cover `needed` in passes under the cap: rows of the same columns merge, because a scroll step's new tiles are a band, and a band too large for
+/// one region splits by rows.
+#[must_use]
+pub fn plan_regions(needed: &[(u32, u32)], (width, height): (u32, u32)) -> Vec<TileRect> {
+    let Some(&(first_column, first_row)) = needed.first() else { return Vec::new() };
+    let (mut left, mut right, mut top, mut bottom) = (first_column, first_column, first_row, first_row);
+    for &(column, row) in needed {
+        left = left.min(column);
+        right = right.max(column);
+        top = top.min(row);
+        bottom = bottom.max(row);
+    }
+    let x = left * TILE_EDGE;
+    let region_width = ((right + 1) * TILE_EDGE).min(width) - x;
+    let row_bytes = u64::from(region_width) * u64::from(BYTES_PER_PIXEL) * u64::from(TILE_EDGE);
+    let rows_per_region = (recto_proto::MAX_REGION_BYTES / row_bytes).max(1) as u32;
+    let mut regions = Vec::new();
+    let mut row = top;
+    while row <= bottom {
+        let last = (row + rows_per_region - 1).min(bottom);
+        let y = row * TILE_EDGE;
+        regions.push(TileRect { x, y, width: region_width, height: ((last + 1) * TILE_EDGE).min(height) - y });
+        row = last + 1;
+    }
+    regions
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_regions(
+    doc: &mut DocRenderer,
+    page: u32,
+    scale: f32,
+    needed: &[(u32, u32)],
+    size: (u32, u32),
+    surface: &mut Option<SharedMemory>,
+    hand_out: &mut [u8],
+    step: &mut ViewportStep,
+) {
+    for rect in plan_regions(needed, size) {
+        let stride = rect.width * BYTES_PER_PIXEL;
+        let bytes = stride as usize * rect.height as usize;
+        if surface.as_ref().is_none_or(|memory| memory.len() < bytes) {
+            *surface = SharedMemory::create(bytes).ok();
+        }
+        let Some(memory) = surface.as_ref() else {
+            step.failed += 1;
+            continue;
+        };
+        step.passes += 1;
+        match doc.render_region(&TileRequest { page, rect, scale, stride, generation: 0 }, TILE_EDGE, memory) {
+            Ok(TileResult::Done(tile)) if tile.low_res.is_none() => {
+                for (place, kind) in recto_proto::region_tiles(rect, TILE_EDGE).zip(tile.region_kinds) {
+                    count_step(step, kind);
+                    // What the app will do for each tile with pixels: copy it into its own surface. Blank tiles need none.
+                    if !matches!(kind, TileKind::Blank { .. }) {
+                        let row_bytes = place.width as usize * BYTES_PER_PIXEL as usize;
+                        for row in 0..place.height as usize {
+                            let offset = (place.y - rect.y) as usize * stride as usize + (place.x - rect.x) as usize * BYTES_PER_PIXEL as usize + row * stride as usize;
+                            memory.copy_out(offset, &mut hand_out[..row_bytes]);
+                        }
+                    }
+                }
+            }
+            Ok(TileResult::Done(tile)) => {
+                step.low_res += 1;
+                count_step(step, tile.kind);
+            }
+            _ => step.failed += 1,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grid(columns: std::ops::Range<u32>, rows: std::ops::Range<u32>) -> Vec<(u32, u32)> {
+        rows.flat_map(|row| columns.clone().map(move |column| (column, row))).collect()
+    }
+
+    /// Failure: a region runs past the cap, or tiles are left out of the plan, so a view has holes or a pass costs more than a viewport's worth.
+    #[test]
+    fn regions_cover_what_is_needed_and_stay_under_the_cap() {
+        let size = (8928, 8064);
+        let needed = grid(0..16, 0..12);
+        let regions = plan_regions(&needed, size);
+        assert!(regions.len() > 1, "this view is past one region's cap");
+        for region in &regions {
+            let bytes = u64::from(region.width) * u64::from(region.height) * u64::from(BYTES_PER_PIXEL);
+            assert!(bytes <= recto_proto::MAX_REGION_BYTES, "{region:?} is {bytes} bytes");
+            assert_eq!(region.x % TILE_EDGE, 0, "{region:?}");
+            assert_eq!(region.y % TILE_EDGE, 0, "{region:?}");
+        }
+        let covered: std::collections::HashSet<(u32, u32)> = regions
+            .iter()
+            .flat_map(|region| recto_proto::region_tiles(*region, TILE_EDGE))
+            .map(|tile| (tile.x / TILE_EDGE, tile.y / TILE_EDGE))
+            .collect();
+        for place in needed {
+            assert!(covered.contains(&place), "{place:?} was left out");
+        }
+    }
+
+    /// Failure: a region runs off the page at its right or bottom edge, and the worker refuses the whole pass.
+    #[test]
+    fn regions_stop_at_the_page_edge() {
+        let regions = plan_regions(&grid(0..3, 0..4), (1224, 1584));
+        let last = regions.last().unwrap();
+        assert_eq!(last.x + last.width, 1224);
+        assert_eq!(last.y + last.height, 1584);
+    }
+
+    /// Failure: nothing needed still plans a pass, or a scroll's single new band becomes one pass per tile.
+    #[test]
+    fn a_band_of_new_tiles_is_one_pass() {
+        assert!(plan_regions(&[], (1224, 1584)).is_empty());
+        let band = plan_regions(&grid(0..6, 4..5), (4464, 4032));
+        assert_eq!(band, vec![TileRect { x: 0, y: 2048, width: 3072, height: 512 }]);
+    }
+
+    /// Failure: one very wide row is past the cap by itself and the plan divides by zero or loops. It should still come out, one row at a time, for the host to refuse plainly.
+    #[test]
+    fn a_row_past_the_cap_doesnt_break_the_plan() {
+        let regions = plan_regions(&grid(0..40, 0..2), (20_480, 1024));
+        assert_eq!(regions.len(), 2);
+    }
 }

@@ -17,7 +17,9 @@ recto: RectoPDF's command line
   recto text <file.pdf> --page N                 A page's text, normalised for search, with the hidden-text flag
   recto budget render --file <file.pdf> --count N [--first P] [--scale S] [--fresh] [--tiles] [--samples]
                       [--limit-mib M] [--retire-mib M]
-                                                 Measure a worker: idle, N pages, peak, retirements";
+                                                 Measure a worker: idle, N pages, peak, retirements
+  recto budget render --file <file.pdf> --viewport WxH [--first P] [--scale S] [--per-tile | --region]
+                                                 Measure a reader's window: first view, one scroll step, one zoom step";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -110,6 +112,24 @@ fn text(file: &Path, args: &[&str]) -> i32 {
 }
 
 fn budget_render(args: &[&str]) -> i32 {
+    if let Some(viewport) = flag(args, "--viewport") {
+        let (Some(file), Some(first), Some(scale)) = (flag(args, "--file"), parsed::<u32>(args, "--first"), parsed::<f32>(args, "--scale")) else {
+            return usage();
+        };
+        return run_on_file(Path::new(file), |tab| Command::BudgetViewport {
+            tab,
+            viewport: viewport.to_string(),
+            first,
+            scale: scale.unwrap_or(DEFAULT_SCALE),
+            strategy: if switch(args, "--per-tile") {
+                Some("per_tile".into())
+            } else if switch(args, "--region") {
+                Some("region".into())
+            } else {
+                None
+            },
+        });
+    }
     let (Some(file), Some(Some(pages)), Some(first), Some(scale), Some(limit_mib), Some(retire_mib)) = (
         flag(args, "--file"),
         parsed::<u32>(args, "--count"),

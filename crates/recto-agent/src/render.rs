@@ -4,7 +4,9 @@
 use crate::{AgentError, exit};
 use recto_index::{hidden_report, normalize};
 use recto_proto::{BYTES_PER_PIXEL, TileKind};
-use recto_render_service::{BUDGET_MAX_TIME, BudgetOptions, DocRenderer, OutputCaps, PageDrawn, PageEvent, Policy, RenderFailure, ServiceConfig, draw_whole_page, measure_budget};
+use recto_render_service::{
+    BUDGET_MAX_TIME, BudgetOptions, DocRenderer, DrawStrategy, OutputCaps, PageDrawn, PageEvent, Policy, RenderFailure, ServiceConfig, ViewportOptions, draw_whole_page, measure_budget, measure_viewport,
+};
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -176,19 +178,9 @@ fn write_error_to_agent(error: &std::io::Error) -> AgentError {
     }
 }
 
-/// What a whole page holds, from its strips. Two different blanks aren't one blank, and a coloured blank strip beside a grey one is a page with colour.
+/// What a whole page holds, from its strips.
 fn merge_kinds(so_far: Option<TileKind>, next: TileKind) -> TileKind {
-    let has_colour = |kind: TileKind| match kind {
-        TileKind::Colour => true,
-        TileKind::Grey => false,
-        TileKind::Blank { rgb } => (rgb >> 16) & 0xFF != (rgb >> 8) & 0xFF || (rgb >> 8) & 0xFF != rgb & 0xFF,
-    };
-    match so_far {
-        None => next,
-        Some(kind) if kind == next => kind,
-        Some(kind) if has_colour(kind) || has_colour(next) => TileKind::Colour,
-        Some(_) => TileKind::Grey,
-    }
+    so_far.map_or(next, |kind| recto_proto::merge_kinds(kind, next))
 }
 
 fn kind_name(kind: TileKind) -> &'static str {
@@ -233,6 +225,59 @@ pub(crate) struct BudgetArgs {
 }
 
 const MIB: u64 = 1024 * 1024;
+
+/// One tile's worth of margin beyond the window, as the reader will prefetch.
+const VIEWPORT_MARGIN_TILES: u32 = 1;
+
+pub(crate) fn budget_viewport(path: &Path, viewport: &str, first: Option<u32>, scale: f32, strategy: Option<&str>) -> Result<Value, AgentError> {
+    let bad = || AgentError::new("bad_viewport", "A viewport is WIDTHxHEIGHT in device pixels, such as 3024x1964.", exit::FAILED);
+    let (width, height) = viewport.split_once('x').ok_or_else(bad)?;
+    let (width, height): (u32, u32) = (width.parse().map_err(|_| bad())?, height.parse().map_err(|_| bad())?);
+    if !(1..=32_767).contains(&width) || !(1..=32_767).contains(&height) {
+        return Err(bad());
+    }
+    if !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&scale) {
+        return Err(AgentError::new("bad_scale", "That scale can't be drawn.", exit::FAILED));
+    }
+    let mut doc = open(path, Policy::default())?;
+    let first_page = first.map_or(Ok(0), page_index)?;
+    let (strategy, strategy_name) = match strategy {
+        None => (DrawStrategy::Auto, "auto"),
+        Some("per_tile") => (DrawStrategy::PerTile, "per_tile"),
+        Some("region") => (DrawStrategy::Region, "region"),
+        Some(_) => return Err(AgentError::new("bad_strategy", "The strategy is per_tile or region, or left out to pick by page.", exit::FAILED)),
+    };
+    let largest_image_pixels = doc.largest_image_pixels(first_page).unwrap_or(0);
+    doc.kill_worker();
+    let steps = measure_viewport(&mut doc, ViewportOptions { first_page, scale, width, height, margin_tiles: VIEWPORT_MARGIN_TILES, strategy })?;
+    let steps: Vec<Value> = steps
+        .iter()
+        .map(|step| {
+            json!({
+                "step": step.name,
+                "ms": step.micros as f64 / 1000.0,
+                "tiles": step.tiles,
+                "passes": step.passes,
+                "blank": step.blank,
+                "grey": step.grey,
+                "colour": step.colour,
+                "low_res": step.low_res,
+                "failed": step.failed,
+                "peak_footprint_bytes": step.peak_footprint_bytes,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "strategy": strategy_name,
+        "largest_image_pixels": largest_image_pixels,
+        "viewport": viewport,
+        "scale": scale,
+        "steps": steps,
+        "spawns": doc.stats().spawns,
+        "retirements": doc.stats().retirements,
+        "host_footprint_bytes": recto_platform::footprint_bytes(),
+    }))
+}
 
 pub(crate) fn budget(path: &Path, args: &BudgetArgs) -> Result<Value, AgentError> {
     if !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&args.scale) {
@@ -415,6 +460,10 @@ mod tests {
                 Kind::SizeRequest => {
                     let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
                     PageSize { job_id, width: 612.0, height: 792.0 }.encode()
+                }
+                Kind::TraitsRequest => {
+                    let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
+                    proto::PageTraits { job_id, largest_image_pixels: 0 }.encode()
                 }
                 _ => {
                     let job = RenderJob::decode(&frame.payload).unwrap();

@@ -3,7 +3,7 @@
 //! the library, the document arrives as a descriptor, and the process has no file path to it.
 
 use recto_platform::isolate::{self, Channel, Handle, SharedMemory, Wait};
-use recto_proto::{self as proto, FailCode, Kind, PageSize, RenderJob, TextJob, TextReply, TileReply, TileStatus};
+use recto_proto::{self as proto, FailCode, Kind, PageSize, RegionReply, RenderJob, TextJob, TextReply, TileReply, TileStatus};
 use recto_render::{Cancel, Pdfium, PdfiumBackend, RenderBackend, TextOptions, TileOutcome};
 use recto_render_service::{control, exit_code, transport};
 use std::path::PathBuf;
@@ -126,6 +126,14 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
                 Err(code) => proto::encode_failed(job_id, code),
             })
         }
+        Kind::TraitsRequest => {
+            let (job_id, page) = proto::decode_size_request(&frame.payload).ok()?;
+            let Some(backend) = backend else { return Some(proto::encode_failed(job_id, FailCode::NoDocument)) };
+            Some(match backend.largest_image_pixels(page) {
+                Ok(largest_image_pixels) => proto::PageTraits { job_id, largest_image_pixels }.encode(),
+                Err(code) => proto::encode_failed(job_id, code),
+            })
+        }
         Kind::TextRequest => {
             let job = TextJob::decode(&frame.payload).ok()?;
             let Some(backend) = backend else { return Some(proto::encode_failed(job.job_id, FailCode::NoDocument)) };
@@ -149,12 +157,18 @@ fn render(job: &RenderJob, surface: Option<Handle>, backend: &mut Option<PdfiumB
     // Mapped for this job alone: a worker holds a surface only while drawing into it. Platform report, §2.7.
     let Ok(mut mapping) = SharedMemory::map(handle, needed) else { return proto::encode_failed(job.job_id, FailCode::BadSurface) };
     let cancel = Generation { word: control_page.and_then(|page| page.atomic_u64(control::CANCEL_BEFORE_OFFSET)), job: job.generation };
-    let status = match backend.render_tile(job.page, job.rect, job.scale, mapping.as_mut_slice(), job.stride, &cancel) {
+    let mut kinds = Vec::new();
+    let outcome = if job.tile_edge == 0 {
+        backend.render_tile(job.page, job.rect, job.scale, mapping.as_mut_slice(), job.stride, &cancel)
+    } else {
+        backend.render_region(job.page, job.rect, job.scale, job.tile_edge, mapping.as_mut_slice(), job.stride, &cancel, &mut kinds)
+    };
+    let status = match outcome {
         Ok(TileOutcome::Done(kind)) => TileStatus::Done(kind),
         Ok(TileOutcome::Cancelled) => TileStatus::Cancelled,
         Err(code) => return proto::encode_failed(job.job_id, code),
     };
-    TileReply {
+    let tile = TileReply {
         generation: job.generation,
         job_id: job.job_id,
         width: job.rect.width,
@@ -162,8 +176,8 @@ fn render(job: &RenderJob, surface: Option<Handle>, backend: &mut Option<PdfiumB
         stride: job.stride,
         status,
         render_us: u32::try_from(started.elapsed().as_micros()).unwrap_or(u32::MAX),
-    }
-    .encode()
+    };
+    if job.tile_edge == 0 { tile.encode() } else { RegionReply { tile, kinds }.encode() }
 }
 
 /// The second line. The host enforces every limit from outside, but if the host dies during a hostile page nobody would stop it, so while

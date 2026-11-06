@@ -48,9 +48,11 @@ The goal: an agent can do everything headless, as you'd expect from the finished
 - [ ] Signature report command (placeholder: present, not checked)
 
 **Renderer**
-- [ ] PDFium in a killable worker: memory limit, per-page deadline, retirement at 64 MiB *(worker running)*
-- [ ] `recto render`: any page to PNG
-- [ ] `recto text`: normalised page text, with a hidden-text flag
+- [x] PDFium in a killable worker: memory limit with the 512 MiB, 1 GiB, lower-resolution sequence, per-page deadline, retirement at 64 MiB
+- [x] `recto render`: any page to PNG, in strips under the same limits
+- [x] `recto text`: normalised page text, with a hidden-text flag
+- [x] `recto budget render`: idle worker, pages, peak, retirement, and a simulated viewport
+- [x] Heavy image pages drawn in one pass per region, not one per tile: USGS map first view 2.1 s to 0.53 s
 
 **The real agent interface**
 - [ ] `recto` as a client of a long-running session on a local socket (owner-only, no network)

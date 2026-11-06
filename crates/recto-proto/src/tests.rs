@@ -8,6 +8,7 @@ fn job() -> RenderJob {
         scale: 2.0,
         rect: TileRect { x: 512, y: 0, width: 512, height: 512 },
         stride: 2048,
+        tile_edge: 0,
     }
 }
 
@@ -39,6 +40,9 @@ fn every_message_survives_a_round_trip() {
     }
     assert_eq!(decode_hello(payload(&encode_hello(42))), Ok(42));
     assert_eq!(decode_opened(payload(&encode_opened(9))), Ok(9));
+    let traits = PageTraits { job_id: 3, largest_image_pixels: 1 << 40 };
+    assert_eq!(PageTraits::decode(payload(&traits.encode())), Ok(traits));
+    assert_eq!(decode_size_request(payload(&encode_traits_request(1, 2))), Ok((1, 2)));
     assert_eq!(decode_size_request(payload(&encode_size_request(1, 2))), Ok((1, 2)));
     let size = PageSize { job_id: 1, width: 612.0, height: 792.0 };
     assert_eq!(PageSize::decode(payload(&size.encode())), Ok(size));
@@ -176,6 +180,83 @@ fn text_replies_are_checked_against_the_job() {
     assert!(validate_text(&job, &flagged).is_err());
 }
 
+fn region_job() -> RenderJob {
+    RenderJob { rect: TileRect { x: 512, y: 1024, width: 1100, height: 600 }, stride: 4400, tile_edge: 512, ..job() }
+}
+
+fn region_reply() -> RegionReply {
+    let job = region_job();
+    let tile = TileReply { width: job.rect.width, height: job.rect.height, stride: job.stride, status: TileStatus::Done(TileKind::Colour), ..tile() };
+    let kinds = vec![TileKind::Grey; 6];
+    RegionReply { tile, kinds }
+}
+
+/// Failure: the two sides cut a region differently, so tile pixels are handed out from the wrong place, and a seam shows.
+#[test]
+fn a_region_is_cut_into_grid_tiles_covering_it_exactly() {
+    let tiles: Vec<TileRect> = region_tiles(TileRect { x: 512, y: 1024, width: 1100, height: 600 }, 512).collect();
+    assert_eq!(tiles.len(), 6);
+    assert_eq!(tiles[0], TileRect { x: 512, y: 1024, width: 512, height: 512 });
+    assert_eq!(tiles[2], TileRect { x: 1536, y: 1024, width: 76, height: 512 }, "short at the right");
+    assert_eq!(tiles[3], TileRect { x: 512, y: 1536, width: 512, height: 88 }, "short at the bottom");
+    let area: u64 = tiles.iter().map(|t| u64::from(t.width) * u64::from(t.height)).sum();
+    assert_eq!(area, 1100 * 600);
+}
+
+/// Failure: a region reply reaches the host with lengths or kinds it can't vouch for, and tiles are classified from nonsense.
+#[test]
+fn bad_region_replies_are_rejected() {
+    let job = region_job();
+    let good = region_reply();
+    assert_eq!(RegionReply::decode(payload(&good.encode())), Ok(good.clone()));
+    assert_eq!(validate_region(&job, &good, job.bytes_needed()), Ok(()));
+    let short = RegionReply { kinds: vec![TileKind::Grey; 5], ..good.clone() };
+    assert!(validate_region(&job, &short, job.bytes_needed()).is_err(), "too few tiles");
+    let wide = RegionReply { tile: TileReply { width: 1101, ..good.tile }, ..good.clone() };
+    assert!(validate_region(&job, &wide, job.bytes_needed()).is_err(), "dimensions differ from the job");
+    assert!(validate_region(&job, &good, job.bytes_needed() - 1).is_err(), "larger than its surface");
+    assert!(validate_region(&self::job(), &good, u64::MAX).is_err(), "not a region job");
+    let encoded = good.encode();
+    let mut body = payload(&encoded).to_vec();
+    body.pop();
+    assert!(RegionReply::decode(&body).is_err(), "short");
+    let mut body = payload(&encoded).to_vec();
+    body[TILE_REPLY_LEN..TILE_REPLY_LEN + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(RegionReply::decode(&body).is_err(), "a claimed count");
+    let mut body = payload(&encoded).to_vec();
+    body[TILE_REPLY_LEN + 4] = 9;
+    assert!(RegionReply::decode(&body).is_err(), "an unknown kind");
+    let mut body = payload(&encoded).to_vec();
+    body[TILE_REPLY_LEN + 4] = 1;
+    body[TILE_REPLY_LEN + 8] = 0xFF;
+    assert!(RegionReply::decode(&body).is_err(), "a blank colour that isn't RGB");
+    assert!(Header::decode(&Header { kind: Kind::Region, len: MAX_FRAME }.encode()).is_err(), "a claimed length past what any region needs");
+}
+
+/// Failure: a region job off the grid or past the cap reaches PDFium, so a hostile or mistaken request costs far more memory than a viewport.
+#[test]
+fn bad_region_jobs_are_refused() {
+    assert_eq!(region_job().check(), Ok(()));
+    assert!(RenderJob { rect: TileRect { x: 100, ..region_job().rect }, ..region_job() }.check().is_err(), "off the grid");
+    let huge = RenderJob { rect: TileRect { x: 0, y: 0, width: 4096, height: 4096 }, stride: 16384, ..region_job() };
+    assert!(huge.check().is_err(), "past the byte cap");
+    let many = RenderJob { rect: TileRect { x: 0, y: 0, width: 1024, height: 1024 }, stride: 4096, tile_edge: 1, ..region_job() };
+    assert!(many.check().is_err(), "past the tile cap, which caps the reply");
+    assert_eq!(RenderJob::decode(payload(&region_job().encode())), Ok(region_job()));
+}
+
+/// Failure: a whole region's kind is reported as colour-free when one tile has colour, or two different blanks read as one.
+#[test]
+fn kinds_merge_truthfully() {
+    let (white, black, red) = (TileKind::Blank { rgb: 0xFF_FFFF }, TileKind::Blank { rgb: 0 }, TileKind::Blank { rgb: 0xFF_0000 });
+    assert_eq!(merge_kinds(white, white), white);
+    assert_eq!(merge_kinds(white, black), TileKind::Grey);
+    assert_eq!(merge_kinds(white, red), TileKind::Colour);
+    assert_eq!(merge_kinds(red, TileKind::Grey), TileKind::Colour);
+    assert_eq!(merge_kinds(TileKind::Grey, white), TileKind::Grey);
+    assert_eq!(merge_kinds(TileKind::Colour, white), TileKind::Colour);
+}
+
 /// Failure: a worker claims billions of pages and the host believes it, so anything sized by the page count allocates without limit.
 #[test]
 fn a_page_count_past_the_cap_is_refused() {
@@ -202,6 +283,8 @@ fn decoders_are_total_on_arbitrary_bytes() {
         let len = next() as usize % buf.len();
         let bytes = &buf[..len];
         let _ = RenderJob::decode(bytes);
+        let _ = RegionReply::decode(bytes);
+        let _ = PageTraits::decode(bytes);
         let _ = TileReply::decode(bytes);
         let _ = TextReply::decode(bytes);
         let _ = TextJob::decode(bytes);

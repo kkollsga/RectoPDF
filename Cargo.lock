@@ -402,6 +402,7 @@ dependencies = [
  "recto-agent",
  "recto-core",
  "recto-platform",
+ "recto-render-service",
  "recto-session",
  "recto-testpdf",
  "serde_json",

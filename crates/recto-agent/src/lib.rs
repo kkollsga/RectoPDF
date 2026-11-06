@@ -93,6 +93,20 @@ pub enum Command {
         #[serde(default)]
         retire_mib: Option<u32>,
     },
+    /// What a reader's window costs: first view, one scroll step, one zoom step, with peak footprint.
+    BudgetViewport {
+        tab: String,
+        /// `WIDTHxHEIGHT` in device pixels, such as `3024x1964`.
+        viewport: String,
+        /// One-based first page. The first page of the file if left out.
+        #[serde(default)]
+        first: Option<u32>,
+        #[serde(default = "render::default_scale")]
+        scale: f32,
+        /// `per_tile` or `region`, for comparing with the default, which picks by page.
+        #[serde(default)]
+        strategy: Option<String>,
+    },
 }
 
 impl Command {
@@ -101,7 +115,7 @@ impl Command {
         match self {
             // Measuring with the decided limits only reads numbers. Choosing other limits decides what a hostile file may use, so it isn't reading.
             Self::BudgetRender { limit_mib: Some(_), .. } | Self::BudgetRender { retire_mib: Some(_), .. } => Level::Full,
-            Self::Tabs {} | Self::Sidebar {} | Self::Budget {} | Self::BudgetRender { .. } => Level::ReadOnly,
+            Self::Tabs {} | Self::Sidebar {} | Self::Budget {} | Self::BudgetRender { .. } | Self::BudgetViewport { .. } => Level::ReadOnly,
             // Reading a page's text is what read-only access is for, and it's what Off exists to refuse.
             Self::Text { .. } => Level::ReadOnly,
             // Writes to disk, so it's with `save` and `export` in the agent report's §5.2.
@@ -196,6 +210,10 @@ pub fn run<L: DocLoader>(session: &mut Session<L>, level: Level, command: &Comma
         Command::Text { tab, page } => {
             let id = select(session, tab)?;
             render::text(&tab_path(session, id)?, *page)
+        }
+        Command::BudgetViewport { tab, viewport, first, scale, strategy } => {
+            let id = select(session, tab)?;
+            render::budget_viewport(&tab_path(session, id)?, viewport, *first, *scale, strategy.as_deref())
         }
         Command::BudgetRender { tab, pages, first, scale, fresh, tiles, samples, limit_mib, retire_mib } => {
             let id = select(session, tab)?;

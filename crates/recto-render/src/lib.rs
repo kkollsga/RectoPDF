@@ -82,6 +82,24 @@ pub trait RenderBackend {
         cancel: &dyn Cancel,
     ) -> Result<TileOutcome, RenderError>;
 
+    /// Draws a region of a page in one pass, for when several tiles are needed: most of a heavy page's cost is per pass, not per pixel. `rect` lies on a grid of `tile_edge`
+    /// from the page's origin. On finishing, `kinds` holds what each tile holds, in [`recto_proto::region_tiles`] order.
+    #[allow(clippy::too_many_arguments)]
+    fn render_region(
+        &mut self,
+        page: u32,
+        rect: TileRect,
+        scale: f32,
+        tile_edge: u32,
+        out: &mut [u8],
+        stride: u32,
+        cancel: &dyn Cancel,
+        kinds: &mut Vec<TileKind>,
+    ) -> Result<TileOutcome, RenderError>;
+
+    /// The largest image on a page, in source pixels. Bounded: it looks at no more than a fixed number of objects. Loads the page, which drawing would do anyway.
+    fn largest_image_pixels(&mut self, page: u32) -> Result<u64, RenderError>;
+
     /// Reads a page's characters, in the order the backend understands them.
     fn page_text(&mut self, page: u32, options: TextOptions) -> Result<PageChars, RenderError>;
 }

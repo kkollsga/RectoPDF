@@ -6,7 +6,7 @@ mod common;
 use common::wait_until;
 use std::sync::atomic::Ordering;
 use recto_platform::isolate::{self, Channel, Handle, SharedMemory};
-use recto_proto::{self as proto, CharRecord, FailCode, HEADER_LEN, Header, Kind, PageSize, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus};
+use recto_proto::{self as proto, CharRecord, FailCode, HEADER_LEN, Header, Kind, PageSize, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus};
 use recto_render_service::transport::{FrameReader, send_all};
 use recto_render_service::{DocRenderer, KillReason, Policy, RenderFailure, ServiceConfig, TileRequest, TileResult, control};
 use recto_testpdf::TempPdf;
@@ -46,7 +46,20 @@ fn mark_job_in_hand() {
 fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut Vec<Vec<u8>>, cancel_word: Option<&SharedMemory>) {
     let good = good_tile(job);
     mark_job_in_hand();
+    let tiles = proto::region_tiles(job.rect, job.tile_edge.max(1)).count();
+    let region = RegionReply { tile: good, kinds: vec![TileKind::Grey; tiles] };
     let reply = match mode {
+        "region_short" => RegionReply { kinds: vec![TileKind::Grey; tiles - 1], ..region }.encode(),
+        "region_long" => RegionReply { kinds: vec![TileKind::Grey; tiles + 1], ..region }.encode(),
+        "region_wrong_size" => RegionReply { tile: TileReply { width: job.rect.width + 1, ..good }, ..region }.encode(),
+        "region_answered_as_a_tile" => good.encode(),
+        "region_garbled" => {
+            let mut bytes = region.encode();
+            let last = bytes.len() - 5;
+            bytes[last] = 9;
+            bytes
+        }
+        "good" if job.tile_edge != 0 => region.encode(),
         "cancels_uncalled" => TileReply { status: TileStatus::Cancelled, ..good }.encode(),
         "done_after_cancel" => {
             // Sees the cancel arrive, and finishes anyway, as a page in its last object would.
@@ -54,7 +67,7 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
             while job.generation >= word.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(1));
             }
-            good.encode()
+            if job.tile_edge != 0 { region.encode() } else { good.encode() }
         }
         "failed_for_another_job" => proto::encode_failed(job.job_id + 1, FailCode::BadPage),
         "wrong_width" => TileReply { width: job.rect.width + 1, ..good }.encode(),
@@ -352,6 +365,70 @@ fn a_cancel_nobody_asked_for_is_misbehaving() {
 fn a_failure_for_another_job_is_rejected() {
     let failure = tile_failure("failed_for_another_job");
     assert!(is_rejected(failure), "{failure:?}");
+}
+
+fn region_request() -> TileRequest {
+    TileRequest { page: 0, rect: TileRect { x: 0, y: 512, width: 1024, height: 1024 }, scale: 2.0, stride: 4096, generation: 1 }
+}
+
+fn region_surface() -> SharedMemory {
+    SharedMemory::create(1024 * 1024 * 4).unwrap()
+}
+
+/// Failure: the host believes a region reply with the wrong number of tiles or the wrong shape, and hands tiles out of the wrong place or runs off the list of kinds.
+#[test]
+fn bad_region_replies_are_rejected_and_the_worker_is_killed() {
+    for mode in ["region_short", "region_long", "region_wrong_size", "region_answered_as_a_tile", "region_garbled"] {
+        let (mut doc, _file) = doc(mode, policy());
+        let failure = doc.render_region(&region_request(), 512, &region_surface()).unwrap_err();
+        assert!(is_rejected(failure), "{mode}: {failure:?}");
+        assert!(!doc.has_worker(), "{mode}");
+    }
+}
+
+/// Failure: the stand-in's region replies are broken, so the rejections above prove nothing. A well-formed one comes through with a kind per tile.
+#[test]
+fn a_good_region_reply_is_accepted() {
+    let (mut doc, _file) = doc("good", policy());
+    let TileResult::Done(tile) = doc.render_region(&region_request(), 512, &region_surface()).unwrap() else { panic!() };
+    assert_eq!(tile.region_kinds, vec![TileKind::Grey; 4]);
+}
+
+/// Failure: a stale region holds the worker for its whole pass, so a scroll waits longer than today's rule allows. It gets the same grace as a tile, then the same kill.
+#[test]
+fn a_region_that_ignores_cancel_is_killed_after_the_grace() {
+    let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
+    let (config, mark) = with_mark("ignore_cancel", &file);
+    let policy = Policy { page_deadline: Duration::from_secs(300), cancel_grace: Duration::from_millis(50), ..Policy::default() };
+    let mut doc = DocRenderer::new(&file.0, None, config, policy).unwrap();
+    let cancel = doc.cancel_handle();
+    let watched = mark.clone();
+    let canceller = std::thread::spawn(move || {
+        wait_until("the job to be in hand", || watched.exists());
+        cancel.cancel_before(2);
+    });
+    let result = doc.render_region(&region_request(), 512, &region_surface()).unwrap();
+    canceller.join().unwrap();
+    let _ = std::fs::remove_file(&mark);
+    assert_eq!(result, TileResult::Cancelled { worker_killed: true });
+}
+
+/// Failure: a region cancelled while it was finishing reaches the caller as drawn tiles, so stale tiles land on screen after a jump.
+#[test]
+fn a_region_cancelled_while_finishing_never_reads_as_done() {
+    let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
+    let (config, mark) = with_mark("done_after_cancel", &file);
+    let mut doc = DocRenderer::new(&file.0, None, config, Policy { cancel_grace: Duration::from_secs(60), ..policy() }).unwrap();
+    let cancel = doc.cancel_handle();
+    let watched = mark.clone();
+    let canceller = std::thread::spawn(move || {
+        wait_until("the job to be in hand", || watched.exists());
+        cancel.cancel_before(2);
+    });
+    let result = doc.render_region(&region_request(), 512, &region_surface()).unwrap();
+    canceller.join().unwrap();
+    let _ = std::fs::remove_file(&mark);
+    assert_eq!(result, TileResult::Cancelled { worker_killed: false });
 }
 
 /// Failure: a compromised worker ignores its idle time and keeps its memory for ever, since nobody looks between jobs. Nothing calls the document here.

@@ -5,7 +5,7 @@
 mod common;
 
 use recto_platform::isolate::{self, Channel, SharedMemory};
-use recto_proto::{self as proto, CharRecord, FailCode, Kind, PageSize, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus};
+use recto_proto::{self as proto, CharRecord, FailCode, Kind, PageSize, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus};
 use recto_render_service::transport::{FrameReader, send_all};
 use recto_render_service::{
     DocRenderer, HeavySlot, KillReason, LowResWhy, OutputCaps, PageDrawState, PageEvent, Policy, RenderFailure, ServiceConfig, TileRequest, TileResult, draw_whole_page,
@@ -41,6 +41,10 @@ fn fake_worker() {
                 let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
                 PageSize { job_id, width: 612.0, height: 792.0 }.encode()
             }
+            Kind::TraitsRequest => {
+                let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
+                proto::PageTraits { job_id, largest_image_pixels: 0 }.encode()
+            }
             Kind::TextRequest => {
                 let job = TextJob::decode(&frame.payload).unwrap();
                 TextReply { job_id: job.job_id, page: job.page, hidden_checked: job.hidden_check, chars: vec![CharRecord::new('a' as u32, 0)], boxes: Vec::new() }.encode().unwrap()
@@ -60,7 +64,7 @@ fn fake_worker() {
                 if !fits {
                     leak_for_ever();
                 }
-                TileReply {
+                let tile = TileReply {
                     generation: job.generation,
                     job_id: job.job_id,
                     width: job.rect.width,
@@ -68,8 +72,12 @@ fn fake_worker() {
                     stride: job.stride,
                     status: TileStatus::Done(TileKind::Colour),
                     render_us: 1,
+                };
+                if job.tile_edge == 0 {
+                    tile.encode()
+                } else {
+                    RegionReply { tile, kinds: vec![TileKind::Colour; proto::region_tiles(job.rect, job.tile_edge).count()] }.encode()
                 }
-                .encode()
             }
             _ => proto::encode_failed(0, FailCode::Internal),
         };
@@ -237,6 +245,31 @@ fn only_one_heavy_worker_across_the_session_and_nobody_waits_for_it() {
     let sharp = done(second.render_tile(&request(0), &surface()));
     assert_eq!(sharp.low_res, None, "with the slot free it should go sharp");
     assert_eq!(second.stats().heavy_retries, 1);
+}
+
+fn region(page: u32) -> TileRequest {
+    TileRequest { page, rect: TileRect { x: 512, y: 512, width: 1024, height: 1024 }, scale: 2.0, stride: 4096, generation: 1 }
+}
+
+fn region_surface() -> SharedMemory {
+    SharedMemory::create(1024 * 1024 * 4).unwrap()
+}
+
+/// Failure: a region escapes the memory sequence, so a heavy page drawn as a region is stopped when one drawn as tiles would have gone on to the larger limit.
+#[test]
+fn a_region_goes_down_the_same_sequence() {
+    let (mut heavy, _a) = doc("fits_heavy");
+    let tile = done(heavy.render_region(&region(0), 512, &region_surface()));
+    assert_eq!(tile.low_res, None);
+    assert_eq!(tile.region_kinds.len(), 4);
+    assert_eq!(heavy.stats().heavy_retries, 1);
+    let (mut low, _b) = doc("fits_low_res");
+    let tile = done(low.render_region(&region(0), 512, &region_surface()));
+    let low_res = tile.low_res.expect("it should say this is a lower resolution");
+    assert_eq!(low_res.rect, TileRect { x: 128, y: 128, width: 178, height: 256 }, "this region runs past the page's right edge, and the smaller one stops there");
+    assert!(tile.region_kinds.is_empty(), "a lower-resolution pass isn't on the tile grid");
+    let (mut none, _c) = doc("fits_nothing");
+    assert_eq!(none.render_region(&region(0), 512, &region_surface()).unwrap_err(), RenderFailure::PageFailed { page: 0, reason: KillReason::MemoryLimit });
 }
 
 /// Failure: a heavy worker that left by itself keeps the slot, so no other page can ever have it.

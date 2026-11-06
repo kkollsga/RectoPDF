@@ -153,6 +153,29 @@ fn the_session_runs_the_same_commands() {
     std::fs::remove_file(&out).unwrap();
 }
 
+/// Failure: `budget render --viewport` misses a step, or claims work a scroll didn't need: a scroll draws only what it brings into view, and zoom draws all of it again.
+#[test]
+fn the_viewport_budget_reports_first_view_scroll_and_zoom() {
+    let file = TempPdf::new("view.pdf", &pages(&[Page::new(recto_testpdf::busy_page()), Page::new(recto_testpdf::busy_page()), Page::new(recto_testpdf::busy_page())]));
+    for strategy in [&["--per-tile"][..], &["--region"][..], &[][..]] {
+        let mut args = vec!["budget", "render", "--file", path_of(&file), "--viewport", "1600x1000", "--scale", "2"];
+        args.extend_from_slice(strategy);
+        let (reply, code) = recto(&args);
+        assert_eq!(code, 0, "{reply}");
+        let steps = reply["data"]["steps"].as_array().unwrap();
+        let names: Vec<&str> = steps.iter().map(|step| step["step"].as_str().unwrap()).collect();
+        assert_eq!(names, ["first_view", "scroll", "zoom"]);
+        let tiles = |step: usize| steps[step]["tiles"].as_u64().unwrap();
+        assert!(tiles(0) > 0);
+        assert!(tiles(1) < tiles(0), "a scroll redrew what it already had: {reply}");
+        assert!(tiles(2) >= tiles(0), "zooming needs everything again: {reply}");
+        assert!(steps.iter().all(|step| step["failed"] == 0 && step["low_res"] == 0), "{reply}");
+        assert!(steps[2]["peak_footprint_bytes"].as_u64().unwrap() > 0);
+    }
+    let (bad, _) = recto(&["budget", "render", "--file", path_of(&file), "--viewport", "wide"]);
+    assert_eq!(bad["error"]["code"], "bad_viewport");
+}
+
 /// Failure: a missing file through `text` reads as an internal error, rather than saying the file isn't there.
 #[test]
 fn a_missing_file_says_so() {

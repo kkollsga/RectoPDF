@@ -2,7 +2,7 @@
 //!
 //! **Raw FFI, not `pdfium-render`.** The spike used `pdfium-render` 0.9.5 only for its bindings, because `PdfDocument::handle()` is
 //! crate-private and its high-level loaders can't reach `FPDF_LoadCustomDocument` with a `pread` callback, the loader the worker needs
-//! (spike §3). Taking the crate for function pointers alone costs 24 crates and a much larger binary, for what is 27 signatures here.
+//! (spike §3). Taking the crate for function pointers alone costs 24 crates and a much larger binary, for what is 33 signatures here.
 //! Those are copied from the headers of the version `tools/pdfium.sh` pins by digest: chromium/8125, non-V8, non-XFA. Every one was compared with those
 //! headers by hand on 2026-11-06.
 //!
@@ -16,7 +16,7 @@
 
 use crate::{Cancel, PageChars, PagePoints, RenderBackend, RenderError, TextOptions, TileOutcome, classify_bgrx};
 use recto_platform::isolate::Library;
-use recto_proto::{CharBox, CharRecord, FailCode, MAX_PAGE_CHARS, MAX_PAGE_COUNT, TileRect, device_size};
+use recto_proto::{CharBox, CharRecord, FailCode, MAX_PAGE_CHARS, MAX_PAGE_COUNT, TileKind, TileRect, device_size, merge_kinds, region_tiles};
 use std::cell::Cell;
 use std::ffi::{CString, c_double, c_float, c_int, c_uchar, c_uint, c_ulong, c_void};
 use std::fs::File;
@@ -30,6 +30,7 @@ type FPDF_PAGE = *mut c_void;
 type FPDF_BITMAP = *mut c_void;
 type FPDF_TEXTPAGE = *mut c_void;
 type FPDF_FORMHANDLE = *mut c_void;
+type FPDF_PAGEOBJECT = *mut c_void;
 type FPDF_BOOL = c_int;
 
 /// `fpdfview.h`: read callback for `FPDF_LoadCustomDocument`.
@@ -67,6 +68,12 @@ const FPDF_ERR_FILE: c_ulong = 2;
 const FPDF_ERR_FORMAT: c_ulong = 3;
 const FPDF_ERR_PASSWORD: c_ulong = 4;
 const FPDF_ERR_SECURITY: c_ulong = 5;
+/// `fpdf_edit.h`: object types.
+const FPDF_PAGEOBJ_IMAGE: c_int = 3;
+const FPDF_PAGEOBJ_FORM: c_int = 5;
+/// How far the look for large images goes. A hostile page can hold millions of objects and forms inside forms, and it's only a hint.
+const MAX_OBJECTS_LOOKED_AT: usize = 20_000;
+const MAX_FORM_DEPTH: u32 = 8;
 /// The background of every page.
 const PAPER_WHITE: c_ulong = 0xFFFF_FFFF;
 
@@ -112,6 +119,12 @@ pdfium_api! {
     FORM_OnAfterLoadPage: fn(FPDF_PAGE, FPDF_FORMHANDLE);
     FORM_OnBeforeClosePage: fn(FPDF_PAGE, FPDF_FORMHANDLE);
     FPDF_FFLDraw: fn(FPDF_FORMHANDLE, FPDF_BITMAP, FPDF_PAGE, c_int, c_int, c_int, c_int, c_int, c_int);
+    FPDFPage_CountObjects: fn(FPDF_PAGE) -> c_int;
+    FPDFPage_GetObject: fn(FPDF_PAGE, c_int) -> FPDF_PAGEOBJECT;
+    FPDFPageObj_GetType: fn(FPDF_PAGEOBJECT) -> c_int;
+    FPDFFormObj_CountObjects: fn(FPDF_PAGEOBJECT) -> c_int;
+    FPDFFormObj_GetObject: fn(FPDF_PAGEOBJECT, c_ulong) -> FPDF_PAGEOBJECT;
+    FPDFImageObj_GetImagePixelSize: fn(FPDF_PAGEOBJECT, *mut c_uint, *mut c_uint) -> FPDF_BOOL;
     FPDFText_LoadPage: fn(FPDF_PAGE) -> FPDF_TEXTPAGE;
     FPDFText_ClosePage: fn(FPDF_TEXTPAGE);
     FPDFText_CountChars: fn(FPDF_TEXTPAGE) -> c_int;
@@ -308,6 +321,28 @@ impl PdfiumBackend {
         self.open_page.as_ref().map(|open| open.page)
     }
 
+    /// Loads the page and draws `rect` of it at `scale` into `out`. False if cancelled.
+    fn draw_rect(&mut self, page: u32, rect: TileRect, scale: f32, out: &mut [u8], stride: u32, cancel: &dyn Cancel) -> Result<bool, RenderError> {
+        if cancel.is_cancelled() {
+            return Ok(false);
+        }
+        let size = self.page_size(page)?;
+        let (full_width, full_height) = device_size(size.width, size.height, scale).map_err(|_| FailCode::TooLarge)?;
+        if rect.x >= full_width || rect.y >= full_height {
+            return Err(FailCode::BadRequest);
+        }
+        let int = |value: u32| c_int::try_from(value).map_err(|_| FailCode::TooLarge);
+        let (width, height, stride_int) = (int(rect.width)?, int(rect.height)?, int(stride)?);
+        let at = (-int(rect.x)?, -int(rect.y)?);
+        let full = (int(full_width)?, int(full_height)?);
+        self.load_page(page)?;
+        // Page load can't be interrupted, so this is the first chance to notice it took too long.
+        if cancel.is_cancelled() {
+            return Ok(false);
+        }
+        self.draw(out, width, height, stride_int, at, full, cancel)
+    }
+
     /// Draws into `out` at the given whole-page size and offset. Returns false if cancelled. Page load has no pause, so a slow one only
     /// notices cancelling here.
     fn draw(&mut self, out: &mut [u8], width: c_int, height: c_int, stride: c_int, at: (c_int, c_int), full: (c_int, c_int), cancel: &dyn Cancel) -> Result<bool, RenderError> {
@@ -378,28 +413,73 @@ impl RenderBackend for PdfiumBackend {
     }
 
     fn render_tile(&mut self, page: u32, rect: TileRect, scale: f32, out: &mut [u8], stride: u32, cancel: &dyn Cancel) -> Result<TileOutcome, RenderError> {
-        if cancel.is_cancelled() {
-            return Ok(TileOutcome::Cancelled);
-        }
-        let size = self.page_size(page)?;
-        let (full_width, full_height) = device_size(size.width, size.height, scale).map_err(|_| FailCode::TooLarge)?;
-        if rect.x >= full_width || rect.y >= full_height {
-            return Err(FailCode::BadRequest);
-        }
-        let int = |value: u32| c_int::try_from(value).map_err(|_| FailCode::TooLarge);
-        let (width, height, stride_int) = (int(rect.width)?, int(rect.height)?, int(stride)?);
-        let at = (-int(rect.x)?, -int(rect.y)?);
-        let full = (int(full_width)?, int(full_height)?);
-        self.load_page(page)?;
-        // Page load can't be interrupted, so this is the first chance to notice it took too long.
-        if cancel.is_cancelled() {
-            return Ok(TileOutcome::Cancelled);
-        }
-        if self.draw(out, width, height, stride_int, at, full, cancel)? {
+        if self.draw_rect(page, rect, scale, out, stride, cancel)? {
             Ok(TileOutcome::Done(classify_bgrx(out, rect.width, rect.height, stride)))
         } else {
             Ok(TileOutcome::Cancelled)
         }
+    }
+
+    fn render_region(
+        &mut self,
+        page: u32,
+        rect: TileRect,
+        scale: f32,
+        tile_edge: u32,
+        out: &mut [u8],
+        stride: u32,
+        cancel: &dyn Cancel,
+        kinds: &mut Vec<TileKind>,
+    ) -> Result<TileOutcome, RenderError> {
+        if !self.draw_rect(page, rect, scale, out, stride, cancel)? {
+            return Ok(TileOutcome::Cancelled);
+        }
+        let mut whole = None;
+        for tile in region_tiles(rect, tile_edge) {
+            let offset = (tile.y - rect.y) as usize * stride as usize + (tile.x - rect.x) as usize * 4;
+            let pixels = out.get(offset..).ok_or(FailCode::BadSurface)?;
+            let kind = classify_bgrx(pixels, tile.width, tile.height, stride);
+            kinds.push(kind);
+            whole = Some(whole.map_or(kind, |so_far| merge_kinds(so_far, kind)));
+        }
+        Ok(TileOutcome::Done(whole.unwrap_or(TileKind::Colour)))
+    }
+
+    fn largest_image_pixels(&mut self, page: u32) -> Result<u64, RenderError> {
+        self.load_page(page)?;
+        let Some(handle) = self.open_page_handle() else { return Err(FailCode::Internal) };
+        let api = self.api;
+        let mut largest = 0u64;
+        let mut looked_at = 0usize;
+        // SAFETY: the page is live for this whole function, and every object comes from it or a form on it. Indexes are below the counts just read.
+        unsafe {
+            let mut waiting: Vec<(FPDF_PAGEOBJECT, u32)> = Vec::new();
+            for index in 0..(api.FPDFPage_CountObjects)(handle).max(0).min(MAX_OBJECTS_LOOKED_AT as c_int) {
+                waiting.push(((api.FPDFPage_GetObject)(handle, index), 0));
+            }
+            while let Some((object, depth)) = waiting.pop() {
+                looked_at += 1;
+                if object.is_null() || looked_at > MAX_OBJECTS_LOOKED_AT {
+                    continue;
+                }
+                match (api.FPDFPageObj_GetType)(object) {
+                    FPDF_PAGEOBJ_IMAGE => {
+                        let (mut width, mut height): (c_uint, c_uint) = (0, 0);
+                        if (api.FPDFImageObj_GetImagePixelSize)(object, &raw mut width, &raw mut height) != 0 {
+                            largest = largest.max(u64::from(width) * u64::from(height));
+                        }
+                    }
+                    FPDF_PAGEOBJ_FORM if depth < MAX_FORM_DEPTH => {
+                        let room = MAX_OBJECTS_LOOKED_AT.saturating_sub(waiting.len());
+                        for index in 0..((api.FPDFFormObj_CountObjects)(object).max(0) as usize).min(room) {
+                            waiting.push(((api.FPDFFormObj_GetObject)(object, index as c_ulong), depth + 1));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(largest)
     }
 
     fn page_text(&mut self, page: u32, options: TextOptions) -> Result<PageChars, RenderError> {

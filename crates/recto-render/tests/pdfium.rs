@@ -152,6 +152,95 @@ fn the_same_tile_draws_the_same_twice() {
     assert!(first == second);
 }
 
+/// Draws `rect` as one region with `edge` tiles, returning its pixels and kinds.
+fn draw_region(backend: &mut PdfiumBackend, page: u32, rect: TileRect, scale: f32, edge: u32) -> (Vec<u8>, Vec<TileKind>) {
+    let stride = rect.width * 4;
+    let mut out = vec![0x55u8; (stride * rect.height) as usize];
+    let mut kinds = Vec::new();
+    let outcome = backend.render_region(page, rect, scale, edge, &mut out, stride, &NeverCancel, &mut kinds).unwrap();
+    assert!(matches!(outcome, TileOutcome::Done(_)));
+    (out, kinds)
+}
+
+/// Failure: tiles handed out of a region don't match the page drawn whole, so a seam shows where one region meets the next. Regions are drawn on the tile grid and pasted
+/// together, then compared the way tiles are, with the same one-pixel negative control.
+#[test]
+fn a_page_drawn_as_regions_equals_the_page_drawn_whole() {
+    let _turn = turn();
+    let file = TempPdf::new("region-seam.pdf", &pages(&[Page::new(busy_page())]));
+    let mut backend = open(&file);
+    for (scale, block) in [(2.0, 1024), (1.37, 1024)] {
+        let (whole, width, height) = whole_page(&mut backend, 0, scale);
+        let mut pasted = vec![0u8; (width * height * 4) as usize];
+        for y in (0..height).step_by(block as usize) {
+            for x in (0..width).step_by(block as usize) {
+                let rect = TileRect { x, y, width: block.min(width - x), height: block.min(height - y) };
+                let (pixels, _) = draw_region(&mut backend, 0, rect, scale, 512);
+                for row in 0..rect.height {
+                    let from = (row * rect.width * 4) as usize;
+                    let to = (((y + row) * width + x) * 4) as usize;
+                    pasted[to..to + (rect.width * 4) as usize].copy_from_slice(&pixels[from..from + (rect.width * 4) as usize]);
+                }
+            }
+        }
+        let differing = share_differing(&whole, &pasted, 16);
+        assert!(differing < 0.002, "scale {scale}: {:.3}% of pixels differ", differing * 100.0);
+        let row = (width * 4) as usize;
+        let shifted = share_differing(&whole[row..], &pasted[..pasted.len() - row], 16);
+        assert!(shifted > differing * 5.0 && shifted > 0.005, "a one-pixel shift should be visible: {shifted} against {differing}");
+    }
+}
+
+/// Failure: a tile cut from a region differs from the same tile drawn alone, so whichever way a tile was drawn shows on screen.
+#[test]
+fn a_tile_from_a_region_equals_the_tile_drawn_alone() {
+    let _turn = turn();
+    let file = TempPdf::new("region-tile.pdf", &pages(&[Page::new(busy_page())]));
+    let mut backend = open(&file);
+    let region = TileRect { x: 0, y: 512, width: 1024, height: 1024 };
+    let (pixels, kinds) = draw_region(&mut backend, 0, region, 2.0, 512);
+    for (tile, kind) in recto_proto::region_tiles(region, 512).zip(&kinds) {
+        let (alone, alone_kind) = draw(&mut backend, 0, tile, 2.0);
+        assert_eq!(*kind, alone_kind, "{tile:?}");
+        let mut cut = Vec::new();
+        for row in 0..tile.height {
+            let at = ((tile.y - region.y + row) * region.width + (tile.x - region.x)) as usize * 4;
+            cut.extend_from_slice(&pixels[at..at + tile.width as usize * 4]);
+        }
+        assert!(share_differing(&alone, &cut, 16) < 0.002, "{tile:?}");
+    }
+}
+
+/// Failure: a region reports one kind for all its tiles, so an empty tile in a busy view costs a surface and a light page loses its savings. Each tile is classified by itself.
+#[test]
+fn each_tile_of_a_region_is_classified_by_itself() {
+    let _turn = turn();
+    let file = TempPdf::new("region-kinds.pdf", &pages(&[Page::new(text_lines(&["Only at the top of the page"]))]));
+    let mut backend = open(&file);
+    let size = backend.page_size(0).unwrap();
+    let (width, height) = device_size(size.width, size.height, 2.0).unwrap();
+    let region = TileRect { x: 0, y: 0, width: width.min(1024), height };
+    let (_, kinds) = draw_region(&mut backend, 0, region, 2.0, 512);
+    assert_eq!(kinds.len(), recto_proto::region_tiles(region, 512).count());
+    assert!(kinds.iter().any(|kind| matches!(kind, TileKind::Grey)), "the tile with text: {kinds:?}");
+    assert_eq!(kinds.iter().filter(|kind| matches!(kind, TileKind::Blank { rgb: 0xFF_FFFF })).count(), kinds.len() - 1, "the rest are empty: {kinds:?}");
+}
+
+/// Failure: a region cancelled up front still draws, or its tiles are reported.
+#[test]
+fn a_region_cancelled_up_front_draws_nothing() {
+    let _turn = turn();
+    let file = TempPdf::new("region-cancel.pdf", &pages(&[Page::new(busy_page())]));
+    let mut backend = open(&file);
+    let mut out = vec![0x55u8; 1024 * 1024 * 4];
+    let mut kinds = Vec::new();
+    let rect = TileRect { x: 0, y: 0, width: 1024, height: 1024 };
+    let cancelled = || true;
+    assert_eq!(backend.render_region(0, rect, 2.0, 512, &mut out, 4096, &cancelled, &mut kinds).unwrap(), TileOutcome::Cancelled);
+    assert!(kinds.is_empty());
+    assert!(out.iter().all(|&byte| byte == 0x55));
+}
+
 /// Failure: a tile off the page or past the document reaches PDFium and draws garbage, or a page count from a hostile file is believed.
 #[test]
 fn impossible_requests_are_refused_before_pdfium_sees_them() {

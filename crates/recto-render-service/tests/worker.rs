@@ -31,7 +31,7 @@ fn a_tile_drawn_in_the_worker_arrives_in_the_hosts_surface() {
     let mut doc = renderer(&file.0, Policy::default());
     let surface = tile_surface();
     let result = doc.render_tile(&tile_request(0, 1), &surface).unwrap();
-    assert!(matches!(result, TileResult::Done(tile) if tile.kind == TileKind::Colour), "{result:?}");
+    assert!(matches!(&result, TileResult::Done(tile) if tile.kind == TileKind::Colour), "{result:?}");
     let mut pixels = vec![0u8; 512 * 512 * 4];
     assert!(surface.copy_out(0, &mut pixels));
     assert!(pixels.as_chunks::<4>().0.iter().any(|px| px[..3] != [255, 255, 255]), "the surface is empty");
@@ -287,6 +287,85 @@ fn killing_a_worker_doesnt_wait_for_it() {
     assert_eq!(doc.worker_pid(), None, "it's let go at once");
     wait_until("the reaper to collect it", || process_memory(pid).is_none());
     assert_eq!(draws(&mut doc, 1), TileKind::Grey);
+}
+
+/// Failure: a region drawn in the worker doesn't reach the host's surface, or its tiles' kinds are lost on the way. Each kind must match what one tile would report.
+#[test]
+fn a_region_through_the_worker_reports_each_tile() {
+    let file = TempPdf::new("region.pdf", &pages(&[Page::new(text_lines(&["Only at the top"]))]));
+    let mut doc = renderer(&file.0, Policy::default());
+    let surface = recto_render_service::Surface::create(1024 * 1024 * 4).unwrap();
+    let request = TileRequest { page: 0, rect: TileRect { x: 0, y: 0, width: 1024, height: 1024 }, scale: 2.0, stride: 4096, generation: 0 };
+    let TileResult::Done(tile) = doc.render_region(&request, 512, &surface).unwrap() else { panic!() };
+    assert_eq!(tile.region_kinds.len(), 4);
+    let single = tile_surface();
+    for (place, kind) in recto_proto::region_tiles(request.rect, 512).zip(&tile.region_kinds) {
+        let alone = TileRequest { rect: place, stride: 2048, ..request };
+        let TileResult::Done(one) = doc.render_tile(&alone, &single).unwrap() else { panic!() };
+        assert_eq!(one.kind, *kind, "{place:?}");
+    }
+    let mut pixels = vec![0u8; 1024 * 1024 * 4];
+    assert!(surface.copy_out(0, &mut pixels));
+    assert!(pixels.as_chunks::<4>().0.iter().any(|px| px[0] < 128), "nothing reached the surface");
+}
+
+/// Failure: a region larger than the cap is sent anyway, so one call can cost far more than a viewport. The host refuses it, with no process started.
+#[test]
+fn a_region_past_the_cap_or_off_the_grid_never_leaves_the_host() {
+    let file = plain_doc();
+    let mut doc = renderer(&file.0, Policy::default());
+    let surface = recto_render_service::Surface::create(64 * 1024 * 1024).unwrap();
+    let past_cap = TileRequest { page: 0, rect: TileRect { x: 0, y: 0, width: 4096, height: 4096 }, scale: 2.0, stride: 16384, generation: 0 };
+    assert_eq!(doc.render_region(&past_cap, 512, &surface).unwrap_err(), RenderFailure::BadRequest);
+    let off_grid = TileRequest { rect: TileRect { x: 100, y: 0, width: 512, height: 512 }, stride: 2048, ..past_cap };
+    assert_eq!(doc.render_region(&off_grid, 512, &surface).unwrap_err(), RenderFailure::BadRequest);
+    assert_eq!(doc.render_region(&off_grid, 0, &surface).unwrap_err(), RenderFailure::BadRequest);
+    assert!(!doc.has_worker());
+}
+
+/// Failure: cancelling a slow region neither returns nor kills, so the page you've scrolled to waits for a pass nobody wants.
+#[test]
+fn cancelling_a_slow_region_returns_or_kill_covers_it() {
+    let file = TempPdf::new("slow.pdf", &pages(&[Page::new(slow_page(400_000)), Page::new(text_lines(&["Next"]))]));
+    let policy = Policy { page_deadline: Duration::from_secs(120), ..Policy::default() };
+    let mut doc = renderer(&file.0, policy);
+    assert_eq!(doc.page_count().unwrap(), 2);
+    let cancel = doc.cancel_handle();
+    let pid = doc.worker_pid().unwrap();
+    let opened = doc.stats().opened_footprint_bytes;
+    let canceller = std::thread::spawn(move || {
+        wait_until("the page to start loading", || process_memory(pid).is_some_and(|memory| memory.footprint_bytes > opened + 1024 * 1024));
+        cancel.cancel_before(2);
+    });
+    let surface = recto_render_service::Surface::create(1024 * 1024 * 4).unwrap();
+    let request = TileRequest { page: 0, rect: TileRect { x: 0, y: 0, width: 1024, height: 1024 }, scale: 2.0, stride: 4096, generation: 1 };
+    let result = doc.render_region(&request, 512, &surface).unwrap();
+    canceller.join().unwrap();
+    assert!(matches!(result, TileResult::Cancelled { .. }), "a page this slow should still be drawing: {result:?}");
+    assert!(matches!(doc.render_tile(&tile_request(1, 2), &tile_surface()).unwrap(), TileResult::Done(_)), "the next job runs at once");
+}
+
+/// Failure: the largest-image hint misreads a page, so the choice of how to draw it is wrong: an image page must report its image's pixels, a text page none, and a page's
+/// answer must be remembered rather than asked for again.
+#[test]
+fn the_largest_image_is_found_and_remembered() {
+    let image = recto_testpdf::Object::Stream {
+        dict: "/Type /XObject /Subtype /Image /Width 40 /Height 30 /ColorSpace /DeviceGray /BitsPerComponent 8".into(),
+        data: vec![128; 40 * 30],
+    };
+    let first = recto_testpdf::first_extra_object(2);
+    let bytes = recto_testpdf::pages_with(
+        &[Page::new(b"q 100 0 0 100 50 50 cm /Im Do Q".to_vec()), Page::new(text_lines(&["Words"]))],
+        &format!("/XObject << /Im {first} 0 R >>"),
+        vec![image],
+    );
+    let file = TempPdf::new("image.pdf", &bytes);
+    let mut doc = renderer(&file.0, Policy::default());
+    assert_eq!(doc.largest_image_pixels(0).unwrap(), 1200);
+    assert_eq!(doc.largest_image_pixels(1).unwrap(), 0);
+    let jobs = doc.stats().jobs;
+    assert_eq!(doc.largest_image_pixels(0).unwrap(), 1200);
+    assert_eq!(doc.stats().jobs, jobs, "asked again rather than remembered");
 }
 
 /// Failure: two documents share a worker or a global in the host, so one's failure breaks the other.
