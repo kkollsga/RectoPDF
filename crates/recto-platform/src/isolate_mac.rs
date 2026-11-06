@@ -10,8 +10,9 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 // Apple's extension, not yet in the `libc` crate. Marks a descriptor to survive `POSIX_SPAWN_CLOEXEC_DEFAULT` under its own number.
 unsafe extern "C" {
@@ -104,7 +105,8 @@ impl Channel {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let mut iov = libc::iovec { iov_base: bytes.as_ptr().cast_mut().cast(), iov_len: bytes.len() };
-        let mut control = ControlBuffer::new();
+        // Room for `MAX_HANDLES` and a header, aligned for it.
+        let mut control = [0u64; 8];
         // SAFETY: a zeroed `msghdr` is valid: null pointers and zero lengths.
         let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
         msg.msg_iov = &raw mut iov;
@@ -113,7 +115,7 @@ impl Channel {
             let payload = (handles.len() * size_of::<RawFd>()) as u32;
             // SAFETY: `CMSG_SPACE` is arithmetic.
             msg.msg_controllen = unsafe { libc::CMSG_SPACE(payload) };
-            msg.msg_control = control.0.as_mut_ptr().cast();
+            msg.msg_control = control.as_mut_ptr().cast();
             // SAFETY: `msg` points at `control`, which is aligned and large enough for `MAX_HANDLES`, so the first header exists
             // and its data has room for the descriptors.
             unsafe {
@@ -140,16 +142,21 @@ impl Channel {
         }
     }
 
-    /// Reads what's available into `buf`, appending any handles that arrived to `handles`. Zero bytes means the peer has gone.
+    /// Reads what's available into `buf`, appending any handles that arrived to `handles`. Zero bytes means the peer has gone. A message
+    /// whose handles didn't fit is `InvalidData`: nothing we send does that, so whoever sent it is misbehaving.
     pub fn recv(&self, buf: &mut [u8], handles: &mut Vec<Handle>) -> io::Result<usize> {
-        let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };
         let mut control = ControlBuffer::new();
+        self.recv_into(buf, handles, &mut control.0)
+    }
+
+    fn recv_into(&self, buf: &mut [u8], handles: &mut Vec<Handle>, control: &mut [u8]) -> io::Result<usize> {
+        let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };
         // SAFETY: a zeroed `msghdr` is valid: null pointers and zero lengths.
         let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
         msg.msg_iov = &raw mut iov;
         msg.msg_iovlen = 1;
-        msg.msg_control = control.0.as_mut_ptr().cast();
-        msg.msg_controllen = size_of::<ControlBuffer>() as u32;
+        msg.msg_control = control.as_mut_ptr().cast();
+        msg.msg_controllen = control.len() as u32;
         let got = loop {
             // SAFETY: `msg` and everything it points at outlive the call, and the lengths describe real buffers.
             let got = unsafe { libc::recvmsg(self.0.as_raw_fd(), &raw mut msg, 0) };
@@ -161,24 +168,17 @@ impl Channel {
                 return Err(error);
             }
         };
-        // SAFETY: the kernel set `msg_controllen` to what it wrote into `control`, and the macros stay inside that length.
-        unsafe {
-            let mut header = libc::CMSG_FIRSTHDR(&raw const msg);
-            while !header.is_null() {
-                if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
-                    let data = libc::CMSG_DATA(header);
-                    let len = ((*header).cmsg_len as usize).saturating_sub(data.offset_from(header.cast()) as usize);
-                    for i in 0..len / size_of::<RawFd>() {
-                        let fd = data.cast::<RawFd>().add(i).read_unaligned();
-                        // Owned first, so it's closed if nothing keeps it. Our own spawns inherit nothing by default, so a failure
-                        // to mark it costs only the second line of defence.
-                        let owned = OwnedFd::from_raw_fd(fd);
-                        let _ = set_cloexec(fd);
-                        handles.push(Handle(owned));
-                    }
-                }
-                header = libc::CMSG_NXTHDR(&raw const msg, header);
-            }
+        // The kernel set `msg_controllen` to what it wrote. Only those bytes are looked at, whatever a header inside them claims.
+        let written = (msg.msg_controllen as usize).min(control.len());
+        descriptors_in(&control[..written], |fd| {
+            // SAFETY: the kernel just installed this descriptor for this process, from the bytes it wrote, and nothing else owns it.
+            let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+            // Our own spawns inherit nothing by default, so a failure here costs only a second line of defence.
+            let _ = set_cloexec(fd);
+            handles.push(Handle(owned));
+        });
+        if msg.msg_flags & libc::MSG_CTRUNC != 0 {
+            return Err(io::ErrorKind::InvalidData.into());
         }
         Ok(got)
     }
@@ -217,13 +217,43 @@ impl Channel {
     }
 }
 
-/// Room for one `SCM_RIGHTS` message of [`MAX_HANDLES`], aligned for its header.
+/// Calls `each` with every descriptor in control bytes the kernel wrote. Bounded by the slice, whatever a header claims: a header that runs past
+/// the end, as after truncation, yields only what's really there and ends the walk. Pure, so malformed input can be tested directly.
+fn descriptors_in(control: &[u8], mut each: impl FnMut(RawFd)) {
+    let header = size_of::<libc::cmsghdr>();
+    let mut at = 0;
+    while let Some(rest) = control.get(at..).filter(|rest| rest.len() >= header) {
+        let field = |offset: usize| i32::from_ne_bytes([rest[offset], rest[offset + 1], rest[offset + 2], rest[offset + 3]]);
+        let (claimed, level, kind) = (field(0) as u32 as usize, field(4), field(8));
+        if claimed < header {
+            return;
+        }
+        let end = claimed.min(rest.len());
+        if level == libc::SOL_SOCKET && kind == libc::SCM_RIGHTS {
+            for fd in rest[header..end].as_chunks::<4>().0 {
+                let fd = i32::from_ne_bytes(*fd);
+                if fd >= 0 {
+                    each(fd);
+                }
+            }
+        }
+        if claimed > rest.len() {
+            return;
+        }
+        // Headers sit on 4-byte boundaries on this OS.
+        at += claimed.next_multiple_of(4);
+    }
+}
+
+/// Room for any message a sender can make. `sendmsg` refuses control data over `MCLBYTES` (2,048), so this can't be truncated, which matters:
+/// when a message is truncated the kernel has already installed the descriptors it dropped, and they can't be closed. `the_kernel_refuses_more_handles_than_fit`
+/// holds that in place.
 #[repr(align(8))]
-struct ControlBuffer([u8; 64]);
+struct ControlBuffer([u8; 4096]);
 
 impl ControlBuffer {
     fn new() -> Self {
-        Self([0; 64])
+        Self([0; 4096])
     }
 }
 
@@ -358,18 +388,96 @@ fn decode_wait_status(status: c_int) -> ChildExit {
     if libc::WIFEXITED(status) { ChildExit::Code(libc::WEXITSTATUS(status)) } else { ChildExit::Signal(libc::WTERMSIG(status)) }
 }
 
-/// A child process that inherits nothing except its channel and an empty environment plus what the caller lists.
-#[derive(Debug)]
-pub struct ChildProcess {
-    pid: libc::pid_t,
+/// What a watched child may do between jobs, with nobody else looking. Checked once, when `after` has passed since it was last active, so a
+/// child that's gone costs no wake-ups and a live one costs one per `after`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IdleRule {
+    /// Killed if it has done nothing for this long. It should have left by itself before then.
+    pub after: Duration,
+    /// Killed if its footprint is past this when checked.
+    pub memory_limit_bytes: u64,
+}
+
+#[derive(Debug, Default)]
+struct ChildEnd {
     exit: Option<ChildExit>,
-    /// Its memory at the moment it ended, read before it was collected.
     last_memory: Option<ProcessMemory>,
 }
 
+#[derive(Debug)]
+struct ChildShared {
+    pid: libc::pid_t,
+    /// Held across any signal or collect. A pid stays this child's until collected, and collecting happens under this lock, so a signal can't reach
+    /// a stranger who was given the number later.
+    end: Mutex<ChildEnd>,
+    epoch: Instant,
+    last_active_ms: AtomicU64,
+    busy: AtomicBool,
+}
+
+impl ChildShared {
+    fn end(&self) -> MutexGuard<'_, ChildEnd> {
+        self.end.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Waits for the end but leaves the child's record in place, so its final memory can still be read. True if it has ended.
+    fn wait_without_collecting(&self, flags: c_int) -> bool {
+        loop {
+            // SAFETY: a zeroed `siginfo_t` is a valid buffer for the call to fill.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: `info` is live for the call, and this only reads the state of a child of this process.
+            let rc = unsafe { libc::waitid(libc::P_PID, self.pid as libc::id_t, &raw mut info, libc::WEXITED | libc::WNOWAIT | flags) };
+            if rc == 0 {
+                return info.si_pid == self.pid;
+            }
+            if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                return false;
+            }
+        }
+    }
+
+    /// Collects it if it has ended. Never blocks, and is safe to race with itself because of the lock.
+    fn try_collect(&self) -> Option<ChildExit> {
+        let mut end = self.end();
+        if end.exit.is_none() && self.wait_without_collecting(libc::WNOHANG) {
+            end.last_memory = process_memory(self.pid as u32);
+            let mut status: c_int = 0;
+            // SAFETY: `status` is live for the call. The child has ended, so this doesn't block.
+            while unsafe { libc::waitpid(self.pid, &raw mut status, libc::WNOHANG) } == -1 {
+                if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                    return end.exit;
+                }
+            }
+            end.exit = Some(decode_wait_status(status));
+        }
+        end.exit
+    }
+
+    /// Sends the kill unless it's already been collected. Never blocks: a process stuck in a read from a dead network volume doesn't die until that
+    /// read returns, so nothing here waits to see it go.
+    fn kill_now(&self) -> bool {
+        let end = self.end();
+        if end.exit.is_some() {
+            return false;
+        }
+        // SAFETY: not yet collected, under the lock that collecting takes, so the pid is still this child.
+        unsafe { libc::kill(self.pid, libc::SIGKILL) };
+        true
+    }
+
+    fn millis(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64
+    }
+}
+
+/// A child process that inherits nothing except its channel and an empty environment plus what the caller lists. Collected as soon as it ends,
+/// by the one [`reaper`] thread, so a child that left leaves no zombie behind. Dropping this kills the child without waiting.
+#[derive(Debug)]
+pub struct ChildProcess(Arc<ChildShared>);
+
 impl ChildProcess {
     /// Starts `exe` with `channel` as its inherited channel. Standard input, output and error are `/dev/null`.
-    pub fn spawn(exe: &Path, args: &[&OsStr], env: &[(&str, &str)], channel: Channel) -> io::Result<Self> {
+    pub fn spawn(exe: &Path, args: &[&OsStr], env: &[(&str, &str)], channel: Channel, rule: Option<IdleRule>) -> io::Result<Self> {
         let cstring = |bytes: &[u8]| CString::new(bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
         let path = cstring(exe.as_os_str().as_bytes())?;
         let mut owned_args = vec![path.clone()];
@@ -412,73 +520,205 @@ impl ChildProcess {
             libc::posix_spawnattr_destroy(&raw mut attr);
             prepared?;
         }
-        Ok(Self { pid, exit: None, last_memory: None })
+        let shared = Arc::new(ChildShared {
+            pid,
+            end: Mutex::new(ChildEnd::default()),
+            epoch: Instant::now(),
+            last_active_ms: AtomicU64::new(0),
+            busy: AtomicBool::new(false),
+        });
+        reaper::watch(shared.clone(), rule);
+        Ok(Self(shared))
     }
 
     pub fn pid(&self) -> u32 {
-        self.pid as u32
+        self.0.pid as u32
     }
 
     /// Its memory right now, from outside, so the child can't lie. Once it has ended, its memory at the end, peak included.
     pub fn memory(&self) -> Option<ProcessMemory> {
-        if self.exit.is_some() { self.last_memory } else { process_memory(self.pid as u32) }
+        let end = self.0.end();
+        if end.exit.is_some() { end.last_memory } else { process_memory(self.pid()) }
     }
 
     /// Whether it has ended, without waiting.
-    pub fn try_wait(&mut self) -> Option<ChildExit> {
-        if self.exit.is_none() && self.wait_without_collecting(libc::WNOHANG) {
-            self.collect();
-        }
-        self.exit
+    pub fn try_wait(&self) -> Option<ChildExit> {
+        self.0.try_collect()
     }
 
-    /// Kills it at once and collects it. Safe to call more than once.
-    pub fn kill(&mut self) -> Option<ChildExit> {
-        if self.exit.is_none() {
-            // SAFETY: the pid is this process's own uncollected child, so the number can't have been reused.
-            unsafe { libc::kill(self.pid, libc::SIGKILL) };
-            self.wait_without_collecting(0);
-            self.collect();
-        }
-        self.exit
+    /// Sends the kill and returns at once. True if the signal was sent, false if the child had already been collected, so a number given to someone
+    /// else is never signalled. Safe from any thread, including one that mustn't block.
+    pub fn kill_now(&self) -> bool {
+        self.0.kill_now()
     }
 
-    /// Waits for the end but leaves the child's record in place, so its final memory can still be read. True if it has ended.
-    fn wait_without_collecting(&self, flags: c_int) -> bool {
+    /// Waits for it to end, up to `limit`. For a background thread that wants its exit status. A child stuck in the kernel may outlast any limit, and
+    /// the reaper collects it whenever it does end.
+    pub fn wait_bounded(&self, limit: Duration) -> Option<ChildExit> {
+        let started = Instant::now();
+        let mut pause = Duration::from_micros(50);
         loop {
-            // SAFETY: a zeroed `siginfo_t` is a valid buffer for the call to fill.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            // SAFETY: `info` is live for the call. The pid is this process's own uncollected child.
-            let rc = unsafe { libc::waitid(libc::P_PID, self.pid as libc::id_t, &raw mut info, libc::WEXITED | libc::WNOWAIT | flags) };
-            if rc == 0 {
-                return info.si_pid == self.pid;
+            if let Some(exit) = self.try_wait() {
+                return Some(exit);
             }
-            if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                return false;
+            if started.elapsed() >= limit {
+                return None;
             }
+            std::thread::sleep(pause.min(limit.saturating_sub(started.elapsed())));
+            pause = (pause * 2).min(Duration::from_millis(5));
         }
     }
 
-    fn collect(&mut self) {
-        self.last_memory = process_memory(self.pid as u32);
-        loop {
-            let mut status: c_int = 0;
-            // SAFETY: `status` is live for the call. The pid is this process's own uncollected child.
-            let waited = unsafe { libc::waitpid(self.pid, &raw mut status, 0) };
-            if waited == self.pid {
-                self.exit = Some(decode_wait_status(status));
-                return;
-            }
-            if waited == -1 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                return;
-            }
-        }
+    /// Says a job started or ended, so the idle rule doesn't count it. One atomic store each.
+    pub fn note_activity(&self, busy: bool) {
+        self.0.last_active_ms.store(self.0.millis(), Ordering::Relaxed);
+        self.0.busy.store(busy, Ordering::Relaxed);
     }
 }
 
 impl Drop for ChildProcess {
     fn drop(&mut self) {
-        self.kill();
+        self.kill_now();
+    }
+}
+
+/// Collects children as they end and enforces their idle rules, on one thread that exists only while a child does. It sleeps in `kevent` with no
+/// timeout, so it wakes only for a child ending or an idle rule coming due. When the last child has gone, the thread and its queue go too: no workers,
+/// no thread, no handle.
+mod reaper {
+    use super::{Arc, ChildShared, IdleRule, Mutex, MutexGuard, Ordering, RawFd, check, set_cloexec};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    struct Watched {
+        child: Arc<ChildShared>,
+        rule: Option<IdleRule>,
+    }
+
+    struct State {
+        queue: Arc<OwnedFd>,
+        children: Vec<Watched>,
+    }
+
+    static STATE: Mutex<Option<State>> = Mutex::new(None);
+
+    fn state() -> MutexGuard<'static, Option<State>> {
+        STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn change(queue: RawFd, ident: libc::pid_t, filter: i16, flags: u16, fflags: u32, data: isize) -> std::io::Result<()> {
+        let event = libc::kevent { ident: ident as usize, filter, flags, fflags, data, udata: std::ptr::null_mut() };
+        // SAFETY: one live change, no events asked for, and a zero timeout pointer isn't read because there's nothing to wait for.
+        check(unsafe { libc::kevent(queue, &raw const event, 1, std::ptr::null_mut(), 0, std::ptr::null()) })?;
+        Ok(())
+    }
+
+    fn arm_timer(queue: RawFd, pid: libc::pid_t, after_ms: u64) {
+        let data = isize::try_from(after_ms.max(1)).unwrap_or(isize::MAX);
+        let _ = change(queue, pid, libc::EVFILT_TIMER, libc::EV_ADD | libc::EV_ONESHOT, 0, data);
+    }
+
+    /// Starts watching a new child. If the thread or queue can't be made, the child is still collected by whoever next asks after it.
+    pub(super) fn watch(child: Arc<ChildShared>, rule: Option<IdleRule>) {
+        let mut guard = state();
+        if guard.is_none() {
+            let Some(queue) = new_queue() else { return };
+            let for_thread = queue.clone();
+            let thread = std::thread::Builder::new().name("recto-reaper".into()).stack_size(64 * 1024).spawn(move || run(&for_thread));
+            if thread.is_err() {
+                return;
+            }
+            *guard = Some(State { queue, children: Vec::new() });
+        }
+        let Some(state) = guard.as_mut() else { return };
+        let queue = state.queue.as_raw_fd();
+        let pid = child.pid;
+        state.children.push(Watched { child: child.clone(), rule });
+        if change(queue, pid, libc::EVFILT_PROC, libc::EV_ADD | libc::EV_ONESHOT, libc::NOTE_EXIT, 0).is_err() {
+            // Already gone, so no event will ever come. A timer of 1 ms brings the thread round to clean up.
+            arm_timer(queue, pid, 1);
+        } else if let Some(rule) = rule {
+            arm_timer(queue, pid, rule.after.as_millis() as u64);
+        }
+    }
+
+    fn new_queue() -> Option<Arc<OwnedFd>> {
+        // SAFETY: no arguments, and the result is checked.
+        let fd = check(unsafe { libc::kqueue() }).ok()?;
+        // SAFETY: the call succeeded, so this descriptor is new and owned only here.
+        let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+        set_cloexec(fd).ok()?;
+        Some(Arc::new(owned))
+    }
+
+    fn run(queue: &OwnedFd) {
+        loop {
+            // SAFETY: a zeroed `kevent` is a valid buffer for the call to fill.
+            let mut events: [libc::kevent; 8] = unsafe { std::mem::zeroed() };
+            // SAFETY: the buffer and its length match, no changes are passed, and a null timeout waits until something happens.
+            let count = unsafe { libc::kevent(queue.as_raw_fd(), std::ptr::null(), 0, events.as_mut_ptr(), events.len() as i32, std::ptr::null()) };
+            if count < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                // Nothing here can recover a broken queue. Leaving means children are collected when next asked after.
+                *state() = None;
+                return;
+            }
+            for event in &events[..count as usize] {
+                handle(queue.as_raw_fd(), event.ident as libc::pid_t, event.filter);
+            }
+            let mut guard = state();
+            if guard.as_ref().is_some_and(|state| state.children.is_empty()) {
+                *guard = None;
+                return;
+            }
+        }
+    }
+
+    /// One child's turn: collected if it has ended, otherwise its idle rule is checked and its timer set again.
+    fn handle(queue: RawFd, pid: libc::pid_t, filter: i16) {
+        let found = {
+            let guard = state();
+            guard.as_ref().and_then(|state| state.children.iter().find(|w| w.child.pid == pid).map(|w| (w.child.clone(), w.rule)))
+        };
+        let Some((child, rule)) = found else { return };
+        let exited = filter == libc::EVFILT_PROC;
+        // An exit event can arrive a moment before the child can be collected. Someone else may have collected it already, which counts.
+        let mut collected = child.try_collect().is_some();
+        for _ in 0..50 {
+            if collected || !exited {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(200));
+            collected = child.try_collect().is_some();
+        }
+        if collected {
+            let _ = change(queue, pid, libc::EVFILT_TIMER, libc::EV_DELETE, 0, 0);
+            if let Some(state) = state().as_mut() {
+                state.children.retain(|w| w.child.pid != pid);
+            }
+            return;
+        }
+        if exited {
+            // Stuck on its way out. Look again soon, without waiting here.
+            arm_timer(queue, pid, 10);
+            return;
+        }
+        let Some(rule) = rule else {
+            // No rule, so this timer only came from a child that had already gone when it was added, or stuck on its way out.
+            arm_timer(queue, pid, 10);
+            return;
+        };
+        let after_ms = rule.after.as_millis() as u64;
+        let idle_ms = child.millis().saturating_sub(child.last_active_ms.load(Ordering::Relaxed));
+        let busy = child.busy.load(Ordering::Relaxed);
+        if !busy {
+            let over = super::process_memory(pid as u32).is_some_and(|memory| memory.footprint_bytes > rule.memory_limit_bytes);
+            if idle_ms >= after_ms || over {
+                child.kill_now();
+            }
+        }
+        arm_timer(queue, pid, if busy { after_ms } else { after_ms.saturating_sub(idle_ms).max(1) });
     }
 }
 
@@ -624,26 +864,22 @@ mod tests {
     #[test]
     fn a_killed_childs_final_memory_can_be_read() {
         let (_ours, theirs) = Channel::pair().unwrap();
-        let mut child = ChildProcess::spawn(Path::new("/bin/sleep"), &[OsStr::new("30")], &[], theirs).unwrap();
+        let child = ChildProcess::spawn(Path::new("/bin/sleep"), &[OsStr::new("30")], &[], theirs, None).unwrap();
         assert!(child.memory().is_some());
         assert!(child.try_wait().is_none());
-        assert_eq!(child.kill(), Some(ChildExit::Signal(libc::SIGKILL)));
+        assert!(child.kill_now());
+        assert_eq!(child.wait_bounded(Duration::from_secs(30)), Some(ChildExit::Signal(libc::SIGKILL)));
         let memory = child.memory().expect("the record was read before it was collected");
         assert!(memory.peak_footprint_bytes > 0);
-        assert_eq!(child.kill(), Some(ChildExit::Signal(libc::SIGKILL)), "killing twice is harmless");
+        assert!(!child.kill_now(), "a collected child's number may be someone else's by now, so it's never signalled");
     }
 
     /// Failure: a child's exit code is lost or read as a crash, so a clean idle exit looks like a failure.
     #[test]
     fn a_childs_exit_code_is_read() {
         let (_ours, theirs) = Channel::pair().unwrap();
-        let mut child = ChildProcess::spawn(Path::new("/bin/sh"), &[OsStr::new("-c"), OsStr::new("exit 7")], &[], theirs).unwrap();
-        let started = std::time::Instant::now();
-        while child.try_wait().is_none() {
-            assert!(started.elapsed() < Duration::from_secs(10), "it never ended");
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert_eq!(child.try_wait(), Some(ChildExit::Code(7)));
+        let child = ChildProcess::spawn(Path::new("/bin/sh"), &[OsStr::new("-c"), OsStr::new("exit 7")], &[], theirs, None).unwrap();
+        assert_eq!(child.wait_bounded(Duration::from_secs(30)), Some(ChildExit::Code(7)));
     }
 
     /// Failure: a worker inherits the host's other open files, so a compromised one can read what the user has open.
@@ -657,13 +893,151 @@ mod tests {
         let _leaky = unsafe { OwnedFd::from_raw_fd(leaky) };
         let (ours, theirs) = Channel::pair().unwrap();
         let script = format!("[ -e /dev/fd/{leaky} ] && exit 9; exit 0");
-        let mut child = ChildProcess::spawn(Path::new("/bin/sh"), &[OsStr::new("-c"), OsStr::new(&script)], &[], theirs).unwrap();
+        let child = ChildProcess::spawn(Path::new("/bin/sh"), &[OsStr::new("-c"), OsStr::new(&script)], &[], theirs, None).unwrap();
+        assert_eq!(child.wait_bounded(Duration::from_secs(30)), Some(ChildExit::Code(0)), "the child could see a file it wasn't given");
+        drop(ours);
+    }
+
+    /// Sends handles straight through `sendmsg`, past `Channel::send`'s own cap, as a hostile worker would. The error if the kernel refuses.
+    fn send_raw_handles(channel: &Channel, fd: RawFd, count: usize) -> io::Result<()> {
+        let mut control = vec![0u64; (count * size_of::<RawFd>() + 64).div_ceil(8)];
+        let byte = 1u8;
+        let mut iov = libc::iovec { iov_base: (&raw const byte).cast_mut().cast(), iov_len: 1 };
+        // SAFETY: a zeroed `msghdr` is valid: null pointers and zero lengths.
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_iov = &raw mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.as_mut_ptr().cast();
+        let payload = (count * size_of::<RawFd>()) as u32;
+        // SAFETY: `CMSG_SPACE` is arithmetic.
+        msg.msg_controllen = unsafe { libc::CMSG_SPACE(payload) };
+        // SAFETY: `control` is aligned and sized above for this header and these descriptors.
+        unsafe {
+            let header = libc::CMSG_FIRSTHDR(&raw const msg);
+            (*header).cmsg_level = libc::SOL_SOCKET;
+            (*header).cmsg_type = libc::SCM_RIGHTS;
+            (*header).cmsg_len = libc::CMSG_LEN(payload);
+            let data = libc::CMSG_DATA(header).cast::<RawFd>();
+            for i in 0..count {
+                data.add(i).write_unaligned(fd);
+            }
+        }
+        // SAFETY: `msg` and everything it points at outlive the call.
+        if unsafe { libc::sendmsg(channel.0.as_raw_fd(), &raw const msg, 0) } < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+    }
+
+    /// Failure: a worker sends ~200 handles, more than the host's control buffer held. The old walk trusted `cmsg_len`, read past the buffer and wrapped
+    /// garbage as descriptors, so the host closed files it didn't own or crashed.
+    #[test]
+    fn a_flood_of_handles_is_received_in_bounds_and_all_closable() {
+        let (a, b) = Channel::pair().unwrap();
+        let file = File::open("/etc/hosts").unwrap();
+        send_raw_handles(&a, file.as_raw_fd(), 200).unwrap();
+        let (mut buf, mut handles) = ([0u8; 4], Vec::new());
+        assert_eq!(b.recv(&mut buf, &mut handles).unwrap(), 1);
+        assert_eq!(handles.len(), 200, "every one that was installed must be owned, so it can be closed");
+        drop(handles);
+    }
+
+    /// Failure: a message can be larger than the receive buffer. Then the kernel installs descriptors nobody can see, and they leak for good.
+    /// `ControlBuffer` is sized on the kernel's refusal of larger messages, and this holds that in place for the next macOS.
+    #[test]
+    fn the_kernel_refuses_more_handles_than_fit() {
+        let (a, _b) = Channel::pair().unwrap();
+        let file = File::open("/etc/hosts").unwrap();
+        let too_many = size_of::<ControlBuffer>() / size_of::<RawFd>();
+        assert!(send_raw_handles(&a, file.as_raw_fd(), too_many).is_err(), "the kernel accepted a message that can't fit the buffer");
+    }
+
+    /// Failure: a truncated message reads as a normal one, so whoever is misbehaving goes unnoticed, or the walk runs past the bytes written.
+    #[test]
+    fn a_truncated_message_is_reported_and_stays_in_bounds() {
+        let (a, b) = Channel::pair().unwrap();
+        let file = File::open("/etc/hosts").unwrap();
+        send_raw_handles(&a, file.as_raw_fd(), 64).unwrap();
+        let (mut buf, mut handles) = ([0u8; 4], Vec::new());
+        let mut small = [0u64; 8];
+        // SAFETY: reinterpreting `u64`s as bytes in place, within the array, which only this function holds.
+        let small = unsafe { std::slice::from_raw_parts_mut(small.as_mut_ptr().cast::<u8>(), size_of::<[u64; 8]>()) };
+        let error = b.recv_into(&mut buf, &mut handles, small).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(handles.len() <= size_of::<[u64; 8]>() / size_of::<RawFd>(), "more handles than the bytes that were written could hold");
+    }
+
+    fn cmsg(claimed: u32, level: i32, kind: i32, fds: &[i32]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&claimed.to_ne_bytes());
+        out.extend_from_slice(&level.to_ne_bytes());
+        out.extend_from_slice(&kind.to_ne_bytes());
+        for fd in fds {
+            out.extend_from_slice(&fd.to_ne_bytes());
+        }
+        out
+    }
+
+    fn found(control: &[u8]) -> Vec<i32> {
+        let mut out = Vec::new();
+        descriptors_in(control, |fd| out.push(fd));
+        out
+    }
+
+    /// Failure: malformed control data makes the walk read out of bounds, hang on a zero length, or treat other messages as descriptors.
+    #[test]
+    fn malformed_control_data_yields_only_what_is_really_there() {
+        let rights = (libc::SOL_SOCKET, libc::SCM_RIGHTS);
+        assert_eq!(found(&cmsg(20, rights.0, rights.1, &[7, 8])), vec![7, 8]);
+        assert_eq!(found(&cmsg(1000, rights.0, rights.1, &[7, 8])), vec![7, 8], "a claim past the end");
+        assert_eq!(found(&cmsg(0, rights.0, rights.1, &[7, 8])), Vec::<i32>::new(), "a zero length mustn't loop for ever");
+        assert_eq!(found(&cmsg(11, rights.0, rights.1, &[7])), Vec::<i32>::new(), "shorter than a header");
+        assert_eq!(found(&cmsg(u32::MAX, rights.0, rights.1, &[7])), vec![7], "a length that would overflow");
+        assert_eq!(found(&cmsg(16, rights.0, rights.1 + 1, &[7])), Vec::<i32>::new(), "another kind of message");
+        assert_eq!(found(&cmsg(16, rights.0, rights.1, &[-1])), Vec::<i32>::new(), "not a descriptor");
+        assert_eq!(found(&[1, 2, 3]), Vec::<i32>::new(), "shorter than a header");
+        assert_eq!(found(&cmsg(14, rights.0, rights.1, &[7])), Vec::<i32>::new(), "half a descriptor");
+        let mut two = cmsg(16, rights.0, rights.1, &[7]);
+        two.extend(cmsg(16, rights.0, rights.1, &[8]));
+        assert_eq!(found(&two), vec![7, 8], "the walk reaches the next message");
+        // SAFETY: arithmetic only. The offsets used above must agree with the OS's own macros.
+        unsafe {
+            assert_eq!(libc::CMSG_LEN(4) as usize, 16);
+            assert_eq!(libc::CMSG_SPACE(4) as usize, 16);
+        }
+    }
+
+    /// Failure: a child that left stays a zombie until someone happens to ask, holding a process-table entry. It must be collected with nobody asking.
+    #[test]
+    fn a_child_that_ends_is_collected_with_nobody_asking() {
+        let (_ours, theirs) = Channel::pair().unwrap();
+        let child = ChildProcess::spawn(Path::new("/bin/sh"), &[OsStr::new("-c"), OsStr::new("exit 0")], &[], theirs, None).unwrap();
+        let shared = child.0.clone();
         let started = std::time::Instant::now();
-        while child.try_wait().is_none() {
-            assert!(started.elapsed() < Duration::from_secs(10), "it never ended");
+        // Only reads the record the reaper fills in, without calling anything that would collect it.
+        while shared.end().exit.is_none() {
+            assert!(started.elapsed() < Duration::from_secs(30), "nobody collected it");
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!(child.try_wait(), Some(ChildExit::Code(0)), "the child could see a file it wasn't given");
-        drop(ours);
+        assert_eq!(shared.end().exit, Some(ChildExit::Code(0)));
+    }
+
+    /// Failure: a child that ignores its idle time keeps its memory for ever, because nobody is watching between jobs.
+    #[test]
+    fn an_idle_rule_kills_a_child_that_outstays_it() {
+        let (_ours, theirs) = Channel::pair().unwrap();
+        let rule = IdleRule { after: Duration::from_millis(50), memory_limit_bytes: u64::MAX };
+        let child = ChildProcess::spawn(Path::new("/bin/sleep"), &[OsStr::new("600")], &[], theirs, Some(rule)).unwrap();
+        child.note_activity(false);
+        assert_eq!(child.wait_bounded(Duration::from_secs(30)), Some(ChildExit::Signal(libc::SIGKILL)));
+    }
+
+    /// Failure: a long job is mistaken for idleness and killed by the idle rule, rather than judged by its own deadline.
+    #[test]
+    fn a_busy_child_isnt_idle() {
+        let (_ours, theirs) = Channel::pair().unwrap();
+        let rule = IdleRule { after: Duration::from_millis(20), memory_limit_bytes: u64::MAX };
+        let child = ChildProcess::spawn(Path::new("/bin/sleep"), &[OsStr::new("600")], &[], theirs, Some(rule)).unwrap();
+        child.note_activity(true);
+        assert_eq!(child.wait_bounded(Duration::from_millis(200)), None, "killed during a job");
+        child.note_activity(false);
+        assert_eq!(child.wait_bounded(Duration::from_secs(30)), Some(ChildExit::Signal(libc::SIGKILL)), "and killed once the job is over");
     }
 }

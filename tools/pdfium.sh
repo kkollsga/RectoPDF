@@ -7,7 +7,8 @@
 #
 # Source:  bblanchon/pdfium-binaries, release chromium/8125 (PDFium 158.0.8125.0, no V8, no XFA).
 # Why here: `target/` is untracked and belongs to one checkout, so no worktree shares state with another. `cargo clean` removes it and
-#          this puts it back. Nothing outside the checkout is written. A downloaded binary is untrusted: both digests must match.
+#          this puts it back. Nothing outside the checkout is written. A downloaded binary is untrusted: both digests must match, and the tarball's digest
+#          also pins its args.gn, so no V8 and no XFA need no check of their own. This check happens here only: a worker loading the library doesn't repeat it.
 #
 # RECTO_PDFIUM_TARBALL=<file> uses a copy you already have, instead of downloading. It goes through the same digest check.
 # Mac on Apple silicon only for now. Elsewhere this says so and exits 0, because the Windows compile check needs no library.
@@ -24,7 +25,7 @@ attest=0
 case "${1:-}" in
   "") ;;
   --attest) attest=1 ;;
-  *) sed -n '2,13p' "$0"; exit 2 ;;
+  *) sed -n '2,14p' "$0"; exit 2 ;;
 esac
 
 if [ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]; then
@@ -43,7 +44,7 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/recto-pdfium.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 tarball="$work/pdfium-mac-arm64.tgz"
 if [ -n "${RECTO_PDFIUM_TARBALL:-}" ]; then
-  cp "$RECTO_PDFIUM_TARBALL" "$tarball"
+  cp -- "$RECTO_PDFIUM_TARBALL" "$tarball"
 else
   echo "pdfium: fetching $URL" >&2
   curl --fail --silent --show-error --location --proto '=https' --output "$tarball" "$URL"
@@ -69,11 +70,11 @@ if [ "$got" != "$DYLIB_SHA256" ]; then
   echo "pdfium: library digest is $got, expected $DYLIB_SHA256. Stopping." >&2
   exit 1
 fi
-grep -q 'pdf_enable_v8 = false' "$work/unpacked/args.gn" && grep -q 'pdf_enable_xfa = false' "$work/unpacked/args.gn"
-
 mkdir -p "$dest"
-cp "$work/unpacked/LICENSE" "$work/unpacked/VERSION" "$work/unpacked/args.gn" "$dest/"
-# Into place in one step, so a run beside this one sees the old file or the whole new one.
-cp "$work/unpacked/lib/libpdfium.dylib" "$lib.partial"
-mv -f "$lib.partial" "$lib"
+cp -- "$work/unpacked/LICENSE" "$work/unpacked/VERSION" "$work/unpacked/args.gn" "$dest/"
+# Into place in one step, so a run beside this one sees the old file or the whole new one. A unique name in the same folder, so two runs don't share it.
+partial="$(mktemp "$dest/libpdfium.XXXXXX")"
+cp -- "$work/unpacked/lib/libpdfium.dylib" "$partial"
+chmod 644 "$partial"
+mv -f -- "$partial" "$lib"
 echo "$lib"

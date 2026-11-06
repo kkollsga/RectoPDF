@@ -4,10 +4,11 @@
 mod common;
 
 use common::wait_until;
+use std::sync::atomic::Ordering;
 use recto_platform::isolate::{self, Channel, Handle, SharedMemory};
 use recto_proto::{self as proto, CharRecord, FailCode, HEADER_LEN, Header, Kind, PageSize, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus};
 use recto_render_service::transport::{FrameReader, send_all};
-use recto_render_service::{DocRenderer, KillReason, Policy, RenderFailure, ServiceConfig, TileRequest, TileResult};
+use recto_render_service::{DocRenderer, KillReason, Policy, RenderFailure, ServiceConfig, TileRequest, TileResult, control};
 use recto_testpdf::TempPdf;
 use std::ffi::OsString;
 use std::time::Duration;
@@ -35,9 +36,27 @@ fn leak_for_ever() -> ! {
     }
 }
 
-fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut Vec<Vec<u8>>) {
+/// Tells the test a job is in hand, so it can act at the right moment rather than after a guessed sleep.
+fn mark_job_in_hand() {
+    if let Ok(path) = std::env::var("RECTO_FAKE_MARK") {
+        std::fs::write(path, b"in hand").unwrap();
+    }
+}
+
+fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut Vec<Vec<u8>>, cancel_word: Option<&SharedMemory>) {
     let good = good_tile(job);
+    mark_job_in_hand();
     let reply = match mode {
+        "cancels_uncalled" => TileReply { status: TileStatus::Cancelled, ..good }.encode(),
+        "done_after_cancel" => {
+            // Sees the cancel arrive, and finishes anyway, as a page in its last object would.
+            let word = cancel_word.unwrap().atomic_u64(control::CANCEL_BEFORE_OFFSET).unwrap();
+            while job.generation >= word.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            good.encode()
+        }
+        "failed_for_another_job" => proto::encode_failed(job.job_id + 1, FailCode::BadPage),
         "wrong_width" => TileReply { width: job.rect.width + 1, ..good }.encode(),
         "wrong_stride" => TileReply { stride: 4, ..good }.encode(),
         "wrong_job" => TileReply { job_id: job.job_id + 1, ..good }.encode(),
@@ -115,19 +134,30 @@ fn fake_worker() {
     send_all(&channel, &proto::encode_hello(std::process::id()), &[]).unwrap();
     let mut reader = FrameReader::default();
     let mut retained = Vec::new();
+    let mut cancel_word = None;
     loop {
         let Ok(frame) = reader.read_blocking(&channel) else { isolate::exit_now(0) };
         match frame.kind {
             Kind::Open => {
+                let mut handles = frame.handles;
+                let shared = SharedMemory::map(handles.pop().unwrap(), control::LEN).unwrap();
                 if mode == "scribble_cancel" {
-                    let mut handles = frame.handles;
-                    let control = SharedMemory::map(handles.pop().unwrap(), recto_render_service::control::LEN).unwrap();
-                    control.atomic_u64(recto_render_service::control::CANCEL_BEFORE_OFFSET).unwrap().store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+                    shared.atomic_u64(control::CANCEL_BEFORE_OFFSET).unwrap().store(u64::MAX, Ordering::SeqCst);
                 }
-                let reply = if mode == "open_lies" { vec![0xFF; 16] } else { proto::encode_opened(3) };
+                cancel_word = Some(shared);
+                if mode == "open_leak" {
+                    leak_for_ever();
+                }
+                let reply = match mode.as_str() {
+                    "open_lies" => vec![0xFF; 16],
+                    "open_failed_for_a_job" => proto::encode_failed(7, FailCode::NotPdf),
+                    "open_too_many_pages" => proto::encode_opened(u32::MAX),
+                    "open_not_pdf" => proto::encode_failed(0, FailCode::NotPdf),
+                    _ => proto::encode_opened(3),
+                };
                 let _ = send_all(&channel, &reply, &[]);
             }
-            Kind::Render => answer_render(&mode, &RenderJob::decode(&frame.payload).unwrap(), &channel, &mut retained),
+            Kind::Render => answer_render(&mode, &RenderJob::decode(&frame.payload).unwrap(), &channel, &mut retained, cancel_word.as_ref()),
             Kind::SizeRequest => {
                 let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
                 let size = match mode.as_str() {
@@ -139,8 +169,11 @@ fn fake_worker() {
                 let _ = send_all(&channel, &size.encode(), &[]);
             }
             Kind::TextRequest => {
-                let reply = answer_text(&mode, &TextJob::decode(&frame.payload).unwrap());
-                let _ = send_all(&channel, &reply, &[]);
+                let job = TextJob::decode(&frame.payload).unwrap();
+                if mode == "dies_drawing_for_the_check" && job.hidden_check {
+                    std::process::abort();
+                }
+                let _ = send_all(&channel, &answer_text(&mode, &job), &[]);
             }
             _ => {
                 let _ = send_all(&channel, &proto::encode_failed(0, FailCode::Internal), &[]);
@@ -258,20 +291,130 @@ fn a_page_that_never_finishes_is_killed_at_the_deadline() {
     assert!(!doc.has_worker());
 }
 
+/// A path the stand-in touches when a job is in hand, and a config that tells it.
+fn with_mark(mode: &str, file: &TempPdf) -> (ServiceConfig, std::path::PathBuf) {
+    let mark = file.0.with_file_name("job-in-hand");
+    let mut config = config(mode);
+    config.extra_env.push(("RECTO_FAKE_MARK".into(), mark.to_str().unwrap().into()));
+    (config, mark)
+}
+
 /// Failure: a worker that ignores the cancel word blocks the next page for its whole deadline. It gets its grace, then the kill.
 #[test]
 fn a_worker_that_ignores_cancel_is_killed_after_the_grace() {
-    let (mut doc, _file) = doc("ignore_cancel", Policy { page_deadline: Duration::from_secs(300), cancel_grace: Duration::from_millis(50), ..Policy::default() });
+    let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
+    let (config, mark) = with_mark("ignore_cancel", &file);
+    let policy = Policy { page_deadline: Duration::from_secs(300), cancel_grace: Duration::from_millis(50), ..Policy::default() };
+    let mut doc = DocRenderer::new(&file.0, None, config, policy).unwrap();
     let cancel = doc.cancel_handle();
+    let watched = mark.clone();
     let canceller = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
+        wait_until("the job to be in hand", || watched.exists());
         cancel.cancel_before(2);
     });
     let result = doc.render_tile(&request(), &surface()).unwrap();
     canceller.join().unwrap();
+    let _ = std::fs::remove_file(&mark);
     assert_eq!(result, TileResult::Cancelled { worker_killed: true });
     assert_eq!(doc.stats().cancel_kills, 1);
     assert_eq!(doc.stats().crashes, 0, "cancelling isn't a crash");
+}
+
+/// Failure: a job cancelled while it was finishing reaches the caller as a finished tile, so a stale tile lands on screen after a jump.
+#[test]
+fn a_tile_cancelled_while_finishing_never_reads_as_done() {
+    let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
+    let (config, mark) = with_mark("done_after_cancel", &file);
+    let mut doc = DocRenderer::new(&file.0, None, config, Policy { cancel_grace: Duration::from_secs(60), ..policy() }).unwrap();
+    let cancel = doc.cancel_handle();
+    let watched = mark.clone();
+    let canceller = std::thread::spawn(move || {
+        wait_until("the job to be in hand", || watched.exists());
+        cancel.cancel_before(2);
+    });
+    let result = doc.render_tile(&request(), &surface()).unwrap();
+    canceller.join().unwrap();
+    let _ = std::fs::remove_file(&mark);
+    assert_eq!(result, TileResult::Cancelled { worker_killed: false });
+    assert_eq!(doc.stats().rejections, 0, "finishing a moment late isn't misbehaving");
+}
+
+/// Failure: a worker says it cancelled a job nobody cancelled, and the host takes that as normal, so a page silently never draws.
+#[test]
+fn a_cancel_nobody_asked_for_is_misbehaving() {
+    let failure = tile_failure("cancels_uncalled");
+    assert!(is_rejected(failure), "{failure:?}");
+}
+
+/// Failure: a refusal for some other job is believed, so a reply meant for nothing decides this job's outcome.
+#[test]
+fn a_failure_for_another_job_is_rejected() {
+    let failure = tile_failure("failed_for_another_job");
+    assert!(is_rejected(failure), "{failure:?}");
+}
+
+/// Failure: a compromised worker ignores its idle time and keeps its memory for ever, since nobody looks between jobs. Nothing calls the document here.
+#[test]
+fn a_worker_that_outstays_its_idle_time_is_killed_with_nobody_asking() {
+    let (mut doc, _file) = doc("good", Policy { idle_exit: Duration::from_millis(50), idle_grace: Duration::from_millis(50), ..policy() });
+    assert!(matches!(doc.render_tile(&request(), &surface()).unwrap(), TileResult::Done(_)));
+    let pid = doc.worker_pid().unwrap();
+    wait_until("the reaper to end it", || isolate::process_memory(pid).is_none());
+}
+
+/// Failure: the hidden-text check's drawing stops the worker and the page's text is lost with it, though the text itself is fine. It must come back marked as not
+/// checked, and the page must stay remembered as one that can't be drawn.
+#[test]
+fn text_comes_back_unchecked_when_the_check_stops_the_worker() {
+    let (mut doc, _file) = doc("dies_drawing_for_the_check", policy());
+    let page = doc.page_characters(0, false, true).unwrap();
+    assert!(!page.hidden_checked, "it claims a check that never finished");
+    assert_eq!(page.chars.len(), 1, "the text was lost");
+    let spawns = doc.stats().spawns;
+    let again = doc.page_characters(0, false, true).unwrap();
+    assert!(!again.hidden_checked);
+    assert_eq!(doc.stats().crashes, 1, "the check was retried on a page known to stop it");
+    assert_eq!(doc.stats().spawns, spawns);
+    assert_eq!(doc.render_tile(&request(), &surface()).unwrap_err(), RenderFailure::PageFailed { page: 0, reason: KillReason::Crashed }, "getting text back mustn't erase what drawing did");
+}
+
+/// Failure: a file that stops every worker while opening starts a new one on every call, and the error blames "page 1", which isn't what happened.
+#[test]
+fn a_failure_at_open_is_remembered_and_doesnt_blame_a_page() {
+    for mode in ["open_lies", "open_failed_for_a_job", "open_too_many_pages"] {
+        let (mut doc, _file) = doc(mode, policy());
+        let first = doc.page_count().unwrap_err();
+        assert!(matches!(first, RenderFailure::OpenFailed { reason: KillReason::Rejected(_) }), "{mode}: {first:?}");
+        assert!(!first.message().contains("Page"), "{mode}: {}", first.message());
+        assert_eq!(doc.stats().rejections, 1, "{mode}");
+        assert_eq!(doc.render_tile(&request(), &surface()).unwrap_err(), first, "{mode}");
+        assert_eq!(doc.page_size(0).unwrap_err(), first, "{mode}");
+        assert_eq!(doc.stats().spawns, 1, "{mode}: it started another process to learn the same thing");
+        doc.forget_failures();
+        assert_eq!(doc.page_count().unwrap_err(), first, "{mode}");
+        assert_eq!(doc.stats().spawns, 2, "{mode}: asked to try again, it should");
+    }
+}
+
+/// Failure: a file that eats memory while opening reads as a bad page, and is opened again on every call.
+#[test]
+fn a_memory_kill_at_open_says_so_and_stays_remembered() {
+    let (mut doc, _file) = doc("open_leak", Policy { memory_limit_bytes: 32 * 1024 * 1024, ..policy() });
+    let failure = doc.page_count().unwrap_err();
+    assert_eq!(failure, RenderFailure::OpenFailed { reason: KillReason::MemoryLimit });
+    assert_eq!(failure.code(), "file_too_large_to_open");
+    assert_eq!(doc.stats().memory_kills, 1);
+    assert_eq!(doc.page_count().unwrap_err(), failure);
+    assert_eq!(doc.stats().spawns, 1);
+}
+
+/// Failure: a file that isn't a PDF starts a process on every call just to hear the same answer.
+#[test]
+fn a_refusal_at_open_is_remembered_too() {
+    let (mut doc, _file) = doc("open_not_pdf", policy());
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotPdf);
+    assert_eq!(doc.page_size(0).unwrap_err(), RenderFailure::NotPdf);
+    assert_eq!(doc.stats().spawns, 1);
 }
 
 /// Failure: the memory limit trusts the worker's word, or there's no limit: this worker says nothing and only touches memory. The host must
@@ -367,14 +510,6 @@ fn handles_on_a_dripped_frame_are_capped() {
     let received = FrameReader::default().read_blocking(&b).unwrap();
     assert_eq!(received.kind, Kind::Opened);
     assert!(received.handles.len() <= isolate::MAX_HANDLES, "kept {}", received.handles.len());
-}
-
-/// Failure: a lie at open time is believed, or panics the host.
-#[test]
-fn a_bad_answer_to_opening_is_rejected() {
-    let (mut doc, _file) = doc("open_lies", policy());
-    assert!(is_rejected(doc.page_count().unwrap_err()));
-    assert!(!doc.has_worker());
 }
 
 /// Failure: a dropped document leaves its worker running, so closing a tab doesn't return its memory.

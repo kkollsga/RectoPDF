@@ -129,7 +129,7 @@ fn grey_and_colour_tiles_are_told_apart() {
 #[test]
 fn rotated_pages_have_rotated_sizes_and_tile_correctly() {
     let _turn = turn();
-    let page = Page { content: busy_page(), page_extra: "/Rotate 90".into(), media: (612, 792) };
+    let page = Page { content: busy_page(), page_extra: "/Rotate 90".into(), media: (612.0, 792.0) };
     let file = TempPdf::new("rotated.pdf", &pages(&[page]));
     let mut backend = open(&file);
     let size = backend.page_size(0).unwrap();
@@ -271,6 +271,41 @@ fn a_page_with_no_text_counts_as_checked() {
     let page = backend.page_text(0, TextOptions { boxes: false, hidden_check: true }).unwrap();
     assert!(page.chars.is_empty());
     assert!(page.hidden_checked);
+}
+
+/// Failure: the page can't be drawn for the hidden-text check and the page's text is lost with it, though ENGINEERING promises the text back, marked as not
+/// checked. A page under a pixel across can't be drawn at any scale the check uses.
+#[test]
+fn text_survives_a_page_the_check_cant_draw() {
+    let _turn = turn();
+    let tiny = Page { content: text_lines(&["Text on a page too small to draw"]), page_extra: String::new(), media: (0.1, 0.1) };
+    let file = TempPdf::new("tiny.pdf", &pages(&[tiny]));
+    let mut backend = open(&file);
+    let page = backend.page_text(0, TextOptions { boxes: false, hidden_check: true }).unwrap();
+    assert!(!page.chars.is_empty(), "the text was lost");
+    assert!(!page.hidden_checked, "it says it was checked when the drawing failed");
+    assert!(page.chars.iter().all(|c| !c.has(CharRecord::NO_INK)), "nothing may be marked without a drawing");
+}
+
+/// Failure: tools/pdfium.sh installs a tarball whose digest is wrong, or leaves anything behind when it stops. A downloaded binary is untrusted.
+#[test]
+fn the_fetch_script_stops_on_a_bad_digest() {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/pdfium.sh");
+    let dir = std::env::temp_dir().join(format!("recto-pdfium-script-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("-not-the-tarball.tgz");
+    std::fs::write(&bad, b"not the tarball").unwrap();
+    let output = std::process::Command::new("bash")
+        .arg(&script)
+        .env("CARGO_TARGET_DIR", dir.join("target"))
+        .env("RECTO_PDFIUM_TARBALL", &bad)
+        .output()
+        .unwrap();
+    let installed = dir.join("target/pdfium").exists();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!output.status.success(), "it accepted a wrong digest");
+    assert!(!installed, "it wrote something after a wrong digest");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("digest"), "it should say why");
 }
 
 /// Failure: garbage or an encrypted file is reported as something else, so the user is told the wrong thing.

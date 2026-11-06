@@ -21,6 +21,8 @@ pub mod exit {
     pub const NOT_FOUND: i32 = 3;
     pub const AMBIGUOUS: i32 = 4;
     pub const PERMISSION: i32 = 5;
+    /// The document is protected or locked, and only the user can do something about it. Agent report, §5.
+    pub const PROTECTED: i32 = 8;
 }
 
 /// What an agent is allowed to do, set by the user. Ordered from least to most.
@@ -97,11 +99,13 @@ impl Command {
     /// The level this command needs. Nothing reads document content at Off.
     pub fn level(&self) -> Level {
         match self {
+            // Measuring with the decided limits only reads numbers. Choosing other limits decides what a hostile file may use, so it isn't reading.
+            Self::BudgetRender { limit_mib: Some(_), .. } | Self::BudgetRender { retire_mib: Some(_), .. } => Level::Full,
             Self::Tabs {} | Self::Sidebar {} | Self::Budget {} | Self::BudgetRender { .. } => Level::ReadOnly,
             // Reading a page's text is what read-only access is for, and it's what Off exists to refuse.
             Self::Text { .. } => Level::ReadOnly,
-            // Writes a file where it's told to, so it isn't read-only.
-            Self::Render { .. } => Level::Control,
+            // Writes to disk, so it's with `save` and `export` in the agent report's §5.2.
+            Self::Render { .. } => Level::Full,
             Self::Open { .. } | Self::Tap { .. } | Self::Goto { .. } | Self::Close { .. } => Level::Control,
         }
     }
@@ -126,6 +130,7 @@ impl From<SessionError> for AgentError {
     fn from(error: SessionError) -> Self {
         let exit = match error {
             SessionError::NoSuchTab | SessionError::Open(recto_core::OpenError::NotFound) => exit::NOT_FOUND,
+            SessionError::Open(recto_core::OpenError::PasswordNeeded) => exit::PROTECTED,
             _ => exit::FAILED,
         };
         Self::new(error.code(), error.message(), exit)
@@ -316,7 +321,32 @@ mod tests {
         let refused = run(&mut session, Level::Off, &text).unwrap_err();
         assert_eq!((refused.code, refused.exit), ("permission_denied", exit::PERMISSION));
         let render = Command::Render { tab: "#1".into(), page: 1, scale: 2.0, out: "/tmp/x.png".into() };
-        assert_eq!(run(&mut session, Level::ReadOnly, &render).unwrap_err().code, "permission_denied", "it writes a file");
+        assert_eq!(run(&mut session, Level::Control, &render).unwrap_err().code, "permission_denied", "it writes to disk, so it needs Full");
+    }
+
+    fn budget_command(limit_mib: Option<u32>, retire_mib: Option<u32>) -> Command {
+        Command::BudgetRender { tab: "#1".into(), pages: 1, first: None, scale: 2.0, fresh: false, tiles: false, samples: false, limit_mib, retire_mib }
+    }
+
+    /// Failure: a read-only agent raises a worker's memory limit to 4 GiB and points it at a hostile file. Choosing limits needs Full, measuring doesn't.
+    #[test]
+    fn raising_a_workers_limits_needs_full() {
+        assert_eq!(budget_command(None, None).level(), Level::ReadOnly);
+        assert_eq!(budget_command(Some(4096), None).level(), Level::Full);
+        assert_eq!(budget_command(None, Some(4096)).level(), Level::Full);
+        let mut session = with_tabs(&["a"]);
+        let refused = run(&mut session, Level::Control, &budget_command(Some(4096), None)).unwrap_err();
+        assert_eq!(refused.code, "permission_denied");
+    }
+
+    /// Failure: a password-protected document reads as a general failure, so an agent retries rather than asking the user. The agent report gives it its own code.
+    #[test]
+    fn a_protected_document_has_its_own_exit_code() {
+        let error = AgentError::from(recto_render_service::RenderFailure::NeedsPassword);
+        assert_eq!((error.code, error.exit), ("needs_password", exit::PROTECTED));
+        assert_eq!(exit::PROTECTED, 8);
+        let opening = AgentError::from(SessionError::Open(OpenError::PasswordNeeded));
+        assert_eq!(opening.exit, exit::PROTECTED, "the session refusing it first must say the same");
     }
 
     /// Failure: a mistyped or extra field on the new commands is silently ignored, and an agent believes it did something.

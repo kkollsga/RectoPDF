@@ -66,6 +66,8 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 
 A page that stops a worker with history gets one more try in a fresh one, because what stopped it may be what earlier pages left behind. A page that stops a fresh worker is remembered and refused until `forget_failures`. A worker the host doesn't watch would be free to grow, so during a job the worker also runs a small thread of its own that checks its footprint, its deadline and whether the host is still there. That thread starts with the first job and parks between jobs.
 
+**Between jobs and at exit.** One reaper thread in the host, alive only while a worker is, sleeps in `kevent`. It collects a worker the moment it ends, and at most once per `idle_exit + idle_grace` (35 s) per live worker it checks the idle rule: past its time or its memory limit, the worker is killed. That's one wake-up per 35 s per live worker, none with no worker, and no thread or handle left behind. A compromised worker could still grow unseen between those wake-ups: closing that needs the sandbox's memory limit. Killing never blocks: a process stuck in a read from a dead network volume can't die until the read returns, so the host signals it and moves on, and the reaper collects it whenever that happens. This wasn't tested against a real dead volume; the property tested is that nothing waits.
+
 **Measured** 2026-11-06, release build, this Mac, warm cache, against the spike. Per-page figures are medians of 3 runs over the same 5,689 pages of bench100, at 2x, whole pages, no retirement, as in the spike. `recto budget render --file F --count 200 --samples --retire-mib 4000 --limit-mib 4096`.
 
 | | Spike | Now |
@@ -92,7 +94,7 @@ The 0.4 ms at p50 is classifying a whole page's pixels (659 µs on a full grey p
 
 **Hidden text.** The spike's prototype: draw the page at 2x, mark a character with no ink under its box (range under 16, box padded by 2 px). `hidden_text.flagged` means a run of 3 or more such characters; shorter ones are thin glyphs, and stay in the count. On bench100 that flags 126 of 5,689 pages, and 19,732 of 16.4 M characters have no ink; neither has been reviewed for false positives. It's a flag: every character stays in the text, under `untrusted`. Its limits: hidden text next to visible text passes, because the box has ink. An OCR layer over a scan is expected to pass, but this corpus has no scan to prove it on. Annotation text the page draws isn't in page text at all (spike §10.4). If the extra render stops the worker, the text comes back with `checked: false`, which never reads as clean.
 
-**Fetching PDFium.** Run `tools/pdfium.sh`, which `tools/check.sh` also runs. The worker finds the library beside itself or in `../pdfium/`; `RECTO_PDFIUM_LIB` overrides. The worker binary is `recto-render-service`, found beside `recto`; `RECTO_RENDER_SERVICE` overrides. `cargo build -p recto-cli` alone doesn't build it: use `--workspace`.
+**Fetching PDFium.** Run `tools/pdfium.sh`, which `tools/check.sh` also runs. The worker finds the library beside itself or in `../pdfium/`. The worker binary is `recto-render-service`, found beside `recto`. `RECTO_PDFIUM_LIB` and `RECTO_RENDER_SERVICE` override, in debug builds only: nothing shipped loads code from a path in its environment. The digest is checked when the script fetches, not at each load; code signing covers that in the app. `cargo build -p recto-cli` alone doesn't build it: use `--workspace`.
 
 ## Machine notes
 

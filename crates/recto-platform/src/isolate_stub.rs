@@ -99,11 +99,17 @@ pub enum ChildExit {
     Signal(i32),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IdleRule {
+    pub after: Duration,
+    pub memory_limit_bytes: u64,
+}
+
 #[derive(Debug)]
 pub struct ChildProcess(());
 
 impl ChildProcess {
-    pub fn spawn(_exe: &Path, _args: &[&OsStr], _env: &[(&str, &str)], _channel: Channel) -> io::Result<Self> {
+    pub fn spawn(_exe: &Path, _args: &[&OsStr], _env: &[(&str, &str)], _channel: Channel, _rule: Option<IdleRule>) -> io::Result<Self> {
         unsupported()
     }
     pub fn pid(&self) -> u32 {
@@ -112,12 +118,16 @@ impl ChildProcess {
     pub fn memory(&self) -> Option<ProcessMemory> {
         None
     }
-    pub fn try_wait(&mut self) -> Option<ChildExit> {
+    pub fn try_wait(&self) -> Option<ChildExit> {
         None
     }
-    pub fn kill(&mut self) -> Option<ChildExit> {
+    pub fn kill_now(&self) -> bool {
+        false
+    }
+    pub fn wait_bounded(&self, _limit: Duration) -> Option<ChildExit> {
         None
     }
+    pub fn note_activity(&self, _busy: bool) {}
 }
 
 pub fn process_memory(_pid: u32) -> Option<ProcessMemory> {

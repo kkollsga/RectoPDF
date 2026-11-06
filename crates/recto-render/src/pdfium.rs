@@ -3,7 +3,11 @@
 //! **Raw FFI, not `pdfium-render`.** The spike used `pdfium-render` 0.9.5 only for its bindings, because `PdfDocument::handle()` is
 //! crate-private and its high-level loaders can't reach `FPDF_LoadCustomDocument` with a `pread` callback, the loader the worker needs
 //! (spike §3). Taking the crate for function pointers alone costs 24 crates and a much larger binary, for what is 27 signatures here.
-//! Those are copied from the headers of the version the digest pins: chromium/8125, non-V8, non-XFA, fetched by `tools/pdfium.sh`.
+//! Those are copied from the headers of the version `tools/pdfium.sh` pins by digest: chromium/8125, non-V8, non-XFA. Every one was compared with those
+//! headers by hand on 2026-11-06.
+//!
+//! **No digest check at load.** The script checks the file when it's fetched; nothing checks it each time a worker starts, because hashing 7 MB per spawn
+//! would cost more than the spawn. Code signing covers it in the app. `Api::load` catches a library missing a function, not a changed one.
 //!
 //! **Not thread-safe.** PDFium holds global state. So there's one library per process, one live document ([`PdfiumBackend::open`]
 //! refuses a second), and the backend is `!Send`. Parallelism comes from more worker processes, which measured better anyway (spike §4).
@@ -12,7 +16,7 @@
 
 use crate::{Cancel, PageChars, PagePoints, RenderBackend, RenderError, TextOptions, TileOutcome, classify_bgrx};
 use recto_platform::isolate::Library;
-use recto_proto::{CharBox, CharRecord, FailCode, MAX_PAGE_CHARS, TileRect, device_size};
+use recto_proto::{CharBox, CharRecord, FailCode, MAX_PAGE_CHARS, MAX_PAGE_COUNT, TileRect, device_size};
 use std::cell::Cell;
 use std::ffi::{CString, c_double, c_float, c_int, c_uchar, c_uint, c_ulong, c_void};
 use std::fs::File;
@@ -74,8 +78,8 @@ macro_rules! pdfium_api {
         impl Api {
             fn load(library: &Library) -> Option<Self> {
                 Some(Self { $(
-                    // SAFETY: the library is the one `tools/pdfium.sh` checked by digest, and this signature is copied from that
-                    // version's headers. A pointer to a function and a `fn` have the same representation.
+                    // SAFETY: this signature is copied from the headers of the version `tools/pdfium.sh` pins, and the caller names that library:
+                    // it isn't re-checked here, see the module's notes. A pointer to a function and a `fn` have the same representation.
                     $name: unsafe {
                         std::mem::transmute::<*mut c_void, unsafe extern "C" fn($($arg),*) $(-> $ret)?>(
                             library.symbol(&CString::new(stringify!($name)).ok()?)?.as_ptr(),
@@ -243,7 +247,7 @@ impl PdfiumBackend {
             });
         }
         // SAFETY: `document` was just checked to be live.
-        let page_count = u32::try_from(unsafe { (api.FPDF_GetPageCount)(document) }).unwrap_or(0);
+        let page_count = u32::try_from(unsafe { (api.FPDF_GetPageCount)(document) }).unwrap_or(0).min(MAX_PAGE_COUNT);
         Ok(Self {
             api,
             document,
@@ -440,10 +444,8 @@ impl RenderBackend for PdfiumBackend {
             }
         }
         // A page with no characters has nothing to hide from a text reader, and needs no drawing to say so.
-        let hidden_checked = options.hidden_check;
-        if options.hidden_check && !chars.is_empty() {
-            self.mark_no_ink(page, &mut chars, &boxes)?;
-        }
+        // If the page can't be drawn for the check, the text still goes back, saying it wasn't checked: nothing is marked until the drawing has worked.
+        let hidden_checked = options.hidden_check && (chars.is_empty() || self.mark_no_ink(page, &mut chars, &boxes).is_ok());
         if !options.boxes {
             boxes = Vec::new();
         }

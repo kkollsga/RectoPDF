@@ -98,12 +98,22 @@ fn retiring_holds_down_a_growing_worker() {
     assert!(peak_with < peak_without, "retiring didn't lower the peak: {} against {} MiB", peak_with / MIB, peak_without / MIB);
 }
 
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Not a test: a host that starts a bomb and is then killed, for the test below. Does nothing unless started as one.
 #[test]
 fn orphan_host_entry() {
     let Ok(pid_file) = std::env::var("RECTO_ORPHAN_PID_FILE") else { return };
     let file = TempPdf::new("orphan.pdf", &form_bomb());
-    let policy = Policy { memory_limit_bytes: 8 << 30, page_deadline: Duration::from_secs(600), ..Policy::default() };
+    // High enough that the worker's growth outlasts its host, and low enough that nothing is left to harm if the test goes wrong.
+    let policy = Policy { memory_limit_bytes: 2 << 30, page_deadline: Duration::from_secs(60), ..Policy::default() };
     let mut doc = renderer(&file.0, policy);
     doc.page_count().unwrap();
     std::fs::write(&pid_file, doc.worker_pid().unwrap().to_string()).unwrap();
@@ -117,13 +127,15 @@ fn an_orphaned_worker_stops_itself() {
     let dir = std::env::temp_dir().join(format!("recto-orphan-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let pid_file = dir.join("pid");
-    let mut host = std::process::Command::new(std::env::current_exe().unwrap())
+    let host = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "orphan_host_entry", "--nocapture", "--test-threads=1"])
         .env("RECTO_ORPHAN_PID_FILE", &pid_file)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
+    // Any panic below kills the host on the way out, and the worker then ends itself, so no bomb is left running.
+    let mut host = KillOnDrop(host);
     let mut worker = None;
     wait_until("the host to start its worker", || {
         worker = std::fs::read_to_string(&pid_file).ok().and_then(|text| text.parse::<u32>().ok());
@@ -131,8 +143,8 @@ fn an_orphaned_worker_stops_itself() {
     });
     let worker = worker.unwrap();
     wait_until("the bomb to start growing", || process_memory(worker).is_some_and(|memory| memory.footprint_bytes > 32 * MIB));
-    let _ = host.kill();
-    let _ = host.wait();
+    let _ = host.0.kill();
+    let _ = host.0.wait();
     let mut seen_peak = 0;
     let gone = (0..2000).any(|_| {
         std::thread::sleep(Duration::from_millis(5));

@@ -130,6 +130,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] Hidden-text and prompt-injection tests
 - [ ] Panel: visible steps, clickable citations, token count
 - [ ] Setup steps when `claude` isn't installed; first-use consent per document
+- [ ] Protected documents: reading a password-protected document's text needs the user's consent for that document, per the agent report's §5.5. Until then `recto text` refuses with exit 8
 - [ ] Room for a second CLI
 - [ ] **Blind agent test, round 3**
 

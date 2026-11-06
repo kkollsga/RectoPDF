@@ -2,7 +2,7 @@
 
 use crate::transport::{Frame, FrameReader, ReadError};
 use crate::{control, exit_code};
-use recto_platform::isolate::{self, Channel, ChildExit, ChildProcess, Handle, SharedMemory, Wait};
+use recto_platform::isolate::{self, Channel, ChildExit, ChildProcess, Handle, IdleRule, SharedMemory, Wait};
 use recto_proto::{self as proto, CharBox, CharRecord, FailCode, Kind, PageSize, ProtoError, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -29,6 +29,8 @@ pub struct Policy {
     pub cancel_grace: Duration,
     /// The worker leaves after this long with no job.
     pub idle_exit: Duration,
+    /// A worker still here this long after it should have left is killed, because it's ignoring its own exit.
+    pub idle_grace: Duration,
     /// How often a running job's worker is checked.
     pub watch_step: Duration,
     /// How long a new worker gets to say it's ready. Loading PDFium took 2 ms in the spike, so this is only for one that isn't going to.
@@ -46,6 +48,7 @@ impl Default for Policy {
             // Spike §12: a stale render is gone within 100 ms, by return or kill.
             cancel_grace: Duration::from_millis(90),
             idle_exit: Duration::from_secs(30),
+            idle_grace: Duration::from_secs(5),
             // The worst growth measured is about 650 MiB/s, so this overshoots by a few MiB.
             watch_step: Duration::from_millis(5),
             start_timeout: Duration::from_secs(10),
@@ -65,10 +68,11 @@ pub struct ServiceConfig {
 
 impl ServiceConfig {
     /// Finds the worker beside this program (or one folder up, for a test binary in `deps/`) and PDFium beside the worker or in the
-    /// `pdfium` folder `tools/pdfium.sh` fills. `RECTO_RENDER_SERVICE` and `RECTO_PDFIUM_LIB` override.
+    /// `pdfium` folder `tools/pdfium.sh` fills. In debug builds only, `RECTO_RENDER_SERVICE` and `RECTO_PDFIUM_LIB` override: nothing shipped loads code from
+    /// a path in its environment.
     pub fn discover() -> Result<Self, RenderFailure> {
         let exe_name = format!("recto-render-service{}", std::env::consts::EXE_SUFFIX);
-        let worker_exe = match std::env::var_os("RECTO_RENDER_SERVICE") {
+        let worker_exe = match dev_override("RECTO_RENDER_SERVICE") {
             Some(path) => PathBuf::from(path),
             None => {
                 let this = std::env::current_exe().map_err(|_| RenderFailure::WorkerMissing)?;
@@ -90,7 +94,7 @@ impl ServiceConfig {
             return Err(RenderFailure::WorkerMissing);
         }
         let library = isolate::library_file_name("pdfium");
-        let pdfium_lib = match std::env::var_os("RECTO_PDFIUM_LIB") {
+        let pdfium_lib = match dev_override("RECTO_PDFIUM_LIB") {
             Some(path) => PathBuf::from(path),
             None => {
                 let dir = worker_exe.parent().ok_or(RenderFailure::WorkerMissing)?;
@@ -101,6 +105,11 @@ impl ServiceConfig {
         };
         Ok(Self { worker_exe, pdfium_lib, extra_env: Vec::new(), replace_args: None })
     }
+}
+
+/// A development override from the environment. Ignored in a release build.
+fn dev_override(name: &str) -> Option<std::ffi::OsString> {
+    if cfg!(debug_assertions) { std::env::var_os(name) } else { None }
 }
 
 /// Why a worker stopped being one.
@@ -137,6 +146,10 @@ pub enum RenderFailure {
     TooLargeAtThisScale,
     /// This page stopped its worker, in a worker with nothing else in it. It won't be tried again until [`DocRenderer::forget_failures`].
     PageFailed { page: u32, reason: KillReason },
+    /// Opening the file stopped its worker, before any page was involved. Not tried again until [`DocRenderer::forget_failures`].
+    OpenFailed { reason: KillReason },
+    /// Drawing the whole page ran past its time cap. No worker was at fault.
+    TookTooLong,
 }
 
 impl RenderFailure {
@@ -157,7 +170,11 @@ impl RenderFailure {
             Self::PageFailed { reason: KillReason::MemoryLimit, .. } => "page_too_large",
             Self::PageFailed { reason: KillReason::Deadline, .. } => "page_too_slow",
             Self::PageFailed { reason: KillReason::Crashed, .. } => "page_crashed_renderer",
-            Self::PageFailed { reason: KillReason::Rejected(_), .. } => "renderer_misbehaved",
+            Self::PageFailed { reason: KillReason::Rejected(_), .. } | Self::OpenFailed { reason: KillReason::Rejected(_) } => "renderer_misbehaved",
+            Self::OpenFailed { reason: KillReason::MemoryLimit } => "file_too_large_to_open",
+            Self::OpenFailed { reason: KillReason::Deadline } => "file_too_slow_to_open",
+            Self::OpenFailed { reason: KillReason::Crashed } => "file_crashed_renderer",
+            Self::TookTooLong => "render_took_too_long",
         }
     }
 
@@ -183,6 +200,13 @@ impl RenderFailure {
             Self::PageFailed { page, reason: KillReason::Rejected(_) } => {
                 format!("The renderer sent something invalid for page {}, so it was stopped. This file may be malicious.", page + 1)
             }
+            Self::OpenFailed { reason: KillReason::MemoryLimit } => "Opening this file needs more memory than a renderer is allowed.".into(),
+            Self::OpenFailed { reason: KillReason::Deadline } => "This file took too long to open.".into(),
+            Self::OpenFailed { reason: KillReason::Crashed } => "Opening this file stopped the renderer.".into(),
+            Self::OpenFailed { reason: KillReason::Rejected(_) } => {
+                "The renderer sent something invalid while opening this file, so it was stopped. This file may be malicious.".into()
+            }
+            Self::TookTooLong => "Drawing this page at this zoom would take too long.".into(),
         }
     }
 }
@@ -238,7 +262,7 @@ struct CancelWord {
 
 impl CancelWord {
     fn is_stale(&self, generation: u64) -> bool {
-        generation < self.cutoff.load(Ordering::Relaxed)
+        generation < self.cutoff.load(Ordering::SeqCst)
     }
 }
 
@@ -249,9 +273,10 @@ pub struct CancelHandle(Arc<CancelWord>);
 impl CancelHandle {
     /// Every job with a generation below this is stale. Only ever moves up.
     pub fn cancel_before(&self, generation: u64) {
-        let cutoff = self.0.cutoff.fetch_max(generation, Ordering::Relaxed).max(generation);
+        // The host's own word first, so by the time a worker can see a job is stale, the host agrees.
+        let cutoff = self.0.cutoff.fetch_max(generation, Ordering::SeqCst).max(generation);
         if let Some(word) = self.0.shared.atomic_u64(control::CANCEL_BEFORE_OFFSET) {
-            word.store(cutoff, Ordering::Relaxed);
+            word.store(cutoff, Ordering::SeqCst);
         }
     }
 }
@@ -291,8 +316,30 @@ pub struct PageCharacters {
     pub hidden_checked: bool,
 }
 
+/// How long to wait for a killed worker's final numbers.
+const FINAL_NUMBERS_WAIT: Duration = Duration::from_millis(200);
+/// How long to wait to learn why a worker that closed its channel left.
+const EXIT_STATUS_WAIT: Duration = Duration::from_secs(2);
+
 /// How many pages that stopped a worker are remembered, so a bomb isn't retried on every scroll.
 const MAX_FAILED_PAGES: usize = 64;
+
+/// How much of a page a job touches, lightest first. A page that stopped a job also stops anything heavier, but not something lighter: a page too heavy to
+/// draw may still give up its text, and a page too heavy to load may still say its size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum JobWeight {
+    Size,
+    Text,
+    Draw,
+}
+
+/// A page that stopped a worker, and the lightest job that did it.
+#[derive(Clone, Copy, Debug)]
+struct FailedPage {
+    page: u32,
+    weight: JobWeight,
+    reason: KillReason,
+}
 
 /// One document's renderer. Holds the file and a control page, and a worker only while one is needed. A cold tab never has one of these.
 pub struct DocRenderer {
@@ -304,7 +351,9 @@ pub struct DocRenderer {
     worker: Option<Worker>,
     page_count: Option<u32>,
     next_job: u32,
-    failed: Vec<(u32, KillReason)>,
+    failed: Vec<FailedPage>,
+    /// Why opening the file failed, if it's something trying again wouldn't change. The descriptor is fixed, so its bytes are too.
+    open_failure: Option<RenderFailure>,
     /// The page the worker last worked on, while its footprint is past the retirement line. It goes before the next job for any other page.
     retire_after_page: Option<u32>,
     stats: RenderStats,
@@ -328,6 +377,7 @@ impl DocRenderer {
             page_count: None,
             next_job: 0,
             failed: Vec::new(),
+            open_failure: None,
             retire_after_page: None,
             stats: RenderStats::default(),
         })
@@ -364,14 +414,20 @@ impl DocRenderer {
         self.worker.as_ref().and_then(|worker| worker.child.memory()).map(|memory| memory.footprint_bytes)
     }
 
-    /// Kills the worker now, for a window closing or a test. The next job starts a new one.
+    /// Kills the worker now, for a window closing or a test. The next job starts a new one. Never blocks, so it's safe from any thread: the worker is
+    /// signalled and let go, and the reaper collects it when it ends, however long a read from a dead volume keeps it.
     pub fn kill_worker(&mut self) {
-        self.bury_worker();
+        self.retire_after_page = None;
+        if let Some(worker) = self.worker.take() {
+            self.note_peak(&worker);
+            worker.child.kill_now();
+        }
     }
 
     /// Clears the memory of which pages stopped a worker. For a "try again", or after the zoom changes.
     pub fn forget_failures(&mut self) {
         self.failed.clear();
+        self.open_failure = None;
     }
 
     /// Starts a worker if none is running, and returns the page count. Most callers can just ask for what they want.
@@ -384,7 +440,7 @@ impl DocRenderer {
     pub fn page_size(&mut self, page: u32) -> Result<(f32, f32), RenderFailure> {
         let job_id = self.next_job_id();
         let frame = proto::encode_size_request(job_id, page);
-        let size = self.run_job(page, None, &[], &frame, |reply| match reply.kind {
+        let size = self.run_job(job_id, page, JobWeight::Size, None, &[], &frame, |reply| match reply.kind {
             Kind::Size => {
                 let size = PageSize::decode(&reply.payload)?;
                 proto::validate_page_size(job_id, &size)?;
@@ -414,16 +470,23 @@ impl DocRenderer {
         }
         let frame = job.encode();
         let surface_len = surface.len() as u64;
-        let reply = self.run_job(request.page, Some(request.generation), &[surface.handle()], &frame, |reply| match reply.kind {
+        let control = self.control.clone();
+        let reply = self.run_job(job.job_id, request.page, JobWeight::Draw, Some(request.generation), &[surface.handle()], &frame, |reply| match reply.kind {
             Kind::Tile => {
                 let tile = TileReply::decode(&reply.payload)?;
                 proto::validate_tile(&job, &tile, surface_len)?;
+                // The host's word moves first, so a worker can't honestly see a cancel the host hasn't made.
+                if tile.status == TileStatus::Cancelled && !control.is_stale(job.generation) {
+                    return Err(ProtoError("a job cancelled that nobody cancelled"));
+                }
                 Ok(tile)
             }
             _ => Err(ProtoError("the wrong kind of reply to a tile")),
         });
         match reply {
             Ok(tile) => Ok(match tile.status {
+                // Cancelled while it was finishing. The caller moved on, so this tile must never reach the screen.
+                TileStatus::Done(_) if self.control.is_stale(request.generation) => TileResult::Cancelled { worker_killed: false },
                 TileStatus::Done(kind) => TileResult::Done(Tile { kind, render_us: tile.render_us }),
                 TileStatus::Cancelled => TileResult::Cancelled { worker_killed: false },
             }),
@@ -432,22 +495,24 @@ impl DocRenderer {
         }
     }
 
-    /// A page's characters, with a box per character if `boxes`, and the hidden-text check if `hidden_check`. If drawing the page for the
-    /// check stops the worker, the text still comes back with `hidden_checked` false, so "not known" never reads as "nothing hidden".
+    /// A page's characters, with a box per character if `boxes`, and the hidden-text check if `hidden_check`. If drawing the page for the check stops the
+    /// worker, or is already known to, the text still comes back with `hidden_checked` false, so "not known" never reads as "nothing hidden". The page stays
+    /// remembered as one that can't be drawn.
     pub fn page_characters(&mut self, page: u32, boxes: bool, hidden_check: bool) -> Result<PageCharacters, RenderFailure> {
-        match self.text_job(page, boxes, hidden_check) {
-            Err(RenderFailure::PageFailed { reason: KillReason::MemoryLimit | KillReason::Deadline, .. }) if hidden_check => {
-                self.failed.retain(|(failed, _)| *failed != page);
-                self.text_job(page, boxes, false)
+        if hidden_check && self.known_failure(page, JobWeight::Draw).is_none() {
+            match self.text_job(page, boxes, true) {
+                Err(RenderFailure::PageFailed { reason: KillReason::MemoryLimit | KillReason::Deadline | KillReason::Crashed, .. }) => {}
+                other => return other,
             }
-            other => other,
         }
+        self.text_job(page, boxes, false)
     }
 
     fn text_job(&mut self, page: u32, boxes: bool, hidden_check: bool) -> Result<PageCharacters, RenderFailure> {
         let job = TextJob { job_id: self.next_job_id(), page, boxes, hidden_check };
         let frame = job.encode();
-        let reply = self.run_job(page, None, &[], &frame, |reply| match reply.kind {
+        let weight = if hidden_check { JobWeight::Draw } else { JobWeight::Text };
+        let reply = self.run_job(job.job_id, page, weight, None, &[], &frame, |reply| match reply.kind {
             Kind::Text => {
                 let text = TextReply::decode(&reply.payload)?;
                 proto::validate_text(&job, &text)?;
@@ -458,6 +523,11 @@ impl DocRenderer {
         Ok(PageCharacters { chars: reply.chars, boxes: reply.boxes, hidden_checked: reply.hidden_checked })
     }
 
+    /// Why a job this heavy shouldn't be tried on this page, if something already showed that.
+    fn known_failure(&self, page: u32, weight: JobWeight) -> Option<KillReason> {
+        self.failed.iter().find(|failed| failed.page == page && failed.weight <= weight).map(|failed| failed.reason)
+    }
+
     fn next_job_id(&mut self) -> u32 {
         self.next_job = self.next_job.wrapping_add(1);
         self.next_job
@@ -466,16 +536,19 @@ impl DocRenderer {
     /// Sends a job and interprets the reply, starting and replacing workers as needed. This is where a failure becomes a retry, a remembered
     /// page or an error. A stopped worker gets one more try in a fresh one, because what stopped it may be what earlier pages left behind.
     /// A fresh worker failing means the page itself did it, unless the time ran out, which wouldn't go better a second time.
+    #[allow(clippy::too_many_arguments)]
     fn run_job<T>(
         &mut self,
+        job_id: u32,
         page: u32,
+        weight: JobWeight,
         generation: Option<u64>,
         handles: &[&Handle],
         frame: &[u8],
         decode: impl Fn(&Frame) -> Result<T, ProtoError>,
     ) -> Result<T, JobFailure> {
-        if let Some((_, reason)) = self.failed.iter().find(|(failed, _)| *failed == page) {
-            return Err(RenderFailure::PageFailed { page, reason: *reason }.into());
+        if let Some(reason) = self.known_failure(page, weight) {
+            return Err(RenderFailure::PageFailed { page, reason }.into());
         }
         if self.retire_after_page.is_some_and(|last| last != page) {
             self.stats.retirements += 1;
@@ -490,7 +563,10 @@ impl DocRenderer {
             let watch = Watch { policy: &self.policy, control: &self.control, generation };
             let outcome = worker.exchange(frame, handles, &watch).and_then(|reply| {
                 if reply.kind == Kind::Failed {
-                    let (_, code) = proto::decode_failed(&reply.payload).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))?;
+                    let (answered, code) = proto::decode_failed(&reply.payload).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))?;
+                    if answered != job_id {
+                        return Err(Stop::Killed(KillReason::Rejected("a failure for a different job")));
+                    }
                     return Err(Stop::Refused(code));
                 }
                 decode(&reply).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))
@@ -518,7 +594,7 @@ impl DocRenderer {
                     // A real idle exit happens at most once per job. More than that isn't idleness.
                     if idle_retries > 2 {
                         self.stats.crashes += 1;
-                        return Err(self.page_failed(page, KillReason::Crashed));
+                        return Err(self.page_failed(page, weight, KillReason::Crashed));
                     }
                 }
                 Err(Stop::Killed(reason)) => {
@@ -534,17 +610,18 @@ impl DocRenderer {
                         retried = true;
                         continue;
                     }
-                    return Err(self.page_failed(page, reason));
+                    return Err(self.page_failed(page, weight, reason));
                 }
             }
         }
     }
 
-    fn page_failed(&mut self, page: u32, reason: KillReason) -> JobFailure {
+    fn page_failed(&mut self, page: u32, weight: JobWeight, reason: KillReason) -> JobFailure {
+        self.failed.retain(|failed| failed.page != page);
         if self.failed.len() >= MAX_FAILED_PAGES {
             self.failed.remove(0);
         }
-        self.failed.push((page, reason));
+        self.failed.push(FailedPage { page, weight, reason });
         RenderFailure::PageFailed { page, reason }.into()
     }
 
@@ -563,8 +640,10 @@ impl DocRenderer {
     /// Takes the worker away, killed and collected, keeping its last numbers.
     fn bury_worker(&mut self) {
         self.retire_after_page = None;
-        if let Some(mut worker) = self.worker.take() {
-            worker.child.kill();
+        if let Some(worker) = self.worker.take() {
+            worker.child.kill_now();
+            // Long enough to read its final numbers, usually under a millisecond. A worker stuck in the kernel isn't waited for.
+            worker.child.wait_bounded(FINAL_NUMBERS_WAIT);
             self.note_peak(&worker);
         }
     }
@@ -577,43 +656,72 @@ impl DocRenderer {
 
     /// Collects a worker that left on its own, such as after its idle time.
     fn reap_if_gone(&mut self) {
-        let gone = self.worker.as_mut().is_some_and(|worker| worker.child.try_wait().is_some());
+        let gone = self.worker.as_ref().is_some_and(|worker| worker.child.try_wait().is_some());
         if gone {
             self.stats.idle_exits += 1;
             self.bury_worker();
         }
     }
 
-    /// Starts a worker and opens the document in it, if there isn't one already.
+    /// Starts a worker and opens the document in it, if there isn't one already. A failure that trying again wouldn't change is remembered, so the next call
+    /// doesn't start another process to learn the same thing.
     fn ensure_worker(&mut self) -> Result<(), RenderFailure> {
+        if let Some(failure) = self.open_failure {
+            return Err(failure);
+        }
         self.reap_if_gone();
         if self.worker.is_some() {
             return Ok(());
         }
-        let (mut worker, ready) = Worker::start(&self.config, &self.policy).map_err(|error| match error.kind() {
+        let (worker, ready) = Worker::start(&self.config, &self.policy).map_err(|error| match error.kind() {
             io::ErrorKind::NotFound => RenderFailure::LibraryMissing,
             _ => RenderFailure::Unavailable,
         })?;
         self.stats.spawns += 1;
         self.stats.ready_footprint_bytes = ready;
         self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(ready);
-        let handles = (
-            Handle::from_file(&self.file).map_err(|_| RenderFailure::Unavailable)?,
-            self.control.shared.handle(),
-        );
+        self.open_in(worker).inspect_err(|failure| {
+            if !matches!(failure, RenderFailure::Unavailable) {
+                self.open_failure = Some(*failure);
+            }
+        })
+    }
+
+    fn open_in(&mut self, mut worker: Worker) -> Result<(), RenderFailure> {
+        let file = Handle::from_file(&self.file).map_err(|_| RenderFailure::Unavailable)?;
         let frame = proto::encode_open(self.password.as_deref().unwrap_or_default()).map_err(|_| RenderFailure::NeedsPassword)?;
         let watch = Watch { policy: &self.policy, control: &self.control, generation: None };
-        let reply = worker.exchange(&frame, &[&handles.0, handles.1], &watch).map_err(|stop| match stop {
-            Stop::Killed(reason) => RenderFailure::PageFailed { page: 0, reason },
-            _ => RenderFailure::Unavailable,
-        })?;
+        let reply = worker.exchange(&frame, &[&file, self.control.shared.handle()], &watch);
+        let killed = |stats: &mut RenderStats, reason: KillReason| {
+            match reason {
+                KillReason::MemoryLimit => stats.memory_kills += 1,
+                KillReason::Deadline => stats.deadline_kills += 1,
+                KillReason::Crashed => stats.crashes += 1,
+                KillReason::Rejected(_) => stats.rejections += 1,
+            }
+            RenderFailure::OpenFailed { reason }
+        };
+        let reply = match reply {
+            Ok(reply) => reply,
+            Err(Stop::Killed(reason)) => {
+                worker.child.kill_now();
+                worker.child.wait_bounded(FINAL_NUMBERS_WAIT);
+                self.note_peak(&worker);
+                return Err(killed(&mut self.stats, reason));
+            }
+            Err(_) => return Err(RenderFailure::Unavailable),
+        };
+        let rejected = |stats: &mut RenderStats, why: &'static str| killed(stats, KillReason::Rejected(why));
         let pages = match reply.kind {
-            Kind::Opened => proto::decode_opened(&reply.payload).map_err(|error| RenderFailure::PageFailed { page: 0, reason: KillReason::Rejected(error.0) })?,
+            Kind::Opened => proto::decode_opened(&reply.payload).map_err(|error| rejected(&mut self.stats, error.0))?,
             Kind::Failed => {
-                let (_, code) = proto::decode_failed(&reply.payload).map_err(|error| RenderFailure::PageFailed { page: 0, reason: KillReason::Rejected(error.0) })?;
+                let (answered, code) = proto::decode_failed(&reply.payload).map_err(|error| rejected(&mut self.stats, error.0))?;
+                if answered != 0 {
+                    return Err(rejected(&mut self.stats, "a failure for a different job"));
+                }
                 return Err(failure_from_code(code));
             }
-            _ => return Err(RenderFailure::PageFailed { page: 0, reason: KillReason::Rejected("the wrong kind of reply to opening") }),
+            _ => return Err(rejected(&mut self.stats, "the wrong kind of reply to opening")),
         };
         if self.page_count.is_some_and(|known| known != pages) {
             return Err(RenderFailure::SourceChanged);
@@ -698,7 +806,9 @@ impl Worker {
         };
         let arg_refs: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
         let env_refs: Vec<(&str, &str)> = config.extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let child = ChildProcess::spawn(&config.worker_exe, &arg_refs, &env_refs, theirs)?;
+        let rule = IdleRule { after: policy.idle_exit.saturating_add(policy.idle_grace), memory_limit_bytes: policy.memory_limit_bytes };
+        let child = ChildProcess::spawn(&config.worker_exe, &arg_refs, &env_refs, theirs, Some(rule))?;
+        child.note_activity(false);
         ours.set_nonblocking(true)?;
         let mut worker = Self { child, channel: ours, reader: FrameReader::default(), jobs_done: 0 };
         let started = Instant::now();
@@ -708,7 +818,8 @@ impl Worker {
                 Ok(Some(frame)) => break frame,
                 Ok(None) => {}
                 Err(_) => {
-                    let no_library = worker.child.kill() == Some(ChildExit::Code(exit_code::NO_LIBRARY));
+                    worker.child.kill_now();
+                    let no_library = worker.child.wait_bounded(EXIT_STATUS_WAIT) == Some(ChildExit::Code(exit_code::NO_LIBRARY));
                     return Err(if no_library { io::ErrorKind::NotFound } else { io::ErrorKind::BrokenPipe }.into());
                 }
             }
@@ -727,6 +838,13 @@ impl Worker {
     /// Sends one frame and waits for one back, watching the worker the whole time. On any stop except a refusal, the worker is finished and the
     /// caller must drop it.
     fn exchange(&mut self, frame: &[u8], handles: &[&Handle], watch: &Watch<'_>) -> Result<Frame, Stop> {
+        self.child.note_activity(true);
+        let result = self.exchange_watched(frame, handles, watch);
+        self.child.note_activity(false);
+        result
+    }
+
+    fn exchange_watched(&mut self, frame: &[u8], handles: &[&Handle], watch: &Watch<'_>) -> Result<Frame, Stop> {
         let started = Instant::now();
         let deadline = started + watch.policy.page_deadline;
         let mut sent = 0;
@@ -741,7 +859,12 @@ impl Worker {
                     Err(_) => return Err(self.departed()),
                 }
             }
-            match self.reader.read(&self.channel) {
+            let read = self.reader.read(&self.channel);
+            // Handles only ever go to a worker. Checked before anything else, and they're closed along with the reader's frame.
+            if self.reader.has_handles() || matches!(&read, Ok(Some(reply)) if !reply.handles.is_empty()) {
+                return Err(Stop::Killed(KillReason::Rejected("a worker sent handles")));
+            }
+            match read {
                 Ok(Some(reply)) => return Ok(reply),
                 Ok(None) => {}
                 Err(ReadError::Closed | ReadError::Io(_)) => return Err(self.departed()),
@@ -769,9 +892,11 @@ impl Worker {
         }
     }
 
-    /// The channel closed. Reads the exit status, to tell a clean idle exit from a crash or the worker's own limits.
+    /// The channel closed. Reads the exit status, to tell a clean idle exit from a crash or the worker's own limits. A worker that closed its channel
+    /// but won't end reads as a crash, and is left to the reaper.
     fn departed(&mut self) -> Stop {
-        match self.child.kill() {
+        self.child.kill_now();
+        match self.child.wait_bounded(EXIT_STATUS_WAIT) {
             Some(ChildExit::Code(exit_code::IDLE)) => Stop::WentIdle,
             Some(ChildExit::Code(exit_code::MEMORY)) => Stop::Killed(KillReason::MemoryLimit),
             Some(ChildExit::Code(exit_code::DEADLINE)) => Stop::Killed(KillReason::Deadline),

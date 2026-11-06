@@ -1,8 +1,10 @@
 //! The host's side of a renderer worker: starts it, gives it one document, watches it from outside, validates what it says, and kills it.
 //! No window, no AppKit, no PDFium in this process.
 //!
-//! **Threads.** None. A call blocks its caller, which must not be the UI thread, and watches the worker in a poll loop while a job is in
-//! flight. Nothing runs and nothing wakes between jobs. A cold tab has no [`DocRenderer`], so it costs nothing here.
+//! **Threads.** A call blocks its caller, which must not be the UI thread, and watches the worker in a poll loop while a job is in flight. Between jobs
+//! there's no polling: one reaper thread, in `recto-platform`, exists while any worker does and sleeps in `kevent`. It wakes when a worker ends, and at
+//! most once per `idle_exit + idle_grace` per live worker. A cold tab has no [`DocRenderer`], so it costs nothing here: with no workers, no thread and
+//! no handle.
 //!
 //! **Limits.** Enforced from this side, because the worker may be compromised, and macOS offers no OS limit to lean on: `setrlimit`
 //! refuses `RLIMIT_AS`, `RLIMIT_DATA` and `RLIMIT_RSS` with `EINVAL` (measured, macOS 27).
@@ -11,15 +13,20 @@
 //! - Retirement: a footprint past 64 MiB after a job ends the worker before its next job for another page, because only exit returns the
 //!   memory (spike §6).
 //! - Cancel by generation: one shared atomic. The worker polls it between objects; if it hasn't returned within the grace, it's killed.
-//! - Idle exit: the worker leaves 30 s after its last job, and the next job starts another.
+//! - Idle exit: the worker leaves 30 s after its last job, and the next job starts another. Past `idle_grace` more, the reaper kills one that didn't.
 //!
 //! The worker also watches itself during a job, as a second line for when the host has died and nobody else is watching.
+//!
+//! **What remains between jobs.** An honest worker sits in `poll` and can't grow. A compromised one could, and the host's check comes only at the idle
+//! rule's one wake-up, so it could grow unwatched for up to `idle_exit + idle_grace`, 35 s by default. Closing that needs a timer per live worker or
+//! the sandbox's memory limit. A timer would break the "no wake-ups when idle" budget, so it waits for the sandbox spike. An exited worker's channel
+//! stays open in its `DocRenderer` until the next call on it: one descriptor, on a tab that's hot or warm anyway.
 
 mod budget;
 mod host;
 pub mod transport;
 
-pub use budget::{BudgetOptions, BudgetReport, PageSample, STRIP_MAX_BYTES, for_each_strip, measure_budget};
+pub use budget::{BUDGET_MAX_TIME, BudgetOptions, BudgetReport, OutputCaps, PageSample, STRIP_MAX_BYTES, for_each_strip, measure_budget, page_device_size};
 pub use host::{CancelHandle, DocRenderer, KillReason, PageCharacters, Policy, RenderFailure, RenderStats, ServiceConfig, Surface, Tile, TileRequest, TileResult};
 pub use recto_proto::{CharRecord, TileKind, TileRect, TILE_EDGE};
 

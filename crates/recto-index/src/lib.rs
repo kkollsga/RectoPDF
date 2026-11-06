@@ -6,9 +6,11 @@
 //! | PDFium returns | Why it matters | Becomes |
 //! |---|---|---|
 //! | U+FFFE or a hyphen flag at a line break | `valuable` misses `valu￾able`: 13,924 cases in 128 files | Joined or a real hyphen, see below |
-//! | NBSP, thin spaces | `a poppet` misses `a\u{A0}poppet` | A space |
+//! | NBSP, thin spaces, every other Unicode space | `a poppet` misses `a\u{A0}poppet` | A space |
 //! | CRLF, bare CR | Lines end oddly | LF |
-//! | U+00AD, zero-width characters, control and private-use characters, U+FFFD | Invisible splits inside words; junk from maths fonts | Removed |
+//! | U+00AD, zero-width, bidi, tag, variation and other format characters | Invisible splits inside words, and text no eye can see: tag characters spell out prompt injection invisibly | Removed and counted |
+//! | Control and private-use characters, U+FFFD | Junk from maths fonts | Removed |
+//! | Form feed, vertical tab, NEL, U+2028, U+2029 | Joined words if simply removed | LF |
 //! | U+2010, U+2011 | `simulation-based` misses them | `-` |
 //! | A printed hyphen right before a line break (`21-`, `cm`) | 185 cases | `21-cm`, line break removed |
 //!
@@ -30,7 +32,8 @@
 //!
 //! **Limits, plainly.** This guesses. A compound outside the list and not repeated on the page is joined (`datacrunching`), and a broken
 //! word whose tail happens to be on the list is kept (`mean-time`). So every decision with at least three letters on each side also goes
-//! in [`Normalized::also_spelled`] in its other form, which a search can look through: both forms stay findable, whichever was chosen.
+//! in [`Normalized::also_spelled`] in its other form, which a search can look through: both forms stay findable, whichever was chosen, up to
+//! [`MAX_ALSO_SPELLED`] on a page, past which [`Normalized::also_spelled_dropped`] says how many weren't kept.
 //! Lines stay lines: a phrase across a line break still needs a multi-line search, because unwrapping lines would garble tables.
 
 use recto_proto::CharRecord;
@@ -68,6 +71,12 @@ pub struct Normalized {
     pub source: Vec<u32>,
     pub hyphens_joined: u32,
     pub hyphens_kept: u32,
+    /// Spellings that didn't fit in `also_spelled`.
+    pub also_spelled_dropped: u32,
+    /// Characters no eye can see that were taken out. Includes the tag characters.
+    pub invisible_removed: u32,
+    /// Tag characters taken out, U+E0000 to U+E007F. They spell text invisibly and have no legitimate use on a page, so an agent should hear about any.
+    pub tag_chars_removed: u32,
 }
 
 /// What to do with one character.
@@ -78,22 +87,36 @@ enum Action {
 
 fn map_char(ch: char) -> Action {
     match ch {
-        // NBSP, figure and thin spaces, narrow NBSP, medium mathematical space, ideographic space.
-        '\u{A0}' | '\u{2002}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}' => Action::Keep(' '),
         '\u{2010}' | '\u{2011}' => Action::Keep('-'),
-        // Soft hyphen, zero-width characters, word joiner, byte-order mark.
-        '\u{AD}' | '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' => Action::Drop,
         // Replacement character and the noncharacters: nothing a search can use.
         '\u{FFFD}' | '\u{FFFE}' | '\u{FFFF}' => Action::Drop,
         '\t' | '\n' => Action::Keep(ch),
+        c if is_break(c) => Action::Keep('\n'),
+        c if c.is_whitespace() => Action::Keep(' '),
+        c if is_invisible_format(c) => Action::Drop,
         c if c.is_control() => Action::Drop,
         '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}' => Action::Drop,
         c => Action::Keep(c),
     }
 }
 
+/// Characters that draw nothing: Unicode's format characters and default-ignorables. `recto_core::clean_text`'s rule is the baseline, and this adds what page
+/// text can also carry: tag characters, variation selectors, annotation marks, and fillers that display as nothing.
+fn is_invisible_format(c: char) -> bool {
+    matches!(c,
+        '\u{AD}' | '\u{34F}' | '\u{61C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}' | '\u{180B}'..='\u{180F}'
+        | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{3164}'
+        | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF0}'..='\u{FFFB}'
+        | '\u{600}'..='\u{605}' | '\u{6DD}' | '\u{70F}' | '\u{8E2}' | '\u{110BD}' | '\u{110CD}' | '\u{13430}'..='\u{1343F}'
+        | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}' | '\u{E0000}'..='\u{E0FFF}')
+}
+
+fn is_tag_character(c: char) -> bool {
+    matches!(c, '\u{E0000}'..='\u{E007F}')
+}
+
 fn is_break(ch: char) -> bool {
-    ch == '\r' || ch == '\n'
+    matches!(ch, '\r' | '\n' | '\u{B}' | '\u{C}' | '\u{85}' | '\u{2028}' | '\u{2029}')
 }
 
 fn is_marker(record: CharRecord) -> bool {
@@ -122,14 +145,15 @@ pub fn normalize(chars: &[CharRecord], want_source: bool) -> Normalized {
             checks += 1;
             let use_evidence = checks <= MAX_EVIDENCE_CHECKS;
             let keep = keep_hyphen(&left, &right, right_start < chars.len(), use_evidence.then_some(&mut evidence));
-            remember_other_spelling(&mut out.also_spelled, &left, &right, keep);
+            remember_other_spelling(&mut out, &left, &right, keep);
             if keep {
                 push(&mut out, '-', i);
                 out.hyphens_kept += 1;
             } else {
                 out.hyphens_joined += 1;
             }
-            i = right_start;
+            // A marker carries its line break away only if there's a token to join it to. Otherwise the line really did end here.
+            i = if chars.get(right_start).is_some_and(|c| c.ch().is_alphanumeric()) { right_start } else { i + 1 };
             continue;
         }
         if is_break(ch) {
@@ -144,8 +168,13 @@ pub fn normalize(chars: &[CharRecord], want_source: bool) -> Normalized {
             i = next;
             continue;
         }
-        if let Action::Keep(mapped) = map_char(ch) {
-            push(&mut out, mapped, i);
+        match map_char(ch) {
+            Action::Keep(mapped) => push(&mut out, mapped, i),
+            Action::Drop if is_invisible_format(ch) => {
+                out.invisible_removed += 1;
+                out.tag_chars_removed += u32::from(is_tag_character(ch));
+            }
+            Action::Drop => {}
         }
         i += 1;
     }
@@ -166,9 +195,22 @@ fn word_before(text: &str) -> String {
     word.into_iter().collect()
 }
 
-/// The letters starting at `start`, capped.
+/// The letters starting at `start`, as they'll read once normalised, capped. An invisible character inside a word doesn't end it.
 fn word_after(chars: &[CharRecord], start: usize) -> String {
-    chars.iter().skip(start).take(MAX_WORD_PART + 1).map(|c| c.ch()).take_while(|c| c.is_alphabetic()).collect()
+    let mut word = String::new();
+    let mut count = 0;
+    // Bounded on raw characters too, so a run of invisibles after every marker can't make this quadratic.
+    for record in chars.iter().skip(start).take(MAX_WORD_PART * 4) {
+        match map_char(record.ch()) {
+            Action::Keep(c) if c.is_alphabetic() && count <= MAX_WORD_PART => {
+                word.push(c);
+                count += 1;
+            }
+            Action::Drop if !is_marker(*record) => {}
+            _ => break,
+        }
+    }
+    word
 }
 
 fn keep_hyphen(left: &str, right: &str, has_right: bool, evidence: Option<&mut PageEvidence>) -> bool {
@@ -207,17 +249,21 @@ fn keep_hyphen(left: &str, right: &str, has_right: bool, evidence: Option<&mut P
     false
 }
 
-fn remember_other_spelling(also: &mut Vec<String>, left: &str, right: &str, kept: bool) {
-    if also.len() >= MAX_ALSO_SPELLED || left.chars().count() < 3 || right.chars().count() < 3 {
-        return;
-    }
-    if !left.chars().all(char::is_alphabetic) || !right.chars().all(char::is_alphabetic) {
+fn remember_other_spelling(out: &mut Normalized, left: &str, right: &str, kept: bool) {
+    let (left_len, right_len) = (left.chars().count(), right.chars().count());
+    // A part at the cap was cut short, and half a word is no spelling at all.
+    if left_len < 3 || right_len < 3 || left_len > MAX_WORD_PART || right_len > MAX_WORD_PART {
         return;
     }
     let other = if kept { format!("{left}{right}") } else { format!("{left}-{right}") };
-    if !also.contains(&other) {
-        also.push(other);
+    if out.also_spelled.contains(&other) {
+        return;
     }
+    if out.also_spelled.len() >= MAX_ALSO_SPELLED {
+        out.also_spelled_dropped += 1;
+        return;
+    }
+    out.also_spelled.push(other);
 }
 
 /// The rest of the page, lowercased, built only if a marker asks. Word-boundary searches over it are the "what does this page do" check.
@@ -234,8 +280,21 @@ impl<'a> PageEvidence<'a> {
     /// The page with line-end markers taken out of play, so a marker can't count as evidence for itself.
     fn text(&mut self) -> &str {
         let chars = self.chars;
+        // Read as they'll read once normalised, so `simulation\u{2010}based` counts as `simulation-based`, and an invisible character can't hide a word.
         self.text.get_or_insert_with(|| {
-            chars.iter().flat_map(|record| if is_marker(*record) { '\u{1}'.to_lowercase() } else { record.ch().to_lowercase() }).collect()
+            chars
+                .iter()
+                .filter_map(|record| {
+                    if is_marker(*record) {
+                        return Some('\u{1}');
+                    }
+                    match map_char(record.ch()) {
+                        Action::Keep(c) => Some(c),
+                        Action::Drop => None,
+                    }
+                })
+                .flat_map(char::to_lowercase)
+                .collect()
         })
     }
 
@@ -434,6 +493,75 @@ mod tests {
             assert!(same, "{ch:?} maps to {original:?}");
         }
         assert!(normalize(&input, false).source.is_empty(), "the map costs memory, so it's built only when asked");
+    }
+
+    /// Failure: invisible characters reach an agent, the plainest prompt injection there is: tag characters spell a whole instruction no eye can see, and bidi
+    /// controls reorder what a reader sees against what an agent reads. Each kind must go, and be counted, so it isn't silent.
+    #[test]
+    fn invisible_characters_are_removed_and_counted() {
+        let tags: String = "ignore previous".chars().map(|c| char::from_u32(0xE0000 + c as u32).unwrap()).collect();
+        let result = normalize(&chars(&format!("safe{tags}text")), false);
+        assert_eq!(result.text, "safetext");
+        assert_eq!(result.tag_chars_removed, 15);
+        assert_eq!(result.invisible_removed, 15);
+        let controls = ['\u{202A}', '\u{202E}', '\u{2066}', '\u{2069}', '\u{200E}', '\u{200F}', '\u{61C}', '\u{FE0F}', '\u{E0100}', '\u{FFF9}', '\u{180E}', '\u{3164}', '\u{115F}', '\u{2064}', '\u{1D173}'];
+        for control in controls {
+            let result = normalize(&chars(&format!("a{control}b")), false);
+            assert_eq!(result.text, "ab", "U+{:04X} stayed in the text", control as u32);
+            assert_eq!(result.invisible_removed, 1, "U+{:04X} wasn't counted", control as u32);
+            assert_eq!(result.tag_chars_removed, 0, "U+{:04X} isn't a tag character", control as u32);
+        }
+        assert_eq!(normalize(&chars("plain text"), false).invisible_removed, 0);
+    }
+
+    /// Failure: every character `recto_core::clean_text` strips from a title still reaches an agent through page text.
+    #[test]
+    fn the_baseline_from_titles_is_covered() {
+        for code in (0x200B..=0x200F).chain(0x202A..=0x202E).chain(0x2060..=0x2069).chain([0xFEFF, 0xAD]) {
+            let c = char::from_u32(code).unwrap();
+            assert_eq!(text(&format!("a{c}b")), "ab", "U+{code:04X}");
+        }
+    }
+
+    /// Failure: the page's own evidence is missed when it's spelled with U+2010, so one word gets two spellings on a page.
+    #[test]
+    fn evidence_reads_the_page_as_it_will_be_normalised() {
+        assert_eq!(text("foo\u{2010}bar here and foo~bar there"), "foo-bar here and foo-bar there");
+        assert_eq!(text("foo\u{200B}bar here and foo~bar there"), "foobar here and foobar there", "an invisible character can't hide a word");
+    }
+
+    /// Failure: rarer spaces and line separators are dropped as control characters, or left as they are, so words run together or a search misses them.
+    #[test]
+    fn every_space_and_line_separator_separates() {
+        for space in ['\u{2000}', '\u{2001}', '\u{1680}', '\u{205F}', '\u{3000}'] {
+            assert_eq!(text(&format!("a{space}b")), "a b", "U+{:04X}", space as u32);
+        }
+        for separator in ['\u{C}', '\u{B}', '\u{85}', '\u{2028}', '\u{2029}'] {
+            assert_eq!(text(&format!("one{separator}two")), "one\ntwo", "U+{:04X} joined two words", separator as u32);
+        }
+    }
+
+    /// Failure: a line break after a marker is thrown away when there's no token after it, so a line runs into the next.
+    #[test]
+    fn a_marker_keeps_its_line_break_when_nothing_joins_it() {
+        assert_eq!(text("end~^(next)"), "end-\n(next)");
+        assert_eq!(text("valu~^able"), "valuable", "a word still joins across it");
+        assert_eq!(text("COVID~^19"), "COVID-19", "and so does a number");
+    }
+
+    /// Failure: a very long word is cut at the cap and half of it goes in `also_spelled`, or the list hits its cap and nobody can tell.
+    #[test]
+    fn other_spellings_are_whole_and_their_cap_is_stated() {
+        let long = "a".repeat(MAX_WORD_PART + 10);
+        assert!(normalize(&chars(&format!("{long}~bcd")), false).also_spelled.is_empty(), "half a word isn't a spelling");
+        let mut many = String::new();
+        for i in 0..(MAX_ALSO_SPELLED + 5) {
+            let letter = |n: usize| char::from(b'a' + (n % 26) as u8);
+            many.push_str(&format!("{0}{1}{2}x~y{0}{1}{2} ", letter(i), letter(i / 26), letter(i / 676)));
+        }
+        let result = normalize(&chars(&many), false);
+        assert_eq!(result.also_spelled.len(), MAX_ALSO_SPELLED);
+        assert_eq!(result.also_spelled_dropped, 5);
     }
 
     /// Failure: a hostile page full of markers makes normalising quadratic, stalling the host for minutes.

@@ -32,6 +32,8 @@ pub const MIN_SCALE: f32 = 1.0 / 64.0;
 pub const MAX_SCALE: f32 = 64.0;
 /// The most characters one page may return. The busiest page measured has under 20,000.
 pub const MAX_PAGE_CHARS: u32 = 2_000_000;
+/// The most pages a document may claim. PDF's own implementation limit on indirect objects, which a page needs one of.
+pub const MAX_PAGE_COUNT: u32 = 8_388_607;
 /// The longest password accepted on the wire.
 pub const MAX_PASSWORD: usize = 1024;
 /// Bytes per pixel of [`PixelFormat::Bgrx8`].
@@ -202,6 +204,9 @@ pub fn decode_opened(payload: &[u8]) -> Result<u32, ProtoError> {
     let mut r = Reader(payload);
     let pages = r.u32()?;
     r.end()?;
+    if pages > MAX_PAGE_COUNT {
+        return Err(ProtoError("more pages than a document can have"));
+    }
     Ok(pages)
 }
 

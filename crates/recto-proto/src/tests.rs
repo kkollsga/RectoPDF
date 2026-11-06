@@ -176,6 +176,14 @@ fn text_replies_are_checked_against_the_job() {
     assert!(validate_text(&job, &flagged).is_err());
 }
 
+/// Failure: a worker claims billions of pages and the host believes it, so anything sized by the page count allocates without limit.
+#[test]
+fn a_page_count_past_the_cap_is_refused() {
+    assert_eq!(decode_opened(payload(&encode_opened(MAX_PAGE_COUNT))), Ok(MAX_PAGE_COUNT));
+    assert!(decode_opened(payload(&encode_opened(MAX_PAGE_COUNT + 1))).is_err());
+    assert!(decode_opened(payload(&encode_opened(u32::MAX))).is_err());
+}
+
 /// Failure: a decoder panics or hangs on hostile bytes. Not a fuzzer, only a cheap floor until the real targets exist.
 #[test]
 fn decoders_are_total_on_arbitrary_bytes() {

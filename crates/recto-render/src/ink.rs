@@ -17,8 +17,9 @@ pub fn box_has_ink(pixels: &[u8], width: i32, height: i32, stride: usize, (x0, y
     if x1 <= 0 || y1 <= 0 || x0 >= width || y0 >= height {
         return false;
     }
-    let (x0, x1) = ((x0 - INK_PADDING_PX).max(0), (x1 + INK_PADDING_PX).min(width));
-    let (y0, y1) = ((y0 - INK_PADDING_PX).max(0), (y1 + INK_PADDING_PX).min(height));
+    // These numbers come from a hostile file's boxes, so they may be at the very ends of the range.
+    let (x0, x1) = (x0.saturating_sub(INK_PADDING_PX).max(0), x1.saturating_add(INK_PADDING_PX).min(width));
+    let (y0, y1) = (y0.saturating_sub(INK_PADDING_PX).max(0), y1.saturating_add(INK_PADDING_PX).min(height));
     let (mut low, mut high) = (255i32, 0i32);
     for y in y0..y1 {
         let start = y as usize * stride + x0 as usize * 4;
@@ -73,6 +74,15 @@ mod tests {
             assert!(!box_has_ink(&page(), 40, 40, 160, (x0, y0, x1, y1)));
         }
         assert!(box_has_ink(&page(), 40, 40, 160, (-100, -100, 1000, 1000)), "a huge box is clipped, not refused");
+    }
+
+    /// Failure: a hostile file's box reaches the ends of the integer range, and the padding overflows, panicking in a checked build and reading the wrong
+    /// pixels in a release one.
+    #[test]
+    fn boxes_at_the_ends_of_the_range_dont_overflow() {
+        assert!(box_has_ink(&page(), 40, 40, 160, (i32::MIN, i32::MIN, i32::MAX, i32::MAX)));
+        assert!(!box_has_ink(&page(), 40, 40, 160, (i32::MIN, i32::MIN, i32::MIN + 1, i32::MIN + 1)));
+        assert!(!box_has_ink(&page(), 40, 40, 160, (i32::MAX - 1, i32::MAX - 1, i32::MAX, i32::MAX)));
     }
 
     /// Failure: a bitmap shorter than its claimed size panics the worker.

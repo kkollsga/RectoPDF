@@ -118,10 +118,10 @@ fn cancelling_a_slow_page_returns_or_kill_covers_it() {
     assert_eq!(doc.page_count().unwrap(), 2);
     let cancel = doc.cancel_handle();
     let pid = doc.worker_pid().unwrap();
+    let opened = doc.stats().opened_footprint_bytes;
     let canceller = std::thread::spawn(move || {
-        // CPU time in the worker means the job is in hand.
-        std::thread::sleep(Duration::from_millis(30));
-        let _ = process_memory(pid);
+        // Parsing this page's 400,000 objects grows the worker, so growth means the job is in hand. The page takes far longer than this.
+        wait_until("the page to start loading", || process_memory(pid).is_some_and(|memory| memory.footprint_bytes > opened + 1024 * 1024));
         cancel.cancel_before(2);
     });
     let surface = tile_surface();
@@ -242,22 +242,46 @@ fn page_characters_come_through_with_the_check_stated() {
     assert_eq!(with_boxes.boxes.len(), with_boxes.chars.len());
 }
 
-/// Failure: the hidden-text check's extra render pushes a heavy page over the limit and the agent gets no text at all. The text must still
-/// come back, marked as not checked.
+/// Failure: a page that explodes on loading is run again by each kind of job, so reading the text of a bomb after failing to draw it costs another full run, and
+/// getting past the hidden-text check erases what was learned. One outcome: refused, and remembered for every kind of job after.
 #[test]
-fn text_survives_a_page_too_heavy_to_check() {
+fn a_page_that_cant_even_load_is_refused_once_and_remembered() {
     let file = TempPdf::new("bomb.pdf", &form_bomb());
     let policy = Policy { memory_limit_bytes: 64 * 1024 * 1024, ..Policy::default() };
     let mut doc = renderer(&file.0, policy);
     // The ordinary page: checked.
     assert!(doc.page_characters(1, false, true).unwrap().hidden_checked);
-    // The bomb has no text of its own, and loading its page is what explodes, so here the honest answer is that it failed. Not a panic,
-    // not a false all-clear.
-    let bomb = doc.page_characters(0, false, true);
-    match bomb {
-        Ok(page) => assert!(!page.hidden_checked),
-        Err(failure) => assert!(matches!(failure, RenderFailure::PageFailed { page: 0, .. }), "{failure:?}"),
-    }
+    let expected = RenderFailure::PageFailed { page: 0, reason: KillReason::MemoryLimit };
+    assert_eq!(doc.page_characters(0, false, true).unwrap_err(), expected);
+    let spawns = doc.stats().spawns;
+    assert_eq!(doc.page_characters(0, false, true).unwrap_err(), expected);
+    assert_eq!(doc.page_characters(0, false, false).unwrap_err(), expected);
+    assert_eq!(doc.render_tile(&tile_request(0, 0), &tile_surface()).unwrap_err(), expected);
+    assert_eq!(doc.stats().spawns, spawns, "each of those should have been answered from memory");
+}
+
+/// Failure: a worker that left stays a zombie until the document is next touched. Nothing calls the document here, so only the reaper can have collected it.
+#[test]
+fn a_worker_that_left_is_collected_with_nobody_asking() {
+    let file = plain_doc();
+    let policy = Policy { idle_exit: Duration::from_millis(50), ..Policy::default() };
+    let mut doc = renderer(&file.0, policy);
+    draws(&mut doc, 0);
+    let pid = doc.worker_pid().unwrap();
+    wait_until("the worker to be collected", || process_memory(pid).is_none());
+}
+
+/// Failure: `kill_worker` waits for the process to end, so a worker stuck in a read from a dead volume hangs whoever called it. It must return, and the next job must still work.
+#[test]
+fn killing_a_worker_doesnt_wait_for_it() {
+    let file = plain_doc();
+    let mut doc = renderer(&file.0, Policy::default());
+    draws(&mut doc, 0);
+    let pid = doc.worker_pid().unwrap();
+    doc.kill_worker();
+    assert_eq!(doc.worker_pid(), None, "it's let go at once");
+    wait_until("the reaper to collect it", || process_memory(pid).is_none());
+    assert_eq!(draws(&mut doc, 1), TileKind::Grey);
 }
 
 /// Failure: two documents share a worker or a global in the host, so one's failure breaks the other.

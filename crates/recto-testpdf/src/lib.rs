@@ -41,12 +41,12 @@ pub struct Page {
     pub content: Vec<u8>,
     /// Extra page dictionary entries, such as `/Rotate 90`.
     pub page_extra: String,
-    pub media: (u32, u32),
+    pub media: (f32, f32),
 }
 
 impl Page {
     pub fn new(content: impl Into<Vec<u8>>) -> Self {
-        Self { content: content.into(), page_extra: String::new(), media: (612, 792) }
+        Self { content: content.into(), page_extra: String::new(), media: (612.0, 792.0) }
     }
 }
 
@@ -137,7 +137,7 @@ pub fn slow_page(rectangles: usize) -> Vec<u8> {
 /// The spike's hostile `form_bomb`: a form that draws itself twice, with its own resources naming itself. PDFium took this to 4 GiB in
 /// 6.3 s (spike §8), with no way to interrupt it. The second page is ordinary, so a test can tell a page failing from a file failing.
 pub fn form_bomb() -> Vec<u8> {
-    let bomb_page = Page { content: b"q /X Do Q".to_vec(), page_extra: String::new(), media: (200, 200) };
+    let bomb_page = Page { content: b"q /X Do Q".to_vec(), page_extra: String::new(), media: (200.0, 200.0) };
     let plain = Page::new(text_lines(&["An ordinary page after the bomb"]));
     let form_object = first_extra_object(2);
     let resources = format!("/XObject << /X {form_object} 0 R >>");

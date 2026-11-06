@@ -70,6 +70,11 @@ impl FrameReader {
         Frame { kind: header.kind, payload: std::mem::take(&mut self.payload), handles: std::mem::take(&mut self.handles) }
     }
 
+    /// Whether any handles have arrived with the frame in progress. The host expects none from a worker, ever.
+    pub fn has_handles(&self) -> bool {
+        !self.handles.is_empty()
+    }
+
     /// Blocks until a whole frame arrives, on a blocking channel.
     pub fn read_blocking(&mut self, channel: &Channel) -> Result<Frame, ReadError> {
         loop {
@@ -88,6 +93,8 @@ fn recv(channel: &Channel, buf: &mut [u8], handles: &mut Vec<Handle>) -> Result<
         Ok(0) => Err(ReadError::Closed),
         Ok(got) => Ok(Some(got)),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+        // More handles than a message can carry: nothing we send does that.
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => Err(ReadError::Bad(ProtoError("a message with more handles than fit"))),
         Err(error) => Err(ReadError::Io(error)),
     }
 }

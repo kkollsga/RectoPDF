@@ -311,7 +311,8 @@ pub fn clean_text(bytes: &[u8]) -> String {
 }
 
 fn is_invisible_format(c: char) -> bool {
-    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}' | '\u{AD}')
+    // The tag characters and variation selectors spell or carry text no eye can see, the same risk in a title as in page text.
+    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{AD}' | '\u{E0000}'..='\u{E0FFF}')
 }
 
 fn pdf_doc_char(b: u8) -> char {
@@ -344,6 +345,17 @@ mod tests {
         for unit in "a\u{202E}b".encode_utf16() {
             utf16.extend(unit.to_be_bytes());
         }
+        assert_eq!(clean_text(&utf16), "ab");
+    }
+
+    /// Failure: a title carries an instruction in tag characters, which no eye can see and an agent reads as text.
+    #[test]
+    fn clean_text_strips_tag_characters_and_variation_selectors() {
+        let mut utf16 = vec![0xFE, 0xFF, 0, b'a'];
+        for unit in "\u{E0041}\u{E0042}\u{FE0F}\u{2064}".encode_utf16() {
+            utf16.extend_from_slice(&unit.to_be_bytes());
+        }
+        utf16.extend_from_slice(&[0, b'b']);
         assert_eq!(clean_text(&utf16), "ab");
     }
 

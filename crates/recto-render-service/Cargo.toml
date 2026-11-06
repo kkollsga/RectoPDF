@@ -25,3 +25,7 @@ recto-render.workspace = true
 
 [dev-dependencies]
 recto-testpdf.workspace = true
+
+# A stand-in worker in `tests/handles.rs` sends what `Channel::send` wouldn't.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libc.workspace = true

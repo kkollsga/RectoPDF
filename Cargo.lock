@@ -390,6 +390,7 @@ dependencies = [
  "recto-proto",
  "recto-render-service",
  "recto-session",
+ "recto-testpdf",
  "serde",
  "serde_json",
 ]
@@ -445,6 +446,7 @@ dependencies = [
 name = "recto-render-service"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "recto-platform",
  "recto-proto",
  "recto-render",

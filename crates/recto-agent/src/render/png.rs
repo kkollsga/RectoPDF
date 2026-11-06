@@ -4,7 +4,6 @@
 use flate2::{Compression, Crc, write::ZlibEncoder};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
-use std::path::Path;
 
 const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 /// How much compressed data a single IDAT chunk holds.
@@ -20,18 +19,22 @@ fn write_chunk(out: &mut impl Write, kind: &[u8; 4], data: &[u8]) -> io::Result<
     out.write_all(&crc.sum().to_be_bytes())
 }
 
-/// Turns each write into one IDAT chunk.
-struct IdatChunks(BufWriter<File>);
+/// Turns each write into one IDAT chunk, stopping at the cap with `FileTooLarge`.
+struct IdatChunks {
+    file: BufWriter<File>,
+    left: u64,
+}
 
 impl Write for IdatChunks {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         if !data.is_empty() {
-            write_chunk(&mut self.0, b"IDAT", data)?;
+            self.left = self.left.checked_sub(data.len() as u64).ok_or(io::ErrorKind::FileTooLarge)?;
+            write_chunk(&mut self.file, b"IDAT", data)?;
         }
         Ok(data.len())
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+        self.file.flush()
     }
 }
 
@@ -42,8 +45,9 @@ pub(super) struct RgbWriter {
 }
 
 impl RgbWriter {
-    pub(super) fn create(path: &Path, width: u32, height: u32) -> io::Result<Self> {
-        let mut file = BufWriter::new(File::create(path)?);
+    /// Starts a picture in a file the caller made, so the caller decides how it's safe to create. Compressed data past `max_bytes` is refused.
+    pub(super) fn create(file: File, width: u32, height: u32, max_bytes: u64) -> io::Result<Self> {
+        let mut file = BufWriter::new(file);
         file.write_all(&SIGNATURE)?;
         let mut header = [0u8; 13];
         header[..4].copy_from_slice(&width.to_be_bytes());
@@ -51,7 +55,7 @@ impl RgbWriter {
         header[8] = 8; // Bits per channel.
         header[9] = 2; // RGB.
         write_chunk(&mut file, b"IHDR", &header)?;
-        let chunks = BufWriter::with_capacity(CHUNK, IdatChunks(file));
+        let chunks = BufWriter::with_capacity(CHUNK, IdatChunks { file, left: max_bytes });
         Ok(Self { encoder: ZlibEncoder::new(chunks, Compression::fast()), row: Vec::with_capacity(width as usize * 3 + 1) })
     }
 
@@ -67,7 +71,7 @@ impl RgbWriter {
 
     pub(super) fn finish(self) -> io::Result<()> {
         let chunks = self.encoder.finish()?;
-        let IdatChunks(mut file) = chunks.into_inner().map_err(io::IntoInnerError::into_error)?;
+        let IdatChunks { mut file, .. } = chunks.into_inner().map_err(io::IntoInnerError::into_error)?;
         write_chunk(&mut file, b"IEND", &[])?;
         file.flush()
     }
@@ -83,7 +87,7 @@ mod tests {
     #[test]
     fn a_written_png_decodes_to_the_same_pixels() {
         let path = std::env::temp_dir().join(format!("recto-png-test-{}.png", std::process::id()));
-        let mut writer = RgbWriter::create(&path, 2, 2).unwrap();
+        let mut writer = RgbWriter::create(File::create(&path).unwrap(), 2, 2, u64::MAX).unwrap();
         writer.write_bgrx_row(&[1, 2, 3, 0, 4, 5, 6, 0]).unwrap();
         writer.write_bgrx_row(&[7, 8, 9, 0, 10, 11, 12, 0]).unwrap();
         writer.finish().unwrap();
