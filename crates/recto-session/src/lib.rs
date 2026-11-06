@@ -149,11 +149,11 @@ impl<L: DocLoader> Session<L> {
     pub fn open(&mut self, path: &Path) -> Result<TabId, SessionError> {
         let dir_path = path.parent().unwrap_or(Path::new(""));
         let file_name = path.file_name().ok_or(SessionError::Open(OpenError::NotFound))?;
-        if let Some(&dir) = self.dir_ids.get(dir_path) {
-            if let Some(id) = self.tabs.iter().find(|t| t.dir == dir && &*t.file_name == file_name).map(|t| t.id) {
-                self.activate(id);
-                return Ok(id);
-            }
+        if let Some(&dir) = self.dir_ids.get(dir_path)
+            && let Some(id) = self.tabs.iter().find(|t| t.dir == dir && &*t.file_name == file_name).map(|t| t.id)
+        {
+            self.activate(id);
+            return Ok(id);
         }
         if self.tabs.len() >= MAX_TABS {
             return Err(SessionError::TooManyTabs);
@@ -229,10 +229,10 @@ impl<L: DocLoader> Session<L> {
             }
             toc_open = tab.toc_open;
             place = format!("{} of {}", tab.page + 1, tab.page_count);
-            if tab.toc_open {
-                if let Some((_, toc)) = self.warm.iter().find(|(id, _)| *id == tab.id) {
-                    rail_filled = contents_rows(toc, tab, &mut rows);
-                }
+            if tab.toc_open
+                && let Some((_, toc)) = self.warm.iter().find(|(id, _)| *id == tab.id)
+            {
+                rail_filled = contents_rows(toc, tab, &mut rows);
             }
         }
         SidebarModel { rows, rail_filled, toc_open, place }

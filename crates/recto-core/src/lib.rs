@@ -197,10 +197,10 @@ fn read_toc(reader: &IndexedReader) -> Option<Toc> {
         if let Ok(next) = node.get(b"Next").and_then(Object::as_reference) {
             stack.push((next, parent, depth));
         }
-        if depth < MAX_TOC_DEPTH {
-            if let Ok(child) = node.get(b"First").and_then(Object::as_reference) {
-                stack.push((child, index, depth + 1));
-            }
+        if depth < MAX_TOC_DEPTH
+            && let Ok(child) = node.get(b"First").and_then(Object::as_reference)
+        {
+            stack.push((child, index, depth + 1));
         }
     }
     Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice() })
@@ -256,17 +256,16 @@ fn find_in_name_tree(reader: &IndexedReader, root: &Object, wanted: &[u8]) -> Op
             return None;
         }
         let Ok(dict) = node.as_dict() else { continue };
-        if let Ok(limits) = dict.get(b"Limits").and_then(Object::as_array) {
-            if let (Some(Ok(low)), Some(Ok(high))) = (limits.first().map(Object::as_str), limits.get(1).map(Object::as_str)) {
-                if wanted < low || wanted > high {
-                    continue;
-                }
-            }
+        if let Ok(limits) = dict.get(b"Limits").and_then(Object::as_array)
+            && let (Some(Ok(low)), Some(Ok(high))) = (limits.first().map(Object::as_str), limits.get(1).map(Object::as_str))
+            && (wanted < low || wanted > high)
+        {
+            continue;
         }
         if let Ok(pairs) = dict.get(b"Names").and_then(Object::as_array) {
-            for pair in pairs.chunks_exact(2) {
-                if pair[0].as_str().ok() == Some(wanted) {
-                    return deref(reader, &pair[1]);
+            for [name, value] in pairs.as_chunks::<2>().0 {
+                if name.as_str().ok() == Some(wanted) {
+                    return deref(reader, value);
                 }
             }
         }
@@ -281,7 +280,7 @@ fn find_in_name_tree(reader: &IndexedReader, root: &Object, wanted: &[u8]) -> Op
 /// The result is one line, capped at [`MAX_TITLE_BYTES`] without splitting a character.
 pub fn clean_text(bytes: &[u8]) -> String {
     let decoded = if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        let units = rest.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]]));
+        let units = rest.as_chunks::<2>().0.iter().map(|pair| u16::from_be_bytes(*pair));
         char::decode_utf16(units).map(|c| c.unwrap_or('\u{FFFD}')).collect()
     } else if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         String::from_utf8_lossy(rest).into_owned()
