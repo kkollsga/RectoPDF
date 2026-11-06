@@ -51,7 +51,7 @@ fast because everything is rebuilt from disk.
 - **PDFium without V8 or XFA** draws pages and supplies selection, search text and highlight positions. It runs in a sandboxed,
   killable worker behind a `RenderBackend` seam. Measured in `docs/research/2026-11-06-renderer-spike.md`: text and vector pages at 2x
   are p50 2.06 ms, p95 8.64 ms. Cancelling isn't always prompt and one hostile file reached 4 GiB, so the worker gets a **hard memory
-  limit, a per-page deadline with kill, and retirement at 64 MiB** (*default*, amends the benchmark's rule).
+  limit, a per-page deadline with kill, and retirement at 64 MiB** (*default*, amends the benchmark's rule). Built in `recto-render-service`: details in `docs/ENGINEERING.md`.
   *Rejected:* MuPDF (AGPL), poppler (GPL). hayro stays the challenger: as fast, pure Rust, but no cancel call and it reached 843 MiB where PDFium peaks at 113.
 - **Search text needs a normaliser.** PDFium returns line-end hyphens as U+FFFE, plus NBSP and CRLF, which defeat plain `rg`.
 - **PDFium returns hidden text** (14 of 17 techniques, and real files contain it), so hidden text is flagged for the agent as untrusted, never dropped silently, because an OCR layer is invisible too.

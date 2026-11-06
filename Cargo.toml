@@ -14,12 +14,18 @@ recto-core = { path = "crates/recto-core" }
 recto-sign = { path = "crates/recto-sign" }
 recto-session = { path = "crates/recto-session" }
 recto-agent = { path = "crates/recto-agent" }
+recto-proto = { path = "crates/recto-proto" }
+recto-render = { path = "crates/recto-render" }
+recto-render-service = { path = "crates/recto-render-service" }
+recto-index = { path = "crates/recto-index" }
+recto-testpdf = { path = "crates/recto-testpdf" }
 # The owner's fork, for its lazy IndexedReader, at the 0.47 merge. Pinned to a revision so builds repeat.
 # A local URL until that branch is pushed; then this becomes https://github.com/kkollsga/lopdf.git at the same revision.
 lopdf = { git = "file:///Volumes/EksternalHome/Koding/Rust/lopdf-lazy-engine", rev = "bc73ca505e44e6f03716531cec8326afa62ab8dc", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 libc = { version = "0.2", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [workspace.lints.rust]
 # Denied, not forbidden, so a memory test can install a counting allocator. Only recto-platform allows it in library code.

@@ -1,0 +1,16 @@
+[package]
+name = "recto-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+recto-platform.workspace = true
+recto-proto.workspace = true
+
+[dev-dependencies]
+recto-testpdf.workspace = true

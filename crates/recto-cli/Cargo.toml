@@ -18,3 +18,6 @@ recto-core.workspace = true
 recto-platform.workspace = true
 recto-session.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+recto-testpdf.workspace = true

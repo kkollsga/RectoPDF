@@ -383,8 +383,12 @@ checksum = "a611d15b50743feb4c76b7d03edcb0e64f399c26961e4efe6975bc398be6aa3d"
 name = "recto-agent"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "recto-core",
+ "recto-index",
  "recto-platform",
+ "recto-proto",
+ "recto-render-service",
  "recto-session",
  "serde",
  "serde_json",
@@ -398,6 +402,7 @@ dependencies = [
  "recto-core",
  "recto-platform",
  "recto-session",
+ "recto-testpdf",
  "serde_json",
 ]
 
@@ -410,10 +415,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "recto-index"
+version = "0.1.0"
+dependencies = [
+ "recto-proto",
+]
+
+[[package]]
 name = "recto-platform"
 version = "0.1.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "recto-proto"
+version = "0.1.0"
+
+[[package]]
+name = "recto-render"
+version = "0.1.0"
+dependencies = [
+ "recto-platform",
+ "recto-proto",
+ "recto-testpdf",
+]
+
+[[package]]
+name = "recto-render-service"
+version = "0.1.0"
+dependencies = [
+ "recto-platform",
+ "recto-proto",
+ "recto-render",
+ "recto-testpdf",
 ]
 
 [[package]]
@@ -426,6 +461,10 @@ dependencies = [
 
 [[package]]
 name = "recto-sign"
+version = "0.1.0"
+
+[[package]]
+name = "recto-testpdf"
 version = "0.1.0"
 
 [[package]]

@@ -22,28 +22,8 @@ pub fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {
 }
 
 /// This process's physical footprint in bytes, the number Activity Monitor shows. `None` where it isn't implemented.
-#[cfg(target_os = "macos")]
 pub fn footprint_bytes() -> Option<u64> {
-    let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::zeroed();
-    // SAFETY: the buffer matches the requested flavor and lives for the whole call; the kernel fills it on success.
-    #[allow(unsafe_code)]
-    let info = unsafe {
-        let rc = libc::proc_pid_rusage(
-            libc::getpid(),
-            libc::RUSAGE_INFO_V4,
-            info.as_mut_ptr().cast::<libc::rusage_info_t>(),
-        );
-        if rc != 0 {
-            return None;
-        }
-        info.assume_init()
-    };
-    Some(info.ri_phys_footprint)
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn footprint_bytes() -> Option<u64> {
-    None
+    isolate::process_memory(std::process::id()).map(|memory| memory.footprint_bytes)
 }
 
 /// How many file descriptors this process has open. `None` where it isn't implemented.
@@ -57,3 +37,36 @@ pub fn open_handle_count() -> Option<usize> {
 pub fn open_handle_count() -> Option<usize> {
     None
 }
+
+/// Fills `buf` from `offset` without moving the file's position, so readers never share a cursor. Fails on a short read.
+#[cfg(unix)]
+pub fn read_exact_at(file: &std::fs::File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+    std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
+}
+
+/// Fills `buf` from `offset`. Windows moves the file's position as it reads, which doesn't matter here because every read says where.
+#[cfg(windows)]
+pub fn read_exact_at(file: &std::fs::File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        let read = file.seek_read(buf, offset)?;
+        if read == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        buf = &mut buf[read..];
+        offset += read as u64;
+    }
+    Ok(())
+}
+
+/// A process's memory as Activity Monitor counts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessMemory {
+    pub footprint_bytes: u64,
+    /// The highest the footprint has been in this process's life.
+    pub peak_footprint_bytes: u64,
+}
+
+#[cfg_attr(target_os = "macos", path = "isolate_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "isolate_stub.rs")]
+pub mod isolate;
