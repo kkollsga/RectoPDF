@@ -1,0 +1,4 @@
+/target
+/app/build
+.DS_Store
+tools/sysguard/local.env

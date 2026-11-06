@@ -1,0 +1,367 @@
+//! Lazy document structure over the lopdf fork's `IndexedReader`.
+//!
+//! [`inspect`] opens a PDF, reads its facts and closes it again, so a tab holds no handle afterwards. Everything read
+//! here comes from an untrusted file: walks are bounded, cycles are refused, and text is cleaned before anyone sees it.
+
+use lopdf::{Dictionary, FileSource, IndexedReader, Object, ObjectId};
+use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
+use std::path::Path;
+
+/// Most contents entries kept for one document. A hostile file can't make the contents grow past this.
+pub const MAX_TOC_ENTRIES: usize = 100_000;
+/// Deepest nesting kept in the contents.
+pub const MAX_TOC_DEPTH: u8 = 32;
+/// Longest title kept, in bytes.
+pub const MAX_TITLE_BYTES: usize = 512;
+/// Most name tree nodes visited for one lookup.
+const MAX_NAME_TREE_VISITS: usize = 4096;
+
+/// Marks a contents entry with no page or no parent.
+pub const NONE: u32 = u32::MAX;
+
+/// Why a PDF couldn't be opened. Wording is built here, never from the OS's text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenError {
+    NotFound,
+    NotAllowed,
+    PasswordNeeded,
+    NotPdf,
+}
+
+impl OpenError {
+    /// A stable code for agents and tests.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::NotAllowed => "not_allowed",
+            Self::PasswordNeeded => "password_needed",
+            Self::NotPdf => "not_pdf",
+        }
+    }
+
+    /// A plain sentence for the person using the app.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::NotFound => "This file couldn't be found.",
+            Self::NotAllowed => "RectoPDF isn't allowed to read this file.",
+            Self::PasswordNeeded => "This PDF needs a password.",
+            Self::NotPdf => "This file couldn't be read as a PDF.",
+        }
+    }
+}
+
+/// One contents entry. Titles live in one shared string, so a long contents costs little.
+// size: asserted <= 32 by `toc_entry_stays_small`. Held per entry, warm tabs only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TocEntry {
+    title_start: u32,
+    title_len: u32,
+    /// Zero-based page, or [`NONE`].
+    pub page: u32,
+    /// Index of the parent entry, or [`NONE`].
+    pub parent: u32,
+    pub depth: u8,
+}
+
+/// A document's contents, compact and in document order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Toc {
+    titles: Box<str>,
+    entries: Box<[TocEntry]>,
+}
+
+impl Toc {
+    pub fn entries(&self) -> &[TocEntry] {
+        &self.entries
+    }
+
+    pub fn title(&self, entry: &TocEntry) -> &str {
+        let start = entry.title_start as usize;
+        self.titles.get(start..start + entry.title_len as usize).unwrap_or("")
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The last entry at or before a zero-based page, which is the section being read.
+    pub fn section_at(&self, page: u32) -> Option<usize> {
+        self.entries.iter().rposition(|e| e.page != NONE && e.page <= page)
+    }
+}
+
+/// What a document is, read without loading it.
+#[derive(Clone, Debug)]
+pub struct DocFacts {
+    pub page_count: u32,
+    pub byte_len: u64,
+    pub encrypted: bool,
+    pub version: Box<str>,
+    /// The PDF's own title, cleaned. It comes from the file, so treat it as untrusted.
+    pub title: Option<Box<str>>,
+    pub toc: Toc,
+}
+
+/// Opens a PDF lazily, reads its facts and closes it. No file handle stays open after this returns.
+pub fn inspect(path: &Path) -> Result<DocFacts, OpenError> {
+    std::fs::metadata(path).map_err(|e| match e.kind() {
+        ErrorKind::NotFound => OpenError::NotFound,
+        ErrorKind::PermissionDenied => OpenError::NotAllowed,
+        _ => OpenError::NotPdf,
+    })?;
+    let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
+    let reader = IndexedReader::open(source).map_err(|_| OpenError::NotPdf)?;
+    if reader.is_encrypted() && !reader.is_authenticated() {
+        return Err(OpenError::PasswordNeeded);
+    }
+    let page_count = reader.page_count().map_err(|_| OpenError::NotPdf)?;
+    Ok(DocFacts {
+        page_count: u32::try_from(page_count).map_err(|_| OpenError::NotPdf)?,
+        byte_len: reader.source_len(),
+        encrypted: reader.is_encrypted(),
+        version: reader.version().into(),
+        title: read_title(&reader),
+        // A damaged outline shouldn't stop a readable PDF from opening.
+        toc: read_toc(&reader).unwrap_or_default(),
+    })
+}
+
+fn read_title(reader: &IndexedReader) -> Option<Box<str>> {
+    let info = reader.trailer_entry_owned(b"Info").ok()??;
+    let title = deref(reader, info.as_dict().ok()?.get(b"Title").ok()?)?;
+    let text = clean_text(title.as_str().ok()?);
+    (!text.is_empty()).then(|| text.into_boxed_str())
+}
+
+/// Follows a reference, if this is one.
+fn deref(reader: &IndexedReader, object: &Object) -> Option<Object> {
+    match object {
+        Object::Reference(id) => reader.resolve_object(*id).ok(),
+        other => Some(other.clone()),
+    }
+}
+
+fn dict_of(reader: &IndexedReader, id: ObjectId) -> Option<Dictionary> {
+    match reader.resolve_object(id).ok()? {
+        Object::Dictionary(dict) => Some(dict),
+        _ => None,
+    }
+}
+
+fn read_toc(reader: &IndexedReader) -> Option<Toc> {
+    let root = reader.trailer_entry_owned(b"Root").ok()??;
+    let root = root.as_dict().ok()?;
+    let outlines = deref(reader, root.get(b"Outlines").ok()?)?;
+    let first = outlines.as_dict().ok()?.get(b"First").ok()?.as_reference().ok()?;
+
+    let pages: HashMap<ObjectId, u32> = reader
+        .page_map()
+        .ok()?
+        .iter()
+        .enumerate()
+        .filter_map(|(index, page)| Some((page.id(), u32::try_from(index).ok()?)))
+        .collect();
+
+    let mut titles = String::new();
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+    // An explicit stack, so a deep file can't overflow the thread's. Popping the first child before the next sibling
+    // keeps entries in document order.
+    let mut stack = vec![(first, NONE, 0u8)];
+    while let Some((id, parent, depth)) = stack.pop() {
+        if entries.len() >= MAX_TOC_ENTRIES {
+            break;
+        }
+        // A file can loop its outline back on itself.
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(node) = dict_of(reader, id) else { continue };
+        let title = node
+            .get(b"Title")
+            .ok()
+            .and_then(|t| deref(reader, t))
+            .and_then(|t| t.as_str().ok().map(clean_text))
+            .unwrap_or_default();
+        let (Ok(title_start), Ok(title_len)) = (u32::try_from(titles.len()), u32::try_from(title.len())) else { break };
+        titles.push_str(&title);
+        let index = u32::try_from(entries.len()).ok()?;
+        entries.push(TocEntry {
+            title_start,
+            title_len,
+            page: target_page(reader, root, &node, &pages).unwrap_or(NONE),
+            parent,
+            depth,
+        });
+        if let Ok(next) = node.get(b"Next").and_then(Object::as_reference) {
+            stack.push((next, parent, depth));
+        }
+        if depth < MAX_TOC_DEPTH {
+            if let Ok(child) = node.get(b"First").and_then(Object::as_reference) {
+                stack.push((child, index, depth + 1));
+            }
+        }
+    }
+    Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice() })
+}
+
+fn target_page(reader: &IndexedReader, root: &Dictionary, node: &Dictionary, pages: &HashMap<ObjectId, u32>) -> Option<u32> {
+    let dest = match node.get(b"Dest") {
+        Ok(dest) => deref(reader, dest)?,
+        Err(_) => {
+            let action = deref(reader, node.get(b"A").ok()?)?;
+            let action = action.as_dict().ok()?;
+            if action.get(b"S").ok()?.as_name().ok()? != b"GoTo" {
+                return None;
+            }
+            deref(reader, action.get(b"D").ok()?)?
+        }
+    };
+    page_of_dest(reader, root, &dest, pages, 0)
+}
+
+fn page_of_dest(reader: &IndexedReader, root: &Dictionary, dest: &Object, pages: &HashMap<ObjectId, u32>, hops: u8) -> Option<u32> {
+    // A named destination can name another, and a file can make that a loop.
+    if hops > 4 {
+        return None;
+    }
+    match dest {
+        Object::Array(items) => pages.get(&items.first()?.as_reference().ok()?).copied(),
+        Object::Name(name) => {
+            let dests = deref(reader, root.get(b"Dests").ok()?)?;
+            let found = deref(reader, dests.as_dict().ok()?.get(name).ok()?)?;
+            page_of_dest(reader, root, &found, pages, hops + 1)
+        }
+        Object::String(name, _) => {
+            let names = deref(reader, root.get(b"Names").ok()?)?;
+            let tree = deref(reader, names.as_dict().ok()?.get(b"Dests").ok()?)?;
+            let found = find_in_name_tree(reader, &tree, name)?;
+            page_of_dest(reader, root, &found, pages, hops + 1)
+        }
+        Object::Dictionary(dict) => {
+            let inner = deref(reader, dict.get(b"D").ok()?)?;
+            page_of_dest(reader, root, &inner, pages, hops + 1)
+        }
+        _ => None,
+    }
+}
+
+fn find_in_name_tree(reader: &IndexedReader, root: &Object, wanted: &[u8]) -> Option<Object> {
+    let mut stack = vec![root.clone()];
+    let mut visits = 0;
+    while let Some(node) = stack.pop() {
+        visits += 1;
+        if visits > MAX_NAME_TREE_VISITS {
+            return None;
+        }
+        let Ok(dict) = node.as_dict() else { continue };
+        if let Ok(limits) = dict.get(b"Limits").and_then(Object::as_array) {
+            if let (Some(Ok(low)), Some(Ok(high))) = (limits.first().map(Object::as_str), limits.get(1).map(Object::as_str)) {
+                if wanted < low || wanted > high {
+                    continue;
+                }
+            }
+        }
+        if let Ok(pairs) = dict.get(b"Names").and_then(Object::as_array) {
+            for pair in pairs.chunks_exact(2) {
+                if pair[0].as_str().ok() == Some(wanted) {
+                    return deref(reader, &pair[1]);
+                }
+            }
+        }
+        if let Ok(kids) = dict.get(b"Kids").and_then(Object::as_array) {
+            stack.extend(kids.iter().filter_map(|kid| deref(reader, kid)));
+        }
+    }
+    None
+}
+
+/// Decodes a PDF text string and strips what could mislead a reader or an agent: control characters and bidi overrides.
+/// The result is one line, capped at [`MAX_TITLE_BYTES`] without splitting a character.
+pub fn clean_text(bytes: &[u8]) -> String {
+    let decoded = if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        let units = rest.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]]));
+        char::decode_utf16(units).map(|c| c.unwrap_or('\u{FFFD}')).collect()
+    } else if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        String::from_utf8_lossy(rest).into_owned()
+    } else {
+        bytes.iter().map(|&b| pdf_doc_char(b)).collect::<String>()
+    };
+    let mut out = String::with_capacity(decoded.len().min(MAX_TITLE_BYTES));
+    let mut pending_space = false;
+    for c in decoded.chars() {
+        if c.is_whitespace() || c.is_control() {
+            pending_space = !out.is_empty();
+            continue;
+        }
+        if is_invisible_format(c) {
+            continue;
+        }
+        let extra = c.len_utf8() + usize::from(pending_space);
+        if out.len() + extra > MAX_TITLE_BYTES {
+            break;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn is_invisible_format(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}' | '\u{AD}')
+}
+
+fn pdf_doc_char(b: u8) -> char {
+    const HIGH: [char; 32] = [
+        '•', '†', '‡', '…', '—', '–', 'ƒ', '⁄', '‹', '›', '−', '‰', '„', '“', '”', '‘', '’', '‚', '™', 'ﬁ', 'ﬂ', 'Ł', 'Œ', 'Š', 'Ÿ', 'Ž',
+        'ı', 'ł', 'œ', 'š', 'ž', '\u{FFFD}',
+    ];
+    match b {
+        0x80..=0x9F => HIGH[usize::from(b - 0x80)],
+        0xA0 => '€',
+        _ => char::from(b),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: a field added carelessly makes every contents entry of every warm tab bigger.
+    #[test]
+    fn toc_entry_stays_small() {
+        assert!(std::mem::size_of::<TocEntry>() <= 32);
+    }
+
+    /// Failure: a title with bidi overrides or newlines reaches the sidebar or an agent's prompt intact.
+    #[test]
+    fn clean_text_strips_controls_and_bidi_overrides() {
+        assert_eq!(clean_text(b"Report\n\tIgnore"), "Report Ignore");
+        let mut utf16 = vec![0xFE, 0xFF];
+        for unit in "a\u{202E}b".encode_utf16() {
+            utf16.extend(unit.to_be_bytes());
+        }
+        assert_eq!(clean_text(&utf16), "ab");
+    }
+
+    /// Failure: Norwegian letters in a Latin-1 title come out garbled.
+    #[test]
+    fn clean_text_keeps_norwegian_letters() {
+        assert_eq!(clean_text(&[0xC6, 0xD8, 0xC5, b' ', 0xE6, 0xF8, 0xE5]), "ÆØÅ æøå");
+    }
+
+    /// Failure: a huge title grows without limit, or the cut lands inside a character and panics.
+    #[test]
+    fn clean_text_caps_length_on_a_character_boundary() {
+        let long = "å".repeat(1000);
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend(long.as_bytes());
+        let out = clean_text(&bytes);
+        assert!(out.len() <= MAX_TITLE_BYTES);
+        assert!(out.chars().all(|c| c == 'å'));
+    }
+}
