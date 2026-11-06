@@ -29,7 +29,7 @@ A missed budget is a bug. The whole process tree counts, on release builds, on a
 | Live documents | Active plus at most 2 recent; a byte budget frees the oldest first | Tested for the count; byte budget when renderers exist |
 | One document, text page | ≤ 60 MiB | Pending app |
 | Colour full-bleed page | ≤ 100 MiB | Pending app |
-| Fast scrolling, peak | ≤ 170 MiB. **Named exception:** pages with huge images can exceed this, under the memory limit sequence in §3. Measured: 341 MiB in tiles on a 330 MiB map | Pending app |
+| Fast scrolling, peak | ≤ 170 MiB. **Named exception:** pages with huge images can exceed this, under the memory limit sequence in §3. Accepted by the owner, 2026-11-07: about 415–450 MiB on a 330 MiB map with one-pass drawing, in exchange for a first view about four times faster | Pending app |
 | Cold start to first sharp page | ≤ 300 ms p50, ≤ 500 ms p95 | Pending app |
 | Open 2 GB, 10k pages | Page 1 sharp ≤ 250 ms warm, ≤ 600 ms cold; main never stalls > 16 ms | Pending app |
 | Idle CPU | ~0%, ≤ 1 wake-up per second | Pending app |
@@ -52,7 +52,7 @@ fast because everything is rebuilt from disk.
   killable worker behind a `RenderBackend` seam. Measured in `docs/research/2026-11-06-renderer-spike.md`: text and vector pages at 2x
   are p50 2.06 ms, p95 8.64 ms. Cancelling isn't always prompt and one hostile file reached 4 GiB, so the worker gets a **hard memory
   limit, a per-page deadline with kill, and retirement at 64 MiB** (amends the benchmark's rule).
-- **Memory limit sequence** (owner approved, 2026-11-06): 512 MiB per worker; a page that hits it retries alone with up to 1 GiB if the Mac has memory free; failing that, a lower-resolution version that says so, so a page is never blank. A page that fails all the way down isn't retried, and one heavy worker runs at a time. Exports and printing draw in tiles under the same limits.
+- **Memory limit sequence** (owner approved, 2026-11-06): 512 MiB per worker; a page that hits it retries alone with up to 1 GiB if the Mac has memory free; failing that, a lower-resolution version that says so, so a page is never blank. A page that fails all the way down isn't retried, and one heavy worker runs at a time. Exports and printing draw in tiles under the same limits. **An on-screen page never waits and may show low resolution; an export waits for the heavy slot and never saves a low-resolution file** (owner, 2026-11-07).
   *Rejected:* MuPDF (AGPL), poppler (GPL). hayro stays the challenger: as fast, pure Rust, but no cancel call and it reached 843 MiB where PDFium peaks at 113.
 - **Visible regions are drawn in one pass** (owner, 2026-11-06: "4s to render a map is too slow. We can do better"). Tiles stay the cache unit, but a separate render call per tile cost 46–55 ms each on a heavy map, so 72 tiles took 3.7 s against 0.7 s for one pass.
 - **Search text needs a normaliser.** PDFium returns line-end hyphens as U+FFFE, plus NBSP and CRLF, which defeat plain `rg`.
