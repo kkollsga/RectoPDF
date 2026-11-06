@@ -81,13 +81,12 @@ Whole-page drawing (`recto render`, later print and snapshot) goes in strips und
 |---|---:|---:|
 | Idle worker footprint, 423 spawns | 2.27 MiB | 2.27 MiB |
 | Worker binary | 1.3 MB | 0.48 MB |
-| Text and vector pages, p50 / p95, inside the worker | 2.06 / 8.64 ms | 2.47 / 8.01 ms |
-| Same, as the host sees it, round trip | | 2.54 / 8.11 ms |
-| All pages, p50 / p95 | 2.41 / 30.39 ms | 2.94 / 28.37 ms |
+| Text and vector pages, p50 / p95, as the host sees it, round trip | 2.06 / 8.64 ms, in process | 2.57 / 8.31 ms |
+| All pages, p50 / p95 | 2.41 / 30.39 ms | 2.98 / 28.33 ms |
 | Respawn, reopen, draw first page, `rfc9110` | 13.28 ms | 12.95 ms |
 | `gov_nasa_ntrs20240002628`, peak with retirement at 64 MiB | 115.8 MiB | 83.2 MiB |
 | Largest peak across files, p95, with retirement | | 153 MiB (257 without) |
-| `form_bomb` | 4 GiB, killed by the harness in 6.3 s | 512 MiB, killed by the host in 0.53 s |
+| `form_bomb`, every step of the memory sequence | 4 GiB, killed by the harness in 6.3 s | 3.1 s in all, peak 1 GiB, then nothing: it's remembered |
 
 The 0.4 ms at p50 is classifying a whole page's pixels (659 µs on a full grey page). The app draws tiles, at 92 µs a tile, so this is mostly a cost of whole-page runs. With retirement on, p95 rises to 10.04 ms from the respawns it causes.
 
@@ -104,7 +103,11 @@ The 0.4 ms at p50 is classifying a whole page's pixels (659 µs on a full grey p
 
 Only pages with an image of 20 Mpx or more use regions: `REGION_MIN_IMAGE_PIXELS`, with its table, gives why. Below that a region costs more memory, and between 1 and 20 Mpx more time as well. 20 Mpx rests on 4 sampled pages from 2 documents above it and 17 pages just under. A region is capped at 32 MiB (`MAX_REGION_BYTES`), which covers a 3024 x 1964 window and a third more, and takes more passes beyond that. It's mapped in the worker while drawing, so the memory limit and its sequence see it, and it goes down the same sequence as a tile, with the same cancelling and validation.
 
-**What the limit does to the 28 pages above 170 MiB**, each in a fresh worker, whole page at 2x: at 512 MiB all 28 draw, and the worst peaks at 488 MiB. At 256 MiB 16 to 17 are refused as `page_too_large`. At 170 MiB all 28 are. A kill overshoots by up to about 55 MiB on a large image's single allocation.
+**What the limit does to the 28 pages above 170 MiB**, each in a fresh worker, whole page at 2x, with no heavy step: at 512 MiB all 28 draw sharp, and the worst peaks at 396 MiB, down from 488 now that whole pages go in pieces. At 256 MiB, 1 can't be drawn at all, and at 170 MiB, 4; the others draw, sharp or at the lower resolution. A kill overshoots by up to about 55 MiB on a large image's single allocation.
+
+**The USGS map, before and after.** Whole page as tiles at 2x went from 3.75 s to 0.70 s, peak 339 to 426 MiB, and at 4x from 10.9 s to 2.95 s, peak 342 to 448 MiB. `recto render` at 2x is 0.83 s; at 4x it was stopped at the limit and is now 2.46 s, peak 468 MiB.
+
+**The first pass's 450 ms** is about half inflating the two images' Flate streams and most of the rest stretching them (sampled at 0.25x). It's the same at any zoom, because every source row must be inflated. Nothing short of a change to PDFium or a preview cached from an earlier run avoids it.
 
 **The renderer is hostile.** Replies go through `recto-proto`'s decoders and validators before anything uses them; any violation kills the worker. A frame's claimed length costs nothing until bytes arrive. Pixels are copied out of shared memory, never referenced in place, and shared memory can't be resized once sized on macOS, so a worker can't make the host fault. A compromised worker can still draw a wrong picture and rewrite a surface it was given earlier; that's the limit of this design until surfaces are per-job IOSurfaces.
 
