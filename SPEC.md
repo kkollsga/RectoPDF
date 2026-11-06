@@ -71,8 +71,9 @@ Reference: `docs/concepts/`. Rules from the owner:
 - **Tabs live in the sidebar.** Tapping the active PDF folds or opens its contents.
 - **At rest the sidebar is only names and contents.** The rail fills as you read. Chevron and page numbers appear on hover.
 - **The macOS menu bar is the home of every command** (owner, 2026-11-06: "Not all options need to be in the sidebar. A lot can be in the macos top bar instead"). Menus: File, Edit, View, Go, Pages, Mark Up, Tools, Window, Help. Map: `docs/concepts/menumap-light.png`. Rust decides which items exist and which are enabled. ⌘K finds any command.
-- **The `⋯` panel holds only what you touch while reading** (owner: "let the … menu toggle open a compact menu in lower part of left sidebar with tabs"). It opens in the lower sidebar with three tabs: View (zoom, paper, layout), Mark up, and Pages. A tool started from the menu bar that needs choices, such as Compress, opens here, in place of the tabs.
-- **Save and Save As are the normal commands** (owner: "Save a copy is a normal save / save as buttons, when there are changes"). The buttons appear above the footer only while there are unsaved changes, and the active PDF gets a small dot.
+- **The `⋯` panel holds only what you touch while reading** (owner: "let the … menu toggle open a compact menu in lower part of left sidebar with tabs"). It opens in the lower sidebar with two tabs, View (zoom, paper, layout) and Mark up, plus an **Edit PDF** button. A tool started from the menu bar that needs choices, such as Compress, opens here, in place of the tabs.
+- **Editing tools show in the sidebar only in edit mode** (owner, 2026-11-06: "These are tools in the sidebar only visible when in edit mode"). The panel changes to the edit tools when you enter with ⌘E, the Pages menu or Edit PDF, and Done returns to reading. In the Pages menu, Rust enables those items only in edit mode.
+- **Saving looks and works like a native Mac app** (owner, 2026-11-06: "I want something that looks more like a native save / save as feature. Like word etc"). With unsaved changes, the red window button shows its dot and a Save icon appears beside the window controls. `⌘S` saves, `⇧⌘S` and File > Save As open the system's save sheet, and closing asks Don't Save, Cancel or Save. Tools change the open document (Compress has Apply) and never have their own save buttons.
 - **Agent icon at the top right**, in the empty margin. It opens the agent panel and stays in the same spot.
 - **Dark mode offers dark or white paper.** Signing always shows the true page.
 - **Focus view:** sidebar hidden, page number only, agent icon kept.
@@ -101,11 +102,11 @@ Reference: `docs/concepts/`. Rules from the owner:
 | Annotations | Highlight, underline, strikeout, note, ink. Notes autosave beside the file, and go into the PDF on Save (*default*) |
 | Forms | Filling, owned by the Rust core and lopdf (*default*). No JavaScript; detect and explain. Dynamic XFA detected only (*default*) |
 | Signing | **Placeholder for now** (owner, 2026-11-06): the labelled image option, a neutral "signature present, not checked" report, and the final seams in `recto-sign`. No file is signed cryptographically until it's built properly to the official standards (ISO 32000-2, ETSI EN 319 142, RFC 5652, RFC 3161) |
-| Page tools | Rotate, delete, reorder, extract, insert, merge, split |
+| Edit PDF | **An edit mode** (owner, 2026-11-06: "pdf edit mode that lets you edit text, drag and drop pdfs into the app to add more pages to an existing pdf, rearrange pages, turn/rotate individual pages"). **Pages:** the page area becomes a grid; drag to rearrange, drop PDFs to add their pages, rotate, delete, extract, split. Edits are a small list applied on Save: instant, about 8 B a page, and undoable. **Text:** click text and type. Lines rewrap inside their text block, as in Foxit's Edit Text; other blocks don't move, and nothing flows across pages. It keeps the PDF's font; a character the font lacks uses an embedded fallback font. See `docs/research/2026-11-06-foxit-editing.md` |
 | Security | Password protection |
 | Saving | **Save** and **Save As**, atomic, never partly written. Adding things appends to the file. **Removing things (delete a page, redact, compress) rewrites it, so the old data is really gone.** If a change would break a signature, Save is off and Save As explains why. One backup of the original on first save (*default*) |
 | Compare | Text first, read-only |
-| Compress | **Low, Medium, High to a fixed image DPI, then save.** Start: 220, 150, 96 DPI. Measured at printed size; never enlarges, leaves text, vectors and 1-bit scans alone; cleans the file first. Then a normal Save or Save As |
+| Compress | **Low, Medium, High to a fixed image DPI, then save.** Start: 220, 150, 96 DPI. Measured at printed size; never enlarges, leaves text, vectors and 1-bit scans alone; cleans the file first. Apply changes the open document, then it saves normally |
 | OCR | Tesseract, with **Save as searchable PDF**: an invisible text layer with an embedded Unicode font, in a helper process |
 | Extraction | **Click an image to copy it losslessly.** **Snapshot tool:** drag a box for text, PNG, SVG and JPG, all on the clipboard at once |
 
@@ -122,7 +123,7 @@ Signature trust through EU lists comes later, with the signing work.
 
 [DECIDE] Image copy and snapshot on PDFs whose permissions forbid copying (*default:* a notice with "Copy anyway"). Open-source readers differ: pdf.js and Evince ignore the flag by default, Okular obeys it with a setting to turn that off, and SumatraPDF blocks text copy but still copies as an image.
 
-**Left out:** full text and image editing, conversion to Word or Excel, creating PDFs from Office files, sending documents for signature,
+**Left out:** paragraph reflow and image replacement (for now), conversion to Word or Excel, creating PDFs from Office files, sending documents for signature,
 print production, portfolios, 3D and media, V8.
 
 ## 7. Decision log
@@ -145,4 +146,5 @@ Numbered so they can be cited. Newest last.
 14. **All five extra tools are in this build.** Owner answered yes on 2026-11-06.
 15. **PDFium confirmed for now** (*default*). Fast on 5,689 real pages; two lines of the benchmark's rule fail, so the rule is amended as in §3.
 16. **Normal Save and Save As.** Owner, 2026-11-06. Replaces the earlier save-to-a-copy default.
+18. **Edit mode is in, including text editing.** Owner, 2026-11-06. Reverses the earlier call to leave text editing out. Text edits work on a whole block, matching Foxit's baseline.
 17. **Commands live in the macOS menu bar;** the sidebar panel keeps only what you use while reading. Owner, 2026-11-06.

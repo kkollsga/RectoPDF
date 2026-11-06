@@ -25,6 +25,9 @@ const I = {
   send: svg(14, 14, '<path d="M7 11.5v-9M3.4 6 7 2.5 10.6 6"/>'),
   seal: svg(14, 14, '<path d="M7 1.3 8.5 2.5l1.9-.1.6 1.8 1.6 1.1-.7 1.8.7 1.7-1.6 1.1-.6 1.9-1.9-.1L7 12.7l-1.5-1.2-1.9.1-.6-1.9-1.6-1.1.7-1.7-.7-1.8L3 4.2l.6-1.8 1.9.1z"/><path d="m5 7 1.5 1.5L9.2 5.7"/>'),
   sigmark: svg(14, 14, '<path d="M7 1.3 8.5 2.5l1.9-.1.6 1.8 1.6 1.1-.7 1.8.7 1.7-1.6 1.1-.6 1.9-1.9-.1L7 12.7l-1.5-1.2-1.9.1-.6-1.9-1.6-1.1.7-1.7-.7-1.8L3 4.2l.6-1.8 1.9.1z"/>'),
+  rotl: svg(14, 14, '<path d="M3 5.500V2.500M3 5.500h3M3.400 5.300A4.500 4.500 0 1 1 2.500 8"/>'),
+  rotr: svg(14, 14, '<path d="M11 5.500V2.500M11 5.500H8M10.600 5.300A4.500 4.500 0 1 0 11.500 8"/>'),
+  save: svg(16, 16, '<path d="M3 3.800c0-.5.4-.9.9-.9h6.900L13 5.100v7.100c0 .5-.4.9-.9.900H3.900a.9.9 0 0 1-.9-.9z"/><path d="M5.300 2.900v3h4.500v-3M5 13.100V9.300h6v3.800"/>'),
   back: svg(10, 10, '<path d="M6.5 1.8 3.100 5l3.400 3.200"/>'),
   key: svg(15, 15, '<circle cx="5" cy="10" r="2.8"/><path d="m7 8 5.2-5.2M10 5l1.8 1.8"/>'),
   lock: svg(14, 14, '<rect x="3" y="6.2" width="8" height="5.8" rx="1.3"/><path d="M4.8 6.2V4.6a2.2 2.2 0 0 1 4.4 0v1.6"/>'),
@@ -70,16 +73,16 @@ function sidebar({ active = "survey", open = true, tabs = TABS, tap = false, hov
       ${isOn && body ? body : ""}${isOn && open && !body && t.toc ? tocHtml(t.toc, hover) : ""}`;
   }).join("");
   return `<aside class="sidebar">
-    <div class="side-top"><div class="lights"><i></i><i></i><i></i></div><span class="ibtn ${on.includes("search") ? "on" : ""}">${I.search}</span><span class="ibtn">${I.plus}</span></div>
+    <div class="side-top"><div class="lights ${edited ? "dirty" : ""}"><i></i><i></i><i></i></div>${edited ? `<span class="ibtn savebtn" title="Save">${I.save}</span>` : ""}<span style="flex:1"></span><span class="ibtn ${on.includes("search") ? "on" : ""}">${I.search}</span><span class="ibtn">${I.plus}</span></div>
     <div class="tabs" style="position:relative">${rows}${tap ? '<span class="tap"></span>' : ""}</div>
-    ${menu}${edited ? SAVEROW : ""}<div class="side-foot">${chrome ? `<span class="place"><b>${pg[0]}</b> of ${pg[1]}</span>` : "<span></span>"}<span class="ibtn ${on.includes("more") ? "on" : ""}">${I.more}</span></div>
+    ${menu}<div class="side-foot">${chrome ? `<span class="place"><b>${pg[0]}</b> of ${pg[1]}</span>` : "<span></span>"}<span class="ibtn ${on.includes("more") ? "on" : ""}">${I.more}</span></div>
   </aside>`;
 }
 
 const AGENT = (on = false) => `<span class="ibtn agentbtn ${on ? "on" : ""}">${I.ask}</span>`;
 const pill = (page, total) => `<div class="pill"><span class="sec"><span class="num">${page}</span> of ${total}</span></div>`;
 // The ⋯ button opens this in the lower sidebar. It holds only what you touch while reading; the macOS menu bar has the rest.
-const DOCK_TABS = ["View", "Mark up", "Pages"];
+const DOCK_TABS = ["View", "Mark up"];
 const grid = (items, on = "") => `<div class="dgrid">${items.map((t) => `<span class="${t === on ? "on" : ""}">${t}</span>`).join("")}</div>`;
 const PANES = {
   View: () => `<div class="dpane">
@@ -87,18 +90,16 @@ const PANES = {
     ${theme === "dark" ? `<div class="drow">Paper<span class="seg mini"><span class="on">Dark</span><span>White</span></span></div>` : ""}
     <div class="drow">Layout<span class="seg mini"><span class="on">Single</span><span>Spread</span></span></div></div>`,
   "Mark up": () => grid(["Highlight", "Underline", "Strikeout", "Note", "Draw", "Signature image"], "Highlight"),
-  Pages: () => grid(["Thumbnails", "Rotate", "Delete", "Extract"]),
 };
-const DOCK = (tab = "View", body = "") => body ? `<div class="dock">${body}</div>` : `<div class="dock"><div class="dtabs">${DOCK_TABS.map((t) => `<span class="${t === tab ? "on" : ""}">${t}</span>`).join("")}</div>${PANES[tab]()}</div>`;
-// Save and Save As are the normal commands. These buttons appear only while there are unsaved changes.
-const SAVEROW = `<div class="saverow"><span class="edited">Edited</span><span class="btn ghost small">Save As…</span><span class="btn primary small">Save</span></div>`;
+const DOCK = (tab = "View", body = "") => body ? `<div class="dock">${body}</div>` : `<div class="dock"><div class="dtabs">${DOCK_TABS.map((t) => `<span class="${t === tab ? "on" : ""}">${t}</span>`).join("")}</div>${PANES[tab]()}<div class="dedit"><span>Edit PDF</span><kbd>⌘E</kbd></div></div>`;
 const COMPRESS = `<div class="dback">${I.back}Compress<span>41 MB now</span></div>
   <div class="levels">
     <div class="lvl"><b>Low</b><span>220 DPI</span><em>33 MB</em></div>
     <div class="lvl on"><b>Medium</b><span>150 DPI</span><em>18 MB</em></div>
     <div class="lvl"><b>High</b><span>96 DPI</span><em>9 MB</em></div>
   </div>
-  <div class="dnote">Text and vector graphics aren't touched.</div>`;
+  <div class="dnote">Text and vector graphics aren't touched.</div>
+  <div class="dsave"><span class="btn primary small">Apply</span></div>`;
 
 // Every command has one home in the macOS menu bar. Each entry is a label and its shortcut; "-" is a separator.
 const MENUS = {
@@ -106,12 +107,26 @@ const MENUS = {
   Edit: [["Undo", "⌘Z"], ["Redo", "⇧⌘Z"], "-", ["Cut", "⌘X"], ["Copy", "⌘C"], ["Paste", "⌘V"], ["Select All", "⌘A"], "-", ["Find…", "⌘F"], ["Find Next", "⌘G"], ["Find Previous", "⇧⌘G"]],
   View: [["Zoom In", "⌘+"], ["Zoom Out", "⌘−"], ["Actual Size", "⌘0"], ["Fit Width", ""], "-", ["Paper", "▸"], ["Single Page", ""], ["Two-Page Spread", ""], "-", ["Show Sidebar", "⌃⌘S"], ["Show Agent", "⌥⌘A"], ["Focus View", "⇧⌘F"], ["Enter Full Screen", "⌃⌘F"]],
   Go: [["Back", "⌘["], ["Forward", "⌘]"], "-", ["Next Page", "⌥↓"], ["Previous Page", "⌥↑"], ["Go to Page…", "⌘L"], "-", ["Next Tab", "⌃⇥"], ["Previous Tab", "⌃⇧⇥"]],
-  Pages: [["Show Thumbnails", ""], "-", ["Rotate Left", ""], ["Rotate Right", ""], ["Delete", ""], ["Extract…", ""], ["Insert…", ""], "-", ["Merge PDFs…", ""], ["Split…", ""]],
+  Pages: [["Edit PDF", "⌘E"], ["Edit Text", "⇧⌘E"], "-", ["Rotate Left", ""], ["Rotate Right", ""], ["Delete", ""], ["Extract…", ""], ["Insert…", ""], "-", ["Merge PDFs…", ""], ["Split…", ""]],
   "Mark Up": [["Highlight", ""], ["Underline", ""], ["Strikeout", ""], ["Note", ""], ["Draw", ""], "-", ["Signature Image…", ""], ["Fill Form", ""], ["Create Form…", ""]],
   Tools: [["All Commands…", "⌘K"], "-", ["Snapshot", "⌥⌘4"], ["Copy Image", ""], "-", ["Compare…", ""], ["Redact…", ""], ["Watermark…", ""], ["Bates Numbers…", ""], ["Measure", ""]],
 };
 const menuList = (name) => `<div class="mlist">${MENUS[name].map((m) => m === "-" ? '<div class="msep"></div>' : `<div class="mitem"><span>${m[0]}</span><kbd>${m[1]}</kbd></div>`).join("")}</div>`;
 const MACBAR = (open = "") => `<div class="macbar"><b>RectoPDF</b>${Object.keys(MENUS).map((n) => `<span class="${n === open ? "on" : ""}">${n}</span>`).join("")}<span>Window</span><span>Help</span></div>`;
+
+// Edit mode. The page area becomes a grid; every control stays in the sidebar, so there's still no top bar.
+const THUMBS = [
+  ["28"], ["29", "fig"], ["30"], ["31"], ["32", "fig", "sel"], ["33"], ["34", "", "turned"], ["35"],
+  ["36", "fig"], ["37"], ["38"], ["39", "fig"],
+];
+const thumbPage = (fig) => `<div class="tpage"><i></i>${"<b></b>".repeat(fig ? 2 : 3)}${fig ? "<u></u>" : ""}${"<b></b>".repeat(fig ? 4 : 11)}</div>`;
+const handles = `<div class="thandles"><span>${I.rotl}</span><span>${I.rotr}</span><span>${I.plus14}</span><span>${I.x}</span></div>`;
+const GRID = `<section class="surface pagesgrid">${AGENT()}<div class="tgrid">${THUMBS.map(([n, fig = "", state = ""], i) => `${i === 6 ? `<div class="dropbar"><div class="dropcard"><b>Tide Tables Q1 2026</b><span>Add 44 pages here</span></div></div>` : ""}<div class="thumbcell ${state}">${thumbPage(fig)}${state === "sel" ? handles : ""}<em>${n}</em></div>`).join("")}</div></section>`;
+const EDITDOCK = (mode) => `<div class="dhead"><b>Edit PDF</b><span class="btn ghost small">Done</span></div>
+  <div class="seg"><span class="${mode === "pages" ? "on" : ""}">Pages</span><span class="${mode === "text" ? "on" : ""}">Text</span></div>
+  ${mode === "pages"
+    ? `<div class="dhint">Drag pages to rearrange them. Drop a PDF to add its pages.</div>${grid(["Rotate left", "Rotate right", "Delete", "Extract", "Insert PDF…", "Split…"])}`
+    : `<div class="drow">Font<span class="dval">Charter, from this PDF</span></div><div class="drow">Size<span class="dval">13.2 pt</span></div><div class="dhint">Click text to change it. Lines rewrap inside their block; other blocks don't move.</div>`}`;
 
 // A bathymetry figure with its own colours: it keeps them in PDF dark mode, like photos do.
 const FIGURE = `<svg viewBox="0 0 576 214" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, Helvetica Neue, sans-serif">
@@ -141,7 +156,7 @@ const SURVEY_PAGE = `<article class="page">
   <div class="head"><span>Nordvik Harbour Authority · Seabed Survey 2025</span><span>Sediment and scour</span></div>
   <h2><span>3.2</span>${h("Scour")} at the ferry quay</h2>
   <p>The ferry quay sits on the outer edge of the harbour basin, where propeller wash from the two daily crossings meets the ebb current. Repeated multibeam passes between March and September 2025 show that the ${h("scour", true)} hole along the berth face has continued to deepen, although more slowly than the 2023 survey predicted.</p>
-  <p><mark class="cite">The deepest point, at transect T-14, now lies 2.4 m below the design seabed level, compared with 1.9 m in 2023.</mark> ${h("Scour")} reaches within 6 m of the sheet-pile toe on the northern berth, while the southern berth remains stable.</p>
+  <p><span class="editblock"><mark class="cite">The deepest point, at transect T-14, now lies 2.6 m<span class="tcaret"></span> below the design seabed level, compared with 1.9 m in 2023.</mark> ${h("Scour")} reaches within 6 m of the sheet-pile toe on the northern berth, while the southern berth remains stable.</span></p>
   <figure class="fig">${FIGURE}
     <figcaption class="cap"><b>Figure 3.4.</b> Bathymetry along the northern berth, September 2025, with survey transects T-12 to T-16.</figcaption></figure>
   <figcaption class="cap" style="margin-top:14px"><b>Table 3.2.</b> ${h("Scour")} depth by transect, metres below design seabed level.</figcaption>
@@ -245,8 +260,12 @@ const Screens = {
   paperwhite: () => `<div class="window">${sidebar({})}<main class="main">${surface({ cls: "true-page", extra: AGENT() })}</main></div>`,
   menu: () => `<div class="window">${sidebar({ on: "more", menu: DOCK("View") })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
   markup: () => `<div class="window">${sidebar({ on: "more", menu: DOCK("Mark up") })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
-  compress: () => `<div class="window">${sidebar({ on: "more", menu: DOCK("", COMPRESS), edited: true })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
+  compress: () => `<div class="window">${sidebar({ on: "more", menu: DOCK("", COMPRESS) })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
   edited: () => `<div class="window">${sidebar({ edited: true })}<main class="main">${surface({ cls: "show-mark", extra: AGENT() })}</main></div>`,
+  editpages: () => `<div class="window">${sidebar({ menu: DOCK("", EDITDOCK("pages")), edited: true, pg: [32, 140] })}<main class="main">${GRID}</main></div>`,
+  edittext: () => `<div class="window">${sidebar({ menu: DOCK("", EDITDOCK("text")), edited: true })}<main class="main">${surface({ cls: "show-edit", extra: AGENT() })}</main></div>`,
+  saveas: () => `<div class="window">${sidebar({ edited: true })}<main class="main">${surface({ cls: "show-mark", extra: AGENT() })}</main><div class="sheet saveas"><div class="sfield"><label>Save As:</label><span class="sinput">Nordvik Seabed Survey 2025 (edited)</span></div><div class="sfield"><label>Tags:</label><span class="sinput faint"></span></div><div class="sfield"><label>Where:</label><span class="sselect">Reports<i>⌄</i></span></div><div class="sfoot"><span></span><span class="btn ghost">Cancel</span><span class="btn primary">Save</span></div></div></div>`,
+  closeprompt: () => `<div class="window">${sidebar({ edited: true })}<main class="main">${surface({ cls: "show-mark", extra: AGENT() })}</main><div class="sheet alert">${MARK(46)}<b>Do you want to save the changes you made to “Nordvik Seabed Survey 2025”?</b><p>Your changes will be lost if you don't save them.</p><div class="sbtns"><span class="btn ghost">Don't Save</span><span style="flex:1"></span><span class="btn ghost">Cancel</span><span class="btn primary">Save</span></div></div></div>`,
   menufile: () => `${MACBAR("File")}<div class="mdrop" style="left:119px">${menuList("File")}</div><div class="window">${sidebar({})}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
   menumap: () => `<div class="board-map">${MACBAR()}<div class="map">${Object.keys(MENUS).map((n) => `<div class="mapcol"><h4>${n}</h4>${menuList(n)}</div>`).join("")}</div></div>`,
   find: () => `<div class="window">${sidebar({ on: "search", body: FIND })}<main class="main">${surface({ cls: "show-hits", extra: AGENT() })}</main></div>`,

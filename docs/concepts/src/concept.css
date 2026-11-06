@@ -364,3 +364,53 @@ mark { background: transparent; color: inherit; }
 .mapcol .mlist { background: var(--raised); border-radius: 10px; padding: 5px; box-shadow: 0 0 0 .5px var(--hair-strong), 0 8px 24px rgba(0,0,0,.12); }
 .mapcol .mitem { padding: 0 7px; }
 .mapcol .mitem kbd { margin-left: 6px; font-size: 11px; }
+
+/* Edit mode: pages as a grid, controls in the sidebar. */
+.tcaret { display: none; }
+.show-edit .tcaret { display: inline-block; width: 1.5px; height: 14px; background: var(--accent); vertical-align: -2px; margin-left: 1px; }
+.show-edit .editblock { display: block; outline: 1.5px solid var(--accent); outline-offset: 4px; border-radius: 2px; }
+.pagesgrid { overflow: hidden; }
+.tgrid { display: grid; grid-template-columns: repeat(4, 212px); justify-content: center; gap: 26px 28px; padding: 26px 40px; position: relative; }
+.thumbcell { position: relative; text-align: center; }
+.thumbcell em { display: block; font-style: normal; font-size: 11.5px; color: var(--muted); margin-top: 7px; font-variant-numeric: tabular-nums; }
+.tpage { height: 274px; background: var(--page); border-radius: 2px; box-shadow: var(--page-shadow); padding: 24px 22px; display: flex; flex-direction: column; gap: 8px; }
+.tpage i { display: block; width: 60%; height: 6px; background: var(--ink); opacity: .7; margin-bottom: 6px; }
+.tpage b { display: block; height: 2px; background: var(--ink-soft); opacity: .4; flex: none; }
+.tpage u { display: block; height: 70px; flex: none; background: linear-gradient(170deg, #c6e2ee, #3f8cb6); margin: 3px 0; filter: var(--figure-filter); }
+.thumbcell.sel .tpage { box-shadow: 0 0 0 2px var(--accent), var(--page-shadow); }
+.thumbcell.sel em { color: var(--accent); font-weight: 600; }
+.thumbcell.turned .tpage { transform: rotate(90deg) scale(.77); transform-origin: center; }
+.thandles { position: absolute; top: 8px; right: 8px; display: flex; gap: 1px; padding: 2px; border-radius: 8px; background: var(--pill); box-shadow: 0 0 0 .5px var(--hair-strong), 0 3px 10px rgba(0,0,0,.18); color: var(--text); backdrop-filter: blur(12px); }
+.thandles span { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; }
+.dropbar { position: absolute; left: 583px; top: 349px; width: 3px; height: 274px; background: var(--accent); border-radius: 2px; z-index: 4; }
+.dropcard { position: absolute; top: 88px; left: 16px; width: 190px; padding: 9px 12px; border-radius: 9px; background: var(--raised); box-shadow: 0 0 0 1.5px var(--accent), 0 12px 30px rgba(0,0,0,.24); font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+.dropcard b { font-weight: 600; }
+.dropcard span { color: var(--accent); }
+.dhead { display: flex; align-items: center; justify-content: space-between; padding: 1px 1px 7px 9px; }
+.dhead b { font-weight: 620; font-size: 13px; }
+.dhint { padding: 0 9px 6px; font-size: 11.5px; line-height: 1.38; color: var(--muted); }
+.dval { color: var(--muted); font-size: 12px; padding-right: 9px; }
+.dock .seg { margin-bottom: 7px; }
+.dedit { display: flex; align-items: center; justify-content: space-between; min-height: 28px; margin-top: 4px; padding: 0 9px; border-radius: 6px; background: var(--fill); font-weight: 500; font-size: 12.5px; }
+.dedit kbd { font: 11.5px -apple-system, sans-serif; color: var(--faint); }
+
+/* Native save: a dot in the close button, a Save icon by the window controls, and system sheets. */
+.lights.dirty i:first-child { position: relative; }
+.lights.dirty i:first-child::after { content: ""; position: absolute; left: 4px; top: 4px; width: 4px; height: 4px; border-radius: 50%; background: rgba(90,10,6,.75); }
+.lights { margin-right: 6px; }
+.savebtn { color: var(--text); }
+.sheet { position: absolute; left: 50%; transform: translateX(-50%); top: 0; z-index: 30; background: var(--raised); box-shadow: 0 0 0 .5px var(--hair-strong), 0 22px 60px rgba(0,0,0,.34); font-size: 13px; }
+.saveas { width: 520px; padding: 20px 22px 16px; border-radius: 0 0 12px 12px; display: flex; flex-direction: column; gap: 9px; }
+.sfield { display: flex; align-items: center; gap: 9px; }
+.sfield label { width: 60px; text-align: right; color: var(--muted); }
+.sinput { flex: 1; height: 26px; padding: 0 9px; display: flex; align-items: center; border-radius: 6px; box-shadow: 0 0 0 1.5px var(--accent); background: var(--canvas); }
+.sinput.faint { box-shadow: 0 0 0 .5px var(--hair-strong); }
+.sselect { flex: 1; height: 26px; padding: 0 9px; display: flex; align-items: center; justify-content: space-between; border-radius: 6px; background: var(--fill-strong); }
+.sselect i { font-style: normal; color: var(--muted); }
+.sfoot { display: flex; gap: 8px; margin-top: 8px; }
+.sfoot > span:first-child { flex: 1; }
+.alert { top: 130px; width: 300px; padding: 20px 18px 16px; border-radius: 14px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; }
+.alert b { font-weight: 650; line-height: 1.32; margin-top: 4px; }
+.alert p { font-size: 12px; color: var(--muted); }
+.sbtns { display: flex; gap: 6px; width: 100%; margin-top: 8px; }
+.sbtns .btn { padding: 0 10px; font-size: 12.5px; }
