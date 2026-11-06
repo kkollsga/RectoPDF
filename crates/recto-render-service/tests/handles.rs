@@ -89,6 +89,7 @@ fn config(mode: &str) -> ServiceConfig {
     ServiceConfig {
         worker_exe: std::env::current_exe().unwrap(),
         pdfium_lib: "/nonexistent".into(),
+        heavy_slot: recto_render_service::HeavySlot::new(),
         extra_env: vec![("RECTO_FAKE".into(), mode.into())],
         replace_args: Some(["--exact", "fake_worker", "--nocapture", "--test-threads=1"].into_iter().map(OsString::from).collect()),
     }

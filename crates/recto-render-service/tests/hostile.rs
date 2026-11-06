@@ -186,6 +186,7 @@ fn config(mode: &str) -> ServiceConfig {
     ServiceConfig {
         worker_exe: std::env::current_exe().unwrap(),
         pdfium_lib: "/nonexistent".into(),
+        heavy_slot: recto_render_service::HeavySlot::new(),
         extra_env: vec![("RECTO_FAKE".into(), mode.into())],
         replace_args: Some(["--exact", "fake_worker", "--nocapture", "--test-threads=1"].into_iter().map(OsString::from).collect()),
     }
@@ -215,7 +216,7 @@ fn tile_failure(mode: &str) -> RenderFailure {
 }
 
 fn is_rejected(failure: RenderFailure) -> bool {
-    matches!(failure, RenderFailure::PageFailed { reason: KillReason::Rejected(_), .. })
+    matches!(failure, RenderFailure::PageFailed { reason: KillReason::Rejected(_), .. } | RenderFailure::PageReadFailed { reason: KillReason::Rejected(_), .. })
 }
 
 /// Failure: the stand-in itself is broken, so every rejection below proves nothing. A well-behaved fake must pass.
@@ -417,17 +418,17 @@ fn a_refusal_at_open_is_remembered_too() {
     assert_eq!(doc.stats().spawns, 1);
 }
 
-/// Failure: the memory limit trusts the worker's word, or there's no limit: this worker says nothing and only touches memory. The host must
-/// see it from outside and stop it, without PDFium's help.
+/// Failure: the memory limit trusts the worker's word, or there's no limit: this worker says nothing and only touches memory. The host must see it from outside and
+/// stop it, at each limit in turn, without PDFium's help.
 #[test]
 fn a_worker_that_grows_is_killed_at_the_limit_from_outside() {
-    let limit = 64 * 1024 * 1024;
-    let (mut doc, _file) = doc("leak", Policy { memory_limit_bytes: limit, ..policy() });
+    let (limit, heavy) = (32 * 1024 * 1024, 64 * 1024 * 1024);
+    let (mut doc, _file) = doc("leak", Policy { memory_limit_bytes: limit, heavy_limit_bytes: heavy, heavy_min_free_percent: 0, ..policy() });
     assert_eq!(doc.render_tile(&request(), &surface()).unwrap_err(), RenderFailure::PageFailed { page: 0, reason: KillReason::MemoryLimit });
     let stats = doc.stats();
-    assert_eq!(stats.memory_kills, 1);
-    assert!(stats.peak_footprint_bytes > limit, "killed before it reached the limit: {}", stats.peak_footprint_bytes);
-    assert!(stats.peak_footprint_bytes < limit + 64 * 1024 * 1024, "overshoot too large: {}", stats.peak_footprint_bytes);
+    assert_eq!(stats.memory_kills, 3, "the normal limit, the larger one, and the lower-resolution try");
+    assert!(stats.peak_footprint_bytes > heavy, "killed before it reached the limit: {}", stats.peak_footprint_bytes);
+    assert!(stats.peak_footprint_bytes < heavy + 64 * 1024 * 1024, "overshoot too large: {}", stats.peak_footprint_bytes);
 }
 
 /// Failure: retirement depends on the worker reporting its own size, so a compromised one never retires. It's measured from outside.

@@ -134,6 +134,10 @@ pub fn process_memory(_pid: u32) -> Option<ProcessMemory> {
     None
 }
 
+pub(crate) fn memory_free_percent() -> Option<u32> {
+    None
+}
+
 pub fn harden_this_process() {}
 
 pub fn exit_now(code: i32) -> ! {

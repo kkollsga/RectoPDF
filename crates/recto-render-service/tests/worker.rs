@@ -76,11 +76,11 @@ fn a_worker_killed_mid_page_is_replaced() {
     assert_eq!(doc.stats().crashes, 1);
 }
 
-/// Failure: a page that stopped a worker is tried again on every scroll, each try costing seconds and hundreds of MiB.
+/// Failure: a page that stopped every step is tried again on every scroll, each try costing seconds and hundreds of MiB.
 #[test]
-fn a_page_that_stopped_a_fresh_worker_isnt_retried_until_asked() {
+fn a_page_that_fails_all_the_way_down_isnt_retried_until_asked() {
     let file = TempPdf::new("again.pdf", &form_bomb());
-    let policy = Policy { memory_limit_bytes: 64 * 1024 * 1024, ..Policy::default() };
+    let policy = Policy { memory_limit_bytes: 64 * 1024 * 1024, heavy_limit_bytes: 128 * 1024 * 1024, heavy_min_free_percent: 0, ..Policy::default() };
     let mut doc = renderer(&file.0, policy);
     let surface = tile_surface();
     let first = doc.render_tile(&tile_request(0, 0), &surface).unwrap_err();
@@ -90,7 +90,7 @@ fn a_page_that_stopped_a_fresh_worker_isnt_retried_until_asked() {
     assert_eq!(doc.stats().spawns, spawns, "remembering it must not start a worker");
     doc.forget_failures();
     assert_eq!(doc.render_tile(&tile_request(0, 0), &surface).unwrap_err(), first, "tried again once asked");
-    assert_eq!(doc.stats().spawns, spawns + 1);
+    assert!(doc.stats().spawns > spawns);
 }
 
 /// Failure: a job that's already stale still starts drawing, so fast scrolling queues up work nobody will see.
@@ -247,17 +247,22 @@ fn page_characters_come_through_with_the_check_stated() {
 #[test]
 fn a_page_that_cant_even_load_is_refused_once_and_remembered() {
     let file = TempPdf::new("bomb.pdf", &form_bomb());
-    let policy = Policy { memory_limit_bytes: 64 * 1024 * 1024, ..Policy::default() };
+    let policy = Policy { memory_limit_bytes: 64 * 1024 * 1024, heavy_limit_bytes: 128 * 1024 * 1024, heavy_min_free_percent: 0, ..Policy::default() };
     let mut doc = renderer(&file.0, policy);
     // The ordinary page: checked.
     assert!(doc.page_characters(1, false, true).unwrap().hidden_checked);
-    let expected = RenderFailure::PageFailed { page: 0, reason: KillReason::MemoryLimit };
+    let expected = RenderFailure::PageReadFailed { page: 0, reason: KillReason::MemoryLimit };
     assert_eq!(doc.page_characters(0, false, true).unwrap_err(), expected);
     let spawns = doc.stats().spawns;
     assert_eq!(doc.page_characters(0, false, true).unwrap_err(), expected);
     assert_eq!(doc.page_characters(0, false, false).unwrap_err(), expected);
-    assert_eq!(doc.render_tile(&tile_request(0, 0), &tile_surface()).unwrap_err(), expected);
     assert_eq!(doc.stats().spawns, spawns, "each of those should have been answered from memory");
+    // Drawing has its own steps, and once they've failed they're remembered too.
+    let drawn = RenderFailure::PageFailed { page: 0, reason: KillReason::MemoryLimit };
+    assert_eq!(doc.render_tile(&tile_request(0, 0), &tile_surface()).unwrap_err(), drawn);
+    let spawns = doc.stats().spawns;
+    assert_eq!(doc.render_tile(&tile_request(0, 0), &tile_surface()).unwrap_err(), drawn);
+    assert_eq!(doc.stats().spawns, spawns);
 }
 
 /// Failure: a worker that left stays a zombie until the document is next touched. Nothing calls the document here, so only the reaper can have collected it.

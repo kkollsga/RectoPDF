@@ -1,13 +1,17 @@
 //! Shared by this crate's test binaries.
 #![allow(dead_code)]
 
-use recto_render_service::{DocRenderer, Policy, ServiceConfig, Surface};
+use recto_render_service::{DocRenderer, HeavySlot, Policy, ServiceConfig, Surface};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// The real worker. Failing here means `tools/pdfium.sh` hasn't run: a plain failure, because a skipped renderer test looks like a pass.
 pub fn real_config() -> ServiceConfig {
-    ServiceConfig::for_worker(env!("CARGO_BIN_EXE_recto-render-service").into()).unwrap_or_else(|failure| panic!("{}. Run tools/pdfium.sh", failure.message()))
+    let mut config = ServiceConfig::for_worker(env!("CARGO_BIN_EXE_recto-render-service").into())
+        .unwrap_or_else(|failure| panic!("{}. Run tools/pdfium.sh", failure.message()));
+    // Each test's heavy worker is its own, so tests running side by side in one process can't change each other's results.
+    config.heavy_slot = HeavySlot::new();
+    config
 }
 
 pub fn renderer(path: &Path, policy: Policy) -> DocRenderer {

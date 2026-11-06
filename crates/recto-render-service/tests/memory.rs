@@ -15,13 +15,14 @@ fn tile(page: u32) -> TileRequest {
     TileRequest { page, rect: TileRect { x: 0, y: 0, width: 512, height: 512 }, scale: 2.0, stride: 2048, generation: 0 }
 }
 
-/// Failure: the bomb the spike found, which took PDFium to 4 GiB in 6.3 s, runs past the limit. Asserted against the default limit, on the
-/// bound the host promises, and the rest of the file must still draw.
+/// Failure: the bomb the spike found, which took PDFium to 4 GiB in 6.3 s, runs past any limit, or the sequence lets a hostile file take long. Every step of the
+/// sequence fails for this page, so this runs them all against the default limits: it must end, within the larger limit, and the rest of the file must still draw.
 #[test]
-fn the_default_limit_stops_a_form_bomb() {
+fn the_memory_sequence_ends_a_form_bomb_quickly() {
     let file = TempPdf::new("bomb.pdf", &form_bomb());
-    let policy = Policy::default();
-    let limit = policy.memory_limit_bytes;
+    // Whether this Mac has memory free shouldn't decide what this test runs.
+    let policy = Policy { heavy_min_free_percent: 0, ..Policy::default() };
+    let (normal, heavy) = (policy.memory_limit_bytes, policy.heavy_limit_bytes);
     let mut doc = renderer(&file.0, policy);
     let surface = tile_surface();
     let started = std::time::Instant::now();
@@ -29,10 +30,19 @@ fn the_default_limit_stops_a_form_bomb() {
     let elapsed = started.elapsed();
     assert_eq!(failure, RenderFailure::PageFailed { page: 0, reason: KillReason::MemoryLimit });
     let stats = doc.stats();
-    assert_eq!(stats.memory_kills, 1);
-    assert!(stats.peak_footprint_bytes > limit, "it never reached the limit: {} MiB", stats.peak_footprint_bytes / MIB);
-    assert!(stats.peak_footprint_bytes < limit + 64 * MIB, "overshoot: peak {} MiB against a limit of {} MiB", stats.peak_footprint_bytes / MIB, limit / MIB);
-    eprintln!("bomb: stopped at {} MiB after {elapsed:?}", stats.peak_footprint_bytes / MIB);
+    assert_eq!(stats.memory_kills, 3, "the normal limit, the larger limit, and the lower resolution, once each");
+    assert_eq!(stats.heavy_retries, 1);
+    assert!(stats.peak_footprint_bytes > normal, "it never passed the normal limit: {} MiB", stats.peak_footprint_bytes / MIB);
+    assert!(stats.peak_footprint_bytes < heavy + 64 * MIB, "overshoot: peak {} MiB against a limit of {} MiB", stats.peak_footprint_bytes / MIB, heavy / MIB);
+    eprintln!("bomb: all steps failed by {elapsed:?}, peak {} MiB", stats.peak_footprint_bytes / MIB);
+    // A bound for a hung machine, far above any real run, and not one machine's time.
+    assert!(elapsed < Duration::from_secs(60), "a hostile file took {elapsed:?} to end");
+    assert_eq!(doc.page_draw_state(0), recto_render_service::PageDrawState::Failed(KillReason::MemoryLimit));
+    let spawns = doc.stats().spawns;
+    let again = std::time::Instant::now();
+    assert_eq!(doc.render_tile(&tile(0), &surface).unwrap_err(), failure);
+    assert_eq!(doc.stats().spawns, spawns, "it ran the bomb again");
+    assert!(again.elapsed() < elapsed / 10 + Duration::from_millis(50), "asking again should cost next to nothing");
     assert!(matches!(doc.render_tile(&tile(1), &surface).unwrap(), TileResult::Done(_)), "the ordinary page after the bomb still draws");
 }
 

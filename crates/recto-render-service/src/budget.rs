@@ -1,14 +1,15 @@
 //! `budget render`: what a worker costs, measured from outside on the real path. Also the shared way to draw a whole page in strips, so a
 //! large page never needs a whole-page buffer.
 
-use crate::host::{DocRenderer, RenderFailure, TileRequest, TileResult};
+use crate::host::{DocRenderer, LowResWhy, RenderFailure, TileRequest, TileResult};
 use recto_platform::isolate::SharedMemory;
 use recto_proto::{BYTES_PER_PIXEL, TILE_EDGE, TileKind, TileRect, device_size};
 use std::time::{Duration, Instant};
 
-/// The most one strip of a page may hold, from the platform report's 64 MiB per decoded image (§2.6). A letter page at 2x is 7.7 MiB; the largest real page at
-/// 2x is about 69 MiB, which is two strips.
-pub const STRIP_MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// The most one strip of a page may hold. Whole-page drawing costs more memory the larger each piece is, and takes longer the smaller it is. Measured on the USGS map at
+/// 4x: 64 MiB strips peak at 613 MiB in 1.5 s, 16 MiB at 450 in 3.4 s, 8 MiB at 423 in 5.6 s, 1 MiB at 405 in 38 s. At 2x, 8 MiB is 371 MiB in 0.7 s, no slower than
+/// 64 MiB. A letter page at 2x is 7.7 MiB, so an ordinary page stays one strip. Memory first, so 8 MiB, which keeps every page measured under the normal limit.
+pub const STRIP_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 /// What drawing one whole page may cost. Without these, a tiny PDF asking for a huge scale costs minutes and gigabytes, and each strip staying under its own
 /// deadline doesn't stop that.
@@ -38,16 +39,66 @@ pub fn page_device_size(doc: &mut DocRenderer, page: u32, scale: f32, caps: &Out
     Ok((width, height))
 }
 
-/// Draws a whole page of the given device size into `surface`, in strips no larger than [`STRIP_MAX_BYTES`], calling `each` with every strip's rows. Grows
-/// `surface` once if it's too small. Stops at `deadline`. Used by `render` and `budget render`.
-pub fn for_each_strip(
+/// What [`draw_whole_page`] hands over as it goes.
+pub enum PageEvent<'a> {
+    /// A picture of this size starts here. A second one means the first is abandoned: the page couldn't be drawn at the scale asked for.
+    Begin { width: u32, height: u32, scale: f32, low_res: Option<LowResWhy> },
+    /// The next rows, top to bottom.
+    Rows { memory: &'a SharedMemory, rect: TileRect, stride: u32, kind: TileKind },
+}
+
+/// How a whole page came out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PageDrawn {
+    pub width: u32,
+    pub height: u32,
+    pub scale: f32,
+    /// Set if this is a lower-resolution version, and why.
+    pub low_res: Option<LowResWhy>,
+    pub render_us: u64,
+}
+
+/// Draws a whole page in strips no larger than [`STRIP_MAX_BYTES`], so it stays under the same limits as tiles. What `render` uses, and what print and snapshot will.
+/// If the page can only be drawn at a lower resolution, it starts again at that scale and says so, rather than pasting one strip among others.
+pub fn draw_whole_page(
     doc: &mut DocRenderer,
+    page: u32,
+    scale: f32,
+    caps: &OutputCaps,
+    surface: &mut Option<SharedMemory>,
+    mut sink: impl FnMut(PageEvent<'_>) -> Result<(), RenderFailure>,
+) -> Result<PageDrawn, RenderFailure> {
+    let deadline = Instant::now() + caps.max_time;
+    let (width, height) = page_device_size(doc, page, scale, caps)?;
+    sink(PageEvent::Begin { width, height, scale, low_res: None })?;
+    match strips(doc, DocRenderer::render_exact, page, scale, (width, height), deadline, surface, &mut sink) {
+        Ok(render_us) => Ok(PageDrawn { width, height, scale, low_res: None, render_us }),
+        Err(RenderFailure::LowResOnly { scale: lower, why, .. }) => {
+            // Scaled from the same answer, not a new one: a hostile worker's second answer needn't match its first.
+            let (width, height) = device_size_from(width, height, scale, lower)?;
+            sink(PageEvent::Begin { width, height, scale: lower, low_res: Some(why) })?;
+            let render_us = strips(doc, DocRenderer::render_low_res_pass, page, lower, (width, height), deadline, surface, &mut sink)?;
+            Ok(PageDrawn { width, height, scale: lower, low_res: Some(why), render_us })
+        }
+        Err(failure) => Err(failure),
+    }
+}
+
+fn device_size_from(width: u32, height: u32, scale: f32, lower: f32) -> Result<(u32, u32), RenderFailure> {
+    let shrink = |edge: u32| ((f64::from(edge) * f64::from(lower) / f64::from(scale)).round() as u32).max(1);
+    Ok((shrink(width), shrink(height)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn strips(
+    doc: &mut DocRenderer,
+    draw: fn(&mut DocRenderer, &TileRequest, &SharedMemory) -> Result<TileResult, RenderFailure>,
     page: u32,
     scale: f32,
     (width, height): (u32, u32),
     deadline: Instant,
     surface: &mut Option<SharedMemory>,
-    mut each: impl FnMut(&SharedMemory, TileRect, u32, TileKind) -> Result<(), RenderFailure>,
+    sink: &mut impl FnMut(PageEvent<'_>) -> Result<(), RenderFailure>,
 ) -> Result<u64, RenderFailure> {
     let stride = width.checked_mul(BYTES_PER_PIXEL).ok_or(RenderFailure::TooLargeAtThisScale)?;
     let strip_rows = (STRIP_MAX_BYTES / u64::from(stride)).clamp(1, u64::from(recto_proto::MAX_TILE_EDGE)) as u32;
@@ -63,10 +114,10 @@ pub fn for_each_strip(
             return Err(RenderFailure::TookTooLong);
         }
         let rect = TileRect { x: 0, y, width, height: strip_rows.min(height - y) };
-        match doc.render_tile(&TileRequest { page, rect, scale, stride, generation: 0 }, memory)? {
+        match draw(doc, &TileRequest { page, rect, scale, stride, generation: 0 }, memory)? {
             TileResult::Done(tile) => {
                 render_us += u64::from(tile.render_us);
-                each(memory, rect, stride, tile.kind)?;
+                sink(PageEvent::Rows { memory, rect, stride, kind: tile.kind })?;
             }
             TileResult::Cancelled { .. } => return Err(RenderFailure::Unavailable),
         }
@@ -116,6 +167,9 @@ pub struct BudgetReport {
     pub surface_bytes: u64,
     pub pages_drawn: u32,
     pub pages_failed: u32,
+    /// Pages that came out at a lower resolution, in whole or in part.
+    pub pages_low_res: u32,
+    pub heavy_retries: u32,
     pub spawns: u32,
     pub retirements: u32,
     pub memory_kills: u32,
@@ -149,7 +203,17 @@ pub fn measure_budget(doc: &mut DocRenderer, options: BudgetOptions) -> Result<B
             doc.kill_worker();
         }
         let started = Instant::now();
-        let drawn = if options.tiles { draw_tiles(doc, page, options.scale, &mut surface, &mut report) } else { draw_whole(doc, page, options.scale, &mut surface, &mut report) };
+        let low_res_before = doc.stats().low_res_tiles;
+        let mut whole_low_res = false;
+        let drawn = if options.tiles {
+            draw_tiles(doc, page, options.scale, &mut surface, &mut report)
+        } else {
+            draw_whole(doc, page, options.scale, &mut surface, &mut report).map(|drawn| {
+                whole_low_res = drawn.low_res.is_some();
+                drawn.render_us
+            })
+        };
+        report.pages_low_res += u32::from(whole_low_res || doc.stats().low_res_tiles > low_res_before);
         let micros = started.elapsed().as_micros() as u64;
         let footprint_after_bytes = doc.worker_footprint();
         report.last_footprint_bytes = footprint_after_bytes.unwrap_or(report.last_footprint_bytes);
@@ -170,6 +234,7 @@ pub fn measure_budget(doc: &mut DocRenderer, options: BudgetOptions) -> Result<B
     report.peak_footprint_bytes = stats.peak_footprint_bytes;
     report.spawns = stats.spawns;
     report.retirements = stats.retirements;
+    report.heavy_retries = stats.heavy_retries;
     report.memory_kills = stats.memory_kills;
     report.deadline_kills = stats.deadline_kills;
     report.crashes = stats.crashes;
@@ -184,11 +249,11 @@ fn count(report: &mut BudgetReport, kind: TileKind) {
     }
 }
 
-fn draw_whole(doc: &mut DocRenderer, page: u32, scale: f32, surface: &mut Option<SharedMemory>, report: &mut BudgetReport) -> Result<u64, RenderFailure> {
-    let caps = OutputCaps::default();
-    let size = page_device_size(doc, page, scale, &caps)?;
-    for_each_strip(doc, page, scale, size, Instant::now() + caps.max_time, surface, |_, _, _, kind| {
-        count(report, kind);
+fn draw_whole(doc: &mut DocRenderer, page: u32, scale: f32, surface: &mut Option<SharedMemory>, report: &mut BudgetReport) -> Result<PageDrawn, RenderFailure> {
+    draw_whole_page(doc, page, scale, &OutputCaps::default(), surface, |event| {
+        if let PageEvent::Rows { kind, .. } = event {
+            count(report, kind);
+        }
         Ok(())
     })
 }

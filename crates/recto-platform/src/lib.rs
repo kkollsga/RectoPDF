@@ -67,6 +67,12 @@ pub struct ProcessMemory {
     pub peak_footprint_bytes: u64,
 }
 
+/// How much of this Mac's memory is free, as a percentage: `kern.memorystatus_level`, the kernel's own measure of what it could hand out. `None` where it isn't
+/// implemented or can't be read, which callers must take as "don't know". Only the reading lives here; what to do about it belongs to the caller.
+pub fn memory_free_percent() -> Option<u32> {
+    isolate::memory_free_percent()
+}
+
 #[cfg_attr(target_os = "macos", path = "isolate_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "isolate_stub.rs")]
 pub mod isolate;

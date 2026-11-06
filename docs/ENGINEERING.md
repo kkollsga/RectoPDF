@@ -58,13 +58,20 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 
 | What | Default | Why |
 |---|---|---|
-| Hard memory limit | 512 MiB footprint, read every 5 ms during a job | The worst real page reaches 493 MiB. macOS has no OS limit for this: `setrlimit` refuses `RLIMIT_AS`, `RLIMIT_DATA` and `RLIMIT_RSS` with `EINVAL` |
+| Hard memory limit | 512 MiB footprint, read every 5 ms during a job, then the sequence below | The worst real page reaches 493 MiB. macOS has no OS limit for this: `setrlimit` refuses `RLIMIT_AS`, `RLIMIT_DATA` and `RLIMIT_RSS` with `EINVAL` |
 | Page deadline, with kill | 5 s | Platform §2.6. The slowest real page at 2x took 939 ms |
 | Retirement | 64 MiB after a job; the worker goes before its next job for another page | Only exit returns PDFium's memory (spike §6). Tiles of one page share a worker: retiring between them cost 72 respawns and 14 s on the USGS map |
 | Cancel by generation | Kill 90 ms after a job goes stale, if it hasn't returned | A stale render is gone within 100 ms, by return or kill. PDFium's pause callback runs only between objects |
 | Idle exit | 30 s after the last job | |
 
-A page that stops a worker with history gets one more try in a fresh one, because what stopped it may be what earlier pages left behind. A page that stops a fresh worker is remembered and refused until `forget_failures`. A worker the host doesn't watch would be free to grow, so during a job the worker also runs a small thread of its own that checks its footprint, its deadline and whether the host is still there. That thread starts with the first job and parks between jobs.
+**The memory sequence** (owner, 2026-11-06), all decided in `DocRenderer`, with only the reading of free memory in `recto-platform`:
+
+1. **512 MiB.** A worker with history gets one more try in a fresh one, because what stopped it may be what earlier pages left behind.
+2. **That page alone at up to 1 GiB,** if `kern.memorystatus_level` is at least 30 and no other page has the one heavy slot. 30% is about 4.8 GiB free on 16 GB, and 2.4 GiB on 8 GB, over twice what the retry can use. The slot is per process, taken without waiting, and goes with the worker, so the worst case stays near 1 GiB and nothing blocks on it. The heavy worker goes before any other page.
+3. **A lower-resolution version at a quarter of the scale,** under the normal limit, reported in `Tile::low_res` with its scale, rectangle and reason. A page lacking only memory or the slot may go sharp later (`may_clear`); one past 1 GiB won't.
+4. **`PageFailed`,** with words saying even that couldn't be drawn. Remembered with every step before it, so a hostile page runs each step once and then costs nothing. `forget_failures` clears it. `page_draw_state` gives this to a view model.
+
+Whole-page drawing (`recto render`, later print and snapshot) goes in strips under the same limits and the same sequence. It can't paste one low-resolution strip among sharp ones, so it starts the page again at the lower scale and says so. A worker the host doesn't watch would be free to grow, so during a job the worker also runs a small thread of its own that checks its footprint, its deadline and whether the host is still there. That thread starts with the first job and parks between jobs.
 
 **Between jobs and at exit.** One reaper thread in the host, alive only while a worker is, sleeps in `kevent`. It collects a worker the moment it ends, and at most once per `idle_exit + idle_grace` (35 s) per live worker it checks the idle rule: past its time or its memory limit, the worker is killed. That's one wake-up per 35 s per live worker, none with no worker, and no thread or handle left behind. A compromised worker could still grow unseen between those wake-ups: closing that needs the sandbox's memory limit. Killing never blocks: a process stuck in a read from a dead network volume can't die until the read returns, so the host signals it and moves on, and the reaper collects it whenever that happens. This wasn't tested against a real dead volume; the property tested is that nothing waits.
 

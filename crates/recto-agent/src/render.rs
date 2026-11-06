@@ -4,12 +4,11 @@
 use crate::{AgentError, exit};
 use recto_index::{hidden_report, normalize};
 use recto_proto::{BYTES_PER_PIXEL, TileKind};
-use recto_render_service::{BUDGET_MAX_TIME, BudgetOptions, DocRenderer, OutputCaps, Policy, RenderFailure, ServiceConfig, for_each_strip, measure_budget, page_device_size};
+use recto_render_service::{BUDGET_MAX_TIME, BudgetOptions, DocRenderer, OutputCaps, PageDrawn, PageEvent, Policy, RenderFailure, ServiceConfig, draw_whole_page, measure_budget};
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Instant;
 
 mod png;
 
@@ -82,6 +81,10 @@ fn output_exists() -> AgentError {
 }
 
 fn render_with_caps(path: &Path, page: u32, scale: f32, out: &Path, caps: &OutputCaps) -> Result<Value, AgentError> {
+    render_with(ServiceConfig::discover()?, path, page, scale, out, caps)
+}
+
+fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &Path, caps: &OutputCaps) -> Result<Value, AgentError> {
     let page = page_index(page)?;
     // Only ever a new picture. This also keeps `out` off the PDF itself, because only the append writer may change one.
     if out.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("png")) {
@@ -94,10 +97,8 @@ fn render_with_caps(path: &Path, page: u32, scale: f32, out: &Path, caps: &Outpu
     if std::fs::symlink_metadata(out).is_ok() {
         return Err(output_exists());
     }
-    let mut doc = open(path, Policy::default())?;
-    let size = page_device_size(&mut doc, page, scale, caps)?;
-    let (temp, file) = OwnTemp::create(out)?;
-    let kind = write_page(&mut doc, page, scale, size, file, caps)?;
+    let mut doc = DocRenderer::new(path, None, config, Policy::default())?;
+    let (temp, drawn, kind) = write_page(&mut doc, page, scale, out, caps)?;
     // In one step and never over anything: a stopped renderer leaves no half a picture under the real name, and a file that appeared meanwhile stays as it was.
     match std::fs::hard_link(&temp.path, out) {
         Ok(()) => {}
@@ -107,43 +108,64 @@ fn render_with_caps(path: &Path, page: u32, scale: f32, out: &Path, caps: &Outpu
     drop(temp);
     Ok(json!({
         "page": page + 1,
-        "scale": scale,
+        "asked_scale": scale,
+        "scale": drawn.scale,
         "out": out,
-        "width": size.0,
-        "height": size.1,
+        "width": drawn.width,
+        "height": drawn.height,
         "bytes": std::fs::metadata(out).map(|meta| meta.len()).ok(),
         "kind": kind,
+        "low_res": drawn.low_res.map(|why| json!({ "why": why.code(), "message": why.message(), "may_clear": why.may_clear() })),
     }))
 }
 
-fn write_page(doc: &mut DocRenderer, page: u32, scale: f32, (width, height): (u32, u32), file: File, caps: &OutputCaps) -> Result<&'static str, AgentError> {
+/// Writes the page to a new temp file, starting a new one if the page comes down to a lower resolution. Returns the file, ready to publish.
+fn write_page(doc: &mut DocRenderer, page: u32, scale: f32, out: &Path, caps: &OutputCaps) -> Result<(OwnTemp, PageDrawn, &'static str), AgentError> {
     let write_failed = || AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED);
-    let mut writer = png::RgbWriter::create(file, width, height, caps.max_bytes).map_err(|_| write_failed())?;
     let mut surface = None;
     let mut kind = None;
-    let mut row = vec![0u8; width as usize * BYTES_PER_PIXEL as usize];
-    let mut write_error = None;
-    let deadline = Instant::now() + caps.max_time;
-    for_each_strip(doc, page, scale, (width, height), deadline, &mut surface, |memory, rect, stride, strip_kind| {
-        kind = Some(merge_kinds(kind, strip_kind));
-        for y in 0..rect.height as usize {
-            // A copy out, never a look in place: the worker still holds this memory, and it isn't trusted.
-            if !memory.copy_out(y * stride as usize, &mut row) {
-                return Err(RenderFailure::Unavailable);
-            }
-            if let Err(error) = writer.write_bgrx_row(&row) {
-                write_error = Some(error);
-                return Err(RenderFailure::Unavailable);
+    let mut picture: Option<(OwnTemp, png::RgbWriter, Vec<u8>)> = None;
+    let mut sink_error = None;
+    let drawn = draw_whole_page(doc, page, scale, caps, &mut surface, |event| match event {
+        PageEvent::Begin { width, height, .. } => {
+            // Dropping any earlier picture deletes its temp file.
+            picture = None;
+            kind = None;
+            let started = OwnTemp::create(out).and_then(|(temp, file)| {
+                let writer = png::RgbWriter::create(file, width, height, caps.max_bytes).map_err(|_| write_failed())?;
+                Ok((temp, writer, vec![0u8; width as usize * BYTES_PER_PIXEL as usize]))
+            });
+            match started {
+                Ok(started) => {
+                    picture = Some(started);
+                    Ok(())
+                }
+                Err(error) => {
+                    sink_error = Some(error);
+                    Err(RenderFailure::Unavailable)
+                }
             }
         }
-        Ok(())
+        PageEvent::Rows { memory, rect, stride, kind: strip_kind } => {
+            kind = Some(merge_kinds(kind, strip_kind));
+            let Some((_, writer, row)) = picture.as_mut() else { return Err(RenderFailure::Unavailable) };
+            for y in 0..rect.height as usize {
+                // A copy out, never a look in place: the worker still holds this memory, and it isn't trusted.
+                if !memory.copy_out(y * stride as usize, row) {
+                    return Err(RenderFailure::Unavailable);
+                }
+                if let Err(error) = writer.write_bgrx_row(row) {
+                    sink_error = Some(write_error_to_agent(&error));
+                    return Err(RenderFailure::Unavailable);
+                }
+            }
+            Ok(())
+        }
     })
-    .map_err(|failure| match &write_error {
-        Some(error) => write_error_to_agent(error),
-        None => failure.into(),
-    })?;
+    .map_err(|failure| sink_error.take().unwrap_or_else(|| failure.into()))?;
+    let (temp, writer, _) = picture.ok_or_else(write_failed)?;
     writer.finish().map_err(|error| write_error_to_agent(&error))?;
-    Ok(kind.map_or("blank", kind_name))
+    Ok((temp, drawn, kind.map_or("blank", kind_name)))
 }
 
 fn write_error_to_agent(error: &std::io::Error) -> AgentError {
@@ -219,6 +241,8 @@ pub(crate) fn budget(path: &Path, args: &BudgetArgs) -> Result<Value, AgentError
     let mut policy = Policy::default();
     if let Some(limit) = args.limit_mib {
         policy.memory_limit_bytes = u64::from(limit.clamp(1, MAX_LIMIT_MIB)) * MIB;
+        // To measure what exactly this limit does, nothing rescues a page from it.
+        policy.heavy_limit_bytes = 0;
     }
     if let Some(retire) = args.retire_mib {
         policy.retire_bytes = u64::from(retire.clamp(1, MAX_LIMIT_MIB)) * MIB;
@@ -248,6 +272,8 @@ pub(crate) fn budget(path: &Path, args: &BudgetArgs) -> Result<Value, AgentError
         "surface_bytes": report.surface_bytes,
         "pages_drawn": report.pages_drawn,
         "pages_failed": report.pages_failed,
+        "pages_low_res": report.pages_low_res,
+        "heavy_retries": report.heavy_retries,
         "stopped_early": report.stopped_early,
         "spawns": report.spawns,
         "retirements": report.retirements,
@@ -273,7 +299,7 @@ pub(crate) fn budget(path: &Path, args: &BudgetArgs) -> Result<Value, AgentError
 mod tests {
     use super::*;
     use recto_testpdf::{Page, TempPdf, busy_page, pages, text_lines};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     fn doc() -> TempPdf {
         TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["Words"]))]))
@@ -367,6 +393,68 @@ mod tests {
         assert_eq!(render(&file.0, 1, 64.0, &out).unwrap_err().code, "too_large_at_this_scale", "wider than a strip can be");
         assert!(started.elapsed() < Duration::from_secs(30), "it should refuse from the size alone");
         assert!(!out.exists());
+    }
+
+    /// Not a test: a stand-in worker in which page 1 fits only at a lower resolution. Does nothing unless started as one.
+    #[test]
+    fn fake_worker() {
+        use recto_platform::isolate::{self, Channel};
+        use recto_proto::{self as proto, Kind, PageSize, RenderJob, TileReply, TileStatus};
+        use recto_render_service::transport::{FrameReader, send_all};
+        if std::env::var("RECTO_FAKE").is_err() {
+            return;
+        }
+        let channel = Channel::inherited().unwrap();
+        send_all(&channel, &proto::encode_hello(std::process::id()), &[]).unwrap();
+        let mut reader = FrameReader::default();
+        let mut kept = Vec::new();
+        loop {
+            let Ok(frame) = reader.read_blocking(&channel) else { isolate::exit_now(0) };
+            let reply = match frame.kind {
+                Kind::Open => proto::encode_opened(1),
+                Kind::SizeRequest => {
+                    let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
+                    PageSize { job_id, width: 612.0, height: 792.0 }.encode()
+                }
+                _ => {
+                    let job = RenderJob::decode(&frame.payload).unwrap();
+                    if job.scale >= 1.0 {
+                        loop {
+                            kept.push(vec![1u8; 8 * 1024 * 1024]);
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    }
+                    let status = TileStatus::Done(TileKind::Colour);
+                    TileReply { generation: job.generation, job_id: job.job_id, width: job.rect.width, height: job.rect.height, stride: job.stride, status, render_us: 1 }.encode()
+                }
+            };
+            send_all(&channel, &reply, &[]).unwrap();
+        }
+    }
+
+    /// Failure: a page past every limit comes out of `recto render` as a smaller picture with nothing saying so, and an agent takes it for what it asked for. And since only
+    /// the picture that finished may remain, the abandoned one must leave no file behind.
+    #[test]
+    fn a_lower_resolution_picture_says_so() {
+        let file = doc();
+        let before = folder_entries(&file);
+        let out = file.0.with_file_name("low.png");
+        let config = ServiceConfig {
+            worker_exe: std::env::current_exe().unwrap(),
+            pdfium_lib: "/nonexistent".into(),
+            heavy_slot: recto_render_service::HeavySlot::new(),
+            extra_env: vec![("RECTO_FAKE".into(), "1".into())],
+            replace_args: Some(["--exact", "render::tests::fake_worker", "--nocapture", "--test-threads=1"].into_iter().map(Into::into).collect()),
+        };
+        let reply = render_with(config, &file.0, 1, 2.0, &out, &OutputCaps::default()).unwrap();
+        assert_eq!(reply["asked_scale"], 2.0);
+        assert_eq!(reply["scale"], 0.5);
+        assert_eq!((&reply["width"], &reply["height"]), (&json!(306), &json!(396)));
+        assert!(reply["low_res"]["message"].as_str().unwrap().contains("lower-resolution"), "{reply}");
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), 306, "the file must be the size the reply says");
+        std::fs::remove_file(&out).unwrap();
+        assert_eq!(folder_entries(&file), before, "the abandoned picture was left behind");
     }
 
     /// Failure: a page with a red blank strip and a white one reports `grey`, telling an agent there's no colour on a page that has some.

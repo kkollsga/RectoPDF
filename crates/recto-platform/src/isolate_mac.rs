@@ -736,6 +736,15 @@ pub fn process_memory(pid: u32) -> Option<ProcessMemory> {
     Some(ProcessMemory { footprint_bytes: info.ri_phys_footprint, peak_footprint_bytes: info.ri_lifetime_max_phys_footprint })
 }
 
+/// See [`crate::memory_free_percent`].
+pub(crate) fn memory_free_percent() -> Option<u32> {
+    let mut level: c_int = 0;
+    let mut len = size_of::<c_int>();
+    // SAFETY: the name is NUL-terminated, the buffer is a live `c_int`, and `len` says so. The call writes back no more than `len`.
+    let rc = unsafe { libc::sysctlbyname(c"kern.memorystatus_level".as_ptr(), (&raw mut level).cast(), &raw mut len, std::ptr::null_mut(), 0) };
+    if rc == 0 && len == size_of::<c_int>() { u32::try_from(level).ok() } else { None }
+}
+
 /// Takes away what a renderer process never needs, before it touches a hostile file. Lowered for good: hard and soft together.
 /// Memory isn't here because macOS has no working limit for it: `setrlimit` refuses `RLIMIT_AS`, `RLIMIT_DATA` and `RLIMIT_RSS` with
 /// `EINVAL` (measured on macOS 27), so the host polls from outside instead.
@@ -1039,5 +1048,12 @@ mod tests {
         assert_eq!(child.wait_bounded(Duration::from_millis(200)), None, "killed during a job");
         child.note_activity(false);
         assert_eq!(child.wait_bounded(Duration::from_secs(30)), Some(ChildExit::Signal(libc::SIGKILL)), "and killed once the job is over");
+    }
+
+    /// Failure: the reading of free memory silently fails, so the heavier retry is never allowed on any Mac, or reads a number that isn't a percentage.
+    #[test]
+    fn free_memory_is_readable_and_a_percentage() {
+        let percent = crate::memory_free_percent().expect("the reading failed");
+        assert!(percent <= 100, "{percent}");
     }
 }

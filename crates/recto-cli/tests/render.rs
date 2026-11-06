@@ -37,6 +37,23 @@ fn render_writes_a_png_of_the_size_it_reports() {
     std::fs::remove_file(&out).unwrap();
 }
 
+/// Failure: a page wider and taller than one strip comes out with rows missing or out of step, or a whole-page draw uses a surface the size of the page. Drawn in strips, a
+/// large page is the size it says, and no surface is larger than a strip.
+#[test]
+fn a_large_page_is_drawn_in_strips() {
+    let big = Page { content: text_lines(&["Large page"]), page_extra: String::new(), media: (3000.0, 3000.0) };
+    let file = TempPdf::new("big.pdf", &pages(&[big]));
+    let out = file.0.with_file_name("big.png");
+    let (reply, code) = recto(&["render", path_of(&file), "--page", "1", "--scale", "2", "--out", out.to_str().unwrap()]);
+    assert_eq!(code, 0, "{reply}");
+    assert_eq!((&reply["data"]["width"], &reply["data"]["height"]), (&Value::from(6000), &Value::from(6000)));
+    assert_eq!(reply["data"]["low_res"], Value::Null);
+    std::fs::remove_file(&out).unwrap();
+    let (budget, _) = recto(&["budget", "render", "--file", path_of(&file), "--count", "1", "--scale", "2"]);
+    assert!(budget["data"]["surface_bytes"].as_u64().unwrap() <= recto_render_service::STRIP_MAX_BYTES, "{budget}");
+    assert!(budget["data"]["peak_footprint_bytes"].as_u64().unwrap() < 144 * 1024 * 1024, "the page's 144 MiB of pixels shouldn't all be in memory at once: {budget}");
+}
+
 /// Failure: a bad page or output path writes something anyway, or overwrites the PDF itself through `--out`, breaking the one-writer rule.
 #[test]
 fn render_refuses_what_it_shouldnt_write() {
