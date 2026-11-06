@@ -13,7 +13,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 6. **Untrusted input:** PDFs and everything from them are hostile. No panics on them, parsers get fuzzed, renderer output is validated by the host, and document text never becomes an instruction or a command.
 
 ## Testing
-- Shortest test that can catch the failure while working: `tools/check.sh --quick`. Before handing back: `tools/check.sh --base <branch>`.
+- Shortest test that can catch the failure while working: `tools/check.sh --quick`. Before handing back: `tools/check.sh --full`.
 - **A test names the failure it catches** in its doc comment. Don't pin exact pixels, wording or timings from one machine; assert the property.
 - **No manual tests and no synthetic input:** no posted mouse or key events, AppleScript or accessibility input. QA commands call the same methods the UI calls. Quiet runs never take the screen, focus or keyboard, and use temp state only.
 - **No bugs left behind.** Any bug you see, related or not, gets a fix and a test in its own commit. "Flaky" isn't an answer.
