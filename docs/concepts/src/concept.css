@@ -314,7 +314,7 @@ mark { background: transparent; color: inherit; }
 /* The ⋯ button opens a compact panel docked in the lower sidebar, not a popover. */
 .tabs { min-height: 0; }
 .dock { flex: none; border-top: .5px solid var(--hair-strong); padding: 7px 8px 6px; font-size: 12.5px; }
-.dtabs { display: grid; grid-template-columns: repeat(4, auto); justify-content: space-between; margin-bottom: 7px; }
+.dtabs { display: flex; gap: 4px; margin-bottom: 7px; }
 .dtabs span { padding: 3px 9px; border-radius: 6px; color: var(--muted); font-size: 12px; }
 .dtabs span.on { color: var(--text); background: var(--fill-strong); font-weight: 560; }
 .dpane { padding-bottom: 2px; }
@@ -339,3 +339,28 @@ mark { background: transparent; color: inherit; }
 .side-foot .place { display: block; }
 .tap { left: 224px; top: 3px; }
 .p-head { padding-right: 12px; }
+
+/* Save appears only with unsaved changes. */
+.saverow { flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 8px 8px 18px; border-top: .5px solid var(--hair-strong); }
+.edited { flex: 1; font-size: 12px; color: var(--muted); }
+.tab .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex: none; }
+.show-mark mark.cite { background: var(--hit); color: #1a1600; box-shadow: 0 0 0 1px var(--hit); border-radius: 1px; }
+.dgrid span.on { background: var(--accent-soft); color: var(--accent); font-weight: 560; }
+
+/* The macOS menu bar, drawn above the window. It costs the window nothing. */
+#stage { place-items: center; }
+.macbar { position: absolute; top: 0; left: 0; right: 0; height: 26px; display: flex; align-items: center; gap: 2px; padding: 0 12px; font-size: 13px; background: var(--pill); color: var(--text); box-shadow: 0 .5px 0 var(--hair-strong); z-index: 20; backdrop-filter: blur(20px); }
+.macbar b { font-weight: 700; margin-right: 8px; padding-left: 4px; }
+.macbar span { padding: 2px 8px; border-radius: 5px; }
+.macbar span.on { background: var(--accent); color: var(--accent-ink); }
+.mdrop { position: absolute; top: 28px; width: 256px; z-index: 21; background: var(--raised); border-radius: 10px; padding: 5px; box-shadow: 0 0 0 .5px var(--hair-strong), 0 16px 44px rgba(0,0,0,.3); font-size: 13px; }
+.mitem { display: flex; justify-content: space-between; align-items: center; height: 24px; padding: 0 9px; border-radius: 5px; white-space: nowrap; }
+.mitem kbd { font: 12px -apple-system, sans-serif; color: var(--faint); margin-left: 16px; }
+.msep { height: .5px; background: var(--hair-strong); margin: 4px 9px; }
+.board-map { width: 1560px; height: 1000px; position: relative; background: var(--canvas); padding-top: 64px; }
+.map { display: grid; grid-template-columns: repeat(7, 1fr); gap: 12px; padding: 0 24px; align-items: start; }
+.mapcol h4 { font-size: 13px; font-weight: 640; padding: 0 0 8px 12px; }
+.mlist { font-size: 12.5px; }
+.mapcol .mlist { background: var(--raised); border-radius: 10px; padding: 5px; box-shadow: 0 0 0 .5px var(--hair-strong), 0 8px 24px rgba(0,0,0,.12); }
+.mapcol .mitem { padding: 0 7px; }
+.mapcol .mitem kbd { margin-left: 6px; font-size: 11px; }

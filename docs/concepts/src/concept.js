@@ -62,44 +62,56 @@ function tocHtml(items, showPages = false) {
 }
 
 // At rest: names and contents only. Page numbers and the chevron appear on hover.
-function sidebar({ active = "survey", open = true, tabs = TABS, tap = false, hover = false, on = "", pg = [32, 96], body = null, chrome = true, menu = "" } = {}) {
+function sidebar({ active = "survey", open = true, tabs = TABS, tap = false, hover = false, on = "", pg = [32, 96], body = null, chrome = true, menu = "", edited = false } = {}) {
   const rows = tabs.map((t) => {
     const isOn = t.id === active;
-    return `<div class="tab ${isOn ? "active" : ""}"><span class="name">${t.name}</span>
+    return `<div class="tab ${isOn ? "active" : ""}"><span class="name">${t.name}</span>${isOn && edited ? '<i class="dot"></i>' : ""}
       ${isOn && (hover || !open) ? `<span class="chev ${open ? "open" : ""}">${I.chev}</span>` : ""}</div>
       ${isOn && body ? body : ""}${isOn && open && !body && t.toc ? tocHtml(t.toc, hover) : ""}`;
   }).join("");
   return `<aside class="sidebar">
     <div class="side-top"><div class="lights"><i></i><i></i><i></i></div><span class="ibtn ${on.includes("search") ? "on" : ""}">${I.search}</span><span class="ibtn">${I.plus}</span></div>
     <div class="tabs" style="position:relative">${rows}${tap ? '<span class="tap"></span>' : ""}</div>
-    ${menu}<div class="side-foot">${chrome ? `<span class="place"><b>${pg[0]}</b> of ${pg[1]}</span>` : "<span></span>"}<span class="ibtn ${on.includes("more") ? "on" : ""}">${I.more}</span></div>
+    ${menu}${edited ? SAVEROW : ""}<div class="side-foot">${chrome ? `<span class="place"><b>${pg[0]}</b> of ${pg[1]}</span>` : "<span></span>"}<span class="ibtn ${on.includes("more") ? "on" : ""}">${I.more}</span></div>
   </aside>`;
 }
 
 const AGENT = (on = false) => `<span class="ibtn agentbtn ${on ? "on" : ""}">${I.ask}</span>`;
 const pill = (page, total) => `<div class="pill"><span class="sec"><span class="num">${page}</span> of ${total}</span></div>`;
-// The ⋯ button opens this in the lower part of the sidebar. PDFs and contents stay visible above it.
-const DOCK_TABS = ["View", "Pages", "Mark up", "Tools"];
-const grid = (items) => `<div class="dgrid">${items.map((t) => `<span>${t}</span>`).join("")}</div>`;
+// The ⋯ button opens this in the lower sidebar. It holds only what you touch while reading; the macOS menu bar has the rest.
+const DOCK_TABS = ["View", "Mark up", "Pages"];
+const grid = (items, on = "") => `<div class="dgrid">${items.map((t) => `<span class="${t === on ? "on" : ""}">${t}</span>`).join("")}</div>`;
 const PANES = {
   View: () => `<div class="dpane">
     <div class="drow">Zoom<span class="zoom"><span class="zb">${I.minus}</span>125%<span class="zb">${I.plus14}</span><span class="zb">${I.fit}</span></span></div>
     ${theme === "dark" ? `<div class="drow">Paper<span class="seg mini"><span class="on">Dark</span><span>White</span></span></div>` : ""}
-    <div class="drow">Layout<span class="seg mini"><span class="on">Single</span><span>Spread</span></span></div></div>
-    ${grid(["Focus view", "Hide sidebar", "Print…", "Settings…"])}`,
-  Pages: () => grid(["Thumbnails", "Rotate", "Reorder", "Insert", "Delete", "Extract", "Merge", "Split"]),
-  "Mark up": () => grid(["Highlight", "Underline", "Strikeout", "Note", "Draw", "Image signature", "Fill form", "Create form"]),
-  Tools: () => grid(["Snapshot", "Compare", "Compress", "Make searchable", "Redact", "Remove hidden data", "Watermark", "Bates numbers", "Password", "Measure"]),
+    <div class="drow">Layout<span class="seg mini"><span class="on">Single</span><span>Spread</span></span></div></div>`,
+  "Mark up": () => grid(["Highlight", "Underline", "Strikeout", "Note", "Draw", "Signature image"], "Highlight"),
+  Pages: () => grid(["Thumbnails", "Rotate", "Delete", "Extract"]),
 };
-const DOCK = (tab = "View", body = "") => `<div class="dock"><div class="dtabs">${DOCK_TABS.map((t) => `<span class="${t === tab ? "on" : ""}">${t}</span>`).join("")}</div>${body || PANES[tab]()}</div>`;
+const DOCK = (tab = "View", body = "") => body ? `<div class="dock">${body}</div>` : `<div class="dock"><div class="dtabs">${DOCK_TABS.map((t) => `<span class="${t === tab ? "on" : ""}">${t}</span>`).join("")}</div>${PANES[tab]()}</div>`;
+// Save and Save As are the normal commands. These buttons appear only while there are unsaved changes.
+const SAVEROW = `<div class="saverow"><span class="edited">Edited</span><span class="btn ghost small">Save As…</span><span class="btn primary small">Save</span></div>`;
 const COMPRESS = `<div class="dback">${I.back}Compress<span>41 MB now</span></div>
   <div class="levels">
     <div class="lvl"><b>Low</b><span>220 DPI</span><em>33 MB</em></div>
     <div class="lvl on"><b>Medium</b><span>150 DPI</span><em>18 MB</em></div>
     <div class="lvl"><b>High</b><span>96 DPI</span><em>9 MB</em></div>
   </div>
-  <div class="dnote">Text and vector graphics aren't touched.</div>
-  <div class="dsave"><span class="btn primary small">Save copy</span></div>`;
+  <div class="dnote">Text and vector graphics aren't touched.</div>`;
+
+// Every command has one home in the macOS menu bar. Each entry is a label and its shortcut; "-" is a separator.
+const MENUS = {
+  File: [["Open…", "⌘O"], ["Open Recent", "▸"], "-", ["Close Tab", "⌘W"], ["Save", "⌘S"], ["Save As…", "⇧⌘S"], ["Revert to Saved", ""], "-", ["Compress…", ""], ["Make Searchable…", ""], ["Password…", ""], ["Remove Hidden Data…", ""], "-", ["Print…", "⌘P"]],
+  Edit: [["Undo", "⌘Z"], ["Redo", "⇧⌘Z"], "-", ["Cut", "⌘X"], ["Copy", "⌘C"], ["Paste", "⌘V"], ["Select All", "⌘A"], "-", ["Find…", "⌘F"], ["Find Next", "⌘G"], ["Find Previous", "⇧⌘G"]],
+  View: [["Zoom In", "⌘+"], ["Zoom Out", "⌘−"], ["Actual Size", "⌘0"], ["Fit Width", ""], "-", ["Paper", "▸"], ["Single Page", ""], ["Two-Page Spread", ""], "-", ["Show Sidebar", "⌃⌘S"], ["Show Agent", "⌥⌘A"], ["Focus View", "⇧⌘F"], ["Enter Full Screen", "⌃⌘F"]],
+  Go: [["Back", "⌘["], ["Forward", "⌘]"], "-", ["Next Page", "⌥↓"], ["Previous Page", "⌥↑"], ["Go to Page…", "⌘L"], "-", ["Next Tab", "⌃⇥"], ["Previous Tab", "⌃⇧⇥"]],
+  Pages: [["Show Thumbnails", ""], "-", ["Rotate Left", ""], ["Rotate Right", ""], ["Delete", ""], ["Extract…", ""], ["Insert…", ""], "-", ["Merge PDFs…", ""], ["Split…", ""]],
+  "Mark Up": [["Highlight", ""], ["Underline", ""], ["Strikeout", ""], ["Note", ""], ["Draw", ""], "-", ["Signature Image…", ""], ["Fill Form", ""], ["Create Form…", ""]],
+  Tools: [["All Commands…", "⌘K"], "-", ["Snapshot", "⌥⌘4"], ["Copy Image", ""], "-", ["Compare…", ""], ["Redact…", ""], ["Watermark…", ""], ["Bates Numbers…", ""], ["Measure", ""]],
+};
+const menuList = (name) => `<div class="mlist">${MENUS[name].map((m) => m === "-" ? '<div class="msep"></div>' : `<div class="mitem"><span>${m[0]}</span><kbd>${m[1]}</kbd></div>`).join("")}</div>`;
+const MACBAR = (open = "") => `<div class="macbar"><b>RectoPDF</b>${Object.keys(MENUS).map((n) => `<span class="${n === open ? "on" : ""}">${n}</span>`).join("")}<span>Window</span><span>Help</span></div>`;
 
 // A bathymetry figure with its own colours: it keeps them in PDF dark mode, like photos do.
 const FIGURE = `<svg viewBox="0 0 576 214" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, Helvetica Neue, sans-serif">
@@ -232,8 +244,11 @@ const Screens = {
   reader: () => `<div class="window">${sidebar({})}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
   paperwhite: () => `<div class="window">${sidebar({})}<main class="main">${surface({ cls: "true-page", extra: AGENT() })}</main></div>`,
   menu: () => `<div class="window">${sidebar({ on: "more", menu: DOCK("View") })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
-  tools: () => `<div class="window">${sidebar({ on: "more", menu: DOCK("Tools") })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
-  compress: () => `<div class="window">${sidebar({ on: "more", menu: DOCK("Tools", COMPRESS) })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
+  markup: () => `<div class="window">${sidebar({ on: "more", menu: DOCK("Mark up") })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
+  compress: () => `<div class="window">${sidebar({ on: "more", menu: DOCK("", COMPRESS), edited: true })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
+  edited: () => `<div class="window">${sidebar({ edited: true })}<main class="main">${surface({ cls: "show-mark", extra: AGENT() })}</main></div>`,
+  menufile: () => `${MACBAR("File")}<div class="mdrop" style="left:119px">${menuList("File")}</div><div class="window">${sidebar({})}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
+  menumap: () => `<div class="board-map">${MACBAR()}<div class="map">${Object.keys(MENUS).map((n) => `<div class="mapcol"><h4>${n}</h4>${menuList(n)}</div>`).join("")}</div></div>`,
   find: () => `<div class="window">${sidebar({ on: "search", body: FIND })}<main class="main">${surface({ cls: "show-hits", extra: AGENT() })}</main></div>`,
   ask: () => `<div class="window">${sidebar({})}<main class="main">${surface({ cls: "show-cite", width: 700 })}${ASK}</main></div>`,
   sign: () => `<div class="window">${sidebar({ active: "lease", pg: [6, 6], body: STATUS + tocHtml(LEASE_TOC) })}<main class="main">${surface({ page: LEASE_PAGE, width: 700 })}${SIGN}</main></div>`,

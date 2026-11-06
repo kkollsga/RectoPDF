@@ -70,7 +70,9 @@ Reference: `docs/concepts/`. Rules from the owner:
 - **No top bar.** Maximum vertical reading space; nothing sits above or over a page.
 - **Tabs live in the sidebar.** Tapping the active PDF folds or opens its contents.
 - **At rest the sidebar is only names and contents.** The rail fills as you read. Chevron and page numbers appear on hover.
-- **Everything else lives in a compact panel** that the `⋯` button opens in the lower part of the sidebar, with tabs for View, Pages, Mark up and Tools. Owner, 2026-11-06: "the way we can add complex features without making the app complex is to let the … menu toggle open a compact menu in lower part of left sidebar with tabs". A tool such as Compress opens in place inside the panel, and the PDFs and contents stay visible above it. ⌘K finds any command.
+- **The macOS menu bar is the home of every command** (owner, 2026-11-06: "Not all options need to be in the sidebar. A lot can be in the macos top bar instead"). Menus: File, Edit, View, Go, Pages, Mark Up, Tools, Window, Help. Map: `docs/concepts/menumap-light.png`. Rust decides which items exist and which are enabled. ⌘K finds any command.
+- **The `⋯` panel holds only what you touch while reading** (owner: "let the … menu toggle open a compact menu in lower part of left sidebar with tabs"). It opens in the lower sidebar with three tabs: View (zoom, paper, layout), Mark up, and Pages. A tool started from the menu bar that needs choices, such as Compress, opens here, in place of the tabs.
+- **Save and Save As are the normal commands** (owner: "Save a copy is a normal save / save as buttons, when there are changes"). The buttons appear above the footer only while there are unsaved changes, and the active PDF gets a small dot.
 - **Agent icon at the top right**, in the empty margin. It opens the agent panel and stays in the same spot.
 - **Dark mode offers dark or white paper.** Signing always shows the true page.
 - **Focus view:** sidebar hidden, page number only, agent icon kept.
@@ -99,10 +101,11 @@ Reference: `docs/concepts/`. Rules from the owner:
 | Annotations | Highlight, underline, strikeout, note, ink. Notes autosave beside the file, and go into the PDF on Save (*default*) |
 | Forms | Filling, owned by the Rust core and lopdf (*default*). No JavaScript; detect and explain. Dynamic XFA detected only (*default*) |
 | Signing | **Placeholder for now** (owner, 2026-11-06): the labelled image option, a neutral "signature present, not checked" report, and the final seams in `recto-sign`. No file is signed cryptographically until it's built properly to the official standards (ISO 32000-2, ETSI EN 319 142, RFC 5652, RFC 3161) |
-| Page tools | Rotate, delete, reorder, extract, insert, merge, split. Signed files go to a copy |
-| Security | Password protection. Deleting offers **Save a clean copy**, because appending leaves old data in the file |
+| Page tools | Rotate, delete, reorder, extract, insert, merge, split |
+| Security | Password protection |
+| Saving | **Save** and **Save As**, atomic, never partly written. Adding things appends to the file. **Removing things (delete a page, redact, compress) rewrites it, so the old data is really gone.** If a change would break a signature, Save is off and Save As explains why. One backup of the original on first save (*default*) |
 | Compare | Text first, read-only |
-| Compress | **Low, Medium, High to a fixed image DPI, then save.** Start: 220, 150, 96 DPI. Measured at printed size; never enlarges, leaves text, vectors and 1-bit scans alone; cleans the file first. Saves a new file (*default*) |
+| Compress | **Low, Medium, High to a fixed image DPI, then save.** Start: 220, 150, 96 DPI. Measured at printed size; never enlarges, leaves text, vectors and 1-bit scans alone; cleans the file first. Then a normal Save or Save As |
 | OCR | Tesseract, with **Save as searchable PDF**: an invisible text layer with an embedded Unicode font, in a helper process |
 | Extraction | **Click an image to copy it losslessly.** **Snapshot tool:** drag a box for text, PNG, SVG and JPG, all on the clipboard at once |
 
@@ -141,3 +144,5 @@ Numbered so they can be cited. Newest last.
 13. **Signatures are a placeholder for now.** Owner: "lets do a signature place holder for now. We can build it out properly later using the official standards. So structure the code accordingly." A placeholder never produces anything that looks like a signature.
 14. **All five extra tools are in this build.** Owner answered yes on 2026-11-06.
 15. **PDFium confirmed for now** (*default*). Fast on 5,689 real pages; two lines of the benchmark's rule fail, so the rule is amended as in §3.
+16. **Normal Save and Save As.** Owner, 2026-11-06. Replaces the earlier save-to-a-copy default.
+17. **Commands live in the macOS menu bar;** the sidebar panel keeps only what you use while reading. Owner, 2026-11-06.
