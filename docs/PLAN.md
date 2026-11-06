@@ -50,6 +50,7 @@ The goal: an agent can do everything headless, as you'd expect from the finished
 **Renderer**
 - [ ] PDFium in a killable worker: memory limit, per-page deadline, retirement at 64 MiB *(worker running)*
 - [ ] Memory limit sequence: 512 MiB, retry alone up to 1 GiB, then a labelled low-resolution page *(worker running)*
+- [ ] Draw the visible region in one pass, so heavy pages aren't slowed by tile count *(worker running)*
 - [ ] `recto render`: any page to PNG
 - [ ] `recto text`: normalised page text, with a hidden-text flag
 
@@ -71,6 +72,7 @@ The goal: an agent can do everything headless, as you'd expect from the finished
 - [ ] Hang watchdog: a 2 s stall fails the run
 - [ ] Window, sidebar, tap rule, contents with the rail
 - [ ] Page tiles on IOSurface, scrolling, pinch, blur to sharp
+- [ ] Low-resolution page previews kept on disk, so a page seen before shows at once on reopening
 - [ ] Dark mode with dark or white paper; focus view; agent icon as a placeholder
 - [ ] Budget tests: cold start, one document, scrolling, idle CPU, closed window
 - [ ] Spike on the MacBook: 120 Hz and on-screen memory

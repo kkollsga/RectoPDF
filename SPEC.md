@@ -54,6 +54,7 @@ fast because everything is rebuilt from disk.
   limit, a per-page deadline with kill, and retirement at 64 MiB** (amends the benchmark's rule).
 - **Memory limit sequence** (owner approved, 2026-11-06): 512 MiB per worker; a page that hits it retries alone with up to 1 GiB if the Mac has memory free; failing that, a lower-resolution version that says so, so a page is never blank. A page that fails all the way down isn't retried, and one heavy worker runs at a time. Exports and printing draw in tiles under the same limits.
   *Rejected:* MuPDF (AGPL), poppler (GPL). hayro stays the challenger: as fast, pure Rust, but no cancel call and it reached 843 MiB where PDFium peaks at 113.
+- **Visible regions are drawn in one pass** (owner, 2026-11-06: "4s to render a map is too slow. We can do better"). Tiles stay the cache unit, but a separate render call per tile cost 46–55 ms each on a heavy map, so 72 tiles took 3.7 s against 0.7 s for one pass.
 - **Search text needs a normaliser.** PDFium returns line-end hyphens as U+FFFE, plus NBSP and CRLF, which defeat plain `rg`.
 - **PDFium returns hidden text** (14 of 17 techniques, and real files contain it), so hidden text is flagged for the agent as untrusted, never dropped silently, because an OCR layer is invisible too.
 - **The lopdf fork's `IndexedReader`** owns file structure with no renderer running. Its append-only writer is the only code that
