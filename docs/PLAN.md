@@ -73,6 +73,8 @@ The goal: an agent can do everything headless, as you'd expect from the finished
 - [ ] Window, sidebar, tap rule, contents with the rail
 - [ ] Page tiles on IOSurface, scrolling, pinch, blur to sharp
 - [ ] Low-resolution page previews kept on disk, so a page seen before shows at once on reopening
+- [ ] Draw the next pages ahead while idle, within the memory limits
+- [ ] Compare hayro, and MuPDF as a measuring stick only, on heavy pages, **only if** the viewport numbers still miss their targets
 - [ ] Dark mode with dark or white paper; focus view; agent icon as a placeholder
 - [ ] Budget tests: cold start, one document, scrolling, idle CPU, closed window
 - [ ] Spike on the MacBook: 120 Hz and on-screen memory
