@@ -267,7 +267,7 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
             })
         })
         .collect();
-    json!({ "rows": rows, "rail_filled": model.rail_filled, "toc_open": model.toc_open, "place": model.place })
+    json!({ "rows": rows, "rail_filled": model.rail_filled, "toc_open": model.toc_open, "place": model.place, "edited": model.edited })
 }
 
 #[cfg(test)]

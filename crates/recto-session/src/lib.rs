@@ -4,6 +4,9 @@
 //! reads a PDF's facts and closes it. Only the active tab and the most recent others keep their contents, up to
 //! [`MAX_WARM`], and anything evicted is rebuilt from disk when it's needed again.
 
+pub mod edit;
+
+use edit::{EditError, PageEdits};
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
@@ -92,6 +95,8 @@ pub struct SidebarModel<'a> {
     pub toc_open: bool,
     /// The footer line, such as "32 of 96". Empty with no PDF open.
     pub place: String,
+    /// Whether the active PDF has unsaved changes, which shows its dot and the Save buttons.
+    pub edited: bool,
 }
 
 /// All open tabs and which one is active.
@@ -104,6 +109,8 @@ pub struct Session<L = DiskLoader> {
     warm: VecDeque<(TabId, Arc<Toc>)>,
     dirs: Vec<Box<Path>>,
     dir_ids: HashMap<Box<Path>, u32>,
+    /// Only for tabs with page edits. A tab with none costs nothing here.
+    edits: HashMap<TabId, PageEdits>,
 }
 
 impl Default for Session<DiskLoader> {
@@ -114,7 +121,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), dirs: Vec::new(), dir_ids: HashMap::new() }
+        Self { loader, tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new() }
     }
 
     pub fn tabs(&self) -> &[TabRecord] {
@@ -195,13 +202,75 @@ impl<L: DocLoader> Session<L> {
 
     /// Moves a tab to a zero-based page, clamped to the document.
     pub fn go_to(&mut self, id: TabId, page: u32) -> Result<(), SessionError> {
+        let pages = self.pages_in(id);
         let tab = self.tab_mut(id).ok_or(SessionError::NoSuchTab)?;
-        tab.page = page.min(tab.page_count.saturating_sub(1));
+        tab.page = page.min(pages.saturating_sub(1));
         Ok(())
     }
 
+    /// How many pages a tab has now, counting unsaved edits.
+    pub fn pages_in(&self, id: TabId) -> u32 {
+        self.edits.get(&id).map(PageEdits::len).or_else(|| self.tab(id).map(|t| t.page_count)).unwrap_or(0)
+    }
+
+    /// Whether a tab has unsaved changes.
+    pub fn is_edited(&self, id: TabId) -> bool {
+        self.edits.get(&id).is_some_and(PageEdits::is_edited)
+    }
+
+    /// A tab's page edits, if it has any.
+    pub fn page_edits(&self, id: TabId) -> Option<&PageEdits> {
+        self.edits.get(&id)
+    }
+
+    /// Applies a page edit: rearranging, rotating or deleting. The list is made the first time a tab is edited.
+    pub fn edit_pages(&mut self, id: TabId, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
+        let page_count = self.tab(id).ok_or(SessionError::NoSuchTab)?.page_count;
+        change(self.edits.entry(id).or_insert_with(|| PageEdits::new(page_count))).map_err(SessionError::Edit)?;
+        self.keep_page_in_range(id);
+        Ok(())
+    }
+
+    /// Adds every page of another PDF at a position, as dropping it into the page view does. Only its facts are read.
+    pub fn insert_pdf(&mut self, id: TabId, at: u32, path: &Path) -> Result<(), SessionError> {
+        let facts = self.loader.load(path).map_err(SessionError::Open)?;
+        self.edit_pages(id, |edits| edits.insert_pdf(at, path, facts.page_count))
+    }
+
+    /// Reverses the last page edit. Returns false with nothing to undo.
+    pub fn undo_edit(&mut self, id: TabId) -> bool {
+        let undone = self.edits.get_mut(&id).is_some_and(PageEdits::undo);
+        self.keep_page_in_range(id);
+        undone
+    }
+
+    /// Repeats the last undone page edit. Returns false with nothing to redo.
+    pub fn redo_edit(&mut self, id: TabId) -> bool {
+        let redone = self.edits.get_mut(&id).is_some_and(PageEdits::redo);
+        self.keep_page_in_range(id);
+        redone
+    }
+
+    /// Throws away a tab's unsaved page edits.
+    pub fn discard_edits(&mut self, id: TabId) {
+        self.edits.remove(&id);
+        self.keep_page_in_range(id);
+    }
+
+    fn keep_page_in_range(&mut self, id: TabId) {
+        let pages = self.pages_in(id);
+        if let Some(tab) = self.tab_mut(id) {
+            tab.page = tab.page.min(pages.saturating_sub(1));
+        }
+    }
+
     /// Closes a tab and releases what it held. The next tab along, or the previous one, becomes active.
+    /// Refuses while there are unsaved changes, so nothing is lost by accident.
     pub fn close(&mut self, id: TabId) -> Result<(), SessionError> {
+        if self.is_edited(id) {
+            return Err(SessionError::UnsavedChanges);
+        }
+        self.edits.remove(&id);
         let index = self.tabs.iter().position(|t| t.id == id).ok_or(SessionError::NoSuchTab)?;
         self.tabs.remove(index);
         self.warm.retain(|(tab, _)| *tab != id);
@@ -228,14 +297,15 @@ impl<L: DocLoader> Session<L> {
                 continue;
             }
             toc_open = tab.toc_open;
-            place = format!("{} of {}", tab.page + 1, tab.page_count);
+            place = format!("{} of {}", tab.page + 1, self.pages_in(tab.id));
             if tab.toc_open
                 && let Some((_, toc)) = self.warm.iter().find(|(id, _)| *id == tab.id)
             {
-                rail_filled = contents_rows(toc, tab, &mut rows);
+                rail_filled = contents_rows(toc, tab, self.edits.get(&tab.id), &mut rows);
             }
         }
-        SidebarModel { rows, rail_filled, toc_open, place }
+        let edited = self.active.is_some_and(|id| self.is_edited(id));
+        SidebarModel { rows, rail_filled, toc_open, place, edited }
     }
 
     fn activate(&mut self, id: TabId) {
@@ -288,8 +358,15 @@ impl<L: DocLoader> Session<L> {
 
 /// Adds the visible contents rows: every top-level entry, plus the chapter being read opened down to the current
 /// section. Returns how many rows the rail fills.
-fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, rows: &mut Vec<SidebarRow<'a>>) -> usize {
-    let here = toc.section_at(tab.page);
+///
+/// With unsaved page edits, entries follow their pages to their new positions. An entry whose page was deleted stays
+/// without a number, and pages added from another PDF belong to no section.
+fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, edits: Option<&PageEdits>, rows: &mut Vec<SidebarRow<'a>>) -> usize {
+    let original_page = match edits {
+        Some(edits) => edits.slots().get(tab.page as usize).filter(|s| s.source == 0).map(|s| s.page),
+        None => Some(tab.page),
+    };
+    let here = original_page.and_then(|page| toc.section_at(page));
     let mut open = HashSet::new();
     let mut cursor = here.map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
     while cursor != NONE && open.insert(cursor) {
@@ -306,7 +383,10 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, rows: &mut Vec<SidebarRow<'a
             kind: RowKind::Contents,
             tab: tab.id,
             text: toc.title(entry),
-            page: (entry.page != NONE).then(|| entry.page + 1),
+            page: (entry.page != NONE)
+                .then(|| edits.map_or(Some(entry.page), |e| e.position_of(entry.page)))
+                .flatten()
+                .map(|page| page + 1),
             depth: entry.depth,
             current,
         });
@@ -322,6 +402,8 @@ pub enum SessionError {
     Open(OpenError),
     NoSuchTab,
     TooManyTabs,
+    UnsavedChanges,
+    Edit(EditError),
 }
 
 impl SessionError {
@@ -330,6 +412,8 @@ impl SessionError {
             Self::Open(error) => error.code(),
             Self::NoSuchTab => "no_such_tab",
             Self::TooManyTabs => "too_many_tabs",
+            Self::UnsavedChanges => "unsaved_changes",
+            Self::Edit(error) => error.code(),
         }
     }
 
@@ -338,6 +422,8 @@ impl SessionError {
             Self::Open(error) => error.message(),
             Self::NoSuchTab => "That tab isn't open.",
             Self::TooManyTabs => "Too many PDFs are open. Close some and try again.",
+            Self::UnsavedChanges => "This PDF has unsaved changes.",
+            Self::Edit(error) => error.message(),
         }
     }
 }
@@ -464,6 +550,54 @@ mod tests {
         s.close(a).unwrap();
         assert_eq!(s.active(), None);
         assert_eq!(s.sidebar().place, "");
+    }
+
+    /// Failure: closing a tab loses page edits without warning.
+    #[test]
+    fn closing_refuses_while_there_are_unsaved_edits() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages(id, |e| e.rotate(0, 1, 1)).unwrap();
+        assert_eq!(s.close(id), Err(SessionError::UnsavedChanges));
+        assert!(s.sidebar().edited);
+        assert!(s.undo_edit(id));
+        assert!(!s.sidebar().edited);
+        assert!(s.close(id).is_ok());
+    }
+
+    /// Failure: the footer and page clamp ignore added or deleted pages, so the reader lands past the end.
+    #[test]
+    fn page_count_and_position_follow_edits() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.go_to(id, 4).unwrap();
+        s.edit_pages(id, |e| e.delete(1, 3)).unwrap();
+        assert_eq!(s.sidebar().place, "2 of 2");
+        s.insert_pdf(id, 2, Path::new("/d/b.pdf")).unwrap();
+        assert_eq!(s.pages_in(id), 7);
+        assert_eq!(s.sidebar().place, "2 of 7");
+        s.discard_edits(id);
+        assert_eq!(s.sidebar().place, "2 of 5");
+    }
+
+    /// Failure: every open tab pays for page edits, so idle tabs cost more once one PDF is edited.
+    #[test]
+    fn only_edited_tabs_have_an_edit_list() {
+        let mut s = session(5);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.open(Path::new("/d/b.pdf")).unwrap();
+        s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+        assert_eq!(s.edits.len(), 1);
+    }
+
+    /// Failure: a dropped PDF that can't be read changes the document anyway.
+    #[test]
+    fn a_dropped_pdf_that_cant_be_read_changes_nothing() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        assert_eq!(s.insert_pdf(id, 0, Path::new("/d/missing.pdf")), Err(SessionError::Open(OpenError::NotFound)));
+        assert!(!s.is_edited(id));
+        assert_eq!(s.pages_in(id), 5);
     }
 
     /// Failure: a PDF moved away after opening crashes or disappears, rather than staying open and saying why.

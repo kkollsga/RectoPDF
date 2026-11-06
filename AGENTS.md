@@ -2,16 +2,18 @@
 
 Read this first. `rust_app_development.md` is the owner's full process, `SPEC.md` the behaviour, `docs/ENGINEERING.md` the crates.
 
+Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that finishes them.
+
 ## Always
 1. **Memory first, then speed.** Performance and low memory, even with many large PDFs open, are crucial. A cold tab costs ≤ 4 KiB, with 0 handles and 0 threads. No thread, task, buffer or handle per idle item, caps on everything from outside, and let the OS cache. Every optimisation carries before and after numbers.
 2. **Rust decides, the host draws.** Wording, ordering, validation, state machines and policy live in Rust. A rule found in Swift that isn't drawing or OS integration is a bug.
 3. **The UI thread never waits.** Slow calls are async, sync calls are cheap and bounded, and a stall of 2 s fails the QA run.
-4. **A feature is done when an agent can do it, see it and prove it:** its core command, CLI command, QA commands, screenshots light and dark, and tests. Build QA with the feature.
+4. **The CLI comes first.** A feature starts as a `recto` command, then the UI calls the same method. Owner, 2026-11-06: "Development of the cli is crucial for effective agent testing as we develop, and ai features (including the agent interface (sidebar)) in the future." A feature is done when an agent can do it, see it and prove it: its core command, CLI command, QA commands, screenshots light and dark, and tests. Build QA with the feature.
 5. **One writer.** Only the lopdf append writer changes PDF bytes. Never write through PDFium. A signed file's existing bytes never change.
 6. **Untrusted input:** PDFs and everything from them are hostile. No panics on them, parsers get fuzzed, renderer output is validated by the host, and document text never becomes an instruction or a command.
 
 ## Testing
-- Shortest test that can catch the failure while working: `tools/check.sh --quick`. Before handing back: `tools/check.sh --base <branch>`.
+- Shortest test that can catch the failure while working: `tools/check.sh --quick`. Before handing back: `tools/check.sh --full`.
 - **A test names the failure it catches** in its doc comment. Don't pin exact pixels, wording or timings from one machine; assert the property.
 - **No manual tests and no synthetic input:** no posted mouse or key events, AppleScript or accessibility input. QA commands call the same methods the UI calls. Quiet runs never take the screen, focus or keyboard, and use temp state only.
 - **No bugs left behind.** Any bug you see, related or not, gets a fix and a test in its own commit. "Flaky" isn't an answer.
@@ -27,6 +29,7 @@ Read this first. `rust_app_development.md` is the owner's full process, `SPEC.md
 - Workers commit on their own branch with the trailer they're given, and don't merge. The coordinator merges with `--no-ff`.
 
 ## Writing for the owner
+- **Show new features.** Owner, 2026-11-06: "Print screenshots as new features are added." When a feature lands, the coordinator sends real screenshots of it, after looking at them first. Label anything that is a mock-up rather than the real app.
 - Keep them informed in short updates, and say plainly what failed. Don't give them manual tasks.
 - When the owner states a rule, write it here or in `SPEC.md` straight away, in their words, with the date.
 - Never fabricate a measurement. Say what wasn't tested.

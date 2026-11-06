@@ -14,7 +14,7 @@ shot() { # name query
     --screenshot="$here/$1.png" "file://$here/$2" >/dev/null 2>&1
 }
 
-for screen in home reader menu find ask sign focus; do
+for screen in home reader menu markup compress editpages edittext edited saveas closeprompt menufile menumap find ask sign focus; do
   for theme in light dark; do
     shot "$screen-$theme" "src/concept.html?theme=$theme&screen=$screen"
   done
@@ -24,6 +24,6 @@ shot "sidebar-states" "src/concept.html?screen=states"
 # Overview of every screen, light on the left and dark on the right, built from the renders above.
 "$chrome" --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
   --force-color-profile=srgb --no-first-run --no-default-browser-check --allow-file-access-from-files \
-  --user-data-dir="$profile" --window-size=1600,4060 --virtual-time-budget=4000 \
+  --user-data-dir="$profile" --window-size=1600,8600 --virtual-time-budget=4000 \
   --screenshot="$here/overview.png" "file://$here/src/overview.html" >/dev/null 2>&1
 ls -la "$here"/*.png
