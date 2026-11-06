@@ -49,6 +49,7 @@ The goal: an agent can do everything headless, as you'd expect from the finished
 
 **Renderer**
 - [ ] PDFium in a killable worker: memory limit, per-page deadline, retirement at 64 MiB *(worker running)*
+- [ ] Memory limit sequence: 512 MiB, retry alone up to 1 GiB, then a labelled low-resolution page *(worker running)*
 - [ ] `recto render`: any page to PNG
 - [ ] `recto text`: normalised page text, with a hidden-text flag
 

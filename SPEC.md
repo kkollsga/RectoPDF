@@ -29,7 +29,7 @@ A missed budget is a bug. The whole process tree counts, on release builds, on a
 | Live documents | Active plus at most 2 recent; a byte budget frees the oldest first | Tested for the count; byte budget when renderers exist |
 | One document, text page | ≤ 60 MiB | Pending app |
 | Colour full-bleed page | ≤ 100 MiB | Pending app |
-| Fast scrolling, peak | ≤ 170 MiB | Pending app |
+| Fast scrolling, peak | ≤ 170 MiB. **Named exception:** pages with huge images can exceed this, under the memory limit sequence in §3. Measured: 341 MiB in tiles on a 330 MiB map | Pending app |
 | Cold start to first sharp page | ≤ 300 ms p50, ≤ 500 ms p95 | Pending app |
 | Open 2 GB, 10k pages | Page 1 sharp ≤ 250 ms warm, ≤ 600 ms cold; main never stalls > 16 ms | Pending app |
 | Idle CPU | ~0%, ≤ 1 wake-up per second | Pending app |
@@ -51,7 +51,8 @@ fast because everything is rebuilt from disk.
 - **PDFium without V8 or XFA** draws pages and supplies selection, search text and highlight positions. It runs in a sandboxed,
   killable worker behind a `RenderBackend` seam. Measured in `docs/research/2026-11-06-renderer-spike.md`: text and vector pages at 2x
   are p50 2.06 ms, p95 8.64 ms. Cancelling isn't always prompt and one hostile file reached 4 GiB, so the worker gets a **hard memory
-  limit, a per-page deadline with kill, and retirement at 64 MiB** (*default*, amends the benchmark's rule).
+  limit, a per-page deadline with kill, and retirement at 64 MiB** (amends the benchmark's rule).
+- **Memory limit sequence** (owner approved, 2026-11-06): 512 MiB per worker; a page that hits it retries alone with up to 1 GiB if the Mac has memory free; failing that, a lower-resolution version that says so, so a page is never blank. A page that fails all the way down isn't retried, and one heavy worker runs at a time. Exports and printing draw in tiles under the same limits.
   *Rejected:* MuPDF (AGPL), poppler (GPL). hayro stays the challenger: as fast, pure Rust, but no cancel call and it reached 843 MiB where PDFium peaks at 113.
 - **Search text needs a normaliser.** PDFium returns line-end hyphens as U+FFFE, plus NBSP and CRLF, which defeat plain `rg`.
 - **PDFium returns hidden text** (14 of 17 techniques, and real files contain it), so hidden text is flagged for the agent as untrusted, never dropped silently, because an OCR layer is invisible too.
@@ -144,7 +145,7 @@ Numbered so they can be cited. Newest last.
 12. **Permissive or closed licence** (*default*). Rules out MuPDF and poppler.
 13. **Signatures are a placeholder for now.** Owner: "lets do a signature place holder for now. We can build it out properly later using the official standards. So structure the code accordingly." A placeholder never produces anything that looks like a signature.
 14. **All five extra tools are in this build.** Owner answered yes on 2026-11-06.
-15. **PDFium confirmed for now** (*default*). Fast on 5,689 real pages; two lines of the benchmark's rule fail, so the rule is amended as in §3.
+15. **PDFium confirmed for now.** Fast on 5,689 real pages; two lines of the benchmark's rule fail, so the rule is amended as in §3.
 16. **Normal Save and Save As.** Owner, 2026-11-06. Replaces the earlier save-to-a-copy default.
 18. **Edit mode is in, including text editing.** Owner, 2026-11-06. Reverses the earlier call to leave text editing out. Text edits work on a whole block, matching Foxit's baseline.
 17. **Commands live in the macOS menu bar;** the sidebar panel keeps only what you use while reading. Owner, 2026-11-06.
