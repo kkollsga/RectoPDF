@@ -2,7 +2,7 @@
 //!
 //! **Raw FFI, not `pdfium-render`.** The spike used `pdfium-render` 0.9.5 only for its bindings, because `PdfDocument::handle()` is
 //! crate-private and its high-level loaders can't reach `FPDF_LoadCustomDocument` with a `pread` callback, the loader the worker needs
-//! (spike §3). Taking the crate for function pointers alone costs 24 crates and a much larger binary, for what is 30 signatures here.
+//! (spike §3). Taking the crate for function pointers alone costs 24 crates and a much larger binary, for what is 27 signatures here.
 //! Those are copied from the headers of the version the digest pins: chromium/8125, non-V8, non-XFA, fetched by `tools/pdfium.sh`.
 //!
 //! **Not thread-safe.** PDFium holds global state. So there's one library per process, one live document ([`PdfiumBackend::open`]
@@ -119,7 +119,7 @@ pdfium_api! {
 
 /// Why PDFium couldn't be brought up. Separate from [`FailCode`] because a worker reports this once, at start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BackendGuardError {
+pub enum LibraryError {
     /// The library file is missing or isn't loadable.
     LibraryMissing,
     /// A function this seam needs isn't in the library, so it's the wrong version.
@@ -131,16 +131,16 @@ pub struct Pdfium {
     api: &'static Api,
 }
 
-static API: OnceLock<Result<Api, BackendGuardError>> = OnceLock::new();
+static API: OnceLock<Result<Api, LibraryError>> = OnceLock::new();
 /// Set while a document is open. PDFium's global state makes a second one unsafe however carefully it's used.
 static DOCUMENT_OPEN: AtomicBool = AtomicBool::new(false);
 
 impl Pdfium {
     /// Loads and initialises the library at `path`. Later calls return the same library whatever path they name.
-    pub fn load(path: &Path) -> Result<Self, BackendGuardError> {
+    pub fn load(path: &Path) -> Result<Self, LibraryError> {
         let loaded = API.get_or_init(|| {
-            let library = Library::open(path).map_err(|_| BackendGuardError::LibraryMissing)?;
-            let api = Api::load(&library).ok_or(BackendGuardError::WrongLibrary)?;
+            let library = Library::open(path).map_err(|_| LibraryError::LibraryMissing)?;
+            let api = Api::load(&library).ok_or(LibraryError::WrongLibrary)?;
             // SAFETY: the symbol was resolved above, and `get_or_init` means this runs once in the process.
             unsafe { (api.FPDF_InitLibrary)() };
             // `Library` has no destructor: the library stays loaded for the process's life, and `api` points into it.
@@ -408,7 +408,7 @@ impl RenderBackend for PdfiumBackend {
         }
         let text = open.text;
         if text.is_null() {
-            return Ok(PageChars { hidden_checked: false, ..PageChars::default() });
+            return Err(FailCode::Internal);
         }
         // SAFETY: `text` was just checked to be live.
         let count = unsafe { (api.FPDFText_CountChars)(text) }.max(0);
@@ -439,9 +439,10 @@ impl RenderBackend for PdfiumBackend {
                 boxes.push([edge(left), edge(bottom), edge(right), edge(top)]);
             }
         }
-        let mut hidden_checked = false;
+        // A page with no characters has nothing to hide from a text reader, and needs no drawing to say so.
+        let hidden_checked = options.hidden_check;
         if options.hidden_check && !chars.is_empty() {
-            hidden_checked = self.mark_no_ink(page, &mut chars, &boxes)?;
+            self.mark_no_ink(page, &mut chars, &boxes)?;
         }
         if !options.boxes {
             boxes = Vec::new();
@@ -457,7 +458,7 @@ const INK_MAX_BYTES: f32 = 64.0 * 1024.0 * 1024.0;
 impl PdfiumBackend {
     /// Draws the page and sets `NO_INK` on each visible-looking character whose box has no ink. Nothing is removed. From the spike's
     /// prototype, §10.4. Whitespace, control characters and characters PDFium generated have no ink to find, so they're skipped.
-    fn mark_no_ink(&mut self, page: u32, chars: &mut [CharRecord], boxes: &[CharBox]) -> Result<bool, RenderError> {
+    fn mark_no_ink(&mut self, page: u32, chars: &mut [CharRecord], boxes: &[CharBox]) -> Result<(), RenderError> {
         let size = self.page_size(page)?;
         let area_at_ink_scale = size.width * INK_SCALE * size.height * INK_SCALE * 4.0;
         let scale = if area_at_ink_scale > INK_MAX_BYTES { INK_SCALE * (INK_MAX_BYTES / area_at_ink_scale).sqrt() } else { INK_SCALE };
@@ -484,10 +485,10 @@ impl PdfiumBackend {
             let (x0, y0) = to_device(left, top);
             let (x1, y1) = to_device(right, bottom);
             if !crate::box_has_ink(&pixels, width, height, stride as usize, (x0, y0, x1.saturating_add(1), y1.saturating_add(1))) {
-                *record = CharRecord::new(ch as u32, record.bits() & (CharRecord::HYPHEN | CharRecord::GENERATED) | CharRecord::NO_INK);
+                *record = CharRecord::new(ch as u32, CharRecord::NO_INK);
             }
         }
-        Ok(true)
+        Ok(())
     }
 }
 

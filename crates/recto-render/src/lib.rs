@@ -9,7 +9,7 @@ mod pdfium;
 
 pub use classify::classify_bgrx;
 pub use ink::{INK_PADDING_PX, INK_RANGE, box_has_ink};
-pub use pdfium::{BackendGuardError, Pdfium, PdfiumBackend};
+pub use pdfium::{LibraryError, Pdfium, PdfiumBackend};
 pub use recto_proto::{CharBox, CharRecord, FailCode, TileKind, TileRect};
 
 /// Asks whether the job this check belongs to has gone stale. Called between PDF objects, so it must be cheap: one atomic load.

@@ -262,6 +262,17 @@ fn an_ordinary_page_has_no_hidden_text() {
     assert_eq!(flagged, 0);
 }
 
+/// Failure: a page with no text reads as "not checked", so an agent is told nothing is known about a page where there's nothing to know.
+#[test]
+fn a_page_with_no_text_counts_as_checked() {
+    let _turn = turn();
+    let file = TempPdf::new("empty-page.pdf", &pages(&[Page::new(b"0.5 g 10 10 100 100 re f".to_vec())]));
+    let mut backend = open(&file);
+    let page = backend.page_text(0, TextOptions { boxes: false, hidden_check: true }).unwrap();
+    assert!(page.chars.is_empty());
+    assert!(page.hidden_checked);
+}
+
 /// Failure: garbage or an encrypted file is reported as something else, so the user is told the wrong thing.
 #[test]
 fn open_failures_say_why() {

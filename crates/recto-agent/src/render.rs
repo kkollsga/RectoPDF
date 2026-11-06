@@ -182,6 +182,7 @@ pub(crate) fn budget(path: &Path, args: &BudgetArgs) -> Result<Value, AgentError
         "peak_footprint_bytes": report.peak_footprint_bytes,
         "last_footprint_bytes": report.last_footprint_bytes,
         "host_footprint_bytes": recto_platform::footprint_bytes(),
+        "surface_bytes": report.surface_bytes,
         "pages_drawn": report.pages_drawn,
         "pages_failed": report.pages_failed,
         "spawns": report.spawns,

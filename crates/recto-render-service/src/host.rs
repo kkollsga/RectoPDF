@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// The memory holding a tile's pixels: written by the worker, read by the host and later the compositor. Host-owned, because the host hands
@@ -21,7 +21,7 @@ pub type Surface = SharedMemory;
 pub struct Policy {
     /// Past this footprint during a job, the worker is killed.
     pub memory_limit_bytes: u64,
-    /// Past this footprint after a job, the worker is retired.
+    /// Past this footprint after a job, the worker is retired before its next job for another page.
     pub retire_bytes: u64,
     /// A job running longer than this has its worker killed.
     pub page_deadline: Duration,
@@ -31,6 +31,8 @@ pub struct Policy {
     pub idle_exit: Duration,
     /// How often a running job's worker is checked.
     pub watch_step: Duration,
+    /// How long a new worker gets to say it's ready. Loading PDFium took 2 ms in the spike, so this is only for one that isn't going to.
+    pub start_timeout: Duration,
 }
 
 impl Default for Policy {
@@ -46,6 +48,7 @@ impl Default for Policy {
             idle_exit: Duration::from_secs(30),
             // The worst growth measured is about 650 MiB/s, so this overshoots by a few MiB.
             watch_step: Duration::from_millis(5),
+            start_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -225,15 +228,30 @@ struct Worker {
     jobs_done: u32,
 }
 
-/// Cancels jobs by generation, from any thread, with one atomic store.
+/// The word that says which generations are stale. The worker sees a shared copy and may be hostile, so the host decides from its own: a worker
+/// that scribbles on the shared one can only cancel its own jobs, not make the host believe everything is stale.
+#[derive(Debug)]
+struct CancelWord {
+    shared: SharedMemory,
+    cutoff: AtomicU64,
+}
+
+impl CancelWord {
+    fn is_stale(&self, generation: u64) -> bool {
+        generation < self.cutoff.load(Ordering::Relaxed)
+    }
+}
+
+/// Cancels jobs by generation, from any thread, with atomic stores and no system call.
 #[derive(Clone, Debug)]
-pub struct CancelHandle(Arc<SharedMemory>);
+pub struct CancelHandle(Arc<CancelWord>);
 
 impl CancelHandle {
     /// Every job with a generation below this is stale. Only ever moves up.
     pub fn cancel_before(&self, generation: u64) {
-        if let Some(word) = self.0.atomic_u64(control::CANCEL_BEFORE_OFFSET) {
-            word.fetch_max(generation, Ordering::Relaxed);
+        let cutoff = self.0.cutoff.fetch_max(generation, Ordering::Relaxed).max(generation);
+        if let Some(word) = self.0.shared.atomic_u64(control::CANCEL_BEFORE_OFFSET) {
+            word.store(cutoff, Ordering::Relaxed);
         }
     }
 }
@@ -282,11 +300,13 @@ pub struct DocRenderer {
     policy: Policy,
     file: File,
     password: Option<Vec<u8>>,
-    control: Arc<SharedMemory>,
+    control: Arc<CancelWord>,
     worker: Option<Worker>,
     page_count: Option<u32>,
     next_job: u32,
     failed: Vec<(u32, KillReason)>,
+    /// The page the worker last worked on, while its footprint is past the retirement line. It goes before the next job for any other page.
+    retire_after_page: Option<u32>,
     stats: RenderStats,
 }
 
@@ -297,17 +317,18 @@ impl DocRenderer {
             io::ErrorKind::NotFound => RenderFailure::NotFound,
             _ => RenderFailure::Unavailable,
         })?;
-        let control = SharedMemory::create(control::LEN).map_err(|_| RenderFailure::Unavailable)?;
+        let shared = SharedMemory::create(control::LEN).map_err(|_| RenderFailure::Unavailable)?;
         Ok(Self {
             config,
             policy,
             file,
             password: password.map(<[u8]>::to_vec),
-            control: Arc::new(control),
+            control: Arc::new(CancelWord { shared, cutoff: AtomicU64::new(0) }),
             worker: None,
             page_count: None,
             next_job: 0,
             failed: Vec::new(),
+            retire_after_page: None,
             stats: RenderStats::default(),
         })
     }
@@ -388,8 +409,7 @@ impl DocRenderer {
         if job.bytes_needed() > surface.len() as u64 {
             return Err(RenderFailure::BadRequest);
         }
-        let stale = self.control.atomic_u64(control::CANCEL_BEFORE_OFFSET).is_some_and(|word| request.generation < word.load(Ordering::Relaxed));
-        if stale {
+        if self.control.is_stale(request.generation) {
             return Ok(TileResult::Cancelled { worker_killed: false });
         }
         let frame = job.encode();
@@ -457,6 +477,10 @@ impl DocRenderer {
         if let Some((_, reason)) = self.failed.iter().find(|(failed, _)| *failed == page) {
             return Err(RenderFailure::PageFailed { page, reason: *reason }.into());
         }
+        if self.retire_after_page.is_some_and(|last| last != page) {
+            self.stats.retirements += 1;
+            self.bury_worker();
+        }
         let mut retried = false;
         let mut idle_retries = 0;
         loop {
@@ -475,11 +499,11 @@ impl DocRenderer {
             match outcome {
                 Ok(value) => {
                     worker.jobs_done += 1;
-                    self.after_job();
+                    self.after_job(page);
                     return Ok(value);
                 }
                 Err(Stop::Refused(code)) => {
-                    self.after_job();
+                    self.after_job(page);
                     return Err(failure_from_code(code).into());
                 }
                 Err(Stop::StaleKilled) => {
@@ -524,21 +548,21 @@ impl DocRenderer {
         RenderFailure::PageFailed { page, reason }.into()
     }
 
-    /// Retires a worker past the limit. Closing the document wouldn't help: only exit returns the memory (spike §6).
-    fn after_job(&mut self) {
+    /// Notes a worker past the retirement line. Only exit returns the memory (spike §6), but the worker goes before the next job for another
+    /// page rather than now. A page can pass the line by itself, and retiring between its tiles would make it reload for each one: measured on
+    /// the USGS map, 72 respawns and 14 s to draw one page.
+    fn after_job(&mut self, page: u32) {
         let Some(worker) = self.worker.as_mut() else { return };
         let footprint = worker.child.memory().map_or(0, |memory| {
             self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(memory.peak_footprint_bytes);
             memory.footprint_bytes
         });
-        if footprint > self.policy.retire_bytes {
-            self.stats.retirements += 1;
-            self.bury_worker();
-        }
+        self.retire_after_page = (footprint > self.policy.retire_bytes).then_some(page);
     }
 
     /// Takes the worker away, killed and collected, keeping its last numbers.
     fn bury_worker(&mut self) {
+        self.retire_after_page = None;
         if let Some(mut worker) = self.worker.take() {
             worker.child.kill();
             self.note_peak(&worker);
@@ -575,7 +599,7 @@ impl DocRenderer {
         self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(ready);
         let handles = (
             Handle::from_file(&self.file).map_err(|_| RenderFailure::Unavailable)?,
-            self.control.handle(),
+            self.control.shared.handle(),
         );
         let frame = proto::encode_open(self.password.as_deref().unwrap_or_default()).map_err(|_| RenderFailure::NeedsPassword)?;
         let watch = Watch { policy: &self.policy, control: &self.control, generation: None };
@@ -641,14 +665,13 @@ fn failure_from_code(code: FailCode) -> RenderFailure {
 /// What one exchange watches for.
 struct Watch<'a> {
     policy: &'a Policy,
-    control: &'a SharedMemory,
+    control: &'a CancelWord,
     generation: Option<u64>,
 }
 
 impl Watch<'_> {
     fn is_stale(&self) -> bool {
-        let cutoff = self.control.atomic_u64(control::CANCEL_BEFORE_OFFSET).map_or(0, |word| word.load(Ordering::Relaxed));
-        self.generation.is_some_and(|generation| generation < cutoff)
+        self.generation.is_some_and(|generation| self.control.is_stale(generation))
     }
 }
 
@@ -678,9 +701,8 @@ impl Worker {
         let child = ChildProcess::spawn(&config.worker_exe, &arg_refs, &env_refs, theirs)?;
         ours.set_nonblocking(true)?;
         let mut worker = Self { child, channel: ours, reader: FrameReader::default(), jobs_done: 0 };
-        // Loading PDFium took 2 ms in the spike. This is the time to give a process that isn't going to answer.
         let started = Instant::now();
-        let limit = Duration::from_secs(10);
+        let limit = policy.start_timeout;
         let hello = loop {
             match worker.reader.read(&worker.channel) {
                 Ok(Some(frame)) => break frame,

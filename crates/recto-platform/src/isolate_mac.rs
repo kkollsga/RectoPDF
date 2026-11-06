@@ -170,9 +170,10 @@ impl Channel {
                     let len = ((*header).cmsg_len as usize).saturating_sub(data.offset_from(header.cast()) as usize);
                     for i in 0..len / size_of::<RawFd>() {
                         let fd = data.cast::<RawFd>().add(i).read_unaligned();
-                        // Owned first, so a failure below still closes it.
+                        // Owned first, so it's closed if nothing keeps it. Our own spawns inherit nothing by default, so a failure
+                        // to mark it costs only the second line of defence.
                         let owned = OwnedFd::from_raw_fd(fd);
-                        set_cloexec(fd)?;
+                        let _ = set_cloexec(fd);
                         handles.push(Handle(owned));
                     }
                 }

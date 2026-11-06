@@ -124,6 +124,11 @@ fn fake_worker() {
         let Ok(frame) = reader.read_blocking(&channel) else { isolate::exit_now(0) };
         match frame.kind {
             Kind::Open => {
+                if mode == "scribble_cancel" {
+                    let mut handles = frame.handles;
+                    let control = SharedMemory::map(handles.pop().unwrap(), recto_render_service::control::LEN).unwrap();
+                    control.atomic_u64(recto_render_service::control::CANCEL_BEFORE_OFFSET).unwrap().store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+                }
                 let reply = if mode == "open_lies" { vec![0xFF; 16] } else { proto::encode_opened(3) };
                 let _ = send_all(&channel, &reply, &[]);
             }
@@ -292,8 +297,11 @@ fn a_worker_that_grows_is_killed_at_the_limit_from_outside() {
 fn retirement_is_measured_from_outside() {
     let (mut doc, _file) = doc("bloat_then_answer", Policy { retire_bytes: 16 * 1024 * 1024, ..policy() });
     assert!(matches!(doc.render_tile(&request(), &surface()).unwrap(), TileResult::Done(_)));
+    let bloated = doc.worker_pid();
+    let next_page = TileRequest { page: 1, ..request() };
+    assert!(matches!(doc.render_tile(&next_page, &surface()).unwrap(), TileResult::Done(_)));
     assert_eq!(doc.stats().retirements, 1);
-    assert!(!doc.has_worker());
+    assert_ne!(doc.worker_pid(), bloated);
 }
 
 /// Failure: a crash in a worker that has drawn other pages marks the page as bad, though the cause may be what's built up. It gets one more
@@ -347,6 +355,37 @@ fn a_worker_that_wont_start_properly_is_refused() {
     let (mut wrong, _file) = doc("wrong_hello", policy());
     assert_eq!(wrong.page_count().unwrap_err(), RenderFailure::Unavailable);
     assert_eq!(wrong.stats().spawns, 0);
+}
+
+/// Failure: a worker that never says hello hangs its caller for ever.
+#[test]
+fn a_worker_that_never_says_hello_is_given_up_on() {
+    let (mut doc, _file) = doc("hang_before_hello", Policy { start_timeout: Duration::from_millis(100), ..policy() });
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::Unavailable);
+    assert!(!doc.has_worker());
+}
+
+/// Failure: a compromised worker writes to the shared cancel word and the host believes it, so every tile of the document reads as stale.
+#[test]
+fn a_worker_cant_make_the_host_think_everything_is_stale() {
+    let (mut doc, _file) = doc("scribble_cancel", policy());
+    doc.page_count().unwrap();
+    assert!(matches!(doc.render_tile(&request(), &surface()).unwrap(), TileResult::Done(_)));
+    assert_eq!(doc.stats().cancel_kills, 0);
+}
+
+/// Failure: a worker keeps sending handles on a long frame, and the host holds them until it runs out of descriptors.
+#[test]
+fn handles_on_a_dripped_frame_are_capped() {
+    let (a, b) = Channel::pair().unwrap();
+    let memory = SharedMemory::create(4096).unwrap();
+    let frame = proto::encode_opened(5);
+    for byte in &frame {
+        a.send(std::slice::from_ref(byte), &[memory.handle()]).unwrap();
+    }
+    let received = FrameReader::default().read_blocking(&b).unwrap();
+    assert_eq!(received.kind, Kind::Opened);
+    assert!(received.handles.len() <= isolate::MAX_HANDLES, "kept {}", received.handles.len());
 }
 
 /// Failure: a lie at open time is believed, or panics the host.

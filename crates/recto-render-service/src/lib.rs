@@ -8,7 +8,8 @@
 //! refuses `RLIMIT_AS`, `RLIMIT_DATA` and `RLIMIT_RSS` with `EINVAL` (measured, macOS 27).
 //! - Hard memory limit: the worker's footprint is read every 5 ms during a job and it's killed when past the limit.
 //! - Page deadline: past it, the worker is killed.
-//! - Retirement: after a job, a footprint past 64 MiB ends the worker, because only exit returns the memory (spike §6).
+//! - Retirement: a footprint past 64 MiB after a job ends the worker before its next job for another page, because only exit returns the
+//!   memory (spike §6).
 //! - Cancel by generation: one shared atomic. The worker polls it between objects; if it hasn't returned within the grace, it's killed.
 //! - Idle exit: the worker leaves 30 s after its last job, and the next job starts another.
 //!

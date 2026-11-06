@@ -77,6 +77,9 @@ pub struct BudgetReport {
     pub opened_footprint_bytes: u64,
     pub peak_footprint_bytes: u64,
     pub last_footprint_bytes: u64,
+    /// The largest surface used. Shared memory counts in a footprint only while a process has it mapped and has touched it. The worker unmaps
+    /// after each job and the host hasn't read these, so this memory is in nobody's footprint and must be added by whoever is counting.
+    pub surface_bytes: u64,
     pub pages_drawn: u32,
     pub pages_failed: u32,
     pub spawns: u32,
@@ -121,6 +124,7 @@ pub fn measure_budget(doc: &mut DocRenderer, options: BudgetOptions) -> Result<B
         };
         report.samples.push(PageSample { page, micros, render_us, footprint_after_bytes, failure });
     }
+    report.surface_bytes = surface.as_ref().map_or(0, |memory| memory.len() as u64);
     let stats = doc.stats();
     report.peak_footprint_bytes = stats.peak_footprint_bytes;
     report.spawns = stats.spawns;

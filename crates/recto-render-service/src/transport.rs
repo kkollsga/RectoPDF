@@ -1,6 +1,6 @@
 //! Frames over a channel, for both sides. Knows bytes and handles, nothing about jobs.
 
-use recto_platform::isolate::{Channel, Handle};
+use recto_platform::isolate::{Channel, Handle, MAX_HANDLES};
 use recto_proto::{HEADER_LEN, Header, Kind, ProtoError};
 use std::io;
 
@@ -81,7 +81,10 @@ impl FrameReader {
 }
 
 fn recv(channel: &Channel, buf: &mut [u8], handles: &mut Vec<Handle>) -> Result<Option<usize>, ReadError> {
-    match channel.recv(buf, handles) {
+    let received = channel.recv(buf, handles);
+    // No frame needs more. Past this they're closed at once, so a worker dripping a long frame with handles on it can't fill the host's table.
+    handles.truncate(MAX_HANDLES);
+    match received {
         Ok(0) => Err(ReadError::Closed),
         Ok(got) => Ok(Some(got)),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),

@@ -157,18 +157,36 @@ fn an_idle_worker_leaves_and_the_next_job_starts_another() {
     assert_eq!(doc.stats().crashes, 0, "leaving when idle isn't a crash");
 }
 
-/// Failure: a worker past the retirement footprint keeps going, so memory only ever grows through a long document.
+/// Failure: a worker past the footprint keeps going into another page, so memory only ever grows through a long document.
 #[test]
-fn a_worker_past_the_footprint_is_retired_and_replaced() {
+fn a_worker_past_the_footprint_is_retired_before_the_next_page() {
     let file = plain_doc();
     let policy = Policy { retire_bytes: 1024, ..Policy::default() };
     let mut doc = renderer(&file.0, policy);
     draws(&mut doc, 0);
-    assert!(!doc.has_worker(), "past the footprint, so it should be gone");
-    assert_eq!(doc.stats().retirements, 1);
+    let first = doc.worker_pid();
     assert_eq!(draws(&mut doc, 1), TileKind::Grey, "retiring doesn't lose the document");
+    assert_ne!(doc.worker_pid(), first, "the next page should have a new worker");
+    assert_eq!(doc.stats().retirements, 1);
     assert_eq!(doc.stats().spawns, 2);
     assert_eq!(doc.stats().crashes, 0, "retiring isn't a crash");
+}
+
+/// Failure: a page past the footprint by itself has its worker retired between its tiles, so every tile reloads it. Measured on a real map:
+/// 72 respawns and 14 s to draw one page.
+#[test]
+fn tiles_of_one_page_share_a_worker_even_past_the_footprint() {
+    let file = plain_doc();
+    let policy = Policy { retire_bytes: 1024, ..Policy::default() };
+    let mut doc = renderer(&file.0, policy);
+    let surface = tile_surface();
+    for x in 0..3 {
+        let request = TileRequest { rect: TileRect { x: x * 300, y: 0, width: 300, height: 300 }, ..tile_request(0, 0) };
+        assert!(matches!(doc.render_tile(&request, &surface).unwrap(), TileResult::Done(_)));
+    }
+    assert_eq!(doc.stats().spawns, 1);
+    assert_eq!(doc.stats().retirements, 0);
+    assert!(doc.has_worker());
 }
 
 /// Failure: a request that can't be met kills the worker, so one bad scroll position costs a respawn.
