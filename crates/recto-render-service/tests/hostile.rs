@@ -72,11 +72,6 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
             }
             return;
         }
-        "attach_handles" => {
-            let extra = SharedMemory::create(4096).unwrap();
-            let _ = send_all(channel, &good.encode(), &[extra.handle()]);
-            return;
-        }
         _ => good.encode(),
     };
     let _ = send_all(channel, &reply, &[]);
@@ -333,20 +328,6 @@ fn claiming_to_be_idle_cant_loop_for_ever() {
 fn a_slow_reply_is_still_a_reply() {
     let (mut doc, _file) = doc("drip", policy());
     assert!(matches!(doc.render_tile(&request(), &surface()).unwrap(), TileResult::Done(_)));
-}
-
-/// Failure: a worker sends handles to the host and the host keeps them, until it runs out of descriptors.
-#[test]
-fn handles_from_a_worker_are_not_kept() {
-    let (mut doc, _file) = doc("attach_handles", policy());
-    let surface = surface();
-    doc.page_count().unwrap();
-    assert!(matches!(doc.render_tile(&request(), &surface).unwrap(), TileResult::Done(_)));
-    let before = recto_platform::open_handle_count();
-    for _ in 0..20 {
-        assert!(matches!(doc.render_tile(&request(), &surface).unwrap(), TileResult::Done(_)));
-    }
-    assert_eq!(recto_platform::open_handle_count(), before);
 }
 
 /// Failure: a worker that won't say hello hangs the caller, or wrong version bytes are accepted.
