@@ -25,6 +25,7 @@ const I = {
   send: svg(14, 14, '<path d="M7 11.5v-9M3.4 6 7 2.5 10.6 6"/>'),
   seal: svg(14, 14, '<path d="M7 1.3 8.5 2.5l1.9-.1.6 1.8 1.6 1.1-.7 1.8.7 1.7-1.6 1.1-.6 1.9-1.9-.1L7 12.7l-1.5-1.2-1.9.1-.6-1.9-1.6-1.1.7-1.7-.7-1.8L3 4.2l.6-1.8 1.9.1z"/><path d="m5 7 1.5 1.5L9.2 5.7"/>'),
   sigmark: svg(14, 14, '<path d="M7 1.3 8.5 2.5l1.9-.1.6 1.8 1.6 1.1-.7 1.8.7 1.7-1.6 1.1-.6 1.9-1.9-.1L7 12.7l-1.5-1.2-1.9.1-.6-1.9-1.6-1.1.7-1.7-.7-1.8L3 4.2l.6-1.8 1.9.1z"/>'),
+  back: svg(10, 10, '<path d="M6.5 1.8 3.100 5l3.400 3.200"/>'),
   key: svg(15, 15, '<circle cx="5" cy="10" r="2.8"/><path d="m7 8 5.2-5.2M10 5l1.8 1.8"/>'),
   lock: svg(14, 14, '<rect x="3" y="6.2" width="8" height="5.8" rx="1.3"/><path d="M4.8 6.2V4.6a2.2 2.2 0 0 1 4.4 0v1.6"/>'),
   page: svg(14, 14, '<path d="M3.5 2.8c0-.5.4-.9.9-.9h3.7l2.4 2.4v6.9c0 .5-.4.9-.9.9H4.4a.9.9 0 0 1-.9-.9z"/><path d="M8 2v2.4h2.4"/>'),
@@ -71,21 +72,34 @@ function sidebar({ active = "survey", open = true, tabs = TABS, tap = false, hov
   return `<aside class="sidebar">
     <div class="side-top"><div class="lights"><i></i><i></i><i></i></div><span class="ibtn ${on.includes("search") ? "on" : ""}">${I.search}</span><span class="ibtn">${I.plus}</span></div>
     <div class="tabs" style="position:relative">${rows}${tap ? '<span class="tap"></span>' : ""}</div>
-    <div class="side-foot">${chrome ? `<span class="place"><b>${pg[0]}</b> of ${pg[1]}</span>` : "<span></span>"}<span class="ibtn ${on.includes("more") ? "on" : ""}">${I.more}</span></div>
-    ${menu}
+    ${menu}<div class="side-foot">${chrome ? `<span class="place"><b>${pg[0]}</b> of ${pg[1]}</span>` : "<span></span>"}<span class="ibtn ${on.includes("more") ? "on" : ""}">${I.more}</span></div>
   </aside>`;
 }
 
 const AGENT = (on = false) => `<span class="ibtn agentbtn ${on ? "on" : ""}">${I.ask}</span>`;
 const pill = (page, total) => `<div class="pill"><span class="sec"><span class="num">${page}</span> of ${total}</span></div>`;
-const MENU = () => `<div class="menu">
-  <div class="mi">Find<kbd>⌘F</kbd></div>
-  <div class="mi zoomrow">Zoom<span class="zoom"><span class="zb">${I.minus}</span>125%<span class="zb">${I.plus14}</span><span class="zb">${I.fit}</span></span></div>
-  ${theme === "dark" ? `<div class="mi paperrow">Paper<span class="seg mini"><span class="on">Dark</span><span>White</span></span></div>` : ""}
-  <div class="msep"></div>
-  <div class="mi">Sign…</div><div class="mi">Print…<kbd>⌘P</kbd></div><div class="mi">Hide sidebar<kbd>⌃⌘S</kbd></div>
-  <div class="msep"></div>
-  <div class="mi">Settings…<kbd>⌘,</kbd></div></div>`;
+// The ⋯ button opens this in the lower part of the sidebar. PDFs and contents stay visible above it.
+const DOCK_TABS = ["View", "Pages", "Mark up", "Tools"];
+const grid = (items) => `<div class="dgrid">${items.map((t) => `<span>${t}</span>`).join("")}</div>`;
+const PANES = {
+  View: () => `<div class="dpane">
+    <div class="drow">Zoom<span class="zoom"><span class="zb">${I.minus}</span>125%<span class="zb">${I.plus14}</span><span class="zb">${I.fit}</span></span></div>
+    ${theme === "dark" ? `<div class="drow">Paper<span class="seg mini"><span class="on">Dark</span><span>White</span></span></div>` : ""}
+    <div class="drow">Layout<span class="seg mini"><span class="on">Single</span><span>Spread</span></span></div></div>
+    ${grid(["Focus view", "Hide sidebar", "Print…", "Settings…"])}`,
+  Pages: () => grid(["Thumbnails", "Rotate", "Reorder", "Insert", "Delete", "Extract", "Merge", "Split"]),
+  "Mark up": () => grid(["Highlight", "Underline", "Strikeout", "Note", "Draw", "Image signature", "Fill form", "Create form"]),
+  Tools: () => grid(["Snapshot", "Compare", "Compress", "Make searchable", "Redact", "Remove hidden data", "Watermark", "Bates numbers", "Password", "Measure"]),
+};
+const DOCK = (tab = "View", body = "") => `<div class="dock"><div class="dtabs">${DOCK_TABS.map((t) => `<span class="${t === tab ? "on" : ""}">${t}</span>`).join("")}</div>${body || PANES[tab]()}</div>`;
+const COMPRESS = `<div class="dback">${I.back}Compress<span>41 MB now</span></div>
+  <div class="levels">
+    <div class="lvl"><b>Low</b><span>220 DPI</span><em>33 MB</em></div>
+    <div class="lvl on"><b>Medium</b><span>150 DPI</span><em>18 MB</em></div>
+    <div class="lvl"><b>High</b><span>96 DPI</span><em>9 MB</em></div>
+  </div>
+  <div class="dnote">Text and vector graphics aren't touched.</div>
+  <div class="dsave"><span class="btn primary small">Save copy</span></div>`;
 
 // A bathymetry figure with its own colours: it keeps them in PDF dark mode, like photos do.
 const FIGURE = `<svg viewBox="0 0 576 214" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, Helvetica Neue, sans-serif">
@@ -217,7 +231,9 @@ const Screens = {
   home: () => `<div class="window">${sidebar({ active: "", tabs: [], chrome: false })}<main class="main">${HOME}</main></div>`,
   reader: () => `<div class="window">${sidebar({})}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
   paperwhite: () => `<div class="window">${sidebar({})}<main class="main">${surface({ cls: "true-page", extra: AGENT() })}</main></div>`,
-  menu: () => `<div class="window">${sidebar({ on: "more", menu: MENU() })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
+  menu: () => `<div class="window">${sidebar({ on: "more", menu: DOCK("View") })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
+  tools: () => `<div class="window">${sidebar({ on: "more", menu: DOCK("Tools") })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
+  compress: () => `<div class="window">${sidebar({ on: "more", menu: DOCK("Tools", COMPRESS) })}<main class="main">${surface({ extra: AGENT() })}</main></div>`,
   find: () => `<div class="window">${sidebar({ on: "search", body: FIND })}<main class="main">${surface({ cls: "show-hits", extra: AGENT() })}</main></div>`,
   ask: () => `<div class="window">${sidebar({})}<main class="main">${surface({ cls: "show-cite", width: 700 })}${ASK}</main></div>`,
   sign: () => `<div class="window">${sidebar({ active: "lease", pg: [6, 6], body: STATUS + tocHtml(LEASE_TOC) })}<main class="main">${surface({ page: LEASE_PAGE, width: 700 })}${SIGN}</main></div>`,

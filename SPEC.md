@@ -70,7 +70,7 @@ Reference: `docs/concepts/`. Rules from the owner:
 - **No top bar.** Maximum vertical reading space; nothing sits above or over a page.
 - **Tabs live in the sidebar.** Tapping the active PDF folds or opens its contents.
 - **At rest the sidebar is only names and contents.** The rail fills as you read. Chevron and page numbers appear on hover.
-- **Everything else** lives in a `⋯` menu and a ⌘K command list, or appears when relevant.
+- **Everything else lives in a compact panel** that the `⋯` button opens in the lower part of the sidebar, with tabs for View, Pages, Mark up and Tools. Owner, 2026-11-06: "the way we can add complex features without making the app complex is to let the … menu toggle open a compact menu in lower part of left sidebar with tabs". A tool such as Compress opens in place inside the panel, and the PDFs and contents stay visible above it. ⌘K finds any command.
 - **Agent icon at the top right**, in the empty margin. It opens the agent panel and stays in the same spot.
 - **Dark mode offers dark or white paper.** Signing always shows the true page.
 - **Focus view:** sidebar hidden, page number only, agent icon kept.

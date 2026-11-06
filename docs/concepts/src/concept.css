@@ -311,14 +311,30 @@ mark { background: transparent; color: inherit; }
 .surface > .agentbtn { position: absolute; top: 11px; right: 12px; z-index: 5; }
 .panel .agentbtn { }
 
-/* The ⋯ menu holds everything that isn't reading. */
-.menu { position: absolute; left: 12px; right: 12px; bottom: 46px; z-index: 9; background: var(--raised); border-radius: 11px; padding: 5px; box-shadow: 0 0 0 .5px var(--hair-strong), 0 12px 34px rgba(0,0,0,.24); font-size: 13px; }
-.mi { display: flex; align-items: center; justify-content: space-between; min-height: 28px; padding: 0 3px 0 9px; border-radius: 6px; }
-.mi kbd { font: 11.5px -apple-system, sans-serif; color: var(--faint); padding-right: 6px; }
-.msep { height: .5px; background: var(--hair-strong); margin: 4px 8px; }
-.mi .zoom { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.seg.mini { width: 112px; margin: 2px 0; font-size: 11.5px; }
+/* The ⋯ button opens a compact panel docked in the lower sidebar, not a popover. */
+.tabs { min-height: 0; }
+.dock { flex: none; border-top: .5px solid var(--hair-strong); padding: 7px 8px 6px; font-size: 12.5px; }
+.dtabs { display: grid; grid-template-columns: repeat(4, auto); justify-content: space-between; margin-bottom: 7px; }
+.dtabs span { padding: 3px 9px; border-radius: 6px; color: var(--muted); font-size: 12px; }
+.dtabs span.on { color: var(--text); background: var(--fill-strong); font-weight: 560; }
+.dpane { padding-bottom: 2px; }
+.drow { display: flex; align-items: center; justify-content: space-between; min-height: 28px; padding: 0 0 0 9px; }
+.drow .zoom { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.seg.mini { width: 124px; margin: 0; font-size: 11.5px; }
 .seg.mini span { padding: 2px 0; }
+.dgrid { display: grid; grid-template-columns: 1fr 1fr; }
+.dgrid span { min-height: 27px; display: flex; align-items: center; padding: 0 9px; border-radius: 6px; white-space: nowrap; font-size: 12.5px; }
+.dback { display: flex; align-items: center; gap: 6px; padding: 2px 9px 7px; font-weight: 560; }
+.dback svg { color: var(--muted); }
+.dback span { margin-left: auto; font-weight: 400; color: var(--muted); font-size: 11.5px; }
+.levels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.lvl { display: flex; flex-direction: column; gap: 1px; padding: 7px 8px; border-radius: 8px; background: var(--fill); font-size: 11px; color: var(--muted); }
+.lvl b { color: var(--text); font-weight: 560; font-size: 12px; }
+.lvl em { font-style: normal; color: var(--text); font-variant-numeric: tabular-nums; margin-top: 2px; }
+.lvl.on { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.dnote { padding: 7px 9px 3px; font-size: 11px; color: var(--muted); }
+.dsave { display: flex; justify-content: flex-end; padding: 3px 1px 2px; }
+.btn.small { height: 26px; padding: 0 11px; font-size: 12px; }
 .frame .side-foot { height: auto; }
 .side-foot .place { display: block; }
 .tap { left: 224px; top: 3px; }
