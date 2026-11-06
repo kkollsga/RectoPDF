@@ -29,6 +29,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - Workers commit on their own branch with the trailer they're given, and don't merge. The coordinator merges with `--no-ff`.
 
 ## Writing for the owner
+- **Show new features.** Owner, 2026-11-06: "Print screenshots as new features are added." When a feature lands, the coordinator sends real screenshots of it, after looking at them first. Label anything that is a mock-up rather than the real app.
 - Keep them informed in short updates, and say plainly what failed. Don't give them manual tasks.
 - When the owner states a rule, write it here or in `SPEC.md` straight away, in their words, with the date.
 - Never fabricate a measurement. Say what wasn't tested.

@@ -17,7 +17,7 @@ Last updated 2026-11-06. Behaviour is in `SPEC.md`, and the reasons behind it ar
 
 **Sizes are rough estimates by the coordinating agent, not measurements,** and they're work rather than calendar time. Several agents can run at once, but only one heavy build at a time. The total is about 85–135 agent-days.
 
-**How to follow along:** this page is updated as work lands. Each phase ends with a short report to you: what works, the budgets measured, renders in light and dark, and what wasn't tested.
+**How to follow along:** this page is updated as work lands. **Real screenshots are sent to the owner as each new feature lands**, light and dark once the app exists. Each phase ends with a short report: what works, the budgets measured, and what wasn't tested.
 
 ## Rules for every phase
 
