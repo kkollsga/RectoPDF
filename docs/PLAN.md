@@ -118,7 +118,9 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Update check: *Check for Updates…* in the RectoPDF menu, *Update to X.Y.Z…* when one is found, once a day (SPEC decision 24)
 - [ ] Links, back and forward, page labels
 - [ ] Click to copy an image losslessly
-- [ ] Snapshot tool with text, PNG, JPG and the hand-rolled streaming `recto-svg`
+- [x] Hand-rolled streaming `recto-svg`, and `recto export svg`: a page or a box to a new SVG, images lossless, what can't be vector a named picture of just that element
+- [ ] Snapshot tool with text, PNG, JPG and SVG, on top of that
+- [ ] SVG follow-ups, each on the PNG path today so nothing's wrong, only larger: a JPEG with `/Decode` kept through an SVG filter, measured in Chrome and WebKit first (owner's brief, 2026-11-07); `/ColorTransform` through an Adobe marker; a mask finer than its image at its own size, which takes reading it from the file since PDFium has no call for it; a page's JPEGs where drawing is past the 256 MiB look
 - [ ] Print
 - [ ] Generated contents: `recto contents --generated`, then a quiet offer in the sidebar when a file's own are missing or look bad. distillPDF's headings, in a helper with a memory limit, labelled as generated. Needs distillPDF's per-page work
 - [x] `recto search --regex` by ripgrep's engine in process, and `--rank` by BM25, with no new index (owner, 2026-11-07)

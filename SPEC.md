@@ -121,12 +121,17 @@ Reference: `docs/concepts/`. Rules from the owner:
 | OCR | Tesseract, with **Save as searchable PDF**: an invisible text layer with an embedded Unicode font, in a helper process |
 | Extraction | **Click an image to copy it losslessly.** **Snapshot tool:** drag a box for text, PNG, SVG and JPG, all on the clipboard at once |
 
-**SVG is hand-rolled** (owner, 2026-11-06): a small streaming generator in `recto-svg` that writes as it walks the content stream, with no
-document held in memory. Paths, images and text come first, then gradients, masks and blend modes. Anything SVG can't express is
-embedded as a raster of just that element and reported, and content outside the snapshot box is left out rather than hidden.
+**SVG is hand-rolled** (owner, 2026-11-06): a small streaming generator in `recto-svg` that writes as it reads PDFium's page objects through the worker, with no
+document held in memory. Paths, clips, images and text are direct. Anything SVG or PDFium's calls can't express (PDFium has no way to read a shading, a pattern, a blend mode or a soft mask) is embedded as a raster of just that element and reported, and content outside the snapshot box is left out rather than hidden.
 *Rejected:* `hayro-svg` as a dependency, and PDFium, which has no SVG output as far as we know.
 
+**Text in an SVG** is exact outlines with invisible real characters over them, so it looks right and can be selected (*default*, 2026-11-07). `--text paths` drops the characters, and `--text selectable` drops the outlines, for the smallest file, in whatever font the reader has.
+
 **JPG honesty:** a JPG is lossless only when it's the original bytes of one image. Anything else is re-encoded and says so.
+
+**A passed-through JPEG keeps its original bytes** (owner, 2026-11-07: "Lets do original bytes"): EXIF, XMP, comments and bytes after its end all stay, so it's byte-identical to the one in the PDF, and the answer says what's there, with counts. What isn't a sound JPEG, or doesn't mean what the page means by it, goes as PNG. **`recto export svg --strip-metadata`** (owner, 2026-11-07: "Just add it in the cli for now (agent option)") takes that out, keeping what affects how the picture looks, and the compressed image data stays byte-identical. CLI and agent only, with no app UI, and it's off by default. A box leaves out the document's title, and so does stripping.
+
+**Where a JPEG would look different from the page, what's around it is corrected and the picture stays** (owner, 2026-11-07, about JPEGs going out as PNG: "Cant we fix the decoding instead?"). The compressed picture stays byte-identical, and the answer counts such a JPEG apart from original bytes. EXIF that says to turn it is set to upright. A profile of its own that the page doesn't go by is taken out, and a profile the page says it's in goes with it, within a size limit. A JPEG with a mask keeps its picture, with the mask beside it as lossless grey through SVG's own `<mask>`. PNG stays for what that can't make right: CMYK, a `/Decode` or `/ColorTransform` that changes the picture, a mask blended ahead of time, a cut image and anything that isn't a sound JPEG. `--strip-metadata` keeps its meaning and doesn't undo these.
 
 | Added by the owner, 2026-11-06 | Redaction, remove hidden data, watermarks and Bates numbers, create form fields, measure tools |
 

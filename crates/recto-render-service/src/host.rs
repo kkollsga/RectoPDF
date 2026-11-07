@@ -1,5 +1,7 @@
 //! A document's renderer, from the host's side. See the crate's notes for the rules.
 
+pub mod contents;
+
 use crate::transport::{Frame, FrameReader, ReadError};
 use crate::{control, exit_code};
 use recto_platform::isolate::{self, Channel, ChildExit, ChildProcess, Handle, IdleRule, SharedMemory, Wait};
@@ -1298,7 +1300,7 @@ impl DocRenderer {
         generation: Option<u64>,
         handles: &[&Handle],
         frame: &[u8],
-        decode: impl Fn(&Frame) -> Result<T, ProtoError>,
+        decode: impl Fn(&mut Frame) -> Result<T, ProtoError>,
     ) -> Result<T, JobFailure> {
         self.run_job_with(job_id, page, leaves_something_behind, class, generation, handles, None, frame, decode)
     }
@@ -1315,7 +1317,7 @@ impl DocRenderer {
         handles: &[&Handle],
         surface: Option<&PixelSurface>,
         frame: &[u8],
-        decode: impl Fn(&Frame) -> Result<T, ProtoError>,
+        decode: impl Fn(&mut Frame) -> Result<T, ProtoError>,
     ) -> Result<T, JobFailure> {
         self.retire_if_other_page(page);
         // Past twice the cap it goes whatever page it's on: a one-page file would otherwise never get to its retirement.
@@ -1347,7 +1349,7 @@ impl DocRenderer {
                 }
                 worker.surface_bytes_sent += surface.len() as u64;
             }
-            let outcome = worker.exchange(frame, handles, &watch).and_then(|reply| {
+            let outcome = worker.exchange(frame, handles, &watch).and_then(|mut reply| {
                 if reply.kind == Kind::Failed {
                     let (answered, code) = proto::decode_failed(&reply.payload).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))?;
                     if answered != job_id {
@@ -1355,7 +1357,7 @@ impl DocRenderer {
                     }
                     return Err(Stop::Refused(code));
                 }
-                decode(&reply).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))
+                decode(&mut reply).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))
             });
             self.stats.jobs += 1;
             match outcome {

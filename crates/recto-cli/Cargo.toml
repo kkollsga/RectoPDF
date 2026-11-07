@@ -22,5 +22,7 @@ recto-session.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+recto-svg.workspace = true
+recto-proto.workspace = true
 recto-render-service.workspace = true
 recto-testpdf.workspace = true
