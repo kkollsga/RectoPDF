@@ -49,6 +49,11 @@ impl PixelSurface {
     pub fn with_pixels<R>(&self, _step: impl FnOnce(&mut [u8]) -> R) -> io::Result<R> {
         unsupported()
     }
+    pub fn release_for_host(_reference: u64) {}
+    #[doc(hidden)]
+    pub fn reference_count(&self) -> isize {
+        0
+    }
     pub fn set_discardable(&self) {}
     #[doc(hidden)]
     pub fn empty_now(&self) {}

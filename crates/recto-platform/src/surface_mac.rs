@@ -31,6 +31,7 @@ unsafe extern "C" {
     fn CFDictionaryCreate(allocator: CfRef, keys: *const CfRef, values: *const CfRef, count: isize, key_callbacks: *const CfDictionaryKeyCallBacks, value_callbacks: *const CfDictionaryValueCallBacks) -> CfRef;
     fn CFStringCreateWithCString(allocator: CfRef, text: *const c_char, encoding: u32) -> CfRef;
     fn CFRelease(value: CfRef);
+    fn CFGetRetainCount(value: CfRef) -> isize;
     fn CFRetain(value: CfRef) -> CfRef;
 }
 
@@ -166,6 +167,21 @@ impl PixelSurface {
     pub fn retained_for_host(&self) -> u64 {
         // SAFETY: the surface is live, and the extra reference outlives this one until the host releases it.
         unsafe { CFRetain(self.raw.as_ptr().cast_const()) as usize as u64 }
+    }
+
+    /// Gives back a reference from [`Self::retained_for_host`] that no host is going to take. Zero, which means no surface, does nothing.
+    pub fn release_for_host(reference: u64) {
+        if reference != 0 {
+            // SAFETY: as `retained_for_host` says, this value is one reference that's its holder's to release, and this is its one release.
+            unsafe { CFRelease(reference as usize as CfRef) };
+        }
+    }
+
+    /// How many references there are to this surface in this process, for a test of who's holding it.
+    #[doc(hidden)]
+    pub fn reference_count(&self) -> isize {
+        // SAFETY: the surface is live.
+        unsafe { CFGetRetainCount(self.raw.as_ptr().cast_const()) }
     }
 
     /// Reaches the memory, under the surface's lock. A compromised worker that kept its own reference can still write here at any moment, so whatever's read is treated as untrusted bytes.

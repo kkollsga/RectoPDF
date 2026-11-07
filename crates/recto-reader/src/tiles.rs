@@ -189,6 +189,56 @@ pub enum DrawKind {
     Region,
 }
 
+/// A job, before its surface is made. The reader's lock is held for as long as it takes the UI thread's `set_viewport` to get a word in, so what can take a while is done after it's let go.
+#[derive(Debug)]
+pub struct JobPlan {
+    pub tab: u32,
+    pub position: u32,
+    pub file: PathBuf,
+    pub source_page: u32,
+    pub generation: u64,
+    kind: PlanKind,
+}
+
+#[derive(Debug)]
+enum PlanKind {
+    Size,
+    Traits,
+    Draw { scale: f32, rect: TileRect, what: DrawKind, paper: PaperKind },
+}
+
+impl JobPlan {
+    /// Makes its surface. A new one for each job: see [`Self::take_surface`]. `None` if it can't be made, which leaves things as if there'd been nothing to do.
+    pub fn ready(self) -> Option<Job> {
+        let Self { tab, position, file, source_page, generation, kind } = self;
+        let kind = match kind {
+            PlanKind::Size => JobKind::Size,
+            PlanKind::Traits => JobKind::Traits,
+            PlanKind::Draw { scale, mut rect, what, paper } => {
+                let surface = match what {
+                    DrawKind::Preview => Self::take_surface(rect.width, rect.height)?,
+                    DrawKind::Tile => Self::take_surface(TILE_EDGE, TILE_EDGE)?,
+                    DrawKind::Region => loop {
+                        let surface = Self::take_surface(rect.width, rect.height)?;
+                        // A surface's rows can be padded, which can take it over the cap. A row of tiles less is always under.
+                        if u64::from(surface.stride()) * u64::from(rect.height) <= MAX_REGION_BYTES || rect.height <= TILE_EDGE {
+                            break surface;
+                        }
+                        rect.height -= TILE_EDGE;
+                    },
+                };
+                JobKind::Draw { scale, rect, surface, what, paper }
+            }
+        };
+        Some(Job { tab, position, file, source_page, generation, kind })
+    }
+
+    /// A new surface for each job, never one that's been used. A worker can read and write a surface it was sent for as long as it lives, whatever it's told, so a surface used twice is a way from one file's worker to another file's pixels. It costs 51 µs more a tile than reusing one, nearly all of it the first touch of its pages: 67 against 16, p50.
+    fn take_surface(width: u32, height: u32) -> Option<PixelSurface> {
+        PixelSurface::create(width, height).ok()
+    }
+}
+
 /// How a job came out.
 #[derive(Debug)]
 pub enum Outcome {
@@ -862,11 +912,6 @@ impl Reader {
         keys
     }
 
-    /// A new surface for each job, never one that's been used. A worker can read and write a surface it was sent for as long as it lives, whatever it's told, so a surface used twice is a way from one file's worker to another file's pixels. It costs 51 µs more a tile than reusing one, nearly all of it the first touch of its pages: 67 against 16, p50.
-    fn take_surface(width: u32, height: u32) -> Option<PixelSurface> {
-        PixelSurface::create(width, height).ok()
-    }
-
     fn count_blanks(&mut self) {
         let Some(doc) = self.doc() else { return };
         let (mut blank, mut blank_seen) = (false, false);
@@ -967,6 +1012,16 @@ impl Reader {
         for id in ids {
             self.forget_entry(id);
         }
+        // Nothing's there to take them. What was waiting is thrown away, and each `Attach` holds a reference to a surface, which goes with it.
+        for op in self.ops.drain(..) {
+            if let Op::Attach { surface, .. } = op {
+                PixelSurface::release_for_host(surface);
+            }
+        }
+        self.to_discard.clear();
+        self.handed_to_host.clear();
+        self.unapplied = false;
+        self.more_to_attach = false;
         if let Some(running) = &self.running
             && let Some(cancel) = &running.cancel
         {
@@ -992,7 +1047,7 @@ impl Reader {
     }
 
     /// The next thing to do, most wanted first, or `None`, when the engine parks. Only what's visible is drawn: drawing ahead comes in a later phase.
-    pub fn next_job(&mut self) -> Option<Job> {
+    pub fn next_plan(&mut self) -> Option<JobPlan> {
         if !self.window_open {
             return None;
         }
@@ -1051,16 +1106,15 @@ impl Reader {
             // Asked once, and it loads the page, which drawing would do anyway.
             if !doc.heavy.contains_key(&page) {
                 let generation = self.fresh_generation();
-                return Some(Job { tab, position: page, file, source_page, generation, kind: JobKind::Traits });
+                return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Traits });
             }
             let heavy = doc.heavy.get(&page).copied().unwrap_or(false);
             // A heavy page's cost is per pass, so a preview would cost it as much again. Any other page gets one however little of it shows: a page first seen as a sliver at the bottom of the window, with no preview, goes blank when that sliver's tile scrolls off.
             let preview_wanted = !heavy && !self.cover.contains_key(&self.preview_key(doc, page));
             if preview_wanted && let Some((preview_scale, rect)) = self.preview_rect(doc, page, scale) {
-                let surface = Self::take_surface(rect.width, rect.height)?;
                 let paper = self.paper;
                 let generation = self.fresh_generation();
-                return Some(Job { tab, position: page, file, source_page, generation, kind: JobKind::Draw { scale: preview_scale, rect, surface, what: DrawKind::Preview, paper } });
+                return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Draw { scale: preview_scale, rect, what: DrawKind::Preview, paper } });
             }
             let size = doc.layout.size(page);
             let (width, height) = device_size(size.width, size.height, scale).ok()?;
@@ -1068,26 +1122,17 @@ impl Reader {
                 let wanted: Vec<(u32, u32)> = missing.iter().map(|&(column, row)| (u32::from(column), u32::from(row))).collect();
                 let mut sorted = wanted;
                 sorted.sort_unstable();
-                let mut rect = plan_regions(&sorted, (width, height)).into_iter().next()?;
-                let surface = loop {
-                    let surface = Self::take_surface(rect.width, rect.height)?;
-                    // A surface's rows can be padded, which can take it over the cap. A row of tiles less is always under.
-                    if u64::from(surface.stride()) * u64::from(rect.height) <= MAX_REGION_BYTES || rect.height <= TILE_EDGE {
-                        break surface;
-                    }
-                    rect.height -= TILE_EDGE;
-                };
+                let rect = plan_regions(&sorted, (width, height)).into_iter().next()?;
                 let paper = self.paper;
                 let generation = self.fresh_generation();
-                return Some(Job { tab, position: page, file, source_page, generation, kind: JobKind::Draw { scale, rect, surface, what: DrawKind::Region, paper } });
+                return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Draw { scale, rect, what: DrawKind::Region, paper } });
             }
             let (column, row) = missing[0];
             let (x, y) = (u32::from(column) * TILE_EDGE, u32::from(row) * TILE_EDGE);
             let rect = TileRect { x, y, width: TILE_EDGE.min(width - x), height: TILE_EDGE.min(height - y) };
-            let surface = Self::take_surface(TILE_EDGE, TILE_EDGE)?;
             let paper = self.paper;
             let generation = self.fresh_generation();
-            return Some(Job { tab, position: page, file, source_page, generation, kind: JobKind::Draw { scale, rect, surface, what: DrawKind::Tile, paper } });
+            return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Draw { scale, rect, what: DrawKind::Tile, paper } });
         }
         None
     }
@@ -1336,6 +1381,13 @@ mod tests {
 
     fn map() -> PageMap {
         PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: None }
+    }
+
+    impl Reader {
+        /// The next job with its surface made, as the engine has it.
+        fn next_job(&mut self) -> Option<Job> {
+            self.next_plan()?.ready()
+        }
     }
 
     fn view(y: f64) -> Viewport {
@@ -1915,6 +1967,60 @@ mod tests {
         reader.set_viewport(Viewport { magnification: 2.0, scrolled_to: *seq, ..view(*y) });
         assert_eq!(reader.take_moved_page(), None, "arriving isn't a move");
         assert_eq!(reader.doc().unwrap().magnification, 2.0);
+    }
+
+    /// Failure: closing the window leaves ops queued with nobody to take them. Each `Attach` holds a surface's memory until the window's back, and `qa wait-settled` waits for ever. They're gone, and the surfaces with them, the moment it's closed.
+    #[test]
+    fn a_closed_window_keeps_no_ops_or_surfaces_for_them() {
+        let mut reader = reader_on(10);
+        let draw = a_draw_job(&mut reader, DrawKind::Preview);
+        let JobKind::Draw { surface, .. } = &draw.kind else { panic!() };
+        let held = surface.clone();
+        reader.finish(draw, Outcome::Drawn { kind: TileKind::Colour, low_res: None });
+        // Attached in Rust, and waiting for a host that hasn't come for it.
+        assert!(reader.ops.iter().any(|op| matches!(op, Op::Attach { surface, .. } if *surface != 0)), "{:?}", reader.ops);
+        let before = held.reference_count();
+        reader.window_closed();
+        assert!(reader.ops.is_empty(), "{:?}", reader.ops);
+        assert!(held.reference_count() < before - 1, "the entry's and the waiting op's both gone: {} from {before}", held.reference_count());
+        assert!(reader.is_settled(), "{}", reader.report().0);
+    }
+
+    /// Failure: a surface goes out to the engine with a tile's lock on the reader, as making one is what the plan's for. A plan can be made with no surface, and a region's rows are kept to the cap only once it has one.
+    #[test]
+    fn a_plan_makes_its_surface_after_the_lock() {
+        let mut reader = reader_on(10);
+        loop {
+            let plan = reader.next_plan().expect("a plan");
+            let is_draw = matches!(plan.kind, PlanKind::Draw { .. });
+            let job = plan.ready().expect("made");
+            if is_draw {
+                assert!(matches!(job.kind, JobKind::Draw { .. }));
+                break;
+            }
+            let outcome = if matches!(job.kind, JobKind::Size) { Outcome::Size(letter()) } else { Outcome::Heavy(false) };
+            reader.finish(job, outcome);
+        }
+    }
+
+    /// Failure: each way of zooming has its own step and limits, or one goes past them, or "actual size" is the same as "fit".
+    #[test]
+    fn every_way_of_zooming_is_one_path_with_one_set_of_limits() {
+        let mut reader = reader_on(10);
+        settle(&mut reader);
+        assert_eq!(reader.zoom(Zoom::In), Some(ZOOM_STEP));
+        assert!(reader.take_ops().iter().any(|op| matches!(op, Op::Magnify { value } if *value == ZOOM_STEP)));
+        assert_eq!(reader.zoom(Zoom::Out), Some(1.0));
+        assert_eq!(reader.zoom(Zoom::To(1e9)), Some(MAX_ZOOM));
+        assert_eq!(reader.zoom(Zoom::To(0.0)), Some(MIN_ZOOM));
+        assert_eq!(reader.zoom(Zoom::To(f64::NAN)), Some(MIN_ZOOM), "a nonsense number changes nothing");
+        assert_eq!(reader.zoom(Zoom::Fit), Some(1.0));
+        let actual = reader.zoom(Zoom::Actual).unwrap();
+        assert!((actual * reader.doc().unwrap().layout.fit() - 1.0).abs() < 1e-9 || actual == MIN_ZOOM || actual == MAX_ZOOM, "{actual}");
+        assert!(zoom_after_scroll(1.0, 100.0) > 1.0 && zoom_after_scroll(1.0, -100.0) < 1.0, "upwards is in");
+        assert_eq!(zoom_after_scroll(1.0, 1e9), MAX_ZOOM);
+        assert_eq!(zoom_after_scroll(1.0, -1e9), MIN_ZOOM);
+        assert_eq!(zoom_after_scroll(2.0, f64::NAN), 2.0);
     }
 
     /// Failure: the host's size change moves the reader away from what they were reading.
