@@ -10,3 +10,5 @@ workspace = true
 
 [dependencies]
 recto-proto.workspace = true
+# For the one rule on invisible characters, shared with titles and names.
+recto-core.workspace = true

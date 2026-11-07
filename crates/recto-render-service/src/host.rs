@@ -35,6 +35,12 @@ pub struct Policy {
     pub cancel_grace: Duration,
     /// The worker leaves after this long with no job.
     pub idle_exit: Duration,
+    /// A heavy worker leaves after this long with no job, so its memory and the slot don't wait on a page nobody's using.
+    pub heavy_idle_exit: Duration,
+    /// How many times one document may start a heavy worker. Past this its pages draw at a lower resolution, so a hostile file can't keep asking for a gigabyte.
+    pub max_heavy_retries: u32,
+    /// How many workers one document may have killed for overrunning. Past this it draws nothing more until asked, so a file of many bad pages ends quickly too.
+    pub max_kills_per_document: u32,
     /// A worker still here this long after it should have left is killed, because it's ignoring its own exit.
     pub idle_grace: Duration,
     /// How often a running job's worker is checked.
@@ -53,7 +59,7 @@ impl Default for Policy {
             // On 16 GB this is about 4.8 GiB free, several times what the retry can use. Low enough to fire on a working Mac, and high enough that a Mac
             // already short of memory isn't asked for another gigabyte. An 8 GB Mac has 2.4 GiB at this level, still over twice the need.
             heavy_min_free_percent: 30,
-            // Longer than an idle heavy worker can hold the slot, which is 35 s at most, so only real use of it can make an export time out.
+            // Far longer than an idle heavy worker can hold the slot, which is 8 s at most, so only real use of it can make an export time out.
             export_slot_wait: Duration::from_secs(60),
             retire_bytes: 64 * 1024 * 1024,
             // Platform §2.6. The slowest real page at 2x took 939 ms.
@@ -61,6 +67,10 @@ impl Default for Policy {
             // Spike §12: a stale render is gone within 100 ms, by return or kill.
             cancel_grace: Duration::from_millis(90),
             idle_exit: Duration::from_secs(30),
+            // Long enough to bridge a pause in scrolling, and a reload costs less than holding a gigabyte.
+            heavy_idle_exit: Duration::from_secs(3),
+            max_heavy_retries: 8,
+            max_kills_per_document: 128,
             idle_grace: Duration::from_secs(5),
             // The worst growth measured is about 650 MiB/s, so this overshoots by a few MiB.
             watch_step: Duration::from_millis(5),
@@ -295,6 +305,10 @@ pub enum RenderFailure {
     ExportRefused { page: u32, why: ExportRefusal },
     /// The job's generation went stale. For an export, nothing should be written.
     Cancelled,
+    /// This page can't be drawn right now: it needs the larger limit, and its smaller version doesn't fit either. Asking again when the reason has cleared may work.
+    NotDrawableNow { page: u32, why: LowResWhy },
+    /// This document has had too many workers killed. It draws nothing more until [`DocRenderer::forget_failures`].
+    DocumentStopped,
     /// Drawing the whole page ran past its time cap. No worker was at fault.
     TookTooLong,
 }
@@ -385,6 +399,8 @@ impl RenderFailure {
             Self::ExportRefused { why: ExportRefusal::WaitTimedOut, .. } => "export_wait_timed_out",
             Self::ExportRefused { why: ExportRefusal::TooHeavy, .. } => "export_page_too_heavy",
             Self::Cancelled => "cancelled",
+            Self::NotDrawableNow { .. } => "page_not_drawable_now",
+            Self::DocumentStopped => "document_stopped",
             Self::TookTooLong => "render_took_too_long",
         }
     }
@@ -433,6 +449,11 @@ impl RenderFailure {
                 format!("Page {} wasn't exported, and no file was written: it needs more memory than RectoPDF allows at this size. A smaller scale may fit.", page + 1)
             }
             Self::Cancelled => "This was cancelled, and nothing was written.".into(),
+            Self::NotDrawableNow { page, why: LowResWhy::HeavyBusy } => {
+                format!("Page {} can't be drawn right now: another heavy page is using the memory it needs. It may draw when that's done.", page + 1)
+            }
+            Self::NotDrawableNow { page, .. } => format!("Page {} can't be drawn right now: this Mac is short of the memory it needs. It may draw when more is free.", page + 1),
+            Self::DocumentStopped => "This document has used too much memory too many times, so RectoPDF has stopped drawing it. It may be malicious.".into(),
             Self::TookTooLong => "Drawing this page at this zoom would take too long.".into(),
         }
     }
@@ -579,9 +600,16 @@ const MAX_FAILED_PAGES: usize = 64;
 struct PageMemory {
     page: u32,
     draw: PageDrawState,
+    /// The scale `draw` was learned at. It holds at this scale and above, since a higher zoom costs more, and a lower zoom gets its own try.
+    draw_scale: f32,
+    /// Its lower-resolution version stopped a worker while the larger limit was out of reach. Once that's been tried and failed too, every step has failed once.
+    low_res_stopped: bool,
     text: Option<KillReason>,
     size: Option<KillReason>,
 }
+
+/// How far below the scale a page's state was learned at before a zoom counts as different. So that small changes in zoom don't each run the kills again.
+const LOWER_ZOOM_RATIO: f32 = 0.7;
 
 /// How much lower the lower-resolution version is, from the platform report's page texture at about a quarter of the scale (§2.5).
 const LOW_RES_DIVISOR: u32 = 4;
@@ -597,6 +625,9 @@ pub struct DocRenderer {
     page_count: Option<u32>,
     next_job: u32,
     slot_wait_total: Duration,
+    /// Where the caps start from, moved by `forget_failures`.
+    kills_counted_from: u32,
+    heavy_retries_counted_from: u32,
     remembered: Vec<PageMemory>,
     /// Each page's largest image in source pixels, for those asked about.
     traits: Vec<(u32, u64)>,
@@ -628,6 +659,8 @@ impl DocRenderer {
             page_count: None,
             next_job: 0,
             slot_wait_total: Duration::ZERO,
+            kills_counted_from: 0,
+            heavy_retries_counted_from: 0,
             remembered: Vec::new(),
             traits: Vec::new(),
             waited_ticket: None,
@@ -678,21 +711,38 @@ impl DocRenderer {
         }
     }
 
-    /// Clears the memory of which pages stopped a worker. For a "try again", or after the zoom changes.
+    /// Clears the memory of which pages stopped a worker, and the count that stops a document. For the reader's "try again". In ordinary use failures also clear by themselves: a lower zoom gets its
+    /// own try, and closing the tab drops all of this. An agent's command starts with a clean slate each time.
     pub fn forget_failures(&mut self) {
         self.remembered.clear();
         self.open_failure = None;
+        self.kills_counted_from = self.kills();
+        self.heavy_retries_counted_from = self.stats.heavy_retries;
     }
 
     /// Starts a worker if none is running, and returns the page count. Most callers can just ask for what they want.
     pub fn page_count(&mut self) -> Result<u32, RenderFailure> {
-        self.ensure_worker(WorkerClass::Normal).map_err(RenderFailure::from)?;
+        self.ensure_worker(WorkerClass::Normal, None).map_err(RenderFailure::from)?;
         self.page_count.ok_or(RenderFailure::Unavailable)
     }
 
-    /// What's known about drawing a page, for the view model.
+    /// What's known about drawing a page at the scale that taught it, for the view model.
     pub fn page_draw_state(&self, page: u32) -> PageDrawState {
-        self.remembered.iter().find(|memory| memory.page == page).map_or(PageDrawState::Sharp, |memory| memory.draw)
+        self.remembered(page).map_or(PageDrawState::Sharp, |memory| memory.draw)
+    }
+
+    /// What's known about drawing a page at this scale. A page too heavy at a high zoom may be fine at a lower one, so a lower one starts clean.
+    pub fn page_draw_state_at(&self, page: u32, scale: f32) -> PageDrawState {
+        match self.remembered(page) {
+            Some(memory) if scale >= memory.draw_scale * LOWER_ZOOM_RATIO => memory.draw,
+            _ => PageDrawState::Sharp,
+        }
+    }
+
+    fn set_draw(&mut self, page: u32, scale: f32, draw: PageDrawState) {
+        let memory = self.remember(page);
+        memory.draw = draw;
+        memory.draw_scale = scale;
     }
 
     /// A page's size in points, after rotation, validated.
@@ -731,19 +781,19 @@ impl DocRenderer {
         self.draw(request, surface)
     }
 
-    /// The largest image on a page in source pixels. Remembered per page, up to a cap. If looking at the page stops a worker, that's noted as drawing would have noted it,
-    /// and the answer is zero.
-    pub fn largest_image_pixels(&mut self, page: u32) -> Result<u64, RenderFailure> {
+    /// The largest image on a page in source pixels, a hint for how to draw it. Remembered per page, up to a cap. If looking at the page stops a worker, that's noted as drawing would have noted
+    /// it, and the answer is zero. Likewise if `generation` goes stale, without remembering that.
+    pub fn largest_image_pixels(&mut self, page: u32, generation: u64) -> Result<u64, RenderFailure> {
         if let Some(&(_, pixels)) = self.traits.iter().find(|(known, _)| *known == page) {
             return Ok(pixels);
         }
-        if self.page_draw_state(page) != PageDrawState::Sharp {
+        if self.page_draw_state(page) != PageDrawState::Sharp || self.control.is_stale(generation) || self.stopped() {
             return Ok(0);
         }
         let job_id = self.next_job_id();
         let frame = proto::encode_traits_request(job_id, page);
         // Loads this page, which is what the next job for it needs anyway, so it leaves nothing that could explain that job failing.
-        let reply = self.run_job(job_id, page, false, WorkerClass::Normal, None, &[], &frame, |reply| match reply.kind {
+        let reply = self.run_job(job_id, page, false, WorkerClass::Normal, Some(generation), &[], &frame, |reply| match reply.kind {
             Kind::Traits => {
                 let traits = proto::PageTraits::decode(&reply.payload)?;
                 if traits.job_id == job_id { Ok(traits.largest_image_pixels) } else { Err(ProtoError("traits answer a different job")) }
@@ -752,11 +802,13 @@ impl DocRenderer {
         });
         let pixels = match reply {
             Ok(pixels) => pixels,
+            Err(JobFailure::StaleKilled) => return Ok(0),
+            // At what scale isn't known, so it holds at every one, until a lower zoom's own draw says otherwise. Which is the same as the page's load being too heavy.
             Err(JobFailure::Stopped(KillReason::MemoryLimit)) => {
-                self.remember(page).draw = PageDrawState::NeedsHeavy;
+                self.set_draw(page, 0.0, PageDrawState::NeedsHeavy);
                 0
             }
-            Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, reason)),
+            Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, 0.0, reason)),
             Err(failure) => return Err(failure.into()),
         };
         if self.traits.len() >= MAX_FAILED_PAGES {
@@ -805,27 +857,41 @@ impl DocRenderer {
         }
         self.reap_if_gone();
         self.retire_if_other_page(page);
+        let scale = request.scale;
         loop {
-            match self.page_draw_state(page) {
+            // A cancel between steps ends it here: a stale job takes no slot and starts no heavy worker.
+            if self.control.is_stale(request.generation) {
+                return Ok(TileResult::Cancelled { worker_killed: false });
+            }
+            let state = self.page_draw_state_at(page, scale);
+            if !matches!(state, PageDrawState::Failed(_)) && self.stopped() {
+                return Err(RenderFailure::DocumentStopped);
+            }
+            match state {
                 PageDrawState::Failed(reason) => return Err(RenderFailure::PageFailed { page, reason }),
                 PageDrawState::LowResOnly => match purpose {
+                    DrawPurpose::OnScreen if self.remembered(page).is_some_and(|memory| memory.low_res_stopped) => {
+                        // Its smaller version already failed, and now the larger limit has too. That's every step, once.
+                        return Err(self.give_up_drawing(page, scale / LOW_RES_DIVISOR as f32, KillReason::MemoryLimit));
+                    }
                     DrawPurpose::OnScreen => return self.low_res(request, surface, LowResWhy::TooHeavy),
                     DrawPurpose::Export => return Err(RenderFailure::ExportRefused { page, why: ExportRefusal::TooHeavy }),
                 },
                 PageDrawState::Sharp => match self.draw_once(request, surface, WorkerClass::Normal, tile_edge) {
-                    Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.remember(page).draw = PageDrawState::NeedsHeavy,
-                    Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, reason)),
+                    Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.set_draw(page, scale, PageDrawState::NeedsHeavy),
+                    Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, 0.0, reason)),
                     other => return other_result(other),
                 },
                 PageDrawState::NeedsHeavy => {
-                    if self.policy.heavy_limit_bytes <= self.policy.memory_limit_bytes {
-                        self.remember(page).draw = PageDrawState::LowResOnly;
+                    let retries = self.stats.heavy_retries - self.heavy_retries_counted_from;
+                    let already_heavy = self.worker.as_ref().is_some_and(|worker| worker.heavy);
+                    if self.policy.heavy_limit_bytes <= self.policy.memory_limit_bytes || (!already_heavy && retries >= self.policy.max_heavy_retries) {
+                        self.set_draw(page, scale, PageDrawState::LowResOnly);
                         continue;
                     }
-                    let already_heavy = self.worker.as_ref().is_some_and(|worker| worker.heavy);
                     if !already_heavy && !self.memory_to_spare() {
                         return match purpose {
-                            DrawPurpose::OnScreen => self.low_res(request, surface, LowResWhy::MemoryTight),
+                            DrawPurpose::OnScreen => self.low_res_for_now(request, surface, LowResWhy::MemoryTight),
                             DrawPurpose::Export => Err(RenderFailure::ExportRefused { page, why: ExportRefusal::MemoryTight }),
                         };
                     }
@@ -846,17 +912,35 @@ impl DocRenderer {
                     self.waited_ticket = None;
                     match drawn {
                         Err(JobFailure::HeavyBusy) => match purpose {
-                            DrawPurpose::OnScreen => return self.low_res(request, surface, LowResWhy::HeavyBusy),
+                            DrawPurpose::OnScreen => return self.low_res_for_now(request, surface, LowResWhy::HeavyBusy),
                             // Its worker left between jobs and someone else has the slot now. Back to waiting, within the same limits.
                             DrawPurpose::Export => {}
                         },
-                        Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.remember(page).draw = PageDrawState::LowResOnly,
-                        Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, reason)),
+                        Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.set_draw(page, scale, PageDrawState::LowResOnly),
+                        Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, 0.0, reason)),
                         other => return other_result(other),
                     }
                 }
             }
         }
+    }
+
+    /// Whether this document has had too many workers killed.
+    fn stopped(&self) -> bool {
+        self.kills() - self.kills_counted_from >= self.policy.max_kills_per_document
+    }
+
+    fn kills(&self) -> u32 {
+        self.stats.memory_kills + self.stats.deadline_kills + self.stats.crashes + self.stats.rejections
+    }
+
+    /// The lower-resolution version while the larger limit is out of reach. If that version is known not to fit, says so without another try, and the page isn't given up on: the larger limit
+    /// was never tried, and it may yet be.
+    fn low_res_for_now(&mut self, request: &TileRequest, surface: &Surface, why: LowResWhy) -> Result<TileResult, RenderFailure> {
+        if self.remembered(request.page).is_some_and(|memory| memory.low_res_stopped) {
+            return Err(RenderFailure::NotDrawableNow { page: request.page, why });
+        }
+        self.low_res(request, surface, why)
     }
 
     fn memory_to_spare(&self) -> bool {
@@ -876,8 +960,9 @@ impl DocRenderer {
     fn low_res(&mut self, request: &TileRequest, surface: &Surface, why: LowResWhy) -> Result<TileResult, RenderFailure> {
         let page = request.page;
         let scale = request.scale / LOW_RES_DIVISOR as f32;
+        // Nothing lower to draw at this zoom, and that says nothing about other zooms, so nothing is remembered.
         if scale < proto::MIN_SCALE {
-            return Err(self.give_up_drawing(page, KillReason::MemoryLimit));
+            return Err(RenderFailure::TooLargeAtThisScale);
         }
         let (width, height) = self.page_size(page)?;
         let (full_width, full_height) = device_size(width, height, scale).map_err(|_| RenderFailure::TooLargeAtThisScale)?;
@@ -892,7 +977,12 @@ impl DocRenderer {
                 self.stats.low_res_tiles += 1;
                 Ok(TileResult::Done(Tile { low_res: Some(LowRes { scale, rect, why }), ..tile }))
             }
-            Err(JobFailure::Stopped(reason)) => Err(self.give_up_drawing(page, reason)),
+            Err(JobFailure::Stopped(KillReason::MemoryLimit)) if why.may_clear() => {
+                self.remember(page).low_res_stopped = true;
+                Err(RenderFailure::NotDrawableNow { page, why })
+            }
+            Err(JobFailure::Stopped(KillReason::MemoryLimit)) => Err(self.give_up_drawing(page, scale, KillReason::MemoryLimit)),
+            Err(JobFailure::Stopped(reason)) => Err(self.give_up_drawing(page, 0.0, reason)),
             other => other_result(other),
         }
     }
@@ -947,9 +1037,9 @@ impl DocRenderer {
         }
     }
 
-    /// The end of the sequence: remembered, and said plainly.
-    fn give_up_drawing(&mut self, page: u32, reason: KillReason) -> RenderFailure {
-        self.remember(page).draw = PageDrawState::Failed(reason);
+    /// The end of the sequence: remembered, and said plainly. `from_scale` is the lowest scale that failed. Zero means every scale, for what isn't about memory.
+    fn give_up_drawing(&mut self, page: u32, from_scale: f32, reason: KillReason) -> RenderFailure {
+        self.set_draw(page, from_scale, PageDrawState::Failed(reason));
         RenderFailure::PageFailed { page, reason }
     }
 
@@ -960,10 +1050,14 @@ impl DocRenderer {
         if let Some(reason) = self.remembered(page).and_then(|memory| memory.text) {
             return Err(RenderFailure::PageReadFailed { page, reason });
         }
-        if hidden_check && self.page_draw_state(page) == PageDrawState::Sharp {
+        if self.stopped() {
+            return Err(RenderFailure::DocumentStopped);
+        }
+        // The check draws at 2x.
+        if hidden_check && self.page_draw_state_at(page, 2.0) == PageDrawState::Sharp {
             match self.text_job(page, boxes, true) {
-                Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.remember(page).draw = PageDrawState::NeedsHeavy,
-                Err(JobFailure::Stopped(reason @ (KillReason::Deadline | KillReason::Crashed))) => self.remember(page).draw = PageDrawState::Failed(reason),
+                Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.set_draw(page, 2.0, PageDrawState::NeedsHeavy),
+                Err(JobFailure::Stopped(reason @ (KillReason::Deadline | KillReason::Crashed))) => self.set_draw(page, 0.0, PageDrawState::Failed(reason)),
                 Err(JobFailure::Stopped(reason)) => {
                     self.remember(page).text = Some(reason);
                     return Err(RenderFailure::PageReadFailed { page, reason });
@@ -1006,7 +1100,7 @@ impl DocRenderer {
                 if self.remembered.len() >= MAX_FAILED_PAGES {
                     self.remembered.remove(0);
                 }
-                self.remembered.push(PageMemory { page, draw: PageDrawState::Sharp, text: None, size: None });
+                self.remembered.push(PageMemory { page, draw: PageDrawState::Sharp, draw_scale: 0.0, low_res_stopped: false, text: None, size: None });
                 self.remembered.len() - 1
             }
         };
@@ -1045,7 +1139,7 @@ impl DocRenderer {
         let mut retried = false;
         let mut idle_retries = 0;
         loop {
-            self.ensure_worker(class)?;
+            self.ensure_worker(class, generation)?;
             let Some(worker) = self.worker.as_mut() else { return Err(RenderFailure::Unavailable.into()) };
             let fresh = worker.jobs_done == 0;
             let is_heavy = worker.heavy;
@@ -1146,26 +1240,24 @@ impl DocRenderer {
         }
     }
 
-    /// Starts a worker of this class and opens the document in it, unless one that will do is already running. A normal job will do in a heavy worker, but not the
-    /// other way round. A failure that trying again wouldn't change is remembered, so the next call doesn't start another process to learn the same thing.
-    fn ensure_worker(&mut self, class: WorkerClass) -> Result<(), JobFailure> {
+    /// Starts a worker of this class and opens the document in it, unless one that will do is already running. A normal job will do in a heavy worker, but not the other way round. A failure
+    /// that trying again wouldn't change is remembered, so the next call doesn't start another process to learn the same thing. `generation` is the job this is for, so a long open can be cancelled.
+    fn ensure_worker(&mut self, class: WorkerClass, generation: Option<u64>) -> Result<(), JobFailure> {
         if let Some(failure) = self.open_failure {
             return Err(failure.into());
         }
         self.reap_if_gone();
-        if self.worker.as_ref().is_some_and(|worker| class == WorkerClass::Heavy && !worker.heavy) {
-            self.bury_worker();
-        }
-        if self.worker.is_some() {
+        let needs_heavy = class == WorkerClass::Heavy && !self.worker.as_ref().is_some_and(|worker| worker.heavy);
+        if !needs_heavy && self.worker.is_some() {
             return Ok(());
         }
-        // Before the process starts: an export has waited for it already, and a viewer takes it now or draws its lower-resolution version for now.
-        let ticket = match class {
-            WorkerClass::Normal => None,
-            WorkerClass::Heavy => Some(self.waited_ticket.take().or_else(|| self.config.heavy_slot.try_take()).ok_or(JobFailure::HeavyBusy)?),
-        };
-        let limit = if ticket.is_some() { self.policy.heavy_limit_bytes } else { self.policy.memory_limit_bytes };
-        let (mut worker, ready) = Worker::start(&self.config, &self.policy, limit).map_err(|error| match error.kind() {
+        // Taken before anything else: if another page has it, the normal worker stays, and the caller draws its lower-resolution version in it. An export has waited for it already.
+        let ticket = if needs_heavy { Some(self.waited_ticket.take().or_else(|| self.config.heavy_slot.try_take()).ok_or(JobFailure::HeavyBusy)?) } else { None };
+        if needs_heavy {
+            self.bury_worker();
+        }
+        let (limit, idle_exit) = if ticket.is_some() { (self.policy.heavy_limit_bytes, self.policy.heavy_idle_exit) } else { (self.policy.memory_limit_bytes, self.policy.idle_exit) };
+        let (mut worker, ready) = Worker::start(&self.config, &self.policy, limit, idle_exit).map_err(|error| match error.kind() {
             io::ErrorKind::NotFound => RenderFailure::LibraryMissing,
             _ => RenderFailure::Unavailable,
         })?;
@@ -1177,19 +1269,20 @@ impl DocRenderer {
         self.stats.spawns += 1;
         self.stats.ready_footprint_bytes = ready;
         self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(ready);
-        self.open_in(worker)
+        self.open_in(worker, generation)
             .inspect_err(|failure| {
-                if !matches!(failure, RenderFailure::Unavailable) {
+                if let JobFailure::Failed(failure) = failure
+                    && !matches!(failure, RenderFailure::Unavailable)
+                {
                     self.open_failure = Some(*failure);
                 }
             })
-            .map_err(JobFailure::from)
     }
 
-    fn open_in(&mut self, mut worker: Worker) -> Result<(), RenderFailure> {
+    fn open_in(&mut self, mut worker: Worker, generation: Option<u64>) -> Result<(), JobFailure> {
         let file = Handle::from_file(&self.file).map_err(|_| RenderFailure::Unavailable)?;
         let frame = proto::encode_open(self.password.as_deref().unwrap_or_default()).map_err(|_| RenderFailure::NeedsPassword)?;
-        let watch = Watch { limit: worker.limit, policy: &self.policy, control: &self.control, generation: None };
+        let watch = Watch { limit: worker.limit, policy: &self.policy, control: &self.control, generation };
         let reply = worker.exchange(&frame, &[&file, self.control.shared.handle()], &watch);
         let killed = |stats: &mut RenderStats, reason: KillReason| {
             match reason {
@@ -1206,24 +1299,29 @@ impl DocRenderer {
                 worker.child.kill_now();
                 worker.child.wait_bounded(FINAL_NUMBERS_WAIT);
                 self.note_peak(&worker);
-                return Err(killed(&mut self.stats, reason));
+                return Err(killed(&mut self.stats, reason).into());
             }
-            Err(_) => return Err(RenderFailure::Unavailable),
+            // A stale job has no use for the document open. Nothing is wrong with it, so nothing is remembered.
+            Err(Stop::StaleKilled) => {
+                self.stats.cancel_kills += 1;
+                return Err(JobFailure::StaleKilled);
+            }
+            Err(_) => return Err(RenderFailure::Unavailable.into()),
         };
         let rejected = |stats: &mut RenderStats, why: &'static str| killed(stats, KillReason::Rejected(why));
         let pages = match reply.kind {
-            Kind::Opened => proto::decode_opened(&reply.payload).map_err(|error| rejected(&mut self.stats, error.0))?,
+            Kind::Opened => proto::decode_opened(&reply.payload).map_err(|error| JobFailure::from(rejected(&mut self.stats, error.0)))?,
             Kind::Failed => {
-                let (answered, code) = proto::decode_failed(&reply.payload).map_err(|error| rejected(&mut self.stats, error.0))?;
+                let (answered, code) = proto::decode_failed(&reply.payload).map_err(|error| JobFailure::from(rejected(&mut self.stats, error.0)))?;
                 if answered != 0 {
-                    return Err(rejected(&mut self.stats, "a failure for a different job"));
+                    return Err(rejected(&mut self.stats, "a failure for a different job").into());
                 }
-                return Err(failure_from_code(code));
+                return Err(failure_from_code(code).into());
             }
-            _ => return Err(rejected(&mut self.stats, "the wrong kind of reply to opening")),
+            _ => return Err(rejected(&mut self.stats, "the wrong kind of reply to opening").into()),
         };
         if self.page_count.is_some_and(|known| known != pages) {
-            return Err(RenderFailure::SourceChanged);
+            return Err(RenderFailure::SourceChanged.into());
         }
         self.page_count = Some(pages);
         if let Some(memory) = worker.child.memory() {
@@ -1299,7 +1397,7 @@ impl Watch<'_> {
 
 impl Worker {
     /// Starts a worker, waits for its hello, and returns it with its footprint at that moment.
-    fn start(config: &ServiceConfig, policy: &Policy, limit: u64) -> io::Result<(Self, u64)> {
+    fn start(config: &ServiceConfig, policy: &Policy, limit: u64, idle_exit: Duration) -> io::Result<(Self, u64)> {
         let (ours, theirs) = Channel::pair()?;
         let default_args: Vec<OsString>;
         let args: &[OsString] = match &config.replace_args {
@@ -1309,7 +1407,7 @@ impl Worker {
                     "--pdfium".into(),
                     config.pdfium_lib.clone().into_os_string(),
                     "--idle-exit-ms".into(),
-                    policy.idle_exit.as_millis().to_string().into(),
+                    idle_exit.as_millis().to_string().into(),
                     "--memory-limit".into(),
                     limit.to_string().into(),
                     "--deadline-ms".into(),
@@ -1325,7 +1423,7 @@ impl Worker {
         if config.replace_args.is_some() {
             env_refs.push(("RECTO_WORKER_LIMIT", &limit_text));
         }
-        let rule = IdleRule { after: policy.idle_exit.saturating_add(policy.idle_grace), memory_limit_bytes: limit };
+        let rule = IdleRule { after: idle_exit.saturating_add(policy.idle_grace), memory_limit_bytes: limit };
         let child = ChildProcess::spawn(&config.worker_exe, &arg_refs, &env_refs, theirs, Some(rule))?;
         child.note_activity(false);
         ours.set_nonblocking(true)?;
@@ -1347,7 +1445,7 @@ impl Worker {
             }
             worker.channel.wait_readable(Some(policy.watch_step))?;
         };
-        if hello.kind != Kind::Hello || proto::decode_hello(&hello.payload).is_err() {
+        if hello.kind != Kind::Hello || !hello.handles.is_empty() || proto::decode_hello(&hello.payload).is_err() {
             return Err(io::ErrorKind::InvalidData.into());
         }
         let footprint = worker.child.memory().map_or(0, |memory| memory.footprint_bytes);

@@ -78,6 +78,78 @@ fn share_differing(a: &[u8], b: &[u8], tolerance: i32) -> f64 {
     differing as f64 / (a.len() / 4) as f64
 }
 
+/// The share of pixels within a pixel of a tile boundary whose largest channel difference passes `tolerance`. A whole-page share hides a seam, because a seam is only a few pixels in a million.
+fn share_differing_at_seams(a: &[u8], b: &[u8], width: u32, height: u32, edge: u32, tolerance: i32) -> f64 {
+    let at_seam = |value: u32, end: u32| value >= edge && (value.is_multiple_of(edge) || value % edge == edge - 1) && value < end;
+    let (mut differing, mut total) = (0u64, 0u64);
+    for y in 0..height {
+        for x in 0..width {
+            if !at_seam(x, width) && !at_seam(y, height) {
+                continue;
+            }
+            total += 1;
+            let at = ((y * width + x) * 4) as usize;
+            if (0..3).any(|channel| (i32::from(a[at + channel]) - i32::from(b[at + channel])).abs() > tolerance) {
+                differing += 1;
+            }
+        }
+    }
+    differing as f64 / total.max(1) as f64
+}
+
+/// Paints the rows around a horizontal tile boundary black, the way a wrongly placed or short tile would show. Not white: those rows may be white already.
+fn with_a_seam_painted(pixels: &[u8], width: u32, edge: u32) -> Vec<u8> {
+    let mut out = pixels.to_vec();
+    let row = (width * 4) as usize;
+    for line in [edge - 1, edge] {
+        let start = line as usize * row;
+        out[start..start + row].fill(0);
+    }
+    out
+}
+
+/// Failure: a seam the page-wide share can't see: a whole row wrong at a tile boundary is under 0.1% of a page. So this looks only at pixels beside a boundary, and proves it would notice by
+/// painting one in.
+#[test]
+fn tile_boundaries_themselves_match_the_page_drawn_whole() {
+    let _turn = turn();
+    let file = TempPdf::new("seam-rows.pdf", &pages(&[Page::new(busy_page())]));
+    let mut backend = open(&file);
+    let (scale, edge) = (2.0, 512);
+    let (whole, width, height) = whole_page(&mut backend, 0, scale);
+    let tiles = stitched(&mut backend, 0, scale, edge, width, height);
+    let measured = share_differing_at_seams(&whole, &tiles, width, height, edge, 16);
+    assert!(measured < 0.02, "{:.2}% of the pixels at tile boundaries differ", measured * 100.0);
+    let seam = share_differing_at_seams(&whole, &with_a_seam_painted(&tiles, width, edge), width, height, edge, 16);
+    assert!(seam > measured * 3.0 && seam > 0.02, "a painted seam should show here: {seam} against {measured}");
+    // And in regions, which meet each other on the same grid.
+    let mut pasted = vec![0u8; (width * height * 4) as usize];
+    for y in (0..height).step_by(edge as usize * 2) {
+        let rect = TileRect { x: 0, y, width: width.min(1024), height: (edge * 2).min(height - y) };
+        let (pixels, _) = draw_region(&mut backend, 0, rect, scale, edge);
+        for row in 0..rect.height {
+            let (from, to) = ((row * rect.width * 4) as usize, (((y + row) * width) * 4) as usize);
+            pasted[to..to + (rect.width * 4) as usize].copy_from_slice(&pixels[from..from + (rect.width * 4) as usize]);
+        }
+    }
+    let row_share = {
+        let (mut differing, mut total) = (0u64, 0u64);
+        for y in (edge * 2..height).step_by(edge as usize * 2) {
+            for line in [y - 1, y] {
+                for x in 0..width.min(1024) {
+                    total += 1;
+                    let at = ((line * width + x) * 4) as usize;
+                    if (0..3).any(|channel| (i32::from(whole[at + channel]) - i32::from(pasted[at + channel])).abs() > 16) {
+                        differing += 1;
+                    }
+                }
+            }
+        }
+        differing as f64 / total.max(1) as f64
+    };
+    assert!(row_share < 0.02, "{:.2}% of the pixels where regions meet differ", row_share * 100.0);
+}
+
 /// Failure: tile edges don't line up with the page drawn whole, so a seam shows wherever two tiles meet. The shifted comparison proves the
 /// tolerance is tight enough to catch a tile placed one pixel off.
 #[test]

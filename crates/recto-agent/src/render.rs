@@ -59,10 +59,13 @@ impl OwnTemp {
     /// Makes a new file with a name nobody else has. `create_new` is `O_CREAT | O_EXCL`, which refuses an existing name and doesn't follow a symlink.
     fn create(out: &Path) -> Result<(Self, File), AgentError> {
         let failed = || AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED);
-        let name = out.file_name().ok_or_else(failed)?.to_string_lossy().into_owned();
+        if out.file_name().is_none() {
+            return Err(failed());
+        }
         for _ in 0..64 {
             let attempt = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-            let path = out.with_file_name(format!(".{name}.{}.{attempt}.partial", std::process::id()));
+            // Short and its own, not built from the output's name: a name near the file system's limit must still have a temp file.
+            let path = out.with_file_name(format!(".recto-{}-{attempt}.partial", std::process::id()));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => return Ok((Self { path }, file)),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -76,6 +79,29 @@ impl OwnTemp {
 impl Drop for OwnTemp {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Puts a finished picture at `out`, never over anything. A hard link does it in one step, so a stopped renderer leaves no half a picture under the real name, and a file that appeared meanwhile
+/// stays as it was. A volume without hard links, such as exFAT, gets the same refusal through `create_new`, then a copy, removed if the copy fails.
+fn publish(temp: &Path, out: &Path, link: impl Fn(&Path, &Path) -> std::io::Result<()>) -> Result<(), AgentError> {
+    let failed = || AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED);
+    match link(temp, out) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(output_exists()),
+        Err(_) => {
+            let mut target = match OpenOptions::new().write(true).create_new(true).open(out) {
+                Ok(target) => target,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Err(output_exists()),
+                Err(_) => return Err(failed()),
+            };
+            let copied = File::open(temp).and_then(|mut source| std::io::copy(&mut source, &mut target));
+            if copied.is_err() {
+                let _ = std::fs::remove_file(out);
+                return Err(failed());
+            }
+            Ok(())
+        }
     }
 }
 
@@ -102,12 +128,7 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     }
     let mut doc = DocRenderer::new(path, None, config, Policy::default())?;
     let (temp, drawn, kind) = write_page(&mut doc, page, scale, out, caps)?;
-    // In one step and never over anything: a stopped renderer leaves no half a picture under the real name, and a file that appeared meanwhile stays as it was.
-    match std::fs::hard_link(&temp.path, out) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Err(output_exists()),
-        Err(_) => return Err(AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED)),
-    }
+    publish(&temp.path, out, |from, to| std::fs::hard_link(from, to))?;
     drop(temp);
     Ok(json!({
         "page": page + 1,
@@ -244,7 +265,7 @@ pub(crate) fn budget_viewport(path: &Path, viewport: &str, first: Option<u32>, s
         Some("region") => (DrawStrategy::Region, "region"),
         Some(_) => return Err(AgentError::new("bad_strategy", "The strategy is per_tile or region, or left out to pick by page.", exit::FAILED)),
     };
-    let largest_image_pixels = doc.largest_image_pixels(first_page).unwrap_or(0);
+    let largest_image_pixels = doc.largest_image_pixels(first_page, 0).unwrap_or(0);
     doc.kill_worker();
     let steps = measure_viewport(&mut doc, ViewportOptions { first_page, scale, width, height, margin_tiles: VIEWPORT_MARGIN_TILES, strategy })?;
     let steps: Vec<Value> = steps
@@ -396,6 +417,32 @@ mod tests {
         for path in [&out, &target, &link, &plain] {
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    /// Failure: a volume without hard links, such as exFAT, can't receive a picture at all; or the fallback writes over a file that appeared meanwhile.
+    #[test]
+    fn publishing_works_without_hard_links_and_still_never_replaces() {
+        let file = doc();
+        let temp = file.0.with_file_name("from");
+        let out = file.0.with_file_name("to.png");
+        std::fs::write(&temp, b"picture").unwrap();
+        let unsupported = |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        publish(&temp, &out, unsupported).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), b"picture");
+        std::fs::write(&out, b"precious").unwrap();
+        assert_eq!(publish(&temp, &out, unsupported).unwrap_err().code, "output_exists");
+        assert_eq!(std::fs::read(&out).unwrap(), b"precious");
+        std::fs::remove_file(&temp).unwrap();
+        std::fs::remove_file(&out).unwrap();
+    }
+
+    /// Failure: an output name near the file system's limit fails, because the temp name was built from it and came out too long.
+    #[test]
+    fn a_long_output_name_still_gets_a_temp_file() {
+        let file = doc();
+        let out = file.0.with_file_name(format!("{}.png", "n".repeat(250)));
+        render(&file.0, 1, 1.0, &out).unwrap();
+        std::fs::remove_file(&out).unwrap();
     }
 
     /// Failure: a failed or refused render leaves its temp file behind, so a folder fills up with partial pictures.

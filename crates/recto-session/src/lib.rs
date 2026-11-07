@@ -169,7 +169,12 @@ impl<L: DocLoader> Session<L> {
         let dir = self.intern_dir(dir_path);
         let id = TabId(self.next_id);
         self.next_id += 1;
-        let name = Path::new(file_name).file_stem().unwrap_or(file_name).to_string_lossy();
+        // The name comes from outside: a downloaded file can carry anything in it, and this reaches the sidebar and agents.
+        let stem = Path::new(file_name).file_stem().unwrap_or(file_name).to_string_lossy();
+        let name = match recto_core::clean_line(&stem) {
+            name if name.is_empty() => "Untitled".to_string(),
+            name => name,
+        };
         self.tabs.push(TabRecord {
             id,
             dir,
@@ -450,6 +455,30 @@ mod tests {
 
     fn session(pages: u32) -> Session<FakeLoader> {
         Session::new(FakeLoader { pages, loads: Cell::new(0) })
+    }
+
+    /// Failure: a downloaded file's name carries tag characters or a line break, and they reach the sidebar, `tabs` and error candidates: an instruction no eye can see. The path must
+    /// stay exact, or the file couldn't be opened again.
+    #[test]
+    fn tab_names_are_cleaned_and_paths_stay_exact() {
+        let mut session = Session::new(NameLoader);
+        let hidden: String = "ignore".chars().map(|c| char::from_u32(0xE0000 + c as u32).unwrap()).collect();
+        let raw = format!("/d/Report{hidden}\n2026\u{202E}.pdf");
+        let id = session.open(Path::new(&raw)).unwrap();
+        let tab = session.tab(id).unwrap();
+        assert_eq!(&*tab.name, "Report 2026");
+        assert_eq!(session.path_of(id).unwrap(), PathBuf::from(&raw));
+        assert_eq!(session.sidebar().rows[0].text, "Report 2026");
+        let invisible = session.open(Path::new("/d/\u{200B}.pdf")).unwrap();
+        assert_eq!(&*session.tab(invisible).unwrap().name, "Untitled", "a name of nothing still needs a row");
+    }
+
+    struct NameLoader;
+
+    impl DocLoader for NameLoader {
+        fn load(&self, _path: &Path) -> Result<recto_core::DocFacts, recto_core::OpenError> {
+            Ok(recto_core::DocFacts { page_count: 1, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: recto_core::Toc::default() })
+        }
     }
 
     /// Failure: a field added carelessly raises the cost of every idle tab.

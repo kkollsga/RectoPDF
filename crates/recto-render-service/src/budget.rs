@@ -89,7 +89,7 @@ fn strips(
 ) -> Result<u64, RenderFailure> {
     let stride = width.checked_mul(BYTES_PER_PIXEL).ok_or(RenderFailure::TooLargeAtThisScale)?;
     // A page with a huge image pays per pass, so it gets the largest piece the limits allow, as tiles do. The USGS map at 4x: 1.97 s at 32 MiB against 5.6 s at 8 MiB.
-    let piece = if doc.largest_image_pixels(page).unwrap_or(0) >= REGION_MIN_IMAGE_PIXELS { recto_proto::MAX_REGION_BYTES } else { STRIP_MAX_BYTES };
+    let piece = if doc.largest_image_pixels(page, generation).unwrap_or(0) >= REGION_MIN_IMAGE_PIXELS { recto_proto::MAX_REGION_BYTES } else { STRIP_MAX_BYTES };
     let strip_rows = (piece / u64::from(stride)).clamp(1, u64::from(recto_proto::MAX_TILE_EDGE)) as u32;
     let strip_bytes = u64::from(stride) * u64::from(strip_rows.min(height));
     if surface.as_ref().is_none_or(|memory| (memory.len() as u64) < strip_bytes) {
@@ -252,7 +252,7 @@ fn draw_tiles(doc: &mut DocRenderer, page: u32, scale: f32, surface: &mut Option
     let grid: Vec<(u32, u32)> = (0..height.div_ceil(TILE_EDGE)).flat_map(|row| (0..width.div_ceil(TILE_EDGE)).map(move |column| (column, row))).collect();
     let mut render_us = 0;
     // The same choice the app will make, so this measures what a whole page in tiles will really cost.
-    let passes = if doc.largest_image_pixels(page).unwrap_or(0) >= REGION_MIN_IMAGE_PIXELS {
+    let passes = if doc.largest_image_pixels(page, 0).unwrap_or(0) >= REGION_MIN_IMAGE_PIXELS {
         plan_regions(&grid, (width, height)).into_iter().map(|rect| (rect, TILE_EDGE)).collect()
     } else {
         grid.iter().map(|&place| (tile_rect(place, (width, height)), 0)).collect::<Vec<_>>()
@@ -345,13 +345,14 @@ type TilePlace = (u32, u32, u32);
 
 /// Measures what a reader does: the first view of a page (worker start included), one scroll step of a quarter of the window, and one zoom step of 1.5x.
 pub fn measure_viewport(doc: &mut DocRenderer, options: ViewportOptions) -> Result<Vec<ViewportStep>, RenderFailure> {
-    let mut sizes: Vec<(u32, f32, f32)> = Vec::new();
+    let mut sizes: std::collections::HashMap<u32, (f32, f32)> = std::collections::HashMap::new();
     let mut cached: std::collections::HashSet<TilePlace> = std::collections::HashSet::new();
     let mut surface: Option<SharedMemory> = None;
     let mut hand_out = vec![0u8; (TILE_EDGE * TILE_EDGE * BYTES_PER_PIXEL) as usize];
     let mut steps = Vec::new();
     let quarter = u64::from(options.height / 4);
     let zoomed = options.scale * 1.5;
+    let started_run = Instant::now();
     for (name, scale, top) in [("first_view", options.scale, 0u64), ("scroll", options.scale, quarter), ("zoom", zoomed, (quarter as f64 * 1.5) as u64)] {
         if steps.is_empty() {
             cached.clear();
@@ -364,12 +365,13 @@ pub fn measure_viewport(doc: &mut DocRenderer, options: ViewportOptions) -> Resu
         let mut step = ViewportStep { name, micros: 0, tiles: 0, passes: 0, blank: 0, grey: 0, colour: 0, low_res: 0, failed: 0, peak_footprint_bytes: 0 };
         let places = visible_places(doc, &options, scale, top, &mut sizes)?;
         for (page, columns, rows, width, height) in places {
-            let needed: Vec<(u32, u32)> = rows
-                .clone()
-                .flat_map(|row| columns.clone().map(move |column| (column, row)))
-                .filter(|&(column, row)| cached.insert((page, column, row)))
-                .collect();
+            let needed: Vec<(u32, u32)> =
+                rows.clone().flat_map(|row| columns.clone().map(move |column| (column, row))).filter(|&(column, row)| !cached.contains(&(page, column, row))).collect();
             if needed.is_empty() {
+                continue;
+            }
+            if started_run.elapsed() >= BUDGET_MAX_TIME {
+                step.failed += needed.len() as u32;
                 continue;
             }
             step.tiles += needed.len() as u32;
@@ -377,13 +379,16 @@ pub fn measure_viewport(doc: &mut DocRenderer, options: ViewportOptions) -> Resu
                 DrawStrategy::PerTile => false,
                 DrawStrategy::Region => true,
                 // More than one tile, or there's nothing to gain, and a page known to be worth it.
-                DrawStrategy::Auto => needed.len() > 1 && doc.largest_image_pixels(page).unwrap_or(0) >= REGION_MIN_IMAGE_PIXELS,
+                DrawStrategy::Auto => needed.len() > 1 && doc.largest_image_pixels(page, 0).unwrap_or(0) >= REGION_MIN_IMAGE_PIXELS,
             };
+            let mut sharp = Vec::new();
             if use_regions {
-                draw_regions(doc, page, scale, &needed, (width, height), &mut surface, &mut hand_out, &mut step);
+                draw_regions(doc, page, scale, &needed, (width, height), &mut surface, &mut hand_out, &mut step, &mut sharp);
             } else {
-                draw_per_tile(doc, page, scale, &needed, (width, height), &mut surface, &mut step);
+                draw_per_tile(doc, page, scale, &needed, (width, height), &mut surface, &mut step, &mut sharp);
             }
+            // Only what really arrived, sharp. Anything else has to be asked for again on the next step, as it will in the app, and should cost that here too.
+            cached.extend(sharp.into_iter().map(|(column, row)| (page, column, row)));
         }
         step.micros = started.elapsed().as_micros() as u64;
         step.peak_footprint_bytes = doc.stats().peak_footprint_bytes.max(doc.worker_footprint().unwrap_or(0));
@@ -399,7 +404,7 @@ fn visible_places(
     options: &ViewportOptions,
     scale: f32,
     top: u64,
-    sizes: &mut Vec<(u32, f32, f32)>,
+    sizes: &mut std::collections::HashMap<u32, (f32, f32)>,
 ) -> Result<Vec<(u32, std::ops::Range<u32>, std::ops::Range<u32>, u32, u32)>, RenderFailure> {
     let total = doc.page_count()?;
     let bottom = top + u64::from(options.height);
@@ -407,11 +412,11 @@ fn visible_places(
     let mut page_top = 0u64;
     let mut page = options.first_page;
     while page < total && page_top < bottom {
-        let (width_points, height_points) = match sizes.iter().find(|size| size.0 == page) {
-            Some(size) => (size.1, size.2),
+        let (width_points, height_points) = match sizes.get(&page) {
+            Some(&size) => size,
             None => {
                 let size = doc.page_size(page)?;
-                sizes.push((page, size.0, size.1));
+                sizes.insert(page, size);
                 size
             }
         };
@@ -444,7 +449,8 @@ fn count_step(step: &mut ViewportStep, kind: TileKind) {
     }
 }
 
-fn draw_per_tile(doc: &mut DocRenderer, page: u32, scale: f32, needed: &[(u32, u32)], size: (u32, u32), surface: &mut Option<SharedMemory>, step: &mut ViewportStep) {
+#[allow(clippy::too_many_arguments)]
+fn draw_per_tile(doc: &mut DocRenderer, page: u32, scale: f32, needed: &[(u32, u32)], size: (u32, u32), surface: &mut Option<SharedMemory>, step: &mut ViewportStep, sharp: &mut Vec<(u32, u32)>) {
     let stride = TILE_EDGE * BYTES_PER_PIXEL;
     let bytes = (stride * TILE_EDGE) as usize;
     if surface.as_ref().is_none_or(|memory| memory.len() < bytes) {
@@ -460,6 +466,9 @@ fn draw_per_tile(doc: &mut DocRenderer, page: u32, scale: f32, needed: &[(u32, u
             Ok(TileResult::Done(tile)) => {
                 step.low_res += u32::from(tile.low_res.is_some());
                 count_step(step, tile.kind);
+                if tile.low_res.is_none() {
+                    sharp.push(place);
+                }
             }
             _ => step.failed += 1,
         }
@@ -503,6 +512,7 @@ fn draw_regions(
     surface: &mut Option<SharedMemory>,
     hand_out: &mut [u8],
     step: &mut ViewportStep,
+    sharp: &mut Vec<(u32, u32)>,
 ) {
     for rect in plan_regions(needed, size) {
         let stride = rect.width * BYTES_PER_PIXEL;
@@ -519,6 +529,7 @@ fn draw_regions(
             Ok(TileResult::Done(tile)) if tile.low_res.is_none() => {
                 for (place, kind) in recto_proto::region_tiles(rect, TILE_EDGE).zip(tile.region_kinds) {
                     count_step(step, kind);
+                    sharp.push((place.x / TILE_EDGE, place.y / TILE_EDGE));
                     // What the app will do for each tile with pixels: copy it into its own surface. Blank tiles need none.
                     if !matches!(kind, TileKind::Blank { .. }) {
                         let row_bytes = place.width as usize * BYTES_PER_PIXEL as usize;

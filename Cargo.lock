@@ -420,6 +420,7 @@ dependencies = [
 name = "recto-index"
 version = "0.1.0"
 dependencies = [
+ "recto-core",
  "recto-proto",
 ]
 

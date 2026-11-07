@@ -749,25 +749,42 @@ mod reaper {
             return;
         }
         if exited {
-            // Stuck on its way out. Look again soon, without waiting here.
-            arm_timer(queue, pid, 10);
+            // Stuck on its way out. Look again later, without waiting here.
+            arm_timer(queue, pid, STUCK_CHECK_MS);
             return;
         }
         let Some(rule) = rule else {
-            // No rule, so this timer only came from a child that had already gone when it was added, or stuck on its way out.
-            arm_timer(queue, pid, 10);
+            // No rule, so this timer only came from a child that had already gone when it was added, or is stuck on its way out.
+            arm_timer(queue, pid, STUCK_CHECK_MS);
             return;
         };
         let after_ms = rule.after.as_millis() as u64;
         let idle_ms = child.millis().saturating_sub(child.last_active_ms.load(Ordering::Relaxed));
         let busy = child.busy.load(Ordering::Relaxed);
+        let mut killed = false;
         if !busy {
             let over = super::process_memory(pid as u32).is_some_and(|memory| memory.footprint_bytes > rule.memory_limit_bytes);
             if idle_ms >= after_ms || over {
                 child.kill_now();
+                killed = true;
             }
         }
-        arm_timer(queue, pid, if busy { after_ms } else { after_ms.saturating_sub(idle_ms).max(1) });
+        arm_timer(queue, pid, next_check_ms(after_ms, idle_ms, busy, killed));
+    }
+
+    /// A child already signalled that hasn't gone is stuck in the kernel, perhaps on a dead volume, and looking sooner won't help.
+    const STUCK_CHECK_MS: u64 = 1000;
+
+    /// When to look at a child next. Never sooner than a second for one that's already been killed, because the budget for an idle app is one wake-up a second, and a worker stuck on a dead
+    /// volume can stay for as long as the volume does.
+    pub(super) fn next_check_ms(after_ms: u64, idle_ms: u64, busy: bool, killed: bool) -> u64 {
+        if killed {
+            STUCK_CHECK_MS
+        } else if busy {
+            after_ms
+        } else {
+            after_ms.saturating_sub(idle_ms).max(1)
+        }
     }
 }
 
@@ -1122,5 +1139,14 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         already.on_end(Box::new(move || sender.send(()).unwrap()));
         receiver.recv_timeout(Duration::from_secs(30)).expect("a child already gone should run it at once");
+    }
+
+    /// Failure: a killed worker stuck on a dead volume wakes the reaper about 1,000 times a second for as long as it's stuck, past the budget of one a second for an idle app.
+    #[test]
+    fn a_stuck_child_is_looked_at_once_a_second_at_most() {
+        assert!(reaper::next_check_ms(100, 5000, false, true) >= 1000, "just killed, and long past its time");
+        assert!(reaper::next_check_ms(100, 100, false, true) >= 1000);
+        assert_eq!(reaper::next_check_ms(35_000, 5_000, false, false), 30_000, "alive and idle: when its time is up");
+        assert_eq!(reaper::next_check_ms(35_000, 5_000, true, false), 35_000, "alive and busy: a whole period on");
     }
 }

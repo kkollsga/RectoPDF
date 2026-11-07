@@ -36,6 +36,7 @@
 //! [`MAX_ALSO_SPELLED`] on a page, past which [`Normalized::also_spelled_dropped`] says how many weren't kept.
 //! Lines stay lines: a phrase across a line break still needs a multi-line search, because unwrapping lines would garble tables.
 
+use recto_core::is_invisible_format;
 use recto_proto::CharRecord;
 
 /// Markers on one page that may search the rest of the page for evidence. Each search costs a pass over the page.
@@ -88,8 +89,8 @@ enum Action {
 fn map_char(ch: char) -> Action {
     match ch {
         '\u{2010}' | '\u{2011}' => Action::Keep('-'),
-        // Replacement character and the noncharacters: nothing a search can use.
-        '\u{FFFD}' | '\u{FFFE}' | '\u{FFFF}' => Action::Drop,
+        // Nothing a search can use.
+        '\u{FFFD}' => Action::Drop,
         '\t' | '\n' => Action::Keep(ch),
         c if is_break(c) => Action::Keep('\n'),
         c if c.is_whitespace() => Action::Keep(' '),
@@ -98,17 +99,6 @@ fn map_char(ch: char) -> Action {
         '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}' => Action::Drop,
         c => Action::Keep(c),
     }
-}
-
-/// Characters that draw nothing: Unicode's format characters and default-ignorables. `recto_core::clean_text`'s rule is the baseline, and this adds what page
-/// text can also carry: tag characters, variation selectors, annotation marks, and fillers that display as nothing.
-fn is_invisible_format(c: char) -> bool {
-    matches!(c,
-        '\u{AD}' | '\u{34F}' | '\u{61C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}' | '\u{180B}'..='\u{180F}'
-        | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{3164}'
-        | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF0}'..='\u{FFFB}'
-        | '\u{600}'..='\u{605}' | '\u{6DD}' | '\u{70F}' | '\u{8E2}' | '\u{110BD}' | '\u{110CD}' | '\u{13430}'..='\u{1343F}'
-        | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}' | '\u{E0000}'..='\u{E0FFF}')
 }
 
 fn is_tag_character(c: char) -> bool {

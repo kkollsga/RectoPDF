@@ -41,7 +41,8 @@ if [ -f "$lib" ] && [ "$(sha "$lib")" = "$DYLIB_SHA256" ] && [ "$attest" = 0 ]; 
 fi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/recto-pdfium.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
+partial=""
+trap 'rm -rf "$work"; [ -z "$partial" ] || rm -f "$partial"' EXIT
 tarball="$work/pdfium-mac-arm64.tgz"
 if [ -n "${RECTO_PDFIUM_TARBALL:-}" ]; then
   cp -- "$RECTO_PDFIUM_TARBALL" "$tarball"
@@ -77,4 +78,5 @@ partial="$(mktemp "$dest/libpdfium.XXXXXX")"
 cp -- "$work/unpacked/lib/libpdfium.dylib" "$partial"
 chmod 644 "$partial"
 mv -f -- "$partial" "$lib"
+partial=""
 echo "$lib"

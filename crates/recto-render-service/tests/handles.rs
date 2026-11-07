@@ -53,6 +53,11 @@ fn fake_worker() {
     }
     let mode = std::env::var("RECTO_FAKE").unwrap();
     let channel = Channel::inherited().unwrap();
+    if mode == "handle_on_hello" {
+        let extra = SharedMemory::create(4096).unwrap();
+        send_all(&channel, &proto::encode_hello(std::process::id()), &[extra.handle()]).unwrap();
+        std::thread::sleep(Duration::from_secs(600));
+    }
     send_all(&channel, &proto::encode_hello(std::process::id()), &[]).unwrap();
     let mut reader = FrameReader::default();
     loop {
@@ -139,6 +144,16 @@ fn a_flood_of_handles_kills_the_worker_and_closes_every_one() {
     wait_until("descriptors to go back to where they were", || recto_platform::open_handle_count() == before);
     assert!(std::fs::read_to_string("/etc/hosts").is_ok());
     assert!(held.metadata().is_ok(), "a file the host held open was closed under it");
+}
+
+/// Failure: a handle on a worker's very first message is taken as a good hello, when a worker that's misbehaving already should go no further.
+#[test]
+fn a_handle_on_the_hello_is_refused() {
+    let _turn = turn();
+    let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
+    let mut doc = DocRenderer::new(&file.0, None, config("handle_on_hello"), Policy::default()).unwrap();
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::Unavailable);
+    assert_eq!(doc.stats().spawns, 0);
 }
 
 /// Failure: the reaper's thread and queue stay after the last worker, so a session that has closed every document still holds a handle and a thread.

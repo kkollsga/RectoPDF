@@ -276,8 +276,7 @@ fn find_in_name_tree(reader: &IndexedReader, root: &Object, wanted: &[u8]) -> Op
     None
 }
 
-/// Decodes a PDF text string and strips what could mislead a reader or an agent: control characters and bidi overrides.
-/// The result is one line, capped at [`MAX_TITLE_BYTES`] without splitting a character.
+/// Decodes a PDF text string and strips what could mislead a reader or an agent. See [`clean_line`].
 pub fn clean_text(bytes: &[u8]) -> String {
     let decoded = if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
         let units = rest.as_chunks::<2>().0.iter().map(|pair| u16::from_be_bytes(*pair));
@@ -287,14 +286,20 @@ pub fn clean_text(bytes: &[u8]) -> String {
     } else {
         bytes.iter().map(|&b| pdf_doc_char(b)).collect::<String>()
     };
-    let mut out = String::with_capacity(decoded.len().min(MAX_TITLE_BYTES));
+    clean_line(&decoded)
+}
+
+/// Makes any short string from outside safe to show or pass to an agent: titles, contents, and file names. Strips control and invisible characters, and returns one line, capped at
+/// [`MAX_TITLE_BYTES`] without splitting a character.
+pub fn clean_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len().min(MAX_TITLE_BYTES));
     let mut pending_space = false;
-    for c in decoded.chars() {
-        if c.is_whitespace() || c.is_control() {
-            pending_space = !out.is_empty();
+    for c in text.chars() {
+        if is_invisible_format(c) {
             continue;
         }
-        if is_invisible_format(c) {
+        if c.is_whitespace() || c.is_control() {
+            pending_space = !out.is_empty();
             continue;
         }
         let extra = c.len_utf8() + usize::from(pending_space);
@@ -310,9 +315,20 @@ pub fn clean_text(bytes: &[u8]) -> String {
     out
 }
 
-fn is_invisible_format(c: char) -> bool {
-    // The tag characters and variation selectors spell or carry text no eye can see, the same risk in a title as in page text.
-    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{AD}' | '\u{E0000}'..='\u{E0FFF}')
+/// Characters that draw nothing, so text can hide in them or be reordered by them: Unicode's format characters and default-ignorables, including tag characters, bidi controls, variation
+/// selectors, annotation marks and fillers, plus blanks that aren't spaces and the noncharacters. The one rule for titles, contents, file names and page text.
+pub fn is_invisible_format(c: char) -> bool {
+    let code = c as u32;
+    // Every plane's last two code points, and the block of noncharacters in the BMP.
+    if code & 0xFFFE == 0xFFFE || (0xFDD0..=0xFDEF).contains(&code) {
+        return true;
+    }
+    matches!(c,
+        '\u{AD}' | '\u{34F}' | '\u{61C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}' | '\u{180B}'..='\u{180F}'
+        | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{2800}' | '\u{3164}'
+        | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF0}'..='\u{FFFB}'
+        | '\u{600}'..='\u{605}' | '\u{6DD}' | '\u{70F}' | '\u{8E2}' | '\u{110BD}' | '\u{110CD}' | '\u{13430}'..='\u{1343F}'
+        | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D159}' | '\u{1D173}'..='\u{1D17A}' | '\u{E0000}'..='\u{E0FFF}')
 }
 
 fn pdf_doc_char(b: u8) -> char {
@@ -346,6 +362,22 @@ mod tests {
             utf16.extend(unit.to_be_bytes());
         }
         assert_eq!(clean_text(&utf16), "ab");
+    }
+
+    /// Failure: titles, names and page text use different lists, so a character that page text strips reaches an agent through a title.
+    #[test]
+    fn the_one_rule_covers_every_kind_of_invisible_character() {
+        let invisible = [
+            '\u{61C}', '\u{3164}', '\u{115F}', '\u{FFF9}', '\u{FFFB}', '\u{180B}', '\u{180E}', '\u{1D173}', '\u{1D17A}', '\u{2800}', '\u{1D159}', '\u{E0041}', '\u{FE0F}', '\u{2064}',
+            '\u{FDD0}', '\u{FFFE}', '\u{1FFFF}', '\u{10FFFE}', '\u{AD}', '\u{200B}', '\u{202E}',
+        ];
+        for c in invisible {
+            assert!(is_invisible_format(c), "U+{:04X}", c as u32);
+            assert_eq!(clean_line(&format!("a{c}b")), "ab", "U+{:04X}", c as u32);
+        }
+        for c in ['a', 'Æ', '数', '😀', ' ', '-'] {
+            assert!(!is_invisible_format(c), "U+{:04X} is real text", c as u32);
+        }
     }
 
     /// Failure: a title carries an instruction in tag characters, which no eye can see and an agent reads as text.

@@ -361,10 +361,10 @@ fn the_largest_image_is_found_and_remembered() {
     );
     let file = TempPdf::new("image.pdf", &bytes);
     let mut doc = renderer(&file.0, Policy::default());
-    assert_eq!(doc.largest_image_pixels(0).unwrap(), 1200);
-    assert_eq!(doc.largest_image_pixels(1).unwrap(), 0);
+    assert_eq!(doc.largest_image_pixels(0, 0).unwrap(), 1200);
+    assert_eq!(doc.largest_image_pixels(1, 0).unwrap(), 0);
     let jobs = doc.stats().jobs;
-    assert_eq!(doc.largest_image_pixels(0).unwrap(), 1200);
+    assert_eq!(doc.largest_image_pixels(0, 0).unwrap(), 1200);
     assert_eq!(doc.stats().jobs, jobs, "asked again rather than remembered");
 }
 
