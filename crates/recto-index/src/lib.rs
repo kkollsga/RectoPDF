@@ -151,8 +151,8 @@ pub fn normalize(chars: &[CharRecord], want_source: bool) -> Normalized {
             } else {
                 out.hyphens_joined += 1;
             }
-            // A marker carries its line break away only if there's a token to join it to. Otherwise the line really did end here.
-            i = if chars.get(right_start).is_some_and(|c| c.ch().is_alphanumeric()) { right_start } else { i + 1 };
+            // A marker carries its line break away only if there's a token to join it to, and a page number isn't half of one. Otherwise the line really did end here.
+            i = if chars.get(right_start).is_some_and(|c| c.ch().is_alphanumeric()) && !ends_in_a_page_mark(&out.text, chars.get(right_start).map(|c| c.ch())) { right_start } else { i + 1 };
             continue;
         }
         if is_break(ch) {
@@ -160,7 +160,8 @@ pub fn normalize(chars: &[CharRecord], want_source: bool) -> Normalized {
             let next = skip_breaks(chars, i);
             let joined = out.text.ends_with('-')
                 && out.text[..out.text.len() - 1].chars().next_back().is_some_and(char::is_alphanumeric)
-                && chars.get(next).is_some_and(|c| c.ch().is_alphanumeric());
+                && chars.get(next).is_some_and(|c| c.ch().is_alphanumeric())
+                && !ends_in_a_page_mark(&out.text, chars.get(next).map(|c| c.ch()));
             if !joined {
                 push(&mut out, '\n', i);
             }
@@ -178,6 +179,29 @@ pub fn normalize(chars: &[CharRecord], want_source: bool) -> Normalized {
         i += 1;
     }
     out
+}
+
+/// How far back a line's end is looked at for a page mark. Longer than any, so a hostile page of one long line can't make this quadratic.
+const MAX_PAGE_MARK: usize = 32;
+
+/// Whether the text so far ends in a hyphen that belongs to a page number or a marker, rather than a word broken across a line: `-17-` or `-iv-` anywhere, or `17-` or `A-` as all there is on its line. Those aren't half of a token, so the next line isn't their other half: `wbD34442284` p. 17 read `-17-PBC`. `the 21-` isn't one of them, since that's how `21-cm` breaks across a line. Nor is `2015-` alone on its line above `2019`: a range of numbers in a table's cell is one token, as on `un_sdg2024` p. 43.
+fn ends_in_a_page_mark(text: &str, next: Option<char>) -> bool {
+    let tail_start = text.char_indices().rev().nth(MAX_PAGE_MARK).map_or(0, |(at, _)| at);
+    let tail = &text[tail_start..];
+    let line = tail.rsplit('\n').next().unwrap_or(tail);
+    let Some(token) = line.split_whitespace().next_back() else { return false };
+    let core = token.trim_end_matches('-');
+    let core_bare = core.trim_start_matches(['-', '\u{2013}', '\u{2014}']);
+    if core_bare.is_empty() {
+        return false;
+    }
+    let digits = core_bare.chars().all(|c| c.is_ascii_digit());
+    let roman = core_bare.chars().all(|c| "ivxlcdmIVXLCDM".contains(c));
+    let one_letter = core_bare.chars().count() == 1;
+    let enclosed = core_bare.len() < core.len();
+    let is_all_on_its_line = (tail_start == 0 || line.len() < tail.len()) && line.trim() == token;
+    let a_range = digits && next.is_some_and(|c| c.is_ascii_digit());
+    (enclosed && (digits || roman || one_letter)) || (is_all_on_its_line && !a_range && (digits || one_letter))
 }
 
 fn skip_breaks(chars: &[CharRecord], mut i: usize) -> usize {
@@ -608,6 +632,24 @@ mod tests {
         assert_eq!(text("a -^b"), "a -\nb", "not a word before the hyphen");
         assert_eq!(text("well-^ b"), "well-\n b", "not a word after it");
         assert_eq!(text("plain^line"), "plain\nline", "ordinary lines stay lines, so tables survive");
+    }
+
+    /// Failure: a page number's hyphen joins it to the next line, as `-17-PBC` on `wbD34442284` p. 17, because it reads as a token broken in two. Real tokens must still join, including a number and its unit.
+    #[test]
+    fn a_page_number_isnt_half_of_the_next_line() {
+        assert_eq!(text("-17-^PBC Description"), "-17-\nPBC Description");
+        assert_eq!(text("end of page^-17-^PBC"), "end of page\n-17-\nPBC");
+        assert_eq!(text("\u{2013}17-^PBC"), "\u{2013}17-\nPBC");
+        assert_eq!(text("-iv-^Contents"), "-iv-\nContents");
+        assert_eq!(text("before^17-^PBC"), "before\n17-\nPBC", "a number alone on its line");
+        assert_eq!(text("-17~^PBC"), "-17-\nPBC", "the same with PDFium's own marker");
+        assert_eq!(text("the 21-^cm line"), "the 21-cm line", "a number in a sentence is half of something");
+        assert_eq!(text("state-of-the-^art"), "state-of-the-art");
+        assert_eq!(text("the COVID-^19 cases"), "the COVID-19 cases");
+        assert_eq!(text("COVID~^19"), "COVID-19");
+        assert_eq!(text("anti-^inflammatory"), "anti-inflammatory", "a word alone on its line still joins");
+        assert_eq!(text("cell^2015-^2019"), "cell\n2015-2019", "and so does a range of numbers in a table's cell");
+        assert_eq!(text("-3-^2. The Recipient"), "-3-\n2. The Recipient", "but not a page number above a numbered line");
     }
 
     /// Failure: highlights land on the wrong characters because the map back to PDFium's indices drifts after a join.
