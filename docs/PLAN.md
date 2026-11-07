@@ -217,6 +217,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] On the first version bump's gate: `copy_folder` copies kept files into `session.vN` with no pruning, and a clear doesn't reach them, which would keep redacted text
 - [x] Deep sleep's last review: `session sleep` counts against the write limits, a same-stamp rewrite is told apart by the file's ID, page count and length, and unreadable edits say so. A file with no ID rewritten with every object in place still can't be told apart
 - [x] Red frames from an old file: a warm tab whose file was replaced kept showing the old pages, on main too; every picture and tile now carries its file's version, and a tab's file is looked at before it's shown
+- [ ] A quiet QA app outlives a test or script that stopped without saying so: three ran on, orphaned, for up to their 30-minute limit after their worktrees were gone. It should end when the client that started it is gone
 - [ ] Test line order on a real right-to-left PDF (none among the 454 in distillPDF)
 - [ ] 24-hour soak, flat memory
 - [x] Installer that checks checksum, team and Gatekeeper, and goes back to the previous app if the new one fails. `app/release-zip.sh` and the release workflow are written and read; the workflow hasn't run, and `docs/RELEASING.md` says what the owner has to add
