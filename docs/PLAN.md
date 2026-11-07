@@ -143,6 +143,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 ## Phase 4: Saving and editing
 
 - [x] Fork: append writer, reopen after append, revision chain (`work/append-writer` at `0e89b89` on the fork; RectoPDF still to repin)
+- [ ] Fork: streaming rewrite to a new file, copying only what's still used and without loading the whole PDF, for deleting pages, replaced text, redaction, compress and hidden-data removal. SPEC section 6 needs it, and the only rewrite in lopdf today loads everything into memory
 - [ ] Agreement gate between lopdf and PDFium
 - [ ] Native Save, Save As, close prompt, atomic writes, one backup
 - [ ] Edit mode: page grid, drag, drop PDFs, rotate, delete, extract, split, merge
