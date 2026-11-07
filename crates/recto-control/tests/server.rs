@@ -26,6 +26,7 @@ struct Stand {
     unsaved: Mutex<Vec<(TabId, String)>>,
     wheres: AtomicUsize,
     looks_answer: std::sync::atomic::AtomicBool,
+    stop_refused: std::sync::atomic::AtomicBool,
 }
 
 impl Stand {
@@ -81,6 +82,10 @@ impl Host for Stand {
 
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
         self.unsaved.lock().unwrap().clone()
+    }
+
+    fn stop_refusal(&self) -> Option<AgentError> {
+        self.stop_refused.load(Ordering::SeqCst).then(|| AgentError::new("only_the_user_quits", "Not over the socket.", exit::FAILED))
     }
 }
 
@@ -268,6 +273,17 @@ fn a_half_closed_client_still_gets_its_answer() {
     stream.shutdown(std::net::Shutdown::Write).unwrap();
     assert_eq!(read_line(&mut stream).unwrap()["data"]["read"], true);
     assert_eq!(read_line(&mut stream), None, "and then it's over");
+}
+
+/// Failure: a host that won't be stopped over the socket is, or a refused `stop` leaves the server saying it's stopping. It answers why, and everything goes on.
+#[test]
+fn a_host_can_refuse_to_be_stopped() {
+    let running = Running::start(Limits::default());
+    running.host.stop_refused.store(true, Ordering::SeqCst);
+    let refused = running.call(&json!({ "cmd": "stop" }));
+    assert_eq!(refused["error"]["code"], "only_the_user_quits", "{refused}");
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    assert_eq!(running.call(&json!({ "cmd": "goto", "page": 1 }))["ok"], true, "commands aren't refused as if it were stopping");
 }
 
 /// Failure: `stop` drops unsaved edits, or a host can't end the server it's carrying. A host's stopper and `stop` must both end `run`, and both remove the socket.

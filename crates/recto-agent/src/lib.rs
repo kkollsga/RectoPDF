@@ -687,6 +687,11 @@ pub fn paper_name(view: recto_session::ViewSettings) -> &'static str {
 }
 
 /// QA commands reach an app started in QA mode, and nothing else. Other sessions, a shipped app's included, say this.
+/// `recto stop` against the owner's own app. Only they quit it: the default, by the coordinator's decision of 2026-11-07, until the owner says otherwise.
+pub fn only_the_user_quits() -> AgentError {
+    AgentError::new("only_the_user_quits", "This session is the app someone is using, and only they can quit it.", exit::FAILED).then("Ask them to, if it needs to stop. Everything else works with it running.")
+}
+
 pub fn qa_needs_app() -> AgentError {
     AgentError::new("qa_needs_app", "QA commands only work on an app started with `recto qa start`.", exit::FAILED).then("Set RECTO_STATE_DIR to a temp folder and run `recto qa start`.")
 }

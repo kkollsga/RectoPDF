@@ -265,6 +265,11 @@ impl Host for AppHost {
         self.session.tab_count()
     }
 
+    /// Quitting is the person's. A quiet run is someone's test, and stops when it's told to.
+    fn stop_refusal(&self) -> Option<AgentError> {
+        self.qa.is_none().then(recto_agent::only_the_user_quits)
+    }
+
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
         self.session.unsaved_tabs()
     }
@@ -1015,6 +1020,36 @@ mod tests {
         assert_eq!(shift(&in_three, 2, &in_two, 3), 2, "back: 2.2 wasn't listed, but 3, the row it came from, still is");
         assert_eq!(shift(&in_two, 5, &["1", "2", "2.1", "2.2", "3", "4", "4.1"], 5), 0, "everything happened below");
         assert_eq!(shift(&in_two, 5, &in_three, 4), -1, "everything happened above");
+    }
+
+    /// Failure: with the session thread held up by a file on a dead volume, every drawn tile and click queues for it, and the queue grows without end. It stops at its cap, and someone waiting for a flush still gets in.
+    #[test]
+    fn the_queue_for_the_session_thread_has_a_cap() {
+        let queue = CoreQueue::default();
+        for page in 0..(MAX_QUEUED_CALLS as u32 + 100) {
+            queue.push(CoreCall::Page(page, None, TabId(1)));
+        }
+        assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS);
+        queue.push(CoreCall::Flush(Arc::new(Flushed::default())));
+        assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS + 1, "someone is waiting on that");
+    }
+
+    /// Failure: an agent at Control quits the app out from under the person using it, with no prompt, by `recto stop`. In a normal app it's refused, and the words are for whoever's asking.
+    #[test]
+    fn stop_is_refused_by_a_normal_app() {
+        let host = AppHost { session: SessionHost::new(DrawableLoader), core: Arc::new(CoreQueue::default()), qa: None };
+        assert_eq!(host.stop_refusal().expect("refused").code, "only_the_user_quits");
+    }
+
+    /// Failure: the host and the core decide a quiet run differently: a word after `-NS...` is that option's value here, while the host's own search found `--qa` in it. It would launch off every screen with nothing watching for a QA run, or the other way round, and take the screen.
+    #[test]
+    fn a_launch_is_quiet_only_as_the_parser_says() {
+        let words = |list: &[&str]| list.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(launch_is_quiet(words(&["--qa"])));
+        assert!(!launch_is_quiet(words(&[])));
+        assert!(!launch_is_quiet(words(&["-NSSomething", "--qa"])), "that's the option's value");
+        assert!(!launch_is_quiet(words(&["/d/--qa.pdf"])));
+        assert!(launch_is_quiet(words(&["--not-an-option"])), "it won't get as far as a window");
     }
 
     /// Failure: QA options work on a normal launch, so a shipped app can be started with its limits changed, or a file named at launch is taken for an option.

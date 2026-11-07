@@ -85,6 +85,7 @@ Reference: `docs/concepts/`. Rules from the owner:
 
 ## 5. Agent
 
+- **`recto stop` doesn't quit the app someone is using.** In a normal app it refuses, and says only the user quits the app. A quiet QA run stops when told. A default, by the coordinator's decision of 2026-11-07, until the owner says otherwise.
 - The app starts the user's **existing `claude` install** if there is one, and never handles credentials. If it's missing, the panel shows
   setup steps and the reader works as normal.
 - **The agent requests what it needs.** The first prompt holds facts about the PDF (size, pages, text status, outline) plus the question,

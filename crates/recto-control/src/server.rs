@@ -1148,6 +1148,9 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
                     return Err(refusal(table::display_name(tag), level, command.access()));
                 }
                 if matches!(command, Command::Stop {}) {
+                    if let Some(refusal) = host.stop_refusal() {
+                        return Err(refusal);
+                    }
                     let unsaved = host.unsaved_tabs();
                     return if unsaved.is_empty() { Ok(json!({ "stopping": true })) } else { Err(unsaved_refusal(&unsaved)) };
                 }
