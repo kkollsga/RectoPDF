@@ -12,3 +12,9 @@ workspace = true
 recto-proto.workspace = true
 # For the one rule on invisible characters, shared with titles and names.
 recto-core.workspace = true
+recto-platform.workspace = true
+serde_json.workspace = true
+# Names a corpus for its file. Already in the tree through lopdf, so it adds no crate.
+sha2.workspace = true
+# A checksum per page, in hardware on this Mac. Already in the tree through flate2, so it adds no crate.
+crc32fast.workspace = true

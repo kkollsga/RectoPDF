@@ -103,7 +103,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 ## Phase 3: Complete reader
 
 - [ ] Native text selection: drag, double and triple click, select across pages, ⌘C, the system's highlight colour and I-beam cursor
-- [ ] Search corpus and index, with the text normaliser
+- [x] Search corpus and index, with the text normaliser: `recto index`, `recto wait indexing-done`, and `recto search` answering from it, with `route` saying how
 - [ ] Find in the sidebar, with the hit list
 - [ ] macOS menu bar, driven by a Rust model; `⋯` panel; ⌘K
 - [ ] Session restore, recent files, replaced-file handling, password prompt
@@ -111,8 +111,10 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Click to copy an image losslessly
 - [ ] Snapshot tool with text, PNG, JPG and the hand-rolled streaming `recto-svg`
 - [ ] Print
-- [ ] What blind agents asked for: a whole-document hit total in `search`, an unwrapped quote form of `text`, `edits` saying when turns cancel out, `watch` to a file, and what an encrypted file restricts in `facts`
 - [ ] Generated contents: `recto contents --generated`, then a quiet offer in the sidebar when a file's own are missing or look bad. distillPDF's headings, in a helper with a memory limit, labelled as generated. Needs distillPDF's per-page work
+- [x] `recto search --regex` by ripgrep's engine in process, and `--rank` by BM25, with no new index (owner, 2026-11-07)
+- [x] What blind agents asked for: a whole-document hit total in `search`
+- [ ] The rest of what they asked for: an unwrapped quote form of `text`, `edits` saying when turns cancel out, `watch` to a file, and what an encrypted file restricts in `facts`
 - [ ] **Blind agent test, next round**
 
 **Done when:** it can replace your everyday reader for reading only.
@@ -152,7 +154,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 Built last among features because it stands on the CLI, the corpus and OCR.
 
 - [ ] Spike: the locked-down `claude` command, using a small amount of your quota, with your approval
-- [ ] Per-document folder, `manifest.json`, first-prompt facts; the agent requests what it needs
+- [x] Per-document folder and `manifest.json`, made from the corpus on demand by `recto index --agent`
+- [ ] First-prompt facts, and pointing the run at that folder; the agent requests what it needs
 - [ ] Hidden-text and prompt-injection tests
 - [ ] Panel: visible steps, clickable citations, token count
 - [ ] Setup steps when `claude` isn't installed; first-use consent per document
@@ -169,6 +172,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] **Release blocker:** the renderer runs in the sandbox, tested on the signed build
 - [ ] Fuzzing on every parser of untrusted input
 - [ ] Corpus run across all benchmark PDFs, with a dated report
+- [ ] Fuzz `recto_index::corpus`'s reader with damaged files on disk, as for every parser
 - [ ] Test line order on a real right-to-left PDF (none among the 454 in distillPDF)
 - [ ] 24-hour soak, flat memory
 - [ ] Developer ID signing and notarization, installer, update check

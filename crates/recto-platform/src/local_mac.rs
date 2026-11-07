@@ -242,16 +242,40 @@ pub fn check_private_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The name of the kind of file system a file is on, such as `apfs`.
+pub fn file_system_name(file: &File) -> io::Result<String> {
+    let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: the descriptor is open for as long as `file`, and the buffer is the size `fstatfs` writes.
+    let info = unsafe {
+        if libc::fstatfs(std::os::fd::AsRawFd::as_raw_fd(file), info.as_mut_ptr()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        info.assume_init()
+    };
+    let name: Vec<u8> = info.f_fstypename.iter().take_while(|byte| **byte != 0).map(|byte| *byte as u8).collect();
+    Ok(String::from_utf8_lossy(&name).into_owned())
+}
+
+/// Opens a file for reading, only if it's a plain file of this user's that nobody else can write. A link isn't followed, and a pipe left in its place doesn't wait for a writer.
+pub fn open_private_file(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)?;
+    let meta = file.metadata()?;
+    if !meta.file_type().is_file() || meta.uid() != current_uid() || meta.mode() & 0o022 != 0 {
+        return Err(refused("this file isn't a private file of this user's"));
+    }
+    Ok(file)
+}
+
 /// Reads a file only if it's a plain file of this user's that nobody else can write, in at most `max_bytes`. `None` if it isn't there. Anything else is an error, which callers take as "don't trust it".
 pub fn read_private_file(path: &Path, max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
-    let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) {
+    let file = match open_private_file(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
     let meta = file.metadata()?;
-    if !meta.file_type().is_file() || meta.uid() != current_uid() || meta.mode() & 0o022 != 0 || meta.len() > max_bytes {
-        return Err(refused("this file isn't a private file of this user's"));
+    if meta.len() > max_bytes {
+        return Err(refused("this file is larger than it can be"));
     }
     let mut bytes = Vec::with_capacity(meta.len() as usize);
     file.take(max_bytes).read_to_end(&mut bytes)?;
@@ -272,9 +296,53 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
 }
 
+/// The same with nothing synced, for what a kill or a power cut may lose: a cache that can be made again. A sync per small file costs milliseconds on a real disk.
+pub fn write_private_file_unsynced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temp = path.with_extension(format!("tmp{}", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    let written = create_private_file(&temp).and_then(|mut file| file.write_all(bytes));
+    match written.and_then(|()| std::fs::rename(&temp, path)) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(error)
+        }
+    }
+}
+
+/// Makes a new file, mode 0600, for writing. Refuses if anything's already at that name, and a planted link isn't followed.
+pub fn create_private_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)
+}
+
+/// The attribute `tmutil addexclusion` sets, which goes with the item wherever it's moved. Its value is the binary property list for the string `com.apple.backupd`.
+const BACKUP_EXCLUDE_NAME: &std::ffi::CStr = c"com.apple.metadata:com_apple_backup_excludeItem";
+const BACKUP_EXCLUDE_VALUE: &[u8] = b"bplist00_\x10\x11com.apple.backupd\x08\0\0\0\0\0\0\x01\x01\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x1c";
+
+fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
+    std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| io::ErrorKind::InvalidInput.into())
+}
+
+/// Keeps a folder out of Time Machine.
+pub fn exclude_from_backups(path: &Path) -> io::Result<()> {
+    let path = c_path(path)?;
+    // SAFETY: both strings are NUL-terminated and live for the call, and the value is its given length. XATTR_NOFOLLOW so a link isn't what gets marked.
+    let rc = unsafe { libc::setxattr(path.as_ptr(), BACKUP_EXCLUDE_NAME.as_ptr(), BACKUP_EXCLUDE_VALUE.as_ptr().cast(), BACKUP_EXCLUDE_VALUE.len(), 0, libc::XATTR_NOFOLLOW) };
+    if rc == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Whether [`exclude_from_backups`] has marked this.
+pub fn is_excluded_from_backups(path: &Path) -> bool {
+    let Ok(path) = c_path(path) else { return false };
+    // SAFETY: a null buffer asks only for the value's length, and the strings live for the call.
+    let rc = unsafe { libc::getxattr(path.as_ptr(), BACKUP_EXCLUDE_NAME.as_ptr(), std::ptr::null_mut(), 0, 0, libc::XATTR_NOFOLLOW) };
+    rc > 0
+}
+
 /// Opens a file for appending, made with mode 0600 if new. A link isn't followed.
 pub fn append_private_file(path: &Path) -> io::Result<File> {
-    OpenOptions::new().append(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)
+    // Not blocking: opening a pipe to write would otherwise wait for a reader for ever.
+    OpenOptions::new().append(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
 }
 
 /// What's at a socket's path.
