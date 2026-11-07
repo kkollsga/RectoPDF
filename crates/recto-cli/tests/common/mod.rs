@@ -152,6 +152,53 @@ impl Raw {
     }
 }
 
+/// How to answer the word a command asks for at a terminal.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Word {
+    Right,
+    Wrong,
+}
+
+/// Runs `recto` the way a person does: `script` gives it a real pseudo-terminal with a controlling terminal, and the word is read from the prompt and typed back through it. Returns the exit code and everything shown.
+pub fn in_a_terminal(state: &State, args: &[&str], home: Option<&Path>, word: Word) -> (i32, String) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let mut script = Command::new("/usr/bin/script");
+    script.args(["-q", "/dev/null", bin()]).args(args).env(STATE_ENV, &state.root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    if let Some(home) = home {
+        script.env("HOME", home);
+    }
+    let mut child = script.spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut seen = String::new();
+    // The prompt ends with no line end, at "press return: ", so this reads what's there a byte at a time.
+    let mut byte = [0u8];
+    while !seen.contains("press return: ") {
+        if stdout.read(&mut byte).unwrap_or(0) == 0 {
+            break;
+        }
+        seen.push(char::from(byte[0]));
+    }
+    let shown = seen.rsplit("type ").next().unwrap_or("").split(' ').next().unwrap_or("").to_string();
+    let answer = if word == Word::Wrong { "wrongword".to_string() } else { shown };
+    let _ = writeln!(stdin, "{answer}");
+    let mut rest = String::new();
+    for line in stdout.by_ref().lines() {
+        let Ok(line) = line else { break };
+        rest.push_str(&line);
+        rest.push('\n');
+    }
+    drop(stdin);
+    let status = child.wait().unwrap();
+    (status.code().unwrap_or(-1), seen + &rest)
+}
+
+/// The JSON answer at the end of what a terminal showed.
+pub fn last_json(shown: &str) -> Value {
+    let line = shown.lines().rev().find(|line| line.trim_start().starts_with('{')).unwrap_or_else(|| panic!("no JSON in {shown:?}"));
+    serde_json::from_str(line.trim()).unwrap_or_else(|_| panic!("not JSON: {line:?}"))
+}
+
 pub fn open_cmd(path: &Path) -> Value {
     json!({ "cmd": "open", "path": path })
 }

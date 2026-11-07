@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{Raw, Serving, State, open_cmd};
+use common::{Raw, Serving, State, Word, in_a_terminal, open_cmd};
 use recto_agent::{Level, exit};
 use recto_control::state::STATE_ENV;
 use recto_testpdf::{Page, TempPdf, busy_page, pages, text_lines};
@@ -603,15 +603,38 @@ fn the_log_reads_with_no_session_at_the_same_level() {
     assert_eq!((log["error"]["code"].as_str(), code), (Some("permission_denied"), exit::PERMISSION));
 }
 
-/// Failure: `recto skill install` writes outside what was asked, overwrites a changed file without saying so, or a QA run writes into the real home.
+/// Failure: an agent writes into the user's agent's skill folder through a pipe, or `--replace` overwrites someone's file with no one at a terminal. Every install takes a real terminal, and `show` stays open at Off.
 #[test]
-fn skill_install_writes_only_where_asked() {
+fn skill_install_needs_a_real_terminal_and_show_doesnt() {
+    let state = State::new();
+    let folder = state.root.with_extension("skill-pipe");
+    for args in [&["skill", "install", "--path", folder.to_str().unwrap()][..], &["skill", "install", "--path", folder.to_str().unwrap(), "--dry-run"][..], &["skill", "install", "--path", folder.to_str().unwrap(), "--replace"][..]] {
+        let (reply, code) = state.json(args);
+        assert_eq!((reply["error"]["code"].as_str(), code), (Some("needs_terminal"), exit::PERMISSION), "{args:?}: {reply}");
+        assert!(reply["error"]["next"].as_str().unwrap().contains("recto skill show"), "{reply}");
+    }
+    assert!(!folder.exists(), "something was written without a terminal");
+    // Pointed at the real home by a test state folder, it's refused before it even asks.
+    let (reply, code) = state.json(&["skill", "install", "--target", "claude-code"]);
+    assert_eq!((reply["error"]["code"].as_str(), code), (Some("state_refused"), exit::PERMISSION), "{reply}");
+    let (shown, _, code) = state.text(&["skill", "show"]);
+    assert_eq!(code, 0, "an agent at Off must still be able to read it");
+    assert!(shown.starts_with("---\nname: recto\n"), "{shown}");
+}
+
+/// Failure: `recto skill install` at a real terminal writes outside what was asked, overwrites a changed file without saying so, or a QA run writes into the real home. And its own advice fails with a usage error.
+#[test]
+fn skill_install_at_a_terminal_writes_only_where_asked() {
     let state = State::new();
     let folder = state.root.with_extension("skill");
     let fake_home = state.root.with_extension("home");
     std::fs::create_dir_all(&fake_home).unwrap();
-    let (reply, code) = state.json(&["skill", "install", "--path", folder.to_str().unwrap()]);
-    assert_eq!(code, 0, "{reply}");
+    let path = folder.to_str().unwrap();
+    let (code, shown) = in_a_terminal(&state, &["skill", "install", "--path", path, "--json"], None, Word::Wrong);
+    assert_eq!(code, exit::PERMISSION, "{shown}");
+    assert!(!folder.exists(), "a wrong word wrote something");
+    let (code, shown) = in_a_terminal(&state, &["skill", "install", "--path", path, "--json"], None, Word::Right);
+    assert_eq!(code, 0, "{shown}");
     let body = std::fs::read_to_string(folder.join("SKILL.md")).unwrap();
     assert!(body.starts_with("---\nname: recto\n"), "the front matter must come first");
     assert!(folder.join("REFERENCE.md").exists());
@@ -620,27 +643,25 @@ fn skill_install_writes_only_where_asked() {
     assert_eq!(shown.trim_end(), body.trim_end(), "`skill show` and the file must match");
 
     std::fs::write(folder.join("REFERENCE.md"), "edited by someone").unwrap();
-    let (reply, code) = state.json(&["skill", "install", "--path", folder.to_str().unwrap()]);
+    let (code, shown) = in_a_terminal(&state, &["skill", "install", "--path", path, "--json"], None, Word::Right);
+    let reply = common::last_json(&shown);
     assert_eq!((reply["error"]["code"].as_str(), code), (Some("skill_changed"), exit::FAILED), "{reply}");
     assert!(reply["error"]["candidates"][0].as_str().unwrap().ends_with("REFERENCE.md"));
     assert_eq!(std::fs::read_to_string(folder.join("REFERENCE.md")).unwrap(), "edited by someone");
-    let (_, said, code) = state.text(&["skill", "install", "--path", folder.to_str().unwrap()]);
-    assert_eq!(code, exit::FAILED);
-    assert!(said.contains("--replace"), "{said}");
+    // Its advice must be a line that runs.
+    let next = reply["error"]["next"].as_str().unwrap();
+    assert!(next.contains("--replace") && next.contains("same"), "{next}");
+    let (code, shown) = in_a_terminal(&state, &["skill", "install", "--path", path, "--replace", "--json"], None, Word::Right);
+    assert_eq!(code, 0, "{shown}");
+    assert_ne!(std::fs::read_to_string(folder.join("REFERENCE.md")).unwrap(), "edited by someone");
 
     // Claude Code's own place, resolved from a home that's a temp folder here.
-    let target = |home: &std::path::Path, extra: &[&str]| {
-        let mut args = vec!["skill", "install", "--target", "claude-code", "--json"];
-        args.extend_from_slice(extra);
-        let output = state.command().env("HOME", home).args(&args).output().unwrap();
-        (serde_json::from_slice::<Value>(&output.stdout).unwrap(), output.status.code().unwrap())
-    };
-    let (dry, code) = target(&fake_home, &["--dry-run"]);
-    assert_eq!(code, 0, "{dry}");
-    assert!(dry["data"]["folder"].as_str().unwrap().ends_with(".claude/skills/recto"), "{dry}");
+    let (code, shown) = in_a_terminal(&state, &["skill", "install", "--target", "claude-code", "--dry-run", "--json"], Some(&fake_home), Word::Right);
+    assert_eq!(code, 0, "{shown}");
+    assert!(common::last_json(&shown)["data"]["folder"].as_str().unwrap().ends_with(".claude/skills/recto"), "{shown}");
     assert!(!fake_home.join(".claude").exists(), "a dry run wrote something");
-    let (written, code) = target(&fake_home, &[]);
-    assert_eq!(code, 0, "{written}");
+    let (code, shown) = in_a_terminal(&state, &["skill", "install", "--target", "claude-code", "--json"], Some(&fake_home), Word::Right);
+    assert_eq!(code, 0, "{shown}");
     assert!(fake_home.join(".claude/skills/recto/SKILL.md").exists());
     // With a test state folder, it won't touch the real home, whatever's asked.
     let real_home = recto_platform::local::real_home().unwrap();

@@ -744,7 +744,7 @@ fn every_row_that_runs_here_is_wired_up() {
     let mut stop = Raw::connect(&state);
     state.set_level(Level::Control);
     stop.call(&json!({ "cmd": "stop" }));
-    std::fs::remove_dir_all(&folder).unwrap();
+    assert!(!folder.exists(), "it's refused with no terminal");
 }
 
 /// Failure: `budget tabs` through the session measures the wrong process, or leaves its tabs behind and its links dangling.

@@ -1,4 +1,4 @@
-//! `SKILL.md` and `REFERENCE.md`, generated from the command table, so every documented command exists and every example parses. `recto skill install` writes them only when asked.
+//! `SKILL.md` and `REFERENCE.md`, generated from the command table, so every documented command exists and every example parses. `recto skill install` writes them only when the user asks, at a real terminal.
 //!
 //! The teaching text comes from the agent report's §7.1, without the agent panel, which is Phase 6. It names only what's built: `search` scans pages for now, with the corpus coming later behind the same command.
 
@@ -186,7 +186,7 @@ pub fn install(folder: &Path, replace: bool, dry_run: bool) -> Result<Value, Age
         rows.push(json!({ "path": path, "action": action }));
     }
     if !refused.is_empty() {
-        let mut error = AgentError::new("skill_changed", "Nothing was written: these files were changed by someone, or aren't plain files, and won't be replaced without saying so.", exit::FAILED).then("Look at them first. `recto skill install --replace` replaces a changed file.");
+        let mut error = AgentError::new("skill_changed", "Nothing was written: these files were changed by someone, or aren't plain files, and won't be replaced without saying so.", exit::FAILED).then("Look at them first. Adding `--replace` to the same `recto skill install` command replaces them, with no backup.");
         error.candidates = refused;
         return Err(error);
     }

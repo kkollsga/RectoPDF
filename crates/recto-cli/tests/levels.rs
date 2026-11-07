@@ -2,13 +2,13 @@
 
 mod common;
 
-use common::{Raw, State, open_cmd};
+use common::{Raw, State, Word, in_a_terminal, open_cmd};
 use recto_agent::table::{Access, Route, TABLE, parse_cli};
 use recto_agent::{Level, exit, skill};
 use recto_control::levels;
 use recto_testpdf::{Page, TempPdf, hidden_text_page, pages, text_lines};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::process::Stdio;
 
 fn doc() -> TempPdf {
@@ -226,49 +226,17 @@ fn raising_needs_a_real_terminal_and_lowering_doesnt() {
     assert_eq!(levels::current(&state.paths), Level::Off);
 }
 
-fn in_a_terminal(state: &State, word_from_prompt: bool, wrong: bool, level: &str) -> (i32, String) {
-    // `script` gives the command a real pseudo-terminal, with a controlling terminal: a real TTY, unlike a pipe.
-    let mut script = std::process::Command::new("/usr/bin/script");
-    script.args(["-q", "/dev/null", common::bin(), "permission", "set", level, "--json"]).env(recto_control::state::STATE_ENV, &state.root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-    let mut child = script.spawn().unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut seen = String::new();
-    if word_from_prompt {
-        // The prompt ends with no line end, at "press return: ", so this reads what's there a byte at a time.
-        let mut byte = [0u8];
-        while !seen.contains("press return: ") {
-            if stdout.read(&mut byte).unwrap() == 0 {
-                break;
-            }
-            seen.push(char::from(byte[0]));
-        }
-        let word = seen.rsplit("type ").next().unwrap().split(' ').next().unwrap().to_string();
-        let answer = if wrong { "wrongword".to_string() } else { word };
-        writeln!(stdin, "{answer}").unwrap();
-    }
-    let mut rest = String::new();
-    for line in stdout.by_ref().lines() {
-        let Ok(line) = line else { break };
-        rest.push_str(&line);
-        rest.push('\n');
-    }
-    drop(stdin);
-    let status = child.wait().unwrap();
-    (status.code().unwrap_or(-1), seen + &rest)
-}
-
 /// Failure: the real path doesn't work at all, or takes any answer. On a real terminal the prompt shows a word, the right word raises the level, and a wrong one changes nothing. This is the user's own route, tested on a real pseudo-terminal.
 #[test]
 fn at_a_real_terminal_the_right_word_raises_and_a_wrong_one_doesnt() {
     let state = State::new();
     state.paths.prepare().unwrap();
-    let (_, output) = in_a_terminal(&state, true, true, "control");
+    let (_, output) = in_a_terminal(&state, &["permission", "set", "control", "--json"], None, Word::Wrong);
     assert!(output.contains("Give agents Control access"), "{output}");
     assert_eq!(levels::current(&state.paths), Level::Off, "a wrong word raised it: {output}");
     assert!(output.contains("not_confirmed"), "{output}");
 
-    let (code, output) = in_a_terminal(&state, true, false, "control");
+    let (code, output) = in_a_terminal(&state, &["permission", "set", "control", "--json"], None, Word::Right);
     assert_eq!(levels::current(&state.paths), Level::Control, "the right word didn't raise it: {output}");
     assert_eq!(code, 0, "{output}");
     assert!(state.log_text().contains("permission_set"), "raising it must be logged");

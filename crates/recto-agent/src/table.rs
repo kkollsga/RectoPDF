@@ -424,7 +424,7 @@ pub static TABLE: &[Spec] = &[
         args: &[
             Arg { key: "path", flag: Some("--path"), kind: Kind::Path, required: false, help: "The folder to write into." },
             Arg { key: "target", flag: Some("--target"), kind: Kind::Choice(&["claude-code"]), required: false, help: "`claude-code` is Claude Code's own place for skills, `~/.claude/skills/recto/`." },
-            Arg { key: "replace", flag: Some("--replace"), kind: Kind::Switch, required: false, help: "Replace files even if someone changed them." },
+            Arg { key: "replace", flag: Some("--replace"), kind: Kind::Switch, required: false, help: "Replace files even if someone changed them. There's no backup." },
             Arg { key: "dry_run", flag: Some("--dry-run"), kind: Kind::Switch, required: false, help: "Says what it would write, and writes nothing." },
         ],
         data: "`{ folder, files: [ { path, action } ], dry_run }`.",

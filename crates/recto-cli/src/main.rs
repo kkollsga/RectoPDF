@@ -241,6 +241,7 @@ fn skill_install(invocation: &Invocation) -> Result<Value, AgentError> {
         return Err(AgentError::new("state_refused", "This run uses a test state folder, so it won't write into the real home.", exit::PERMISSION).then("Use `--path` with a temp folder, or set `HOME` to one."));
     }
     let flag = |key: &str| invocation.fields.get(key).and_then(Value::as_bool).unwrap_or(false);
+    terminal::confirm_skill_install(&folder, flag("replace"))?;
     skill::install(&folder, flag("replace"), flag("dry_run"))
 }
 

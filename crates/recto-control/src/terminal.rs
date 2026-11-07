@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{BufRead, BufReader, IsTerminal, Write};
+use std::path::Path;
 use std::time::Duration;
 
 /// Sets the level. Raising it reads a confirmation from the real terminal.
@@ -36,7 +37,26 @@ pub fn needs_terminal(wanted: Level) -> AgentError {
 }
 
 fn confirm_at_terminal(wanted: Level) -> Result<(), AgentError> {
-    let refused = || needs_terminal(wanted);
+    let what = format!("Give agents {} access to RectoPDF? {}", wanted.label(), match wanted {
+        Level::Full => "They could write new pictures to disk and throw away unsaved edits.",
+        Level::Control => "They could open and close PDFs and change pages in memory.",
+        _ => "They could read and search PDFs that are open.",
+    });
+    let command = format!("recto permission set {}", wanted.name());
+    confirm(&what, &command, || needs_terminal(wanted))
+}
+
+/// `recto skill install`: writes into the user's agent's own files, so it takes the user, the same way raising a level does. `recto skill show` needs nothing, so an agent can still read it.
+pub fn confirm_skill_install(folder: &Path, replace: bool) -> Result<(), AgentError> {
+    let shown = recto_core::clean_line(&folder.display().to_string());
+    let what = if replace { format!("Write RectoPDF's skill to {shown}, replacing files there even if someone changed them?") } else { format!("Write RectoPDF's skill to {shown}?") };
+    confirm(&what, "recto skill install", || {
+        AgentError::new("needs_terminal", "Installing the skill needs the user, at a real terminal.", exit::PERMISSION).then("Ask the user to run `recto skill install` in their own terminal. `recto skill show` prints the skill for you to read.")
+    })
+}
+
+/// The real-terminal check, and the word typed back: stdin and `/dev/tty` must be a terminal, and the answer is read from it, never from stdin. `refused` says what to do about it.
+fn confirm(what: &str, command: &str, refused: impl Fn() -> AgentError) -> Result<(), AgentError> {
     if !std::io::stdin().is_terminal() {
         return Err(refused());
     }
@@ -46,17 +66,12 @@ fn confirm_at_terminal(wanted: Level) -> Result<(), AgentError> {
     }
     let word = fresh_word();
     let mut out = &terminal;
-    write!(out, "Give agents {} access to RectoPDF? {}\nTo allow it, type {word} and press return: ", wanted.label(), match wanted {
-        Level::Full => "They could write new pictures to disk and throw away unsaved edits.",
-        Level::Control => "They could open and close PDFs and change pages in memory.",
-        _ => "They could read and search PDFs that are open.",
-    })
-    .map_err(|_| refused())?;
+    write!(out, "{what}\nTo allow it, type {word} and press return: ").map_err(|_| refused())?;
     let mut answer = String::new();
     BufReader::new(&terminal).read_line(&mut answer).map_err(|_| refused())?;
     if answer.trim() != word {
         let _ = writeln!(out, "That wasn't the word, so nothing changed.");
-        return Err(AgentError::new("not_confirmed", "That wasn't the word, so nothing changed.", exit::PERMISSION).then(format!("Run `recto permission set {}` again, and type the word it shows.", wanted.name())));
+        return Err(AgentError::new("not_confirmed", "That wasn't the word, so nothing changed.", exit::PERMISSION).then(format!("Run `{command}` again, and type the word it shows.")));
     }
     Ok(())
 }
