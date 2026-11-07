@@ -530,6 +530,8 @@ pub struct RenderStats {
     pub retirements: u32,
     pub memory_kills: u32,
     pub deadline_kills: u32,
+    /// Times a worker ran out of time it hadn't been given: never ready, or too long opening its document with little processor time to show for it. That's the Mac being busy, and says nothing about the file.
+    pub too_busy: u32,
     pub cancel_kills: u32,
     pub crashes: u32,
     pub rejections: u32,
@@ -1458,7 +1460,12 @@ impl DocRenderer {
             self.bury_worker();
         }
         let (limit, idle_exit) = if ticket.is_some() { (self.policy.heavy_limit_bytes, self.policy.heavy_idle_exit) } else { (self.policy.memory_limit_bytes, self.policy.idle_exit) };
-        let (mut worker, ready) = Worker::start(&self.config, &self.policy, limit, idle_exit).map_err(|error| match error.kind() {
+        let started = Worker::start(&self.config, &self.policy, limit, idle_exit);
+        // No file has reached it yet, so whatever kept it from saying hello isn't the file's doing.
+        if started.as_ref().is_err_and(|error| error.kind() == io::ErrorKind::TimedOut) {
+            self.stats.too_busy += 1;
+        }
+        let (mut worker, ready) = started.map_err(|error| match error.kind() {
             io::ErrorKind::NotFound => RenderFailure::LibraryMissing,
             _ => RenderFailure::Unavailable,
         })?;
@@ -1541,6 +1548,9 @@ impl DocRenderer {
                 worker.child.kill_now();
                 worker.child.wait_bounded(FINAL_NUMBERS_WAIT);
                 self.note_peak(&worker);
+                if matches!(reason, KillReason::Deadline) && worker.child.memory().is_some_and(|memory| was_starved(memory.cpu_ns, self.policy.page_deadline)) {
+                    self.stats.too_busy += 1;
+                }
                 return Err(killed(&mut self.stats, reason).into());
             }
             // A stale job has no use for the document open. Nothing is wrong with it, so nothing is remembered.
@@ -1638,6 +1648,11 @@ impl Watch<'_> {
     fn is_stale(&self) -> bool {
         self.generation.is_some_and(|generation| self.control.is_stale(generation))
     }
+}
+
+/// Whether a worker that ran out of time had too little of the processor to have been the cause. A file that's slow to open uses what it's given. A worker that's hung looks starved too, and all that costs is its time being asked for again, a whole deadline apart.
+fn was_starved(cpu_ns: u64, deadline: Duration) -> bool {
+    u128::from(cpu_ns) < deadline.as_nanos() / 2
 }
 
 impl Worker {

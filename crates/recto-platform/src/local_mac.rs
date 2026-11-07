@@ -375,6 +375,15 @@ unsafe extern "C" {
     fn mach_timebase_info(info: *mut Timebase) -> libc::c_int;
 }
 
+/// Turns the kernel's time units, as `proc_pid_rusage` gives them, into nanoseconds.
+pub(crate) fn ticks_to_ns(ticks: u64) -> u64 {
+    let mut timebase = Timebase { numer: 0, denom: 0 };
+    // SAFETY: the pointer is valid for writes, and the struct matches the C one.
+    let rc = unsafe { mach_timebase_info(&raw mut timebase) };
+    let ns = if rc == 0 && timebase.denom != 0 { u128::from(ticks) * u128::from(timebase.numer) / u128::from(timebase.denom) } else { u128::from(ticks) };
+    u64::try_from(ns).unwrap_or(u64::MAX)
+}
+
 /// What a process has used so far, for a test or a budget to compare at two moments.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProcessCounters {
@@ -405,13 +414,8 @@ pub fn process_counters(pid: u32) -> Option<ProcessCounters> {
     }
     // SAFETY: filled, as checked.
     let task = unsafe { task.assume_init() };
-    let mut timebase = Timebase { numer: 0, denom: 0 };
-    // SAFETY: the pointer is valid for writes, and the struct matches the C one.
-    let rc = unsafe { mach_timebase_info(&raw mut timebase) };
-    let ticks = info.ri_user_time.saturating_add(info.ri_system_time);
-    let cpu_ns = if rc == 0 && timebase.denom != 0 { u128::from(ticks) * u128::from(timebase.numer) / u128::from(timebase.denom) } else { u128::from(ticks) };
     Some(ProcessCounters {
-        cpu_ns: u64::try_from(cpu_ns).unwrap_or(u64::MAX),
+        cpu_ns: ticks_to_ns(info.ri_user_time.saturating_add(info.ri_system_time)),
         wakeups: info.ri_pkg_idle_wkups.saturating_add(info.ri_interrupt_wkups),
         context_switches: u64::try_from(task.pti_csw).unwrap_or(0),
         threads: u32::try_from(task.pti_threadnum).unwrap_or(0),

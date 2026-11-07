@@ -18,6 +18,8 @@ jobs:
     env:
       # A runner has less memory free than heavy.sh asks of the owner's Mac, and it runs one job alone.
       MIN_FREE: '0'
+      # Every failure in one round trip, not only the first.
+      NEXTEST_PROFILE: ci
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
