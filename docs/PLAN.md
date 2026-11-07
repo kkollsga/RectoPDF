@@ -111,6 +111,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Snapshot tool with text, PNG, JPG and the hand-rolled streaming `recto-svg`
 - [ ] Print
 - [ ] What blind agents asked for: a whole-document hit total in `search`, an unwrapped quote form of `text`, `edits` saying when turns cancel out, `watch` to a file, and what an encrypted file restricts in `facts`
+- [ ] Generated contents: `recto contents --generated`, then a quiet offer in the sidebar when a file's own are missing or look bad. distillPDF's headings, in a helper with a memory limit, labelled as generated. Needs distillPDF's per-page work
 - [ ] **Blind agent test, next round**
 
 **Done when:** it can replace your everyday reader for reading only.

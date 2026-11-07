@@ -53,3 +53,4 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "Im seeing an issue: in dark mode scanned pages appear bright white: We need to detect scanned images (with predominently white bg, and flip and match grey tone paper color".
 - "similar with images with white bg" (dark paper: an image with a white background flips with the page, as a scan does).
 - "Lets style the scrollbar better. Lets use the mac native option, as seen in pages".
+- "I think option 4 is the best one, dont modify the bad toc, but offer a generated toc using distillpdf".
