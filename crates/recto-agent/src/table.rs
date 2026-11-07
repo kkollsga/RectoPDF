@@ -240,9 +240,9 @@ pub static TABLE: &[Spec] = &[
         tag: "index_clear",
         group: GROUP_READ,
         access: Access::At(Level::Control),
-        summary: "Throws away the tab's search index, or with `--all` every one. It's a copy of documents' text on disk, and it can be built again. One that's being built stays.",
+        summary: "Throws away the tab's search index, or with `--all` every one. It's a copy of documents' text on disk, and it can be built again. Whatever's on its way for them stops first.",
         args: &[TAB, Arg { key: "all", flag: Some("--all"), kind: Kind::Switch, required: false, help: "Every document's." }],
-        data: "`{ cleared, being_built }`: how many went, and how many are being built and stayed.",
+        data: "`{ cleared, being_built }`: how many went, and how many builds wouldn't stop in time and stayed. If some couldn't be removed it's exit 1 with `clear_incomplete`, saying that text is still there.",
         examples: &["recto index clear", "recto index clear --all"],
         ..BASE
     },

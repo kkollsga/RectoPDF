@@ -290,24 +290,27 @@ pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &str, all: bool) -> Resul
     if all {
         indexing.cancel(None);
         wait_until_stopped(indexing, None);
-        let (cleared, building) = corpus::clear_all(indexing.root()).map_err(|_| failed())?;
-        return Ok(json!({ "cleared": cleared, "being_built": building }));
+        return said_cleared(corpus::clear_all(indexing.root()).map_err(|_| failed())?);
     }
     let (_, files) = tab_files(access, tab)?;
-    let (mut cleared, mut building) = (0, 0);
+    let mut report = corpus::Cleared::default();
     for file in &files {
         // Every version there's a record of, even if the file's gone, or the text of the last one stays behind what's there now.
         for key in corpus::keys_of_file(indexing.root(), &file.path) {
             // Before it's cleared, or the queue writes it all back.
             indexing.cancel(Some(key));
             wait_until_stopped(indexing, Some(key));
-            match corpus::clear(indexing.root(), key) {
-                Ok(()) => cleared += 1,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => building += 1,
-            }
+            report.note(corpus::clear(indexing.root(), key));
         }
         corpus::forget_file(indexing.root(), &file.path);
     }
-    Ok(json!({ "cleared": cleared, "being_built": building }))
+    said_cleared(report)
+}
+
+/// Says how a clear went. Text that's still there is a failure: someone asked for it to be gone.
+fn said_cleared(report: corpus::Cleared) -> Result<Value, AgentError> {
+    if report.failed > 0 {
+        return Err(AgentError::new("clear_incomplete", format!("{} couldn't be removed, so that text is still on disk. {} went.", report.failed, report.cleared), exit::FAILED).then("Tell the user. `recto index status` gives the folder, and they may need to remove it themselves."));
+    }
+    Ok(json!({ "cleared": report.cleared, "being_built": report.being_built }))
 }

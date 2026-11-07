@@ -1264,12 +1264,32 @@ pub fn clear(root: &Path, key: CorpusKey) -> io::Result<()> {
     remove_unless_building(root, key)
 }
 
-/// Throws away everything that's not being built. Returns how many went and how many are being built.
-pub fn clear_all(root: &Path) -> io::Result<(u32, u32)> {
-    let (mut cleared, mut building) = (0, 0);
+/// What a clear did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cleared {
+    pub cleared: u32,
+    pub being_built: u32,
+    /// These couldn't be removed, so their text is still there.
+    pub failed: u32,
+}
+
+impl Cleared {
+    pub fn note(&mut self, result: io::Result<()>) {
+        match result {
+            Ok(()) => self.cleared += 1,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.being_built += 1,
+            Err(_) => self.failed += 1,
+        }
+    }
+}
+
+/// Throws away everything that's not being built, and says what went and what didn't.
+pub fn clear_all(root: &Path) -> io::Result<Cleared> {
+    let mut report = Cleared::default();
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(report),
         Err(error) => return Err(error),
     };
     for entry in entries {
@@ -1278,13 +1298,10 @@ pub fn clear_all(root: &Path) -> io::Result<(u32, u32)> {
         if !entry.file_type()?.is_dir() {
             continue;
         }
-        match remove_unless_building(root, key) {
-            Ok(()) => cleared += 1,
-            Err(_) => building += 1,
-        }
+        report.note(remove_unless_building(root, key));
     }
     let _ = fs::remove_dir_all(root.join(VERSIONS_FOLDER));
-    Ok((cleared, building))
+    Ok(report)
 }
 
 fn remove_unless_building(root: &Path, key: CorpusKey) -> io::Result<()> {

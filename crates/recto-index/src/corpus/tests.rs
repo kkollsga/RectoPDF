@@ -827,10 +827,26 @@ fn only_one_builds_at_a_time() {
     lock.try_lock().unwrap();
     assert_eq!(build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap(), BuildOutcome::Busy);
     assert_eq!(clear(&root, key).unwrap_err().kind(), io::ErrorKind::WouldBlock, "and clearing leaves it alone");
-    assert_eq!(clear_all(&root).unwrap(), (0, 1));
+    assert_eq!(clear_all(&root).unwrap(), Cleared { being_built: 1, ..Cleared::default() });
     drop(lock);
-    assert_eq!(clear_all(&root).unwrap(), (1, 0));
-    assert_eq!(clear_all(&temp.0.join("nothing-here")).unwrap(), (0, 0));
+    assert_eq!(clear_all(&root).unwrap(), Cleared { cleared: 1, ..Cleared::default() });
+    assert_eq!(clear_all(&temp.0.join("nothing-here")).unwrap(), Cleared::default());
+}
+
+/// Failure: a folder that can't be removed reads as "being built, and stayed", which says the text is on its way, when it's there and staying, and a person asked for it to be gone.
+#[test]
+fn a_clear_that_fails_doesnt_read_as_being_built() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let key = CorpusKey([4; 32]);
+    build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    let pages = CorpusPaths::new(&root, key).pages;
+    fs::set_permissions(&pages, fs::Permissions::from_mode(0o500)).unwrap();
+    let report = clear_all(&root).unwrap();
+    fs::set_permissions(&pages, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(report, Cleared { failed: 1, ..Cleared::default() });
+    assert!(clear(&root, key).is_ok(), "with the way clear, it goes");
 }
 
 /// Failure: [`read_page`]'s rules change, and old corpora keep answering with old text, so `search` and `text` disagree until the file happens to change. If this fails, what you changed changes a page's text: raise [`NORMALISER`], which starts new corpora, and update this.
