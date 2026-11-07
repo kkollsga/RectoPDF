@@ -484,16 +484,20 @@ fn a_look_finishing_after_access_goes_off_stops_indexing_again() {
 #[derive(Default)]
 struct BufLine {
     bytes: Vec<u8>,
+    /// How much of `bytes` is known to hold no line end. Looking from the start after each read is what made a 5 MB answer take seconds in a debug build.
+    searched: usize,
 }
 
 impl BufLine {
     fn next(&mut self, stream: &mut UnixStream) -> Option<Value> {
         let mut chunk = vec![0u8; 256 * 1024];
         loop {
-            if let Some(at) = self.bytes.iter().position(|byte| *byte == b'\n') {
-                let line: Vec<u8> = self.bytes.drain(..=at).collect();
+            if let Some(at) = self.bytes[self.searched..].iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = self.bytes.drain(..=self.searched + at).collect();
+                self.searched = 0;
                 return Some(serde_json::from_slice(&line).unwrap());
             }
+            self.searched = self.bytes.len();
             let count = stream.read(&mut chunk).ok()?;
             if count == 0 {
                 return None;
