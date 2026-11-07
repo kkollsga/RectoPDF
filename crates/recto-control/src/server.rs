@@ -857,7 +857,7 @@ impl<H: Host> Loop<H> {
             let conn = &self.conns[index];
             let stalled_output = conn.has_output() && now.saturating_duration_since(conn.output_since) >= self.limits.write_deadline;
             // Only while it's its turn to speak: a client may send its next command while the last one runs.
-            let stalled_line = matches!(conn.state, State::Idle) && conn.line_started.is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline);
+            let stalled_line = matches!(conn.state, State::Idle) && conn.is_midway_through_a_line() && conn.line_started.is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline);
             let idle_limit = if conn.overflow { self.limits.overflow_idle } else { self.limits.idle_deadline };
             let idle = matches!(conn.state, State::Idle) && conn.input.is_empty() && !conn.has_output() && now.saturating_duration_since(conn.last_activity) >= idle_limit;
             if stalled_output || stalled_line || idle {
@@ -975,7 +975,9 @@ impl<H: Host> Loop<H> {
             }
             match &conn.state {
                 State::Idle => {
-                    if let Some(started) = conn.line_started {
+                    if conn.is_midway_through_a_line()
+                        && let Some(started) = conn.line_started
+                    {
                         consider(started + self.limits.line_deadline);
                     }
                     if conn.input.is_empty() && !conn.has_output() {
@@ -1064,6 +1066,11 @@ impl Conn {
     }
 
     /// The next whole line, if there is one and it isn't blank.
+    /// It has begun a line and not finished it. Whole lines waiting their turn aren't this: their client has said all it means to, and may only be waiting because it's still reading the last answer.
+    fn is_midway_through_a_line(&self) -> bool {
+        !self.input.is_empty() && !self.input.contains(&b'\n')
+    }
+
     fn next_line(&mut self) -> Option<Vec<u8>> {
         loop {
             let at = self.input.iter().position(|byte| *byte == b'\n')?;

@@ -412,6 +412,26 @@ fn a_client_that_doesnt_read_isnt_worked_for() {
     assert!(running.host.wheres.load(Ordering::SeqCst) >= 2);
 }
 
+/// Failure: a client that sent several commands and is slowly reading the first huge answer is cut off for sending "half a line", though its lines are whole and only waiting for it to catch up. It showed as this file's other test failing when the Mac was busy, as reading took past the 5 s.
+#[test]
+fn whole_lines_waiting_arent_a_stalled_line() {
+    let limits = Limits { line_deadline: Duration::from_millis(100), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut greedy = running.connect();
+    greedy.write_all("{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n".as_bytes()).unwrap();
+    // Long past the deadline, with its answer unread and two commands waiting.
+    std::thread::sleep(Duration::from_millis(400));
+    let mut reader = BufLine::default();
+    for _ in 0..3 {
+        assert!(reader.next(&mut greedy).unwrap()["data"]["huge"].is_string());
+    }
+    // And half a line is still caught.
+    greedy.write_all(b"{\"cmd\":").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let mut rest = [0u8; 16];
+    assert_eq!(greedy.read(&mut rest).unwrap(), 0, "it's gone");
+}
+
 #[derive(Default)]
 struct BufLine {
     bytes: Vec<u8>,
