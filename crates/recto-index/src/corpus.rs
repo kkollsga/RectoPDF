@@ -1445,7 +1445,7 @@ fn remove_unless_building(root: &Path, key: CorpusKey) -> io::Result<()> {
 }
 
 /// What a folder takes up, near enough. Doesn't follow links, and stops at a depth no corpus reaches.
-fn folder_bytes(dir: &Path) -> u64 {
+pub fn folder_bytes(dir: &Path) -> u64 {
     let mut total = 0;
     let mut stack = vec![(dir.to_path_buf(), 0u8)];
     while let Some((folder, depth)) = stack.pop() {

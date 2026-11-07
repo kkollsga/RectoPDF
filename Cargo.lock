@@ -463,6 +463,7 @@ dependencies = [
  "recto-core",
  "recto-index",
  "recto-platform",
+ "recto-proto",
  "recto-session",
  "recto-testpdf",
  "serde_json",

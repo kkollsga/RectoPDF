@@ -213,35 +213,41 @@ What made them look wrong is that **most of it is harmless, and the check can't 
 
 **No index in front of the text, because it isn't needed yet.** A search is one pass over `text.pack`, folding each page with no map back to the text, and placing hits with the normal code only on a page with one. So the same code that reads a live page makes each hit, which is what makes the answers the same. A trigram or word index would shorten a pass that's already this quick, take more room on disk, and need its results checked against the text anyway. **Measured** below: 37 MB of text takes 42 ms, and that's the largest tested. By arithmetic, the 200,000 pages a document may have would take about a second, which wasn't tried. If documents that large turn out to be common, that's the next step, behind the same command.
 
-**The same answers, proven.** `real_pages_answer_the_same_from_the_index` holds every field of an answer from the index to `--scan`, apart from `route`, `index` and the three new count fields, for 8 searches at 2 limits each. Set `RECTO_BENCH100`, and `RECTO_INDEX_ALL` for every file. On all 141 PDFs of bench100, 5,872 pages, release build, 2026-11-07: 2,256 searches compared and none differed, with no page failing to read. It covers line-order repair, hidden text and hyphen spellings because `read_page` is the one way both get a page's text. `an_edited_tab_keeps_its_page_numbers_and_marks_added_files` holds the same through moves, deletes, inserts and undo.
+**The same answers, proven.** `real_pages_answer_the_same_from_the_index` holds every field of an answer from the index to `--scan`, apart from how it was read, for 8 plain searches at 2 limits each, 7 patterns and 6 ranked searches on each file. Set `RECTO_BENCH100`, and `RECTO_INDEX_ALL` for every file. On all 141 PDFs of bench100, 5,872 pages, release build, 2026-11-07: 2,256 plain searches, 987 patterns and 846 ranked searches compared, and none differed, with no page failing to read. `the_same_answer` leaves out `route`, `index` and the counts, and `totals_agree` holds the counts wherever a page-by-page read can know them. It covers line-order repair, hidden text and hyphen spellings because `read_page` is the one way both get a page's text. `an_edited_tab_keeps_its_page_numbers_and_marks_added_files` holds the same through moves, deletes, inserts and undo.
 
-**Measured** 2026-11-07, release build, this Mac, other agents building throughout (load about 5 to 7, memory 30 to 80% free), so the coordinator re-measures final budgets alone. Whole process from start to exit, `recto local F search Q`, 11 runs each, against the build before this work. It's a process start and an open each time. Through a running session, the search and client together are p50 5 to 10 ms on all but USGS.
+**Measured** 2026-11-07, release build, this Mac, other agents building throughout (load 6 to 18, memory 30 to 80% free), so the coordinator re-measures final budgets alone. Whole process from start to exit, `recto local F search Q`, 11 runs each, so that's a process start and an open each time, on a finished index. p50 / p95 ms, and `recto`'s own peak at the most of those. "Before" is the build before any of this, by the same command. The last column is reading the pages with `--scan`, for a word nothing has.
 
-| | Pages | Word nothing has, p50 / p95 ms | Then | `the`, stops at the limit | Then | Peak, before | Then |
+| | Pages | Before, word nothing has | Plain, the same | `\bthe\b` `--regex` | `the` `--rank` | Peak | `--scan` |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `rfc9110` | 194 | 326 / 340 | 18 / 19 | 44 / 71 | 18 / 19 | 4.4 MiB | 3.4 MiB |
-| NASA | 383 | 1,734 / 1,840 | 30 / 32 | 58 / 61 | 30 / 33 | 6.4 MiB | 5.4 MiB |
-| `math_AG_2607.28411` | 83 | 126 / 132 | 13 / 14 | 46 / 56 | 13 / 15 | 3.8 MiB | 3.2 MiB |
-| `un_sdg2024` | 51 | 254 / 269 | 10 / 11 | 66 / 70 | 10 / 11 | 3.9 MiB | 2.8 MiB |
-| USGS map | 1 | 85 / 90 | 5.3 / 7.4 | 681 / 689 | 682 / 723 | 3.1 MiB | 2.9 MiB |
-| A made 10,000-page PDF, 3.7 KB a page, in process (`budget index`, 3 runs) | 10,000 | 7,476 / 7,646 | 42 / 42 | 37 / 41 | 51 / 52 | | 5.9 MiB |
+| `rfc9110` | 194 | 326 / 340 | 12.5 / 13.4 | 21 / 89 | 16.5 / 19.5 | 4.0 MiB | 462 / 537 |
+| NASA | 383 | 1,734 / 1,840 | 23.6 / 23.8 | 22.7 / 23.2 | 24.0 / 24.4 | 5.6 MiB | 1,195 / 1,202 |
+| `math_AG_2607.28411` | 83 | 126 / 132 | 13.6 / 14.0 | 13.2 / 14.1 | 13.7 / 14.4 | 3.8 MiB | 117 / 119 |
+| `un_sdg2024` | 51 | 254 / 269 | 9.8 / 10.3 | 9.2 / 9.4 | 10.0 / 10.7 | 3.6 MiB | 249 / 285 |
+| USGS map | 1 | 85 / 90 | 5.9 / 6.6 | 646 / 652 | 654 / 760 | 3.6 MiB | 81 / 82 |
+| A made 10,000-page PDF, 3.7 KB a page | 10,000 | 7,476 / 7,646 in process | 82 / 125 | 78 / 106 | 125 / 131 | 5.7 MiB | 6,424 / 6,434 |
 
-Peaks are `recto`'s own: the worker's are on top of the "before" column, and there's none "then". USGS's `the` is no faster because its one page is over the build's limit, so it's drawn at the hit, as it always was. Reaching the limit now costs a pass over the rest to count: `the` on NASA gives `hits_total` 6,113 and shows 20.
+**So `--rank` needs no index:** 37 MB of text in about 125 ms from process start to exit, at 5.4 MiB, with nothing on disk beyond the pack, and no new crate. USGS's 650 ms is its one page, over the build's limit, being drawn for the hit, as it always was. The `--regex` and `--rank` numbers for reading pages run to 14.6 s on the 10,000 pages, under load. A pattern that stops at the limit pays for the count over the rest of the document, which is the point of the total.
 
-| | PDF | Corpus, by `du` | Share | Build, normal / background | Worker peak | Helper peak |
-|---|---:|---:|---:|---:|---:|---:|
-| `rfc9110` | 2.7 MiB | 1.3 MiB | 47% | 0.64 / 1.36 s | 33 MiB | 4.8 MiB |
-| NASA | 97.6 MiB | 2.3 MiB | 2.3% | 5.95 / 14.8 s | 122 MiB | 6.7 MiB |
-| `math_AG_2607.28411` | 0.8 MiB | 0.58 MiB | 73% | 0.27 / 1.22 s | 27 MiB | 4.0 MiB |
-| `un_sdg2024` | 8 MiB | 0.66 MiB | 8% | 0.87 / 3.4 s | 83 MiB | 3.9 MiB |
-| USGS map | 330 MiB | 36 KiB | 0.01% | 0.19 / 0.57 s | 309 MiB, killed at 256 | 2.7 MiB |
-| The made 10,000-page PDF, its streams uncompressed | 41.7 MiB | about 75 MiB by the build's own count | 181% | 17.7 s normal | 67 MiB | 6.3 MiB |
+The checksum per page didn't show: NASA's plain search was 30 ms before it, and 23.6 now, with the second copy of its text gone too and other load different, so that says it isn't large and no more than that.
 
-**All 141 PDFs of bench100,** one at a time at normal priority, by `budget index`: 5,872 pages in 71 s, about 12 ms a page with the check for hidden text. 45 MiB of corpus for 841 MiB of PDFs, 5.3%. No page failed. Worker peak p50 28 MiB, p95 151 MiB and at most 286 MiB, on the USGS map, killed at its limit. Helper peak at most 8.9 MiB. 17 pages couldn't be checked for hidden text under the build's limit, all in 4 documents, and 33 workers were stopped on the way, each costing a respawn. So a file like `ntrs20220005969` takes the slow road on 14 pages, and a search draws them on a hit. 128 pages are flagged, where `examples/hidden_corpus.rs` flags 129, and the other should be among those 17, though that wasn't confirmed.
+**What the text takes up, by `du`,** one form as a build leaves it, and both after `recto index --agent`. Over all 141 PDFs of bench100, one form is about 2.0% of the PDFs' bytes by the build's own count, 16.7 MiB of 841 MiB on the 140 whose lines the run printed, where both forms were 5.3%. Writing the second form takes 51 ms on NASA and 1.2 s on the 10,000 pages, from the pack.
 
-Most of a small PDF's share is each page's file taking a whole 4 KiB block. The text is twice over, in the pack and the page files: the pack makes the pass fast, and without it, each page would need its own open and close. NASA's worker peak is within the 170 MiB budget, with 23 retirements on the way, and the whole tree during its build is about 134 MiB: 5.1 session, 6.7 helper, 122 worker.
+| | PDF | One form | Share | Both | Share |
+|---|---:|---:|---:|---:|---:|
+| `rfc9110` | 2.7 MiB | 500 KiB | 17.9% | 1.3 MiB | 47% |
+| NASA | 97.6 MiB | 692 KiB | 0.69% | 2.3 MiB | 2.3% |
+| `math_AG_2607.28411` | 0.8 MiB | 272 KiB | 34% | 624 KiB | 79% |
+| `un_sdg2024` | 8 MiB | 308 KiB | 3.7% | 688 KiB | 8.2% |
+| USGS map | 330 MiB | 32 KiB | 0.01% | 48 KiB | 0.01% |
+| The made 10,000-page PDF, its streams uncompressed | 41.7 MiB | 36.5 MiB | 87% | 76 MiB | 183% |
 
-The session itself, NASA, by `recto budget`: 1.41 MiB at the start, 5.05 once it's open, **5.14 after indexing all 383 pages**, 5.63 after 10 searches. The build before this: 1.44, 4.77, and 6.88 after the same searches, with a worker on top of that during each. Handles are the same before and after, and a test holds that, and one thread once it's done. Whole-process `budget index` reports all of the build's numbers itself: `recto budget index --file F`.
+**Time to build,** at normal priority and at background, first measured before this format, and the work hasn't changed: `rfc9110` 0.64 / 1.36 s, NASA 5.95 / 14.8 s, `math_AG_2607.28411` 0.27 / 1.22 s, `un_sdg2024` 0.87 / 3.4 s, the USGS map 0.19 / 0.57 s. Worker peaks: 33, 122, 27, 83 MiB, and 309 MiB on the map, killed at its limit. Helper peaks 2.7 to 6.7 MiB. Under the load of this run at background: 3.1, 22.8, 1.3, 4.0 and 0.9 s, and 61 s for the 10,000 pages.
+
+**All 141 PDFs of bench100,** one at a time at normal priority, by `budget index`: 5,872 pages in 71 s, about 12 ms a page with the check for hidden text. No page failed. Worker peak p50 28 MiB, p95 151 MiB and at most 286 MiB, on the USGS map, killed at its limit. Helper peak at most 8.9 MiB. 17 pages couldn't be checked for hidden text under the build's limit, all in 4 documents, and 33 workers were stopped on the way, each costing a respawn. So a file like `ntrs20220005969` takes the slow road on 14 pages, and a search draws them on a hit. 128 pages are flagged, where `examples/hidden_corpus.rs` flags 129, and the other should be among those 17, though that wasn't confirmed.
+
+**What the crates cost.** `recto` is 2.87 MB without `grep-regex` and 4.44 MB with it, 1.57 MB more, most of it Unicode's tables, so `\w` means what it should. `recto-indexer` and the worker don't link it. Linked and used, `grep-searcher` would add only another 40 KB, and it's left out because nothing needs it: pages are in memory, and a pattern here crosses lines. The session's own footprint at the start, by `recto budget`, reads 1.55 MiB against 1.41 before this, with the spread of a few runs not looked at.
+
+The session itself, NASA, by `recto budget`: 1.55 MiB at the start, 4.81 once it's open, **4.94 after indexing all 383 pages**, 5.86 after 20 searches of all kinds. The build before any of this: 1.44, 4.77, and 6.88 after 10 plain searches, with a worker on top of that during each. Handles are the same before and after, and a test holds that, and one thread once it's done. `recto budget index --file F` reports all of a build's numbers and times each kind of search both ways.
 
 ## The agent interface
 

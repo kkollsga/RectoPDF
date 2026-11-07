@@ -56,6 +56,7 @@ struct Inner {
 
 struct Shared {
     root: PathBuf,
+    limits: BuildLimits,
     runner: Box<dyn Runner>,
     inner: Mutex<Inner>,
     notify: OnceLock<Notifier>,
@@ -76,7 +77,11 @@ impl Indexer {
     }
 
     pub fn with_runner(root: &Path, runner: Box<dyn Runner>) -> Self {
-        Self(Arc::new(Shared { root: root.to_path_buf(), runner, inner: Mutex::new(Inner { sweep_due: true, ..Inner::default() }), notify: OnceLock::new() }))
+        Self::with_limits(root, runner, BuildLimits::default())
+    }
+
+    fn with_limits(root: &Path, runner: Box<dyn Runner>, limits: BuildLimits) -> Self {
+        Self(Arc::new(Shared { root: root.to_path_buf(), limits, runner, inner: Mutex::new(Inner { sweep_due: true, ..Inner::default() }), notify: OnceLock::new() }))
     }
 
     pub fn attach(&self, notify: Notifier) {
@@ -135,7 +140,7 @@ impl Shared {
         loop {
             // First, before anything's built, and on this thread because it walks a folder of any size.
             if std::mem::take(&mut self.lock().sweep_due) {
-                let _ = corpus::evict(&self.root, &BuildLimits::default(), None);
+                let _ = corpus::evict(&self.root, &self.limits, None);
             }
             let job = {
                 let mut inner = self.lock();
@@ -425,6 +430,72 @@ mod tests {
         }
         indexer.ask(job(1));
         assert!(indexer.load().0 + indexer.load().1 >= 1 || stand.finished.load(Ordering::SeqCst) >= 2, "turned away, as if it had failed");
+    }
+
+    /// A corpus of one page, with nothing to read but what's given.
+    struct OnePage;
+
+    impl corpus::PageFeed for OnePage {
+        fn page_count(&mut self) -> Result<u32, corpus::FeedError> {
+            Ok(1)
+        }
+        fn read(&mut self, _page: u32) -> Result<corpus::FedPage, corpus::FeedError> {
+            let chars = "A page of text".chars().map(|c| recto_proto::CharRecord::new(c as u32, 0)).collect();
+            Ok(corpus::FedPage { chars, boxes: Vec::new(), hidden_checked: true })
+        }
+        fn still_the_same_file(&mut self) -> bool {
+            true
+        }
+    }
+
+    /// Failure: the owner's rule of 90 days and a maximum size only holds when a build succeeds, so a session that only reads what's there, or whose builds all fail, keeps text past both for good. The first ask of a session must apply each, with nothing being built.
+    #[test]
+    fn the_first_ask_of_a_session_applies_both_limits() {
+        let temp = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-limits-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        recto_platform::local::ensure_private_dir(&temp).unwrap();
+        let (root, generous) = (temp.join("corpus.noindex"), BuildLimits::default());
+        let build = |key: CorpusKey| corpus::build(&root, key, &mut OnePage, &corpus::DocMeta::default(), &generous).unwrap();
+        let (old, recent) = (key(1), key(2));
+        build(old);
+        build(recent);
+        let age = |key: CorpusKey, days: u64| {
+            let used = corpus::CorpusPaths::new(&root, key).app.join("used");
+            std::fs::File::options().write(true).open(used).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(days * 24 * 3600)).unwrap();
+        };
+        let wait_until_gone = |key: CorpusKey| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while root.join(key.hex()).exists() {
+                assert!(Instant::now() < deadline, "{key:?} is still there");
+                std::thread::yield_now();
+            }
+        };
+
+        // Past 90 days, under the size.
+        age(old, 91);
+        age(recent, 1);
+        let by_age = Indexer::with_limits(&root, Box::new(Fails), generous);
+        by_age.note_asked();
+        wait_until_gone(old);
+        assert!(root.join(recent.hex()).exists(), "what's within its time stays");
+        // 89 days is within it.
+        build(old);
+        age(old, 89);
+        let within = Indexer::with_limits(&root, Box::new(Fails), generous);
+        within.note_asked();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while within.0.lock().working && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(root.join(old.hex()).exists());
+
+        // Past the size, within 90 days: the least recently used goes.
+        let tight = BuildLimits { max_total_bytes: corpus::folder_bytes(&root.join(recent.hex())) + 1, ..BuildLimits::default() };
+        let by_size = Indexer::with_limits(&root, Box::new(Fails), tight);
+        by_size.note_asked();
+        wait_until_gone(old);
+        assert!(root.join(recent.hex()).exists(), "the most recently used goes last");
+        let _ = std::fs::remove_dir_all(&temp);
     }
 
     /// Failure: `stop` finds a build still queued and starts it after the session has gone, or asking afterwards starts one.
