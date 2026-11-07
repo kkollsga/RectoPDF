@@ -34,3 +34,5 @@ The whole suite decides a hand-back. It's never how you find out why something c
 The memory of a pass covers the tracked code, the test tools' versions (nextest, Swift, macOS), whether the Windows target is installed, and settings that change what tests do (`RECTO_*`, `NEXTEST_*`, `RUSTFLAGS`). It doesn't cover the real PDFs in the distillPDF checkout, which `recto-reader`'s `looks_on_real_files` and the fuzz seeds read when they're there. After changing those, use `CHECK_AGAIN=1`.
 
 A test that fails only sometimes can pass once and then be remembered, so a failure you've seen still gets a fix. CI and the reviews still run on everything.
+
+Never `git stash`, which is shared across worktrees. To compare with old code, use a temporary commit or a second worktree.

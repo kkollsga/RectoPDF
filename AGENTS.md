@@ -27,6 +27,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - Worktrees and temp folders are removed as soon as they're merged or finished. Never sweep a shared folder. No `timeout` binary exists here.
 
 ## Git
+- Never `git stash`: the stash is shared by every worktree and session in a repo, and `git stash pop` can take someone else's work (it happened three times on 2026-11-07, once touching the owner's own WIP in the lopdf fork). Set work aside with a temporary commit on your own branch.
 - Never `git switch --orphan`. Never `git add -A` without checking `git status`. Check a commit's size before any push.
 - **Pushing `main` of `kkollsga/RectoPDF`:** owner, 2026-11-07: "Push automatically". The coordinator pushes `main` after each merge that passes its check. Workers don't push.
 - A pre-push hook enforces that (`tools/hooks/install.sh`): `main` only goes up if `tools/check.sh --full` passed on that commit, or only documents changed since. Never use `--no-verify`.
