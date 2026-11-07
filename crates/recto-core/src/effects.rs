@@ -18,6 +18,8 @@ const MAX_TIME: Duration = Duration::from_secs(1);
 /// How much of a page's drawing, decoded, is looked through for JPEGs written in place, and for how long. Both are far past a normal page. Past them, its JPEGs go as PNG, which is right whatever's there.
 const MAX_DRAWING_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_DRAWING_TIME: Duration = Duration::from_millis(500);
+/// How much of a protected file's drawing is decrypted to look through, a stream at a time, since that can only be had whole.
+const MAX_DECRYPTED_DRAWING: u64 = 8 * 1024 * 1024;
 /// A `/Decode` that long isn't one any image has.
 const MAX_DECODE: usize = 64;
 
@@ -69,24 +71,46 @@ pub fn page_effects(path: &Path, page: u32) -> Option<PageEffects> {
     Some(walk.effects)
 }
 
-/// The streams a page draws from, directly. `None`-like cases just come back empty, and the page's reader finds that for itself.
+/// The streams a page draws from, directly. A stream's bytes stay where they are: this only asks what it is. Anything else just comes back empty, and the page's reader finds that for itself.
 fn page_contents(reader: &IndexedReader, page: ObjectId) -> Vec<ObjectId> {
     let Some(page) = dict_at(reader, page) else { return Vec::new() };
+    let listed = |items: &[Object]| items.iter().filter_map(|item| item.as_reference().ok()).take(MAX_VISITS).collect();
     match page.get(b"Contents") {
+        Ok(Object::Reference(id)) if reader.resolve_stream_descriptor(*id).is_ok() => vec![*id],
         Ok(Object::Reference(id)) => match reader.resolve_object(*id) {
-            Ok(Object::Array(items)) => items.iter().filter_map(|item| item.as_reference().ok()).take(MAX_VISITS).collect(),
-            _ => vec![*id],
+            Ok(Object::Array(items)) => listed(&items),
+            _ => Vec::new(),
         },
-        Ok(Object::Array(items)) => items.iter().filter_map(|item| item.as_reference().ok()).take(MAX_VISITS).collect(),
+        Ok(Object::Array(items)) => listed(items),
         _ => Vec::new(),
     }
 }
 
-/// Whether any of these streams mentions the DCT filter, which is what an image written in place has to do. Words in a string saying the same only cost a page's JPEGs their bytes. One that can't be read through counts.
+/// Whether any of these streams has a filter named DCT, which is what an image written in place has to have. A string saying the same only costs a page's JPEGs their bytes. One that can't be read through counts.
 fn writes_a_jpeg_in_place(reader: &IndexedReader, streams: &[ObjectId]) -> bool {
     let deadline = Instant::now() + MAX_DRAWING_TIME;
     let mut budget = MAX_DRAWING_BYTES;
     streams.iter().any(|id| mentions_dct(reader, *id, deadline, &mut budget).unwrap_or(true))
+}
+
+/// Where a stream's stored bytes come from: read from the file a piece at a time, or decrypted, which can only be had whole.
+enum Stored {
+    File(lopdf::EncodedStreamReader),
+    Decrypted { bytes: Vec<u8>, at: usize },
+}
+
+impl Stored {
+    fn read(&mut self, into: &mut [u8]) -> Option<usize> {
+        match self {
+            Self::File(reader) => reader.read_chunk(into).ok(),
+            Self::Decrypted { bytes, at } => {
+                let take = (bytes.len() - *at).min(into.len());
+                into[..take].copy_from_slice(&bytes[*at..*at + take]);
+                *at += take;
+                Some(take)
+            }
+        }
+    }
 }
 
 fn mentions_dct(reader: &IndexedReader, id: ObjectId, deadline: Instant, budget: &mut u64) -> Option<bool> {
@@ -108,14 +132,24 @@ fn mentions_dct(reader: &IndexedReader, id: ObjectId, deadline: Instant, budget:
         // A predictor makes bytes that can't be searched, and drawing has no use for one.
         return None;
     }
-    let mut source = descriptor.open_plain_encoded().ok()?;
+    let mut source = match descriptor.open_plain_encoded() {
+        Ok(source) => Stored::File(source),
+        Err(_) => {
+            // A protected file, which is usually one with an empty password. Only its reader can decrypt it, whole, so not one past a limit.
+            if descriptor.encoded_len()? > MAX_DECRYPTED_DRAWING {
+                return None;
+            }
+            let Object::Stream(stream) = reader.resolve_object(id).ok()? else { return None };
+            Stored::Decrypted { bytes: stream.content, at: 0 }
+        }
+    };
     let mut encoded = vec![0u8; 64 * 1024];
     let mut decoded = vec![0u8; 64 * 1024];
     let mut inflate = Decompress::new(true);
     // The end of the last piece, for a word cut in two.
-    let mut tail = [0u8; 2];
+    let mut tail = [0u8; 3];
     loop {
-        let got = source.read_chunk(&mut encoded).ok()?;
+        let got = source.read(&mut encoded)?;
         let mut piece = &encoded[..got];
         loop {
             if Instant::now() >= deadline {
@@ -132,17 +166,18 @@ fn mentions_dct(reader: &IndexedReader, id: ObjectId, deadline: Instant, budget:
                 (plain_bytes, plain_bytes, got == 0)
             };
             *budget = budget.checked_sub(made as u64)?;
-            let mut joined = [0u8; 2 + 3];
-            joined[..2].copy_from_slice(&tail);
-            let start = made.min(3);
-            joined[2..2 + start].copy_from_slice(&decoded[..start]);
-            if joined[..2 + start].windows(3).any(|word| word == b"DCT") || decoded[..made].windows(3).any(|word| word == b"DCT") {
+            let mut joined = [0u8; 3 + 4];
+            joined[..3].copy_from_slice(&tail);
+            let start = made.min(4);
+            joined[3..3 + start].copy_from_slice(&decoded[..start]);
+            if joined[..3 + start].windows(4).any(|word| word == b"/DCT") || decoded[..made].windows(4).any(|word| word == b"/DCT") {
                 return Some(true);
             }
-            if made >= 2 {
-                tail.copy_from_slice(&decoded[made - 2..made]);
-            } else if made == 1 {
-                tail = [tail[1], decoded[0]];
+            if made >= 3 {
+                tail.copy_from_slice(&decoded[made - 3..made]);
+            } else {
+                tail.rotate_left(made);
+                tail[3 - made..].copy_from_slice(&decoded[..made]);
             }
             piece = &piece[used..];
             if finished {
@@ -556,11 +591,15 @@ mod tests {
         let form = first_extra_object(1);
         let inside = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1]".into(), data: inline.clone() };
         assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![inside]).jpeg_read_differently, "in a form");
+        // So that the word is cut across two of the pieces it's read in.
+        let word_at = inline.windows(4).position(|word| word == b"/DCT").unwrap();
         let mut packed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
-        std::io::Write::write_all(&mut packed, &[b" ".repeat(64 * 1024 - 1), inline].concat()).unwrap();
+        std::io::Write::write_all(&mut packed, &[b" ".repeat(64 * 1024 - word_at - 2), inline].concat()).unwrap();
         let packed = packed.finish().unwrap();
         let drawn = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode".into(), data: packed };
         assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![drawn]).jpeg_read_differently, "compressed");
+        let mentioned = pages(&[Page::new(text_lines(&["the DCT coefficients of a JPEG"]))]);
+        assert!(!page_effects(&TempPdf::new("doc.pdf", &mentioned).0, 0).unwrap().jpeg_read_differently, "a page that's only talking about it");
         let unread = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /ASCII85Decode".into(), data: b"~>".to_vec() };
         assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![unread]).jpeg_read_differently, "a filter this doesn't read counts");
     }
