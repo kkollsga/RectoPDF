@@ -8,7 +8,6 @@ use crate::targets::{NamedLoader, facts_of};
 use recto_agent::{Level, parse, run};
 use recto_session::edit::{Author, MAX_HISTORY_BYTES, MAX_PAGES, MAX_UNDO, PageSlot};
 use recto_session::{Session, TabId};
-use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::time::Duration;
 
@@ -16,14 +15,14 @@ const BUDGET: Budget = Budget { time: Duration::from_secs(120), memory: 256 * 10
 /// What one sequence may do, where a step costs 1 and more on a long document. Enough for a small document to go well past the undo cap, or for dozens of steps at the longest a document can be.
 const MAX_COST: usize = 8192;
 
-/// A state the page order was in, small enough to keep one per step.
+/// A state the page order was in, small enough to keep one per step. Plain arithmetic, because this runs over every page after every step, and a keyed hash there was most of what a run did.
 fn fingerprint(slots: &[PageSlot]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    slots.len().hash(&mut hasher);
+    let mut state = slots.len() as u64;
     for slot in slots {
-        (slot.source, slot.page, slot.quarter_turns).hash(&mut hasher);
+        let packed = u64::from(slot.page) | u64::from(slot.source) << 32 | u64::from(slot.quarter_turns) << 48;
+        state = (state ^ packed).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(23);
     }
-    hasher.finish()
+    state
 }
 
 fn is_the_file(slots: &[PageSlot], file_pages: u32) -> bool {
@@ -124,7 +123,7 @@ fn sequence(data: &[u8]) {
             if session.tab(model.id).is_none() {
                 model = Model::new(open(&mut session), file_pages);
             }
-            cost += 1 + model.slots.len() / 1024;
+            cost += 1 + model.slots.len() / 512;
         }
     }
     // Everything still on the lists gives back what it says it will, all the way down, and then up again.

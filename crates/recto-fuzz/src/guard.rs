@@ -5,7 +5,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::io::Write;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// All anything may hold at once. The owner's line: a 1 GiB allocation is a failure.
@@ -13,6 +13,7 @@ pub const HARD_LIMIT: usize = 1 << 30;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
+static DYING: AtomicBool = AtomicBool::new(false);
 
 /// The counting allocator. It's this crate's alone, and nothing that ships depends on this crate.
 pub struct Counting;
@@ -20,7 +21,8 @@ pub struct Counting;
 fn note_grown(by: usize) {
     let live = LIVE.fetch_add(by, Ordering::Relaxed) + by;
     PEAK.fetch_max(live, Ordering::Relaxed);
-    if live > HARD_LIMIT {
+    // Writing to stderr can itself allocate, the first time, and that mustn't come back here.
+    if live > HARD_LIMIT && !DYING.swap(true, Ordering::Relaxed) {
         // Not a panic: this can be inside the allocator, on any thread, in a job that catches panics.
         let _ = writeln!(std::io::stderr(), "recto-fuzz: {live} bytes live, past the {HARD_LIMIT} limit (this allocation: {by})");
         std::process::abort();

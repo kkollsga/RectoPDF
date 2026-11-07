@@ -16,6 +16,9 @@ const BUDGET: Budget = Budget { time: Duration::from_secs(60), memory: 512 * 102
 /// The longest page a check builds. A smoke run on a debug build holds this down, because a page at the wire's cap takes seconds there, and every other run wants the cap.
 pub static LONGEST_PAGE: AtomicUsize = AtomicUsize::new(MAX_PAGE_CHARS as usize);
 
+/// The longest page that isn't asking to be at the cap. About the busiest real page.
+const MAX_ORDINARY_PAGE: usize = 32_768;
+
 /// What fuzz bytes choose characters from: the ones each rule looks at, and the ones that have tripped text code before.
 const ALPHABET: &[char] = &[
     'a', 'b', 'e', 'i', 'v', 'x', 'A', 'I', 'V', 'Æ', 'ß', 'İ', 'ı', '数', '1', '7', ' ', ' ', ' ', '\r', '\n', '\n', '\u{B}', '\u{C}', '\u{85}', '\u{2028}', '\u{2029}', '-', '-', '\u{2010}', '\u{2011}', '\u{2013}', '\u{2014}', '\u{FFFE}', '\u{FFFD}',
@@ -31,7 +34,9 @@ pub fn page(data: &[u8]) -> (Vec<CharRecord>, Vec<CharBox>) {
     let mut take = Take(data);
     let mode = take.u8();
     let raw = mode & 1 == 1;
-    let repeat = [1usize, 1, 1, 1, 1, 1, 2, 8, 64, 512, 4096, 32_768, 1 << 20][usize::from(mode >> 4) % 13];
+    // A page at the wire's cap takes a second or so, so it's rare, and everything else stays short enough to run thousands of times.
+    let at_the_cap = mode >= 0xFE;
+    let repeat = if at_the_cap { MAX_PAGE_CHARS as usize } else { [1usize, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 8, 64, 512][usize::from(mode >> 4)] };
     let mut chars = Vec::new();
     let mut boxes = Vec::new();
     let (mut x, mut y) = (72.0f32, 700.0f32);
@@ -52,7 +57,7 @@ pub fn page(data: &[u8]) -> (Vec<CharRecord>, Vec<CharBox>) {
             x += step;
         }
     }
-    let longest = LONGEST_PAGE.load(Ordering::Relaxed);
+    let longest = LONGEST_PAGE.load(Ordering::Relaxed).min(if at_the_cap { usize::MAX } else { MAX_ORDINARY_PAGE });
     let wanted = chars.len().saturating_mul(repeat).min(longest);
     chars.truncate(longest);
     boxes.truncate(longest);

@@ -103,7 +103,7 @@ pub fn proto_seeds() -> Vec<Vec<u8>> {
 /// Pages that read like text, and ones that don't.
 pub fn index_seeds() -> Vec<Vec<u8>> {
     let mut seeds = Vec::new();
-    for mode in [0u8, 2, 0x60, 0x70, 0x80, 0x90, 0xA0, 1, 0x71] {
+    for mode in [0u8, 2, 0xC0, 0xD0, 0xE0, 0xF0, 1, 0xD1, 0xFE, 0xFF] {
         for salt in 0..4u32 {
             let mut seed = vec![mode];
             seed.extend((0..360u32).map(|at| (at.wrapping_mul(at).wrapping_mul(salt * 2 + 1).wrapping_add(at) >> 2) as u8));
@@ -113,7 +113,7 @@ pub fn index_seeds() -> Vec<Vec<u8>> {
     seeds
 }
 
-/// A page shaped like the ones that break line order: runs drawn late on earlier baselines. Bytes as `targets::index::page` reads them.
+/// Steps of every kind, on documents of several lengths.
 pub fn sequence_seeds() -> Vec<Vec<u8>> {
     let mut seeds = Vec::new();
     for file_pages_choice in [0u8, 2, 4, 8] {

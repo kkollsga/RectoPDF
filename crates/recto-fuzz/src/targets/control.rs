@@ -60,9 +60,7 @@ static SERVER: Mutex<Option<Running>> = Mutex::new(None);
 /// `RECTO_FUZZ_STATE` is how `tools/fuzz.sh` says where, so it can clear up after a run that ends by being stopped.
 fn state_folder() -> PathBuf {
     if let Some(chosen) = std::env::var_os("RECTO_FUZZ_STATE") {
-        let chosen = PathBuf::from(chosen);
-        let _ = std::fs::create_dir_all(&chosen);
-        return chosen.canonicalize().unwrap_or(chosen);
+        return PathBuf::from(chosen);
     }
     std::env::temp_dir().canonicalize().unwrap_or_else(|_| std::env::temp_dir()).join(format!("rf{}", std::process::id()))
 }
@@ -102,10 +100,13 @@ pub fn check(data: &[u8]) {
         }
         let running = guard.as_ref().expect("just started");
         talk(running, data);
-        // A `stop` a moment ago is the one reason the next client mightn't get in.
-        if !running.thread.is_finished() {
-            let answered = answers_status(running);
-            assert!(answered || running.thread.is_finished(), "the session stopped answering a new client");
+        // A `stop` a moment ago is the one reason the next client mightn't get in, and then the server ends, within its grace.
+        if !answers_status(running) {
+            let started = Instant::now();
+            while !running.thread.is_finished() {
+                assert!(started.elapsed() < Duration::from_secs(20), "the session stopped answering a new client, and hasn't ended");
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
         // What this input opened goes, so one input's tabs aren't the next one's.
         running.host.0.with_session(|session| {

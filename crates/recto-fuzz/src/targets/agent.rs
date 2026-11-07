@@ -109,9 +109,9 @@ fn small_grammars(bytes: &[u8]) {
     }
 }
 
-/// Catches: a level file that raises the level without saying one plainly. The file fails closed, so all that can be got from it is what it spells out.
+/// Catches: a level file that gives a level without saying one plainly. The file fails closed, so a level only comes from a string in the place a level goes.
 fn level_file(bytes: &[u8]) {
     let Some(stored) = parse_stored(bytes) else { return };
-    let text = String::from_utf8_lossy(bytes);
-    assert!(text.contains(stored.level.name()), "{text:?} gave {:?}", stored.level);
+    let said: serde_json::Value = serde_json::from_slice(bytes).expect("what gave a level is JSON");
+    assert_eq!(said["level"].as_str().and_then(Level::parse), Some(stored.level));
 }

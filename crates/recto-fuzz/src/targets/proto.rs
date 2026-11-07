@@ -169,6 +169,8 @@ fn frames_through_a_real_channel(bytes: &[u8]) {
                 let _ = send_all(&sender, bytes, &[]);
                 drop(sender);
             });
+            // Moved in, so it closes when this stops reading, and a writer blocked on a full socket gets its error instead of waiting for ever.
+            let receiver = receiver;
             let mut reader = FrameReader::default();
             loop {
                 match reader.read_blocking(&receiver) {

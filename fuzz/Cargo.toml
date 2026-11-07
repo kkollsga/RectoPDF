@@ -16,3 +16,52 @@ recto-fuzz = { path = "../crates/recto-fuzz" }
 
 [profile.release]
 debug = 1
+
+[[bin]]
+name = "pdf_bytes"
+path = "fuzz_targets/pdf_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pdf_tree"
+path = "fuzz_targets/pdf_tree.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proto"
+path = "fuzz_targets/proto.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "index"
+path = "fuzz_targets/index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent"
+path = "fuzz_targets/agent.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control"
+path = "fuzz_targets/control.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "edits"
+path = "fuzz_targets/edits.rs"
+test = false
+doc = false
+bench = false
