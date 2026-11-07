@@ -17,6 +17,7 @@ use crate::state::StatePaths;
 use recto_platform::{FileStamp, file_stamp, local};
 use recto_session::edit::{AddedSource, PageEdits};
 use recto_session::record::{self, AppRecord, CURRENT_VERSION, DecodedRecord, FileNotice, FindRecord, JOURNAL_COMPACT_ABOVE, JournalHeader, JournalOp, MAX_JOURNAL_BYTES, MAX_PLACES_LOG_BYTES, MAX_RECORD_BYTES, ParsedJournal, PlaceDelta, RecordError, SessionRecord, TabEntry, ViewRecord, closed_journal_name, is_closed_journal_name, is_journal_name, journal_is_for, journal_named_is_for};
+use recto_session::sleep::{MAX_SLEEP_FILE_BYTES, SleepFile, decode_sleep, encode_sleep};
 use recto_session::{HistorySource, JournalOutcome, JournalWork, RestoredEdits, TakenHistory};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -33,6 +34,8 @@ const JOURNALS: &str = "journals";
 const MAX_CLOSED_JOURNAL_BYTES: u64 = 1024 * 1024 * 1024;
 /// How long a closed PDF's history waits to be picked up. Owner, 2026-11-07.
 const CLOSED_JOURNAL_DAYS: u64 = 30;
+/// Sleep files in all. About 256 tabs' worth of a whole picture, and more with text, which packs well.
+const MAX_SLEEP_BYTES: u64 = 256 * 1024 * 1024;
 /// Most bytes of journals a launch reads, whatever's there. Real ones are a few kilobytes each. What's past it stays where it is, and those tabs say they couldn't be read.
 const MAX_JOURNAL_BYTES_AT_LAUNCH: u64 = 1024 * 1024 * 1024;
 /// How many damaged states are kept.
@@ -478,6 +481,7 @@ impl RecordStore {
         // Nothing's changed by coming back, unless the journals said otherwise: writing what was read would be a write for nothing.
         progress.whole_crc = as_read;
         drop(progress);
+        prune_sleep_files(&dir.join(JOURNALS));
         let in_use: Vec<String> = journals.values().flat_map(|restored| restored.edits.kept_sources().filter_map(|(_, added)| added.path.file_name()?.to_str().map(str::to_string)).collect::<Vec<_>>()).collect();
         prune_history(&dir.join(JOURNALS), Some(&in_use));
         if !had_record && record.tabs.is_empty() {
@@ -504,7 +508,7 @@ impl RecordStore {
         let mut progress = self.progress();
         let folder = dir.join(JOURNALS);
         for name in &work.retired {
-            if !is_journal_name(name) && !record::is_kept_name(name) {
+            if !is_journal_name(name) && !record::is_kept_name(name) && !record::is_sleep_name(name) {
                 continue;
             }
             match std::fs::remove_file(folder.join(name)) {
@@ -856,9 +860,44 @@ impl RecordStore {
         self.read_list(name).is_some_and(|restored| restored.edits.to_record() == *base)
     }
 
+    /// **Writes a tab's sleep file,** in one step, as it goes dormant or the app goes away. It's only a way to be quick, so failing here costs nothing but that, and isn't said. Says how many bytes went.
+    pub fn write_sleep(&self, path: &Path, sleep: &SleepFile) -> u64 {
+        if self.refuses_writes().is_some() {
+            return 0;
+        }
+        let dir = self.dir();
+        if Self::ensure_dirs(&dir).is_err() {
+            return 0;
+        }
+        self.note_going_back(&dir);
+        let bytes = encode_sleep(sleep);
+        let folder = dir.join(JOURNALS);
+        if bytes.len() > MAX_SLEEP_FILE_BYTES || replace(&folder.join(record::sleep_file_name(sleep.file, path)), &bytes, false).is_err() {
+            return 0;
+        }
+        self.progress().wrote_bytes += bytes.len() as u64;
+        prune_sleep_files(&folder);
+        bytes.len() as u64
+    }
+
+    /// A tab's sleep file, if there's one for this version of this file. The name goes by the stamp, so what's asked for is what's known of the file, and nothing here looks at the PDF, which may be on a disk that's gone away. Whoever's waking the tab looks at that on a thread of its own. **One that doesn't read is removed:** it can always be rebuilt.
+    pub fn read_sleep(&self, stamp: FileStamp, path: &Path) -> Option<SleepFile> {
+        let file = self.dir().join(JOURNALS).join(record::sleep_file_name(stamp, path));
+        let bytes = read_ours(&file, MAX_SLEEP_FILE_BYTES).ok().flatten()?;
+        match decode_sleep(&bytes, CURRENT_VERSION) {
+            Ok(sleep) if sleep.file.same_contents(stamp) && sleep.file.inode == stamp.inode => Some(sleep),
+            // A newer app's, which isn't this one's to touch.
+            Err(RecordError::Newer(_)) => None,
+            _ => {
+                let _ = std::fs::remove_file(&file);
+                None
+            }
+        }
+    }
+
     /// Removes a journal found to be stale.
     pub fn remove_journal(&self, name: &str) {
-        if is_journal_name(name) || record::is_kept_name(name) {
+        if is_journal_name(name) || record::is_kept_name(name) || record::is_sleep_name(name) {
             let _ = std::fs::remove_file(self.dir().join(JOURNALS).join(name));
             self.progress().journal_bytes.remove(name);
         }
@@ -932,7 +971,7 @@ fn remove_temp_files(dir: &Path) {
     for folder in [dir.to_path_buf(), dir.join(JOURNALS)] {
         for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
             let name = entry.file_name();
-            let is_temp = name.to_str().is_some_and(|name| (name.starts_with("record.") || name.starts_with("journal-") || name.starts_with("closed-") || name.starts_with("kept-") || name.starts_with(PLACES)) && name.rsplit('.').next().is_some_and(|tail| tail.starts_with("tmp") && tail[3..].bytes().all(|byte| byte.is_ascii_digit())));
+            let is_temp = name.to_str().is_some_and(|name| (name.starts_with("record.") || name.starts_with("journal-") || name.starts_with("closed-") || name.starts_with("kept-") || name.starts_with("sleep-") || name.starts_with(PLACES)) && name.rsplit('.').next().is_some_and(|tail| tail.starts_with("tmp") && tail[3..].bytes().all(|byte| byte.is_ascii_digit())));
             if is_temp && entry.file_type().is_ok_and(|kind| kind.is_file()) {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -968,6 +1007,30 @@ fn prune_history(folder: &Path, kept_in_use: Option<&[String]>) {
         }
         let may_go = !is_kept || kept_in_use.is_some_and(|in_use| !path.file_name().and_then(|name| name.to_str()).is_some_and(|name| in_use.iter().any(|used| used == name)));
         if may_go {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Sleep files are held to [`MAX_SLEEP_BYTES`] in all, oldest first, and 30 days: each can be rebuilt. A look at their sizes each time one's written, which is once for a tab going dormant.
+fn prune_sleep_files(folder: &Path) {
+    let now = std::time::SystemTime::now();
+    let mut files: Vec<(u64, PathBuf, u64)> = std::fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name().to_str().is_some_and(record::is_sleep_name))
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            let age = meta.modified().ok().and_then(|modified| now.duration_since(modified).ok()).map_or(0, |age| age.as_secs());
+            Some((age, entry.path(), meta.len()))
+        })
+        .collect();
+    files.sort_unstable_by_key(|(age, ..)| *age);
+    let mut total = 0u64;
+    for (age, path, bytes) in files {
+        total += bytes;
+        if age > CLOSED_JOURNAL_DAYS * 86_400 || total > MAX_SLEEP_BYTES {
             let _ = std::fs::remove_file(path);
         }
     }
@@ -1625,6 +1688,70 @@ mod tests {
         std::fs::remove_file(&kept_again.path).unwrap();
         let taken = store.history_of(Some(now), &file).unwrap();
         assert!(taken.restored.rolled_off && !taken.restored.edits.can_undo());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure: a sleep file for another version of the file is used, or a damaged one stays to be read at every wake, or a bad name reaches outside the folder, or a newer app's is thrown away. It's only ever a way to be quick, so all of these just cost that.
+    #[test]
+    fn a_sleep_file_is_only_for_its_own_file() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let file = root.join("doc.pdf");
+        std::fs::write(&file, b"contents").unwrap();
+        let stamp = file_stamp(&file).unwrap();
+        let sleep = SleepFile { file: stamp, file_pages: 3, pages: 3, list_seq: 0, renderer_only: false, toc: recto_core::Toc::default(), usual: Some((612.0, 792.0)), sizes: Vec::new(), pictures: Vec::new() };
+        assert!(store.write_sleep(&file, &sleep) > 0);
+        assert_eq!(store.read_sleep(stamp, &file), Some(sleep.clone()));
+        let on_disk = root.join("session").join(JOURNALS).join(record::sleep_file_name(stamp, &file));
+        assert!(local::is_excluded_from_backups(&on_disk.parent().unwrap()));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&on_disk).unwrap().permissions().mode() & 0o077, 0);
+        // Another version of the file has another name.
+        let later = FileStamp { size: stamp.size + 1, ..stamp };
+        assert_eq!(store.read_sleep(later, &file), None);
+        assert!(on_disk.exists());
+        // Swapped under another's name, or damaged: gone.
+        let other = root.join("other.pdf");
+        let other_stamp = FileStamp { inode: stamp.inode + 1, ..stamp };
+        std::fs::copy(&on_disk, root.join("session").join(JOURNALS).join(record::sleep_file_name(other_stamp, &other))).unwrap();
+        assert_eq!(store.read_sleep(other_stamp, &other), None);
+        assert!(!root.join("session").join(JOURNALS).join(record::sleep_file_name(other_stamp, &other)).exists());
+        let mut bytes = std::fs::read(&on_disk).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        std::fs::write(&on_disk, &bytes).unwrap();
+        assert_eq!(store.read_sleep(stamp, &file), None);
+        assert!(!on_disk.exists());
+        // A newer app's stays.
+        let newer = record::seal_as("recto-sleep", CURRENT_VERSION + 1, 0, b"{}\n");
+        std::fs::write(&on_disk, &newer).unwrap();
+        assert_eq!(store.read_sleep(stamp, &file), None);
+        assert!(on_disk.exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure: sleep files grow without end over thousands of tabs. They're held to their limit, oldest first, and that doesn't touch anything else.
+    #[test]
+    fn sleep_files_stay_within_their_limit() {
+        let (root, _paths) = state();
+        let folder = root.join("journals");
+        std::fs::create_dir_all(&folder).unwrap();
+        let make = |name: &str, age: u64, bytes: u64| {
+            let path = folder.join(name);
+            let file = File::create(&path).unwrap();
+            file.set_len(bytes).unwrap();
+            file.set_modified(std::time::SystemTime::now() - Duration::from_secs(age)).unwrap();
+            path
+        };
+        let new = make("sleep-00000000000000aa.bin", 10, MAX_SLEEP_BYTES / 2);
+        let middle = make("sleep-00000000000000bb.bin", 20, MAX_SLEEP_BYTES / 2);
+        let oldest = make("sleep-00000000000000cc.bin", 30, 10);
+        let expired = make("sleep-00000000000000dd.bin", (CLOSED_JOURNAL_DAYS + 1) * 86_400, 0);
+        let journal = make("journal-00000000000000ee.log", (CLOSED_JOURNAL_DAYS + 1) * 86_400, 10);
+        prune_sleep_files(&folder);
+        assert!(new.exists() && middle.exists());
+        assert!(!oldest.exists() && !expired.exists());
+        assert!(journal.exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

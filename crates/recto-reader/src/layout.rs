@@ -94,6 +94,11 @@ impl PageLayout {
         }
     }
 
+    /// The pages that aren't the usual size, and their sizes.
+    pub fn other_sizes(&self) -> Vec<(u32, PageBox)> {
+        self.overrides.iter().map(|known| (known.page, known.size)).collect()
+    }
+
     /// The size every page is taken to be, if it came from a real page.
     pub fn usual_size(&self) -> Option<PageBox> {
         self.usual_known.then_some(self.usual)

@@ -84,7 +84,29 @@ pub struct Toc {
     pub truncated: bool,
 }
 
+/// One line of contents, for putting a [`Toc`] together from what was kept of one.
+#[derive(Clone, Copy, Debug)]
+pub struct TocLine<'a> {
+    pub title: &'a str,
+    pub page: u32,
+    pub parent: u32,
+    pub depth: u8,
+}
+
 impl Toc {
+    /// Contents from what's been kept of them. Titles go through the same cleaning as those from a PDF, as whatever kept them can't be believed.
+    pub fn from_lines(lines: &[TocLine<'_>], truncated: bool) -> Self {
+        let mut titles = String::new();
+        let mut entries = Vec::with_capacity(lines.len());
+        for line in lines {
+            let start = u32::try_from(titles.len()).unwrap_or(u32::MAX);
+            titles.push_str(&clean_line(line.title));
+            let end = u32::try_from(titles.len()).unwrap_or(u32::MAX);
+            entries.push(TocEntry { title_start: start, title_len: end - start, page: line.page, parent: line.parent, depth: line.depth });
+        }
+        Self { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated }
+    }
+
     pub fn entries(&self) -> &[TocEntry] {
         &self.entries
     }

@@ -210,6 +210,57 @@ pub struct SavedPlace {
     pub page_size: Option<PageBox>,
 }
 
+/// What a page view takes from a sleep file for a tab's first frame: pages' sizes, and pictures to show until they're drawn. Its numbers have been held to what's possible on the way here, and these are held to the layout's own.
+#[derive(Debug, Default)]
+pub struct SleepView {
+    pub usual: Option<PageBox>,
+    pub sizes: Vec<(u32, PageBox)>,
+    pub pictures: Vec<SleepShot>,
+}
+
+/// A picture for a page, in a surface of its own.
+#[derive(Debug)]
+pub struct SleepShot {
+    pub page: u32,
+    pub scale: f32,
+    pub paper: PaperKind,
+    pub surface: PixelSurface,
+}
+
+/// What a tab's sleep file gets from the page view: pages' sizes, and pictures of the pages at its place, as there are now.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SleepMaterial {
+    pub usual: Option<PageBox>,
+    pub sizes: Vec<(u32, PageBox)>,
+    pub pictures: Vec<RawPicture>,
+}
+
+/// A picture for a sleep file, in its own bytes. Rows are `width * 4` bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RawPicture {
+    pub page: u32,
+    pub scale: f32,
+    pub width: u32,
+    pub height: u32,
+    pub paper: PaperKind,
+    pub bgra: Vec<u8>,
+}
+
+/// Pictures that go in a sleep file: as many as [`recto_session::sleep::MAX_SLEEP_PICTURES`] says, which this crate doesn't know of.
+const MAX_SLEEP_SHOTS: usize = 6;
+
+/// How a tab's wake went, for QA and the budgets: from being asked to the first frame showing something on every page, and to sharp.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WakeReport {
+    pub tab: u32,
+    /// It came from a sleep file.
+    pub from_sleep: bool,
+    pub first_frame_us: Option<u64>,
+    pub sharp_us: Option<u64>,
+    /// Frames the host applied with a visible page bare, once it was at its place.
+    pub blank_frames: u32,
+}
+
 /// One thing for the engine to do. The surface, if any, is the job's until it comes back.
 #[derive(Debug)]
 pub struct Job {
@@ -289,6 +340,39 @@ impl JobPlan {
     /// A new surface for each job, never one that's been used. A worker can read and write a surface it was sent for as long as it lives, whatever it's told, so a surface used twice is a way from one file's worker to another file's pixels. It costs 51 µs more a tile than reusing one, nearly all of it the first touch of its pages: 67 against 16, p50.
     fn take_surface(width: u32, height: u32) -> Option<PixelSurface> {
         PixelSurface::create(width, height).ok()
+    }
+}
+
+/// Copies a tile's pixels into a picture of its page, a step-sized box of them to each pixel. A pixel past the edge of either is left.
+#[allow(clippy::too_many_arguments)]
+fn shrink_into(source: &[u8], stride: usize, used_width: u32, used_height: u32, step: u32, at: (u32, u32), picture: &mut [u8], width: u32, height: u32) {
+    let (step, picture_row) = (step.max(1) as usize, width as usize * 4);
+    let area = (step * step) as u32;
+    for y in 0..(used_height as usize / step) {
+        let target_y = at.1 as usize + y;
+        if target_y >= height as usize {
+            break;
+        }
+        for x in 0..(used_width as usize / step) {
+            let target_x = at.0 as usize + x;
+            if target_x >= width as usize {
+                break;
+            }
+            let mut sum = [0u32; 4];
+            for row in 0..step {
+                let start = (y * step + row) * stride + x * step * 4;
+                let Some(pixels) = source.get(start..start + step * 4) else { continue };
+                for pixel in pixels.chunks_exact(4) {
+                    for (total, byte) in sum.iter_mut().zip(pixel) {
+                        *total += u32::from(*byte);
+                    }
+                }
+            }
+            let out = target_y * picture_row + target_x * 4;
+            for (channel, total) in sum.iter().enumerate() {
+                picture[out + channel] = (total / area) as u8;
+            }
+        }
     }
 }
 
@@ -391,6 +475,11 @@ pub struct Reader {
     selecting: Selecting,
     /// The thread that draws has failed too many times to go on trying, and this says so.
     gave_up: bool,
+    /// What's come from a tab's sleep file, for when it's made the hot tab.
+    sleep_view: Option<(u32, SleepView)>,
+    /// When the wake under way was asked for, and how it's gone.
+    waking: Option<(Instant, WakeReport)>,
+    last_wake: Option<WakeReport>,
 }
 
 /// What a page says once the thread that draws has given up.
@@ -434,7 +523,195 @@ impl Reader {
             note: None,
             selecting: Selecting::default(),
             gave_up: false,
+            sleep_view: None,
+            waking: None,
+            last_wake: None,
         }
+    }
+
+    /// **What a tab's first frame shows, from its sleep file, ahead of [`Self::activate`].** Pictures of the pages at its place, kept as those pages' previews, so they go on as a preview does, and the same rules take them off. The tab's been asked for from here, for how long it takes.
+    pub fn give_sleep(&mut self, tab: u32, view: SleepView) {
+        self.sleep_view = Some((tab, view));
+    }
+
+    /// A tab's being woken, as of now. For how long it takes.
+    pub fn note_wake(&mut self, tab: u32, began: Instant) {
+        self.waking = Some((began, WakeReport { tab, from_sleep: false, ..WakeReport::default() }));
+    }
+
+    /// The files a tab it holds has.
+    pub fn files_of(&self, tab: u32) -> Vec<PathBuf> {
+        self.docs.get(&tab).map_or_else(Vec::new, |doc| doc.map.files.clone())
+    }
+
+    /// Whether this tab's anything here: a view of it's held, so a sleep file has nothing to add.
+    pub fn holds(&self, tab: u32) -> bool {
+        self.docs.contains_key(&tab)
+    }
+
+    /// How the last wake went.
+    pub fn last_wake(&self) -> Option<WakeReport> {
+        self.waking.map(|(_, report)| report).or(self.last_wake)
+    }
+
+    /// Whether every visible page is showing something, at the place, with nothing on its way to the host: what a window can go up with. It'll sharpen from there.
+    pub fn is_showable(&self) -> bool {
+        if self.jump.is_some() || !self.ops.is_empty() || self.unapplied || self.viewport.height <= 0.0 {
+            return false;
+        }
+        let Some(doc) = self.doc() else { return false };
+        doc.problem.is_none() && self.visible_pages(doc).all(|page| self.attached.get(&page).is_some_and(|ids| !ids.is_empty()))
+    }
+
+    /// Goes through how a wake's going, each time the host has applied something.
+    fn track_wake(&mut self) {
+        let Some((began, mut report)) = self.waking else { return };
+        if self.hot != Some(report.tab) {
+            self.waking = None;
+            return;
+        }
+        let Some(doc) = self.doc() else { return };
+        if self.jump.is_none() && self.viewport.height > 0.0 {
+            let covered = self.visible_pages(doc).all(|page| self.attached.get(&page).is_some_and(|ids| !ids.is_empty()));
+            if covered && report.first_frame_us.is_none() {
+                report.first_frame_us = Some(u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX));
+            } else if !covered && report.first_frame_us.is_none() {
+                report.blank_frames += 1;
+            }
+        }
+        if report.first_frame_us.is_some() && self.is_settled() {
+            report.sharp_us = Some(u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX));
+            self.last_wake = Some(report);
+            self.waking = None;
+            return;
+        }
+        self.waking = Some((began, report));
+    }
+
+    /// **What a tab's sleep file gets from what's here.** Sizes, and a picture for each page at its place: its preview, if the system has left it, or else put together from whatever of its tiles are here, so a heavy page, which has no preview, has one too. A short lock: a picture's a few milliseconds at the worst.
+    pub fn sleep_material(&mut self, tab: u32) -> Option<SleepMaterial> {
+        let doc = self.docs.get(&tab)?;
+        let usual = doc.layout.usual_size();
+        let sizes = doc.layout.other_sizes();
+        let pages: Vec<u32> = if self.hot == Some(tab) {
+            self.visible_pages(doc).collect()
+        } else {
+            let y = doc.exact_y.map_or_else(|| doc.left_at.map_or(0.0, |(_, anchor)| doc.layout.anchor_y(anchor)), |(y, _)| y);
+            let height = self.viewport.height.max(1.0);
+            if doc.layout.count() == 0 { Vec::new() } else { doc.layout.pages_between(y.max(0.0), y.max(0.0) + height).collect() }
+        };
+        let mut pictures = Vec::new();
+        for page in pages.into_iter().take(MAX_SLEEP_SHOTS) {
+            if let Some(picture) = self.picture_of(tab, page) {
+                pictures.push(picture);
+            }
+        }
+        Some(SleepMaterial { usual, sizes, pictures })
+    }
+
+    fn picture_of(&mut self, tab: u32, page: u32) -> Option<RawPicture> {
+        let paper = self.paper;
+        let doc = self.docs.get(&tab)?;
+        let preview_scale = ((doc.layout.fit() * self.viewport.backing / PREVIEW_DIVISOR) as f32).clamp(MIN_SCALE, MAX_SCALE);
+        let size = doc.layout.size(page);
+        let paper_rgb = paper.rgb();
+        // A preview as it is, if there's one.
+        let preview = self.cover.get(&self.preview_key(doc, page)).copied();
+        if let Some(id) = preview
+            && let Some(picture) = self.copy_preview(id)
+        {
+            return Some(picture);
+        }
+        // Otherwise the sharpest tiles there are of this page, at whole steps down.
+        let ids: Vec<u64> = self.entries.values().filter(|entry| entry.tab == tab && entry.page == page && !entry.preview && entry.paper == paper && entry.surface.is_some() && entry.low_res.is_none()).map(|entry| entry.id).collect();
+        let finest = ids.iter().filter_map(|id| self.entries.get(id)).map(|entry| entry.scale).fold(0.0f32, f32::max);
+        if finest <= 0.0 {
+            return None;
+        }
+        let step = (finest / preview_scale).round().max(1.0) as u32;
+        let scale = finest / step as f32;
+        let (width, height) = device_size(size.width, size.height, scale).ok()?;
+        let bytes = u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL);
+        if bytes > MAX_PREVIEW_BYTES {
+            return None;
+        }
+        let mut bgra = vec![0u8; bytes as usize];
+        for pixel in bgra.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[(paper_rgb & 0xFF) as u8, ((paper_rgb >> 8) & 0xFF) as u8, ((paper_rgb >> 16) & 0xFF) as u8, 0xFF]);
+        }
+        let mut any = false;
+        for id in ids {
+            let Some(entry) = self.entries.get(&id) else { continue };
+            if entry.scale != finest {
+                continue;
+            }
+            let was_discardable = entry.discardable;
+            if was_discardable && entry.surface.as_ref().is_none_or(|surface| surface.reclaim() != Purge::Kept) {
+                self.counts.discards_lost += 1;
+                self.forget_entry(id);
+                continue;
+            }
+            let Some(entry) = self.entries.get_mut(&id) else { continue };
+            entry.discardable = false;
+            let rect = entry.rect;
+            let (crop_width, crop_height) = entry.crop;
+            if let Some(surface) = &entry.surface {
+                let stride = surface.stride() as usize;
+                let (surface_width, surface_height) = (surface.width(), surface.height());
+                let used_width = ((f64::from(surface_width) * crop_width) as u32).min(rect.width);
+                let used_height = ((f64::from(surface_height) * crop_height) as u32).min(rect.height);
+                let copied = surface.with_pixels(|source| shrink_into(source, stride, used_width, used_height, step, (rect.x / step, rect.y / step), &mut bgra, width, height));
+                any |= copied.is_ok();
+                if was_discardable {
+                    surface.set_discardable();
+                    entry.discardable = true;
+                }
+            }
+        }
+        any.then_some(RawPicture { page, scale, width, height, paper, bgra })
+    }
+
+    fn copy_preview(&mut self, id: u64) -> Option<RawPicture> {
+        let entry = self.entries.get(&id)?;
+        let was_discardable = entry.discardable;
+        if was_discardable && entry.surface.as_ref().is_none_or(|surface| surface.reclaim() != Purge::Kept) {
+            self.counts.discards_lost += 1;
+            self.forget_entry(id);
+            return None;
+        }
+        let entry = self.entries.get_mut(&id)?;
+        entry.discardable = false;
+        // A preview that's only what could be drawn then, or of one colour with no surface, isn't what's wanted.
+        let (rect, page, scale, paper) = (entry.rect, entry.page, entry.scale, entry.paper);
+        let usable = entry.low_res.is_none();
+        let surface = entry.surface.as_ref()?;
+        let stride = surface.stride() as usize;
+        let row = rect.width as usize * 4;
+        let copied = usable.then(|| surface.with_pixels(|source| {
+            let mut bgra = Vec::with_capacity(row * rect.height as usize);
+            for line in source.chunks_exact(stride).take(rect.height as usize) {
+                bgra.extend_from_slice(line.get(..row)?);
+            }
+            (bgra.len() == row * rect.height as usize).then_some(bgra)
+        }).ok().flatten()).flatten();
+        if was_discardable {
+            surface.set_discardable();
+            entry.discardable = true;
+        }
+        Some(RawPicture { page, scale, width: rect.width, height: rect.height, paper, bgra: copied? })
+    }
+
+    /// Everything that can go without the page on screen going blank: what's off the layers, and at the worst, every picture too. Those that are discardable may have gone anyway, so this is what the system's asked of us, with nothing kept for later.
+    pub fn memory_pressure(&mut self, critical: bool) {
+        let ids: Vec<u64> = self.entries.values().filter(|entry| !entry.attached && (critical || !entry.preview)).map(|entry| entry.id).collect();
+        for id in ids {
+            self.forget_entry(id);
+        }
+    }
+
+    /// How many surfaces are held, for QA.
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
     }
 
     pub fn hot_tab(&self) -> Option<u32> {
@@ -527,6 +804,7 @@ impl Reader {
             // Its pages are other pages now, so what was selected on them isn't there.
             self.selecting.reset();
         }
+        self.take_sleep_view(tab);
         let (magnification, across) = self.docs.get(&tab).map_or((1.0, 0.0), |doc| (doc.magnification, doc.scroll_x));
         self.ops.push_back(Op::Magnify { value: magnification });
         self.lay_out();
@@ -534,6 +812,41 @@ impl Reader {
         self.ops.push_back(Op::ScrollAcross { x: across });
         self.recount_wanted_files(warm);
         self.refresh(MAX_ATTACH_PER_TURN);
+    }
+
+    /// What came from a sleep file goes in, if it's for this tab and there's nothing better here. Anything for another tab has been overtaken.
+    fn take_sleep_view(&mut self, tab: u32) {
+        let Some((for_tab, view)) = self.sleep_view.take() else { return };
+        if for_tab != tab {
+            return;
+        }
+        let Some(doc) = self.docs.get_mut(&tab) else { return };
+        if let Some(usual) = view.usual {
+            doc.layout.seed_usual(usual);
+        }
+        for (page, size) in view.sizes {
+            doc.layout.set_page_size(page, size);
+        }
+        let count = doc.layout.count();
+        let mut any = false;
+        for shot in view.pictures {
+            if shot.page >= count {
+                continue;
+            }
+            // Its size is known, or it wouldn't be shown.
+            if let Some(doc) = self.docs.get_mut(&tab) {
+                let size = doc.layout.size(shot.page);
+                doc.layout.set_page_size(shot.page, size);
+            }
+            let rect = TileRect { x: 0, y: 0, width: shot.surface.width(), height: shot.surface.height() };
+            self.keep_drawn(tab, shot.page, shot.scale, rect, shot.surface, DrawKind::Preview, shot.paper, TileKind::Colour, None);
+            any = true;
+        }
+        if let Some((_, report)) = &mut self.waking
+            && report.tab == tab
+        {
+            report.from_sleep = any;
+        }
     }
 
     fn recount_wanted_files(&mut self, warm: &[u32]) {
@@ -1128,6 +1441,7 @@ impl Reader {
     /// The host has applied what it was given. What's now off every layer can be marked discardable, and it leaves the footprint.
     pub fn applied(&mut self) {
         self.unapplied = false;
+        self.track_wake();
         for id in std::mem::take(&mut self.handed_to_host) {
             if let Some(entry) = self.entries.get_mut(&id)
                 && !entry.attached
@@ -1757,6 +2071,7 @@ impl Reader {
                 "discards_lost": self.counts.discards_lost,
             },
             "documents_held": self.docs.len(),
+            "last_wake": self.last_wake().map(|wake| json!({ "tab": wake.tab, "from_sleep": wake.from_sleep, "first_frame_us": wake.first_frame_us, "sharp_us": wake.sharp_us, "blank_frames": wake.blank_frames })),
             "window_open": self.window_open,
             "selection": self.selecting.report(),
         }))
@@ -2431,6 +2746,117 @@ mod tests {
         reader.set_viewport(Viewport { magnification: 2.0, scrolled_to: *seq, ..view(*y) });
         assert_eq!(reader.take_moved_page(), None, "arriving isn't a move");
         assert_eq!(reader.doc().unwrap().magnification, 2.0);
+    }
+
+    /// Failure (decision 25): a tab woken from its sleep file comes up with bare pages until they're drawn, or a picture's used for the wrong page or paper, or lands on the wrong tab. It's on the layers in the first turn with nothing drawn, and it's kept as a preview, so sharp tiles replace it as usual.
+    #[test]
+    fn the_tabs_sleep_view_is_its_first_frame() {
+        let mut reader = Reader::new();
+        reader.set_viewport(view(0.0));
+        let surface = PixelSurface::create(153, 198).unwrap();
+        let shot = |page: u32, surface: PixelSurface| SleepShot { page, scale: 0.25, paper: PaperKind::White, surface };
+        let saved = SavedPlace { page: 0, anchor: (0, 0.0), x: 0.0, y: 0.0, document_height: 0.0, magnification: 1.0, page_size: Some(letter()) };
+        // For another tab: not used.
+        reader.give_sleep(9, SleepView { usual: Some(letter()), sizes: Vec::new(), pictures: vec![shot(0, PixelSurface::create(153, 198).unwrap())] });
+        reader.note_wake(1, Instant::now());
+        reader.give_sleep(1, SleepView { usual: Some(letter()), sizes: vec![(3, PageBox { width: 300.0, height: 400.0 })], pictures: vec![shot(0, surface), shot(500, PixelSurface::create(153, 198).unwrap())] });
+        reader.activate(1, 5, 0, map(), &[], Some(saved));
+        let doc = reader.doc().unwrap();
+        assert!(doc.layout.is_known(0));
+        assert!(doc.layout.is_known(3), "the page table's taken up");
+        assert_eq!(doc.layout.size(3), PageBox { width: 300.0, height: 400.0 });
+        assert_eq!(reader.entries.len(), 1, "the one for a page that's there");
+        let scrolled = reader.jump.unwrap_or(0);
+        let ops = reader.set_viewport(Viewport { scrolled_to: scrolled, ..view(0.0) });
+        let attached = reader.attached.get(&0).is_some_and(|ids| !ids.is_empty());
+        assert!(attached, "it's up with nothing drawn: {ops:?}");
+        assert!(ops.iter().any(|op| matches!(op, Op::Attach { below: true, .. })));
+        reader.take_ops();
+        reader.unapplied = true;
+        reader.applied();
+        let wake = reader.last_wake().unwrap();
+        assert!(wake.from_sleep);
+        assert!(wake.first_frame_us.is_some(), "{wake:?}");
+        assert_eq!(wake.sharp_us, None, "not sharp yet");
+        assert_eq!(wake.blank_frames, 0);
+        // A worker's asked for what's sharp, as if there'd been none of this, and no preview as it's got one.
+        let jobs = settle(&mut reader);
+        assert!(!jobs.iter().any(|job| matches!(job.kind, JobKind::Draw { what: DrawKind::Preview, .. }) && job.position == 0));
+    }
+
+    /// Failure: a sleep file has no picture of a heavy page, which has no preview, so it wakes bare; or what's put together of its tiles is the wrong size or in the wrong place; or a page's picture comes from a preview the system's taken. It's a real picture of the page at a smaller scale, and pixels of a tile land where they should.
+    #[test]
+    fn a_picture_for_sleep_comes_from_a_preview_or_the_tiles() {
+        let mut reader = reader_on(5);
+        settle(&mut reader);
+        let material = reader.sleep_material(1).expect("a tab it holds");
+        assert_eq!(material.usual, Some(letter()));
+        assert!(!material.pictures.is_empty());
+        let picture = &material.pictures[0];
+        assert_eq!(picture.page, 0);
+        assert_eq!(picture.bgra.len(), picture.width as usize * picture.height as usize * 4);
+        assert!(reader.sleep_material(99).is_none());
+        // Pixels from a tile, shrunk by two: a block of 2 by 2 comes to one, and their average, and it lands at the tile's place.
+        let mut tile = vec![0u8; 4 * 4 * 4];
+        for pixel in tile.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[100, 100, 100, 255]);
+        }
+        tile[0..4].copy_from_slice(&[200, 200, 200, 255]);
+        let mut picture = vec![9u8; 4 * 4 * 4];
+        shrink_into(&tile, 16, 4, 4, 2, (1, 1), &mut picture, 4, 4);
+        let at = |x: usize, y: usize| picture[(y * 4 + x) * 4];
+        assert_eq!(at(0, 0), 9, "outside it, left alone");
+        assert_eq!(at(1, 1), 125, "(200 + 3 x 100) / 4");
+        assert_eq!(at(2, 2), 100);
+        assert_eq!(at(3, 3), 9);
+        // Off the edge of the picture: nothing panics.
+        shrink_into(&tile, 16, 4, 4, 2, (3, 3), &mut picture, 4, 4);
+        shrink_into(&tile[..8], 16, 4, 4, 2, (0, 0), &mut picture, 4, 4);
+    }
+
+    /// Failure: memory pressure takes what's on screen, leaving a blank page, or leaves what could go. And at its worst, the previews go too.
+    #[test]
+    fn memory_pressure_leaves_only_whats_showing() {
+        let mut reader = reader_on(30);
+        settle(&mut reader);
+        reader.set_viewport(view(5000.0));
+        settle(&mut reader);
+        let attached = reader.attached.values().map(Vec::len).sum::<usize>();
+        assert!(reader.entries.len() > attached, "there's something off screen to go");
+        reader.memory_pressure(false);
+        let previews = reader.entries.values().filter(|entry| !entry.attached && entry.preview).count();
+        assert!(reader.entries.values().all(|entry| entry.attached || entry.preview), "only what's showing, and previews");
+        assert!(previews > 0);
+        reader.memory_pressure(true);
+        assert_eq!(reader.entries.len(), attached);
+        assert_eq!(reader.attached.values().map(Vec::len).sum::<usize>(), attached, "nothing's come off the screen");
+    }
+
+    /// Failure: a window can't go up until every tile's drawn, which on a heavy page is most of a second, or it goes up over a bare page.
+    #[test]
+    fn a_window_can_go_up_with_a_picture_on_every_page() {
+        let mut reader = Reader::new();
+        reader.set_viewport(view(0.0));
+        let saved = SavedPlace { page: 0, anchor: (0, 0.0), x: 0.0, y: 0.0, document_height: 0.0, magnification: 1.0, page_size: Some(letter()) };
+        reader.give_sleep(1, SleepView { usual: Some(letter()), sizes: Vec::new(), pictures: Vec::new() });
+        reader.activate(1, 5, 0, map(), &[], Some(saved));
+        reader.take_ops();
+        assert!(!reader.is_showable(), "still being sent to its place, with nothing on it");
+        let scrolled = reader.jump.unwrap_or(0);
+        reader.set_viewport(Viewport { scrolled_to: scrolled, ..view(0.0) });
+        reader.take_ops();
+        reader.unapplied = false;
+        assert!(!reader.is_showable(), "a bare page isn't what goes up");
+        let shot = SleepShot { page: 0, scale: 0.25, paper: PaperKind::White, surface: PixelSurface::create(153, 198).unwrap() };
+        reader.give_sleep(2, SleepView { usual: Some(letter()), sizes: Vec::new(), pictures: vec![shot] });
+        reader.activate(2, 1, 0, map(), &[], Some(saved));
+        reader.take_ops();
+        let scrolled = reader.jump.unwrap_or(0);
+        reader.set_viewport(Viewport { scrolled_to: scrolled, ..view(0.0) });
+        reader.take_ops();
+        reader.unapplied = false;
+        assert!(reader.is_showable());
+        assert!(!reader.is_on_place(), "and that's sooner than sharp");
     }
 
     /// Failure: a tab comes back where the document's top is, or at no zoom, or near its place by rounding rather than on it. Or the place is taken from where the view still is on its way there, so the next layout goes somewhere else. What's said comes straight back out, to the pixel, and a place for another page, as a `goto` while cold leaves, isn't used.
