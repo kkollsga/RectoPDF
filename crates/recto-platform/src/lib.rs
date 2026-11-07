@@ -81,3 +81,8 @@ pub mod isolate;
 #[cfg_attr(target_os = "macos", path = "local_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "local_stub.rs")]
 pub mod local;
+
+/// Pixel memory the compositor can show directly, and the way it reaches a worker with no copy.
+#[cfg_attr(target_os = "macos", path = "surface_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "surface_stub.rs")]
+pub mod surface;

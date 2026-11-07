@@ -3,6 +3,7 @@
 use crate::transport::{Frame, FrameReader, ReadError};
 use crate::{control, exit_code};
 use recto_platform::isolate::{self, Channel, ChildExit, ChildProcess, Handle, IdleRule, SharedMemory, Wait};
+use recto_platform::surface::{LinkInvite, PixelSurface, SurfaceSender};
 use recto_platform::{FileStamp, file_stamp};
 use recto_proto::{self as proto, CharBox, CharRecord, FailCode, Kind, PageSize, ProtoError, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus, device_size};
 use std::ffi::{OsStr, OsString};
@@ -13,9 +14,50 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-/// The memory holding a tile's pixels: written by the worker, read by the host and later the compositor. Host-owned, because the host hands
-/// it over for one job at a time. Replaced by IOSurface when the app needs it.
+/// The memory holding a tile's pixels: written by the worker, read by the host. Host-owned, because the host hands it over for one job at a time.
 pub type Surface = SharedMemory;
+
+/// Where a tile is to be drawn. Either memory the host reads back, or a surface the compositor can show as it is, with no copy anywhere: see `recto_platform::surface`. Everything else about a job is the same.
+#[derive(Clone, Copy, Debug)]
+pub enum Target<'a> {
+    Shared(&'a SharedMemory),
+    Pixels(&'a PixelSurface),
+}
+
+impl Target<'_> {
+    fn len(self) -> usize {
+        match self {
+            Self::Shared(memory) => memory.len(),
+            Self::Pixels(surface) => surface.len(),
+        }
+    }
+
+    fn handles(&self) -> Vec<&Handle> {
+        match self {
+            Self::Shared(memory) => vec![memory.handle()],
+            Self::Pixels(_) => Vec::new(),
+        }
+    }
+
+    fn pixels(self) -> Option<PixelSurface> {
+        match self {
+            Self::Shared(_) => None,
+            Self::Pixels(surface) => Some(surface.clone()),
+        }
+    }
+}
+
+impl<'a> From<&'a SharedMemory> for Target<'a> {
+    fn from(memory: &'a SharedMemory) -> Self {
+        Self::Shared(memory)
+    }
+}
+
+impl<'a> From<&'a PixelSurface> for Target<'a> {
+    fn from(surface: &'a PixelSurface) -> Self {
+        Self::Pixels(surface)
+    }
+}
 
 /// What a worker may do. Defaults are the decisions from the spike; see `docs/ENGINEERING.md`.
 #[derive(Clone, Debug)]
@@ -505,6 +547,8 @@ struct Worker {
     child: ChildProcess,
     channel: Channel,
     reader: FrameReader,
+    /// Where surfaces go, unless this worker didn't make the link, as a stand-in for a test may not.
+    surfaces: Option<SurfaceSender>,
     /// Text and drawing jobs finished. Asking a page's size or what's on it doesn't count: that leaves nothing behind that could explain a later failure.
     jobs_done: u32,
     /// This worker's own hard limit.
@@ -808,8 +852,8 @@ impl DocRenderer {
     /// 2. That page alone at the larger limit, if the Mac has the memory and no other page has the slot.
     /// 3. A lower-resolution version, reported in [`Tile::low_res`].
     /// 4. [`RenderFailure::PageFailed`], remembered.
-    pub fn render_tile(&mut self, request: &TileRequest, surface: &Surface) -> Result<TileResult, RenderFailure> {
-        self.draw(request, surface)
+    pub fn render_tile<'a>(&mut self, request: &TileRequest, surface: impl Into<Target<'a>>) -> Result<TileResult, RenderFailure> {
+        self.draw_with(request, surface.into(), DrawPurpose::OnScreen, 0)
     }
 
     /// The largest image on a page in source pixels, a hint for how to draw it. Remembered per page, up to a cap. If looking at the page stops a worker, that's noted as drawing would have noted
@@ -852,18 +896,18 @@ impl DocRenderer {
     /// Draws a region of the page in one pass, cut into tiles of `tile_edge` for the caller to hand out. Cheaper than one pass per tile whenever several tiles are needed: see
     /// `docs/ENGINEERING.md`. Goes down the same sequence as a tile, is cancelled by generation like one, and is limited to [`recto_proto::MAX_REGION_BYTES`], so its surface is
     /// part of what the worker's memory limit sees. Rows sit `request.stride` apart in `surface`.
-    pub fn render_region(&mut self, request: &TileRequest, tile_edge: u32, surface: &Surface) -> Result<TileResult, RenderFailure> {
+    pub fn render_region<'a>(&mut self, request: &TileRequest, tile_edge: u32, surface: impl Into<Target<'a>>) -> Result<TileResult, RenderFailure> {
         if tile_edge == 0 {
             return Err(RenderFailure::BadRequest);
         }
-        self.draw_with(request, surface, DrawPurpose::OnScreen, tile_edge)
+        self.draw_with(request, surface.into(), DrawPurpose::OnScreen, tile_edge)
     }
 
     /// As [`Self::render_tile`], for a stated purpose. [`DrawPurpose::Export`] is for a file, a print or a snapshot, and differs in one way: when the page needs the larger limit, it sleeps
     /// until it can have it, up to [`Policy::export_slot_wait`], and then draws sharp, or fails with [`RenderFailure::ExportRefused`]. It never draws a lower resolution. So it can block
     /// for a long time: call it only on a worker or job thread, never a UI thread. [`CancelHandle::cancel_before`] ends the wait at once, with [`TileResult::Cancelled`].
     pub fn render_for(&mut self, purpose: DrawPurpose, request: &TileRequest, surface: &Surface) -> Result<TileResult, RenderFailure> {
-        self.draw_with(request, surface, purpose, 0)
+        self.draw_with(request, surface.into(), purpose, 0)
     }
 
     /// How long this document's exports have slept waiting for the larger limit. Time spent asleep isn't time spent drawing, so a cap on drawing can leave it out.
@@ -871,11 +915,7 @@ impl DocRenderer {
         self.slot_wait_total
     }
 
-    fn draw(&mut self, request: &TileRequest, surface: &Surface) -> Result<TileResult, RenderFailure> {
-        self.draw_with(request, surface, DrawPurpose::OnScreen, 0)
-    }
-
-    fn draw_with(&mut self, request: &TileRequest, surface: &Surface, purpose: DrawPurpose, tile_edge: u32) -> Result<TileResult, RenderFailure> {
+    fn draw_with(&mut self, request: &TileRequest, surface: Target<'_>, purpose: DrawPurpose, tile_edge: u32) -> Result<TileResult, RenderFailure> {
         let page = request.page;
         // Checked before anything else, so a request that can't be met starts no process.
         let check = RenderJob { generation: request.generation, job_id: 0, page, scale: request.scale, rect: request.rect, stride: request.stride, tile_edge };
@@ -967,7 +1007,7 @@ impl DocRenderer {
 
     /// The lower-resolution version while the larger limit is out of reach. If that version is known not to fit, says so without another try, and the page isn't given up on: the larger limit
     /// was never tried, and it may yet be.
-    fn low_res_for_now(&mut self, request: &TileRequest, surface: &Surface, why: LowResWhy) -> Result<TileResult, RenderFailure> {
+    fn low_res_for_now(&mut self, request: &TileRequest, surface: Target<'_>, why: LowResWhy) -> Result<TileResult, RenderFailure> {
         if self.remembered(request.page).is_some_and(|memory| memory.low_res_stopped) {
             return Err(RenderFailure::NotDrawableNow { page: request.page, why });
         }
@@ -988,7 +1028,7 @@ impl DocRenderer {
     }
 
     /// Step 3. Draws the part of the page this tile covers, at a quarter of the scale, into the same surface: it needs less room, never more.
-    fn low_res(&mut self, request: &TileRequest, surface: &Surface, why: LowResWhy) -> Result<TileResult, RenderFailure> {
+    fn low_res(&mut self, request: &TileRequest, surface: Target<'_>, why: LowResWhy) -> Result<TileResult, RenderFailure> {
         let page = request.page;
         let scale = request.scale / LOW_RES_DIVISOR as f32;
         // Nothing lower to draw at this zoom, and that says nothing about other zooms, so nothing is remembered.
@@ -1019,7 +1059,7 @@ impl DocRenderer {
     }
 
     /// One job, in one class of worker. A stopped worker comes back as [`JobFailure::Stopped`], for the sequence to decide on.
-    fn draw_once(&mut self, request: &TileRequest, surface: &Surface, class: WorkerClass, tile_edge: u32) -> Result<TileResult, JobFailure> {
+    fn draw_once(&mut self, request: &TileRequest, surface: Target<'_>, class: WorkerClass, tile_edge: u32) -> Result<TileResult, JobFailure> {
         let job = RenderJob {
             generation: request.generation,
             job_id: self.next_job_id(),
@@ -1036,7 +1076,9 @@ impl DocRenderer {
         let frame = job.encode();
         let surface_len = surface.len() as u64;
         let control = self.control.clone();
-        let reply = self.run_job(job.job_id, request.page, true, class, Some(request.generation), &[surface.handle()], &frame, |reply| {
+        let handles = surface.handles();
+        let sends = surface.pixels();
+        let reply = self.run_job_with(job.job_id, request.page, true, class, Some(request.generation), &handles, sends.as_ref(), &frame, |reply| {
             let (tile, kinds) = match (reply.kind, tile_edge) {
                 (Kind::Tile, 0) => {
                     let tile = TileReply::decode(&reply.payload)?;
@@ -1166,6 +1208,23 @@ impl DocRenderer {
         frame: &[u8],
         decode: impl Fn(&Frame) -> Result<T, ProtoError>,
     ) -> Result<T, JobFailure> {
+        self.run_job_with(job_id, page, leaves_something_behind, class, generation, handles, None, frame, decode)
+    }
+
+    /// As [`Self::run_job`], with a surface for the worker to draw in. It goes ahead of the frame, each time the job is tried.
+    #[allow(clippy::too_many_arguments)]
+    fn run_job_with<T>(
+        &mut self,
+        job_id: u32,
+        page: u32,
+        leaves_something_behind: bool,
+        class: WorkerClass,
+        generation: Option<u64>,
+        handles: &[&Handle],
+        surface: Option<&PixelSurface>,
+        frame: &[u8],
+        decode: impl Fn(&Frame) -> Result<T, ProtoError>,
+    ) -> Result<T, JobFailure> {
         self.retire_if_other_page(page);
         let mut retried = false;
         let mut idle_retries = 0;
@@ -1175,6 +1234,13 @@ impl DocRenderer {
             let fresh = worker.jobs_done == 0;
             let is_heavy = worker.heavy;
             let watch = Watch { limit: worker.limit, policy: &self.policy, control: &self.control, generation };
+            // A worker with no link can't take this. That's only a stand-in, so it's a plain failure rather than a kill.
+            if let Some(surface) = surface {
+                match &worker.surfaces {
+                    Some(link) if link.send(surface).is_ok() => {}
+                    _ => return Err(RenderFailure::Unavailable.into()),
+                }
+            }
             let outcome = worker.exchange(frame, handles, &watch).and_then(|reply| {
                 if reply.kind == Kind::Failed {
                     let (answered, code) = proto::decode_failed(&reply.payload).map_err(|error| Stop::Killed(KillReason::Rejected(error.0)))?;
@@ -1498,10 +1564,12 @@ impl Worker {
             env_refs.push(("RECTO_WORKER_LIMIT", &limit_text));
         }
         let rule = IdleRule { after: idle_exit.saturating_add(policy.idle_grace), memory_limit_bytes: limit };
-        let child = ChildProcess::spawn(&config.worker_exe, &arg_refs, &env_refs, theirs, Some(rule))?;
+        // The one seam that says how a worker comes to exist. With no invitation it still runs: it just can't draw into surfaces.
+        let invite = LinkInvite::new().ok();
+        let child = ChildProcess::spawn_linked(&config.worker_exe, &arg_refs, &env_refs, theirs, Some(rule), invite.as_ref())?;
         child.note_activity(false);
         ours.set_nonblocking(true)?;
-        let mut worker = Self { child, channel: ours, reader: FrameReader::default(), jobs_done: 0, limit, heavy: false };
+        let mut worker = Self { child, channel: ours, reader: FrameReader::default(), surfaces: None, jobs_done: 0, limit, heavy: false };
         let started = Instant::now();
         let limit = policy.start_timeout;
         let hello = loop {
@@ -1522,6 +1590,8 @@ impl Worker {
         if hello.kind != Kind::Hello || !hello.handles.is_empty() || proto::decode_hello(&hello.payload).is_err() {
             return Err(io::ErrorKind::InvalidData.into());
         }
+        // A worker answers the invitation before it says hello, so by now its message is waiting, or isn't coming.
+        worker.surfaces = invite.and_then(|invite| invite.accept(Duration::ZERO));
         let footprint = worker.child.memory().map_or(0, |memory| memory.footprint_bytes);
         Ok((worker, footprint))
     }

@@ -511,6 +511,11 @@ pub struct ChildProcess(Arc<ChildShared>);
 impl ChildProcess {
     /// Starts `exe` with `channel` as its inherited channel. Standard input, output and error are `/dev/null`.
     pub fn spawn(exe: &Path, args: &[&OsStr], env: &[(&str, &str)], channel: Channel, rule: Option<IdleRule>) -> io::Result<Self> {
+        Self::spawn_linked(exe, args, env, channel, rule, None)
+    }
+
+    /// As [`Self::spawn`], with an invitation for the child to make a surface link, as `surface` describes.
+    pub fn spawn_linked(exe: &Path, args: &[&OsStr], env: &[(&str, &str)], channel: Channel, rule: Option<IdleRule>, invite: Option<&crate::surface::LinkInvite>) -> io::Result<Self> {
         let cstring = |bytes: &[u8]| CString::new(bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
         let path = cstring(exe.as_os_str().as_bytes())?;
         let mut owned_args = vec![path.clone()];
@@ -539,6 +544,9 @@ impl ChildProcess {
             let prepared = (|| {
                 // Nothing is inherited unless named below, whatever else in this process forgot to mark close-on-exec.
                 check_spawn(libc::posix_spawnattr_setflags(&raw mut attr, libc::POSIX_SPAWN_CLOEXEC_DEFAULT as libc::c_short))?;
+                if let Some(invite) = invite {
+                    check_spawn(invite.apply(&raw mut attr))?;
+                }
                 if child_fd == CHILD_CHANNEL_FD {
                     check_spawn(posix_spawn_file_actions_addinherit_np(&raw mut actions, child_fd))?;
                 } else {
