@@ -241,7 +241,12 @@ final class RevealLabel: FlippedView {
     let footer = TextLine()
     let addButton = NSButton(title: "", target: nil, action: nil)
     private let core: AppCore
-    private(set) var model = SidebarView(tabs: [], contentsCount: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsPlaceShift: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false)
+    private(set) var model = SidebarView(tabsVersion: 0, tabCount: 0, activeIndex: nil, contentsCount: 0, contentsVersion: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsPlaceShift: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false)
+    /// The tabs, pulled only when their version moves.
+    private(set) var tabs: [SidebarRow] = []
+    private var shownTabsVersion: UInt64 = 0
+    private var shownContentsVersion: UInt64 = 0
+    private var activeIndex: Int?
     private var layout = SidebarLayout(tabRow: 32, contentsRow: 28, contentsHeight: 0, tabsScroll: false)
     private(set) var hoveredRow: Int?
     var addPressed: (() -> Void)?
@@ -377,6 +382,7 @@ final class RevealLabel: FlippedView {
             "scroll_y": contentsY,
             "reduce_motion": shouldReduceMotion,
             "row_views": shown ? contentsTable.subviews.count : 0,
+            "table_rows": contentsTable.numberOfRows,
             "stale_rows": staleContentsRows(),
             "scroller": contentsScroll.hasVerticalScroller,
             "tab_rows_on_screen": table.rows(in: table.visibleRect).length,
@@ -397,9 +403,7 @@ final class RevealLabel: FlippedView {
     }
 
     /// Tabs and contents, as a person counts them.
-    var rowCount: Int { model.tabs.count + Int(model.tocOpen ? model.contentsCount : 0) }
-
-    private var activeIndex: Int? { model.tabs.firstIndex { $0.current } }
+    var rowCount: Int { tabs.count + Int(model.tocOpen ? model.contentsCount : 0) }
 
     private var contentsHeight: CGFloat { model.tocOpen ? layout.contentsHeight : 0 }
 
@@ -486,9 +490,9 @@ final class RevealLabel: FlippedView {
             return (cell, data)
         }
         let tab = model.tocOpen && activeIndex.map({ row > $0 }) == true ? row - Int(model.contentsCount) : row
-        guard tab >= 0, tab < model.tabs.count, let view = table.view(atColumn: 0, row: tab, makeIfNecessary: false) else { return nil }
+        guard tab >= 0, tab < tabs.count, let view = table.view(atColumn: 0, row: tab, makeIfNecessary: false) else { return nil }
         guard let cell = (view as? ActiveTabCell)?.tab ?? view as? SidebarCell else { return nil }
-        return (cell, model.tabs[tab])
+        return (cell, tabs[tab])
     }
 
     /// What the pointer resting on a row does, and what `recto qa reveal` calls. Only a row that's cut off shows anything, and the words are Rust's.
@@ -521,9 +525,9 @@ final class RevealLabel: FlippedView {
 
     private func reloadCells() {
         table.enumerateAvailableRowViews { [self] _, index in
-            guard index < model.tabs.count, let view = table.view(atColumn: 0, row: index, makeIfNecessary: false) else { return }
+            guard index < tabs.count, let view = table.view(atColumn: 0, row: index, makeIfNecessary: false) else { return }
             let cell = (view as? ActiveTabCell)?.tab ?? view as? SidebarCell
-            cell?.show(row: model.tabs[index], foldedActive: !model.tocOpen, hovered: hoveredRow != nil)
+            cell?.show(row: tabs[index], foldedActive: !model.tocOpen, hovered: hoveredRow != nil)
         }
         reloadContentsCells()
     }
@@ -551,8 +555,8 @@ final class RevealLabel: FlippedView {
     }
 
     private func tapTab(_ row: Int) {
-        guard row >= 0, row < model.tabs.count else { return }
-        core.tapRow(row: model.tabs[row])
+        guard row >= 0, row < tabs.count else { return }
+        core.tapRow(row: tabs[row])
     }
 
     private func tapContents(_ row: Int) {
@@ -577,33 +581,59 @@ final class RevealLabel: FlippedView {
     }
 
     func update(_ new: SidebarView) {
-        let old = model
-        let oldActive = activeIndex
+        let (oldTabCount, oldActive, oldOpen) = (tabs.count, activeIndex, model.tocOpen)
+        let oldActiveTab = activeTabID
+        let tabsChanged = new.tabsVersion != shownTabsVersion
+        if tabsChanged {
+            tabs = core.sidebarTabs()
+            shownTabsVersion = new.tabsVersion
+        }
         model = new
+        activeIndex = new.activeIndex.map { Int($0) }.flatMap { $0 < tabs.count ? $0 : nil }
         // A row under the label may have changed. It opens again only on the next rest.
-        if new.tabs != old.tabs || new.contentsCount != old.contentsCount { reveal.isHidden = true }
+        if tabsChanged || new.contentsVersion != shownContentsVersion { reveal.isHidden = true }
         placeFooter()
         let next = core.sidebarLayout(room: scroll.frame.height)
-        let sameTab = new.tabs.first { $0.current }?.tab == old.tabs.first { $0.current }?.tab
-        let sameShape = new.tabs.count == old.tabs.count && new.tocOpen == old.tocOpen && activeIndex == oldActive && next == layout
+        let sameTab = activeTabID == oldActiveTab
+        let sameList = tabs.count == oldTabCount && new.tocOpen == oldOpen && activeIndex == oldActive && sameTab
+        let heightChanged = next != layout
         layout = next
         contentsTable.isHidden = !new.tocOpen
         if !sameTab { rowShift = 0 }
-        if sameShape && new.tabs == old.tabs {
-            if new.contentsRemoved > 0 || new.contentsInserted > 0 {
+        if sameList {
+            // A version applied once and only once: a publish can come twice for one change, and two changes can come as one pull.
+            if new.contentsVersion == shownContentsVersion {
+                reloadContentsCells()
+            } else if new.contentsVersion == shownContentsVersion + 1 {
                 applyRowChange(new)
             } else {
-                reloadContentsCells()
+                keepingScrollAccount { contentsTable.reloadData() }
             }
-        } else if sameShape {
-            reloadCells()
-            if new.contentsRemoved > 0 || new.contentsInserted > 0 { applyRowChange(new) }
+            if heightChanged {
+                // The area's height moved with the count, and that can clamp the scroll.
+                keepingScrollAccount { table.reloadData() }
+            } else if tabsChanged {
+                reloadCells()
+            }
         } else {
             table.reloadData()
             contentsTable.reloadData()
             if let active = activeIndex { table.scrollRowToVisible(active) }
         }
         revealPlace()
+    }
+
+    private var activeTabID: UInt32? { activeIndex.flatMap { $0 < tabs.count ? tabs[$0].tab : nil } }
+
+    /// Whatever this does to the scroll, by clamping it or otherwise, Rust and QA hear of as rows moving and not as anyone scrolling.
+    private func keepingScrollAccount(_ work: () -> Void) {
+        let before = contentsY
+        work()
+        let moved = contentsY - before
+        if moved != 0 {
+            rowShift += moved
+            core.contentsShifted(by: moved)
+        }
     }
 
     /// Rust's rule says whether the place being read needs bringing into view, and how. A resize changes the height with the table not laid out yet, so the height is the rule's, not the view's.
@@ -620,7 +650,7 @@ final class RevealLabel: FlippedView {
         }
     }
 
-    /// Rows opened or closed as the reader moved. Rust's rule says whether the scroll takes it up, in the same transaction so that what stays still does. If not, they slide, and with Reduce Motion they don't.
+    /// Rows opened or closed as the reader moved. Rust's rule says whether the scroll takes it up, in the same transaction so that what stays still does. If not, they slide, and with Reduce Motion they don't. Whatever else moves the scroll, as a shorter list clamps it, counts the same.
     private func applyRowChange(_ new: SidebarView) {
         let from = Int(new.contentsChangedFrom)
         let (removed, inserted) = (Int(new.contentsRemoved), Int(new.contentsInserted))
@@ -657,7 +687,7 @@ final class RevealLabel: FlippedView {
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        tableView === contentsTable ? Int(model.tocOpen ? model.contentsCount : 0) : model.tabs.count
+        tableView === contentsTable ? Int(model.tocOpen ? model.contentsCount : 0) : tabs.count
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
@@ -673,7 +703,7 @@ final class RevealLabel: FlippedView {
             }
             return cell
         }
-        let tab = model.tabs[row]
+        let tab = tabs[row]
         if row == activeIndex {
             let id = NSUserInterfaceItemIdentifier("active")
             let holder = tableView.makeView(withIdentifier: id, owner: self) as? ActiveTabCell ?? {

@@ -102,10 +102,15 @@ struct ContentsEntry {
 /// Everything the sidebar draws, but for the contents' rows, which are pulled with `contents_rows` as they come on screen.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct SidebarView {
-    /// One row per tab. The active tab's contents go under it, as many as `contents_count`.
-    pub tabs: Vec<SidebarRow>,
+    /// Goes up when the tabs change, which is when to pull them with `sidebar_tabs`. A page crossed doesn't copy them all, with thousands of them, on the UI thread.
+    pub tabs_version: u64,
+    pub tab_count: u32,
+    /// Which tab is the active one, whose contents go under it, as many as `contents_count`.
+    pub active_index: Option<u32>,
     pub contents_count: u32,
-    /// The last change closed `contents_removed` rows here and opened `contents_inserted`: a chapter closing as the reader leaves it, and the next one opening. Above the view the host moves its scroll to match, so it can't be seen. In it, the rows slide.
+    /// Goes up by one each time the contents' rows change. What follows says how the list at this version differs from the one before, and stays the same until the next change, so a host a version behind applies it once, a host already there applies nothing, and a host further behind reloads.
+    pub contents_version: u64,
+    /// The last change closed `contents_removed` rows here and opened `contents_inserted`: a chapter closing as the reader leaves it, and the next one opening.
     pub contents_changed_from: u32,
     pub contents_removed: u32,
     pub contents_inserted: u32,
@@ -304,6 +309,7 @@ pub(crate) struct Flushed {
 }
 
 /// The session thread's queue. A parked thread at rest, so an open app takes no wake-ups for it.
+#[derive(Default)]
 pub(crate) struct CoreQueue {
     calls: Mutex<VecDeque<CoreCall>>,
     ready: Condvar,
@@ -396,6 +402,7 @@ struct Synced {
 /// The state the UI thread pulls, swapped whole. A short lock, never held across anything slow.
 struct Published {
     sidebar: Arc<SidebarView>,
+    tabs: Arc<Vec<SidebarRow>>,
     contents: Arc<Vec<ContentsEntry>>,
     rail_filled: u32,
     reader: ReaderView,
@@ -510,7 +517,7 @@ impl AppCore {
             listener: Arc::clone(&listener),
             contents_follow: Mutex::new(ContentsFollow::default()),
             started: Instant::now(),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, sidebar: Arc::new(SidebarView { tabs: Vec::new(), contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -595,9 +602,15 @@ impl AppCore {
         ReaderLimits { min_zoom: MIN_ZOOM, max_zoom: MAX_ZOOM, zoom_step: 1.25, window_width: 1440.0, window_height: 900.0, sidebar_width: 272.0 }
     }
 
-    /// The sidebar as it stands. A short lock and a copy.
+    /// The sidebar as it stands, but for its tabs. A short lock and a small copy.
     pub fn sidebar(&self) -> SidebarView {
         (*lock(&self.inner.published).sidebar).clone()
+    }
+
+    /// The tabs, one row each. Worth pulling only when `tabs_version` has moved: this copies all of them.
+    pub fn sidebar_tabs(&self) -> Vec<SidebarRow> {
+        let tabs = Arc::clone(&lock(&self.inner.published).tabs);
+        (*tabs).clone()
     }
 
     /// Some of the contents' rows, for what's on screen. A short lock and a copy of at most [`MAX_CONTENTS_FETCH`].
@@ -618,7 +631,7 @@ impl AppCore {
     /// The sidebar's height rule, for this much room between its header and footer.
     pub fn sidebar_layout(&self, room: f64) -> SidebarLayout {
         let published = lock(&self.inner.published);
-        let tabs = u32::try_from(published.sidebar.tabs.len()).unwrap_or(u32::MAX);
+        let tabs = published.sidebar.tab_count;
         let rows = if published.sidebar.toc_open { published.sidebar.contents_count } else { 0 };
         drop(published);
         let heights = sidebar_heights(room, tabs, rows);
@@ -810,6 +823,11 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::Page(page, failure, tab) => {
                 host.session.with_session(|session| session.note_drawn(DrawNote { tab, page, failure }));
                 events.push(Event::new(if failure.is_some() { "page_failed" } else { "page_drawn" }, json!({ "tab": tab.0, "page": page + 1 })));
+                // Nothing the sidebar or the reader shows comes from this. Going round for it would rebuild the model per tile drawn.
+                if let Some(announcer) = lock(&inner.announcer).as_ref() {
+                    announcer.announce(events);
+                }
+                continue;
             }
         }
         reconcile(inner, &mut synced, &mut events);
@@ -888,7 +906,7 @@ fn open_file(inner: &Inner, path: &Path, events: &mut Vec<Event>) {
 fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let moved = inner.engine.take_moved_page();
     let synced_tab = synced.tab;
-    let (snapshot, sidebar, contents, rail_filled, view) = inner.host.session.with_session(|session| {
+    let (snapshot, sidebar, tabs, contents, rail_filled, view) = inner.host.session.with_session(|session| {
         let active = session.active();
         if let (Some(id), Some(page)) = (active, moved)
             && synced_tab == Some(id)
@@ -912,35 +930,47 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             Some((id, session.pages_in(id), tab.page, map, warm, tab.problem.map(|problem| problem.message().to_string())))
         });
         let model = session.sidebar();
-        let mut index = 0u32;
         let mut current = None;
-        let mut tabs = Vec::new();
-        let mut contents_row_count = 0u32;
+        let mut active_index = None;
+        let (mut tab_count, mut contents_row_count) = (0u32, 0u32);
         for row in &model.rows {
             if row.kind == SessionRowKind::Contents {
                 if row.current {
-                    current = Some(index);
+                    current = Some(contents_row_count);
                 }
-                index += 1;
                 contents_row_count += 1;
             } else {
-                tabs.push(SidebarRow { kind: RowKind::Tab, tab: row.tab.0, text: row.text.to_string(), page: row.page, depth: row.depth, current: row.current, rail_filled: false, rail_first: false, rail_last: false });
+                if row.current {
+                    active_index = Some(tab_count);
+                }
+                tab_count += 1;
             }
         }
-        // Copied only when they've changed: for a long outline, a page crossed mustn't mean thousands of strings.
-        let held = Arc::clone(&lock(&inner.published).contents);
-        let same = held.len() == contents_row_count as usize && model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).zip(held.iter()).all(|(row, entry)| row.tab.0 == entry.tab && row.page == entry.page && row.depth == entry.depth && row.text == &*entry.text);
-        let held_before = Arc::clone(&held);
-        let contents = if same {
-            held
-        } else {
-            Arc::new(model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).map(|row| ContentsEntry { tab: row.tab.0, text: row.text.into(), page: row.page, depth: row.depth }).collect())
+        // Copied only when they've changed: a page crossed mustn't mean thousands of strings, for a long outline or for many tabs.
+        let (held_tabs, held, was) = {
+            let published = lock(&inner.published);
+            (Arc::clone(&published.tabs), Arc::clone(&published.contents), Arc::clone(&published.sidebar))
         };
+        let tab_rows = || model.rows.iter().filter(|row| row.kind != SessionRowKind::Contents);
+        let same_tabs = held_tabs.len() == tab_count as usize && tab_rows().zip(held_tabs.iter()).all(|(row, tab)| row.tab.0 == tab.tab && row.current == tab.current && row.text == tab.text.as_str());
+        let tabs = if same_tabs {
+            held_tabs
+        } else {
+            Arc::new(tab_rows().map(|row| SidebarRow { kind: RowKind::Tab, tab: row.tab.0, text: row.text.to_string(), page: row.page, depth: row.depth, current: row.current, rail_filled: false, rail_first: false, rail_last: false }).collect())
+        };
+        let tabs_version = if same_tabs { was.tabs_version } else { was.tabs_version + 1 };
+        let same = held.len() == contents_row_count as usize && model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).zip(held.iter()).all(|(row, entry)| row.tab.0 == entry.tab && row.page == entry.page && row.depth == entry.depth && row.text == entry.text.as_ref());
         let rail_filled = u32::try_from(model.rail_filled).unwrap_or(u32::MAX);
-        let change = rows_changed(&held_before, &contents);
-        let (contents_changed_from, contents_removed, contents_inserted) = change;
-        let contents_place_shift = if change.1 == 0 && change.2 == 0 { 0 } else { place_shift(&held_before, &contents, change, lock(&inner.published).sidebar.contents_current, current) };
-        (snapshot, SidebarView { tabs, contents_count: contents_row_count, contents_changed_from, contents_removed, contents_inserted, contents_place_shift, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps }, contents, rail_filled, session.view())
+        let (contents, contents_version, change, contents_place_shift) = if same {
+            (held, was.contents_version, (was.contents_changed_from, was.contents_removed, was.contents_inserted), was.contents_place_shift)
+        } else {
+            let list: Arc<Vec<ContentsEntry>> = Arc::new(model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).map(|row| ContentsEntry { tab: row.tab.0, text: row.text.into(), page: row.page, depth: row.depth }).collect());
+            let change = rows_changed(&held, &list);
+            let shift = place_shift(&held, &list, change, was.contents_current, current);
+            (list, was.contents_version + 1, change, shift)
+        };
+        let view = SidebarView { tabs_version, tab_count, active_index, contents_count: contents_row_count, contents_version, contents_changed_from: change.0, contents_removed: change.1, contents_inserted: change.2, contents_place_shift, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps };
+        (snapshot, view, tabs, contents, rail_filled, session.view())
     });
     // The paper and focus first, so what's asked for next is drawn right.
     let dark = inner.dark.load(Ordering::SeqCst) || synced.dark;
@@ -1005,6 +1035,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let mut published = lock(&inner.published);
     let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {
+        published.tabs = tabs;
         published.sidebar = Arc::new(sidebar);
         published.reader = reader;
         published.contents = contents;
