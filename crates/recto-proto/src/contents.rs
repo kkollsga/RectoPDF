@@ -4,6 +4,7 @@
 //! **Streaming.** The host asks for the next piece, and gets a frame of records of at most [`MAX_CONTENTS_FRAME`], usually about [`CONTENTS_CHUNK`]. So nothing piles up on either side: a page of any size
 //! costs the host one frame at a time. Only an image's bytes can run across frames. A path, a clip or a run of text is whole in its one frame, and one too large for that goes as a picture instead.
 
+use crate::jpeg::{JpegFacts, JpegScan};
 use crate::{HEADER_LEN, Header, Kind, ProtoError, Reader, frame};
 
 /// Largest frame. It holds [`MAX_PATH_SEGMENTS`] and room to spare.
@@ -348,6 +349,10 @@ pub enum NoteCode {
     LayersUnchecked = 5,
     /// Objects past the limit, on a page drawn whole instead.
     ObjectsSkipped = 6,
+    /// JPEGs whose EXIF says to turn them, which a page takes no notice of and a reader does, so they went as PNG.
+    JpegTurned = 7,
+    /// JPEGs that aren't sound as JPEGs, so they went as PNG.
+    JpegUnsound = 8,
 }
 
 impl NoteCode {
@@ -359,6 +364,8 @@ impl NoteCode {
             4 => Self::Unknown,
             5 => Self::LayersUnchecked,
             6 => Self::ObjectsSkipped,
+            7 => Self::JpegTurned,
+            8 => Self::JpegUnsound,
             _ => return Err(ProtoError("unknown note")),
         })
     }
@@ -703,10 +710,10 @@ pub mod put {
 }
 
 /// An image in progress, as the host follows it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct OpenImage {
     left: u64,
-    jpeg_start: bool,
+    jpeg: Option<JpegScan>,
 }
 
 /// The rules of a page's stream of records, held from outside the worker. Bounded on purpose: at most a byte per clip, under a cap.
@@ -719,6 +726,7 @@ pub struct StreamCheck {
     clip_depths: Vec<u8>,
     glyphs: u32,
     image_bytes_said: u64,
+    jpeg_facts: JpegFacts,
 }
 
 impl StreamCheck {
@@ -731,16 +739,17 @@ impl StreamCheck {
         if let Some(open) = self.image.as_mut() {
             return match record {
                 Record::ImageBytes(bytes) => {
-                    if open.jpeg_start && !bytes.is_empty() {
-                        if !bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-                            return Err(ProtoError("a JPEG that doesn't start as one"));
-                        }
-                        open.jpeg_start = false;
+                    if let Some(jpeg) = open.jpeg.as_mut() {
+                        jpeg.feed(bytes, &mut Vec::new())?;
                     }
                     open.left = open.left.checked_sub(bytes.len() as u64).ok_or(ProtoError("more image bytes than it said"))?;
                     Ok(())
                 }
                 Record::ImageEnd if open.left == 0 => {
+                    if let Some(jpeg) = open.jpeg.as_ref() {
+                        jpeg.finish()?;
+                        self.jpeg_facts.add(&jpeg.facts());
+                    }
                     self.image = None;
                     Ok(())
                 }
@@ -805,8 +814,8 @@ impl StreamCheck {
                 Ok(())
             }
             Record::ImageBegin { coding, width, height, total, .. } => {
-                let (left, jpeg_start) = match coding {
-                    ImageCoding::Jpeg => (*total, true),
+                let (left, jpeg) = match coding {
+                    ImageCoding::Jpeg => (*total, Some(JpegScan::new(false))),
                     ImageCoding::Pixels { channels } => {
                         if *width == 0 || *height == 0 {
                             return Err(ProtoError("an image with no size"));
@@ -819,11 +828,11 @@ impl StreamCheck {
                         if bytes != *total {
                             return Err(ProtoError("an image's bytes differ from its size"));
                         }
-                        (bytes, false)
+                        (bytes, None)
                     }
                 };
                 self.image_bytes_said = self.image_bytes_said.saturating_add(left);
-                self.image = Some(OpenImage { left, jpeg_start });
+                self.image = Some(OpenImage { left, jpeg });
                 Ok(())
             }
             Record::ImageBytes(_) | Record::ImageEnd => Err(ProtoError("image bytes with no image")),
@@ -842,6 +851,11 @@ impl StreamCheck {
             return Err(ProtoError("a group left open"));
         }
         Ok(())
+    }
+
+    /// What the JPEGs so far carry besides their pictures, as read from their bytes and not from a worker's word.
+    pub fn jpeg_facts(&self) -> JpegFacts {
+        self.jpeg_facts
     }
 
     /// Raw bytes of all images so far, by what they said. For a caller holding its own cap.

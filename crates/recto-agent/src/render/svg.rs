@@ -2,6 +2,7 @@
 
 use super::{OwnTemp, largest_scale_that_fits, output_exists, page_index, publish, too_heavy_to_export, with_time_taken};
 use crate::{AgentError, exit};
+use recto_proto::jpeg::{JpegFacts, JpegScan};
 use recto_proto::contents::{ImageCoding, NoteCode, PaintStyle, Record, SEG_CURVE, SEG_LINE, TextMode, WireSeg, Why, hints};
 use recto_render_service::{ContentsEvent, ContentsRequest, DocRenderer, ExportRefusal, OutputCaps, Policy, RenderFailure, ServiceConfig};
 use recto_svg::{GenericFamily, ImageData, Matrix, Paint, PathStyle, PngChannels, Rgb, Seg, SegKind, Stroke, SvgWriter, TextStyle};
@@ -21,6 +22,8 @@ pub(crate) struct SvgArgs<'a> {
     pub rect: Option<[f32; 4]>,
     pub text: Option<&'a str>,
     pub scale: f32,
+    /// Takes out of JPEGs what isn't the picture, and the document's title. Off by default: a JPEG goes as its original bytes (owner, 2026-11-07).
+    pub strip_metadata: bool,
 }
 
 /// Why each kind of picture is one, in words, and a stable code. PDFium has no call that reads these, so it's said rather than guessed.
@@ -53,6 +56,8 @@ fn note_words(code: NoteCode) -> (&'static str, &'static str) {
         NoteCode::Unknown => ("unknown_object", "objects the renderer says nothing about, left out"),
         NoteCode::LayersUnchecked => ("layers_unchecked", "objects whose layer wasn't looked up, past a limit: they're in the picture of the whole page, which obeys it, and any text in them isn't kept"),
         NoteCode::ObjectsSkipped => ("objects_past_limit", "objects past the limit on one page, in the picture of the whole page"),
+        NoteCode::JpegTurned => ("jpeg_turned", "JPEGs whose EXIF says to turn them, which the page takes no notice of and a browser does, so they went as PNG"),
+        NoteCode::JpegUnsound => ("jpeg_unsound", "JPEGs that aren't sound as JPEGs, so they went as PNG, as the renderer reads them"),
     }
 }
 
@@ -87,6 +92,10 @@ struct Tally {
     images_png: u64,
     images_jpeg: u64,
     images_masked: u64,
+    /// JPEGs with what isn't the picture taken out, so they aren't original bytes.
+    images_jpeg_stripped: u64,
+    /// What's taking that out of the JPEG in hand, with what it's written so far.
+    stripping: Option<JpegScan>,
     rasterised: BTreeMap<u8, u64>,
     notes: BTreeMap<u8, (NoteCode, u64)>,
     chars_dropped: u64,
@@ -119,7 +128,8 @@ fn path_style(style: &PaintStyle<'_>) -> PathStyle {
 }
 
 /// One record, written. The stream's rules have been checked by the time it gets here.
-fn write_record<'file>(svg: &mut Option<SvgWriter<Capped<'file>>>, file: &'file File, limit: u64, title: Option<&str>, tally: &mut Tally, record: &Record<'_>) -> io::Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn write_record<'file>(svg: &mut Option<SvgWriter<Capped<'file>>>, file: &'file File, limit: u64, title: Option<&str>, strip: bool, tally: &mut Tally, record: &Record<'_>) -> io::Result<()> {
     if let Record::Page { width, height, matrix } = record {
         tally.size = (*width, *height);
         *svg = Some(SvgWriter::begin(Capped { file, left: limit, written: 0 }, f64::from(*width), f64::from(*height), &mat(matrix), title)?);
@@ -176,6 +186,9 @@ fn write_record<'file>(svg: &mut Option<SvgWriter<Capped<'file>>>, file: &'file 
                     },
                 },
             };
+            if strip && matches!(coding, ImageCoding::Jpeg) {
+                tally.stripping = Some(JpegScan::new(true));
+            }
             match (why, coding) {
                 (Why::Image, ImageCoding::Jpeg) => tally.images_jpeg += 1,
                 (Why::Image, _) => tally.images_png += 1,
@@ -184,8 +197,21 @@ fn write_record<'file>(svg: &mut Option<SvgWriter<Capped<'file>>>, file: &'file 
             }
             writer.image_begin(data, &mat(matrix), *opacity, !matches!(why, Why::Image | Why::ImageWithMask))?;
         }
-        Record::ImageBytes(bytes) => writer.image_bytes(bytes)?,
-        Record::ImageEnd => writer.image_end()?,
+        Record::ImageBytes(bytes) => match tally.stripping.as_mut() {
+            Some(stripping) => {
+                let mut kept = Vec::with_capacity(bytes.len());
+                stripping.feed(bytes, &mut kept).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+                writer.image_bytes(&kept)?;
+            }
+            None => writer.image_bytes(bytes)?,
+        },
+        Record::ImageEnd => {
+            if tally.stripping.take().is_some_and(|stripping| stripping.changed()) {
+                tally.images_jpeg -= 1;
+                tally.images_jpeg_stripped += 1;
+            }
+            writer.image_end()?;
+        }
         Record::Note { code, count } => tally.notes.entry(*code as u8).or_insert((*code, 0)).1 += u64::from(*count),
     }
     Ok(())
@@ -252,7 +278,8 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
     let most = largest_scale_that_fits(width_points, height_points, caps).ok_or_else(|| AgentError::new("too_large_at_this_scale", format!("Page {} is {width_points} x {height_points} points, and no scale fits: a picture is at most {} Mpx.", page + 1, caps.max_pixels / 1_000_000), exit::FAILED).then("Tell the user this page can't be exported."))?;
     let raster_scale = args.scale.min(most);
     let request = ContentsRequest { page, generation: 0, scale: raster_scale, rect: args.rect, text, hints: hints_for(args.path, page), max_time: caps.max_time };
-    let title = recto_core::document_title(args.path);
+    // A box is a piece of a document, so it doesn't say what the whole is called.
+    let title = if args.rect.is_some() || args.strip_metadata { None } else { recto_core::document_title(args.path) };
     let (temp, file) = OwnTemp::create(args.out).map_err(|_| write_failed())?;
     let mut tally = Tally::default();
     let mut sink_error = None;
@@ -265,7 +292,7 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
                 tally = Tally::default();
                 file.set_len(0).and_then(|()| (&file).rewind().map(|_| ()))
             }
-            ContentsEvent::Record(record) => write_record(&mut svg, &file, caps.max_bytes, title.as_deref(), &mut tally, &record),
+            ContentsEvent::Record(record) => write_record(&mut svg, &file, caps.max_bytes, title.as_deref(), args.strip_metadata, &mut tally, &record),
         };
         written.map_err(|error| {
             sink_error = Some(from_io(&error));
@@ -293,7 +320,7 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
             Some(json!({ "why": code, "count": count, "says": says }))
         })
         .collect();
-    let notes: Vec<Value> = tally
+    let mut notes: Vec<Value> = tally
         .notes
         .values()
         .map(|(code, count)| {
@@ -301,6 +328,7 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
             json!({ "note": name, "count": count, "says": says })
         })
         .collect();
+    notes.extend(jpeg_notes(&done.jpeg, args.strip_metadata));
     Ok(json!({
         "page": page + 1,
         "out": args.out,
@@ -313,12 +341,29 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
         "raster_scale_lowered": raster_scale < args.scale,
         "bytes": bytes,
         "all_vector": rasterised.is_empty(),
-        "objects": { "paths": tally.paths, "clips": tally.clips, "glyphs": tally.glyphs, "glyph_runs": tally.glyph_runs, "text_runs": tally.text_runs, "text_chars": tally.text_chars, "images_png": tally.images_png, "images_original_jpeg": tally.images_jpeg, "images_drawn_with_mask": tally.images_masked, "chars_dropped": tally.chars_dropped },
+        "objects": { "paths": tally.paths, "clips": tally.clips, "glyphs": tally.glyphs, "glyph_runs": tally.glyph_runs, "text_runs": tally.text_runs, "text_chars": tally.text_chars, "images_png": tally.images_png, "images_original_jpeg": tally.images_jpeg, "images_drawn_with_mask": tally.images_masked, "images_jpeg_metadata_removed": tally.images_jpeg_stripped, "chars_dropped": tally.chars_dropped },
+        "strip_metadata": args.strip_metadata,
         "rasterised": rasterised,
         "notes": notes,
         "worker_peak_bytes": doc.stats().peak_footprint_bytes,
         "restarts": done.restarts,
     }))
+}
+
+/// What the JPEGs carried besides their pictures, in the answer's words. Without stripping, it's all still in the file, because a JPEG goes as its original bytes. Stripping keeps only what a decoder or a reader needs for the colours.
+fn jpeg_notes(facts: &JpegFacts, stripped: bool) -> Vec<Value> {
+    let gone = |present: &'static str, removed: &'static str| if stripped { removed } else { present };
+    let items: [(&str, u64, &str); 8] = [
+        ("jpeg_exif", u64::from(facts.exif), gone("EXIF blocks in the JPEGs, kept as they were, which can say when, where and on what a photo was taken", "EXIF blocks removed from the JPEGs")),
+        ("jpeg_gps", u64::from(facts.gps), gone("of those with a GPS position, kept", "of those with a GPS position, removed")),
+        ("jpeg_thumbnail", u64::from(facts.thumbnails), gone("thumbnails in the JPEGs, kept, which can show the photo from before any cropping", "thumbnails removed from the JPEGs")),
+        ("jpeg_xmp", u64::from(facts.xmp), gone("XMP blocks in the JPEGs, kept", "XMP blocks removed from the JPEGs")),
+        ("jpeg_comment", u64::from(facts.comments), gone("comments in the JPEGs, kept", "comments removed from the JPEGs")),
+        ("jpeg_other_metadata", u64::from(facts.other_app), gone("other application blocks in the JPEGs, kept", "other application blocks removed from the JPEGs")),
+        ("jpeg_trailing_bytes", facts.trailing_bytes, gone("bytes after the end of the JPEGs, kept as they were, which aren't part of the picture", "bytes after the end of the JPEGs removed")),
+        ("jpeg_color_profile", u64::from(facts.color_profiles), "colour profiles in the JPEGs, kept because they say what the colours mean"),
+    ];
+    items.into_iter().filter(|(_, count, _)| *count > 0).map(|(note, count, says)| json!({ "note": note, "count": count, "says": says })).collect()
 }
 
 const WHYS: [Why; 16] = [Why::Image, Why::Shading, Why::TilingPattern, Why::ShadingPattern, Why::BlendOrMask, Why::GroupEffects, Why::TextOutline, Why::TextClip, Why::TooComplex, Why::Annotations, Why::Flattened, Why::MaskedImage, Why::ImageUnreadable, Why::OutsideBox, Why::ClipRule, Why::ImageWithMask];

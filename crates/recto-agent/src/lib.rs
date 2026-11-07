@@ -176,6 +176,9 @@ pub enum Command {
         /// The scale of anything that has to go as a picture.
         #[serde(default = "render::default_scale")]
         scale: f32,
+        /// Takes out of JPEGs what isn't the picture, and the document's title.
+        #[serde(default)]
+        strip_metadata: bool,
     },
     /// A page's text, normalised for search, with the hidden-text flag.
     Text {
@@ -738,10 +741,10 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             describe_source(&mut data, *page, &source);
             Ok(data)
         }
-        Command::ExportSvg { tab, page, out, rect, text, scale } => {
+        Command::ExportSvg { tab, page, out, rect, text, scale, strip_metadata } => {
             require_absolute(out)?;
             let (id, position, source) = locate(access, tab, *page)?;
-            let args = render::SvgArgs { path: &source.path, page: source.page + 1, out, rect: *rect, text: text.as_deref(), scale: *scale };
+            let args = render::SvgArgs { path: &source.path, page: source.page + 1, out, rect: *rect, text: text.as_deref(), scale: *scale, strip_metadata: *strip_metadata };
             let drawn = render::export_svg(&args);
             if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
                 note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code), events);
@@ -1444,7 +1447,7 @@ mod tests {
             Command::Close { tab: tab() },
             Command::Budget {},
             Command::Render { tab: tab(), page: 1, scale: 2.0, out: "/d/x.png".into() },
-            Command::ExportSvg { tab: tab(), page: 1, out: "/d/x.svg".into(), rect: None, text: None, scale: 2.0 },
+            Command::ExportSvg { tab: tab(), page: 1, out: "/d/x.svg".into(), rect: None, text: None, scale: 2.0, strip_metadata: false },
             Command::Text { tab: tab(), page: 1 },
             budget_command(None, None),
             Command::BudgetViewport { tab: tab(), viewport: "10x10".into(), first: None, scale: 2.0, strategy: None },

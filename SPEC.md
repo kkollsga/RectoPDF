@@ -124,6 +124,8 @@ document held in memory. Paths, clips, images and text are direct. Anything SVG 
 
 **JPG honesty:** a JPG is lossless only when it's the original bytes of one image. Anything else is re-encoded and says so.
 
+**A passed-through JPEG keeps its original bytes** (owner, 2026-11-07: "Lets do original bytes"): EXIF, XMP, comments and bytes after its end all stay, so it's byte-identical to the one in the PDF, and the answer says what's there, with counts. What isn't a sound JPEG, or doesn't mean what the page means by it, goes as PNG. **`recto export svg --strip-metadata`** (owner, 2026-11-07: "Just add it in the cli for now (agent option)") takes that out, keeping what affects how the picture looks, and the compressed image data stays byte-identical. CLI and agent only, with no app UI, and it's off by default. A box leaves out the document's title, and so does stripping.
+
 | Added by the owner, 2026-11-06 | Redaction, remove hidden data, watermarks and Bates numbers, create form fields, measure tools |
 
 Signature trust through EU lists comes later, with the signing work.

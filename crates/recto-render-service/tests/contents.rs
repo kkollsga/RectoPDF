@@ -51,6 +51,14 @@ fn frame_for(mode: &str, job: &ContentsJob, in_heavy: bool) -> Vec<u8> {
             done = false;
         }
         ("size_overflows", 1) => put::image_begin(&mut out, ImageCoding::Pixels { channels: 4 }, Why::Image, 255, u32::MAX, u32::MAX, 0, &IDENTITY),
+        // Starts as a JPEG, and then isn't one, so a reader's decoder would get what the host never saw.
+        ("not_really_a_jpeg", 1) => {
+            put::image_begin(&mut out, ImageCoding::Jpeg, Why::Image, 255, 1, 1, 8, &IDENTITY);
+            let at = put::image_bytes_begin(&mut out);
+            out.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 2, 0x12, 0x34]);
+            put::image_bytes_end(&mut out, at);
+            put::image_end(&mut out);
+        }
         ("image_left_open", 1) => put::image_begin(&mut out, ImageCoding::Pixels { channels: 1 }, Why::Image, 255, 2, 2, 4, &IDENTITY),
         ("group_left_open", 1) => put::group_begin(&mut out, 7),
         ("garbage", 1) => out.extend_from_slice(b"\xFFnot a record"),
@@ -162,7 +170,7 @@ fn a_page_past_every_limit_is_refused() {
 /// Failure: a compromised worker's records reach the writer, among them an image whose rows would fill the host's memory before any cap on the file sees a byte, or one whose size overflows the sum that checks it. Each of these breaks a rule, kills the worker, and ends in a failure, so nothing is published.
 #[test]
 fn a_stream_that_breaks_the_rules_is_stopped() {
-    for mode in ["row_too_long", "size_overflows", "page_twice", "clip_too_deep", "image_short", "image_left_open", "group_left_open", "garbage", "not_finite", "wrong_seq"] {
+    for mode in ["not_really_a_jpeg", "row_too_long", "size_overflows", "page_twice", "clip_too_deep", "image_short", "image_left_open", "group_left_open", "garbage", "not_finite", "wrong_seq"] {
         let (result, _) = run(mode);
         assert!(matches!(result, Err(RenderFailure::PageFailed { reason: KillReason::Rejected(_), .. })), "{mode}: {result:?}");
     }

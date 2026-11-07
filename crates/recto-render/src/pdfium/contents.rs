@@ -10,6 +10,7 @@
 //! PDFium gives for the real character, and text whose outlines don't match, or that has none, as in a Type 3 font, goes as a picture. The real characters stay over it, selectable.
 
 use super::*;
+use recto_proto::jpeg::JpegScan;
 use recto_proto::contents::{CONTENTS_CHUNK, ContentsJob, ImageCoding, MAX_CLIP_CHAIN, MAX_CLIPS, MAX_GLYPHS, MAX_GROUP_NESTING, MAX_IMAGE_ROW_BYTES, MAX_PATH_SEGMENTS, MAX_RUN_ITEMS, NoteCode, SEG_CURVE, SEG_LINE, SEG_MOVE, TextMode, Why, begin_contents, finish_contents, hints, put};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -268,7 +269,7 @@ pub(super) struct Walk {
     flatten: bool,
     probes: u32,
     layers: HashMap<u64, bool>,
-    notes: [u32; 7],
+    notes: [u32; 9],
     buffer: Vec<(u32, f32, f32)>,
 }
 
@@ -388,7 +389,7 @@ impl PdfiumBackend {
             flatten: false,
             probes: 0,
             layers: HashMap::new(),
-            notes: [0; 7],
+            notes: [0; 9],
             buffer: Vec::new(),
         };
         // SAFETY: the page is live.
@@ -526,7 +527,7 @@ impl Walk {
     }
 
     fn write_notes(&mut self, out: &mut Vec<u8>) {
-        for (code, index) in [NoteCode::NotFinite, NoteCode::HiddenLayer, NoteCode::InvisibleText, NoteCode::Unknown, NoteCode::LayersUnchecked, NoteCode::ObjectsSkipped].into_iter().map(|code| (code, code as usize)) {
+        for (code, index) in [NoteCode::NotFinite, NoteCode::HiddenLayer, NoteCode::InvisibleText, NoteCode::Unknown, NoteCode::LayersUnchecked, NoteCode::ObjectsSkipped, NoteCode::JpegTurned, NoteCode::JpegUnsound].into_iter().map(|code| (code, code as usize)) {
             if self.notes[index] > 0 {
                 put::note(out, code, self.notes[index]);
             }
@@ -1553,12 +1554,16 @@ impl Walk {
                 data.truncate(got.min(len));
                 data
             };
-            if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            // The original bytes, all of them (owner, 2026-11-07), if they're sound as a JPEG and mean what the page means by them. One that says to turn itself doesn't: a page takes no notice and a browser does. Otherwise PNG.
+            let mut scan = JpegScan::new(false);
+            let sound = scan.feed(&data, &mut Vec::new()).and_then(|()| scan.finish()).is_ok();
+            if sound && !scan.facts().is_turned() {
                 let Some(wire) = to_f32(&matrix) else { return Ok(()) };
                 put::image_begin(out, ImageCoding::Jpeg, Why::Image, alpha, width, height, data.len() as u64, &wire);
                 self.pending = Some(Pending::Bytes { data, at: 0 });
                 return Ok(());
             }
+            self.note(if sound { NoteCode::JpegTurned } else { NoteCode::JpegUnsound });
         }
         let bitmap = if masked {
             if u64::from(width) * u64::from(height) * 4 > MAX_MASKED_BYTES {

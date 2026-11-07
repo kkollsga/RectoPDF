@@ -1,6 +1,7 @@
 //! A page's contents, from the host's side: asks for a frame at a time, checks what comes, and hands it on. Goes down the same limits as an export, so a page comes out whole or is refused, and nothing is written.
 
 use super::{DocRenderer, ExportRefusal, JobFailure, KillReason, PageDrawState, RenderFailure, SlotWaitEnd, WorkerClass};
+use recto_proto::jpeg::JpegFacts;
 use recto_proto::contents::{ContentsJob, Record, Records, StreamCheck, TextMode, decode_contents, validate_contents};
 use recto_proto::{Kind, ProtoError};
 use std::time::{Duration, Instant};
@@ -35,6 +36,8 @@ pub enum ContentsEvent<'a> {
 pub struct ContentsDone {
     pub frames: u32,
     pub restarts: u32,
+    /// What the JPEGs in it carry besides their pictures.
+    pub jpeg: JpegFacts,
 }
 
 /// How many times a page may lose its place and start again, inside one class of worker.
@@ -185,6 +188,7 @@ impl DocRenderer {
                 if let Err(error) = check.finish() {
                     return self.reject_contents(error);
                 }
+                done.jpeg = check.jpeg_facts();
                 return Ok(TryEnd::Finished);
             }
             seq = seq.wrapping_add(1);

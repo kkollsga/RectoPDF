@@ -738,3 +738,128 @@ fn an_image_drawn_with_its_mask_is_counted_apart() {
     assert!(said.contains("drawn with their masks"), "{said}");
     std::fs::remove_file(&out).unwrap();
 }
+
+/// A JPEG with extra segments and bytes after its end, built from the test's own.
+fn jpeg_with(segments: &[(u8, &[u8])], trailing: &[u8]) -> Vec<u8> {
+    let plain = jpeg_bytes();
+    let mut out = plain[..2].to_vec();
+    for (marker, body) in segments {
+        out.extend_from_slice(&[0xFF, *marker]);
+        out.extend_from_slice(&((body.len() + 2) as u16).to_be_bytes());
+        out.extend_from_slice(body);
+    }
+    out.extend_from_slice(&plain[2..]);
+    out.extend_from_slice(trailing);
+    out
+}
+
+/// A PDF with one JPEG, as it is.
+fn doc_with_jpeg(jpeg: Vec<u8>) -> TempPdf {
+    let image = first_extra_object(1);
+    let dict = "/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode".to_string();
+    TempPdf::new("doc.pdf", &pages_with(&[Page::new("q 40 0 0 40 100 500 cm /Im Do Q\n")], &format!("/XObject << /Im {image} 0 R >>"), vec![Object::Stream { dict, data: jpeg }]))
+}
+
+/// An EXIF block saying where a photo was taken, with a thumbnail in it.
+fn exif_with_gps_and_thumbnail() -> Vec<u8> {
+    let mut out = b"Exif\0\0II*\0\x08\0\0\0".to_vec();
+    out.extend_from_slice(&[1, 0, 0x25, 0x88, 4, 0, 1, 0, 0, 0, 44, 0, 0, 0, 26, 0, 0, 0]);
+    out.extend_from_slice(&[1, 0, 0x01, 0x02, 4, 0, 1, 0, 0, 0, 50, 0, 0, 0, 0, 0, 0, 0]);
+    out.extend_from_slice(b"GPS: 59.9N 10.7E, THUMBNAIL OF THE UNCROPPED PHOTO");
+    out
+}
+
+/// Failure: a JPEG's original bytes are altered, or what they carry goes unsaid: EXIF can hold GPS and a thumbnail of the uncropped original. Owner, 2026-11-07: "Lets do original bytes". So everything stays, bytes past the end too, byte for byte, and the answer says what's there.
+#[test]
+fn a_jpeg_keeps_all_its_bytes_and_says_what_it_carries() {
+    let carried = jpeg_with(&[(0xE1, &exif_with_gps_and_thumbnail()), (0xE1, b"http://ns.adobe.com/xap/1.0/\0<xmp/>"), (0xFE, b"a comment")], b"BYTES AFTER THE END");
+    let file = doc_with_jpeg(carried.clone());
+    let (svg, data) = svg_of(&file, &[]);
+    assert_eq!(embedded_images(svg.as_bytes()), vec![Embedded::Jpeg(carried)], "{data}");
+    assert_eq!(data["objects"]["images_original_jpeg"], 1, "{data}");
+    for (name, count) in [("jpeg_exif", 1), ("jpeg_gps", 1), ("jpeg_thumbnail", 1), ("jpeg_xmp", 1), ("jpeg_comment", 1), ("jpeg_trailing_bytes", 19)] {
+        assert_eq!(note(&data, name), count, "{name}: {data}");
+    }
+}
+
+/// Failure: what isn't a sound JPEG reaches a reader's decoder as if it were: here, one cut off before its end. It goes as PNG, as the renderer reads it, and says so.
+#[test]
+fn what_isnt_a_sound_jpeg_goes_as_png() {
+    let plain = jpeg_bytes();
+    let file = doc_with_jpeg(plain[..plain.len() - 2].to_vec());
+    let (svg, data) = svg_of(&file, &[]);
+    assert_eq!(data["objects"]["images_original_jpeg"], 0, "{data}");
+    assert!(matches!(&embedded_images(svg.as_bytes())[..], [Embedded::Png { .. }]), "{data}");
+    assert_eq!(note(&data, "jpeg_unsound"), 1, "{data}");
+}
+
+/// Failure: a JPEG whose EXIF says to turn it passes through, and a browser turns it where the page doesn't: Chrome was seen doing just that in an SVG. So it goes as PNG, and says why.
+#[test]
+fn a_jpeg_that_says_to_turn_itself_goes_as_png() {
+    let turned = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+    let file = doc_with_jpeg(jpeg_with(&[(0xE1, turned)], b""));
+    let (svg, data) = svg_of(&file, &[]);
+    assert_eq!(data["objects"]["images_original_jpeg"], 0, "{data}");
+    assert!(matches!(&embedded_images(svg.as_bytes())[..], [Embedded::Png { .. }]), "{data}");
+    assert_eq!(note(&data, "jpeg_turned"), 1, "{data}");
+}
+
+/// Failure: \`--strip-metadata\` leaves GPS or a thumbnail behind, says nothing of what it took, still counts the JPEG as original bytes, leaves the title, or changes the picture. Owner, 2026-11-07: "Just add it in the cli for now (agent option)". The compressed picture stays byte for byte, and a real decoder draws the same pixels from what's left.
+#[test]
+fn stripping_takes_the_metadata_and_leaves_the_picture() {
+    let carried = jpeg_with(&[(0xE1, &exif_with_gps_and_thumbnail()), (0xE1, b"http://ns.adobe.com/xap/1.0/\0<xmp/>"), (0xFE, b"a comment"), (0xE5, b"something else"), (0xEE, b"Adobe\0\0\0\0\0\0\x01")], b"BYTES AFTER THE END");
+    let info = first_extra_object(1) + 1;
+    let image = first_extra_object(1);
+    let dict = "/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode".to_string();
+    let bytes = pages_with(&[Page::new("q 40 0 0 40 100 500 cm /Im Do Q\n")], &format!("/XObject << /Im {image} 0 R >>"), vec![Object::Stream { dict, data: carried.clone() }, Object::Dict("<< /Title (A secret title) >>".into())]);
+    let bytes: Vec<u8> = bytes.iter().copied().collect();
+    let at = bytes.windows(11).position(|window| window == b"/Root 1 0 R").unwrap();
+    let mut with_title = bytes[..at].to_vec();
+    with_title.extend_from_slice(format!("/Root 1 0 R /Info {info} 0 R").as_bytes());
+    with_title.extend_from_slice(&bytes[at + 11..]);
+    let file = TempPdf::new("doc.pdf", &with_title);
+    let (svg, data) = svg_of(&file, &["--strip-metadata"]);
+    let images = embedded_images(svg.as_bytes());
+    let [Embedded::Jpeg(stripped)] = &images[..] else { panic!("{data}") };
+    for gone in [&b"GPS"[..], b"THUMBNAIL", b"Exif", b"xmp", b"a comment", b"something else", b"AFTER THE END"] {
+        assert!(!stripped.windows(gone.len()).any(|window| window == gone), "{}", String::from_utf8_lossy(gone));
+    }
+    assert!(!svg.contains("secret"), "the title");
+    assert!(stripped.windows(5).any(|window| window == b"Adobe"), "what decides the colours stays");
+    assert_eq!(data["objects"]["images_original_jpeg"], 0, "its bytes changed, so it isn't original bytes: {data}");
+    assert_eq!(data["objects"]["images_jpeg_metadata_removed"], 1, "{data}");
+    for (name, count) in [("jpeg_exif", 1), ("jpeg_gps", 1), ("jpeg_thumbnail", 1), ("jpeg_xmp", 1), ("jpeg_comment", 1), ("jpeg_other_metadata", 1), ("jpeg_trailing_bytes", 19)] {
+        assert_eq!(note(&data, name), count, "{name}: {data}");
+    }
+    // From the first frame on, before the trailing bytes, it's the same bytes.
+    let plain = jpeg_bytes();
+    let from_tables = plain.windows(2).position(|window| window == [0xFF, 0xDB]).unwrap();
+    assert!(stripped.ends_with(&plain[from_tables..]), "the picture itself, byte for byte");
+    // A real decoder gets the same pixels from each.
+    let state = State::at(Level::Full);
+    let picture = |jpeg: &[u8]| {
+        let file = doc_with_jpeg(jpeg.to_vec());
+        let out = file.0.with_file_name("drawn.png");
+        let (reply, code) = state.json(&["local", file.0.to_str().unwrap(), "render", "1", "--out", out.to_str().unwrap()]);
+        assert_eq!(code, 0, "{reply}");
+        let bytes = std::fs::read(&out).unwrap();
+        std::fs::remove_file(&out).unwrap();
+        bytes
+    };
+    assert_eq!(picture(stripped), picture(&carried), "the pixels, drawn from each");
+    // With nothing to take, it's still the original bytes.
+    let (svg, data) = svg_of(&doc_with_jpeg(plain.clone()), &["--strip-metadata"]);
+    assert_eq!(embedded_images(svg.as_bytes()), vec![Embedded::Jpeg(plain)], "{data}");
+    assert_eq!(data["objects"]["images_original_jpeg"], 1, "{data}");
+}
+
+/// Failure: a box of a page hands over the document's title, which is about the whole of it, to someone being sent a piece.
+#[test]
+fn a_box_leaves_out_the_documents_title() {
+    let info = first_extra_object(1);
+    let bytes = pages_with(&[Page::new(text_lines(&["Words"]))], "", vec![Object::Dict("<< /Title (A secret title) >>".into())]);
+    let bytes = String::from_utf8_lossy(&bytes).replace("/Root 1 0 R", &format!("/Root 1 0 R /Info {info} 0 R"));
+    let file = TempPdf::new("doc.pdf", bytes.as_bytes());
+    assert!(svg_of(&file, &[]).0.contains("A secret title"));
+    assert!(!svg_of(&file, &["--rect", "60,60,300,100"]).0.contains("secret"));
+}

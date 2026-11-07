@@ -12,6 +12,7 @@
 //! worker whose [`VERSION`] differs, which can't happen in one signed app unless something is wrong.
 
 pub mod contents;
+pub mod jpeg;
 
 /// Bumped on any change to a layout below.
 pub const VERSION: u16 = 3;
