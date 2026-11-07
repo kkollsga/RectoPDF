@@ -4,8 +4,9 @@ mod common;
 
 use common::{Raw, State};
 use recto_agent::Level;
+use recto_platform::isolate::process_memory;
 use recto_platform::local::process_counters;
-use recto_testpdf::{Page, TempPdf, pages, text_lines};
+use recto_testpdf::{Object, Page, TempPdf, first_extra_object, pages, pages_with, text_lines};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -174,6 +175,53 @@ fn out_of_descriptors_the_session_doesnt_spin() {
         assert!(started.elapsed() < Duration::from_secs(10), "with descriptors free again, it must take connections again");
     }
     serving.kill();
+}
+
+/// Failure: `export svg` holds a page in memory on its way to the file, so a large image or a page of millions of points takes the session's process with it. The image here is larger than everything the process may hold: its bytes must pass through. The whole process is measured, from outside, as it runs.
+#[test]
+fn an_export_holds_nothing_of_the_page() {
+    const EDGE: u32 = 3000;
+    let raw = u64::from(EDGE) * u64::from(EDGE) * 3;
+    let mut seed = 0x9E37_79B9u32;
+    let pixels: Vec<u8> = (0..raw)
+        .map(|_| {
+            seed = seed.wrapping_mul(0x0100_0193).wrapping_add(0x0123_4567);
+            (seed >> 24) as u8
+        })
+        .collect();
+    let image = first_extra_object(1);
+    let dict = format!("/Type /XObject /Subtype /Image /Width {EDGE} /Height {EDGE} /ColorSpace /DeviceRGB /BitsPerComponent 8");
+    let resources = format!("/XObject << /Im {image} 0 R >>");
+    let mut content = String::from("q 500 0 0 500 50 50 cm /Im Do Q\n");
+    for path in 0..40u32 {
+        content.push_str(&format!("{path} 0 m\n"));
+        for i in 0..10_000u32 {
+            content.push_str(&format!("{} {} l\n", i % 600, i % 790));
+        }
+        content.push_str("S\n");
+    }
+    let file = TempPdf::new("large.pdf", &pages_with(&[Page::new(content)], &resources, vec![Object::Stream { dict, data: pixels }]));
+    let out = file.0.with_file_name("large.svg");
+    let state = State::at(Level::Full);
+    let mut child = state.command().args(["local", file.0.to_str().unwrap(), "export", "svg", "1", "--out", out.to_str().unwrap(), "--json"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let mut peak = 0;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if let Some(memory) = process_memory(child.id()) {
+            peak = peak.max(memory.footprint_bytes);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(status.success());
+    assert!(peak > 0, "the process was never measured, so this would prove nothing");
+    let written = std::fs::metadata(&out).unwrap().len();
+    println!("export: {written} bytes written, host peak {peak} bytes, image alone {raw} bytes");
+    assert!(written > raw, "the image can't be in the file: {written}");
+    // Under a third of the image alone: a frame, a compressor and small buffers.
+    assert!(peak < raw / 3, "the host reached {peak} bytes on an image of {raw}");
+    std::fs::remove_file(&out).unwrap();
 }
 
 /// Failure: indexing leaves something in the session: a page's text, a table, a thread or a descriptor, or a helper still running. All of that belongs to the helper, whose memory goes when it exits. **The budget is the same session as before,** with nothing to show for it but what's on disk.

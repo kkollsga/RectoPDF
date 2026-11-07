@@ -1304,6 +1304,14 @@ so **anything that must hold everywhere goes into a skill or the repo, not only 
 
 ---
 
+### Failures that only happen elsewhere
+
+- **Bring the evidence before the explanation.** A test failing only on CI cost four rounds of check and CI here, because the first fix was a guess and the first diagnostic looked after the moment that mattered. When a failure happens on a machine you can't reach, make the test capture state and thread stacks during the failing window, and push that first. Sampling costs little and is only read on failure.
+- **An intermittent failure can be a real bug.** A test's `unwrap` on a socket option panicked now and then. macOS refuses `SO_RCVTIMEO` once the peer has closed, and the product's client made the same call and then told users the session had ended, with the answer waiting unread. Calling it flaky would have shipped that.
+- **Scripts that gate a push end with the real exit status.** One ending in `; echo` read a failed check as success.
+- **Test a dependent when its dependency moves, not at release.** A 141-document gate showed no change from a text-decoding merge, and three small unit tests caught two real regressions.
+- **Agents won't take a relayed approval to change their own configuration, and they're right.** Keep those steps with the coordinator, on the user's direct word.
+
 ## 12. Working with the user
 
 - **Few practical tasks for the user.** "Try avoiding giving me so many practical tasks. You guys can figure it

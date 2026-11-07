@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 mod png;
+mod svg;
+
+pub(crate) use svg::{SvgArgs, export_svg};
 
 pub const DEFAULT_SCALE: f32 = 2.0;
 
@@ -310,6 +313,13 @@ pub(crate) fn open_for_text(path: &Path) -> Result<DocRenderer, AgentError> {
     open(path, Policy::default())
 }
 
+/// What a page's characters say about hidden text. `text` and `export svg` both go by this, so they can't disagree.
+fn hidden_text_facts(characters: &recto_render_service::PageCharacters) -> Value {
+    let reading = read_page(&characters.chars, &characters.boxes, characters.hidden_checked);
+    let hidden = hidden_report(&characters.chars, characters.hidden_checked);
+    json!({ "checked": hidden.checked, "flagged": hidden.flagged || reading.hidden_flagged || reading.normalized.tag_chars_removed > 0, "chars": hidden.chars })
+}
+
 pub(crate) fn text(path: &Path, page: u32) -> Result<Value, AgentError> {
     let page = page_index(page)?;
     let mut doc = open(path, Policy::default())?;
@@ -329,7 +339,7 @@ pub(crate) fn text(path: &Path, page: u32) -> Result<Value, AgentError> {
         "also_spelled_dropped": normalized.also_spelled_dropped,
         // Words the file drew late, put back on their lines. `search` reads the same text.
         "runs_moved": reading.runs_moved,
-        "hidden_text": { "checked": hidden.checked, "flagged": hidden.flagged || reading.hidden_flagged || normalized.tag_chars_removed > 0, "chars": hidden.chars },
+        "hidden_text": hidden_text_facts(&characters),
         // Where `hidden_runs` lie in the text, in characters. Numbers only, so it isn't untrusted.
         "hidden_spans": reading.hidden_spans.iter().map(|span| [span.0, span.1]).collect::<Vec<_>>(),
         "hidden_spans_dropped": reading.hidden_spans_dropped,

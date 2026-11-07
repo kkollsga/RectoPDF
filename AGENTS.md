@@ -70,3 +70,11 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "I think option 4 is the best one, dont modify the bad toc, but offer a generated toc using distillpdf".
 - "To save horizontal space the scrollbar can stop below the agent icon. Add an option in the macos top bar to turn off agent bar (hides the icon), enable + - and command - scroll for zooming".
 - "And select text should work natively".
+- "For rectopdf we need a update feature similar to what we added to seedwell. Can you have a look and implement a similar handsoff system? For us we can add a check for updates button in the top bar, that turns into a update to… button if new version has been released. App settings should have a auto update toggle, and we check for updates once per day. It's crucial that app state is perfectly recovered before and after update".
+- "Actually it should recover state so perfectly that it can update while the user is using it. But for auto update let's update in a window the user hasn't touched the app for 30 minutes".
+- "I was thinking we need to reduce SSD wear as much as we can, while of course keeping a good memory budget." Edits come in bursts: "usually when people are editing they will edit a lot of things, so we need to make sure we keep the budget".
+- "We want a good balance between SSD-aware performance and memory use for warm PDFs that's actively being edited. It's fine to keep in memory for a while, and then as it goes dormant we store to disk."
+- "When it's on deep sleep, we want its state to be stored on disk, not on memory. But it needs to be stored in a way that's quick to recover without any delay."
+- "and edit should also keep undo, redo history of edits until save has been applied."
+- "We don't want to add the undo redo history to the file itself, but we can have a rolling save redo history on the system, so it kind of in the temp files per PDF."
+- "1000 steps and 64mb is good." On Save: "after a save you might still have regrets and want to make changes. But you definitely don't want history to leak into the pdf file".

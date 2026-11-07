@@ -1,6 +1,7 @@
 //! The server with a stand-in host and short limits, on a real socket: what a real session is too well-behaved, or too slow, to show.
 
 use recto_agent::{AgentError, Command, Condition, ConditionState, Event, Level, exit};
+use recto_platform::local::process_counters;
 use recto_control::StatePaths;
 use recto_control::client::Client;
 use recto_control::host::Host;
@@ -441,6 +442,40 @@ fn a_client_that_doesnt_read_isnt_worked_for() {
     assert!(reader.next(&mut greedy).unwrap()["data"]["huge"].is_string());
     assert!(reader.next(&mut greedy).unwrap()["data"]["huge"].is_string());
     assert!(running.host.wheres.load(Ordering::SeqCst) >= 2);
+}
+
+/// Failure: a client that sends two commands and reads slowly loses its connection, because the second, whole and waiting behind an answer not yet read, was timed as half a line. It failed the full run on a busy Mac, and every time with 24 clients at once. A client gets all its answers however slowly it reads, up to the write deadline.
+#[test]
+fn a_whole_line_waiting_behind_an_unread_answer_isnt_half_a_line() {
+    let limits = Limits { line_deadline: Duration::from_millis(100), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut slow = running.connect();
+    slow.write_all(b"{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let mut reader = BufLine::default();
+    for answer in 0..2 {
+        assert!(reader.next(&mut slow).unwrap_or_else(|| panic!("answer {answer}: the connection was dropped"))["data"]["huge"].is_string());
+    }
+}
+
+/// Failure: with a whole line held back behind an unread answer, the session's next wake-up is a line deadline that nothing acts on, so `poll` returns at once, for ever, and the session's one thread spins at 100%. Measured as the process's CPU time and wake-ups while nothing is happening.
+#[test]
+fn a_line_held_back_behind_an_unread_answer_doesnt_spin_the_session() {
+    let limits = Limits { line_deadline: Duration::from_millis(50), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut slow = running.connect();
+    slow.write_all(b"{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n").unwrap();
+    // Past the deadline it would have spun on, with the answer unread.
+    std::thread::sleep(Duration::from_millis(200));
+    let before = process_counters(std::process::id()).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let after = process_counters(std::process::id()).unwrap();
+    let cpu_ms = (after.cpu_ns - before.cpu_ns) / 1_000_000;
+    let wakes = after.context_switches - before.context_switches;
+    assert!(cpu_ms < 100, "{cpu_ms} ms of CPU in 500 ms: it's spinning");
+    assert!(wakes < 200, "{wakes} wake-ups in 500 ms: it's spinning");
+    let mut reader = BufLine::default();
+    assert!(reader.next(&mut slow).expect("and the client still gets its answer")["data"]["huge"].is_string());
 }
 
 /// Failure: a client that sent several commands and is slowly reading the first huge answer is cut off for sending "half a line", though its lines are whole and only waiting for it to catch up. It showed as this file's other test failing when the Mac was busy, as reading took past the 5 s.

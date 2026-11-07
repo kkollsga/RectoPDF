@@ -9,6 +9,8 @@
 //! **No digest check at load.** The script checks the file when it's fetched; nothing checks it each time a worker starts, because hashing 7 MB per spawn
 //! would cost more than the spawn. Code signing covers it in the app. `Api::load` catches a library missing a function, not a changed one.
 //!
+//! A page's contents are read in the `contents` module under this one, which is part of this seam.
+//!
 //! **Not thread-safe.** PDFium holds global state. So there's one library per process, one live document ([`PdfiumBackend::open`]
 //! refuses a second), and the backend is `!Send`. Parallelism comes from more worker processes, which measured better anyway (spike §4).
 
@@ -16,6 +18,7 @@
 
 use crate::{Cancel, PageChars, PagePoints, RenderBackend, RenderError, TextOptions, TileOutcome, classify_bgrx};
 use recto_platform::isolate::Library;
+use recto_proto::contents::{ContentsJob, Mat};
 use recto_proto::{CharBox, CharRecord, FailCode, MAX_PAGE_CHARS, MAX_PAGE_COUNT, PageFrame, TileKind, TileRect, device_size, merge_kinds, region_tiles};
 use std::cell::Cell;
 use std::ffi::{CString, c_double, c_float, c_int, c_uchar, c_uint, c_ulong, c_void};
@@ -31,7 +34,50 @@ type FPDF_BITMAP = *mut c_void;
 type FPDF_TEXTPAGE = *mut c_void;
 type FPDF_FORMHANDLE = *mut c_void;
 type FPDF_PAGEOBJECT = *mut c_void;
+type FPDF_PAGEOBJECTMARK = *mut c_void;
+type FPDF_CLIPPATH = *mut c_void;
+type FPDF_PATHSEGMENT = *mut c_void;
+type FPDF_GLYPHPATH = *mut c_void;
+type FPDF_FONT = *mut c_void;
+type FPDF_ANNOTATION = *mut c_void;
 type FPDF_BOOL = c_int;
+
+mod contents;
+use contents::Walk;
+
+/// `fpdfview.h`: a transform.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FS_MATRIX {
+    a: c_float,
+    b: c_float,
+    c: c_float,
+    d: c_float,
+    e: c_float,
+    f: c_float,
+}
+
+/// `fpdfview.h`: a rectangle.
+#[repr(C)]
+struct FS_RECTF {
+    left: c_float,
+    top: c_float,
+    right: c_float,
+    bottom: c_float,
+}
+
+/// `fpdf_edit.h`: what's known about an image.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FPDF_IMAGEOBJ_METADATA {
+    width: c_uint,
+    height: c_uint,
+    horizontal_dpi: c_float,
+    vertical_dpi: c_float,
+    bits_per_pixel: c_uint,
+    colorspace: c_int,
+    marked_content_id: c_int,
+}
 
 /// `fpdfview.h`: read callback for `FPDF_LoadCustomDocument`.
 #[repr(C)]
@@ -109,8 +155,6 @@ pdfium_api! {
     FPDF_GetPageSizeByIndex: fn(FPDF_DOCUMENT, c_int, *mut c_double, *mut c_double) -> c_int;
     FPDF_LoadPage: fn(FPDF_DOCUMENT, c_int) -> FPDF_PAGE;
     FPDF_ClosePage: fn(FPDF_PAGE);
-    FPDF_GetPageBoundingBox: fn(FPDF_PAGE, *mut FS_RECTF) -> FPDF_BOOL;
-    FPDFPage_GetRotation: fn(FPDF_PAGE) -> c_int;
     FPDF_GetDocPermissions: fn(FPDF_DOCUMENT) -> c_ulong;
     FPDF_PageToDevice: fn(FPDF_PAGE, c_int, c_int, c_int, c_int, c_int, c_double, c_double, *mut c_int, *mut c_int) -> FPDF_BOOL;
     FPDFBitmap_CreateEx: fn(c_int, c_int, c_int, *mut c_void, c_int) -> FPDF_BITMAP;
@@ -138,6 +182,73 @@ pdfium_api! {
     FPDFText_IsHyphen: fn(FPDF_TEXTPAGE, c_int) -> c_int;
     FPDFText_IsGenerated: fn(FPDF_TEXTPAGE, c_int) -> c_int;
     FPDFText_GetCharBox: fn(FPDF_TEXTPAGE, c_int, *mut c_double, *mut c_double, *mut c_double, *mut c_double) -> FPDF_BOOL;
+    FPDFText_GetCharOrigin: fn(FPDF_TEXTPAGE, c_int, *mut c_double, *mut c_double) -> FPDF_BOOL;
+    FPDFText_GetTextObject: fn(FPDF_TEXTPAGE, c_int) -> FPDF_PAGEOBJECT;
+    FPDF_GetPageBoundingBox: fn(FPDF_PAGE, *mut FS_RECTF) -> FPDF_BOOL;
+    FPDFPage_GetRotation: fn(FPDF_PAGE) -> c_int;
+    FPDFPageObj_HasTransparency: fn(FPDF_PAGEOBJECT) -> FPDF_BOOL;
+    FPDFPageObj_SetIsActive: fn(FPDF_PAGEOBJECT, FPDF_BOOL) -> FPDF_BOOL;
+    FPDFPageObj_GetMatrix: fn(FPDF_PAGEOBJECT, *mut FS_MATRIX) -> FPDF_BOOL;
+    FPDFPageObj_SetMatrix: fn(FPDF_PAGEOBJECT, *const FS_MATRIX) -> FPDF_BOOL;
+    FPDFPageObj_CountMarks: fn(FPDF_PAGEOBJECT) -> c_int;
+    FPDFPageObj_GetMark: fn(FPDF_PAGEOBJECT, c_ulong) -> FPDF_PAGEOBJECTMARK;
+    FPDFPageObjMark_GetName: fn(FPDF_PAGEOBJECTMARK, *mut u16, c_ulong, *mut c_ulong) -> FPDF_BOOL;
+    FPDFPageObjMark_GetParamStringValue: fn(FPDF_PAGEOBJECTMARK, *const std::ffi::c_char, *mut u16, c_ulong, *mut c_ulong) -> FPDF_BOOL;
+    FPDFPageObj_AddExistingMark: fn(FPDF_PAGEOBJECT, FPDF_PAGEOBJECTMARK) -> FPDF_BOOL;
+    FPDFPageObj_CreateNewRect: fn(c_float, c_float, c_float, c_float) -> FPDF_PAGEOBJECT;
+    FPDFPageObj_Destroy: fn(FPDF_PAGEOBJECT);
+    FPDFPath_SetDrawMode: fn(FPDF_PAGEOBJECT, c_int, FPDF_BOOL) -> FPDF_BOOL;
+    FPDFPage_InsertObject: fn(FPDF_PAGE, FPDF_PAGEOBJECT);
+    FPDFPage_RemoveObject: fn(FPDF_PAGE, FPDF_PAGEOBJECT) -> FPDF_BOOL;
+    FPDFPageObj_GetFillColor: fn(FPDF_PAGEOBJECT, *mut c_uint, *mut c_uint, *mut c_uint, *mut c_uint) -> FPDF_BOOL;
+    FPDFPageObj_SetFillColor: fn(FPDF_PAGEOBJECT, c_uint, c_uint, c_uint, c_uint) -> FPDF_BOOL;
+    FPDFPageObj_GetStrokeColor: fn(FPDF_PAGEOBJECT, *mut c_uint, *mut c_uint, *mut c_uint, *mut c_uint) -> FPDF_BOOL;
+    FPDFPageObj_GetStrokeWidth: fn(FPDF_PAGEOBJECT, *mut c_float) -> FPDF_BOOL;
+    FPDFPageObj_GetLineJoin: fn(FPDF_PAGEOBJECT) -> c_int;
+    FPDFPageObj_GetLineCap: fn(FPDF_PAGEOBJECT) -> c_int;
+    FPDFPageObj_GetDashPhase: fn(FPDF_PAGEOBJECT, *mut c_float) -> FPDF_BOOL;
+    FPDFPageObj_GetDashCount: fn(FPDF_PAGEOBJECT) -> c_int;
+    FPDFPageObj_GetDashArray: fn(FPDF_PAGEOBJECT, *mut c_float, usize) -> FPDF_BOOL;
+    FPDFPageObj_GetRenderedStrokePattern: fn(FPDF_DOCUMENT, FPDF_PAGEOBJECT) -> FPDF_BITMAP;
+    FPDFPageObj_GetRenderedFillPattern: fn(FPDF_DOCUMENT, FPDF_PAGEOBJECT) -> FPDF_BITMAP;
+    FPDFPageObj_GetClipPath: fn(FPDF_PAGEOBJECT) -> FPDF_CLIPPATH;
+    FPDFPageObj_TransformClipPath: fn(FPDF_PAGEOBJECT, c_double, c_double, c_double, c_double, c_double, c_double);
+    FPDFClipPath_CountPaths: fn(FPDF_CLIPPATH) -> c_int;
+    FPDFClipPath_CountPathSegments: fn(FPDF_CLIPPATH, c_int) -> c_int;
+    FPDFClipPath_GetPathSegment: fn(FPDF_CLIPPATH, c_int, c_int) -> FPDF_PATHSEGMENT;
+    FPDFPath_CountSegments: fn(FPDF_PAGEOBJECT) -> c_int;
+    FPDFPath_GetPathSegment: fn(FPDF_PAGEOBJECT, c_int) -> FPDF_PATHSEGMENT;
+    FPDFPath_GetDrawMode: fn(FPDF_PAGEOBJECT, *mut c_int, *mut FPDF_BOOL) -> FPDF_BOOL;
+    FPDFPathSegment_GetPoint: fn(FPDF_PATHSEGMENT, *mut c_float, *mut c_float) -> FPDF_BOOL;
+    FPDFPathSegment_GetType: fn(FPDF_PATHSEGMENT) -> c_int;
+    FPDFPathSegment_GetClose: fn(FPDF_PATHSEGMENT) -> FPDF_BOOL;
+    FPDFTextObj_GetFontSize: fn(FPDF_PAGEOBJECT, *mut c_float) -> FPDF_BOOL;
+    FPDFTextObj_GetTextRenderMode: fn(FPDF_PAGEOBJECT) -> c_int;
+    FPDFTextObj_GetFont: fn(FPDF_PAGEOBJECT) -> FPDF_FONT;
+    FPDFFont_GetFamilyName: fn(FPDF_FONT, *mut std::ffi::c_char, usize) -> usize;
+    FPDFFont_GetFlags: fn(FPDF_FONT) -> c_int;
+    FPDFFont_GetGlyphWidth: fn(FPDF_FONT, u32, c_float, *mut c_float) -> FPDF_BOOL;
+    FPDFAnnot_HasKey: fn(FPDF_ANNOTATION, *const std::ffi::c_char) -> FPDF_BOOL;
+    FPDFFont_GetWeight: fn(FPDF_FONT) -> c_int;
+    FPDFFont_GetGlyphPath: fn(FPDF_FONT, u32, c_float) -> FPDF_GLYPHPATH;
+    FPDFGlyphPath_CountGlyphSegments: fn(FPDF_GLYPHPATH) -> c_int;
+    FPDFGlyphPath_GetGlyphPathSegment: fn(FPDF_GLYPHPATH, c_int) -> FPDF_PATHSEGMENT;
+    FPDFImageObj_GetBitmap: fn(FPDF_PAGEOBJECT) -> FPDF_BITMAP;
+    FPDFImageObj_GetRenderedBitmap: fn(FPDF_DOCUMENT, FPDF_PAGE, FPDF_PAGEOBJECT) -> FPDF_BITMAP;
+    FPDFImageObj_GetImageDataRaw: fn(FPDF_PAGEOBJECT, *mut c_void, c_ulong) -> c_ulong;
+    FPDFImageObj_GetImageFilterCount: fn(FPDF_PAGEOBJECT) -> c_int;
+    FPDFImageObj_GetImageFilter: fn(FPDF_PAGEOBJECT, c_int, *mut c_void, c_ulong) -> c_ulong;
+    FPDFImageObj_GetIccProfileDataDecoded: fn(FPDF_PAGEOBJECT, FPDF_PAGE, *mut u8, usize, *mut usize) -> FPDF_BOOL;
+    FPDFImageObj_GetImageMetadata: fn(FPDF_PAGEOBJECT, FPDF_PAGE, *mut FPDF_IMAGEOBJ_METADATA) -> FPDF_BOOL;
+    FPDFBitmap_GetFormat: fn(FPDF_BITMAP) -> c_int;
+    FPDFBitmap_GetBuffer: fn(FPDF_BITMAP) -> *mut c_void;
+    FPDFBitmap_GetWidth: fn(FPDF_BITMAP) -> c_int;
+    FPDFBitmap_GetHeight: fn(FPDF_BITMAP) -> c_int;
+    FPDFBitmap_GetStride: fn(FPDF_BITMAP) -> c_int;
+    FPDFPage_GetAnnotCount: fn(FPDF_PAGE) -> c_int;
+    FPDFPage_GetAnnot: fn(FPDF_PAGE, c_int) -> FPDF_ANNOTATION;
+    FPDFPage_CloseAnnot: fn(FPDF_ANNOTATION);
+    FPDFAnnot_GetSubtype: fn(FPDF_ANNOTATION) -> c_int;
 }
 
 /// Why PDFium couldn't be brought up. Separate from [`FailCode`] because a worker reports this once, at start.
@@ -203,16 +314,6 @@ unsafe extern "C" fn need_to_pause(this: *mut IFSDK_PAUSE) -> FPDF_BOOL {
     FPDF_BOOL::from(cancelled)
 }
 
-/// `fpdfview.h`: a rectangle of page points.
-#[repr(C)]
-#[allow(non_camel_case_types)]
-struct FS_RECTF {
-    left: c_float,
-    top: c_float,
-    right: c_float,
-    bottom: c_float,
-}
-
 /// The one open page, kept because tiles arrive in runs for the same page and `FPDF_LoadPage` is the slow part.
 struct OpenPage {
     index: u32,
@@ -235,6 +336,8 @@ pub struct PdfiumBackend {
     _file: Box<File>,
     /// `!Send` and `!Sync`: PDFium isn't thread-safe.
     _one_thread: PhantomData<*mut ()>,
+    /// A page's contents on their way out, a frame at a time. Goes before the page it's about, and any other job for any page ends it.
+    walk: Option<Box<Walk>>,
 }
 
 impl PdfiumBackend {
@@ -287,6 +390,7 @@ impl PdfiumBackend {
             _access: access,
             _file: file,
             _one_thread: PhantomData,
+            walk: None,
         })
     }
 
@@ -300,6 +404,15 @@ impl PdfiumBackend {
 
     /// Makes `index` the open page, closing any other.
     fn load_page(&mut self, index: u32) -> Result<(), RenderError> {
+        // A walk turns objects off and changes their opacity, so nothing else may see the page it was on.
+        if self.walk.is_some() {
+            self.close_page();
+        }
+        self.load_page_for_walk(index)
+    }
+
+    /// Makes `index` the open page, for a walk that manages what it's done to it.
+    fn load_page_for_walk(&mut self, index: u32) -> Result<(), RenderError> {
         if index >= self.page_count {
             return Err(FailCode::BadPage);
         }
@@ -317,6 +430,7 @@ impl PdfiumBackend {
     }
 
     fn close_page(&mut self) {
+        self.walk = None;
         if let Some(open) = self.open_page.take() {
             // SAFETY: these handles came from this document, are live, and `take` means nothing can reach them after this. The text page
             // and form view must go before the page they refer to.
@@ -357,6 +471,28 @@ impl PdfiumBackend {
             return Ok(false);
         }
         self.draw(out, width, height, stride_int, at, full, cancel)
+    }
+
+    /// Readies the open page's form fields for drawing, if the environment can be made.
+    fn ready_form_view(&mut self) {
+        self.ensure_form();
+        let (api, form) = (self.api, self.form);
+        if let Some(open) = self.open_page.as_mut().filter(|open| !open.form_loaded && !form.is_null()) {
+            // SAFETY: the page is live and `form` came from this document. Once per open page, as `form_loaded` says.
+            unsafe { (api.FORM_OnAfterLoadPage)(open.page, form) };
+            open.form_loaded = true;
+        }
+    }
+
+    /// The open page's text page, made if need be. It goes with the page.
+    fn text_page_now(&mut self) -> Result<FPDF_TEXTPAGE, RenderError> {
+        let api = self.api;
+        let open = self.open_page.as_mut().ok_or(FailCode::Internal)?;
+        if open.text.is_null() {
+            // SAFETY: the page is live, and the text page is closed with it in `close_page`.
+            open.text = unsafe { (api.FPDFText_LoadPage)(open.page) };
+        }
+        if open.text.is_null() { Err(FailCode::Internal) } else { Ok(open.text) }
     }
 
     /// Draws into `out` at the given whole-page size and offset. Returns false if cancelled. Page load has no pause, so a slow one only
@@ -459,6 +595,10 @@ impl RenderBackend for PdfiumBackend {
             whole = Some(whole.map_or(kind, |so_far| merge_kinds(so_far, kind)));
         }
         Ok(TileOutcome::Done(whole.unwrap_or(TileKind::Colour)))
+    }
+
+    fn contents_frame(&mut self, job: &ContentsJob, out: &mut Vec<u8>, cancel: &dyn Cancel) -> Result<(), RenderError> {
+        PdfiumBackend::contents_frame(self, job, out, cancel)
     }
 
     fn largest_image_pixels(&mut self, page: u32) -> Result<u64, RenderError> {
@@ -675,6 +815,37 @@ impl PdfiumBackend {
             }
         }
         Ok(())
+    }
+}
+
+/// Draws one page onto a caller's memory, in one go: the host's watch holds it from outside, and nothing here pauses. `form` draws form fields too, when `annots` is set.
+#[allow(clippy::too_many_arguments)]
+fn draw_plain(api: &'static Api, page: FPDF_PAGE, form: FPDF_FORMHANDLE, out: &mut [u8], width: c_int, height: c_int, stride: c_int, at: (c_int, c_int), full: (c_int, c_int), format: c_int, paper: c_ulong, annots: bool) -> bool {
+    let needed = i64::from(stride) * i64::from(height);
+    if needed > out.len() as i64 || stride < width.saturating_mul(4) {
+        return false;
+    }
+    let flags = if annots { FPDF_ANNOT } else { 0 };
+    // SAFETY: `out` holds at least `stride * height` bytes, checked above, and outlives the bitmap, destroyed below in this function. `page` is live for the caller's walk.
+    unsafe {
+        let bitmap = (api.FPDFBitmap_CreateEx)(width, height, format, out.as_mut_ptr().cast(), stride);
+        if bitmap.is_null() {
+            return false;
+        }
+        (api.FPDFBitmap_FillRect)(bitmap, 0, 0, width, height, paper);
+        let mut pause = PauseState { base: IFSDK_PAUSE { version: 1, NeedToPauseNow: need_to_pause, user: std::ptr::null_mut() }, cancel: &crate::NeverCancel, cancelled: Cell::new(false) };
+        let pause_ptr = (&raw mut pause).cast::<IFSDK_PAUSE>();
+        let mut status = (api.FPDF_RenderPageBitmap_Start)(bitmap, page, at.0, at.1, full.0, full.1, 0, flags, pause_ptr);
+        while status == FPDF_RENDER_TOBECONTINUED {
+            status = (api.FPDF_RenderPage_Continue)(page, pause_ptr);
+        }
+        let done = status == FPDF_RENDER_DONE;
+        if done && annots && !form.is_null() {
+            (api.FPDF_FFLDraw)(form, bitmap, page, at.0, at.1, full.0, full.1, 0, flags);
+        }
+        (api.FPDF_RenderPage_Close)(page);
+        (api.FPDFBitmap_Destroy)(bitmap);
+        done
     }
 }
 
