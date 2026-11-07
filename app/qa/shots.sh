@@ -53,9 +53,7 @@ r view --paper white
 settle
 shot dark-white-paper
 r view --paper dark
-# A long outline with other tabs, and at a short window. The contents scroll by themselves, and the tabs and footer stay.
-r tap "#1"
-settle
+# A long outline with other tabs, and at a short window. The contents scroll by themselves, and the tabs and footer stay. Tab 1 is active by now.
 for look in light dark; do
     r qa appearance "$look"
     settle

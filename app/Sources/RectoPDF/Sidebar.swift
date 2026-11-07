@@ -351,8 +351,13 @@ final class ActiveTabCell: FlippedView {
     private func relayout() {
         let next = core.sidebarLayout(room: scroll.frame.height)
         guard next != layout else { return }
+        let heightChanged = next.contentsHeight != layout.contentsHeight
         layout = next
         table.reloadData()
+        if heightChanged {
+            core.contentsViewChanged()
+            revealPlace()
+        }
     }
 
     private func placeFooter() {
@@ -457,9 +462,13 @@ final class ActiveTabCell: FlippedView {
             contentsTable.reloadData()
             if let active = activeIndex { table.scrollRowToVisible(active) }
         }
-        // Rust's rule says whether the place being read needs bringing into view, and how.
-        let height = contentsScroll.superview == nil ? 0 : contentsScroll.frame.height
-        switch core.contentsReached(row: new.tocOpen ? new.contentsCurrent : nil, scrollY: contentsY, height: height, reduceMotion: shouldReduceMotion) {
+        revealPlace()
+    }
+
+    /// Rust's rule says whether the place being read needs bringing into view, and how. A resize changes the height with the table not laid out yet, so the height is the rule's, not the view's.
+    private func revealPlace() {
+        table.layoutSubtreeIfNeeded()
+        switch core.contentsReached(row: model.tocOpen ? model.contentsCurrent : nil, scrollY: contentsY, height: contentsHeight, reduceMotion: shouldReduceMotion) {
         case .stay:
             break
         case let .setTo(y):

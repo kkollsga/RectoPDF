@@ -243,6 +243,13 @@ impl ContentsFollow {
         *self = Self { pointer_inside, ..Self::default() };
     }
 
+    /// The contents' area changed height, as the window did. The place is looked at again next, and goes straight to where it should be, since nothing about a resize wants drifting.
+    pub fn view_changed(&mut self) {
+        self.current = None;
+        self.placed = false;
+        self.drift = None;
+    }
+
     pub fn is_following(self) -> bool {
         !self.paused
     }
@@ -1124,6 +1131,15 @@ mod tests {
         let mut follow = placed_at(100);
         follow.new_contents();
         assert!(matches!(follow.reached(Some(500), contents_view(0.0), 100.0, false), FollowMove::SetTo(_)));
+    }
+
+    /// Failure: a shorter window leaves the place below the bottom of the contents, with nothing to bring it back until the section changes. Seen in the first short-window shot.
+    #[test]
+    fn a_change_of_height_brings_the_place_back() {
+        let mut follow = placed_at(100);
+        let y = (100.5 * CONTENTS_ROW_HEIGHT) - 280.0;
+        follow.view_changed();
+        assert!(matches!(follow.reached(Some(100), ContentsView { scroll_y: y, height: 120.0, rows: 1000 }, 100.0, false), FollowMove::SetTo(_)));
     }
 
     /// Failure: rows opening above the place throw a drift off, by the number of rows the host just moved past.

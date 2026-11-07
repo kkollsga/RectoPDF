@@ -377,6 +377,8 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
             "note": "A window off every screen, so what a display link or a visible window adds isn't in this.",
         });
     }
+    run.call(json!({ "cmd": "goto", "page": (state["reader"]["pages"].as_u64().unwrap_or(2) / 3).max(1) }))?;
+    run.settled()?;
     let sweep = run.call(json!({ "cmd": "qa_drive", "verb": "sweep", "value": "6", "timeout_ms": 5000 }))?;
     report["scroll"] = json!({
         "pages_per_second": 6,
@@ -386,6 +388,7 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
         "budget_ui_step_us_p99": 2000,
         "blank_seen_steps": sweep["blank_seen_steps"],
         "blank_steps": sweep["blank_steps"],
+        "contents": sweep["contents"],
         "peak_tree_mib": mib(sweep["peak_tree_bytes"].as_u64().unwrap_or(0)),
         "budget_peak_mib": 170,
         "sharp_after_stop_ms": sweep["sharp_after_ms"],
@@ -404,7 +407,7 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     stops.sort_by(f64::total_cmp);
     report["sharp_after_scroll_stops_ms"] = json!({ "stops": stops.len(), "p50": round(percentile(&stops, 0.5)), "worst": round(percentile(&stops, 1.0)), "budget": 100, "note": "From `qa scroll` returning. Includes one client round trip." });
     let fast = run.call(json!({ "cmd": "qa_drive", "verb": "sweep", "value": "40", "timeout_ms": 5000 }))?;
-    report["fast_scroll"] = json!({ "pages_per_second": 40, "ui_step_us": fast["step_us"], "blank_seen_steps": fast["blank_seen_steps"], "peak_tree_mib": mib(fast["peak_tree_bytes"].as_u64().unwrap_or(0)), "budget_peak_mib": 170, "sharp_after_stop_ms": fast["sharp_after_ms"], "cancelled": fast["cancelled"] });
+    report["fast_scroll"] = json!({ "pages_per_second": 40, "contents": fast["contents"], "ui_step_us": fast["step_us"], "blank_seen_steps": fast["blank_seen_steps"], "peak_tree_mib": mib(fast["peak_tree_bytes"].as_u64().unwrap_or(0)), "budget_peak_mib": 170, "sharp_after_stop_ms": fast["sharp_after_ms"], "cancelled": fast["cancelled"] });
     run.drive("window", "close")?;
     std::thread::sleep(Duration::from_millis(500));
     let closed = run.state()?;

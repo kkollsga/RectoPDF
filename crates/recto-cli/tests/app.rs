@@ -433,6 +433,7 @@ fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
     let short = run.ok(&["qa", "resize", "900x420"]);
     assert_eq!(short["contents"]["tab_rows_on_screen"], 5, "{short}");
     assert!(short["contents"]["height"].as_f64().unwrap() + 5.0 * 32.0 <= short["contents"]["list_height"].as_f64().unwrap() + 0.5, "{short}");
+    assert_eq!(short["contents"]["current_in_view"], true, "a shorter window doesn't lose the place: {short}");
     run.ok(&["qa", "resize", "1440x900"]);
     run.settled();
     // The place stays in view as the reader reads on, and a far `goto` lands rather than whooshes.

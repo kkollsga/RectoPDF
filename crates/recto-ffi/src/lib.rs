@@ -608,6 +608,11 @@ impl AppCore {
         lock(&self.inner.contents_follow).step(position, dt)
     }
 
+    /// The contents' area changed height.
+    pub fn contents_view_changed(&self) {
+        lock(&self.inner.contents_follow).view_changed();
+    }
+
     /// Rows above changed, and the host moved its scroll by this many points to match.
     pub fn contents_shifted(&self, by: f64) {
         lock(&self.inner.contents_follow).shifted(by);
