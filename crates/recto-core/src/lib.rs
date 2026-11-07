@@ -8,6 +8,10 @@ use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::Path;
 
+mod signatures;
+
+pub use signatures::{MAX_SIGNATURES, SignatureEntry, SignatureInventory, signatures};
+
 /// Most contents entries kept for one document. A hostile file can't make the contents grow past this.
 pub const MAX_TOC_ENTRIES: usize = 100_000;
 /// Deepest nesting kept in the contents.
@@ -101,20 +105,32 @@ pub struct DocFacts {
     /// The PDF's own title, cleaned. It comes from the file, so treat it as untrusted.
     pub title: Option<Box<str>>,
     pub toc: Toc,
+    /// The structure reader refused this file, and only the renderer could read it. The page count is the renderer's, and there's no title, contents or signature report to give.
+    /// Such a tab can be read and drawn, but its pages can't be edited: only the structure reader's writer may change a PDF.
+    pub renderer_only: bool,
 }
 
-/// Opens a PDF lazily, reads its facts and closes it. No file handle stays open after this returns.
-pub fn inspect(path: &Path) -> Result<DocFacts, OpenError> {
-    std::fs::metadata(path).map_err(|e| match e.kind() {
+/// Opens a file for the lazy reader. Only a plain file: opening a pipe would wait for a writer for ever, and a device could be anything.
+fn open_reader(path: &Path) -> Result<IndexedReader, OpenError> {
+    let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
         ErrorKind::NotFound => OpenError::NotFound,
         ErrorKind::PermissionDenied => OpenError::NotAllowed,
         _ => OpenError::NotPdf,
     })?;
+    if !meta.is_file() {
+        return Err(OpenError::NotPdf);
+    }
     let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
     let reader = IndexedReader::open(source).map_err(|_| OpenError::NotPdf)?;
     if reader.is_encrypted() && !reader.is_authenticated() {
         return Err(OpenError::PasswordNeeded);
     }
+    Ok(reader)
+}
+
+/// Opens a PDF lazily, reads its facts and closes it. No file handle stays open after this returns.
+pub fn inspect(path: &Path) -> Result<DocFacts, OpenError> {
+    let reader = open_reader(path)?;
     let page_count = reader.page_count().map_err(|_| OpenError::NotPdf)?;
     Ok(DocFacts {
         page_count: u32::try_from(page_count).map_err(|_| OpenError::NotPdf)?,
@@ -124,6 +140,7 @@ pub fn inspect(path: &Path) -> Result<DocFacts, OpenError> {
         title: read_title(&reader),
         // A damaged outline shouldn't stop a readable PDF from opening.
         toc: read_toc(&reader).unwrap_or_default(),
+        renderer_only: false,
     })
 }
 
