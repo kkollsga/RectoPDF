@@ -58,20 +58,27 @@ const fn paper_channels() -> [i32; 3] {
     [((DARK_PAPER >> 16) & 0xFF) as i32, ((DARK_PAPER >> 8) & 0xFF) as i32, (DARK_PAPER & 0xFF) as i32]
 }
 
+/// **How turned-over text keeps its weight** (owner, 2026-11-07: "The font in the future competitiveness is not super readible. I think its a bit to skinny"). On white paper the renderer's text is what Preview draws: PDFium draws glyphs through Core Graphics on a Mac, and at the same scale their ink is the same to four places. Turned over in sRGB's encoding, though, a letter's anti-aliased edge gives off much less light above dark paper than it took from white, so light text came out thinner than black, and thinner than macOS draws its own light text: in three system fonts at the reader's scale, 0.70 to 0.78 of the light per letter against 0.84 to 0.88 for Core Text's own light-on-dark. Paper-ness goes through this power first, so an edge gives off more: at 1.8 the turned-over text gives off 0.98 to 1.00 of what Core Text's own does. White and black stay where they were, so paper and ink are unchanged.
+const TURNED_LIGHTNESS_POWER: f64 = 1.8;
+
+/// Paper-ness after [`TURNED_LIGHTNESS_POWER`], for each value of it. Made once.
+static TURNED_LIGHTNESS: std::sync::LazyLock<[u8; 256]> = std::sync::LazyLock::new(|| std::array::from_fn(|value| (255.0 * (value as f64 / 255.0).powf(TURNED_LIGHTNESS_POWER)).round().clamp(0.0, 255.0) as u8));
+
 /// Turns one colour over, as a blank tile's single colour needs.
 pub fn dark_rgb(rgb: u32) -> u32 {
     let mut pixel = [(rgb & 0xFF) as u8, ((rgb >> 8) & 0xFF) as u8, ((rgb >> 16) & 0xFF) as u8, 0xFF];
-    turn_pixel(&mut pixel);
+    turn_pixel(&mut pixel, &TURNED_LIGHTNESS);
     (u32::from(pixel[2]) << 16) | (u32::from(pixel[1]) << 8) | u32::from(pixel[0])
 }
 
 #[inline]
-fn turn_pixel(pixel: &mut [u8; 4]) {
+fn turn_pixel(pixel: &mut [u8; 4], lightness: &[u8; 256]) {
     let [paper_r, paper_g, paper_b] = paper_channels();
     let (b, g, r) = (i32::from(pixel[0]), i32::from(pixel[1]), i32::from(pixel[2]));
-    // Rec. 601 weights, in 256ths: 255 is paper, 0 is ink.
+    // Rec. 601 weights, in 256ths: 255 is paper, 0 is ink. At most 255, as the weights add up to 256.
     let luma = (77 * r + 150 * g + 29 * b) >> 8;
-    let over = |paper: i32, ink: i32, value: i32| (((paper * luma + ink * (255 - luma)) / 255) + value - luma).clamp(0, 255) as u8;
+    let paperness = i32::from(lightness[(luma as usize) & 0xFF]);
+    let over = |paper: i32, ink: i32, value: i32| (((paper * paperness + ink * (255 - paperness)) / 255) + value - luma).clamp(0, 255) as u8;
     pixel[0] = over(paper_b, DARK_INK[2], b);
     pixel[1] = over(paper_g, DARK_INK[1], g);
     pixel[2] = over(paper_r, DARK_INK[0], r);
@@ -357,11 +364,12 @@ pub fn turn_over(pixels: &mut [u8], width: u32, height: u32, stride: u32, grey: 
     if stride < row_bytes || stride == 0 {
         return;
     }
+    let lightness = &*TURNED_LIGHTNESS;
     if grey && keeps.is_empty() && whiten.is_empty() {
         let mut table = [[0u8; 3]; 256];
         for (value, entry) in table.iter_mut().enumerate() {
             let mut pixel = [value as u8, value as u8, value as u8, 0xFF];
-            turn_pixel(&mut pixel);
+            turn_pixel(&mut pixel, lightness);
             *entry = [pixel[0], pixel[1], pixel[2]];
         }
         for row in pixels.chunks_mut(stride).take(height as usize) {
@@ -388,7 +396,7 @@ pub fn turn_over(pixels: &mut [u8], width: u32, height: u32, stride: u32, grey: 
             if let Some((_, gains)) = to_whiten.iter().find(|(place, _)| (place.left as usize..place.right as usize).contains(&x)) {
                 whiten_pixel(pixel, *gains);
             }
-            turn_pixel(pixel);
+            turn_pixel(pixel, lightness);
         }
     }
 }
@@ -459,6 +467,23 @@ mod tests {
             assert!(now + 2 >= last, "at {edge:06x}: {now}, after {last}");
             last = now;
         }
+    }
+
+    /// Failure: text on dark paper is thinner than the same text on white, as the owner found the EU competitiveness report's light sans (2026-11-07: "I think its a bit to skinny"). Turning lightness over in sRGB's encoding leaves a letter's anti-aliased edge giving off far less light above dark paper, in linear light, than it took from white paper, and the letter looks thinner, where macOS draws its own light text heavier. Over every grey an edge can be, what's turned over must give off at least 0.7 of the light the edge took from white: a straight turn gives 0.50.
+    #[test]
+    fn text_keeps_its_weight_on_dark_paper() {
+        let linear = |value: u32| {
+            let channel = f64::from(value) / 255.0;
+            if channel <= 0.04045 { channel / 12.92 } else { ((channel + 0.055) / 1.055).powf(2.4) }
+        };
+        let light = |rgb: u32| 0.2126 * linear((rgb >> 16) & 0xFF) + 0.7152 * linear((rgb >> 8) & 0xFF) + 0.0722 * linear(rgb & 0xFF);
+        let (paper, ink) = (light(DARK_PAPER), light(dark_rgb(0)));
+        let (mut taken, mut given) = (0.0, 0.0);
+        for grey in 0..=255u32 {
+            taken += 1.0 - linear(grey);
+            given += (light(dark_rgb(grey * 0x01_01_01)) - paper) / (ink - paper);
+        }
+        assert!(given / taken >= 0.7, "turned-over edges give off {:.2} of what they took from white", given / taken);
     }
 
     /// Failure: an image turns into its negative on dark paper, as the hillshade on the USGS map did. It stays itself, a little dimmed, while the page around it turns over.
