@@ -877,7 +877,7 @@ fn flag_for_stray_word(spec: &Spec, word: &str) -> Option<(&'static str, String)
     let value = match whole_number(word) {
         Some(number) if number > 0 && !has_pages => format!("\"#{number}\""),
         Some(_) => return None,
-        None if word.ends_with(|c: char| c == '-') || word.starts_with('-') || word.contains('/') || word.to_ascii_lowercase().ends_with(".pdf") => return None,
+        None if word.ends_with('-') || word.starts_with('-') || word.contains('/') || word.to_ascii_lowercase().ends_with(".pdf") => return None,
         None if word.chars().any(char::is_alphabetic) || word.strip_prefix('#').and_then(whole_number).is_some() => typed_value(word)?,
         None => return None,
     };
