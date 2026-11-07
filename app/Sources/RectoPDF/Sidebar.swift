@@ -291,6 +291,8 @@ final class RevealLabel: FlippedView {
         contentsTable.action = #selector(contentsClicked)
         // One height for every row, so the table asks nothing per row, however many there are.
         contentsTable.rowHeight = 28
+        // A move of the contents isn't the reader's, so it shows no scroller. With the pointer over them it's the system's as usual.
+        contentsScroll.hasVerticalScroller = false
         contentsScroll.userScrolled = { [weak self] in self?.noteUserScrolled() }
         contentsScroll.pointerMoved = { [weak self] inside in self?.setContentsPointer(inside) }
         NotificationCenter.default.addObserver(self, selector: #selector(contentsLiveScrolled), name: NSScrollView.didLiveScrollNotification, object: contentsScroll)
@@ -326,6 +328,7 @@ final class RevealLabel: FlippedView {
     /// What the pointer entering or leaving the contents does, and what `recto qa contents-pointer` calls.
     func setContentsPointer(_ inside: Bool) {
         pointerInContents = inside
+        contentsScroll.hasVerticalScroller = inside
         core.contentsPointer(inside: inside)
         if inside { frames?.stop() }
     }
@@ -375,6 +378,7 @@ final class RevealLabel: FlippedView {
             "reduce_motion": shouldReduceMotion,
             "row_views": shown ? contentsTable.subviews.count : 0,
             "stale_rows": staleContentsRows(),
+            "scroller": contentsScroll.hasVerticalScroller,
             "tab_rows_on_screen": table.rows(in: table.visibleRect).length,
             "tabs_scroll": layout.tabsScroll,
             "list_height": scroll.frame.height,

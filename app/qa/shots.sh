@@ -3,7 +3,7 @@
 #
 #   app/qa/shots.sh OUT_DIR READER.pdf HEAVY.pdf [more PDFs for tabs...]
 #
-# OUT_DIR gets home, reader, sidebar-open, sidebar-folded, sidebar-hover, focus, heavy and low-res, each -light and -dark, and dark-white-paper.
+# OUT_DIR gets home, reader, sidebar-open, sidebar-folded, sidebar-hover, focus, heavy and low-res, each -light and -dark with the paper that goes with the window, and dark-white-paper and light-dark-paper.
 # Given more PDFs, the first of them onward are other tabs for sidebar-long-contents.
 set -euo pipefail
 out="$1"; reader="$2"; heavy="$3"; shift 3
@@ -28,7 +28,7 @@ r tap "#1"
 settle
 for look in light dark; do
     r qa appearance "$look"
-    r view --paper dark
+    r view --paper auto
     settle
     r goto 12
     settle
@@ -52,7 +52,11 @@ r qa appearance dark
 r view --paper white
 settle
 shot dark-white-paper
+r qa appearance light
 r view --paper dark
+settle
+shot light-dark-paper
+r view --paper auto
 # A long outline with other tabs, and at a short window. The contents scroll by themselves, and the tabs and footer stay. Tab 1 is active by now.
 for look in light dark; do
     r qa appearance "$look"

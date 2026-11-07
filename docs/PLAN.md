@@ -91,6 +91,10 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Draw the next pages ahead while idle, within the memory limits
 - [ ] Compare hayro, and MuPDF as a measuring stick only, on heavy pages, **only if** the viewport numbers still miss their targets
 - [x] Dark mode with dark or white paper; focus view; agent icon as a placeholder
+- [x] Contents in a scrolling area with a maximum height; other tabs and footer stay; virtualised, for 10,000 entries
+- [x] Contents repositions and rests: dead zone, one eased move, no second move as a chapter closes. How it feels is for the owner to judge on a dev build
+- [x] A shortened name shows in full on hover, for tabs and contents entries
+- [x] Warm paper, a third paper colour, by a compositor tint with no re-render; `recto view --paper`
 - [x] Budget tests: cold start, one document, scrolling, idle CPU, closed window (`recto qa budget`, off screen; numbers in `docs/ENGINEERING.md`)
 - [ ] Spike on the MacBook: 120 Hz and on-screen memory
 - [ ] Sandbox spike: PDFium in an XPC service (its library links AppKit)

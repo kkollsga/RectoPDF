@@ -453,6 +453,8 @@ fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
     run.settled();
     let again = wait_for(&run, |state| state["app"]["contents"]["frames_running"] == false && state["app"]["contents"]["current"].as_u64().unwrap_or(0) > 1000);
     assert_eq!(again["app"]["contents"]["stale_rows"], 0, "{again}");
+    // Failure: every reposition flashes a scroller the reader didn't ask for, where the sidebar is meant to be names and contents at rest.
+    assert_eq!(again["app"]["contents"]["scroller"], false, "{again}");
     // Scrolled away, it stays where it's put, however the reader moves on.
     let away = run.ok(&["qa", "contents-scroll", "10"]);
     assert_eq!(away["contents"]["following"], false, "{away}");

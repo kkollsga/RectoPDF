@@ -30,10 +30,10 @@ A missed budget is a bug. The whole process tree counts, on release builds, on a
 | One document, text page | ≤ 60 MiB | Met off screen: 32 MiB |
 | Colour full-bleed page | ≤ 100 MiB | 38 MiB on an image page. **Missed at 210 MiB** on a page of shaded backgrounds, from PDFium |
 | Fast scrolling, peak | ≤ 170 MiB. **Named exception:** pages with huge images can exceed this, under the memory limit sequence in §3. Accepted by the owner, 2026-11-07: about 415–450 MiB on a 330 MiB map with one-pass drawing, in exchange for a first view about four times faster | Text 40 to 50 MiB, images 61 to 90. The map: 377 fitted, 433 at 2x, **489 at 3x**, by the tree |
-| Cold start to first sharp page | ≤ 300 ms p50, ≤ 500 ms p95 | Met off screen: 136, 152 ms |
-| Open 2 GB, 10k pages | Page 1 sharp ≤ 250 ms warm, ≤ 600 ms cold; main never stalls > 16 ms | 170 ms warm. Cold not tested. **Worst stall 18 ms** |
-| Idle CPU | ~0%, ≤ 1 wake-up per second | Met off screen: 0.0%, 0.5 at most |
-| Scroll | 120 fps on ProMotion, ≥ 99% of frames on time, 0 blank frames on seen pages | UI thread 0.24 ms p99 a step, 0 blank steps, off screen. Frames not tested: needs the MacBook |
+| Cold start to first sharp page | ≤ 300 ms p50, ≤ 500 ms p95 | Met off screen: 134, 154 ms |
+| Open 2 GB, 10k pages | Page 1 sharp ≤ 250 ms warm, ≤ 600 ms cold; main never stalls > 16 ms | 182 ms warm. Cold not tested. **Worst stall 20 ms** |
+| Idle CPU | ~0%, ≤ 1 wake-up per second | Met off screen: 0.0%, 0.65 at most |
+| Scroll | 120 fps on ProMotion, ≥ 99% of frames on time, 0 blank frames on seen pages | UI thread 0.5 ms p99 a step, off screen. **Blank steps on seen pages past the last 128 pages** at 40 pages a second, until disk previews. Frames not tested: needs the MacBook |
 | Sharp after scroll stops | ≤ 100 ms on a text page | Met: 7 ms typical, 17 at worst |
 | Background work (OCR, indexing, compress) | Helper process, background QoS, exits when done | Pending |
 | Window closed | ≤ 20 MiB | Met: 11.5 MiB |

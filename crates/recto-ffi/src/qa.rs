@@ -42,6 +42,8 @@ struct Motion {
 fn contents_moves(steps: &[(f64, f64)]) -> Value {
     // Steps this close together with no movement between them are one move's slow part, and not a rest: the scroll is rounded to a device pixel, so a slow end can hold still for a few.
     const SAME_MOVE_GAP: f64 = 0.2;
+    const SPEED_OVER: f64 = 0.025;
+    let mut back = 0;
     // The moves themselves, up to a limit: a sweep can't have more that anyone would read one by one.
     const MOVES_LISTED: usize = 64;
     let finish = |motion: Motion, moves: &mut Vec<(f64, f64)>, listed: &mut Vec<Value>| {
@@ -61,7 +63,11 @@ fn contents_moves(steps: &[(f64, f64)]) -> Value {
         if to == from {
             continue;
         }
-        let speed = (to - from).abs() / (now - then).max(1e-3);
+        // Over a little time, not one step: steps aren't evenly spaced, and two close together would read as a speed nothing reached.
+        while now - steps[back + 1].0 >= SPEED_OVER {
+            back += 1;
+        }
+        let speed = (to - steps[back].1).abs() / (now - steps[back].0).max(SPEED_OVER);
         current = match current {
             Some(motion) if then - motion.end <= SAME_MOVE_GAP => Some(Motion { end: now, to, peak: motion.peak.max(speed), largest: motion.largest.max((to - from).abs()), ..motion }),
             finished => {
