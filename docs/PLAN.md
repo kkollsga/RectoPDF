@@ -109,7 +109,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Native text selection: drag, double and triple click, select across pages, ⌘C, the system's highlight colour and I-beam cursor
 - [x] Search corpus and index, with the text normaliser: `recto index`, `recto wait indexing-done`, and `recto search` answering from it, with `route` saying how
 - [ ] Find in the sidebar, with the hit list
-- [ ] macOS menu bar, driven by a Rust model; `⋯` panel; ⌘K
+- [x] macOS menu bar, driven by a Rust model; `⋯` panel
+- [ ] ⌘K
 - [ ] Session restore, recent files, replaced-file handling, password prompt
 - [ ] Links, back and forward, page labels
 - [ ] Click to copy an image losslessly
