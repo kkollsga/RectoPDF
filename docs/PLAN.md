@@ -108,7 +108,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Session restore, recent files, replaced-file handling, password prompt
 - [ ] Links, back and forward, page labels
 - [ ] Click to copy an image losslessly
-- [ ] Snapshot tool with text, PNG, JPG and the hand-rolled streaming `recto-svg`
+- [x] Hand-rolled streaming `recto-svg`, and `recto export svg`: a page or a box to a new SVG, images lossless, what can't be vector a named picture of just that element
+- [ ] Snapshot tool with text, PNG, JPG and SVG, on top of that
 - [ ] Print
 - [ ] What blind agents asked for: a whole-document hit total in `search`, an unwrapped quote form of `text`, `edits` saying when turns cancel out, `watch` to a file, and what an encrypted file restricts in `facts`
 - [ ] **Blind agent test, next round**

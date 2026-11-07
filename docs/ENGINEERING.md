@@ -9,10 +9,10 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `recto-platform` | **Started** | File identity, process footprint, handle count, `isolate`: child process, channel with handles, shared memory, loaded library. Later `surface`, `fswatch` | Hold policy |
 | `recto-core` | **Started** | Lazy document structure over the lopdf fork's `IndexedReader`: facts, page count, contents. Later the append writer | Know about tiles, threads or an OS |
 | `recto-proto` | **Started** | Job and tile wire types, no dependencies. The host validates everything from the renderer | |
-| `recto-render` | **Started** | `render_tile(page, rect, scale, &mut [u8], cancel)` behind `RenderBackend`, page text. PDFium, by raw FFI | Allocate surfaces, name an OS, decide policy |
+| `recto-render` | **Started** | `render_tile(page, rect, scale, &mut [u8], cancel)` behind `RenderBackend`, page text, and a page's contents a frame at a time. PDFium, by raw FFI | Allocate surfaces, name an OS, decide policy |
 | `recto-render-service` | **Started** | Library: the host's side, `DocRenderer`, limits, validation. Binary: the worker. Plain child process for now; sandbox is a separate spike | Link PDFium into the host |
 | `recto-index` | **Started** | Line order, text normaliser and hidden-text report: pure functions on the host's side. Later the page-text corpus | Touch the UI |
-| `recto-svg` | Planned | Streaming SVG writer | Build a document in memory |
+| `recto-svg` | **Started** | Streaming SVG writer over `io::Write`, with PNG and base64 written as bytes arrive. Knows nothing about PDFs | Build a document in memory |
 | `recto-sign` | **Started (placeholder)** | Final seams for PAdES creation and the honest report; `PlaceholderSigner` always refuses | Depend on `recto-render`; produce anything that looks like a signature |
 | `recto-session` | **Started** | Tabs, tiers, sidebar and view models: all the rules | Name a UI toolkit |
 | `recto-agent` | **Started** | Typed, versioned commands, permission levels, the JSON envelope. `table.rs` is the one list of commands: the CLI's grammar, `recto help`, the level checks, `SKILL.md` and `REFERENCE.md` all come from it | Hold state of its own |
@@ -23,7 +23,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 
 ## Quality bar
 
-- `unsafe` is forbidden in every crate except the OS seams (`recto-platform`, `recto-ffi`) and the PDFium seam (`recto-render/src/pdfium.rs`). Every `unsafe` has a SAFETY comment.
+- `unsafe` is forbidden in every crate except the OS seams (`recto-platform`, `recto-ffi`) and the PDFium seam (`recto-render/src/pdfium.rs` and `pdfium/contents.rs`). Every `unsafe` has a SAFETY comment.
 - Clippy with `-D warnings`.
 - No panics on untrusted input. Collections grown from outside input have a cap.
 - A struct held per item documents its size and asserts it in a test.
@@ -50,7 +50,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `lopdf` (fork) | The lazy `IndexedReader`, and later the append writer. Pinned to a git revision |
 | `serde`, `serde_json` | The agent JSON envelope |
 | `libc` | `proc_pid_rusage` for footprint, process, channel and shared-memory calls, and the control socket's `poll` and `getpeereid`, `recto-platform` only |
-| `flate2` | Compresses `render`'s PNG. Already in the tree through lopdf, so it adds no crate. `recto-agent` only |
+| `flate2` | Compresses `render`'s PNG and the PNGs in an SVG. Already in the tree through lopdf, so it adds no crate. `recto-agent` and `recto-svg` only |
 | PDFium (not a crate) | Draws pages. `bblanchon/pdfium-binaries` release `chromium/8125`, PDFium 158.0.8125.0, no V8, no XFA. Loaded at run time, by the worker alone. `tools/pdfium.sh` fetches it from that release's URL to `target/pdfium/` and stops unless the tarball is SHA-256 `4939bd93…139d` and the library `a45c4464…373a`; `--attest` also runs `gh attestation verify`. It links AppKit; see the sandbox note below |
 
 **No `pdfium-render`.** The spike used it only for raw bindings, because its high-level loaders can't take a `pread` callback and `PdfDocument::handle()` is crate-private. 27 signatures in one file cost no crate; `pdfium-render` costs 24 in the tree. The worker is 0.48 MB here against the spike's 1.3 MB, which also carried JSON.
@@ -176,6 +176,68 @@ What made them look wrong is that **most of it is harmless, and the check can't 
 **A missing renderer** names itself: the error says `recto-render-service` or `libpdfium.dylib`, and `next` says how to get it.
 
 **Fetching PDFium.** Run `tools/pdfium.sh`, which `tools/check.sh` also runs. The worker finds the library beside itself or in `../pdfium/`. The worker binary is `recto-render-service`, found beside `recto`. `RECTO_PDFIUM_LIB` and `RECTO_RENDER_SERVICE` override, in debug builds only: nothing shipped loads code from a path in its environment. The digest is checked when the script fetches, not at each load; code signing covers that in the app. `cargo build -p recto-cli` alone doesn't build it: use `--workspace`.
+
+## SVG export
+
+`recto export svg` writes a page, or a box on it, to a new SVG, with the same `O_EXCL` temp file and `link(2)` publish as `render`, at Full. **Nothing is held.** The worker reads PDFium's page objects and answers one frame of records at a time, usually about 1 MiB and at most 16 MiB, only when asked (`recto_proto::contents`). The host checks each record (`StreamCheck`) and passes it straight through `recto-svg` to the temp file. So the host costs one or two frames, one row, one compressor and a small buffer, however large the page: an image's rows go through as they arrive, base64 and PNG included, and a path's numbers are written as they're read. The worker holds the page PDFium has parsed, and the image in hand.
+
+It goes down the same limits as any export (`DocRenderer::read_contents`): 512 MiB, then that page alone at 1 GiB with the wait for the heavy slot, sharp or refused with nothing published. A worker stopped partway means starting again from the top in the larger one, with the temp file emptied first. There's one deadline per frame, and one over the whole page, so a worker can't keep a job alive by always saying there's more. Being asked for one frame at a time is also what holds a hostile page to a pace the host decides.
+
+**What's read, and from where.** PDFium's objects, rather than a content stream parser of our own: paths with their matrices, clips, text, images and forms. Forms are flattened into page coordinates, so the file's nesting isn't its depth: a clip stack is a chain of at most 32 `clipPath`s, and opacity groups nest at most 16. What PDFium's calls can't say, and what's done about each:
+
+| Can't be read | How it's noticed | What comes out |
+|---|---|---|
+| A shading | Its object type | A picture of just that element |
+| A tiling pattern | `FPDFPageObj_GetRenderedFillPattern` is the one call that tells | A picture of just that element |
+| A shading pattern, which reads as plain white | The file's structure says the page has one, and that white thing draws in colour on its own | A picture of just that element |
+| A blend mode or soft mask on an object | `HasTransparency` at full opacity, or with the structure saying the page uses one | A blend: a picture of it over everything under it, 32 at most. A soft mask: of just it |
+| The same on a form | `HasTransparency` can't tell these from a plain transparency group, so the structure decides | The same, with its text kept selectable |
+| Anything clipped by text | Text in a clipping mode. There's no call for the clip, so what comes after it in its form goes as pictures, which obey it, a little more than may be needed | A picture of each |
+| Stroked text | Its render mode. A pen's width goes by a transform PDFium keeps to itself, so an outline's stroke can't be the right width | A picture of just that text, with its characters kept |
+| Annotations and form fields | They aren't page objects | One picture of just them, if they draw anything. A link with no appearance doesn't |
+| Whether a layer is on | Drawing it to see, only if the file has layers that start off: PDFium draws nothing for a layer that's off | Left out, and counted. A layer is known by name, so 4 blanks in a row or one thing drawn settles it for all of it. Forms and images are looked at each time, since they can name a layer where no call reaches |
+
+`FPDFPageObj_SetIsActive` is what makes "just that element" exact: every other object is switched off and the page is drawn, on transparency, clip and all, in strips, at `--scale`. This changes the page in memory, and it's thrown away when the walk ends. The structure comes from `recto_core::page_effects`, a bounded walk of the page's resources through the lazy reader, down through forms and patterns without reading a stream's bytes. If that can't be read it says nothing, and everything's assumed. Past 512 pictures, 4 pages' worth of pixels, 32 blends or 4,000,000 objects, one picture of the whole page goes last, opaque, with the text kept selectable and the pointer let through to it. Each kind is listed in the answer in plain words. Nothing is dropped without saying.
+
+**Text is exact outlines with real characters over them, invisible** (`--text both`, the default). Selectable text alone (`--text selectable`) is the smallest and is what a text editor wants, but it looks like whatever font the reader has. Outlines alone (`--text paths`) are exact and can't be selected. Both together cost about half as much again as outlines alone, and keep what each is for. A glyph's outline is defined once and used by number, so a page costs its letters plus about 30 bytes a character. The trade-off stays open: it's one flag, on the same records.
+
+**A glyph's outline can be the wrong one.** `FPDFFont_GetGlyphPath` goes from Unicode back to a character code, which a font's map doesn't always lead back from, so a math font's `σ` often has no outline, and two codes for one letter can lead to the wrong one. Each outline is checked against PDFium's own box for the character, and if it's off by more than 0.12 em or missing, that text goes as a picture with its characters over it. A ligature's parts share an origin, so they're tried as the ligature's own character. There's no call that gives an outline by character code: this is the most that can be had without parsing the font programs.
+
+**Images.** At their own resolution, and pixels byte for byte as PDFium decodes them (color conversion is PDFium's). The file's own JPEG bytes pass through where they mean what the page means: one `DCTDecode` filter, grey or RGB, no mask, and not cut by a box. A mask needs PDFium's drawing to apply: it's found by drawing the image small, then drawn at its own size. That call obeys the object's clip as well, in coordinates that mean nothing once the image is laid flat, and no call takes a clip off, so the clip is blown up around a point inside it for the moment it's drawn, and the real clip goes in the file. A JPEG that a box cuts through becomes a PNG of what's inside, since a JPEG can't be cut losslessly. PNG uses the `Up` filter and needs one row of memory.
+
+**What's lost, or can't be known.** The fill rule of a clip: PDFium has no call for it, so an even-odd clip reads as nonzero. A miter limit, ditto: always 10, PDF's default. A form's soft mask or blend on a page whose structure the reader couldn't see through. Text PDFium makes bold itself when it substitutes a font. A `/Decode` array on a JPEG, which would make passing its bytes through wrong. An image mask so slight that a 64 x 64 drawing shows nothing. Hairlines: PDFium never draws one thinner than a device pixel, and a browser will. A path crossing a box's edge keeps all its points, clipped by the document's edge, where characters and upright images are cut. Gradients are pictures: `recto-svg` can write them, but PDFium can't read them.
+
+**Hostile.** Text is escaped, and characters XML can't hold or that change how text reads unseen are dropped along with their positions and counted. Attributes hold only numbers, fixed words and a font name cut down to letters and digits. The only hrefs are `#g12` and `data:image/...`. Numbers go through integers, so no `NaN`, no `inf` and no `1e+39` can be written. `recto_svg::verify` reads output back strictly, for tests. Every record is checked for form, and against the stream: ids in order, one image at a time with exactly its bytes, a JPEG starting as one, groups closed. Any violation kills the worker with nothing published.
+
+**Measured** 2026-11-07, release build, this Mac, with other agents' builds running (load 12 to 18), so times are on the high side. 274 pages: the first and middle of each of bench100's 141 readable documents. Every one exported, and `xmllint` found all 274 well formed. Fidelity is against `recto render` at 2x, drawing the SVG with headless Chrome at 2x (`--run-all-compositor-stages-before-draw`, without which Chrome under load leaves parts of a page unpainted). `qlmanage` (WebKit) draws them too, looked at on a few.
+
+| Across the 274 pages | p50 | p95 | Max |
+|---|---:|---:|---:|
+| Export, whole process | 38 ms | 252 ms | 4.4 s |
+| `render` at 2x, same pages | 52 ms | 139 ms | 2.5 s |
+| SVG | 271 KiB | 3.7 MiB | 56.4 MiB |
+| PNG at 2x | 331 KiB | 1.6 MiB | 12.8 MiB |
+| Host, peak footprint | 3.3 MiB | 6.4 MiB | 12.4 MiB |
+| Worker, peak footprint | 8.3 MiB | 37 MiB | 677 MiB |
+
+**Fidelity.** Pages differ from `render` at nearly every text edge, mostly because PDFium snaps glyphs to whole pixels and a browser doesn't: 1.6% of 4 x 4 px blocks differ by more than 32 of 255 at p50 and 5.0% at worst, and that's what side-by-side pictures of those pages show. So what's reported is a coarser look, 16 x 16 px blocks (8 points) differing by more than 24 of 255, which shows anything missing or wrong while passing over edges: 0 at p50, 0.16% at p95, 0.98% at worst, on `q-bio_NC_2607.26322` p. 1, whose text matches and whose hatched figure looks resampled differently. Twelve pages were looked at side by side, including the worst of each sweep, and not the rest. Looking found real faults while this was being built: a photo cut by its own clip, stroked labels too heavy, and layers that were off. On 90 pages nothing became a picture. 160 have text as pictures, 3,851 objects in all, and the ones traced were math symbols whose outlines PDFium won't give. Of the rest, 16 pages have annotations as a picture, 9 groups, 7 blends or masks, 5 tiling patterns and 4 shadings. One page went whole, a report's section cover with many blends.
+
+| A page in each text mode | `both` | `paths` | `selectable` | `selectable`, 16 x 16 blocks differing |
+|---|---:|---:|---:|---:|
+| `rfc9110` p. 10 | 83 KiB | 58 KiB | 25 KiB | 0% |
+| `math_AG_2607.28411` p. 5 | 269 KiB | 186 KiB | 81 KiB | 7.0% |
+| `eu_gdpr` p. 10 | 488 KiB | 265 KiB | 218 KiB | 18.2% |
+| `wbD34442276` p. 1 | 251 KiB | 200 KiB | 69 KiB | 0% |
+
+The last column is why `both` is the default: a font the reader doesn't have changes the look that much. Selecting all of `math_AG` p. 5 in headless Chrome gives `criterion for when a stability condition on D` and so on, with the spaces PDFium makes up kept in the text. A caret placed at the middle of each text object lands in text on 196 of 348. The other 152 weren't looked into.
+
+**The USGS map.** 56.4 MiB against a 12.8 MiB PNG, because its images stay at their own 5104 x 6004. 4.1 to 7.0 s against 1.0 s for `render`, as 4,644 objects in layers that are off get found and left out, and two images at 30 Mpx are drawn with their masks, past 512 MiB, so the page starts again in the larger worker: 677 MiB there, 6.6 to 8.7 MiB in the host. A box of 400 x 300 pt is 3.1 MiB in 1.9 to 2.3 s, since those images are still drawn whole before they're cut. `form_bomb` is refused in 2.7 s with the host at 1.6 MiB and nothing left behind.
+
+**PNG compression.** Level 3, from 6: on the map 54.5 MiB and 11.6 s became 56.4 MiB and 5.7 to 7.1 s, and those were single runs under load. The `Up` filter on its largest image, in zlib at level 3: 24.0 MiB, against 26.7 unfiltered, 25.5 for `Sub`, and 24.0 for `Up` then `Sub`.
+
+**Not tested.** Illustrator, Inkscape, Figma or any other reader of SVG but Chrome and WebKit. A CMYK JPEG's colours against another engine. Vertical or right-to-left text. Encrypted files through a password. The hairline difference hasn't been measured apart from the rest. Pictures of whole pages past 100 Mpx: a page too large for the scale asked has its pictures drawn at the largest scale that fits, and says so.
+
+**Limits on what a box leaves out.** Characters, and upright images, are cut to the box. A path crossing its edge keeps all its points, and an image that's turned is whole. Both are clipped by the document's edge in a browser, and could still be seen in an editor.
 
 ## The agent interface
 

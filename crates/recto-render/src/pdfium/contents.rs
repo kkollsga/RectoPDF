@@ -44,7 +44,7 @@ const MAX_MASKED_BYTES: u64 = 256 * 1024 * 1024;
 const MASK_PROBE_EDGE: u32 = 64;
 /// How wide one row of an image may be, so a frame stays under its limit.
 const MAX_ROW_BYTES: u64 = 8 * 1024 * 1024;
-/// How far a clip is blown up to cover an image laid flat. With a point a quarter of a point from the clip's edge, that covers an image of 2,500 pixels from its middle, and a clip's own numbers stay within what a float can hold.
+/// How far a clip is blown up to cover an image laid flat. A point a quarter of a point inside the clip then covers 5,000 pixels from the image's middle, and a page's clip stays within what a float can hold.
 const CLIP_BLOW_UP: f64 = 2.0e4;
 /// How far a glyph's outline may be from the box PDFium gives for the character, as a share of the font's size. Boxes are in whole thousandths and outlines aren't hinted, but a wrong glyph is usually much further off than this.
 const BOX_TOLERANCE_EM: f64 = 0.12;

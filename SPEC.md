@@ -115,10 +115,11 @@ Reference: `docs/concepts/`. Rules from the owner:
 | OCR | Tesseract, with **Save as searchable PDF**: an invisible text layer with an embedded Unicode font, in a helper process |
 | Extraction | **Click an image to copy it losslessly.** **Snapshot tool:** drag a box for text, PNG, SVG and JPG, all on the clipboard at once |
 
-**SVG is hand-rolled** (owner, 2026-11-06): a small streaming generator in `recto-svg` that writes as it walks the content stream, with no
-document held in memory. Paths, images and text come first, then gradients, masks and blend modes. Anything SVG can't express is
-embedded as a raster of just that element and reported, and content outside the snapshot box is left out rather than hidden.
+**SVG is hand-rolled** (owner, 2026-11-06): a small streaming generator in `recto-svg` that writes as it reads PDFium's page objects through the worker, with no
+document held in memory. Paths, clips, images and text are direct. Anything SVG or PDFium's calls can't express (PDFium has no way to read a shading, a pattern, a blend mode or a soft mask) is embedded as a raster of just that element and reported, and content outside the snapshot box is left out rather than hidden.
 *Rejected:* `hayro-svg` as a dependency, and PDFium, which has no SVG output as far as we know.
+
+**Text in an SVG** is exact outlines with invisible real characters over them, so it looks right and can be selected (*default*, 2026-11-07). `--text paths` drops the characters, and `--text selectable` drops the outlines, for the smallest file, in whatever font the reader has.
 
 **JPG honesty:** a JPG is lossless only when it's the original bytes of one image. Anything else is re-encoded and says so.
 
