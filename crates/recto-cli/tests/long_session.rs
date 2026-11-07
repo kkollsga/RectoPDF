@@ -10,7 +10,11 @@ use std::path::PathBuf;
 
 const TABS: usize = 30;
 
+/// The app, unless this run's said it isn't to be used: a stage of `tools/check.sh` that runs before the app's been built from this tree would otherwise use whatever's there.
 fn app_path() -> Option<PathBuf> {
+    if std::env::var_os("RECTO_SKIP_APP").is_some() {
+        return None;
+    }
     let exe = std::env::current_exe().ok()?;
     let root = exe.ancestors().find(|folder| folder.join("Cargo.lock").exists())?.to_path_buf();
     let app = root.join("app/build/RectoPDF.app/Contents/MacOS/RectoPDF");
