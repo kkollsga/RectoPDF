@@ -121,7 +121,9 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Update check: *Check for Updates…* in the RectoPDF menu, *Update to X.Y.Z…* when one is found, once a day (SPEC decision 24)
 - [ ] Links, back and forward, page labels
 - [ ] Click to copy an image losslessly
-- [ ] Snapshot tool with text, PNG, JPG and the hand-rolled streaming `recto-svg`
+- [x] Hand-rolled streaming `recto-svg`, and `recto export svg`: a page or a box to a new SVG, images lossless, what can't be vector a named picture of just that element
+- [ ] Snapshot tool with text, PNG, JPG and SVG, on top of that
+- [ ] SVG follow-ups, each on the PNG path today so nothing's wrong, only larger: a JPEG with `/Decode` kept through an SVG filter, measured in Chrome and WebKit first (owner's brief, 2026-11-07); `/ColorTransform` through an Adobe marker; a mask finer than its image at its own size, which takes reading it from the file since PDFium has no call for it; a page's JPEGs where drawing is past the 256 MiB look
 - [ ] Print
 - [ ] Generated contents: `recto contents --generated`, then a quiet offer in the sidebar when a file's own are missing or look bad. distillPDF's headings, in a helper with a memory limit, labelled as generated. Needs distillPDF's per-page work
 - [x] `recto search --regex` by ripgrep's engine in process, and `--rank` by BM25, with no new index (owner, 2026-11-07)
@@ -142,7 +144,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Edit text: block editing, line breaking, font reuse, embedded fallback
 - [ ] Signature image, and the honest signature report
 - [ ] Failure tests from the research: no lost edits on any exit path, never damage a signed file
-- [ ] Close the gap in edit ownership: an agent at Control can delete a page the owner rotated, then edit past the undo cap so the delete can't be undone. Closes with undo kept until Save (SPEC decision 25), when no step falls off a cap any more
+- [ ] Close the gap in edit ownership: an agent at Control can delete a page the owner rotated, then edit past the undo cap so the delete can't be undone. Closes when an agent's steps can no longer push out the owner's (SPEC decision 25)
 - [ ] A file lopdf refuses for hitting a limit must not fall back to PDFium in `crates/recto-agent/src/loader.rs`: a hostile file with 100,000 `/Prev` sections takes PDFium 3.4 s to load, though the fork's cap refuses it in about 3 ms
 - [ ] Save uses only the fork's `append_atomically` with `prepare_replacement`. Its `AppendWriter` can't be given a `File`, but `Writer::write_object`, the eager `Document` and `IncrementalDocument` saves and `copy_revision_to` still take any `Write`, so add a check that nothing in RectoPDF calls them, and never `File::create` the original before `copy_revision_to`
 - [ ] Opening a file with lopdf never runs on the UI thread: a 2 MiB hostile file relisting a million numbers takes 3.7 s of CPU and 96 MiB, bounded but over the 2 s stall rule
@@ -210,14 +212,26 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 Real digital signatures to the official standards, signature trust checks, Windows, Link and Join text, document-wide reflow, a second agent CLI.
 
+## Decisions made by the owner, 2026-11-07
+
+"I agree, but license mit is fine", to these recommendations:
+- **Licence: MIT.** Third-party notices remain a Phase 7 item.
+- **lopdf fork:** tag the commit a published distillPDF depends on, and move the fork's `main` to the new code once distillPDF has published.
+- **Quit doesn't ask about unsaved edits,** which come back on the next launch. Closing a document still asks.
+- **Agents and copy-restricted PDFs:** stays as it is, and each use of `--anyway` goes in the activity log.
+- **Hidden text past today's detection:** tightened in the planned hidden-text work, without holding up selection.
+- **Copies:** notice with Copy anyway; hidden text left out, with a notice.
+- **SVG:** no WebP flag for now.
+- **Updates:** *Check for Updates…* in the RectoPDF menu, automatic updates on, the daily check always runs. Signing secrets are added when the updater needs them.
+- **State:** dormant after 5 minutes; history kept 30 days within 1 GiB, out of backups; redaction and hidden-data removal clear it.
+- **Agents:** below Full an agent throws away only agents' edits; the skill keeps auto-approving read-only commands; a same-user process faking a terminal is accepted until Settings exists.
+- **Exports:** peaks of 465–494 MiB at 3× and 4× are accepted.
+- **Tab names:** the file name, with the full name and title on hover.
+- **Before a public release:** a name search for the trademark, no registration yet; wait for Anthropic's written answer and add an API-key route.
+
 ## Decisions waiting on you
 
 | Decision | Needed by | Current default |
 |---|---|---|
-| A same-user process faking a terminal or writing the level file: accept until the app's settings exist? | Phase 2 | Yes |
-| `SKILL.md` auto-approves read-only `recto` commands in Claude Code; the session's level still applies | Phase 6 | Keep |
-| Whole-page exports at 3× and 4× peak at 465–469 MiB, above the 415–450 MiB accepted | Phase 2 | Accept |
-| Copy-restricted PDFs: notice with Copy anyway? | Phase 3 | Yes |
 | What Save does the first time: keep one backup of the original? | Phase 4 | Yes |
 | Anthropic's answer before public release; API-key route | Phase 6 | Wait; add it |
-| Licence: permissive or closed | Phase 7 | Permissive or closed, undecided which |

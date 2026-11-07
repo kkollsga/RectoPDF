@@ -11,8 +11,11 @@
 //! All integers are little-endian. A frame is a 12-byte header and a payload. A version change is a hard stop: the host refuses a
 //! worker whose [`VERSION`] differs, which can't happen in one signed app unless something is wrong.
 
+pub mod contents;
+pub mod jpeg;
+
 /// Bumped on any change to a layout below.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 3;
 pub const MAGIC: [u8; 2] = *b"RP";
 pub const HEADER_LEN: usize = 12;
 
@@ -76,6 +79,9 @@ pub enum Kind {
     Region = 11,
     TraitsRequest = 12,
     Traits = 13,
+    /// Asks for a page's contents, or the next piece of them. See [`contents`].
+    ContentsRequest = 32,
+    Contents = 33,
     ImagesRequest = 14,
     Images = 15,
 }
@@ -96,6 +102,8 @@ impl Kind {
             11 => Self::Region,
             12 => Self::TraitsRequest,
             13 => Self::Traits,
+            32 => Self::ContentsRequest,
+            33 => Self::Contents,
             14 => Self::ImagesRequest,
             15 => Self::Images,
             _ => return Err(ProtoError("unknown frame kind")),
@@ -118,6 +126,8 @@ impl Kind {
             Self::Region => (TILE_REPLY_LEN + 4 + MAX_REGION_TILES as usize * REGION_KIND_LEN) as u32,
             Self::TraitsRequest => SIZE_REQUEST_LEN as u32,
             Self::Traits => PAGE_TRAITS_LEN as u32,
+            Self::ContentsRequest => contents::CONTENTS_JOB_LEN as u32,
+            Self::Contents => contents::MAX_CONTENTS_FRAME,
             Self::ImagesRequest => SIZE_REQUEST_LEN as u32,
             Self::Images => (8 + MAX_IMAGE_BOXES * IMAGE_BOX_LEN) as u32,
         }

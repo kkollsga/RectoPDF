@@ -33,6 +33,7 @@ pub use budget::{
     measure_viewport, page_device_size, plan_regions,
 };
 pub use host::{CancelHandle, DocRenderer, DrawPurpose, ExportRefusal, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy, RenderFailure, RenderStats, ServiceConfig, Surface, Target, Tile, TileRequest, TileResult};
+pub use host::contents::{ContentsDone, ContentsEvent, ContentsRequest};
 pub use recto_proto::{CharRecord, TileKind, TileRect, TILE_EDGE};
 
 /// Exit codes the worker uses to say why it left. Anything else, or a signal, reads as a crash.

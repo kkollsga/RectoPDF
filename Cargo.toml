@@ -7,6 +7,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
+license = "MIT"
 
 [workspace.dependencies]
 recto-platform = { path = "crates/recto-platform" }
@@ -19,6 +20,7 @@ recto-proto = { path = "crates/recto-proto" }
 recto-render = { path = "crates/recto-render" }
 recto-render-service = { path = "crates/recto-render-service" }
 recto-index = { path = "crates/recto-index" }
+recto-svg = { path = "crates/recto-svg" }
 recto-reader = { path = "crates/recto-reader" }
 recto-indexer = { path = "crates/recto-indexer" }
 recto-testpdf = { path = "crates/recto-testpdf" }
