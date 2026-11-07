@@ -447,7 +447,7 @@ pub(crate) mod tests {
     #[test]
     fn what_a_zip_lists_is_what_it_holds() {
         let good = Made::file("RectoPDF.app/x", b"data");
-        check(&make_zip(&[good.clone()])).expect("the plain case");
+        check(&make_zip(std::slice::from_ref(&good))).expect("the plain case");
 
         let mut other_name = good.clone();
         other_name.local_name = b"../../outside/local-escape".to_vec();
@@ -469,7 +469,7 @@ pub(crate) mod tests {
         refused(&make_zip(&[Made::file("Evil.app/x", b"x")]), "another app");
         refused(b"this isn't a zip", "junk");
         refused(b"", "nothing");
-        let mut trailing = make_zip(&[good.clone()]);
+        let mut trailing = make_zip(std::slice::from_ref(&good));
         trailing.extend_from_slice(b"trailing bytes");
         refused(&trailing, "bytes after its end");
         let mut prefixed = b"prefix".to_vec();

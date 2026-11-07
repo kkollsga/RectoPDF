@@ -372,7 +372,8 @@ fn what_it_swaps_in_is_what_was_verified() {
         std::fs::write(app.join("Contents/Resources"), "not what was verified").unwrap();
         sign(&app);
     };
-    let cases: [(&str, &dyn Fn(&Bed)); 3] = [("another", &swapped_for_another), ("changed", &changed_a_file), ("rebuilt", &another_good_build)];
+    type Change<'a> = &'a dyn Fn(&Bed);
+    let cases: [(&str, Change<'_>); 3] = [("another", &swapped_for_another), ("changed", &changed_a_file), ("rebuilt", &another_good_build)];
     for (name, change) in cases {
         let mut bed = Bed::new(&format!("pin-{name}"), "ok");
         change(&bed);
