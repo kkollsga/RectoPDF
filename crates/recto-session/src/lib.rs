@@ -344,10 +344,12 @@ impl ContentsFollow {
             let in_view = place >= view.scroll_y && place <= view.scroll_y + view.height;
             return if in_view { FollowMove::Stay } else { FollowMove::SetTo(target) };
         }
-        // A move under way counts from where it's going. Past that, it just carries on towards the new place, so sections going by fast are one long move rather than a row of them, and sections going by slowly are a move and then a rest.
+        // A move under way counts from where it's going, so sections going by fast are one long move rather than a row of them, and sections going by slowly are a move and then a rest. If the place has got out of the view itself, the view is trailing: it goes for where the place is now, and faster each time, or scrolling past the speed of the move would lose the place for good.
         if let Some(motion) = &mut self.moving {
             let zone = (motion.target + view.height * FOLLOW_DEAD_ZONE.0)..=(motion.target + view.height * FOLLOW_DEAD_ZONE.1);
-            if zone.contains(&place) {
+            let at = motion.at.unwrap_or(view.scroll_y);
+            let in_view = (at..=at + view.height).contains(&place);
+            if zone.contains(&place) && in_view {
                 return FollowMove::Move;
             }
             motion.target = target;
@@ -488,6 +490,8 @@ pub struct Session<L = DiskLoader> {
     edits: HashMap<TabId, PageEdits>,
     /// The latest pages drawn or tried, newest last, at most [`MAX_DRAWS_KEPT`]. Lets a waiter find out about a page finished a moment before it asked.
     draws: VecDeque<DrawNote>,
+    /// A cold tab's file, read ahead of waking it, with this session free. Taken by the next [`Self::activate`] of that tab.
+    woken: Option<(TabId, Result<DocFacts, OpenError>, Option<FileStamp>)>,
     /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`Session::take_place_lost`].
     place_lost: bool,
 }
@@ -514,7 +518,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), draws: VecDeque::new(), place_lost: false }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: None, dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), draws: VecDeque::new(), place_lost: false }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -622,6 +626,33 @@ impl<L: DocLoader> Session<L> {
         self.remember_warm(id, Arc::new(facts.toc));
         self.active = Some(id);
         Ok(id)
+    }
+
+    /// The tab tapping this one would wake from cold, and its file, so that can be read with this session free: a file on a dead volume mustn't hold up everything else that asks about tabs.
+    pub fn wake_for_tap(&self, id: TabId) -> Option<(TabId, PathBuf)> {
+        (self.active != Some(id)).then(|| self.file_to_wake(id)).flatten()
+    }
+
+    /// The same, for closing this tab: what becomes active next.
+    pub fn wake_for_close(&self, id: TabId) -> Option<(TabId, PathBuf)> {
+        if self.active != Some(id) {
+            return None;
+        }
+        let index = self.tabs.iter().position(|tab| tab.id == id)?;
+        let next = self.tabs.get(index + 1).or_else(|| index.checked_sub(1).and_then(|before| self.tabs.get(before)))?;
+        self.file_to_wake(next.id)
+    }
+
+    fn file_to_wake(&self, id: TabId) -> Option<(TabId, PathBuf)> {
+        if self.warm.iter().any(|(tab, _)| *tab == id) {
+            return None;
+        }
+        self.path_of(id).map(|path| (id, path))
+    }
+
+    /// What was read for [`Self::wake_for_tap`] or [`Self::wake_for_close`]. One is held, and only until a tab next wakes.
+    pub fn give_woken(&mut self, id: TabId, loaded: Result<DocFacts, OpenError>, stamp: Option<FileStamp>) {
+        self.woken = Some((id, loaded, stamp));
     }
 
     /// **The sidebar's tap rule.** Tapping another PDF switches to it. Tapping the active PDF folds or opens its contents.
@@ -874,9 +905,14 @@ impl<L: DocLoader> Session<L> {
             }
             return;
         }
-        // Woken from cold: rebuild from disk. If that fails, the tab stays and says why.
-        let stamp = self.path_of(id).and_then(|path| file_stamp(&path).ok());
-        let loaded = self.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path));
+        // Woken from cold: rebuild from disk, or from what was read ahead with the session free. If that fails, the tab stays and says why.
+        let (loaded, stamp) = match self.woken.take().filter(|(tab, _, _)| *tab == id) {
+            Some((_, loaded, stamp)) => (loaded, stamp),
+            None => {
+                let stamp = self.path_of(id).and_then(|path| file_stamp(&path).ok());
+                (self.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path)), stamp)
+            }
+        };
         // An edited tab's length is its edit list's, not the file's: added pages must stay reachable.
         let pages_with_edits = self.edits.get(&id).map(PageEdits::len);
         let tab = self.tab_mut(id);

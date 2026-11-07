@@ -705,7 +705,10 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         Command::Open { path, page } => open(access, path, *page, events),
         Command::Tabs { from, limit } => access.with(|s| tabs_json(s, *from, *limit)),
         Command::Sidebar {} => Ok(access.with(|s| sidebar_json(s))),
-        Command::Tap { tab } => access.with(|s| {
+        Command::Tap { tab } => {
+            let id = access.with(|s| select(s, tab))?;
+            read_ahead(access, |s| s.wake_for_tap(id));
+            access.with(|s| {
             let id = select(s, tab)?;
             let was_active = s.active();
             s.tap(id)?;
@@ -713,14 +716,18 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
                 events.push(Event::new("tab_activated", json!({ "tab": id.0 })));
             }
             Ok(sidebar_json(s))
-        }),
+            })
+        }
         Command::Goto { tab, page } => access.with(|s| {
             let id = select(s, tab)?;
             go_to(s, id, *page)?;
             events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page })));
             Ok(where_json(s, id))
         }),
-        Command::Close { tab } => access.with(|s| {
+        Command::Close { tab } => {
+            let id = access.with(|s| select(s, tab))?;
+            read_ahead(access, |s| s.wake_for_close(id));
+            access.with(|s| {
             let id = select(s, tab)?;
             refuse_close_that_loses_something(s, id, level)?;
             let before = s.active();
@@ -737,7 +744,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             }
             // Not the whole list: closing a thousand tabs shouldn't build a thousand lists.
             Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.active().map(|active| where_json(s, active)) }))
-        }),
+            })
+        }
         Command::View { paper, focus } => access.with(|s| {
             let was = s.view();
             let mut view = was;
@@ -949,6 +957,15 @@ fn no_such_page() -> AgentError {
 
 fn require_absolute(path: &Path) -> Result<(), AgentError> {
     if path.is_absolute() { Ok(()) } else { Err(AgentError::new("bad_path", "That path isn't whole. A session has no folder of its own to start from.", exit::FAILED)) }
+}
+
+/// Reads a cold tab's file, if what's about to happen would wake one, with the session free. A file on a dead volume holds up this command and no other.
+fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&Session<A::Loader>) -> Option<(TabId, PathBuf)>) {
+    let Some((id, path)) = access.with(|s| plan(s)) else { return };
+    let loader = access.with(|s| s.loader().clone());
+    let stamp = recto_platform::file_stamp(&path).ok();
+    let loaded = loader.load(&path);
+    access.with(|s| s.give_woken(id, loaded, stamp));
 }
 
 fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
@@ -1366,6 +1383,57 @@ mod tests {
         fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
             Ok(DocFacts { page_count: 10, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
         }
+    }
+
+    /// Failure: waking a cold tab reads its file with the session's lock held, so a file on a dead volume hangs `status`, `tabs` and the UI thread's every pull with it. The file is read with the lock free, for a tap and for a close that wakes what's next, and it isn't read twice.
+    #[test]
+    fn waking_a_cold_tab_reads_its_file_with_the_session_free() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        #[derive(Clone, Default)]
+        struct Gated {
+            armed: Arc<AtomicBool>,
+            inside: Arc<AtomicBool>,
+            release: Arc<AtomicBool>,
+            reads: Arc<AtomicU32>,
+        }
+        impl DocLoader for Gated {
+            fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+                if self.armed.load(Ordering::SeqCst) {
+                    self.reads.fetch_add(1, Ordering::SeqCst);
+                    self.inside.store(true, Ordering::SeqCst);
+                    while !self.release.load(Ordering::SeqCst) {
+                        std::thread::yield_now();
+                    }
+                }
+                Ok(DocFacts { page_count: 10, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+            }
+        }
+        let gate = Gated::default();
+        let session = Arc::new(Mutex::new(Session::new(gate.clone())));
+        for name in ["a", "b", "c", "d", "e", "f"] {
+            session.lock().unwrap().open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap();
+        }
+        let wake = |command: Command| {
+            gate.reads.store(0, Ordering::SeqCst);
+            gate.inside.store(false, Ordering::SeqCst);
+            gate.release.store(false, Ordering::SeqCst);
+            gate.armed.store(true, Ordering::SeqCst);
+            let shared = Arc::clone(&session);
+            let running = std::thread::spawn(move || execute(&*shared, Level::Control, &command, &mut Vec::new()).map(|_| ()));
+            while !gate.inside.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            assert!(session.try_lock().is_ok(), "the session's lock is held across the read");
+            gate.release.store(true, Ordering::SeqCst);
+            running.join().unwrap().unwrap();
+            gate.armed.store(false, Ordering::SeqCst);
+            assert_eq!(gate.reads.load(Ordering::SeqCst), 1, "read once");
+        };
+        wake(Command::Tap { tab: "#1".into() });
+        assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(1));
+        wake(Command::Close { tab: "#1".into() });
+        assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(2));
     }
 
     fn with_tabs(names: &[&str]) -> Session<Fake> {

@@ -279,6 +279,9 @@ impl Host for AppHost {
     }
 }
 
+/// How many calls can wait for the session thread.
+const MAX_QUEUED_CALLS: usize = 4096;
+
 /// What the session thread is asked to do, in the order the user asked.
 #[derive(Debug)]
 enum CoreCall {
@@ -313,7 +316,13 @@ impl CoreQueue {
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
             return;
         }
-        lock(&self.calls).push_back(call);
+        let mut calls = lock(&self.calls);
+        // With the session thread held up by a dead volume, this would grow for as long as tiles and clicks kept coming. Past the cap what's asked is dropped, as it's long out of date by the time it could run. A flush is someone waiting, with a limit of their own, so it's kept.
+        if calls.len() >= MAX_QUEUED_CALLS && !matches!(call, CoreCall::Flush(_)) {
+            return;
+        }
+        calls.push_back(call);
+        drop(calls);
         self.ready.notify_one();
     }
 
@@ -764,6 +773,12 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::Reconcile => {}
             CoreCall::Tap(id) => {
                 let was = host.session.with_session(|session| session.active());
+                // A cold tab's file is read with the session free, as an `open` is, so a dead volume holds up this tap and nothing that asks about tabs.
+                if let Some((tab, path)) = host.session.with_session(|session| session.wake_for_tap(id)) {
+                    let stamp = recto_platform::file_stamp(&path).ok();
+                    let loaded = DrawableLoader.load(&path);
+                    host.session.with_session(|session| session.give_woken(tab, loaded, stamp));
+                }
                 let tapped = host.session.with_session(|session| session.tap(id));
                 if tapped.is_ok() && was != Some(id) {
                     events.push(Event::new("tab_activated", json!({ "tab": id.0 })));
