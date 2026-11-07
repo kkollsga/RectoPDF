@@ -9,6 +9,8 @@ mod qa;
 mod watchdog;
 
 use qa::QaBridge;
+use recto_core::{DocFacts, OpenError};
+use recto_platform::FileStamp;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost};
@@ -19,9 +21,9 @@ use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_render_service::Policy;
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsRowChange, ContentsView, DocLoader, FollowMove, WARM_PAPER, row_full_text, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TAB_ROW_HEIGHT, TabId, ViewSettings, sidebar_heights};
 use serde_json::{Value, json};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -284,8 +286,10 @@ impl Host for AppHost {
     }
 }
 
-/// How many calls can wait for the session thread.
+/// How many calls can wait for the session thread before notes of pages drawn stop being added.
 const MAX_QUEUED_CALLS: usize = 4096;
+/// Files being read at once off the session thread. Each is a thread that a dead volume can hold for as long as it likes, so there's a limit, and past it a tab or file doesn't open and says so.
+const MAX_FILE_READS: usize = 4;
 
 /// What the session thread is asked to do, in the order the user asked.
 #[derive(Debug)]
@@ -295,8 +299,11 @@ enum CoreCall {
     GoTo(TabId, u32),
     Open(PathBuf),
     SetFocus(bool),
-    Dark(bool),
+    SetPaper(Paper),
+    ToggleAgentIcon,
     Page(u32, Option<&'static str>, TabId),
+    /// A file read off the session thread, for a tab being woken or a file being opened.
+    Read(FileRead),
     /// Everything asked before this has been done.
     Flush(Arc<Flushed>),
 }
@@ -306,6 +313,27 @@ enum CoreCall {
 pub(crate) struct Flushed {
     done: Mutex<bool>,
     ready: Condvar,
+}
+
+impl Flushed {
+    fn finished(&self) {
+        *lock(&self.done) = true;
+        self.ready.notify_all();
+    }
+
+    /// Waits for it, up to a limit, and says whether it came.
+    fn wait(&self, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        let mut done = lock(&self.done);
+        while !*done {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            done = self.ready.wait_timeout(done, left).unwrap_or_else(PoisonError::into_inner).0;
+        }
+        true
+    }
 }
 
 /// The session thread's queue. A parked thread at rest, so an open app takes no wake-ups for it.
@@ -323,9 +351,11 @@ impl CoreQueue {
             return;
         }
         let mut calls = lock(&self.calls);
-        // With the session thread held up by a dead volume, this would grow for as long as tiles and clicks kept coming. Past the cap what's asked is dropped, as it's long out of date by the time it could run. A flush is someone waiting, with a limit of their own, so it's kept.
-        if calls.len() >= MAX_QUEUED_CALLS && !matches!(call, CoreCall::Flush(_)) {
-            return;
+        if let CoreCall::Page(page, failure, tab) = &call {
+            // Only notes of what was drawn can go, as they're told on to watchers and no more. Many tiles of a page are one note, which is most of them, so this is hard to reach. With the session thread held up for some reason this stops them growing without end. Anything a person did always gets in.
+            if calls.len() >= MAX_QUEUED_CALLS || matches!(calls.back(), Some(CoreCall::Page(last_page, last_failure, last_tab)) if last_page == page && last_failure == failure && last_tab == tab) {
+                return;
+            }
         }
         calls.push_back(call);
         drop(calls);
@@ -779,6 +809,7 @@ impl AppCore {
 
 fn session_thread(inner: &Arc<Inner>) {
     let mut synced = Synced::default();
+    let mut reads = FileReads::default();
     loop {
         let call = inner.core.next();
         let mut events = Vec::new();
@@ -786,16 +817,16 @@ fn session_thread(inner: &Arc<Inner>) {
         match call {
             CoreCall::Reconcile => {}
             CoreCall::Tap(id) => {
-                let was = host.session.with_session(|session| session.active());
-                // A cold tab's file is read with the session free, as an `open` is, so a dead volume holds up this tap and nothing that asks about tabs.
-                if let Some((tab, path)) = host.session.with_session(|session| session.wake_for_tap(id)) {
-                    let stamp = recto_platform::file_stamp(&path).ok();
-                    let loaded = DrawableLoader.load(&path);
-                    host.session.with_session(|session| session.give_woken(tab, loaded, stamp));
-                }
-                let tapped = host.session.with_session(|session| session.tap(id));
-                if tapped.is_ok() && was != Some(id) {
-                    events.push(Event::new("tab_activated", json!({ "tab": id.0 })));
+                // A cold tab's file is read on a thread of its own, as an `open` is, so a file on a dead volume holds up neither this thread nor anything that asks about tabs, and a later tap goes ahead.
+                match host.session.with_session(|session| session.wake_for_tap(id)) {
+                    Some((tab, path)) => {
+                        reads.wanted_tab = Some(tab);
+                        reads.start(inner, Reading::Tab(tab), path);
+                    }
+                    None => {
+                        reads.wanted_tab = None;
+                        tap_now(inner, id, &mut events);
+                    }
                 }
             }
             CoreCall::GoTo(id, page) => {
@@ -804,7 +835,22 @@ fn session_thread(inner: &Arc<Inner>) {
                     events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page + 1 })));
                 }
             }
-            CoreCall::Open(path) => open_file(inner, &path, &mut events),
+            CoreCall::Open(path) => {
+                *lock(&inner.open_failure) = None;
+                let cold = host.session.with_session(|session| session.tab_for_path(&path).and_then(|id| session.wake_for_tap(id)));
+                if let Some((tab, file)) = cold {
+                    reads.wanted_tab = Some(tab);
+                    reads.start(inner, Reading::Tab(tab), file);
+                } else if host.session.with_session(|session| session.go_to_open_file(&path)).is_some() {
+                    reads.wanted_tab = None;
+                } else {
+                    reads.wanted_tab = None;
+                    reads.start(inner, Reading::File(path.clone()), path);
+                }
+            }
+            CoreCall::Read(read) => reads.finished(inner, read, &mut events),
+            CoreCall::SetPaper(paper) => set_view(inner, &mut events, |view| view.paper = Some(paper)),
+            CoreCall::ToggleAgentIcon => set_view(inner, &mut events, |view| view.agent_icon_hidden = !view.agent_icon_hidden),
             CoreCall::SetFocus(focus) => {
                 let view = host.session.with_session(|session| {
                     let view = ViewSettings { focus, ..session.view() };
@@ -813,11 +859,14 @@ fn session_thread(inner: &Arc<Inner>) {
                 });
                 events.push(Event::new("view_changed", json!({ "paper": recto_agent::paper_name(view), "focus": view.focus })));
             }
-            CoreCall::Dark(dark) => synced.dark = dark,
             CoreCall::Flush(marker) => {
                 reconcile(inner, &mut synced, &mut events);
-                *lock(&marker.done) = true;
-                marker.ready.notify_all();
+                // What was asked before this includes any file being read for it.
+                if reads.running.is_empty() {
+                    marker.finished();
+                } else {
+                    reads.flushes.push(marker);
+                }
                 continue;
             }
             CoreCall::Page(page, failure, tab) => {
@@ -831,11 +880,124 @@ fn session_thread(inner: &Arc<Inner>) {
             }
         }
         reconcile(inner, &mut synced, &mut events);
+        if reads.running.is_empty() {
+            for marker in reads.flushes.drain(..) {
+                marker.finished();
+            }
+        }
         if !events.is_empty()
             && let Some(announcer) = lock(&inner.announcer).as_ref()
         {
             announcer.announce(events);
         }
+    }
+}
+
+/// What a file's being read for.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Reading {
+    Tab(TabId),
+    File(PathBuf),
+}
+
+/// A file read off the session thread, on its way back to it.
+#[derive(Debug)]
+struct FileRead {
+    what: Reading,
+    loaded: Result<DocFacts, OpenError>,
+    stamp: Option<FileStamp>,
+}
+
+/// Reads of files under way off the session thread. A file on a dead volume holds up the one thread reading it, and neither this one nor anyone else's tap.
+#[derive(Default)]
+struct FileReads {
+    running: HashSet<Reading>,
+    /// The tab the reader last asked for that's being read. Reading it isn't asking again: they may have gone elsewhere by the time it's done.
+    wanted_tab: Option<TabId>,
+    flushes: Vec<Arc<Flushed>>,
+    /// The last file being opened, so several opened together keep their order unless one isn't answering.
+    last_open: Option<Arc<Flushed>>,
+}
+
+/// What's said when there are more files not answering than can be waited on.
+const TOO_MANY_READS: &str = "Several files aren't answering, so this one wasn't opened. Their disk may have gone to sleep or been disconnected.";
+
+/// How long a file being opened waits for the one opened before it, so tabs come in the order asked for, unless that one isn't answering.
+const OPEN_ORDER_WAIT: Duration = Duration::from_secs(1);
+
+impl FileReads {
+    fn start(&mut self, inner: &Arc<Inner>, what: Reading, path: PathBuf) {
+        if self.running.contains(&what) {
+            return;
+        }
+        if self.running.len() >= MAX_FILE_READS {
+            *lock(&inner.open_failure) = Some(TOO_MANY_READS.to_string());
+            return;
+        }
+        let core = Arc::clone(&inner.core);
+        let (before, done) = if matches!(what, Reading::File(_)) {
+            let done = Arc::new(Flushed::default());
+            (self.last_open.replace(Arc::clone(&done)), Some(done))
+        } else {
+            (None, None)
+        };
+        let reading = what.clone();
+        let spawned = std::thread::Builder::new().name("recto-read".into()).stack_size(1024 * 1024).spawn(move || {
+            let stamp = recto_platform::file_stamp(&path).ok();
+            let loaded = DrawableLoader.load(&path);
+            if let Some(before) = before {
+                before.wait(OPEN_ORDER_WAIT);
+            }
+            core.push(CoreCall::Read(FileRead { what: reading, loaded, stamp }));
+            if let Some(done) = done {
+                done.finished();
+            }
+        });
+        if spawned.is_ok() {
+            self.running.insert(what);
+        } else {
+            *lock(&inner.open_failure) = Some(TOO_MANY_READS.to_string());
+        }
+    }
+
+    fn finished(&mut self, inner: &Arc<Inner>, read: FileRead, events: &mut Vec<Event>) {
+        self.running.remove(&read.what);
+        let host = &inner.host;
+        match read.what {
+            Reading::Tab(tab) => {
+                // Only if it's still what's wanted. If not, there's no telling how long till it's used, and it'll be read fresh when it's asked for.
+                if self.wanted_tab == Some(tab) {
+                    self.wanted_tab = None;
+                    host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
+                    tap_now(inner, tab, events);
+                }
+            }
+            Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| host.session.with_session(|session| session.open_with_facts(&path, facts, read.stamp))) {
+                Ok(id) => events.push(Event::new("tab_opened", json!({ "tab": id.0 }))),
+                Err(error) => *lock(&inner.open_failure) = Some(error.message().to_string()),
+            },
+        }
+    }
+}
+
+/// A change to how pages are shown, as `recto view` makes it.
+fn set_view(inner: &Inner, events: &mut Vec<Event>, change: impl FnOnce(&mut ViewSettings)) {
+    let view = inner.host.session.with_session(|session| {
+        let mut view = session.view();
+        change(&mut view);
+        session.set_view(view);
+        view
+    });
+    events.push(Event::new("view_changed", json!({ "paper": recto_agent::paper_name(view), "focus": view.focus })));
+}
+
+/// What a tap on a tab does, once whatever it needs from disk is here.
+fn tap_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
+    let host = &inner.host;
+    let was = host.session.with_session(|session| session.active());
+    let tapped = host.session.with_session(|session| session.tap(id));
+    if tapped.is_ok() && was != Some(id) {
+        events.push(Event::new("tab_activated", json!({ "tab": id.0 })));
     }
 }
 
@@ -973,7 +1135,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         (snapshot, view, tabs, contents, rail_filled, session.view())
     });
     // The paper and focus first, so what's asked for next is drawn right.
-    let dark = inner.dark.load(Ordering::SeqCst) || synced.dark;
+    let dark = inner.dark.load(Ordering::SeqCst);
     let shown = Paper::resolved(view.paper, dark);
     // Warm paper is white paper with a tint over it in the compositor, so going to it or from it draws nothing and holds nothing more.
     let (paper, page_tint) = match shown {
@@ -1083,16 +1245,49 @@ mod tests {
         assert_eq!(shift(&in_two, 5, &in_three, 4), -1, "everything happened above");
     }
 
-    /// Failure: with the session thread held up by a file on a dead volume, every drawn tile and click queues for it, and the queue grows without end. It stops at its cap, and someone waiting for a flush still gets in.
+    /// Failure: notes of tiles drawn fill the session thread's queue, and past the cap what a person did is thrown away: a tap, an open, the appearance. A look dropped when it's full leaves "a look is queued" set, so none is ever queued again. Only those notes can go, and repeats of one don't take a place.
     #[test]
-    fn the_queue_for_the_session_thread_has_a_cap() {
+    fn a_full_queue_loses_only_notes_of_pages_drawn() {
         let queue = CoreQueue::default();
         for page in 0..(MAX_QUEUED_CALLS as u32 + 100) {
             queue.push(CoreCall::Page(page, None, TabId(1)));
         }
-        assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS);
+        assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS, "it stops at the cap");
+        queue.push(CoreCall::Tap(TabId(2)));
+        queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
+        queue.push(CoreCall::SetFocus(true));
+        queue.push(CoreCall::Reconcile);
+        queue.push(CoreCall::Reconcile);
         queue.push(CoreCall::Flush(Arc::new(Flushed::default())));
-        assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS + 1, "someone is waiting on that");
+        assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS + 5, "all of those are in, one look among them");
+        // Drained, the look it had queued is seen, and another can be asked for.
+        while !lock(&queue.calls).is_empty() {
+            queue.next();
+        }
+        assert!(!queue.reconcile_queued.load(Ordering::SeqCst));
+        queue.push(CoreCall::Reconcile);
+        assert_eq!(lock(&queue.calls).len(), 1);
+    }
+
+    /// Failure: each tile of a page is a note, so an ordinary page of tiles uses a dozen places, and the queue's cap is reached by reading alone. In a row, one note for one page is enough.
+    #[test]
+    fn repeated_notes_of_a_page_take_one_place() {
+        let queue = CoreQueue::default();
+        for _ in 0..100 {
+            queue.push(CoreCall::Page(3, None, TabId(1)));
+        }
+        assert_eq!(lock(&queue.calls).len(), 1);
+        queue.push(CoreCall::Page(3, Some("page_failed"), TabId(1)));
+        queue.push(CoreCall::Page(4, None, TabId(1)));
+        assert_eq!(lock(&queue.calls).len(), 3);
+    }
+
+    struct TestEngineEvents;
+    impl EngineEvents for TestEngineEvents {
+        fn ops_ready(&self) {}
+        fn note_changed(&self) {}
+        fn page_moved(&self) {}
+        fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {}
     }
 
     /// Failure: an agent at Control quits the app out from under the person using it, with no prompt, by `recto stop`. In a normal app it's refused, and the words are for whoever's asking.

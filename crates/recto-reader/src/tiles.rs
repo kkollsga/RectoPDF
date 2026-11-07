@@ -548,7 +548,7 @@ impl Reader {
     }
 
     /// Whether what's running is still of use: on the tab showing, its page in view, and if it's a tile, at the zoom the view is at now and touching the view.
-    fn running_is_wanted(&self) -> bool {
+    pub fn running_is_wanted(&self) -> bool {
         let Some(running) = &self.running else { return true };
         self.hot == Some(running.tab)
             && self.window_open
@@ -1009,10 +1009,11 @@ impl Reader {
         }
         let around = first.saturating_sub(SIZES_AROUND)..=(last + SIZES_AROUND).min(doc.layout.count().saturating_sub(1));
         // A page whose size couldn't be read has its reason on it, and isn't asked again: nothing about it will be different straight away.
-        if let Some(page) = visible.clone().chain(around).find(|page| !doc.layout.is_known(*page) && !doc.issues.contains_key(page)) {
+        let waiting_on_issue = |page: &u32| doc.issues.get(page).is_some_and(|issue| !issue.try_again_at.is_some_and(|at| Instant::now() >= at));
+        if let Some(page) = visible.clone().chain(around).find(|page| !doc.layout.is_known(*page) && !waiting_on_issue(page)) {
             let (file, source_page) = doc.map.source(page)?;
             let generation = self.fresh_generation();
-            return Some(Job { tab, position: page, file, source_page, generation, kind: JobKind::Size });
+            return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Size });
         }
         let now = Instant::now();
         let scale = doc.tile_scale;
@@ -1115,6 +1116,13 @@ impl Reader {
             _ => (None, 0.0, false),
         };
         self.running = Some(Running { tab: job.tab, position: job.position, rect, scale, preview, generation: job.generation, cancel, cancel_asked: false });
+    }
+
+    /// What can stop the job now running, once there's something that can.
+    pub fn set_cancel(&mut self, cancel: CancelHandle) {
+        if let Some(running) = &mut self.running {
+            running.cancel = Some(cancel);
+        }
     }
 
     fn note_issue(&mut self, tab: u32, page: u32, message: String, may_pass: bool) {

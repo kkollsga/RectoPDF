@@ -1,13 +1,17 @@
 //! One thread that runs what [`Reader`] asks for. It's parked with nothing to do: no timer, no wake-ups. A page blocks this thread and never the UI thread, and the one lock is never held across a render.
 
 use crate::layout::PageBox;
-use crate::paper::{DarkTile, PaperKind, dark_rgb, dark_tile, dim_page, dim_rgb, is_grey, turn_over};
-use crate::tiles::{DrawKind, Job, JobKind, MAX_ATTACH_PER_TURN, Op, Outcome, PageMap, Reader, ReaderReport, Viewport};
+use crate::paper::{DarkTile, PageLook, PaperKind, dark_rgb, dim_page, dim_rgb, is_grey, turn_over};
+use crate::tiles::{DrawKind, Job, JobKind, JobPlan, MAX_ATTACH_PER_TURN, Zoom, Op, Outcome, PageMap, Reader, ReaderReport, Viewport};
 use recto_platform::isolate;
+use recto_platform::surface::PixelSurface;
+use recto_proto::TileRect;
 use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, TileKind, TileRequest, TileResult};
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::Thread;
 use std::time::{Duration, Instant};
@@ -31,6 +35,14 @@ pub struct EngineConfig {
     pub service: Option<ServiceConfig>,
     pub policy: Option<Policy>,
 }
+
+/// Files that can be being opened at once. Past this, more that aren't answering wait for one that is.
+const MAX_OPENINGS: usize = 4;
+/// How long a job waits for its file to open before the page says so. It stays being tried.
+const OPEN_PATIENCE: Duration = Duration::from_secs(3);
+const OPEN_LOOK: Duration = Duration::from_millis(20);
+/// What a page says while its file doesn't answer.
+const NOT_ANSWERING: &str = "This file isn't answering. Its disk may have gone to sleep or been disconnected.";
 
 /// How long a worker past the retirement line may sit with nothing to do. As long as a heavy worker's idle rule, for the same reason.
 const BIG_WORKER_REST: Duration = Duration::from_secs(3);
@@ -238,17 +250,21 @@ fn run(shared: &Shared) {
     let service = shared.config.service.clone().map_or_else(ServiceConfig::discover, Ok);
     let policy = shared.config.policy.clone().unwrap_or_default();
     let mut resting_since: Option<Instant> = None;
+    let mut openings: HashMap<PathBuf, Receiver<Result<File, RenderFailure>>> = HashMap::new();
     loop {
-        let job = {
+        let plan = {
             let mut reader = lock(&shared.reader);
             let files = reader.wanted_files();
             if !Arc::ptr_eq(&files, &wanted) {
                 wanted = files;
             }
-            reader.next_job()
+            reader.next_plan()
         };
+        // Its surface is made with the lock let go, which the UI thread needs on every scroll.
+        let job = plan.and_then(JobPlan::ready);
         // Only hot and warm tabs' files keep a renderer. Dropping one kills its worker and closes its file.
         renderers.retain(|path, _| wanted.contains(path));
+        openings.retain(|path, _| wanted.contains(path));
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
             shared.settled.notify_all();
@@ -274,14 +290,15 @@ fn run(shared: &Shared) {
             continue;
         };
         resting_since = None;
-        let cancel = match renderer_for(&mut renderers, &job.file, &service, &policy) {
-            Ok(doc) => Some(doc.cancel_handle()),
-            Err(_) => None,
-        };
-        lock(&shared.reader).note_started(&job, cancel);
-        let outcome = match renderer_for(&mut renderers, &job.file, &service, &policy) {
-            Ok(doc) => do_job(doc, &job),
-            Err(failure) => Outcome::DocumentFailed(failure.message()),
+        lock(&shared.reader).note_started(&job, None);
+        let outcome = match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
+            Ok(open) => {
+                lock(&shared.reader).set_cancel(open.doc.cancel_handle());
+                do_job(open, &job)
+            }
+            Err(Unopened::Failed(failure)) => Outcome::DocumentFailed(failure.message()),
+            Err(Unopened::NotWanted) => Outcome::Cancelled,
+            Err(Unopened::NotAnswering) => Outcome::PageFailed { message: NOT_ANSWERING.to_string(), may_pass: true },
         };
         publish_workers(shared, &mut renderers);
         let drawn = match (&job.kind, &outcome) {
@@ -311,16 +328,116 @@ fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, DocRenderer
     *lock(&shared.worker_pids) = pids;
 }
 
-fn renderer_for<'a>(renderers: &'a mut HashMap<PathBuf, DocRenderer>, path: &Path, service: &Result<ServiceConfig, RenderFailure>, policy: &Policy) -> Result<&'a mut DocRenderer, RenderFailure> {
-    if !renderers.contains_key(path) {
-        let config = service.as_ref().map_err(|failure| *failure)?.clone();
-        let doc = DocRenderer::new(path, None, config, policy.clone())?;
-        renderers.insert(path.to_path_buf(), doc);
-    }
-    renderers.get_mut(path).ok_or(RenderFailure::Unavailable)
+/// A file's renderer, and what's been decided about its pages on dark paper. Each page gets one decision, however many tiles it comes to, at whatever scale.
+struct OpenDoc {
+    doc: DocRenderer,
+    looks: HashMap<u32, Arc<PageLook>>,
 }
 
-fn do_job(doc: &mut DocRenderer, job: &Job) -> Outcome {
+/// Pages whose look is remembered. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten. Each is at most 64 boxes.
+const MAX_LOOKS: usize = 4096;
+/// The longest side of the picture of a page that's drawn to judge it, if there's no preview to use. Enough to see paper between lines of text, and a mebibyte of memory for a moment.
+const LOOK_PICTURE_EDGE: f32 = 512.0;
+
+/// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images needs neither. `None` means this job went stale on the way, which says nothing about the page, and nothing is kept.
+fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&PixelSurface, TileRect)>) -> Option<Arc<PageLook>> {
+    if open.doc.take_file_changed() {
+        open.looks.clear();
+    }
+    if let Some(known) = open.looks.get(&page) {
+        return Some(Arc::clone(known));
+    }
+    let boxes = open.doc.image_boxes(page, generation);
+    if open.doc.is_stale(generation) {
+        return None;
+    }
+    let look = if boxes.as_ref().is_some_and(Vec::is_empty) {
+        PageLook::text()
+    } else if let Some((surface, rect)) = whole {
+        let stride = surface.stride() as usize;
+        surface.with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, rect.width, rect.height)).unwrap_or_else(|_| PageLook::unknown())
+    } else {
+        let doc = &mut open.doc;
+        let picture = doc.page_size(page).ok().and_then(|(width, height)| {
+            let scale = (LOOK_PICTURE_EDGE / width.max(height).max(1.0)).clamp(recto_proto::MIN_SCALE, recto_proto::MAX_SCALE);
+            let (pixel_width, pixel_height) = recto_proto::device_size(width, height, scale).ok()?;
+            let surface = PixelSurface::create(pixel_width, pixel_height).ok()?;
+            Some((scale, TileRect { x: 0, y: 0, width: pixel_width, height: pixel_height }, surface))
+        });
+        match picture {
+            Some((scale, rect, surface)) => match doc.render_tile(&TileRequest { page, rect, scale, stride: surface.stride(), generation }, &surface) {
+                Ok(TileResult::Done(tile)) => {
+                    let drawn = tile.low_res.map_or(rect, |low| low.rect);
+                    let stride = surface.stride() as usize;
+                    surface.with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, drawn.width, drawn.height)).unwrap_or_else(|_| PageLook::unknown())
+                }
+                Ok(TileResult::Cancelled { .. }) => return None,
+                Err(_) => PageLook::unknown(),
+            },
+            None => PageLook::unknown(),
+        }
+    };
+    if open.looks.len() >= MAX_LOOKS {
+        open.looks.clear();
+    }
+    let look = Arc::new(look);
+    open.looks.insert(page, Arc::clone(&look));
+    Some(look)
+}
+
+/// Why there's no renderer for a job, for now or for good.
+enum Unopened {
+    Failed(RenderFailure),
+    /// The reader left while the file was being opened, so the thread is free for what's wanted now.
+    NotWanted,
+    /// It hasn't answered in [`OPEN_PATIENCE`], and it's still being tried.
+    NotAnswering,
+}
+
+/// Opens a file's renderer on a thread of its own, the one part of this that a dead volume can hold up for ever, and waits for it only while the job's still wanted. One file not answering is no reason for a healthy tab to get no tiles. The wait is a look every [`OPEN_LOOK`], and only while a file's being opened.
+fn renderer_for<'a>(shared: &Shared, renderers: &'a mut HashMap<PathBuf, OpenDoc>, openings: &mut HashMap<PathBuf, Receiver<Result<File, RenderFailure>>>, path: &Path, service: &Result<ServiceConfig, RenderFailure>, policy: &Policy) -> Result<&'a mut OpenDoc, Unopened> {
+    if !renderers.contains_key(path) {
+        let config = service.as_ref().map_err(|failure| Unopened::Failed(*failure))?.clone();
+        if !openings.contains_key(path) {
+            if openings.len() >= MAX_OPENINGS {
+                return Err(Unopened::NotAnswering);
+            }
+            let (sender, receiver) = sync_channel(1);
+            let opening = path.to_path_buf();
+            std::thread::Builder::new()
+                .name("recto-open".into())
+                .stack_size(128 * 1024)
+                .spawn(move || {
+                    let _ = sender.send(DocRenderer::open_file(&opening));
+                })
+                .map_err(|_| Unopened::Failed(RenderFailure::Unavailable))?;
+            openings.insert(path.to_path_buf(), receiver);
+        }
+        let started = Instant::now();
+        let opened = loop {
+            let receiver = openings.get(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))?;
+            match receiver.recv_timeout(OPEN_LOOK) {
+                Ok(opened) => break opened,
+                Err(RecvTimeoutError::Disconnected) => break Err(RenderFailure::Unavailable),
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            if !lock(&shared.reader).running_is_wanted() {
+                return Err(Unopened::NotWanted);
+            }
+            if started.elapsed() >= OPEN_PATIENCE {
+                return Err(Unopened::NotAnswering);
+            }
+        };
+        openings.remove(path);
+        let file = opened.map_err(Unopened::Failed)?;
+        let doc = DocRenderer::with_file(file, path, None, config, policy.clone()).map_err(Unopened::Failed)?;
+        renderers.insert(path.to_path_buf(), OpenDoc { doc, looks: HashMap::new() });
+    }
+    renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))
+}
+
+fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
+    let doc = &mut open.doc;
     match &job.kind {
         JobKind::Size => match doc.page_size(job.source_page) {
             Ok((width, height)) => Outcome::Size(PageBox { width, height }),

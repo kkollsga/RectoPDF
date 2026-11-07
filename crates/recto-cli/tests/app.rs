@@ -446,6 +446,108 @@ fn reopening_the_window_keeps_the_place_and_the_zoom() {
     assert_eq!(run.ok(&["where"])["page"], page, "the session's place too");
 }
 
+/// Failure: a tab's file doesn't answer, on a dead volume, and a click on the tab holds the session thread for as long as it takes: later clicks and opens wait, and with the session's lock held so does `status`. A FIFO with no writer stands in for a dead volume: its open never returns. Everything else goes on, on the app's real path.
+#[test]
+fn a_file_that_doesnt_answer_holds_up_nothing_else() {
+    let Some(run) = Run::start() else { return };
+    let folder = run.state.root.join("files");
+    std::fs::create_dir_all(&folder).unwrap();
+    let body = pages(&[Page::new(text_lines(&["A page"]))]);
+    let paths: Vec<PathBuf> = (0..5).map(|index| folder.join(format!("{index}.pdf"))).collect();
+    for path in &paths {
+        std::fs::write(path, &body).unwrap();
+        run.ok(&["open", path.to_str().unwrap()]);
+    }
+    run.settled();
+    // The first has gone cold by now. Its file stops answering.
+    std::fs::remove_file(&paths[0]).unwrap();
+    assert!(Command::new("/usr/bin/mkfifo").arg(&paths[0]).status().unwrap().success());
+    let started = std::time::Instant::now();
+    run.ok(&["qa", "click-row", "0"]);
+    assert_eq!(run.ok(&["status"])["tabs"], 5, "the session answers");
+    assert_eq!(run.ok(&["tabs"])["count"].as_u64().or(Some(5)), Some(5));
+    // A later click goes ahead, and it's what's shown when the read does come back.
+    run.ok(&["qa", "click-row", "2"]);
+    let elsewhere = wait_for(&run, |state| state["reader"]["tab"] == 3);
+    assert_eq!(elsewhere["reader"]["tab"], 3, "{elsewhere}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(15), "{:?}", started.elapsed());
+    run.settled();
+    let last = folder.join("late.pdf");
+    std::fs::write(&last, &body).unwrap();
+    run.ok(&["open", last.to_str().unwrap()]);
+    run.settled();
+    // Lets its thread go, and nothing comes of it: the reader has moved on.
+    drop(std::fs::OpenOptions::new().write(true).open(&paths[0]));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_ne!(run.report()["reader"]["tab"], 1, "a read coming back doesn't take the reader anywhere");
+}
+
+/// Failure: the owner couldn't see the settings: the panel is there only if it can be opened, says what's chosen, and changes what it says it does, through its real buttons, with no re-render for warm paper. And at rest there's only the button.
+#[test]
+fn the_panel_opens_and_does_what_it_says() {
+    let Some(run) = Run::start() else { return };
+    // In a light window, where the paper with nothing chosen is white, and warm is that with a tint.
+    run.ok(&["qa", "appearance", "light"]);
+    let file = long_document(5);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let rest = run.report();
+    assert_eq!(rest["app"]["panel"]["open"], false, "{rest}");
+    assert_eq!(rest["app"]["panel"]["items"].as_array().unwrap().len(), 0, "quiet at rest: {rest}");
+    let list_at_rest = rest["app"]["contents"]["list_height"].as_f64().unwrap();
+    run.ok(&["qa", "panel", "toggle"]);
+    wait_for(&run, |state| state["app"]["panel"]["open"] == true);
+    run.settled();
+    let open = run.report();
+    let ids: Vec<&str> = open["app"]["panel"]["items"].as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["paper.white", "paper.warm", "paper.dark", "view.zoom_out", "view.zoom_in", "view.fit", "view.focus"], "this and nothing else");
+    assert!(open["app"]["contents"]["list_height"].as_f64().unwrap() < list_at_rest, "it docks in room from the list: {open}");
+    let drawn = open["reader"]["counts"]["drawn"].clone();
+    run.ok(&["qa", "panel", "paper.warm"]);
+    let warm = wait_for(&run, |state| state["app"]["paper"] == "warm");
+    assert_eq!(warm["app"]["pages"]["tint_layers"].as_u64().map(|layers| layers >= 1), Some(true), "{warm}");
+    assert_eq!(warm["reader"]["counts"]["drawn"], drawn, "warm paper draws nothing");
+    let picked: Vec<&Value> = warm["app"]["panel"]["items"].as_array().unwrap().iter().filter(|item| item["selected"] == true).collect();
+    assert_eq!(picked.len(), 1);
+    assert_eq!(picked[0]["id"], "paper.warm");
+    assert_eq!(run.ok(&["view"])["paper"], "warm", "the same setting `recto view` has");
+    run.ok(&["qa", "panel", "view.zoom_in"]);
+    wait_for(&run, |state| state["app"]["pages"]["magnification"].as_f64().unwrap_or(0.0) > 1.0);
+    run.ok(&["qa", "panel", "view.fit"]);
+    wait_for(&run, |state| state["app"]["pages"]["magnification"] == 1.0);
+    run.ok(&["qa", "panel", "toggle"]);
+    wait_for(&run, |state| state["app"]["panel"]["open"] == false);
+}
+
+/// Failure: the menu bar isn't what Rust lists, or Show Agent Icon doesn't hide the star, or isn't remembered, or the page's scroller still runs under where the star is, or the full way with a star there. Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon. Add an option in the macos top bar to turn off agent bar (hides the icon), enable + - and command - scroll for zooming".
+#[test]
+fn the_menu_bar_and_the_agent_icon() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(5);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let state = run.report();
+    let titles: Vec<&str> = state["app"]["menu_bar"].as_array().unwrap().iter().map(|menu| menu["title"].as_str().unwrap()).collect();
+    assert_eq!(titles, ["RectoPDF", "File", "View"], "{state}");
+    let view = &state["app"]["menu_bar"][2]["items"];
+    let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Focus View", "Show Agent Icon"]);
+    assert_eq!(state["app"]["agent_icon"], true);
+    assert!(state["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() > 30.0, "below the star: {state}");
+    run.ok(&["qa", "menu", "view.agent_icon"]);
+    let hidden = wait_for(&run, |state| state["app"]["agent_icon"] == false);
+    assert_eq!(hidden["app"]["pages"]["scroller_top_inset"], 0.0, "the whole way with no star: {hidden}");
+    assert_eq!(hidden["app"]["menu_bar"][2]["items"][5]["checked"], false, "{hidden}");
+    assert_eq!(run.ok(&["view"])["agent_icon"], false, "the same setting `recto view` has");
+    assert!(run.state.root.join("agent-icon-hidden").exists(), "remembered");
+    run.ok(&["view", "--agent-icon", "on"]);
+    wait_for(&run, |state| state["app"]["agent_icon"] == true);
+    assert!(!run.state.root.join("agent-icon-hidden").exists());
+    let (reply, status) = run.state.json(&["qa", "menu", "file.open"]);
+    assert_eq!(status, exit::USAGE, "a quiet run shows no window: {reply}");
+    assert!(run.ok(&["view", "--zoom", "in"])["zoom"].as_f64().unwrap() > 1.0);
+}
+
 /// Failure: a file that can't be drawn hangs the view, kills the app, or shows a blank page with no reason. A page past every memory limit must come out as words, with the UI thread free.
 #[test]
 fn a_page_that_cant_be_drawn_says_so() {

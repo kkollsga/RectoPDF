@@ -714,10 +714,19 @@ pub struct DocRenderer {
 impl DocRenderer {
     /// Opens the file for reading and prepares a renderer. No process starts until something needs one.
     pub fn new(path: &Path, password: Option<&[u8]>, config: ServiceConfig, policy: Policy) -> Result<Self, RenderFailure> {
-        let file = File::open(path).map_err(|error| match error.kind() {
+        Self::with_file(Self::open_file(path)?, path, password, config, policy)
+    }
+
+    /// The part of [`Self::new`] that can block, on a file on a dead volume, for a caller that can't be held up.
+    pub fn open_file(path: &Path) -> Result<File, RenderFailure> {
+        File::open(path).map_err(|error| match error.kind() {
             io::ErrorKind::NotFound => RenderFailure::NotFound,
             _ => RenderFailure::Unavailable,
-        })?;
+        })
+    }
+
+    /// The rest of [`Self::new`], with the file open.
+    pub fn with_file(file: File, path: &Path, password: Option<&[u8]>, config: ServiceConfig, policy: Policy) -> Result<Self, RenderFailure> {
         let shared = SharedMemory::create(control::LEN).map_err(|_| RenderFailure::Unavailable)?;
         let slot = config.heavy_slot.clone();
         Ok(Self {

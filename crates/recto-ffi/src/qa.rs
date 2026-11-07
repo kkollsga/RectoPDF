@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 /// How long the UI thread may take with a QA request before the answer is that it's stuck.
 const UI_ANSWER_WAIT: Duration = Duration::from_secs(30);
+/// How long a drive verb waits for its effect before saying how things stand. A click on a tab whose file isn't answering is still a click that's been made, and `qa wait-settled` is for waiting on as long as it takes.
+const ANSWER_AFTER_CLICK: Duration = Duration::from_secs(3);
 const DEFAULT_SETTLE_WAIT: Duration = Duration::from_secs(30);
 /// How long a sweep may be asked to run.
 const MAX_SWEEP: Duration = Duration::from_secs(60);
@@ -215,7 +217,7 @@ impl QaBridge {
         }
         self.ask(verb, value)?;
         // A click goes to the session thread and comes back as a model. The answer is what's true once that's happened, so nobody has to sleep and hope.
-        self.core.flush(UI_ANSWER_WAIT);
+        self.core.flush(ANSWER_AFTER_CLICK);
         self.ask("state", "")
     }
 

@@ -182,6 +182,44 @@ fn a_page_that_is_a_picture_keeps_its_colours_on_dark_paper() {
     assert!(!colours.is_empty() || !surfaces.is_empty(), "something was drawn: {ops:?}");
 }
 
+/// Failure: a tab's file doesn't answer, on a dead volume, and the page view's one thread sits in `File::open` for it, so a healthy tab gets no tiles. A FIFO with no writer is a file whose open never returns, as a dead volume's does. The reader moving on is all it takes, and that tab's page says what's wrong.
+#[test]
+fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
+    let folder = std::env::temp_dir().join(format!("recto-fifo-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let dead = folder.join("dead.pdf");
+    let _ = std::fs::remove_file(&dead);
+    assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&dead).status().unwrap().success());
+    let events = Arc::new(Events::default());
+    let engine = Engine::new(EngineConfig::default(), events);
+    engine.set_viewport(view(0.0));
+    engine.activate(1, 1, 0, PageMap { files: vec![dead.clone()], slots: None }, &[]);
+    engine.set_viewport(view(0.0));
+    // Its open is under way and stuck. A healthy tab comes up.
+    std::thread::sleep(Duration::from_millis(100));
+    let file = document(1);
+    engine.activate(2, 1, 0, PageMap { files: vec![file.0.clone()], slots: None }, &[1]);
+    engine.set_viewport(view(0.0));
+    let began = Instant::now();
+    pump(&engine, Duration::from_secs(10));
+    assert!(engine.wait_settled(Duration::from_secs(5)), "the healthy tab never settled: {}", engine.report().0);
+    assert!(began.elapsed() < Duration::from_secs(8), "{:?}", began.elapsed());
+    assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
+    // And back on it, it says so rather than waiting for ever.
+    engine.activate(1, 1, 0, PageMap { files: vec![dead.clone()], slots: None }, &[2]);
+    engine.set_viewport(view(0.0));
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while engine.note().is_none() && Instant::now() < deadline {
+        engine.drain();
+        engine.applied();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(engine.note().is_some_and(|note| note.contains("answering")), "{:?}", engine.note());
+    // Lets its thread go.
+    drop(std::fs::OpenOptions::new().write(true).open(&dead));
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
 /// Failure: closing the window leaves "there are ops" raised with no host to take them, so when the window's back nobody is ever told again, and tiles stop arriving. The host must hear of new ones, even if no ops were taken in between.
 #[test]
 fn tiles_keep_arriving_after_the_window_comes_back() {
