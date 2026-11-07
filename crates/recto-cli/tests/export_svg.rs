@@ -4,7 +4,7 @@ mod common;
 
 use common::State;
 use recto_agent::Level;
-use recto_svg::verify::{Embedded, check_document, embedded_images};
+use recto_svg::verify::{Embedded, check_document, embedded_images, read_png};
 use recto_testpdf::{Object, Page, TempPdf, first_extra_object, form_bomb, pages, pages_with, text_lines};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -335,6 +335,139 @@ fn invisible_text_stays_unseen_and_is_counted() {
     let (svg, data) = svg_of(&file, &[]);
     assert!(svg.contains(">quiet words</text>") && svg.contains("fill-opacity=\"0\"") && !svg.contains("<use"), "{svg}");
     assert_eq!(note(&data, "invisible_text_chars"), 11, "{data}");
+}
+
+/// A pixel that's the red the hidden things in these tests are.
+fn red_pixels(image: &Embedded) -> usize {
+    let Embedded::Png { channels, pixels, .. } = image else { return 0 };
+    pixels.chunks(*channels).filter(|pixel| pixel.len() >= 3 && pixel[0] > 180 && pixel[1] < 80 && pixel[2] < 80 && (pixel.len() < 4 || pixel[3] > 200)).count()
+}
+
+/// What `recto render` draws, which is PDFium's real rule, as its count of red pixels.
+fn red_in_render(file: &TempPdf) -> usize {
+    let state = State::at(Level::Full);
+    let out = file.0.with_file_name(format!("render-{}.png", std::process::id()));
+    let (reply, code) = state.json(&["local", file.0.to_str().unwrap(), "render", "1", "--scale", "2", "--out", out.to_str().unwrap()]);
+    assert_eq!(code, 0, "{reply}");
+    let image = read_png(&std::fs::read(&out).unwrap());
+    std::fs::remove_file(&out).unwrap();
+    red_pixels(&image)
+}
+
+/// Asserts the page really hides its red box and the word SECRET, by PDFium's own drawing, and that neither's anywhere in the file, as vector, text or pixels, whole page or in a box. What's shown stays.
+fn hidden_stays_out(what: &str, bytes: &[u8]) {
+    let file = TempPdf::new("doc.pdf", bytes);
+    assert_eq!(red_in_render(&file), 0, "{what}: PDFium shows this, so the test proves nothing");
+    for extra in [&[][..], &["--rect", "50,50,500,700"][..]] {
+        let (svg, data) = svg_of(&file, extra);
+        assert!(!svg.contains("#f00"), "{what} {extra:?}: in vector: {data}");
+        assert!(!svg.contains("SECRET"), "{what} {extra:?}: in text: {data}");
+        let red: usize = embedded_images(svg.as_bytes()).iter().map(red_pixels).sum();
+        assert_eq!(red, 0, "{what} {extra:?}: in pixels: {data}");
+        assert!(svg.contains("#0f0") || !embedded_images(svg.as_bytes()).is_empty(), "{what} {extra:?}: what's shown went too: {data}");
+    }
+}
+
+/// A page with a layer that shows and something else that doesn't, one document's way of saying so. Extra objects are numbered from the first after the page's own, and `/On` is always the first.
+fn layered(catalog: &str, properties: &str, objects: Vec<Object>, content: &str) -> Vec<u8> {
+    let bytes = pages_with(&[Page::new(content)], &format!("/Properties << {properties} >>"), objects);
+    if catalog.is_empty() {
+        return bytes;
+    }
+    String::from_utf8_lossy(&bytes).replace("/Type /Catalog", &format!("/Type /Catalog {catalog}")).into_bytes()
+}
+
+const HIDDEN_ART: &str = "1 0 0 rg 100 100 50 50 re f BT /F1 12 Tf 100 200 Td (SECRET) Tj ET";
+const SHOWN_ART: &str = "0 1 0 rg 300 100 50 50 re f BT /F1 12 Tf 300 200 Td (Shown) Tj ET";
+
+fn on_then_off() -> String {
+    format!("/OC /On BDC {SHOWN_ART} EMC /OC /Off BDC {HIDDEN_ART} EMC\n")
+}
+
+/// Failure: only a layer that starts off gets looked at, so what a membership's rule hides, or a layer's usage, goes out though the page doesn't show it. PDFium's answer is asked for every mark, so its real rule is what counts, whichever this is.
+#[test]
+fn whatever_rule_hides_a_section_it_stays_out() {
+    let on = first_extra_object(1);
+    let off = on + 1;
+    let group = Object::Dict("<< /Type /OCG /Name (Roads) >>".into());
+    let properties = format!("/On {on} 0 R /Off {off} 0 R");
+    let listed = format!("/OCProperties << /OCGs [{on} 0 R] /D << >> >>");
+    let memberships = [
+        ("all off, over a layer that's on", format!("<< /Type /OCMD /OCGs [{on} 0 R] /P /AllOff >>")),
+        ("not, over a layer that's on", format!("<< /Type /OCMD /VE [/Not {on} 0 R] >>")),
+    ];
+    for (what, membership) in &memberships {
+        hidden_stays_out(what, &layered(&listed, &properties, vec![group.clone(), Object::Dict(membership.clone())], &on_then_off()));
+        hidden_stays_out(&format!("{what}, with no layers listed"), &layered("", &properties, vec![group.clone(), Object::Dict(membership.clone())], &on_then_off()));
+    }
+    let both = format!("/OCProperties << /OCGs [{on} 0 R {off} 0 R] /D << >> >>");
+    let off_by_use = Object::Dict("<< /Type /OCG /Name (Rivers) /Usage << /View << /ViewState /OFF >> >> >>".into());
+    hidden_stays_out("a layer whose usage says off", &layered(&both, &properties, vec![group.clone(), off_by_use], &on_then_off()));
+}
+
+/// Failure: a form or image naming a layer in its own dictionary, where no call reaches, is only looked at if something starts off, so a rule's answer goes unseen. Drawn to see, wherever a document has layers or the thing itself names one.
+#[test]
+fn a_form_or_image_a_rule_hides_stays_out() {
+    let on = first_extra_object(1);
+    let membership = on + 1;
+    let thing = on + 2;
+    let group = Object::Dict("<< /Type /OCG /Name (Roads) >>".into());
+    let rule = Object::Dict(format!("<< /Type /OCMD /VE [/Not {on} 0 R] >>"));
+    let form = Object::Stream { dict: format!("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /OC {membership} 0 R /Resources << /Font << /F1 3 0 R >> >>"), data: HIDDEN_ART.as_bytes().to_vec() };
+    let image = Object::Stream { dict: format!("/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /OC {membership} 0 R"), data: [255, 0, 0].repeat(4) };
+    let listed = format!("/OCProperties << /OCGs [{on} 0 R] /D << >> >>");
+    for catalog in [listed.as_str(), ""] {
+        let page = |objects: Vec<Object>, content: String| {
+            let bytes = pages_with(&[Page::new(content)], &format!("/XObject << /X {thing} 0 R >>"), objects);
+            if catalog.is_empty() { bytes } else { String::from_utf8_lossy(&bytes).replace("/Type /Catalog", &format!("/Type /Catalog {catalog}")).into_bytes() }
+        };
+        hidden_stays_out("a form", &page(vec![group.clone(), rule.clone(), form.clone()], format!("/X Do {SHOWN_ART}\n")));
+        // Binary doesn't survive the catalog's edit where there's one, and these bytes are plain enough to.
+        hidden_stays_out("an image", &page(vec![group.clone(), rule.clone(), image.clone()], format!("q 50 0 0 50 100 100 cm /X Do Q {SHOWN_ART}\n")));
+    }
+}
+
+/// Failure: a name stands for a layer it isn't, so a section takes the state of a layer that's on because it shares its name: here a membership that's hidden, named after one that shows. With anything but listed layers about, each mark answers for itself.
+#[test]
+fn a_hidden_section_doesnt_borrow_another_layers_name() {
+    let on = first_extra_object(1);
+    let off = on + 1;
+    let group = Object::Dict("<< /Type /OCG /Name (Roads) >>".into());
+    let properties = format!("/On {on} 0 R /Off {off} 0 R");
+    let listed = format!("/OCProperties << /OCGs [{on} 0 R] /D << >> >>");
+    let membership = Object::Dict(format!("<< /Type /OCMD /Name (Roads) /OCGs [{on} 0 R] /P /AllOff >>"));
+    hidden_stays_out("a membership named after a layer", &layered(&listed, &properties, vec![group.clone(), membership], &on_then_off()));
+    let both = format!("/OCProperties << /OCGs [{on} 0 R {off} 0 R] /D << /OFF [{off} 0 R] >> >>");
+    hidden_stays_out("two layers with one name", &layered(&both, &properties, vec![group.clone(), group.clone()], &on_then_off()));
+    hidden_stays_out("one in UTF-16", &layered(&both, &properties, vec![group.clone(), Object::Dict("<< /Type /OCG /Name <FFFE52006F00610064007300> >>".into())], &on_then_off()));
+}
+
+/// Failure: a layer the document doesn't list reads as off because `/OFF` names it, and is left out, where PDFium draws it: going by the lists isn't its rule. What the page shows must come through, name or no name.
+#[test]
+fn a_layer_the_document_doesnt_list_is_as_pdfium_says() {
+    let on = first_extra_object(1);
+    let off = on + 1;
+    let group = Object::Dict("<< /Type /OCG /Name (Roads) >>".into());
+    let catalog = format!("/OCProperties << /OCGs [{on} 0 R] /D << /OFF [{off} 0 R] >> >>");
+    let bytes = layered(&catalog, &format!("/On {on} 0 R /Off {off} 0 R"), vec![group.clone(), group], &on_then_off());
+    let file = TempPdf::new("doc.pdf", &bytes);
+    assert!(red_in_render(&file) > 0, "PDFium draws it");
+    let (svg, _) = svg_of(&file, &[]);
+    assert!(svg.contains("#f00") && svg.contains("SECRET"), "{svg}");
+}
+
+/// Failure: only the first 64 marks on an object are read, so a harmless pile of them in front of a layer's mark hides that mark from the check, and the object goes out. Past the limit nothing's been shown to be visible, and the page goes as PDFium draws it.
+#[test]
+fn a_mark_past_the_limit_doesnt_let_a_section_through() {
+    let on = first_extra_object(1);
+    let off = on + 1;
+    let groups = vec![Object::Dict("<< /Type /OCG /Name (Roads) >>".into()), Object::Dict("<< /Type /OCG /Name (Rivers) >>".into())];
+    let catalog = format!("/OCProperties << /OCGs [{on} 0 R {off} 0 R] /D << /OFF [{off} 0 R] >> >>");
+    let content = format!("/OC /On BDC {SHOWN_ART} EMC {} /OC /Off BDC {HIDDEN_ART} EMC {}\n", "/M BMC ".repeat(64), "EMC ".repeat(64));
+    let bytes = layered(&catalog, &format!("/On {on} 0 R /Off {off} 0 R"), groups, &content);
+    hidden_stays_out("behind 64 other marks", &bytes);
+    let (_, data) = svg_of(&TempPdf::new("doc.pdf", &bytes), &[]);
+    assert_eq!(data["all_vector"], false, "and it says so: {data}");
 }
 
 /// Failure: a layer that's off comes out in the export, so what the page doesn't show is handed over. It must be left out, and counted.

@@ -50,14 +50,14 @@ pub mod hints {
     pub const BLEND: u8 = 2;
     /// Some pattern is a shading: a fill that reads as plain white through PDFium's calls.
     pub const SHADING_PATTERN: u8 = 4;
-    /// The document has optional content that's off by default.
-    pub const HIDDEN_LAYERS: u8 = 8;
-    /// Two layers may share a name, so a name can't stand for a layer.
-    pub const LAYER_NAMES_REPEAT: u8 = 16;
+    /// The document has optional content, or a form or image here names a layer in its own dictionary, where no call reaches, so those are drawn to see.
+    pub const OPTIONAL_CONTENT: u8 = 8;
+    /// A marked section here may name something other than a listed layer with a name of its own, so a name can't stand for a layer.
+    pub const LAYER_NAMES_UNSAFE: u8 = 16;
     /// Some JPEG on the page has a `/Decode` or `/ColorTransform` that changes what its bytes mean, so its bytes alone wouldn't be the same picture. PDFium's calls don't show those.
     pub const JPEG_READ_DIFFERENTLY: u8 = 32;
     /// Every hint. For a file the structure reader couldn't read, which says nothing about what it uses.
-    pub const ALL: u8 = SOFT_MASK | BLEND | SHADING_PATTERN | HIDDEN_LAYERS | LAYER_NAMES_REPEAT | JPEG_READ_DIFFERENTLY;
+    pub const ALL: u8 = SOFT_MASK | BLEND | SHADING_PATTERN | OPTIONAL_CONTENT | LAYER_NAMES_UNSAFE | JPEG_READ_DIFFERENTLY;
 }
 
 /// Ask for a page's contents, or the next piece of them.

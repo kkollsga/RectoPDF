@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// A body for one object: either a dictionary or a stream with its own dictionary entries.
+#[derive(Clone)]
 pub enum Object {
     Dict(String),
     Stream { dict: String, data: Vec<u8> },

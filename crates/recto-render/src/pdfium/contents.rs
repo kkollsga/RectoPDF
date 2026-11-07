@@ -33,6 +33,8 @@ const MAX_PATCH_PAGES: u64 = 4;
 const MAX_PROBES: u32 = 1024;
 /// How many layers are remembered. One past this is drawn to see each time, up to the limit on drawings.
 const MAX_LAYERS: usize = 4096;
+/// Most marks looked through on one object. Past this it hasn't been shown to be visible.
+const MAX_MARKS: c_int = 64;
 /// How large such a drawing is, at most, on its long side.
 const PROBE_EDGE: f64 = 256.0;
 /// A picture is drawn in strips of at most this, so its size isn't its memory.
@@ -200,6 +202,13 @@ type GlyphBounds = (f64, f64, f64, f64);
 /// The "index" of a space PDFium made up, which no glyph or box goes with.
 const NOT_DRAWN: u32 = u32::MAX;
 
+/// What a layer's state is remembered by. A mark is never wrong and only takes more looks. A name, whole so that two can't be mistaken for one, is used only where the structure says it can stand for its layer.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum LayerKey {
+    Name(Box<[u16]>),
+    Mark(usize),
+}
+
 /// What's known about whether an object is in a layer that's on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shows {
@@ -270,7 +279,7 @@ pub(super) struct Walk {
     patch_pixels: u64,
     flatten: bool,
     probes: u32,
-    layers: HashMap<u64, bool>,
+    layers: HashMap<LayerKey, bool>,
     invisible_counted: HashSet<usize>,
     notes: [u32; 9],
     buffer: Vec<(u32, f32, f32)>,
@@ -803,18 +812,17 @@ impl Walk {
         if !area.meets(self.view) {
             return Ok(());
         }
-        if self.job.hints & hints::HIDDEN_LAYERS != 0 {
-            match self.layer_shows(object, area, kind) {
-                Shows::On => {}
-                Shows::Off => {
-                    self.note(NoteCode::HiddenLayer);
-                    return Ok(());
-                }
-                Shows::NotLookedUp => {
-                    self.note(NoteCode::LayersUnchecked);
-                    self.flatten = true;
-                    return Ok(());
-                }
+        // Asked of everything: a membership's rule can hide what's in it even in a document that lists no layers, and PDFium is the one that knows. What can't be shown to be visible goes as a picture PDFium draws.
+        match self.layer_shows(object, area, kind) {
+            Shows::On => {}
+            Shows::Off => {
+                self.note(NoteCode::HiddenLayer);
+                return Ok(());
+            }
+            Shows::NotLookedUp => {
+                self.note(NoteCode::LayersUnchecked);
+                self.flatten = true;
+                return Ok(());
             }
         }
         let text_only = self.level().text_only || self.flatten;
@@ -1411,7 +1419,8 @@ impl Walk {
 
     /// Whether an object is in layers that are on. PDFium has no call that says, so each layer's mark is put on a plain box that always draws, and the box is drawn alone: PDFium itself decides. Nothing about the object can sway that, so an OCR layer's invisible text doesn't condemn its layer. A layer is known by its name where the document's names are all different, and otherwise by its mark, which is never wrong and only takes more looks.
     fn layer_shows(&mut self, object: FPDF_PAGEOBJECT, area: Area, kind: c_int) -> Shows {
-        for (mark, key) in self.layer_marks_of(object) {
+        let Some(marks) = self.layer_marks_of(object) else { return Shows::NotLookedUp };
+        for (mark, key) in marks {
             let on = match self.layers.get(&key) {
                 Some(on) => Some(*on),
                 None => {
@@ -1436,7 +1445,7 @@ impl Walk {
             }
         }
         // Forms and images can name a layer in their own dictionaries, where no call reaches, so they're drawn to see. One that draws nothing has nothing to lose but text that can't be told from what's hidden.
-        if kind == FPDF_PAGEOBJ_FORM || kind == FPDF_PAGEOBJ_IMAGE {
+        if self.job.hints & hints::OPTIONAL_CONTENT != 0 && (kind == FPDF_PAGEOBJ_FORM || kind == FPDF_PAGEOBJ_IMAGE) {
             if self.probes >= MAX_PROBES {
                 return Shows::NotLookedUp;
             }
@@ -1476,37 +1485,36 @@ impl Walk {
         Some(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0))
     }
 
-    /// The `/OC` marks on an object, each with what it's known by.
-    fn layer_marks_of(&self, object: FPDF_PAGEOBJECT) -> Vec<(FPDF_PAGEOBJECTMARK, u64)> {
+    /// The `/OC` marks on an object, each with what it's known by, or `None` if they can't all be seen.
+    fn layer_marks_of(&self, object: FPDF_PAGEOBJECT) -> Option<Vec<(FPDF_PAGEOBJECTMARK, LayerKey)>> {
         let mut found = Vec::new();
-        let names_are_unique = self.job.hints & hints::LAYER_NAMES_REPEAT == 0;
+        let names_are_unique = self.job.hints & hints::LAYER_NAMES_UNSAFE == 0;
         // SAFETY: the object is live with its page, and so are its marks. Each buffer is live for its call, and PDFium writes only if it fits.
         unsafe {
-            for index in 0..(self.api.FPDFPageObj_CountMarks)(object).clamp(0, 64) {
+            let count = (self.api.FPDFPageObj_CountMarks)(object);
+            if count > MAX_MARKS {
+                return None;
+            }
+            for index in 0..count.max(0) {
                 let mark = (self.api.FPDFPageObj_GetMark)(object, index as c_ulong);
                 if mark.is_null() {
-                    continue;
+                    return None;
                 }
                 let mut name = [0u16; 4];
                 let mut len: c_ulong = 0;
-                if (self.api.FPDFPageObjMark_GetName)(mark, name.as_mut_ptr(), 8, &raw mut len) == 0 || len != 6 || name[0] != u16::from(b'O') || name[1] != u16::from(b'C') {
+                if (self.api.FPDFPageObjMark_GetName)(mark, name.as_mut_ptr(), 8, &raw mut len) == 0 {
+                    return None;
+                }
+                if len != 6 || name[0] != u16::from(b'O') || name[1] != u16::from(b'C') {
                     continue;
                 }
                 let mut layer = [0u16; 128];
                 let mut layer_len: c_ulong = 0;
                 let named = names_are_unique && (self.api.FPDFPageObjMark_GetParamStringValue)(mark, c"Name".as_ptr(), layer.as_mut_ptr(), (layer.len() * 2) as c_ulong, &raw mut layer_len) != 0 && layer_len as usize <= layer.len() * 2;
-                if named {
-                    let mut hash = Hasher::new();
-                    for unit in &layer[..layer_len as usize / 2] {
-                        hash.bytes(&unit.to_le_bytes());
-                    }
-                    found.push((mark, hash.0));
-                } else {
-                    found.push((mark, mark as u64));
-                }
+                found.push((mark, if named { LayerKey::Name(layer[..layer_len as usize / 2].into()) } else { LayerKey::Mark(mark as usize) }));
             }
         }
-        found
+        Some(found)
     }
 
     /// An image, as itself if it can go as itself.

@@ -22,10 +22,10 @@ pub struct PageEffects {
     pub blend: bool,
     /// A pattern that's a shading.
     pub shading_pattern: bool,
-    /// The document has optional content that starts off, or changes by how it's viewed.
-    pub hidden_layers: bool,
-    /// Two of its layers have one name, or their names can't be read, so a name can't stand for a layer.
-    pub layer_names_repeat: bool,
+    /// The document has optional content, or something on this page names a layer in its own dictionary. What that hides is PDFium's to say and can't be worked out from here, since a layer's state can go by its usage, or a membership's by a rule, so this only says to look.
+    pub optional_content: bool,
+    /// A name can't stand for a layer on this page: see [`Walk::look_at_properties`].
+    pub layer_names_unsafe: bool,
     /// A JPEG here has a `/Decode` or `/ColorTransform` that changes what its bytes mean.
     pub jpeg_read_differently: bool,
 }
@@ -38,11 +38,13 @@ pub fn page_effects(path: &Path, page: u32) -> Option<PageEffects> {
     let owner = entry.inherited().resources().unwrap_or(entry.id());
     let page_dict = dict_at(&reader, owner)?;
     let resources = page_dict.get(b"Resources").ok()?;
-    let mut walk = Walk { reader: &reader, deadline: Instant::now() + MAX_TIME, visits: 0, effects: PageEffects { hidden_layers: has_hidden_layers(&reader), layer_names_repeat: layer_names_repeat(&reader), ..PageEffects::default() }, waiting: Vec::new(), seen: HashSet::new() };
+    let mut walk = Walk { reader: &reader, deadline: Instant::now() + MAX_TIME, visits: 0, effects: PageEffects::default(), waiting: Vec::new(), seen: HashSet::new(), listed: HashSet::new() };
+    walk.read_layers()?;
     walk.resources(resources)?;
     while let Some(id) = walk.waiting.pop() {
         walk.tick()?;
         let Some(inner) = stream_or_dict(&reader, &Object::Reference(id)) else { continue };
+        walk.effects.optional_content |= inner.has(b"OC");
         walk.look_at_pattern(&inner);
         walk.look_at_image(&inner);
         if let Ok(next) = inner.get(b"Resources") {
@@ -60,6 +62,8 @@ struct Walk<'a> {
     effects: PageEffects,
     waiting: Vec<ObjectId>,
     seen: HashSet<ObjectId>,
+    /// The layers whose names can stand for them.
+    listed: HashSet<ObjectId>,
 }
 
 impl Walk<'_> {
@@ -67,6 +71,59 @@ impl Walk<'_> {
     fn tick(&mut self) -> Option<()> {
         self.visits += 1;
         (self.visits <= MAX_VISITS && Instant::now() < self.deadline).then_some(())
+    }
+
+    /// Whether the document has layers, and which can be known by name: each listed as a layer by reference, with a plain name no other has. A name that isn't plain may read as another once it's decoded, by rules that aren't this reader's. Anything else just isn't listed, which costs looking at it by its mark.
+    fn read_layers(&mut self) -> Option<()> {
+        let Some(root) = self.reader.trailer_entry_owned(b"Root").ok().flatten() else {
+            self.effects.optional_content = true;
+            self.effects.layer_names_unsafe = true;
+            return Some(());
+        };
+        let Ok(root) = root.as_dict() else {
+            self.effects.optional_content = true;
+            self.effects.layer_names_unsafe = true;
+            return Some(());
+        };
+        let Ok(properties) = root.get(b"OCProperties") else { return Some(()) };
+        self.effects.optional_content = true;
+        let layers = value_dict(self.reader, properties).and_then(|properties| deref(self.reader, properties.get(b"OCGs").ok()?));
+        let Some(Object::Array(layers)) = layers else {
+            self.effects.layer_names_unsafe = true;
+            return Some(());
+        };
+        let mut names = HashSet::new();
+        for layer in &layers {
+            self.tick()?;
+            let name = match layer {
+                Object::Reference(id) => dict_at(self.reader, *id).filter(is_a_layer).and_then(|dict| plain_name(self.reader, &dict)).map(|name| (*id, name)),
+                _ => None,
+            };
+            if let Some((id, name)) = name
+                && names.insert(name)
+            {
+                self.listed.insert(id);
+            } else {
+                self.effects.layer_names_unsafe = true;
+            }
+        }
+        Some(())
+    }
+
+    /// A marked section says which layer it's in by a name in these, and that needn't be a layer of the document: it can be a membership with a rule of its own, or one the document doesn't list. So a name stands for a layer only if everything here is one listed.
+    fn look_at_properties(&mut self, dict: &Dictionary) -> Option<()> {
+        let Ok(value) = dict.get(b"Properties") else { return Some(()) };
+        let Some(properties) = value_dict(self.reader, value) else {
+            self.effects.layer_names_unsafe = true;
+            return Some(());
+        };
+        for (_, value) in properties.iter() {
+            self.tick()?;
+            if !matches!(value, Object::Reference(id) if self.listed.contains(id)) {
+                self.effects.layer_names_unsafe = true;
+            }
+        }
+        Some(())
     }
 
     fn resources(&mut self, value: &Object) -> Option<()> {
@@ -82,6 +139,7 @@ impl Walk<'_> {
             Object::Dictionary(dict) => dict.clone(),
             _ => return Some(()),
         };
+        self.look_at_properties(&dict)?;
         if let Some(states) = entry_dict(self.reader, &dict, b"ExtGState") {
             for (_, state) in states.iter() {
                 self.tick()?;
@@ -194,50 +252,16 @@ fn has_blend(state: &Dictionary) -> bool {
     }
 }
 
-/// Whether any two layers listed in the document share a name, as cleaned for reading. Something there that can't be read may do, so it counts.
-fn layer_names_repeat(reader: &IndexedReader) -> bool {
-    let read = || -> Option<bool> {
-        let root = reader.trailer_entry_owned(b"Root").ok()??;
-        let properties = match root.as_dict().ok()?.get(b"OCProperties") {
-            Ok(value) => value_dict(reader, value)?,
-            Err(_) => return Some(false),
-        };
-        let layers = deref(reader, properties.get(b"OCGs").ok()?)?;
-        let mut names = HashSet::new();
-        for layer in layers.as_array().ok()?.iter().take(MAX_VISITS) {
-            let layer = value_dict(reader, layer)?;
-            let name = deref(reader, layer.get(b"Name").ok()?)?;
-            if !names.insert(crate::clean_text(name.as_str().ok()?)) {
-                return Some(true);
-            }
-        }
-        // Past the look, nothing's known about the rest.
-        Some(layers.as_array().ok()?.len() > MAX_VISITS)
-    };
-    read().unwrap_or(true)
+fn is_a_layer(dict: &Dictionary) -> bool {
+    matches!(dict.get(b"Type"), Ok(Object::Name(name)) if name == b"OCG")
 }
 
-fn has_hidden_layers(reader: &IndexedReader) -> bool {
-    let read = || -> Option<bool> {
-        let root = reader.trailer_entry_owned(b"Root").ok()??;
-        let properties = match root.as_dict().ok()?.get(b"OCProperties") {
-            Ok(value) => value_dict(reader, value)?,
-            Err(_) => return Some(false),
-        };
-        let config = entry_dict(reader, &properties, b"D")?;
-        let starts_off = config.get(b"BaseState").is_ok_and(|state| matches!(state, Object::Name(name) if name != b"ON"));
-        let list = |key: &[u8]| config.get(key).ok().and_then(|value| match value {
-            Object::Array(items) => Some(!items.is_empty()),
-            Object::Reference(id) => match reader.resolve_object(*id).ok()? {
-                Object::Array(items) => Some(!items.is_empty()),
-                _ => Some(true),
-            },
-            _ => Some(true),
-        });
-        Some(starts_off || list(b"OFF").unwrap_or(false) || list(b"AS").unwrap_or(false))
-    };
-    // Something there that can't be read may hide things, so it counts.
-    read().unwrap_or(true)
+/// A layer's name, if it's plain printable ASCII, which reads the same however a text string is decoded.
+fn plain_name(reader: &IndexedReader, dict: &Dictionary) -> Option<Vec<u8>> {
+    match deref(reader, dict.get(b"Name").ok()?)? {
+        Object::String(bytes, _) if bytes.iter().all(|byte| (0x20..0x7F).contains(byte)) => Some(bytes),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -279,32 +303,48 @@ mod tests {
         assert_eq!(effects(&resources, vec![looped]), PageEffects::default());
     }
 
-    /// Failure: a layer that starts off goes unnoticed, so what the page doesn't show is handed over. And a file with layers that are all on shouldn't pay for drawing each to see.
-    #[test]
-    fn layers_that_start_off_are_noticed() {
-        let group = first_extra_object(1);
-        let doc = |config: &str| {
-            let bytes = pages_with(&[Page::new(text_lines(&["Words"]))], "", vec![Object::Dict("<< /Type /OCG /Name (L) >>".into())]);
-            let bytes = String::from_utf8_lossy(&bytes).replace("/Type /Catalog", &format!("/Type /Catalog /OCProperties << /OCGs [{group} 0 R] /D << {config} >> >>"));
-            TempPdf::new("doc.pdf", bytes.as_bytes())
-        };
-        assert!(page_effects(&doc(&format!("/OFF [{group} 0 R]")).0, 0).unwrap().hidden_layers);
-        assert!(page_effects(&doc("/BaseState /OFF").0, 0).unwrap().hidden_layers);
-        assert!(!page_effects(&doc("/OFF [] /BaseState /ON").0, 0).unwrap().hidden_layers);
+    /// A page with a marked section naming layers through these, in a document listing these.
+    fn layered(listed: &str, properties: &str, objects: Vec<Object>) -> PageEffects {
+        let bytes = pages_with(&[Page::new(text_lines(&["Words"]))], &format!("/Properties << {properties} >>"), objects);
+        let bytes = String::from_utf8_lossy(&bytes).replace("/Type /Catalog", &format!("/Type /Catalog /OCProperties << /OCGs [{listed}] /D << >> >>"));
+        page_effects(&TempPdf::new("doc.pdf", bytes.as_bytes()).0, 0).unwrap()
     }
 
-    /// Failure: two layers with one name are taken for one layer, so the one that's on speaks for the one that's off and what the page hides goes out in plain sight.
+    /// Failure: only layers that start off get looked at, so a membership with a rule, or a layer whose usage says it's off, goes out as though it were on. Having layers at all, or a form or image naming one, is what makes it worth looking.
     #[test]
-    fn repeated_layer_names_are_noticed() {
+    fn having_layers_at_all_is_noticed() {
+        let group = first_extra_object(1);
+        let found = layered(&format!("{group} 0 R"), "", vec![Object::Dict("<< /Type /OCG /Name (L) >>".into())]);
+        assert!(found.optional_content, "with nothing off and no rule");
+        assert_eq!(page_effects(&TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["Words"]))])).0, 0).unwrap().optional_content, false, "and none costs nothing");
+        for subtype in ["/Subtype /Form /BBox [0 0 1 1]", "/Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray"] {
+            let object = first_extra_object(1);
+            let inside = Object::Stream { dict: format!("/Type /XObject {subtype} /OC << /Type /OCMD >>"), data: vec![0] };
+            assert!(effects(&format!("/XObject << /X {object} 0 R >>"), vec![inside]).optional_content, "{subtype}, in a document with no layers listed");
+        }
+    }
+
+    /// Failure: a name stands for a layer it isn't. A membership named after a layer that's on, or a second layer that reads as the same name once decoded, takes that layer's state, and what the page hides goes out in plain sight. A name is trusted only when everything a section can name is a listed layer with a plain name no other has.
+    #[test]
+    fn a_name_stands_for_a_layer_only_when_nothing_else_can_share_it() {
         let (first, second) = (first_extra_object(1), first_extra_object(1) + 1);
-        let doc = |one: &str, two: &str| {
-            let objects = vec![Object::Dict(format!("<< /Type /OCG /Name ({one}) >>")), Object::Dict(format!("<< /Type /OCG /Name ({two}) >>"))];
-            let bytes = pages_with(&[Page::new(text_lines(&["Words"]))], "", objects);
-            let bytes = String::from_utf8_lossy(&bytes).replace("/Type /Catalog", &format!("/Type /Catalog /OCProperties << /OCGs [{first} 0 R {second} 0 R] /D << >> >>"));
-            TempPdf::new("doc.pdf", bytes.as_bytes())
-        };
-        assert!(page_effects(&doc("Layer 1", "Layer 1").0, 0).unwrap().layer_names_repeat);
-        assert!(!page_effects(&doc("Roads", "Rivers").0, 0).unwrap().layer_names_repeat);
+        let group = |name: &str| Object::Dict(format!("<< /Type /OCG /Name {name} >>"));
+        let both = format!("{first} 0 R {second} 0 R");
+        let named = format!("/A {first} 0 R /B {second} 0 R");
+        assert!(!layered(&both, &named, vec![group("(Roads)"), group("(Rivers)")]).layer_names_unsafe, "the plain case keeps its shortcut");
+        assert!(layered(&both, &named, vec![group("(Roads)"), group("(Roads)")]).layer_names_unsafe, "two with one name");
+        assert!(layered(&both, &named, vec![group("(Roads)"), group("<FFFE52006F00>")]).layer_names_unsafe, "a name in UTF-16");
+        assert!(layered(&both, &named, vec![group("(Roads)"), group("(R\\351gion)")]).layer_names_unsafe, "a name past ASCII");
+        assert!(layered(&format!("{first} 0 R"), &named, vec![group("(Roads)"), group("(Rivers)")]).layer_names_unsafe, "one a section names isn't listed");
+        assert!(layered(&format!("{first} 0 R"), &format!("/A {first} 0 R /B {second} 0 R"), vec![group("(Roads)"), Object::Dict(format!("<< /Type /OCMD /Name (Roads) /OCGs [{first} 0 R] /P /AllOff >>"))]).layer_names_unsafe, "a membership by the same name");
+        assert!(layered(&both, &format!("/A {first} 0 R /B {second} 0 R"), vec![group("(Roads)"), Object::Dict(format!("<< /Type /OCMD /Name (Rivers) /OCGs [{first} 0 R] >>"))]).layer_names_unsafe, "a membership listed as if it were a layer");
+        assert!(layered(&both, "/A << /Type /OCG /Name (Roads) >>", vec![group("(Roads)"), group("(Rivers)")]).layer_names_unsafe, "written in place, not by reference");
+        let form = first_extra_object(1) + 2;
+        let inside = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /Properties << /C << /Type /OCMD >> >> >>".into(), data: Vec::new() };
+        let page_form = format!("/Properties << /A {first} 0 R /B {second} 0 R >> /XObject << /F {form} 0 R >>");
+        let bytes = pages_with(&[Page::new(text_lines(&["Words"]))], &page_form, vec![group("(Roads)"), group("(Rivers)"), inside]);
+        let bytes = String::from_utf8_lossy(&bytes).replace("/Type /Catalog", &format!("/Type /Catalog /OCProperties << /OCGs [{both}] /D << >> >>"));
+        assert!(page_effects(&TempPdf::new("doc.pdf", bytes.as_bytes()).0, 0).unwrap().layer_names_unsafe, "inside a form");
     }
 
     /// Failure: a JPEG's bytes pass through though the page reads them differently: inverted by `/Decode`, or in other colours by `/ColorTransform`. Neither shows through PDFium's calls. A `/Decode` that changes nothing, or a transform that's already the default, shouldn't cost a JPEG its original bytes.

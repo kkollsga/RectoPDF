@@ -107,7 +107,7 @@ pub fn embedded_images(bytes: &[u8]) -> Vec<Embedded> {
         let data = from_base64(body);
         images.push(match kind {
             "jpeg" => Embedded::Jpeg(data),
-            "png" => read_png(&data),
+            "png" => read_png_own(&data),
             other => panic!("an image of kind {other}"),
         });
         rest = after;
@@ -133,7 +133,29 @@ fn from_base64(text: &str) -> Vec<u8> {
     out
 }
 
-fn read_png(file: &[u8]) -> Embedded {
+fn paeth(left: u8, up: u8, corner: u8) -> u8 {
+    let estimate = i32::from(left) + i32::from(up) - i32::from(corner);
+    let (a, b, c) = ((estimate - i32::from(left)).abs(), (estimate - i32::from(up)).abs(), (estimate - i32::from(corner)).abs());
+    if a <= b && a <= c {
+        left
+    } else if b <= c {
+        up
+    } else {
+        corner
+    }
+}
+
+/// A PNG the writer here made, which only ever filters by Up, so anything else in one is a fault in the writer.
+fn read_png_own(file: &[u8]) -> Embedded {
+    read_with(file, true)
+}
+
+/// Any plain 8-bit PNG, such as `recto render`'s or a browser's.
+pub fn read_png(file: &[u8]) -> Embedded {
+    read_with(file, false)
+}
+
+fn read_with(file: &[u8], only_up: bool) -> Embedded {
     use std::io::Read;
     assert_eq!(&file[..4], &[0x89, b'P', b'N', b'G'], "the signature");
     let (mut at, mut idat, mut header) = (8, Vec::new(), None);
@@ -167,8 +189,21 @@ fn read_png(file: &[u8]) -> Embedded {
     let mut pixels = Vec::with_capacity(row_len * height as usize);
     let mut above = vec![0u8; row_len];
     for row in filtered.chunks(row_len + 1) {
-        assert_eq!(row[0], 2, "the Up filter");
-        let now: Vec<u8> = row[1..].iter().zip(&above).map(|(value, up)| value.wrapping_add(*up)).collect();
+        assert!(!only_up || row[0] == 2, "the Up filter");
+        let mut now = vec![0u8; row_len];
+        for (at, value) in row[1..].iter().enumerate() {
+            let left = if at >= channels { now[at - channels] } else { 0 };
+            let corner = if at >= channels { above[at - channels] } else { 0 };
+            let up = above[at];
+            now[at] = value.wrapping_add(match row[0] {
+                0 => 0,
+                1 => left,
+                2 => up,
+                3 => ((u16::from(left) + u16::from(up)) / 2) as u8,
+                4 => paeth(left, up, corner),
+                other => panic!("filter {other}"),
+            });
+        }
         pixels.extend_from_slice(&now);
         above = now;
     }
