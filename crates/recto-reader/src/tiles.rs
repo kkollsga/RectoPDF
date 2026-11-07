@@ -899,6 +899,7 @@ impl Reader {
     }
 
     /// Makes a tab the one on screen, with its place. A tab seen before keeps its layout and zoom.
+    #[allow(clippy::too_many_arguments)]
     pub fn activate(&mut self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: Spread) {
         self.keep_only(warm, tab);
         if self.hot != Some(tab) {
@@ -2620,7 +2621,7 @@ mod tests {
         settle(&mut reader);
         reader.take_moved_page();
         reader.jump_to(51);
-        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().filter(|op| matches!(op, Op::ScrollTo { .. })).last() else { panic!("no scroll") };
+        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("no scroll") };
         let mut there = view(y);
         there.scrolled_to = seq;
         reader.set_viewport(there);

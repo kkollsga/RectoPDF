@@ -292,8 +292,8 @@ impl PageLayout {
     fn on_the_right(&self, page: u32) -> bool {
         match self.spread {
             Spread::Single => false,
-            Spread::TwoUp => page % 2 == 1,
-            Spread::TwoUpCover => page % 2 == 0,
+            Spread::TwoUp => !page.is_multiple_of(2),
+            Spread::TwoUpCover => page.is_multiple_of(2),
         }
     }
 
@@ -707,7 +707,7 @@ mod tests {
             assert_eq!(layout.page_at(1.0), 0, "the margin above is the first page's");
             assert_eq!(layout.page_at(layout.document_height() + 5.0), layout.first_of_row(layout.rows() - 1));
         }
-        assert!(END_MARGIN > PAGE_GAP, "it reads as the document's end, not another gap");
+        const { assert!(END_MARGIN > PAGE_GAP, "it reads as the document's end, not another gap") };
     }
 
     /// Failure: a tiny or a huge hostile page gives a scale off the end of what can be drawn.

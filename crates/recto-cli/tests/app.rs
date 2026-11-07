@@ -368,7 +368,7 @@ fn side_by_side_lays_out_selects_and_keeps_the_place() {
     wait_for(&run, |state| state["app"]["layout"] == "two-up");
     run.settled();
     let two = run.report();
-    assert_eq!(layouts(&two)[1].1, true, "the one showing is ticked: {two}");
+    assert!(layouts(&two)[1].1, "the one showing is ticked: {two}");
     assert!(two["reader"]["document_height"].as_f64().unwrap() < single_height * 0.7, "two to a row: {two}");
     assert!(two["reader"]["visible_pages"].as_array().unwrap().contains(&json!(5)), "still on page 5: {two}");
     assert!(two["app"]["place_label"].as_str().is_some_and(|place| place.ends_with("of 9")), "{two}");
@@ -730,7 +730,7 @@ fn the_menu_bar_and_the_agent_icon() {
     assert_eq!(state["app"]["agent_icon"], true);
     // Owner, 2026-11-07: the same margin to the right as above, and less above than the 16 it had.
     let (top, right) = (state["app"]["agent_icon_margins"]["top"].as_f64().unwrap(), state["app"]["agent_icon_margins"]["right"].as_f64().unwrap());
-    assert!((top - right).abs() < 0.5 && top < 16.0 && top >= 8.0, "top {top}, right {right}");
+    assert!((top - right).abs() < 0.5 && (8.0..16.0).contains(&top), "top {top}, right {right}");
     assert!(state["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() > 28.0, "below the star: {state}");
     run.ok(&["qa", "menu", "view.agent_icon"]);
     let hidden = wait_for(&run, |state| state["app"]["agent_icon"] == false);
