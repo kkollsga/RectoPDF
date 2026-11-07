@@ -129,7 +129,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Signature image, and the honest signature report
 - [ ] Failure tests from the research: no lost edits on any exit path, never damage a signed file
 - [ ] Close the gap in edit ownership: an agent at Control can delete a page the owner rotated, then edit past the undo cap so the delete can't be undone
-- [ ] Fork: a cap on `/Prev` chains in `IndexedReaderOptions` (100,000 sections in 8 MiB take 2–4 s per open)
+- [ ] A file lopdf refuses for hitting a limit must not fall back to PDFium in `crates/recto-agent/src/loader.rs`: a hostile file with 100,000 `/Prev` sections takes PDFium 3.4 s to load, though the fork's cap refuses it in about 3 ms
 
 **Done when:** edited files open correctly in other readers and pass external validators, with no data-loss failures across the test matrix.
 
