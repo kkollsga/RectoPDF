@@ -1,7 +1,7 @@
 //! QA commands, on their way to the UI thread. They run on a job thread of the server, so waiting here holds up nobody. A QA command calls what the UI calls: the host's answer says what happened.
 
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
-use crate::{AppListener, lock};
+use crate::{AppListener, CoreQueue, lock};
 use recto_agent::{AgentError, Command, exit};
 use recto_reader::Engine;
 use serde_json::{Value, json};
@@ -22,6 +22,7 @@ pub(crate) struct QaBridge {
     listener: Arc<dyn AppListener>,
     engine: Engine,
     watchdog: Watchdog,
+    core: Arc<CoreQueue>,
     next_id: AtomicU64,
     answers: Mutex<HashMap<u64, Option<Result<String, String>>>>,
     answered: Condvar,
@@ -30,8 +31,8 @@ pub(crate) struct QaBridge {
 }
 
 impl QaBridge {
-    pub(crate) fn new(listener: Arc<dyn AppListener>, engine: Engine, watchdog: Watchdog) -> Self {
-        Self { listener, engine, watchdog, next_id: AtomicU64::new(1), answers: Mutex::new(HashMap::new()), answered: Condvar::new(), steps: Mutex::new(Vec::new()), step_waiting: AtomicBool::new(false) }
+    pub(crate) fn new(listener: Arc<dyn AppListener>, engine: Engine, watchdog: Watchdog, core: Arc<CoreQueue>) -> Self {
+        Self { listener, engine, watchdog, core, next_id: AtomicU64::new(1), answers: Mutex::new(HashMap::new()), answered: Condvar::new(), steps: Mutex::new(Vec::new()), step_waiting: AtomicBool::new(false) }
     }
 
     pub(crate) fn answer(&self, id: u64, ok: bool, json: String) {
@@ -116,7 +117,10 @@ impl QaBridge {
             "sweep" => return self.sweep(number(0.1, 1000.0)?, Duration::from_millis(timeout_ms.unwrap_or(5000)).min(MAX_SWEEP)),
             _ => return Err(bad("That isn't a QA command.")),
         }
-        self.ask(verb, value)
+        self.ask(verb, value)?;
+        // A click goes to the session thread and comes back as a model. The answer is what's true once that's happened, so nobody has to sleep and hope.
+        self.core.flush(UI_ANSWER_WAIT);
+        self.ask("state", "")
     }
 
     fn state(&self) -> Result<Value, AgentError> {
@@ -142,7 +146,8 @@ impl QaBridge {
 
     fn settled(&self, limit: Duration) -> Result<Value, AgentError> {
         let started = Instant::now();
-        if self.engine.wait_settled(limit) {
+        // What's been asked of the session thread comes first: an `open` it hasn't reached yet isn't settled, it's not started.
+        if self.core.flush(limit) && self.engine.wait_settled(limit.saturating_sub(started.elapsed())) {
             Ok(json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64 }))
         } else {
             Err(AgentError::new("timed_out", "The page view didn't settle in time.", exit::TIMED_OUT).then("`recto qa state` shows what it's still waiting for."))
@@ -153,9 +158,7 @@ impl QaBridge {
     fn sweep(&self, pages_per_second: f64, length: Duration) -> Result<Value, AgentError> {
         lock(&self.steps).clear();
         let before = self.engine.report().0;
-        let fit = before["fit"].as_f64().unwrap_or(1.0);
         let pages = before["document_height"].as_f64().unwrap_or(0.0) / before["pages"].as_f64().unwrap_or(1.0).max(1.0);
-        let _ = fit;
         let points_per_step = pages * pages_per_second * SWEEP_STEP.as_secs_f64();
         let started = Instant::now();
         let mut next = started;

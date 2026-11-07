@@ -13,8 +13,7 @@ root="$(mktemp -d)"
 trap 'rm -rf "${root:?}"' EXIT
 export RECTO_STATE_DIR="$root/s"
 r() { "$recto" "$@" >/dev/null; }
-# A click reaches the session thread and comes back as a model. Everything visible settled again is the sign it's done.
-settle() { sleep 0.15; r qa wait-settled --timeout 60s; }
+settle() { r qa wait-settled --timeout 60s; }
 shot() { r qa shot --out "$out/$1.png"; }
 
 r qa start --time-limit 5m
@@ -54,7 +53,7 @@ settle
 shot dark-white-paper
 r view --paper dark
 r stop
-sleep 0.5
+sleep 1
 
 export RECTO_STATE_DIR="$root/h"
 r qa start --time-limit 5m
@@ -65,7 +64,7 @@ for look in light dark; do
     shot "heavy-$look"
 done
 r stop
-sleep 0.5
+sleep 1
 
 # A limit under what this page needs, and the larger limit off, so it takes the path a page past 1 GiB takes.
 export RECTO_STATE_DIR="$root/l"

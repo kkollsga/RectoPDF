@@ -156,3 +156,23 @@ fn a_closed_window_lets_the_worker_go() {
     assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
 }
+
+/// Failure: a heavy page at rest holds its worker's hundreds of megabytes for the 30 s of the idle rule, when it could have gone once the reader had paused. Set so that any worker counts as big. It must go by itself, with nobody calling, and the page must still be on screen.
+#[test]
+fn a_worker_holding_a_lot_is_let_go_at_rest() {
+    let file = document(1);
+    let events = Arc::new(Events::default());
+    let policy = recto_render_service::Policy { retire_bytes: 1, ..recto_render_service::Policy::default() };
+    let engine = Engine::new(EngineConfig { service: None, policy: Some(policy) }, events);
+    engine.set_viewport(view(0.0));
+    engine.activate(1, 1, 0, PageMap { files: vec![file.0.clone()], slots: None }, &[]);
+    engine.set_viewport(view(0.0));
+    pump(&engine, Duration::from_secs(20));
+    assert!(engine.wait_settled(Duration::from_secs(5)));
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while engine.workers_footprint().0 > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(engine.workers_footprint().0, 0, "it should have gone by now");
+    assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1, "the page stays on screen");
+}

@@ -24,7 +24,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use watchdog::Watchdog;
 
 uniffi::setup_scaffolding!();
@@ -232,6 +232,15 @@ enum CoreCall {
     SetFocus(bool),
     Dark(bool),
     Page(u32, Option<&'static str>, TabId),
+    /// Everything asked before this has been done.
+    Flush(Arc<Flushed>),
+}
+
+/// A marker through the session thread's queue, for QA to know what it asked for has happened.
+#[derive(Debug, Default)]
+pub(crate) struct Flushed {
+    done: Mutex<bool>,
+    ready: Condvar,
 }
 
 /// The session thread's queue. A parked thread at rest, so an open app takes no wake-ups for it.
@@ -251,6 +260,22 @@ impl CoreQueue {
         self.ready.notify_one();
     }
 
+    /// Blocks until the session thread has got through everything already asked of it. For QA, on a job thread. A file on a dead volume could hold this up, so it has a limit.
+    pub(crate) fn flush(&self, limit: Duration) -> bool {
+        let marker = Arc::new(Flushed::default());
+        self.push(CoreCall::Flush(Arc::clone(&marker)));
+        let deadline = Instant::now() + limit;
+        let mut done = lock(&marker.done);
+        while !*done {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            done = marker.ready.wait_timeout(done, left).unwrap_or_else(PoisonError::into_inner).0;
+        }
+        true
+    }
+
     fn next(&self) -> CoreCall {
         let mut calls = lock(&self.calls);
         loop {
@@ -268,7 +293,6 @@ impl CoreQueue {
 struct EngineHooks {
     core: Arc<CoreQueue>,
     listener: Arc<dyn AppListener>,
-    tab_for_notes: Mutex<Option<TabId>>,
 }
 
 impl EngineEvents for EngineHooks {
@@ -285,7 +309,6 @@ impl EngineEvents for EngineHooks {
     }
 
     fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>) {
-        *lock(&self.tab_for_notes) = Some(TabId(tab));
         self.core.push(CoreCall::Page(page, failure, TabId(tab)));
     }
 }
@@ -389,7 +412,7 @@ impl AppCore {
             Err(_) => None,
         };
         let core = Arc::new(CoreQueue { calls: Mutex::new(VecDeque::new()), ready: Condvar::new(), reconcile_queued: AtomicBool::new(false) });
-        let hooks: Arc<dyn EngineEvents> = Arc::new(EngineHooks { core: Arc::clone(&core), listener: Arc::clone(&listener), tab_for_notes: Mutex::new(None) });
+        let hooks: Arc<dyn EngineEvents> = Arc::new(EngineHooks { core: Arc::clone(&core), listener: Arc::clone(&listener) });
         let mut policy = Policy::default();
         if let Some(limit) = args.memory_limit_mib {
             policy.memory_limit_bytes = limit * 1024 * 1024;
@@ -398,7 +421,7 @@ impl AppCore {
         }
         let engine = Engine::new(EngineConfig { service: None, policy: Some(policy) }, hooks);
         let watchdog = Watchdog::new();
-        let qa = args.qa.then(|| Arc::new(QaBridge::new(Arc::clone(&listener), engine.clone(), watchdog.clone())));
+        let qa = args.qa.then(|| Arc::new(QaBridge::new(Arc::clone(&listener), engine.clone(), watchdog.clone(), Arc::clone(&core))));
         let host = Arc::new(AppHost { session: SessionHost::new(DrawableLoader), core: Arc::clone(&core), qa: qa.clone() });
         let stopper = server.as_ref().and_then(|server| server.stopper().ok());
         let announcer = server.as_ref().and_then(|server| server.announcer().ok());
@@ -623,6 +646,12 @@ fn session_thread(inner: &Arc<Inner>) {
                 events.push(Event::new("view_changed", json!({ "paper": view.paper.name(), "focus": view.focus })));
             }
             CoreCall::Dark(dark) => synced.dark = dark,
+            CoreCall::Flush(marker) => {
+                reconcile(inner, &mut synced, &mut events);
+                *lock(&marker.done) = true;
+                marker.ready.notify_all();
+                continue;
+            }
             CoreCall::Page(page, failure, tab) => {
                 host.session.with_session(|session| session.note_drawn(DrawNote { tab, page, failure }));
                 events.push(Event::new(if failure.is_some() { "page_failed" } else { "page_drawn" }, json!({ "tab": tab.0, "page": page + 1 })));

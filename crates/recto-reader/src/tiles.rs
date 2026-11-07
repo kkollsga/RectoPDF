@@ -22,6 +22,8 @@ pub const MAX_ATTACH_PER_TURN: usize = 8;
 /// Off-screen surfaces kept, by bytes and by count. Least recently used go first. Platform report §2.6.
 const MAX_KEPT_BYTES: usize = 256 * 1024 * 1024;
 const MAX_KEPT_SURFACES: usize = 1024;
+/// Previews kept off screen, about 0.75 MiB each and discardable. Platform report §2.6 said 16. More costs nothing while the Mac has memory, and each one is a page that doesn't come back blank.
+const MAX_KEPT_PREVIEWS: usize = 128;
 /// Entries of any kind, since a blank tile has no surface but is still remembered.
 const MAX_ENTRIES: usize = 4096;
 /// Free surfaces kept for reuse, all discardable. Platform report §2.6.
@@ -609,6 +611,18 @@ impl Reader {
                 self.ops.push_back(Op::ShowPage { page, x: placement.x, y: placement.y, width: placement.width, height: placement.height, fit: placement.fit, paper_rgb: placement.paper_rgb });
             }
         }
+        // Every visible page shows something before any page gets more: a preview is one attachment and fills a page. Without this, a tall page's first eight tiles leave the next page blank for a turn.
+        for &page in &visible {
+            let Some(doc) = self.docs.get(&tab) else { return };
+            let preview = self.preview_key(doc, page);
+            let bare = !self.attached.get(&page).is_some_and(|ids| !ids.is_empty());
+            if bare
+                && let Some(&id) = self.cover.get(&preview)
+                && self.attach(id, true)
+            {
+                budget = budget.saturating_sub(1);
+            }
+        }
         let now = Instant::now();
         for page in visible {
             let Some(doc) = self.docs.get(&tab) else { return };
@@ -859,16 +873,27 @@ impl Reader {
         self.evict();
     }
 
+    /// Least recently used first, with a page's preview outliving its tiles: it's a fraction of their size, and it's what keeps a page seen a while ago from coming back blank. Bounded, as the entries are, and a look along them only when something has just gone off a layer.
     fn evict(&mut self) {
         loop {
-            let kept: Vec<(u64, u64, usize)> = self.entries.values().filter(|entry| !entry.attached).map(|entry| (entry.last_used, entry.id, entry.surface.as_ref().map_or(0, PixelSurface::len))).collect();
-            let bytes: usize = kept.iter().map(|(_, _, bytes)| bytes).sum();
-            let surfaces = kept.iter().filter(|(_, _, bytes)| *bytes > 0).count();
-            if bytes <= MAX_KEPT_BYTES && surfaces <= MAX_KEPT_SURFACES && self.entries.len() <= MAX_ENTRIES {
-                return;
+            let (mut tile_bytes, mut tile_surfaces, mut previews) = (0usize, 0usize, 0usize);
+            let mut oldest_tile: Option<(u64, u64)> = None;
+            let mut oldest_preview: Option<(u64, u64)> = None;
+            for entry in self.entries.values().filter(|entry| !entry.attached) {
+                let age = (entry.last_used, entry.id);
+                if entry.preview {
+                    previews += 1;
+                    oldest_preview = Some(oldest_preview.map_or(age, |known| known.min(age)));
+                } else {
+                    tile_bytes += entry.surface.as_ref().map_or(0, PixelSurface::len);
+                    tile_surfaces += usize::from(entry.surface.is_some());
+                    oldest_tile = Some(oldest_tile.map_or(age, |known| known.min(age)));
+                }
             }
-            let Some(&(_, oldest, _)) = kept.iter().min() else { return };
-            self.forget_entry(oldest, true);
+            let too_many_tiles = tile_bytes > MAX_KEPT_BYTES || tile_surfaces > MAX_KEPT_SURFACES || self.entries.len() > MAX_ENTRIES;
+            let victim = if previews > MAX_KEPT_PREVIEWS { oldest_preview } else if too_many_tiles { oldest_tile.or(oldest_preview) } else { None };
+            let Some((_, id)) = victim else { return };
+            self.forget_entry(id, true);
         }
     }
 
@@ -1340,6 +1365,44 @@ mod tests {
         assert_eq!(reader.counts().blank_seen_steps, 0);
         settle(&mut reader);
         assert_eq!(reader.counts().drawn, before, "nothing needed drawing again");
+    }
+
+    /// Failure: coming back to two pages at once, the first takes the whole turn's attachments, and the second is blank until the next turn. Measured on `qa sweep`: 32 such steps in 5 s at 40 pages a second.
+    #[test]
+    fn every_visible_page_shows_something_in_the_first_turn() {
+        let mut reader = reader_on(100);
+        let tall = |y: f64| Viewport { height: 1700.0, ..view(y) };
+        reader.set_viewport(tall(0.0));
+        settle(&mut reader);
+        reader.set_viewport(tall(30_000.0));
+        settle(&mut reader);
+        let ops = reader.set_viewport(tall(0.0));
+        let pages: HashSet<u32> = ops.iter().filter_map(|op| if let Op::Attach { page, .. } = op { Some(*page) } else { None }).collect();
+        let visible = reader.report().0["visible_pages"].as_array().unwrap().len();
+        assert!(visible >= 2, "this needs two pages in view");
+        assert_eq!(pages.len(), visible, "{ops:?}");
+        assert_eq!(reader.counts().blank_seen_steps, 0);
+    }
+
+    /// Failure: reading on through a long document pushes out what it just read, and a page's preview goes with its tiles, so coming back to it shows nothing at all. Measured at 40 pages a second on `rfc9110`: 84 blank steps on seen pages, all from this. Past the tile cap, tiles go and previews stay.
+    #[test]
+    fn previews_outlive_their_tiles() {
+        let mut reader = reader_on(600);
+        let step = reader.doc().map(|doc| doc.layout.top(1)).unwrap();
+        settle(&mut reader);
+        // Enough pages at 12 tiles each to pass the tile cap by a long way, and few enough to stay under the preview cap.
+        for page in 1..60 {
+            reader.set_viewport(view(f64::from(page) * step));
+            settle(&mut reader);
+        }
+        let report = reader.report().0;
+        assert!(report["tiles"]["kept_bytes"].as_u64().unwrap() <= (MAX_KEPT_BYTES + MAX_KEPT_PREVIEWS * 1024 * 1024) as u64, "{report}");
+        let doc = reader.doc().unwrap();
+        let key = reader.preview_key(doc, 0);
+        assert!(reader.cover.contains_key(&key), "the first page's preview is still here");
+        let ops = reader.set_viewport(view(0.0));
+        assert!(ops.iter().any(|op| matches!(op, Op::Attach { below: true, .. })), "and shows at once: {ops:?}");
+        assert_eq!(reader.counts().blank_seen_steps, 0);
     }
 
     /// Failure: a burst of attachments stalls the UI thread, or the leftovers are forgotten.

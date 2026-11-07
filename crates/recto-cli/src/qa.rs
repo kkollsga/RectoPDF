@@ -363,7 +363,7 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     });
     std::thread::sleep(Duration::from_secs(1));
     let before = recto_platform::local::process_counters(run.pid);
-    let idle_for = Duration::from_secs(10);
+    let idle_for = Duration::from_secs(20);
     std::thread::sleep(idle_for);
     let after = recto_platform::local::process_counters(run.pid);
     if let (Some(before), Some(after)) = (before, after) {
@@ -392,6 +392,17 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
         "budget_sharp_ms": 100,
         "note": "The UI thread's work per step at 120 steps a second, off screen. Frames reaching a display aren't in this: a quiet run has none.",
     });
+    // Sharp after scroll stops, on pages that haven't been seen: where the reader's next stop isn't drawn yet.
+    let mut stops = Vec::new();
+    let pages = state["reader"]["document_height"].as_f64().unwrap_or(0.0) / state["reader"]["pages"].as_f64().unwrap_or(1.0).max(1.0);
+    run.call(json!({ "cmd": "goto", "page": 1 }))?;
+    run.settled()?;
+    for _ in 0..runs.min(20) {
+        run.drive("scroll", &format!("{}", pages * 0.75))?;
+        stops.push(run.settled()?);
+    }
+    stops.sort_by(f64::total_cmp);
+    report["sharp_after_scroll_stops_ms"] = json!({ "stops": stops.len(), "p50": round(percentile(&stops, 0.5)), "worst": round(percentile(&stops, 1.0)), "budget": 100, "note": "From `qa scroll` returning. Includes one client round trip." });
     let fast = run.call(json!({ "cmd": "qa_drive", "verb": "sweep", "value": "40", "timeout_ms": 5000 }))?;
     report["fast_scroll"] = json!({ "pages_per_second": 40, "ui_step_us": fast["step_us"], "blank_seen_steps": fast["blank_seen_steps"], "peak_tree_mib": mib(fast["peak_tree_bytes"].as_u64().unwrap_or(0)), "budget_peak_mib": 170, "sharp_after_stop_ms": fast["sharp_after_ms"], "cancelled": fast["cancelled"] });
     run.drive("window", "close")?;
@@ -424,8 +435,19 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     run.drive("click_row", "0")?;
     run.settled()?;
     let switch_ms = started.elapsed().as_secs_f64() * 1000.0;
+    // The sidebar with 1,000 tabs, shown again after focus view, whose rows are all rebuilt.
+    run.call(json!({ "cmd": "view", "focus": "on" }))?;
+    run.settled()?;
+    let started = Instant::now();
+    run.call(json!({ "cmd": "view", "focus": "off" }))?;
+    run.settled()?;
+    let sidebar_state = run.state()?;
+    let sidebar_ms = started.elapsed().as_secs_f64() * 1000.0;
+    if sidebar_state["app"]["sidebar_visible"] != true {
+        return Err(failed("qa_failed", "The sidebar didn't come back."));
+    }
     let (first_tabs, last) = (measures[0]["app_mib"].as_f64().unwrap_or(0.0), measures[2]["app_mib"].as_f64().unwrap_or(0.0));
-    report["tabs"] = json!({ "file": tab_file.file_name().map(|name| name.to_string_lossy().to_string()), "measures": measures, "app_mib_over_2_tabs_at_1000": round(last - first_tabs), "budget_mib_over_2_tabs": 4, "switch_to_a_cold_tab_ms": round(switch_ms) });
+    report["tabs"] = json!({ "file": tab_file.file_name().map(|name| name.to_string_lossy().to_string()), "measures": measures, "app_mib_over_2_tabs_at_1000": round(last - first_tabs), "budget_mib_over_2_tabs": 4, "switch_to_a_cold_tab_ms": round(switch_ms), "sidebar_opens_ms": round(sidebar_ms), "budget_sidebar_ms": 150 });
     drop(run);
 
     if let Some(heavy) = heavy {
@@ -435,26 +457,36 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
         run.settled()?;
         let first_view = started.elapsed().as_secs_f64() * 1000.0;
         let first = run.state()?;
+        // A map like this fits the window whole at the fitted width, so there's nothing to scroll. Zoomed to 3, it's about 2x, as `budget viewport` draws it.
+        let started = Instant::now();
+        run.drive("zoom", "3")?;
+        run.settled()?;
+        let zoom_2x_ms = started.elapsed().as_secs_f64() * 1000.0;
         let started = Instant::now();
         run.drive("scroll", "225")?;
         run.settled()?;
         let scroll_ms = started.elapsed().as_secs_f64() * 1000.0;
         let after_scroll = run.state()?;
         let started = Instant::now();
-        run.drive("zoom", "1.5")?;
+        run.drive("zoom", "4.5")?;
         run.settled()?;
         let zoom_ms = started.elapsed().as_secs_f64() * 1000.0;
         let after_zoom = run.state()?;
+        // Long enough for the worker to be let go.
+        std::thread::sleep(Duration::from_secs(4));
+        let at_rest = run.state()?;
         report["heavy"] = json!({
             "file": heavy.file_name().map(|name| name.to_string_lossy().to_string()),
             "first_view_ms_from_process_start": round(first_view),
             "scroll_quarter_window_ms": round(scroll_ms),
-            "zoom_1_5_ms": round(zoom_ms),
+            "zoom_to_about_2x_ms": round(zoom_2x_ms),
+            "zoom_1_5_more_ms": round(zoom_ms),
             "first_view_tree_mib": mib(first["memory"]["tree_bytes"].as_u64().unwrap_or(0)),
             "after_scroll_tree_mib": mib(after_scroll["memory"]["tree_bytes"].as_u64().unwrap_or(0)),
             "after_zoom_tree_mib": mib(after_zoom["memory"]["tree_bytes"].as_u64().unwrap_or(0)),
             "worker_peak_mib": mib(after_zoom["memory"]["worker_peak_bytes"].as_u64().unwrap_or(0)),
             "app_mib_at_zoom": mib(after_zoom["memory"]["footprint_bytes"].as_u64().unwrap_or(0)),
+            "at_rest_4s_later_tree_mib": mib(at_rest["memory"]["tree_bytes"].as_u64().unwrap_or(0)),
             "budget_note": "Named exception: 415 to 450 MiB accepted by the owner, 2026-11-07.",
             "tile_scale": after_zoom["reader"]["tile_scale"],
             "low_res_pages": after_zoom["reader"]["low_res_pages"],

@@ -137,12 +137,12 @@ final class CenteringClipView: NSClipView {
         for op in ops { apply(op) }
         CATransaction.commit()
         applying = false
-        core.opsApplied()
-        // Moving the document or the view changes the viewport. It goes back once all of it is applied, and says which scroll it has reached.
+        // Moving the document or the view changes the viewport. It goes back once all of it is applied, and says which scroll it has reached. Before saying it's applied, or for a moment everything looks settled on the old view.
         if viewportDirty {
             viewportDirty = false
             sendViewport()
         }
+        core.opsApplied()
     }
 
     private func apply(_ op: ReaderOp) {

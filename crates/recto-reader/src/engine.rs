@@ -32,6 +32,9 @@ pub struct EngineConfig {
     pub policy: Option<Policy>,
 }
 
+/// How long a worker past the retirement line may sit with nothing to do. As long as a heavy worker's idle rule, for the same reason.
+const BIG_WORKER_REST: Duration = Duration::from_secs(3);
+
 struct Shared {
     reader: Mutex<Reader>,
     /// Woken when a job ends or the host says it has applied ops, for whoever's waiting to see everything settled.
@@ -223,6 +226,7 @@ fn run(shared: &Shared) {
     let mut wanted = lock(&shared.reader).wanted_files();
     let service = shared.config.service.clone().map_or_else(ServiceConfig::discover, Ok);
     let policy = shared.config.policy.clone().unwrap_or_default();
+    let mut resting_since: Option<Instant> = None;
     loop {
         let job = {
             let mut reader = lock(&shared.reader);
@@ -237,9 +241,28 @@ fn run(shared: &Shared) {
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
             shared.settled.notify_all();
-            std::thread::park();
+            // With nothing to do, this thread is asleep and costs nothing. The one exception: a worker holding a heavy page's memory, which only goes when it does. It gets long enough to bridge a pause in scrolling, and then it's let go, so a heavy page at rest doesn't hold hundreds of megabytes for the 30 s of the idle rule.
+            let big = renderers.values_mut().any(|doc| doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes));
+            if !big {
+                std::thread::park();
+                resting_since = None;
+                continue;
+            }
+            let since = *resting_since.get_or_insert_with(Instant::now);
+            let left = BIG_WORKER_REST.saturating_sub(since.elapsed());
+            if left.is_zero() {
+                for doc in renderers.values_mut() {
+                    if doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes) {
+                        doc.kill_worker();
+                    }
+                }
+                resting_since = None;
+            } else {
+                std::thread::park_timeout(left);
+            }
             continue;
         };
+        resting_since = None;
         let cancel = match renderer_for(&mut renderers, &job.file, &service, &policy) {
             Ok(doc) => Some(doc.cancel_handle()),
             Err(_) => None,
