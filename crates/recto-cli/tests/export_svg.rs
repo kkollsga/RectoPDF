@@ -610,3 +610,23 @@ fn what_draws_nothing_doesnt_turn_a_layer_off() {
     assert_eq!(note(&data, "hidden_layer"), 0, "{data}");
     assert!(svg.contains(">six</text>"), "and its invisible text is kept like any other: {data}");
 }
+
+/// Failure: an even-odd clip with a hole comes out solid, since PDFium's calls don't give the rule, so what the hole hid shows, and the answer says all's vector.
+#[test]
+fn a_clip_with_a_hole_keeps_its_hole() {
+    let content = "q 100 100 200 200 re 150 150 100 100 re W* n 1 0 0 rg 0 0 612 792 re f Q\n";
+    let file = TempPdf::new("doc.pdf", &pages(&[Page::new(content)]));
+    let (svg, data) = svg_of(&file, &[]);
+    assert_eq!(rasterised(&data, "clip_rule"), 1, "{data}");
+    assert!(!svg.contains("<clipPath"), "{svg}");
+    let images = embedded_images(svg.as_bytes());
+    let [Embedded::Png { width, height, channels: 4, pixels }] = &images[..] else { panic!("{images:?}") };
+    let at = |x: u32, y: u32| pixels[((y * width + x) * 4 + 3) as usize];
+    assert!(at(width / 2, height / 2) == 0, "the middle of the hole is empty: {}", at(width / 2, height / 2));
+    assert!(at(width / 16, height / 16) > 0, "and the ring around it is painted");
+    // One plain shape is still vector.
+    let file = TempPdf::new("doc.pdf", &pages(&[Page::new("q 100 100 200 200 re W* n 1 0 0 rg 0 0 612 792 re f Q\n")]));
+    let (svg, data) = svg_of(&file, &[]);
+    assert_eq!(data["all_vector"], true, "{data}");
+    assert!(svg.contains("<clipPath"), "{svg}");
+}

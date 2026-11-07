@@ -298,6 +298,12 @@ pub enum Why {
     MaskedImage = 11,
     /// An image PDFium could draw but not hand over.
     ImageUnreadable = 12,
+    /// Something crossing the edge of a box, so that nothing outside it is in the file.
+    OutsideBox = 13,
+    /// Something clipped by a shape whose fill rule would change it, which PDFium doesn't give.
+    ClipRule = 14,
+    /// An image as itself, at its own size, but through PDFium's drawing, to apply its mask.
+    ImageWithMask = 15,
 }
 
 impl Why {
@@ -316,6 +322,9 @@ impl Why {
             10 => Self::Flattened,
             11 => Self::MaskedImage,
             12 => Self::ImageUnreadable,
+            13 => Self::OutsideBox,
+            14 => Self::ClipRule,
+            15 => Self::ImageWithMask,
             _ => return Err(ProtoError("unknown image reason")),
         })
     }

@@ -39,6 +39,9 @@ fn why_words(why: Why) -> (&'static str, &'static str) {
         Why::Flattened => ("page", "so much of the page had to be pictures that the rest went as one picture of the whole page, with its text kept selectable"),
         Why::MaskedImage => ("masked_image", "an image too large to take apart with its mask, drawn as a picture at this scale"),
         Why::ImageUnreadable => ("image_unreadable", "an image that can be drawn but not handed over, drawn as a picture at this scale"),
+        Why::OutsideBox => ("outside_box", "something crossing the box's edge, drawn as a picture cut to the box, so nothing outside it is in the file"),
+        Why::ClipRule => ("clip_rule", "something clipped by a shape that its fill rule would change, which can't be read, drawn as a picture that obeys it"),
+        Why::ImageWithMask => ("image_with_mask", "an image at its own size, through the renderer's drawing to apply its mask"),
     }
 }
 
@@ -316,7 +319,7 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
     }))
 }
 
-const WHYS: [Why; 13] = [Why::Image, Why::Shading, Why::TilingPattern, Why::ShadingPattern, Why::BlendOrMask, Why::GroupEffects, Why::TextOutline, Why::TextClip, Why::TooComplex, Why::Annotations, Why::Flattened, Why::MaskedImage, Why::ImageUnreadable];
+const WHYS: [Why; 16] = [Why::Image, Why::Shading, Why::TilingPattern, Why::ShadingPattern, Why::BlendOrMask, Why::GroupEffects, Why::TextOutline, Why::TextClip, Why::TooComplex, Why::Annotations, Why::Flattened, Why::MaskedImage, Why::ImageUnreadable, Why::OutsideBox, Why::ClipRule, Why::ImageWithMask];
 
 fn bad_rect() -> AgentError {
     AgentError::new("bad_rect", "A box is x,y,width,height in points from the page's top left, each a number, with a width and a height above 0.", exit::FAILED)

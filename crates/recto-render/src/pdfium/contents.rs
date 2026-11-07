@@ -434,6 +434,19 @@ enum Clipped {
     Id(u32, u8),
     TooComplex,
     NotFinite,
+    /// A shape the fill rule would change, and PDFium doesn't say which it has.
+    RuleUnknown,
+}
+
+impl Clipped {
+    /// Why a picture has to stand in for what this clips, if one does.
+    fn why(self) -> Option<Why> {
+        match self {
+            Self::TooComplex => Some(Why::TooComplex),
+            Self::RuleUnknown => Some(Why::ClipRule),
+            Self::Id(..) | Self::NotFinite => None,
+        }
+    }
 }
 
 struct Hasher(u64);
@@ -650,11 +663,17 @@ impl Walk {
                 hash.bytes(&value.to_le_bytes());
             }
             let source = SegSource::Clip(clip, path);
+            let mut points = Vec::with_capacity(segments as usize);
             for index in 0..segments {
                 let Some((kind, close, x, y)) = self.segment(source, index) else { return Clipped::NotFinite };
                 hash.bytes(&[kind, u8::from(close)]);
                 hash.bytes(&x.to_le_bytes());
                 hash.bytes(&y.to_le_bytes());
+                points.push((kind, x, y));
+            }
+            // The rule only matters where a shape overlaps itself. PDFium has no call that gives a clip's rule, so what it would matter to goes as a picture, which obeys the real one.
+            if !is_one_plain_shape(&points) {
+                return Clipped::RuleUnknown;
             }
             if let Some(&(known, known_depth)) = self.clips.get(&hash.0) {
                 id = known;
@@ -797,12 +816,14 @@ impl Walk {
                 self.set_clip(id, out);
                 true
             }
-            Clipped::TooComplex => {
-                self.patch(object, area, Why::TooComplex, PatchKind::Alone, out);
-                false
-            }
             Clipped::NotFinite => {
                 self.note(NoteCode::NotFinite);
+                false
+            }
+            other => {
+                if let Some(why) = other.why() {
+                    self.patch(object, area, why, PatchKind::Alone, out);
+                }
                 false
             }
         }
@@ -922,16 +943,15 @@ impl Walk {
         } else {
             match self.clip_for(object, out) {
                 Clipped::Id(id, depth) => (id, depth),
-                Clipped::TooComplex => {
-                    let area = self.area_of(object);
-                    if let Some(area) = area {
-                        self.patch(object, area, Why::TooComplex, PatchKind::Alone, out);
-                    }
-                    return self.enter_form(object, out, true, None);
-                }
                 Clipped::NotFinite => {
                     self.note(NoteCode::NotFinite);
                     return Ok(());
+                }
+                other => {
+                    if let (Some(why), Some(area)) = (other.why(), self.area_of(object)) {
+                        self.patch(object, area, why, PatchKind::Alone, out);
+                    }
+                    return self.enter_form(object, out, true, None);
                 }
             }
         };
@@ -1991,6 +2011,47 @@ impl Walk {
 }
 
 
+/// Whether a path is one shape that doesn't cross itself, so that a fill rule can't change what it covers. Going by its corners, which for a curve can read as crossing when it doesn't: that only makes a picture. A subpath of one point covers nothing. Long ones aren't looked through, and count as not.
+fn is_one_plain_shape(points: &[(u8, f32, f32)]) -> bool {
+    const MAX_LOOKED_THROUGH: usize = 256;
+    let mut starts = points.iter().enumerate().filter(|(_, (kind, _, _))| *kind == SEG_MOVE).map(|(at, _)| at);
+    let start = starts.next().unwrap_or(0);
+    let mut end = points.len();
+    if let Some(next) = starts.next() {
+        // A shape followed only by lone moves is still one shape.
+        if !(next..points.len()).all(|at| points[at].0 == SEG_MOVE) {
+            return false;
+        }
+        end = next;
+    }
+    let corners = &points[start..end];
+    if corners.len() < 4 {
+        return true;
+    }
+    if corners.len() > MAX_LOOKED_THROUGH {
+        return false;
+    }
+    let side = |a: (f32, f32), b: (f32, f32), c: (f32, f32)| f64::from(b.0 - a.0) * f64::from(c.1 - a.1) - f64::from(b.1 - a.1) * f64::from(c.0 - a.0);
+    let at = |index: usize| {
+        let (_, x, y) = corners[index % corners.len()];
+        (x, y)
+    };
+    for first in 0..corners.len() {
+        for second in first + 2..corners.len() {
+            // Next to each other all the way round, so they meet at a corner and don't cross.
+            if first == 0 && second == corners.len() - 1 {
+                continue;
+            }
+            let (a, b, c, d) = (at(first), at(first + 1), at(second), at(second + 1));
+            let crosses = side(a, b, c) * side(a, b, d) < 0.0 && side(c, d, a) * side(c, d, b) < 0.0;
+            if crosses {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Whether a point is inside a closed outline, by the even-odd rule.
 fn inside_outline(outline: &[(f64, f64)], x: f64, y: f64) -> bool {
     let mut inside = false;
@@ -2108,6 +2169,23 @@ mod tests {
             assert!(area.left.abs() < 1e-9 && (area.right - page_w).abs() < 1e-9 && area.bottom.abs() < 1e-9 && (area.top - page_h).abs() < 1e-9, "rotation {rotation}: {area:?}");
         }
         assert!(display_matrix((0.0, 0.0, 0.0, 10.0), 0, 1.0, 1.0).is_none(), "a box with no area");
+    }
+
+    /// Failure: a clip that a fill rule would change passes as plain, so its hole fills in; or an ordinary box or blob doesn't, and everything it clips turns into a picture for nothing.
+    #[test]
+    fn only_a_plain_shape_passes_as_plain() {
+        let shape = |points: &[(u8, f32, f32)]| is_one_plain_shape(points);
+        let square = [(SEG_MOVE, 0.0, 0.0), (SEG_LINE, 10.0, 0.0), (SEG_LINE, 10.0, 10.0), (SEG_LINE, 0.0, 10.0), (SEG_LINE, 0.0, 0.0)];
+        assert!(shape(&square));
+        assert!(shape(&[]), "an empty clip covers nothing, by either rule");
+        let mut trailing = square.to_vec();
+        trailing.push((SEG_MOVE, 3.0, 3.0));
+        assert!(shape(&trailing), "a lone move covers nothing");
+        let mut hole = square.to_vec();
+        hole.extend([(SEG_MOVE, 2.0, 2.0), (SEG_LINE, 8.0, 2.0), (SEG_LINE, 8.0, 8.0)]);
+        assert!(!shape(&hole), "a second shape");
+        let star = [(SEG_MOVE, 0.0, 0.0), (SEG_LINE, 10.0, 10.0), (SEG_LINE, 10.0, 0.0), (SEG_LINE, 0.0, 10.0), (SEG_LINE, 0.0, 0.0)];
+        assert!(!shape(&star), "a shape crossing itself");
     }
 
     /// Failure: the matrix maths is wrong in some rare composition, and nested forms land in the wrong place.
