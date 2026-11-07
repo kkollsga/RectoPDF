@@ -28,11 +28,14 @@ Without those secrets the release workflow fails at once. There's no unsigned re
 `.github/workflows/release.yml` runs when a `vX.Y.Z` tag is pushed, **all or nothing**:
 
 1. *Tag and CI*: the tag matches `Cargo.toml`, and CI passed on the tagged commit.
-2. *Mac build*: `app/release-zip.sh --built-only` compiles everything with no signing key anywhere on the machine, so no dependency's build script can reach one. Then the keys arrive, and `--signed --already-built` signs it, notarizes and staples it, runs the signed bundle in a quiet run that opens a PDF and has to draw it, zips it, and checks the zip with the updater's own reader and Gatekeeper.
-3. *Draft release*: `RectoPDF-X.Y.Z.zip`, `SHA256SUMS` and `latest.json`, not published.
-4. *Withdraw the tag* if anything failed or was cancelled, so a fix can tag the same version again. Never a release that's been published: run again after that, this fails and leaves it alone.
+2. *Mac build*, a job with no secrets in it at all: `app/release-zip.sh --built-only` compiles everything, checks it reads no override, and runs it in a quiet run that opens a PDF and has to draw it.
+3. *Mac signing*, in the `release` Environment, a job that compiles nothing and runs nothing of the product while a key is there: `--signed --already-built` signs what was built, notarizes, staples and zips it. The keychain and every file of a secret are removed, and then `--check-signed` runs the stapled app drawing a PDF, and checks the zip with the updater's own reader and Gatekeeper. The certificate's password reaches `openssl` by the environment, never a command line. The keychain's own throwaway password, made in the job, is on one.
+4. *Draft release*: `RectoPDF-X.Y.Z.zip`, `SHA256SUMS` and `latest.json`, not published.
+5. *Withdraw the tag* if anything failed or was cancelled, so a fix can tag the same version again. Never a release that's been published: run again after that, this fails and leaves it alone.
 
 CI runs only on `main` and skips a commit that changes only documents, so the gate asks about the newest commit that changes anything else.
+
+**A known limit: several commits pushed at once.** CI runs on what a push leaves at the head, not on each commit in it, so a tag on an earlier commit of the same push has no run of its own, and the gate waits an hour and withdraws it. Tag the head of a push, or push the commit to be tagged on its own first. The converting of the certificate by `openssl` hasn't run either: if the runner's LibreSSL can't read the `.p12`, export it again with the older algorithms (Keychain Access does both), and say so here.
 
 ```sh
 # bump [workspace.package] version in Cargo.toml, run `cargo check` so Cargo.lock follows (builds use --locked), commit both on main, push, then:
