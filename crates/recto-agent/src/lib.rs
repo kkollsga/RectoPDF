@@ -676,6 +676,10 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             let id = select(s, tab)?;
             refuse_close_that_loses_something(s, id, level)?;
             let before = s.active();
+            // At Full, what's lost is the holder's call, and `refuse_close_that_loses_something` has let it through. The session itself won't lose the owner's undone steps unasked.
+            if level >= Level::Full && s.has_undone_owner_steps(id) {
+                s.discard_edits(id);
+            }
             s.close(id)?;
             events.push(Event::new("tab_closed", json!({ "tab": id.0 })));
             if s.active() != before
@@ -1054,19 +1058,25 @@ fn edits_event<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
 /// The plain truth about unsaved edits, wherever a tab reports them.
 pub const UNSAVED_NOTE: &str = "These edits are in this session only. Saving isn't built yet, so the file on disk is unchanged and they're lost when the session ends.";
 
+/// What's true when an agent has undone the user's edits: the page matches the file, and they're not gone yet.
+pub const USER_EDITS_UNDONE_NOTE: &str = "The user's edits on this tab are undone, not gone: `recto redo` brings them back, and closing would lose them. Nothing has been saved.";
+
 fn edit_state_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
     let edits = session.page_edits(id);
     let edited = session.is_edited(id);
+    let user_edits_undone = session.has_undone_owner_steps(id);
     json!({
         "tab": id.0,
         "pages": session.pages_in(id),
         "file_pages": session.tab(id).map(|t| t.page_count),
         "page": session.tab(id).map(|t| t.page + 1),
         "edited": edited,
-        "saved": !edited,
+        // The user's undone edits aren't in the file, and closing would lose them, so nothing about this says "saved".
+        "saved": !edited && !user_edits_undone,
+        "user_edits_undone": user_edits_undone,
         "can_undo": edits.is_some_and(recto_session::edit::PageEdits::can_undo),
         "can_redo": edits.is_some_and(recto_session::edit::PageEdits::can_redo),
-        "note": edited.then_some(UNSAVED_NOTE),
+        "note": if edited { Some(UNSAVED_NOTE) } else { user_edits_undone.then_some(USER_EDITS_UNDONE_NOTE) },
     })
 }
 
@@ -1220,9 +1230,10 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         "pages": session.pages_in(id),
         "active": session.active() == Some(id),
         "edited": edited,
+        "user_edits_undone": session.has_undone_owner_steps(id),
         "structure": if tab.renderer_only { "renderer_only" } else { "readable" },
         "problem": tab.problem.map(recto_core::OpenError::message),
-        "note": edited.then_some(UNSAVED_NOTE),
+        "note": if edited { Some(UNSAVED_NOTE) } else { session.has_undone_owner_steps(id).then_some(USER_EDITS_UNDONE_NOTE) },
         "untrusted": { "name": &*tab.name },
     })
 }
@@ -1255,7 +1266,7 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
             })
         })
         .collect();
-    json!({ "rows": rows, "rail_filled": model.rail_filled, "toc_open": model.toc_open, "place": model.place, "edited": model.edited })
+    json!({ "rows": rows, "rail_filled": model.rail_filled, "toc_open": model.toc_open, "place": model.place, "edited": model.edited, "undone_owner_steps": model.undone_owner_steps })
 }
 
 #[cfg(test)]
@@ -1653,6 +1664,26 @@ mod tests {
         // At Full, it's the holder's call, as it was.
         run(&mut s, Level::Full, &Command::Discard { tab: tab() }).unwrap();
         assert!(run(&mut s, Level::Full, &Command::Close { tab: tab() }).is_ok());
+    }
+
+    /// Failure: an agent's `undo` hides the user's edit. It's off the page, so every answer read `saved: true` and nothing said it was there to lose, and the session's own close, the app's way out, would have gone through. At Full it's still the holder's call, and goes through this time because it's said on purpose.
+    #[test]
+    fn undoing_the_users_edit_doesnt_read_as_nothing_there() {
+        let mut s = edit_session();
+        let id = TabId(1);
+        let tab = || "#1".to_string();
+        owners_rotation(&mut s, 0);
+        let undone = run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        assert_eq!((&undone["edited"], &undone["saved"], &undone["user_edits_undone"], &undone["can_redo"]), (&json!(false), &json!(false), &json!(true), &json!(true)), "{undone}");
+        assert!(human::render("undo", &undone).contains("recto redo"), "{undone}");
+        let where_now = run(&mut s, Level::ReadOnly, &Command::Where { tab: tab() }).unwrap();
+        assert_eq!(where_now["user_edits_undone"], true, "{where_now}");
+        assert!(human::render("where", &where_now).contains("recto redo"), "{where_now}");
+        assert_eq!(run(&mut s, Level::ReadOnly, &Command::Sidebar {}).unwrap()["undone_owner_steps"], true);
+        assert_eq!(s.close(id), Err(SessionError::UnsavedChanges), "the app's route refuses too");
+        assert_eq!(run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err().code, "would_clear_redo");
+        let closed = run(&mut s, Level::Full, &Command::Close { tab: tab() }).unwrap();
+        assert_eq!(closed["count"], 0, "at Full it closes, as it did: {closed}");
     }
 
     /// Failure: an agent that does `page move`, `undo`, then anything else is refused and has to ask for Full to clear up after itself. A blind agent got stuck exactly here.

@@ -127,6 +127,8 @@ pub struct SidebarModel<'a> {
     pub place: String,
     /// Whether the active PDF has unsaved changes, which shows its dot and the Save buttons.
     pub edited: bool,
+    /// The owner's edits on the active PDF have been undone, by anyone, and can still be redone. The page matches the file, so `edited` is false, but closing would lose them, so the app has this to show.
+    pub undone_owner_steps: bool,
 }
 
 /// All open tabs and which one is active.
@@ -299,6 +301,11 @@ impl<L: DocLoader> Session<L> {
         self.edits.get(&id).is_some_and(PageEdits::is_edited)
     }
 
+    /// Whether the owner's edits on this tab have been undone and can still be redone. Closing would lose them.
+    pub fn has_undone_owner_steps(&self, id: TabId) -> bool {
+        self.edits.get(&id).is_some_and(PageEdits::owner_steps_undone)
+    }
+
     /// A tab's page edits, if it has any.
     pub fn page_edits(&self, id: TabId) -> Option<&PageEdits> {
         self.edits.get(&id)
@@ -458,9 +465,9 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// Closes a tab and releases what it held. The next tab along, or the previous one, becomes active.
-    /// Refuses while there are unsaved changes, so nothing is lost by accident.
+    /// Refuses while there are unsaved changes, or undone edits of the owner's, so nothing is lost by accident. [`Self::discard_edits`] is how to say it's meant, as the app does when told "Don't Save".
     pub fn close(&mut self, id: TabId) -> Result<(), SessionError> {
-        if self.is_edited(id) {
+        if self.is_edited(id) || self.has_undone_owner_steps(id) {
             return Err(SessionError::UnsavedChanges);
         }
         self.edits.remove(&id);
@@ -499,7 +506,8 @@ impl<L: DocLoader> Session<L> {
             }
         }
         let edited = self.active.is_some_and(|id| self.is_edited(id));
-        SidebarModel { rows, rail_filled, toc_open, place, edited }
+        let undone_owner_steps = self.active.is_some_and(|id| self.has_undone_owner_steps(id));
+        SidebarModel { rows, rail_filled, toc_open, place, edited, undone_owner_steps }
     }
 
     fn activate(&mut self, id: TabId) {
@@ -962,6 +970,22 @@ mod tests {
         assert!(s.sidebar().edited);
         assert!(s.undo_edit(id));
         assert!(!s.sidebar().edited);
+        // Failure: an agent's `undo` takes the owner's edit off the page, so the dot goes and this close goes through with no prompt, and the edit is gone for good.
+        assert!(s.sidebar().undone_owner_steps, "the app must be able to show it");
+        assert_eq!(s.close(id), Err(SessionError::UnsavedChanges), "the owner's edit can still be redone, so closing would lose it");
+        s.discard_edits(id);
+        assert!(!s.sidebar().undone_owner_steps);
+        assert!(s.close(id).is_ok());
+    }
+
+    /// Failure: undone steps of an agent's own hold up the app's close, or read as the owner's. They're an agent's to lose.
+    #[test]
+    fn an_agents_undone_steps_dont_stop_a_close() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages_as(id, Author::Agent, |e| e.rotate(0, 1, 1)).unwrap();
+        assert!(s.undo_edit(id));
+        assert!(!s.has_undone_owner_steps(id) && !s.sidebar().undone_owner_steps);
         assert!(s.close(id).is_ok());
     }
 

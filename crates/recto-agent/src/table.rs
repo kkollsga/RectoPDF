@@ -145,8 +145,8 @@ pub const GROUP_SESSION: &str = "The session";
 pub const GROUP_SKILL: &str = "Skill files";
 pub const GROUP_MEASURE: &str = "Measuring";
 
-const AGENT_EXITS_PAGE: &str = "`{ tab, sel, page, pages, active, edited, structure, problem, note, untrusted: { name } }`.";
-const EDIT_STATE: &str = "`{ tab, pages, file_pages, page, edited, saved, can_undo, can_redo, note, page_was_removed, place_note }`. The tab stays on the page it was reading, wherever that goes. If that page was removed, `page_was_removed` says so and it's on the nearest one.";
+const AGENT_EXITS_PAGE: &str = "`{ tab, sel, page, pages, active, edited, user_edits_undone, structure, problem, note, untrusted: { name } }`. `user_edits_undone: true` means the user's edits are undone and can still be redone, so the page matches the file but closing would lose them.";
+const EDIT_STATE: &str = "`{ tab, pages, file_pages, page, edited, saved, user_edits_undone, can_undo, can_redo, note, page_was_removed, place_note }`. The tab stays on the page it was reading, wherever that goes. If that page was removed, `page_was_removed` says so and it's on the nearest one.";
 const STATUS_DATA: &str = "`{ running, pid, version, api, level, uptime_ms, socket, tabs }`. `tabs` is how many PDFs are open, at every level, and never their names.";
 
 /// Every command, in the order `recto help` shows them.
@@ -250,7 +250,7 @@ pub static TABLE: &[Spec] = &[
         examples: &["recto signatures", "recto signatures --tab contract --json"],
         ..BASE
     },
-    Spec { name: "sidebar", tag: "sidebar", group: GROUP_READ, summary: "The sidebar's rows, as the app would draw them.", data: "`{ rows: [ { kind, tab, page, depth, current, untrusted: { text } } ], rail_filled, toc_open, place, edited }`.", examples: &["recto sidebar --json"], ..BASE },
+    Spec { name: "sidebar", tag: "sidebar", group: GROUP_READ, summary: "The sidebar's rows, as the app would draw them.", data: "`{ rows: [ { kind, tab, page, depth, current, untrusted: { text } } ], rail_filled, toc_open, place, edited, undone_owner_steps }`.", examples: &["recto sidebar --json"], ..BASE },
     Spec {
         name: "open",
         tag: "open",

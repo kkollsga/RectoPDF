@@ -105,6 +105,10 @@ fn over_the_socket_an_agent_cant_erase_the_owners_edits_at_any_step() {
         assert_eq!(running.turns(), turns_now, "nothing moved after {undone} undone");
         assert!(holds_them() && running.tab_is_open(), "after {undone} undone");
     }
+    // Failure: with them all undone, the page matches the file, and the session's own close would have lost them.
+    let undone = running.call(json!({ "cmd": "where" }));
+    assert_eq!((&undone["data"]["edited"], &undone["data"]["user_edits_undone"]), (&json!(false), &json!(true)), "{undone}");
+    assert!(running.host.with_session(|s| s.close(TabId(1)).is_err()), "the app's route refuses too");
     // Stopping the session would end them too.
     assert_eq!(running.refusal(json!({ "cmd": "stop" })).0, "unsaved_changes");
 

@@ -46,6 +46,8 @@ fn tab_line(tab: &Value) -> String {
     }
     if tab["edited"] == true {
         line.push_str(", unsaved edits");
+    } else if tab["user_edits_undone"] == true {
+        line.push_str(", the user's edits undone");
     }
     if tab["structure"] == "renderer_only" {
         line.push_str(", drawable only");
@@ -60,6 +62,8 @@ fn edit_state(data: &Value) -> String {
     let mut out = format!("{} now, {} in the file.", count(number(&data["pages"]), "page", "pages"), number(&data["file_pages"]));
     if data["edited"] == true {
         let _ = write!(out, " Unsaved. {}", text(&data["note"]));
+    } else if data["user_edits_undone"] == true {
+        let _ = write!(out, " {}", text(&data["note"]));
     } else {
         out.push_str(" No unsaved edits.");
     }
