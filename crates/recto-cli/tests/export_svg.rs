@@ -577,3 +577,36 @@ fn an_image_that_only_touches_the_box_is_left_out() {
         assert!(embedded_images(svg.as_bytes()).is_empty(), "{rect}: {data}");
     }
 }
+
+/// Two layers, the first on and the second off, both with this name, and what each draws.
+fn two_layers(first_name: &str, second_name: &str, content: &str) -> TempPdf {
+    let (on, off) = (first_extra_object(1), first_extra_object(1) + 1);
+    let resources = format!("/Properties << /On {on} 0 R /Off {off} 0 R >>");
+    let objects = vec![Object::Dict(format!("<< /Type /OCG /Name ({first_name}) >>")), Object::Dict(format!("<< /Type /OCG /Name ({second_name}) >>"))];
+    let bytes = pages_with(&[Page::new(content)], &resources, objects);
+    let bytes = String::from_utf8_lossy(&bytes).replace("/Type /Catalog", &format!("/Type /Catalog /OCProperties << /OCGs [{on} 0 R {off} 0 R] /D << /OFF [{off} 0 R] >> >>"));
+    TempPdf::new("doc.pdf", bytes.as_bytes())
+}
+
+/// Failure: two layers share a name, as `Layer 1` often does, and the one that's on speaks for the one that's off, so what the page hides goes out in plain sight with nothing said.
+#[test]
+fn a_layer_thats_off_stays_off_beside_one_of_the_same_name() {
+    let content = "/OC /On BDC 0 1 0 rg 10 10 50 50 re f EMC /OC /Off BDC 1 0 0 rg 100 100 50 50 re f EMC /OC /On BDC 0 0 1 rg 200 200 50 50 re f EMC\n";
+    let file = two_layers("Layer 1", "Layer 1", content);
+    let (svg, data) = svg_of(&file, &[]);
+    assert!(svg.contains("#0f0") && svg.contains("#00f"), "{svg}");
+    assert!(!svg.contains("#f00"), "the layer that's off: {svg}");
+    assert_eq!(note(&data, "hidden_layer"), 1, "{data}");
+}
+
+/// Failure: things in a layer that draw nothing, such as an OCR layer's invisible text, condemn the layer, and what it does draw after them is dropped as hidden.
+#[test]
+fn what_draws_nothing_doesnt_turn_a_layer_off() {
+    let mut content = String::from("/OC /On BDC BT /F1 12 Tf 3 Tr 72 700 Td (one) Tj ET BT /F1 12 Tf 3 Tr 72 680 Td (two) Tj ET BT /F1 12 Tf 3 Tr 72 660 Td (three) Tj ET BT /F1 12 Tf 3 Tr 72 640 Td (four) Tj ET BT /F1 12 Tf 3 Tr 72 620 Td (five) Tj ET BT /F1 12 Tf 3 Tr 72 600 Td (six) Tj ET");
+    content.push_str(" 0 1 0 rg 300 300 50 50 re f EMC\n");
+    let file = two_layers("Words", "Other", &content);
+    let (svg, data) = svg_of(&file, &[]);
+    assert!(svg.contains("#0f0"), "what the layer draws: {data}");
+    assert_eq!(note(&data, "hidden_layer"), 0, "{data}");
+    assert!(svg.contains(">six</text>"), "and its invisible text is kept like any other: {data}");
+}

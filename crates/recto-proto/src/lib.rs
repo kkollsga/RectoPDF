@@ -14,7 +14,7 @@
 pub mod contents;
 
 /// Bumped on any change to a layout below.
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 3;
 pub const MAGIC: [u8; 2] = *b"RP";
 pub const HEADER_LEN: usize = 12;
 

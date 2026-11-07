@@ -30,8 +30,6 @@ const MAX_BACKDROPS: u32 = 32;
 const MAX_PATCH_PAGES: u64 = 4;
 /// How many small drawings may be made to learn whether something's in a layer that's off.
 const MAX_PROBES: u32 = 1024;
-/// How many things in a row in a layer draw nothing before it's taken to be off.
-const LAYER_BLANKS: u8 = 4;
 /// How many layers are remembered. One past this is drawn to see each time, up to the limit on drawings.
 const MAX_LAYERS: usize = 4096;
 /// How large such a drawing is, at most, on its long side.
@@ -59,6 +57,7 @@ const FPDF_SEGMENT_BEZIERTO: c_int = 1;
 const FPDF_SEGMENT_MOVETO: c_int = 2;
 const FPDF_FILLMODE_NONE: c_int = 0;
 const FPDF_FILLMODE_ALTERNATE: c_int = 1;
+const FPDF_FILLMODE_WINDING: c_int = 2;
 const FPDF_COLORSPACE_UNKNOWN: c_int = 0;
 const FPDF_COLORSPACE_DEVICEGRAY: c_int = 1;
 const FPDF_COLORSPACE_DEVICERGB: c_int = 2;
@@ -198,11 +197,13 @@ type GlyphBounds = (f64, f64, f64, f64);
 /// The "index" of a space PDFium made up, which no glyph or box goes with.
 const NOT_DRAWN: u32 = u32::MAX;
 
-/// What drawing has shown about a layer.
-#[derive(Clone, Copy, Default)]
-struct LayerState {
-    shows: bool,
-    blanks: u8,
+/// What's known about whether an object is in a layer that's on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shows {
+    On,
+    Off,
+    /// Past the limit on looking. Nothing unchecked goes out as itself, because what the page hides mustn't appear: the whole page is drawn at the end, and that obeys its layers.
+    NotLookedUp,
 }
 
 /// What's known about a font, once.
@@ -266,7 +267,7 @@ pub(super) struct Walk {
     patch_pixels: u64,
     flatten: bool,
     probes: u32,
-    layers: HashMap<u64, LayerState>,
+    layers: HashMap<u64, bool>,
     notes: [u32; 7],
     buffer: Vec<(u32, f32, f32)>,
 }
@@ -747,9 +748,19 @@ impl Walk {
         if !area.meets(self.view) {
             return Ok(());
         }
-        if self.job.hints & hints::HIDDEN_LAYERS != 0 && !self.layer_shows(object, area, kind) {
-            self.note(NoteCode::HiddenLayer);
-            return Ok(());
+        if self.job.hints & hints::HIDDEN_LAYERS != 0 {
+            match self.layer_shows(object, area, kind) {
+                Shows::On => {}
+                Shows::Off => {
+                    self.note(NoteCode::HiddenLayer);
+                    return Ok(());
+                }
+                Shows::NotLookedUp => {
+                    self.note(NoteCode::LayersUnchecked);
+                    self.flatten = true;
+                    return Ok(());
+                }
+            }
         }
         let text_only = self.level().text_only || self.flatten;
         if text_only {
@@ -838,9 +849,16 @@ impl Walk {
         }
         // A shading pattern reads as plain white, through PDFium's calls, and only the drawing can tell them apart.
         let reads_white = |color: Option<[u8; 4]>| color.is_some_and(|[r, g, b, _]| [r, g, b] == [255, 255, 255]);
-        if self.job.hints & hints::SHADING_PATTERN != 0 && (reads_white(fill) || reads_white(stroke)) && self.probes < MAX_PROBES && self.probe(object, area).1 {
-            self.patch(object, area, Why::ShadingPattern, PatchKind::Alone, out);
-            return Ok(());
+        if self.job.hints & hints::SHADING_PATTERN != 0 && (reads_white(fill) || reads_white(stroke)) {
+            // Past the limit on looking, this could be anything, and the whole page drawn at the end is right whichever it is.
+            if self.probes >= MAX_PROBES {
+                self.flatten = true;
+                return Ok(());
+            }
+            if self.probe(object, area).1 {
+                self.patch(object, area, Why::ShadingPattern, PatchKind::Alone, out);
+                return Ok(());
+            }
         }
         let Some(matrix) = self.object_matrix(object).map(|m| then(&m, &self.level().matrix)).and_then(|m| to_f32(&m)) else {
             self.note(NoteCode::NotFinite);
@@ -1329,35 +1347,77 @@ impl Walk {
         (paints, not_white)
     }
 
-    /// Whether an object is in layers that are on. PDFium has no call for this, so the answer comes from drawing: what draws nothing on its own either draws nothing or is in a layer that's off. A layer is known by its name, so a yes for one object holds for all of it, and so does a no after a few in a row, since a real layer doesn't start with many things that draw nothing.
-    fn layer_shows(&mut self, object: FPDF_PAGEOBJECT, area: Area, kind: c_int) -> bool {
-        let marks = self.layer_marks_of(object);
-        if marks.iter().any(|mark| self.layers.get(mark).is_some_and(|state| !state.shows && state.blanks >= LAYER_BLANKS)) {
-            return false;
-        }
-        let known_on = !marks.is_empty() && marks.iter().all(|mark| self.layers.get(mark).is_some_and(|state| state.shows));
-        // Forms and images can name a layer in their own dictionaries, where no call reaches, so they're drawn to see.
-        if known_on || (marks.is_empty() && kind != FPDF_PAGEOBJ_FORM && kind != FPDF_PAGEOBJ_IMAGE) {
-            return true;
-        }
-        if self.probes >= MAX_PROBES {
-            self.note(NoteCode::LayersUnchecked);
-            return true;
-        }
-        let shows = self.probe(object, area).0;
-        for mark in marks {
-            if self.layers.len() < MAX_LAYERS || self.layers.contains_key(&mark) {
-                let state = self.layers.entry(mark).or_default();
-                state.shows |= shows;
-                state.blanks = state.blanks.saturating_add(u8::from(!shows));
+    /// Whether an object is in layers that are on. PDFium has no call that says, so each layer's mark is put on a plain box that always draws, and the box is drawn alone: PDFium itself decides. Nothing about the object can sway that, so an OCR layer's invisible text doesn't condemn its layer. A layer is known by its name where the document's names are all different, and otherwise by its mark, which is never wrong and only takes more looks.
+    fn layer_shows(&mut self, object: FPDF_PAGEOBJECT, area: Area, kind: c_int) -> Shows {
+        for (mark, key) in self.layer_marks_of(object) {
+            let on = match self.layers.get(&key) {
+                Some(on) => Some(*on),
+                None => {
+                    if self.probes >= MAX_PROBES {
+                        return Shows::NotLookedUp;
+                    }
+                    let on = self.mark_draws(mark);
+                    if let Some(on) = on
+                        && self.layers.len() < MAX_LAYERS
+                    {
+                        self.layers.insert(key, on);
+                    }
+                    on
+                }
+            };
+            match on {
+                Some(true) => {}
+                Some(false) => return Shows::Off,
+                // The mark wouldn't go on the box, so the only thing left to ask is the object.
+                None if self.probe(object, area).0 => {}
+                None => return Shows::Off,
             }
         }
-        shows
+        // Forms and images can name a layer in their own dictionaries, where no call reaches, so they're drawn to see. One that draws nothing has nothing to lose but text that can't be told from what's hidden.
+        if kind == FPDF_PAGEOBJ_FORM || kind == FPDF_PAGEOBJ_IMAGE {
+            if self.probes >= MAX_PROBES {
+                return Shows::NotLookedUp;
+            }
+            if !self.probe(object, area).0 {
+                return Shows::Off;
+            }
+        }
+        Shows::On
     }
 
-    /// The `/OC` marks on an object, each as a layer's name if it has one, and otherwise as the mark itself.
-    fn layer_marks_of(&self, object: FPDF_PAGEOBJECT) -> Vec<u64> {
+    /// Whether a plain box carrying this mark draws, or `None` if it wouldn't take the mark. The box is gone again after, and nothing else can see it, since everything else is off.
+    fn mark_draws(&mut self, mark: FPDF_PAGEOBJECTMARK) -> Option<bool> {
+        self.probes += 1;
+        self.isolate_nothing();
+        let whole = Area { left: 0.0, bottom: 0.0, right: self.page_w, top: self.page_h }.through(&self.undisplay);
+        let mut pixels = [0u8; 16 * 16 * 4];
+        // SAFETY: the page and mark are live, the new box is ours until `InsertObject` hands it to the page and `RemoveObject` hands it back, and then it's destroyed here.
+        unsafe {
+            let probe = (self.api.FPDFPageObj_CreateNewRect)(whole.left as f32, whole.bottom as f32, (whole.right - whole.left) as f32, (whole.top - whole.bottom) as f32);
+            if probe.is_null() {
+                return None;
+            }
+            (self.api.FPDFPageObj_SetFillColor)(probe, 0, 0, 0, 255);
+            (self.api.FPDFPath_SetDrawMode)(probe, FPDF_FILLMODE_WINDING, 0);
+            if (self.api.FPDFPageObj_AddExistingMark)(probe, mark) == 0 {
+                (self.api.FPDFPageObj_Destroy)(probe);
+                return None;
+            }
+            (self.api.FPDFPage_InsertObject)(self.page_handle, probe);
+            let drawn = self.draw_into(&mut pixels, 16, 16, 16 * 4, (0, 0), (16, 16), FORMAT_BGRA, 0, false);
+            (self.api.FPDFPage_RemoveObject)(self.page_handle, probe);
+            (self.api.FPDFPageObj_Destroy)(probe);
+            if !drawn {
+                return None;
+            }
+        }
+        Some(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 0))
+    }
+
+    /// The `/OC` marks on an object, each with what it's known by.
+    fn layer_marks_of(&self, object: FPDF_PAGEOBJECT) -> Vec<(FPDF_PAGEOBJECTMARK, u64)> {
         let mut found = Vec::new();
+        let names_are_unique = self.job.hints & hints::LAYER_NAMES_REPEAT == 0;
         // SAFETY: the object is live with its page, and so are its marks. Each buffer is live for its call, and PDFium writes only if it fits.
         unsafe {
             for index in 0..(self.api.FPDFPageObj_CountMarks)(object).clamp(0, 64) {
@@ -1372,15 +1432,15 @@ impl Walk {
                 }
                 let mut layer = [0u16; 128];
                 let mut layer_len: c_ulong = 0;
-                let named = (self.api.FPDFPageObjMark_GetParamStringValue)(mark, c"Name".as_ptr(), layer.as_mut_ptr(), (layer.len() * 2) as c_ulong, &raw mut layer_len) != 0 && layer_len as usize <= layer.len() * 2;
+                let named = names_are_unique && (self.api.FPDFPageObjMark_GetParamStringValue)(mark, c"Name".as_ptr(), layer.as_mut_ptr(), (layer.len() * 2) as c_ulong, &raw mut layer_len) != 0 && layer_len as usize <= layer.len() * 2;
                 if named {
                     let mut hash = Hasher::new();
                     for unit in &layer[..layer_len as usize / 2] {
                         hash.bytes(&unit.to_le_bytes());
                     }
-                    found.push(hash.0);
+                    found.push((mark, hash.0));
                 } else {
-                    found.push(mark as u64);
+                    found.push((mark, mark as u64));
                 }
             }
         }

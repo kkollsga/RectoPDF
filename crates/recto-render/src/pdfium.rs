@@ -191,6 +191,12 @@ pdfium_api! {
     FPDFPageObj_GetMark: fn(FPDF_PAGEOBJECT, c_ulong) -> FPDF_PAGEOBJECTMARK;
     FPDFPageObjMark_GetName: fn(FPDF_PAGEOBJECTMARK, *mut u16, c_ulong, *mut c_ulong) -> FPDF_BOOL;
     FPDFPageObjMark_GetParamStringValue: fn(FPDF_PAGEOBJECTMARK, *const std::ffi::c_char, *mut u16, c_ulong, *mut c_ulong) -> FPDF_BOOL;
+    FPDFPageObj_AddExistingMark: fn(FPDF_PAGEOBJECT, FPDF_PAGEOBJECTMARK) -> FPDF_BOOL;
+    FPDFPageObj_CreateNewRect: fn(c_float, c_float, c_float, c_float) -> FPDF_PAGEOBJECT;
+    FPDFPageObj_Destroy: fn(FPDF_PAGEOBJECT);
+    FPDFPath_SetDrawMode: fn(FPDF_PAGEOBJECT, c_int, FPDF_BOOL) -> FPDF_BOOL;
+    FPDFPage_InsertObject: fn(FPDF_PAGE, FPDF_PAGEOBJECT);
+    FPDFPage_RemoveObject: fn(FPDF_PAGE, FPDF_PAGEOBJECT) -> FPDF_BOOL;
     FPDFPageObj_GetFillColor: fn(FPDF_PAGEOBJECT, *mut c_uint, *mut c_uint, *mut c_uint, *mut c_uint) -> FPDF_BOOL;
     FPDFPageObj_SetFillColor: fn(FPDF_PAGEOBJECT, c_uint, c_uint, c_uint, c_uint) -> FPDF_BOOL;
     FPDFPageObj_GetStrokeColor: fn(FPDF_PAGEOBJECT, *mut c_uint, *mut c_uint, *mut c_uint, *mut c_uint) -> FPDF_BOOL;

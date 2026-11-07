@@ -2,7 +2,7 @@
 //!
 //! The walk is bounded for hostile files: forms inside forms, loops and millions of entries all end at a fixed number of visits, and past that, or for anything that can't be read, the answer is `None`, which the caller takes as "may use anything". A stream's dictionary is read without its bytes, so a form on a page with a 300 MiB image costs no more than one without.
 
-use crate::open_reader;
+use crate::{deref, open_reader};
 use lopdf::{Dictionary, IndexedReader, Object, ObjectId};
 use std::collections::HashSet;
 use std::path::Path;
@@ -24,6 +24,8 @@ pub struct PageEffects {
     pub shading_pattern: bool,
     /// The document has optional content that starts off, or changes by how it's viewed.
     pub hidden_layers: bool,
+    /// Two of its layers have one name, or their names can't be read, so a name can't stand for a layer.
+    pub layer_names_repeat: bool,
 }
 
 /// What this page uses, or `None` if that can't be said. `page` is zero-based.
@@ -34,7 +36,7 @@ pub fn page_effects(path: &Path, page: u32) -> Option<PageEffects> {
     let owner = entry.inherited().resources().unwrap_or(entry.id());
     let page_dict = dict_at(&reader, owner)?;
     let resources = page_dict.get(b"Resources").ok()?;
-    let mut walk = Walk { reader: &reader, deadline: Instant::now() + MAX_TIME, visits: 0, effects: PageEffects { hidden_layers: has_hidden_layers(&reader), ..PageEffects::default() }, waiting: Vec::new(), seen: HashSet::new() };
+    let mut walk = Walk { reader: &reader, deadline: Instant::now() + MAX_TIME, visits: 0, effects: PageEffects { hidden_layers: has_hidden_layers(&reader), layer_names_repeat: layer_names_repeat(&reader), ..PageEffects::default() }, waiting: Vec::new(), seen: HashSet::new() };
     walk.resources(resources)?;
     while let Some(id) = walk.waiting.pop() {
         walk.tick()?;
@@ -161,6 +163,29 @@ fn has_blend(state: &Dictionary) -> bool {
     }
 }
 
+/// Whether any two layers listed in the document share a name, as cleaned for reading. Something there that can't be read may do, so it counts.
+fn layer_names_repeat(reader: &IndexedReader) -> bool {
+    let read = || -> Option<bool> {
+        let root = reader.trailer_entry_owned(b"Root").ok()??;
+        let properties = match root.as_dict().ok()?.get(b"OCProperties") {
+            Ok(value) => value_dict(reader, value)?,
+            Err(_) => return Some(false),
+        };
+        let layers = deref(reader, properties.get(b"OCGs").ok()?)?;
+        let mut names = HashSet::new();
+        for layer in layers.as_array().ok()?.iter().take(MAX_VISITS) {
+            let layer = value_dict(reader, layer)?;
+            let name = deref(reader, layer.get(b"Name").ok()?)?;
+            if !names.insert(crate::clean_text(name.as_str().ok()?)) {
+                return Some(true);
+            }
+        }
+        // Past the look, nothing's known about the rest.
+        Some(layers.as_array().ok()?.len() > MAX_VISITS)
+    };
+    read().unwrap_or(true)
+}
+
 fn has_hidden_layers(reader: &IndexedReader) -> bool {
     let read = || -> Option<bool> {
         let root = reader.trailer_entry_owned(b"Root").ok()??;
@@ -235,6 +260,20 @@ mod tests {
         assert!(page_effects(&doc(&format!("/OFF [{group} 0 R]")).0, 0).unwrap().hidden_layers);
         assert!(page_effects(&doc("/BaseState /OFF").0, 0).unwrap().hidden_layers);
         assert!(!page_effects(&doc("/OFF [] /BaseState /ON").0, 0).unwrap().hidden_layers);
+    }
+
+    /// Failure: two layers with one name are taken for one layer, so the one that's on speaks for the one that's off and what the page hides goes out in plain sight.
+    #[test]
+    fn repeated_layer_names_are_noticed() {
+        let (first, second) = (first_extra_object(1), first_extra_object(1) + 1);
+        let doc = |one: &str, two: &str| {
+            let objects = vec![Object::Dict(format!("<< /Type /OCG /Name ({one}) >>")), Object::Dict(format!("<< /Type /OCG /Name ({two}) >>"))];
+            let bytes = pages_with(&[Page::new(text_lines(&["Words"]))], "", objects);
+            let bytes = String::from_utf8_lossy(&bytes).replace("/Type /Catalog", &format!("/Type /Catalog /OCProperties << /OCGs [{first} 0 R {second} 0 R] /D << >> >>"));
+            TempPdf::new("doc.pdf", bytes.as_bytes())
+        };
+        assert!(page_effects(&doc("Layer 1", "Layer 1").0, 0).unwrap().layer_names_repeat);
+        assert!(!page_effects(&doc("Roads", "Rivers").0, 0).unwrap().layer_names_repeat);
     }
 
     /// Failure: something that can't be read reads as "uses nothing", which would be a claim about what it hasn't seen. There's no answer, and the caller assumes anything.

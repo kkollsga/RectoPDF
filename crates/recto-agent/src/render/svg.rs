@@ -48,7 +48,7 @@ fn note_words(code: NoteCode) -> (&'static str, &'static str) {
         NoteCode::HiddenLayer => ("hidden_layer", "objects in layers that are off, left out"),
         NoteCode::InvisibleText => ("invisible_text_chars", "characters of text that draw nothing, kept as selectable text"),
         NoteCode::Unknown => ("unknown_object", "objects the renderer says nothing about, left out"),
-        NoteCode::LayersUnchecked => ("layers_unchecked", "objects not checked for whether their layer is on, past a limit, kept"),
+        NoteCode::LayersUnchecked => ("layers_unchecked", "objects whose layer wasn't looked up, past a limit: they're in the picture of the whole page, which obeys it, and any text in them isn't kept"),
         NoteCode::ObjectsSkipped => ("objects_past_limit", "objects past the limit on one page, in the picture of the whole page"),
     }
 }
@@ -197,7 +197,7 @@ fn text_mode(word: Option<&str>) -> Result<TextMode, AgentError> {
 
 fn hints_for(path: &Path, page: u32) -> u8 {
     let Some(effects) = recto_core::page_effects(path, page) else { return hints::ALL };
-    (u8::from(effects.soft_mask) * hints::SOFT_MASK) | (u8::from(effects.blend) * hints::BLEND) | (u8::from(effects.shading_pattern) * hints::SHADING_PATTERN) | (u8::from(effects.hidden_layers) * hints::HIDDEN_LAYERS)
+    (u8::from(effects.soft_mask) * hints::SOFT_MASK) | (u8::from(effects.blend) * hints::BLEND) | (u8::from(effects.shading_pattern) * hints::SHADING_PATTERN) | (u8::from(effects.hidden_layers) * hints::HIDDEN_LAYERS) | (u8::from(effects.layer_names_repeat) * hints::LAYER_NAMES_REPEAT)
 }
 
 const WRITE_FAILED: &str = "The SVG couldn't be saved there.";

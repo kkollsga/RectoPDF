@@ -51,8 +51,10 @@ pub mod hints {
     pub const SHADING_PATTERN: u8 = 4;
     /// The document has optional content that's off by default.
     pub const HIDDEN_LAYERS: u8 = 8;
+    /// Two layers may share a name, so a name can't stand for a layer.
+    pub const LAYER_NAMES_REPEAT: u8 = 16;
     /// Every hint. For a file the structure reader couldn't read, which says nothing about what it uses.
-    pub const ALL: u8 = SOFT_MASK | BLEND | SHADING_PATTERN | HIDDEN_LAYERS;
+    pub const ALL: u8 = SOFT_MASK | BLEND | SHADING_PATTERN | HIDDEN_LAYERS | LAYER_NAMES_REPEAT;
 }
 
 /// Ask for a page's contents, or the next piece of them.
@@ -331,7 +333,7 @@ pub enum NoteCode {
     InvisibleText = 3,
     /// Objects PDFium couldn't say anything about, left out.
     Unknown = 4,
-    /// Checks for hidden layers that were skipped, past their limit.
+    /// Objects whose layer wasn't looked up, past the limit. They're in the picture of the whole page, which obeys it, and any text in them isn't kept.
     LayersUnchecked = 5,
     /// Objects past the limit, on a page drawn whole instead.
     ObjectsSkipped = 6,
