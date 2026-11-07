@@ -101,6 +101,14 @@ const WHITE_MOST_COLOUR: f64 = 0.20;
 /// The second kind, a scan on paper that's gone yellow or grey: no plain white at all, so nearly all of it must be paper, with next to no colour. A red stamp and a blue signature are about 0.02. Maps on tan are 0.04 and up, or under this much paper.
 const SCAN_LEAST_PAPER: f64 = 0.75;
 const SCAN_MOST_COLOUR: f64 = 0.03;
+/// **The third kind, a chart or diagram whose colour is flat** (owner, 2026-11-07: "images with a white background should be dark, as a chart with a white background was left light"). Its bars, slices and fills are a few colours each, so most of its colour falls in a handful of [`COLOUR_BINS`]: [`FLAT_LEAST_CLUSTERED`] of it in the [`FLAT_TOP_BINS`] fullest. A photo, a rendering or a heatmap shades from one colour to the next and spreads over many. Over `bench100`'s 4,149 images that stayed and part B of the EU competitiveness report, every one past this with a white or plain background was a chart, a table, a diagram, a logo or a page of a document, and the photos, renderings and heatmaps with as much white were under 0.80. With this, the background can be white, as in the first kind, or one plain light colour, [`PLAIN_LEAST`] of it within [`PLAIN_NEAR`] of its average, as a chart on beige is. A map on tan isn't: its land is shaded.
+const FLAT_MOST_COLOUR: f64 = 0.45;
+const FLAT_LEAST_CLUSTERED: f64 = 0.80;
+const FLAT_TOP_BINS: usize = 4;
+/// Colour is binned by the top 3 bits of each channel, so a JPEG's noise round a bar's colour stays in its bin.
+const COLOUR_BINS: usize = 512;
+const PLAIN_LEAST: f64 = 0.60;
+const PLAIN_NEAR: u8 = 10;
 /// Judging a whole page, with its images not known, white margins count for the page: a map sheet is as white as a chart. So nearly none of it can be colour.
 const WHOLE_PAGE_MOST_COLOUR: f64 = 0.05;
 /// An image this small in a picture of the page has too few pixels to say. It's left alone.
@@ -120,42 +128,67 @@ pub struct ImageSample {
     /// The colour its paper is, as `[red, green, blue]`.
     pub background: [u8; 3],
     pub pixels: usize,
+    /// The part of its colour in its [`FLAT_TOP_BINS`] fullest bins: near 1 for a chart's flat fills, low for a photo. 1 with no colour.
+    pub clustered: f64,
+    /// The part of it within [`PLAIN_NEAR`] of its paper's average colour, in every channel. Only looked for when it decides something, and 0 otherwise.
+    pub plain: f64,
 }
 
-/// Looks at a rectangle of BGRA pixels.
+/// Looks at a rectangle of BGRA pixels. One pass, and a second over the same rectangle only for an image the third kind's plain background would decide.
 pub fn sample_pixels(pixels: &[u8], stride: usize, left: usize, top: usize, right: usize, bottom: usize) -> ImageSample {
     let (mut paper, mut colour, mut white, mut count) = (0usize, 0usize, 0usize, 0usize);
     let mut sums = [0u64; 3];
-    if stride > 0 {
-        for row in pixels.chunks(stride).skip(top).take(bottom.saturating_sub(top)) {
-            let Some(row) = row.get(left.saturating_mul(4)..right.saturating_mul(4).min(row.len())) else { continue };
-            for pixel in row.as_chunks::<4>().0 {
-                let (b, g, r) = (pixel[0], pixel[1], pixel[2]);
-                let (low, high) = (r.min(g).min(b), r.max(g).max(b));
-                count += 1;
-                if low >= WHITE_LIGHTEST_CHANNEL && high - low <= WHITE_MOST_SPREAD {
-                    white += 1;
-                }
-                if low >= PAPER_LIGHTEST_CHANNEL && high - low <= PAPER_MOST_SPREAD {
-                    paper += 1;
-                    sums[0] += u64::from(r);
-                    sums[1] += u64::from(g);
-                    sums[2] += u64::from(b);
-                } else if high - low >= COLOUR_LEAST_SPREAD {
-                    colour += 1;
-                }
+    let mut bins = [0u32; COLOUR_BINS];
+    // At most a picture's height of slices, so a second pass needn't work out the rows again.
+    let inside: Vec<&[u8]> = if stride == 0 { Vec::new() } else { pixels.chunks(stride).skip(top).take(bottom.saturating_sub(top)).filter_map(|row| row.get(left.saturating_mul(4)..right.saturating_mul(4).min(row.len()))).collect() };
+    for row in &inside {
+        for pixel in row.as_chunks::<4>().0 {
+            let (b, g, r) = (pixel[0], pixel[1], pixel[2]);
+            let (low, high) = (r.min(g).min(b), r.max(g).max(b));
+            count += 1;
+            if low >= WHITE_LIGHTEST_CHANNEL && high - low <= WHITE_MOST_SPREAD {
+                white += 1;
+            }
+            if low >= PAPER_LIGHTEST_CHANNEL && high - low <= PAPER_MOST_SPREAD {
+                paper += 1;
+                sums[0] += u64::from(r);
+                sums[1] += u64::from(g);
+                sums[2] += u64::from(b);
+            } else if high - low >= COLOUR_LEAST_SPREAD {
+                colour += 1;
+                bins[(usize::from(r >> 5) << 6) | (usize::from(g >> 5) << 3) | usize::from(b >> 5)] += 1;
             }
         }
     }
     let share = |part: usize| if count == 0 { 0.0 } else { part as f64 / count as f64 };
     let average = |sum: u64| if paper == 0 { 255 } else { u8::try_from(sum / paper as u64).unwrap_or(255) };
-    ImageSample { paper: share(paper), colour: share(colour), white: share(white), background: [average(sums[0]), average(sums[1]), average(sums[2])], pixels: count }
+    let background = [average(sums[0]), average(sums[1]), average(sums[2])];
+    let clustered = if colour == 0 {
+        1.0
+    } else {
+        let mut fullest = [0u32; FLAT_TOP_BINS];
+        for &bin in &bins {
+            if bin > fullest[FLAT_TOP_BINS - 1] {
+                fullest[FLAT_TOP_BINS - 1] = bin;
+                fullest.sort_unstable_by(|one, two| two.cmp(one));
+            }
+        }
+        fullest.iter().map(|bin| f64::from(*bin)).sum::<f64>() / colour as f64
+    };
+    let mut found = ImageSample { paper: share(paper), colour: share(colour), white: share(white), background, pixels: count, clustered, plain: 0.0 };
+    if found.white < WHITE_LEAST && found.paper >= SCAN_LEAST_PAPER && found.colour > SCAN_MOST_COLOUR && found.colour <= FLAT_MOST_COLOUR && found.clustered >= FLAT_LEAST_CLUSTERED {
+        let near = |value: u8, to: u8| value.abs_diff(to) <= PLAIN_NEAR;
+        let plain: usize = inside.iter().map(|row| row.as_chunks::<4>().0.iter().filter(|pixel| near(pixel[2], background[0]) && near(pixel[1], background[1]) && near(pixel[0], background[2])).count()).sum();
+        found.plain = share(plain);
+    }
+    found
 }
 
 impl ImageSample {
     /// Whether it's an image with a white background, that turns over with the page. Uncertain is no.
     pub fn has_white_background(self) -> bool {
-        self.pixels >= LEAST_PIXELS_TO_JUDGE && ((self.white >= WHITE_LEAST && self.colour <= WHITE_MOST_COLOUR) || (self.paper >= SCAN_LEAST_PAPER && self.colour <= SCAN_MOST_COLOUR))
+        let flat = self.colour <= FLAT_MOST_COLOUR && self.clustered >= FLAT_LEAST_CLUSTERED && (self.white >= WHITE_LEAST || (self.paper >= SCAN_LEAST_PAPER && self.plain >= PLAIN_LEAST));
+        self.pixels >= LEAST_PIXELS_TO_JUDGE && ((self.white >= WHITE_LEAST && self.colour <= WHITE_MOST_COLOUR) || (self.paper >= SCAN_LEAST_PAPER && self.colour <= SCAN_MOST_COLOUR) || flat)
     }
 
     /// The same, for a whole page with nothing known of its images. Stricter, and uncertain is still no.
@@ -497,6 +530,34 @@ mod tests {
         assert_eq!(PageLook::decide(Some(&[]), &page, 400, 100, 100), PageLook::text());
         let tiny = PageLook::decide(Some(&[[0, 0, 300, 300]]), &page, 400, 100, 100);
         assert_eq!(tiny.keep.len(), 1, "too small to say, so it's left alone: {tiny:?}");
+    }
+
+    /// Failure: a bar chart on white stays a light box on dark paper because its bars are a quarter of it, as the owner saw in the EU competitiveness report's figure 8 (2026-11-07: "images with a white background should be dark"), or one on beige does. Failure the other way: a photo beside as much white, or a map on shaded tan, goes negative. Flat fills turn over, shading stays.
+    #[test]
+    fn a_chart_turns_over_and_a_photo_with_as_much_white_does_not() {
+        let whole = Some(&[[0u16, 0, 65_535, 65_535]][..]);
+        let bars = |paper: [u8; 3], tall: u32| {
+            picture(100, 100, move |x, y| match x {
+                10..25 if y >= 95 - tall => [21, 32, 240],
+                35..50 if y >= 95 - tall / 2 => [74, 138, 198],
+                60..75 if y >= 95 - tall => [21, 32, 240],
+                _ if y == 96 => [80, 80, 80],
+                _ => paper,
+            })
+        };
+        let chart = bars([255, 255, 255], 60);
+        let found = sample_pixels(&chart, 400, 0, 0, 100, 100);
+        assert!(found.colour > WHITE_MOST_COLOUR, "more colour than the first kind allows, as figure 8 has: {found:?}");
+        let look = PageLook::decide(whole, &chart, 400, 100, 100);
+        assert!(!look.dim && look.whiten.len() == 1, "a chart on white: {look:?}");
+        let look = PageLook::decide(whole, &bars([234, 232, 227], 45), 400, 100, 100);
+        assert!(!look.dim && look.whiten.len() == 1, "a chart on beige: {look:?}");
+        let photo = picture(100, 100, |x, y| if x < 50 { [255, 255, 255] } else { [((x - 50) * 4) as u8 + 40, (y * 2) as u8 + 20, 90] });
+        let found = sample_pixels(&photo, 400, 0, 0, 100, 100);
+        assert!(found.white >= WHITE_LEAST && found.colour <= FLAT_MOST_COLOUR, "as white as a chart, and no more colour: {found:?}");
+        assert!(PageLook::decide(whole, &photo, 400, 100, 100).dim, "a photo beside white");
+        let tan_map = picture(100, 100, |x, y| if (x + y) % 9 == 0 { [40, 90, 200] } else { [200 + ((x * 7 + y * 3) % 50) as u8, 190 + ((x * 3 + y * 5) % 40) as u8, 160] });
+        assert!(PageLook::decide(whole, &tan_map, 400, 100, 100).dim, "a map on shaded tan");
     }
 
     /// Failure: a scan's off-white paper lands on a muddy tone beside a true text page, or its noise speckles, and a tile crossing the image's edge shows a seam. Whitened first, its paper is the paper's colour exactly, with the same result as white paper turned over, and its ink stays light.

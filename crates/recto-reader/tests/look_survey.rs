@@ -48,7 +48,7 @@ fn survey() {
                         let (left, top, right, bottom) = (place(sides[0], w), place(sides[1], h), place(sides[2], w).min(w as usize), place(sides[3], h).min(h as usize));
                         let found = sample_pixels(pixels, stride, left, top, right, bottom);
                         let share = f64::from(sides[2].saturating_sub(sides[0])) * f64::from(sides[3].saturating_sub(sides[1])) / (65_535.0 * 65_535.0);
-                        let _ = writeln!(rows, "  {name} p{} box{index} share={share:.2} paper={:.2} colour={:.2} purewhite={:.2} px={} bg={:?} white={}", page + 1, found.paper, found.colour, found.white, found.pixels, found.background, found.has_white_background());
+                        let _ = writeln!(rows, "  {name} p{} box{index} share={share:.2} paper={:.2} colour={:.2} purewhite={:.2} clustered={:.2} plain={:.2} px={} bg={:?} white={}", page + 1, found.paper, found.colour, found.white, found.clustered, found.plain, found.pixels, found.background, found.has_white_background());
                         // The image, as a picture to look at.
                         if right > left && bottom > top {
                             let mut ppm = format!("P6\n{} {}\n255\n", right - left, bottom - top).into_bytes();
