@@ -139,7 +139,7 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     drop(temp);
     Ok(json!({
         "page": page + 1,
-        "scale": scale,
+        "scale": as_written(scale),
         "out": out,
         "took_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         "width": drawn.width,
@@ -147,6 +147,11 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
         "bytes": std::fs::metadata(out).map(|meta| meta.len()).ok(),
         "kind": kind,
     }))
+}
+
+/// A scale as it was written. A float widened as it stands reads 4.71 as 4.71000003814697, in JSON and in plain words.
+fn as_written(scale: f32) -> f64 {
+    scale.to_string().parse().unwrap_or_else(|_| f64::from(scale))
 }
 
 /// Says the largest scale that fits this page, from its size and the caps, so an agent doesn't try 8, 4, 2 and 1 by hand. It's about size alone, and a heavy page can still be refused for memory, in words of its own.
@@ -592,6 +597,17 @@ mod tests {
         let at_the_floor = too_heavy_to_export(refused, 0, recto_proto::MIN_SCALE, (8000, 8000), gib);
         assert!(!at_the_floor.next.contains("may fit"), "there's nowhere to go: {}", at_the_floor.next);
         assert_eq!(small.code, "export_page_too_heavy");
+    }
+
+    /// Failure: a drawing at 4.71x says it was at 4.71000003814697x, so a number an agent chose comes back looking like a different one.
+    #[test]
+    fn a_scale_reads_as_it_was_written() {
+        let file = doc();
+        let out = file.0.with_file_name("written.png");
+        let drawn = render(&file.0, 1, 0.71, &out).unwrap();
+        assert_eq!(drawn["scale"], 0.71, "{drawn}");
+        assert!(crate::human::render("render", &drawn).contains("at 0.71x"), "{drawn}");
+        std::fs::remove_file(&out).unwrap();
     }
 
     /// Failure: nobody can tell a slow draw from a fast one, so a slow page or a bad scale goes unnoticed.
