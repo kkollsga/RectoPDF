@@ -996,6 +996,23 @@ fn notes_on_a_file_are_capped_and_the_oldest_text_goes() {
     assert_eq!(keys_of_file(&root, &file).iter().filter(|key| **key != now).count(), MAX_KEYS_PER_ALIAS);
 }
 
+/// Failure: a pipe left at a tab's path blocks `index clear` for ever, pinning a job thread, because looking up what it's had opened it.
+#[test]
+fn a_pipe_at_a_files_path_doesnt_block_looking_it_up() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let fifo = temp.0.join("pipe.pdf");
+    assert!(std::process::Command::new("/usr/bin/mkfifo").arg(&fifo).status().unwrap().success());
+    let (done, finished) = std::sync::mpsc::channel();
+    let (root_copy, fifo_copy) = (root.clone(), fifo.clone());
+    std::thread::spawn(move || {
+        let keys = keys_of_file(&root_copy, &fifo_copy);
+        forget_file(&root_copy, &fifo_copy);
+        let _ = done.send(keys);
+    });
+    assert_eq!(finished.recv_timeout(Duration::from_secs(20)).expect("it blocked on the pipe"), Vec::new());
+}
+
 /// Failure: two sessions on one folder both build a document, and one's pack interleaves with the other's.
 #[test]
 fn only_one_builds_at_a_time() {

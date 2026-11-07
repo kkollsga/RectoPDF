@@ -48,6 +48,20 @@ pub fn file_identity(file: &std::fs::File) -> std::io::Result<FileIdentity> {
     Ok(FileIdentity { device: 0, inode: 0, size: meta.len(), mtime_ns: nanos, ctime_ns: nanos })
 }
 
+/// A file's device and inode, with no opening of it: opening a pipe would wait for a writer for ever. `None` where there's no such thing, or it can't be looked at.
+pub fn file_device_and_inode(path: &Path) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).ok().map(|meta| (meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 /// Puts this process at background priority: slower CPUs and slower disk, so it gets out of the way of whatever someone's waiting for. A failure leaves it as it was, which only costs politeness. The children it starts after this inherit it.
 pub fn run_in_background() {
     isolate::run_in_background();

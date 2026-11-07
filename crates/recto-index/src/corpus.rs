@@ -877,8 +877,8 @@ fn file_aliases(path: &Path) -> Vec<String> {
             aliases.push(real);
         }
     }
-    if let Some(identity) = File::open(path).ok().and_then(|file| recto_platform::file_identity(&file).ok()) {
-        aliases.push(hash_of("inode", &[identity.device.to_le_bytes(), identity.inode.to_le_bytes()].concat()));
+    if let Some((device, inode)) = recto_platform::file_device_and_inode(path) {
+        aliases.push(hash_of("inode", &[device.to_le_bytes(), inode.to_le_bytes()].concat()));
     }
     aliases
 }
