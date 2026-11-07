@@ -793,8 +793,13 @@ impl<H: Host> Loop<H> {
     fn flush_all(&mut self) {
         for conn in &mut self.conns {
             if conn.has_output() {
+                let was_paused = conn.unsent() > self.limits.max_unsent_before_pause;
                 let flushed = conn.flush();
                 self.queued_bytes -= flushed;
+                // Its time for the rest of a line starts again now it's being read in again.
+                if was_paused && conn.unsent() <= self.limits.max_unsent_before_pause && conn.line_started.is_some() {
+                    conn.line_started = Some(Instant::now());
+                }
             }
         }
     }
@@ -848,7 +853,7 @@ impl<H: Host> Loop<H> {
             let conn = &self.conns[index];
             let stalled_output = conn.has_output() && now.saturating_duration_since(conn.output_since) >= self.limits.write_deadline;
             // Only while it's its turn to speak: a client may send its next command while the last one runs.
-            let stalled_line = matches!(conn.state, State::Idle) && conn.line_started.is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline);
+            let stalled_line = matches!(conn.state, State::Idle) && conn.is_halfway_through_a_line(self.limits.max_unsent_before_pause) && conn.line_started.is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline);
             let idle_limit = if conn.overflow { self.limits.overflow_idle } else { self.limits.idle_deadline };
             let idle = matches!(conn.state, State::Idle) && conn.input.is_empty() && !conn.has_output() && now.saturating_duration_since(conn.last_activity) >= idle_limit;
             if stalled_output || stalled_line || idle {
@@ -966,7 +971,7 @@ impl<H: Host> Loop<H> {
             }
             match &conn.state {
                 State::Idle => {
-                    if let Some(started) = conn.line_started {
+                    if let Some(started) = conn.line_started.filter(|_| conn.is_halfway_through_a_line(self.limits.max_unsent_before_pause)) {
                         consider(started + self.limits.line_deadline);
                     }
                     if conn.input.is_empty() && !conn.has_output() {
@@ -991,6 +996,11 @@ fn too_large(tag: &str) -> Vec<u8> {
 }
 
 impl Conn {
+    /// Whether what's holding things up is this client not finishing a line, which is all that has a deadline. A whole command waiting behind answers it hasn't read isn't, and neither is the rest of a line that isn't being read in for that reason.
+    fn is_halfway_through_a_line(&self, max_unsent: usize) -> bool {
+        self.unsent() <= max_unsent && !self.input.contains(&b'\n')
+    }
+
     fn wants_input(&self, max_line: usize, max_unsent: usize) -> bool {
         !self.input_closed && !self.gone && !self.closing && self.input.len() <= max_line && self.unsent() <= max_unsent
     }

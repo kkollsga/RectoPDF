@@ -412,6 +412,20 @@ fn a_client_that_doesnt_read_isnt_worked_for() {
     assert!(running.host.wheres.load(Ordering::SeqCst) >= 2);
 }
 
+/// Failure: a client with commands waiting while it catches up on a large answer is dropped, as though it had stalled halfway through a line, if it takes longer than half a line is given. Those commands are whole, and waiting is the session's doing. Found by `a_client_that_doesnt_read_isnt_worked_for` failing on a Mac under load.
+#[test]
+fn a_client_catching_up_isnt_dropped_for_the_commands_it_has_waiting() {
+    let limits = Limits { max_unsent_before_pause: 1024 * 1024, line_deadline: Duration::from_millis(100), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut greedy = running.connect();
+    greedy.write_all("{\"cmd\":\"where\"}\n".repeat(20).as_bytes()).unwrap();
+    // Well past the time half a line gets.
+    std::thread::sleep(Duration::from_millis(800));
+    let mut reader = BufLine::default();
+    assert!(reader.next(&mut greedy).expect("it was dropped while it had commands waiting")["data"]["huge"].is_string());
+    assert!(reader.next(&mut greedy).expect("it was dropped after its first answer")["data"]["huge"].is_string());
+}
+
 #[derive(Default)]
 struct BufLine {
     bytes: Vec<u8>,
