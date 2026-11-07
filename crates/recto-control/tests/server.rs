@@ -412,6 +412,20 @@ fn a_client_that_doesnt_read_isnt_worked_for() {
     assert!(running.host.wheres.load(Ordering::SeqCst) >= 2);
 }
 
+/// Failure: a client that sends two commands and reads slowly loses its connection, because the second, whole and waiting behind an answer not yet read, was timed as half a line. It failed the full run on a busy Mac, and every time with 24 clients at once. A client gets all its answers however slowly it reads, up to the write deadline.
+#[test]
+fn a_whole_line_waiting_behind_an_unread_answer_isnt_half_a_line() {
+    let limits = Limits { line_deadline: Duration::from_millis(100), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut slow = running.connect();
+    slow.write_all(b"{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let mut reader = BufLine::default();
+    for answer in 0..2 {
+        assert!(reader.next(&mut slow).unwrap_or_else(|| panic!("answer {answer}: the connection was dropped"))["data"]["huge"].is_string());
+    }
+}
+
 #[derive(Default)]
 struct BufLine {
     bytes: Vec<u8>,

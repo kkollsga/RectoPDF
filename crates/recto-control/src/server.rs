@@ -830,7 +830,8 @@ impl<H: Host> Loop<H> {
             let conn = &self.conns[index];
             let stalled_output = conn.has_output() && now.saturating_duration_since(conn.output_since) >= self.limits.write_deadline;
             // Only while it's its turn to speak: a client may send its next command while the last one runs.
-            let stalled_line = matches!(conn.state, State::Idle) && conn.line_started.is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline);
+            // A whole line waiting its turn behind an answer not yet read isn't half a line: it's the client that's being held back, and the write deadline looks after a client that's stopped reading.
+            let stalled_line = matches!(conn.state, State::Idle) && conn.line_started.is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline) && !conn.input.contains(&b'\n');
             let idle_limit = if conn.overflow { self.limits.overflow_idle } else { self.limits.idle_deadline };
             let idle = matches!(conn.state, State::Idle) && conn.input.is_empty() && !conn.has_output() && now.saturating_duration_since(conn.last_activity) >= idle_limit;
             if stalled_output || stalled_line || idle {
