@@ -1,15 +1,28 @@
 //! The one control API. The UI, the CLI, QA and agents all go through these typed, versioned commands, and they call the
 //! same session methods the UI calls.
+//!
+//! This crate holds no state of its own. A caller brings a session through [`SessionAccess`], and [`execute`] takes the session only for as long as each step needs it: reading a file or drawing
+//! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
+pub mod human;
+mod loader;
+mod reading;
 mod render;
+mod search;
+pub mod skill;
+pub mod table;
 
-use recto_session::{DocLoader, RowKind, Session, SessionError, TabId};
+use recto_session::{DocLoader, DrawNote, RowKind, Session, SessionError, TabId};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
+pub use loader::DrawableLoader;
 use render::BudgetArgs;
 pub use render::DEFAULT_SCALE;
+pub use table::{Access, Spec};
 
 /// The envelope's version. Within a version, fields are only ever added.
 pub const VERSION: u32 = 1;
@@ -18,13 +31,19 @@ pub const VERSION: u32 = 1;
 pub mod exit {
     pub const OK: i32 = 0;
     pub const FAILED: i32 = 1;
+    /// The command line itself was wrong.
+    pub const USAGE: i32 = 2;
     pub const NOT_FOUND: i32 = 3;
     pub const AMBIGUOUS: i32 = 4;
     pub const PERMISSION: i32 = 5;
+    /// No RectoPDF session is running.
+    pub const NOT_RUNNING: i32 = 6;
     /// Something ran out of time. Agent report, §5.
     pub const TIMED_OUT: i32 = 7;
     /// The document is protected or locked, and only the user can do something about it. Agent report, §5.
     pub const PROTECTED: i32 = 8;
+    /// The session is too busy for this right now. Try again.
+    pub const BUSY: i32 = 10;
 }
 
 /// What an agent is allowed to do, set by the user. Ordered from least to most.
@@ -38,7 +57,8 @@ pub enum Level {
 }
 
 impl Level {
-    fn name(self) -> &'static str {
+    /// The name used on the command line and in JSON.
+    pub fn name(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::ReadOnly => "read_only",
@@ -46,22 +66,88 @@ impl Level {
             Self::Full => "full",
         }
     }
+
+    /// The name shown to people.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::ReadOnly => "Read-only",
+            Self::Control => "Control",
+            Self::Full => "Full",
+        }
+    }
+
+    /// Reads a level's name. `read-only` and `read_only` are the same word.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.to_ascii_lowercase().replace('-', "_").as_str() {
+            "off" => Some(Self::Off),
+            "read_only" | "readonly" => Some(Self::ReadOnly),
+            "control" => Some(Self::Control),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+}
+
+fn active_tab() -> String {
+    "active".into()
+}
+
+fn default_wait_ms() -> u64 {
+    DEFAULT_WAIT_MS
+}
+
+/// How long `wait` waits if not told.
+pub const DEFAULT_WAIT_MS: u64 = 30_000;
+/// The longest any wait or watch may run, so a forgotten one can't stay for ever.
+pub const MAX_WAIT_MS: u64 = 24 * 60 * 60 * 1000;
+/// How long `watch` runs if not told.
+pub const DEFAULT_WATCH_MS: u64 = 10 * 60 * 1000;
+
+/// What `wait` can wait for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Condition {
+    /// A tab matching the selector is open.
+    TabOpen,
+    /// No tab matches the selector any more.
+    TabClosed,
+    /// The page has finished drawing, or failed to.
+    PageDrawn,
+    /// The document's search index is ready. Doesn't exist yet, and says so.
+    IndexingDone,
 }
 
 /// Every command. A feature without a command here isn't finished.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
-    Open { path: PathBuf },
+    Open {
+        path: PathBuf,
+        /// One-based page to land on.
+        #[serde(default)]
+        page: Option<u32>,
+    },
     // Empty braces, not unit variants: serde ignores extra fields on a unit variant, even with `deny_unknown_fields`.
     Tabs {},
     Sidebar {},
-    Tap { tab: String },
-    Goto { tab: String, page: u32 },
-    Close { tab: String },
+    Tap {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
+    Goto {
+        #[serde(default = "active_tab")]
+        tab: String,
+        page: u32,
+    },
+    Close {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
     Budget {},
     /// Draws a page to a PNG file.
     Render {
+        #[serde(default = "active_tab")]
         tab: String,
         page: u32,
         #[serde(default = "render::default_scale")]
@@ -69,9 +155,14 @@ pub enum Command {
         out: PathBuf,
     },
     /// A page's text, normalised for search, with the hidden-text flag.
-    Text { tab: String, page: u32 },
+    Text {
+        #[serde(default = "active_tab")]
+        tab: String,
+        page: u32,
+    },
     /// What a worker costs: idle, per page, peak, and how often it was retired.
     BudgetRender {
+        #[serde(default = "active_tab")]
         tab: String,
         pages: u32,
         /// One-based first page. The first page of the file if left out.
@@ -97,6 +188,7 @@ pub enum Command {
     },
     /// What a reader's window costs: first view, one scroll step, one zoom step, with peak footprint.
     BudgetViewport {
+        #[serde(default = "active_tab")]
         tab: String,
         /// `WIDTHxHEIGHT` in device pixels, such as `3024x1964`.
         viewport: String,
@@ -109,43 +201,283 @@ pub enum Command {
         #[serde(default)]
         strategy: Option<String>,
     },
+    /// Where a tab is: its page, its length and whether it has unsaved edits.
+    Where {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
+    /// A document's facts: pages, size, version, what could be read of its structure.
+    Facts {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
+    /// A document's contents, in pieces.
+    Contents {
+        #[serde(default = "active_tab")]
+        tab: String,
+        /// Entries to skip, from `next_from` in the last answer.
+        #[serde(default)]
+        from: Option<u32>,
+        #[serde(default)]
+        limit: Option<u32>,
+        /// Deepest nesting to include. 0 is the top level.
+        #[serde(default)]
+        depth: Option<u8>,
+    },
+    /// Finds words across a document, without an index for now.
+    Search {
+        #[serde(default = "active_tab")]
+        tab: String,
+        query: String,
+        /// `4` or `4-6`. All pages if left out.
+        #[serde(default)]
+        pages: Option<String>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// What the file says about signatures. Facts only, never a verdict.
+    Signatures {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
+    /// The unsaved page edits on a tab.
+    Edits {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
+    PageMove {
+        #[serde(default = "active_tab")]
+        tab: String,
+        pages: String,
+        to: u32,
+    },
+    PageRotate {
+        #[serde(default = "active_tab")]
+        tab: String,
+        pages: String,
+        degrees: i32,
+    },
+    PageDelete {
+        #[serde(default = "active_tab")]
+        tab: String,
+        pages: String,
+    },
+    PageInsert {
+        #[serde(default = "active_tab")]
+        tab: String,
+        path: PathBuf,
+        at: u32,
+    },
+    Undo {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
+    Redo {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
+    /// Throws away a tab's unsaved edits. They can't be got back, so it asks for more than editing does.
+    Discard {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
+    /// Doesn't exist yet, and says so.
+    Save {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
+    /// Never reachable by an agent. It exists to say so.
+    Sign {},
+    /// The session: is it there, which version, what level.
+    Status {},
+    PermissionShow {},
+    /// Asks the user for more access. Grants nothing by itself.
+    PermissionRequest {
+        level: Level,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// The level's file changed: read it again. Carries no level, so it can't raise one.
+    LevelChanged {},
+    /// Blocks until a condition holds, or the time runs out.
+    Wait {
+        condition: Condition,
+        #[serde(default = "active_tab")]
+        tab: String,
+        #[serde(default)]
+        page: Option<u32>,
+        #[serde(default = "default_wait_ms")]
+        timeout_ms: u64,
+    },
+    /// Streams events, one line each.
+    Watch {
+        #[serde(default)]
+        events: Option<Vec<String>>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+        #[serde(default)]
+        count: Option<u32>,
+    },
+    /// What agents have done, newest last.
+    Log {
+        #[serde(default)]
+        last: Option<u32>,
+    },
+    /// Ends the session.
+    Stop {},
 }
 
 impl Command {
-    /// The level this command needs. Nothing reads document content at Off.
-    pub fn level(&self) -> Level {
+    /// The name on the wire, which is the first column of the command table with spaces as underscores. Spelled out so a new command can't compile without one.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Self::Open { .. } => "open",
+            Self::Tabs {} => "tabs",
+            Self::Sidebar {} => "sidebar",
+            Self::Tap { .. } => "tap",
+            Self::Goto { .. } => "goto",
+            Self::Close { .. } => "close",
+            Self::Budget {} => "budget",
+            Self::Render { .. } => "render",
+            Self::Text { .. } => "text",
+            Self::BudgetRender { .. } => "budget_render",
+            Self::BudgetViewport { .. } => "budget_viewport",
+            Self::Where { .. } => "where",
+            Self::Facts { .. } => "facts",
+            Self::Contents { .. } => "contents",
+            Self::Search { .. } => "search",
+            Self::Signatures { .. } => "signatures",
+            Self::Edits { .. } => "edits",
+            Self::PageMove { .. } => "page_move",
+            Self::PageRotate { .. } => "page_rotate",
+            Self::PageDelete { .. } => "page_delete",
+            Self::PageInsert { .. } => "page_insert",
+            Self::Undo { .. } => "undo",
+            Self::Redo { .. } => "redo",
+            Self::Discard { .. } => "discard",
+            Self::Save { .. } => "save",
+            Self::Sign {} => "sign",
+            Self::Status {} => "status",
+            Self::PermissionShow {} => "permission_show",
+            Self::PermissionRequest { .. } => "permission_request",
+            Self::LevelChanged {} => "level_changed",
+            Self::Wait { .. } => "wait",
+            Self::Watch { .. } => "watch",
+            Self::Log { .. } => "log",
+            Self::Stop {} => "stop",
+        }
+    }
+
+    /// Who may run this. From the command table, with the one case the table can't express.
+    pub fn access(&self) -> Access {
         match self {
             // Measuring with the decided limits only reads numbers. Choosing other limits decides what a hostile file may use, so it isn't reading.
-            Self::BudgetRender { limit_mib: Some(_), .. } | Self::BudgetRender { retire_mib: Some(_), .. } => Level::Full,
-            Self::Tabs {} | Self::Sidebar {} | Self::Budget {} | Self::BudgetRender { .. } | Self::BudgetViewport { .. } => Level::ReadOnly,
-            // Reading a page's text is what read-only access is for, and it's what Off exists to refuse.
-            Self::Text { .. } => Level::ReadOnly,
-            // Writes to disk, so it's with `save` and `export` in the agent report's §5.2.
-            Self::Render { .. } => Level::Full,
-            Self::Open { .. } | Self::Tap { .. } | Self::Goto { .. } | Self::Close { .. } => Level::Control,
+            Self::BudgetRender { limit_mib: Some(_), .. } | Self::BudgetRender { retire_mib: Some(_), .. } => Access::At(Level::Full),
+            // A command with no row can't run: the table is the list.
+            _ => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
+        }
+    }
+
+    /// Whether this draws or reads pages through a worker. These run at most a few at a time, because each can use hundreds of megabytes.
+    pub fn draws(&self) -> bool {
+        matches!(self, Self::Render { .. } | Self::Text { .. } | Self::Search { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. })
+    }
+
+    /// What goes in the activity log about this command's arguments. Numbers and cleaned file names, and never anything that could hold document text: a tab's name as typed or a search's words aren't kept.
+    pub fn log_details(&self) -> Value {
+        let file = |path: &Path| path.file_name().map(|name| recto_core::clean_line(&name.to_string_lossy()));
+        let tab_of = |tab: &str| if tab == "active" || tab.strip_prefix('#').is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()) && id.len() <= 10) { tab.to_string() } else { "by name".to_string() };
+        match self {
+            Self::Open { path, page } => json!({ "file": file(path), "page": page }),
+            Self::PageInsert { tab, path, at } => json!({ "tab": tab_of(tab), "file": file(path), "at": at }),
+            Self::Render { tab, page, out, .. } => json!({ "tab": tab_of(tab), "page": page, "file": file(out) }),
+            Self::Text { tab, page } | Self::Goto { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
+            Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
+            Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
+            Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
+            Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
+            Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
+            Self::Wait { .. } | Self::Watch { .. } | Self::Log { .. } | Self::Tabs {} | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
         }
     }
 }
 
-/// A failed command, with a stable code and a plain message.
+/// Keeps a page range in the log only if it's what a range should be.
+fn clean_range(text: &str) -> &str {
+    if text.len() <= 24 && text.bytes().all(|b| b.is_ascii_digit() || b == b'-') { text } else { "?" }
+}
+
+/// A failed command, with a stable code, a plain message and the next step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentError {
     pub code: &'static str,
     pub message: String,
     pub candidates: Vec<String>,
     pub exit: i32,
+    /// What to do about it, in plain words.
+    pub next: String,
+    /// The one command that asks the user for what's missing, on a refusal.
+    pub ask: Option<String>,
 }
 
 impl AgentError {
-    fn new(code: &'static str, message: impl Into<String>, exit: i32) -> Self {
-        Self { code, message: message.into(), candidates: Vec::new(), exit }
+    pub fn new(code: &'static str, message: impl Into<String>, exit: i32) -> Self {
+        Self { code, message: message.into(), candidates: Vec::new(), exit, next: next_step(code, exit).to_string(), ask: None }
+    }
+
+    /// Replaces the next step with one that knows more.
+    #[must_use]
+    pub fn then(mut self, next: impl Into<String>) -> Self {
+        self.next = next.into();
+        self
+    }
+}
+
+/// The next step for an error, by its code, or else by its kind. Every error says one.
+fn next_step(code: &str, exit: i32) -> &'static str {
+    match code {
+        "no_such_tab" => "`recto tabs` lists what's open. `recto open <file.pdf>` opens a file.",
+        "no_such_page" | "page_out_of_range" => "`recto where` gives the tab's length. Pages count from 1.",
+        "not_found" => "Check the path. It's read by the session, and relative paths are taken from where you ran `recto`.",
+        "not_allowed" => "Ask the user to give this user account access to the file.",
+        "not_pdf" => "This file can't be opened. Try another file.",
+        "password_needed" | "needs_password" => "Ask the user to open it in the app and allow it. Passwords are never taken here.",
+        "ambiguous" => "Use one of the candidates, written as `#id`.",
+        "unsaved_changes" => "`recto undo` steps back through them, or with Full access `recto discard` throws them away. Saving isn't built yet.",
+        "last_page" => "Keep at least one page, or delete fewer.",
+        "too_many_pages" | "too_many_sources" => "Add less to this document.",
+        "too_many_tabs" => "`recto close` closes a tab.",
+        "renderer_only" => "This file can still be read and drawn. To change it, it first needs repairing in another tool.",
+        "nothing_to_undo" | "nothing_to_redo" => "`recto edits` shows where this tab is.",
+        "not_built" => "Tell the user this isn't in this version yet.",
+        "bad_command" => "`recto help` lists every command.",
+        "bad_path" => "Give the whole path. `recto` does this for you.",
+        "output_exists" => "Choose a new file name. An existing file is never replaced.",
+        "bad_output" => "Choose a file name ending in .png.",
+        "needs_server" => "Start the session with `recto serve --background`, then use `recto` without `local`.",
+        "not_running" => "Start it with `recto serve --background`.",
+        "needs_terminal" => "Ask the user to run this command themselves, in their own terminal.",
+        "sign_refused" => "Tell the user. Only they can sign, in the app.",
+        "busy" => "Try again in a moment.",
+        "wrong_version" => "Stop the old session with `recto stop` and start this version with `recto serve --background`.",
+        _ => match exit {
+            exit::NOT_FOUND => "`recto tabs` lists what's open.",
+            exit::AMBIGUOUS => "Use one of the candidates.",
+            exit::PERMISSION => "Ask the user for more access.",
+            exit::NOT_RUNNING => "Start it with `recto serve --background`.",
+            exit::TIMED_OUT => "Try again, or with a longer `--timeout`.",
+            exit::PROTECTED => "Ask the user: only they can unlock this.",
+            exit::BUSY => "Try again in a moment.",
+            exit::USAGE => "`recto help` lists every command.",
+            _ => "`recto status` shows whether the session is healthy. If this keeps happening, tell the user what you tried.",
+        },
     }
 }
 
 impl From<SessionError> for AgentError {
     fn from(error: SessionError) -> Self {
         let exit = match error {
-            SessionError::NoSuchTab | SessionError::Open(recto_core::OpenError::NotFound) => exit::NOT_FOUND,
+            SessionError::NoSuchTab | SessionError::Open(recto_core::OpenError::NotFound) | SessionError::Edit(recto_session::edit::EditError::OutOfRange) => exit::NOT_FOUND,
             SessionError::Open(recto_core::OpenError::PasswordNeeded) => exit::PROTECTED,
             _ => exit::FAILED,
         };
@@ -153,72 +485,199 @@ impl From<SessionError> for AgentError {
     }
 }
 
+impl From<recto_core::OpenError> for AgentError {
+    fn from(error: recto_core::OpenError) -> Self {
+        Self::from(SessionError::Open(error))
+    }
+}
+
+/// An error as JSON, the same everywhere.
+fn error_json(error: &AgentError) -> Value {
+    let mut out = json!({ "code": error.code, "message": error.message, "candidates": error.candidates, "exit": error.exit, "next": error.next });
+    if let Some(ask) = &error.ask {
+        out["ask"] = json!(ask);
+    }
+    out
+}
+
 /// Wraps a result in the envelope every response uses.
 pub fn envelope(result: &Result<Value, AgentError>) -> Value {
     match result {
         Ok(data) => json!({ "v": VERSION, "ok": true, "data": data }),
-        Err(error) => json!({
-            "v": VERSION,
-            "ok": false,
-            "error": { "code": error.code, "message": error.message, "candidates": error.candidates },
-        }),
+        Err(error) => json!({ "v": VERSION, "ok": false, "error": error_json(error) }),
     }
 }
+
+/// The envelope with the command's name, which is what the socket and `--json` print.
+pub fn reply(cmd: &str, result: &Result<Value, AgentError>) -> Value {
+    let mut out = envelope(result);
+    out["cmd"] = json!(cmd);
+    out
+}
+
+/// Longest line a client may send: a command and a path or two. No command needs more, so a longer one is refused before anything reads it.
+pub const MAX_COMMAND_BYTES: usize = 64 * 1024;
 
 /// Parses one JSON command. Unknown commands and fields are refused rather than guessed at.
 pub fn parse(line: &str) -> Result<Command, AgentError> {
+    if line.len() > MAX_COMMAND_BYTES {
+        return Err(AgentError::new("bad_command", "That command is too long.", exit::FAILED));
+    }
     serde_json::from_str(line).map_err(|_| AgentError::new("bad_command", "That isn't a command RectoPDF knows.", exit::FAILED))
 }
 
+/// The refusal for a level that's too low: what's missing, and the one command that asks for it.
+pub fn refusal(command_name: &str, have: Level, needed: Access) -> AgentError {
+    match needed {
+        Access::At(level) => {
+            let mut error = AgentError::new("permission_denied", format!("`{command_name}` needs {} access, and agent access is {} now.", level.label(), have.label()), exit::PERMISSION);
+            let ask = format!("recto permission request {}", level.name());
+            error.next = format!("Run `{ask}`, which tells the user what to allow. Nothing else raises this.");
+            error.ask = Some(ask);
+            error
+        }
+        Access::UserOnly => AgentError::new("needs_terminal", format!("`{command_name}` is for the user, at their own terminal."), exit::PERMISSION),
+        Access::Nobody => AgentError::new("sign_refused", "Only the user can sign a document, in the app. No agent command signs, at any level.", exit::PERMISSION),
+    }
+}
+
+/// Whether a level may run a command.
+pub fn allowed(have: Level, needed: Access) -> bool {
+    matches!(needed, Access::At(level) if have >= level)
+}
+
+/// Something that happened in the session, for `wait` and `watch`. Holds no document text beyond a cleaned name, marked untrusted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Event {
+    pub name: &'static str,
+    pub data: Value,
+}
+
+impl Event {
+    pub fn new(name: &'static str, data: Value) -> Self {
+        Self { name, data }
+    }
+
+    /// The group `watch --events` selects it by.
+    pub fn group(&self) -> &'static str {
+        table::event_group(self.name)
+    }
+
+    /// The line a watcher receives.
+    pub fn to_json(&self) -> Value {
+        let mut out = self.data.clone();
+        out["event"] = json!(self.name);
+        out
+    }
+}
+
+/// A way to reach the session. In one process that's a plain reference; on the socket it's a lock taken only as long as each step needs.
+pub trait SessionAccess {
+    type Loader: DocLoader + Clone;
+    fn with<R>(&self, step: impl FnOnce(&mut Session<Self::Loader>) -> R) -> R;
+}
+
+impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {
+    type Loader = L;
+    fn with<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
+        // A panic on another thread doesn't make the tabs wrong, and every session method leaves them whole.
+        step(&mut self.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+}
+
+struct Direct<'a, L>(RefCell<&'a mut Session<L>>);
+
+impl<L: DocLoader + Clone> SessionAccess for Direct<'_, L> {
+    type Loader = L;
+    fn with<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
+        step(&mut self.0.borrow_mut())
+    }
+}
+
 /// Runs one command against a session, if the level allows it.
-pub fn run<L: DocLoader>(session: &mut Session<L>, level: Level, command: &Command) -> Result<Value, AgentError> {
-    let needed = command.level();
-    if level < needed {
-        let message = format!("This needs agent access level {}. Ask the user to allow it in RectoPDF's settings.", needed.name());
-        return Err(AgentError::new("permission_denied", message, exit::PERMISSION));
+pub fn run<L: DocLoader + Clone>(session: &mut Session<L>, level: Level, command: &Command) -> Result<Value, AgentError> {
+    execute(&Direct(RefCell::new(session)), level, command, &mut Vec::new())
+}
+
+/// Runs one command, noting what happened in `events`. Commands that only a long-running session can answer say so.
+pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    let needed = command.access();
+    if !allowed(level, needed) {
+        return Err(refusal(table::display_name(command.tag()), level, needed));
     }
     match command {
-        Command::Open { path } => {
-            let id = session.open(path)?;
-            Ok(json!({ "tab": id.0 }))
-        }
-        Command::Tabs {} => Ok(tabs_json(session)),
-        Command::Sidebar {} => Ok(sidebar_json(session)),
-        Command::Tap { tab } => {
-            let id = select(session, tab)?;
-            session.tap(id)?;
-            Ok(sidebar_json(session))
-        }
-        Command::Goto { tab, page } => {
-            let id = select(session, tab)?;
-            // Pages are one-based for people and agents, and zero-based inside.
-            session.go_to(id, page.saturating_sub(1))?;
-            Ok(sidebar_json(session))
-        }
-        Command::Close { tab } => {
-            let id = select(session, tab)?;
-            session.close(id)?;
-            Ok(tabs_json(session))
-        }
+        Command::Open { path, page } => open(access, path, *page, events),
+        Command::Tabs {} => Ok(access.with(|s| tabs_json(s))),
+        Command::Sidebar {} => Ok(access.with(|s| sidebar_json(s))),
+        Command::Tap { tab } => access.with(|s| {
+            let id = select(s, tab)?;
+            let was_active = s.active();
+            s.tap(id)?;
+            if was_active != Some(id) {
+                events.push(Event::new("tab_activated", json!({ "tab": id.0 })));
+            }
+            Ok(sidebar_json(s))
+        }),
+        Command::Goto { tab, page } => access.with(|s| {
+            let id = select(s, tab)?;
+            go_to(s, id, *page)?;
+            events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page })));
+            Ok(where_json(s, id))
+        }),
+        Command::Close { tab } => access.with(|s| {
+            let id = select(s, tab)?;
+            let before = s.active();
+            s.close(id)?;
+            events.push(Event::new("tab_closed", json!({ "tab": id.0 })));
+            if s.active() != before
+                && let Some(active) = s.active()
+            {
+                events.push(Event::new("tab_activated", json!({ "tab": active.0 })));
+            }
+            Ok(tabs_json(s))
+        }),
         Command::Budget {} => Ok(json!({
-            "tabs": session.tabs().len(),
+            "tabs": access.with(|s| s.tabs().len()),
             "footprint_bytes": recto_platform::footprint_bytes(),
             "open_handles": recto_platform::open_handle_count(),
         })),
+        Command::Where { tab } => access.with(|s| Ok(where_json(s, select(s, tab)?))),
+        Command::Facts { tab } => reading::facts(access, tab),
+        Command::Contents { tab, from, limit, depth } => reading::contents(access, tab, *from, *limit, *depth),
+        Command::Signatures { tab } => reading::signatures(access, tab),
+        Command::Search { tab, query, pages, limit } => search::search(access, tab, query, pages.as_deref(), *limit),
+        Command::Edits { tab } => access.with(|s| {
+            let id = select(s, tab)?;
+            Ok(edits_json(s, id))
+        }),
         Command::Render { tab, page, scale, out } => {
-            let id = select(session, tab)?;
-            render::render(&tab_path(session, id)?, *page, *scale, out)
+            require_absolute(out)?;
+            let (id, position, source, source_page, turns) = locate(access, tab, *page)?;
+            let drawn = render::render(&source, source_page + 1, *scale, out);
+            note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code), events);
+            let mut data = drawn?;
+            data["page"] = json!(*page);
+            describe_source(&mut data, *page, source_page, turns);
+            Ok(data)
         }
         Command::Text { tab, page } => {
-            let id = select(session, tab)?;
-            render::text(&tab_path(session, id)?, *page)
+            let (id, position, source, source_page, turns) = locate(access, tab, *page)?;
+            let read = render::text(&source, source_page + 1);
+            let drew = read.as_ref().is_ok_and(|data| data["hidden_text"]["checked"] == true);
+            if drew || read.is_err() {
+                note_draw(access, id, position, read.as_ref().err().map(|error| error.code), events);
+            }
+            let mut data = read?;
+            data["page"] = json!(*page);
+            describe_source(&mut data, *page, source_page, turns);
+            Ok(data)
         }
         Command::BudgetViewport { tab, viewport, first, scale, strategy } => {
-            let id = select(session, tab)?;
-            render::budget_viewport(&tab_path(session, id)?, viewport, *first, *scale, strategy.as_deref())
+            let path = access.with(|s| tab_path(s, select(s, tab)?))?;
+            render::budget_viewport(&path, viewport, *first, *scale, strategy.as_deref())
         }
         Command::BudgetRender { tab, pages, first, scale, fresh, tiles, samples, limit_mib, retire_mib } => {
-            let id = select(session, tab)?;
+            let path = access.with(|s| tab_path(s, select(s, tab)?))?;
             let args = BudgetArgs {
                 pages: *pages,
                 first: *first,
@@ -229,51 +688,343 @@ pub fn run<L: DocLoader>(session: &mut Session<L>, level: Level, command: &Comma
                 limit_mib: *limit_mib,
                 retire_mib: *retire_mib,
             };
-            render::budget(&tab_path(session, id)?, &args)
+            render::budget(&path, &args)
+        }
+        Command::PageMove { tab, pages, to } => {
+            let (start, len) = parse_pages(pages)?;
+            let destination = one_based(*to)?;
+            edit(access, tab, events, |e| e.move_pages(start, len, destination))
+        }
+        Command::PageRotate { tab, pages, degrees } => {
+            let (start, len) = parse_pages(pages)?;
+            let turns = quarter_turns(*degrees)?;
+            edit(access, tab, events, |e| e.rotate(start, len, turns))
+        }
+        Command::PageDelete { tab, pages } => {
+            let (start, len) = parse_pages(pages)?;
+            edit(access, tab, events, |e| e.delete(start, len))
+        }
+        Command::PageInsert { tab, path, at } => {
+            require_absolute(path)?;
+            let position = one_based(*at)?;
+            // The file is read first and outside the session, so a slow one holds nobody else up.
+            let loader = access.with(|s| s.loader().clone());
+            let facts = loader.load(path)?;
+            access.with(|s| {
+                let id = select(s, tab)?;
+                s.insert_pdf_with_facts(id, position, path, &facts)?;
+                events.push(edits_event(s, id));
+                Ok(edit_state_json(s, id))
+            })
+        }
+        Command::Undo { tab } => access.with(|s| {
+            let id = select(s, tab)?;
+            if !s.undo_edit(id) {
+                return Err(AgentError::new("nothing_to_undo", "There's nothing to undo on this tab.", exit::FAILED));
+            }
+            events.push(edits_event(s, id));
+            Ok(edit_state_json(s, id))
+        }),
+        Command::Redo { tab } => access.with(|s| {
+            let id = select(s, tab)?;
+            if !s.redo_edit(id) {
+                return Err(AgentError::new("nothing_to_redo", "There's nothing to redo on this tab.", exit::FAILED));
+            }
+            events.push(edits_event(s, id));
+            Ok(edit_state_json(s, id))
+        }),
+        Command::Discard { tab } => access.with(|s| {
+            let id = select(s, tab)?;
+            s.discard_edits(id);
+            events.push(edits_event(s, id));
+            Ok(edit_state_json(s, id))
+        }),
+        Command::Save { .. } => Err(AgentError::new(
+            "not_built",
+            "Saving isn't built yet, so nothing was written. Page edits stay in this session only, the file on disk is unchanged, and they're lost when the session ends.",
+            exit::FAILED,
+        )),
+        Command::Sign {} => Err(refusal("sign", level, Access::Nobody)),
+        Command::Status {} | Command::PermissionShow {} | Command::PermissionRequest { .. } | Command::LevelChanged {} | Command::Wait { .. } | Command::Watch { .. } | Command::Log { .. } | Command::Stop {} => {
+            Err(AgentError::new("needs_server", "This needs the long-running session.", exit::NOT_RUNNING))
         }
     }
+}
+
+/// What a page's draw teaches the session and anyone waiting.
+fn note_draw<A: SessionAccess>(access: &A, tab: TabId, position: u32, failure: Option<&'static str>, events: &mut Vec<Event>) {
+    access.with(|s| s.note_drawn(DrawNote { tab, page: position, failure }));
+    let page = position + 1;
+    events.push(match failure {
+        None => Event::new("page_drawn", json!({ "tab": tab.0, "page": page })),
+        Some(code) => Event::new("page_failed", json!({ "tab": tab.0, "page": page, "code": code })),
+    });
+}
+
+/// Says when a page isn't the file's page of that number, and that a drawing doesn't show an unsaved turn.
+fn describe_source(data: &mut Value, page: u32, source_page: u32, turns: u8) {
+    if source_page + 1 != page {
+        data["source_page"] = json!(source_page + 1);
+    }
+    if turns != 0 {
+        data["unsaved_rotation_degrees"] = json!(u32::from(turns) * 90);
+    }
+}
+
+/// Finds a tab's page as things stand now, edits included: tab, zero-based position, the file it comes from, its page there, its unsaved turns.
+fn locate<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<(TabId, u32, PathBuf, u32, u8), AgentError> {
+    access.with(|s| {
+        let id = select(s, tab)?;
+        let position = page.checked_sub(1).ok_or_else(no_such_page)?;
+        let (path, source_page, turns) = s.page_source(id, position).ok_or_else(no_such_page)?;
+        Ok((id, position, path, source_page, turns))
+    })
+}
+
+fn no_such_page() -> AgentError {
+    AgentError::new("no_such_page", "That page isn't in this document.", exit::NOT_FOUND)
+}
+
+fn require_absolute(path: &Path) -> Result<(), AgentError> {
+    if path.is_absolute() { Ok(()) } else { Err(AgentError::new("bad_path", "That path isn't whole. A session has no folder of its own to start from.", exit::FAILED)) }
+}
+
+fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+    require_absolute(path)?;
+    // The file is read outside the session, so a slow or hostile one holds nobody else up.
+    let existing = access.with(|s| s.go_to_open_file(path));
+    let (id, is_new) = match existing {
+        Some(id) => (id, false),
+        None => {
+            let loader = access.with(|s| s.loader().clone());
+            let facts = loader.load(path)?;
+            let before = access.with(|s| s.tabs().len());
+            let id = access.with(|s| s.open_with_facts(path, facts))?;
+            (id, access.with(|s| s.tabs().len()) > before)
+        }
+    };
+    access.with(|s| {
+        if let Some(page) = page {
+            go_to(s, id, page)?;
+        }
+        let name = s.tab(id).map(|t| t.name.to_string());
+        events.push(Event::new(if is_new { "tab_opened" } else { "tab_activated" }, json!({ "tab": id.0, "untrusted": { "name": name } })));
+        Ok(where_json(s, id))
+    })
+}
+
+/// Goes to a one-based page. A page that isn't there is refused here rather than clamped, so an agent can't believe it's somewhere it isn't.
+fn go_to<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32) -> Result<(), AgentError> {
+    let position = page.checked_sub(1).filter(|position| *position < session.pages_in(id)).ok_or_else(no_such_page)?;
+    session.go_to(id, position)?;
+    Ok(())
+}
+
+fn one_based(page: u32) -> Result<u32, AgentError> {
+    page.checked_sub(1).ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))
+}
+
+/// Parses `4` or `4-6` into a zero-based start and a length.
+pub(crate) fn parse_pages(pages: &str) -> Result<(u32, u32), AgentError> {
+    let bad = || AgentError::new("bad_pages", "Pages are one number or a range, such as 4, 4-6 or 4-.", exit::FAILED).then("Write them as 4 or 4-6, counting from 1. 4- runs to the end.");
+    let (first, last) = pages.split_once('-').unwrap_or((pages, pages));
+    let number = |text: &str| if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) { Err(bad()) } else { text.parse::<u32>().map_err(|_| bad()) };
+    let first = number(first)?;
+    // `5-` means to the end. The length is then as long as can be, and whoever knows the document's length cuts it down or refuses it.
+    let last = if pages.ends_with('-') { u32::MAX } else { number(last)? };
+    if first == 0 || last < first {
+        return Err(bad());
+    }
+    Ok((first - 1, last - first + 1))
+}
+
+fn quarter_turns(degrees: i32) -> Result<i32, AgentError> {
+    if degrees % 90 != 0 || degrees % 360 == 0 {
+        return Err(AgentError::new("bad_rotation", "A rotation is a quarter turn or more, such as 90, 180, 270 or -90 degrees.", exit::FAILED).then("Use 90, 180, 270 or -90."));
+    }
+    Ok(degrees / 90)
+}
+
+fn edit<A: SessionAccess>(access: &A, tab: &str, events: &mut Vec<Event>, change: impl FnOnce(&mut recto_session::edit::PageEdits) -> Result<(), recto_session::edit::EditError>) -> Result<Value, AgentError> {
+    access.with(|s| {
+        let id = select(s, tab)?;
+        s.edit_pages(id, change)?;
+        events.push(edits_event(s, id));
+        Ok(edit_state_json(s, id))
+    })
+}
+
+fn edits_event<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
+    Event::new("edits_changed", json!({ "tab": id.0, "pages": session.pages_in(id), "edited": session.is_edited(id) }))
+}
+
+/// The plain truth about unsaved edits, wherever a tab reports them.
+pub const UNSAVED_NOTE: &str = "These edits are in this session only. Saving isn't built yet, so the file on disk is unchanged and they're lost when the session ends.";
+
+fn edit_state_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
+    let edits = session.page_edits(id);
+    let edited = session.is_edited(id);
+    json!({
+        "tab": id.0,
+        "pages": session.pages_in(id),
+        "file_pages": session.tab(id).map(|t| t.page_count),
+        "page": session.tab(id).map(|t| t.page + 1),
+        "edited": edited,
+        "saved": !edited,
+        "can_undo": edits.is_some_and(recto_session::edit::PageEdits::can_undo),
+        "can_redo": edits.is_some_and(recto_session::edit::PageEdits::can_redo),
+        "note": edited.then_some(UNSAVED_NOTE),
+    })
+}
+
+/// Most runs `edits` lists, so a hostile edit history can't make an enormous answer.
+const MAX_EDIT_RUNS: usize = 1000;
+
+/// The edited page order, as runs of pages from one file with one rotation.
+fn edits_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
+    let mut data = edit_state_json(session, id);
+    let Some(edits) = session.page_edits(id) else {
+        data["runs"] = json!([]);
+        data["runs_truncated"] = json!(false);
+        return data;
+    };
+    let mut runs: Vec<Value> = Vec::new();
+    let mut slots = edits.slots().iter().copied().peekable();
+    let mut position = 0u32;
+    let mut truncated = false;
+    while let Some(first) = slots.next() {
+        if runs.len() >= MAX_EDIT_RUNS {
+            truncated = true;
+            break;
+        }
+        let mut len = 1u32;
+        while slots.peek().is_some_and(|next| next.source == first.source && next.quarter_turns == first.quarter_turns && next.page == first.page + len) {
+            slots.next();
+            len += 1;
+        }
+        let file = match first.source {
+            0 => None,
+            source => edits.added_sources().get(usize::from(source) - 1).and_then(|(path, _)| path.file_name()).map(|name| recto_core::clean_line(&name.to_string_lossy())),
+        };
+        runs.push(json!({
+            "pages": page_span(position + 1, position + len),
+            "from_file_pages": page_span(first.page + 1, first.page + len),
+            "rotation_degrees": u32::from(first.quarter_turns) * 90,
+            "added": first.source != 0,
+            "untrusted": { "added_file": file },
+        }));
+        position += len;
+    }
+    data["runs"] = json!(runs);
+    data["runs_truncated"] = json!(truncated);
+    data
+}
+
+fn page_span(first: u32, last: u32) -> String {
+    if first == last { first.to_string() } else { format!("{first}-{last}") }
 }
 
 fn tab_path<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<PathBuf, AgentError> {
     session.path_of(id).ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))
 }
 
-/// Finds a tab by `#id` or by a piece of its name. Selectors never guess: an ambiguous name lists the candidates.
-fn select<L: DocLoader>(session: &Session<L>, selector: &str) -> Result<TabId, AgentError> {
+/// Finds a tab by `#id`, by `active`, or by a piece of its name. Selectors never guess: an ambiguous name lists the candidates.
+pub(crate) fn select<L: DocLoader>(session: &Session<L>, selector: &str) -> Result<TabId, AgentError> {
     let not_found = || AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND);
+    if selector == "active" {
+        return session.active().ok_or_else(|| AgentError::new("no_such_tab", "No PDF is open.", exit::NOT_FOUND).then("Open one with `recto open <file.pdf>`."));
+    }
     if let Some(number) = selector.strip_prefix('#') {
         let id = TabId(number.parse().map_err(|_| not_found())?);
         return session.tab(id).map(|_| id).ok_or_else(not_found);
     }
     let needle = selector.to_lowercase();
-    let matches: Vec<_> = session.tabs().iter().filter(|t| t.name.to_lowercase().contains(&needle)).collect();
+    let matches: Vec<_> = session.tabs().iter().filter(|t| t.name.to_lowercase().contains(&needle)).take(MAX_CANDIDATES + 1).collect();
     match matches.as_slice() {
         [] => Err(not_found()),
         [one] => Ok(one.id),
         many => {
             let mut error = AgentError::new("ambiguous", "More than one tab matches that name.", exit::AMBIGUOUS);
-            error.candidates = many.iter().map(|t| format!("#{} {}", t.id.0, t.name)).collect();
+            error.candidates = many.iter().take(MAX_CANDIDATES).map(|t| format!("#{} {}", t.id.0, t.name)).collect();
             Err(error)
         }
     }
 }
 
+/// Most candidates listed for an ambiguous name. Enough to choose from, and the rest of a thousand tabs isn't help.
+const MAX_CANDIDATES: usize = 20;
+
+/// What `wait` finds when it looks.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConditionState {
+    Waiting,
+    Met(Value),
+    Failed(AgentError),
+}
+
+/// Looks at a condition once. Blocks for nothing but the session's lock.
+pub fn check_condition<A: SessionAccess>(access: &A, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState {
+    access.with(|s| match condition {
+        Condition::IndexingDone => ConditionState::Failed(AgentError::new("not_built", "The search index isn't built yet, so there's nothing to wait for. `recto search` works without one.", exit::FAILED)),
+        Condition::TabOpen => match select(s, tab) {
+            Ok(id) => ConditionState::Met(where_json(s, id)),
+            Err(error) if error.exit == exit::AMBIGUOUS => ConditionState::Failed(error),
+            Err(_) => ConditionState::Waiting,
+        },
+        Condition::TabClosed => match select(s, tab) {
+            Ok(_) => ConditionState::Waiting,
+            Err(error) if error.exit == exit::AMBIGUOUS => ConditionState::Failed(error),
+            Err(_) => ConditionState::Met(json!({ "closed": true })),
+        },
+        Condition::PageDrawn => {
+            let Some(page) = page.filter(|page| *page >= 1) else {
+                return ConditionState::Failed(AgentError::new("no_such_page", "`wait page-drawn` needs `--page`, counting from 1.", exit::NOT_FOUND));
+            };
+            match select(s, tab) {
+                Err(error) if error.exit == exit::AMBIGUOUS => ConditionState::Failed(error),
+                Err(_) => ConditionState::Waiting,
+                Ok(id) => match s.draw_note(id, page - 1) {
+                    None => ConditionState::Waiting,
+                    Some(DrawNote { failure: None, .. }) => ConditionState::Met(json!({ "tab": id.0, "page": page, "drawn": true })),
+                    Some(DrawNote { failure: Some(code), .. }) => ConditionState::Failed(AgentError::new("page_failed", format!("Page {page} couldn't be drawn ({code})."), exit::FAILED).then("Try another page, or `recto text --page N` for its text.")),
+                },
+            }
+        }
+    })
+}
+
+/// Which event groups could change what a condition sees. A waiter is only looked at again when one of these happens.
+pub fn condition_topics(condition: Condition) -> &'static [&'static str] {
+    match condition {
+        Condition::TabOpen | Condition::TabClosed => &["tabs"],
+        Condition::PageDrawn => &["tabs", "draws"],
+        Condition::IndexingDone => &[],
+    }
+}
+
+fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
+    let Some(tab) = session.tab(id) else { return Value::Null };
+    let edited = session.is_edited(id);
+    json!({
+        "tab": id.0,
+        "sel": format!("#{}", id.0),
+        "page": tab.page + 1,
+        "pages": session.pages_in(id),
+        "active": session.active() == Some(id),
+        "edited": edited,
+        "structure": if tab.renderer_only { "renderer_only" } else { "readable" },
+        "problem": tab.problem.map(recto_core::OpenError::message),
+        "note": edited.then_some(UNSAVED_NOTE),
+        "untrusted": { "name": &*tab.name },
+    })
+}
+
+/// Most tabs one `tabs` answer lists, because a thousand of them is more than an agent can use.
+const MAX_TABS_LISTED: usize = 500;
+
 fn tabs_json<L: DocLoader>(session: &Session<L>) -> Value {
-    let tabs: Vec<Value> = session
-        .tabs()
-        .iter()
-        .map(|t| {
-            json!({
-                "tab": t.id.0,
-                "name": &*t.name,
-                "page": t.page + 1,
-                "pages": t.page_count,
-                "active": session.active() == Some(t.id),
-                "problem": t.problem.map(|p| p.message()),
-            })
-        })
-        .collect();
-    json!({ "tabs": tabs })
+    let tabs: Vec<Value> = session.tabs().iter().take(MAX_TABS_LISTED).map(|t| where_json(session, t.id)).collect();
+    json!({ "tabs": tabs, "count": session.tabs().len(), "truncated": session.tabs().len() > MAX_TABS_LISTED })
 }
 
 fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
@@ -285,10 +1036,10 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
             json!({
                 "kind": match row.kind { RowKind::Tab => "tab", RowKind::Contents => "contents" },
                 "tab": row.tab.0,
-                "text": row.text,
                 "page": row.page,
                 "depth": row.depth,
                 "current": row.current,
+                "untrusted": { "text": row.text },
             })
         })
         .collect();
@@ -301,11 +1052,12 @@ mod tests {
     use recto_core::{DocFacts, OpenError, Toc};
     use std::path::Path;
 
+    #[derive(Clone)]
     struct Fake;
 
     impl DocLoader for Fake {
         fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
-            Ok(DocFacts { page_count: 10, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default() })
+            Ok(DocFacts { page_count: 10, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
         }
     }
 
@@ -335,8 +1087,7 @@ mod tests {
     #[test]
     fn reading_page_text_needs_more_than_off() {
         let text = Command::Text { tab: "#1".into(), page: 1 };
-        assert!(text.level() > Level::Off);
-        assert_eq!(text.level(), Level::ReadOnly);
+        assert_eq!(text.access(), Access::At(Level::ReadOnly));
         let mut session = with_tabs(&["a"]);
         let refused = run(&mut session, Level::Off, &text).unwrap_err();
         assert_eq!((refused.code, refused.exit), ("permission_denied", exit::PERMISSION));
@@ -351,9 +1102,9 @@ mod tests {
     /// Failure: a read-only agent raises a worker's memory limit to 4 GiB and points it at a hostile file. Choosing limits needs Full, measuring doesn't.
     #[test]
     fn raising_a_workers_limits_needs_full() {
-        assert_eq!(budget_command(None, None).level(), Level::ReadOnly);
-        assert_eq!(budget_command(Some(4096), None).level(), Level::Full);
-        assert_eq!(budget_command(None, Some(4096)).level(), Level::Full);
+        assert_eq!(budget_command(None, None).access(), Access::At(Level::ReadOnly));
+        assert_eq!(budget_command(Some(4096), None).access(), Access::At(Level::Full));
+        assert_eq!(budget_command(None, Some(4096)).access(), Access::At(Level::Full));
         let mut session = with_tabs(&["a"]);
         let refused = run(&mut session, Level::Control, &budget_command(Some(4096), None)).unwrap_err();
         assert_eq!(refused.code, "permission_denied");
@@ -406,6 +1157,260 @@ mod tests {
         assert_eq!(parse(r#"{"cmd":"format_disk"}"#).unwrap_err().code, "bad_command");
         assert_eq!(parse(r#"{"cmd":"tabs","extra":1}"#).unwrap_err().code, "bad_command");
         assert!(matches!(parse(r#"{"cmd":"tabs"}"#), Ok(Command::Tabs {})));
+    }
+
+    fn every_command() -> Vec<Command> {
+        let tab = || "#1".to_string();
+        vec![
+            Command::Open { path: "/d/a.pdf".into(), page: None },
+            Command::Tabs {},
+            Command::Sidebar {},
+            Command::Tap { tab: tab() },
+            Command::Goto { tab: tab(), page: 1 },
+            Command::Close { tab: tab() },
+            Command::Budget {},
+            Command::Render { tab: tab(), page: 1, scale: 2.0, out: "/d/x.png".into() },
+            Command::Text { tab: tab(), page: 1 },
+            budget_command(None, None),
+            Command::BudgetViewport { tab: tab(), viewport: "10x10".into(), first: None, scale: 2.0, strategy: None },
+            Command::Where { tab: tab() },
+            Command::Facts { tab: tab() },
+            Command::Contents { tab: tab(), from: None, limit: None, depth: None },
+            Command::Search { tab: tab(), query: "x".into(), pages: None, limit: None },
+            Command::Signatures { tab: tab() },
+            Command::Edits { tab: tab() },
+            Command::PageMove { tab: tab(), pages: "1".into(), to: 1 },
+            Command::PageRotate { tab: tab(), pages: "1".into(), degrees: 90 },
+            Command::PageDelete { tab: tab(), pages: "1".into() },
+            Command::PageInsert { tab: tab(), path: "/d/b.pdf".into(), at: 1 },
+            Command::Undo { tab: tab() },
+            Command::Redo { tab: tab() },
+            Command::Discard { tab: tab() },
+            Command::Save { tab: tab() },
+            Command::Sign {},
+            Command::Status {},
+            Command::PermissionShow {},
+            Command::PermissionRequest { level: Level::Full, timeout_ms: None },
+            Command::LevelChanged {},
+            Command::Wait { condition: Condition::TabOpen, tab: tab(), page: None, timeout_ms: 1 },
+            Command::Watch { events: None, timeout_ms: None, count: None },
+            Command::Log { last: None },
+            Command::Stop {},
+        ]
+    }
+
+    /// Failure: a command is added with no row in the table, so it has no level, no docs and no CLI. `Command::tag` is exhaustive, so a new variant can't compile without a name, and this holds the name to a row.
+    #[test]
+    fn every_command_has_a_row_and_every_session_row_has_a_command() {
+        let commands = every_command();
+        for command in &commands {
+            let spec = table::by_tag(command.tag()).unwrap_or_else(|| panic!("{} has no row", command.tag()));
+            assert_eq!(spec.route, table::Route::Session, "{}", spec.name);
+        }
+        for spec in table::TABLE.iter().filter(|spec| spec.route == table::Route::Session) {
+            assert!(commands.iter().any(|command| command.tag() == spec.tag), "row {} has no command", spec.name);
+        }
+    }
+
+    /// Failure: two faces of one command disagree on what they need, so which row is found first decides who gets in.
+    #[test]
+    fn rows_sharing_a_command_share_their_access() {
+        for spec in table::TABLE {
+            let first = table::by_tag(spec.tag).unwrap();
+            assert_eq!(first.access, spec.access, "{}", spec.name);
+        }
+    }
+
+    /// Failure: something reaches a document at Off, or a level above doesn't include what's below, or signing or setting the level is open to any level. Walks every command at every level.
+    #[test]
+    fn walking_every_command_at_every_level() {
+        let mut off_allowed = Vec::new();
+        for command in every_command() {
+            let access = command.access();
+            let mut session = with_tabs(&["a"]);
+            let mut was_allowed = false;
+            for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
+                let result = run(&mut session, level, &command);
+                let is_allowed = allowed(level, access);
+                let refused = result.as_ref().err().is_some_and(|error| error.exit == exit::PERMISSION);
+                assert_eq!(refused, !is_allowed, "{} at {level:?}: {result:?}", command.tag());
+                assert!(!was_allowed || is_allowed, "{} is allowed at a lower level but not at {level:?}", command.tag());
+                was_allowed = is_allowed;
+                if level == Level::Off && is_allowed {
+                    off_allowed.push(command.tag());
+                }
+            }
+        }
+        off_allowed.sort_unstable();
+        assert_eq!(off_allowed, ["level_changed", "permission_request", "permission_show", "save", "status"], "what's open at Off must stay this short");
+        assert_eq!(Command::Sign {}.access(), Access::Nobody);
+        for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
+            assert!(!allowed(level, Access::Nobody) && !allowed(level, Access::UserOnly));
+        }
+        assert!(table::TABLE.iter().filter(|spec| spec.access == Access::UserOnly).all(|spec| spec.route == table::Route::Here), "what's for the user alone must not go over the socket");
+        assert!(table::TABLE.iter().filter(|spec| spec.tag == "permission_set").all(|spec| spec.access == Access::UserOnly));
+        assert!(parse(r#"{"cmd":"permission_set","level":"full"}"#).is_err(), "no command on the wire sets a level");
+    }
+
+    /// Failure: a refusal doesn't say what's missing or gives a command that doesn't exist, so an agent is stuck or guesses.
+    #[test]
+    fn a_refusal_gives_one_command_that_works_at_off() {
+        for level in [Level::ReadOnly, Level::Control, Level::Full] {
+            let error = refusal("text", Level::Off, Access::At(level));
+            assert_eq!((error.code, error.exit), ("permission_denied", exit::PERMISSION));
+            assert!(error.message.contains(level.label()) && error.message.contains("Off"), "{}", error.message);
+            let ask = error.ask.unwrap();
+            let words = skill::shell_words(&ask);
+            assert_eq!(words[0], "recto");
+            let line = table::parse_cli(&words[1..]).unwrap();
+            assert_eq!(line.spec.tag, "permission_request");
+            assert_eq!(line.spec.access, Access::At(Level::Off), "the asking must work at the level it's asked from");
+        }
+    }
+
+    /// Failure: an error comes with no next step, so an agent is left guessing. Every code the session, core and renderer can give must say one, whichever kind it is.
+    #[test]
+    fn every_error_says_the_next_step() {
+        use recto_session::edit::EditError;
+        let session_errors = [
+            SessionError::NoSuchTab,
+            SessionError::TooManyTabs,
+            SessionError::UnsavedChanges,
+            SessionError::RendererOnly,
+            SessionError::Edit(EditError::OutOfRange),
+            SessionError::Edit(EditError::LastPage),
+            SessionError::Edit(EditError::TooManyPages),
+            SessionError::Edit(EditError::TooManySources),
+            SessionError::Open(OpenError::NotFound),
+            SessionError::Open(OpenError::NotAllowed),
+            SessionError::Open(OpenError::PasswordNeeded),
+            SessionError::Open(OpenError::NotPdf),
+        ];
+        for error in session_errors {
+            let error = AgentError::from(error);
+            assert!(!error.next.is_empty(), "{}", error.code);
+        }
+        for exit_code in [exit::FAILED, exit::USAGE, exit::NOT_FOUND, exit::AMBIGUOUS, exit::PERMISSION, exit::NOT_RUNNING, exit::TIMED_OUT, exit::PROTECTED, exit::BUSY] {
+            assert!(!AgentError::new("some_new_code", "m", exit_code).next.is_empty(), "exit {exit_code}");
+        }
+    }
+
+    /// Failure: the exit codes move, which breaks every script that reads them. Fixed by the agent report.
+    #[test]
+    fn exit_codes_are_fixed() {
+        assert_eq!((exit::OK, exit::FAILED, exit::USAGE, exit::NOT_FOUND, exit::AMBIGUOUS, exit::PERMISSION, exit::NOT_RUNNING, exit::TIMED_OUT, exit::PROTECTED, exit::BUSY), (0, 1, 2, 3, 4, 5, 6, 7, 8, 10));
+    }
+
+    fn edit_session() -> Session<Fake> {
+        with_tabs(&["a"])
+    }
+
+    /// Failure: page edits reach the session wrongly: off by one on a one-based number, or the tab doesn't report it has unsaved edits.
+    #[test]
+    fn page_commands_use_one_based_numbers_and_report_unsaved_edits() {
+        let mut s = edit_session();
+        let moved = run(&mut s, Level::Control, &Command::PageMove { tab: "#1".into(), pages: "3".into(), to: 1 }).unwrap();
+        assert_eq!(moved["edited"], true);
+        assert_eq!(moved["saved"], false);
+        assert!(moved["note"].as_str().unwrap().contains("Saving isn't built"), "it must say so plainly: {moved}");
+        let id = TabId(1);
+        assert_eq!(s.page_edits(id).unwrap().slots()[0].page, 2);
+        let tabs = run(&mut s, Level::ReadOnly, &Command::Tabs {}).unwrap();
+        assert_eq!(tabs["tabs"][0]["edited"], true);
+        run(&mut s, Level::Control, &Command::PageRotate { tab: "active".into(), pages: "2-3".into(), degrees: -90 }).unwrap();
+        assert_eq!(s.page_edits(id).unwrap().slots()[1].quarter_turns, 3);
+        run(&mut s, Level::Control, &Command::PageDelete { tab: "active".into(), pages: "1".into() }).unwrap();
+        assert_eq!(s.pages_in(id), 9);
+        run(&mut s, Level::Control, &Command::PageInsert { tab: "active".into(), path: "/d/b.pdf".into(), at: 10 }).unwrap();
+        assert_eq!(s.pages_in(id), 19);
+        let shown = run(&mut s, Level::ReadOnly, &Command::Edits { tab: "active".into() }).unwrap();
+        assert_eq!(shown["runs"].as_array().unwrap().last().unwrap()["added"], true);
+        assert_eq!(shown["runs"].as_array().unwrap().last().unwrap()["untrusted"]["added_file"], "b.pdf");
+        run(&mut s, Level::Control, &Command::Undo { tab: "active".into() }).unwrap();
+        assert_eq!(s.pages_in(id), 9);
+        let redone = run(&mut s, Level::Control, &Command::Redo { tab: "active".into() }).unwrap();
+        assert_eq!((&redone["pages"], &redone["can_redo"]), (&json!(19), &json!(false)));
+    }
+
+    /// Failure: a bad request reads as success, or changes the document. Each must be refused with its own code and leave things as they were.
+    #[test]
+    fn bad_page_commands_change_nothing() {
+        let mut s = edit_session();
+        let id = TabId(1);
+        let tab = || "#1".to_string();
+        assert_eq!(run(&mut s, Level::Control, &Command::PageDelete { tab: tab(), pages: "1-10".into() }).unwrap_err().code, "last_page");
+        let far = run(&mut s, Level::Control, &Command::PageRotate { tab: tab(), pages: "11".into(), degrees: 90 }).unwrap_err();
+        assert_eq!((far.code, far.exit), ("page_out_of_range", exit::NOT_FOUND));
+        assert_eq!(run(&mut s, Level::Control, &Command::PageRotate { tab: tab(), pages: "1".into(), degrees: 45 }).unwrap_err().code, "bad_rotation");
+        assert_eq!(run(&mut s, Level::Control, &Command::PageRotate { tab: tab(), pages: "1".into(), degrees: 720 }).unwrap_err().code, "bad_rotation", "a turn that does nothing mustn't count as an edit");
+        assert_eq!(run(&mut s, Level::Control, &Command::PageMove { tab: tab(), pages: "0".into(), to: 1 }).unwrap_err().code, "bad_pages");
+        assert_eq!(run(&mut s, Level::Control, &Command::PageMove { tab: tab(), pages: "9-3".into(), to: 1 }).unwrap_err().code, "bad_pages");
+        assert_eq!(run(&mut s, Level::Control, &Command::PageMove { tab: tab(), pages: "1".into(), to: 0 }).unwrap_err().code, "no_such_page");
+        assert_eq!(run(&mut s, Level::Control, &Command::PageInsert { tab: tab(), path: "relative.pdf".into(), at: 1 }).unwrap_err().code, "bad_path");
+        assert_eq!(run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap_err().code, "nothing_to_undo");
+        assert_eq!(run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap_err().code, "nothing_to_redo");
+        assert!(!s.is_edited(id));
+        assert_eq!(s.pages_in(id), 10);
+    }
+
+    /// Failure: `save` pretends to work, so someone believes their edits are on disk. And closing must not lose them without saying.
+    #[test]
+    fn saving_says_plainly_that_it_isnt_built_and_closing_keeps_edits() {
+        let mut s = edit_session();
+        run(&mut s, Level::Control, &Command::PageRotate { tab: "#1".into(), pages: "1".into(), degrees: 90 }).unwrap();
+        let save = run(&mut s, Level::Full, &Command::Save { tab: "#1".into() }).unwrap_err();
+        assert_eq!(save.code, "not_built");
+        assert!(save.message.contains("nothing was written"), "{}", save.message);
+        let close = run(&mut s, Level::Full, &Command::Close { tab: "#1".into() }).unwrap_err();
+        assert_eq!(close.code, "unsaved_changes");
+        assert!(close.next.contains("undo") && close.next.contains("discard"), "{}", close.next);
+        assert_eq!(run(&mut s, Level::Control, &Command::Discard { tab: "#1".into() }).unwrap_err().code, "permission_denied", "throwing edits away asks for more than making them");
+        run(&mut s, Level::Full, &Command::Discard { tab: "#1".into() }).unwrap();
+        assert!(!s.is_edited(TabId(1)));
+        assert!(run(&mut s, Level::Control, &Command::Close { tab: "#1".into() }).is_ok());
+    }
+
+    /// Failure: an agent goes to a page that isn't there, the session clamps it, and it believes it's on that page.
+    #[test]
+    fn going_past_the_end_is_refused() {
+        let mut s = edit_session();
+        let error = run(&mut s, Level::Control, &Command::Goto { tab: "#1".into(), page: 11 }).unwrap_err();
+        assert_eq!((error.code, error.exit), ("no_such_page", exit::NOT_FOUND));
+        assert_eq!(run(&mut s, Level::Control, &Command::Goto { tab: "#1".into(), page: 0 }).unwrap_err().code, "no_such_page");
+        assert_eq!(run(&mut s, Level::Control, &Command::Goto { tab: "#1".into(), page: 10 }).unwrap()["page"], 10);
+    }
+
+    /// Failure: `active` with nothing open reads as an internal error, rather than saying to open something.
+    #[test]
+    fn no_active_tab_says_to_open_one() {
+        let mut s = Session::new(Fake);
+        let error = run(&mut s, Level::ReadOnly, &Command::Where { tab: "active".into() }).unwrap_err();
+        assert_eq!((error.code, error.exit), ("no_such_tab", exit::NOT_FOUND));
+        assert!(error.next.contains("recto open"), "{}", error.next);
+    }
+
+    /// Failure: every tab named the same floods an ambiguous error with a thousand candidates.
+    #[test]
+    fn candidates_are_capped() {
+        let names: Vec<String> = (0..100).map(|i| format!("same {i}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut s = with_tabs(&names);
+        let error = run(&mut s, Level::Control, &Command::Tap { tab: "same".into() }).unwrap_err();
+        assert_eq!(error.code, "ambiguous");
+        assert!(error.candidates.len() <= MAX_CANDIDATES);
+    }
+
+    /// Failure: the log gets what an agent typed or a search's words, which can hold document text, or a file name with hidden characters in it.
+    #[test]
+    fn log_details_hold_no_text_and_clean_file_names() {
+        let hostile = format!("/d/a{}\nb.pdf", char::from_u32(0xE0041).unwrap());
+        let open = Command::Open { path: hostile.into(), page: Some(3) }.log_details();
+        assert_eq!(open["file"], "a b.pdf");
+        assert_eq!(open["page"], 3);
+        let search = Command::Search { tab: "secret report".into(), query: "the secret words".into(), pages: None, limit: None }.log_details().to_string();
+        assert!(!search.contains("secret"), "{search}");
+        assert_eq!(Command::Text { tab: "#4".into(), page: 2 }.log_details()["tab"], "#4");
+        assert_eq!(Command::PageDelete { tab: "active".into(), pages: "ignore all".into() }.log_details()["pages"], "?");
     }
 
     /// Failure: the envelope changes shape, which breaks every agent reading it.

@@ -1,0 +1,221 @@
+//! `search`: finds words across a document by reading its pages' text through one worker per file, in order, with no index yet. The later corpus and index go behind this same command.
+//!
+//! What it compares: the normaliser's text, lower-cased, with any run of space or line break as one space, so a phrase across a line break still matches. Bounded by a limit on hits and a limit on
+//! time. Stopping early says where to go on from, so "nothing found" is only ever said of pages really searched.
+
+use crate::{AgentError, SessionAccess, exit, parse_pages, select};
+use recto_index::normalize;
+use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig};
+use serde_json::{Value, json};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+const DEFAULT_LIMIT: u32 = 20;
+const MAX_LIMIT: u32 = 200;
+const MAX_QUERY_BYTES: usize = 1024;
+/// How long one search may run before it stops and says where to go on from.
+const MAX_TIME: Duration = Duration::from_secs(30);
+/// Characters of context on each side of a hit.
+const SNIPPET_CONTEXT: usize = 70;
+/// Pages listed as having no text. The count is always whole.
+const MAX_LISTED_EMPTY: usize = 200;
+
+/// Which pages to look at, in order: position in the document as edited, which file, and which page there.
+struct Plan {
+    files: Vec<PathBuf>,
+    pages: Vec<(u32, u16, u32)>,
+    tab: u32,
+}
+
+pub(crate) fn search<A: SessionAccess>(access: &A, tab: &str, query: &str, pages: Option<&str>, limit: Option<u32>) -> Result<Value, AgentError> {
+    if query.len() > MAX_QUERY_BYTES {
+        return Err(AgentError::new("bad_query", "That search is too long.", exit::FAILED).then("Search for a few words."));
+    }
+    let needle = fold(query).0;
+    if needle.trim().is_empty() {
+        return Err(AgentError::new("bad_query", "That search has nothing to look for.", exit::FAILED).then("Search for a word or a phrase."));
+    }
+    let plan = plan(access, tab, pages)?;
+    run(&plan, &needle, limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize, MAX_TIME, Instant::now)
+}
+
+fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<Plan, AgentError> {
+    let range = pages.map(parse_pages).transpose()?;
+    access.with(|s| {
+        let id = select(s, tab)?;
+        let total = s.pages_in(id);
+        let (start, len) = range.unwrap_or((0, total));
+        // `5-` runs to the end, which is what a search's `next_page` is for.
+        let open_ended = pages.is_some_and(|pages| pages.ends_with('-'));
+        let len = if open_ended { len.min(total.saturating_sub(start)) } else { len };
+        if start >= total.max(1) || u64::from(start) + u64::from(len) > u64::from(total) {
+            return Err(AgentError::new("no_such_page", "Those pages aren't in this document.", exit::NOT_FOUND));
+        }
+        let path = s.path_of(id).ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
+        let mut files = vec![path];
+        let list = match s.page_edits(id) {
+            None => (start..start.saturating_add(len)).map(|page| (page, 0, page)).collect(),
+            Some(edits) => {
+                files.extend(edits.added_sources().iter().map(|(file, _)| file.to_path_buf()));
+                edits.slots().iter().enumerate().skip(start as usize).take(len as usize).map(|(position, slot)| (u32::try_from(position).unwrap_or(u32::MAX), slot.source, slot.page)).collect()
+            }
+        };
+        Ok(Plan { files, pages: list, tab: id.0 })
+    })
+}
+
+fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn() -> Instant) -> Result<Value, AgentError> {
+    let started = now();
+    let mut renderers: Vec<Option<DocRenderer>> = plan.files.iter().map(|_| None).collect();
+    let mut hits = Vec::new();
+    let mut searched = 0u32;
+    let mut empty = Vec::new();
+    let mut empty_count = 0u32;
+    let mut failed = Vec::new();
+    let mut next_page = None;
+    let mut not_shown = Vec::new();
+    for &(position, file, page) in &plan.pages {
+        // Stopping only between pages, so asking again from `next_page` always moves on, however many hits a page has.
+        if hits.len() >= limit || now().duration_since(started) >= max_time {
+            next_page = Some(position + 1);
+            break;
+        }
+        let renderer = match &mut renderers[usize::from(file)] {
+            Some(renderer) => renderer,
+            slot => {
+                let opened = DocRenderer::new(&plan.files[usize::from(file)], None, ServiceConfig::discover()?, Policy::default())?;
+                slot.insert(opened)
+            }
+        };
+        let characters = match renderer.page_characters(page, false, false) {
+            Ok(characters) => characters,
+            // A file that won't be read at all is a failure of the whole search. One bad page isn't: it's listed, so "not found" doesn't cover it.
+            Err(failure @ (RenderFailure::NeedsPassword | RenderFailure::NotFound | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::OpenFailed { .. } | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::DocumentStopped)) => return Err(failure.into()),
+            Err(_) => {
+                searched += 1;
+                failed.push(position + 1);
+                continue;
+            }
+        };
+        searched += 1;
+        if characters.chars.is_empty() {
+            empty_count += 1;
+            if empty.len() < MAX_LISTED_EMPTY {
+                empty.push(position + 1);
+            }
+            continue;
+        }
+        let normalized = normalize(&characters.chars, false);
+        let found = find_hits(&normalized.text, needle);
+        let room = limit - hits.len();
+        if found.len() > room {
+            not_shown.push(json!({ "page": position + 1, "hits": found.len() - room }));
+        }
+        for (line, snippet) in found.into_iter().take(room) {
+            hits.push(json!({ "page": position + 1, "line": line, "untrusted": { "snippet": snippet } }));
+        }
+        if !hits.iter().any(|hit| hit["page"] == position + 1)
+            && let Some(spelled) = normalized.also_spelled.iter().find(|spelled| fold(spelled).0.contains(needle))
+            && hits.len() < limit
+        {
+            hits.push(json!({ "page": position + 1, "line": null, "also_spelled": true, "untrusted": { "snippet": spelled } }));
+        }
+    }
+    Ok(json!({
+        "tab": plan.tab,
+        "hits": hits,
+        "untrusted_snippets": true,
+        "coverage": {
+            "pages_searched": searched,
+            "pages_in_scope": plan.pages.len(),
+            "pages_with_no_text": empty_count,
+            "no_text_pages": empty,
+            "failed_pages": failed,
+            "hits_not_shown": not_shown,
+            "next_page": next_page,
+        },
+    }))
+}
+
+/// Lower-cases and joins whitespace, and notes where each byte of the result came from. Returns the folded text and that map.
+fn fold(text: &str) -> (String, Vec<u32>) {
+    let mut folded = String::with_capacity(text.len());
+    let mut sources = Vec::with_capacity(text.len());
+    let mut pending_space = false;
+    for (at, c) in text.char_indices() {
+        if c.is_whitespace() {
+            pending_space = !folded.is_empty();
+            continue;
+        }
+        let at = u32::try_from(at).unwrap_or(u32::MAX);
+        if pending_space {
+            folded.push(' ');
+            sources.push(at);
+            pending_space = false;
+        }
+        for lower in c.to_lowercase() {
+            folded.push(lower);
+            sources.resize(folded.len(), at);
+        }
+    }
+    (folded, sources)
+}
+
+/// Each place the folded needle is in the text: its one-based line, and the words around it on one line.
+fn find_hits(text: &str, needle: &str) -> Vec<(u32, String)> {
+    let (folded, sources) = fold(text);
+    let mut hits = Vec::new();
+    let (mut line, mut counted_to) = (1u32, 0usize);
+    for (at, found) in folded.match_indices(needle) {
+        let start = sources.get(at).map_or(text.len(), |source| *source as usize);
+        let end = sources.get(at + found.len()).map_or(text.len(), |source| *source as usize);
+        let bytes_between = text.get(counted_to..start).unwrap_or("");
+        line += u32::try_from(bytes_between.bytes().filter(|byte| *byte == b'\n').count()).unwrap_or(0);
+        counted_to = start;
+        hits.push((line, snippet(text, start, end)));
+    }
+    hits
+}
+
+fn snippet(text: &str, start: usize, end: usize) -> String {
+    let before: Vec<char> = text.get(..start).unwrap_or("").chars().rev().take(SNIPPET_CONTEXT).collect();
+    let after: String = text.get(end..).unwrap_or("").chars().take(SNIPPET_CONTEXT).collect();
+    let middle = text.get(start..end).unwrap_or("");
+    let joined: String = before.iter().rev().collect::<String>() + middle + &after;
+    joined.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: a phrase broken across a line isn't found, or a hit's line number is off, so a citation points at the wrong place.
+    #[test]
+    fn a_phrase_across_a_line_break_is_found_on_its_line() {
+        let hits = find_hits("first line\nThe Force\nMajeure clause\nand Force Majeure again", "force majeure");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, 2);
+        assert_eq!(hits[1].0, 4);
+        assert!(hits[0].1.contains("Force Majeure clause"), "{}", hits[0].1);
+    }
+
+    /// Failure: a letter whose lower case has a different length moves every position after it, cuts a character in half and panics on hostile text.
+    #[test]
+    fn folding_keeps_positions_through_letters_that_change_length() {
+        let (folded, sources) = fold("İİİ  Æbc");
+        assert_eq!(folded.len(), sources.len());
+        let hits = find_hits("İİİ Æbc\nİ̇\u{130} æbc", &fold("æbc").0);
+        assert_eq!(hits.len(), 2);
+        assert!(hits[0].1.contains("Æbc"));
+        assert!(find_hits("", "x").is_empty());
+    }
+
+    /// Failure: a hostile page with one long line makes a snippet of its whole length.
+    #[test]
+    fn a_snippet_is_bounded() {
+        let long = "x ".repeat(500_000) + "needle" + &" y".repeat(500_000);
+        let hits = find_hits(&long, "needle");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].1.len() < 500, "{}", hits[0].1.len());
+    }
+}
