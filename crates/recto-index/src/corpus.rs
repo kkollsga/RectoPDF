@@ -22,7 +22,7 @@
 //! **A new version takes the old one's text away.** Each key stands alone, so a saved edit, a redaction or a file since encrypted would leave the old version's plain text behind. `by-file/` connects them, with a small file per hash of a file's path, of what that path really leads to and of its inode, each holding the key it last had: so a new version at the same path is connected, and so is one that's been renamed. They hold no path. When a build for a key finishes, whatever those last held goes.
 //!
 //! **Killed at any moment, this is still sound.** A page's text goes in first, then its page file, then its record, and only a record counts. Starting again checks every record against what's there,
-//! cuts off anything past the last good one, and goes on from there. Only `ready.json` makes a corpus usable, and it's written once everything under it has been synced.
+//! cuts off anything past the last good one, and goes on from there. Only `ready.json` makes a corpus usable, and it's written once the pack and the table have been synced, which is what a search reads. Page files aren't synced: see `docs/ENGINEERING.md` for what that would cost, and for how a page file lost to a power cut is found.
 //!
 //! **Everything here came from a hostile file, or sits in a folder something may have changed.** Reading it back checks that the folders are private with no links on the way, that the files are plain files of bounded size, that lengths agree and text is UTF-8. The mark names its key, and each page's checksum has its number in it, so one file's or one page's text can't answer for another by a folder being copied or a record pointed elsewhere. A corpus that doesn't add up is thrown away, which only costs a rebuild.
 //!
@@ -749,7 +749,7 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
     if !feed.still_the_same_file() {
         return throw_away(&paths);
     }
-    // Only now is any of it believed, so it must really be there before the mark that says so.
+    // Only now is any of it believed, so what a search reads must really be there before the mark that says so.
     pack.sync_all()?;
     table.sync_all()?;
     let summary = finish(&paths, key, pages, width, offset, bytes, meta, 0)?;
