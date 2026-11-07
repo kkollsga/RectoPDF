@@ -136,7 +136,13 @@ Only pages with an image of 20 Mpx or more use regions: `REGION_MIN_IMAGE_PIXELS
 
 **The session lock is held per step.** `execute` takes the session through `SessionAccess`, only as long as each step needs. `open` and `page insert` read the file with no lock held, then take it to make the change, so a slow or hostile file holds nobody else up. **What isn't solved yet:** switching to a cold tab reads its file with the lock held, as `Session::tap` and `close` do, so a file on a dead volume could hold the session until the volume answers. `status` still answers, and every client gives up with exit 7 rather than hanging.
 
-**Hostile input.** A line is capped at 64 KiB, and half a line has 5 s. Commands parse with `deny_unknown_fields`, so a mistyped or added field is refused. A silent connection goes after 60 s, a client that doesn't read its answer after 30 s, and at most 128 connect at once (past that, `busy`, exit 10). A watcher that stops reading is dropped past 1 MiB of backlog, an answer is capped at 32 MiB, and all unread answers together at 128 MiB. A panic in a job is an error for that one client. There's no rate limit beyond these caps yet.
+**Hostile input.** A line is capped at 64 KiB, a selector at 1 KiB, and half a line has 5 s. Commands parse with `deny_unknown_fields`, so a mistyped or added field is refused. A silent connection goes after 60 s, a client that doesn't read its answer after 30 s. A client past 1 MiB unread has its next command left unread until it catches up, so nobody works for answers nobody's taking. An answer is capped at 32 MiB. All unread answers together are capped at 128 MiB for large ones, and at 144 MiB for anything: small answers can go past the first, so `status` still answers, and whoever would take it past the second is dropped. A watcher that stops reading is dropped past 1 MiB of backlog, and one that writes anything at all goes at once, since it could otherwise hold the only working thread. A panic in a job is an error for that one client. There's no rate limit beyond these caps yet.
+
+**What must always get through.** At most 128 connections, of which at most 64 may be in `wait`, `watch` or a waiting `permission request`. Past 128, up to 16 more may connect for `status`, `stop`, `permission show` and the message after `permission set`, and nothing else: anything else gets `busy`, exit 10, and each new one pushes out the oldest of these. A new connection reads the level before anything else, so a lowered level ends waits and watches even with every slot full, and a wait's look reads it again.
+
+**`stop`.** It closes the door to anything but quick answers, refuses what's still queued, waits up to 5 s for what's running, and only then looks for unsaved or undone edits. An edit can't slip past that check. If something stays stuck, it says so and the session carries on.
+
+**Out of descriptors.** On macOS, an `accept` that fails for want of descriptors drops the waiting connection (measured: 20 connections at a limit of 12, 8 accepted, 12 failed once each, then nothing was ready even after freeing some). So the listener doesn't stay ready, and there's nothing to spin on: those clients see their connection end. `out_of_descriptors_the_session_doesnt_spin` holds that. It would need a pause on an OS that behaves otherwise, and Windows is a different seam anyway.
 
 **Local only.** The socket is mode 0600 in a 0700 folder that's checked, never repaired: a link, someone else's folder or an open one is refused. The peer's user is checked on every connection, and the client checks the socket and its folder the same way. There's no TCP listener, and a test holds the source and the running process to that. A client that's gone before it's accepted can't pass the peer check, so what it sent is dropped.
 
@@ -146,38 +152,59 @@ Only pages with an image of 20 Mpx or more use regions: `REGION_MIN_IMAGE_PIXELS
 
 **Levels.** `Off`, `Read-only`, `Control`, `Full`, default `Off`. Each command's level is in its row, read fresh from the file for every command, so lowering applies at once on connections already open, and to waits and watches, which it ends. It fails closed: a missing, malformed, linked or open file is `Off`. Nothing over the socket can raise it: no command writes the file, and `level_changed` carries no level. No variable or flag does either.
 
-**How the user sets it, in the headless phase.** `recto permission set <level>`. Lowering needs nothing. Raising needs stdin and `/dev/tty` to be a real terminal, and a word typed back that's different every time, read from the terminal. **The app's settings take this over later,** through the same `levels::store`. A refusal's `ask` is `recto permission request <level>`, which grants nothing. It tells the agent what to tell the user, and with `--timeout` it blocks until they've answered.
+**How the user sets it, in the headless phase.** `recto permission set <level>`. Lowering needs nothing. Raising needs stdin and `/dev/tty` to be a real terminal, and a word typed back that's different every time, read from the terminal. **The app's settings take this over later,** through the same `levels::store`. A refusal's `ask` is `recto permission request <level>`, which grants nothing. It tells the agent what to tell the user, and with `--timeout` it blocks until they've answered. It writes a line for the user only for a level higher than it's said since the level last changed, so asking in a loop can't fill that file, and a write that fails can't end the session.
+
+**`recto skill install`** takes the same check (coordinator's decision, 2026-11-07): it writes into the user's agent's own files, and `--replace` keeps no backup. `recto skill show` stays open at Off, so an agent can read it. With a test state folder it won't write into the real home, going by where the path really leads.
+
+**Nothing is lost without Full** (coordinator's decision, 2026-11-07). `discard` needs Full, so whatever else would throw away edits for good needs it too: below Full, an edit or a close that would clear undone steps is refused with exit 5, and `recto redo` keeps everything. `stop` counts undone steps as unsaved.
 
 **What this does and doesn't protect against** (agent report, threat T16). It shuts every ordinary route: an agent running commands through a tool has a pipe, not a terminal. It can't stop a process of the same user that goes to the length of faking a terminal or writing the file itself: that process could read the PDFs directly anyway. A variable can point a run at a fresh state folder, which starts at Off, and writing a file into it gives access only to the throwaway session there, not the user's. The app's settings, behind a human gesture, are the stronger answer.
 
 **Signing** is out of reach at every level. `recto sign` always refuses, and nothing in the control path links a signer. `recto signatures` reports facts through `recto_core::signatures`, a bounded walk of the form fields, with `recto-sign`'s wording: "Signature present, not checked", never "valid". Stated names and times go under `untrusted`, because they're only what the file claims.
 
-**State folder.** `~/Library/Application Support/RectoPDF/agent`, under the real home from the user database, not `$HOME`. `RECTO_STATE_DIR` overrides it for tests and QA, and refuses the real home, anything holding it, and anything inside it unless that's in the system's temp folder, through links too. If the path is too long for a socket (the kernel's limit is 103 bytes), the socket goes in `/tmp/recto-<uid>/`, checked the same way and named for the state folder.
+**State folder.** `~/Library/Application Support/RectoPDF/agent`, under the real home from the user database, not `$HOME`. `RECTO_STATE_DIR` overrides it for tests and QA, and refuses the real home, anything holding it, and anything inside it unless that's in the OS's temp folder (from `confstr`, not `$TMPDIR`), through links too. If the path is too long for a socket (the kernel's limit is 103 bytes), the socket goes in `/tmp/recto-<uid>/`, checked the same way and named for the state folder.
 
-**Activity log.** `activity.jsonl`, one line per action with its time, command, level and outcome, refusals included. 1 MiB, then rotated once, so at most 2 MiB. It holds numbers and cleaned file names, and never document text: `Command::log_details` is the one place that decides, and a tab's name as typed and a search's words aren't kept. At a real terminal `recto log` reads the file with no session or level, for the user. Otherwise it needs Read-only, even with no session.
+**Activity log.** One line per action with its time, command, level and outcome, refusals included. It holds numbers, and cleaned file names under `untrusted`, and never document text: `Command::log_details` is the one place that decides, and a tab's name as typed and a search's words aren't kept. At a real terminal `recto log` reads the files with no session or level, for the user. Otherwise it needs Read-only, even with no session.
+
+An agent mustn't be able to erase its own record, so there are two files, 1 MiB each and rotated once. `activity.jsonl` has what changes something: `open`, `close`, page edits, `render`, `stop`, `permission set`. `activity-other.jsonl` has the rest, so no flood of reading or refusals can reach the first. `status`, bad lines, asks and refusals are written once, then as one line with a count, at most once a minute each. **Limit:** an agent at Control can still push out its own changes with enough of them, since each one is an action to record.
 
 **A file only the renderer can read.** lopdf refuses some damaged files PDFium repairs, or finds no pages in them, and commands go through `session.open`. So `DrawableLoader` asks PDFium, in its worker, when lopdf says "not a PDF" or "no pages": the tab opens with PDFium's page count and `renderer_only` set. Facts stay trustworthy because nothing is made up. `facts` says `structure: renderer_only`, `contents` says `available: false`, and `signatures` says `structure_read: false`, each meaning "couldn't be read" and never "none". Editing it, or inserting it into another document, is refused, since only the structure reader's writer may change a PDF. A password-protected, missing or forbidden file stays that way: only those two answers get a second opinion.
 
-**Search for now.** `recto search` reads each page's text through one worker per file, in order, ignoring case and line breaks, with no index: at most 200 hits and 30 s, stopping only between pages so `next_page` always moves on. It's slow on a long document, and the Phase 3 corpus goes behind the same command.
+**Search for now.** `recto search` reads each page's text through one worker at a time, in order, ignoring case and line breaks, with no index: at most 200 hits and 30 s, stopping only between pages so `next_page` always moves on. Snippets are built only for hits that will be shown, and the count stays whole. It's slow on a long document, and the Phase 3 corpus goes behind the same command.
 
-**Edits and pages.** Page numbers on every command mean the document as edited: `text` reads the page now in that place, from whichever file it came from, and says `source_page` if that isn't the same. `render` doesn't show an unsaved rotation, and says so in `unsaved_rotation_degrees`. Deleting a page is `Control` rather than the report's `Full`: nothing reaches a file, and it can be undone. The two-step plan and confirm belong to `save`, when that exists.
+**Hidden text in search:** only a page with a hit is drawn to check it. Drawing every page costs too much for what it adds, since a page with no hit is never read: rfc9110, 194 pages, went from 1.14 to 3.2 ms a page, and NASA's 383 pages from 3.5 to 16 ms a page (release, this Mac, 3 runs each, `recto local F search zzzqqqxx`, with the check switched on in code for the second). Each hit says `hidden_text: { checked, flagged }` and `page_has_tag_chars`.
+
+**Characters past 16 bits.** A font's ToUnicode gives these as two halves, and PDFium reports each as a character. `recto-render` joins them, or an emoji is lost and a tag character, the plainest hidden instruction there is, never raises its flag.
+
+**Files that change.** A tab, and each PDF added to it, keeps the size and modification time its page numbers were recorded from. If an added file, or an edited tab's own file, has changed or gone, `text`, `render`, `contents` and `signatures` refuse with `source_changed`, and `search` lists those pages as failed and names the file. An unedited tab has no numbers to get wrong, and reads the file as it now is.
+
+**Edits and pages.** A tab's place follows the page it's reading, and if that page is removed it lands on the nearest and says so once. A draw's note goes when the page order changes. Page numbers on every command mean the document as edited: `text` reads the page now in that place, from whichever file it came from, and says `source_page` and `from_added_file`. `render` doesn't show an unsaved rotation, and says so in `unsaved_rotation_degrees`. Deleting a page is `Control` rather than the report's `Full`: nothing reaches a file, and it can be undone. The two-step plan and confirm belong to `save`, when that exists.
+
+**Stack depth in the session's own process.** The structure reader runs in the session, where an overflow would abort it, unsaved edits and all, and `catch_unwind` can't help. lopdf's fork already stops at 100 levels of nesting, 4 MiB an object and 256 levels of page tree, and our own walks keep explicit stacks. Arrays and dictionaries nested 1,000,000 deep, page trees, outlines, field trees and name trees 500,000 deep, object streams, and chains of 100,000 `/Length` references and `/Prev` sections all returned on a release build, through `facts`, `contents` and `signatures`. `crates/recto-core/tests/deep.rs` keeps these at 100,000 on a test thread's 2 MiB in debug. **For the fork, not changed here:** a `/Prev` chain has no cap, and 100,000 sections in an 8 MiB file take about 4 s to open, in proportion, with no lock held and no thread lost except a job's. `IndexedReaderOptions` could take a maximum number of sections.
 
 **Measured** 2026-11-07, release build, this Mac, on the 330 MiB `gov_usgs_usgs70277338.pdf`.
 
-| | Before: one-shot in-process, no session | Now: through the socket | Budget |
-|---|---:|---:|---:|
-| One answer, whole process start to exit, 200 runs, p50 / p95 / max | 4.09 / 4.62 / 4.90 ms (`echo '{"cmd":"tabs"}' \| recto session`) | 4.66 / 6.34 / 7.83 ms (`recto status --json`) | ≤ 30 ms |
-| The same, with 1,000 tabs open | | 5.44 / 6.17 / 6.55 ms | |
-| Footprint, idle | | 1.74 MiB | |
-| Footprint, 1,000 tabs of the 330 MiB PDF (`recto budget tabs --file F --count 1000`) | 2.70 MiB, from 1.28 MiB | 3.05 MiB, from 1.75 MiB | ≤ 4 KiB a tab |
-| Handles, with 1,000 tabs | 3 | 11, the same as with none | 0 a tab |
-| Thread count, idle or with 1,000 tabs | | 1 | |
-| Over 30 s idle, by `top`: CPU, idle wake-ups, context switches | | 0.0%, 0, 0 | |
-| Over 1 s with 50 clients blocked in `wait` and `watch`, by the kernel's counters | | 0 wake-ups, 0 context switches, 0 ns of CPU, 1 thread | |
-| One open of that PDF, over one connection | 5.10 ms | 1.57 ms | |
-| One open through the real client, process start included | | 7.22 ms | |
+| | Before any session: one-shot in-process | First socket build | Now | Budget |
+|---|---:|---:|---:|---:|
+| One answer, whole process start to exit, 200 runs, p50 / p95 / max | 4.09 / 4.62 / 4.90 ms (`echo '{"cmd":"tabs"}' \| recto session`) | 4.66 / 6.34 / 7.83 ms | 5.83 / 6.57 / 7.83 ms (`recto status --json`) | ≤ 30 ms |
+| The same, with 1,000 tabs open | | 5.44 / 6.17 / 6.55 ms | 5.65 / 6.84 / 9.28 ms | |
+| Footprint, idle | | 1.74 MiB | 1.64 MiB | |
+| Footprint, 1,000 tabs of the 330 MiB PDF (`recto budget tabs --file F --count 1000`) | 2.70 MiB, from 1.28 MiB | 3.05 MiB, from 1.75 MiB | 3.13 MiB, from 1.74 MiB | ≤ 4 KiB a tab |
+| Thread count, idle or with 1,000 tabs | | 1 | 1 | |
+| Over 30 s idle, by `top`: CPU, idle wake-ups, context switches | | 0.0%, 0, 0 | 0.0%, 0, 0 | |
+| One open of that PDF, over one connection | 5.10 ms | 1.57 ms | 1.61 ms | |
+| One open through the real client, process start included | | 7.22 ms | 7.28 ms | |
 
-The two per-open numbers for that PDF aren't comparing like with like: the earlier run came first, on a colder file cache. `recto-cli`'s `tests/memory.rs` holds the idle and per-tab properties, its own binary. It measures 689 B a tab over the socket on a release build. **What this isn't:** a soak, or tabs that have been read from. Drawing is what `recto budget render` measures, in the renderer section.
+The two per-open numbers for that PDF aren't comparing like with like: the earliest run came first, on a colder file cache. `recto-cli`'s `tests/memory.rs` holds the idle and per-tab properties, in its own binary. **What this isn't:** a soak, or tabs that have been read from. Drawing is what `recto budget render` measures, in the renderer section.
+
+**Descriptors**, by `lsof` on the release build. A tab holds none: hot, warm or cold makes no difference, and the count is the same with 1 tab or 1,000.
+
+| | Server | Worker |
+|---|---:|---:|
+| Idle, nothing logged yet | 8: stdin, stdout, stderr, lock, a log, listener, wake pair | none |
+| With tabs of any tier | 10: the second log file, once it's been written | none |
+| During a job that draws or reads a page | 17: adds the worker's channel, shared memory, the document, a kqueue | 8: stdin, stdout, stderr to `/dev/null`, its channel, the document, shared memory, the system's font folder, one more that PDFium holds |
+| After the job | 10 | gone |
 
 ## Machine notes
 
