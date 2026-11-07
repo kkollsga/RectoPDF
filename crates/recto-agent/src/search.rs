@@ -270,6 +270,7 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             }
             continue;
         }
+        let mut read_live_after_failure = false;
         if let FileRoute::Index(key) = routes[usize::from(file)] {
             let read = match corpus_for(&mut corpus_open, file, key, indexing) {
                 // Pages it hasn't got are pages the file hasn't got: the same as a worker saying so.
@@ -284,11 +285,18 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
                     continue;
                 }
                 Ok(Some(stored)) => {
-                    found.used_index = true;
+                    if stored.kind == PageKind::Failed {
+                        // That's only what happened when it was built, which may have been the moment rather than the page. It goes on down to be read now. Past this a whole file can't be read, so this search says that page failed, rather than ending.
+                        read_live_after_failure = true;
+                    }
                     match stored.kind {
-                        PageKind::Failed => found.failed.push(position + 1),
-                        PageKind::NoText => found.no_text(position),
+                        PageKind::Failed => {}
+                        PageKind::NoText => {
+                            found.used_index = true;
+                            found.no_text(position);
+                        }
                         PageKind::Text => {
+                            found.used_index = true;
                             found.searched += 1;
                             let also_spelled = stored.also_spelled();
                             fold_into(stored.text, &mut folded);
@@ -309,7 +317,9 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
                             });
                         }
                     }
-                    continue;
+                    if !read_live_after_failure {
+                        continue;
+                    }
                 }
                 // This page and the rest of the file are read one by one.
                 Err(Damaged) => {
@@ -323,6 +333,10 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
         found.used_scan = true;
         let renderer = match worker_for(&mut current, file, source) {
             Ok(Some(renderer)) => renderer,
+            Err(_) if read_live_after_failure => {
+                found.failed.push(position + 1);
+                continue;
+            }
             Ok(None) | Err(RenderFailure::NotFound) if source.added || source.expected.is_some() => {
                 found.changed.push(file);
                 found.failed.push(position + 1);
@@ -333,6 +347,10 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
         };
         let characters = match renderer.page_characters(page, true, false) {
             Ok(characters) => characters,
+            Err(_) if read_live_after_failure => {
+                found.failed.push(position + 1);
+                continue;
+            }
             // A file that won't be read at all is a failure of the whole search. One bad page isn't: it's listed, so "not found" doesn't cover it.
             Err(failure @ (RenderFailure::NeedsPassword | RenderFailure::NotFound | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::OpenFailed { .. } | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::DocumentStopped)) => return Err(failure.into()),
             Err(_) => {

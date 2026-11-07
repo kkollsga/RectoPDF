@@ -4,7 +4,7 @@
 
 use recto_core::OpenError;
 use recto_index::corpus::{self, BuildLimits, BuildOutcome, CorpusKey, DocMeta, FailReason, FedPage, FeedError, PageFeed};
-use recto_render_service::{DocRenderer, Policy, RenderFailure, RenderStats, ServiceConfig};
+use recto_render_service::{DocRenderer, KillReason, Policy, RenderFailure, RenderStats, ServiceConfig};
 use serde_json::{Value, json};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -70,6 +70,19 @@ fn whole_file(failure: RenderFailure) -> FeedError {
     }
 }
 
+/// What a failure to read one page means for the build. Only what's a fact about that page gets written down as one, and whether it might read another time goes with it. What's about this moment rather than any page stops the build where it is, with nothing written, so it goes on from that page later.
+fn read_failure(failure: RenderFailure) -> FeedError {
+    match failure {
+        RenderFailure::Unavailable => FeedError::Cant("render_unavailable"),
+        RenderFailure::PageReadFailed { reason: KillReason::Deadline, .. } => FeedError::Page(FailReason::Deadline),
+        RenderFailure::PageReadFailed { reason: KillReason::Crashed, .. } => FeedError::Page(FailReason::Crashed),
+        RenderFailure::DocumentStopped => FeedError::Page(FailReason::DocumentStopped),
+        RenderFailure::SourceChanged => FeedError::FileChanged,
+        RenderFailure::NeedsPassword | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::NotFound | RenderFailure::OpenFailed { .. } => whole_file(failure),
+        _ => FeedError::Page(FailReason::Stopped),
+    }
+}
+
 impl PageFeed for WorkerFeed {
     fn page_count(&mut self) -> Result<u32, FeedError> {
         self.renderer()?.page_count().map_err(whole_file)
@@ -86,15 +99,18 @@ impl PageFeed for WorkerFeed {
                 }
                 Ok(FedPage { chars: characters.chars, boxes: characters.boxes, hidden_checked: characters.hidden_checked })
             }
-            Err(RenderFailure::DocumentStopped) => Err(FeedError::Page(FailReason::DocumentStopped)),
-            Err(RenderFailure::SourceChanged) => Err(FeedError::FileChanged),
-            Err(failure @ (RenderFailure::NeedsPassword | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::NotFound | RenderFailure::OpenFailed { .. })) => Err(whole_file(failure)),
-            Err(_) => Err(FeedError::Page(FailReason::Stopped)),
+            Err(failure) => Err(read_failure(failure)),
         }
     }
 
     fn still_the_same_file(&mut self) -> bool {
         CorpusKey::of_file(&self.path).is_ok_and(|now| now == self.key)
+    }
+
+    fn forget_failures(&mut self) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.forget_failures();
+        }
     }
 }
 
@@ -206,4 +222,21 @@ fn report(built: std::io::Result<BuildOutcome>, stats: RenderStats, hidden_check
     line["crashes"] = json!(stats.crashes);
     line["hidden_check_failures"] = json!(hidden_check_failures);
     say(&line);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: a worker that couldn't be started, or a failure that's remembered for only a moment, goes down as this page having failed, and so does every page in that moment. The corpus is then marked finished with those pages failed for good.
+    #[test]
+    fn a_failure_of_the_moment_writes_no_page_down_as_failed() {
+        assert_eq!(read_failure(RenderFailure::Unavailable), FeedError::Cant("render_unavailable"));
+        // These go down as failed, and are read again, because they may say more about the moment than the page.
+        assert!(matches!(read_failure(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Deadline }), FeedError::Page(reason) if reason.is_temporary()));
+        assert!(matches!(read_failure(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Crashed }), FeedError::Page(reason) if reason.is_temporary()));
+        assert!(matches!(read_failure(RenderFailure::DocumentStopped), FeedError::Page(reason) if reason.is_temporary()));
+        // This is the page's own doing, and stays.
+        assert!(matches!(read_failure(RenderFailure::PageReadFailed { page: 1, reason: KillReason::MemoryLimit }), FeedError::Page(reason) if !reason.is_temporary()));
+    }
 }

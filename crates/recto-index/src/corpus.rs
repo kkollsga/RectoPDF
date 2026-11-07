@@ -51,6 +51,10 @@ pub const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const MAX_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 /// Longest one build runs before it stops and leaves the rest for next time.
 pub const MAX_BUILD_TIME: Duration = Duration::from_secs(60 * 60);
+/// How many times pages that failed for a temporary reason are read again, how far apart, and how many in one go. A hostile file can fail any number of pages, each costing a worker and up to a page's time.
+pub const MAX_RETRIES: u32 = 3;
+pub const RETRY_PAUSE: Duration = Duration::from_secs(10 * 60);
+const MAX_RETRY_PAGES: u32 = 64;
 /// Most entries of a document's outline in its manifest, and most characters of each.
 const MAX_OUTLINE: usize = 2000;
 const MAX_UNTRUSTED_CHARS: usize = 200;
@@ -189,13 +193,17 @@ pub enum PageKind {
 /// Why a page couldn't be read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailReason {
-    /// The worker running it was stopped.
+    /// The worker reading it was stopped for what the page itself did: past its memory limit, or breaking the protocol. That won't change.
     Stopped = 1,
     /// Too many of this document's pages stopped workers, so it wasn't tried.
     DocumentStopped = 2,
     /// Reading its text hit a bug here.
     Internal = 3,
     Unknown = 4,
+    /// It ran past the page's time, which on a loaded Mac needn't be the page's fault.
+    Deadline = 5,
+    /// The worker ended with no one asking. The page may have done that, or the system may have, for want of memory.
+    Crashed = 6,
 }
 
 impl FailReason {
@@ -205,7 +213,14 @@ impl FailReason {
             Self::DocumentStopped => "document_stopped",
             Self::Internal => "internal",
             Self::Unknown => "unknown",
+            Self::Deadline => "deadline",
+            Self::Crashed => "crashed",
         }
+    }
+
+    /// Whether this says only something about the moment it was read, so it's worth reading again later.
+    pub fn is_temporary(self) -> bool {
+        matches!(self, Self::Deadline | Self::Crashed | Self::DocumentStopped)
     }
 
     fn from_byte(byte: u8) -> Self {
@@ -213,6 +228,8 @@ impl FailReason {
             1 => Self::Stopped,
             2 => Self::DocumentStopped,
             3 => Self::Internal,
+            5 => Self::Deadline,
+            6 => Self::Crashed,
             _ => Self::Unknown,
         }
     }
@@ -305,11 +322,22 @@ pub struct Summary {
     pub hidden_flagged_pages: u32,
     pub hidden_unchecked_pages: u32,
     pub tag_char_pages: u32,
+    /// Failed pages that failed only because of when they were read.
+    pub retry_pages: u32,
+    /// How many times those have been read again.
+    pub retries: u32,
+    /// When they last were, in seconds since 1970.
+    pub retried_at: u64,
 }
 
 impl Summary {
     fn to_json(&self) -> Value {
-        json!({ "format": FORMAT, "normaliser": NORMALISER, "pages": self.pages, "width": self.width, "table_bytes": self.table_bytes, "pack_bytes": self.pack_bytes, "corpus_bytes": self.corpus_bytes, "no_text_pages": self.no_text_pages, "failed_pages": self.failed_pages, "hidden_flagged_pages": self.hidden_flagged_pages, "hidden_unchecked_pages": self.hidden_unchecked_pages, "tag_char_pages": self.tag_char_pages })
+        json!({ "format": FORMAT, "normaliser": NORMALISER, "pages": self.pages, "width": self.width, "table_bytes": self.table_bytes, "pack_bytes": self.pack_bytes, "corpus_bytes": self.corpus_bytes, "no_text_pages": self.no_text_pages, "failed_pages": self.failed_pages, "hidden_flagged_pages": self.hidden_flagged_pages, "hidden_unchecked_pages": self.hidden_unchecked_pages, "tag_char_pages": self.tag_char_pages, "retry_pages": self.retry_pages, "retries": self.retries, "retried_at": self.retried_at })
+    }
+
+    /// Whether some pages failed only because of when they were read, and it's time to try them again. A page that keeps failing stops being tried: then it's the page.
+    pub fn retry_is_due(&self) -> bool {
+        self.retry_pages > 0 && self.retries < MAX_RETRIES && now_seconds().saturating_sub(self.retried_at) >= RETRY_PAUSE.as_secs()
     }
 
     fn from_json(value: &Value) -> Option<Self> {
@@ -329,6 +357,9 @@ impl Summary {
             hidden_flagged_pages: small("hidden_flagged_pages")?,
             hidden_unchecked_pages: small("hidden_unchecked_pages")?,
             tag_char_pages: small("tag_char_pages")?,
+            retry_pages: small("retry_pages")?,
+            retries: small("retries")?,
+            retried_at: number("retried_at")?,
         })
     }
 }
@@ -449,6 +480,7 @@ impl<'a> Aux<'a> {
 pub struct ReadyCorpus {
     table: Vec<u8>,
     pack: File,
+    pack_len: u64,
     pub summary: Summary,
     pub paths: CorpusPaths,
 }
@@ -466,16 +498,18 @@ impl ReadyCorpus {
         if summary.pages > MAX_PAGES || summary.table_bytes != u64::from(summary.pages) * RECORD_LEN as u64 {
             return Err(Damaged);
         }
-        let pack = File::open(&paths.pack).map_err(|_| Damaged)?;
-        if pack.metadata().map_err(|_| Damaged)?.len() != summary.pack_bytes {
-            return Err(Damaged);
-        }
+        // In this order: a retry of failed pages adds to the pack before it changes the table, so this table only points at text in this pack. The pack can be longer than said, and never shorter.
         let table = fs::read(&paths.table).map_err(|_| Damaged)?;
         if table.len() as u64 != summary.table_bytes {
             return Err(Damaged);
         }
+        let pack = File::open(&paths.pack).map_err(|_| Damaged)?;
+        let pack_len = pack.metadata().map_err(|_| Damaged)?.len();
+        if pack_len < summary.pack_bytes {
+            return Err(Damaged);
+        }
         note_used(&paths);
-        Ok(Some(Self { table, pack, summary, paths }))
+        Ok(Some(Self { table, pack, pack_len, summary, paths }))
     }
 
     pub fn pages(&self) -> u32 {
@@ -487,7 +521,7 @@ impl ReadyCorpus {
         let start = page as usize * RECORD_LEN;
         let record = self.table.get(start..start + RECORD_LEN).and_then(PageRecord::decode).ok_or(Damaged)?;
         let len = record.blob_len();
-        if len > MAX_BLOB_BYTES || record.end() > self.summary.pack_bytes {
+        if len > MAX_BLOB_BYTES || record.end() > self.pack_len {
             return Err(Damaged);
         }
         buffer.resize(len, 0);
@@ -546,6 +580,8 @@ pub trait PageFeed {
     fn read(&mut self, page: u32) -> Result<FedPage, FeedError>;
     /// Whether the file is still the one this is a corpus of.
     fn still_the_same_file(&mut self) -> bool;
+    /// What's about to be read has been tried before, so forget that it failed.
+    fn forget_failures(&mut self) {}
 }
 
 /// What goes in the manifest beside the pages. All of it comes from the file, and goes under `untrusted`.
@@ -607,6 +643,7 @@ pub fn build(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: &DocMe
         return Ok(BuildOutcome::Busy);
     }
     match disk_state(root, key) {
+        DiskState::Ready(summary) if summary.retry_is_due() => return retry_failed_pages(&paths, feed, meta, summary),
         DiskState::Ready(summary) => return Ok(BuildOutcome::AlreadyReady(summary)),
         DiskState::Refused(code) => return Ok(BuildOutcome::Refused(code)),
         DiskState::Partial { .. } | DiskState::Nothing => {}
@@ -641,11 +678,7 @@ pub fn build(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: &DocMe
             Err(FeedError::Cant(code)) => return Ok(BuildOutcome::Paused(code)),
             Err(FeedError::FileChanged) => return throw_away(&paths),
         };
-        // A panic here would be a bug of ours, on text a hostile file chose. It costs that page.
-        let (record, also_spelled, spans, text) = catch_unwind(AssertUnwindSafe(|| digest(read, offset)))
-            .ok()
-            .filter(|(_, also_spelled, spans, text)| text.len() + also_spelled.iter().map(|word| word.len() + 2).sum::<usize>() + spans.len() * 8 + 6 <= MAX_BLOB_BYTES)
-            .unwrap_or_else(|| (failed_record(offset, FailReason::Internal), Vec::new(), Vec::new(), String::new()));
+        let (record, also_spelled, spans, text) = digest_safely(read, offset);
         blob.clear();
         blob.extend_from_slice(text.as_bytes());
         Aux::write(&also_spelled, &spans, &mut blob);
@@ -667,11 +700,90 @@ pub fn build(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: &DocMe
     // Only now is any of it believed, so it must really be there before the mark that says so.
     pack.sync_all()?;
     table.sync_all()?;
-    let summary = finish(&paths, pages, width, offset, bytes, meta)?;
+    let summary = finish(&paths, pages, width, offset, bytes, meta, 0)?;
     let stats = BuildStats { pages_built: pages - resumed.pages, pages_resumed: resumed.pages, elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX) };
+    // What failed only because of the moment gets one more try at once, now that the rest of the document isn't in its way.
+    if summary.retry_pages > 0 {
+        return match retry_failed_pages(&paths, feed, meta, summary)? {
+            BuildOutcome::AlreadyReady(summary) => Ok(BuildOutcome::Ready { summary, stats }),
+            other => Ok(other),
+        };
+    }
     drop(lock);
     let _ = evict(root, limits, Some(key));
     Ok(BuildOutcome::Ready { summary, stats })
+}
+
+/// Reads pages that failed for a temporary reason again, and puts in place what comes back. A search may be reading this corpus now, so what it holds stays good throughout: the new text goes on the end of the pack, then its page file goes in place, and then the table, each in one step. A reader takes the table before the pack, so any table it has only points at text it can see. Killed partway, the worst left is text nothing points at.
+fn retry_failed_pages(paths: &CorpusPaths, feed: &mut impl PageFeed, meta: &DocMeta, summary: Summary) -> io::Result<BuildOutcome> {
+    let mut table = read_table(paths, summary.pages)?;
+    let width = summary.width as usize;
+    let mut pack = local::append_private_file(&paths.pack)?;
+    let mut offset = pack.metadata()?.len();
+    let mut bytes = summary.corpus_bytes;
+    feed.forget_failures();
+    let mut tried = 0;
+    let (mut blob, mut file_text) = (Vec::new(), String::new());
+    for page in 0..summary.pages {
+        let at = page as usize * RECORD_LEN;
+        let Some(old) = table.get(at..at + RECORD_LEN).and_then(PageRecord::decode) else { return Err(io::ErrorKind::InvalidData.into()) };
+        if old.kind != PageKind::Failed || !FailReason::from_byte(old.reason).is_temporary() {
+            continue;
+        }
+        if tried >= MAX_RETRY_PAGES {
+            break;
+        }
+        tried += 1;
+        if !feed.still_the_same_file() {
+            return throw_away(paths);
+        }
+        let read = match feed.read(page) {
+            Ok(read) => Ok(read),
+            Err(FeedError::Page(reason)) => Err(reason),
+            Err(FeedError::Refused(code)) => return refuse(paths, code),
+            // It can't be tried now, which says nothing about this page.
+            Err(FeedError::Cant(_)) => break,
+            Err(FeedError::FileChanged) => return throw_away(paths),
+        };
+        let (record, also_spelled, spans, text) = digest_safely(read, offset);
+        blob.clear();
+        blob.extend_from_slice(text.as_bytes());
+        Aux::write(&also_spelled, &spans, &mut blob);
+        let record = PageRecord { aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX), ..record };
+        file_text.clear();
+        write_page_file_text(&mut file_text, page, &record, &text, &also_spelled, &spans);
+        pack.write_all(&blob)?;
+        write_page_file(paths, page, width, &file_text)?;
+        table[at..at + RECORD_LEN].copy_from_slice(&record.encode());
+        offset += blob.len() as u64;
+        bytes += blob.len() as u64;
+    }
+    pack.sync_all()?;
+    local::write_private_file(&paths.table, &table)?;
+    let summary = finish(paths, summary.pages, width, offset, bytes, meta, summary.retries + 1)?;
+    Ok(BuildOutcome::AlreadyReady(summary))
+}
+
+/// [`digest`], with a panic or a page too large to keep costing only that page.
+fn digest_safely(read: Result<FedPage, FailReason>, offset: u64) -> (PageRecord, Vec<String>, Vec<(u32, u32)>, String) {
+    // A panic here would be a bug of ours, on text a hostile file chose.
+    catch_unwind(AssertUnwindSafe(|| digest(read, offset)))
+        .ok()
+        .filter(|(_, also_spelled, spans, text)| text.len() + also_spelled.iter().map(|word| word.len() + 2).sum::<usize>() + spans.len() * 8 + 6 <= MAX_BLOB_BYTES)
+        .unwrap_or_else(|| (failed_record(offset, FailReason::Internal), Vec::new(), Vec::new(), String::new()))
+}
+
+fn now_seconds() -> u64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |since| since.as_secs())
+}
+
+/// A corpus's table, as long as it should be and no longer.
+fn read_table(paths: &CorpusPaths, pages: u32) -> io::Result<Vec<u8>> {
+    let table = fs::read(&paths.table)?;
+    if table.len() != pages as usize * RECORD_LEN {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok(table)
 }
 
 /// Turns what was read into what's stored: reading it the one way `text` and `search` read a page, and judging hidden text the same.
@@ -880,12 +992,9 @@ fn write_building_manifest(paths: &CorpusPaths, pages: u32, width: usize) -> io:
 }
 
 /// Writes the manifest from the table, a line per page, then the mark that makes it all usable.
-fn finish(paths: &CorpusPaths, pages: u32, width: usize, pack_bytes: u64, bytes: u64, meta: &DocMeta) -> io::Result<Summary> {
-    let table = fs::read(&paths.table)?;
-    if table.len() != pages as usize * RECORD_LEN {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
-    let mut summary = Summary { pages, width: width as u32, table_bytes: table.len() as u64, pack_bytes, ..Summary::default() };
+fn finish(paths: &CorpusPaths, pages: u32, width: usize, pack_bytes: u64, bytes: u64, meta: &DocMeta, retries: u32) -> io::Result<Summary> {
+    let table = read_table(paths, pages)?;
+    let mut summary = Summary { pages, width: width as u32, table_bytes: table.len() as u64, pack_bytes, retries, retried_at: now_seconds(), ..Summary::default() };
     let mut index = String::with_capacity(table.len() * 3);
     let (mut no_text, mut failed, mut flagged, mut unchecked, mut tag_chars) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for (page, bytes) in table.as_chunks::<RECORD_LEN>().0.iter().enumerate() {
@@ -893,7 +1002,10 @@ fn finish(paths: &CorpusPaths, pages: u32, width: usize, pack_bytes: u64, bytes:
         let number = page as u32 + 1;
         match record.kind {
             PageKind::NoText => no_text.push(number),
-            PageKind::Failed => failed.push(number),
+            PageKind::Failed => {
+                failed.push(number);
+                summary.retry_pages += u32::from(FailReason::from_byte(record.reason).is_temporary());
+            }
             PageKind::Text => {}
         }
         if record.flags & FLAG_HIDDEN_FLAGGED != 0 {

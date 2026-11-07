@@ -123,7 +123,13 @@ pub(crate) fn file_index(indexing: &dyn Indexing, path: &Path, want: bool) -> (O
     let Ok(key) = CorpusKey::of_file(path) else { return (None, FileIndex::Unavailable) };
     let disk = corpus::disk_state(indexing.root(), key);
     let pages_done = match &disk {
-        DiskState::Ready(summary) => return (Some(key), FileIndex::Ready(summary.clone())),
+        DiskState::Ready(summary) => {
+            // What it holds is good to use meanwhile: this only reads again pages that failed for a temporary reason.
+            if want && summary.retry_is_due() {
+                indexing.want(path, key);
+            }
+            return (Some(key), FileIndex::Ready(summary.clone()));
+        }
         DiskState::Refused(code) => return (Some(key), FileIndex::Refused(code.clone())),
         DiskState::Partial { pages_done } => *pages_done,
         DiskState::Nothing => 0,

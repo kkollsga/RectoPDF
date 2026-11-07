@@ -287,7 +287,7 @@ fn an_adversarial_page_fails_alone_and_says_so() {
     println!("{done}");
     let (found, code) = state.json(&["search", "ordinary page"]);
     assert_eq!(code, 0, "{found}");
-    assert_eq!(found["data"]["route"], "index", "{found}");
+    assert_eq!(found["data"]["route"], "mixed", "the bomb's page is read again, in case it was the moment: {found}");
     assert_eq!(found["data"]["hits"].as_array().unwrap().len(), 1, "the page after the bomb: {found}");
     let hit = &found["data"]["hits"][0];
     assert_eq!(hit["page"], 2);
@@ -534,4 +534,71 @@ fn a_password_protected_file_leaves_no_text() {
     assert!(!paths.pages.exists() || std::fs::read_dir(&paths.pages).is_ok_and(|mut pages| pages.next().is_none()), "there are page files on disk");
     let (searched, code) = state.json(&["search", "anything"]);
     assert_eq!(code, exit::PROTECTED, "{searched}");
+}
+
+/// Reads a real file, except that one page fails, as a worker lost at the wrong moment would make it.
+struct OnePageFails {
+    doc: recto_render_service::DocRenderer,
+    file: PathBuf,
+    key: CorpusKey,
+    fails: u32,
+}
+
+impl recto_index::corpus::PageFeed for OnePageFails {
+    fn page_count(&mut self) -> Result<u32, recto_index::corpus::FeedError> {
+        self.doc.page_count().map_err(|_| recto_index::corpus::FeedError::Cant("couldnt_open"))
+    }
+    fn read(&mut self, page: u32) -> Result<recto_index::corpus::FedPage, recto_index::corpus::FeedError> {
+        if page == self.fails {
+            return Err(recto_index::corpus::FeedError::Page(recto_index::corpus::FailReason::Stopped));
+        }
+        let read = self.doc.page_characters(page, true, true).unwrap();
+        Ok(recto_index::corpus::FedPage { chars: read.chars, boxes: read.boxes, hidden_checked: read.hidden_checked })
+    }
+    fn still_the_same_file(&mut self) -> bool {
+        CorpusKey::of_file(&self.file).is_ok_and(|now| now == self.key)
+    }
+}
+
+/// Builds a file's corpus here, with one page recorded as failed.
+fn corpus_with_a_failed_page(state: &State, file: &TempPdf, page: u32) {
+    let key = CorpusKey::of_file(&file.0).unwrap();
+    let doc = recto_render_service::DocRenderer::new(&file.0, None, recto_render_service::ServiceConfig::for_worker(Path::new(common::bin()).with_file_name("recto-render-service")).unwrap(), recto_render_service::Policy::default()).unwrap();
+    let mut feed = OnePageFails { doc, file: file.0.clone(), key, fails: page };
+    state.paths.prepare().unwrap();
+    let built = recto_index::corpus::build(&state.paths.corpus, key, &mut feed, &recto_index::corpus::DocMeta::default(), &recto_index::corpus::BuildLimits::default()).unwrap();
+    assert!(matches!(built, recto_index::corpus::BuildOutcome::Ready { .. }), "{built:?}");
+}
+
+/// Failure: a page that failed only because of the moment it was read, such as a worker lost to memory pressure or a deadline under load, reads as failed for as long as the file stays the same, though `--scan` reads it perfectly well, and it's listed in `failed_pages`, so its words can't be found. A failed page in a corpus is only what happened then, so a search reads it now.
+#[test]
+fn a_search_reads_a_page_the_build_couldnt() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("failed.pdf", 5);
+    corpus_with_a_failed_page(&state, &file, 2);
+    state.json(&["open", path(&file)]);
+    let (found, code) = state.json(&["search", "page 3 of"]);
+    assert_eq!(code, 0, "{found}");
+    assert_eq!(found["data"]["coverage"]["failed_pages"], serde_json::json!([]), "{found}");
+    assert_eq!(found["data"]["hits"].as_array().unwrap().len(), 1, "{found}");
+    assert_eq!(found["data"]["hits"][0]["page"], 3, "{found}");
+    assert_eq!(found["data"]["route"], "mixed", "{found}");
+    let (scanned, code) = state.json(&["search", "page 3 of", "--scan"]);
+    assert_eq!(code, 0, "{scanned}");
+    assert_eq!(the_same_answer(found), the_same_answer(scanned));
+    index_or_mixed_matches_scan(&state, &["search", "common"]);
+    index_or_mixed_matches_scan(&state, &["search", "common", "--limit", "200"]);
+    index_or_mixed_matches_scan(&state, &["search", "zzzqqqxx"]);
+}
+
+/// The same as [`index_matches_scan`], for a corpus some of whose pages have to be read live.
+fn index_or_mixed_matches_scan(state: &State, args: &[&str]) {
+    let (indexed, code) = state.json(args);
+    assert_eq!(code, 0, "{args:?}: {indexed}");
+    let mut with_scan = args.to_vec();
+    with_scan.push("--scan");
+    let (scanned, code) = state.json(&with_scan);
+    assert_eq!(code, 0, "{args:?}: {scanned}");
+    assert_eq!(the_same_answer(indexed), the_same_answer(scanned), "{args:?}");
 }

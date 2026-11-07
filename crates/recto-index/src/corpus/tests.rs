@@ -46,6 +46,10 @@ enum Fake {
     Text(&'static str),
     Unchecked(&'static str),
     Failed,
+    /// Fails for a reason of the moment, every time.
+    LostWorker,
+    /// Fails for a reason of the moment, the first time only.
+    LostWorkerOnce(&'static str),
     /// Reading can't go on past here. What's been done stays.
     Stop,
     Refuse,
@@ -55,11 +59,12 @@ struct FakeFeed {
     pages: Vec<Fake>,
     reads: u32,
     same_file: bool,
+    lost_once: Vec<u32>,
 }
 
 impl FakeFeed {
     fn new(pages: &[Fake]) -> Self {
-        Self { pages: pages.to_vec(), reads: 0, same_file: true }
+        Self { pages: pages.to_vec(), reads: 0, same_file: true, lost_once: Vec::new() }
     }
 }
 
@@ -74,6 +79,15 @@ impl PageFeed for FakeFeed {
             Fake::Text(text) => Ok(FedPage { chars: chars(text), boxes: Vec::new(), hidden_checked: true }),
             Fake::Unchecked(text) => Ok(FedPage { chars: chars(text), boxes: Vec::new(), hidden_checked: false }),
             Fake::Failed => Err(FeedError::Page(FailReason::Stopped)),
+            Fake::LostWorker => Err(FeedError::Page(FailReason::Crashed)),
+            Fake::LostWorkerOnce(text) => {
+                if self.lost_once.contains(&page) {
+                    Ok(FedPage { chars: chars(text), boxes: Vec::new(), hidden_checked: true })
+                } else {
+                    self.lost_once.push(page);
+                    Err(FeedError::Page(FailReason::Deadline))
+                }
+            }
             Fake::Stop => Err(FeedError::Cant("stopped_here")),
             Fake::Refuse => Err(FeedError::Refused("needs_password")),
         }
@@ -445,6 +459,75 @@ fn a_page_that_fails_is_said_and_the_rest_go_on() {
     let mut buffer = Vec::new();
     assert_eq!(corpus.page(1, &mut buffer).unwrap().kind, PageKind::Failed);
     assert_eq!(corpus.page(2, &mut buffer).unwrap().text, "after the bomb");
+}
+
+/// Failure: a page that failed for a reason of the moment, a worker lost to memory pressure or a deadline under load, stays failed for as long as the file's the same, in the search and in the folder an agent will read. It's read again at once, and what comes back is exactly what a clean build would have made.
+#[test]
+fn a_temporary_failure_gets_read_again_and_comes_out_as_if_it_never_happened() {
+    let temp = Temp::new();
+    let key = key_of(&temp, b"a file");
+    let root = temp.0.join("corpus");
+    let pages = [PLAIN, Fake::LostWorkerOnce("the words of a page that was only unlucky"), PLAIN];
+    let BuildOutcome::Ready { summary, .. } = build(&root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &BuildLimits::default()).unwrap() else { panic!() };
+    assert_eq!((summary.failed_pages, summary.retry_pages), (0, 0), "{summary:?}");
+    let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
+    let mut buffer = Vec::new();
+    let page = corpus.page(1, &mut buffer).unwrap();
+    assert_eq!((page.kind, page.text), (PageKind::Text, "the words of a page that was only unlucky"));
+    let paths = CorpusPaths::new(&root, key);
+    let file = fs::read_to_string(paths.page_file(1, 4)).unwrap();
+    assert!(file.contains("only unlucky") && file.contains("text=native"), "{file}");
+    let manifest: Value = serde_json::from_slice(&fs::read(&paths.manifest).unwrap()).unwrap();
+    assert_eq!(manifest["failed_pages"], json!([]));
+    assert_eq!(manifest["page_index"][1]["text"], "native");
+    assert_eq!(corpus.page(2, &mut buffer).unwrap().text, "first line of a page\nsecond line of it", "the pages after it are where they were");
+}
+
+/// Failure: a page that truly can't be read is tried for ever, each costing a worker and up to a page's time, or a page that's only failed once is never tried again. It's tried a few times, some time apart, and then it's the page. And what truly can't be read never gets tried at all.
+#[test]
+fn a_page_that_keeps_failing_stops_being_tried() {
+    let temp = Temp::new();
+    let key = key_of(&temp, b"a file");
+    let root = temp.0.join("corpus");
+    let pages = [PLAIN, Fake::LostWorker, Fake::Failed];
+    let BuildOutcome::Ready { summary, .. } = build(&root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &BuildLimits::default()).unwrap() else { panic!() };
+    assert_eq!((summary.failed_pages, summary.retry_pages, summary.retries), (2, 1, 1), "{summary:?}");
+    assert!(!summary.retry_is_due(), "not again straight away");
+
+    let paths = CorpusPaths::new(&root, key);
+    let age = |retries: u32| {
+        let mut ready: Value = serde_json::from_slice(&fs::read(&paths.ready).unwrap()).unwrap();
+        ready["retried_at"] = json!(now_seconds() - RETRY_PAUSE.as_secs() - 1);
+        ready["retries"] = json!(retries);
+        fs::write(&paths.ready, ready.to_string()).unwrap();
+    };
+    age(1);
+    let mut feed = FakeFeed::new(&pages);
+    let BuildOutcome::AlreadyReady(after) = build(&root, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap() else { panic!() };
+    assert_eq!(feed.reads, 1, "only the page that might read another time is read again");
+    assert_eq!(after.retries, 2);
+    assert!(ReadyCorpus::open(&root, key).unwrap().is_some(), "and it's still usable");
+
+    age(MAX_RETRIES);
+    let mut feed = FakeFeed::new(&pages);
+    let BuildOutcome::AlreadyReady(last) = build(&root, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap() else { panic!() };
+    assert_eq!(feed.reads, 0, "it's been tried enough");
+    assert!(!last.retry_is_due());
+}
+
+/// Failure: a retry adds to the pack while a search is reading, and the search takes the longer pack for a damaged corpus and throws it away. Text no record points at is harmless, as a retry killed partway leaves it. A pack shorter than promised isn't.
+#[test]
+fn a_pack_may_be_longer_than_it_says_and_never_shorter() {
+    let temp = Temp::new();
+    let key = key_of(&temp, b"a file");
+    let root = temp.0.join("corpus");
+    build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    let paths = CorpusPaths::new(&root, key);
+    let mut pack = OpenOptions::new().append(true).open(&paths.pack).unwrap();
+    pack.write_all(b"text nothing points at").unwrap();
+    assert!(ReadyCorpus::open(&root, key).unwrap().is_some());
+    pack.set_len(2).unwrap();
+    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged);
 }
 
 /// Failure: a corpus someone has damaged panics the session, or its bad bytes reach an agent as a document's text. Each way it can fail to add up is said, and a page past the end of a file or with broken UTF-8 isn't believed.
