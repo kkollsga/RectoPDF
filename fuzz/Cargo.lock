@@ -479,6 +479,7 @@ dependencies = [
  "recto-render-service",
  "recto-session",
  "recto-sign",
+ "recto-svg",
  "serde",
  "serde_json",
 ]
@@ -499,6 +500,7 @@ dependencies = [
 name = "recto-core"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "lopdf",
 ]
 
@@ -512,6 +514,7 @@ dependencies = [
  "recto-index",
  "recto-platform",
  "recto-proto",
+ "recto-reader",
  "recto-render-service",
  "recto-session",
  "recto-testpdf",
@@ -550,6 +553,17 @@ name = "recto-proto"
 version = "0.1.0"
 
 [[package]]
+name = "recto-reader"
+version = "0.1.0"
+dependencies = [
+ "recto-index",
+ "recto-platform",
+ "recto-proto",
+ "recto-render-service",
+ "serde_json",
+]
+
+[[package]]
 name = "recto-render"
 version = "0.1.0"
 dependencies = [
@@ -577,6 +591,13 @@ dependencies = [
 [[package]]
 name = "recto-sign"
 version = "0.1.0"
+
+[[package]]
+name = "recto-svg"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+]
 
 [[package]]
 name = "recto-testpdf"
