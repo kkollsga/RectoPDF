@@ -348,6 +348,14 @@ mod tests {
         assert_eq!(&text[byte_spans(text, &[(27, 31)])[0].clone()], "that", "a span running to the end of the text");
     }
 
+    /// Failure: `10-year` broken across a line stays in two pieces, and `fold` makes that `10- year`, which a search for `10-year` doesn't match, so a real term can't be found. Traced from the characters, through the normaliser, to a hit.
+    #[test]
+    fn a_number_and_its_noun_broken_across_lines_is_found() {
+        let page: Vec<recto_proto::CharRecord> = "A plan\n10-\nyear horizon".chars().map(|c| recto_proto::CharRecord::new(c as u32, 0)).collect();
+        let text = recto_index::normalize(&page, false).text;
+        assert_eq!(find_hits(&text, &fold("10-year").0, 5).total, 1, "{text:?}");
+    }
+
     /// Failure: a phrase broken across a line isn't found, or a hit's line number is off, so a citation points at the wrong place.
     #[test]
     fn a_phrase_across_a_line_break_is_found_on_its_line() {

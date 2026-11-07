@@ -151,8 +151,9 @@ pub fn normalize(chars: &[CharRecord], want_source: bool) -> Normalized {
             } else {
                 out.hyphens_joined += 1;
             }
-            // A marker carries its line break away only if there's a token to join it to, and a page number isn't half of one. Otherwise the line really did end here.
-            i = if chars.get(right_start).is_some_and(|c| c.ch().is_alphanumeric()) && !ends_in_a_page_mark(&out.text, chars.get(right_start).map(|c| c.ch())) { right_start } else { i + 1 };
+            // A marker carries its line break away only if there's a token to join it to, and a page number isn't half of one. Otherwise the line really did end here. A hyphen that was joined away has already counted as a join, and has to be one: only a hyphen that's kept can belong to a page number.
+            let page_mark = keep && ends_in_a_page_mark(&out.text, chars.get(right_start).map(|c| c.ch()));
+            i = if chars.get(right_start).is_some_and(|c| c.ch().is_alphanumeric()) && !page_mark { right_start } else { i + 1 };
             continue;
         }
         if is_break(ch) {
@@ -184,8 +185,17 @@ pub fn normalize(chars: &[CharRecord], want_source: bool) -> Normalized {
 /// How far back a line's end is looked at for a page mark. Longer than any, so a hostile page of one long line can't make this quadratic.
 const MAX_PAGE_MARK: usize = 32;
 
-/// Whether the text so far ends in a hyphen that belongs to a page number or a marker, rather than a word broken across a line: `-17-` or `-iv-` anywhere, or `17-` or `A-` as all there is on its line. Those aren't half of a token, so the next line isn't their other half: `wbD34442284` p. 17 read `-17-PBC`. `the 21-` isn't one of them, since that's how `21-cm` breaks across a line. Nor is `2015-` alone on its line above `2019`: a range of numbers in a table's cell is one token, as on `un_sdg2024` p. 43.
+/// Whether the text so far ends in a hyphen that belongs to a page number or a marker, rather than a word broken across a line. Those aren't half of a token, so the next line isn't their other half: `wbD34442284` p. 17 read `-17-PBC`. What counts:
+///
+/// - A number between hyphens, `-17-`, whatever follows.
+/// - A real roman numeral or one letter between hyphens, `-iv-`, unless a small letter follows: `-civil-` and `-mix-` are more likely words.
+/// - A number or one letter as all there is on its line, `17-` or `A-`, only above a capital. `10-` above `year` and `X-` above `ray` are how `10-year` and `X-ray` break, and `2015-` above `2019` is a range in a table's cell, as on `un_sdg2024` p. 43.
+///
+/// `the 21-` isn't one, since that's how `21-cm` breaks across a line.
 fn ends_in_a_page_mark(text: &str, next: Option<char>) -> bool {
+    if !text.ends_with('-') {
+        return false;
+    }
     let tail_start = text.char_indices().rev().nth(MAX_PAGE_MARK).map_or(0, |(at, _)| at);
     let tail = &text[tail_start..];
     let line = tail.rsplit('\n').next().unwrap_or(tail);
@@ -196,12 +206,37 @@ fn ends_in_a_page_mark(text: &str, next: Option<char>) -> bool {
         return false;
     }
     let digits = core_bare.chars().all(|c| c.is_ascii_digit());
-    let roman = core_bare.chars().all(|c| "ivxlcdmIVXLCDM".contains(c));
     let one_letter = core_bare.chars().count() == 1;
     let enclosed = core_bare.len() < core.len();
     let is_all_on_its_line = (tail_start == 0 || line.len() < tail.len()) && line.trim() == token;
-    let a_range = digits && next.is_some_and(|c| c.is_ascii_digit());
-    (enclosed && (digits || roman || one_letter)) || (is_all_on_its_line && !a_range && (digits || one_letter))
+    if enclosed {
+        digits || ((one_letter || is_roman_numeral(core_bare)) && !next.is_some_and(char::is_lowercase))
+    } else {
+        is_all_on_its_line && (digits || one_letter) && next.is_some_and(char::is_uppercase)
+    }
+}
+
+/// Whether this is a roman numeral as they're written: `iv`, `XIX`, and not `civil`, `mid` or `iiii`.
+fn is_roman_numeral(word: &str) -> bool {
+    let lower = word.to_ascii_lowercase();
+    if word != lower && word != word.to_ascii_uppercase() {
+        return false;
+    }
+    // Thousands, then hundreds, tens and ones, each with the same three signs.
+    let mut rest = lower.as_str();
+    rest = rest.trim_start_matches('m');
+    for (one, five, ten) in [('c', 'd', 'm'), ('x', 'l', 'c'), ('i', 'v', 'x')] {
+        let (nine, four) = (format!("{one}{ten}"), format!("{one}{five}"));
+        if let Some(after) = rest.strip_prefix(&nine).or_else(|| rest.strip_prefix(&four)) {
+            rest = after;
+            continue;
+        }
+        rest = rest.strip_prefix(five).unwrap_or(rest);
+        for _ in 0..3 {
+            rest = rest.strip_prefix(one).unwrap_or(rest);
+        }
+    }
+    rest.is_empty() && !lower.is_empty() && lower.len() <= 15
 }
 
 fn skip_breaks(chars: &[CharRecord], mut i: usize) -> usize {
@@ -650,6 +685,35 @@ mod tests {
         assert_eq!(text("anti-^inflammatory"), "anti-inflammatory", "a word alone on its line still joins");
         assert_eq!(text("cell^2015-^2019"), "cell\n2015-2019", "and so does a range of numbers in a table's cell");
         assert_eq!(text("-3-^2. The Recipient"), "-3-\n2. The Recipient", "but not a page number above a numbered line");
+        assert_eq!(text("-2-^be delivered"), "-2-\nbe delivered", "nor above a line that starts small: between hyphens, it's a page number");
+    }
+
+    /// Failure: the rule for page numbers takes in real tokens. `10-^year` stays in two pieces, and a search for `10-year` misses it, and `X-^ray`, `-civil-^ian` and `-Mid-^night` read as markers, because any word made of the letters of roman numerals counted as one and anything alone on its line did.
+    #[test]
+    fn real_tokens_arent_taken_for_page_marks() {
+        assert_eq!(text("before^10-^year plan"), "before\n10-year plan");
+        assert_eq!(text("before^X-^ray of"), "before\nX-ray of");
+        assert_eq!(text("-civil-^ian"), "-civil-ian");
+        assert_eq!(text("\u{2014}Mid-^night"), "\u{2014}Mid-night");
+        assert_eq!(text("-mix-^ture"), "-mix-ture", "a real numeral, but a small letter follows");
+        assert_eq!(text("before^10~^year"), "before\n10-year", "the same with PDFium's own marker");
+        assert_eq!(text("-iv-^Contents"), "-iv-\nContents", "and a real one above a capital is still a page number");
+        assert_eq!(text("before^A-^Summary"), "before\nA-\nSummary");
+        for good in ["i", "iv", "xix", "XIV", "mmxxvi", "cd", "xc", "lxxxviii"] {
+            assert!(is_roman_numeral(good), "{good}");
+        }
+        for bad in ["civil", "mid", "iiii", "vx", "ic", "Xi", "", "dim", "lid", "xxxx", "vv"] {
+            assert!(!is_roman_numeral(bad), "{bad}");
+        }
+    }
+
+    /// Failure: a join is counted and then undone, or undone halfway, so the text reads `-civil` over `ian` with its hyphen gone, and `hyphens_joined` says it joined. A count must match what the text did.
+    #[test]
+    fn a_joined_hyphen_stays_joined_and_counted_once() {
+        let joined = normalize(&chars("-civil~^ian"), false);
+        assert_eq!((joined.text.as_str(), joined.hyphens_joined, joined.hyphens_kept), ("-civilian", 1, 0));
+        let kept = normalize(&chars("-17~^PBC"), false);
+        assert_eq!((kept.text.as_str(), kept.hyphens_joined, kept.hyphens_kept), ("-17-\nPBC", 0, 1));
     }
 
     /// Failure: highlights land on the wrong characters because the map back to PDFium's indices drifts after a join.
