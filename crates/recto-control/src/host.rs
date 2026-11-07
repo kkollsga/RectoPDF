@@ -1,7 +1,7 @@
 //! What the server asks of whoever holds the session. `recto serve` uses [`SessionHost`], and the Mac app will use one that shares its own session.
 
-use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, check_condition, exit};
-use recto_session::{DocLoader, Session};
+use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, check_condition, exit, with_tab_candidates};
+use recto_session::{DocLoader, Session, TabId};
 use serde_json::Value;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -14,8 +14,8 @@ pub trait Host: Send + Sync + 'static {
     fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState;
     /// How many tabs are open. Must never block: `status` answers from the socket's own thread.
     fn tab_count(&self) -> u32;
-    /// The names of tabs with unsaved edits, which `stop` won't throw away.
-    fn unsaved_tabs(&self) -> Vec<String>;
+    /// The tabs with unsaved edits, which `stop` won't throw away.
+    fn unsaved_tabs(&self) -> Vec<(TabId, String)>;
 }
 
 /// A session in this process.
@@ -52,16 +52,16 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
         self.tabs.load(Ordering::Relaxed)
     }
 
-    fn unsaved_tabs(&self) -> Vec<String> {
+    fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
         let session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Undone steps count: they can still be got back, and stopping would lose them.
-        session.tabs().iter().filter(|tab| session.is_edited(tab.id) || session.page_edits(tab.id).is_some_and(recto_session::edit::PageEdits::can_redo)).map(|tab| format!("#{} {}", tab.id.0, tab.name)).collect()
+        session.tabs().iter().filter(|tab| session.is_edited(tab.id) || session.page_edits(tab.id).is_some_and(recto_session::edit::PageEdits::can_redo)).map(|tab| (tab.id, tab.name.to_string())).collect()
     }
 }
 
 /// The refusal for stopping with unsaved edits.
-pub(crate) fn unsaved_refusal(tabs: Vec<String>) -> AgentError {
+pub(crate) fn unsaved_refusal(tabs: &[(TabId, String)]) -> AgentError {
     let mut error = AgentError::new("unsaved_changes", "The session wasn't stopped: these tabs have unsaved edits, which would be lost.", exit::FAILED);
-    error.candidates = tabs;
+    with_tab_candidates(&mut error, tabs.iter().map(|(id, name)| (*id, name.as_str())));
     error
 }

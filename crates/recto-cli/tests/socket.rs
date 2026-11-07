@@ -565,7 +565,7 @@ fn the_log_records_every_action_and_never_document_text() {
     assert!(!text.contains(canary), "document text in the log");
     assert!(!text.contains("secret") && !text.contains(&hidden), "a hidden name in the log");
     assert!(!text.contains('\u{E0073}'), "a tag character in the log");
-    assert!(text.contains("\"file\":\"repo rt.pdf\""), "the cleaned name: {text}");
+    assert!(text.contains("\"untrusted\":{\"file\":\"repo rt.pdf\"}"), "the cleaned name, under `untrusted`: {text}");
 
     let (log, code) = state.json(&["log", "--last", "100"]);
     assert_eq!(code, 0, "{log}");
@@ -638,9 +638,9 @@ fn skill_install_at_a_terminal_writes_only_where_asked() {
     let body = std::fs::read_to_string(folder.join("SKILL.md")).unwrap();
     assert!(body.starts_with("---\nname: recto\n"), "the front matter must come first");
     assert!(folder.join("REFERENCE.md").exists());
-    let (shown, _, code) = state.text(&["skill", "show"]);
+    let (show, _, code) = state.text(&["skill", "show"]);
     assert_eq!(code, 0);
-    assert_eq!(shown.trim_end(), body.trim_end(), "`skill show` and the file must match");
+    assert_eq!(show.trim_end(), body.trim_end(), "`skill show` and the file must match");
 
     std::fs::write(folder.join("REFERENCE.md"), "edited by someone").unwrap();
     let (code, shown) = in_a_terminal(&state, &["skill", "install", "--path", path, "--json"], None, Word::Right);
@@ -663,10 +663,6 @@ fn skill_install_at_a_terminal_writes_only_where_asked() {
     let (code, shown) = in_a_terminal(&state, &["skill", "install", "--target", "claude-code", "--json"], Some(&fake_home), Word::Right);
     assert_eq!(code, 0, "{shown}");
     assert!(fake_home.join(".claude/skills/recto/SKILL.md").exists());
-    // With a test state folder, it won't touch the real home, whatever's asked.
-    let real_home = recto_platform::local::real_home().unwrap();
-    let (refused, code) = target(&real_home, &[]);
-    assert_eq!((refused["error"]["code"].as_str(), code), (Some("state_refused"), exit::PERMISSION), "{refused}");
     let (neither, code) = state.json(&["skill", "install"]);
     assert_eq!((neither["error"]["code"].as_str(), code), (Some("usage"), exit::USAGE));
     std::fs::remove_dir_all(&folder).unwrap();

@@ -391,12 +391,13 @@ impl Command {
 
     /// What goes in the activity log about this command's arguments. Numbers and cleaned file names, and never anything that could hold document text: a tab's name as typed or a search's words aren't kept.
     pub fn log_details(&self) -> Value {
-        let file = |path: &Path| path.file_name().map(|name| recto_core::clean_line(&name.to_string_lossy()));
+        // A file's name comes from outside, so even cleaned, it goes under `untrusted`, here as everywhere.
+        let file = |path: &Path| json!({ "file": file_label(path) });
         let tab_of = |tab: &str| if tab == "active" || tab.strip_prefix('#').is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()) && id.len() <= 10) { tab.to_string() } else { "by name".to_string() };
         match self {
-            Self::Open { path, page } => json!({ "file": file(path), "page": page }),
-            Self::PageInsert { tab, path, at } => json!({ "tab": tab_of(tab), "file": file(path), "at": at }),
-            Self::Render { tab, page, out, .. } => json!({ "tab": tab_of(tab), "page": page, "file": file(out) }),
+            Self::Open { path, page } => json!({ "page": page, "untrusted": file(path) }),
+            Self::PageInsert { tab, path, at } => json!({ "tab": tab_of(tab), "at": at, "untrusted": file(path) }),
+            Self::Render { tab, page, out, .. } => json!({ "tab": tab_of(tab), "page": page, "untrusted": file(out) }),
             Self::Text { tab, page } | Self::Goto { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
@@ -1043,10 +1044,22 @@ pub(crate) fn select<L: DocLoader>(session: &Session<L>, selector: &str) -> Resu
         [one] => Ok(one.id),
         many => {
             let mut error = AgentError::new("ambiguous", "More than one tab matches that name.", exit::AMBIGUOUS);
-            error.candidates = many.iter().take(MAX_CANDIDATES).map(|t| format!("#{} {}", t.id.0, t.name)).collect();
+            with_tab_candidates(&mut error, many.iter().take(MAX_CANDIDATES).map(|t| (t.id, &*t.name)));
             Err(error)
         }
     }
+}
+
+/// Lists tabs in an error: their ids to use, and their names, which come from files, only under `untrusted`.
+pub fn with_tab_candidates<'a>(error: &mut AgentError, tabs: impl Iterator<Item = (TabId, &'a str)>) {
+    let mut names = Vec::new();
+    error.candidates.clear();
+    for (id, name) in tabs {
+        let sel = format!("#{}", id.0);
+        names.push(json!({ "sel": sel, "name": name }));
+        error.candidates.push(sel);
+    }
+    error.untrusted = json!({ "candidates": names });
 }
 
 /// Most candidates listed for an ambiguous name. Enough to choose from, and the rest of a thousand tabs isn't help.
@@ -1241,7 +1254,8 @@ mod tests {
         let error = run(&mut session, Level::Control, &Command::Tap { tab: "report".into() }).unwrap_err();
         assert_eq!(error.code, "ambiguous");
         assert_eq!(error.exit, exit::AMBIGUOUS);
-        assert_eq!(error.candidates.len(), 2);
+        assert_eq!(error.candidates, ["#1", "#2"], "ids to use, and no names outside `untrusted`");
+        assert_eq!(error.untrusted["candidates"][0]["name"], "Report 2025");
         assert!(run(&mut session, Level::Control, &Command::Tap { tab: "invoice".into() }).is_ok());
     }
 
@@ -1556,7 +1570,7 @@ mod tests {
     fn log_details_hold_no_text_and_clean_file_names() {
         let hostile = format!("/d/a{}\nb.pdf", char::from_u32(0xE0041).unwrap());
         let open = Command::Open { path: hostile.into(), page: Some(3) }.log_details();
-        assert_eq!(open["file"], "a b.pdf");
+        assert_eq!(open["untrusted"]["file"], "a b.pdf");
         assert_eq!(open["page"], 3);
         let search = Command::Search { tab: "secret report".into(), query: "the secret words".into(), pages: None, limit: None }.log_details().to_string();
         assert!(!search.contains("secret"), "{search}");

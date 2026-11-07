@@ -943,7 +943,7 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
                 }
                 if matches!(command, Command::Stop {}) {
                     let unsaved = host.unsaved_tabs();
-                    return if unsaved.is_empty() { Ok(json!({ "stopping": true })) } else { Err(unsaved_refusal(unsaved)) };
+                    return if unsaved.is_empty() { Ok(json!({ "stopping": true })) } else { Err(unsaved_refusal(&unsaved)) };
                 }
                 host.run(level, &command, &mut events)
             }))

@@ -6,6 +6,7 @@ use recto_control::client::Client;
 use recto_control::host::Host;
 use recto_control::levels;
 use recto_control::server::{BindError, Limits, Server};
+use recto_session::TabId;
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -22,7 +23,7 @@ struct Stand {
     released: Condvar,
     running_draws: AtomicUsize,
     most_draws: AtomicUsize,
-    unsaved: Mutex<Vec<String>>,
+    unsaved: Mutex<Vec<(TabId, String)>>,
 }
 
 impl Stand {
@@ -70,7 +71,7 @@ impl Host for Stand {
         7
     }
 
-    fn unsaved_tabs(&self) -> Vec<String> {
+    fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
         self.unsaved.lock().unwrap().clone()
     }
 }
@@ -265,10 +266,11 @@ fn a_half_closed_client_still_gets_its_answer() {
 #[test]
 fn stop_keeps_unsaved_edits_and_a_host_can_end_it() {
     let running = Running::start(Limits::default());
-    running.host.unsaved.lock().unwrap().push("#1 report".to_string());
+    running.host.unsaved.lock().unwrap().push((TabId(1), "report".to_string()));
     let refused = running.call(&json!({ "cmd": "stop" }));
     assert_eq!(refused["error"]["code"], "unsaved_changes", "{refused}");
-    assert_eq!(refused["error"]["candidates"][0], "#1 report");
+    assert_eq!(refused["error"]["candidates"][0], "#1");
+    assert_eq!(refused["error"]["untrusted"]["candidates"][0]["name"], "report", "a file's name goes only under `untrusted`");
     assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
     running.host.unsaved.lock().unwrap().clear();
     let mut watcher = running.connect();

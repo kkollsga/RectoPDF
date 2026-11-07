@@ -418,9 +418,9 @@ pub static TABLE: &[Spec] = &[
         name: "skill install",
         tag: "skill_install",
         group: GROUP_SKILL,
-        access: Access::At(Level::Off),
+        access: Access::UserOnly,
         route: Route::Here,
-        summary: "Writes SKILL.md and REFERENCE.md, only when asked. Refuses to replace a file someone changed, and says so.",
+        summary: "For the user: writes SKILL.md and REFERENCE.md into their agent's files, after a word typed back at a real terminal. Refuses to replace a file someone changed, and says so.",
         args: &[
             Arg { key: "path", flag: Some("--path"), kind: Kind::Path, required: false, help: "The folder to write into." },
             Arg { key: "target", flag: Some("--target"), kind: Kind::Choice(&["claude-code"]), required: false, help: "`claude-code` is Claude Code's own place for skills, `~/.claude/skills/recto/`." },
