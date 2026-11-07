@@ -224,6 +224,7 @@ pdfium_api! {
     FPDFTextObj_GetFont: fn(FPDF_PAGEOBJECT) -> FPDF_FONT;
     FPDFFont_GetFamilyName: fn(FPDF_FONT, *mut std::ffi::c_char, usize) -> usize;
     FPDFFont_GetFlags: fn(FPDF_FONT) -> c_int;
+    FPDFAnnot_HasKey: fn(FPDF_ANNOTATION, *const std::ffi::c_char) -> FPDF_BOOL;
     FPDFFont_GetWeight: fn(FPDF_FONT) -> c_int;
     FPDFFont_GetGlyphPath: fn(FPDF_FONT, u32, c_float) -> FPDF_GLYPHPATH;
     FPDFGlyphPath_CountGlyphSegments: fn(FPDF_GLYPHPATH) -> c_int;

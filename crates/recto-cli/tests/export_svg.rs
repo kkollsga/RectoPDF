@@ -470,6 +470,48 @@ fn a_mark_past_the_limit_doesnt_let_a_section_through() {
     assert_eq!(data["all_vector"], false, "and it says so: {data}");
 }
 
+/// Failure: text that clips is only noticed if it's in the box and on the page, so what it clips to nothing goes out as vector and text, with `all_vector` true. It has to count from wherever it is.
+#[test]
+fn what_text_clips_away_stays_out_wherever_the_text_is() {
+    let art = "1 0 0 rg 300 100 200 200 re f BT /F1 12 Tf 0 Tr 320 200 Td (SECRET) Tj ET Q 0 1 0 rg 40 100 40 40 re f\n";
+    let outside_the_box = format!("q BT /F1 40 Tf 7 Tr 72 700 Td (HEAD) Tj ET {art}");
+    let off_the_page = format!("q BT /F1 40 Tf 7 Tr 72 -500 Td (HEAD) Tj ET {art}");
+    let box_away = ["--rect", "20,400,560,380"];
+    let file = TempPdf::new("doc.pdf", &pages(&[Page::new(outside_the_box)]));
+    assert_eq!(red_in_render(&file), 0, "PDFium clips it away");
+    let (svg, data) = svg_of(&file, &box_away);
+    assert!(!svg.contains("#f00") && !svg.contains("SECRET"), "{data}");
+    let file = TempPdf::new("doc.pdf", &pages(&[Page::new(off_the_page)]));
+    assert_eq!(red_in_render(&file), 0, "PDFium clips it away");
+    let (svg, data) = svg_of(&file, &[]);
+    assert!(!svg.contains("#f00") && !svg.contains("SECRET"), "{data}");
+}
+
+/// Failure: the picture of a page's annotations is written under whatever clip the last object had, so a stamp is cut to that, or vanishes, while the answer lists the picture. Same for one that's a link's own appearance, which isn't kept at all.
+#[test]
+fn annotations_arent_cut_to_the_last_objects_clip_and_a_links_look_is_kept() {
+    let (annot, look) = (first_extra_object(1), first_extra_object(1) + 1);
+    let appearance = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 100 100]".into(), data: b"1 0 0 rg 0 0 100 100 re f".to_vec() };
+    let clipped_last = "q 10 10 m 20 10 l 15 20 l h W n 0 1 0 rg 0 0 100 100 re f Q\n";
+    let stamp = Object::Dict(format!("<< /Type /Annot /Subtype /Stamp /Rect [300 300 400 400] /AP << /N {look} 0 R >> /F 4 >>"));
+    let bytes = pages_with(&[Page { page_extra: format!("/Annots [{annot} 0 R]"), ..Page::new(clipped_last) }], "", vec![stamp, appearance.clone()]);
+    let (svg, data) = svg_of(&TempPdf::new("doc.pdf", &bytes), &[]);
+    assert_eq!(rasterised(&data, "annotations"), 1, "{data}");
+    let (picture, clip_closes) = (svg.find("<image").unwrap(), svg.find("</g>").unwrap());
+    assert!(clip_closes < picture, "the picture's inside the clip's group: {}", &svg[..svg.len().min(700)]);
+    let link = Object::Dict(format!("<< /Type /Annot /Subtype /Link /Rect [300 300 400 400] /AP << /N {look} 0 R >> /F 4 >>"));
+    let bytes = pages_with(&[Page { page_extra: format!("/Annots [{annot} 0 R]"), ..Page::new("0 1 0 rg 10 10 5 5 re f\n") }], "", vec![link, appearance]);
+    let file = TempPdf::new("doc.pdf", &bytes);
+    assert!(red_in_render(&file) > 0, "PDFium draws it");
+    let (svg, data) = svg_of(&file, &[]);
+    assert!(embedded_images(svg.as_bytes()).iter().map(red_pixels).sum::<usize>() > 0, "{data}");
+    // One with no look of its own draws nothing and costs nothing.
+    let plain = Object::Dict("<< /Type /Annot /Subtype /Link /Rect [300 300 400 400] /Border [0 0 0] >>".into());
+    let bytes = pages_with(&[Page { page_extra: format!("/Annots [{annot} 0 R]"), ..Page::new("0 1 0 rg 10 10 5 5 re f\n") }], "", vec![plain]);
+    let (_, data) = svg_of(&TempPdf::new("doc.pdf", &bytes), &[]);
+    assert_eq!(data["all_vector"], true, "{data}");
+}
+
 /// Failure: a layer that's off comes out in the export, so what the page doesn't show is handed over. It must be left out, and counted.
 #[test]
 fn a_layer_thats_off_is_left_out_and_counted() {

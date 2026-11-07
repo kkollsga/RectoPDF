@@ -517,7 +517,7 @@ impl Walk {
                 Phase::Annotations => {
                     self.phase = Phase::Whole;
                     if !self.flatten {
-                        self.annotations_patch();
+                        self.annotations_patch(out);
                     }
                 }
                 Phase::Whole => {
@@ -804,6 +804,15 @@ impl Walk {
             self.note(NoteCode::Unknown);
             return Ok(());
         }
+        // Before anything can pass over it: text that clips does so from wherever it is, off the page or outside the box. It applies to what comes after, not to itself.
+        let clipped_by_text = self.level().text_clip;
+        if kind == FPDF_PAGEOBJ_TEXT
+            // SAFETY: the object is live with its page.
+            && matches!(unsafe { (self.api.FPDFTextObj_GetTextRenderMode)(object) }, 4..=7)
+            && let Some(level) = self.levels.last_mut()
+        {
+            level.text_clip = true;
+        }
         let Some(area) = self.area_of(object) else {
             self.note(NoteCode::NotFinite);
             return Ok(());
@@ -833,9 +842,10 @@ impl Walk {
                 _ => Ok(()),
             };
         }
-        if self.level().text_clip {
+        // Whether any of it shows can't be told, so what's drawn is the picture, and its words stay out of the file: they may be clipped to nothing.
+        if clipped_by_text {
             self.patch(object, area, Why::TextClip, PatchKind::Alone, out);
-            return if kind == FPDF_PAGEOBJ_TEXT { self.text_overlay_only(object, out) } else { Ok(()) };
+            return Ok(());
         }
         match kind {
             FPDF_PAGEOBJ_PATH => self.path(object, area, out),
@@ -1254,11 +1264,6 @@ impl Walk {
         let draws = matches!(mode, 0 | 1 | 2 | 4 | 5 | 6);
         let strokes = matches!(mode, 1 | 2 | 5 | 6);
         let fills = matches!(mode, 0 | 2 | 4 | 6);
-        if matches!(mode, 4..=7)
-            && let Some(level) = self.levels.last_mut()
-        {
-            level.text_clip = true;
-        }
         if !draws {
             return self.text_overlay_only_with(object, &chars, out);
         }
@@ -1897,7 +1902,7 @@ impl Walk {
     }
 
     /// A picture of what annotations and form fields draw, if any might. Anything else on the page is off, since it's in the file already.
-    fn annotations_patch(&mut self) {
+    fn annotations_patch(&mut self, out: &mut Vec<u8>) {
         // SAFETY: the page is live, each index below its count, and each annotation closed before the next.
         let mut any = false;
         unsafe {
@@ -1907,8 +1912,10 @@ impl Walk {
                     continue;
                 }
                 let subtype = (self.api.FPDFAnnot_GetSubtype)(annot);
+                // A link draws nothing unless it brings its own look, as PDFium draws it if it does.
+                let has_look = (self.api.FPDFAnnot_HasKey)(annot, c"AP".as_ptr()) != 0;
                 (self.api.FPDFPage_CloseAnnot)(annot);
-                if subtype != FPDF_ANNOT_LINK && subtype != FPDF_ANNOT_POPUP {
+                if subtype != FPDF_ANNOT_POPUP && (subtype != FPDF_ANNOT_LINK || has_look) {
                     any = true;
                     break;
                 }
@@ -1916,6 +1923,7 @@ impl Walk {
         }
         if any {
             self.isolate_nothing();
+            self.set_clip(0, out);
             self.begin_patch(PatchKind::Annotations, Why::Annotations, self.view_px, std::ptr::null_mut());
         }
     }
