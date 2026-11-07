@@ -670,3 +670,12 @@ fn nothing_outside_a_box_is_in_the_file_at_all() {
     assert_eq!(data["all_vector"], true, "{data}");
     assert!(!svg.contains("612") && !svg.contains("792"), "the page's clip, not cut to the box: {svg}");
 }
+
+/// Failure: a line with `0 w`, the thinnest a device can draw and what CAD and maps use, comes out with no width at all, which SVG draws as nothing.
+#[test]
+fn a_zero_width_line_stays_visible() {
+    let file = TempPdf::new("doc.pdf", &pages(&[Page::new("0 w 100 100 m 400 500 l S\n")]));
+    let (svg, _) = svg_of(&file, &[]);
+    assert!(svg.contains("vector-effect=\"non-scaling-stroke\"") && svg.contains("stroke-width=\"1\""), "{svg}");
+    assert!(!svg.contains("stroke-width=\"0\""), "{svg}");
+}

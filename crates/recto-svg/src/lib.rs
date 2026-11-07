@@ -401,7 +401,10 @@ impl<W: Write> SvgWriter<W> {
         if let Some(stroke) = &style.stroke {
             let factor = if bake { scale.unwrap_or(1.0) } else { 1.0 };
             self.paint(b" stroke=\"", b" stroke-opacity=\"", stroke.paint)?;
-            if (stroke.width - 1.0).abs() > f64::EPSILON || factor != 1.0 {
+            // PDF's zero is the thinnest line a device can draw, and SVG's draws nothing. A width that would be written as zero means the same, and comes out as one pixel whatever the zoom.
+            if fixed_grid(stroke.width * factor, COORD_DIGITS + 1) == 0 {
+                self.push(b" vector-effect=\"non-scaling-stroke\" stroke-width=\"1\"")?;
+            } else if (stroke.width - 1.0).abs() > f64::EPSILON || factor != 1.0 {
                 self.push(b" stroke-width=\"")?;
                 self.number(stroke.width * factor, COORD_DIGITS + 1)?;
                 self.push(b"\"")?;

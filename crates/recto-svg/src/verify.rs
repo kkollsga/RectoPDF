@@ -4,7 +4,7 @@
 const TAGS: &[&str] = &["svg", "g", "path", "defs", "clipPath", "use", "text", "image", "title", "linearGradient", "radialGradient", "stop"];
 const ATTRIBUTES: &[&str] = &[
     "xmlns", "xmlns:xlink", "version", "width", "height", "viewBox", "transform", "d", "fill", "fill-opacity", "fill-rule", "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset",
-    "stroke-miterlimit", "opacity", "pointer-events", "clip-path", "id", "xlink:href", "x", "y", "font-size", "font-family", "font-weight", "font-style", "xml:space", "preserveAspectRatio", "gradientUnits", "x1", "y1", "x2", "y2", "cx", "cy", "r", "offset", "stop-color", "stop-opacity",
+    "stroke-miterlimit", "opacity", "pointer-events", "vector-effect", "clip-path", "id", "xlink:href", "x", "y", "font-size", "font-family", "font-weight", "font-style", "xml:space", "preserveAspectRatio", "gradientUnits", "x1", "y1", "x2", "y2", "cx", "cy", "r", "offset", "stop-color", "stop-opacity",
 ];
 
 /// Reads a whole document, and panics on anything that isn't well formed or isn't on the lists above.

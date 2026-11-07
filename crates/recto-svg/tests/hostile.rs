@@ -191,6 +191,31 @@ fn a_long_path_does_not_drift() {
     }
 }
 
+/// Failure: a line of no width, or one that rounds to none, is written as `stroke-width="0"`, which SVG draws as nothing where PDF draws a hairline. Maps and CAD drawings lose their lines. A thin one that can be written stays what it is.
+#[test]
+fn a_stroke_too_thin_to_write_is_a_hairline() {
+    let stroked = |width: f64, matrix: &Matrix| {
+        let mut out = Vec::new();
+        let mut svg = SvgWriter::begin(&mut out, 10.0, 10.0, &Matrix::IDENTITY, None).unwrap();
+        let stroke = Stroke { paint: Paint::Solid(Rgb(0, 0, 0), 255), width, cap: 0, join: 0, dashes: Vec::new(), dash_phase: 0.0 };
+        let segs = [Seg { kind: SegKind::Move, close: false, x: 0.0, y: 0.0 }, Seg { kind: SegKind::Line, close: false, x: 5.0, y: 5.0 }];
+        svg.path(&PathStyle { fill: Paint::None, even_odd: false, stroke: Some(stroke) }, matrix, segs).unwrap();
+        svg.finish().unwrap();
+        check_document(&out);
+        String::from_utf8(out).unwrap()
+    };
+    let hairline = "vector-effect=\"non-scaling-stroke\" stroke-width=\"1\"";
+    for width in [0.0, 0.00001] {
+        let written = stroked(width, &Matrix::IDENTITY);
+        assert!(written.contains(hairline), "{width}: {written}");
+        assert!(!written.contains("stroke-width=\"0\""), "{written}");
+    }
+    let shrunk = stroked(1.0, &Matrix::new(0.00001, 0.0, 0.0, 0.00001, 0.0, 0.0));
+    assert!(shrunk.contains(hairline), "a pen scaled away to nothing: {shrunk}");
+    let thin = stroked(0.1, &Matrix::IDENTITY);
+    assert!(!thin.contains("vector-effect") && thin.contains("stroke-width=\".1\""), "{thin}");
+}
+
 /// Failure: a curve comes back with its control points wrong, or a move, a line or a close changes meaning through the compact form. Read back, it's the same shape.
 #[test]
 fn every_kind_of_segment_reads_back_as_itself() {
