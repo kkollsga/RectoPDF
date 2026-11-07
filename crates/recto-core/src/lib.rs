@@ -3,16 +3,17 @@
 //! [`inspect`] opens a PDF, reads its facts and closes it again, so a tab holds no handle afterwards. Everything read
 //! here comes from an untrusted file: walks are bounded, cycles are refused, and text is cleaned before anyone sees it.
 
-use lopdf::{Dictionary, FileSource, IndexedReader, Object, ObjectId};
+use lopdf::{BytesSource, Dictionary, FileSource, IndexedReader, Object, ObjectId};
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::cell::Cell;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod signatures;
 
-pub use signatures::{MAX_FIELD_VISITS, MAX_SIGNATURES, SignatureEntry, SignatureInventory, SignatureState, signatures, signatures_within};
+pub use signatures::{MAX_FIELD_VISITS, MAX_SIGNATURES, SignatureEntry, SignatureInventory, SignatureState, signatures, signatures_in_bytes, signatures_within};
 
 /// Most contents entries kept for one document. A hostile file can't make the contents grow past this.
 pub const MAX_TOC_ENTRIES: usize = 100_000;
@@ -127,25 +128,43 @@ fn open_reader(path: &Path) -> Result<IndexedReader, OpenError> {
         return Err(OpenError::NotPdf);
     }
     let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
-    let reader = IndexedReader::open(source).map_err(|_| OpenError::NotPdf)?;
+    checked_reader(IndexedReader::open(source))
+}
+
+/// What every way of opening shares: a file that needs a password is refused here, whichever bytes it came from.
+fn checked_reader(opened: Result<IndexedReader, lopdf::IndexedReaderError>) -> Result<IndexedReader, OpenError> {
+    let reader = opened.map_err(|_| OpenError::NotPdf)?;
     if reader.is_encrypted() && !reader.is_authenticated() {
         return Err(OpenError::PasswordNeeded);
     }
     Ok(reader)
 }
 
+/// Opens bytes already in memory, the same way a file is opened.
+fn open_bytes(bytes: Arc<[u8]>) -> Result<IndexedReader, OpenError> {
+    checked_reader(IndexedReader::open(BytesSource::new(bytes)))
+}
+
 /// Opens a PDF lazily, reads its facts and closes it. No file handle stays open after this returns.
 pub fn inspect(path: &Path) -> Result<DocFacts, OpenError> {
-    let reader = open_reader(path)?;
+    read_facts(&open_reader(path)?)
+}
+
+/// [`inspect`] on bytes in memory. The same walk, so a fuzzer tests the real one, thousands of times a second and without writing a file for each.
+pub fn inspect_bytes(bytes: Arc<[u8]>) -> Result<DocFacts, OpenError> {
+    read_facts(&open_bytes(bytes)?)
+}
+
+fn read_facts(reader: &IndexedReader) -> Result<DocFacts, OpenError> {
     let page_count = reader.page_count().map_err(|_| OpenError::NotPdf)?;
     Ok(DocFacts {
         page_count: u32::try_from(page_count).map_err(|_| OpenError::NotPdf)?,
         byte_len: reader.source_len(),
         encrypted: reader.is_encrypted(),
         version: reader.version().into(),
-        title: read_title(&reader),
+        title: read_title(reader),
         // A damaged outline shouldn't stop a readable PDF from opening.
-        toc: read_toc(&reader).unwrap_or_default(),
+        toc: read_toc(reader).unwrap_or_default(),
         renderer_only: false,
     })
 }

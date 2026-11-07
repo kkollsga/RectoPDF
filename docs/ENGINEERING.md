@@ -21,6 +21,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `recto-ffi` | Planned | UniFFI, pinned to what the C# generator supports (0.31 in Seedwell); every call async or bounded | Hold rules |
 | `recto-cli` | **Started** | `recto`: a thin client of the session on the socket, plus an in-process route for tests that uses the same dispatch, levels and log | Link AppKit |
 | `app/` | Planned | AppKit host, QA channel | Hold rules |
+| `recto-testpdf`, `recto-fuzz` | **Started** | Test-only: PDFs written for tests, and one check on bytes for each thing that takes hostile input. Nothing that ships depends on these | Be depended on by anything that ships |
 
 ## Quality bar
 
@@ -57,6 +58,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `crc32fast` | A checksum per page of a corpus, in hardware on this Mac. Already in the tree through flate2, so it adds no crate. `recto-index` only |
 | `grep-regex`, `grep-matcher` | `search --regex`: ripgrep's own engine, run here, so no program is started and nothing like `rg --pre` can run. `grep-regex` brings `regex-automata`, `regex-syntax` and `bstr`. Not `grep-searcher`: it's for reading files by line, where pages are already in memory and patterns cross lines, and it would add `encoding_rs` and `memmap2`. Both MIT or Unlicense. The way it's set up follows `crates/mcp-methods/src/grep/searcher.rs` in the owner's `mcp-methods`, MIT. `recto-agent` only |
 | `sha2` | Names a corpus for its file, from its identity and samples of its bytes. Already in the tree through lopdf, so it adds no crate. `recto-index` only |
+| `libfuzzer-sys` | `fuzz/` only, which is outside the workspace: nothing in the normal build sees it |
 | PDFium (not a crate) | Draws pages. `bblanchon/pdfium-binaries` release `chromium/8125`, PDFium 158.0.8125.0, no V8, no XFA. Loaded at run time, by the worker alone. `tools/pdfium.sh` fetches it from that release's URL to `target/pdfium/` and stops unless the tarball is SHA-256 `4939bd93…139d` and the library `a45c4464…373a`; `--attest` also runs `gh attestation verify`. It links AppKit; see the sandbox note below |
 
 **No `pdfium-render`.** The spike used it only for raw bindings, because its high-level loaders can't take a `pread` callback and `PdfDocument::handle()` is crate-private. 27 signatures in one file cost no crate; `pdfium-render` costs 24 in the tree. The worker is 0.48 MB here against the spike's 1.3 MB, which also carried JSON.
@@ -353,6 +355,21 @@ The two per-open numbers for that PDF aren't comparing like with like: the earli
 | During a job that draws or reads a page | 17: adds the worker's channel, shared memory, the document, a kqueue | 8: stdin, stdout, stderr to `/dev/null`, its channel, the document, shared memory, the system's font folder, one more that PDFium holds |
 | After the job | 10 | gone |
 | While an index builds | 12: adds the helper's stdin and stdout, and its worker counts as above against the helper | as during a job |
+
+## Fuzzing
+
+**One check per thing that takes hostile input,** in `crates/recto-fuzz/src/targets/`, a plain function on bytes. `tests/smoke.rs` runs each on stable with a fixed seed and a mutator that needs no crate, so every `tools/check.sh` runs them, and a failure repeats on any machine. `fuzz/`, outside the workspace, runs the same functions under libFuzzer, on nightly. `tools/fuzz.sh --seconds 300 [target ...]` builds and runs them, each under the heavy lock and releasing it between targets, keeping its corpus and any crash in `target/fuzz-work`. A longer campaign is the same with `--seconds 3600` overnight, since a run picks up from its corpus: let it take the lock only while nothing else needs the Mac. `RECTO_FUZZ_ROUNDS` and `RECTO_FUZZ_SEED` run the stable loop for longer, with no coverage feedback, if nightly isn't to hand.
+
+| Target | What it runs | What must hold |
+|---|---|---|
+| `pdf_bytes`, `pdf_tree` | `inspect`, `signatures`, the sidebar and `contents` on mutated real PDFs, and on PDFs built from the bytes with a true cross-reference table | Returns, within 30 s and 512 MiB. Caps hold, text is clean, "none" only said of what was read |
+| `proto` | Every decoder and validator, and `FrameReader` on a real channel | No allocation before the bytes arrive, decode and encode agree, a reply that differs from its job is refused |
+| `index` | `repair_line_order`, `read_page`, `normalize`, `hidden_report`, up to the wire's 2,000,000 characters, with NaN, infinities and huge boxes | Only whitespace is added or lost, offsets in bounds, within 60 s |
+| `agent` | JSON lines and command lines through `parse`, `parse_cli` and `execute`, selectors, page specs, level files | Caps hold, what the CLI builds the socket takes, a tab's name doesn't reach Off |
+| `control` | Bytes from a client to the real server on a real socket | Every answer is a line of JSON, no job panics, `status` is answered, and the next client gets in |
+| `edits` | Random steps by the owner and by agents through `execute` at Control, against a plain model | The order is the model's, undo inverts, `is_edited` means it differs, no owner's step is lost below Full, caps hold |
+
+**A hang or a bomb is a failure.** `recto_fuzz::guard` counts every allocation in the process, ends it past 1 GiB, and holds each check to its time and memory. A fuzz build has debug assertions and overflow checks on, and the default sanitizer is none, for speed: everything here is safe Rust but the OS seam, and `FUZZ_SANITIZER=address tools/fuzz.sh control` covers that. **Not covered:** PDFium, which runs in a worker that can be killed, and what's past the reader's own limit on one object. `recto log`'s reading of the log files, which only this user's processes can write. The fork's `/Prev` chain, noted above, which is slow in proportion rather than a hang.
 
 ## Machine notes
 
