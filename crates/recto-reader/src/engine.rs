@@ -48,6 +48,11 @@ const OPEN_LOOK: Duration = Duration::from_millis(20);
 /// What a page says while its file doesn't answer.
 const NOT_ANSWERING: &str = "This file isn't answering. Its disk may have gone to sleep or been disconnected.";
 
+/// Panics of the thread that draws that it comes back from, close together. Past this it would only panic again.
+const MAX_PANICS_IN_A_ROW: u32 = 4;
+/// A panic this long after the last one is a new story.
+const PANICS_FORGOTTEN_AFTER: Duration = Duration::from_secs(60);
+
 /// How long a worker past the retirement line may sit with nothing to do. As long as a heavy worker's idle rule, for the same reason.
 const BIG_WORKER_REST: Duration = Duration::from_secs(3);
 
@@ -88,7 +93,7 @@ impl Engine {
             None => {
                 let shared = Arc::clone(&self.shared);
                 // Small: everything it holds is on the heap.
-                if let Ok(handle) = std::thread::Builder::new().name("recto-pages".into()).stack_size(512 * 1024).spawn(move || run(&shared)) {
+                if let Ok(handle) = std::thread::Builder::new().name("recto-pages".into()).stack_size(512 * 1024).spawn(move || run_guarded(&shared)) {
                     *thread = Some(handle.thread().clone());
                 }
             }
@@ -203,6 +208,11 @@ impl Engine {
 
     pub fn selection_release(&self) -> Vec<Op> {
         self.pointer_did(Reader::selection_release)
+    }
+
+    /// Whether the selection can be sent to the Services menu as it stands, which it's asked on the UI thread. Nothing's built.
+    pub fn selection_can_be_sent(&self) -> bool {
+        lock(&self.shared.reader).selection_can_be_sent()
     }
 
     /// Whether the pointer's on text. If its page hasn't been read, it's wanted, and this says no for now.
@@ -329,6 +339,11 @@ impl Engine {
         }
     }
 
+    /// Every worker running now.
+    pub fn worker_pids(&self) -> Vec<u32> {
+        lock(&self.shared.worker_pids).clone()
+    }
+
     /// The footprint of every worker running now, from outside.
     pub fn workers_footprint(&self) -> (u64, u64) {
         let pids = lock(&self.shared.worker_pids).clone();
@@ -370,6 +385,37 @@ fn tell_selecting(shared: &Shared, news: SelectingNews) {
 fn signal_ops(shared: &Shared) {
     if !shared.ops_signalled.swap(true, Ordering::SeqCst) {
         shared.events.ops_ready();
+    }
+}
+
+/// Goes round [`run`] again if it panics, so a panic can't leave pages silently undrawn with nothing left to draw them. What's held in it, workers included, goes with it, and pages are asked for again. A few in a row means trying again won't help, and the page says so.
+fn run_guarded(shared: &Shared) {
+    let mut panics_in_a_row = 0;
+    let mut last_panic: Option<Instant> = None;
+    loop {
+        // Everything shared is behind locks that don't care about poison, and is brought back into line below.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(shared))).is_ok() {
+            return;
+        }
+        panics_in_a_row = if last_panic.is_some_and(|last| last.elapsed() < PANICS_FORGOTTEN_AFTER) { panics_in_a_row + 1 } else { 1 };
+        last_panic = Some(Instant::now());
+        let give_up = panics_in_a_row >= MAX_PANICS_IN_A_ROW;
+        let mut reader = lock(&shared.reader);
+        reader.thread_restarted(give_up);
+        let has_ops = reader.has_ops();
+        let note = reader.note().map(str::to_string);
+        let selecting = selecting_news(&mut reader);
+        drop(reader);
+        note_change(shared, note);
+        tell_selecting(shared, selecting);
+        *lock(&shared.worker_pids) = Vec::new();
+        shared.settled.notify_all();
+        if has_ops {
+            signal_ops(shared);
+        }
+        if give_up {
+            return;
+        }
     }
 }
 
@@ -420,10 +466,16 @@ fn run(shared: &Shared) {
         };
         resting_since = None;
         lock(&shared.reader).note_started(&job, None);
+        let mut file_changed = false;
         let outcome = match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
             Ok(open) => {
                 lock(&shared.reader).set_cancel(open.doc.cancel_handle());
-                do_job(open, &job)
+                let outcome = do_job(open, &job);
+                file_changed = open.doc.take_file_changed();
+                if file_changed {
+                    open.looks.clear();
+                }
+                outcome
             }
             Err(Unopened::Failed(failure)) => Outcome::DocumentFailed(failure.message()),
             Err(Unopened::NotWanted) => Outcome::Cancelled,
@@ -437,6 +489,11 @@ fn run(shared: &Shared) {
         };
         let (tab, page) = (job.tab, job.position);
         let mut reader = lock(&shared.reader);
+        if file_changed {
+            reader.file_changed(tab);
+        }
+        // What a text job read isn't about what's selected now, if that's gone with the file.
+        let outcome = if file_changed && matches!(job.kind, JobKind::Text { .. }) { Outcome::Cancelled } else { outcome };
         reader.finish(job, outcome);
         let has_ops = reader.has_ops();
         let note = reader.note().map(str::to_string);
@@ -463,8 +520,6 @@ fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
 struct OpenDoc {
     doc: DocRenderer,
     looks: HashMap<u32, Arc<PageLook>>,
-    /// The file changed since text was last read for selecting.
-    text_stale: bool,
 }
 
 /// Pages whose look is remembered. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten. Each is at most 64 boxes.
@@ -474,9 +529,9 @@ const LOOK_PICTURE_EDGE: f32 = 512.0;
 
 /// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images needs neither. `None` means this job went stale on the way, which says nothing about the page, and nothing is kept.
 fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&PixelSurface, TileRect)>) -> Option<Arc<PageLook>> {
-    if open.doc.take_file_changed() {
+    // The places of its images are what a look was decided from, and they may not come out the same twice, so neither of a page's tiles may go by an old answer.
+    if open.doc.take_image_places_cleared() {
         open.looks.clear();
-        open.text_stale = true;
     }
     if let Some(known) = open.looks.get(&page) {
         return Some(Arc::clone(known));
@@ -565,22 +620,19 @@ fn renderer_for<'a>(shared: &Shared, renderers: &'a mut HashMap<PathBuf, OpenDoc
         openings.remove(path);
         let file = opened.map_err(Unopened::Failed)?;
         let doc = DocRenderer::with_file(file, path, None, config, policy.clone()).map_err(Unopened::Failed)?;
-        renderers.insert(path.to_path_buf(), OpenDoc { doc, looks: HashMap::new(), text_stale: false });
+        renderers.insert(path.to_path_buf(), OpenDoc { doc, looks: HashMap::new() });
     }
     renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))
 }
 
 fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
     if let JobKind::Text { check } = job.kind {
-        let read = open.doc.page_characters(job.source_page, true, check);
-        // Asked after the read, which is what finds the file's changed.
-        if open.doc.take_file_changed() {
-            open.looks.clear();
-            open.text_stale = true;
-        }
-        let file_changed = std::mem::take(&mut open.text_stale);
+        let read = open.doc.page_characters_for(job.source_page, true, check, job.generation);
+        // Told to stop, a check that didn't finish says nothing about the page, so it's as though it was never tried. What was read on the way is good, and a read that went with its worker isn't a failure of the page's.
+        let stopped = open.doc.is_stale(job.generation);
         return match read {
-            Ok(page) => Outcome::Text { text: Arc::new(PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)), file_changed },
+            Ok(page) => Outcome::Text { text: Arc::new(PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)), checked: check && !stopped },
+            Err(_) if stopped => Outcome::Cancelled,
             Err(_) => Outcome::TextFailed,
         };
     }

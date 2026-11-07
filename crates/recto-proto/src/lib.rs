@@ -716,9 +716,14 @@ pub struct TextJob {
     pub boxes: bool,
     /// Draw the page and flag characters with no ink under them. Costs a render.
     pub hidden_check: bool,
+    /// Stop that render once the control page says this generation is stale. [`NEVER_STALE`] for one that runs to the end.
+    pub generation: u64,
 }
 
-pub const TEXT_JOB_LEN: usize = 9;
+/// In a [`TextJob`]: nothing can make this one stale.
+pub const NEVER_STALE: u64 = u64::MAX;
+
+pub const TEXT_JOB_LEN: usize = 17;
 
 impl TextJob {
     pub fn encode(&self) -> Vec<u8> {
@@ -726,17 +731,18 @@ impl TextJob {
         p[..4].copy_from_slice(&self.job_id.to_le_bytes());
         p[4..8].copy_from_slice(&self.page.to_le_bytes());
         p[8] = u8::from(self.boxes) | u8::from(self.hidden_check) << 1;
+        p[9..17].copy_from_slice(&self.generation.to_le_bytes());
         frame(Kind::TextRequest, &p)
     }
 
     pub fn decode(payload: &[u8]) -> Result<Self, ProtoError> {
         let mut r = Reader(payload);
-        let (job_id, page, flags) = (r.u32()?, r.u32()?, r.u8()?);
+        let (job_id, page, flags, generation) = (r.u32()?, r.u32()?, r.u8()?, r.u64()?);
         r.end()?;
         if flags & !0b11 != 0 {
             return Err(ProtoError("unknown text flags"));
         }
-        Ok(Self { job_id, page, boxes: flags & 1 != 0, hidden_check: flags & 2 != 0 })
+        Ok(Self { job_id, page, boxes: flags & 1 != 0, hidden_check: flags & 2 != 0, generation })
     }
 }
 

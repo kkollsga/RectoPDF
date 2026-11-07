@@ -46,7 +46,7 @@ fn every_message_survives_a_round_trip() {
     assert_eq!(decode_size_request(payload(&encode_size_request(1, 2))), Ok((1, 2)));
     let size = PageSize { job_id: 1, width: 612.0, height: 792.0 };
     assert_eq!(PageSize::decode(payload(&size.encode())), Ok(size));
-    let text_job = TextJob { job_id: 4, page: 5, boxes: true, hidden_check: true };
+    let text_job = TextJob { job_id: 4, page: 5, boxes: true, hidden_check: true, generation: 9 };
     assert_eq!(TextJob::decode(payload(&text_job.encode())), Ok(text_job));
     let text = TextReply {
         job_id: 4,
@@ -172,7 +172,7 @@ fn text_values_are_checked() {
 /// Failure: the host accepts text it didn't ask for or that claims a check nobody ran, so the agent gets a false "no hidden text".
 #[test]
 fn text_replies_are_checked_against_the_job() {
-    let job = TextJob { job_id: 1, page: 2, boxes: false, hidden_check: false };
+    let job = TextJob { job_id: 1, page: 2, boxes: false, hidden_check: false, generation: NEVER_STALE };
     let good = TextReply { job_id: 1, page: 2, chars: vec![CharRecord::new(65, 0)], ..TextReply::default() };
     assert_eq!(validate_text(&job, &good), Ok(()));
     assert!(validate_text(&job, &TextReply { job_id: 2, ..good.clone() }).is_err());

@@ -159,7 +159,8 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
         Kind::TextRequest => {
             let job = TextJob::decode(&frame.payload).ok()?;
             let Some(backend) = backend else { return Some(proto::encode_failed(job.job_id, FailCode::NoDocument)) };
-            Some(match backend.page_text(job.page, TextOptions { boxes: job.boxes, hidden_check: job.hidden_check }) {
+            let cancel = Generation { word: control_page.as_ref().and_then(|page| page.atomic_u64(control::CANCEL_BEFORE_OFFSET)), job: job.generation };
+            Some(match backend.page_text_until(job.page, TextOptions { boxes: job.boxes, hidden_check: job.hidden_check }, &cancel) {
                 Ok(page) => {
                     let reply = TextReply { job_id: job.job_id, page: job.page, hidden_checked: page.hidden_checked, chars: page.chars, boxes: page.boxes, frame: page.frame, copy_restricted: page.copy_restricted };
                     reply.encode().unwrap_or_else(|_| proto::encode_failed(job.job_id, FailCode::TooLarge))

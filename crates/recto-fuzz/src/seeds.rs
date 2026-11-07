@@ -84,7 +84,7 @@ pub fn proto_seeds() -> Vec<Vec<u8>> {
         region.encode(),
         PageSize { job_id: 1, width: 612.0, height: 792.0 }.encode(),
         PageTraits { job_id: 1, largest_image_pixels: 1 << 30 }.encode(),
-        TextJob { job_id: 1, page: 2, boxes: true, hidden_check: true }.encode(),
+        TextJob { job_id: 1, page: 2, boxes: true, hidden_check: true, generation: 3 }.encode(),
         text.encode().expect("a small page"),
         encode_failed(9, FailCode::TooLarge),
     ];

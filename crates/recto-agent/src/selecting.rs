@@ -8,10 +8,12 @@ use recto_index::select::{CopiedText, MAX_COPY_BYTES, MAX_COPY_PAGES, MAX_COPY_T
 use recto_render_service::DocRenderer;
 use recto_session::TabId;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// Workers kept through one command. A tab of many inserted files goes from one to the next, and there's no reason to hold on to the others.
+const MAX_WORKERS: usize = 2;
 /// Pages one `select` gives rectangles for. It's for looking at a stretch, and `copy` is for taking a long one.
 const MAX_SELECT_PAGES: u32 = 32;
 /// Text one `select` gives, which goes the same way as its rectangles.
@@ -49,9 +51,12 @@ fn char_range(word: &str) -> Result<(u32, u32), AgentError> {
 struct Pages<'a, A: SessionAccess> {
     access: &'a A,
     id: TabId,
-    docs: HashMap<PathBuf, DocRenderer>,
+    /// At most [`MAX_WORKERS`], the most recently used last. Dropping one ends its worker.
+    docs: Vec<(PathBuf, DocRenderer)>,
     /// What says where a drag's ends are. They're read once, and kept for as long as this command.
     ends: HashMap<u32, PageText>,
+    /// Those of them that couldn't be read, which has nothing to do with having no text.
+    failed_ends: HashSet<u32>,
 }
 
 impl<A: SessionAccess> Pages<'_, A> {
@@ -62,11 +67,19 @@ impl<A: SessionAccess> Pages<'_, A> {
         if !source.is_current() {
             return Err(source_changed(&source.path));
         }
-        if !self.docs.contains_key(&source.path) {
-            let doc = open_for_text(&source.path)?;
-            self.docs.insert(source.path.clone(), doc);
+        match self.docs.iter().position(|(path, _)| *path == source.path) {
+            Some(at) => {
+                let found = self.docs.remove(at);
+                self.docs.push(found);
+            }
+            None => {
+                if self.docs.len() >= MAX_WORKERS {
+                    self.docs.remove(0);
+                }
+                self.docs.push((source.path.clone(), open_for_text(&source.path)?));
+            }
         }
-        let Some(doc) = self.docs.get_mut(&source.path) else { return Ok(None) };
+        let Some((_, doc)) = self.docs.last_mut() else { return Ok(None) };
         Ok(doc.page_characters(source.page, true, true).ok().map(|page| PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)))
     }
 }
@@ -129,8 +142,11 @@ fn range_of<A: SessionAccess>(pick: &Pick, pages: u32, reading: &mut Pages<A>) -
     selection.release();
     for wanted in [first, last] {
         if !reading.ends.contains_key(&wanted) {
-            let text = reading.read(wanted)?.unwrap_or_default();
-            reading.ends.insert(wanted, text);
+            let text = reading.read(wanted)?;
+            if text.is_none() {
+                reading.failed_ends.insert(wanted);
+            }
+            reading.ends.insert(wanted, text.unwrap_or_default());
         }
     }
     selection.range(&Held(&reading.ends)).ok_or_else(no_such_page)
@@ -138,11 +154,22 @@ fn range_of<A: SessionAccess>(pick: &Pick, pages: u32, reading: &mut Pages<A>) -
 
 /// Both commands: `rects` for what `select` gives page by page. `copy` has no use for them and goes as far as its limits.
 pub(crate) fn run<A: SessionAccess>(access: &A, pick: &Pick, rects: bool) -> Result<Value, AgentError> {
+    run_counted(access, pick, rects, &mut Counted::default())
+}
+
+/// What a command cost, for the tests that hold it to its limits.
+#[derive(Debug, Default)]
+struct Counted {
+    reads: u32,
+    most_workers: usize,
+}
+
+fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: &mut Counted) -> Result<Value, AgentError> {
     let (id, pages) = access.with(|s| {
         let id = select_tab(s, pick.tab)?;
         Ok::<_, AgentError>((id, s.pages_in(id)))
     })?;
-    let mut reading = Pages { access, id, docs: HashMap::new(), ends: HashMap::new() };
+    let mut reading = Pages { access, id, docs: Vec::new(), ends: HashMap::new(), failed_ends: HashSet::new() };
     let range = range_of(pick, pages, &mut reading)?;
     let (page_cap, room, time) = if rects { (MAX_SELECT_PAGES, MAX_SELECT_BYTES, Duration::from_secs(60)) } else { (MAX_COPY_PAGES, MAX_COPY_BYTES, MAX_COPY_TIME) };
     let started = Instant::now();
@@ -150,6 +177,7 @@ pub(crate) fn run<A: SessionAccess>(access: &A, pick: &Pick, rects: bool) -> Res
     let mut copied = CopiedText::default();
     let mut listed = Vec::new();
     let mut ran_out = None;
+    let (mut start_at, mut end_at) = (None, None);
     let mut page = range.start.page;
     while page <= last_page {
         if page - range.start.page >= page_cap || started.elapsed() >= time {
@@ -157,9 +185,12 @@ pub(crate) fn run<A: SessionAccess>(access: &A, pick: &Pick, rects: bool) -> Res
             break;
         }
         let text = match reading.ends.remove(&page) {
+            Some(_) if reading.failed_ends.contains(&page) => None,
             Some(text) => Some(text),
             None => reading.read(page)?,
         };
+        counted.reads += 1;
+        counted.most_workers = counted.most_workers.max(reading.docs.len());
         let Some(text) = text else {
             copied.add_failed_page();
             if rects {
@@ -174,14 +205,21 @@ pub(crate) fn run<A: SessionAccess>(access: &A, pick: &Pick, rects: bool) -> Res
             let (width, height) = text.size();
             listed.push(json!({ "page": page + 1, "start": start.min(text.len()), "end": end.min(text.len()), "width": width, "height": height, "rects": shapes }));
         }
+        if page == range.start.page {
+            start_at = Some(range.start.at.min(text.len()));
+        }
+        if page == range.end.page {
+            end_at = Some(range.end.at.min(text.len()));
+        }
         let room_left = copied.add_page(page, &text, &range, room);
+        // Its first page already says so, and the same goes for the rest: the permissions are the file's.
+        if copied.restricted && !pick.anyway && !rects {
+            return Err(AgentError::new("copy_restricted", "This file's permissions ask that its text isn't copied.", exit::PROTECTED).then("Tell the user. `--anyway` copies it, once they've said to. Each use goes in the activity log."));
+        }
         if !room_left {
             break;
         }
         page += 1;
-    }
-    if copied.restricted && !pick.anyway && !rects {
-        return Err(AgentError::new("copy_restricted", "This file's permissions ask that its text isn't copied.", exit::PROTECTED).then("Tell the user. `--anyway` copies it, once they've said to."));
     }
     let withheld = copied.restricted && !pick.anyway;
     let stopped_at = copied.stopped_at.or(ran_out);
@@ -197,8 +235,8 @@ pub(crate) fn run<A: SessionAccess>(access: &A, pick: &Pick, rects: bool) -> Res
     }
     let mut data = json!({
         "tab": id.0,
-        "start": { "page": range.start.page + 1, "at": range.start.at },
-        "end": { "page": range.end.page.min(last_page) + 1, "at": range.end.at.min(u32::MAX - 1) },
+        "start": { "page": range.start.page + 1, "at": start_at },
+        "end": { "page": range.end.page.min(last_page) + 1, "at": end_at },
         "chars": if withheld { None } else { Some(copied.text.chars().count()) },
         "hidden_left_out": copied.hidden_left_out,
         "pages_read": copied.pages_read,
@@ -218,4 +256,82 @@ pub(crate) fn run<A: SessionAccess>(access: &A, pick: &Pick, rects: bool) -> Res
 
 fn round(value: f32) -> f64 {
     (f64::from(value) * 100.0).round() / 100.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Direct, Level, exit, run as run_command};
+    use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+    use recto_session::Session;
+    use recto_testpdf::{Page, TempPdf, pages, text_lines};
+    use std::cell::RefCell;
+
+    fn words(line: &str, count: usize) -> Vec<u8> {
+        pages(&(0..count).map(|_| Page::new(text_lines(&[line]))).collect::<Vec<_>>())
+    }
+
+    fn opened(file: &TempPdf) -> Session<crate::DrawableLoader> {
+        let mut session = Session::new(crate::DrawableLoader);
+        run_command(&mut session, Level::Control, &Command::Open { path: file.0.clone(), page: None }).unwrap();
+        session
+    }
+
+    fn whole<'a>() -> Pick<'a> {
+        Pick { tab: "active", page: None, to_page: None, chars: None, at: None, to: None, unit: None, all: true, anyway: false }
+    }
+
+    fn restricted(count: usize) -> Vec<u8> {
+        let mut document = lopdf::Document::load_mem(&words("Words that ask not to be copied", count)).unwrap();
+        document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));
+        let state = EncryptionState::try_from(EncryptionVersion::V2 { document: &document, owner_password: "owner", user_password: "", key_length: 128, permissions: Permissions::all() - Permissions::COPYABLE }).unwrap();
+        document.encrypt(&state).unwrap();
+        let mut out = Vec::new();
+        document.save_to(&mut out).unwrap();
+        out
+    }
+
+    /// Failure: `recto copy --all` on a file that asks not to be copied reads all of it before refusing, for minutes on a long file, when its first page already says so.
+    #[test]
+    fn a_restricted_file_is_refused_at_its_first_page() {
+        let file = TempPdf::new("restricted.pdf", &restricted(12));
+        let mut session = opened(&file);
+        let mut counted = Counted::default();
+        let access = Direct(RefCell::new(&mut session), None);
+        let refused = run_counted(&access, &whole(), false, &mut counted).unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("copy_restricted", exit::PROTECTED));
+        assert_eq!(counted.reads, 1, "it knew at the first page");
+    }
+
+    /// Failure: a tab with many PDFs inserted keeps a worker running for each through `copy --all`, at up to hundreds of MiB each, since none is let go.
+    #[test]
+    fn a_copy_over_many_files_keeps_few_workers() {
+        let file = TempPdf::new("main.pdf", &words("The main file", 1));
+        let added: Vec<TempPdf> = (0..6).map(|at| TempPdf::new("added.pdf", &words(&format!("Added file {at}"), 1))).collect();
+        let mut session = opened(&file);
+        for one in &added {
+            run_command(&mut session, Level::Control, &Command::PageInsert { tab: "active".into(), path: one.0.clone(), at: 1 }).unwrap();
+        }
+        let mut counted = Counted::default();
+        let access = Direct(RefCell::new(&mut session), None);
+        let answer = run_counted(&access, &whole(), false, &mut counted).unwrap();
+        let text = answer["untrusted"]["text"].as_str().unwrap();
+        for at in 0..6 {
+            assert!(text.contains(&format!("Added file {at}")), "{text}");
+        }
+        assert_eq!(counted.reads, 7);
+        assert!(counted.most_workers <= MAX_WORKERS, "{}", counted.most_workers);
+    }
+
+    /// Failure: the page a drag ends on can't be read, and the answer says "it may be a scan", which sends someone looking for the wrong thing. It says the page couldn't be read.
+    #[test]
+    fn an_end_page_that_cant_be_read_isnt_called_a_scan() {
+        let file = TempPdf::new("shrinks.pdf", &words("Some words", 3));
+        let mut session = opened(&file);
+        std::fs::write(&file.0, words("Some words", 1)).unwrap();
+        let access = Direct(RefCell::new(&mut session), None);
+        let answer = run(&access, &Pick { page: Some(3), at: Some("100,100"), all: false, ..whole() }, true).unwrap();
+        assert_eq!(answer["pages_failed"], 1, "{answer}");
+        assert!(answer["note"].is_null() || !answer["note"].as_str().unwrap().contains("scan"), "{answer}");
+    }
 }

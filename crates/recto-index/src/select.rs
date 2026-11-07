@@ -211,7 +211,8 @@ impl PageText {
         let mut spans: Vec<(u32, u32)> = Vec::new();
         let mut start = 0;
         for at in 0..=self.text.len() {
-            if at == self.text.len() || self.text[at] == '\n' {
+            let ends_a_line = at == self.text.len() || (self.text[at] == '\n' && spans.len() + 1 < MAX_LINES);
+            if ends_a_line {
                 self.split_by_shape(start, at, &mut spans);
                 start = at + 1;
             }
@@ -240,6 +241,8 @@ impl PageText {
 
     /// One stretch between line breaks, as one line or more.
     fn split_by_shape(&self, start: usize, end: usize, spans: &mut Vec<(u32, u32)>) {
+        // A line in the middle of what's left past the cap would pass it.
+        let room = MAX_LINES.saturating_sub(1);
         let sideways = self.runs_sideways(start, end);
         let (mut from, mut last) = (start, None);
         for at in start..end {
@@ -248,7 +251,7 @@ impl PageText {
                 continue;
             }
             if let Some(before) = last
-                && spans.len() + 1 < MAX_LINES
+                && spans.len() < room
                 && Self::leaves_the_line(&self.boxes[before], &self.boxes[at], sideways)
             {
                 spans.push((from as u32, at as u32));
@@ -310,6 +313,11 @@ impl PageText {
         let size = if tallest < usual && tallest >= usual * SAME_SIZE { usual } else { tallest };
         let (above, below) = if upside_down { (BELOW_BASELINE, ABOVE_BASELINE) } else { (ABOVE_BASELINE, BELOW_BASELINE) };
         Line { start, end, x0, y0: y0.min(baseline - size * above), x1, y1: y1.max(baseline + size * below), sideways, backward }
+    }
+
+    /// How many lines it's cut into.
+    pub fn line_count(&self) -> usize {
+        self.lines.len()
     }
 
     /// How many characters there are, which is where [`PAGE_END`] is.
@@ -1057,7 +1065,7 @@ mod tests {
         assert!(!page.is_over_text(2010.0, shown(680.0)), "no I-beam on what's off the page");
     }
 
-    /// Failure: the second read of a page, with the hidden-text check, moves what's already been worked out from the first: a selection jumps when the check comes back, a moment after it's made.
+    /// Failure: the second read of a page, with the hidden-text check, moves what's already been worked out from the first: a selection jumps when the check comes back, a moment after it's made. Every character keeps its place, the hidden ones too, so a range keeps meaning the same characters. What does change is what's on them: a hidden word can't be hit or highlighted or copied, and an end that was on one goes to the nearest thing that shows.
     #[test]
     fn checking_for_hidden_text_moves_no_place() {
         let (mut chars, mut boxes) = (Vec::new(), Vec::new());
@@ -1070,9 +1078,23 @@ mod tests {
         let checked = PageText::build(&chars, &boxes, FRAME, true, false);
         assert_eq!(first.len(), checked.len());
         assert_eq!(first.text, checked.text);
+        assert_eq!(first.line_count(), checked.line_count());
+        // Off the hidden word, a click lands where it did.
         assert_eq!(first.unit_at(80.0, shown(680.0), Unit::Line), checked.unit_at(80.0, shown(680.0), Unit::Line));
         assert_eq!(first.unit_at(400.0, shown(700.0), Unit::Char), checked.unit_at(400.0, shown(700.0), Unit::Char));
-        assert_ne!(first.text_of(0, PAGE_END), checked.text_of(0, PAGE_END), "it's only what's flagged that changes");
+        assert_eq!(first.unit_at(72.0 + 16.0 * 6.0, shown(700.0), Unit::Word), checked.unit_at(72.0 + 16.0 * 6.0, shown(700.0), Unit::Word), "`words`, after it");
+        // On it: the first read takes it, and the check takes it away, to what's next to it.
+        let on_secret = 72.0 + 10.0 * 6.0;
+        let (start, end) = first.unit_at(on_secret, shown(700.0), Unit::Word).unwrap();
+        assert_eq!(first.text_of(start, end), "secret");
+        let (start, end) = checked.unit_at(on_secret, shown(700.0), Unit::Word).unwrap();
+        assert_ne!(checked.text_of(start, end), "secret");
+        // A range over it means the same characters either way, with the hidden ones left out of what comes of it.
+        assert_eq!(first.text_of(4, 20), "the secret words");
+        assert_eq!(checked.text_of(4, 20), "the words");
+        let (whole, without) = (first.rects(4, 20), checked.rects(4, 20));
+        assert_eq!(whole.len(), 1);
+        assert!(!without.is_empty() && without.iter().all(|rect| rect.y == whole[0].y && rect.height == whole[0].height), "{without:?}");
     }
 
     /// Failure: copying a long selection grows without end, or stops without saying where, or runs pages together with no line between.
@@ -1104,6 +1126,22 @@ mod tests {
         let mut copied = CopiedText::default();
         copied.add_page(0, &page, &Range::pages(0, 0), 100);
         assert_eq!((copied.pages_too_long, copied.restricted), (1, true));
+    }
+
+    /// Failure: a page of nothing but line breaks holds a line for each, past the cap this module says it keeps to: `MAX_LINES` only held for the lines geometry found.
+    #[test]
+    fn a_page_of_line_breaks_keeps_to_the_cap_on_lines() {
+        let mut chars = Vec::new();
+        let mut boxes = Vec::new();
+        for at in 0..(MAX_LINES + 2000) {
+            chars.push(CharRecord::new('a' as u32, 0));
+            boxes.push([72.0, (at % 700) as f32, 77.0, (at % 700) as f32 + 5.0]);
+            chars.push(CharRecord::new('\n' as u32, CharRecord::GENERATED));
+            boxes.push([0.0; 4]);
+        }
+        let page = PageText::build(&chars, &boxes, FRAME, true, false);
+        assert!(page.line_count() <= MAX_LINES, "{}", page.line_count());
+        assert_eq!(page.text_of(0, PAGE_END).matches('a').count(), MAX_LINES + 2000, "and no text goes with them");
     }
 
     /// Failure: hit-testing a NaN from the host, a page with a zero-size frame, or an end past the text panics, as a slice would.

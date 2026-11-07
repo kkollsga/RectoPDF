@@ -215,7 +215,7 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     // Services: the selection as text, to anything that takes it. It has to answer now, and it can if the text's all here, as it is for a selection that's on screen.
     @objc(validRequestorForSendType:returnType:) func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?, returnType: NSPasteboard.PasteboardType?) -> Any? {
-        (sendType == .string && returnType == nil && core.selectionTextNow() != nil) ? self : nil
+        (sendType == .string && returnType == nil && core.selectionCanBeSent()) ? self : nil
     }
 
     func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {

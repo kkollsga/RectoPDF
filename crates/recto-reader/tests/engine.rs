@@ -15,6 +15,7 @@ struct Events {
     ops: AtomicU32,
     drawn: AtomicU32,
     copies: AtomicU32,
+    panics: AtomicU32,
 }
 
 impl EngineEvents for Events {
@@ -25,6 +26,12 @@ impl EngineEvents for Events {
     fn page_moved(&self) {}
     fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {
         self.drawn.fetch_add(1, Ordering::SeqCst);
+        // On the thread that draws: stands in for anything going wrong on it.
+        let left = self.panics.load(Ordering::SeqCst);
+        if left > 0 {
+            self.panics.store(left - 1, Ordering::SeqCst);
+            panic!("a test's panic on the thread that draws");
+        }
     }
     fn copy_ready(&self) {
         self.copies.fetch_add(1, Ordering::SeqCst);
@@ -419,4 +426,96 @@ fn the_pointer_asks_for_its_page_and_goes_to_an_i_beam_only_over_text() {
     assert!(engine.pointer_is_over_text(on_x, on_y), "{}", engine.report().0);
     assert!(!engine.pointer_is_over_text(x + 80.0 * fit, y + 600.0 * fit), "the blank part of the page");
     assert!(!engine.pointer_is_over_text(x - 30.0, on_y), "the margin");
+}
+
+/// Failure: the thread that draws dies, and no page draws again, with nothing said: the page just stays blank. It comes back, and pages draw.
+#[test]
+fn the_thread_that_draws_comes_back_after_a_panic() {
+    let file = document(30);
+    let (engine, events) = started(&file, 30);
+    pump(&engine, Duration::from_secs(20));
+    events.panics.store(1, Ordering::SeqCst);
+    engine.jump_to(10);
+    engine.applied();
+    let view_at = engine.report().0["document_height"].as_f64().unwrap() / 30.0 * 10.0;
+    engine.set_viewport(Viewport { scrolled_to: u64::MAX, ..view(view_at) });
+    engine.applied();
+    let ops = pump(&engine, Duration::from_secs(20));
+    assert_eq!(events.panics.load(Ordering::SeqCst), 0, "it did panic");
+    assert!(engine.wait_settled(Duration::from_secs(20)), "{}", engine.report().0);
+    let more = ops.iter().filter(|op| matches!(op, Op::Attach { .. })).count();
+    assert!(more > 0, "pages draw again: {ops:?}");
+    assert_eq!(engine.note(), None);
+}
+
+/// Failure: a page that panics the thread every time takes it down for good, and the reader sees a blank window, with no reason. Past a few goes it stops trying, and says so.
+#[test]
+fn a_thread_that_keeps_dying_says_so() {
+    let file = document(30);
+    let (engine, events) = started(&file, 30);
+    events.panics.store(1000, Ordering::SeqCst);
+    engine.set_viewport(view(0.0));
+    engine.applied();
+    pump(&engine, Duration::from_secs(20));
+    assert!(engine.note().is_some_and(|note| note.contains("draw")), "{:?}", engine.note());
+    assert!(engine.wait_settled(Duration::from_secs(5)), "nothing's left to wait for: {}", engine.report().0);
+}
+
+/// Failure: a worker dying in the middle of a copy loses the copy, or leaves it running for ever, or leaves pages undrawn. It comes out with what could be read, says what couldn't, and the page view goes on.
+#[test]
+fn a_worker_dying_in_a_copy_leaves_a_copy_that_says_what_happened() {
+    const COUNT: u32 = 40;
+    let mut content = slow_page(2_000);
+    content.extend_from_slice(&text_lines(&["Page words"]));
+    let list: Vec<Page> = (0..COUNT).map(|_| Page::new(content.clone())).collect();
+    let file = TempPdf::new("dying.pdf", &pages(&list));
+    let (engine, events) = started(&file, COUNT);
+    settled_on_page(&engine, 0);
+    engine.select_all();
+    pump(&engine, Duration::from_secs(20));
+    engine.copy_selection(false);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut killed = 0;
+    while events.copies.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline, "the copy didn't finish: {}", engine.report().0);
+        if killed < 3
+            && engine.report().0["selection"]["copying"] == true
+            && let Some(pid) = engine.worker_pids().first()
+        {
+            let _ = std::process::Command::new("/bin/kill").arg("-9").arg(pid.to_string()).status();
+            killed += 1;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert!(killed > 0, "the worker never got killed, so this tested nothing");
+    let copied = engine.take_copied().expect("the copy is ready");
+    assert_eq!(copied.pages_read, COUNT);
+    assert_eq!(copied.text.matches("Page words").count() as u32 + copied.pages_failed, COUNT, "every page is in it, or counted as not");
+    pump(&engine, Duration::from_secs(20));
+    assert!(engine.wait_settled(Duration::from_secs(1)), "{}", engine.report().0);
+    assert_eq!(engine.report().0["selection"]["copying"], false);
+}
+
+/// Failure: the file changes on disk, and a selection and a copy go on with places and pages that were about the old one. A copy stopped this way says why.
+#[test]
+fn a_file_changing_ends_a_selection_and_says_so_to_a_copy() {
+    let file = TempPdf::new("changing.pdf", &pages(&[Page::new(text_lines(&["First"])), Page::new(text_lines(&["Second"])), Page::new(text_lines(&["Third"]))]));
+    let (engine, _events) = started(&file, 3);
+    settled_on_page(&engine, 0);
+    engine.select_all();
+    pump(&engine, Duration::from_secs(20));
+    assert!(engine.has_selection());
+    std::fs::write(&file.0, pages(&[Page::new(text_lines(&["Only this now"]))])).unwrap();
+    for pid in engine.worker_pids() {
+        let _ = std::process::Command::new("/bin/kill").arg("-9").arg(pid.to_string()).status();
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    engine.copy_selection(false);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while engine.has_selection() {
+        assert!(Instant::now() < deadline, "still selected: {}", engine.report().0);
+        pump(&engine, Duration::from_millis(50));
+    }
+    assert!(engine.take_copied().is_none(), "none of it is about this file");
+    assert!(engine.selection_notice().is_some_and(|notice| notice.text.contains("changed")), "{:?}", engine.selection_notice());
 }

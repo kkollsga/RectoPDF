@@ -138,9 +138,11 @@ document held in memory. Paths, clips, images and text are direct. Anything SVG 
 
 Signature trust through EU lists comes later, with the signing work.
 
-[DECIDE] Hidden text in a copy (*default, the coordinator's, 2026-11-07, built:* left out, with a quiet notice saying how many characters went. `recto text` keeps them, marked, since an agent is told about them and a clipboard can't be).
+**Hidden text in a copy is left out, with a quiet notice saying how many characters went** (decided by the owner, 2026-11-07). `recto text` keeps them, marked, since an agent is told about them and a clipboard can't be.
 
-[DECIDE] Text copy, image copy and snapshot on PDFs whose permissions forbid copying (*default, the coordinator's, 2026-11-07, built for text:* a small notice with "Copy anyway", for that file while it's on screen; `recto copy` is exit 8 unless given `--anyway`). Open-source readers differ: pdf.js and Evince ignore the flag by default, Okular obeys it with a setting to turn that off, and SumatraPDF blocks text copy but still copies as an image.
+**Text copy on a PDF whose permissions forbid copying gets a small notice with "Copy anyway"**, for that file while it's on screen (decided by the owner, 2026-11-07). **An agent keeps `recto copy --anyway`, and each use goes in the activity log** (owner, 2026-11-07, passed on by the coordinator). Without it, `recto copy` is exit 8.
+
+[DECIDE] Image copy and snapshot on such PDFs (*default:* the same notice, as for text). Open-source readers differ: pdf.js and Evince ignore the flag by default, Okular obeys it with a setting to turn that off, and SumatraPDF blocks text copy but still copies as an image.
 
 **Left out:** paragraph reflow and image replacement (for now), conversion to Word or Excel, creating PDFs from Office files, sending documents for signature,
 print production, portfolios, 3D and media, V8.

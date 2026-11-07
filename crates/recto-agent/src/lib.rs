@@ -539,7 +539,7 @@ impl Command {
             Self::Render { tab, page, out, .. } | Self::ExportSvg { tab, page, out, .. } => json!({ "tab": tab_of(tab), "page": page, "untrusted": file(out) }),
             Self::Text { tab, page } | Self::Goto { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
             // Which pages, and not where on them or what's there.
-            Self::Select { tab, page, to_page, all, .. } | Self::Copy { tab, page, to_page, all, .. } => json!({ "tab": tab_of(tab), "page": page, "to_page": to_page, "all": all }),
+            Self::Select { tab, page, to_page, all, anyway, .. } | Self::Copy { tab, page, to_page, all, anyway, .. } => json!({ "tab": tab_of(tab), "page": page, "to_page": to_page, "all": all, "anyway": anyway }),
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),

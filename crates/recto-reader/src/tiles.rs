@@ -283,8 +283,8 @@ pub enum Outcome {
     PageFailed { message: String, may_pass: bool },
     /// The file can't be drawn, in these words.
     DocumentFailed(String),
-    /// A page's text, for selecting. `file_changed` says what was read before this is about another version of the file.
-    Text { text: Arc<recto_index::select::PageText>, file_changed: bool },
+    /// A page's text, for selecting. `checked` says a hidden-text check was asked for and has been tried, however it came out, and not stopped because nobody wanted it.
+    Text { text: Arc<recto_index::select::PageText>, checked: bool },
     /// A page's text can't be read. That's the page's text, and nothing about drawing it.
     TextFailed,
 }
@@ -302,6 +302,8 @@ struct Running {
     cancel_asked: bool,
     /// It's reading text. A selection or a copy can want a page that isn't in view, so where the view is says nothing about it.
     text: bool,
+    /// It's drawing for a hidden-text check too, which can take seconds, and can go when there's something more wanted.
+    check: bool,
 }
 
 /// How a page sits.
@@ -367,7 +369,12 @@ pub struct Reader {
     wanted_files: Arc<Vec<PathBuf>>,
     note: Option<String>,
     selecting: Selecting,
+    /// The thread that draws has failed too many times to go on trying, and this says so.
+    gave_up: bool,
 }
+
+/// What a page says once the thread that draws has given up.
+const CANT_DRAW: &str = "RectoPDF can't draw pages right now, because something went wrong too many times. Quit and open it again.";
 
 impl Default for Reader {
     fn default() -> Self {
@@ -406,6 +413,7 @@ impl Reader {
             wanted_files: Arc::new(Vec::new()),
             note: None,
             selecting: Selecting::default(),
+            gave_up: false,
         }
     }
 
@@ -664,7 +672,8 @@ impl Reader {
     pub fn running_is_wanted(&self) -> bool {
         let Some(running) = &self.running else { return true };
         if running.text {
-            return self.hot == Some(running.tab) && self.window_open;
+            // Only a check goes for what's more wanted: it can take seconds, where reading is quick, and it's what's asked for when there's nothing better to do.
+            return self.hot == Some(running.tab) && self.window_open && !(running.check && self.view_needs_something());
         }
         self.hot == Some(running.tab)
             && self.window_open
@@ -672,6 +681,29 @@ impl Reader {
                 self.visible_pages(doc).contains(&running.position)
                     && (running.preview || running.rect.is_none_or(|rect| running.scale == doc.tile_scale && self.touches_view(doc, running.position, rect, running.scale)))
             })
+    }
+
+    /// Whether what's on screen wants something that isn't there yet: a tile, or the text under a selection being made.
+    fn view_needs_something(&self) -> bool {
+        let Some(doc) = self.doc() else { return false };
+        let scale = doc.tile_scale;
+        if scale <= 0.0 {
+            return false;
+        }
+        let visible: Vec<u32> = self.visible_pages(doc).collect();
+        if self.selecting.wanted(Urgency::Now, &visible, |page| doc.heavy.get(&page).copied().unwrap_or(false)).is_some() {
+            return true;
+        }
+        visible.iter().any(|&page| {
+            if doc.issues.contains_key(&page) {
+                return false;
+            }
+            if !doc.layout.is_known(page) {
+                return true;
+            }
+            let Ok(cells) = self.visible_cells(doc, page, scale) else { return false };
+            cells.into_iter().any(|cell| !self.cover.contains_key(&self.key(doc, page, scale, cell)))
+        })
     }
 
     fn cancel_if_unwanted(&mut self) {
@@ -878,7 +910,7 @@ impl Reader {
             }
             None
         });
-        self.set_note(note);
+        self.set_note(if self.gave_up { Some(CANT_DRAW.to_string()) } else { note });
     }
 
     fn set_note(&mut self, note: Option<String>) {
@@ -1266,12 +1298,14 @@ impl Reader {
             None => self.selecting.clear(),
         }
         self.highlight_ops();
+        self.cancel_if_unwanted();
     }
 
     pub fn selection_drag(&mut self, x: f64, y: f64) {
         if let Some(point) = self.point_on_page(x, y) {
             self.selecting.drag(point);
             self.highlight_ops();
+            self.cancel_if_unwanted();
         }
     }
 
@@ -1335,6 +1369,10 @@ impl Reader {
         self.selecting.text_now(self.doc()?.layout.count())
     }
 
+    pub fn selection_can_be_sent(&self) -> bool {
+        self.doc().is_some_and(|doc| self.selecting.can_offer(doc.layout.count()))
+    }
+
     pub fn selection_notice(&self) -> Option<Notice> {
         self.selecting.notice().cloned()
     }
@@ -1343,25 +1381,39 @@ impl Reader {
         self.selecting.dismiss_notice();
     }
 
-    /// Text arrived.
-    fn take_text(&mut self, tab: u32, position: u32, outcome: Result<(Arc<recto_index::select::PageText>, bool), ()>, check: bool) {
+    /// Text arrived, or couldn't be read.
+    fn take_text(&mut self, tab: u32, position: u32, outcome: Option<(Arc<recto_index::select::PageText>, bool)>) {
         if self.hot != Some(tab) || !self.window_open {
             return;
         }
         let visible: Vec<u32> = self.doc().map(|doc| self.visible_pages(doc).collect()).unwrap_or_default();
         match outcome {
-            Ok((text, file_changed)) => {
-                if file_changed {
-                    // Places and pages are about the file as it was.
-                    self.selecting.reset();
-                }
-                self.selecting.page_read(position, text, check, &visible);
-            }
-            Err(()) => self.selecting.page_failed(position, &visible),
+            Some((text, checked)) => self.selecting.page_read(position, text, checked, &visible),
+            None => self.selecting.page_failed(position, &visible),
         }
+        self.advance_copy();
+    }
+
+    fn advance_copy(&mut self) {
         let pages = self.doc().map_or(0, |doc| doc.layout.count());
         let heavy = self.heavy_pages();
         self.selecting.advance_copy(pages, |page| heavy.get(&page).copied().unwrap_or(false));
+    }
+
+    /// The file behind a tab has been seen to be another one, so places on its pages mean nothing now. It comes before the job's outcome, which may be about it.
+    pub fn file_changed(&mut self, tab: u32) {
+        if self.hot == Some(tab) {
+            self.selecting.file_changed();
+            self.highlight_ops();
+        }
+    }
+
+    /// The thread that draws panicked and is starting over, or, with `give_up`, isn't. What it was doing is gone, and everything it would come back to is asked for again.
+    pub fn thread_restarted(&mut self, give_up: bool) {
+        self.running = None;
+        self.selecting.thread_restarted();
+        self.gave_up |= give_up;
+        self.refresh(MAX_ATTACH_PER_TURN);
     }
 
     fn preview_rect(&self, doc: &DocView, page: u32, scale: f32) -> Option<(f32, TileRect)> {
@@ -1387,8 +1439,11 @@ impl Reader {
             JobKind::Draw { scale, rect, what, .. } => (Some(*rect), *scale, *what == DrawKind::Preview),
             _ => (None, 0.0, false),
         };
-        let text = matches!(job.kind, JobKind::Text { .. });
-        self.running = Some(Running { tab: job.tab, position: job.position, rect, scale, preview, generation: job.generation, cancel, cancel_asked: false, text });
+        let (text, check) = match job.kind {
+            JobKind::Text { check } => (true, check),
+            _ => (false, false),
+        };
+        self.running = Some(Running { tab: job.tab, position: job.position, rect, scale, preview, generation: job.generation, cancel, cancel_asked: false, text, check });
     }
 
     /// What can stop the job now running, once there's something that can.
@@ -1417,8 +1472,10 @@ impl Reader {
             return;
         }
         match (kind, outcome) {
-            (JobKind::Text { check }, Outcome::Text { text, file_changed }) => self.take_text(tab, position, Ok((text, file_changed)), check),
-            (JobKind::Text { check }, _) => self.take_text(tab, position, Err(()), check),
+            (JobKind::Text { .. }, Outcome::Text { text, checked }) => self.take_text(tab, position, Some((text, checked))),
+            // Nobody wanted it any more. It'll be asked for again if that changes.
+            (JobKind::Text { .. }, Outcome::Cancelled) => self.counts.cancelled += 1,
+            (JobKind::Text { .. }, _) => self.take_text(tab, position, None),
             (JobKind::Size, Outcome::Size(size)) => {
                 let Some(doc) = self.docs.get_mut(&tab) else { return };
                 let moved = doc.layout.set_page_size(position, size);
@@ -1518,6 +1575,9 @@ impl Reader {
 
     /// Whether everything visible is drawn and on its layers, or marked as it is.
     pub fn is_settled(&self) -> bool {
+        if self.gave_up {
+            return self.ops.is_empty() && !self.unapplied;
+        }
         if self.running.is_some() || !self.ops.is_empty() || self.unapplied || self.more_to_attach {
             return false;
         }
@@ -2129,6 +2189,65 @@ mod tests {
         reader.take_ops();
         reader.applied();
         assert!(reader.entries[&id].discardable, "now the host has been told");
+    }
+
+    /// Finishes everything that isn't text, with a pretend renderer, and hands back the first text job.
+    fn settle_to_text(reader: &mut Reader) -> Option<Job> {
+        loop {
+            reader.take_ops();
+            reader.applied();
+            let job = reader.next_job()?;
+            match &job.kind {
+                JobKind::Text { .. } => return Some(job),
+                JobKind::Size => reader.finish(job, Outcome::Size(letter())),
+                JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
+                JobKind::Draw { .. } => reader.finish(job, Outcome::Drawn { kind: TileKind::Colour, low_res: None }),
+            }
+        }
+    }
+
+    /// Failure: a hidden-text check that takes seconds keeps the page the reader has just scrolled to blank, over and over on a hostile file, as a running text job couldn't be told to stop. Its first read, which is quick and is what the reader's hand is waiting on, isn't given up for a scroll.
+    #[test]
+    fn a_check_goes_when_the_view_wants_something_and_a_read_does_not() {
+        let mut reader = reader_on(100);
+        settle_to_text(&mut reader);
+        reader.select_all();
+        let first = settle_to_text(&mut reader).expect("what shows is read");
+        assert!(matches!(first.kind, JobKind::Text { check: false }), "{first:?}");
+        reader.note_started(&first, None);
+        reader.set_viewport(view(40_000.0));
+        assert!(reader.running_is_wanted(), "a read stays, as what's showing needs it");
+        reader.running = None;
+        // Back where it was, with everything there, and the check runs.
+        reader.set_viewport(view(0.0));
+        let text = Arc::new(recto_index::select::PageText::default());
+        reader.finish(first, Outcome::Text { text, checked: false });
+        let check = settle_to_text(&mut reader).expect("selected and showing, so it's checked");
+        assert!(matches!(check.kind, JobKind::Text { check: true }), "{check:?}");
+        reader.note_started(&check, None);
+        assert!(reader.running_is_wanted(), "nothing else is wanted");
+        // A scroll to pages with nothing drawn.
+        let asked = reader.counts.cancels_asked;
+        reader.set_viewport(view(40_000.0));
+        assert!(!reader.running_is_wanted(), "the view wants tiles");
+        assert_eq!(reader.counts.cancels_asked, asked + 1);
+    }
+
+    /// Failure: a check that was stopped reads as one that was tried, so the page is never checked, or a stopped read holds a place in the cache as a page that failed.
+    #[test]
+    fn a_stopped_text_job_is_asked_for_again() {
+        let mut reader = reader_on(10);
+        settle_to_text(&mut reader);
+        reader.select_all();
+        let read = settle_to_text(&mut reader).expect("what shows is read");
+        let page = read.position;
+        reader.finish(read, Outcome::Cancelled);
+        let again = settle_to_text(&mut reader).expect("it's still wanted");
+        assert_eq!(again.position, page);
+        assert!(matches!(again.kind, JobKind::Text { check: false }));
+        reader.finish(again, Outcome::Text { text: Arc::new(recto_index::select::PageText::default()), checked: false });
+        let check = settle_to_text(&mut reader).expect("not tried, so asked for");
+        assert!(matches!(check.kind, JobKind::Text { check: true }));
     }
 
     /// Failure: a tile finishes after the reader has left it, or for an old zoom or paper or a warm tab, and it's held in the footprint with nothing showing it. Only what's on a layer may count, or memory has no bound the budgets can rely on.

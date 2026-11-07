@@ -4,6 +4,8 @@
 //! **What an agent can't erase.** A log with one cap can be flushed by whoever is being logged: about 28,000 `status` calls at Off would push out everything before them. So there are two files with a cap
 //! each. What changes something (opening, editing, drawing to disk, setting the level) goes in one, and everything else in the other, so no amount of reading or refused commands can reach it. On top of that,
 //! the commands an agent can repeat for free (`status`, a bad line, a refusal) are written once, and then as one line with a count, at most once a minute each.
+//!
+//! **Going past a file's permissions** (owner, 2026-11-07: an agent keeps `recto copy --anyway`, and each use goes in the activity log). Each use that worked gets a line in a third file of its own, never counted or collapsed. It's at Read-only, so in the changes' file it would let an agent at Read-only push out what's changed, and among the rest a flood of reading could push it out. Here, only more of the same can.
 
 use crate::levels::now_ms;
 use crate::state::StatePaths;
@@ -15,7 +17,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// One file's size before it's rotated. Two files are kept for each of two kinds, so at most four times this.
+/// One file's size before it's rotated. Two files are kept for each of three kinds, so at most six times this.
 pub const MAX_LOG_BYTES: u64 = 1024 * 1024;
 const DEFAULT_LAST: usize = 50;
 const MAX_LINE_BYTES: usize = 4096;
@@ -82,6 +84,7 @@ pub struct ActivityLog {
     paths: StatePaths,
     changes: Rotating,
     others: Rotating,
+    overrides: Rotating,
     collapsing: Vec<Collapsing>,
     failing: bool,
 }
@@ -89,6 +92,11 @@ pub struct ActivityLog {
 /// What changed something: a command of that kind that worked. A failed one changed nothing, whatever it was stopped by, and a flood of those can't push the changes out. A list of refusals would miss the next one added, as `would_discard_user_edits` was. **Limit:** an agent's own working commands can still push out older ones, since each is a change to record.
 fn is_change(cmd: &str, outcome: &str) -> bool {
     outcome == "ok" && matches!(cmd, "open" | "close" | "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" | "render" | "export_svg" | "index_clear" | "stop" | "permission_set")
+}
+
+/// Text given past what a file's permissions ask. Only an answer that worked gave anything.
+fn is_override(cmd: &str, outcome: &str, details: &Value) -> bool {
+    outcome == "ok" && matches!(cmd, "select" | "copy") && details["anyway"] == true
 }
 
 /// What an agent can repeat for nothing, so it's counted rather than written each time.
@@ -102,6 +110,7 @@ impl ActivityLog {
             paths: paths.clone(),
             changes: Rotating::new(paths.log.clone(), paths.old_log.clone()),
             others: Rotating::new(paths.other_log.clone(), paths.old_other_log.clone()),
+            overrides: Rotating::new(paths.overrides_log.clone(), paths.old_overrides_log.clone()),
             collapsing: Vec::new(),
             failing: false,
         }
@@ -119,7 +128,13 @@ impl ActivityLog {
             line = json!({ "t_ms": now_ms(), "cmd": cmd, "level": level.name(), "outcome": outcome }).to_string();
         }
         line.push('\n');
-        let wrote = if is_change(cmd, outcome) { self.changes.append(&self.paths, line.as_bytes()) } else { self.others.append(&self.paths, line.as_bytes()) };
+        let wrote = if is_override(cmd, outcome, details) {
+            self.overrides.append(&self.paths, line.as_bytes())
+        } else if is_change(cmd, outcome) {
+            self.changes.append(&self.paths, line.as_bytes())
+        } else {
+            self.others.append(&self.paths, line.as_bytes())
+        };
         self.failing = wrote.is_err();
     }
 
@@ -176,7 +191,7 @@ pub fn recent(paths: &StatePaths, last: Option<u32>) -> Value {
     let wanted = last.map_or(DEFAULT_LAST, |last| last as usize).max(1);
     let mut lines = Vec::new();
     let mut kept_bytes = 0u64;
-    for path in [&paths.old_log, &paths.log, &paths.old_other_log, &paths.other_log] {
+    for path in [&paths.old_log, &paths.log, &paths.old_other_log, &paths.other_log, &paths.old_overrides_log, &paths.overrides_log] {
         if let Ok(Some(bytes)) = local::read_private_file(path, MAX_LOG_BYTES * 2) {
             kept_bytes += bytes.len() as u64;
             for line in String::from_utf8_lossy(&bytes).lines() {
@@ -350,5 +365,35 @@ mod tests {
         log.record("open", Level::Control, "ok", &Value::Null);
         assert!(!log.healthy());
         std::fs::remove_file(&paths.root).unwrap();
+    }
+
+    /// Failure: an agent uses `--anyway` and it leaves no line, or one that's counted in with others, or one that a flood of ordinary reading can push out, or by which an agent at Read-only can push out what's changed. Owner, 2026-11-07: "each use" goes in the log.
+    #[test]
+    fn each_use_of_anyway_has_its_own_line_that_nothing_else_can_push_out() {
+        let dir = std::env::temp_dir().join(format!("recto-log-anyway-{}", std::process::id()));
+        let paths = StatePaths::overridden(&dir).unwrap();
+        let mut log = ActivityLog::new(&paths);
+        let anyway = json!({ "tab": "#1", "page": 1, "anyway": true });
+        for _ in 0..3 {
+            log.record("copy", Level::ReadOnly, "ok", &anyway);
+        }
+        log.record("select", Level::ReadOnly, "ok", &anyway);
+        // Asked for it, and refused: nothing was given.
+        log.record("copy", Level::ReadOnly, "copy_restricted", &json!({ "anyway": false }));
+        log.record("copy", Level::ReadOnly, "ok", &json!({ "anyway": false }));
+        let lines = |path: &PathBuf| std::fs::read_to_string(path).unwrap_or_default().lines().count();
+        assert_eq!(lines(&paths.overrides_log), 4, "one for each use");
+        assert_eq!(lines(&paths.log), 0, "the changes' file isn't a Read-only agent's to fill");
+        // A flood of reading, to past both of the other file's halves.
+        let filler = json!({ "page": 1, "filler": "x".repeat(2000) });
+        for _ in 0..1200 {
+            log.record("text", Level::ReadOnly, "ok", &filler);
+        }
+        assert!(paths.old_other_log.exists(), "it rotated");
+        assert_eq!(lines(&paths.overrides_log), 4, "and these are still there");
+        let seen = recent(&paths, Some(10_000));
+        let rows = seen["entries"].as_array().unwrap();
+        assert_eq!(rows.iter().filter(|row| row["details"]["anyway"] == true).count(), 4, "`recto log` shows them");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

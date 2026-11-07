@@ -93,6 +93,9 @@ import QuartzCore
             controller?.sidebar.setContentsPointer(value == "in")
         case "menu":
             guard let item = menuItem(value), let action = item.action else { return fail(id, "That isn't on the menu bar.") }
+            // As a person can only choose what isn't greyed out, by what AppKit makes of it now.
+            item.menu?.update()
+            guard item.isEnabled else { return fail(id, "That's greyed out in the menu right now.") }
             NSApp.sendAction(action, to: item.target, from: item)
         case "panel":
             guard let sidebar = controller?.sidebar else { return fail(id, "The window is closed.") }
@@ -313,13 +316,30 @@ import QuartzCore
             found["pointer_area_is_on_the_page"] = pages.documentView.trackingAreas.contains { $0.owner === pages.documentView && $0.options.contains(.mouseMoved) && $0.options.contains(.cursorUpdate) && $0.options.contains(.inVisibleRect) }
             found["right_click_has_a_menu"] = pages.documentView.menu(for: mouse(.rightMouseDown, clicks: 1)!)?.items.map(\.action).contains(#selector(AppDelegate.copy(_:))) == true
         }
-        // Copy and Select All: their keys, through the real menu bar, reach the app when nothing with the focus wants them, and Services ask the same object.
-        found["select_all_key_reaches_the_app"] = key("a", .command).map { NSApp.mainMenu?.performKeyEquivalent(with: $0) == true } ?? false
-        found["select_all_selects"] = delegate.core.menuItemEnabled(id: "edit.copy")
-        found["copy_key_reaches_the_app"] = key("c", .command).map { NSApp.mainMenu?.performKeyEquivalent(with: $0) == true } ?? false
-        found["copy_is_validated"] = delegate.responds(to: #selector(NSMenuItemValidation.validateMenuItem(_:)))
-        found["services_ask_the_app"] = delegate.responds(to: NSSelectorFromString("validRequestorForSendType:returnType:"))
-        found["services_write_the_selection"] = delegate.responds(to: #selector(NSServicesMenuRequestor.writeSelection(to:types:)))
+        // Copy and Select All: their keys, through the real menu bar, reach the app when nothing with the focus wants them. What's checked is what comes of it, by what AppKit says of the real item.
+        if let copy = menuItem("edit.copy"), let selectAll = menuItem("edit.select_all") {
+            func enabled(_ item: NSMenuItem) -> Bool {
+                item.menu?.update()
+                return item.isEnabled
+            }
+            // A click takes any selection away, at once, whatever's been read.
+            pages.pointerDown(atWindow: pages.documentView.convert(NSPoint(x: 1, y: 1), to: nil), clicks: 1, shift: false)
+            pages.pointerUp()
+            found["copy_is_grey_with_nothing_selected"] = !enabled(copy)
+            found["select_all_can_be_chosen"] = enabled(selectAll)
+            found["select_all_key_reaches_the_app"] = key("a", .command).map { NSApp.mainMenu?.performKeyEquivalent(with: $0) == true } ?? false
+            found["select_all_selects"] = delegate.core.menuItemEnabled(id: "edit.copy")
+            found["copy_is_enabled_with_something_selected"] = enabled(copy)
+            found["copy_key_reaches_the_app"] = key("c", .command).map { NSApp.mainMenu?.performKeyEquivalent(with: $0) == true } ?? false
+        }
+        // Services, by what they ask. That they're given the text is `qa services`, which needs its page read first.
+        found["services_arent_offered_what_they_didnt_ask_for"] = delegate.validRequestor(forSendType: .tiff, returnType: nil) == nil && delegate.validRequestor(forSendType: .string, returnType: .string) == nil
+        pages.pointerDown(atWindow: pages.documentView.convert(NSPoint(x: 1, y: 1), to: nil), clicks: 1, shift: false)
+        pages.pointerUp()
+        found["services_arent_offered_nothing"] = delegate.validRequestor(forSendType: .string, returnType: nil) == nil
+        let nothing = NSPasteboard(name: NSPasteboard.Name("com.rectopdf.qa.nothing.\(ProcessInfo.processInfo.processIdentifier)"))
+        found["services_write_nothing_with_nothing_selected"] = !delegate.writeSelection(to: nothing, types: [.string]) && nothing.string(forType: .string) == nil
+        nothing.releaseGlobally()
         // A pinch comes with these from AppKit, and they're what stops drawing until it ends.
         found["pages_can_be_pinched"] = pages.scrollView.allowsMagnification
         NotificationCenter.default.post(name: NSScrollView.willStartLiveMagnifyNotification, object: pages.scrollView)

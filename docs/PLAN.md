@@ -108,6 +108,9 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 
 - [x] Native text selection: drag, double and triple click, select across pages, ⌘C, the system's highlight colour and I-beam cursor; `recto select`, `recto copy`, Services and a context menu from AppKit. Real mouse events, the Services menu itself and the compositor's blend aren't checked on a screen: a dev build for the owner is what shows them
 - [x] Search corpus and index, with the text normaliser: `recto index`, `recto wait indexing-done`, and `recto search` answering from it, with `route` saying how
+- [ ] Selecting, from its review: hidden text the check doesn't flag still reaches a copy, as pairs of white letters split by a visible dot, under `MIN_FLAGGED_RUN`, and white text printed over black, which has ink under it
+- [ ] Selecting, from its review: a pointer move at rest starts a worker to read its page, 0 to 4.5 MiB on a tiny file, and that hasn't been measured on a heavy page
+- [ ] Selecting, from its review: 16 MiB on the real clipboard hasn't been measured, and `setString` is synchronous on the UI thread
 - [ ] Find in the sidebar, with the hit list
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
 - [ ] ⌘K
@@ -216,8 +219,7 @@ Real digital signatures to the official standards, signature trust checks, Windo
 | A same-user process faking a terminal or writing the level file: accept until the app's settings exist? | Phase 2 | Yes |
 | `SKILL.md` auto-approves read-only `recto` commands in Claude Code; the session's level still applies | Phase 6 | Keep |
 | Whole-page exports at 3× and 4× peak at 465–469 MiB, above the 415–450 MiB accepted | Phase 2 | Accept |
-| Copy-restricted PDFs: notice with Copy anyway? Built for text, the coordinator's default and not yet the owner's. `recto copy` needs `--anyway`, while `recto text` has never asked | Phase 3 | Yes |
-| Hidden text in a copy: left out, with a quiet notice saying how many characters went? Built, the coordinator's default and not yet the owner's | Phase 3 | Yes |
+| Image copy and snapshot on copy-restricted PDFs: the same notice with Copy anyway as text has, which the owner has decided? | Phase 3 | Yes |
 | What Save does the first time: keep one backup of the original? | Phase 4 | Yes |
 | Anthropic's answer before public release; API-key route | Phase 6 | Wait; add it |
 | Licence: permissive or closed | Phase 7 | Permissive or closed, undecided which |

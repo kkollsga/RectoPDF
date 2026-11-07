@@ -4,9 +4,9 @@
 //!
 //! **What the UI thread pays.** A press, a drag or a pointer move looks through a page already here, or notes that it's wanted and returns. It never waits for text.
 //!
-//! **Hidden text takes a second look.** The first read of a page is quick and has no hidden-text check, since that draws the page. Once a page is in a selection and showing, or being copied, it's read again with the check when everything visible is drawn, and that can move no place: only what's flagged changes. A page known to be heavy isn't drawn for this, since one more draw of a USGS map is hundreds of MiB, and a copy says it wasn't checked.
+//! **Hidden text takes a second look.** The first read of a page is quick and has no hidden-text check, since that draws the page. Once a page is in a selection and showing, or being copied, it's read again with the check when everything visible is drawn. No character moves. What changes is what's on them: an end that was on a hidden word goes to the nearest thing that shows. A page known to be heavy isn't drawn for this, since one more draw of a USGS map is hundreds of MiB, and a copy says it wasn't checked.
 
-use recto_index::select::{CopiedText, MAX_COPY_BYTES, MAX_COPY_PAGES, MAX_COPY_TIME, PagePoint, PageText, Range, Rect, Selection, Texts};
+use recto_index::select::{CopiedText, MAX_COPY_BYTES, MAX_COPY_PAGES, MAX_COPY_TIME, PAGE_END, PagePoint, PageText, Range, Rect, Selection, Texts};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -45,11 +45,13 @@ struct Held {
     last_used: u64,
 }
 
-/// A copy on its way, a page at a time.
+/// A copy on its way, a page at a time. It holds what was selected when it was asked for, as a Mac's ⌘C copies that: the selection can go on moving, or go, and this is still what the reader asked for.
 #[derive(Debug)]
 struct CopyRun {
     out: CopiedText,
-    next: Option<u32>,
+    range: Range,
+    /// The page it's waiting for, never before the start of `range`.
+    next: u32,
     started: Instant,
 }
 
@@ -105,6 +107,20 @@ impl Selecting {
         *self = Self { reads: self.reads, clock: self.clock, on_layers: std::mem::take(&mut self.on_layers), ..Self::default() };
     }
 
+    /// The file isn't the one any of this was about. A copy on its way says so, as the reader's waiting for it.
+    pub fn file_changed(&mut self) {
+        let was_copying = self.copy.is_some();
+        self.reset();
+        if was_copying {
+            self.notice = Some(Notice { text: "This file changed on disk, so the copy stopped.".to_string(), offers_copy_anyway: false, fades: true });
+        }
+    }
+
+    /// The thread that reads text is starting again, and what it was doing is gone.
+    pub fn thread_restarted(&mut self) {
+        self.reset();
+    }
+
     /// The window closed: text goes, and the selection stays, to be worked out again if it comes back.
     pub fn drop_texts(&mut self) {
         self.texts = Vec::new();
@@ -132,9 +148,10 @@ impl Selecting {
     }
 
     pub fn press(&mut self, point: PagePoint, clicks: u32, shift: bool) {
-        // A new selection is what a copy on its way was for no longer.
-        self.copy = None;
-        self.notice = None;
+        // What a copy on its way says about itself stays, and what was said about a finished one has had its moment.
+        if self.copy.is_none() {
+            self.notice = None;
+        }
         self.selection.press(point, clicks, shift);
         self.changed();
     }
@@ -151,15 +168,17 @@ impl Selecting {
     }
 
     pub fn set_range(&mut self, range: Range) {
-        self.copy = None;
-        self.notice = None;
+        if self.copy.is_none() {
+            self.notice = None;
+        }
         self.selection.set_range(range);
         self.changed();
     }
 
     pub fn clear(&mut self) {
-        self.copy = None;
-        self.notice = None;
+        if self.copy.is_none() {
+            self.notice = None;
+        }
         self.selection.clear();
         self.changed();
     }
@@ -221,7 +240,7 @@ impl Selecting {
                 visible.iter().filter(|page| range.on_page(**page).is_some()).take(MAX_SELECTED_VISIBLE).find(|page| self.held(**page).is_none()).map(|page| WantedText { page: *page, check: false })
             }
             Urgency::WhenIdle => {
-                if let Some(page) = self.copy.as_ref().and_then(|copy| copy.next) {
+                if let Some(page) = self.copy.as_ref().map(|copy| copy.next) {
                     let heavy = is_heavy(page);
                     if self.held(page).is_none() || self.page_wants_check(page, heavy) {
                         return Some(WantedText { page, check: !heavy });
@@ -275,7 +294,7 @@ impl Selecting {
     fn evict(&mut self, visible: &[u32]) {
         let ends = self.selection.end_pages();
         let range = self.range;
-        let copy_next = self.copy.as_ref().and_then(|copy| copy.next);
+        let copy_next = self.copy.as_ref().map(|copy| copy.next);
         loop {
             if self.texts.len() <= MAX_TEXT_PAGES && self.held_bytes() <= MAX_TEXT_BYTES {
                 return;
@@ -309,28 +328,25 @@ impl Selecting {
         self.on_layers.is_empty() && !self.has_selection()
     }
 
-    /// Starts a copy, or says why not. `anyway` is the reader having said so about a file that asks not to be.
+    /// Starts a copy of what's selected now. With nothing selected there's nothing to start, which is why the menu says it can't be chosen. `anyway` is the reader having said so about a file that asks not to be.
     pub fn start_copy(&mut self, anyway: bool, pages: u32, is_heavy: impl Fn(u32) -> bool) {
+        let Some(range) = self.range.filter(|range| !range.is_empty()) else { return };
         if anyway {
             self.copy_allowed = true;
         }
         self.notice = None;
         self.copied = None;
         self.copied_told = false;
-        self.copy = Some(CopyRun { out: CopiedText::default(), next: None, started: Instant::now() });
+        self.copy = Some(CopyRun { out: CopiedText::default(), range, next: range.start.page, started: Instant::now() });
         self.advance_copy(pages, is_heavy);
     }
 
     /// Takes the copy as far as the text here allows. Bounded by what's held, which is what this gets through without another read.
     pub fn advance_copy(&mut self, pages: u32, is_heavy: impl Fn(u32) -> bool) {
         while let Some(mut run) = self.copy.take() {
-            let Some(range) = self.range else {
-                // Its ends are still being read.
-                self.copy = Some(run);
-                return;
-            };
+            let range = run.range;
             let last = range.end.page.min(pages.saturating_sub(1));
-            let page = *run.next.get_or_insert(range.start.page);
+            let page = run.next;
             if page > last {
                 self.finish_copy(run.out);
                 return;
@@ -343,7 +359,7 @@ impl Selecting {
             let heavy = is_heavy(page);
             let wants_check = self.page_wants_check(page, heavy);
             let Some(held) = self.held(page).filter(|_| !wants_check) else {
-                self.notice = progress(&run, range, last);
+                self.notice = progress(&run, last).or(self.notice.take());
                 self.copy = Some(run);
                 return;
             };
@@ -361,7 +377,7 @@ impl Selecting {
                 self.finish_copy(run.out);
                 return;
             }
-            run.next = Some(page + 1);
+            run.next = page + 1;
             self.copy = Some(run);
         }
     }
@@ -383,19 +399,35 @@ impl Selecting {
         self.copied.take()
     }
 
-    /// The selection's text with nothing to wait for, for what can't wait, such as the Services menu. `None` if any of it isn't here yet, or if the file asks not to be copied and hasn't been told otherwise.
-    pub fn text_now(&self, pages: u32) -> Option<String> {
-        let range = self.range.filter(|range| !range.is_empty())?;
+    /// Whether [`Self::text_now`] has something to give, with none of it built: every page is here and a check has looked at it, and the file hasn't asked not to be copied. Services ask this on each event of a menu's life, on the UI thread. A check that couldn't be done doesn't count, as a copy can say a page wasn't checked and Services can't.
+    pub fn can_offer(&self, pages: u32) -> bool {
+        let Some(range) = self.range.filter(|range| !range.is_empty()) else { return false };
         let last = range.end.page.min(pages.saturating_sub(1));
-        if last - range.start.page >= MAX_TEXT_PAGES as u32 {
+        if last < range.start.page || last - range.start.page >= MAX_TEXT_PAGES as u32 {
+            return false;
+        }
+        let mut any = false;
+        for page in range.start.page..=last {
+            let Some(held) = self.held(page) else { return false };
+            if held.failed || (!held.text.hidden_checked() && !held.text.is_empty()) || (held.text.copy_restricted() && !self.copy_allowed) {
+                return false;
+            }
+            any |= range.on_page(page).is_some_and(|(start, end)| start < end.min(held.text.len()));
+        }
+        any
+    }
+
+    /// The selection's text with nothing to wait for, for what can't wait, such as the Services menu. `None` unless [`Self::can_offer`].
+    pub fn text_now(&self, pages: u32) -> Option<String> {
+        if !self.can_offer(pages) {
             return None;
         }
+        let range = self.range?;
         let mut out = CopiedText::default();
-        for page in range.start.page..=last {
-            let held = self.held(page).filter(|held| held.check_tried)?;
-            out.add_page(page, &held.text, &range, MAX_COPY_BYTES);
+        for page in range.start.page..=range.end.page.min(pages.saturating_sub(1)) {
+            out.add_page(page, &self.held(page)?.text, &range, MAX_COPY_BYTES);
         }
-        (!out.text.is_empty() && (!out.restricted || self.copy_allowed)).then_some(out.text)
+        (!out.text.is_empty()).then_some(out.text)
     }
 
     pub fn notice(&self) -> Option<&Notice> {
@@ -407,7 +439,8 @@ impl Selecting {
     }
 
     pub fn report(&self) -> Value {
-        let place = |at: recto_index::select::Place| json!({ "page": at.page + 1, "at": at.at });
+        // The end of a page whose length isn't known here has no number to say.
+        let place = |at: recto_index::select::Place| json!({ "page": at.page + 1, "at": (at.at != PAGE_END).then_some(at.at) });
         json!({
             "selected": self.has_selection(),
             "dragging": self.selection.is_dragging(),
@@ -424,8 +457,9 @@ impl Selecting {
     }
 }
 
-fn progress(run: &CopyRun, range: Range, last: u32) -> Option<Notice> {
-    (run.started.elapsed().as_secs_f64() >= SAY_PROGRESS_AFTER).then(|| Notice { text: format!("Copying… {} of {} pages.", run.next.map_or(0, |page| page - range.start.page), last - range.start.page + 1), offers_copy_anyway: false, fades: false })
+fn progress(run: &CopyRun, last: u32) -> Option<Notice> {
+    let start = run.range.start.page;
+    (run.started.elapsed().as_secs_f64() >= SAY_PROGRESS_AFTER).then(|| Notice { text: format!("Copying… {} of {} pages.", run.next - start, last - start + 1), offers_copy_anyway: false, fades: false })
 }
 
 /// What's worth saying about a copy, or nothing if it went as asked. The clipboard holding what it does is the news, and this is only what the reader wouldn't otherwise know.
@@ -594,7 +628,9 @@ mod tests {
         assert!(!asks.is_copying());
         assert!(asks.notice().unwrap().offers_copy_anyway);
         assert!(asks.take_copied().is_none());
+        asks.page_read(1, restricted("second"), true, &[]);
         assert_eq!(asks.text_now(2), None, "and the Services menu can't get round it");
+        assert!(!asks.can_offer(2));
         asks.start_copy(true, 2, NOT_HEAVY);
         asks.page_read(1, restricted("second"), true, &[]);
         asks.advance_copy(2, NOT_HEAVY);
@@ -621,6 +657,175 @@ mod tests {
         failing.advance_copy(2, NOT_HEAVY);
         assert_eq!(failing.take_copied().unwrap().text, "fine");
         assert!(failing.notice().unwrap().text.contains("1 page couldn't be read"), "{:?}", failing.notice());
+    }
+
+    /// Failure: ⌘C with the button still down, then the drag goes on: the copy read the live selection, so its next page came before its start, which underflowed and killed the thread that draws, or wrapped into wrong text and an untrue notice. On a Mac ⌘C copies what's selected when it's pressed, whatever happens next.
+    #[test]
+    fn a_copy_takes_what_was_selected_when_it_was_asked_for() {
+        let mut selecting = Selecting::default();
+        for page in 0..50 {
+            selecting.page_read(page, text(&format!("page {page}")), true, &[]);
+        }
+        selecting.press(at(30, 72.0), 1, false);
+        selecting.drag(at(32, 100.0));
+        selecting.page_read(30, text("page 30"), true, &[]);
+        selecting.page_read(32, text("page 32"), true, &[]);
+        assert!(selecting.has_selection());
+        selecting.start_copy(false, 50, NOT_HEAVY);
+        // The button's still down, and it goes on: above where the copy started, and then below it.
+        selecting.drag(at(5, 72.0));
+        selecting.page_read(5, text("page 5"), true, &[]);
+        selecting.advance_copy(50, NOT_HEAVY);
+        selecting.drag(at(40, 100.0));
+        selecting.page_read(40, text("page 40"), true, &[]);
+        selecting.release();
+        for page in 30..=32 {
+            selecting.page_read(page, text(&format!("page {page}")), true, &[]);
+            selecting.advance_copy(50, NOT_HEAVY);
+        }
+        let copied = selecting.take_copied().expect("the copy came out");
+        assert!(copied.text.starts_with("page 30") || copied.text.starts_with("ge 30"), "{:?}", copied.text);
+        assert!(copied.text.contains("page 31"), "{:?}", copied.text);
+        assert!(!copied.text.contains("page 5\n") && !copied.text.contains("page 40"), "{:?}", copied.text);
+        assert_eq!(copied.pages_read, 3);
+    }
+
+    /// Failure: a click during a long copy throws it away with nothing said, though the reader asked for it and the clipboard never gets it.
+    #[test]
+    fn a_click_during_a_copy_doesnt_lose_it() {
+        let mut selecting = Selecting::default();
+        selecting.set_range(Range::pages(0, 1));
+        selecting.start_copy(false, 2, NOT_HEAVY);
+        selecting.page_read(0, text("first"), true, &[]);
+        selecting.advance_copy(2, NOT_HEAVY);
+        selecting.press(at(0, 72.0), 1, false);
+        selecting.release();
+        assert!(selecting.is_copying());
+        selecting.page_read(1, text("second"), true, &[]);
+        selecting.advance_copy(2, NOT_HEAVY);
+        assert_eq!(selecting.take_copied().unwrap().text, "first\nsecond");
+    }
+
+    /// Failure: Copy runs with nothing selected, whoever asked, and says it's copying for ever.
+    #[test]
+    fn a_copy_of_nothing_doesnt_start() {
+        let mut selecting = Selecting::default();
+        selecting.start_copy(false, 3, NOT_HEAVY);
+        assert!(!selecting.is_copying());
+        selecting.press(at(0, 72.0), 1, false);
+        selecting.start_copy(false, 3, NOT_HEAVY);
+        assert!(!selecting.is_copying(), "its text isn't known, so there's nothing selected yet");
+        selecting.page_read(0, text("words"), false, &[]);
+        selecting.start_copy(false, 3, NOT_HEAVY);
+        assert!(!selecting.is_copying(), "a click selects nothing");
+    }
+
+    /// A page as it comes back when its check was asked for and couldn't be done: tried, and not checked.
+    fn not_checked(line: &str) -> Arc<PageText> {
+        let frame = PageFrame { turns: 0, left: 0.0, bottom: 0.0, right: 612.0, top: 792.0 };
+        let chars: Vec<CharRecord> = line.chars().map(|ch| CharRecord::new(ch as u32, 0)).collect();
+        let boxes: Vec<CharBox> = (0..chars.len()).map(|at| [72.0 + at as f32 * 6.0, 700.0, 77.0 + at as f32 * 6.0, 710.0]).collect();
+        Arc::new(PageText::build(&chars, &boxes, frame, false, false))
+    }
+
+    /// Failure: Services are sent text no check has looked at, hidden words included, with nothing said, since they go by the check having been tried and not by what it found. A copy says when a page wasn't checked, and Services have no way to, so they aren't offered it.
+    #[test]
+    fn services_are_only_given_what_a_check_has_looked_at() {
+        let mut selecting = Selecting::default();
+        selecting.set_range(Range::pages(0, 0));
+        selecting.page_read(0, not_checked("can't be vouched for"), true, &[0]);
+        assert_eq!(selecting.text_now(1), None);
+        assert!(!selecting.can_offer(1));
+        selecting.page_read(0, text("looked at"), true, &[0]);
+        assert_eq!(selecting.text_now(1).as_deref(), Some("looked at"));
+        assert!(selecting.can_offer(1));
+    }
+
+    /// Failure: a file claiming millions of pages keeps a copy going for ever.
+    #[test]
+    fn a_copy_stops_at_its_page_limit_and_says_where() {
+        let mut selecting = Selecting::default();
+        selecting.set_range(Range::all(MAX_COPY_PAGES + 50));
+        selecting.start_copy(false, MAX_COPY_PAGES + 50, NOT_HEAVY);
+        selecting.copy.as_mut().unwrap().next = MAX_COPY_PAGES;
+        selecting.advance_copy(MAX_COPY_PAGES + 50, NOT_HEAVY);
+        assert!(!selecting.is_copying());
+        assert!(selecting.notice().unwrap().text.contains(&format!("page {}", MAX_COPY_PAGES + 1)), "{:?}", selecting.notice());
+    }
+
+    /// Failure: a file whose pages are each slow to read keeps a copy going past its time, with the reader waiting on nothing they can see.
+    #[test]
+    fn a_copy_stops_at_its_time_limit_and_says_where() {
+        let mut selecting = Selecting::default();
+        selecting.set_range(Range::pages(0, 9));
+        selecting.start_copy(false, 10, NOT_HEAVY);
+        selecting.page_read(0, text("first"), true, &[]);
+        selecting.advance_copy(10, NOT_HEAVY);
+        selecting.copy.as_mut().unwrap().started = Instant::now().checked_sub(MAX_COPY_TIME + std::time::Duration::from_secs(1)).unwrap();
+        selecting.page_read(1, text("second"), true, &[]);
+        selecting.advance_copy(10, NOT_HEAVY);
+        assert!(!selecting.is_copying());
+        assert_eq!(selecting.take_copied().unwrap().stopped_at, Some(1));
+    }
+
+    /// A page as large as can be selected: about 2.6 MiB held.
+    fn huge_page() -> Arc<PageText> {
+        let frame = PageFrame { turns: 0, left: 0.0, bottom: 0.0, right: 612.0, top: 792.0 };
+        let chars = vec![CharRecord::new('a' as u32, 0); recto_index::select::MAX_SELECTABLE_CHARS];
+        let boxes: Vec<CharBox> = (0..chars.len()).map(|at| [(at % 500) as f32, (at / 500 % 700) as f32, (at % 500) as f32 + 1.0, (at / 500 % 700) as f32 + 1.0]).collect();
+        Arc::new(PageText::build(&chars, &boxes, frame, true, false))
+    }
+
+    /// Failure: a copy past 16 MiB goes on, or its text passes the limit, or nothing says it stopped.
+    #[test]
+    fn a_copy_stops_at_its_byte_limit_and_says_where() {
+        let huge = huge_page();
+        let pages = 1000;
+        let mut selecting = Selecting::default();
+        selecting.set_range(Range::all(pages));
+        selecting.start_copy(false, pages, NOT_HEAVY);
+        let mut page = 0;
+        while selecting.is_copying() {
+            selecting.page_read(page, Arc::clone(&huge), true, &[]);
+            selecting.advance_copy(pages, NOT_HEAVY);
+            page += 1;
+            assert!(page < pages, "it never stopped");
+        }
+        let copied = selecting.take_copied().unwrap();
+        assert!(copied.text.len() <= MAX_COPY_BYTES, "{}", copied.text.len());
+        assert_eq!(copied.stopped_at, Some(page - 1));
+        assert!(selecting.notice().unwrap().text.contains("as much as one copy holds"));
+    }
+
+    /// Failure: long pages visited stay held past 8 MiB, or with everything in view selected, more are read past 16 MiB: hundreds of megabytes on a file of tiny pages with long text.
+    #[test]
+    fn text_held_stays_under_its_byte_limits() {
+        let huge = huge_page();
+        let mut selecting = Selecting::default();
+        for page in 0..7 {
+            selecting.page_read(page, Arc::clone(&huge), false, &[]);
+            assert!(selecting.held_bytes() <= MAX_TEXT_BYTES, "{} at page {page}", selecting.held_bytes());
+        }
+        let visible: Vec<u32> = (100..112).collect();
+        let mut showing = Selecting::default();
+        showing.set_range(Range::all(1000));
+        let mut read = 0;
+        while let Some(wanted) = showing.wanted(Urgency::Now, &visible, NOT_HEAVY) {
+            showing.page_read(wanted.page, Arc::clone(&huge), false, &visible);
+            read += 1;
+            assert!(read <= visible.len(), "it keeps asking");
+        }
+        assert!(read < visible.len(), "it stopped reading: {read}");
+        assert!(showing.held_bytes() >= MOST_TEXT_BYTES && showing.held_bytes() < MOST_TEXT_BYTES + huge.bytes(), "{}", showing.held_bytes());
+    }
+
+    /// Failure: a whole-page selection reads as ending at character 4,294,967,294, in what QA and the budgets look at.
+    #[test]
+    fn a_report_doesnt_show_the_end_of_a_page_as_a_number() {
+        let mut selecting = Selecting::default();
+        selecting.set_range(Range::pages(0, 1));
+        assert!(selecting.report()["end"]["at"].is_null(), "{}", selecting.report());
+        assert_eq!(selecting.report()["end"]["page"], 2);
     }
 
     /// Failure: a highlight stays up after it's cleared, or every scroll with nothing selected walks the visible pages.

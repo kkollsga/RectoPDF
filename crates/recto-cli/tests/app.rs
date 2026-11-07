@@ -427,7 +427,7 @@ fn what_appkit_calls_reaches_the_app() {
     let checked = found.as_object().unwrap();
     let failed: Vec<&String> = checked.iter().filter(|(_, ok)| **ok != true).map(|(name, _)| name).collect();
     assert!(failed.is_empty(), "these don't reach the app: {failed:?}\n{found}");
-    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "corner_covers_the_buttons", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "select_all_key_reaches_the_app", "select_all_selects", "copy_key_reaches_the_app", "copy_is_validated", "services_ask_the_app", "services_write_the_selection", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
+    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "corner_covers_the_buttons", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "copy_is_grey_with_nothing_selected", "select_all_can_be_chosen", "select_all_key_reaches_the_app", "select_all_selects", "copy_is_enabled_with_something_selected", "copy_key_reaches_the_app", "services_arent_offered_what_they_didnt_ask_for", "services_arent_offered_nothing", "services_write_nothing_with_nothing_selected", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
         assert!(checked.contains_key(name), "{name} wasn't checked: {found}");
     }
     run.ok(&["view", "--focus", "on"]);
@@ -1334,4 +1334,85 @@ fn a_copy_restricted_file_offers_copy_anyway() {
 /// The middle of the first line. `recto select` gives rectangles for a restricted file too, and no text.
 fn place_on_anyway(run: &Run) -> String {
     place_on(run, 1, 0, 0.5)
+}
+
+/// Failure: `qa menu` chooses an item the real menu has greyed out, which a person can't do, so what's tested is a path nobody takes: `qa menu edit.copy` with nothing selected said it was copying, for good.
+#[test]
+fn a_greyed_out_menu_item_cant_be_chosen_by_qa_either() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let (reply, status) = run.state.json(&["qa", "menu", "edit.copy"]);
+    assert_eq!(status, exit::FAILED, "it's greyed out: {reply}");
+    assert_eq!(run.report()["reader"]["selection"]["copying"], false);
+    run.ok(&["qa", "menu", "edit.select_all"]);
+    run.settled();
+    run.ok(&["qa", "menu", "edit.copy"]);
+    run.settled();
+    assert_eq!(run.report()["reader"]["selection"]["copying"], false, "and it finishes");
+}
+
+/// Failure: an unsaved edit leaves a selection on what's now another page, a copy gives what's no longer there, or the wrong page's words come off the clipboard. A page deleted is pages moved, and what was selected on them is gone. A word then comes from where it now is.
+#[test]
+fn a_selection_during_an_unsaved_edit_follows_what_is_on_screen() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("edits.pdf", &pages(&[Page::new(text_lines(&["Alpha page words"])), Page::new(text_lines(&["Bravo page words"])), Page::new(text_lines(&["Charlie page words"]))]));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "zoom", "0.5"]);
+    run.settled();
+    let line = "1:90,72:2";
+    run.ok(&["qa", "mouse-down", &line.replacen('1', "2", 1)]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    assert_eq!(run.report()["reader"]["selection"]["selected"], true);
+    run.ok(&["page", "delete", "1"]);
+    let moved = wait_for(&run, |state| state["reader"]["pages"] == 2);
+    assert_eq!(moved["reader"]["selection"]["selected"], false, "{moved}");
+    run.settled();
+    assert_eq!(run.report()["app"]["pages"]["highlight_layers"], 0);
+    // Bravo is the first page now.
+    run.ok(&["qa", "mouse-down", &format!("{line}")]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    copy_now(&run);
+    assert_eq!(copied(&run), "Bravo");
+    assert_eq!(run.ok(&["copy", "--all"])["untrusted"]["text"], "Bravo page words\nCharlie page words", "what's on screen, in that order");
+    // A rotation that isn't saved isn't drawn, so a selection on that page is as it was.
+    run.ok(&["page", "rotate", "1", "--by", "90"]);
+    run.settled();
+    let turned = run.report();
+    assert_eq!(turned["reader"]["selection"]["selected"], true, "{turned}");
+    copy_now(&run);
+    assert_eq!(copied(&run), "Bravo");
+    run.ok(&["undo"]);
+    run.ok(&["undo"]);
+    let back = wait_for(&run, |state| state["reader"]["pages"] == 3);
+    assert_eq!(back["reader"]["selection"]["selected"], false, "the pages moved back, so that's another page: {back}");
+}
+
+/// Failure: an agent's use of `--anyway` leaves no mark. Owner, 2026-11-07: the agent keeps it, and each use goes in the activity log. Through the real server, at the level both commands need, and read back by `recto log`. Text from the document never goes in.
+#[test]
+fn each_use_of_copy_anyway_is_in_the_activity_log() {
+    let Some(run) = Run::start() else { return };
+    let file = restricted_pdf();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.state.set_level(Level::ReadOnly);
+    let uses = |run: &Run| run.ok(&["log", "--last", "200"])["entries"].as_array().unwrap().iter().filter(|row| row["details"]["anyway"] == true).count();
+    let before = uses(&run);
+    let (refused, status) = run.state.json(&["copy", "1"]);
+    assert_eq!(status, exit::PROTECTED, "{refused}");
+    assert_eq!(uses(&run), before, "nothing's been gone past");
+    for times in 1..=2 {
+        let copied = run.ok(&["copy", "1", "--anyway"]);
+        assert_eq!(copied["untrusted"]["text"], "Words that ask not to be copied");
+        assert_eq!(uses(&run), before + times, "each use");
+    }
+    let shown = run.ok(&["select", "1", "--anyway"]);
+    assert_eq!(shown["untrusted"]["text"], "Words that ask not to be copied");
+    assert_eq!(uses(&run), before + 3, "`select` gives the text too");
+    let log = run.ok(&["log", "--last", "200"]).to_string();
+    assert!(!log.contains("Words that ask"), "no document text: {log}");
 }

@@ -243,3 +243,15 @@ fn a_pick_that_makes_no_sense_is_refused() {
     }
     assert_eq!(text(&data(&file, &["select", "--page", "1", "--chars", "3-999"])), "ds", "an end past the text is the end of the text");
 }
+
+/// Failure: the end of a whole page reads as character 4,294,967,294 in an answer an agent goes by.
+#[test]
+fn a_whole_page_ends_at_its_own_length() {
+    let file = TempPdf::new("one.pdf", &pages(&[Page::new(text_lines(&["Words"])), Page::new(text_lines(&["More words"]))]));
+    let answer = data(&file, &["select", "2"]);
+    assert_eq!(answer["end"]["page"], 2);
+    assert_eq!(answer["end"]["at"], answer["pages"][0]["end"], "{answer}");
+    assert!(answer["end"]["at"].as_u64().unwrap() < 100, "{answer}");
+    let copied = data(&file, &["copy", "--all"]);
+    assert!(copied["end"]["at"].as_u64().unwrap() < 100, "{copied}");
+}

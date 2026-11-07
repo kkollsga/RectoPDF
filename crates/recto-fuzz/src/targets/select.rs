@@ -5,8 +5,10 @@
 use super::index::page;
 use crate::guard::{Budget, within};
 use crate::input::Take;
-use recto_index::select::{CopiedText, MAX_RECTS_PER_PAGE, MAX_SELECTABLE_CHARS, PAGE_END, PagePoint, PageText, Range, Selection, Texts, Unit};
+use recto_index::select::{CopiedText, MAX_LINES, MAX_RECTS_PER_PAGE, MAX_SELECTABLE_CHARS, PAGE_END, PagePoint, PageText, Place, Range, Selection, Texts, Unit};
 use recto_proto::PageFrame;
+use recto_reader::selection::{Selecting, Urgency};
+use std::sync::Arc;
 use std::time::Duration;
 
 const BUDGET: Budget = Budget { time: Duration::from_secs(60), memory: 512 * 1024 * 1024 };
@@ -29,8 +31,8 @@ impl Texts for One {
 
 /// Catches: a place or a range out of bounds, a highlight off the page or not a number, a copy past its room, and anything worse than linear on a hostile page.
 pub fn check(data: &[u8]) {
-    // What says how the page sits and where the pointer goes comes first and is short, and the rest is the page, as in `index`.
-    let (head, rest) = data.split_at(data.len().min(64));
+    // What says how the page sits and where the pointer goes comes first, up to a third of the input, and the rest is the page, as in `index`. Running out reads as zeros, which is one op over and over, so it needs a real share.
+    let (head, rest) = data.split_at((data.len() / 3).clamp(data.len().min(64), 2048));
     let mut take = Take(head);
     let frame = PageFrame { turns: take.u8() & 3, left: take.pick(EDGES), bottom: take.pick(EDGES), right: take.pick(EDGES), top: take.pick(EDGES) };
     let (chars, boxes) = page(rest);
@@ -39,7 +41,9 @@ pub fn check(data: &[u8]) {
         check_page(&text, &mut take);
         let without_boxes = PageText::build(&chars, &[], frame, true, false);
         check_page(&without_boxes, &mut take);
-        check_pointer(&One(text, without_boxes), &mut take);
+        let (text, without_boxes) = (Arc::new(text), Arc::new(without_boxes));
+        check_page_view(&text, &without_boxes, &mut take);
+        check_pointer(&One((*text).clone(), (*without_boxes).clone()), &mut take);
     });
 }
 
@@ -47,6 +51,7 @@ fn check_page(text: &PageText, take: &mut Take) {
     let len = text.len();
     assert!(len as usize <= MAX_SELECTABLE_CHARS * 2, "{len}");
     assert!(text.rects(0, PAGE_END).len() <= MAX_RECTS_PER_PAGE);
+    assert!(text.line_count() <= MAX_LINES, "{}", text.line_count());
     let (width, height) = text.size();
     for rect in text.rects(0, PAGE_END) {
         assert!([rect.x, rect.y, rect.width, rect.height].iter().all(|edge| edge.is_finite()), "{rect:?}");
@@ -74,6 +79,69 @@ fn check_page(text: &PageText, take: &mut Take) {
     assert!(copied.text.len() <= 64, "{}", copied.text.len());
 }
 
+/// What the page view holds, through any order of what can happen to it: a pointer that does anything, text arriving or failing for any page at any time, a copy started and asked to go on, a window closing. Catches a subtraction that only holds if a selection stays put, which killed the thread that draws, and a copy that never comes to rest.
+fn check_page_view(text: &Arc<PageText>, other: &Arc<PageText>, take: &mut Take) {
+    const PAGES: u32 = 8;
+    let mut selecting = Selecting::default();
+    let visible = [1, 2, 3];
+    // Half the time it starts with something selected over a few pages and on its way to the clipboard, the button still down, because that's where the state is that a random walk rarely reaches.
+    if take.u8() & 1 == 1 {
+        selecting.press(PagePoint { page: 4, x: 0.0, y: 0.0 }, 1, false);
+        selecting.drag(PagePoint { page: 2, x: 1e9, y: 1e9 });
+        // No check yet, so the copy has to wait for what comes next, with the selection free to move under it.
+        for page in [2, 3, 4] {
+            selecting.page_read(page, Arc::clone(text), false, &visible);
+        }
+        selecting.start_copy(false, PAGES, |_| false);
+    }
+    for _ in 0..POINTERS * 4 {
+        let page = u32::from(take.u8()) % (PAGES + 2);
+        let point = PagePoint { page, x: take.pick(POINTS), y: take.pick(POINTS) };
+        let heavy = take.u8() & 7 == 0;
+        match take.u8() % 14 {
+            0 => selecting.press(point, u32::from(take.u8()), take.u8() & 1 == 1),
+            1 | 2 | 3 => selecting.drag(point),
+            4 => selecting.release(),
+            5 => selecting.set_range(Range { start: Place { page, at: take.u32() }, end: Place { page: page.saturating_add(u32::from(take.u8())), at: take.u32() } }),
+            6 => selecting.clear(),
+            7 => selecting.start_copy(take.u8() & 1 == 1, PAGES, |_| heavy),
+            8 => selecting.advance_copy(PAGES, |_| heavy),
+            9 => selecting.page_read(page, Arc::clone(if take.u8() & 1 == 1 { text } else { other }), take.u8() & 1 == 1, &visible),
+            10 => selecting.page_failed(page, &visible),
+            11 => selecting.drop_texts(),
+            12 => {
+                let _ = selecting.is_over_text(point);
+            }
+            _ => selecting.reset(),
+        }
+        for &on in &visible {
+            let _ = selecting.layer_update(on);
+        }
+        let _ = selecting.take_copied();
+        let _ = selecting.take_copy_signal();
+        let _ = selecting.text_now(PAGES);
+        let _ = selecting.can_offer(PAGES);
+        let _ = selecting.notice();
+        let _ = selecting.report();
+        if let Some(range) = selecting.range() {
+            assert!(range.start <= range.end, "{range:?}");
+        }
+        for urgency in [Urgency::Now, Urgency::WhenIdle] {
+            if let Some(wanted) = selecting.wanted(urgency, &visible, |_| heavy) {
+                assert!(wanted.page <= u32::from(u8::MAX).saturating_mul(2) + PAGES, "{wanted:?}");
+            }
+        }
+    }
+    // Left to itself, with every page it asks for given to it, a copy comes to an end.
+    selecting.release();
+    for _ in 0..u32::from(u8::MAX) * 4 {
+        let Some(wanted) = selecting.wanted(Urgency::Now, &visible, |_| false).or_else(|| selecting.wanted(Urgency::WhenIdle, &visible, |_| false)) else { break };
+        selecting.page_read(wanted.page, Arc::clone(text), true, &visible);
+        selecting.advance_copy(PAGES, |_| false);
+    }
+    assert!(!selecting.is_copying(), "a copy never came to rest");
+}
+
 fn check_pointer(texts: &One, take: &mut Take) {
     let mut selection = Selection::default();
     for _ in 0..POINTERS {
@@ -82,7 +150,7 @@ fn check_pointer(texts: &One, take: &mut Take) {
             0 => selection.press(point, u32::from(take.u8()), take.u8() & 1 == 1),
             1 => selection.drag(point),
             2 => selection.release(),
-            3 => selection.set_range(Range { start: recto_index::select::Place { page: point.page, at: take.u32() }, end: recto_index::select::Place { page: point.page.saturating_add(1), at: take.u32() } }),
+            3 => selection.set_range(Range { start: Place { page: point.page, at: take.u32() }, end: Place { page: point.page.saturating_add(1), at: take.u32() } }),
             _ => selection.clear(),
         }
         if let Some(range) = selection.range(texts) {

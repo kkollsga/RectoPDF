@@ -694,7 +694,7 @@ impl RenderBackend for PdfiumBackend {
         Ok(boxes)
     }
 
-    fn page_text(&mut self, page: u32, options: TextOptions) -> Result<PageChars, RenderError> {
+    fn page_text_until(&mut self, page: u32, options: TextOptions, cancel: &dyn Cancel) -> Result<PageChars, RenderError> {
         self.load_page(page)?;
         let api = self.api;
         let open = self.open_page.as_mut().ok_or(FailCode::Internal)?;
@@ -750,7 +750,7 @@ impl RenderBackend for PdfiumBackend {
         }
         // A page with no characters has nothing to hide from a text reader, and needs no drawing to say so.
         // If the page can't be drawn for the check, the text still goes back, saying it wasn't checked: nothing is marked until the drawing has worked.
-        let hidden_checked = options.hidden_check && (chars.is_empty() || self.mark_no_ink(page, &mut chars, &boxes).is_ok());
+        let hidden_checked = options.hidden_check && (chars.is_empty() || self.mark_no_ink(page, &mut chars, &boxes, cancel).is_ok());
         if !options.boxes {
             boxes = Vec::new();
         }
@@ -784,7 +784,7 @@ const INK_MAX_BYTES: f32 = 64.0 * 1024.0 * 1024.0;
 impl PdfiumBackend {
     /// Draws the page and sets `NO_INK` on each visible-looking character whose box has no ink. Nothing is removed. From the spike's
     /// prototype, §10.4. Whitespace, control characters and characters PDFium generated have no ink to find, so they're skipped.
-    fn mark_no_ink(&mut self, page: u32, chars: &mut [CharRecord], boxes: &[CharBox]) -> Result<(), RenderError> {
+    fn mark_no_ink(&mut self, page: u32, chars: &mut [CharRecord], boxes: &[CharBox], cancel: &dyn Cancel) -> Result<(), RenderError> {
         let size = self.page_size(page)?;
         let area_at_ink_scale = size.width * INK_SCALE * size.height * INK_SCALE * 4.0;
         let scale = if area_at_ink_scale > INK_MAX_BYTES { INK_SCALE * (INK_MAX_BYTES / area_at_ink_scale).sqrt() } else { INK_SCALE };
@@ -793,7 +793,10 @@ impl PdfiumBackend {
         let stride = width.checked_mul(4).ok_or(FailCode::TooLarge)?;
         let bytes = usize::try_from(i64::from(stride) * i64::from(height)).map_err(|_| FailCode::TooLarge)?;
         let mut pixels = vec![0u8; bytes];
-        self.draw(&mut pixels, width, height, stride, (0, 0), (width, height), &crate::NeverCancel)?;
+        // Stopped part way, there's no telling what's ink: it's as though the check never ran, and nothing's marked.
+        if !self.draw(&mut pixels, width, height, stride, (0, 0), (width, height), cancel)? {
+            return Err(FailCode::Internal);
+        }
         let Some(page_handle) = self.open_page_handle() else { return Err(FailCode::Internal) };
         let api = self.api;
         let to_device = |x: f32, y: f32| {

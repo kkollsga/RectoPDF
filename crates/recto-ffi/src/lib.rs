@@ -903,6 +903,11 @@ impl AppCore {
         self.inner.engine.selection_text_now()
     }
 
+    /// Whether there's text the Services menu can be offered, which it asks often, on the UI thread. Builds nothing.
+    pub fn selection_can_be_sent(&self) -> bool {
+        self.inner.engine.selection_can_be_sent()
+    }
+
     /// The reader has dismissed the notice, or its time's up.
     pub fn dismiss_selection_notice(&self) {
         self.inner.engine.dismiss_selection_notice();

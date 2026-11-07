@@ -107,7 +107,12 @@ pub trait RenderBackend {
     fn image_boxes(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError>;
 
     /// Reads a page's characters, in the order the backend understands them.
-    fn page_text(&mut self, page: u32, options: TextOptions) -> Result<PageChars, RenderError>;
+    fn page_text(&mut self, page: u32, options: TextOptions) -> Result<PageChars, RenderError> {
+        self.page_text_until(page, options, &NeverCancel)
+    }
+
+    /// As [`Self::page_text`], with the draw for the hidden-text check stopping if `cancel` says to. The text still comes back, as not checked.
+    fn page_text_until(&mut self, page: u32, options: TextOptions, cancel: &dyn Cancel) -> Result<PageChars, RenderError>;
 
     /// The next piece of a page's contents, as a whole frame in `out`, for the host to write out as SVG. `job.seq` 0 starts again from the top. Bounded: at most a frame's worth of memory beyond what the page and its current image hold.
     fn contents_frame(&mut self, job: &recto_proto::contents::ContentsJob, out: &mut Vec<u8>, cancel: &dyn Cancel) -> Result<(), RenderError>;
