@@ -725,7 +725,12 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             Ok(where_json(s, id))
         }),
         Command::Close { tab } => {
-            let id = access.with(|s| select(s, tab))?;
+            // What would refuse it comes first: no reading a file for a close that won't happen.
+            let id = access.with(|s| {
+                let id = select(s, tab)?;
+                refuse_close_that_loses_something(s, id, level)?;
+                Ok::<_, AgentError>(id)
+            })?;
             read_ahead(access, |s| s.wake_for_close(id));
             access.with(|s| {
             let id = select(s, tab)?;
@@ -972,6 +977,8 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
     require_absolute(path)?;
     let wrong_page = |pages: u32| AgentError::new("no_such_page", format!("Nothing was opened: it has {pages} pages, and page {} isn't one of them.", page.unwrap_or(0)), exit::NOT_FOUND).then("Open it with a page it has, or with no `--page`.");
     let fits = |pages: u32| page.is_none_or(|page| page >= 1 && page <= pages);
+    // A file already open, in a tab gone cold, is read with the session free too.
+    read_ahead(access, |s| s.tab_for_path(path).and_then(|id| s.wake_for_tap(id)));
     // Already open: check the page before anything moves.
     let existing = access.with(|s| {
         let id = s.tab_for_path(path)?;
@@ -1434,6 +1441,9 @@ mod tests {
         assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(1));
         wake(Command::Close { tab: "#1".into() });
         assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(2));
+        // Opening a file whose tab has gone cold.
+        wake(Command::Open { path: PathBuf::from("/d/c.pdf"), page: None });
+        assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(3));
     }
 
     fn with_tabs(names: &[&str]) -> Session<Fake> {

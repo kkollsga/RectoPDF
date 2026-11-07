@@ -490,11 +490,14 @@ pub struct Session<L = DiskLoader> {
     edits: HashMap<TabId, PageEdits>,
     /// The latest pages drawn or tried, newest last, at most [`MAX_DRAWS_KEPT`]. Lets a waiter find out about a page finished a moment before it asked.
     draws: VecDeque<DrawNote>,
-    /// A cold tab's file, read ahead of waking it, with this session free. Taken by the next [`Self::activate`] of that tab.
-    woken: Option<(TabId, Result<DocFacts, OpenError>, Option<FileStamp>)>,
+    /// Cold tabs' files, read ahead of waking them with this session free. Each is taken by the next [`Self::activate`] of that tab, and goes if the tab stops being cold. At most [`MAX_READ_AHEAD`].
+    woken: Vec<(TabId, Result<DocFacts, OpenError>, Option<FileStamp>)>,
     /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`Session::take_place_lost`].
     place_lost: bool,
 }
+
+/// Files read ahead of waking their tabs, held at once. More than wakes can be under way together.
+const MAX_READ_AHEAD: usize = 4;
 
 /// Page results remembered across every tab, so nothing here grows with idle tabs.
 pub const MAX_DRAWS_KEPT: usize = 256;
@@ -518,7 +521,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: None, dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), draws: VecDeque::new(), place_lost: false }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), draws: VecDeque::new(), place_lost: false }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -650,9 +653,16 @@ impl<L: DocLoader> Session<L> {
         self.path_of(id).map(|path| (id, path))
     }
 
-    /// What was read for [`Self::wake_for_tap`] or [`Self::wake_for_close`]. One is held, and only until a tab next wakes.
+    /// What was read for [`Self::wake_for_tap`] or [`Self::wake_for_close`], kept for that tab's waking. A tab closed or already woken while it was being read has no use for it. Several can be read at once, so they don't take each other's place, and the oldest goes past the cap.
     pub fn give_woken(&mut self, id: TabId, loaded: Result<DocFacts, OpenError>, stamp: Option<FileStamp>) {
-        self.woken = Some((id, loaded, stamp));
+        self.woken.retain(|(tab, _, _)| *tab != id);
+        if self.file_to_wake(id).is_none() {
+            return;
+        }
+        if self.woken.len() >= MAX_READ_AHEAD {
+            drop(self.woken.remove(0));
+        }
+        self.woken.push((id, loaded, stamp));
     }
 
     /// **The sidebar's tap rule.** Tapping another PDF switches to it. Tapping the active PDF folds or opens its contents.
@@ -862,6 +872,7 @@ impl<L: DocLoader> Session<L> {
         self.tabs.remove(index);
         self.draws.retain(|d| d.tab != id);
         self.warm.retain(|(tab, _)| *tab != id);
+        self.woken.retain(|(tab, _, _)| *tab != id);
         if self.active == Some(id) {
             self.active = None;
             let next = self.tabs.get(index).or_else(|| index.checked_sub(1).and_then(|i| self.tabs.get(i))).map(|t| t.id);
@@ -906,8 +917,11 @@ impl<L: DocLoader> Session<L> {
             return;
         }
         // Woken from cold: rebuild from disk, or from what was read ahead with the session free. If that fails, the tab stays and says why.
-        let (loaded, stamp) = match self.woken.take().filter(|(tab, _, _)| *tab == id) {
-            Some((_, loaded, stamp)) => (loaded, stamp),
+        let (loaded, stamp) = match self.woken.iter().position(|(tab, _, _)| *tab == id) {
+            Some(place) => {
+                let (_, loaded, stamp) = self.woken.remove(place);
+                (loaded, stamp)
+            }
             None => {
                 let stamp = self.path_of(id).and_then(|path| file_stamp(&path).ok());
                 (self.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path)), stamp)
@@ -1223,6 +1237,41 @@ mod tests {
             let share = place_in_view(rows_per_second, 5.0);
             assert!(share >= 0.97, "{rows_per_second} rows a second: in view {share}");
         }
+    }
+
+    /// Failure: two tabs being woken at once share one place to put what was read, so one is lost and loaded with the session locked. Or a tab closed mid-read keeps its facts, or another tab's are taken for it. Each is kept for its own tab, and only while that tab is cold.
+    #[test]
+    fn what_was_read_ahead_stays_with_its_tab() {
+        struct Counted(std::rc::Rc<std::cell::Cell<u32>>);
+        impl DocLoader for Counted {
+            fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
+                self.0.set(self.0.get() + 1);
+                Ok(DocFacts { page_count: 5, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+            }
+        }
+        let loads = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut s = Session::new(Counted(loads.clone()));
+        let ids: Vec<TabId> = (0..6).map(|index| s.open(Path::new(&format!("/d/{index}.pdf"))).unwrap()).collect();
+        let facts = |pages| Ok(DocFacts { page_count: pages, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false });
+        let base = loads.get();
+        // Two wakes done together: both kept, each for its own tab.
+        s.give_woken(ids[0], facts(11), None);
+        s.give_woken(ids[1], facts(22), None);
+        s.tap(ids[1]).unwrap();
+        assert_eq!(s.pages_in(ids[1]), 22);
+        assert_eq!(loads.get(), base, "no read with the session held");
+        // Closed mid-read: nothing's kept for it.
+        s.give_woken(ids[2], facts(33), None);
+        s.close(ids[2]).unwrap();
+        assert!(s.woken.iter().all(|(tab, _, _)| *tab != ids[2]));
+        s.give_woken(ids[2], facts(33), None);
+        assert!(s.woken.iter().all(|(tab, _, _)| *tab != ids[2]), "it's gone, so what arrives late isn't kept");
+        // Already warm: it's not needed.
+        s.give_woken(ids[5], facts(55), None);
+        assert!(s.woken.iter().all(|(tab, _, _)| *tab != ids[5]));
+        s.tap(ids[0]).unwrap();
+        assert_eq!(s.pages_in(ids[0]), 11, "the first's own");
+        assert_eq!(loads.get(), base);
     }
 
     /// Failure: a chapter closes just after a reposition. The place drops up the list by the rows that went, past the dead zone, and the contents move straight back, so one change of section makes two moves in opposite directions.
