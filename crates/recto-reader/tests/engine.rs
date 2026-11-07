@@ -131,8 +131,54 @@ fn dark_paper_changes_what_is_in_the_surface() {
     engine.set_paper(PaperKind::Dark);
     let ops = pump(&engine, Duration::from_secs(20));
     assert!(engine.wait_settled(Duration::from_secs(5)));
-    assert!(ops.iter().any(|op| matches!(op, Op::ShowPage { paper_rgb, .. } if *paper_rgb == PaperKind::Dark.rgb())), "{ops:?}");
     assert_eq!(engine.report().0["paper"], "dark");
+    let dark = corners(&ops);
+    let rgb = PaperKind::Dark.rgb();
+    let paper = [((rgb >> 16) & 0xFF) as u8, ((rgb >> 8) & 0xFF) as u8, (rgb & 0xFF) as u8];
+    assert!(!dark.is_empty() && dark.iter().all(|corner| *corner == paper), "{dark:?} against {paper:?}");
+}
+
+/// Failure: a page that's mostly a picture goes negative on dark paper, as the USGS map's band went mint. Owner, 2026-11-07: "I agree" that it's dimmed instead. A real worker and a real image over the whole page: every surface and colour on the layers is the image's true colour, dimmed, and none is turned over.
+#[test]
+fn a_page_that_is_a_picture_keeps_its_colours_on_dark_paper() {
+    let red = [0xFF, 0x00, 0x00].repeat(64);
+    let image = first_extra_object(1);
+    let page = Page::new(b"q 612 0 0 792 0 0 cm /Im0 Do Q".to_vec());
+    let extra = vec![Object::Stream { dict: "/Type /XObject /Subtype /Image /Width 8 /Height 8 /BitsPerComponent 8 /ColorSpace /DeviceRGB".into(), data: red }];
+    let file = TempPdf::new("picture.pdf", &pages_with(&[page], &format!("/XObject << /Im0 {image} 0 R >>"), extra));
+    let (engine, _events) = started(&file, 1);
+    pump(&engine, Duration::from_secs(20));
+    engine.set_paper(PaperKind::Dark);
+    let ops = pump(&engine, Duration::from_secs(20));
+    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    let dimmed = dim_rgb(0xFF_00_00);
+    let want = [(dimmed >> 16) as u8, 0, 0];
+    let colours: Vec<u32> = ops.iter().filter_map(|op| if let Op::Attach { rgb, surface: 0, .. } = op { *rgb } else { None }).collect();
+    assert!(colours.iter().all(|rgb| *rgb == dimmed), "{colours:06x?} against {dimmed:06x}");
+    let surfaces = corners(&ops);
+    assert!(surfaces.iter().all(|corner| *corner == want), "{surfaces:?} against {want:?}");
+    assert!(!colours.is_empty() || !surfaces.is_empty(), "something was drawn: {ops:?}");
+}
+
+/// Failure: closing the window leaves "there are ops" raised with no host to take them, so when the window's back nobody is ever told again, and tiles stop arriving. The host must hear of new ones, even if no ops were taken in between.
+#[test]
+fn tiles_keep_arriving_after_the_window_comes_back() {
+    let file = document(1);
+    let (engine, events) = started(&file, 1);
+    pump(&engine, Duration::from_secs(20));
+    assert!(engine.wait_settled(Duration::from_secs(5)));
+    // The window's gone: whatever it's told now, nobody takes.
+    engine.window_closed();
+    let before = events.ops.load(Ordering::SeqCst);
+    engine.window_opened();
+    engine.set_viewport(view(0.0));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while events.ops.load(Ordering::SeqCst) == before && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(events.ops.load(Ordering::SeqCst) > before, "tiles were drawn, and nobody was told");
+    pump(&engine, Duration::from_secs(20));
+    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
 }
 
 /// Failure: a closed window keeps its worker and file, so it's over the budget for a closed window. Everything goes, and comes back when the window does.

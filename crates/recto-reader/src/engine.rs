@@ -123,6 +123,8 @@ impl Engine {
 
     /// From the UI thread, on every scroll. A short lock and a few map lookups. What comes back is for the host to apply now.
     pub fn set_viewport(&self, viewport: Viewport) -> Vec<Op> {
+        // What this returns is what was waiting, so nothing's waiting to be told about.
+        self.shared.ops_signalled.store(false, Ordering::SeqCst);
         let mut reader = lock(&self.shared.reader);
         let ops = reader.set_viewport(viewport);
         let moved = reader.has_moved_page();
@@ -170,6 +172,8 @@ impl Engine {
     }
 
     pub fn window_opened(&self) {
+        // Whatever was said while the window was closed had no host to take it. If that's still raised, nobody hears of anything from here on.
+        self.shared.ops_signalled.store(false, Ordering::SeqCst);
         let mut reader = lock(&self.shared.reader);
         reader.window_opened();
         self.after(reader);

@@ -315,10 +315,15 @@ fn dark_mode_paper_and_focus_change_what_is_drawn() {
 #[test]
 fn closing_the_window_frees_tiles_and_keeps_the_session() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(2);
+    // More tiles with ink in them than go on in one turn, so the rest have to be told about after the window's back. With a page of two lines, what's drawn goes on in a turn anyway, and this passed with tiles stopping for good on any fuller page.
+    let line = "words and more words, right across the page, ".repeat(3);
+    let lines: Vec<&str> = std::iter::repeat_n(line.as_str(), 70).collect();
+    let file = TempPdf::new("full.pdf", &pages(&[Page::new(text_lines(&lines))]));
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    assert!(run.report()["reader"]["tiles"]["attached"].as_u64().unwrap() >= 1);
+    let before = run.report();
+    let layers = before["app"]["pages"]["tile_layers"].as_u64().unwrap();
+    assert!(layers > 8, "this needs more than a turn's worth: {before}");
     run.ok(&["qa", "window", "close"]);
     let closed = run.report();
     assert_eq!(closed["reader"]["tiles"]["attached"], 0, "{closed}");
@@ -332,7 +337,71 @@ fn closing_the_window_frees_tiles_and_keeps_the_session() {
     run.settled();
     let back = run.report();
     assert_eq!(back["app"]["window_open"], true);
-    assert!(back["reader"]["tiles"]["attached"].as_u64().unwrap() >= 1, "{back}");
+    assert_eq!(back["app"]["pages"]["tile_layers"].as_u64().unwrap(), layers, "every tile is back on a layer: {back}");
+}
+
+/// Failure: `qa shot` is at Read-only, and an agent can start a QA run itself, so it could replace any file with a PNG, a thesis included. It writes a new `.png` and nothing else: not over a file, not through a link.
+#[test]
+fn a_shot_replaces_nothing() {
+    let Some(run) = Run::start() else { return };
+    let root = &run.state.root;
+    let refused = |out: &std::path::Path, code: &str| {
+        let (reply, status) = run.state.json(&["qa", "shot", "--out", out.to_str().unwrap()]);
+        assert_ne!(status, 0, "{reply}");
+        assert_eq!(reply["error"]["code"], code, "{reply}");
+    };
+    let thesis = root.join("thesis.pdf");
+    std::fs::write(&thesis, b"years of work").unwrap();
+    refused(&thesis, "usage");
+    assert_eq!(std::fs::read(&thesis).unwrap(), b"years of work");
+    let picture = root.join("picture.png");
+    std::fs::write(&picture, b"an earlier one").unwrap();
+    refused(&picture, "output_exists");
+    assert_eq!(std::fs::read(&picture).unwrap(), b"an earlier one");
+    let link = root.join("link.png");
+    let aimed_at = root.join("aimed-at.txt");
+    std::fs::write(&aimed_at, b"untouched").unwrap();
+    std::os::unix::fs::symlink(&aimed_at, &link).unwrap();
+    refused(&link, "output_exists");
+    assert_eq!(std::fs::read(&aimed_at).unwrap(), b"untouched");
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+    let fine = root.join("new.png");
+    let written = run.ok(&["qa", "shot", "--out", fine.to_str().unwrap()]);
+    assert_eq!(written["out"], fine.to_str().unwrap(), "{written}");
+    assert!(std::fs::read(&fine).unwrap().starts_with(b"\x89PNG"));
+    let left: Vec<_> = std::fs::read_dir(root).unwrap().filter_map(Result::ok).filter(|entry| entry.file_name().to_string_lossy().contains("recto-shot")).collect();
+    assert!(left.is_empty(), "no temp file left next to it: {left:?}");
+}
+
+/// Failure: `qa appearance zzz` reports success, with the rule in the host. It's refused before the host hears of it.
+#[test]
+fn a_drive_verb_refuses_what_it_cant_do() {
+    let Some(run) = Run::start() else { return };
+    let (reply, status) = run.state.json(&["qa", "appearance", "zzz"]);
+    assert_eq!(status, exit::USAGE, "{reply}");
+    assert_eq!(reply["error"]["code"], "usage", "{reply}");
+}
+
+/// Failure: every other QA verb calls the method behind an event, so a method AppKit can't reach by name passes them all: hover never fired on a real window, as its handlers weren't Objective-C, so full names and hover details did nothing. Every owner answers what AppKit will send, and where an event can be made and handed over, what it does happens. Nothing is posted.
+#[test]
+fn what_appkit_calls_reaches_the_app() {
+    let Some(run) = Run::start() else { return };
+    let long = outlined_with(200);
+    run.ok(&["open", long.0.to_str().unwrap()]);
+    run.settled();
+    let found = run.ok(&["qa", "entry-points"]);
+    let checked = found.as_object().unwrap();
+    assert!(checked.len() >= 20, "{found}");
+    let failed: Vec<&String> = checked.iter().filter(|(_, ok)| **ok != true).map(|(name, _)| name).collect();
+    assert!(failed.is_empty(), "these don't reach the app: {failed:?}\n{found}");
+    for name in ["hover_shows_details", "pointer_finds_row", "hover_ends", "wheel_in_contents_stops_following", "pinch_starts"] {
+        assert!(checked.contains_key(name), "{name} wasn't checked: {found}");
+    }
+    run.ok(&["view", "--focus", "on"]);
+    run.settled();
+    let focused = run.ok(&["qa", "entry-points"]);
+    assert_eq!(focused["buttons_come_back"], true, "focus view's buttons have to come back: {focused}");
+    assert_eq!(focused["buttons_go_again"], true, "{focused}");
 }
 
 /// Failure: a file that can't be drawn hangs the view, kills the app, or shows a blank page with no reason. A page past every memory limit must come out as words, with the UI thread free.
