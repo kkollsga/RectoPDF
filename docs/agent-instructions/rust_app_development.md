@@ -893,6 +893,8 @@ recreating a folder mid-rename, a counter reset during a wait).
   a log of waits. Move up a slot only on measured numbers: lowest free memory, swap growth, and whether jobs really
   wait. **Read this section before raising it:** a check at job start doesn't catch memory falling later, so keep
   the watcher (`tools/sysguard/sysguard.sh`) running whenever more than one slot is open.
+- **A shared queue is critical infrastructure, so give it an owner and an alarm.** One bug stopped every build on the Mac for over 80 minutes across two projects, and the operator read the waiting notices as normal. A job holding slots while waiting for its turn deadlocked against quick jobs that had jumped ahead of it. Hold nothing while waiting; have every job agree on one order; test the queue with its own script; and run a watchdog that wakes the operator when jobs wait and nothing moves. Tell every waiting job how long it has waited, so nobody has to guess whether it's normal.
+- **Don't say something was done until you've seen the result.** A blocked kill reported as done led another agent to do it, so a blocked action happened anyway.
 - **Look for strays when builds feel slow.** Three test scripts from another project sat at 100% CPU for six days.
 - The lock is for memory only. QA scripts, renders, reviews and git don't wait for it, and **nobody waits for a
   "quiet machine"**: load doesn't let an error go uncaught.

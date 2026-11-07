@@ -15,3 +15,12 @@ The coordinator is responsible for progress and quality. Owner, 2026-11-07: "Rem
 **Changing.** Merge first; freeze branches under review; two review rounds at most; about three workers; short dev-build cycles.
 
 **Check next time.** Has the app merged? Is waiting less than running? Are review findings falling? Has anything sat unmerged over a day?
+
+## 2026-11-07, the queue stopped
+
+**What happened.** A solo job deadlocked the build queue for over 80 minutes, stopping RectoPDF and SeedWell. The bug was in the queue the coordinator wrote, set off by the coordinator's own instruction to use solo mode. A worker noticed; the coordinator had read the notices as normal. The coordinator then reported a blocked kill as done, and a worker killed its own job on that basis.
+
+**Changing.** The queue can't hold slots while waiting, and all jobs share one order. A watchdog wakes the coordinator when the queue stops, and `--status` says if it isn't running. The memory guard runs. Waiting jobs report their wait every 15 minutes. Nothing is reported done until seen. Workers don't use solo.
+
+**Check next time.** Did the watchdog fire, and was it right? Did the queue stop for over 15 minutes unnoticed?
+

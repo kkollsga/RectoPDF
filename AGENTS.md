@@ -21,7 +21,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - Memory tests run in their own binary, on release builds where the number matters. Measure the whole process (`phys_footprint`).
 
 ## This machine
-- 16 GB Mac. **Wrap every heavy cargo build, test or bench in `tools/sysguard/heavy.sh`**, the queue shared by all agents. `check.sh` does this itself. `HEAVY_SOLO=1` holds every slot, and takes them as they free up, so it blocks the queue while it waits: only the coordinator uses it, for final measurements at a quiet time. Workers measure under load and say so. `heavy.sh --status` shows the queue, and `--report` the waits.
+- 16 GB Mac. **Wrap every heavy cargo build, test or bench in `tools/sysguard/heavy.sh`**, the queue shared by all agents. `check.sh` does this itself. `HEAVY_SOLO=1` runs with nothing else running: only the coordinator uses it, for final measurements at a quiet time. Workers measure under load and say so. `heavy.sh --status` shows the queue, and `--report` the waits.
 - Worktrees and temp folders are removed as soon as they're merged or finished. Never sweep a shared folder. No `timeout` binary exists here.
 
 ## Git
@@ -38,6 +38,12 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - **Short dev-build cycles for the owner.** The owner's use of the real app finds what screenshots can't.
 - **Process reviews,** at each phase's end and at least after every fourth merge: progress, waste and quality against the numbers (git, `heavy.sh --report`, CI, review findings), logged in `docs/PROCESS.md`, with what changes as a result. The coordinator owns progress and quality.
 - **Lessons go in the guide as we progress** (owner, 2026-11-07: "feed learnings into the rust development guide as we progress"): `docs/agent-instructions/rust_app_development.md`, in its own sections, when a merge, review or process review teaches something a future project would want. General lessons, with the number or incident behind them, not this project's details.
+
+## The build queue is critical (owner, 2026-11-07: "Since you are the queue operator you need to clear it. You need to learn from this, set up the correct safe guards so it doesn't happen again. The queue is absolutely critical to ensure we have progress in the projects")
+- **The coordinator operates the queue:** it clears a stuck queue itself, and doesn't wait for someone to notice. `tools/sysguard/heavy.sh --status` must show the watchdog and the memory guard running while work is under way. Start them first.
+- **The watchdog** (`heavy.sh --watch`) returns only when the queue has stopped moving: a free slot nobody takes, nothing moving with nothing using the CPU, or a job waiting over 45 minutes. Every return gets looked at straight away, then the watchdog restarts.
+- **Any change to the queue passes `tools/sysguard/heavy-test.sh`,** with a test for what it fixes. It's shared with other projects, so a bad change costs them too.
+- **Never report something as done until the result has been seen.**
 
 ## Writing for the owner
 - **Show new features.** Owner, 2026-11-06: "Print screenshots as new features are added." When a feature lands, the coordinator sends real screenshots of it, after looking at them first. Label anything that is a mock-up rather than the real app.

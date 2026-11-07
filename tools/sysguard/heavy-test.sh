@@ -172,5 +172,50 @@ wait "$p" 2>/dev/null
 check "no memory, no start" "" "$(order)"
 check "a job killed while waiting leaves no ticket" "0" "$(ls "$X/lock.queue" | wc -l | tr -d ' ')"
 
+# The watchdog. Failure: the queue stops, nobody notices, and everything waits for over an hour.
+watch() { rm -f "$X/watch.rc"; ( HEAVY_WATCH_EVERY=1 "$@" bash "$HEAVY" --watch > "$X/watch.out" 2>&1; echo $? > "$X/watch.rc" ) & W=$!; }
+ended_within() { # seconds
+  local n=0
+  while [ "$n" -lt "$(( $1 * 5 ))" ]; do [ -f "$X/watch.rc" ] && { echo "ended $(cat "$X/watch.rc")"; return; }; pause 0.2; n=$((n + 1)); done
+  pkill -P "$W" 2>/dev/null; echo "still watching"
+}
+clean_queue() { rm -rf "$X/lock" "$X/lock.2" "$X/lock.3" "$X/lock.4"; rm -f "$X"/lock.queue/*; }
+bash "$HEAVY" --slots 1 >/dev/null
+clean_queue
+sleep 60 & idle=$!
+mkdir "$X/lock"; echo "$idle 00:00:00 idle holder" > "$X/lock/owner"
+echo "a waiting job" > "$X/lock.queue/2-$(date +%s)-$$"
+watch env HEAVY_STALL_SECS=2
+check "a holder doing nothing with jobs waiting wakes the watchdog" "ended 1" "$(ended_within 15)"
+case "$(cat "$X/watch.out")" in *"NEEDS ATTENTION"*"idle holder"*) r=says ;; *) r=silent ;; esac
+check "and it says what's holding the queue" "says" "$r"
+{ kill "$idle"; wait "$idle"; } 2>/dev/null
+clean_queue
+yes > /dev/null & busy=$!
+mkdir "$X/lock"; echo "$busy 00:00:00 busy holder" > "$X/lock/owner"
+echo "a waiting job" > "$X/lock.queue/2-$(date +%s)-$$"
+pause 1
+watch env HEAVY_STALL_SECS=2
+check "a long job really working isn't called stuck" "still watching" "$(ended_within 6)"
+{ kill "$busy"; wait "$busy"; } 2>/dev/null
+clean_queue
+bash "$HEAVY" --slots 2 >/dev/null
+echo "a waiting job" > "$X/lock.queue/2-$(date +%s)-$$"
+watch env HEAVY_FREE_SLOT_SECS=2
+check "a free slot nobody takes wakes it" "ended 1" "$(ended_within 15)"
+clean_queue
+watch env HEAVY_STALL_SECS=1 HEAVY_FREE_SLOT_SECS=1
+check "an empty queue doesn't" "still watching" "$(ended_within 4)"
+yes > /dev/null & busy=$!
+mkdir "$X/lock"; echo "$busy 00:00:00 busy holder" > "$X/lock/owner"
+echo "an old job" > "$X/lock.queue/2-$(($(date +%s) - 100))-$$"
+watch env HEAVY_LONG_WAIT_SECS=50 HEAVY_FREE_SLOT_SECS=999
+check "a job waiting far too long wakes it, even with work running" "ended 1" "$(ended_within 15)"
+{ kill "$busy"; wait "$busy"; } 2>/dev/null
+clean_queue
+bash "$HEAVY" --slots 2 >/dev/null
+case "$(bash "$HEAVY" --status)" in *"Watchdog: NOT RUNNING"*) r=says ;; *) r=silent ;; esac
+check "status says when no watchdog is running" "says" "$r"
+
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."
