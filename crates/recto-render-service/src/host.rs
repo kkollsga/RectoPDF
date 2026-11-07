@@ -1271,6 +1271,7 @@ impl DocRenderer {
         self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(ready);
         self.open_in(worker, generation)
             .inspect_err(|failure| {
+                // `Unavailable` here means it never got to ask, which trying again may mend. What the worker itself said was noted where it was heard.
                 if let JobFailure::Failed(failure) = failure
                     && !matches!(failure, RenderFailure::Unavailable)
                 {
@@ -1316,7 +1317,10 @@ impl DocRenderer {
                 if answered != 0 {
                     return Err(rejected(&mut self.stats, "a failure for a different job").into());
                 }
-                return Err(failure_from_code(code).into());
+                // The worker looked and says no, about bytes that can't change, however that word reads. `Unavailable` from anywhere else is a failure to get as far as asking, and may pass. Without this, a search of a file PDFium can't read starts a process per page to hear the same answer.
+                let failure = failure_from_code(code);
+                self.open_failure = Some(failure);
+                return Err(failure.into());
             }
             _ => return Err(rejected(&mut self.stats, "the wrong kind of reply to opening").into()),
         };

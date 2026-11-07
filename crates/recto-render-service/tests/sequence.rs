@@ -41,7 +41,7 @@ fn fake_worker() {
             Kind::Open => {
                 let mut handles = frame.handles;
                 cancel_word = Some(SharedMemory::map(handles.pop().unwrap(), control::LEN).unwrap());
-                proto::encode_opened(3)
+                if mode == "open_unreadable" { proto::encode_failed(0, FailCode::Unreadable) } else { proto::encode_opened(3) }
             }
             Kind::SizeRequest => {
                 let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
@@ -602,6 +602,20 @@ fn a_cancel_between_steps_ends_the_sequence() {
     assert_eq!(doc.stats().memory_kills, 1);
     assert_eq!(doc.stats().heavy_retries, 0, "a stale job started a heavy worker");
     assert!(!slot.is_taken());
+}
+
+/// Failure: a file the worker looks at and refuses as unreadable isn't remembered, because the word for that is also the word for not getting as far as asking. So each page of a search starts a process to hear the same answer. It may be asked again only when someone says to.
+#[test]
+fn a_file_the_worker_refuses_is_remembered_after_the_first_time() {
+    let (mut doc, _file) = doc("open_unreadable");
+    for _ in 0..5 {
+        assert_eq!(doc.page_characters(0, false, false).unwrap_err(), RenderFailure::Unavailable);
+    }
+    assert_eq!(doc.stats().spawns, 1, "one process was enough to learn that");
+    assert!(!doc.has_worker());
+    doc.forget_failures();
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::Unavailable);
+    assert_eq!(doc.stats().spawns, 2, "asking again is what forgetting is for");
 }
 
 /// Failure: the viewport budget counts low-resolution tiles as cached, so the next step looks cheaper than the app would find it, and the numbers we rely on flatter the page.
