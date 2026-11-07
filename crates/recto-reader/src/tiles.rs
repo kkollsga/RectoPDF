@@ -155,6 +155,8 @@ struct DocView {
     /// The whole file can't be drawn, in words the reader can read.
     problem: Option<String>,
     seen: HashSet<u32>,
+    /// Which page the reader was on when this tab was left, and exactly where in it.
+    left_at: Option<(u32, (u32, f64))>,
     /// Jobs of a generation below this were about the pages as they were before the last edit, and what they found is thrown away.
     floor: u64,
 }
@@ -345,14 +347,21 @@ impl Reader {
     pub fn activate(&mut self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32]) {
         self.keep_only(warm, tab);
         if self.hot != Some(tab) {
+            let last_page = self.last_view_page;
+            if let Some(doc) = self.hot.and_then(|hot| self.docs.get_mut(&hot)) {
+                doc.left_at = last_page.map(|page| (page, doc.anchor));
+            }
             self.clear_screen();
             self.hot = Some(tab);
             self.last_view_page = None;
             self.moved_page = None;
         }
         let floor = self.next_generation;
-        let doc = self.docs.entry(tab).or_insert_with(|| DocView { tab, layout: PageLayout::new(pages), map: map.clone(), magnification: 1.0, anchor: (page, 0.0), tile_scale: 0.0, issues: HashMap::new(), heavy: HashMap::new(), problem: None, seen: HashSet::new(), floor });
-        doc.anchor = (page.min(pages.saturating_sub(1)), 0.0);
+        let doc = self.docs.entry(tab).or_insert_with(|| DocView { tab, layout: PageLayout::new(pages), map: map.clone(), magnification: 1.0, anchor: (page, 0.0), tile_scale: 0.0, issues: HashMap::new(), heavy: HashMap::new(), problem: None, seen: HashSet::new(), left_at: None, floor });
+        // Back on the page it was left on, and it's back at the same place in that page. A tall page's reader isn't sent to its top.
+        let same_pages = doc.map == map && doc.layout.count() == pages;
+        let back_at = doc.left_at.take().filter(|(left, _)| *left == page && same_pages).map(|(_, anchor)| anchor);
+        doc.anchor = back_at.unwrap_or((page.min(pages.saturating_sub(1)), 0.0));
         if doc.map != map || doc.layout.count() != pages {
             doc.map = map;
             doc.layout = PageLayout::new(pages);
@@ -373,7 +382,7 @@ impl Reader {
         let magnification = self.docs.get(&tab).map_or(1.0, |doc| doc.magnification);
         self.ops.push_back(Op::Magnify { value: magnification });
         self.lay_out();
-        self.jump_to(page);
+        self.jump_to_anchor(page);
         self.recount_wanted_files(warm);
         self.refresh(MAX_ATTACH_PER_TURN);
     }
@@ -445,6 +454,17 @@ impl Reader {
         self.next_seq += 1;
         self.jump = Some(seq);
         self.last_view_page = Some(page);
+        self.ops.push_back(Op::ScrollTo { y, seq });
+    }
+
+    /// Goes where the tab's anchor says, which is on this page, as a jump.
+    fn jump_to_anchor(&mut self, page: u32) {
+        let Some(doc) = self.hot.and_then(|tab| self.docs.get(&tab)) else { return };
+        let y = doc.layout.anchor_y(doc.anchor);
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.jump = Some(seq);
+        self.last_view_page = Some(page.min(doc.layout.count().saturating_sub(1)));
         self.ops.push_back(Op::ScrollTo { y, seq });
     }
 
@@ -1753,6 +1773,31 @@ mod tests {
         reader.finish(draw, Outcome::Drawn { kind: TileKind::Colour, low_res: None });
         let entry = reader.entries.values().next().expect("kept");
         assert!(!entry.attached && entry.discardable, "{entry:?}");
+    }
+
+    /// Failure: going to another tab and back sends the reader to the top of their page, so on a tall page, or any page read past its top, the place is lost. On the page it was left on, it comes back to the same place, and anywhere else it starts at the top.
+    #[test]
+    fn coming_back_to_a_tab_keeps_the_place_in_the_page() {
+        let mut reader = reader_on(100);
+        settle(&mut reader);
+        let tops = |reader: &Reader, page| reader.doc().unwrap().layout.top(page);
+        let inside = tops(&reader, 40) + 300.0;
+        reader.set_viewport(view(inside));
+        let page = reader.take_moved_page().expect("the reader moved");
+        settle(&mut reader);
+        let other = PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None };
+        reader.activate(2, 10, 0, other.clone(), &[1]);
+        reader.take_ops();
+        reader.activate(1, 100, page, map(), &[2]);
+        let scrolled: Vec<f64> = reader.take_ops().into_iter().filter_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None }).collect();
+        assert!((scrolled.last().unwrap() - inside).abs() < 1.0, "{scrolled:?} against {inside}");
+
+        reader.activate(2, 10, 0, other, &[1]);
+        reader.take_ops();
+        reader.activate(1, 100, page + 3, map(), &[2]);
+        let scrolled: Vec<f64> = reader.take_ops().into_iter().filter_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None }).collect();
+        let top = tops(&reader, page + 3);
+        assert!((scrolled.last().unwrap() - top).abs() < 1.0, "sent somewhere else, it starts at the top: {scrolled:?} against {top}");
     }
 
     /// Failure: the host's size change moves the reader away from what they were reading.
