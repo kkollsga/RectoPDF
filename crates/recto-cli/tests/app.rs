@@ -404,6 +404,24 @@ fn what_appkit_calls_reaches_the_app() {
     assert_eq!(focused["buttons_go_again"], true, "{focused}");
 }
 
+/// Failure: with a mouse connected, or "always show" set, a Mac's scrollers take their width from the view, and a page fitted to the view's whole width is wider than what's left, so a scroll bar sits under it for good and the vertical reading space goes down by it. Seen in a shot, when one was plugged in. A fitted page fits, by either style.
+#[test]
+fn a_fitted_page_fits_with_classic_scrollers() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(5);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    for style in ["overlay", "legacy", "overlay"] {
+        run.ok(&["qa", "scroller-style", style]);
+        run.settled();
+        let state = run.report();
+        let pages = &state["app"]["pages"];
+        assert_eq!(pages["scroller_style"], style, "{pages}");
+        assert!(pages["document_width"].as_f64().unwrap() <= pages["view_width"].as_f64().unwrap() + 0.5, "{style}: {pages}");
+        assert_eq!(pages["horizontal_scroller"], false, "{style}: {pages}");
+    }
+}
+
 /// Failure: a file that can't be drawn hangs the view, kills the app, or shows a blank page with no reason. A page past every memory limit must come out as words, with the UI thread free.
 #[test]
 fn a_page_that_cant_be_drawn_says_so() {

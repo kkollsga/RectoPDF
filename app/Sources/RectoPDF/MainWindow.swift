@@ -216,6 +216,11 @@ final class BookMark: NSView {
 
     /// Whole pixels, one pass. Autoresizing would do the same work with more to go wrong.
     func layout() {
+        // Quiet runs look the same whatever this Mac's mouse and settings are, unless QA asks otherwise. A normal run has the system's scrollers.
+        if delegate.isQuiet {
+            let style = delegate.qa?.scrollerStyle ?? .overlay
+            for view in [pages.scrollView, sidebar.scroll, sidebar.contentsScroll as NSScrollView] where view.scrollerStyle != style { view.scrollerStyle = style }
+        }
         let size = window.frame.size
         root.frame = NSRect(origin: .zero, size: size)
         let focus = reader.focus

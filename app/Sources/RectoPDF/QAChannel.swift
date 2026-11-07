@@ -5,6 +5,8 @@ import QuartzCore
 @MainActor final class QAChannel {
     private unowned let delegate: AppDelegate
     private var stepCarry = 0.0
+    /// What a Mac with a mouse connected has, for `recto qa scroller-style`.
+    private(set) var scrollerStyle: NSScroller.Style = .overlay
 
     init(delegate: AppDelegate) {
         self.delegate = delegate
@@ -61,6 +63,9 @@ import QuartzCore
             controller?.sidebar.userScrollContents(toRow: Int(value) ?? 0)
         case "contents_pointer":
             controller?.sidebar.setContentsPointer(value == "in")
+        case "scroller_style":
+            scrollerStyle = value == "legacy" ? .legacy : .overlay
+            controller?.layout()
         case "reduce_motion":
             controller?.sidebar.reduceMotion = value == "on"
         case "reveal":

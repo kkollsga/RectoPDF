@@ -199,7 +199,7 @@ impl QaBridge {
             value.parse::<f64>().ok().filter(|number| number.is_finite() && *number >= low && *number <= high).ok_or_else(|| bad(format!("`{}` isn't a number from {low} to {high}.", cleaned(value))))
         };
         match verb {
-            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" => check_drive_value(verb, value)?,
+            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" => check_drive_value(verb, value)?,
             "entry_points" => return self.ask(verb, value),
             "scroll" => {
                 number(-1e9, 1e9)?;
@@ -331,6 +331,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "window" => one_of(&["open", "close"]),
         "contents_pointer" => one_of(&["in", "out"]),
         "reduce_motion" => one_of(&["on", "off"]),
+        "scroller_style" => one_of(&["legacy", "overlay"]),
         "hover" | "reveal" => value == "none" || row(),
         "click_row" | "contents_scroll" => row(),
         "resize" => value.split_once('x').and_then(|(width, height)| Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?))).is_some_and(|(width, height)| (400.0..=8000.0).contains(&width) && (300.0..=8000.0).contains(&height)),
