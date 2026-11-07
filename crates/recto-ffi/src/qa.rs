@@ -205,7 +205,8 @@ impl QaBridge {
             value.parse::<f64>().ok().filter(|number| number.is_finite() && *number >= low && *number <= high).ok_or_else(|| bad(format!("`{}` isn't a number from {low} to {high}.", cleaned(value))))
         };
         match verb {
-            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" => {}
+            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" => check_drive_value(verb, value)?,
+            "entry_points" => return self.ask(verb, value),
             "scroll" => {
                 number(-1e9, 1e9)?;
             }

@@ -447,6 +447,12 @@ fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
     Ok(parsed)
 }
 
+/// Whether this launch is a quiet run, which is decided before AppKit does anything. The same parser as the rest of the launch, so the two can't disagree. A launch that won't parse ends straight away, and shows nothing on the way.
+#[uniffi::export]
+pub fn launch_is_quiet(args: Vec<String>) -> bool {
+    parse_args(&args).map_or(true, |parsed| parsed.qa)
+}
+
 fn cleaned(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).take(64).collect()
 }
