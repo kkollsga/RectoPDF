@@ -2,7 +2,7 @@
 //! with the call. The session's scheduler will own long-lived ones, behind the same calls.
 
 use crate::{AgentError, exit};
-use recto_index::{hidden_report, normalize};
+use recto_index::{hidden_report, read_page};
 use recto_proto::{BYTES_PER_PIXEL, TileKind};
 use recto_render_service::{
     BUDGET_MAX_TIME, BudgetOptions, DocRenderer, DrawStrategy, ExportRefusal, OutputCaps, PageDrawn, PageEvent, Policy, RenderFailure, ServiceConfig, ViewportOptions, draw_whole_page, measure_budget, measure_viewport,
@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 mod png;
 
@@ -126,14 +127,18 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     if std::fs::symlink_metadata(out).is_ok() {
         return Err(output_exists());
     }
-    let mut doc = DocRenderer::new(path, None, config, Policy::default())?;
-    let (temp, drawn, kind) = write_page(&mut doc, page, scale, out, caps)?;
+    let started = Instant::now();
+    let policy = Policy::default();
+    let limit = policy.heavy_limit_bytes;
+    let mut doc = DocRenderer::new(path, None, config, policy)?;
+    let (temp, drawn, kind) = write_page(&mut doc, page, scale, out, caps, limit).map_err(|error| with_time_taken(error, started))?;
     publish(&temp.path, out, |from, to| std::fs::hard_link(from, to))?;
     drop(temp);
     Ok(json!({
         "page": page + 1,
         "scale": scale,
         "out": out,
+        "took_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         "width": drawn.width,
         "height": drawn.height,
         "bytes": std::fs::metadata(out).map(|meta| meta.len()).ok(),
@@ -143,14 +148,16 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
 
 /// Writes the page to a new temp file, as an export: sharp or not at all, and any failure takes the temp file with it. Returns the file, ready to publish. Can sleep waiting for the larger
 /// limit, which is fine: this runs on a command's thread, never a UI thread.
-fn write_page(doc: &mut DocRenderer, page: u32, scale: f32, out: &Path, caps: &OutputCaps) -> Result<(OwnTemp, PageDrawn, &'static str), AgentError> {
+fn write_page(doc: &mut DocRenderer, page: u32, scale: f32, out: &Path, caps: &OutputCaps, limit: u64) -> Result<(OwnTemp, PageDrawn, &'static str), AgentError> {
     let write_failed = || AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED);
+    let mut size = None;
     let mut surface = None;
     let mut kind = None;
     let mut picture: Option<(OwnTemp, png::RgbWriter, Vec<u8>)> = None;
     let mut sink_error = None;
     let drawn = draw_whole_page(doc, page, scale, 0, caps, &mut surface, |event| match event {
         PageEvent::Begin { width, height } => {
+            size = Some((width, height));
             let started = OwnTemp::create(out).and_then(|(temp, file)| {
                 let writer = png::RgbWriter::create(file, width, height, caps.max_bytes).map_err(|_| write_failed())?;
                 Ok((temp, writer, vec![0u8; width as usize * BYTES_PER_PIXEL as usize]))
@@ -182,10 +189,42 @@ fn write_page(doc: &mut DocRenderer, page: u32, scale: f32, out: &Path, caps: &O
             Ok(())
         }
     })
-    .map_err(|failure| sink_error.take().unwrap_or_else(|| failure.into()))?;
+    .map_err(|failure| {
+        sink_error.take().unwrap_or_else(|| match (failure, size) {
+            (RenderFailure::ExportRefused { why: ExportRefusal::TooHeavy, .. }, Some(size)) => too_heavy_to_export(failure, page, scale, size, limit),
+            _ => failure.into(),
+        })
+    })?;
     let (temp, writer, _) = picture.ok_or_else(write_failed)?;
     writer.finish().map_err(|error| write_error_to_agent(&error))?;
     Ok((temp, drawn, kind.map_or("blank", kind_name)))
+}
+
+/// What a picture must weigh, as a share of the limit, before a smaller scale can honestly be suggested. Below this, what's using the memory is the page's content: a hostile form takes all it's given at any size, and even a heavy map's peak barely moves with scale (468 MiB at 4x, 394 MiB at 2x).
+const SCALE_MATTERS_SHARE: u64 = 8;
+
+/// Says the limit, and suggests a smaller scale only if that can help: the picture itself must be a real share of the limit, and the scale must have somewhere useful to go.
+fn too_heavy_to_export(failure: RenderFailure, page: u32, scale: f32, (width, height): (u32, u32), limit: u64) -> AgentError {
+    let picture = u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL);
+    let mut error = AgentError::from(failure);
+    error.message = format!("Page {} wasn't exported, and no file was written: drawing it needs more than the {} one page may use.", page + 1, crate::human::bytes(limit));
+    if picture.saturating_mul(SCALE_MATTERS_SHARE) >= limit && scale > 1.0 {
+        error.message.push_str(&format!(" The picture alone is {} at {scale}x.", crate::human::bytes(picture)));
+        error.next = "A smaller `--scale` may fit.".to_string();
+    } else {
+        error.message.push_str(&format!(" The picture is only {} at {scale}x, so it's what's on the page that uses the memory.", crate::human::bytes(picture)));
+        error.next = "A smaller scale won't help. Tell the user this page can't be drawn.".to_string();
+    }
+    error
+}
+
+/// Says how long a failure took, when that was long enough to matter to whoever's waiting.
+fn with_time_taken(mut error: AgentError, started: Instant) -> AgentError {
+    let elapsed = started.elapsed();
+    if elapsed.as_millis() >= 100 {
+        error.message.push_str(&format!(" That took {}.", crate::human::duration(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))));
+    }
+    error
 }
 
 fn write_error_to_agent(error: &std::io::Error) -> AgentError {
@@ -212,8 +251,9 @@ fn kind_name(kind: TileKind) -> &'static str {
 pub(crate) fn text(path: &Path, page: u32) -> Result<Value, AgentError> {
     let page = page_index(page)?;
     let mut doc = open(path, Policy::default())?;
-    let characters = doc.page_characters(page, false, true)?;
-    let normalized = normalize(&characters.chars, false);
+    let characters = doc.page_characters(page, true, true)?;
+    let reading = read_page(&characters.chars, &characters.boxes, characters.hidden_checked);
+    let normalized = &reading.normalized;
     let hidden = hidden_report(&characters.chars, characters.hidden_checked);
     // Document text goes under `untrusted`, so nothing reading this mistakes it for an instruction.
     Ok(json!({
@@ -225,7 +265,12 @@ pub(crate) fn text(path: &Path, page: u32) -> Result<Value, AgentError> {
         "invisible_chars_removed": normalized.invisible_removed,
         "tag_chars_removed": normalized.tag_chars_removed,
         "also_spelled_dropped": normalized.also_spelled_dropped,
+        // Words the file drew late, put back on their lines. `search` reads the same text.
+        "runs_moved": reading.runs_moved,
         "hidden_text": { "checked": hidden.checked, "flagged": hidden.flagged || normalized.tag_chars_removed > 0, "chars": hidden.chars },
+        // Where `hidden_runs` lie in the text, in characters. Numbers only, so it isn't untrusted.
+        "hidden_spans": reading.hidden_spans.iter().map(|span| [span.0, span.1]).collect::<Vec<_>>(),
+        "hidden_spans_dropped": reading.hidden_spans_dropped,
         "untrusted": { "text": normalized.text, "also_spelled": normalized.also_spelled, "hidden_runs": hidden.runs },
     }))
 }
@@ -482,6 +527,33 @@ mod tests {
         assert_eq!(render(&file.0, 1, 64.0, &out).unwrap_err().code, "too_large_at_this_scale", "wider than a strip can be");
         assert!(started.elapsed() < Duration::from_secs(30), "it should refuse from the size alone");
         assert!(!out.exists());
+    }
+
+    /// Failure: a refusal tells an agent to try a smaller scale on a page where that can't work, so it tries each one in turn: `form_bomb` fails the same at 0.25. The suggestion needs a picture that's a real share of the limit, and a scale with somewhere to go.
+    #[test]
+    fn a_smaller_scale_is_suggested_only_when_it_can_help() {
+        let refused = RenderFailure::ExportRefused { page: 0, why: ExportRefusal::TooHeavy };
+        let gib = 1024 * 1024 * 1024;
+        let small = too_heavy_to_export(refused, 0, 2.0, (1224, 1584), gib);
+        assert!(small.next.contains("won't help") && !small.next.contains("may fit") && !small.next.contains("recto text"), "and no step that may fail just the same: {}", small.next);
+        assert!(small.message.contains("1.00 GiB"), "it should say the limit: {}", small.message);
+        assert!(small.message.contains("no file was written"), "{}", small.message);
+        let large = too_heavy_to_export(refused, 0, 8.0, (8000, 8000), gib);
+        assert!(large.next.contains("smaller `--scale` may fit"), "{}", large.next);
+        let low_already = too_heavy_to_export(refused, 0, 0.5, (8000, 8000), gib);
+        assert!(!low_already.next.contains("may fit"), "at a low scale, there's nowhere to go: {}", low_already.next);
+        assert_eq!(small.code, "export_page_too_heavy");
+    }
+
+    /// Failure: nobody can tell a slow draw from a fast one, so a slow page or a bad scale goes unnoticed.
+    #[test]
+    fn a_drawing_says_how_long_it_took() {
+        let file = doc();
+        let out = file.0.with_file_name("timed.png");
+        let drawn = render(&file.0, 1, 1.0, &out).unwrap();
+        assert!(drawn["took_ms"].is_u64(), "{drawn}");
+        assert!(crate::human::render("render", &drawn).contains(" in "), "{drawn}");
+        std::fs::remove_file(&out).unwrap();
     }
 
     /// Not a test: a stand-in worker in which page 1 fits only at a lower resolution. Does nothing unless started as one.

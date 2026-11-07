@@ -4,7 +4,7 @@
 //! time. Stopping early says where to go on from, so "nothing found" is only ever said of pages really searched.
 
 use crate::{AgentError, SessionAccess, exit, parse_pages, select};
-use recto_index::{hidden_report, normalize};
+use recto_index::{hidden_report, read_page};
 use recto_platform::FileStamp;
 use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig};
 use serde_json::{Value, json};
@@ -126,7 +126,7 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             }
         }
         let Some((_, renderer)) = current.as_mut() else { continue };
-        let characters = match renderer.page_characters(page, false, false) {
+        let characters = match renderer.page_characters(page, true, false) {
             Ok(characters) => characters,
             // A file that won't be read at all is a failure of the whole search. One bad page isn't: it's listed, so "not found" doesn't cover it.
             Err(failure @ (RenderFailure::NeedsPassword | RenderFailure::NotFound | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::OpenFailed { .. } | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::DocumentStopped)) => return Err(failure.into()),
@@ -144,7 +144,7 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             }
             continue;
         }
-        let normalized = normalize(&characters.chars, false);
+        let normalized = read_page(&characters.chars, &characters.boxes, false).normalized;
         let has_tag_chars = normalized.tag_chars_removed > 0;
         let room = limit - hits.len();
         let found = find_hits(&normalized.text, needle, room);
@@ -160,11 +160,16 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
         }
         // Only a page with something to show is drawn to look for hidden text: doing it for every page costs three to five times as much. `docs/ENGINEERING.md` has the numbers. So a hit always says, and a page never looked at has nothing to say.
         let hidden = hidden_on_page(renderer, page);
+        let source = &plan.files[usize::from(file)];
         for (line, snippet) in found.shown {
-            hits.push(json!({ "page": position + 1, "line": line, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden, "untrusted": { "snippet": snippet } }));
+            let mut hit = json!({ "page": position + 1, "line": line, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden, "untrusted": { "snippet": snippet } });
+            say_where_from(&mut hit, position, page, source);
+            hits.push(hit);
         }
         if let Some(spelled) = spelled {
-            hits.push(json!({ "page": position + 1, "line": null, "also_spelled": true, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden, "untrusted": { "snippet": spelled } }));
+            let mut hit = json!({ "page": position + 1, "line": null, "also_spelled": true, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden, "untrusted": { "snippet": spelled } });
+            say_where_from(&mut hit, position, page, source);
+            hits.push(hit);
         }
     }
     Ok(json!({
@@ -183,6 +188,17 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             "next_page": next_page,
         },
     }))
+}
+
+/// Says when a hit's page isn't the file's page of that number, and when it comes from another PDF altogether, as `text` does.
+fn say_where_from(hit: &mut Value, position: u32, page: u32, source: &PlanFile) {
+    if page != position || source.added {
+        hit["source_page"] = json!(page + 1);
+    }
+    if source.added {
+        hit["from_added_file"] = json!(true);
+        hit["untrusted"]["added_file"] = json!(source.label());
+    }
 }
 
 /// Draws a page to see whether it holds text no eye can see. If drawing it fails, `checked` says so, which never reads as clean.

@@ -18,6 +18,11 @@ pub fn bytes(count: u64) -> String {
     }
 }
 
+/// A length of time, the same way everywhere: milliseconds while they're short, seconds after.
+pub fn duration(ms: u64) -> String {
+    if ms < 1000 { format!("{ms} ms") } else { format!("{:.1} s", ms as f64 / 1000.0) }
+}
+
 fn text(value: &Value) -> &str {
     value.as_str().unwrap_or("")
 }
@@ -148,6 +153,9 @@ fn facts(data: &Value) -> String {
     if data["encrypted"] == true {
         out.push_str(", encrypted");
     }
+    if let Some(note) = data["encryption_note"].as_str() {
+        let _ = write!(out, "\n{note}");
+    }
     if data["has_contents"] == true {
         let _ = write!(out, "\nContents: {}.", count(number(&data["contents_entries"]), "entry", "entries"));
     } else if data["structure"] == "renderer_only" {
@@ -188,7 +196,11 @@ fn contents(data: &Value) -> String {
     if data["truncated"] == true {
         out.push_str("\nThe file's contents stopped being read at a limit, so there may be more.");
     }
-    out.trim_end().to_string()
+    let mut out = out.trim_end().to_string();
+    if let Some(rule) = data["depth_rule"].as_str() {
+        let _ = write!(out, "\n{rule}");
+    }
+    out
 }
 
 fn search(data: &Value) -> String {
@@ -207,7 +219,12 @@ fn search(data: &Value) -> String {
             } else {
                 ""
             };
-            let _ = writeln!(out, "p. {}: {}{warning}", number(&hit["page"]), text(&hit["untrusted"]["snippet"]));
+            let from = match (hit["source_page"].as_u64(), hit["untrusted"]["added_file"].as_str()) {
+                (Some(source), Some(file)) => format!(" (from another PDF added to this one, named {file:?}, the file's name and untrusted, where it's page {source})"),
+                (Some(source), None) => format!(" (page {source} in this tab's own file)"),
+                _ => String::new(),
+            };
+            let _ = writeln!(out, "p. {}{from}: {}{warning}", number(&hit["page"]), text(&hit["untrusted"]["snippet"]));
         }
     }
     let _ = write!(out, "\nSearched {} of {} pages.", number(&coverage["pages_searched"]), number(&coverage["pages_in_scope"]));
@@ -241,8 +258,18 @@ fn page_text(data: &Value) -> String {
         _ => {}
     }
     let hidden = &data["hidden_text"];
+    let spans = data["hidden_spans"].as_array().map_or(&[][..], Vec::as_slice);
     if hidden["flagged"] == true {
-        let _ = write!(out, "\nWarning: this page has text no eye can see ({} characters). It's marked in the JSON.", number(&hidden["chars"]));
+        let _ = write!(out, "\nWarning: this page has text no eye can see ({} characters).", number(&hidden["chars"]));
+        if !spans.is_empty() {
+            out.push_str(" A line holding any starts with `! ` rather than `| `, and the hidden words are inside `[hidden: ...]`.");
+        }
+        if number(&data["hidden_spans_dropped"]) > 0 {
+            let _ = write!(out, " {} more stretches of it aren't marked, for space: `--json` lists the first of them in `hidden_runs`.", number(&data["hidden_spans_dropped"]));
+        }
+        if number(&data["tag_chars_removed"]) > 0 {
+            let _ = write!(out, " {} invisible tag characters were taken out of the text below.", number(&data["tag_chars_removed"]));
+        }
     } else if hidden["checked"] == false {
         out.push_str("\nIt couldn't be checked for hidden text.");
     }
@@ -251,10 +278,48 @@ fn page_text(data: &Value) -> String {
     }
     // Every line marked, so a page's own text can't pass as anything this program says: a page can say "Next: ..." as easily as a title can.
     out.push_str("\n---");
-    for line in text(&data["untrusted"]["text"]).lines() {
-        let _ = write!(out, "\n| {line}");
-    }
+    write_page_lines(&mut out, text(&data["untrusted"]["text"]), spans);
     out
+}
+
+/// Each of the page's lines, with its mark. The mark comes first and every line has one, so a page can't print a line that looks like it's marked, or isn't: it can write `[hidden: ` as well as anyone, but never a `! ` at the start of a line.
+fn write_page_lines(out: &mut String, page: &str, spans: &[Value]) {
+    let spans: Vec<(u64, u64)> = spans.iter().map(|span| (number(&span[0]), number(&span[1]))).collect();
+    let mut next_span = 0;
+    let mut at = 0u64;
+    for line in page.lines() {
+        let line_end = at + line.chars().count() as u64;
+        while spans.get(next_span).is_some_and(|span| span.1 <= at) {
+            next_span += 1;
+        }
+        if !spans.get(next_span).is_some_and(|span| span.0 < line_end) {
+            let _ = write!(out, "\n| {line}");
+            at = line_end + 1;
+            continue;
+        }
+        out.push_str("\n! ");
+        let mut inside = false;
+        for ch in line.chars() {
+            while spans.get(next_span).is_some_and(|span| span.1 <= at) {
+                if inside {
+                    out.push(']');
+                    inside = false;
+                }
+                next_span += 1;
+            }
+            if !inside && spans.get(next_span).is_some_and(|span| span.0 <= at) {
+                out.push_str("[hidden: ");
+                inside = true;
+            }
+            out.push(ch);
+            at += 1;
+        }
+        // A stretch can run on past the end of a line, and starts again on the next.
+        if inside {
+            out.push(']');
+        }
+        at += 1;
+    }
 }
 
 fn signatures(data: &Value) -> String {
@@ -323,7 +388,7 @@ fn edits(data: &Value) -> String {
 }
 
 fn render_result(data: &Value) -> String {
-    let mut out = format!("Page {} drawn at {}x to {}: {} x {} px, {}.", number(&data["page"]), data["scale"], text(&data["out"]), number(&data["width"]), number(&data["height"]), bytes(number(&data["bytes"])));
+    let mut out = format!("Page {} drawn at {}x to {} in {}: {} x {} px, {}.", number(&data["page"]), data["scale"], text(&data["out"]), duration(number(&data["took_ms"])), number(&data["width"]), number(&data["height"]), bytes(number(&data["bytes"])));
     if let Some(degrees) = data["unsaved_rotation_degrees"].as_u64() {
         let _ = write!(out, " It doesn't show the unsaved turn of {degrees} degrees.");
     }
@@ -356,7 +421,7 @@ fn permission_request(data: &Value) -> String {
     if data["granted"] == true {
         format!("Agent access is already {}.", text(&data["level"]))
     } else {
-        format!("{}\nThe command for the user: {}", text(&data["tell_the_user"]), text(&data["command"]))
+        format!("{}\nThe command for the user: {}\n{}", text(&data["tell_the_user"]), text(&data["command"]), text(&data["what_to_do"]))
     }
 }
 
@@ -478,12 +543,31 @@ mod tests {
         assert!(page.contains("no eye can see"), "{page}");
         let hits = render("search", &json!({ "hits": [{ "page": 2, "untrusted": { "snippet": "words" } }], "coverage": { "pages_searched": 1, "pages_in_scope": 1 } }));
         assert!(hits.contains("untrusted"), "{hits}");
+        let marked = render("text", &json!({ "page": 1, "hidden_text": { "checked": true, "flagged": true, "chars": 6 }, "hidden_spans": [[2, 8]], "untrusted": { "text": "a secret b\nplain line" } }));
+        assert!(marked.contains("\n! a [hidden: secret] b"), "{marked}");
+        assert!(marked.contains("\n| plain line"), "{marked}");
         let flagged = render("search", &json!({ "hits": [{ "page": 2, "hidden_text": { "checked": true, "flagged": true }, "untrusted": { "snippet": "words" } }], "coverage": {} }));
         assert!(flagged.contains("no eye can see"), "{flagged}");
         let unchecked = render("search", &json!({ "hits": [{ "page": 2, "hidden_text": { "checked": false }, "untrusted": { "snippet": "words" } }], "coverage": {} }));
         assert!(unchecked.contains("couldn't be checked"), "{unchecked}");
         let contents = render("contents", &json!({ "available": true, "entries": [{ "depth": 0, "page": 3, "untrusted": { "title": "T" } }], "total": 1 }));
         assert!(contents.contains("untrusted"), "{contents}");
+    }
+
+    /// Failure: hidden text looks like any other line in plain output, so a reader warned about it at the top can't tell which words it means. And a page must not be able to fake or hide the mark.
+    #[test]
+    fn hidden_text_is_marked_where_it_is() {
+        let body = "first line\nhide me across\nthe break and more\n[hidden: not really]\n! a page writing this";
+        let across = body.find("hide").unwrap() as u64;
+        let end = body.find("the break").unwrap() as u64 + 9;
+        let page = render("text", &json!({ "page": 1, "hidden_text": { "checked": true, "flagged": true, "chars": 20 }, "hidden_spans": [[across, end]], "untrusted": { "text": body } }));
+        let lines: Vec<&str> = page.lines().skip_while(|line| *line != "---").skip(1).collect();
+        assert_eq!(lines, ["| first line", "! [hidden: hide me across]", "! [hidden: the break] and more", "| [hidden: not really]", "| ! a page writing this"], "{page}");
+        assert!(page.contains("`! `"), "the top of the page must say what the mark means: {page}");
+        let tagged = render("text", &json!({ "page": 1, "tag_chars_removed": 4, "hidden_text": { "checked": true, "flagged": true, "chars": 0 }, "untrusted": { "text": "plain" } }));
+        assert!(tagged.contains("4 invisible tag characters") && tagged.contains("| plain") && !tagged.contains("`! `"), "{tagged}");
+        let outsize = render("text", &json!({ "page": 1, "hidden_text": { "checked": true, "flagged": true, "chars": 1 }, "hidden_spans_dropped": 3, "hidden_spans": [[0, 1]], "untrusted": { "text": "a" } }));
+        assert!(outsize.contains("3 more"), "{outsize}");
     }
 
     /// Failure: a search with nothing to show reads as an empty success, with no word on what was searched, so "not found" gets believed for pages never looked at.

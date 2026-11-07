@@ -35,9 +35,16 @@
 //! in [`Normalized::also_spelled`] in its other form, which a search can look through: both forms stay findable, whichever was chosen, up to
 //! [`MAX_ALSO_SPELLED`] on a page, past which [`Normalized::also_spelled_dropped`] says how many weren't kept.
 //! Lines stay lines: a phrase across a line break still needs a multi-line search, because unwrapping lines would garble tables.
+//!
+//! ## Reading a page
+//!
+//! [`read_page`] is what `text` and `search` both call, so they can't disagree. It puts late-drawn words back on their lines ([`order`]), then normalises. Hidden text is judged in the order
+//! the file gave, before anything moves: a run scattered into a line's gaps must not read as harmless because it now has visible letters between its characters.
+
+pub mod order;
 
 use recto_core::is_invisible_format;
-use recto_proto::CharRecord;
+use recto_proto::{CharBox, CharRecord};
 
 /// Markers on one page that may search the rest of the page for evidence. Each search costs a pass over the page.
 pub const MAX_EVIDENCE_CHECKS: usize = 256;
@@ -306,6 +313,97 @@ fn contains_word(text: &str, needle: &str) -> bool {
     })
 }
 
+/// A page's text as it's read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PageReading {
+    pub normalized: Normalized,
+    /// Runs put back on their lines. See [`order`].
+    pub runs_moved: u32,
+    /// Where the page's flagged hidden text is, as `[start, end)` counted in characters of `normalized.text`. Empty unless asked for.
+    pub hidden_spans: Vec<(u32, u32)>,
+    /// Spans past [`MAX_HIDDEN_SPANS`].
+    pub hidden_spans_dropped: u32,
+}
+
+/// Spans of hidden text given per page. The text they point at is all still there.
+pub const MAX_HIDDEN_SPANS: usize = 256;
+
+/// The one way a page's characters become its text, for `text` and `search` alike. `boxes` holds a box per character, or nothing, which leaves the order as it is.
+pub fn read_page(chars: &[CharRecord], boxes: &[CharBox], want_hidden_spans: bool) -> PageReading {
+    let repaired = order::repair_line_order(chars, boxes);
+    let reading = repaired.as_ref().map_or(chars, |repaired| &repaired.chars);
+    let flagged = if want_hidden_spans { flagged_hidden_chars(chars) } else { Vec::new() };
+    let mut page = PageReading { normalized: normalize(reading, !flagged.is_empty()), runs_moved: repaired.as_ref().map_or(0, |repaired| repaired.runs_moved), ..PageReading::default() };
+    if !flagged.is_empty() {
+        let is_hidden = |index: u32| {
+            let from = repaired.as_ref().map_or(index, |repaired| repaired.origin.get(index as usize).copied().unwrap_or(order::GENERATED));
+            flagged.get(from as usize).copied().unwrap_or(false)
+        };
+        (page.hidden_spans, page.hidden_spans_dropped) = hidden_spans(&page.normalized, is_hidden);
+        // Its job's done, and it's a word per character.
+        page.normalized.source = Vec::new();
+    }
+    page
+}
+
+/// Which characters belong to a run long enough to flag the page. Stray thin glyphs don't, and nothing's returned if no run qualifies. Goes by the same runs as [`hidden_report`].
+fn flagged_hidden_chars(chars: &[CharRecord]) -> Vec<bool> {
+    let mut flagged = Vec::new();
+    let mut run: Vec<u32> = Vec::new();
+    let mut finish = |run: &mut Vec<u32>| {
+        if run.len() >= MIN_FLAGGED_RUN {
+            if flagged.is_empty() {
+                flagged = vec![false; chars.len()];
+            }
+            for &index in run.iter() {
+                flagged[index as usize] = true;
+            }
+        }
+        run.clear();
+    };
+    for (index, record) in chars.iter().enumerate() {
+        if record.has(CharRecord::NO_INK) {
+            run.push(index as u32);
+        } else if !ends_no_hidden_run(*record) {
+            finish(&mut run);
+        }
+    }
+    finish(&mut run);
+    flagged
+}
+
+/// PDFium's own characters and whitespace have no ink to test. They sit inside a run without ending it.
+fn ends_no_hidden_run(record: CharRecord) -> bool {
+    let ch = record.ch();
+    ch.is_whitespace() || ch.is_control() || record.has(CharRecord::GENERATED) || is_marker(record)
+}
+
+/// Joins hidden characters of the text into spans. Spaces inside a span stay in it, and spaces at its end don't.
+fn hidden_spans(normalized: &Normalized, is_hidden: impl Fn(u32) -> bool) -> (Vec<(u32, u32)>, u32) {
+    let mut spans = Vec::new();
+    let mut dropped = 0u32;
+    let mut open: Option<(u32, u32)> = None;
+    let mut close = |open: &mut Option<(u32, u32)>| {
+        if let Some(span) = open.take() {
+            if spans.len() < MAX_HIDDEN_SPANS {
+                spans.push(span);
+            } else {
+                dropped += 1;
+            }
+        }
+    };
+    for (at, (ch, &source)) in normalized.text.chars().zip(&normalized.source).enumerate() {
+        let at = at as u32;
+        if is_hidden(source) {
+            open = Some((open.map_or(at, |span| span.0), at + 1));
+        } else if !ch.is_whitespace() {
+            close(&mut open);
+        }
+    }
+    close(&mut open);
+    (spans, dropped)
+}
+
 /// What the hidden-text check found on a page. A flag for the agent: nothing is removed from the text.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HiddenReport {
@@ -345,8 +443,7 @@ pub fn hidden_report(chars: &[CharRecord], checked: bool) -> HiddenReport {
             {
                 run.push(mapped);
             }
-        } else if ch.is_whitespace() || ch.is_control() || record.has(CharRecord::GENERATED) || is_marker(*record) {
-            // PDFium's own characters and whitespace have no ink to test. They sit inside a run without ending it.
+        } else if ends_no_hidden_run(*record) {
             if run_len > 0 && !run.ends_with(' ') {
                 run.push(' ');
             }
@@ -632,6 +729,85 @@ mod tests {
         let long = format!("#{}|", "z".repeat(10_000));
         let report = hidden_report(&hidden(&long), true);
         assert_eq!(report.runs[0].chars().count(), MAX_HIDDEN_RUN_CHARS);
+    }
+
+    fn boxed(text: &str, y: f32, start_x: f32) -> (Vec<CharRecord>, Vec<CharBox>) {
+        let chars = hidden(text);
+        let boxes = chars.iter().enumerate().map(|(at, _)| [start_x + at as f32 * 5.0, y, start_x + at as f32 * 5.0 + 4.0, y + 7.0]).collect();
+        (chars, boxes)
+    }
+
+    /// Failure: reading and hidden-text marking disagree on which characters are hidden once a run has moved, so a person is shown the wrong words as hidden.
+    #[test]
+    fn hidden_spans_point_at_the_hidden_words_after_a_move() {
+        let (mut chars, mut boxes) = boxed("see #secret| now", 700.0, 0.0);
+        // A late word in a gap before `secret`, so the hidden word's place in the text shifts.
+        let shift = 40.0;
+        for char_box in boxes.iter_mut().skip(4) {
+            char_box[0] += shift;
+            char_box[2] += shift;
+        }
+        chars.push(CharRecord::new('\n' as u32, CharRecord::GENERATED));
+        boxes.push([0.0; 4]);
+        let (late, late_boxes) = boxed("WORD", 700.0, 20.0);
+        chars.extend(late);
+        boxes.extend(late_boxes);
+        let page = read_page(&chars, &boxes, true);
+        assert_eq!(page.runs_moved, 1);
+        assert!(page.normalized.text.starts_with("see WORD"), "{}", page.normalized.text);
+        assert_eq!(page.hidden_spans.len(), 1);
+        let (start, end) = page.hidden_spans[0];
+        let shown: String = page.normalized.text.chars().skip(start as usize).take((end - start) as usize).collect();
+        assert_eq!(shown, "secret");
+        assert!(page.normalized.source.is_empty(), "the map costs a word per character and isn't kept");
+    }
+
+    /// Failure: a hidden instruction broken up into a line's gaps stops being one run once it's in reading order, so the flag and its marks vanish, and a file can hide from the check by being drawn this way.
+    #[test]
+    fn hidden_text_is_judged_in_the_order_the_file_gave() {
+        let (mut chars, mut boxes) = (Vec::new(), Vec::new());
+        for at in 0..5 {
+            let (word, word_boxes) = boxed("ab ", 700.0, at as f32 * 30.0);
+            chars.extend(word);
+            boxes.extend(word_boxes);
+        }
+        // Each hidden letter is drawn late, and fits a gap between the words.
+        chars.push(CharRecord::new('\n' as u32, CharRecord::GENERATED));
+        boxes.push([0.0; 4]);
+        for at in 0..4 {
+            let x = at as f32 * 30.0 + 18.0;
+            chars.push(CharRecord::new('x' as u32, CharRecord::NO_INK));
+            boxes.push([x, 700.0, x + 4.0, 707.0]);
+        }
+        assert!(hidden_report(&chars, true).flagged);
+        let page = read_page(&chars, &boxes, true);
+        assert!(page.runs_moved > 0, "the letters are meant to move: {}", page.normalized.text);
+        let marked: u32 = page.hidden_spans.iter().map(|span| span.1 - span.0).sum();
+        assert_eq!(marked, 4, "each letter is still marked: {:?} in {}", page.hidden_spans, page.normalized.text);
+    }
+
+    /// Failure: one stray thin glyph is marked as hidden on a page with no real hidden text, so marks fire on ordinary pages and stop meaning anything.
+    #[test]
+    fn a_stray_glyph_isnt_marked() {
+        let (chars, boxes) = boxed("a #·| b #–| c", 700.0, 0.0);
+        let page = read_page(&chars, &boxes, true);
+        assert!(page.hidden_spans.is_empty() && !hidden_report(&chars, true).flagged);
+    }
+
+    /// Failure: thousands of hidden runs make an answer as large as the page.
+    #[test]
+    fn hidden_spans_are_capped_and_the_rest_counted() {
+        let (chars, boxes) = boxed(&"#abc| x ".repeat(MAX_HIDDEN_SPANS + 7), 700.0, 0.0);
+        let page = read_page(&chars, &boxes, true);
+        assert_eq!(page.hidden_spans.len(), MAX_HIDDEN_SPANS);
+        assert_eq!(page.hidden_spans_dropped, 7);
+    }
+
+    /// Failure: with no boxes to go by, the page is lost, rather than read as it comes.
+    #[test]
+    fn no_boxes_means_the_order_it_came_in() {
+        let page = read_page(&chars("as it comes"), &[], false);
+        assert_eq!((page.normalized.text.as_str(), page.runs_moved), ("as it comes", 0));
     }
 
     /// Failure: `COMPOUND_ENDINGS` falls out of order and the binary search quietly misses words on it.
