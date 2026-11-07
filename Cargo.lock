@@ -476,6 +476,7 @@ dependencies = [
 name = "recto-core"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "lopdf",
  "recto-platform",
  "recto-testpdf",

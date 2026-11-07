@@ -1,8 +1,11 @@
 //! What a page uses that PDFium's objects can't show, read from the file's own structure through the lazy reader. The SVG export asks this before it starts, and a yes only means it looks harder or uses a picture: none of it is ever a claim about the file.
 //!
 //! The walk is bounded for hostile files: forms inside forms, loops and millions of entries all end at a fixed number of visits, and past that, or for anything that can't be read, the answer is `None`, which the caller takes as "may use anything". A stream's dictionary is read without its bytes, so a form on a page with a 300 MiB image costs no more than one without.
+//!
+//! The one thing read from inside streams is the page's and its forms' own drawing, a chunk at a time and with nothing kept, to see if they write a JPEG in place: no call says so, and nothing about such an image can be known. Past a limit on that, or for a filter this doesn't read, it's taken that they do.
 
 use crate::{deref, open_reader};
+use flate2::{Decompress, FlushDecompress, Status};
 use lopdf::{Dictionary, IndexedReader, Object, ObjectId};
 use std::collections::HashSet;
 use std::path::Path;
@@ -12,6 +15,11 @@ use std::time::{Duration, Instant};
 const MAX_VISITS: usize = 8192;
 /// How long one look may take. This runs on a job's own thread, but a hostile file's references shouldn't cost more than the page.
 const MAX_TIME: Duration = Duration::from_secs(1);
+/// How much of a page's drawing, decoded, is looked through for JPEGs written in place, and for how long. Both are far past a normal page. Past them, its JPEGs go as PNG, which is right whatever's there.
+const MAX_DRAWING_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_DRAWING_TIME: Duration = Duration::from_millis(500);
+/// A `/Decode` that long isn't one any image has.
+const MAX_DECODE: usize = 64;
 
 /// What's on a page, as far as its structure says, down through its forms and patterns.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,7 +34,7 @@ pub struct PageEffects {
     pub optional_content: bool,
     /// A name can't stand for a layer on this page: see [`Walk::look_at_properties`].
     pub layer_names_unsafe: bool,
-    /// A JPEG here has a `/Decode` or `/ColorTransform` that changes what its bytes mean.
+    /// A JPEG here has a `/Decode` or `/ColorTransform` that changes what its bytes mean, or it's written in place, where those can't be seen.
     pub jpeg_read_differently: bool,
 }
 
@@ -41,17 +49,111 @@ pub fn page_effects(path: &Path, page: u32) -> Option<PageEffects> {
     let mut walk = Walk { reader: &reader, deadline: Instant::now() + MAX_TIME, visits: 0, effects: PageEffects::default(), waiting: Vec::new(), seen: HashSet::new(), listed: HashSet::new() };
     walk.read_layers()?;
     walk.resources(resources)?;
+    let mut drawings = page_contents(&reader, entry.id());
     while let Some(id) = walk.waiting.pop() {
         walk.tick()?;
         let Some(inner) = stream_or_dict(&reader, &Object::Reference(id)) else { continue };
+        if drawings.len() < MAX_VISITS && matches!(inner.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Form") {
+            drawings.push(id);
+        }
         walk.effects.optional_content |= inner.has(b"OC");
         walk.look_at_pattern(&inner);
-        walk.look_at_image(&inner);
+        walk.look_at_image(&inner)?;
         if let Ok(next) = inner.get(b"Resources") {
             walk.resources(next)?;
         }
     }
+    walk.effects.jpeg_read_differently |= writes_a_jpeg_in_place(&reader, &drawings);
     Some(walk.effects)
+}
+
+/// The streams a page draws from, directly. `None`-like cases just come back empty, and the page's reader finds that for itself.
+fn page_contents(reader: &IndexedReader, page: ObjectId) -> Vec<ObjectId> {
+    let Some(page) = dict_at(reader, page) else { return Vec::new() };
+    match page.get(b"Contents") {
+        Ok(Object::Reference(id)) => match reader.resolve_object(*id) {
+            Ok(Object::Array(items)) => items.iter().filter_map(|item| item.as_reference().ok()).take(MAX_VISITS).collect(),
+            _ => vec![*id],
+        },
+        Ok(Object::Array(items)) => items.iter().filter_map(|item| item.as_reference().ok()).take(MAX_VISITS).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether any of these streams mentions the DCT filter, which is what an image written in place has to do. Words in a string saying the same only cost a page's JPEGs their bytes. One that can't be read through counts.
+fn writes_a_jpeg_in_place(reader: &IndexedReader, streams: &[ObjectId]) -> bool {
+    let deadline = Instant::now() + MAX_DRAWING_TIME;
+    let mut budget = MAX_DRAWING_BYTES;
+    streams.iter().any(|id| mentions_dct(reader, *id, deadline, &mut budget).unwrap_or(true))
+}
+
+fn mentions_dct(reader: &IndexedReader, id: ObjectId, deadline: Instant, budget: &mut u64) -> Option<bool> {
+    let descriptor = reader.resolve_stream_descriptor(id).ok()?;
+    let dict = descriptor.dictionary();
+    let compressed = match dict.get(b"Filter").ok().map(|filter| deref(reader, filter)) {
+        None => false,
+        Some(filter) => match filter? {
+            Object::Name(name) if name == b"FlateDecode" || name == b"Fl" => true,
+            Object::Array(filters) => match &filters[..] {
+                [] => false,
+                [one] => matches!(deref(reader, one)?, Object::Name(name) if name == b"FlateDecode" || name == b"Fl"),
+                _ => return None,
+            },
+            _ => return None,
+        },
+    };
+    if dict.has(b"DecodeParms") && compressed {
+        // A predictor makes bytes that can't be searched, and drawing has no use for one.
+        return None;
+    }
+    let mut source = descriptor.open_plain_encoded().ok()?;
+    let mut encoded = vec![0u8; 64 * 1024];
+    let mut decoded = vec![0u8; 64 * 1024];
+    let mut inflate = Decompress::new(true);
+    // The end of the last piece, for a word cut in two.
+    let mut tail = [0u8; 2];
+    loop {
+        let got = source.read_chunk(&mut encoded).ok()?;
+        let mut piece = &encoded[..got];
+        loop {
+            if Instant::now() >= deadline {
+                return None;
+            }
+            let plain_bytes;
+            let (made, used, finished) = if compressed {
+                let (before_in, before_out) = (inflate.total_in(), inflate.total_out());
+                let status = inflate.decompress(piece, &mut decoded, if got == 0 { FlushDecompress::Finish } else { FlushDecompress::None }).ok()?;
+                ((inflate.total_out() - before_out) as usize, (inflate.total_in() - before_in) as usize, matches!(status, Status::StreamEnd))
+            } else {
+                plain_bytes = piece.len();
+                decoded[..plain_bytes].copy_from_slice(piece);
+                (plain_bytes, plain_bytes, got == 0)
+            };
+            *budget = budget.checked_sub(made as u64)?;
+            let mut joined = [0u8; 2 + 3];
+            joined[..2].copy_from_slice(&tail);
+            let start = made.min(3);
+            joined[2..2 + start].copy_from_slice(&decoded[..start]);
+            if joined[..2 + start].windows(3).any(|word| word == b"DCT") || decoded[..made].windows(3).any(|word| word == b"DCT") {
+                return Some(true);
+            }
+            if made >= 2 {
+                tail.copy_from_slice(&decoded[made - 2..made]);
+            } else if made == 1 {
+                tail = [tail[1], decoded[0]];
+            }
+            piece = &piece[used..];
+            if finished {
+                return Some(false);
+            }
+            if piece.is_empty() && made < decoded.len() {
+                break;
+            }
+        }
+        if got == 0 {
+            return Some(false);
+        }
+    }
 }
 
 /// Where a look has got to. It holds only ids: a dictionary is read, looked through and dropped, and each is read once, so forms that all name one large dictionary cost one read of it and no copies.
@@ -169,31 +271,82 @@ impl Walk<'_> {
     }
 
     /// A stored JPEG can be passed on as it is only if the page means by it what a reader of the bytes would.
-    fn look_at_image(&mut self, dict: &Dictionary) {
+    fn look_at_image(&mut self, dict: &Dictionary) -> Option<()> {
         let names_dct = |value: &Object| matches!(value, Object::Name(name) if name == b"DCTDecode" || name == b"DCT");
-        let filter = dict.get(b"Filter").ok().and_then(|filter| deref(self.reader, filter));
-        let is_jpeg = filter.is_some_and(|filter| match &filter {
-            Object::Array(filters) => filters.iter().any(names_dct),
-            other => names_dct(other),
-        });
+        let is_jpeg = match dict.get(b"Filter").ok().and_then(|filter| deref(self.reader, filter)) {
+            Some(Object::Array(filters)) => {
+                let mut any = false;
+                for filter in &filters {
+                    self.tick()?;
+                    any |= deref(self.reader, filter).is_some_and(|filter| names_dct(&filter));
+                }
+                any
+            }
+            Some(other) => names_dct(&other),
+            None => false,
+        };
         if !is_jpeg {
-            return;
+            return Some(());
         }
-        let decode_changes = dict.get(b"Decode").ok().and_then(|decode| deref(self.reader, decode)).is_some_and(|decode| match decode.as_array() {
-            Ok(values) => values.iter().enumerate().any(|(at, value)| {
-                let number = deref(self.reader, value).and_then(|value| value.as_float().ok().or_else(|| value.as_i64().ok().map(|whole| whole as f32)));
-                number != Some(if at % 2 == 0 { 0.0 } else { 1.0 })
-            }),
-            Err(_) => true,
-        });
-        let parms = dict.get(b"DecodeParms").ok().and_then(|parms| deref(self.reader, parms));
+        let decode_changes = match dict.get(b"Decode").ok().and_then(|decode| deref(self.reader, decode)) {
+            None => dict.has(b"Decode"),
+            Some(decode) => self.decode_changes(dict, &decode)?,
+        };
         let transform_of = |parms: &Dictionary| parms.get(b"ColorTransform").ok().and_then(|value| deref(self.reader, value)).is_some_and(|value| value.as_i64().ok() != Some(1));
-        let transform_changes = parms.is_some_and(|parms| match &parms {
-            Object::Dictionary(parms) => transform_of(parms),
-            Object::Array(list) => list.iter().any(|one| deref(self.reader, one).is_some_and(|one| one.as_dict().is_ok_and(transform_of))),
+        let transform_changes = match dict.get(b"DecodeParms").ok().and_then(|parms| deref(self.reader, parms)) {
+            Some(Object::Dictionary(parms)) => transform_of(&parms),
+            Some(Object::Array(list)) => {
+                let mut any = false;
+                for one in &list {
+                    self.tick()?;
+                    any |= deref(self.reader, one).is_some_and(|one| one.as_dict().is_ok_and(transform_of));
+                }
+                any
+            }
             _ => false,
-        });
+        };
         self.effects.jpeg_read_differently |= decode_changes || transform_changes;
+        Some(())
+    }
+
+    /// Whether a `/Decode` does anything: a range other than 0 to 1, or not one for each of the image's components, which can't be taken as meaning nothing.
+    fn decode_changes(&mut self, dict: &Dictionary, decode: &Object) -> Option<bool> {
+        let Ok(values) = decode.as_array() else { return Some(true) };
+        if values.len() > MAX_DECODE || Some(values.len()) != self.components(dict).map(|components| components * 2) {
+            return Some(true);
+        }
+        for (at, value) in values.iter().enumerate() {
+            self.tick()?;
+            let number = deref(self.reader, value).and_then(|value| value.as_float().ok().or_else(|| value.as_i64().ok().map(|whole| whole as f32)));
+            if number != Some(if at % 2 == 0 { 0.0 } else { 1.0 }) {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+
+    /// How many components an image's colour space has, if that's plain from its dictionary.
+    fn components(&self, dict: &Dictionary) -> Option<usize> {
+        let space = deref(self.reader, dict.get(b"ColorSpace").ok()?)?;
+        let name = match &space {
+            Object::Name(name) => name.clone(),
+            Object::Array(items) => match deref(self.reader, items.first()?)? {
+                Object::Name(name) => name,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        match &name[..] {
+            b"DeviceGray" | b"G" | b"CalGray" | b"Indexed" | b"I" | b"Separation" => Some(1),
+            b"DeviceRGB" | b"RGB" | b"CalRGB" | b"Lab" => Some(3),
+            b"DeviceCMYK" | b"CMYK" => Some(4),
+            b"ICCBased" => {
+                let Object::Array(items) = &space else { return None };
+                let profile = stream_or_dict(self.reader, items.get(1)?)?;
+                usize::try_from(profile.get(b"N").ok()?.as_i64().ok()?).ok()
+            }
+            _ => None,
+        }
     }
 
     fn look_at_pattern(&mut self, dict: &Dictionary) {
@@ -361,6 +514,49 @@ mod tests {
         assert!(!with(""));
         assert!(!with("/Decode [0 1 0 1 0 1]"));
         assert!(!with("/DecodeParms << /ColorTransform 1 >>"));
+        assert!(with("/Decode [0 1]"), "too short for its colours: a range that isn't there isn't one that does nothing");
+        assert!(with(&format!("/Decode [{}]", "0 1 ".repeat(40))), "far too long");
+    }
+
+    /// Failure: a filter named by reference inside its list isn't seen as JPEG's, so its `/Decode` is never looked at, and an inverted picture goes out with its bytes as they are.
+    #[test]
+    fn a_filter_named_by_reference_is_still_jpegs() {
+        let filter = first_extra_object(1);
+        let image = filter + 1;
+        let stream = Object::Stream { dict: format!("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter [{filter} 0 R] /Decode [1 0 1 0 1 0]"), data: vec![0xFF, 0xD8] };
+        assert!(effects(&format!("/XObject << /I {image} 0 R >>"), vec![Object::Dict("/DCTDecode".into()), stream]).jpeg_read_differently);
+    }
+
+    /// Failure: a JPEG written in the page's drawing can have a `/Decode` nothing reads, so it goes out as its bytes, in the wrong colours. It's looked for through compressed drawing and forms, even with the word cut across two pieces, and a page without one mustn't pay for it.
+    #[test]
+    fn a_jpeg_written_in_place_is_noticed() {
+        let inline = b"BI /W 1 /H 1 /CS /RGB /BPC 8 /F /DCT /D [1 0 1 0 1 0] ID ab EI\n".to_vec();
+        let file = TempPdf::new("doc.pdf", &pages(&[Page::new(inline.clone())]));
+        assert!(page_effects(&file.0, 0).unwrap().jpeg_read_differently, "plain");
+        assert!(!effects("", vec![]).jpeg_read_differently, "a page without one");
+        let form = first_extra_object(1);
+        let inside = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1]".into(), data: inline.clone() };
+        assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![inside]).jpeg_read_differently, "in a form");
+        let mut packed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut packed, &[b" ".repeat(64 * 1024 - 1), inline].concat()).unwrap();
+        let packed = packed.finish().unwrap();
+        let drawn = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode".into(), data: packed };
+        assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![drawn]).jpeg_read_differently, "compressed");
+        let unread = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /ASCII85Decode".into(), data: b"~>".to_vec() };
+        assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![unread]).jpeg_read_differently, "a filter this doesn't read counts");
+    }
+
+    /// Failure: compressed drawing that says it's huge is read to the end on a job's thread. It stops at the limit, and counts.
+    #[test]
+    fn a_bomb_of_drawing_ends_the_look() {
+        let mut packed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        let zeros = vec![b' '; 1024 * 1024];
+        for _ in 0..(MAX_DRAWING_BYTES / (1024 * 1024) + 2) {
+            std::io::Write::write_all(&mut packed, &zeros).unwrap();
+        }
+        let form = first_extra_object(1);
+        let bomb = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode".into(), data: packed.finish().unwrap() };
+        assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![bomb]).jpeg_read_differently);
     }
 
     /// Failure: something that can't be read reads as "uses nothing", which would be a claim about what it hasn't seen. There's no answer, and the caller assumes anything.
