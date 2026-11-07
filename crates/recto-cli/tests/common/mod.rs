@@ -153,10 +153,11 @@ impl Raw {
     /// Gives the session as long as the command says it may take, on top of the usual, as `recto` does.
     pub fn call(&mut self, command: &Value) -> Value {
         let allowed = Duration::from_millis(command["timeout_ms"].as_u64().unwrap_or(0));
-        self.stream.set_read_timeout(Some(READ_TIMEOUT + allowed)).unwrap();
+        // macOS refuses these once the session has closed, which `stop` does as soon as it's answered. Sending and reading are what say so.
+        let _ = self.stream.set_read_timeout(Some(READ_TIMEOUT + allowed));
         self.send(&command.to_string());
         let answer = self.read().expect("the server closed the connection");
-        self.stream.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
+        let _ = self.stream.set_read_timeout(Some(READ_TIMEOUT));
         answer
     }
 }

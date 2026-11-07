@@ -46,7 +46,8 @@ impl Client {
 
     /// Sends one command, as the line the socket reads.
     pub fn send(&mut self, line: &str, wait: Duration) -> Result<(), AgentError> {
-        self.stream.set_write_timeout(Some(wait)).map_err(|_| ended())?;
+        // Never decides anything, for the reason in `read`: a session that's gone shows at the write, which says so.
+        let _ = self.stream.set_write_timeout(Some(wait));
         let mut framed = String::with_capacity(line.len() + 1);
         framed.push_str(line);
         framed.push('\n');
@@ -55,7 +56,8 @@ impl Client {
 
     /// Reads one line of answer, and checks it speaks this version.
     pub fn read(&mut self, wait: Duration) -> Result<Value, AgentError> {
-        self.stream.set_read_timeout(Some(wait.max(Duration::from_millis(1)))).map_err(|_| ended())?;
+        // macOS refuses this once the other end has closed, and an answer can be waiting by then: `stop` answers and closes. So the read below decides, and a closed socket can't leave it waiting.
+        let _ = self.stream.set_read_timeout(Some(wait.max(Duration::from_millis(1))));
         loop {
             if let Some(at) = line_end(&self.buffer, &mut self.searched) {
                 let value: Value = serde_json::from_slice(&self.buffer[..at]).map_err(|_| bad_answer())?;
@@ -108,6 +110,20 @@ fn bad_answer() -> AgentError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: the session answers and closes, as `stop` does, before the client gets to read. macOS then refuses to set the socket's timeout, and the client says the session ended before it answered, with the answer sitting there unread.
+    #[test]
+    fn an_answer_is_read_even_after_the_session_has_closed() {
+        let (ours, theirs) = Stream::pair().unwrap();
+        let answer = format!("{}\n", serde_json::json!({ "v": VERSION, "ok": true }));
+        (&theirs).write_all(answer.as_bytes()).unwrap();
+        drop(theirs);
+        let mut client = Client { stream: ours, buffer: Vec::new(), searched: 0 };
+        let read = client.read(Duration::from_secs(5)).unwrap();
+        assert_eq!(read["ok"], true);
+        assert_eq!(client.read(Duration::from_secs(5)).unwrap_err().code, "session_ended", "and after it, the truth");
+        assert_eq!(client.send("{}", Duration::from_secs(5)).unwrap_err().code, "session_ended", "a closed socket doesn't take a command");
+    }
 
     /// Failure: every read of a large answer looks through all of it again for the line's end, so its cost grows with its square: a 5 MB answer took seconds, and on a slower machine that's enough to look like a client that's stopped. And looking only at what's new mustn't miss a line, or find one twice.
     #[test]
