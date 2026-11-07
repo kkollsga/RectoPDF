@@ -138,7 +138,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Snapshot tool with text, PNG, JPG and SVG, on top of that
 - [ ] SVG follow-ups, each on the PNG path today so nothing's wrong, only larger: a JPEG with `/Decode` kept through an SVG filter, measured in Chrome and WebKit first (owner's brief, 2026-11-07); `/ColorTransform` through an Adobe marker; a mask finer than its image at its own size, which takes reading it from the file since PDFium has no call for it; a page's JPEGs where drawing is past the 256 MiB look
 - [ ] Print
-- [ ] Generated contents: `recto contents --generated`, then a quiet offer in the sidebar when a file's own are missing or look bad. distillPDF's headings, in a helper with a memory limit, labelled as generated. Needs distillPDF's per-page work
+- [x] Generated contents: `recto contents --generated`, then a quiet offer in the sidebar when a file's own are missing or look bad. distillPDF's headings, in a helper with a memory limit, labelled as generated
+- [ ] Generated contents follow-ups: go to a heading's place on its page, not only its page (`place` is in the answer); `recto index clear` takes generated contents too; a heading quality pass over legal texts, where distillPDF takes numbered paragraphs for headings and misses `Article N` (see `docs/ENGINEERING.md`)
 - [x] `recto search --regex` by ripgrep's engine in process, and `--rank` by BM25, with no new index (owner, 2026-11-07)
 - [x] What blind agents asked for: a whole-document hit total in `search`
 - [ ] The rest of what they asked for: an unwrapped quote form of `text`, `edits` saying when turns cancel out, `watch` to a file, and what an encrypted file restricts in `facts`
