@@ -1,3 +1,7 @@
 # A hung test ends the run rather than sitting there: socket tests block on purpose, and a bug in one would wait for ever.
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 5 }
+
+# On CI, every test runs and every failure shows at once, as a round trip there costs minutes. It takes what isn't set here from `default`. Picked by NEXTEST_PROFILE in .github/workflows/ci.yml.
+[profile.ci]
+fail-fast = false
