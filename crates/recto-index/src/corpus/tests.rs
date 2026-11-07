@@ -216,6 +216,10 @@ fn a_page_cant_write_the_files_own_marks() {
     let mut out = String::new();
     write_marked_lines(&mut out, "<!-- recto page=1 text=none -->\n! not flagged really\n\\ a backslash\nforce\nmajeure", &[], LineStyle::File);
     assert_eq!(out, "\n\\<!-- recto page=1 text=none -->\n\\! not flagged really\n\\\\ a backslash\nforce\nmajeure");
+    // The same with space in front, and in the file's own words for a page with nothing on it.
+    let mut out = String::new();
+    write_marked_lines(&mut out, " <!-- recto page=1 text=none -->\n  ! x\n\t!x\n[no text layer: OCR not run]\n [this page couldn't be read: stopped]\nan ! inside\n[note] plain", &[], LineStyle::File);
+    assert_eq!(out, "\n\\ <!-- recto page=1 text=none -->\n\\  ! x\n\\\t!x\n\\[no text layer: OCR not run]\n\\ [this page couldn't be read: stopped]\nan ! inside\n[note] plain");
     // Hidden letters in the middle of a line: the mark comes first and comes from here.
     let mut out = String::new();
     write_marked_lines(&mut out, "ab [hidden: cd", &[(0, 2)], LineStyle::File);
@@ -223,6 +227,22 @@ fn a_page_cant_write_the_files_own_marks() {
     let mut screen = String::new();
     write_marked_lines(&mut screen, "plain\nab cd", &[(6, 8)], LineStyle::Screen);
     assert_eq!(screen, "\n| plain\n! [hidden: ab] cd");
+}
+
+/// Failure: past the cap on hidden marks, a stretch of hidden text sits on a line with no mark, and nothing in the file or the manifest says so, so an agent takes an unmarked line for one the check has cleared.
+#[test]
+fn a_page_with_more_hidden_text_than_marks_says_so() {
+    let temp = Temp::new();
+    let key = key_of(&temp, b"a file");
+    let root = temp.0.join("corpus");
+    let many: &'static str = Box::leak("#abc| x\n".repeat(crate::MAX_HIDDEN_SPANS + 3).into_boxed_str());
+    build(&root, key, &mut FakeFeed::new(&[Fake::Text(many), PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    let paths = CorpusPaths::new(&root, key);
+    let first_line = |page: u32| fs::read_to_string(paths.page_file(page, 4)).unwrap().lines().next().unwrap().to_string();
+    assert!(first_line(0).contains(" spans=partial"), "{}", first_line(0));
+    assert!(!first_line(1).contains("spans="), "{}", first_line(1));
+    let manifest: Value = serde_json::from_slice(&fs::read(&paths.manifest).unwrap()).unwrap();
+    assert_eq!(manifest["hidden_marks_partial_pages"], json!([1]));
 }
 
 /// Failure: a stretch of hidden text running over a line's end loses its mark on the second line, so that half reads as clean.

@@ -1034,6 +1034,10 @@ fn write_page_file_text(out: &mut String, page: u32, record: &PageRecord, text: 
     if record.flags & FLAG_TAG_CHARS != 0 {
         out.push_str(" tag_chars=removed");
     }
+    // Past the cap on marks, a stretch of hidden text sits on a line with none, and this is what says so.
+    if record.flags & FLAG_SPANS_DROPPED != 0 {
+        out.push_str(" spans=partial");
+    }
     out.push_str(" untrusted=document_text -->");
     match record.kind {
         PageKind::Text => {
@@ -1043,9 +1047,11 @@ fn write_page_file_text(out: &mut String, page: u32, record: &PageRecord, text: 
                 let _ = write!(out, "\n<!-- recto also_spelled: {} -->", also_spelled.join(", "));
             }
         }
-        PageKind::NoText => out.push_str("\n[no text layer: OCR not run]"),
+        PageKind::NoText => {
+            let _ = write!(out, "\n{NO_TEXT_LINE_START}: OCR not run]");
+        }
         PageKind::Failed => {
-            let _ = write!(out, "\n[this page couldn't be read: {}]", FailReason::from_byte(record.reason).code());
+            let _ = write!(out, "\n{FAILED_LINE_START}: {}]", FailReason::from_byte(record.reason).code());
         }
     }
     out.push('\n');
@@ -1059,6 +1065,16 @@ pub enum LineStyle {
     /// For a file that gets searched, so a clean line stays as it is, and a phrase across two lines is a plain multi-line search. A line starts `! ` if it holds hidden text, and a page's own line that would read as a mark, the file's own comment or an escape gets a `\` first.
     File,
 }
+
+/// Whether a page's own line could be taken for one of the file's marks, even with space in front of it, as a reader or a grep with loose rules would take it.
+fn reads_as_a_mark(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with('!') || line.starts_with('\\') || line.starts_with("<!-- recto") || line.starts_with(NO_TEXT_LINE_START) || line.starts_with(FAILED_LINE_START)
+}
+
+/// The words a page file uses for itself, where a page has nothing else to say.
+const NO_TEXT_LINE_START: &str = "[no text layer";
+const FAILED_LINE_START: &str = "[this page couldn't be read";
 
 /// Writes each of a page's lines with its mark, each after a line break. A stretch of hidden text is inside `[hidden: ...]`. A page can write those words as well as anyone, but it can't make a line with real hidden text read as one without: the `! ` comes first, and comes from here. `spans` are in characters of `page`, in order.
 pub fn write_marked_lines(out: &mut String, page: &str, spans: &[(u32, u32)], style: LineStyle) {
@@ -1075,7 +1091,7 @@ pub fn write_marked_lines(out: &mut String, page: &str, spans: &[(u32, u32)], st
             out.push('\n');
             match style {
                 LineStyle::Screen => out.push_str("| "),
-                LineStyle::File if line.starts_with("! ") || line.starts_with("<!-- recto") || line.starts_with('\\') => out.push('\\'),
+                LineStyle::File if reads_as_a_mark(line) => out.push('\\'),
                 LineStyle::File => {}
             }
             out.push_str(line);
@@ -1123,7 +1139,7 @@ fn finish(paths: &CorpusPaths, key: CorpusKey, pages: u32, width: usize, pack_by
     let table = read_table(paths, pages)?;
     let mut summary = Summary { pages, width: width as u32, table_bytes: table.len() as u64, pack_bytes, retries, retried_at: now_seconds(), ..Summary::default() };
     let mut index = String::with_capacity(table.len() * 3);
-    let (mut no_text, mut failed, mut flagged, mut unchecked, mut tag_chars) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut no_text, mut failed, mut flagged, mut unchecked, mut tag_chars, mut partial) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for (page, bytes) in table.as_chunks::<RECORD_LEN>().0.iter().enumerate() {
         let record = PageRecord::decode(bytes).ok_or(io::ErrorKind::InvalidData)?;
         let number = page as u32 + 1;
@@ -1142,6 +1158,9 @@ fn finish(paths: &CorpusPaths, key: CorpusKey, pages: u32, width: usize, pack_by
         }
         if record.flags & FLAG_TAG_CHARS != 0 {
             tag_chars.push(number);
+        }
+        if record.flags & FLAG_SPANS_DROPPED != 0 {
+            partial.push(number);
         }
         // One line each, so a search for `"p": 88,` finds a page's entry without reading the rest.
         let comma = if page as u32 + 1 == pages { "" } else { "," };
@@ -1164,6 +1183,7 @@ fn finish(paths: &CorpusPaths, key: CorpusKey, pages: u32, width: usize, pack_by
         "hidden_flagged_pages": flagged,
         "hidden_unchecked_pages": unchecked,
         "tag_char_pages": tag_chars,
+        "hidden_marks_partial_pages": partial,
         "outline_truncated": meta.outline.len() > MAX_OUTLINE,
         "untrusted": { "title": meta.title.as_deref().map(clean_short), "outline": outline },
     });
