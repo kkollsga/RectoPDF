@@ -1292,21 +1292,16 @@ impl Walk {
             self.patch(object, area, Why::TextOutline, PatchKind::Alone, out);
             return self.text_overlay_only_with(object, &chars, out);
         };
+        let Some(items) = with_ids(&glyphs, |code| self.glyph_id(font, code, size, out)) else {
+            self.patch(object, area, Why::TextOutline, PatchKind::Alone, out);
+            return self.text_overlay_only_with(object, &chars, out);
+        };
         if !self.apply_clip_or_patch(object, area, out) {
             return self.text_overlay_only_with(object, &chars, out);
         }
         let Some(matrix) = to_f32(&run.0) else { return Ok(()) };
-        for piece in glyphs.chunks(MAX_RUN_ITEMS as usize) {
-            let mut items = Vec::with_capacity(piece.len());
-            for &(code, local_x, local_y) in piece {
-                let id = self.glyph_id(font, code, size, out);
-                if id != 0 {
-                    items.push((id, local_x, local_y));
-                }
-            }
-            if !items.is_empty() {
-                put::glyph_run(out, &matrix, fill, None, 0.0, &items);
-            }
+        for piece in items.chunks(MAX_RUN_ITEMS as usize) {
+            put::glyph_run(out, &matrix, fill, None, 0.0, piece);
         }
         self.text_overlay_only_with(object, &chars, out)
     }
@@ -2099,6 +2094,16 @@ fn marks_the_page(width: f64, height: f64, em: f64) -> bool {
     width.min(height) > SPACE_THIN_EM * em
 }
 
+/// Each planned glyph with its id, or `None` if any has none. One with no id, past the limit on glyphs or on a glyph's size, can't be drawn, and leaving it out of its run would lose it with nothing said.
+fn with_ids(plan: &[(u32, f32, f32)], mut id_of: impl FnMut(u32) -> u32) -> Option<Vec<(u32, f32, f32)>> {
+    plan.iter()
+        .map(|&(code, x, y)| {
+            let id = id_of(code);
+            (id != 0).then_some((id, x, y))
+        })
+        .collect()
+}
+
 /// Whether an ICC profile's description says sRGB. It's only what it says, and a file lying about it only changes its own colours.
 fn icc_says_srgb(profile: &[u8]) -> bool {
     let word = |at: usize| profile.get(at..at + 4).map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize);
@@ -2322,6 +2327,14 @@ mod tests {
         assert!(!shape(&hole), "a second shape");
         let star = [(SEG_MOVE, 0.0, 0.0), (SEG_LINE, 10.0, 10.0), (SEG_LINE, 10.0, 0.0), (SEG_LINE, 0.0, 10.0), (SEG_LINE, 0.0, 0.0)];
         assert!(!shape(&star), "a shape crossing itself");
+    }
+
+    /// Failure: past a limit a glyph gets no id and drops out of its run, leaving a gap in a line that's reported as vector text. The whole object has to go another way, and the ids have to be the ones given, not the codes.
+    #[test]
+    fn a_glyph_with_no_id_condemns_its_whole_run() {
+        let plan = [(65, 1.0, 2.0), (66, 3.0, 4.0)];
+        assert_eq!(with_ids(&plan, |code| code + 100), Some(vec![(165, 1.0, 2.0), (166, 3.0, 4.0)]));
+        assert_eq!(with_ids(&plan, |code| if code == 66 { 0 } else { 7 }), None);
     }
 
     /// Failure: anything with a space's code and no outline is taken for a space, so TeX's big brackets vanish from every equation; or the reverse, every real space becomes a picture of nothing. The sizes are ones from real pages.
