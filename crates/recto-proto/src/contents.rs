@@ -368,6 +368,10 @@ pub enum NoteCode {
     JpegProfileRemoved = 9,
     /// JPEGs given the colour profile the page says they're in.
     JpegProfileAdded = 10,
+    /// JPEGs that went as PNG because correcting what's around the picture can't make them read as the page does.
+    JpegMeaningAsPng = 11,
+    /// JPEGs that went as PNG because a box cuts them.
+    JpegCutAsPng = 12,
 }
 
 impl NoteCode {
@@ -383,6 +387,8 @@ impl NoteCode {
             8 => Self::JpegUnsound,
             9 => Self::JpegProfileRemoved,
             10 => Self::JpegProfileAdded,
+            11 => Self::JpegMeaningAsPng,
+            12 => Self::JpegCutAsPng,
             _ => return Err(ProtoError("unknown note")),
         })
     }

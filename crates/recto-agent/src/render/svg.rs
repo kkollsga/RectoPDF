@@ -61,6 +61,8 @@ fn note_words(code: NoteCode) -> (&'static str, &'static str) {
         NoteCode::ObjectsSkipped => ("objects_past_limit", "objects past the limit on one page, in the picture of the whole page"),
         NoteCode::JpegTurned => ("jpeg_turned", "JPEGs whose EXIF says to turn them, which the page takes no notice of and a browser does, so it now says upright, with the picture's bytes as they were"),
         NoteCode::JpegProfileRemoved => ("jpeg_profile_removed", "JPEGs whose own colour profile the page doesn't go by, taken out so a browser reads them as the page does, with the picture's bytes as they were"),
+        NoteCode::JpegMeaningAsPng => ("jpeg_meaning_as_png", "JPEGs that went as PNG, in the colours the renderer gives, because correcting what's around the picture can't make a browser read them as the page does: a /Decode or /ColorTransform, one written in place, a colour space like CMYK, or a mask blended ahead of time"),
+        NoteCode::JpegCutAsPng => ("jpeg_cut_as_png", "JPEGs that went as PNG because the box cuts them, so that nothing outside it is in the file"),
         NoteCode::JpegProfileAdded => ("jpeg_profile_added", "JPEGs given the colour profile the page says they're in, so a browser reads them as the page does, with the picture's bytes as they were"),
         NoteCode::JpegUnsound => ("jpeg_unsound", "JPEGs that aren't sound as JPEGs, so they went as PNG, as the renderer reads them"),
     }

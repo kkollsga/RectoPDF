@@ -298,7 +298,7 @@ pub(super) struct Walk {
     layers: HashMap<LayerKey, bool>,
     after_mask: Option<MaskedJpeg>,
     invisible_counted: HashSet<usize>,
-    notes: [u32; 11],
+    notes: [u32; 13],
     buffer: Vec<(u32, f32, f32)>,
 }
 
@@ -420,7 +420,7 @@ impl PdfiumBackend {
             layers: HashMap::new(),
             after_mask: None,
             invisible_counted: HashSet::new(),
-            notes: [0; 11],
+            notes: [0; 13],
             buffer: Vec::new(),
         };
         // SAFETY: the page is live.
@@ -563,7 +563,7 @@ impl Walk {
     }
 
     fn write_notes(&mut self, out: &mut Vec<u8>) {
-        for (code, index) in [NoteCode::NotFinite, NoteCode::HiddenLayer, NoteCode::InvisibleText, NoteCode::Unknown, NoteCode::LayersUnchecked, NoteCode::ObjectsSkipped, NoteCode::JpegTurned, NoteCode::JpegUnsound, NoteCode::JpegProfileRemoved, NoteCode::JpegProfileAdded].into_iter().map(|code| (code, code as usize)) {
+        for (code, index) in [NoteCode::NotFinite, NoteCode::HiddenLayer, NoteCode::InvisibleText, NoteCode::Unknown, NoteCode::LayersUnchecked, NoteCode::ObjectsSkipped, NoteCode::JpegTurned, NoteCode::JpegUnsound, NoteCode::JpegProfileRemoved, NoteCode::JpegProfileAdded, NoteCode::JpegMeaningAsPng, NoteCode::JpegCutAsPng].into_iter().map(|code| (code, code as usize)) {
             if self.notes[index] > 0 {
                 put::note(out, code, self.notes[index]);
             }
@@ -1595,6 +1595,7 @@ impl Walk {
         let masked = stencil || self.has_mask(object, &own, width, height);
         // A whole page keeps a whole image, even past the page's edge, as a bleed goes. Only a box asks for less.
         let inside = !self.partial || area.inside(self.view);
+        let mut said_why = false;
         let mask_comes_apart = !masked || (!stencil && self.job.hints & hints::MASK_NOT_SEPARABLE == 0 && u64::from(width) * u64::from(height) * 4 <= MAX_MASKED_BYTES);
         if mask_comes_apart
             && inside
@@ -1646,7 +1647,11 @@ impl Walk {
                 }
             } else {
                 self.note(NoteCode::JpegUnsound);
+                said_why = true;
             }
+        }
+        if !said_why && self.is_dct(object) {
+            self.note(if inside { NoteCode::JpegMeaningAsPng } else { NoteCode::JpegCutAsPng });
         }
         let bitmap = if masked {
             if u64::from(width) * u64::from(height) * 4 > MAX_MASKED_BYTES {
@@ -1853,13 +1858,7 @@ impl Walk {
 
     /// What an image's stored bytes have to mean for them to go as a JPEG, or `None` if they can't: "lossless" is the same picture, so anything else goes as PNG, in the colours PDFium gives. That's colour spaces a browser wouldn't read the same, a profile that isn't a whole RGB one, and what the file's structure says is decoded differently.
     fn jpeg_meaning(&self, object: FPDF_PAGEOBJECT, metadata: &FPDF_IMAGEOBJ_METADATA) -> Option<PageColour> {
-        if self.job.hints & hints::JPEG_READ_DIFFERENTLY != 0 {
-            return None;
-        }
-        let mut name = [0u8; 16];
-        // SAFETY: the object is live with its page, and `name` holds as many as is passed.
-        let (count, len) = unsafe { ((self.api.FPDFImageObj_GetImageFilterCount)(object), (self.api.FPDFImageObj_GetImageFilter)(object, 0, name.as_mut_ptr().cast(), name.len() as c_ulong)) };
-        if count != 1 || len as usize > name.len() || !name.starts_with(b"DCTDecode\0") {
+        if self.job.hints & hints::JPEG_READ_DIFFERENTLY != 0 || !self.is_dct(object) {
             return None;
         }
         match metadata.colorspace {
@@ -1876,6 +1875,14 @@ impl Walk {
             }
             _ => None,
         }
+    }
+
+    /// Whether an image is stored as a JPEG and nothing else.
+    fn is_dct(&self, object: FPDF_PAGEOBJECT) -> bool {
+        let mut name = [0u8; 16];
+        // SAFETY: the object is live with its page, and `name` holds as many as is passed.
+        let (count, len) = unsafe { ((self.api.FPDFImageObj_GetImageFilterCount)(object), (self.api.FPDFImageObj_GetImageFilter)(object, 0, name.as_mut_ptr().cast(), name.len() as c_ulong)) };
+        count == 1 && len as usize <= name.len() && name.starts_with(b"DCTDecode\0")
     }
 
     fn icc_profile(&self, object: FPDF_PAGEOBJECT) -> Option<Vec<u8>> {

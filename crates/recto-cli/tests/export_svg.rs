@@ -1152,12 +1152,26 @@ fn a_mask_blended_ahead_of_time_stays_drawn_by_the_renderer() {
     assert_eq!((data["objects"]["images_jpeg_with_mask"].as_u64(), data["objects"]["images_drawn_with_mask"].as_u64()), (Some(0), Some(1)), "{data}");
 }
 
-/// Failure: a box hands over a whole JPEG when only part's wanted, through its mask or not. It's cut, as a picture, so nothing outside the box is in the file.
+/// Failure: a box hands over a whole JPEG when only part's wanted, through its mask or not. It's cut, as a picture, so nothing outside the box is in the file, and it says why it isn't a JPEG.
 #[test]
 fn a_masked_jpeg_crossing_a_box_is_cut() {
     let (svg, data) = svg_of(&TempPdf::new("doc.pdf", &masked_jpeg_doc("")), &["--rect", "100,252,20,40"]);
     assert_eq!(data["objects"]["images_jpeg_with_mask"], 0, "{data}");
     assert!(!svg.contains("<mask"), "{data}");
+    assert_eq!(note(&data, "jpeg_cut_as_png"), 1, "{data}");
+}
+
+/// Failure: a JPEG goes out as PNG with nothing said about why, so nobody can tell a PDF that needs it from one that shouldn't. An inverted one can't be corrected around its picture, and says that's why, and one that went through as itself says nothing.
+#[test]
+fn a_jpeg_that_goes_as_png_says_why() {
+    let image = first_extra_object(1);
+    let dict = "/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Decode [1 0 1 0 1 0]".to_string();
+    let bytes = pages_with(&[Page::new("q 40 0 0 40 100 500 cm /Im Do Q\n")], &format!("/XObject << /Im {image} 0 R >>"), vec![Object::Stream { dict, data: jpeg_bytes() }]);
+    let (svg, data) = svg_of(&TempPdf::new("doc.pdf", &bytes), &[]);
+    assert_eq!(note(&data, "jpeg_meaning_as_png"), 1, "{data}");
+    assert!(matches!(&embedded_images(svg.as_bytes())[..], [Embedded::Png { .. }]), "{data}");
+    let (_, data) = svg_of(&doc_with_jpeg(jpeg_bytes()), &[]);
+    assert_eq!(note(&data, "jpeg_meaning_as_png"), 0, "{data}");
 }
 
 /// Failure: `--strip-metadata` leaves GPS or a thumbnail behind, says nothing of what it took, still counts the JPEG as original bytes, leaves the title, or changes the picture. Owner, 2026-11-07: "Just add it in the cli for now (agent option)". The compressed picture stays byte for byte, and a real decoder draws the same pixels from what's left.
