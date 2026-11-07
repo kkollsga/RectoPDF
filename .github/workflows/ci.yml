@@ -1,0 +1,38 @@
+# A clean checkout on someone else's Mac: what passes here doesn't depend on this machine's folders.
+# Runs on main only, never on outside pull requests, skips docs, and a newer push cancels an older run.
+name: CI
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '**.md']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      # A runner has less memory free than heavy.sh asks of the owner's Mac, and it runs one job alone.
+      MIN_FREE: '0'
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust, as pinned in rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@dd2e657c648186b8f995f901aaf7d95fbd87ee34 # nextest
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: check-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: check-
+      - name: Full check
+        run: tools/check.sh --full

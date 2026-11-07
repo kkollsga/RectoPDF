@@ -195,4 +195,3 @@ Real digital signatures to the official standards, signature trust checks, Windo
 | What Save does the first time: keep one backup of the original? | Phase 4 | Yes |
 | Anthropic's answer before public release; API-key route | Phase 6 | Wait; add it |
 | Licence: permissive or closed | Phase 7 | Permissive or closed, undecided which |
-| GitHub repo for RectoPDF; pushing the lopdf branch | When you want CI or a second machine | Local for now |

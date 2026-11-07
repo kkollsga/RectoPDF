@@ -268,7 +268,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 [[package]]
 name = "lopdf"
 version = "0.47.0"
-source = "git+file:///Volumes/EksternalHome/Koding/Rust/lopdf-lazy-engine?rev=bc73ca505e44e6f03716531cec8326afa62ab8dc#bc73ca505e44e6f03716531cec8326afa62ab8dc"
+source = "git+https://github.com/kkollsga/lopdf.git?rev=bc73ca505e44e6f03716531cec8326afa62ab8dc#bc73ca505e44e6f03716531cec8326afa62ab8dc"
 dependencies = [
  "aes",
  "bitflags",
