@@ -102,6 +102,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 
 ## Phase 3: Complete reader
 
+- [ ] Native text selection: drag, double and triple click, select across pages, ⌘C, the system's highlight colour and I-beam cursor
 - [ ] Search corpus and index, with the text normaliser
 - [ ] Find in the sidebar, with the hit list
 - [ ] macOS menu bar, driven by a Rust model; `⋯` panel; ⌘K
@@ -112,6 +113,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Snapshot tool with text, PNG, JPG and SVG, on top of that
 - [ ] Print
 - [ ] What blind agents asked for: a whole-document hit total in `search`, an unwrapped quote form of `text`, `edits` saying when turns cancel out, `watch` to a file, and what an encrypted file restricts in `facts`
+- [ ] Generated contents: `recto contents --generated`, then a quiet offer in the sidebar when a file's own are missing or look bad. distillPDF's headings, in a helper with a memory limit, labelled as generated. Needs distillPDF's per-page work
 - [ ] **Blind agent test, next round**
 
 **Done when:** it can replace your everyday reader for reading only.
@@ -128,7 +130,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Signature image, and the honest signature report
 - [ ] Failure tests from the research: no lost edits on any exit path, never damage a signed file
 - [ ] Close the gap in edit ownership: an agent at Control can delete a page the owner rotated, then edit past the undo cap so the delete can't be undone
-- [ ] Fork: a cap on `/Prev` chains in `IndexedReaderOptions` (100,000 sections in 8 MiB take 2–4 s per open)
+- [ ] A file lopdf refuses for hitting a limit must not fall back to PDFium in `crates/recto-agent/src/loader.rs`: a hostile file with 100,000 `/Prev` sections takes PDFium 3.4 s to load, though the fork's cap refuses it in about 3 ms
 
 **Done when:** edited files open correctly in other readers and pass external validators, with no data-loss failures across the test matrix.
 
