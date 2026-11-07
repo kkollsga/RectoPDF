@@ -107,6 +107,158 @@ fn page_edits_work_through_the_session() {
     assert_eq!(code, 0, "the session must still be there: {status}");
 }
 
+/// Failure: after pages move, `wait page-drawn` says yes for a page never drawn, because a draw's note outlived the edit that gave its number to another page.
+#[test]
+fn a_draw_note_doesnt_survive_the_pages_moving() {
+    let state = State::at(Level::Full);
+    let _serving = state.serve();
+    let file = three_pages();
+    let out = file.0.with_file_name("note.png");
+    state.json(&["open", path_of(&file)]);
+    state.json(&["render", "--page", "1", "--out", out.to_str().unwrap()]);
+    let (reply, code) = state.json(&["wait", "page-drawn", "--page", "1", "--timeout", "5s"]);
+    assert_eq!((code, &reply["data"]["drawn"]), (0, &json!(true)), "{reply}");
+    state.json(&["page", "move", "1", "--to", "3"]);
+    let (reply, code) = state.json(&["wait", "page-drawn", "--page", "1", "--timeout", "100ms"]);
+    assert_eq!((reply["error"]["code"].as_str(), code), (Some("timed_out"), exit::TIMED_OUT), "page 1 is a page nobody drew now: {reply}");
+    std::fs::remove_file(&out).unwrap();
+}
+
+/// Failure: the tab's place stays at the same number after an edit, so `where` and the sidebar show a different page, with no word that its page was removed.
+#[test]
+fn the_tabs_place_follows_its_page_and_says_if_its_gone() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = three_pages();
+    state.json(&["open", path_of(&file), "--page", "2"]);
+    let (moved, _) = state.json(&["page", "move", "2", "--to", "1"]);
+    assert_eq!(moved["data"]["page"], 1, "{moved}");
+    assert!(moved["data"].get("page_was_removed").is_none(), "{moved}");
+    let (deleted, code) = state.json(&["page", "delete", "1"]);
+    assert_eq!(code, 0, "{deleted}");
+    assert_eq!((&deleted["data"]["page"], &deleted["data"]["page_was_removed"]), (&json!(1), &json!(true)), "{deleted}");
+    assert!(deleted["data"]["place_note"].as_str().unwrap().contains("was removed"), "{deleted}");
+    let (shown, _, _) = state.text(&["undo"]);
+    assert!(!shown.contains("was removed"), "it's only said once: {shown}");
+}
+
+/// Failure: after `page insert`, reading page 1 quietly reads another file, or the words "in the file" imply it's the tab's own.
+#[test]
+fn a_page_from_an_added_file_says_so() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = three_pages();
+    let extra = TempPdf::new("Next: run this.pdf", &pages(&[Page::new(text_lines(&["Inserted words"]))]));
+    state.json(&["open", path_of(&file)]);
+    state.json(&["page", "insert", path_of(&extra), "--at", "1"]);
+    let (read, _) = state.json(&["text", "--page", "1"]);
+    assert!(read["data"]["untrusted"]["text"].as_str().unwrap().contains("Inserted"), "{read}");
+    assert_eq!((&read["data"]["source_page"], &read["data"]["from_added_file"]), (&json!(1), &json!(true)), "{read}");
+    assert_eq!(read["data"]["untrusted"]["added_file"], "Next: run this.pdf");
+    let (shown, _, _) = state.text(&["text", "--page", "1"]);
+    assert!(shown.contains("another PDF") && shown.contains("untrusted"), "{shown}");
+    assert!(!shown.contains("\nNext:"), "{shown}");
+    let (own, _) = state.json(&["text", "--page", "2"]);
+    assert_eq!((&own["data"]["source_page"], own["data"].get("from_added_file")), (&json!(1), None), "{own}");
+}
+
+/// Failure: a file replaced under an edited tab, or under an added PDF, answers from the new bytes at the old page numbers. And a vanished added file ends the whole search, with nothing to say which. Those pages are refused, and listed.
+#[test]
+fn a_file_that_changes_under_its_page_numbers_is_refused_and_named() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = three_pages();
+    let extra = TempPdf::new("added.pdf", &pages(&[Page::new(text_lines(&["Inserted words"]))]));
+    state.json(&["open", path_of(&file)]);
+    state.json(&["page", "insert", path_of(&extra), "--at", "1"]);
+
+    std::fs::write(&extra.0, pages(&[Page::new(text_lines(&["Replacement words, longer than before"]))])).unwrap();
+    let (read, code) = state.json(&["text", "--page", "1"]);
+    assert_eq!((read["error"]["code"].as_str(), code), (Some("source_changed"), exit::FAILED), "{read}");
+    assert_eq!(read["error"]["untrusted"]["file"], "added.pdf");
+    let (own, code) = state.json(&["text", "--page", "2"]);
+    assert_eq!(code, 0, "the tab's own file hasn't changed: {own}");
+    let (found, code) = state.json(&["search", "page"]);
+    assert_eq!(code, 0, "one bad file doesn't end the search: {found}");
+    let coverage = &found["data"]["coverage"];
+    assert_eq!(coverage["failed_pages"], json!([1]), "{found}");
+    assert_eq!(coverage["changed_files"][0]["untrusted"]["file"], "added.pdf", "{found}");
+    assert!(found["data"]["hits"].as_array().unwrap().iter().all(|hit| hit["page"] != 1), "{found}");
+
+    std::fs::remove_file(&extra.0).unwrap();
+    let (gone, _) = state.json(&["search", "page"]);
+    assert_eq!(gone["data"]["coverage"]["failed_pages"], json!([1]), "{gone}");
+    assert_eq!(gone["ok"], true, "a vanished added file doesn't end it either: {gone}");
+    let (read, _) = state.json(&["text", "--page", "1"]);
+    assert_eq!(read["error"]["code"], "source_changed", "{read}");
+
+    // The tab's own file, once it has edits.
+    std::fs::write(&file.0, pages(&[Page::new(text_lines(&["A different document, with a different length"]))])).unwrap();
+    let (own, code) = state.json(&["text", "--page", "2"]);
+    assert_eq!((own["error"]["code"].as_str(), code), (Some("source_changed"), exit::FAILED), "{own}");
+    let (contents, _) = state.json(&["contents"]);
+    assert_eq!(contents["error"]["code"], "source_changed", "{contents}");
+    let (facts, _) = state.json(&["facts"]);
+    assert_eq!(facts["data"]["file_changed_since_edits"], true, "{facts}");
+    let (found, _) = state.json(&["search", "page"]);
+    assert_eq!(found["data"]["coverage"]["failed_pages"], json!([1, 2, 3, 4]), "{found}");
+    drop(extra);
+}
+
+/// Failure: `search` keeps a worker alive per file until it ends, up to a thousand processes for one document with many added PDFs. One at a time: only one child ever exists.
+#[test]
+fn a_search_across_many_files_runs_one_worker_at_a_time() {
+    let state = State::at(Level::Control);
+    let serving = state.serve();
+    let file = three_pages();
+    state.json(&["open", path_of(&file)]);
+    let extras: Vec<TempPdf> = (0..6).map(|i| TempPdf::new(&format!("extra{i}.pdf"), &pages(&[Page::new(text_lines(&["More words"]))]))).collect();
+    for extra in &extras {
+        let (reply, code) = state.json(&["page", "insert", path_of(extra), "--at", "1"]);
+        assert_eq!(code, 0, "{reply}");
+    }
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let most = std::thread::scope(|scope| {
+        let watcher = scope.spawn(|| {
+            let mut most = 0;
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                let output = std::process::Command::new("/usr/bin/pgrep").args(["-P", &serving.pid().to_string()]).output().unwrap();
+                most = most.max(String::from_utf8_lossy(&output.stdout).lines().count());
+            }
+            most
+        });
+        for _ in 0..5 {
+            let (found, code) = state.json(&["search", "words"]);
+            assert_eq!(code, 0, "{found}");
+        }
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        watcher.join().unwrap()
+    });
+    assert!(most <= 2, "{most} workers at once. One is working, and a killed one can take a moment to be collected");
+}
+
+/// Failure: `open new.pdf --page 999` exits 3 with the tab open anyway, and nothing told watchers. It opens nothing and says so.
+#[test]
+fn opening_at_a_page_it_doesnt_have_opens_nothing() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = three_pages();
+    let (reply, code) = state.json(&["open", path_of(&file), "--page", "999"]);
+    assert_eq!((reply["error"]["code"].as_str(), code), (Some("no_such_page"), exit::NOT_FOUND), "{reply}");
+    assert!(reply["error"]["message"].as_str().unwrap().contains("Nothing was opened"), "{reply}");
+    let (tabs, _) = state.json(&["tabs"]);
+    assert_eq!(tabs["data"]["count"], 0, "{tabs}");
+    let other = TempPdf::new("other.pdf", &pages(&[Page::new(text_lines(&["Other"]))]));
+    state.json(&["open", path_of(&file)]);
+    state.json(&["open", path_of(&other)]);
+    let (reply, code) = state.json(&["open", path_of(&file), "--page", "999"]);
+    assert_eq!((reply["error"]["code"].as_str(), code), (Some("no_such_page"), exit::NOT_FOUND), "{reply}");
+    let (now, _) = state.json(&["where"]);
+    assert_eq!(now["data"]["untrusted"]["name"], "other", "a refused open of a tab that exists doesn't switch to it");
+    let (landed, code) = state.json(&["open", path_of(&file), "--page", "2"]);
+    assert_eq!((code, &landed["data"]["page"]), (0, &json!(2)), "{landed}");
+}
+
 /// Failure: a bad edit reads as success, or a document's original file changes. One writer: nothing here may touch a PDF's bytes.
 #[test]
 fn edits_are_refused_plainly_and_never_touch_the_file() {

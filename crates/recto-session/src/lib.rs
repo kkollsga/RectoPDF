@@ -115,6 +115,8 @@ pub struct Session<L = DiskLoader> {
     edits: HashMap<TabId, PageEdits>,
     /// The latest pages drawn or tried, newest last, at most [`MAX_DRAWS_KEPT`]. Lets a waiter find out about a page finished a moment before it asked.
     draws: VecDeque<DrawNote>,
+    /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`Session::take_place_lost`].
+    place_lost: bool,
 }
 
 /// Page results remembered across every tab, so nothing here grows with idle tabs.
@@ -139,7 +141,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), draws: VecDeque::new() }
+        Self { loader, tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), draws: VecDeque::new(), place_lost: false }
     }
 
     /// How documents are read. Cheap to reach, so a caller can read a file without holding the session.
@@ -277,9 +279,52 @@ impl<L: DocLoader> Session<L> {
             return Err(SessionError::RendererOnly);
         }
         let page_count = tab.page_count;
-        change(self.edits.entry(id).or_insert_with(|| PageEdits::new(page_count))).map_err(SessionError::Edit)?;
-        self.keep_page_in_range(id);
-        Ok(())
+        let place = self.place_of(id);
+        let result = change(self.edits.entry(id).or_insert_with(|| PageEdits::new(page_count)));
+        if result.is_ok() {
+            self.after_change(id, place);
+        } else {
+            self.drop_list_if_idle(id);
+        }
+        result.map_err(SessionError::Edit)
+    }
+
+    /// What the reader is looking at: which file, which page there, and where it is now.
+    fn place_of(&self, id: TabId) -> Option<(u16, u32, u32)> {
+        let position = self.tab(id)?.page;
+        match self.edits.get(&id) {
+            Some(edits) => edits.slots().get(position as usize).map(|slot| (slot.source, slot.page, position)),
+            None => Some((0, position, position)),
+        }
+    }
+
+    /// Everything a change to the page order means: a drawn page's number no longer names that page, and the reader stays on what they were reading.
+    fn after_change(&mut self, id: TabId, place: Option<(u16, u32, u32)>) {
+        self.draws.retain(|draw| draw.tab != id);
+        self.drop_list_if_idle(id);
+        let pages = self.pages_in(id);
+        let found = place.and_then(|(source, page, near)| match self.edits.get(&id) {
+            Some(edits) => edits.nearest_position(source, page, near),
+            None => (source == 0 && page < pages).then_some(page),
+        });
+        let near = place.map_or(0, |(_, _, near)| near);
+        self.place_lost = place.is_some() && found.is_none();
+        let last = pages.saturating_sub(1);
+        if let Some(tab) = self.tab_mut(id) {
+            tab.page = found.unwrap_or(near).min(last);
+        }
+    }
+
+    /// An edit list with nothing in it costs 8 bytes a page for nothing, and would hold the tab to the file's length as it was.
+    fn drop_list_if_idle(&mut self, id: TabId) {
+        if self.edits.get(&id).is_some_and(|edits| !edits.is_edited() && !edits.can_redo()) {
+            self.edits.remove(&id);
+        }
+    }
+
+    /// Whether the last edit removed the page the reader was on, so its place moved to the nearest one. Asking clears it.
+    pub fn take_place_lost(&mut self) -> bool {
+        std::mem::take(&mut self.place_lost)
     }
 
     /// Adds every page of another PDF at a position, as dropping it into the page view does. Only its facts are read.
@@ -328,28 +373,29 @@ impl<L: DocLoader> Session<L> {
 
     /// Reverses the last page edit. Returns false with nothing to undo.
     pub fn undo_edit(&mut self, id: TabId) -> bool {
+        let place = self.place_of(id);
         let undone = self.edits.get_mut(&id).is_some_and(PageEdits::undo);
-        self.keep_page_in_range(id);
+        if undone {
+            self.after_change(id, place);
+        }
         undone
     }
 
     /// Repeats the last undone page edit. Returns false with nothing to redo.
     pub fn redo_edit(&mut self, id: TabId) -> bool {
+        let place = self.place_of(id);
         let redone = self.edits.get_mut(&id).is_some_and(PageEdits::redo);
-        self.keep_page_in_range(id);
+        if redone {
+            self.after_change(id, place);
+        }
         redone
     }
 
     /// Throws away a tab's unsaved page edits.
     pub fn discard_edits(&mut self, id: TabId) {
-        self.edits.remove(&id);
-        self.keep_page_in_range(id);
-    }
-
-    fn keep_page_in_range(&mut self, id: TabId) {
-        let pages = self.pages_in(id);
-        if let Some(tab) = self.tab_mut(id) {
-            tab.page = tab.page.min(pages.saturating_sub(1));
+        let place = self.place_of(id);
+        if self.edits.remove(&id).is_some() {
+            self.after_change(id, place);
         }
     }
 
@@ -585,6 +631,98 @@ mod tests {
         assert!(std::mem::size_of::<DrawNote>() <= 32);
     }
 
+    /// Failure: after a move, the place stays at the same number and shows a different page, which no reader would do. It stays on the page, and if that page goes, it lands on the nearest and says so once.
+    #[test]
+    fn the_place_follows_the_page_being_read() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.go_to(id, 3).unwrap();
+        s.edit_pages(id, |e| e.move_pages(3, 1, 0)).unwrap();
+        assert_eq!(s.tab(id).unwrap().page, 0, "page 4 moved to the front, and the reader with it");
+        assert!(!s.take_place_lost());
+        s.edit_pages(id, |e| e.move_pages(1, 1, 3)).unwrap();
+        assert_eq!(s.tab(id).unwrap().page, 0, "another page moved, so nothing changes");
+        s.edit_pages(id, |e| e.delete(0, 1)).unwrap();
+        assert!(s.take_place_lost(), "the page being read was deleted");
+        assert!(!s.take_place_lost(), "it's only said once");
+        assert_eq!(s.tab(id).unwrap().page, 0, "the nearest there is");
+        s.go_to(id, 3).unwrap();
+        s.edit_pages(id, |e| e.delete(3, 1)).unwrap();
+        assert!(s.take_place_lost());
+        assert_eq!(s.tab(id).unwrap().page, 2, "the last page, since that was the end");
+        let before = s.tab(id).unwrap().page;
+        assert!(s.undo_edit(id));
+        assert_eq!(s.tab(id).unwrap().page, before, "undo keeps the page in view while one comes back behind it");
+    }
+
+    /// Failure: wait says a page is drawn when a different page now has that number, because notes are by position and outlive edits.
+    #[test]
+    fn draw_notes_go_when_the_pages_move() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        let note = DrawNote { tab: id, page: 0, failure: None };
+        s.note_drawn(note);
+        s.edit_pages(id, |e| e.move_pages(0, 1, 2)).unwrap();
+        assert_eq!(s.draw_note(id, 0), None, "after an edit");
+        s.note_drawn(note);
+        assert!(s.undo_edit(id));
+        assert_eq!(s.draw_note(id, 0), None, "after an undo");
+        s.note_drawn(note);
+        assert!(s.redo_edit(id));
+        assert_eq!(s.draw_note(id, 0), None, "after a redo");
+        s.note_drawn(note);
+        s.discard_edits(id);
+        assert_eq!(s.draw_note(id, 0), None, "after a discard");
+        s.note_drawn(note);
+        assert_eq!(s.edit_pages(id, |e| e.rotate(99, 1, 1)), Err(SessionError::Edit(EditError::OutOfRange)));
+        assert_eq!(s.draw_note(id, 0), Some(note), "a refused edit changes nothing");
+    }
+
+    /// Failure: a refused edit leaves an 8-byte-a-page list behind forever, over the budget for an idle tab, and the tab's length stops following its file.
+    #[test]
+    fn a_refused_first_edit_leaves_no_list() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        assert_eq!(s.edit_pages(id, |e| e.rotate(999, 1, 1)), Err(SessionError::Edit(EditError::OutOfRange)));
+        assert!(s.page_edits(id).is_none(), "a tab with no edits must cost nothing here");
+        s.edit_pages(id, |e| e.rotate(0, 1, 1)).unwrap();
+        assert_eq!(s.edit_pages(id, |e| e.rotate(999, 1, 1)), Err(SessionError::Edit(EditError::OutOfRange)));
+        assert!(s.page_edits(id).is_some(), "a real edit stays");
+        assert!(s.undo_edit(id));
+        assert!(s.page_edits(id).is_some(), "it can be redone");
+        assert!(s.redo_edit(id));
+        s.discard_edits(id);
+        assert!(s.page_edits(id).is_none());
+    }
+
+    /// Failure: a file replaced behind an edited tab, or behind an added PDF, is read at the old page numbers as if nothing happened. A tab with no edits has nothing to get wrong, and reads the file as it is.
+    #[test]
+    fn a_page_knows_whether_its_file_is_the_one_it_was_numbered_from() {
+        let dir = std::env::temp_dir().join(format!("recto-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (own, added) = (dir.join("own.pdf"), dir.join("added.pdf"));
+        std::fs::write(&own, b"one").unwrap();
+        std::fs::write(&added, b"two").unwrap();
+        let mut s = session(3);
+        let id = s.open(&own).unwrap();
+        assert_eq!(s.page_source(id, 0).unwrap().expected, None, "no edits, so no claim");
+        s.insert_pdf(id, 0, &added).unwrap();
+        assert!(s.page_source(id, 0).unwrap().added);
+        assert!(s.page_source(id, 0).unwrap().is_current());
+        assert!(s.page_source(id, 3).unwrap().is_current());
+        assert!(s.own_file_is_current(id));
+        std::fs::write(&added, b"two, longer").unwrap();
+        assert!(!s.page_source(id, 0).unwrap().is_current(), "the added file changed");
+        assert!(s.page_source(id, 3).unwrap().is_current(), "the tab's own file hasn't");
+        assert_eq!(s.insert_pdf(id, 0, &added), Err(SessionError::Edit(EditError::SourceChanged)), "two versions can't share page numbers");
+        std::fs::remove_file(&added).unwrap();
+        assert!(!s.page_source(id, 0).unwrap().is_current(), "the added file's gone");
+        std::fs::write(&own, b"one, longer").unwrap();
+        assert!(!s.page_source(id, 3).unwrap().is_current());
+        assert!(!s.own_file_is_current(id));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Failure: a tab with added pages wakes from cold and lands back inside the file's own length, so the reader jumps away from the page they were on.
     #[test]
     fn waking_an_edited_tab_keeps_its_place_in_the_edited_length() {
@@ -773,7 +911,7 @@ mod tests {
         assert_eq!(s.pages_in(id), 7);
         assert_eq!(s.sidebar().place, "2 of 7");
         s.discard_edits(id);
-        assert_eq!(s.sidebar().place, "2 of 5");
+        assert_eq!(s.sidebar().place, "5 of 5", "the reader stays on the page they were reading");
     }
 
     /// Failure: every open tab pays for page edits, so idle tabs cost more once one PDF is edited.

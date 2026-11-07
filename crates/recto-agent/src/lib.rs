@@ -721,7 +721,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
                 let id = select(s, tab)?;
                 s.insert_pdf_with_facts(id, position, path, &facts)?;
                 events.push(edits_event(s, id));
-                Ok(edit_state_json(s, id))
+                let data = edit_state_json(s, id);
+                Ok(with_place_note(s, id, data))
             })
         }
         Command::Undo { tab } => access.with(|s| {
@@ -730,7 +731,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
                 return Err(AgentError::new("nothing_to_undo", "There's nothing to undo on this tab.", exit::FAILED));
             }
             events.push(edits_event(s, id));
-            Ok(edit_state_json(s, id))
+            let data = edit_state_json(s, id);
+            Ok(with_place_note(s, id, data))
         }),
         Command::Redo { tab } => access.with(|s| {
             let id = select(s, tab)?;
@@ -738,13 +740,15 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
                 return Err(AgentError::new("nothing_to_redo", "There's nothing to redo on this tab.", exit::FAILED));
             }
             events.push(edits_event(s, id));
-            Ok(edit_state_json(s, id))
+            let data = edit_state_json(s, id);
+            Ok(with_place_note(s, id, data))
         }),
         Command::Discard { tab } => access.with(|s| {
             let id = select(s, tab)?;
             s.discard_edits(id);
             events.push(edits_event(s, id));
-            Ok(edit_state_json(s, id))
+            let data = edit_state_json(s, id);
+            Ok(with_place_note(s, id, data))
         }),
         Command::Save { .. } => Err(AgentError::new(
             "not_built",
@@ -857,8 +861,20 @@ fn edit<A: SessionAccess>(access: &A, tab: &str, events: &mut Vec<Event>, change
         let id = select(s, tab)?;
         s.edit_pages(id, change)?;
         events.push(edits_event(s, id));
-        Ok(edit_state_json(s, id))
+        let data = edit_state_json(s, id);
+        Ok(with_place_note(s, id, data))
     })
+}
+
+/// Says when the page being read went away, so the tab is on another one.
+fn with_place_note<L: DocLoader>(session: &mut Session<L>, id: TabId, mut data: Value) -> Value {
+    if session.take_place_lost()
+        && let Some(tab) = session.tab(id)
+    {
+        data["page_was_removed"] = json!(true);
+        data["place_note"] = json!(format!("The page this tab was on was removed, so it's now on page {}.", tab.page + 1));
+    }
+    data
 }
 
 fn edits_event<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {

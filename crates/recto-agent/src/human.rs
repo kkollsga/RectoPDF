@@ -55,6 +55,9 @@ fn edit_state(data: &Value) -> String {
     } else {
         out.push_str(" No unsaved edits.");
     }
+    if let Some(note) = data["place_note"].as_str() {
+        let _ = write!(out, "\n{note}");
+    }
     out
 }
 
