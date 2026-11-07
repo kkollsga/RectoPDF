@@ -44,7 +44,7 @@ final class AgentIcon: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let bubble = NSBezierPath(roundedRect: bounds.insetBy(dx: 2.5, dy: 3.5).offsetBy(dx: 0, dy: -0.5), xRadius: 3.5, yRadius: 3.5)
         bubble.lineWidth = 1.4
-        Theme.textQuiet.setStroke()
+        Theme.textQuiet.ns.setStroke()
         bubble.stroke()
         let prompt = NSBezierPath()
         prompt.lineWidth = 1.4
@@ -61,16 +61,12 @@ final class AgentIcon: NSView {
 
 /// A small label in the margin: the page number in focus view, or what the reader needs to be told.
 final class MarginLabel: NSView {
-    let label = NSTextField(wrappingLabelWithString: "")
+    let label = TextLine()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         layer?.cornerRadius = 8
-        label.font = .systemFont(ofSize: 11.5)
-        label.textColor = Theme.textBody
-        label.isSelectable = false
-        label.maximumNumberOfLines = 6
         addSubview(label)
     }
 
@@ -78,13 +74,13 @@ final class MarginLabel: NSView {
 
     /// Lays itself out at most this wide, with its bottom right at the point given.
     func place(text: String, maxWidth: CGFloat, bottomRight: NSPoint, flippedParent: Bool = true) {
-        label.stringValue = text
+        label.set(text, font: .systemFont(ofSize: 11.5), color: Theme.textBody.ns, wraps: true)
         let room = max(maxWidth - 20, 40)
-        let size = label.sizeThatFits(NSSize(width: room, height: 200))
-        let width = ceil(min(size.width, room))
-        label.frame = NSRect(x: 10, y: 6, width: width, height: ceil(size.height))
-        frame = NSRect(x: bottomRight.x - width - 20, y: bottomRight.y - ceil(size.height) - 12, width: width + 20, height: ceil(size.height) + 12)
-        layer?.backgroundColor = Theme.cg(Theme.pill, in: self)
+        let size = label.size(width: room)
+        let width = min(size.width, room)
+        label.frame = NSRect(x: 10, y: 6, width: width, height: size.height)
+        frame = NSRect(x: bottomRight.x - width - 20, y: bottomRight.y - size.height - 12, width: width + 20, height: size.height + 12)
+        layer?.backgroundColor = Theme.pill.cg
     }
 }
 
@@ -99,7 +95,7 @@ final class BookMark: NSView {
         left.line(to: NSPoint(x: 23.5, y: 48))
         left.line(to: NSPoint(x: 0, y: 42))
         left.close()
-        Theme.bookLeft.setFill()
+        Theme.bookLeft.ns.setFill()
         left.fill()
         let right = NSBezierPath()
         right.move(to: NSPoint(x: 25.5, y: 8))
@@ -107,7 +103,7 @@ final class BookMark: NSView {
         right.line(to: NSPoint(x: 49, y: 42))
         right.line(to: NSPoint(x: 25.5, y: 48))
         right.close()
-        Theme.accent.setFill()
+        Theme.accent.ns.setFill()
         right.fill()
         NSColor.white.setStroke()
         for (y, length) in [(15.0, 13.0), (23.0, 13.0), (31.0, 8.0)] as [(CGFloat, CGFloat)] {
@@ -133,8 +129,8 @@ final class BookMark: NSView {
     let noteLabel = MarginLabel()
     let placeLabel = MarginLabel()
     let home = FlippedView()
-    private let homeTitle = NSTextField(labelWithString: "")
-    private let homeHint = NSTextField(labelWithString: "")
+    private let homeTitle = TextLine()
+    private let homeHint = TextLine()
     private let homeButton = NSButton(title: "", target: nil, action: nil)
     private let homeBook = BookMark()
     private(set) var reader: ReaderView
@@ -202,10 +198,6 @@ final class BookMark: NSView {
 
     private func buildHome() {
         let strings = delegate.strings
-        homeTitle.stringValue = strings.appName
-        homeTitle.font = .boldSystemFont(ofSize: 28)
-        homeHint.stringValue = strings.homeHint
-        homeHint.font = .systemFont(ofSize: 14)
         homeButton.title = strings.openButton
         homeButton.isBordered = false
         homeButton.wantsLayer = true
@@ -263,12 +255,12 @@ final class BookMark: NSView {
         var y = max(home.bounds.midY - 130, 40)
         homeBook.frame = NSRect(x: middle - 24.5, y: y, width: 49, height: 50)
         y += 74
-        homeTitle.sizeToFit()
-        homeTitle.frame.origin = NSPoint(x: middle - homeTitle.frame.width / 2, y: y)
-        y += homeTitle.frame.height + 14
-        homeHint.sizeToFit()
-        homeHint.frame.origin = NSPoint(x: middle - homeHint.frame.width / 2, y: y)
-        y += homeHint.frame.height + 18
+        let title = homeTitle.size()
+        homeTitle.frame = NSRect(x: middle - title.width / 2, y: y, width: title.width, height: title.height)
+        y += title.height + 14
+        let hint = homeHint.size()
+        homeHint.frame = NSRect(x: middle - hint.width / 2, y: y, width: hint.width, height: hint.height)
+        y += hint.height + 18
         let width = homeButton.attributedTitle.size().width + 44
         homeButton.frame = NSRect(x: middle - width / 2, y: y, width: width, height: 30)
     }
@@ -306,19 +298,20 @@ final class BookMark: NSView {
     }
 
     func appearanceChanged() {
-        delegate.core.setDarkAppearance(dark: Theme.isDark(root))
-        root.layer?.backgroundColor = Theme.cg(Theme.margin, in: root)
-        pages.scrollView.backgroundColor = Theme.margin
-        home.layer?.backgroundColor = Theme.cg(Theme.margin, in: root)
-        sidebarEdge.layer?.backgroundColor = Theme.cg(Theme.hairline, in: root)
-        homeTitle.textColor = Theme.textStrong
-        homeHint.textColor = Theme.textQuiet
-        homeButton.layer?.backgroundColor = Theme.cg(Theme.buttonFill, in: root)
+        Theme.dark = Theme.isDark(root)
+        delegate.core.setDarkAppearance(dark: Theme.dark)
+        root.layer?.backgroundColor = Theme.margin.cg
+        pages.scrollView.backgroundColor = Theme.margin.ns
+        home.layer?.backgroundColor = Theme.margin.cg
+        sidebarEdge.layer?.backgroundColor = Theme.hairline.cg
+        homeTitle.set(delegate.strings.appName, font: .boldSystemFont(ofSize: 28), color: Theme.textStrong.ns)
+        homeHint.set(delegate.strings.homeHint, font: .systemFont(ofSize: 14), color: Theme.textQuiet.ns)
+        homeButton.layer?.backgroundColor = Theme.buttonFill.cg
         sidebar.appearanceChanged()
         for view in [agentIcon, homeBook] { view.needsDisplay = true }
         for label in [noteLabel, placeLabel] {
-            label.layer?.backgroundColor = Theme.cg(Theme.pill, in: root)
-            label.label.textColor = Theme.textBody
+            label.layer?.backgroundColor = Theme.pill.cg
+            if !label.label.text.isEmpty { label.label.set(label.label.text, font: .systemFont(ofSize: 11.5), color: Theme.textBody.ns, wraps: true) }
         }
     }
 

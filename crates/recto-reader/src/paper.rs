@@ -4,7 +4,7 @@
 //! filters out. A tile redrawn for another paper is just another tile.
 //!
 //! **The rule,** from `docs/concepts/reader-dark.png`: lightness turns over, so white paper goes dark and black text goes light, and each pixel keeps its colour's distance from grey, so blue text is lighter blue with no halo round its letters. Images aren't turned over: the
-//! renderer says where they are, and they stay as they were, a little dimmed. **Its limit:** a page that's one big image, such as a scan, stays light. And a chart drawn as vectors turns over with the text, where the concept kept its colours, since pixels can't say what they belong to.
+//! renderer says where they are, and they stay as they were, a little dimmed. An image past [`LARGEST_KEPT_IMAGE`] of the page does turn over, as it isn't a picture on a page but the page itself: a scan should go dark like any other page, and a map keeping its white margins showed a hard edge where the kept part ended. **Its limits:** a full-page photograph comes out as a negative, and a chart drawn as vectors turns over with the text, where the concept kept its colours, since pixels can't say what they belong to.
 
 /// Which paper a tile was drawn for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -60,6 +60,9 @@ fn dim_pixel(pixel: &mut [u8; 4]) {
     }
 }
 
+/// An image covering more than this share of a page, in 65535ths of each side multiplied, is the page.
+pub const LARGEST_KEPT_IMAGE: f64 = 0.4;
+
 /// A rectangle of a tile, in its pixels, to leave as a picture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Keep {
@@ -77,6 +80,7 @@ pub fn keeps_in(boxes: &[[u16; 4]], page: (u32, u32), rect: recto_proto::TileRec
     };
     boxes
         .iter()
+        .filter(|sides| f64::from(sides[2].saturating_sub(sides[0])) * f64::from(sides[3].saturating_sub(sides[1])) / (65_535.0 * 65_535.0) <= LARGEST_KEPT_IMAGE)
         .filter_map(|sides| {
             let (left, top) = (place(sides[0], page.0, false), place(sides[1], page.1, false));
             let (right, bottom) = (place(sides[2], page.0, true), place(sides[3], page.1, true));
@@ -175,8 +179,17 @@ mod tests {
         assert_eq!(half, vec![Keep { left: 0, top: 0, right: 512, bottom: 512 }], "to the middle of the page, past this tile");
         assert!(keeps_in(&[[60_000, 60_000, 65_535, 65_535]], (2048, 2048), rect).is_empty(), "elsewhere on the page");
         assert!(keeps_in(&[[65_535, 65_535, 0, 0]], (2048, 2048), rect).is_empty(), "inside out");
-        let everything = keeps_in(&[[0, 0, 65_535, 65_535]], (u32::MAX, u32::MAX), rect);
-        assert!(everything.iter().all(|keep| keep.right <= 512 && keep.bottom <= 512));
+        let edge_to_edge = keeps_in(&[[0, 0, 40_000, 40_000]], (u32::MAX, u32::MAX), rect);
+        assert!(edge_to_edge.iter().all(|keep| keep.right <= 512 && keep.bottom <= 512));
+    }
+
+    /// Failure: a scan stays white on dark paper, or a map's white margins end in a hard edge in the middle of the page, as the USGS map's did. An image that's most of the page turns over with it, and one that's a picture on the page doesn't.
+    #[test]
+    fn an_image_that_is_the_page_turns_over_with_it() {
+        let rect = recto_proto::TileRect { x: 0, y: 0, width: 512, height: 512 };
+        assert!(keeps_in(&[[0, 0, 65_535, 65_535]], (2048, 2048), rect).is_empty(), "a scan");
+        assert!(keeps_in(&[[0, 0, 55_000, 50_000]], (2048, 2048), rect).is_empty(), "most of a page");
+        assert_eq!(keeps_in(&[[0, 0, 30_000, 30_000]], (2048, 2048), rect).len(), 1, "a picture on it");
     }
 
     /// Failure: the table the grey path uses disagrees with the path for colour, so a grey tile beside a colour tile shows a seam.

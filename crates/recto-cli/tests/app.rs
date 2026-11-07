@@ -377,3 +377,33 @@ fn the_reader_script_passes_and_a_wrong_one_fails() {
     assert_eq!(code, exit::FAILED, "{reply}");
     assert!(reply["error"]["message"].as_str().unwrap().contains("line 2"), "{reply}");
 }
+
+/// Failure: updating the sidebar leaves something behind each time, so memory grows just from reading. On macOS 27 an `NSTextField` left about 160 bytes in AppKit at each layout, for good: 7 KiB for each tab opened, found at 5.7 MiB over the budget of 4 at 1,000 tabs. Across hundreds of page crossings with a sidebar full of rows, what's kept must stay flat, and only what's kept is counted, since tiles are discardable.
+#[test]
+fn reading_doesnt_grow_the_app() {
+    let Some(run) = Run::start() else { return };
+    let titles: Vec<String> = (0..24).map(|index| format!("<< /Title (Section {index}) /Parent 3 0 R {} {} /Dest [{} 0 R /Fit] >>", if index > 0 { format!("/Prev {} 0 R", 4 + index - 1) } else { String::new() }, if index < 23 { format!("/Next {} 0 R", 4 + index + 1) } else { String::new() }, 28)).collect();
+    let mut objects = vec![Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R >>".into()), Object::Dict("<< /Type /Pages /Kids [28 0 R 29 0 R] /Count 2 >>".into()), Object::Dict("<< /Type /Outlines /First 4 0 R /Last 27 0 R /Count 24 >>".into())];
+    objects.extend(titles.into_iter().map(Object::Dict));
+    for _ in 0..2 {
+        objects.push(Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()));
+    }
+    let file = TempPdf::new("rows.pdf", &build(&objects));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let rows = run.report()["app"]["sidebar_rows"].as_u64().unwrap();
+    assert!(rows >= 20, "{rows}");
+    let footprint = || run.report()["memory"]["footprint_bytes"].as_u64().unwrap();
+    // The first few crossings make what's reused from then on.
+    for page in ["2", "1", "2", "1"] {
+        run.ok(&["goto", page]);
+        run.settled();
+    }
+    let before = footprint();
+    for round in 0..400 {
+        run.ok(&["goto", if round % 2 == 0 { "2" } else { "1" }]);
+    }
+    run.settled();
+    let grew = footprint().saturating_sub(before);
+    assert!(grew < 1024 * 1024, "the app grew by {grew} bytes over 400 page crossings");
+}

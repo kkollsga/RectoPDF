@@ -2,9 +2,9 @@ import AppKit
 
 /// A row: only its name at rest. Its chevron and page number come with hover, and all it draws comes from Rust's row.
 final class SidebarCell: NSView {
-    let name = NSTextField(labelWithString: "")
-    let pageNumber = NSTextField(labelWithString: "")
-    let chevron = NSTextField(labelWithString: "")
+    let name = TextLine()
+    let pageNumber = TextLine()
+    let chevron = TextLine()
     let pill = CALayer()
     let railLine = CALayer()
     let railFill = CALayer()
@@ -24,16 +24,7 @@ final class SidebarCell: NSView {
         }
         pill.cornerRadius = 7
         railDot.cornerRadius = 3.5
-        for label in [name, pageNumber, chevron] {
-            label.lineBreakMode = .byTruncatingTail
-            label.maximumNumberOfLines = 1
-            label.cell?.truncatesLastVisibleLine = true
-            addSubview(label)
-        }
-        pageNumber.alignment = .right
-        pageNumber.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .regular)
-        chevron.alignment = .center
-        chevron.font = .systemFont(ofSize: 14, weight: .medium)
+        for label in [name, pageNumber, chevron] { addSubview(label) }
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -42,8 +33,6 @@ final class SidebarCell: NSView {
         self.row = row
         self.folded = foldedActive
         self.hovered = hovered
-        name.stringValue = row.text
-        pageNumber.stringValue = row.page.map(String.init) ?? ""
         needsLayout = true
         applyLook()
     }
@@ -53,21 +42,21 @@ final class SidebarCell: NSView {
         let isTab = row.kind == .tab
         let active = isTab && row.current
         pill.isHidden = !active
-        pill.backgroundColor = Theme.cg(Theme.rowActive, in: self)
-        name.font = active ? .systemFont(ofSize: 14, weight: .semibold) : row.current ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: isTab ? 14 : 13.5)
-        name.textColor = active ? Theme.textStrong : row.current ? Theme.accent : row.railFilled && !isTab ? Theme.textBody : Theme.textQuiet
-        pageNumber.textColor = row.current ? Theme.accent : Theme.textQuiet
+        pill.backgroundColor = Theme.rowActive.cg
+        let font: NSFont = active ? .systemFont(ofSize: 14, weight: .semibold) : row.current ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: isTab ? 14 : 13.5)
+        let color = active ? Theme.textStrong : row.current ? Theme.accent : row.railFilled && !isTab ? Theme.textBody : Theme.textQuiet
+        name.set(row.text, font: font, color: color.ns)
+        pageNumber.set(row.page.map(String.init) ?? "", font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .regular), color: (row.current ? Theme.accent : Theme.textQuiet).ns, alignment: .right)
         pageNumber.isHidden = isTab || !hovered || row.page == nil
-        chevron.stringValue = folded ? "›" : "⌄"
-        chevron.textColor = Theme.textQuiet
+        chevron.set(folded ? "›" : "⌄", font: .systemFont(ofSize: 14, weight: .medium), color: Theme.textQuiet.ns, alignment: .center)
         chevron.isHidden = !(active && hovered)
         let isContents = row.kind == .contents
         railLine.isHidden = !isContents
         railFill.isHidden = !(isContents && row.railFilled)
         railDot.isHidden = !(isContents && row.current)
-        railLine.backgroundColor = Theme.cg(Theme.railRest, in: self)
-        railFill.backgroundColor = Theme.cg(Theme.accent, in: self)
-        railDot.backgroundColor = Theme.cg(Theme.accent, in: self)
+        railLine.backgroundColor = Theme.railRest.cg
+        railFill.backgroundColor = Theme.accent.cg
+        railDot.backgroundColor = Theme.accent.cg
     }
 
     override func layout() {
@@ -84,13 +73,12 @@ final class SidebarCell: NSView {
         let indent = isTab ? 18 : 40 + CGFloat(min(Int(row.depth), 5)) * 14
         // Names get the whole row at rest. Page numbers and the chevron make room when they show.
         let right = width - (hovered ? 44 : isTab ? 18 : 14)
-        name.sizeToFit()
-        let textHeight = name.frame.height
-        name.frame = NSRect(x: indent, y: (height - textHeight) / 2, width: max(right - indent, 20), height: textHeight)
-        pageNumber.sizeToFit()
-        pageNumber.frame = NSRect(x: width - 58, y: (height - pageNumber.frame.height) / 2, width: 40, height: pageNumber.frame.height)
-        chevron.sizeToFit()
-        chevron.frame = NSRect(x: width - 42, y: (height - chevron.frame.height) / 2, width: 24, height: chevron.frame.height)
+        let text = name.size()
+        name.frame = NSRect(x: indent, y: floor((height - text.height) / 2), width: max(min(text.width, right - indent), 20), height: text.height)
+        let digits = pageNumber.size()
+        pageNumber.frame = NSRect(x: width - 58, y: floor((height - digits.height) / 2), width: 40, height: digits.height)
+        let mark = chevron.size()
+        chevron.frame = NSRect(x: width - 42, y: floor((height - mark.height) / 2), width: 24, height: mark.height)
     }
 }
 
@@ -99,7 +87,7 @@ final class SidebarCell: NSView {
     let view = FlippedView()
     let scroll = NSScrollView()
     let table = NSTableView()
-    let footer = NSTextField(labelWithString: "")
+    let footer = TextLine()
     let addButton = NSButton(title: "", target: nil, action: nil)
     private let core: AppCore
     private(set) var model = SidebarView(rows: [], tocOpen: false, place: "", edited: false, undoneOwnerSteps: false)
@@ -132,7 +120,6 @@ final class SidebarCell: NSView {
         view.addSubview(scroll)
         view.addSubview(footer)
         view.addSubview(addButton)
-        footer.font = .systemFont(ofSize: 12.5)
         addButton.isBordered = false
         addButton.title = ""
         addButton.toolTip = strings.addTooltip
@@ -154,8 +141,9 @@ final class SidebarCell: NSView {
     }
 
     private func placeFooter() {
-        footer.sizeToFit()
-        footer.frame.origin = NSPoint(x: 18, y: view.bounds.height - footer.frame.height - 12)
+        footer.set(model.place, font: .systemFont(ofSize: 12.5), color: Theme.textQuiet.ns)
+        let size = footer.size()
+        footer.frame = NSRect(x: 18, y: view.bounds.height - size.height - 12, width: size.width, height: size.height)
     }
 
     private func updateTracking() {
@@ -209,7 +197,6 @@ final class SidebarCell: NSView {
         guard new != model else { return }
         let sameRows = new.rows.count == model.rows.count
         model = new
-        footer.stringValue = new.place
         placeFooter()
         if sameRows {
             reloadCells()
@@ -219,9 +206,9 @@ final class SidebarCell: NSView {
     }
 
     func appearanceChanged() {
-        view.layer?.backgroundColor = Theme.cg(Theme.sidebar, in: view)
-        footer.textColor = Theme.textQuiet
-        addButton.contentTintColor = Theme.textQuiet
+        view.layer?.backgroundColor = Theme.sidebar.cg
+        placeFooter()
+        addButton.contentTintColor = Theme.textQuiet.ns
         reloadCells()
     }
 

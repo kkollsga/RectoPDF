@@ -6,7 +6,10 @@ func onMain(_ work: @escaping @MainActor () -> Void) {
     let main = CFRunLoopGetMain()
     let modes = [CFRunLoopMode.commonModes.rawValue, RunLoop.Mode.eventTracking.rawValue as CFString, RunLoop.Mode.modalPanel.rawValue as CFString, CFRunLoopMode.defaultMode.rawValue] as CFArray
     CFRunLoopPerformBlock(main, modes) {
-        MainActor.assumeIsolated { work() }
+        // AppKit drains its pool after an event, and these aren't events. With nobody touching the app, as in a quiet run or a window left reading while an agent works, what these leave would pile up with nothing to clear it.
+        autoreleasepool {
+            MainActor.assumeIsolated { work() }
+        }
     }
     CFRunLoopWakeUp(main)
 }
