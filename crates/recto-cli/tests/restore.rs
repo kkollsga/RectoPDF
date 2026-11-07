@@ -473,7 +473,6 @@ const KNOWN_PATHS: &[&str] = &[
     "session.app.focus.window_key",
     "session.app.notice",
     "session.app.panel_open",
-    "session.app.settings.auto_update",
     "session.app.settings_window.x",
     "session.app.settings_window.y",
     "session.app.sidebar_width",

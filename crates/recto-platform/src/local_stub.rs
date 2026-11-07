@@ -211,6 +211,14 @@ pub fn sync_folder_of(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+pub fn can_be_replaced(_path: &Path) -> bool {
+    false
+}
+
+pub fn make_folder_private(_path: &Path) -> io::Result<()> {
+    unsupported()
+}
+
 pub fn swap_paths(_a: &Path, _b: &Path) -> io::Result<()> {
     unsupported()
 }

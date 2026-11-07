@@ -17,6 +17,7 @@ pub mod saved;
 pub mod source;
 pub mod stage;
 pub mod updater;
+pub mod zip;
 mod process;
 
 /// The project on GitHub. A release build's one and only source.

@@ -1,4 +1,4 @@
-//! An ordinary download, by the system's own `curl`: nothing of a TLS stack or an HTTP client stays in the app, and when it's done nothing's left. No cookies, no credentials, the user's `curlrc` skipped, and redirects only to where a release can really go. The server's hostile: what it sends is capped, how long it takes is capped, and nothing it says gets into a message.
+//! An ordinary download, by the system's own `curl`: nothing of a TLS stack or an HTTP client stays in the app, and when it's done nothing's left. No cookies, no credentials, and the user's `curlrc` skipped. A redirect can only be by HTTPS, and can go anywhere GitHub or anyone else sends it, which is why nothing's believed for where it came from: a release is held to its checksum and its signature. The server's hostile: what it sends is capped, how long it takes is capped, and nothing it says gets into a message.
 
 use crate::process::run;
 use crate::source::Source;

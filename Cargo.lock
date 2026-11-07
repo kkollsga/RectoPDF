@@ -728,6 +728,7 @@ dependencies = [
  "recto-render-service",
  "recto-session",
  "recto-testpdf",
+ "recto-update",
  "serde_json",
 ]
 
@@ -827,6 +828,8 @@ version = "0.1.0"
 name = "recto-update"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
+ "flate2",
  "recto-platform",
  "serde",
  "serde_json",

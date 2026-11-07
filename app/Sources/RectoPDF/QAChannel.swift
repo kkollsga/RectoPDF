@@ -371,6 +371,11 @@ import QuartzCore
             found["copy_is_enabled_with_something_selected"] = enabled(copy)
             found["copy_key_reaches_the_app"] = key("c", .command).map { NSApp.mainMenu?.performKeyEquivalent(with: $0) == true } ?? false
         }
+        // A silent update waits for nobody having touched the app, and that's more than a click: what the monitor's given, by what it was given.
+        let watched = AppDelegate.actions.union(AppDelegate.nearby)
+        let kinds: [NSEvent.EventType] = [.mouseMoved, .leftMouseDragged, .keyDown, .leftMouseDown, .scrollWheel, .magnify, .swipe, .rotate, .flagsChanged, .gesture]
+        found["pointer_and_gestures_count_as_touching"] = kinds.allSatisfy { watched.contains(NSEvent.EventTypeMask(type: $0)) }
+        found["windows_hear_the_pointer_moving"] = controller.window.acceptsMouseMovedEvents
         // Services, by what they ask. That they're given the text is `qa services`, which needs its page read first.
         found["services_arent_offered_what_they_didnt_ask_for"] = delegate.validRequestor(forSendType: .tiff, returnType: nil) == nil && delegate.validRequestor(forSendType: .string, returnType: .string) == nil
         pages.pointerDown(atWindow: pages.documentView.convert(NSPoint(x: 1, y: 1), to: nil), clicks: 1, shift: false)

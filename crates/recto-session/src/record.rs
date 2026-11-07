@@ -216,9 +216,6 @@ pub struct AppRecord {
     /// What the reader was told about the session as a whole and hasn't moved on from, as a code. The words are [`notices::words`]'s, so what a record says can never reach the reader as text.
     #[serde(default)]
     pub notice: Option<String>,
-    /// What's been chosen in Settings. `None` is what the build starts with.
-    #[serde(default)]
-    pub settings: AppSettings,
     /// The Settings window, if it's open: where it is.
     #[serde(default)]
     pub settings_window: Option<SettingsWindow>,
@@ -229,16 +226,8 @@ pub struct AppRecord {
 
 impl Default for AppRecord {
     fn default() -> Self {
-        Self { window: None, appearance: Appearance::System, sidebar_width: None, panel_open: false, contents_scroll: None, focus: FocusRecord::default(), notice: None, settings: AppSettings::default(), settings_window: None, window_closed: false }
+        Self { window: None, appearance: Appearance::System, sidebar_width: None, panel_open: false, contents_scroll: None, focus: FocusRecord::default(), notice: None, settings_window: None, window_closed: false }
     }
-}
-
-/// The app's settings. Owner, 2026-11-07: "App settings should have a auto update toggle".
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppSettings {
-    /// *Update automatically*, if it's been chosen.
-    #[serde(default)]
-    pub auto_update: Option<bool>,
 }
 
 /// Where the Settings window is. It's small and of one size.

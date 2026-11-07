@@ -46,6 +46,15 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# Unpacking a whole app in a test takes minutes at no optimisation.
+[profile.dev.package.miniz_oxide]
+opt-level = 2
+debug = false
+
+[profile.dev.package.crc32fast]
+opt-level = 2
+debug = false
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

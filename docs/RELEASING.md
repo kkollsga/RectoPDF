@@ -18,7 +18,8 @@ Once, by you: the certificate and the key are tied to your Apple account. Never 
    gh secret set NOTARY_ISSUER_ID --repo kkollsga/RectoPDF         # the Issuer ID
    ```
    Then delete the `.p12` and the `.p8` from Desktop and Downloads.
-5. **The repository has to stay public, or the updater can't read it:** it fetches `releases/latest/download/latest.json` with no credentials, on purpose. A private repository answers 404, which reads as "no releases yet".
+5. **A protected Environment, so a pushed tag alone can't reach the keys.** GitHub › the repository › Settings › Environments › New environment, named `release`, with yourself under *Required reviewers*. Move the five secrets to it (`gh secret set NAME --env release --repo kkollsga/RectoPDF`), and delete them from the repository's. Without the review it still works, and then anyone who can push a tag can have something signed.
+6. **The repository has to stay public, or the updater can't read it:** it fetches `releases/latest/download/latest.json` with no credentials, on purpose. A private repository answers 404, which reads as "no releases yet".
 
 Without those secrets the release workflow fails at once. There's no unsigned release.
 
@@ -27,12 +28,14 @@ Without those secrets the release workflow fails at once. There's no unsigned re
 `.github/workflows/release.yml` runs when a `vX.Y.Z` tag is pushed, **all or nothing**:
 
 1. *Tag and CI*: the tag matches `Cargo.toml`, and CI passed on the tagged commit.
-2. *Mac build*: `app/release-zip.sh --signed`, which checks the app, notarizes and staples it, zips it, and checks the zip with Gatekeeper the way the updater will.
+2. *Mac build*: `app/release-zip.sh --built-only` compiles everything with no signing key anywhere on the machine, so no dependency's build script can reach one. Then the keys arrive, and `--signed --already-built` signs it, notarizes and staples it, runs the signed bundle in a quiet run that opens a PDF and has to draw it, zips it, and checks the zip with the updater's own reader and Gatekeeper.
 3. *Draft release*: `RectoPDF-X.Y.Z.zip`, `SHA256SUMS` and `latest.json`, not published.
-4. *Withdraw the tag* if anything failed or was cancelled, so a fix can tag the same version again.
+4. *Withdraw the tag* if anything failed or was cancelled, so a fix can tag the same version again. Never a release that's been published: run again after that, this fails and leaves it alone.
+
+CI runs only on `main` and skips a commit that changes only documents, so the gate asks about the newest commit that changes anything else.
 
 ```sh
-# bump [workspace.package] version in Cargo.toml, commit on main, push, then:
+# bump [workspace.package] version in Cargo.toml, run `cargo check` so Cargo.lock follows (builds use --locked), commit both on main, push, then:
 git tag v0.2.0 && git push origin v0.2.0     # needs the owner's go-ahead each time, as tagging and publishing do
 gh run watch
 ```
@@ -57,6 +60,6 @@ The app reads `<repo>/releases/latest/download/latest.json` once a day: `version
 
 **A release build is whatever `RECTO_RELEASE=1` compiled.** `app/build.sh` on its own makes a development build, which checks only when asked and never replaces itself, so your own dev builds are safe from it. Keep it that way: don't set `RECTO_RELEASE` by hand.
 
-**What's unproven until the first real signed release:** that a real Developer ID build passes the team and Gatekeeper checks in the installer, that a notarized bundle survives `ditto` and the swap with its ticket and signature, and the `--signed` and workflow steps themselves. `docs/PLAN.md` carries the item. The refusal side is tested.
+**What's unproven until the first real signed release:** that a real Developer ID build passes the team and Gatekeeper checks, that a notarized bundle survives the updater's unpacking and the swap with its ticket and signature, what a background reopen does to a real screen (the code sends the window behind everything and waits to go into full screen, and nothing here has seen it on a desktop), how long a first launch takes under Gatekeeper, and the `--signed` and workflow steps themselves. `docs/PLAN.md` carries the item. The refusal side is tested.
 
 **Hardened runtime:** a signed build runs under it, and the renderer helper loading `libpdfium.dylib` needs that dylib signed by the same team, which `build.sh` does. This needs a real signature to prove too.

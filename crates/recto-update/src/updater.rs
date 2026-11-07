@@ -26,8 +26,12 @@ const WAIT_LIMIT: Duration = Duration::from_secs(10 * 60);
 const QUIT_PATIENCE: Duration = Duration::from_secs(15);
 /// What a check's thread gets: room for the parser's own limit of 128 levels on a hostile `latest.json`, at a debug build's frame sizes. It's only address space until it's used.
 const CHECK_STACK: usize = 1024 * 1024;
-/// Launches of a new version that don't reach their first frame, before going back to the kept one.
+/// Launches of a new version that don't come up. The launch after this many goes back to the kept one, as a launch that fails can't do anything about it itself.
 const UNSTARTED_LIMIT: u32 = 3;
+/// Times an install gets as far as quitting the app and reopening it with nothing to show for it. Past this it's not tried by itself again, as each one's the user's app going away and coming back for nothing.
+const QUITS_FOR_NOTHING: u32 = 3;
+/// How long the installer waits in a test's run for a new app to come up, as its broken ones are the point.
+const TEST_START_LIMIT_MS: u64 = 30_000;
 
 /// What the app is to the updater.
 pub trait Host: Send + Sync {
@@ -45,6 +49,14 @@ pub trait Host: Send + Sync {
     fn frontmost(&self) -> bool;
     /// What a test's run reopens with. Nothing, for a real one.
     fn relaunch(&self) -> TestLaunch;
+    /// Whether this copy of the app keeps the state record. A second copy on the same state can't hand off, so it has no business downloading or tidying what the first has staged.
+    fn keeps_the_record(&self) -> bool {
+        true
+    }
+    /// Whether this version can draw a page at all: our own tiny PDF, through the real renderer. Blocks for as long as a worker takes to start, so only ever on a thread of its own, and only when a new version's to be proven.
+    fn can_draw(&self) -> bool {
+        true
+    }
     /// Starts the installer. A test stands in for this.
     fn start_installer(&self, helper: &Path, plan: &Path, log: &Path) -> std::io::Result<u32> {
         local::spawn_detached(helper, &["install".to_owned(), plan.display().to_string()], &[], log)
@@ -146,6 +158,8 @@ pub enum InstallRefused {
     NotInThisBuild,
     NothingOnOffer,
     Underway,
+    /// Another copy of the app has the state, and it's the one that can.
+    AnotherCopy,
 }
 
 struct St {
@@ -153,8 +167,8 @@ struct St {
     saved: Saved,
     launched_ms: u64,
     facts: Option<Facts>,
-    /// What the user chose in Settings, or none: the build's default.
-    switch: Option<bool>,
+    /// Another copy of the app keeps this state folder, so this one writes nothing and installs nothing.
+    second_copy: bool,
     notice: Option<Notice>,
     /// When an automatic install next looks. Set when one's on offer. Moves only then and when it's looked: nothing's done per input.
     install_look_at: Option<u64>,
@@ -217,7 +231,7 @@ fn ago(at_ms: u64, now_ms: u64) -> String {
 impl Updater {
     #[must_use]
     pub fn new(root: &Path, source: Source, host: Arc<dyn Host>) -> Arc<Self> {
-        let st = St { status: Status::Idle, saved: Saved::default(), launched_ms: crate::wall_ms(), facts: None, switch: None, notice: None, install_look_at: None, arrived: None, first_frame_done: false, first_frame_early: None };
+        let st = St { status: Status::Idle, saved: Saved::default(), launched_ms: crate::wall_ms(), facts: None, second_copy: false, notice: None, install_look_at: None, arrived: None, first_frame_done: false, first_frame_early: None };
         Arc::new(Self { files: Files::in_state(root), source, host, st: Mutex::new(st), writing: Mutex::new(()), clock_ahead_ms: AtomicI64::new(0), stopping: AtomicBool::new(false) })
     }
 
@@ -256,33 +270,38 @@ impl Updater {
     /// Writes what's remembered, whatever it is by the time the last write's done, off the lock the UI thread asks through.
     fn save(&self) {
         let _writing = lock(&self.writing);
-        let saved = lock(&self.st).saved.clone();
-        saved.write(&self.files.saved);
+        let (saved, second_copy) = {
+            let st = lock(&self.st);
+            (st.saved.clone(), st.second_copy)
+        };
+        if !second_copy {
+            saved.write(&self.files.saved);
+        }
     }
 
     /// Whether the switch is on, by what was chosen or by what this build starts with.
     #[must_use]
     pub fn switch_on(&self) -> bool {
-        lock(&self.st).switch.unwrap_or_else(|| self.source.auto_default())
+        lock(&self.st).saved.auto_update.unwrap_or_else(|| self.source.auto_default())
     }
 
-    /// The switch's position, from the record or from Settings. An offer waiting is looked at again.
-    pub fn set_switch(&self, chosen: Option<bool>) {
-        let mut st = lock(&self.st);
-        st.switch = chosen;
-        let on = chosen.unwrap_or_else(|| self.source.auto_default());
-        st.install_look_at = (on && self.offered_here(&st).is_some()).then(|| self.now_ms());
-        drop(st);
+    /// The switch was flipped. It holds at once, and an offer waiting is looked at again. It goes to disk on a thread of its own, as this may well be the UI thread.
+    pub fn choose_switch(self: &Arc<Self>, on: bool) {
+        {
+            let mut st = lock(&self.st);
+            st.saved.auto_update = Some(on);
+            st.install_look_at = (on && self.offered_here(&st).is_some()).then(|| self.now_ms());
+        }
+        let me = Arc::clone(self);
+        let written = std::thread::Builder::new().name("recto-update-save".into()).stack_size(128 * 1024).spawn(move || me.save());
+        if written.is_err() {
+            self.save();
+        }
         self.host.changed();
     }
 
-    #[must_use]
-    pub fn switch_choice(&self) -> Option<bool> {
-        lock(&self.st).switch
-    }
-
     fn offered_here(&self, st: &St) -> Option<String> {
-        if !self.source.may_replace_itself() {
+        if !self.source.may_replace_itself() || st.second_copy {
             return None;
         }
         let current = st.facts.as_ref()?.version.as_str();
@@ -290,17 +309,20 @@ impl Updater {
     }
 
     /// What the host knows of this copy. Given once, before anything else asks. Reads what's remembered, says what became of an install that's just ended, and tidies up. All of it files, so never on the UI thread, and none of it holding what the UI thread asks through.
-    pub fn launched(&self, facts: Facts) -> AtLaunch {
+    pub fn launched(&self, mut facts: Facts) -> AtLaunch {
         let now = self.now_ms();
+        facts.app = facts.app.canonicalize().unwrap_or(facts.app);
         let mut saved = Saved::read(&self.files.saved);
         let current = facts.version.clone();
         let app = facts.app.clone();
-        let settled = self.settle_last_install(&mut saved, &current, &app, now);
-        let may_replace = self.source.may_replace_itself();
+        // What's in the state folder and beside the app is the first copy's. This one reads and leaves it.
+        let second_copy = !self.host.keeps_the_record();
+        let settled = if second_copy { Settled::default() } else { self.settle_last_install(&mut saved, &current, &app, now) };
+        let may_replace = self.source.may_replace_itself() && !second_copy;
         let offered = saved.offered.clone().filter(|offered| is_newer(offered, &current));
         // What's staged and no longer on offer is the size of the app, for nothing. Only with no installer at work.
-        if settled.plan_gone && !helper_alive(&self.files) {
-            self.clear_leftovers(&app, offered.is_some());
+        if !second_copy && settled.plan_gone && !helper_alive(&self.files) {
+            self.clear_leftovers(&app, &current, offered.is_some());
         }
         let status = settled.status.unwrap_or_else(|| match &offered {
             Some(offered) if may_replace => Status::Available(offered.clone()),
@@ -322,6 +344,7 @@ impl Updater {
             st.launched_ms = now;
             st.saved = saved;
             st.facts = Some(facts);
+            st.second_copy = second_copy;
             st.status = status;
             st.notice = settled.notice;
             st.arrived = settled.arrived;
@@ -343,8 +366,8 @@ impl Updater {
         AtLaunch::GoOn
     }
 
-    /// What a run that ended early left: a part-downloaded zip, a part-unpacked app, and a staged one that's no use now. Looks at a few names, and a normal launch finds none of them.
-    fn clear_leftovers(&self, app: &Path, still_on_offer: bool) {
+    /// What a run that ended early left: a part-downloaded zip, a part-unpacked app, and a staged one that's no use now. Looks at a few names, and a normal launch finds none of them. **Never the only good copy:** an app there that's older than this one is the swap's other half, from when keeping it didn't work, and it's kept now, if nothing else is.
+    fn clear_leftovers(&self, app: &Path, current: &str, still_on_offer: bool) {
         if let Ok(entries) = std::fs::read_dir(&self.files.work) {
             for entry in entries.flatten() {
                 if entry.file_name().to_string_lossy().ends_with(".zip") {
@@ -354,6 +377,10 @@ impl Updater {
         }
         let Some(beside) = beside_app(app) else { return };
         let _ = std::fs::remove_dir_all(beside.join("unpacking"));
+        let left = new_app_in(&beside);
+        if left.is_dir() && stage::app_version(&left).is_some_and(|version| is_newer(current, &version)) {
+            keep_if_nothing_is(&beside, &left);
+        }
         if !still_on_offer || !beside.join("staged.json").exists() {
             stage::clear_staged(app);
         }
@@ -384,10 +411,23 @@ impl Updater {
                     settled.notice = Some(Notice { text: format!("{APP_NAME} {} didn't start, so {current} came back, just as you left it.", outcome.to), fades: true });
                     self.log(&format!("{} didn't start, and {current} came back", outcome.to));
                 }
+                OutcomeKind::CouldntGoBack => {
+                    saved.note_failed_version(&outcome.to);
+                    let why = "it didn't come up, and there was no earlier version to go back to";
+                    settled.status = Some(Status::Failed { version: outcome.to.clone(), why: why.to_owned() });
+                    settled.notice = Some(Notice { text: format!("{APP_NAME} {} is what's installed, and {why}.", outcome.to), fades: true });
+                    self.log(&format!("{} didn't come up, and couldn't go back: {}", outcome.to, clean_code(&outcome.why)));
+                }
                 OutcomeKind::NotInstalled => {
                     saved.install_failures = saved.install_failures.saturating_add(1);
                     saved.last_install_ms = Some(now);
-                    settled.status = Some(Status::Failed { version: outcome.to.clone(), why: "it couldn't be put in place".to_owned() });
+                    let (why, lasting) = why_not_installed(&outcome.why);
+                    // Whatever it was, the app went away and came back for nothing, and the user may have seen that. Say so, and don't do it for ever.
+                    if lasting || saved.install_failures >= QUITS_FOR_NOTHING {
+                        saved.note_failed_version(&outcome.to);
+                    }
+                    settled.status = Some(Status::Failed { version: outcome.to.clone(), why: why.to_owned() });
+                    settled.notice = Some(Notice { text: format!("Couldn't update to {}: {why}. {APP_NAME} is unchanged.", outcome.to), fades: true });
                     self.log(&format!("{} wasn't installed: {}", outcome.to, clean_code(&outcome.why)));
                 }
             }
@@ -410,12 +450,17 @@ impl Updater {
             }
             settled.arrived = Some(plan);
         } else if alive {
-            settled.status = Some(Status::Installing(plan.to.clone()));
+            // Reopened by someone in the moment it was gone, with the installer still about. It stands down when it sees this, and there's nothing here to wait for: this copy goes on as normal, and the next launch hears how it ended.
+            self.log("the app was reopened while an installer was at work");
         } else {
             // The installer was stopped before it swapped, so this is the old app, and there's no harm done.
             saved.install_failures = saved.install_failures.saturating_add(1);
             saved.last_install_ms = Some(now);
+            if saved.install_failures >= QUITS_FOR_NOTHING {
+                saved.note_failed_version(&plan.to);
+            }
             settled.status = Some(Status::Failed { version: plan.to.clone(), why: "the installer stopped before it finished".to_owned() });
+            settled.notice = Some(Notice { text: format!("Couldn't update to {}: the installer stopped before it finished. {APP_NAME} is unchanged.", plan.to), fades: true });
             self.log(&format!("the install of {} stopped before it finished, and {current} is unchanged", plan.to));
             let _ = std::fs::remove_file(self.files.plan());
             let _ = std::fs::remove_file(self.files.helper_pid());
@@ -429,16 +474,17 @@ impl Updater {
     fn tidy_after_swap(&self, plan: &Plan, beside: &Path) {
         let left = new_app_in(beside);
         if left.is_dir() && stage::app_version(&left).as_deref() == Some(plan.from.as_str()) {
-            let keep = previous_app_in(beside);
-            if let Some(folder) = keep.parent() {
-                let _ = std::fs::remove_dir_all(folder);
-                let _ = std::fs::create_dir_all(folder);
-                let _ = std::fs::rename(&left, &keep);
+            keep_if_nothing_is(beside, &left);
+            // It couldn't be moved, so where it is it's the only way back, and it stays.
+            if stage::app_version(&previous_app_in(beside)).is_none() {
+                let _ = std::fs::remove_file(self.files.plan());
+                let _ = std::fs::remove_file(self.files.helper_pid());
+                return;
             }
         }
         let _ = std::fs::remove_dir_all(beside.join("new"));
         let _ = std::fs::remove_file(beside.join("staged.json"));
-        // The record's copy stays until this version's reached a first frame: it's what going back would put back.
+        // The record's copy stays until this version's come up: it's what going back would put back.
         let _ = std::fs::remove_file(self.files.plan());
         let _ = std::fs::remove_file(self.files.helper_pid());
     }
@@ -447,7 +493,7 @@ impl Updater {
     fn start_going_back(&self, saved: &mut Saved, current: &str, app: &Path, now: u64) -> bool {
         let Some(beside) = beside_app(app) else { return false };
         let Some(previous) = stage::app_version(&previous_app_in(&beside)).filter(|previous| is_newer(current, previous)) else { return false };
-        let plan = Plan { from: previous, to: current.to_owned(), pid: std::process::id(), app: app.to_path_buf(), beside, root: self.files.root.clone(), quit_at_ms: now, background: true, quit_limit_ms: crate::plan::QUIT_LIMIT_MS, start_limit_ms: crate::plan::START_LIMIT_MS, test: test_launch(&self.source, self.host.relaunch()) };
+        let plan = Plan { id: crate::plan::new_id(), cdhash: String::new(), team_required: false, from: previous, to: current.to_owned(), pid: std::process::id(), app: app.to_path_buf(), beside, root: self.files.root.clone(), quit_at_ms: now, background: true, quit_limit_ms: crate::plan::QUIT_LIMIT_MS, start_limit_ms: crate::plan::START_LIMIT_MS, test: test_launch(&self.source, self.host.relaunch()) };
         self.ready_folder();
         if plan.write(&self.files.plan()).is_err() {
             return false;
@@ -458,34 +504,55 @@ impl Updater {
         local::spawn_detached(&app.join(HELPER), &["back".to_owned(), self.files.plan().display().to_string()], &[], &self.files.log).is_ok()
     }
 
-    /// The first correct frame's on the screen. The installer's waiting to hear this, and what it costs at a normal launch is nothing.
+    /// The first correct frame's on the screen. **What "come up" means, which is what the installer waits for and what can send a new version back:** the state's been read and a first frame shown, and this version has drawn a page through the real renderer: our own tiny PDF, not the user's. Not the user's, as one of theirs being moved, damaged or on a dead volume says nothing of this version. And not the first frame alone, which a timer can force and a preview from a sleep file can fill without the renderer ever running. So a version whose renderer can't load, which would otherwise look fine, shows no pages for everyone, and be the one nobody can get back from, goes back. It's asked only of a version that's new here, so a normal launch costs nothing, and this waits on a worker, so it has a thread of its own.
     pub fn first_frame(&self, shown_at_ms: u64) {
-        let (version, arrived, newly_proven, changed) = {
+        let (version, arrived, to_prove, second_copy) = {
             let mut st = lock(&self.st);
             if st.first_frame_done {
                 return;
             }
-            let Some(version) = st.facts.as_ref().map(|facts| facts.version.clone()) else {
+            let Some(facts) = st.facts.as_ref() else {
                 st.first_frame_early = Some(shown_at_ms);
                 return;
             };
+            let version = facts.version.clone();
+            let beside = beside_app(&facts.app).unwrap_or_default();
             st.first_frame_done = true;
+            let arrived = st.arrived.take();
+            let new_here = self.source.may_replace_itself() && st.saved.proven.as_deref() != Some(version.as_str());
+            (version, arrived.clone(), new_here && (arrived.is_some() || previous_app_in(&beside).is_dir()), st.second_copy)
+        };
+        if second_copy {
+            return;
+        }
+        if to_prove {
+            self.ready_folder();
+        }
+        if to_prove && !self.host.can_draw() {
+            self.log(&format!("{version} can't draw a page"));
+            // Without the word from here the installer would find out only by waiting. With no installer, the launches that don't come up are what count.
+            if arrived.is_some() {
+                self.ready_folder();
+                let _ = local::write_private_file(&self.files.launch_failed(), version.as_bytes());
+            }
+            return;
+        }
+        let changed = {
+            let mut st = lock(&self.st);
             let mut changed = st.saved.unstarted != 0;
             st.saved.unstarted = 0;
-            let newly_proven = st.saved.proven.as_deref() != Some(version.as_str()) && self.source.may_replace_itself();
-            if newly_proven {
+            if self.source.may_replace_itself() && st.saved.proven.as_deref() != Some(version.as_str()) {
                 st.saved.proven = Some(version.clone());
                 changed = true;
             }
-            let arrived = st.arrived.take();
             if let Some(plan) = &arrived {
                 st.saved.last_update = Some(LastUpdate { from: plan.from.clone(), to: plan.to.clone(), gap_ms: shown_at_ms.saturating_sub(plan.quit_at_ms), at_ms: shown_at_ms });
                 changed = true;
             }
-            (version, arrived, newly_proven, changed)
+            changed
         };
         // It's come up, so there's nothing the record's copy would be for. The installer clears its own if it's still around.
-        if newly_proven && !helper_alive(&self.files) {
+        if to_prove && !helper_alive(&self.files) {
             let _ = std::fs::remove_dir_all(self.files.before());
         }
         if let Some(plan) = arrived {
@@ -498,22 +565,28 @@ impl Updater {
         }
     }
 
-    /// The menu item. Rust's words, whichever way things stand.
+    /// The menu item. Rust's words, whichever way things stand. An offer stays on it through whatever else has happened: a check that failed last night, or an install that didn't work, which by hand can always be tried again.
     #[must_use]
     pub fn menu_item(&self) -> MenuItem {
         let st = lock(&self.st);
         match &st.status {
-            Status::Available(version) if self.source.may_replace_itself() => MenuItem { title: format!("Update to {version}…"), enabled: true },
-            Status::Preparing(version) | Status::Waiting { version, .. } | Status::Installing(version) => MenuItem { title: format!("Updating to {version}…"), enabled: false },
-            Status::Checking => MenuItem { title: "Check for Updates…".to_owned(), enabled: false },
-            _ => MenuItem { title: "Check for Updates…".to_owned(), enabled: true },
+            Status::Preparing(version) | Status::Waiting { version, .. } | Status::Installing(version) => return MenuItem { title: format!("Updating to {version}…"), enabled: false },
+            Status::Checking => return MenuItem { title: "Check for Updates…".to_owned(), enabled: false },
+            _ => {}
+        }
+        match self.offered_here(&st) {
+            Some(version) => MenuItem { title: format!("Update to {version}…"), enabled: true },
+            None => MenuItem { title: "Check for Updates…".to_owned(), enabled: true },
         }
     }
 
     /// The menu item was chosen. Whichever it says: it starts on a thread of its own, and the UI's not held.
     pub fn menu_chosen(self: &Arc<Self>) {
-        let available = matches!(lock(&self.st).status, Status::Available(_));
-        if available {
+        let on_offer = {
+            let st = lock(&self.st);
+            self.offered_here(&st).is_some()
+        };
+        if on_offer {
             let _ = self.install(Asked::ByHand);
         } else {
             self.check_in_background(Asked::ByHand);
@@ -524,7 +597,7 @@ impl Updater {
     #[must_use]
     pub fn next_wake(&self) -> Option<u64> {
         let st = lock(&self.st);
-        if st.facts.is_none() || st.status.is_under_way() {
+        if st.facts.is_none() || st.status.is_under_way() || st.second_copy {
             return None;
         }
         let check = self.source.checks_by_itself().then(|| rules::next_check_at(&st.saved, st.launched_ms, self.now_ms()));
@@ -560,7 +633,7 @@ impl Updater {
         let step = {
             let mut st = lock(&self.st);
             let offered = self.offered_here(&st);
-            let on = st.switch.unwrap_or_else(|| self.source.auto_default());
+            let on = st.saved.auto_update.unwrap_or_else(|| self.source.auto_default());
             let step = rules::auto_step(AutoLook { build_may: self.source.may_replace_itself(), switch_on: on, offered: offered.is_some(), version_failed: offered.as_ref().is_some_and(|version| st.saved.failed.contains(version)), since_input_ms, busy: !look.busy.is_empty(), back_off_ms: st.saved.install_back_off(now) });
             st.install_look_at = match step {
                 AutoStep::Never | AutoStep::Go => None,
@@ -658,7 +731,11 @@ impl Updater {
             Err(error) => {
                 st.saved.failures = st.saved.failures.saturating_add(1);
                 let why = error.words();
-                st.status = Status::CheckFailed(why.clone());
+                // What's already known doesn't go away because a check couldn't get through: an offline night leaves the offer on the menu.
+                st.status = match self.offered_here(&st) {
+                    Some(version) => Status::Available(version),
+                    None => Status::CheckFailed(why.clone()),
+                };
                 failure = Some(why.clone());
                 format!("Couldn't check for updates: {why}.")
             }
@@ -684,6 +761,9 @@ impl Updater {
             let mut st = lock(&self.st);
             if st.status.is_under_way() {
                 return Err(InstallRefused::Underway);
+            }
+            if st.second_copy {
+                return Err(InstallRefused::AnotherCopy);
             }
             let Some(version) = self.offered_here(&st) else { return Err(InstallRefused::NothingOnOffer) };
             st.status = Status::Preparing(version.clone());
@@ -762,20 +842,22 @@ impl Updater {
         let user_agent = format!("{APP_NAME}/{}", facts.version);
         let stage_in = Stage { source: &self.source, latest: &latest, current: &facts.version, app: &facts.app, files: &self.files, user_agent: &user_agent };
         let log_file = self.files.log.clone();
-        let prepared = stage::prepare(&stage_in, &mut |step| log(&log_file, &format!("{version}: {step}")));
-        if let Err(StageError { code, why, lasting }) = prepared {
-            self.log(&format!("{version} was refused: {code}"));
-            if lasting {
-                stage::clear_staged(&facts.app);
+        let staged = match stage::prepare(&stage_in, &mut |step| log(&log_file, &format!("{version}: {step}"))) {
+            Ok(staged) => staged,
+            Err(StageError { code, why, lasting }) => {
+                self.log(&format!("{version} was refused: {code}"));
+                if lasting {
+                    stage::clear_staged(&facts.app);
+                }
+                self.failed(asked, version, &why, lasting);
+                return;
             }
-            self.failed(asked, version, &why, lasting);
-            return;
-        }
-        self.wait_and_hand_off(asked, version, &facts);
+        };
+        self.wait_and_hand_off(asked, version, &facts, &staged.cdhash);
     }
 
     /// The download's good. What's in flight finishes first, and the user's told if they're waiting on it. Then the hand-off and the quit: from here, what's written is what comes back.
-    fn wait_and_hand_off(self: &Arc<Self>, asked: Asked, version: &str, facts: &Facts) {
+    fn wait_and_hand_off(self: &Arc<Self>, asked: Asked, version: &str, facts: &Facts, cdhash: &str) {
         let began = Instant::now();
         loop {
             // The user's quitting by other means, and this doesn't turn that into a reopening.
@@ -793,7 +875,7 @@ impl Updater {
             if look.busy.is_empty() {
                 match self.host.hand_off(HAND_OFF_LIMIT) {
                     Ok(()) => {
-                        self.quit_after_hand_off(asked, version, facts);
+                        self.quit_after_hand_off(asked, version, facts, cdhash);
                         return;
                     }
                     Err(HandOffRefused::NotSaved(why)) => {
@@ -829,7 +911,7 @@ impl Updater {
     }
 
     /// Past a good hand-off the app's frozen, so every way out from here has to free it.
-    fn quit_after_hand_off(self: &Arc<Self>, asked: Asked, version: &str, facts: &Facts) {
+    fn quit_after_hand_off(self: &Arc<Self>, asked: Asked, version: &str, facts: &Facts, cdhash: &str) {
         let give_up = |why: &str| {
             let _ = std::fs::remove_file(self.files.plan());
             self.host.cancelled();
@@ -852,7 +934,9 @@ impl Updater {
             give_up("this copy isn't in a folder");
             return;
         };
-        let plan = Plan { from: facts.version.clone(), to: version.to_owned(), pid: std::process::id(), app: facts.app.clone(), beside, root: self.files.root.clone(), quit_at_ms: crate::wall_ms(), background: !self.host.frontmost(), quit_limit_ms: crate::plan::QUIT_LIMIT_MS, start_limit_ms: crate::plan::START_LIMIT_MS, test: test_launch(&self.source, self.host.relaunch()) };
+        let team_required = matches!(self.source.trust, crate::source::Trust::DeveloperId { .. });
+        let start_limit_ms = if self.source.mode == Mode::Test { TEST_START_LIMIT_MS } else { crate::plan::START_LIMIT_MS };
+        let plan = Plan { id: crate::plan::new_id(), cdhash: cdhash.to_owned(), team_required, from: facts.version.clone(), to: version.to_owned(), pid: std::process::id(), app: facts.app.clone(), beside, root: self.files.root.clone(), quit_at_ms: crate::wall_ms(), background: !self.host.frontmost(), quit_limit_ms: crate::plan::QUIT_LIMIT_MS, start_limit_ms, test: test_launch(&self.source, self.host.relaunch()) };
         let written = plan.write(&self.files.plan());
         if written.is_err() {
             give_up("the update's plan couldn't be written");
@@ -931,6 +1015,7 @@ impl Updater {
             "menu": { "title": menu.title, "enabled": menu.enabled },
             "offered": st.saved.offered,
             "auto_update": on,
+            "second_copy": st.second_copy,
             "failed_versions": st.saved.failed,
             "last_check_ms": st.saved.last_check_ms,
             "last_update": st.saved.last_update.as_ref().map(|update| json!({ "from": update.from, "to": update.to, "gap_ms": update.gap_ms, "at_ms": update.at_ms })),
@@ -949,6 +1034,33 @@ impl Updater {
     /// The quit didn't happen after all.
     pub fn stop_over(&self) {
         self.stopping.store(false, Ordering::SeqCst);
+    }
+}
+
+/// What each of the installer's reasons comes to, and whether it's the sort of thing that'll be the same tomorrow.
+fn why_not_installed(code: &str) -> (&'static str, bool) {
+    match code {
+        "swap_failed" => ("the app couldn't be replaced where it is", true),
+        "changed_since_checked" => ("what was downloaded changed after it was checked", true),
+        "old_app_stayed" => ("the old app didn't quit in time", false),
+        "app_reopened" => ("the app was opened again while it was going", false),
+        "another_installer" => ("another update was still at work", false),
+        _ => ("it couldn't be put in place", false),
+    }
+}
+
+/// Moves an old app to where it's kept, if there's nothing kept that's any use.
+fn keep_if_nothing_is(beside: &Path, old_app: &Path) {
+    let keep = previous_app_in(beside);
+    if stage::app_version(&keep).is_some() {
+        return;
+    }
+    if let Some(folder) = keep.parent() {
+        if std::fs::remove_dir_all(folder).is_err() {
+            let _ = std::fs::remove_file(folder);
+        }
+        let _ = std::fs::create_dir_all(folder);
+        let _ = std::fs::rename(old_app, &keep);
     }
 }
 
@@ -986,11 +1098,17 @@ mod tests {
         changes: AtomicU32,
         frontmost: AtomicBool,
         plan_at_quit: Mutex<Option<Plan>>,
+        /// What the time since input is on each look, for a user who comes back at a given moment. Past the list, `since_input_ms`.
+        looks: Mutex<std::collections::VecDeque<u64>>,
+        cant_draw: AtomicBool,
+        draws: Mutex<u32>,
+        second_copy: AtomicBool,
     }
 
     impl Host for Fake {
         fn look(&self) -> Look {
-            Look { busy: lock(&self.busy).clone(), since_input_ms: *lock(&self.since_input_ms) }
+            let scripted = lock(&self.looks).pop_front();
+            Look { busy: lock(&self.busy).clone(), since_input_ms: scripted.unwrap_or(*lock(&self.since_input_ms)) }
         }
         fn hand_off(&self, _limit: Duration) -> Result<(), HandOffRefused> {
             self.hand_offs.fetch_add(1, Ordering::SeqCst);
@@ -1014,6 +1132,13 @@ mod tests {
         }
         fn relaunch(&self) -> TestLaunch {
             TestLaunch::default()
+        }
+        fn keeps_the_record(&self) -> bool {
+            !self.second_copy.load(Ordering::SeqCst)
+        }
+        fn can_draw(&self) -> bool {
+            *lock(&self.draws) += 1;
+            !self.cant_draw.load(Ordering::SeqCst)
         }
         fn start_installer(&self, helper: &Path, plan: &Path, _log: &Path) -> std::io::Result<u32> {
             *lock(&self.plan_at_quit) = Plan::read(plan);
@@ -1040,7 +1165,7 @@ mod tests {
             local::ensure_private_dir(&root).unwrap();
             let install = dir.join("install");
             std::fs::create_dir_all(&install).unwrap();
-            let app = fake_app(&install, "0.1.0", "exit 0");
+            let app = fake_app(&install, "0.1.0");
             let server = Server::start();
             let fake = Arc::new(Fake::default());
             let updater = Updater::new(&root, server.source(), Arc::clone(&fake) as Arc<dyn Host>);
@@ -1051,7 +1176,7 @@ mod tests {
         fn publish(&self, version: &str) {
             let built = self.dir.join(format!("r-{version}"));
             std::fs::create_dir_all(&built).unwrap();
-            let app = fake_app(&built, version, "exit 0");
+            let app = fake_app(&built, version);
             let (bytes, sha) = zip_of(&app, &built.join("r.zip"));
             self.server.set(&format!("/releases/download/v{version}/RectoPDF-{version}.zip"), Answer::Body(bytes));
             self.server.set("/releases/latest/download/latest.json", Answer::Body(latest_json(version, &sha)));
@@ -1144,7 +1269,7 @@ mod tests {
         let fake = Arc::new(Fake::default());
         let source = Source { mode: Mode::Development, repo: "http://127.0.0.1:9".into(), trust: crate::source::Trust::AnySignature, network: false, test_env: Vec::new() };
         let updater = Updater::new(&root, source, Arc::clone(&fake) as Arc<dyn Host>);
-        let app = fake_app(&dir, "0.1.0", "exit 0");
+        let app = fake_app(&dir, "0.1.0");
         updater.launched(Facts { version: "0.1.0".into(), app, system: "15.0".into() });
         assert_eq!(updater.next_wake(), None, "no timer at all");
         assert!(!updater.switch_on(), "off to begin with");
@@ -1207,7 +1332,7 @@ mod tests {
         bed.wait_for("the failure", |bed| matches!(bed.status(), Status::Failed { .. }));
         assert_eq!(bed.fake.quits.load(Ordering::SeqCst), 0, "no quit, or the state would be lost");
         assert!(bed.updater.notice().unwrap().text.contains("is unchanged"));
-        assert_eq!(bed.updater.menu_item().title, "Check for Updates…", "it can be asked again");
+        assert_eq!(bed.updater.menu_item().title, "Update to 0.2.0…", "it can be asked again, and it's still on offer");
         assert_eq!(lock(&bed.updater.st).saved.failed, Vec::<String>::new(), "this may pass, so it's not held against the version");
         // A good hand-off and no installer: this one has to be undone.
         *lock(&bed.fake.refuse_with) = None;
@@ -1270,13 +1395,13 @@ mod tests {
         let bed = Bed::new("switch");
         bed.publish("0.2.0");
         bed.updater.check_here(Asked::ByItself);
-        bed.updater.set_switch(Some(false));
+        bed.updater.choose_switch(false);
         *lock(&bed.fake.since_input_ms) = rules::IDLE_BEFORE_INSTALL_MS * 2;
         bed.updater.timer_fired();
         assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0, "off means it waits for the menu");
         assert_eq!(bed.updater.menu_item().title, "Update to 0.2.0…");
         assert!(bed.updater.next_wake().is_some(), "the daily check runs whichever way the switch is set");
-        bed.updater.set_switch(Some(true));
+        bed.updater.choose_switch(true);
         bed.updater.timer_fired();
         bed.wait_for("the quit", |bed| bed.fake.quits.load(Ordering::SeqCst) == 1);
     }
@@ -1326,6 +1451,197 @@ mod tests {
         assert!(!new_app_in(&beside).exists() && !beside.join("staged.json").exists(), "and now it isn't");
     }
 
+    /// Failure: a user who comes back while a release downloads has the app quit under them. The review found this test's forerunner claimed to cover it, and nothing changed the input during the download. The first look says it's been half an hour, as the timer saw. The next, when the slow part's done, says they've just touched it.
+    #[test]
+    fn someone_coming_back_during_the_download_stops_it() {
+        let bed = Bed::new("back-download");
+        bed.publish("0.2.0");
+        bed.updater.check_here(Asked::ByItself);
+        *lock(&bed.fake.since_input_ms) = 1_000;
+        lock(&bed.fake.looks).extend([rules::IDLE_BEFORE_INSTALL_MS]);
+        lock(&bed.updater.st).install_look_at = Some(bed.updater.now_ms());
+        bed.updater.timer_fired();
+        bed.wait_for("standing down", |bed| matches!(bed.status(), Status::Available(_)) && lock(&bed.updater.st).install_look_at.is_some());
+        assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0, "not even a hand-off");
+        assert!(lock(&bed.updater.st).install_look_at.unwrap() > bed.updater.now_ms() + 25 * 60_000, "and the next look is when it could be half an hour");
+        assert!(new_app_in(&beside_app(&bed.app).unwrap()).is_dir(), "it's all ready for then");
+    }
+
+    /// Failure: a user who touches the app in the moment before it froze has it quit under them, and it stays frozen. This is the look after the freeze, which nothing tested. What's in between is real: a real download, and the hand-off answered.
+    #[test]
+    fn someone_coming_back_as_it_freezes_unfreezes_it() {
+        let bed = Bed::new("back-freeze");
+        bed.publish("0.2.0");
+        bed.updater.check_here(Asked::ByItself);
+        let idle = rules::IDLE_BEFORE_INSTALL_MS;
+        *lock(&bed.fake.since_input_ms) = 1_000;
+        // The timer, then the look before the hand-off, then the one after it.
+        lock(&bed.fake.looks).extend([idle, idle, 1_000]);
+        lock(&bed.updater.st).install_look_at = Some(bed.updater.now_ms());
+        bed.updater.timer_fired();
+        bed.wait_for("the cancel", |bed| bed.fake.cancels.load(Ordering::SeqCst) == 1);
+        assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 1);
+        assert_eq!(bed.fake.quits.load(Ordering::SeqCst), 0);
+        assert_eq!(lock(&bed.fake.installers).len(), 0, "no installer was started");
+        bed.wait_for("the offer again", |bed| matches!(bed.status(), Status::Available(_)));
+    }
+
+    /// Failure: an offline night takes *Update to X…* off the menu until a check next gets through.
+    #[test]
+    fn a_failed_check_leaves_the_offer_on_the_menu() {
+        let bed = Bed::new("offline");
+        bed.publish("0.2.0");
+        bed.found("0.2.0");
+        bed.server.set("/releases/latest/download/latest.json", Answer::Status(503));
+        assert_eq!(bed.updater.check_here(Asked::ByHand), Status::Available("0.2.0".into()));
+        assert_eq!(bed.updater.menu_item().title, "Update to 0.2.0…");
+        assert!(bed.updater.notice().unwrap().text.starts_with("Couldn't check"), "it says the check failed");
+        assert!(lock(&bed.updater.st).saved.failures == 1, "and backs off");
+    }
+
+    /// Failure: the user's choice of off is lost with a record, or turned back on by a launch, so an app they told not to replaces itself anyway. The switch is in this updater's own file.
+    #[test]
+    fn the_switch_is_kept_in_the_updaters_own_file() {
+        let bed = Bed::new("switch-file");
+        assert!(bed.updater.switch_on(), "on, by default, in this build");
+        bed.updater.choose_switch(false);
+        let saved = bed.dir.join("state/updates.json");
+        bed.wait_for("the write", |_| Saved::read(&saved).auto_update == Some(false));
+        let again = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+        again.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+        assert!(!again.switch_on(), "a launch knows it, whatever's in the record");
+        // And a damaged file errs towards not replacing anything.
+        local::write_private_file(&saved, b"not json").unwrap();
+        let damaged = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+        damaged.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+        assert!(!damaged.switch_on());
+    }
+
+    /// Failure: a new version that can't draw counts as having come up, because a first frame showed, so every copy moves to a release that shows no pages. **`first_frame` says what "come up" means.** It proves itself with a drawing, says so to the installer at once if it can't, and counts towards going back if there's no installer to hear. A normal launch asks nothing of the renderer.
+    #[test]
+    fn a_version_that_cant_draw_hasnt_come_up() {
+        let bed = Bed::new("draw");
+        let root = bed.dir.join("state");
+        let files = Files::in_state(&root);
+        let plan = Plan { id: "1-1".into(), cdhash: "a".repeat(40), team_required: false, from: "0.1.0".into(), to: "0.2.0".into(), pid: 1, app: bed.app.clone(), beside: beside_app(&bed.app).unwrap(), root: root.clone(), quit_at_ms: 5, background: false, quit_limit_ms: 1, start_limit_ms: 1, test: None };
+        local::ensure_private_dir(&files.work).unwrap();
+        plan.write(&files.plan()).unwrap();
+        bed.fake.cant_draw.store(true, Ordering::SeqCst);
+        let launch = |version: &str| {
+            let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+            updater.launched(Facts { version: version.into(), app: bed.app.clone(), system: "15.0".into() });
+            updater
+        };
+        let updater = launch("0.2.0");
+        updater.first_frame(100);
+        assert!(files.launch_failed().exists(), "the installer hears");
+        assert!(!files.launch_ok().exists(), "and doesn't hear otherwise");
+        assert!(lock(&updater.st).saved.proven.is_none());
+        // Mended: it comes up, and proven, it's not asked again.
+        bed.fake.cant_draw.store(false, Ordering::SeqCst);
+        std::fs::remove_file(files.launch_failed()).unwrap();
+        plan.write(&files.plan()).unwrap();
+        let updater = launch("0.2.0");
+        updater.first_frame(100);
+        assert!(files.launch_ok().exists());
+        let asked = *lock(&bed.fake.draws);
+        let updater = launch("0.2.0");
+        updater.first_frame(100);
+        assert_eq!(*lock(&bed.fake.draws), asked, "a normal launch asks nothing");
+        assert_eq!(lock(&updater.st).saved.proven.as_deref(), Some("0.2.0"));
+    }
+
+    /// Failure: a second copy of the app downloads a release it can't install, as its hand-off will be refused, or takes away what the first has staged. It reads, and says, and leaves it all alone, and it wakes for nothing.
+    #[test]
+    fn a_second_copy_leaves_it_all_to_the_first() {
+        let bed = Bed::new("second");
+        let root = bed.dir.join("state");
+        let beside = beside_app(&bed.app).unwrap();
+        bed.publish("0.2.0");
+        bed.found("0.2.0");
+        std::fs::create_dir_all(new_app_in(&beside)).unwrap();
+        std::fs::write(beside.join("staged.json"), "0.2.0 abc").unwrap();
+        let before = std::fs::read(root.join("updates.json")).unwrap();
+        bed.fake.second_copy.store(true, Ordering::SeqCst);
+        let second = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+        second.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+        assert_eq!(second.next_wake(), None, "it wakes for nothing");
+        assert_eq!(second.install(Asked::ByHand), Err(InstallRefused::AnotherCopy));
+        assert!(new_app_in(&beside).exists() && beside.join("staged.json").exists(), "the first copy's staging stays");
+        second.first_frame(10);
+        assert_eq!(std::fs::read(root.join("updates.json")).unwrap(), before, "it writes nothing of the first's");
+        assert_eq!(second.menu_item().title, "Check for Updates…");
+    }
+
+    /// Failure: an app that can't be replaced quits and reopens for ever, a day apart, saying nothing, which the review proved. It's told once it's back, and that's held against the version. Anything else that quit for nothing gets three goes, and then the same.
+    #[test]
+    fn quitting_for_nothing_says_so_and_stops() {
+        let bed = Bed::new("nothing");
+        let root = bed.dir.join("state");
+        let files = Files::in_state(&root);
+        local::ensure_private_dir(&files.work).unwrap();
+        let launch_with = |why: &str| {
+            Outcome { kind: OutcomeKind::NotInstalled, from: "0.1.0".into(), to: "0.2.0".into(), why: why.into() }.write(&files.outcome()).unwrap();
+            let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+            updater.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+            updater
+        };
+        let updater = launch_with("swap_failed");
+        let notice = updater.notice().unwrap().text;
+        assert!(notice.contains("couldn't be replaced") && notice.contains("unchanged"), "{notice}");
+        assert_eq!(lock(&updater.st).saved.failed, vec!["0.2.0".to_string()], "not by itself again");
+        lock(&updater.st).saved.failed.clear();
+        let cleared = lock(&updater.st).saved.clone();
+        Saved { install_failures: 0, ..cleared }.write(&files.saved);
+        for tries in 1..=QUITS_FOR_NOTHING {
+            let updater = launch_with("old_app_stayed");
+            assert!(updater.notice().is_some(), "said each time");
+            assert_eq!(lock(&updater.st).saved.failed.contains(&"0.2.0".to_string()), tries == QUITS_FOR_NOTHING, "{tries}");
+        }
+    }
+
+    /// Failure: a launch tidying up deletes the only good copy, as `new/` after a keep that failed, or says the version that's here came back. All that's old in there is kept; a version it couldn't go back from says just that.
+    #[test]
+    fn the_only_good_copy_is_never_tidied_away() {
+        let bed = Bed::new("only");
+        let root = bed.dir.join("state");
+        let files = Files::in_state(&root);
+        let beside = beside_app(&bed.app).unwrap();
+        local::ensure_private_dir(&files.work).unwrap();
+        let in_new = new_app_in(&beside);
+        std::fs::create_dir_all(in_new.parent().unwrap()).unwrap();
+        fake_app(in_new.parent().unwrap(), "0.0.5");
+        let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+        updater.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+        assert_eq!(stage::app_version(&previous_app_in(&beside)).as_deref(), Some("0.0.5"), "moved to be kept");
+        Outcome { kind: OutcomeKind::CouldntGoBack, from: "0.0.5".into(), to: "0.1.0".into(), why: "nothing_to_go_back_to".into() }.write(&files.outcome()).unwrap();
+        let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+        updater.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+        let notice = updater.notice().unwrap().text;
+        assert!(notice.contains("no earlier version") && !notice.contains("came back"), "{notice}");
+    }
+
+    /// Failure: a check leaves a thread behind, which would be a cost at rest for ever after. It's what the report's thread numbers can't assert under load, as the system's own pool comes and goes, so it's asked here, of this process alone.
+    #[test]
+    fn a_check_leaves_no_thread_behind() {
+        let bed = Bed::new("threads");
+        bed.publish("0.1.0");
+        let threads = || local::process_counters(std::process::id()).unwrap().threads;
+        // The server's own connection threads end with each request, so a first request settles those.
+        bed.updater.check_here(Asked::ByHand);
+        std::thread::sleep(Duration::from_millis(100));
+        let before = threads();
+        for _ in 0..3 {
+            bed.updater.check_in_background(Asked::ByItself);
+            bed.wait_for("the check", |bed| !lock(&bed.updater.st).status.is_under_way());
+        }
+        let began = Instant::now();
+        while threads() > before {
+            assert!(began.elapsed() < Duration::from_secs(10), "{} threads, and {before} before", threads());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// Failure: a real run's clock can be moved, which would let anything with the socket cut the wait short. Only a test run's moves.
     #[test]
     fn only_a_test_runs_clock_moves() {
@@ -1344,7 +1660,7 @@ mod tests {
     fn a_launch_puts_right_what_a_stopped_installer_left() {
         let bed = Bed::new("left");
         let root = bed.dir.join("state");
-        let plan = Plan { from: "0.1.0".into(), to: "0.2.0".into(), pid: 1, app: bed.app.clone(), beside: beside_app(&bed.app).unwrap(), root: root.clone(), quit_at_ms: 5, background: false, quit_limit_ms: 1, start_limit_ms: 1, test: None };
+        let plan = Plan { id: "1-1".into(), cdhash: "a".repeat(40), team_required: false, from: "0.1.0".into(), to: "0.2.0".into(), pid: 1, app: bed.app.clone(), beside: beside_app(&bed.app).unwrap(), root: root.clone(), quit_at_ms: 5, background: false, quit_limit_ms: 1, start_limit_ms: 1, test: None };
         let launch = |version: &str| {
             let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
             updater.launched(Facts { version: version.into(), app: bed.app.clone(), system: "15.0".into() });
@@ -1363,12 +1679,13 @@ mod tests {
         // Stopped right after the swap: the new version's here, with the old one where the swap left it.
         plan.write(&files.plan()).unwrap();
         std::fs::create_dir_all(plan.new_app().parent().unwrap()).unwrap();
-        fake_app(plan.new_app().parent().unwrap(), "0.1.0", "exit 0");
+        fake_app(plan.new_app().parent().unwrap(), "0.1.0");
         let updater = launch("0.2.0");
         assert_eq!(lock(&updater.st).status, Status::Updated("0.2.0".into()));
         assert_eq!(stage::app_version(&plan.previous_app()).as_deref(), Some("0.1.0"), "kept, as the installer would have");
         assert!(!plan.new_app().exists() && !files.plan().exists());
         updater.first_frame(1_005);
+        assert_eq!(*lock(&bed.fake.draws), 1, "a version that's arrived has to show it can draw");
         let report = updater.report();
         assert_eq!(report["last_update"]["gap_ms"], 1_000);
         assert_eq!(std::fs::read_to_string(files.launch_ok()).unwrap().split_whitespace().next(), Some("0.2.0"));

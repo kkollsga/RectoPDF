@@ -190,6 +190,57 @@ pub fn control_seeds() -> Vec<Vec<u8>> {
 }
 
 /// A target's starting points.
+/// A real `latest.json`, and a small zip made the way the reader takes them, of files stored and a folder.
+fn update_seeds() -> Vec<Vec<u8>> {
+    let latest = format!(r#"{{"version":"0.2.0","tag":"v0.2.0","minimum_macos":"15.0","zip":"RectoPDF-0.2.0.zip","sha256":"{}"}}"#, "a".repeat(64)).into_bytes();
+    vec![latest, update_seed_zip()]
+}
+
+fn update_seed_zip() -> Vec<u8> {
+    let crc = crc_of(b"data");
+    let name = b"RectoPDF.app/x";
+    let mut zip = Vec::new();
+    zip.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+    zip.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    zip.extend_from_slice(&crc.to_le_bytes());
+    zip.extend_from_slice(&4u32.to_le_bytes());
+    zip.extend_from_slice(&4u32.to_le_bytes());
+    zip.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    zip.extend_from_slice(&[0, 0]);
+    zip.extend_from_slice(name);
+    zip.extend_from_slice(b"data");
+    let list_at = zip.len() as u32;
+    let mut list = Vec::new();
+    list.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+    list.extend_from_slice(&[20, 3, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    list.extend_from_slice(&crc.to_le_bytes());
+    list.extend_from_slice(&4u32.to_le_bytes());
+    list.extend_from_slice(&4u32.to_le_bytes());
+    list.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    list.extend_from_slice(&[0; 8]);
+    list.extend_from_slice(&(0o100_644u32 << 16).to_le_bytes());
+    list.extend_from_slice(&0u32.to_le_bytes());
+    list.extend_from_slice(name);
+    zip.extend_from_slice(&list);
+    zip.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    zip.extend_from_slice(&[0, 0, 0, 0, 1, 0, 1, 0]);
+    zip.extend_from_slice(&(list.len() as u32).to_le_bytes());
+    zip.extend_from_slice(&list_at.to_le_bytes());
+    zip.extend_from_slice(&[0, 0]);
+    zip
+}
+
+fn crc_of(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
 /// Samples of the state record's files, and their bodies alone, which the target seals itself.
 fn record_seeds() -> Vec<Vec<u8>> {
     let record = include_bytes!("../../recto-session/tests/fixtures/record-v1.json").to_vec();
@@ -214,6 +265,7 @@ pub fn for_target(name: &str) -> Vec<Vec<u8>> {
         "control" => control_seeds(),
         "edits" => sequence_seeds(),
         "record" => record_seeds(),
+        "update" => update_seeds(),
         _ => Vec::new(),
     }
 }
@@ -232,7 +284,7 @@ pub fn select_seeds() -> Vec<Vec<u8>> {
 }
 
 /// Every target's name.
-pub const TARGET_NAMES: &[&str] = &["pdf_bytes", "pdf_tree", "proto", "index", "select", "agent", "control", "edits", "record"];
+pub const TARGET_NAMES: &[&str] = &["pdf_bytes", "pdf_tree", "proto", "index", "select", "agent", "control", "edits", "record", "update"];
 
 /// The check a target runs, by name.
 pub fn check_for(name: &str) -> Option<fn(&[u8])> {
@@ -246,6 +298,7 @@ pub fn check_for(name: &str) -> Option<fn(&[u8])> {
         "control" => targets::control::check,
         "edits" => targets::edits::check,
         "record" => targets::record::check,
+        "update" => targets::update::check,
         _ => return None,
     })
 }

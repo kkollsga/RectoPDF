@@ -14,6 +14,8 @@ name = "recto-updater"
 path = "src/bin/recto-updater.rs"
 
 [dependencies]
+crc32fast.workspace = true
+flate2.workspace = true
 recto-platform.workspace = true
 serde.workspace = true
 serde_json.workspace = true

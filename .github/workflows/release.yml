@@ -12,8 +12,10 @@ on:
   push:
     tags: ["v*.*.*"]
 
+# `actions: read` so the gate can see CI's runs. A list of permissions sets everything else to none.
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -26,6 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0   # for the newest commit that changed anything but documents
           persist-credentials: false
       - name: The tag matches the version in Cargo.toml
         run: |
@@ -35,24 +38,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # CI skips a commit that changes only documents, so the one to ask about is the newest that doesn't, and a tag on a docs commit is as good as on that.
+          code=$(git log -1 --format=%H -- . ':(exclude)docs/**' ':(exclude,glob)**/*.md')
           # The tag is pushed after main, and CI may still be running. Wait for its run on this commit, at most an hour.
           for _ in $(seq 1 120); do
-            read -r status conclusion url < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
+            read -r status conclusion url < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$code" \
                 --event push --limit 1 --json status,conclusion,url --jq '.[0] | "\(.status) \(.conclusion) \(.url)"') || true
             if [ "${status:-}" = completed ]; then
               [ "$conclusion" = success ] && { echo "CI passed: $url"; exit 0; }
-              echo "::error::CI on $GITHUB_SHA ended with $conclusion: $url"; exit 1
+              echo "::error::CI on $code ended with $conclusion: $url"; exit 1
             fi
-            echo "CI on $GITHUB_SHA: ${status:-not started yet}; waiting"
+            echo "CI on $code: ${status:-not started yet}; waiting"
             sleep 30
           done
-          echo "::error::no finished CI run on $GITHUB_SHA within an hour"; exit 1
+          echo "::error::no finished CI run on $code within an hour"; exit 1
 
   mac:
     name: Mac build
     needs: gate
     runs-on: macos-26
     timeout-minutes: 90
+    # An Environment, so the owner can require their own approval before anything here sees a signing secret: pushing a tag alone doesn't get them.
+    environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,6 +67,11 @@ jobs:
           persist-credentials: false
       - name: Rust, as pinned in rust-toolchain.toml
         run: rustup toolchain install
+      # Everything that compiles anything goes first, so no dependency's build script is ever on a machine that holds a signing key.
+      - name: Build the release, with no signing key anywhere yet
+        env:
+          MIN_FREE: '0'
+        run: app/release-zip.sh --built-only
       - name: Developer ID certificate and notarization key, from the repository's secrets
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
@@ -100,10 +112,8 @@ jobs:
             echo "RECTO_NOTARY_KEYCHAIN=$kc"
           } >> "$GITHUB_ENV"
           echo "Signing as: $identity"
-      - name: Build, sign, notarize and check
-        env:
-          MIN_FREE: '0'
-        run: app/release-zip.sh --signed
+      - name: Sign, notarize, run and check what was built
+        run: app/release-zip.sh --signed --already-built
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mac
@@ -144,12 +154,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Delete the draft, if one was made, and the tag
+      - name: Delete the draft, if one was made, and the tag, and never a published release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null \
-            || gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$GITHUB_REF_NAME" \
-            || true
+          # Someone can run this again after the release went out. That fails, as the release is there, and it's not for this to take back what's been published.
+          draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          if [ "$draft" = false ]; then
+            echo "::error::$GITHUB_REF_NAME is published already, so this run failed and left it alone."
+            exit 1
+          fi
+          if [ "$draft" = true ]; then
+            gh release delete "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          else
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$GITHUB_REF_NAME" || true
+          fi
           echo "::error::The release of $GITHUB_REF_NAME was withdrawn: fix the failure, then tag the version again."
           exit 1

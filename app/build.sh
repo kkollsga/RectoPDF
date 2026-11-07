@@ -3,6 +3,7 @@
 #
 #   app/build.sh            A debug build, for QA while working.
 #   app/build.sh --release  The build every budget is measured on: fat LTO, and it takes minutes.
+#   app/build.sh --sign-only  Signs an app that's been built, with RECTO_SIGN_IDENTITY. A release builds before there's a signing key anywhere on the machine, so no dependency's build script can reach one.
 #
 # Run it through tools/sysguard/heavy.sh.
 set -euo pipefail
@@ -11,9 +12,10 @@ APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$APP_DIR/.." && pwd)"
 mode="${1:---debug}"
 case "$mode" in
+    --sign-only) ;;
     --debug) CARGO_ARGS=(); RUST_OUT="$REPO/target/debug"; SWIFT_ARGS=(-c debug) ;;
     --release) CARGO_ARGS=(--release); RUST_OUT="$REPO/target/release"; SWIFT_ARGS=(-c release) ;;
-    *) sed -n '2,7p' "$0"; exit 2 ;;
+    *) sed -n '2,8p' "$0"; exit 2 ;;
 esac
 BUILD="$APP_DIR/build"
 APP="$BUILD/RectoPDF.app"
@@ -22,6 +24,21 @@ VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}
 # The identity a release is signed with. `app/release-zip.sh --signed` sets it, and without it this is ad hoc.
 SIGN_IDENTITY="${RECTO_SIGN_IDENTITY:--}"
 if [ "$SIGN_IDENTITY" = - ]; then SIGN_ARGS=(--force --sign -); else SIGN_ARGS=(--force --sign "$SIGN_IDENTITY" --options runtime --timestamp); fi
+
+sign_app() {
+    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/libpdfium.dylib"
+    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-render-service"
+    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-indexer"
+    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-updater"
+    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto"
+    codesign "${SIGN_ARGS[@]}" "$APP"
+}
+
+if [ "$mode" = --sign-only ]; then
+    sign_app
+    echo "==> signed $APP"
+    exit 0
+fi
 
 "$REPO/tools/pdfium.sh" >/dev/null
 
@@ -87,10 +104,5 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/libpdfium.dylib"
-codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-render-service"
-codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-indexer"
-codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-updater"
-codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto"
-codesign "${SIGN_ARGS[@]}" "$APP"
+sign_app
 echo "==> built $APP"

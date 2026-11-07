@@ -138,15 +138,21 @@ final class Bridge: AppListener, @unchecked Sendable {
             core.noWindowToShow()
         }
         // It's part of what comes back.
-        if core.settingsWindowPlace() != nil { showSettings(takingKey: false) }
+        if core.settingsWindowWasOpen() { showSettings(takingKey: false) }
         core.ready()
     }
 
     /// Opens Settings, or brings it forward. Nothing's made for it until it's asked for. Coming back at a launch it doesn't take the keyboard, which is the main window's as it was.
     func showSettings(takingKey: Bool = true) {
-        if settings == nil { settings = SettingsWindowController(delegate: self, place: core.settingsWindowPlace()) }
+        if settings == nil { settings = SettingsWindowController(delegate: self, place: core.settingsWindowPlace(screens: NSScreen.screens.map(MainWindowController.info))) }
         guard !isQuiet else { return }
-        if takingKey { settings?.window.makeKeyAndOrderFront(nil) } else { settings?.window.orderFront(nil) }
+        if takingKey {
+            settings?.window.makeKeyAndOrderFront(nil)
+        } else if core.opensInBackground() {
+            settings?.window.orderBack(nil)
+        } else {
+            settings?.window.orderFront(nil)
+        }
     }
 
     func settingsClosed() {
@@ -181,14 +187,20 @@ final class Bridge: AppListener, @unchecked Sendable {
         center.addObserver(self, selector: #selector(activityChanged), name: NSApplication.didBecomeActiveNotification, object: nil)
         center.addObserver(self, selector: #selector(activityChanged), name: NSApplication.didResignActiveNotification, object: nil)
         let core = self.core
-        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .scrollWheel, .magnify]) { event in
-            core.noteUserInput()
+        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: Self.actions.union(Self.nearby)) { event in
+            if Self.actions.contains(NSEvent.EventTypeMask(type: event.type)) { core.noteUserInput() } else { core.noteUserNearby() }
             return event
         }
     }
 
+    /// What someone does. Each says any notice has been read.
+    nonisolated static let actions: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .scrollWheel, .magnify]
+    /// What shows someone's there. Owner, 2026-11-07: "hasn't touched", so a silent update errs towards never interrupting. Comes in only while there's someone moving something, so nothing at rest.
+    nonisolated static let nearby: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .leftMouseUp, .rightMouseUp, .otherMouseUp, .keyUp, .flagsChanged, .rotate, .swipe, .smartMagnify, .gesture, .beginGesture, .endGesture, .pressure, .tabletPoint]
+
     @objc private func activityChanged() {
         guard !isQuiet else { return }
+        if NSApp.isActive { windowController?.cameToTheFront() }
         core.frontmostChanged(app: NSApp.isActive, windowKey: windowController?.window.isKeyWindow ?? false)
     }
 

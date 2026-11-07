@@ -358,6 +358,26 @@ pub fn swap_paths(a: &Path, b: &Path) -> io::Result<()> {
     if unsafe { libc::renamex_np(a_c.as_ptr(), b_c.as_ptr(), libc::RENAME_SWAP) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
+/// Whether this process can move this path to another folder: it needs to be able to write to it, and it can't be locked. What a swap of an app needs, of the bundle and of its folder. A real answer for this user, with whatever ACLs there are.
+pub fn can_be_replaced(path: &Path) -> bool {
+    use std::os::macos::fs::MetadataExt as _;
+    let Ok(path_c) = c_path(path) else { return false };
+    // SAFETY: NUL-terminated and valid for the call, and it writes nothing.
+    if unsafe { libc::access(path_c.as_ptr(), libc::W_OK | libc::X_OK) } != 0 {
+        return false;
+    }
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.st_flags() & (libc::UF_IMMUTABLE | libc::SF_IMMUTABLE) == 0)
+}
+
+/// Makes a folder private to this user, where it's theirs and a real folder.
+pub fn make_folder_private(path: &Path) -> io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_dir() || meta.uid() != current_uid() {
+        return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
 /// The processes running this very executable, by what the system says each was started from. Bounded: the system's own list, read once.
 pub fn processes_running(executable: &Path) -> Vec<u32> {
     let Ok(wanted) = executable.canonicalize() else { return Vec::new() };

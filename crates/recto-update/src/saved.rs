@@ -31,6 +31,8 @@ pub struct Saved {
     pub unstarted: u32,
     /// The last update that went through, as it's reported.
     pub last_update: Option<LastUpdate>,
+    /// *Update automatically*, if it's been chosen. Here and not with the session, so losing a record can't turn it back on against what the user chose.
+    pub auto_update: Option<bool>,
 }
 
 /// How the last update went.
@@ -44,11 +46,20 @@ pub struct LastUpdate {
 }
 
 impl Saved {
-    /// Reads it, keeping only what's well-formed. Nothing from this file reaches the screen or a command without passing here.
+    /// Reads it, keeping only what's well-formed. Nothing from this file reaches the screen or a command without passing here. There not being one is a first launch. One that's there and can't be read says nothing of what the user chose, so nothing's installed by itself until they say: a failing that errs towards not replacing the app under them.
     #[must_use]
     pub fn read(file: &Path) -> Self {
-        let Ok(Some(bytes)) = local::read_private_file(file, MAX_BYTES) else { return Self::default() };
-        let Ok(mut saved) = serde_json::from_slice::<Self>(&bytes) else { return Self::default() };
+        let unreadable = Self { auto_update: Some(false), ..Self::default() };
+        let bytes = match local::read_private_file(file, MAX_BYTES) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return Self::default(),
+            Err(_) => return unreadable,
+        };
+        // A list would read as all defaults otherwise, as if there were nothing there.
+        if serde_json::from_slice::<serde_json::Value>(&bytes).map_or(true, |value| !value.is_object()) {
+            return unreadable;
+        }
+        let Ok(mut saved) = serde_json::from_slice::<Self>(&bytes) else { return unreadable };
         saved.offered = saved.offered.filter(|version| parse_version(version).is_some());
         saved.proven = saved.proven.filter(|version| parse_version(version).is_some());
         saved.failed.retain(|version| parse_version(version).is_some());
@@ -110,7 +121,9 @@ mod tests {
         assert_eq!(read.last_check_ms, Some(7));
         for junk in [&b"not json"[..], b"[]", &[0xFF, 0x00]] {
             local::write_private_file(&file, junk).unwrap();
-            assert_eq!(Saved::read(&file), Saved::default());
+            let read = Saved::read(&file);
+            assert_eq!((read.last_check_ms, read.offered), (None, None));
+            assert_eq!(read.auto_update, Some(false), "what the user chose is unknown, so nothing's installed by itself");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -112,6 +112,16 @@ fn zip_of(app: &Path) -> (Vec<u8>, String) {
     (bytes, sha)
 }
 
+/// What's wrong with a release, for a test.
+#[derive(Clone, Copy, PartialEq)]
+enum Broken {
+    Not,
+    /// What should be the app is a program that damages the real record and ends, having shown nothing.
+    DamagesTheRecordAndEnds,
+    /// The app's fine, and its renderer doesn't work. It'd come up and show a window with no pages.
+    NoRenderer,
+}
+
 /// All a real update needs, in temp folders that go with it.
 struct Bed {
     folder: PathBuf,
@@ -129,12 +139,20 @@ impl Bed {
         Some(Self { folder, state: State::new(), server: Server::start(), app })
     }
 
-    fn release_of(&self, version: &str, broken: bool) {
+    fn release_of(&self, version: &str, broken: Broken) {
         let staging = self.folder.join(format!("release-{version}"));
         let app = copy_app(&staging, version);
-        if broken {
-            std::fs::write(app.join("Contents/MacOS/RectoPDF"), "#!/bin/sh\nexit 1\n").unwrap();
-            sign(&app);
+        let macos = app.join("Contents/MacOS");
+        match broken {
+            Broken::Not => {}
+            Broken::DamagesTheRecordAndEnds => {
+                std::fs::copy(macos.join("recto-updater"), macos.join("RectoPDF")).unwrap();
+                sign(&app);
+            }
+            Broken::NoRenderer => {
+                std::fs::copy("/usr/bin/true", macos.join("recto-render-service")).unwrap();
+                sign(&app);
+            }
         }
         let (zip, sha) = zip_of(&app);
         self.server.release(version, zip, &sha);
@@ -212,6 +230,22 @@ impl Bed {
         }
     }
 
+    /// The same, when what's wanted is one version in particular, as what comes up first may be one that gets sent back.
+    fn wait_for_new_app_of<'a>(&'a self, mut old: Run<'a>, version: &str) -> Run<'a> {
+        let old_pid = old.pid;
+        old.done = true;
+        let began = Instant::now();
+        loop {
+            let (status, code) = self.state.json(&["update", "status"]);
+            let (pid, _) = self.state.json(&["status"]);
+            if code == 0 && status["ok"] == true && status["data"]["version"] == version && pid["data"]["pid"].as_u64().is_some_and(|pid| pid as u32 != old_pid) {
+                return Run { state: &self.state, pid: pid["data"]["pid"].as_u64().unwrap() as u32, done: false };
+            }
+            assert!(began.elapsed() < Duration::from_secs(90), "{status}\n{}", self.log());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// That it's the same app it was, doing what it did. A frozen one refuses a command.
     fn still_usable(&self, run: &Run<'_>) {
         assert!(local::process_counters(run.pid).is_some(), "it's still running");
@@ -249,7 +283,7 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
     assert!(before["session"]["tabs"][0]["edits"]["undo"].as_u64().unwrap() > 0, "{}", before["session"]["tabs"][0]);
     assert_eq!(before["app"]["settings"]["open"], true);
 
-    bed.release_of(NEW, false);
+    bed.release_of(NEW, Broken::Not);
     let checked = run.ok(&["update", "check"]);
     assert_eq!(checked["status"], "available", "{checked}");
     assert_eq!(checked["menu"]["title"], format!("Update to {NEW}…"));
@@ -298,7 +332,7 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
     run.quit();
 }
 
-/// Failure: a new version that won't start leaves nothing, or the user's work behind it. **The real app, with a release whose executable ends at once:** it goes back by itself, the whole state comes back, and it says so and doesn't try again by itself.
+/// Failure: a new version that won't start leaves nothing, or the user's work behind it. **The real app, with a release that damages the real record in both slots and ends:** it goes back by itself, the whole state comes back as it was, and it says so and doesn't try again by itself.
 #[test]
 fn a_new_app_that_wont_start_goes_back_with_the_same_state() {
     let Some(bed) = Bed::new() else { return };
@@ -315,7 +349,7 @@ fn a_new_app_that_wont_start_goes_back_with_the_same_state() {
     // What the journal's called is settled once something's asked to be written.
     run.ok(&["session", "save"]);
     let before = run.report();
-    bed.release_of(NEW, true);
+    bed.release_of(NEW, Broken::DamagesTheRecordAndEnds);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     run.ok(&["update", "install"]);
     let run = bed.wait_for_new_app(run);
@@ -326,8 +360,111 @@ fn a_new_app_that_wont_start_goes_back_with_the_same_state() {
     assert_eq!(status["version"], OLD);
     assert_eq!(status["failed_versions"], json!([NEW]));
     assert!(status["words"].as_str().unwrap().contains("came back"), "{status}");
+    // The one thing that's different, and on purpose: it's still on offer, as by hand it can always be tried again.
+    let menu = run.ok(&["qa", "state"])["app"]["menu_bar"][0]["items"].clone();
+    assert!(menu.as_array().unwrap().iter().any(|item| item["id"] == "app.update" && item["title"] == format!("Update to {NEW}…")), "{menu}");
+    assert_same_but(&before, &run.report(), &[], &["app.settings.status", "app.menu_bar[0].items[1].title"]);
+    let log = bed.log();
+    assert!(log.contains("ended before it came up") && log.contains("went back to"), "{log}");
+    run.quit();
+}
+
+/// Failure: a release whose renderer can't work counts as having started, because a window came up, so every copy moves to it and shows no pages. **What "come up" means, on the real app:** the release has its renderer swapped for a program that does nothing, as a library that won't load under the hardened runtime would leave it. It shows a first frame, can't draw its own test page, and goes back.
+#[test]
+fn a_new_app_that_cant_draw_goes_back() {
+    let Some(bed) = Bed::new() else { return };
+    let run = bed.start();
+    let file = long_document("alpha", 20);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "9"]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "rotate:3"]);
+    run.ok(&["qa", "frontmost", "off"]);
+    run.settled();
+    run.ok(&["session", "save"]);
+    let before = run.report();
+    bed.release_of(NEW, Broken::NoRenderer);
+    assert_eq!(run.ok(&["update", "check"])["status"], "available");
+    run.ok(&["update", "install"]);
+    let run = bed.wait_for_new_app_of(run, OLD);
+    run.ok(&["qa", "scroller-style", "overlay"]);
+    run.settled();
+    assert_eq!(bed.version(), OLD);
+    let status = bed.wait_status(&run, "went_back");
+    assert_eq!(status["failed_versions"], json!([NEW]));
     assert_same_but(&before, &run.report(), &[], ACROSS_AN_UPDATE);
-    assert!(bed.log().contains("went back to"), "{}", bed.log());
+    let log = bed.log();
+    assert!(log.contains("can't draw a page") && log.contains("couldnt_draw"), "{log}");
+    run.quit();
+}
+
+/// Failure: a new version that keeps failing with no installer around has no way back, or the guard's never run. **The launch guard, on the real app, with what a killed installer leaves:** the new version in place that's never come up, three launches counted, the old one kept. A fourth launch goes back by itself, and the old one comes up.
+#[test]
+fn the_launch_guard_goes_back_by_itself() {
+    let Some(bed) = Bed::new() else { return };
+    // The state's there, as the old app left it.
+    let run = bed.start();
+    let file = long_document("alpha", 20);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "9"]);
+    run.settled();
+    run.ok(&["session", "save"]);
+    let page = run.report()["session"]["tabs"][0]["page"].clone();
+    run.quit();
+    // What's left: the new one in place, unproven, and the old one kept.
+    let beside = recto_update::plan::beside_app(&bed.app).unwrap();
+    let keep = recto_update::plan::previous_app_in(&beside);
+    std::fs::create_dir_all(keep.parent().unwrap()).unwrap();
+    std::fs::rename(&bed.app, &keep).unwrap();
+    copy_app(bed.app.parent().unwrap(), NEW);
+    let files = recto_update::plan::Files::in_state(&bed.state.root);
+    let saved = recto_update::saved::Saved { unstarted: 3, proven: Some(OLD.to_owned()), ..recto_update::saved::Saved::default() };
+    saved.write(&files.saved);
+
+    // It ends by itself, without saying it's ready.
+    let mut command = bed.state.command();
+    command.env(REPO_ENV, &bed.server.url);
+    let reply = command.args(["qa", "start", "--app", bed.app.join("Contents/MacOS/RectoPDF").to_str().unwrap(), "--time-limit", "3m", "--json"]).stderr(std::process::Stdio::null()).output().unwrap();
+    let began = Instant::now();
+    while bed.version() != OLD {
+        assert!(began.elapsed() < Duration::from_secs(60), "{}\n{}", String::from_utf8_lossy(&reply.stdout), bed.log());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let run = loop {
+        let (status, code) = bed.state.json(&["status"]);
+        if code == 0 && status["ok"] == true {
+            break Run { state: &bed.state, pid: status["data"]["pid"].as_u64().unwrap() as u32, done: false };
+        }
+        assert!(began.elapsed() < Duration::from_secs(60), "{status}\n{}", bed.log());
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    run.settled();
+    let status = bed.wait_status(&run, "went_back");
+    assert_eq!(status["version"], OLD);
+    assert_eq!(status["failed_versions"], json!([NEW]));
+    assert!(status["words"].as_str().unwrap().contains("came back"), "{status}");
+    assert_eq!(run.report()["session"]["tabs"][0]["page"], page, "with the state as it was");
+    assert!(bed.log().contains("going back"), "{}", bed.log());
+    run.quit();
+}
+
+/// Failure: a lost or damaged record turns the switch back on, against what the user chose, and the app replaces itself. It's in the updater's own file.
+#[test]
+fn a_lost_record_doesnt_turn_automatic_updates_back_on() {
+    let Some(bed) = Bed::new() else { return };
+    let run = bed.start();
+    run.ok(&["settings", "--auto-update", "off"]);
+    let began = Instant::now();
+    while recto_update::saved::Saved::read(&bed.state.root.join("updates.json")).auto_update != Some(false) {
+        assert!(began.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    run.quit();
+    let _ = std::fs::remove_dir_all(bed.state.root.join("session"));
+    let run = bed.start();
+    assert_eq!(run.ok(&["settings"])["auto_update"], false, "still off");
     run.quit();
 }
 
@@ -345,7 +482,7 @@ fn an_installer_killed_after_the_swap_loses_nothing() {
     run.settled();
     run.ok(&["session", "save"]);
     let before = run.report();
-    bed.release_of(NEW, false);
+    bed.release_of(NEW, Broken::Not);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     run.ok(&["update", "install"]);
     let mut run = run;
@@ -386,7 +523,7 @@ fn a_closed_window_stays_closed_across_an_update() {
     run.settled();
     run.ok(&["qa", "window", "close"]);
     assert_eq!(run.ok(&["qa", "state"])["app"]["window_open"], false);
-    bed.release_of(NEW, false);
+    bed.release_of(NEW, Broken::Not);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     run.ok(&["update", "install"]);
     let run = bed.wait_for_new_app(run);
@@ -454,7 +591,7 @@ fn a_bad_release_never_touches_the_running_app() {
 fn the_real_rule_refuses_an_ad_hoc_build() {
     let Some(bed) = Bed::new() else { return };
     let run = bed.start_with(&[(TRUST_ENV, "developer-id")]);
-    bed.release_of(NEW, false);
+    bed.release_of(NEW, Broken::Not);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     run.ok(&["update", "install"]);
     let status = bed.wait_status(&run, "failed");
@@ -477,7 +614,7 @@ fn a_busy_app_waits_and_then_goes() {
     run.settled();
     run.ok(&["qa", "sheet", "open"]);
     let before = run.report();
-    bed.release_of(NEW, false);
+    bed.release_of(NEW, Broken::Not);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     run.ok(&["update", "install"]);
     let status = bed.wait_status(&run, "waiting");
@@ -515,7 +652,7 @@ fn a_cancelled_hand_off_doesnt_leave_the_app_frozen() {
     let file = long_document("alpha", 20);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    bed.release_of(NEW, false);
+    bed.release_of(NEW, Broken::Not);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     // There, as the check before the download looks for it, and it can't be run.
     use std::os::unix::fs::PermissionsExt as _;
@@ -542,7 +679,7 @@ fn an_automatic_update_waits_for_thirty_quiet_minutes() {
     run.ok(&["qa", "frontmost", "off"]);
     run.settled();
     assert_eq!(run.ok(&["settings"])["auto_update"], true, "on by default in anything that behaves as a release");
-    bed.release_of(NEW, false);
+    bed.release_of(NEW, Broken::Not);
     run.ok(&["qa", "note-input", "now"]);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     run.ok(&["qa", "update-tick", "now"]);
@@ -565,6 +702,26 @@ fn an_automatic_update_waits_for_thirty_quiet_minutes() {
     assert_eq!(run.report()["session"]["tabs"][0]["page"], 10);
     assert_eq!(run.report()["session"]["app"]["focus"]["app_frontmost"], false, "and it's still in the background");
     assert!(bed.log().contains("in the background"), "{}", bed.log());
+    run.quit();
+}
+
+/// Failure: an agent's installing or turning off updates isn't in the log of what changed things, which is where a person looks for what an agent did. That the refusals are logged too is in `a_development_build_only_asks_and_installing_needs_full`.
+#[test]
+fn what_an_agent_changes_about_updates_goes_in_the_changes_log() {
+    let Some(bed) = Bed::new() else { return };
+    let run = bed.start();
+    run.ok(&["settings", "--auto-update", "off"]);
+    run.ok(&["settings"]);
+    bed.release_of(NEW, Broken::Not);
+    assert_eq!(run.ok(&["update", "check"])["status"], "available");
+    run.ok(&["update", "install"]);
+    let run = bed.wait_for_new_app(run);
+    run.settled();
+    let changes = std::fs::read_to_string(&bed.state.paths.log).unwrap();
+    let lines: Vec<Value> = changes.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert!(lines.iter().any(|line| line["cmd"] == "update_install" && line["outcome"] == "ok"), "{changes}");
+    assert!(lines.iter().any(|line| line["cmd"] == "settings" && line["outcome"] == "ok" && line["details"]["auto_update"] == "off"), "{changes}");
+    assert!(!lines.iter().any(|line| line["cmd"] == "settings" && line["details"]["auto_update"].is_null()), "asking changes nothing: {changes}");
     run.quit();
 }
 
@@ -646,7 +803,7 @@ fn settings_and_the_menu_say_how_things_stand() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let threads = run.report()["memory"]["threads"].as_u64().unwrap();
-    bed.release_of(NEW, false);
+    bed.release_of(NEW, Broken::Not);
     run.ok(&["qa", "menu", "app.update"]);
     bed.wait_status(&run, "available");
     assert_eq!(item(&menu(&run), "app.update")["title"], format!("Update to {NEW}…"));
@@ -682,9 +839,9 @@ fn settings_and_the_menu_say_how_things_stand() {
     run.quit();
 }
 
-/// Failure: the updater costs something at rest: a thread, memory past small state, or wake-ups. A run with the timer armed and an offer waiting, against one with nothing armed, each settled and then watched. The numbers are what `SPEC.md` holds to. Only with `RECTO_UPDATE_MEASURE` set, as it takes half a minute, and on a release build if the number's to mean anything. The thread count is asserted, as it can't vary with load. Wake-ups and memory are printed, for a person to compare.
+/// **This measures, and asserts only that a timer's armed in one run and not in the other.** Wake-ups, CPU, threads and footprint are printed for a person: they vary too much with load to hold a test to, and a thread count at one moment read 9 and 10 at the same point. That a check leaves no thread of its own is asserted in `recto-update`, in `a_check_leaves_no_thread_behind`. Only with `RECTO_UPDATE_MEASURE` set, as it takes over a minute, and on a release build if the numbers are to mean anything.
 #[test]
-fn at_rest_the_updater_costs_nothing() {
+fn measure_what_the_updater_costs_at_rest() {
     if std::env::var_os("RECTO_UPDATE_MEASURE").is_none() {
         return;
     }
@@ -702,13 +859,12 @@ fn at_rest_the_updater_costs_nothing() {
     let dev_numbers = watch(&dev);
     dev.quit();
     let run = bed.start();
-    bed.release_of(NEW, false);
+    bed.release_of(NEW, Broken::Not);
     run.ok(&["settings", "--auto-update", "off"]);
     let armed_before_a_check = watch(&run);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     let armed_numbers = watch(&run);
     eprintln!("over 20 s at rest, wake-ups, CPU ms, threads, footprint bytes, next wake in ms:\n  nothing armed: {dev_numbers:?}\n  timer armed, before any check: {armed_before_a_check:?}\n  an offer waiting and a check done: {armed_numbers:?}");
-    assert_eq!(armed_numbers.2, dev_numbers.2, "no thread of its own at rest");
     assert!(armed_numbers.4.as_u64().is_some(), "and there's a timer armed");
     assert_eq!(dev_numbers.4, Value::Null, "with none for a development build");
     run.quit();

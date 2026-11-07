@@ -40,10 +40,22 @@ impl Files {
         self.work.join("outcome.json")
     }
 
-    /// What the new app writes at its first frame, which is what the installer's waiting for.
+    /// What the new app writes once it's come up: see [`crate::updater::Updater::first_frame`]. What the installer's waiting for.
     #[must_use]
     pub fn launch_ok(&self) -> PathBuf {
         self.work.join("launch-ok")
+    }
+
+    /// What the new app writes if it knows it hasn't come up, so the installer needn't wait to find out.
+    #[must_use]
+    pub fn launch_failed(&self) -> PathBuf {
+        self.work.join("launch-failed")
+    }
+
+    /// One installer at a time. Held for its whole life, and the system lets go if it's killed.
+    #[must_use]
+    pub fn installer_lock(&self) -> PathBuf {
+        self.work.join("installer.lock")
     }
 
     #[must_use]
@@ -81,8 +93,15 @@ pub struct TestLaunch {
 /// One install.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
+    /// Which install this is. An installer whose plan on disk has another is out of date, and stands down.
+    pub id: String,
     pub from: String,
     pub to: String,
+    /// The signature's hash of what was verified, so the installer knows it's swapping in those bytes and no others, however long it's been.
+    pub cdhash: String,
+    /// A test holding this to the real rule. A real build's installer holds to it whatever this says.
+    #[serde(default)]
+    pub team_required: bool,
     /// The one process to wait for.
     pub pid: u32,
     pub app: PathBuf,
@@ -106,7 +125,8 @@ impl Plan {
     pub fn read(file: &Path) -> Option<Self> {
         let bytes = local::read_private_file(file, MAX_PLAN_BYTES).ok()??;
         let plan: Self = serde_json::from_slice(&bytes).ok()?;
-        (parse_version(&plan.from).is_some() && parse_version(&plan.to).is_some() && plan.app.is_absolute() && plan.beside.is_absolute() && plan.root.is_absolute()).then_some(plan)
+        let cdhash_fine = plan.cdhash.is_empty() || (plan.cdhash.len() == 40 && plan.cdhash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        (!plan.id.is_empty() && cdhash_fine && parse_version(&plan.from).is_some() && parse_version(&plan.to).is_some() && plan.app.is_absolute() && plan.beside.is_absolute() && plan.root.is_absolute()).then_some(plan)
     }
 
     pub fn write(&self, file: &Path) -> std::io::Result<()> {
@@ -130,7 +150,13 @@ impl Plan {
     }
 }
 
-/// The hidden folder beside the app. Beside it, so the swap is on one volume. A dot, so it's not one of the things in Applications.
+/// A name for this install, that a later one can't have.
+#[must_use]
+pub fn new_id() -> String {
+    format!("{}-{}", std::process::id(), crate::wall_ms())
+}
+
+/// The hidden folder beside the app. Beside it, so the swap is on one volume. A dot, so it's not one of the things in Applications, and private, so nobody else can change what's waiting there.
 #[must_use]
 pub fn beside_app(app: &Path) -> Option<PathBuf> {
     Some(app.parent()?.join(".RectoPDF-update"))
@@ -163,6 +189,8 @@ pub enum OutcomeKind {
     NotInstalled,
     /// The new version was in place and didn't start, so the previous one came back.
     WentBack,
+    /// The new version was in place and didn't start, and there was nothing to go back to, or it couldn't be put back.
+    CouldntGoBack,
 }
 
 impl Outcome {
@@ -210,10 +238,10 @@ mod tests {
         local::ensure_private_dir(&dir).unwrap();
         let file = dir.join("plan.json");
         assert_eq!(Plan::read(&file), None);
-        let plan = Plan { from: "0.1.0".into(), to: "0.2.0".into(), pid: 7, app: "/a/RectoPDF.app".into(), beside: "/a/.RectoPDF-update".into(), root: "/s".into(), quit_at_ms: 1, background: false, quit_limit_ms: 1, start_limit_ms: 1, test: None };
+        let plan = Plan { id: "7-1".into(), cdhash: "a".repeat(40), team_required: false, from: "0.1.0".into(), to: "0.2.0".into(), pid: 7, app: "/a/RectoPDF.app".into(), beside: "/a/.RectoPDF-update".into(), root: "/s".into(), quit_at_ms: 1, background: false, quit_limit_ms: 1, start_limit_ms: 1, test: None };
         plan.write(&file).unwrap();
         assert_eq!(Plan::read(&file), Some(plan.clone()));
-        for wrong in [Plan { to: "2".into(), ..plan.clone() }, Plan { from: "x".into(), ..plan.clone() }, Plan { app: "relative".into(), ..plan.clone() }] {
+        for wrong in [Plan { to: "2".into(), ..plan.clone() }, Plan { from: "x".into(), ..plan.clone() }, Plan { app: "relative".into(), ..plan.clone() }, Plan { id: String::new(), ..plan.clone() }, Plan { cdhash: "\"or anything".into(), ..plan.clone() }] {
             wrong.write(&file).unwrap();
             assert_eq!(Plan::read(&file), None);
         }

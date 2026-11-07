@@ -19,7 +19,7 @@ while [ $# -gt 0 ]; do
     *) targets+=("$1"); shift ;;
   esac
 done
-[ ${#targets[@]} -gt 0 ] || targets=(pdf_bytes pdf_tree proto index select agent control edits record)
+[ ${#targets[@]} -gt 0 ] || targets=(pdf_bytes pdf_tree proto index select agent control edits record update)
 toolchain="${FUZZ_TOOLCHAIN:-nightly}"
 sanitizer="${FUZZ_SANITIZER:-none}"
 mkdir -p "$work"
@@ -46,6 +46,7 @@ max_len() {
     control) echo 262144 ;;
     record) echo 262144 ;;
     edits) echo 8192 ;;
+    update) echo 65536 ;;
   esac
 }
 

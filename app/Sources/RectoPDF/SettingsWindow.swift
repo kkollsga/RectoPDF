@@ -40,7 +40,7 @@ import AppKit
         refresh()
         if delegate.isQuiet {
             window.setFrameOrigin(NSPoint(x: -40_000, y: -40_000))
-        } else if let place, place.count == 2, NSScreen.screens.contains(where: { $0.visibleFrame.contains(NSPoint(x: place[0], y: place[1])) }) {
+        } else if let place, place.count == 2 {
             window.setFrameOrigin(NSPoint(x: place[0], y: place[1]))
         } else {
             window.center()

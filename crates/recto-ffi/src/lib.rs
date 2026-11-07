@@ -26,7 +26,7 @@ use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_render_service::Policy;
 use recto_reader::tiles::SavedPlace;
 use recto_session::HistorySource;
-use recto_session::record::{self, Appearance, AppRecord, AppSettings, ContentsScroll, FileStatus, FocusRecord, FocusView, Rect, ScreenNow, ScreenRecord, SettingsWindow, WindowRecord, look_at_file, place_window};
+use recto_session::record::{self, Appearance, AppRecord, ContentsScroll, FileStatus, FocusRecord, FocusView, Rect, ScreenNow, ScreenRecord, SettingsWindow, WindowRecord, look_at_file, place_window};
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsRowChange, ContentsView, DocLoader, FollowMove, WARM_PAPER, row_full_text, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TAB_ROW_HEIGHT, TabId, ViewSettings, sidebar_heights};
 use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
@@ -61,6 +61,8 @@ pub(crate) enum HandOffState {
     Done = 2,
 }
 
+/// The thread a first frame's news goes on: room to start a worker and draw, and only address space until it's used.
+const UPDATE_FRAME_STACK: usize = 1024 * 1024;
 /// How long a socket that's taken is tried again, in case what has it is on its way out.
 const SOCKET_PATIENCE: Duration = Duration::from_secs(1);
 /// How long a quit waits for the state to go out, before asking.
@@ -129,10 +131,15 @@ pub struct WindowPlacement {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    /// Go into full screen on showing. Only for an app that's come forward: it moves the user to another Space.
     pub full_screen: bool,
     /// Come forward. An app that was in the background when it quit reopens without taking the focus from anyone.
     pub activate: bool,
     pub focus_sidebar: bool,
+    /// This is an update arriving with the user doing something else. Nothing goes over what they're looking at, and nothing's made key: the window goes behind everything, and takes it from there when they come to it.
+    pub in_background: bool,
+    /// And it was in full screen, which it goes back into when they come to it.
+    pub full_screen_when_active: bool,
 }
 
 /// How it stands for a hand-off.
@@ -891,7 +898,7 @@ impl Inner {
         let app = lock(&self.app).clone();
         let following = lock(&self.contents_follow).is_following();
         let notice = lock(&self.host.notice).clone();
-        AppRecord { window: app.window, appearance: app.appearance, sidebar_width: Some(app.sidebar_width), panel_open: self.panel_open.load(Ordering::SeqCst), contents_scroll: Some(ContentsScroll { y: app.contents_y.unwrap_or(0.0), following }), focus: app.focus, notice, settings: AppSettings { auto_update: self.updates.switch_choice() }, settings_window: app.settings_window, window_closed: app.window_closed }
+        AppRecord { window: app.window, appearance: app.appearance, sidebar_width: Some(app.sidebar_width), panel_open: self.panel_open.load(Ordering::SeqCst), contents_scroll: Some(ContentsScroll { y: app.contents_y.unwrap_or(0.0), following }), focus: app.focus, notice, settings_window: app.settings_window, window_closed: app.window_closed }
     }
 
     /// Everything the record holds and QA compares: the record as it would be written, and each tab's edits in full.
@@ -1002,6 +1009,10 @@ impl Inner {
             }
             Ok(())
         })
+    }
+
+    fn note_nearby(&self) {
+        self.last_input_ms.store(u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
     fn note_input(&self) {
@@ -1463,7 +1474,7 @@ impl AppCore {
     /// There's no window to wait for, so this launch has come up as far as it goes.
     pub fn no_window_to_show(&self) {
         let updates = Arc::clone(&self.inner.updates);
-        let _ = std::thread::Builder::new().name("recto-update-frame".into()).stack_size(128 * 1024).spawn(move || updates.first_frame(recto_update::wall_ms()));
+        let _ = std::thread::Builder::new().name("recto-update-frame".into()).stack_size(UPDATE_FRAME_STACK).spawn(move || updates.first_frame(recto_update::wall_ms()));
     }
 
     /// The UI thread has woken.
@@ -1529,9 +1540,9 @@ impl AppCore {
     pub fn window_shown(&self, home: bool, tile_layers: u32) {
         let report = self.inner.engine.report().0;
         *lock(&self.inner.first_shown) = Some(json!({ "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"], "tile_layers": tile_layers, "ms_from_start": self.inner.started.elapsed().as_secs_f64() * 1000.0 }));
-        // The installer's waiting for this, off this thread, as it writes a small file only after an update.
+        // The installer's waiting for this, off this thread, as it writes a small file and may start a worker, and only for a version that's new here.
         let updates = Arc::clone(&self.inner.updates);
-        let _ = std::thread::Builder::new().name("recto-update-frame".into()).stack_size(128 * 1024).spawn(move || updates.first_frame(recto_update::wall_ms()));
+        let _ = std::thread::Builder::new().name("recto-update-frame".into()).stack_size(UPDATE_FRAME_STACK).spawn(move || updates.first_frame(recto_update::wall_ms()));
     }
 
     /// Where the new window goes, on the screens there are now. Rust's rule, from what was saved. In a quiet run it keeps its place off every screen, and only its size comes back.
@@ -1539,13 +1550,15 @@ impl AppCore {
         let app = lock(&self.inner.app).clone();
         let activate = app.focus.app_frontmost;
         let focus_sidebar = app.focus.view == FocusView::Sidebar;
-        let Some(saved) = app.window else { return WindowPlacement { saved: false, x: 0.0, y: 0.0, width: 0.0, height: 0.0, full_screen: false, activate, focus_sidebar } };
+        let in_background = updates::opens_in_background(self.inner.updates.arrived_by_update(), activate);
+        let Some(saved) = app.window else { return WindowPlacement { saved: false, x: 0.0, y: 0.0, width: 0.0, height: 0.0, full_screen: false, activate, focus_sidebar, in_background, full_screen_when_active: false } };
         if self.qa_mode {
-            return WindowPlacement { saved: true, x: -40_000.0, y: -40_000.0, width: saved.frame.width.max(record::WINDOW_MIN.0), height: saved.frame.height.max(record::WINDOW_MIN.1), full_screen: saved.full_screen, activate, focus_sidebar };
+            return WindowPlacement { saved: true, x: -40_000.0, y: -40_000.0, width: saved.frame.width.max(record::WINDOW_MIN.0), height: saved.frame.height.max(record::WINDOW_MIN.1), full_screen: saved.full_screen, activate, focus_sidebar, in_background: false, full_screen_when_active: false };
         }
         let now: Vec<ScreenNow> = screens.into_iter().map(|screen| ScreenNow { id: screen.id, name: screen.name, frame: Rect { x: screen.x, y: screen.y, width: screen.width, height: screen.height }, visible: Rect { x: screen.visible_x, y: screen.visible_y, width: screen.visible_width, height: screen.visible_height } }).collect();
         let place = place_window(&saved, &now);
-        WindowPlacement { saved: true, x: place.frame.x, y: place.frame.y, width: place.frame.width, height: place.frame.height, full_screen: place.full_screen, activate, focus_sidebar }
+        let (full_screen, full_screen_when_active) = updates::full_screen_on_showing(place.full_screen, in_background);
+        WindowPlacement { saved: true, x: place.frame.x, y: place.frame.y, width: place.frame.width, height: place.frame.height, full_screen, activate, focus_sidebar, in_background, full_screen_when_active }
     }
 
     /// The window moved, resized or went full screen. Off a window's delegate, so at most as often as those.
@@ -1629,6 +1642,16 @@ impl AppCore {
         self.inner.note_input();
     }
 
+    /// The pointer moved over the app, or something else that shows someone's there and isn't an action. Owner, 2026-11-07: "hasn't touched". One number stored, and it's only pressed keys and clicks that say a notice has been read.
+    pub fn note_user_nearby(&self) {
+        self.inner.note_nearby();
+    }
+
+    /// Seconds since the app was last touched, for QA.
+    pub fn seconds_since_input(&self) -> f64 {
+        self.inner.hand_off_check().seconds_since_input
+    }
+
     /// Whether an update could go now. Cheap: three counters and a clock.
     pub fn hand_off_check(&self) -> HandOffCheck {
         self.inner.hand_off_check()
@@ -1679,9 +1702,19 @@ impl AppCore {
         self.inner.settings_window_changed(open.then_some(SettingsWindow { x, y }));
     }
 
-    /// Where the Settings window was, if it was open.
-    pub fn settings_window_place(&self) -> Option<Vec<f64>> {
-        self.inner.settings_window().map(|place| vec![place.x, place.y])
+    /// Whether the Settings window was open.
+    pub fn settings_window_was_open(&self) -> bool {
+        self.inner.settings_window().is_some()
+    }
+
+    /// Where the Settings window goes on the screens there are now: where it was, if that's still on one. Otherwise wherever the host starts one.
+    pub fn settings_window_place(&self, screens: Vec<ScreenInfo>) -> Option<Vec<f64>> {
+        updates::settings_place(self.inner.settings_window(), &screens)
+    }
+
+    /// Whether this launch comes up behind what the user's doing: see [`WindowPlacement::in_background`].
+    pub fn opens_in_background(&self) -> bool {
+        updates::opens_in_background(self.inner.updates.arrived_by_update(), lock(&self.inner.app).focus.app_frontmost)
     }
 
     /// A quit was asked for, by the menu or the system. Everything's written, on a thread of its own, and `quit_answer` says what to do. Mac apps with Resume don't ask on the way out, and neither does this, as unsaved edits come back: closing a tab with them is where Don't Save, Cancel or Save belongs. It asks only if they couldn't be kept.
@@ -1747,7 +1780,6 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
                     lock(&inner.app).sidebar_width = record::sidebar_width(paper_set);
                 }
                 inner.panel_open.store(saved.panel_open, Ordering::SeqCst);
-                inner.updates.set_switch(saved.settings.auto_update);
                 {
                     let mut app = lock(&inner.app);
                     app.settings_window = saved.settings_window;

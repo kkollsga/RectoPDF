@@ -3,7 +3,9 @@
 # lands in app/build/release/, and nothing is published.
 #
 #   app/release-zip.sh [--allow-dirty]            A local check: signed ad hoc, not notarized, not distributable.
-#   app/release-zip.sh --signed [--allow-dirty]   The release (release.yml): Developer ID signed and notarized.
+#   app/release-zip.sh --signed [--allow-dirty]   The release: Developer ID signed and notarized. Builds, then signs.
+#   app/release-zip.sh --built-only               Builds a release, to be signed by what comes next, with no keys about.
+#   app/release-zip.sh --signed --already-built   Signs what --built-only built. It's what release.yml does, so no dependency's build script runs anywhere near a signing key.
 #
 # --signed needs (docs/RELEASING.md, "What the owner has to add"):
 #   RECTO_SIGN_IDENTITY    "Developer ID Application: <name> (<team>)", of TEAM_ID in crates/recto-update/src/lib.rs
@@ -17,12 +19,14 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$APP_DIR/.." && pwd)"
-ALLOW_DIRTY=0; SIGNED=0
+ALLOW_DIRTY=0; SIGNED=0; BUILT_ONLY=0; ALREADY_BUILT=0
 for a in "$@"; do
     case "$a" in
         --allow-dirty) ALLOW_DIRTY=1 ;;
         --signed) SIGNED=1 ;;
-        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+        --built-only) BUILT_ONLY=1 ;;
+        --already-built) ALREADY_BUILT=1 ;;
+        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "unknown argument: $a" >&2; exit 2 ;;
     esac
 done
@@ -57,9 +61,20 @@ echo "==> RectoPDF $VERSION ($TAG), commit $(git -C "$REPO" rev-parse --short HE
 
 # Compiled in: this is what makes it a release, and it can't be turned on or off afterwards.
 export RECTO_RELEASE=1
-"$APP_DIR/build.sh" --release
-
 APP="$APP_DIR/build/RectoPDF.app"
+if [ "$ALREADY_BUILT" = 1 ]; then
+    [ -x "$APP/Contents/MacOS/recto-updater" ] || { echo "there's no built app to sign" >&2; exit 1; }
+    # Built here by --built-only, from this very commit, so the bundle says the version it's about to be released as.
+    "$APP_DIR/build.sh" --sign-only
+else
+    if [ "$BUILT_ONLY" = 1 ]; then unset RECTO_SIGN_IDENTITY; fi
+    "$APP_DIR/build.sh" --release
+fi
+if [ "$BUILT_ONLY" = 1 ]; then
+    echo "==> Built, not signed: app/release-zip.sh --signed --already-built does the rest."
+    exit 0
+fi
+
 OUT="$APP_DIR/build/release"
 ZIP="RectoPDF-$VERSION.zip"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
@@ -77,9 +92,58 @@ done
 echo "==> Check a release reads no override"
 answer="$(RECTO_UPDATE_REPO=http://127.0.0.1:1 RECTO_UPDATE_TRUST=any RECTO_UPDATER_DIE_AT=swapped "$APP/Contents/MacOS/recto-updater" source)"
 case "$answer" in
-    *"\"mode\":\"release\""*"\"repo\":\"$REPO_URL\""*"\"release_build\":true"*) echo "    $answer" ;;
+    *"\"mode\":\"release\""*"\"repo\":\"$REPO_URL\""*"\"release_build\":true"*"\"trust\":\"developer_id\""*"\"takes_test_hooks\":false"*) echo "    $answer" ;;
     *) echo "this build would use an override: $answer" >&2; exit 1 ;;
 esac
+
+# The real bundle, as signed, in a quiet run, which is the only thing that shows a renderer loading under the hardened
+# runtime. It's what every copy would move to: a first frame on its own isn't enough. With the overrides set, the app
+# has to say it's a release too, and refuse a test's clock.
+echo "==> Run the signed app: it starts, opens a PDF and draws it"
+SMOKE="$(mktemp -d "${TMPDIR:-/tmp}/recto-release-XXXXXX")"
+chmod 700 "$SMOKE"
+smoke_cleanup() { RECTO_STATE_DIR="$SMOKE/s" "$APP/Contents/MacOS/recto" qa quit now >/dev/null 2>&1 || true; rm -rf "$SMOKE"; }
+trap 'smoke_cleanup; rm -rf "$WORK"' EXIT
+cat > "$SMOKE/one.pdf" <<'PDF'
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 27 >>
+stream
+1 0 0 rg 72 72 400 400 re f
+endstream
+endobj
+trailer
+<< /Size 5 /Root 1 0 R >>
+%%EOF
+PDF
+export RECTO_STATE_DIR="$SMOKE/s"
+mkdir -p "$RECTO_STATE_DIR"; chmod 700 "$RECTO_STATE_DIR"
+RECTO_UPDATE_REPO=http://127.0.0.1:1 RECTO_UPDATE_TRUST=any "$APP/Contents/MacOS/recto" qa start --app "$APP/Contents/MacOS/RectoPDF" --time-limit 2m >/dev/null
+"$APP/Contents/MacOS/recto" open "$SMOKE/one.pdf" >/dev/null
+"$APP/Contents/MacOS/recto" qa wait-settled --timeout 60s >/dev/null
+STATE_JSON="$("$APP/Contents/MacOS/recto" qa state --json)"
+printf '%s' "$STATE_JSON" | python3 -I -c '
+import json, sys
+state = json.load(sys.stdin)["data"]
+pages = state["app"]["pages"]
+assert state["reader"]["settled"] is True, "it never settled"
+assert state["reader"]["pages"] == 1, "the PDF did not open"
+assert pages["tile_layers"] > 0, "nothing was drawn: %r" % pages
+assert state["memory"]["worker_bytes"] > 0 or state["reader"]["tiles"].get("attached", 0) > 0, "no worker drew it"
+assert state["update"]["build"] == "release", "the app reads an override: %r" % state["update"]
+' || { echo "the signed app didn't draw" >&2; exit 1; }
+if "$APP/Contents/MacOS/recto" qa update-clock 1000 >/dev/null 2>&1; then echo "a release has a test's clock" >&2; exit 1; fi
+"$APP/Contents/MacOS/recto" qa quit now >/dev/null
+unset RECTO_STATE_DIR
 
 team_of() { codesign -dv --verbose=2 "$1" 2>&1 | sed -n 's/^TeamIdentifier=//p'; }
 
@@ -121,10 +185,10 @@ MIN_MACOS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Co
 printf '{"version":"%s","tag":"%s","minimum_macos":"%s","zip":"%s","sha256":"%s"}\n' \
     "$VERSION" "$TAG" "$MIN_MACOS" "$ZIP" "$ZIP_SHA" > "$OUT/latest.json"
 
-echo "==> Check the zip as the updater will"
+echo "==> Check the zip as the updater will: its own reader, not the system's"
 CHECK="$WORK/check"; mkdir -p "$CHECK"
 (cd "$OUT" && shasum -a 256 -c SHA256SUMS >/dev/null)
-ditto -x -k "$OUT/$ZIP" "$CHECK"
+"$APP/Contents/MacOS/recto-updater" check-zip "$OUT/$ZIP" "$CHECK"
 codesign --verify --deep --strict "$CHECK/RectoPDF.app"
 [ -x "$CHECK/RectoPDF.app/Contents/MacOS/recto-updater" ] || { echo "the zipped app has no installer, so it could never update again" >&2; exit 1; }
 if [ "$SIGNED" = 1 ]; then

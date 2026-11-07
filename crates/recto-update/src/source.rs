@@ -99,6 +99,14 @@ impl Source {
         }
     }
 
+    #[must_use]
+    pub fn trust_name(&self) -> &'static str {
+        match self.trust {
+            Trust::DeveloperId { .. } => "developer_id",
+            Trust::AnySignature => "any_signature",
+        }
+    }
+
     /// Where the release's description is.
     #[must_use]
     pub fn latest_url(&self) -> String {
