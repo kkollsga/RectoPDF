@@ -818,6 +818,10 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
     let mut coverage = found.coverage(plan, &reader);
     coverage["pages_with_these_words"] = json!(matched.len());
     coverage["top_pages_left_out_for_time"] = json!(left_out);
+    // There's no count of hits here to be at least anything.
+    if let Some(coverage) = coverage.as_object_mut() {
+        coverage.remove("hits_at_least");
+    }
     let mut answer = json!({
         "tab": plan.tab,
         "mode": "ranked",

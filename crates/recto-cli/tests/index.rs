@@ -1074,6 +1074,7 @@ fn a_ranked_answer_says_what_it_is() {
     assert_eq!(hits[0]["line"], 1);
     assert_eq!(data["coverage"]["pages_with_these_words"], 9, "{ranked}");
     assert_eq!(data["coverage"]["hits_total"], Value::Null, "a ranked answer isn't every hit, so it gives no total: {ranked}");
+    assert!(data["coverage"].get("hits_at_least").is_none(), "a count of 0 beside real hits: {ranked}");
     assert_eq!(data["coverage"]["no_text_pages"], serde_json::json!([11]), "{ranked}");
     let note = data["ranked_note"].as_str().unwrap();
     assert!(note.contains("isn't every hit") && note.contains("count") && !note.contains("relevan"), "{note}");
