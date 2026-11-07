@@ -6,7 +6,7 @@ mod common;
 
 use common::{State, bin};
 use recto_agent::{Level, exit};
-use recto_testpdf::{Object, Page, TempPdf, build, form_bomb, pages, text_lines};
+use recto_testpdf::{Object, Page, TempPdf, build, form_bomb, hidden_text_page, pages, text_lines};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::Command;
@@ -427,7 +427,7 @@ fn what_appkit_calls_reaches_the_app() {
     let checked = found.as_object().unwrap();
     let failed: Vec<&String> = checked.iter().filter(|(_, ok)| **ok != true).map(|(name, _)| name).collect();
     assert!(failed.is_empty(), "these don't reach the app: {failed:?}\n{found}");
-    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "corner_covers_the_buttons", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
+    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "corner_covers_the_buttons", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "copy_is_grey_with_nothing_selected", "select_all_can_be_chosen", "select_all_key_reaches_the_app", "select_all_selects", "copy_is_enabled_with_something_selected", "copy_key_reaches_the_app", "services_arent_offered_what_they_didnt_ask_for", "services_arent_offered_nothing", "services_write_nothing_with_nothing_selected", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
         assert!(checked.contains_key(name), "{name} wasn't checked: {found}");
     }
     run.ok(&["view", "--focus", "on"]);
@@ -575,8 +575,8 @@ fn the_menu_bar_and_the_agent_icon() {
     run.settled();
     let state = run.report();
     let titles: Vec<&str> = state["app"]["menu_bar"].as_array().unwrap().iter().map(|menu| menu["title"].as_str().unwrap()).collect();
-    assert_eq!(titles, ["RectoPDF", "File", "View"], "{state}");
-    let view = &state["app"]["menu_bar"][2]["items"];
+    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View"], "{state}");
+    let view = &state["app"]["menu_bar"][3]["items"];
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
     assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Focus View", "Show Agent Icon"]);
     assert_eq!(state["app"]["agent_icon"], true);
@@ -584,7 +584,7 @@ fn the_menu_bar_and_the_agent_icon() {
     run.ok(&["qa", "menu", "view.agent_icon"]);
     let hidden = wait_for(&run, |state| state["app"]["agent_icon"] == false);
     assert_eq!(hidden["app"]["pages"]["scroller_top_inset"], 0.0, "the whole way with no star: {hidden}");
-    assert_eq!(hidden["app"]["menu_bar"][2]["items"][5]["checked"], false, "{hidden}");
+    assert_eq!(hidden["app"]["menu_bar"][3]["items"][5]["checked"], false, "{hidden}");
     assert_eq!(run.ok(&["view"])["agent_icon"], false, "the same setting `recto view` has");
     assert!(run.state.root.join("agent-icon-hidden").exists(), "remembered");
     run.ok(&["view", "--agent-icon", "on"]);
@@ -989,4 +989,430 @@ fn a_shortened_name_can_be_read_in_full() {
     assert_eq!((plain["reveal"]["cut_off"].clone(), plain["reveal"]["shown"].clone()), (json!(false), json!(false)), "{plain}");
     assert_eq!(run.ok(&["qa", "reveal", "none"])["reveal"]["shown"], false);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Two pages with two columns of words, the left drawn first: what selecting across a gutter and a page break is about.
+fn columns_and_pages() -> TempPdf {
+    let page = |name: &str| {
+        let mut content = String::from("BT /F1 12 Tf 14 TL 72 720 Td\n");
+        for line in ["left one", "left two", "left three"] {
+            content.push_str(&format!("({name} {line}) Tj T*\n"));
+        }
+        content.push_str("ET\nBT /F1 12 Tf 14 TL 340 720 Td\n");
+        for line in ["right one", "right two", "right three"] {
+            content.push_str(&format!("({name} {line}) Tj T*\n"));
+        }
+        content.push_str("ET\n");
+        Page::new(content.into_bytes())
+    };
+    TempPdf::new("columns.pdf", &pages(&[page("First"), page("Second")]))
+}
+
+/// Where a rectangle of `recto select` is, as `qa mouse-*` takes it: this far along it, in the middle of its height.
+fn place_on(run: &Run, page: u32, rect: usize, along: f64) -> String {
+    let found = run.ok(&["select", &page.to_string()]);
+    let rect = &found["pages"][0]["rects"][rect];
+    format!("{page}:{},{}", rect[0].as_f64().unwrap() + rect[2].as_f64().unwrap() * along, rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap() / 2.0)
+}
+
+fn copied(run: &Run) -> String {
+    run.ok(&["qa", "copied"])["untrusted"]["text"].as_str().unwrap_or_default().to_string()
+}
+
+fn copy_now(run: &Run) {
+    run.ok(&["qa", "menu", "edit.copy"]);
+    run.settled();
+}
+
+fn menu_item(state: &Value, id: &str) -> Value {
+    state["app"]["menu_bar"].as_array().unwrap().iter().flat_map(|menu| menu["items"].as_array().unwrap()).find(|item| item["id"] == id).unwrap_or_else(|| panic!("{id} isn't on the menu bar: {state}")).clone()
+}
+
+/// Failure: a drag in the real app selects something other than `recto select` says, draws into a page's tiles instead of a layer of its own, or copies in the wrong order. The whole path: window coordinates, the document's, Rust, the layer, Edit > Copy, the clipboard. And the real clipboard isn't the one a quiet run uses.
+#[test]
+fn a_drag_over_columns_selects_and_copies_in_reading_order_in_the_app() {
+    let Some(run) = Run::start() else { return };
+    let file = columns_and_pages();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let tiles_before = run.report()["reader"]["counts"]["drawn"].clone();
+    // The second line of the left column, to the second of the right.
+    run.ok(&["qa", "mouse-down", &place_on(&run, 1, 1, 0.0)]);
+    run.ok(&["qa", "mouse-drag", &place_on(&run, 1, 4, 1.0)]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let state = run.report();
+    assert_eq!(state["reader"]["selection"]["selected"], true, "{state}");
+    assert_eq!(state["app"]["pages"]["highlight_layers"], 1, "{state}");
+    assert_eq!(state["app"]["pages"]["highlight_rects"], 4, "one a line: {state}");
+    assert_eq!(state["reader"]["counts"]["drawn"], tiles_before, "selecting draws no tile: {state}");
+    copy_now(&run);
+    assert_eq!(copied(&run), "First left two\nFirst left three\nFirst right one\nFirst right two");
+    assert!(run.ok(&["qa", "copied"])["clipboard"].as_str().unwrap().starts_with("com.rectopdf.qa."), "a quiet run never touches the real clipboard");
+    assert_eq!(run.report()["hangs"]["over_2s"], 0);
+    // What the Services menu is given is that same text, there and then, since it can't wait.
+    let services = run.ok(&["qa", "services"]);
+    assert_eq!((&services["offers_text"], &services["written"]), (&json!(true), &json!(true)), "{services}");
+    assert_eq!(services["untrusted"]["text"].as_str().unwrap(), copied(&run));
+    run.ok(&["qa", "mouse-down", &place_on(&run, 1, 1, 0.0)]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    assert_eq!(run.ok(&["qa", "services"])["offers_text"], false, "with nothing selected it offers nothing");
+}
+
+/// Failure: a selection stops at a page's edge, or draws only on one page, or Select All means the page in view, when on a Mac it's the document.
+#[test]
+fn a_selection_crosses_pages_and_select_all_is_the_document() {
+    let Some(run) = Run::start() else { return };
+    let file = columns_and_pages();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "zoom", "0.5"]);
+    run.settled();
+    let visible = run.report()["reader"]["visible_pages"].as_array().unwrap().len();
+    assert!(visible >= 2, "both pages have to show for this: {visible}");
+    run.ok(&["qa", "mouse-down", &place_on(&run, 1, 5, 0.0)]);
+    run.ok(&["qa", "mouse-drag", &place_on(&run, 2, 0, 1.0)]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let state = run.report();
+    assert_eq!(state["app"]["pages"]["highlight_layers"], 2, "a layer on each page: {state}");
+    copy_now(&run);
+    assert_eq!(copied(&run), "First right three\nSecond left one");
+    run.ok(&["qa", "menu", "edit.select_all"]);
+    run.settled();
+    assert_eq!(run.report()["reader"]["selection"]["end"]["page"], 2);
+    copy_now(&run);
+    let all = copied(&run);
+    assert!(all.starts_with("First left one") && all.ends_with("Second right three"), "{all}");
+    assert_eq!(all, run.ok(&["copy", "--all"])["untrusted"]["text"], "the same as `recto copy --all`");
+}
+
+/// Failure: at another zoom a click lands on another word, since the view's coordinates and the page's differ by the fit and the magnification. It goes in by the window's coordinates, as the mouse does, so what's between them is what's being tested.
+#[test]
+fn a_click_lands_on_the_same_word_at_any_zoom_in_the_app() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("zoom.pdf", &pages(&[Page::new(text_lines(&["Alpha beta gamma delta epsilon zeta"]))]));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let found = run.ok(&["select", "--page", "1", "--chars", "11-16"]);
+    assert_eq!(found["untrusted"]["text"], "gamma");
+    let rect = &found["pages"][0]["rects"][0];
+    let place = format!("1:{},{}:2", rect[0].as_f64().unwrap() + rect[2].as_f64().unwrap() / 2.0, rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap() / 2.0);
+    for zoom in ["1", "0.5", "1.5", "2.5", "4"] {
+        run.ok(&["qa", "zoom", zoom]);
+        run.settled();
+        run.ok(&["qa", "mouse-down", &place]);
+        run.ok(&["qa", "mouse-up"]);
+        run.settled();
+        copy_now(&run);
+        assert_eq!(copied(&run), "gamma", "at {zoom}x");
+        let state = run.report();
+        assert_eq!(state["app"]["pages"]["highlight_layers"], 1, "at {zoom}x: {state}");
+    }
+}
+
+/// Failure: a word on a rotated page can't be clicked, because the page's layer and the page's boxes are turned differently in the host and the worker.
+#[test]
+fn a_click_on_a_rotated_page_in_the_app_takes_what_is_there() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("turned.pdf", &pages(&[Page { content: text_lines(&["Words on a turned page"]), page_extra: "/Rotate 90".to_string(), media: (612.0, 792.0) }]));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let found = run.ok(&["select", "--page", "1", "--chars", "0-5"]);
+    let rect = &found["pages"][0]["rects"][0];
+    run.ok(&["qa", "mouse-down", &format!("1:{},{}:2", rect[0].as_f64().unwrap() + rect[2].as_f64().unwrap() / 2.0, rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap() / 2.0)]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    copy_now(&run);
+    assert_eq!(copied(&run), "Words");
+}
+
+/// Failure: Copy is enabled with nothing selected or stays grey with something, Select All works with nothing open, a shift-click doesn't extend, or a click elsewhere leaves a highlight up. What AppKit says of the real menu items, and not what Rust's rule would.
+#[test]
+fn the_menu_goes_with_the_selection_and_clicks_do_what_they_do_on_a_mac() {
+    let Some(run) = Run::start() else { return };
+    let home = run.report();
+    assert_eq!(menu_item(&home, "edit.copy")["enabled"], false, "{home}");
+    assert_eq!(menu_item(&home, "edit.select_all")["enabled"], false, "nothing's open: {home}");
+    let file = TempPdf::new("words.pdf", &pages(&[Page::new(text_lines(&["Alpha beta gamma delta", "Second line of words"]))]));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let open = run.report();
+    assert_eq!(menu_item(&open, "edit.copy")["enabled"], false, "nothing selected: {open}");
+    assert_eq!(menu_item(&open, "edit.select_all")["enabled"], true, "{open}");
+    assert_eq!(menu_item(&open, "edit.copy")["key"], "c");
+    let first = place_on(&run, 1, 0, 0.5);
+    run.ok(&["qa", "mouse-down", &format!("{first}:3")]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let line = run.report();
+    assert_eq!(line["reader"]["selection"]["unit"], "line", "a third click takes the line: {line}");
+    assert_eq!(menu_item(&line, "edit.copy")["enabled"], true, "{line}");
+    copy_now(&run);
+    assert_eq!(copied(&run), "Alpha beta gamma delta");
+    // A click puts the place there, and shift extends from it.
+    run.ok(&["qa", "mouse-down", &place_on(&run, 1, 0, 0.0)]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let cleared = run.report();
+    assert_eq!(cleared["reader"]["selection"]["selected"], false, "{cleared}");
+    assert_eq!(cleared["app"]["pages"]["highlight_layers"], 0, "{cleared}");
+    assert_eq!(menu_item(&cleared, "edit.copy")["enabled"], false, "{cleared}");
+    run.ok(&["qa", "mouse-down", &format!("{}:1:shift", place_on(&run, 1, 1, 1.0))]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    copy_now(&run);
+    assert_eq!(copied(&run), "Alpha beta gamma delta\nSecond line of words");
+}
+
+/// Failure: the I-beam shows over blank paper or the margin, or never comes, or a page with no text gets one.
+#[test]
+fn the_pointer_is_an_i_beam_over_text_and_only_there() {
+    let Some(run) = Run::start() else { return };
+    let scan = Page::new(b"0.5 g 100 100 300 300 re f".to_vec());
+    let file = TempPdf::new("pointer.pdf", &pages(&[Page::new(text_lines(&["Words on the first page"])), scan]));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "zoom", "0.5"]);
+    run.settled();
+    let on_text = place_on(&run, 1, 0, 0.5);
+    let cursor = |place: &str| run.ok(&["qa", "pointer", place]);
+    cursor(&on_text);
+    // Its page is read when there's nothing better to do. A move after that says what's there.
+    run.settled();
+    assert_eq!(cursor(&on_text)["pages"]["cursor"], "ibeam");
+    assert_eq!(cursor("1:300,600")["pages"]["cursor"], "arrow", "blank paper");
+    assert_eq!(cursor("1:-20,68")["pages"]["cursor"], "arrow", "the margin");
+    cursor("2:200,300");
+    run.settled();
+    assert_eq!(cursor("2:200,300")["pages"]["cursor"], "arrow", "a page with no text");
+}
+
+/// Failure: a scan errors or selects something when dragged over, Copy is offered with nothing to copy, or the UI thread waits on it.
+#[test]
+fn a_page_with_no_text_in_the_app_selects_nothing() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("scan.pdf", &pages(&[Page::new(b"0.5 g 100 100 300 300 re f".to_vec())]));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "mouse-down", "1:150,500:2"]);
+    run.ok(&["qa", "mouse-drag", "1:300,600"]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let state = run.report();
+    assert_eq!(state["reader"]["selection"]["selected"], false, "{state}");
+    assert_eq!(state["app"]["pages"]["highlight_layers"], 0, "{state}");
+    assert_eq!(menu_item(&state, "edit.copy")["enabled"], false, "{state}");
+    // Select All on nothing but a scan: it can be chosen, and it says there's nothing, and the clipboard's left alone.
+    run.ok(&["qa", "menu", "edit.select_all"]);
+    run.settled();
+    copy_now(&run);
+    let after = wait_for(&run, |state| state["app"]["copy_notice"].is_object());
+    assert!(after["app"]["copy_notice"]["text"].as_str().unwrap().contains("no text"), "{after}");
+    assert_eq!(copied(&run), "");
+}
+
+/// Failure: hidden text reaches the clipboard, and nothing says some was left out, or the notice sits on the page. Where it is, and what it says, is what the reader goes by.
+#[test]
+fn hidden_text_stays_off_the_clipboard_and_a_quiet_notice_says_so() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("hidden.pdf", &pages(&[Page::new(hidden_text_page())]));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "edit.select_all"]);
+    run.settled();
+    copy_now(&run);
+    let text = copied(&run);
+    assert!(text.contains("VISIBLE-SENTINEL") && !text.contains("HIDDEN-"), "{text}");
+    let state = wait_for(&run, |state| state["app"]["copy_notice"].is_object());
+    assert!(state["app"]["copy_notice"]["text"].as_str().unwrap().contains("hidden"), "{state}");
+    assert_eq!(state["app"]["copy_notice"]["frame_ok"], true, "{state}");
+    assert!(state["app"]["copy_notice"]["button"].is_null(), "nothing to choose: {state}");
+}
+
+/// Failure: a drag past the bottom of the window doesn't scroll, or keeps scrolling after the button's let go, with a timer left running. A selection longer than a window can't be made without this.
+#[test]
+fn a_drag_past_the_edge_scrolls_until_it_is_let_go() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(20);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let first = place_on(&run, 1, 0, 0.0);
+    run.ok(&["qa", "mouse-down", &first]);
+    let before = run.report()["app"]["pages"]["scroll_y"].as_f64().unwrap();
+    // A long way down the document, which is past the bottom of the view.
+    let dragging = run.ok(&["qa", "mouse-drag", "10:100,100"]);
+    assert_eq!(dragging["pages"]["autoscrolling"], true, "{dragging}");
+    let moved = wait_for(&run, |state| state["app"]["pages"]["scroll_y"].as_f64().unwrap() > before + 50.0);
+    assert_eq!(moved["reader"]["selection"]["dragging"], true, "{moved}");
+    let done = run.ok(&["qa", "mouse-up"]);
+    assert_eq!(done["pages"]["autoscrolling"], false, "{done}");
+    let stopped = done["pages"]["scroll_y"].as_f64().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(run.report()["app"]["pages"]["scroll_y"].as_f64().unwrap(), stopped, "nothing's scrolling now");
+    assert_eq!(run.report()["reader"]["selection"]["selected"], true);
+}
+
+/// Failure: text read for a selection stays behind when the tab goes or the window closes, and a cold tab's cost grows by a page's text, or a highlight comes back on the wrong document. A selection is what's on screen.
+#[test]
+fn another_tab_or_a_closed_window_holds_no_text() {
+    let Some(run) = Run::start() else { return };
+    let (one, two) = (TempPdf::new("one.pdf", &pages(&[Page::new(text_lines(&["First document's words"]))])), TempPdf::new("two.pdf", &pages(&[Page::new(text_lines(&["Second document's words"]))])));
+    run.ok(&["open", one.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "mouse-down", &format!("{}:2", place_on(&run, 1, 0, 0.5))]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    assert!(run.report()["reader"]["selection"]["text_bytes_held"].as_u64().unwrap() > 0);
+    run.ok(&["open", two.0.to_str().unwrap()]);
+    let moved = wait_for(&run, |state| state["reader"]["selection"]["text_pages_held"] == 0);
+    assert_eq!(moved["reader"]["selection"]["selected"], false, "{moved}");
+    run.settled();
+    assert_eq!(run.report()["app"]["pages"]["highlight_layers"], 0);
+    run.ok(&["qa", "mouse-down", &format!("{}:2", place_on(&run, 1, 0, 0.5))]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["pages"]["highlight_layers"], 1);
+    run.ok(&["qa", "window", "close"]);
+    assert_eq!(run.report()["reader"]["selection"]["text_pages_held"], 0, "a closed window holds none");
+    run.ok(&["qa", "window", "open"]);
+    run.settled();
+    let back = run.report();
+    assert_eq!(back["reader"]["selection"]["selected"], true, "the selection's still there to come back to: {back}");
+    assert_eq!(back["app"]["pages"]["highlight_layers"], 1, "and it shows: {back}");
+}
+
+/// Failure: the selection script an agent runs goes out of date, as a script nothing runs does.
+#[test]
+fn the_selection_script_passes() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("script.pdf", &pages(&[Page::new(text_lines(&["Words at the top of the first page", "with more under them"])), Page::new(text_lines(&["Words at the top of the second page"]))]));
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/qa/selection.qa");
+    let output = run.state.command().args(["qa", "run", script.to_str().unwrap(), "--json"]).env("RECTO_QA_PDF", &file.0).output().unwrap();
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["data"]["passed"], true, "{reply}");
+}
+
+/// A file anyone can read and that asks not to be copied.
+fn restricted_pdf() -> TempPdf {
+    use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+    let bytes = pages(&[Page::new(text_lines(&["Words that ask not to be copied"]))]);
+    let mut document = lopdf::Document::load_mem(&bytes).unwrap();
+    document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));
+    let state = EncryptionState::try_from(EncryptionVersion::V2 { document: &document, owner_password: "owner", user_password: "", key_length: 128, permissions: Permissions::all() - Permissions::COPYABLE }).unwrap();
+    document.encrypt(&state).unwrap();
+    let mut out = Vec::new();
+    document.save_to(&mut out).unwrap();
+    TempPdf::new("restricted.pdf", &out)
+}
+
+/// Failure: a file that asks not to be copied is copied with nothing said, or refuses with nothing to do about it. The coordinator's default, until the owner says: a small notice, and "Copy anyway", through the button itself.
+#[test]
+fn a_copy_restricted_file_offers_copy_anyway() {
+    let Some(run) = Run::start() else { return };
+    let file = restricted_pdf();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "mouse-down", &format!("{}:3", place_on_anyway(&run))]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    assert_eq!(run.report()["reader"]["selection"]["selected"], true, "selecting isn't what's restricted");
+    copy_now(&run);
+    let asked = wait_for(&run, |state| state["app"]["copy_notice"].is_object());
+    assert!(asked["app"]["copy_notice"]["text"].as_str().unwrap().contains("permissions"), "{asked}");
+    assert_eq!(asked["app"]["copy_notice"]["button"], "Copy anyway", "{asked}");
+    assert_eq!(copied(&run), "", "nothing's on the clipboard yet");
+    run.ok(&["qa", "notice-button"]);
+    run.settled();
+    assert_eq!(copied(&run), "Words that ask not to be copied");
+    let (reply, status) = run.state.json(&["qa", "notice-button"]);
+    assert_eq!(status, exit::FAILED, "no notice now: {reply}");
+}
+
+/// The middle of the first line. `recto select` gives rectangles for a restricted file too, and no text.
+fn place_on_anyway(run: &Run) -> String {
+    place_on(run, 1, 0, 0.5)
+}
+
+/// Failure: `qa menu` chooses an item the real menu has greyed out, which a person can't do, so what's tested is a path nobody takes: `qa menu edit.copy` with nothing selected said it was copying, for good.
+#[test]
+fn a_greyed_out_menu_item_cant_be_chosen_by_qa_either() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let (reply, status) = run.state.json(&["qa", "menu", "edit.copy"]);
+    assert_eq!(status, exit::FAILED, "it's greyed out: {reply}");
+    assert_eq!(run.report()["reader"]["selection"]["copying"], false);
+    run.ok(&["qa", "menu", "edit.select_all"]);
+    run.settled();
+    run.ok(&["qa", "menu", "edit.copy"]);
+    run.settled();
+    assert_eq!(run.report()["reader"]["selection"]["copying"], false, "and it finishes");
+}
+
+/// Failure: an unsaved edit leaves a selection on what's now another page, a copy gives what's no longer there, or the wrong page's words come off the clipboard. A page deleted is pages moved, and what was selected on them is gone. A word then comes from where it now is.
+#[test]
+fn a_selection_during_an_unsaved_edit_follows_what_is_on_screen() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("edits.pdf", &pages(&[Page::new(text_lines(&["Alpha page words"])), Page::new(text_lines(&["Bravo page words"])), Page::new(text_lines(&["Charlie page words"]))]));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "zoom", "0.5"]);
+    run.settled();
+    let line = "1:90,72:2";
+    run.ok(&["qa", "mouse-down", &line.replacen('1', "2", 1)]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    assert_eq!(run.report()["reader"]["selection"]["selected"], true);
+    run.ok(&["page", "delete", "1"]);
+    let moved = wait_for(&run, |state| state["reader"]["pages"] == 2);
+    assert_eq!(moved["reader"]["selection"]["selected"], false, "{moved}");
+    run.settled();
+    assert_eq!(run.report()["app"]["pages"]["highlight_layers"], 0);
+    // Bravo is the first page now.
+    run.ok(&["qa", "mouse-down", line]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    copy_now(&run);
+    assert_eq!(copied(&run), "Bravo");
+    assert_eq!(run.ok(&["copy", "--all"])["untrusted"]["text"], "Bravo page words\nCharlie page words", "what's on screen, in that order");
+    // A rotation that isn't saved isn't drawn, so a selection on that page is as it was.
+    run.ok(&["page", "rotate", "1", "--by", "90"]);
+    run.settled();
+    let turned = run.report();
+    assert_eq!(turned["reader"]["selection"]["selected"], true, "{turned}");
+    copy_now(&run);
+    assert_eq!(copied(&run), "Bravo");
+    run.ok(&["undo"]);
+    run.ok(&["undo"]);
+    let back = wait_for(&run, |state| state["reader"]["pages"] == 3);
+    assert_eq!(back["reader"]["selection"]["selected"], false, "the pages moved back, so that's another page: {back}");
+}
+
+/// Failure: an agent's use of `--anyway` leaves no mark. Owner, 2026-11-07: the agent keeps it, and each use goes in the activity log. Through the real server, at the level both commands need, and read back by `recto log`. Text from the document never goes in.
+#[test]
+fn each_use_of_copy_anyway_is_in_the_activity_log() {
+    let Some(run) = Run::start() else { return };
+    let file = restricted_pdf();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.state.set_level(Level::ReadOnly);
+    let uses = |run: &Run| run.ok(&["log", "--last", "200"])["entries"].as_array().unwrap().iter().filter(|row| row["details"]["anyway"] == true).count();
+    let before = uses(&run);
+    let (refused, status) = run.state.json(&["copy", "1"]);
+    assert_eq!(status, exit::PROTECTED, "{refused}");
+    assert_eq!(uses(&run), before, "nothing's been gone past");
+    for times in 1..=2 {
+        let copied = run.ok(&["copy", "1", "--anyway"]);
+        assert_eq!(copied["untrusted"]["text"], "Words that ask not to be copied");
+        assert_eq!(uses(&run), before + times, "each use");
+    }
+    let shown = run.ok(&["select", "1", "--anyway"]);
+    assert_eq!(shown["untrusted"]["text"], "Words that ask not to be copied");
+    assert_eq!(uses(&run), before + 3, "`select` gives the text too");
+    let log = run.ok(&["log", "--last", "200"]).to_string();
+    assert!(!log.contains("Words that ask"), "no document text: {log}");
 }

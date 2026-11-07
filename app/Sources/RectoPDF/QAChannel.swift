@@ -48,6 +48,34 @@ import QuartzCore
         case "shot":
             shot(id: id, path: value)
             return
+        case "copied":
+            let text = delegate.pasteboard.string(forType: .string)
+            answer(id, ["chars": text?.count ?? 0, "clipboard": delegate.pasteboard.name.rawValue, "untrusted": ["text": text as Any? ?? NSNull()]] as [String: Any])
+            return
+        case "services":
+            // By the selector AppKit sends, to a clipboard nothing else can see.
+            let requestor = delegate.validRequestor(forSendType: .string, returnType: nil) as? NSServicesMenuRequestor
+            let board = NSPasteboard(name: NSPasteboard.Name("com.rectopdf.qa.services.\(ProcessInfo.processInfo.processIdentifier)"))
+            let written = requestor?.writeSelection?(to: board, types: [.string]) ?? false
+            let text = board.string(forType: .string)
+            board.releaseGlobally()
+            answer(id, ["offers_text": requestor != nil, "written": written, "untrusted": ["text": text as Any? ?? NSNull()]] as [String: Any])
+            return
+        case "mouse_down", "mouse_drag", "pointer":
+            guard let controller else { return fail(id, "The window is closed.") }
+            let parts = value.split(separator: ",").compactMap { Double($0) }
+            guard parts.count == 4 else { return fail(id, "That isn't a place.") }
+            let inWindow = controller.pages.documentView.convert(NSPoint(x: parts[0], y: parts[1]), to: nil)
+            switch verb {
+            case "mouse_down": controller.pages.pointerDown(atWindow: inWindow, clicks: Int(parts[2]), shift: parts[3] != 0)
+            case "mouse_drag": controller.pages.pointerDragged(atWindow: inWindow)
+            default: controller.pages.pointerMoved(atWindow: inWindow)
+            }
+        case "mouse_up":
+            controller?.pages.pointerUp()
+        case "notice_button":
+            guard let controller, !controller.copyNotice.isHidden, !controller.copyNotice.button.isHidden else { return fail(id, "No notice with a button is showing.") }
+            controller.copyNotice.button.performClick(nil)
         case "appearance":
             NSApp.appearance = NSAppearance(named: value == "dark" ? .darkAqua : .aqua)
             controller?.appearanceChanged()
@@ -65,6 +93,9 @@ import QuartzCore
             controller?.sidebar.setContentsPointer(value == "in")
         case "menu":
             guard let item = menuItem(value), let action = item.action else { return fail(id, "That isn't on the menu bar.") }
+            // As a person can only choose what isn't greyed out, by what AppKit makes of it now.
+            item.menu?.update()
+            guard item.isEnabled else { return fail(id, "That's greyed out in the menu right now.") }
             NSApp.sendAction(action, to: item.target, from: item)
         case "panel":
             guard let sidebar = controller?.sidebar else { return fail(id, "The window is closed.") }
@@ -127,11 +158,14 @@ import QuartzCore
             "hover": sidebar.hoveredRow.map { $0 as Any } ?? NSNull(),
             "place": reader.place,
             "note": controller.noteLabel.isHidden ? NSNull() as Any : controller.noteLabel.label.text,
+            "copy_notice": controller.copyNotice.isHidden ? NSNull() as Any : ["text": controller.copyNotice.label.text, "button": controller.copyNotice.button.isHidden ? NSNull() as Any : controller.copyNotice.button.attributedTitle.string, "frame_ok": controller.root.bounds.contains(controller.copyNotice.frame)] as [String: Any],
             "place_label": controller.placeLabel.isHidden ? NSNull() as Any : controller.placeLabel.label.text,
             "agent_icon": !controller.agentIcon.isHidden,
             "panel": sidebar.panelReport(),
             "menu_bar": (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).map { menu -> [String: Any] in
-                ["title": menu.title, "items": menu.items.filter { !$0.isSeparatorItem && !$0.isHidden }.map { ["id": ($0.representedObject as? String) ?? "", "title": $0.title, "key": $0.keyEquivalent, "checked": $0.state == .on] as [String: Any] }]
+                // What AppKit itself says after asking whoever answers, as it does on opening a menu, and no copy of the rule.
+                menu.update()
+                return ["title": menu.title, "items": menu.items.filter { !$0.isSeparatorItem && !$0.isHidden }.map { ["id": ($0.representedObject as? String) ?? "", "title": $0.title, "key": $0.keyEquivalent, "checked": $0.state == .on, "enabled": $0.isEnabled] as [String: Any] }]
             },
             "pages": pages,
             "backing": controller.window.backingScaleFactor,
@@ -265,6 +299,47 @@ import QuartzCore
         sidebar.moreButton.performClick(nil)
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
         found["panel_closes"] = (sidebar.panelReport()["open"] as? Bool) == false
+        // The mouse on a page: a press, a drag and a release, made and handed to what AppKit sends them to, on text if there's text here. Nothing's posted.
+        if let place = pages.documentPointOnText() {
+            let window = controller.window
+            let inWindow = pages.documentView.convert(place, to: nil)
+            func mouse(_ type: NSEvent.EventType, clicks: Int) -> NSEvent? {
+                NSEvent.mouseEvent(with: type, location: inWindow, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: clicks, pressure: 1)
+            }
+            let steps = pages.pointerSteps
+            pages.documentView.perform(#selector(NSResponder.mouseDown(with:)), with: mouse(.leftMouseDown, clicks: 2))
+            pages.documentView.perform(#selector(NSResponder.mouseUp(with:)), with: mouse(.leftMouseUp, clicks: 2))
+            found["mouse_reaches_the_selection"] = pages.pointerSteps == steps + 2
+            pages.documentView.perform(moved, with: mouse(.mouseMoved, clicks: 0))
+            found["pointer_reaches_the_cursor"] = pages.pointerSteps == steps + 3
+            pages.documentView.updateTrackingAreas()
+            found["pointer_area_is_on_the_page"] = pages.documentView.trackingAreas.contains { $0.owner === pages.documentView && $0.options.contains(.mouseMoved) && $0.options.contains(.cursorUpdate) && $0.options.contains(.inVisibleRect) }
+            found["right_click_has_a_menu"] = pages.documentView.menu(for: mouse(.rightMouseDown, clicks: 1)!)?.items.map(\.action).contains(#selector(AppDelegate.copy(_:))) == true
+        }
+        // Copy and Select All: their keys, through the real menu bar, reach the app when nothing with the focus wants them. What's checked is what comes of it, by what AppKit says of the real item.
+        if let copy = menuItem("edit.copy"), let selectAll = menuItem("edit.select_all") {
+            func enabled(_ item: NSMenuItem) -> Bool {
+                item.menu?.update()
+                return item.isEnabled
+            }
+            // A click takes any selection away, at once, whatever's been read.
+            pages.pointerDown(atWindow: pages.documentView.convert(NSPoint(x: 1, y: 1), to: nil), clicks: 1, shift: false)
+            pages.pointerUp()
+            found["copy_is_grey_with_nothing_selected"] = !enabled(copy)
+            found["select_all_can_be_chosen"] = enabled(selectAll)
+            found["select_all_key_reaches_the_app"] = key("a", .command).map { NSApp.mainMenu?.performKeyEquivalent(with: $0) == true } ?? false
+            found["select_all_selects"] = delegate.core.menuItemEnabled(id: "edit.copy")
+            found["copy_is_enabled_with_something_selected"] = enabled(copy)
+            found["copy_key_reaches_the_app"] = key("c", .command).map { NSApp.mainMenu?.performKeyEquivalent(with: $0) == true } ?? false
+        }
+        // Services, by what they ask. That they're given the text is `qa services`, which needs its page read first.
+        found["services_arent_offered_what_they_didnt_ask_for"] = delegate.validRequestor(forSendType: .tiff, returnType: nil) == nil && delegate.validRequestor(forSendType: .string, returnType: .string) == nil
+        pages.pointerDown(atWindow: pages.documentView.convert(NSPoint(x: 1, y: 1), to: nil), clicks: 1, shift: false)
+        pages.pointerUp()
+        found["services_arent_offered_nothing"] = delegate.validRequestor(forSendType: .string, returnType: nil) == nil
+        let nothing = NSPasteboard(name: NSPasteboard.Name("com.rectopdf.qa.nothing.\(ProcessInfo.processInfo.processIdentifier)"))
+        found["services_write_nothing_with_nothing_selected"] = !delegate.writeSelection(to: nothing, types: [.string]) && nothing.string(forType: .string) == nil
+        nothing.releaseGlobally()
         // A pinch comes with these from AppKit, and they're what stops drawing until it ends.
         found["pages_can_be_pinched"] = pages.scrollView.allowsMagnification
         NotificationCenter.default.post(name: NSScrollView.willStartLiveMagnifyNotification, object: pages.scrollView)
@@ -289,8 +364,8 @@ import QuartzCore
         }
     }
 
-    /// Warm paper in a shot: the sum the compositor does, on the picture. `render(in:)` leaves compositing filters out.
-    nonisolated private static func multiply(_ rep: NSBitmapImageRep, by rgb: UInt32, in rects: [NSRect], viewHeight: CGFloat, flipped: Bool) {
+    /// Warm paper and highlights in a shot: the sum the compositor does, on the picture. `render(in:)` leaves compositing filters out. With `lighten`, each channel is the brighter of the two, which is what a highlight on dark paper is.
+    nonisolated private static func multiply(_ rep: NSBitmapImageRep, by rgb: UInt32, in rects: [NSRect], viewHeight: CGFloat, flipped: Bool, lighten: Bool = false) {
         guard let data = rep.bitmapData else { return }
         let (red, green, blue) = (Int((rgb >> 16) & 0xFF), Int((rgb >> 8) & 0xFF), Int(rgb & 0xFF))
         let (stride, width, height) = (rep.bytesPerRow, rep.pixelsWide, rep.pixelsHigh)
@@ -303,9 +378,15 @@ import QuartzCore
                 let row = data + y * stride
                 for x in x0..<x1 {
                     let pixel = row + x * 4
-                    pixel[0] = UInt8(Int(pixel[0]) * red / 255)
-                    pixel[1] = UInt8(Int(pixel[1]) * green / 255)
-                    pixel[2] = UInt8(Int(pixel[2]) * blue / 255)
+                    if lighten {
+                        pixel[0] = UInt8(max(Int(pixel[0]), red))
+                        pixel[1] = UInt8(max(Int(pixel[1]), green))
+                        pixel[2] = UInt8(max(Int(pixel[2]), blue))
+                    } else {
+                        pixel[0] = UInt8(Int(pixel[0]) * red / 255)
+                        pixel[1] = UInt8(Int(pixel[1]) * green / 255)
+                        pixel[2] = UInt8(Int(pixel[2]) * blue / 255)
+                    }
                 }
             }
         }
@@ -321,15 +402,19 @@ import QuartzCore
         guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(bounds.width * 2), pixelsHigh: Int(bounds.height * 2), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return fail(id, "The picture couldn't be made.") }
         rep.size = bounds.size
         let tint = controller.pages.tintRectsForShot(in: view)
+        let highlights = controller.pages.highlightsForShot(in: view)
         controller.pages.hideTintForShot(true)
+        controller.pages.hideHighlightsForShot(true)
         CATransaction.flush()
         view.cacheDisplay(in: bounds, to: rep)
         controller.pages.hideTintForShot(false)
+        controller.pages.hideHighlightsForShot(false)
         let flipped = view.isFlipped
         let core = delegate.core
         // The encoding and the write are slow, so they stay off this thread.
         nonisolated(unsafe) let encoded = rep
         DispatchQueue.global(qos: .userInitiated).async {
+            if let highlights { QAChannel.multiply(encoded, by: highlights.rgb, in: highlights.rects, viewHeight: bounds.height, flipped: flipped, lighten: highlights.lighten) }
             if let tint { QAChannel.multiply(encoded, by: tint.rgb, in: tint.rects, viewHeight: bounds.height, flipped: flipped) }
             guard let data = encoded.representation(using: .png, properties: [:]) else {
                 core.qaAnswer(id: id, ok: false, json: "The picture couldn't be encoded.")

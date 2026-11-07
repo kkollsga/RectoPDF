@@ -4,10 +4,12 @@
 //! - [`tiles`]: the policy. No threads or system calls beyond a surface's own, so the UI thread can call it and a test can drive it.
 //! - [`engine`]: one thread, parked at rest, that runs what [`tiles`] asks for through a `DocRenderer`.
 //! - [`paper`]: dark paper, as a change to a tile's pixels.
+//! - [`selection`]: selected text, as a host layer: what the pointer did, what's been read for it, and a copy on its way.
 
 pub mod engine;
 pub mod layout;
 pub mod paper;
+pub mod selection;
 pub mod tiles;
 
 pub use engine::{Engine, EngineConfig};

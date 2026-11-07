@@ -716,9 +716,14 @@ pub struct TextJob {
     pub boxes: bool,
     /// Draw the page and flag characters with no ink under them. Costs a render.
     pub hidden_check: bool,
+    /// Stop that render once the control page says this generation is stale. [`NEVER_STALE`] for one that runs to the end.
+    pub generation: u64,
 }
 
-pub const TEXT_JOB_LEN: usize = 9;
+/// In a [`TextJob`]: nothing can make this one stale.
+pub const NEVER_STALE: u64 = u64::MAX;
+
+pub const TEXT_JOB_LEN: usize = 17;
 
 impl TextJob {
     pub fn encode(&self) -> Vec<u8> {
@@ -726,17 +731,18 @@ impl TextJob {
         p[..4].copy_from_slice(&self.job_id.to_le_bytes());
         p[4..8].copy_from_slice(&self.page.to_le_bytes());
         p[8] = u8::from(self.boxes) | u8::from(self.hidden_check) << 1;
+        p[9..17].copy_from_slice(&self.generation.to_le_bytes());
         frame(Kind::TextRequest, &p)
     }
 
     pub fn decode(payload: &[u8]) -> Result<Self, ProtoError> {
         let mut r = Reader(payload);
-        let (job_id, page, flags) = (r.u32()?, r.u32()?, r.u8()?);
+        let (job_id, page, flags, generation) = (r.u32()?, r.u32()?, r.u8()?, r.u64()?);
         r.end()?;
         if flags & !0b11 != 0 {
             return Err(ProtoError("unknown text flags"));
         }
-        Ok(Self { job_id, page, boxes: flags & 1 != 0, hidden_check: flags & 2 != 0 })
+        Ok(Self { job_id, page, boxes: flags & 1 != 0, hidden_check: flags & 2 != 0, generation })
     }
 }
 
@@ -787,8 +793,19 @@ impl CharRecord {
 /// A character's box in page points: left, bottom, right, top.
 pub type CharBox = [f32; 4];
 
-/// The fixed part of a text reply: job, page, flags, count.
-const TEXT_HEADER_LEN: usize = 4 + 4 + 1 + 4;
+/// The fixed part of a text reply: job, page, flags, count, and the page's frame.
+const TEXT_HEADER_LEN: usize = 4 + 4 + 1 + 4 + 16;
+
+/// Where a page's boxes are on the page as it's shown: the area shown, in page points, and how far it's turned. Character boxes are in the page's own coordinates, which aren't what the reader sees once a page has a crop or a rotation.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PageFrame {
+    /// Quarter turns clockwise, 0 to 3.
+    pub turns: u8,
+    pub left: f32,
+    pub bottom: f32,
+    pub right: f32,
+    pub top: f32,
+}
 
 /// A page's characters, one record each, in PDFium's reading order.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -800,6 +817,10 @@ pub struct TextReply {
     pub chars: Vec<CharRecord>,
     /// Empty, or one per character.
     pub boxes: Vec<CharBox>,
+    /// The page as it's shown. All zero if boxes weren't asked for.
+    pub frame: PageFrame,
+    /// The file's permissions ask that its text isn't copied.
+    pub copy_restricted: bool,
 }
 
 impl TextReply {
@@ -810,8 +831,11 @@ impl TextReply {
         out.extend_from_slice(&Header { kind: Kind::Text, len }.encode());
         out.extend_from_slice(&self.job_id.to_le_bytes());
         out.extend_from_slice(&self.page.to_le_bytes());
-        out.push(u8::from(!self.boxes.is_empty()) | u8::from(self.hidden_checked) << 1);
+        out.push(u8::from(!self.boxes.is_empty()) | u8::from(self.hidden_checked) << 1 | u8::from(self.copy_restricted) << 2 | (self.frame.turns & 3) << 3);
         out.extend_from_slice(&count.to_le_bytes());
+        for edge in [self.frame.left, self.frame.bottom, self.frame.right, self.frame.top] {
+            out.extend_from_slice(&edge.to_le_bytes());
+        }
         for record in &self.chars {
             out.extend_from_slice(&record.bits().to_le_bytes());
         }
@@ -827,10 +851,14 @@ impl TextReply {
     pub fn decode(payload: &[u8]) -> Result<Self, ProtoError> {
         let mut r = Reader(payload);
         let (job_id, page, flags, count) = (r.u32()?, r.u32()?, r.u8()?, r.u32()?);
-        if flags & !0b11 != 0 {
+        if flags & !0b1_1111 != 0 {
             return Err(ProtoError("unknown text flags"));
         }
         let has_boxes = flags & 1 != 0;
+        let frame = PageFrame { turns: (flags >> 3) & 3, left: r.f32()?, bottom: r.f32()?, right: r.f32()?, top: r.f32()? };
+        if ![frame.left, frame.bottom, frame.right, frame.top].iter().all(|edge| edge.is_finite()) {
+            return Err(ProtoError("page frame isn't finite"));
+        }
         if u64::from(text_payload_len(count, has_boxes)?) != payload.len() as u64 {
             return Err(ProtoError("text length differs from its count"));
         }
@@ -849,7 +877,7 @@ impl TextReply {
             }
         }
         r.end()?;
-        Ok(Self { job_id, page, hidden_checked: flags & 2 != 0, chars, boxes })
+        Ok(Self { job_id, page, hidden_checked: flags & 2 != 0, chars, boxes, frame, copy_restricted: flags & 4 != 0 })
     }
 }
 

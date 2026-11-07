@@ -341,6 +341,9 @@ final class PanelView: FlippedView {
             list.delegate = self
             list.target = self
         }
+        // Clicks still come as actions. Neither takes the focus, so ⌘A and ⌘C go on reaching the page after a click on a row: a table with the focus answers Select All itself, and greys it out.
+        table.refusesFirstResponder = true
+        contentsTable.refusesFirstResponder = true
         table.action = #selector(tabClicked)
         contentsTable.action = #selector(contentsClicked)
         // One height for every row, so the table asks nothing per row, however many there are.

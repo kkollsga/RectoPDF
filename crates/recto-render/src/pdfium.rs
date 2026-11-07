@@ -19,7 +19,7 @@
 use crate::{Cancel, PageChars, PagePoints, RenderBackend, RenderError, TextOptions, TileOutcome, classify_bgrx};
 use recto_platform::isolate::Library;
 use recto_proto::contents::{ContentsJob, Mat};
-use recto_proto::{CharBox, CharRecord, FailCode, MAX_PAGE_CHARS, MAX_PAGE_COUNT, TileKind, TileRect, device_size, merge_kinds, region_tiles};
+use recto_proto::{CharBox, CharRecord, FailCode, MAX_PAGE_CHARS, MAX_PAGE_COUNT, PageFrame, TileKind, TileRect, device_size, merge_kinds, region_tiles};
 use std::cell::Cell;
 use std::ffi::{CString, c_double, c_float, c_int, c_uchar, c_uint, c_ulong, c_void};
 use std::fs::File;
@@ -114,6 +114,8 @@ const FPDF_ERR_FILE: c_ulong = 2;
 const FPDF_ERR_FORMAT: c_ulong = 3;
 const FPDF_ERR_PASSWORD: c_ulong = 4;
 const FPDF_ERR_SECURITY: c_ulong = 5;
+/// `fpdf_doc.h`'s permission bit for copying or extracting text. The table in the PDF standard, 7.6.4.2, bit 5.
+const PERMISSION_COPY: c_ulong = 1 << 4;
 /// `fpdf_edit.h`: object types.
 const FPDF_PAGEOBJ_IMAGE: c_int = 3;
 const FPDF_PAGEOBJ_FORM: c_int = 5;
@@ -153,6 +155,7 @@ pdfium_api! {
     FPDF_GetPageSizeByIndex: fn(FPDF_DOCUMENT, c_int, *mut c_double, *mut c_double) -> c_int;
     FPDF_LoadPage: fn(FPDF_DOCUMENT, c_int) -> FPDF_PAGE;
     FPDF_ClosePage: fn(FPDF_PAGE);
+    FPDF_GetDocPermissions: fn(FPDF_DOCUMENT) -> c_ulong;
     FPDF_PageToDevice: fn(FPDF_PAGE, c_int, c_int, c_int, c_int, c_int, c_double, c_double, *mut c_int, *mut c_int) -> FPDF_BOOL;
     FPDFBitmap_CreateEx: fn(c_int, c_int, c_int, *mut c_void, c_int) -> FPDF_BITMAP;
     FPDFBitmap_FillRect: fn(FPDF_BITMAP, c_int, c_int, c_int, c_int, c_ulong) -> FPDF_BOOL;
@@ -691,7 +694,7 @@ impl RenderBackend for PdfiumBackend {
         Ok(boxes)
     }
 
-    fn page_text(&mut self, page: u32, options: TextOptions) -> Result<PageChars, RenderError> {
+    fn page_text_until(&mut self, page: u32, options: TextOptions, cancel: &dyn Cancel) -> Result<PageChars, RenderError> {
         self.load_page(page)?;
         let api = self.api;
         let open = self.open_page.as_mut().ok_or(FailCode::Internal)?;
@@ -747,11 +750,30 @@ impl RenderBackend for PdfiumBackend {
         }
         // A page with no characters has nothing to hide from a text reader, and needs no drawing to say so.
         // If the page can't be drawn for the check, the text still goes back, saying it wasn't checked: nothing is marked until the drawing has worked.
-        let hidden_checked = options.hidden_check && (chars.is_empty() || self.mark_no_ink(page, &mut chars, &boxes).is_ok());
+        let hidden_checked = options.hidden_check && (chars.is_empty() || self.mark_no_ink(page, &mut chars, &boxes, cancel).is_ok());
         if !options.boxes {
             boxes = Vec::new();
         }
-        Ok(PageChars { chars, boxes, hidden_checked })
+        let frame = if options.boxes { self.page_frame() } else { PageFrame::default() };
+        // SAFETY: the document is live. A file with no encryption answers all ones.
+        let permissions = unsafe { (api.FPDF_GetDocPermissions)(self.document) };
+        Ok(PageChars { chars, boxes, hidden_checked, frame, copy_restricted: permissions & PERMISSION_COPY == 0 })
+    }
+}
+
+impl PdfiumBackend {
+    /// The area of the open page that's shown, and how far it's turned. All zero if PDFium can't say, which leaves the page with nowhere to select.
+    fn page_frame(&self) -> PageFrame {
+        let Some(open) = self.open_page.as_ref() else { return PageFrame::default() };
+        let mut area = FS_RECTF { left: 0.0, top: 0.0, right: 0.0, bottom: 0.0 };
+        // SAFETY: the page is live, and the out-pointer is live for the call.
+        let known = unsafe { (self.api.FPDF_GetPageBoundingBox)(open.page, &raw mut area) };
+        if known == 0 {
+            return PageFrame::default();
+        }
+        // SAFETY: the page is live.
+        let turns = unsafe { (self.api.FPDFPage_GetRotation)(open.page) };
+        PageFrame { turns: (turns & 3) as u8, left: area.left.min(area.right), bottom: area.bottom.min(area.top), right: area.left.max(area.right), top: area.bottom.max(area.top) }
     }
 }
 
@@ -762,7 +784,7 @@ const INK_MAX_BYTES: f32 = 64.0 * 1024.0 * 1024.0;
 impl PdfiumBackend {
     /// Draws the page and sets `NO_INK` on each visible-looking character whose box has no ink. Nothing is removed. From the spike's
     /// prototype, §10.4. Whitespace, control characters and characters PDFium generated have no ink to find, so they're skipped.
-    fn mark_no_ink(&mut self, page: u32, chars: &mut [CharRecord], boxes: &[CharBox]) -> Result<(), RenderError> {
+    fn mark_no_ink(&mut self, page: u32, chars: &mut [CharRecord], boxes: &[CharBox], cancel: &dyn Cancel) -> Result<(), RenderError> {
         let size = self.page_size(page)?;
         let area_at_ink_scale = size.width * INK_SCALE * size.height * INK_SCALE * 4.0;
         let scale = if area_at_ink_scale > INK_MAX_BYTES { INK_SCALE * (INK_MAX_BYTES / area_at_ink_scale).sqrt() } else { INK_SCALE };
@@ -771,7 +793,10 @@ impl PdfiumBackend {
         let stride = width.checked_mul(4).ok_or(FailCode::TooLarge)?;
         let bytes = usize::try_from(i64::from(stride) * i64::from(height)).map_err(|_| FailCode::TooLarge)?;
         let mut pixels = vec![0u8; bytes];
-        self.draw(&mut pixels, width, height, stride, (0, 0), (width, height), &crate::NeverCancel)?;
+        // Stopped part way, there's no telling what's ink: it's as though the check never ran, and nothing's marked.
+        if !self.draw(&mut pixels, width, height, stride, (0, 0), (width, height), cancel)? {
+            return Err(FailCode::Internal);
+        }
         let Some(page_handle) = self.open_page_handle() else { return Err(FailCode::Internal) };
         let api = self.api;
         let to_device = |x: f32, y: f32| {

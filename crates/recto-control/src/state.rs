@@ -25,6 +25,8 @@ pub struct StatePaths {
     /// Everything that doesn't change anything, so it can't push out what does.
     pub other_log: PathBuf,
     pub old_other_log: PathBuf,
+    pub overrides_log: PathBuf,
+    pub old_overrides_log: PathBuf,
     /// Where a background session's own messages go.
     pub server_messages: PathBuf,
     /// Where search corpora go. With the override, inside its folder, so a QA run leaves nothing of a document anywhere else. Otherwise in the user's caches, since it can all be built again (agent report, §6.1). `.noindex` is how a folder says Spotlight should leave it alone: its page files are plain text.
@@ -72,6 +74,8 @@ impl StatePaths {
             old_log: root.join("activity.1.jsonl"),
             other_log: root.join("activity-other.jsonl"),
             old_other_log: root.join("activity-other.1.jsonl"),
+            overrides_log: root.join("activity-overrides.jsonl"),
+            old_overrides_log: root.join("activity-overrides.1.jsonl"),
             server_messages: root.join("server-messages.txt"),
             corpus: if overridden { root.join("corpus.noindex") } else { local::real_home().map_or_else(|| root.join("corpus.noindex"), |home| default_corpus_in(&home)) },
             root,

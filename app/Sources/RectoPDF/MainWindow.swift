@@ -65,7 +65,7 @@ final class AgentIcon: NSView {
 }
 
 /// A small label in the margin: the page number in focus view, or what the reader needs to be told.
-final class MarginLabel: NSView {
+class MarginLabel: NSView {
     let label = TextLine()
 
     override init(frame: NSRect) {
@@ -86,6 +86,35 @@ final class MarginLabel: NSView {
         label.frame = NSRect(x: 10, y: 6, width: width, height: size.height)
         frame = NSRect(x: bottomRight.x - width - 20, y: bottomRight.y - size.height - 12, width: width + 20, height: size.height + 12)
         layer?.backgroundColor = Theme.pill.cg
+    }
+}
+
+/// What a copy has to say, in the margin with the other labels. It's a label, with a button if there's something to choose.
+final class CopyNotice: MarginLabel {
+    let button = NSButton(title: "", target: nil, action: nil)
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        button.isBordered = false
+        button.isHidden = true
+        addSubview(button)
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    func placeWithAction(text: String, action: String?, maxWidth: CGFloat, bottomRight: NSPoint) {
+        place(text: text, maxWidth: maxWidth, bottomRight: bottomRight)
+        guard let action else {
+            button.isHidden = true
+            return
+        }
+        button.isHidden = false
+        button.attributedTitle = NSAttributedString(string: action, attributes: [.foregroundColor: Theme.accent.ns, .font: NSFont.systemFont(ofSize: 11.5, weight: .medium)])
+        let size = button.attributedTitle.size()
+        frame.size.height += size.height + 6
+        frame.origin.y -= size.height + 6
+        button.frame = NSRect(x: 10, y: frame.height - size.height - 6, width: size.width + 4, height: size.height + 2)
+        frame.size.width = max(frame.width, size.width + 24)
     }
 }
 
@@ -133,6 +162,9 @@ final class BookMark: NSView {
     let agentIcon = AgentIcon()
     let noteLabel = MarginLabel()
     let placeLabel = MarginLabel()
+    let copyNotice = CopyNotice()
+    private var noticeFade: Timer?
+    private var shownNotice: SelectionNotice?
     let home = FlippedView()
     private let homeTitle = TextLine()
     private let homeHint = TextLine()
@@ -177,6 +209,11 @@ final class BookMark: NSView {
         root.addSubview(agentIcon)
         root.addSubview(noteLabel)
         root.addSubview(placeLabel)
+        root.addSubview(copyNotice)
+        copyNotice.isHidden = true
+        copyNotice.button.target = self
+        copyNotice.button.action = #selector(copyAnyway)
+        pages.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: true)
         sidebarEdge.wantsLayer = true
         home.wantsLayer = true
         agentIcon.toolTip = delegate.strings.agentTooltip
@@ -272,9 +309,36 @@ final class BookMark: NSView {
         if let note = reader.note {
             noteLabel.isHidden = false
             noteLabel.place(text: note, maxWidth: marginWidth - 24, bottomRight: bottom)
+            bottom.y = noteLabel.frame.minY - 8
         } else {
             noteLabel.isHidden = true
         }
+        if let notice = reader.selectionNotice {
+            copyNotice.isHidden = false
+            copyNotice.placeWithAction(text: notice.text, action: notice.actionTitle, maxWidth: marginWidth - 24, bottomRight: bottom)
+        } else {
+            copyNotice.isHidden = true
+        }
+    }
+
+    @objc private func copyAnyway() {
+        delegate.perform("edit.copy_anyway")
+    }
+
+    /// A notice that goes by itself goes after a moment, with a timer that's there only while it does.
+    private func fadeNoticeIfItSaysTo() {
+        guard reader.selectionNotice != shownNotice else { return }
+        shownNotice = reader.selectionNotice
+        noticeFade?.invalidate()
+        noticeFade = nil
+        guard shownNotice?.fades == true else { return }
+        let core = delegate.core
+        let timer = Timer(timeInterval: delegate.limits.noticeSeconds, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.noticeFade = nil }
+            core.dismissSelectionNotice()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        noticeFade = timer
     }
 
     private func layoutHome() {
@@ -341,6 +405,8 @@ final class BookMark: NSView {
         home.isHidden = !reader.home
         pages.scrollView.isHidden = reader.home
         pages.setTint(reader.pageTint)
+        pages.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: window.isKeyWindow || delegate.isQuiet)
+        fadeNoticeIfItSaysTo()
         agentIcon.isHidden = reader.agentIconHidden
         layout()
     }
@@ -357,7 +423,7 @@ final class BookMark: NSView {
         homeButton.layer?.backgroundColor = Theme.buttonFill.cg
         sidebar.appearanceChanged()
         for view in [agentIcon, homeBook] { view.needsDisplay = true }
-        for label in [noteLabel, placeLabel] {
+        for label in [noteLabel, placeLabel, copyNotice as MarginLabel] {
             label.layer?.backgroundColor = Theme.pill.cg
             if !label.label.text.isEmpty { label.label.set(label.label.text, font: .systemFont(ofSize: 11.5), color: Theme.textBody.ns, wraps: true) }
         }
@@ -373,6 +439,14 @@ final class BookMark: NSView {
 
     func windowDidEndLiveResize(_ notification: Notification) {
         pages.setLive(false)
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        pages.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: true)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        pages.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: delegate.isQuiet)
     }
 
     func windowDidChangeBackingProperties(_ notification: Notification) {

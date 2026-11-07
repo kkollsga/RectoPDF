@@ -394,3 +394,97 @@ fn two_documents_have_separate_workers() {
     one.kill_worker();
     assert_eq!(draws(&mut two, 1), TileKind::Grey, "killing one doesn't touch the other");
 }
+
+/// Fills of the whole page, which take time in proportion to the pixels, so far longer at the check's 2x than for a tile at a low zoom, and a page of them has text that's quick to read.
+fn full_page_fills(count: usize) -> Vec<u8> {
+    let mut content = String::with_capacity(count * 28);
+    for at in 0..count {
+        content.push_str(&format!("0.{} g 0 0 612 792 re f\n", at % 9 + 1));
+    }
+    content.push_str("0 g\n");
+    let mut content = content.into_bytes();
+    content.extend_from_slice(&text_lines(&["Words on a slow page"]));
+    content
+}
+
+/// A page that takes far longer to draw for the hidden-text check than these tests' short deadlines allow.
+fn slow_to_check() -> TempPdf {
+    let content = full_page_fills(20_000);
+    TempPdf::new("slow.pdf", &pages(&[Page::new(text_lines(&["A plain page"])), Page::new(content)]))
+}
+
+/// Failure: reading text for a copy stops a slow page drawing for the rest of the session. The hidden-text check draws the whole page at 2x, and passing the deadline at that marked the page as failed at every scale, on the same renderer tiles use: a page that draws in 3.2 s at half zoom said "took too long to draw" after ⌘A ⌘C. A check that fails means not checked, and nothing about drawing. It's remembered as that, so it isn't tried again, and it doesn't count towards stopping the document.
+#[test]
+fn a_check_past_its_deadline_says_not_checked_and_leaves_drawing_alone() {
+    let file = slow_to_check();
+    let mut doc = renderer(&file.0, Policy { page_deadline: Duration::from_millis(250), ..Policy::default() });
+    let read = doc.page_characters(1, true, true).expect("the text still comes back");
+    assert!(!read.hidden_checked, "not checked");
+    assert!(read.chars.iter().any(|record| record.ch() == 'W'));
+    assert!(doc.stats().deadline_kills >= 1, "{:?}", doc.stats());
+    for scale in [0.25, 0.5, 1.0, 2.0, 4.0] {
+        assert_eq!(doc.page_draw_state_at(1, scale), recto_render_service::PageDrawState::Sharp, "at {scale}x");
+    }
+    let kills = doc.stats().deadline_kills;
+    assert!(!doc.page_characters(1, true, true).unwrap().hidden_checked);
+    assert_eq!(doc.stats().deadline_kills, kills, "it isn't tried again");
+}
+
+/// Failure: a copy of a file with many slow pages uses up the kills a document is allowed, and then nothing in it draws. Checks stop being tried long before that, and what they cost isn't counted against drawing.
+#[test]
+fn checks_past_their_deadline_cant_stop_a_document_drawing() {
+    let content = full_page_fills(20_000);
+    let list: Vec<Page> = (0..6).map(|_| Page::new(content.clone())).collect();
+    let file = TempPdf::new("slows.pdf", &pages(&list));
+    let mut doc = renderer(&file.0, Policy { page_deadline: Duration::from_millis(100), max_kills_per_document: 2, ..Policy::default() });
+    for page in 0..6 {
+        let read = doc.page_characters(page, true, true).unwrap_or_else(|failure| panic!("page {page}: {failure:?}"));
+        assert!(!read.hidden_checked);
+    }
+    assert!(doc.stats().deadline_kills >= 2, "{:?}", doc.stats());
+    assert_eq!(doc.page_draw_state_at(0, 1.0), recto_render_service::PageDrawState::Sharp);
+    assert!(doc.page_size(0).is_ok(), "the document hasn't been stopped");
+}
+
+/// Failure: a check nobody wants any more holds the thread that draws for as long as its deadline, up to 5 s, and on a hostile file again and again, while the page in view stays blank. It has to stop when it's told to, and a text job's generation has to reach the worker.
+#[test]
+fn a_check_stops_when_it_is_cancelled() {
+    let file = TempPdf::new("cancel.pdf", &pages(&[Page::new(full_page_fills(200_000))]));
+    let mut doc = renderer(&file.0, Policy { page_deadline: Duration::from_secs(60), ..Policy::default() });
+    let cancel = doc.cancel_handle();
+    let stopping = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        cancel.cancel_before(8);
+    });
+    let started = std::time::Instant::now();
+    let read = doc.page_characters_for(0, true, true, 7);
+    stopping.join().unwrap();
+    // 200,000 fills of the page at 2x is a minute or so, against its deadline of a minute, and it's the draw that's what's being stopped.
+    assert!(started.elapsed() < Duration::from_secs(20), "it ran for {:?}", started.elapsed());
+    if let Ok(read) = read {
+        assert!(!read.hidden_checked, "stopped, so not checked");
+    }
+    assert!(doc.is_stale(7));
+    assert_eq!(doc.stats().deadline_kills, 0, "it was told, and didn't have to be killed for its time");
+}
+
+/// Failure: a real change to the file goes unnoticed by whatever holds things about it, since what says so only ever fired when a cache of image places filled up, which has nothing to do with the file. Filling that says nothing about the file, and the file changing does.
+#[test]
+fn only_the_file_changing_says_the_file_changed() {
+    let list: Vec<Page> = (0..4100).map(|_| Page::new(b"".to_vec())).collect();
+    let file = TempPdf::new("places.pdf", &pages(&list));
+    let mut doc = renderer(&file.0, Policy::default());
+    for page in 0..4100 {
+        doc.image_boxes(page, 0);
+    }
+    assert!(!doc.take_file_changed(), "a cache filling up");
+    assert!(doc.take_image_places_cleared(), "and the cache says it's been cleared");
+    assert!(!doc.take_image_places_cleared(), "once");
+    // Written in place, with another number of pages, and found when a worker next opens it.
+    assert_eq!(doc.page_count().unwrap(), 4100);
+    std::fs::write(&file.0, pages(&[Page::new(text_lines(&["Only this now"]))])).unwrap();
+    doc.kill_worker();
+    let _ = doc.page_characters(0, true, false);
+    assert!(doc.take_file_changed(), "the file changing");
+    assert!(!doc.take_file_changed(), "once");
+}

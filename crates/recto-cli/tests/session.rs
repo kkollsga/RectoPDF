@@ -827,6 +827,7 @@ fn every_row_that_runs_here_is_wired_up() {
         vec!["qa", "start", "--app", "/nonexistent/RectoPDF"],
         vec!["qa", "run", "/nonexistent/script.qa"],
         vec!["qa", "budget", "--file", path_of(&file), "--app", "/nonexistent/RectoPDF", "--runs", "1"],
+        vec!["qa", "select-budget", "--file", path_of(&file), "--app", "/nonexistent/RectoPDF"],
         vec!["budget", "index", "--file", path_of(&file), "--runs", "1", "--queries", "words"],
     ];
     let here: Vec<&str> = TABLE.iter().filter(|spec| spec.route == Route::Here).map(|spec| spec.name).collect();
@@ -1172,4 +1173,17 @@ fn the_log_says_by_name_when_it_found_no_one_tab() {
     assert_eq!(entry("render")["details"], Value::Null, "{log}");
     assert!(!log.contains("\"tab\":\"secret"), "the name typed isn't kept: {log}");
     assert!(!log.lines().any(|line| line.contains("no such tab")), "{log}");
+}
+
+/// Failure: a test fails with "isn't private to this user", on nothing to do with it, whenever its process id is one a killed run had: that run's folder is still there under the same name, at another mode. Seen in a full check, with 14 such folders in the temp folder.
+#[test]
+fn a_folder_a_killed_run_left_behind_doesnt_stop_a_test() {
+    use std::os::unix::fs::PermissionsExt;
+    let left = common::next_folder_name();
+    std::fs::create_dir(&left).unwrap();
+    std::fs::set_permissions(&left, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let state = State::at(Level::ReadOnly);
+    assert_ne!(state.root, left, "it goes elsewhere");
+    assert_eq!(std::fs::metadata(&left).unwrap().permissions().mode() & 0o777, 0o755, "and what's there is someone else's to clear");
+    std::fs::remove_dir(&left).unwrap();
 }

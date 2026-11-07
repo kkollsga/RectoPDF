@@ -2,7 +2,9 @@
 
 use crate::layout::PageBox;
 use crate::paper::{DarkTile, PageLook, PaperKind, dark_rgb, dim_page, dim_rgb, is_grey, turn_over};
+use crate::selection::Notice;
 use crate::tiles::{DrawKind, Job, JobKind, JobPlan, MAX_ATTACH_PER_TURN, Zoom, Op, Outcome, PageMap, Reader, ReaderReport, Viewport};
+use recto_index::select::PageText;
 use recto_platform::isolate;
 use recto_platform::surface::PixelSurface;
 use recto_proto::TileRect;
@@ -26,6 +28,8 @@ pub trait EngineEvents: Send + Sync {
     fn page_moved(&self);
     /// A page was drawn, or couldn't be.
     fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>);
+    /// A copy is ready for the host to take.
+    fn copy_ready(&self) {}
 }
 
 /// How the engine runs.
@@ -44,6 +48,11 @@ const OPEN_LOOK: Duration = Duration::from_millis(20);
 /// What a page says while its file doesn't answer.
 const NOT_ANSWERING: &str = "This file isn't answering. Its disk may have gone to sleep or been disconnected.";
 
+/// Panics of the thread that draws that it comes back from, close together. Past this it would only panic again.
+const MAX_PANICS_IN_A_ROW: u32 = 4;
+/// A panic this long after the last one is a new story.
+const PANICS_FORGOTTEN_AFTER: Duration = Duration::from_secs(60);
+
 /// How long a worker past the retirement line may sit with nothing to do. As long as a heavy worker's idle rule, for the same reason.
 const BIG_WORKER_REST: Duration = Duration::from_secs(3);
 
@@ -55,6 +64,7 @@ struct Shared {
     ops_signalled: AtomicBool,
     worker_pids: Mutex<Vec<u32>>,
     last_note: Mutex<Option<String>>,
+    last_notice: Mutex<Option<Notice>>,
     config: EngineConfig,
 }
 
@@ -71,7 +81,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Engine {
     pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self {
-        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), last_note: Mutex::new(None), config });
+        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), last_note: Mutex::new(None), last_notice: Mutex::new(None), config });
         Self { shared, thread: Arc::new(Mutex::new(None)) }
     }
 
@@ -83,19 +93,21 @@ impl Engine {
             None => {
                 let shared = Arc::clone(&self.shared);
                 // Small: everything it holds is on the heap.
-                if let Ok(handle) = std::thread::Builder::new().name("recto-pages".into()).stack_size(512 * 1024).spawn(move || run(&shared)) {
+                if let Ok(handle) = std::thread::Builder::new().name("recto-pages".into()).stack_size(512 * 1024).spawn(move || run_guarded(&shared)) {
                     *thread = Some(handle.thread().clone());
                 }
             }
         }
     }
 
-    fn after(&self, reader: MutexGuard<'_, Reader>) {
+    fn after(&self, mut reader: MutexGuard<'_, Reader>) {
         let has_ops = reader.has_ops();
         let note = reader.note().map(str::to_string);
+        let selecting = selecting_news(&mut reader);
         drop(reader);
         self.shared.settled.notify_all();
         note_change(&self.shared, note);
+        tell_selecting(&self.shared, selecting);
         if has_ops {
             signal_ops(&self.shared);
         }
@@ -169,6 +181,103 @@ impl Engine {
         ops
     }
 
+    /// Runs what the mouse did, from the UI thread: a short lock, and at worst a look through one page already here. What comes back is for the host to apply now.
+    fn pointer_did(&self, did: impl FnOnce(&mut Reader)) -> Vec<Op> {
+        self.shared.ops_signalled.store(false, Ordering::SeqCst);
+        let mut reader = lock(&self.shared.reader);
+        did(&mut reader);
+        let ops = reader.drain(0);
+        let more = reader.has_ops();
+        let selecting = selecting_news(&mut reader);
+        drop(reader);
+        tell_selecting(&self.shared, selecting);
+        if more {
+            signal_ops(&self.shared);
+        }
+        self.wake();
+        ops
+    }
+
+    pub fn selection_press(&self, x: f64, y: f64, clicks: u32, shift: bool) -> Vec<Op> {
+        self.pointer_did(|reader| reader.selection_press(x, y, clicks, shift))
+    }
+
+    pub fn selection_drag(&self, x: f64, y: f64) -> Vec<Op> {
+        self.pointer_did(|reader| reader.selection_drag(x, y))
+    }
+
+    pub fn selection_release(&self) -> Vec<Op> {
+        self.pointer_did(Reader::selection_release)
+    }
+
+    /// Whether the selection can be sent to the Services menu as it stands, which it's asked on the UI thread. Nothing's built.
+    pub fn selection_can_be_sent(&self) -> bool {
+        lock(&self.shared.reader).selection_can_be_sent()
+    }
+
+    /// Whether the pointer's on text. If its page hasn't been read, it's wanted, and this says no for now.
+    pub fn pointer_is_over_text(&self, x: f64, y: f64) -> bool {
+        let mut reader = lock(&self.shared.reader);
+        let over = reader.pointer_is_over_text(x, y);
+        drop(reader);
+        self.wake();
+        over
+    }
+
+    pub fn select_all(&self) {
+        let mut reader = lock(&self.shared.reader);
+        reader.select_all();
+        self.after(reader);
+    }
+
+    pub fn clear_selection(&self) {
+        let mut reader = lock(&self.shared.reader);
+        reader.clear_selection();
+        self.after(reader);
+    }
+
+    pub fn has_selection(&self) -> bool {
+        lock(&self.shared.reader).has_selection()
+    }
+
+    pub fn has_document(&self) -> bool {
+        lock(&self.shared.reader).has_document()
+    }
+
+    /// Starts the selection on its way to the clipboard. It goes page by page on the engine's thread, and `EngineEvents::copy_ready` says when.
+    pub fn copy_selection(&self, anyway: bool) {
+        let mut reader = lock(&self.shared.reader);
+        reader.start_copy(anyway);
+        self.after(reader);
+    }
+
+    pub fn take_copied(&self) -> Option<recto_index::select::CopiedText> {
+        let mut reader = lock(&self.shared.reader);
+        let copied = reader.take_copied();
+        drop(reader);
+        self.shared.settled.notify_all();
+        copied
+    }
+
+    pub fn selection_text_now(&self) -> Option<String> {
+        lock(&self.shared.reader).selection_text_now()
+    }
+
+    pub fn selection_notice(&self) -> Option<Notice> {
+        lock(&self.shared.reader).selection_notice()
+    }
+
+    pub fn dismiss_selection_notice(&self) {
+        let mut reader = lock(&self.shared.reader);
+        reader.dismiss_selection_notice();
+        self.after(reader);
+    }
+
+    /// Where a point on a page is in the document.
+    pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
+        lock(&self.shared.reader).document_point(page, x, y)
+    }
+
     pub fn take_moved_page(&self) -> Option<u32> {
         lock(&self.shared.reader).take_moved_page()
     }
@@ -230,6 +339,11 @@ impl Engine {
         }
     }
 
+    /// Every worker running now.
+    pub fn worker_pids(&self) -> Vec<u32> {
+        lock(&self.shared.worker_pids).clone()
+    }
+
     /// The footprint of every worker running now, from outside.
     pub fn workers_footprint(&self) -> (u64, u64) {
         let pids = lock(&self.shared.worker_pids).clone();
@@ -246,9 +360,62 @@ fn note_change(shared: &Shared, note: Option<String>) {
     }
 }
 
+/// What a selection has to say to anyone, taken with the reader's lock, to say with it let go.
+struct SelectingNews {
+    notice: Option<Notice>,
+    copy_ready: bool,
+}
+
+fn selecting_news(reader: &mut Reader) -> SelectingNews {
+    SelectingNews { notice: reader.selection_notice(), copy_ready: reader.take_copy_signal() }
+}
+
+fn tell_selecting(shared: &Shared, news: SelectingNews) {
+    let mut last = lock(&shared.last_notice);
+    if *last != news.notice {
+        *last = news.notice;
+        drop(last);
+        shared.events.note_changed();
+    }
+    if news.copy_ready {
+        shared.events.copy_ready();
+    }
+}
+
 fn signal_ops(shared: &Shared) {
     if !shared.ops_signalled.swap(true, Ordering::SeqCst) {
         shared.events.ops_ready();
+    }
+}
+
+/// Goes round [`run`] again if it panics, so a panic can't leave pages silently undrawn with nothing left to draw them. What's held in it, workers included, goes with it, and pages are asked for again. A few in a row means trying again won't help, and the page says so.
+fn run_guarded(shared: &Shared) {
+    let mut panics_in_a_row = 0;
+    let mut last_panic: Option<Instant> = None;
+    loop {
+        // Everything shared is behind locks that don't care about poison, and is brought back into line below.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(shared))).is_ok() {
+            return;
+        }
+        panics_in_a_row = if last_panic.is_some_and(|last| last.elapsed() < PANICS_FORGOTTEN_AFTER) { panics_in_a_row + 1 } else { 1 };
+        last_panic = Some(Instant::now());
+        let give_up = panics_in_a_row >= MAX_PANICS_IN_A_ROW;
+        let mut reader = lock(&shared.reader);
+        reader.thread_restarted(give_up);
+        let has_ops = reader.has_ops();
+        let note = reader.note().map(str::to_string);
+        let selecting = selecting_news(&mut reader);
+        drop(reader);
+        note_change(shared, note);
+        tell_selecting(shared, selecting);
+        *lock(&shared.worker_pids) = Vec::new();
+        shared.settled.notify_all();
+        if has_ops {
+            signal_ops(shared);
+        }
+        if give_up {
+            return;
+        }
     }
 }
 
@@ -299,10 +466,16 @@ fn run(shared: &Shared) {
         };
         resting_since = None;
         lock(&shared.reader).note_started(&job, None);
+        let mut file_changed = false;
         let outcome = match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
             Ok(open) => {
                 lock(&shared.reader).set_cancel(open.doc.cancel_handle());
-                do_job(open, &job)
+                let outcome = do_job(open, &job);
+                file_changed = open.doc.take_file_changed();
+                if file_changed {
+                    open.looks.clear();
+                }
+                outcome
             }
             Err(Unopened::Failed(failure)) => Outcome::DocumentFailed(failure.message()),
             Err(Unopened::NotWanted) => Outcome::Cancelled,
@@ -316,11 +489,18 @@ fn run(shared: &Shared) {
         };
         let (tab, page) = (job.tab, job.position);
         let mut reader = lock(&shared.reader);
+        if file_changed {
+            reader.file_changed(tab);
+        }
+        // What a text job read isn't about what's selected now, if that's gone with the file.
+        let outcome = if file_changed && matches!(job.kind, JobKind::Text { .. }) { Outcome::Cancelled } else { outcome };
         reader.finish(job, outcome);
         let has_ops = reader.has_ops();
         let note = reader.note().map(str::to_string);
+        let selecting = selecting_news(&mut reader);
         drop(reader);
         note_change(shared, note);
+        tell_selecting(shared, selecting);
         if let Some(failure) = drawn {
             shared.events.page_drawn(tab, page, failure);
         }
@@ -349,7 +529,8 @@ const LOOK_PICTURE_EDGE: f32 = 512.0;
 
 /// The look of a page: known, or decided now from what's on hand, a preview if this job's drawn one, otherwise a small picture drawn for it. A page with no images needs neither. `None` means this job went stale on the way, which says nothing about the page, and nothing is kept.
 fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&PixelSurface, TileRect)>) -> Option<Arc<PageLook>> {
-    if open.doc.take_file_changed() {
+    // The places of its images are what a look was decided from, and they may not come out the same twice, so neither of a page's tiles may go by an old answer.
+    if open.doc.take_image_places_cleared() {
         open.looks.clear();
     }
     if let Some(known) = open.looks.get(&page) {
@@ -445,8 +626,19 @@ fn renderer_for<'a>(shared: &Shared, renderers: &'a mut HashMap<PathBuf, OpenDoc
 }
 
 fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
+    if let JobKind::Text { check } = job.kind {
+        let read = open.doc.page_characters_for(job.source_page, true, check, job.generation);
+        // Told to stop, a check that didn't finish says nothing about the page, so it's as though it was never tried. What was read on the way is good, and a read that went with its worker isn't a failure of the page's.
+        let stopped = open.doc.is_stale(job.generation);
+        return match read {
+            Ok(page) => Outcome::Text { text: Arc::new(PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)), checked: check && !stopped },
+            Err(_) if stopped => Outcome::Cancelled,
+            Err(_) => Outcome::TextFailed,
+        };
+    }
     let doc = &mut open.doc;
     match &job.kind {
+        JobKind::Text { .. } => Outcome::TextFailed,
         JobKind::Size => match doc.page_size(job.source_page) {
             Ok((width, height)) => Outcome::Size(PageBox { width, height }),
             Err(failure) if whole_file(failure) => Outcome::DocumentFailed(failure.message()),

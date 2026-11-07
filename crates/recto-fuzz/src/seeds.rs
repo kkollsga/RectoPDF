@@ -75,7 +75,7 @@ pub fn proto_seeds() -> Vec<Vec<u8>> {
     let job = RenderJob { generation: 1, job_id: 2, page: 0, scale: 2.0, rect: TileRect { x: 512, y: 0, width: 1024, height: 512 }, stride: 4096, tile_edge: 512 };
     let tile = TileReply { generation: 1, job_id: 2, width: 512, height: 512, stride: 2048, status: TileStatus::Done(TileKind::Blank { rgb: 0xFF_FFFF }), render_us: 9 };
     let region = RegionReply { tile, kinds: vec![TileKind::Grey, TileKind::Colour, TileKind::Blank { rgb: 1 }] };
-    let text = TextReply { job_id: 3, page: 4, hidden_checked: true, chars: vec![CharRecord::new('a' as u32, CharRecord::NO_INK), CharRecord::new('b' as u32, 0)], boxes: vec![[1.0, 2.0, 3.0, 4.0], [4.0, 2.0, 5.0, 4.0]] };
+    let text = TextReply { job_id: 3, page: 4, hidden_checked: true, chars: vec![CharRecord::new('a' as u32, CharRecord::NO_INK), CharRecord::new('b' as u32, 0)], boxes: vec![[1.0, 2.0, 3.0, 4.0], [4.0, 2.0, 5.0, 4.0]], ..TextReply::default() };
     let frames: Vec<Vec<u8>> = vec![
         encode_hello(7),
         encode_opened(12),
@@ -84,7 +84,7 @@ pub fn proto_seeds() -> Vec<Vec<u8>> {
         region.encode(),
         PageSize { job_id: 1, width: 612.0, height: 792.0 }.encode(),
         PageTraits { job_id: 1, largest_image_pixels: 1 << 30 }.encode(),
-        TextJob { job_id: 1, page: 2, boxes: true, hidden_check: true }.encode(),
+        TextJob { job_id: 1, page: 2, boxes: true, hidden_check: true, generation: 3 }.encode(),
         text.encode().expect("a small page"),
         encode_failed(9, FailCode::TooLarge),
     ];
@@ -200,6 +200,7 @@ pub fn for_target(name: &str) -> Vec<Vec<u8>> {
         "pdf_tree" => tree_seeds(),
         "proto" => proto_seeds(),
         "index" => index_seeds(),
+        "select" => select_seeds(),
         "agent" => agent_seeds(),
         "control" => control_seeds(),
         "edits" => sequence_seeds(),
@@ -207,8 +208,21 @@ pub fn for_target(name: &str) -> Vec<Vec<u8>> {
     }
 }
 
+/// The pages `index` starts from, each after what says how it sits and where the pointer goes: a page as it comes, and one turned, with a pointer on it.
+pub fn select_seeds() -> Vec<Vec<u8>> {
+    let mut seeds = Vec::new();
+    for page in index_seeds() {
+        for head in [[0u8; 64], [1, 0, 0, 2, 3, 1, 1, 4, 4, 2, 0, 3, 3, 1, 2, 2, 1, 4, 3, 0, 0, 2, 2, 1, 3, 4, 4, 0, 1, 1, 2, 3, 1, 0, 4, 2, 2, 3, 0, 1, 4, 1, 3, 2, 0, 0, 1, 2, 3, 4, 1, 3, 0, 2, 4, 1, 2, 0, 3, 1, 4, 2, 0, 1]] {
+            let mut seed = head.to_vec();
+            seed.extend_from_slice(&page);
+            seeds.push(seed);
+        }
+    }
+    seeds
+}
+
 /// Every target's name.
-pub const TARGET_NAMES: &[&str] = &["pdf_bytes", "pdf_tree", "proto", "index", "agent", "control", "edits"];
+pub const TARGET_NAMES: &[&str] = &["pdf_bytes", "pdf_tree", "proto", "index", "select", "agent", "control", "edits"];
 
 /// The check a target runs, by name.
 pub fn check_for(name: &str) -> Option<fn(&[u8])> {
@@ -217,6 +231,7 @@ pub fn check_for(name: &str) -> Option<fn(&[u8])> {
         "pdf_tree" => targets::pdf::check_tree,
         "proto" => targets::proto::check,
         "index" => targets::index::check,
+        "select" => targets::select::check,
         "agent" => targets::agent::check,
         "control" => targets::control::check,
         "edits" => targets::edits::check,

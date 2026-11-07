@@ -308,6 +308,11 @@ fn kind_name(kind: TileKind) -> &'static str {
     }
 }
 
+/// A renderer for reading a page's text over several pages, under a reader's limits.
+pub(crate) fn open_for_text(path: &Path) -> Result<DocRenderer, AgentError> {
+    open(path, Policy::default())
+}
+
 /// What a page's characters say about hidden text. `text` and `export svg` both go by this, so they can't disagree.
 fn hidden_text_facts(characters: &recto_render_service::PageCharacters) -> Value {
     let reading = read_page(&characters.chars, &characters.boxes, characters.hidden_checked);

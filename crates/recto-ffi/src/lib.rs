@@ -57,6 +57,8 @@ pub trait AppListener: Send + Sync {
     fn qa_request(&self, id: u64, verb: String, value: String);
     /// The session was stopped over the socket.
     fn session_ended(&self);
+    /// A copy is ready: call `take_copied` on the UI thread, and put it on the clipboard.
+    fn copy_ready(&self);
 }
 
 #[derive(Debug, uniffi::Error)]
@@ -167,6 +169,37 @@ pub struct ReaderView {
     pub agent_icon_hidden: bool,
     /// A colour to multiply over each page in the compositor, for warm paper. No tile changes for it.
     pub page_tint: Option<u32>,
+    /// Which of the system's selection colours a highlight uses, going by the page and not the window.
+    pub highlight_dark_colour: bool,
+    /// A highlight lightens the page under it, for a dark page, or multiplies it. See `recto_reader::paper::HighlightLook`.
+    pub highlight_lighten: bool,
+    /// A line by the page about a copy, going by itself if it says so.
+    pub selection_notice: Option<SelectionNotice>,
+}
+
+/// What to say by the page about a copy.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct SelectionNotice {
+    pub text: String,
+    /// The button, if there's one: it's `edit.copy_anyway`.
+    pub action_title: Option<String>,
+    pub fades: bool,
+}
+
+/// A piece of a highlight, in the page's own coordinates, which are its layer's.
+#[derive(Clone, Copy, Debug, PartialEq, uniffi::Record)]
+pub struct HighlightRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// A place in the document, in its view's coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, uniffi::Record)]
+pub struct DocumentPoint {
+    pub x: f64,
+    pub y: f64,
 }
 
 /// What hovering over a row reveals.
@@ -197,6 +230,10 @@ pub struct ReaderLimits {
     pub sidebar_width: f64,
     /// How long the pointer rests on a shortened name before it opens.
     pub reveal_delay_seconds: f64,
+    /// How often a drag past the view's edge scrolls.
+    pub autoscroll_every_seconds: f64,
+    /// How long a notice that fades stays.
+    pub notice_seconds: f64,
 }
 
 /// The scrolled view, on each scroll.
@@ -225,6 +262,8 @@ pub enum ReaderOp {
     /// `surface` is an `IOSurfaceRef` the host now owns one reference to, as a number, or zero if `rgb` is the colour.
     Attach { id: u64, page: u32, x: f64, y: f64, width: f64, height: f64, surface: u64, rgb: Option<u32>, crop_width: f64, crop_height: f64, below: bool },
     Detach { id: u64 },
+    /// All of what's selected on a page, in its own coordinates. Nothing clears it.
+    Highlight { page: u32, rects: Vec<HighlightRect> },
 }
 
 impl From<Op> for ReaderOp {
@@ -238,6 +277,7 @@ impl From<Op> for ReaderOp {
             Op::HidePage { page } => Self::HidePage { page },
             Op::Attach { id, page, x, y, width, height, surface, rgb, crop_width, crop_height, below } => Self::Attach { id, page, x, y, width, height, surface, rgb, crop_width, crop_height, below },
             Op::Detach { id } => Self::Detach { id },
+            Op::Highlight { page, rects } => Self::Highlight { page, rects: rects.into_iter().map(|rect| HighlightRect { x: f64::from(rect.x), y: f64::from(rect.y), width: f64::from(rect.width), height: f64::from(rect.height) }).collect() },
         }
     }
 }
@@ -426,6 +466,10 @@ impl EngineEvents for EngineHooks {
     fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>) {
         self.core.push(CoreCall::Page(page, failure, TabId(tab)));
     }
+
+    fn copy_ready(&self) {
+        self.listener.copy_ready();
+    }
 }
 
 /// What the session thread remembers between looks.
@@ -567,7 +611,7 @@ impl AppCore {
             listener: Arc::clone(&listener),
             contents_follow: Mutex::new(ContentsFollow::default()),
             started: Instant::now(),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -646,7 +690,7 @@ impl AppCore {
     }
 
     pub fn limits(&self) -> ReaderLimits {
-        ReaderLimits { min_zoom: MIN_ZOOM, max_zoom: MAX_ZOOM, window_width: 1440.0, window_height: 900.0, sidebar_width: 272.0, reveal_delay_seconds: 0.5 }
+        ReaderLimits { min_zoom: MIN_ZOOM, max_zoom: MAX_ZOOM, window_width: 1440.0, window_height: 900.0, sidebar_width: 272.0, reveal_delay_seconds: 0.5, autoscroll_every_seconds: recto_reader::selection::AUTOSCROLL_EVERY, notice_seconds: 6.0 }
     }
 
     /// The sidebar as it stands, but for its tabs. A short lock and a small copy.
@@ -797,6 +841,8 @@ impl AppCore {
         let Some(action) = menus::action(&id) else { return HostAction::None };
         match action {
             menus::Action::Host(host) => return host,
+            menus::Action::Copy { anyway } => self.inner.engine.copy_selection(anyway),
+            menus::Action::SelectAll => self.inner.engine.select_all(),
             menus::Action::Zoom(zoom) => {
                 self.inner.engine.zoom(zoom);
             }
@@ -812,6 +858,64 @@ impl AppCore {
             }
         }
         HostAction::None
+    }
+
+    /// Whether a menu item can be chosen now. Asked when a menu opens and on its key.
+    pub fn menu_item_enabled(&self, id: String) -> bool {
+        menus::enabled(&id, self.inner.engine.has_document(), self.inner.engine.has_selection())
+    }
+
+    /// What a right-click on a page offers.
+    pub fn context_menu(&self) -> Vec<MenuEntry> {
+        menus::context_menu()
+    }
+
+    /// The mouse went down on a page, in the document view's coordinates, the same at any zoom. Apply what comes back in the same transaction. It looks through text already here and never waits for any.
+    pub fn selection_press(&self, x: f64, y: f64, clicks: u32, shift: bool) -> Vec<ReaderOp> {
+        self.inner.engine.selection_press(x, y, clicks, shift).into_iter().map(ReaderOp::from).collect()
+    }
+
+    pub fn selection_drag(&self, x: f64, y: f64) -> Vec<ReaderOp> {
+        self.inner.engine.selection_drag(x, y).into_iter().map(ReaderOp::from).collect()
+    }
+
+    pub fn selection_release(&self) -> Vec<ReaderOp> {
+        self.inner.engine.selection_release().into_iter().map(ReaderOp::from).collect()
+    }
+
+    /// Whether the pointer's over text, for the I-beam. A page not read yet says no, and its text is read when there's nothing better to do.
+    pub fn pointer_is_over_text(&self, x: f64, y: f64) -> bool {
+        self.inner.engine.pointer_is_over_text(x, y)
+    }
+
+    /// How far to scroll per step of a drag this far past the view's edge.
+    pub fn autoscroll_step(&self, beyond: f64) -> f64 {
+        recto_reader::selection::autoscroll_step(beyond)
+    }
+
+    /// What a copy has for the clipboard. `copy_ready` says when.
+    pub fn take_copied(&self) -> Option<String> {
+        self.inner.engine.take_copied().map(|copied| copied.text)
+    }
+
+    /// The selection's text if it's all here, for what can't wait, as the Services menu can't. Nothing if not.
+    pub fn selection_text_now(&self) -> Option<String> {
+        self.inner.engine.selection_text_now()
+    }
+
+    /// Whether there's text the Services menu can be offered, which it asks often, on the UI thread. Builds nothing.
+    pub fn selection_can_be_sent(&self) -> bool {
+        self.inner.engine.selection_can_be_sent()
+    }
+
+    /// The reader has dismissed the notice, or its time's up.
+    pub fn dismiss_selection_notice(&self) {
+        self.inner.engine.dismiss_selection_notice();
+    }
+
+    /// Where a point on a page is in the document, for QA to go through what the mouse goes through.
+    pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<DocumentPoint> {
+        self.inner.engine.document_point(page, x, y).map(|(x, y)| DocumentPoint { x, y })
     }
 
     /// The id a key does with nothing held, or none.
@@ -1249,7 +1353,9 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }
     }
     let note = lock(&inner.open_failure).clone().or(problem).or_else(|| inner.engine.note());
-    let reader = ReaderView { home: synced.tab.is_none(), note, focus: view.focus, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden };
+    let highlight = paper.highlight();
+    let selection_notice = inner.engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades });
+    let reader = ReaderView { home: synced.tab.is_none(), note, focus: view.focus, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice };
     let mut published = lock(&inner.published);
     let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {
