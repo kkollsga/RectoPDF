@@ -376,7 +376,11 @@ fn waiting_for_the_index_starts_it_and_hears_it_finish() {
     let done = wait_done(&state, "active");
     assert!(started.elapsed() < Duration::from_secs(120));
     assert_eq!(done["data"]["pages"], 5, "{done}");
-    let folder = PathBuf::from(done["data"]["folder"].as_str().unwrap());
+    assert_eq!(done["data"]["folder"], Value::Null, "a build writes the text once: {done}");
+    let (made, code) = state.json(&["index", "--agent"]);
+    assert_eq!(code, 0, "{made}");
+    let folder = PathBuf::from(made["data"]["folder"].as_str().unwrap());
+    assert!(made["data"]["agent_bytes"].as_u64().unwrap() > 0, "{made}");
     assert!(folder.join("manifest.json").is_file() && folder.join("pages/0005.md").is_file(), "{done}");
     assert!(folder.starts_with(&state.paths.corpus), "QA state must keep it in the temp folder: {}", folder.display());
     assert!(!folder.to_string_lossy().contains("waited"), "a document's name is in the folder's path: {}", folder.display());
@@ -880,4 +884,39 @@ fn a_session_marks_its_corpus_folder() {
     // As the OS itself reads it.
     let said = Command::new("/usr/bin/tmutil").arg("isexcluded").arg(&state.paths.corpus).output().unwrap();
     assert!(String::from_utf8_lossy(&said.stdout).contains("[Excluded]"), "{said:?}");
+}
+
+/// Failure: asking for the agent's folder before there's an index fails, or writes half of one. Or a search makes it, so everyone pays for what only an agent's tools will read, or a clear leaves it behind.
+#[test]
+fn the_agent_folder_comes_only_when_asked_for_and_goes_with_a_clear() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("agent-folder.pdf", 40);
+    let root = state.paths.corpus.clone();
+    state.json(&["open", path(&file)]);
+    let (early, code) = state.json(&["index", "--agent"]);
+    assert_eq!(code, 0, "{early}");
+    assert_eq!(early["data"]["folder"], Value::Null, "it isn't finished, so there's nothing to give: {early}");
+    wait_done(&state, "active");
+    let (searched, _) = state.json(&["search", "common"]);
+    assert_eq!(searched["data"]["route"], "index", "{searched}");
+    assert!(!all_text_under(&root).contains("|"), "nothing's written with marks yet");
+    let key = CorpusKey::of_file(&file.0).unwrap();
+    let paths = recto_index::corpus::CorpusPaths::new(&root, key);
+    assert!(!paths.agent.exists(), "a search wrote the second copy");
+    let (status, _) = state.json(&["index", "status"]);
+    assert_eq!((status["data"]["folder"].clone(), status["data"]["agent_bytes"].as_u64()), (Value::Null, Some(0)), "{status}");
+
+    // With the PDF gone: a folder comes from the pack alone.
+    let (made, code) = state.json(&["index", "--agent"]);
+    assert_eq!(code, 0, "{made}");
+    assert!(paths.manifest.is_file() && paths.page_file(39, 4).is_file(), "{made}");
+    let text = std::fs::read_to_string(paths.page_file(2, 4)).unwrap();
+    assert!(text.contains("This is page 3 of the alpha document"), "{text}");
+    let (status, _) = state.json(&["index", "status"]);
+    assert_eq!(status["data"]["folder"].as_str(), Some(paths.agent.to_str().unwrap()), "{status}");
+
+    let (cleared, code) = state.json(&["index", "clear"]);
+    assert_eq!((code, cleared["data"]["cleared"].as_u64()), (0, Some(1)), "{cleared}");
+    assert!(!all_text_under(&root).contains("alpha document"), "a clear left a form of the text");
 }

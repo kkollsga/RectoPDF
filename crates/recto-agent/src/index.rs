@@ -190,11 +190,31 @@ fn no_indexing() -> AgentError {
 const MAX_LISTED_FILES: usize = 32;
 
 /// `recto index` and `recto index status`.
-pub(crate) fn index<A: SessionAccess>(access: &A, tab: &str, want: bool) -> Result<Value, AgentError> {
+pub(crate) fn index<A: SessionAccess>(access: &A, tab: &str, want: bool, agent: bool) -> Result<Value, AgentError> {
     let indexing = access.indexing().ok_or_else(no_indexing)?;
     let (id, files) = tab_files(access, tab)?;
+    if agent {
+        make_agent_folder(indexing, &files[0])?;
+    }
     let answer = report(indexing, id, &files, want);
     Ok(answer.0)
+}
+
+/// Writes the tab's own file's folder for an agent, if its corpus is finished. If it isn't, there's nothing to make it from yet, and the answer says where that stands.
+fn make_agent_folder(indexing: &dyn Indexing, file: &TabFile) -> Result<(), AgentError> {
+    let current = file.expected.is_none_or(|stamp| recto_platform::file_stamp(&file.path).ok() == Some(stamp));
+    let (Some(key), FileIndex::Ready(_), true) = (CorpusKey::of_file(&file.path).ok(), file_index(indexing, &file.path, true).1, current) else { return Ok(()) };
+    match corpus::ensure_agent_folder(indexing.root(), key, &corpus::BuildLimits::default()) {
+        Ok(_) | Err(corpus::AgentFolderError::NotReady) => Ok(()),
+        Err(corpus::AgentFolderError::Busy) => Err(AgentError::new("busy", "This document's index is being written right now.", exit::BUSY)),
+        Err(corpus::AgentFolderError::TooLarge) => Err(AgentError::new("too_large", "This document has too many pages for a folder of one file each.", exit::FAILED).then("`recto search` works without it.")),
+        Err(corpus::AgentFolderError::Damaged) => {
+            let _ = corpus::clear(indexing.root(), key);
+            indexing.want(&file.path, key);
+            Err(AgentError::new("index_failed", "This document's index didn't add up, so it's being built again.", exit::FAILED).then("`recto wait indexing-done`, then ask again."))
+        }
+        Err(corpus::AgentFolderError::Failed) => Err(AgentError::new("write_failed", "The folder couldn't be written.", exit::FAILED)),
+    }
 }
 
 /// What `index` and `wait` say. The second part is the first file, of the ones this tab uses, that isn't ready.
@@ -202,7 +222,7 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
     let mut listed = Vec::new();
     let mut first_unready = None;
     let (mut pages, mut pages_done, mut ready, mut bytes, mut no_text, mut failed, mut flagged, mut unchecked) = (0u64, 0u64, 0u32, 0u64, 0u64, 0u64, 0u64, 0u64);
-    let mut folder = None;
+    let (mut folder, mut agent_bytes) = (None, 0);
     for file in files.iter().filter(|file| file.pages_used > 0) {
         let current = file.expected.is_none_or(|stamp| recto_platform::file_stamp(&file.path).ok() == Some(stamp));
         let (key, state) = if current { file_index(indexing, &file.path, want) } else { (None, FileIndex::Unavailable) };
@@ -213,8 +233,11 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
                 (bytes, no_text, failed, flagged, unchecked) = (bytes + summary.corpus_bytes, no_text + u64::from(summary.no_text_pages), failed + u64::from(summary.failed_pages), flagged + u64::from(summary.hidden_flagged_pages), unchecked + u64::from(summary.hidden_unchecked_pages));
                 (pages, pages_done) = (pages + u64::from(summary.pages), pages_done + u64::from(summary.pages));
                 row["pages"] = json!(summary.pages);
-                if let (false, Some(key)) = (file.added, key) {
+                if let (false, Some(key)) = (file.added, key)
+                    && let Some(bytes) = corpus::agent_folder_bytes(indexing.root(), key)
+                {
                     folder = Some(corpus::CorpusPaths::new(indexing.root(), key).agent.to_string_lossy().into_owned());
+                    agent_bytes = bytes;
                 }
             }
             FileIndex::Building { pages_done: done } | FileIndex::Queued { pages_done: done } | FileIndex::NotStarted { pages_done: done } => {
@@ -249,8 +272,9 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
         "failed_pages": failed,
         "hidden_flagged_pages": flagged,
         "hidden_unchecked_pages": unchecked,
-        // Only once it's finished, and only the tab's own file. The folder's name says nothing about the document.
+        // Only once it's been asked for, and only the tab's own file. The folder's name says nothing about the document.
         "folder": folder,
+        "agent_bytes": agent_bytes,
         "indexers_running": running,
         "indexers_waiting": waiting,
         "note": note,

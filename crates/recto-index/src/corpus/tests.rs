@@ -218,6 +218,8 @@ fn the_folder_is_what_an_agent_will_read() {
     assert_eq!((stats.pages_built, stats.pages_resumed), (4, 0));
     assert_eq!((summary.pages, summary.no_text_pages, summary.failed_pages, summary.hidden_flagged_pages), (4, 1, 1, 1));
     let paths = CorpusPaths::new(&root, key);
+    assert!(!paths.agent.exists(), "a build keeps the text once");
+    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
     let page = |number: u32| fs::read_to_string(paths.page_file(number, 4)).unwrap();
     assert!(paths.page_file(0, 4).ends_with("agent/pages/0001.md"), "{:?}", paths.page_file(0, 4));
     let first = page(0);
@@ -273,6 +275,7 @@ fn a_page_with_more_hidden_text_than_marks_says_so() {
     let many: &'static str = Box::leak("#abc| x\n".repeat(crate::MAX_HIDDEN_SPANS + 3).into_boxed_str());
     build(&root, key, &mut FakeFeed::new(&[Fake::Text(many), PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
     let paths = CorpusPaths::new(&root, key);
+    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
     let first_line = |page: u32| fs::read_to_string(paths.page_file(page, 4)).unwrap().lines().next().unwrap().to_string();
     assert!(first_line(0).contains(" spans=partial"), "{}", first_line(0));
     assert!(!first_line(1).contains("spans="), "{}", first_line(1));
@@ -361,8 +364,7 @@ fn a_stopped_build_isnt_used_and_going_on_comes_out_the_same() {
     assert_eq!(build(&root_b, key, &mut FakeFeed::new(&stopped), &DocMeta::default(), &BuildLimits::default()).unwrap(), BuildOutcome::Paused("stopped_here"));
     assert_eq!(disk_state(&root_b, key), DiskState::Partial { pages_done: 4 });
     assert_eq!(ReadyCorpus::open(&root_b, key).unwrap().map(|corpus| corpus.pages()), None, "half a document must not answer");
-    let manifest: Value = serde_json::from_slice(&fs::read(CorpusPaths::new(&root_b, key).manifest).unwrap()).unwrap();
-    assert_eq!(manifest["state"], "building", "and an agent reading the folder can tell");
+    assert_eq!(ensure_agent_folder(&root_b, key, &BuildLimits::default()), Err(AgentFolderError::NotReady), "and an agent can't be handed half of one");
 
     let mut feed = FakeFeed::new(&whole);
     let BuildOutcome::Ready { stats, .. } = build(&root_b, key, &mut feed, &DocMeta::default(), &BuildLimits::default()).unwrap() else { panic!() };
@@ -386,7 +388,7 @@ fn a_torn_end_is_cut_back_to_the_last_good_page() {
         stopped
     };
     type Tear<'a> = (&'a str, &'a dyn Fn(&CorpusPaths), u32);
-    let tears: [Tear<'_>; 7] = [
+    let tears: [Tear<'_>; 4] = [
         ("half a record", &|paths: &CorpusPaths| {
             let mut table = OpenOptions::new().append(true).open(&paths.table).unwrap();
             table.write_all(&[1; 10]).unwrap();
@@ -404,17 +406,11 @@ fn a_torn_end_is_cut_back_to_the_last_good_page() {
             let zeroed = vec![0; bytes.len()];
             fs::write(&paths.pack, zeroed).unwrap();
         }, 0),
-        ("a page file gone", &|paths: &CorpusPaths| {
-            fs::remove_file(paths.page_file(1, 4)).unwrap();
-        }, 1),
         ("a record that doesn't follow the last", &|paths: &CorpusPaths| {
             let mut table = fs::read(&paths.table).unwrap();
             table[RECORD_LEN] ^= 1;
             fs::write(&paths.table, table).unwrap();
         }, 1),
-        ("a torn page file on its way in", &|paths: &CorpusPaths| {
-            fs::write(&paths.temp_page, b"half a pa").unwrap();
-        }, 3),
     ];
     for (what, tear, expected) in tears {
         let _ = fs::remove_dir_all(&torn);
@@ -449,7 +445,7 @@ fn a_protected_document_leaves_no_text_behind() {
     assert_eq!(disk_state(&root, key), DiskState::Refused("needs_password".to_string()));
     assert_eq!(build(&root, key, &mut Locked, &DocMeta::default(), &BuildLimits::default()).unwrap(), BuildOutcome::Refused("needs_password".to_string()), "not tried again");
     let paths = CorpusPaths::new(&root, key);
-    assert!(!paths.pack.exists() && !paths.table.exists() && fs::read_dir(&paths.pages).is_ok_and(|mut files| files.next().is_none()));
+    assert!(!paths.pack.exists() && !paths.table.exists() && !paths.agent.exists());
 
     // It became protected partway, as a file replaced under a retired worker can.
     let key = key_of(&temp, b"another");
@@ -530,6 +526,7 @@ fn a_temporary_failure_gets_read_again_and_comes_out_as_if_it_never_happened() {
     let page = corpus.page(1, &mut buffer).unwrap();
     assert_eq!((page.kind, page.text), (PageKind::Text, "the words of a page that was only unlucky"));
     let paths = CorpusPaths::new(&root, key);
+    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
     let file = fs::read_to_string(paths.page_file(1, 4)).unwrap();
     assert!(file.contains("only unlucky") && file.contains("text=native"), "{file}");
     let manifest: Value = serde_json::from_slice(&fs::read(&paths.manifest).unwrap()).unwrap();
@@ -583,6 +580,105 @@ fn a_pack_may_be_longer_than_it_says_and_never_shorter() {
     assert!(ReadyCorpus::open(&root, key).unwrap().is_some());
     pack.set_len(2).unwrap();
     assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged);
+}
+
+/// Failure: every page is kept on disk twice, once for a search and once for an agent, though nothing reads the second until there's an agent to read it. A build makes one, and only asking makes the other, from the pack alone: the PDF needn't even be there. **And it's the same text** in the form the agent report set out.
+#[test]
+fn the_agent_folder_is_made_on_demand_from_the_pack() {
+    let temp = Temp::new();
+    let key = key_of(&temp, b"a file");
+    let root = temp.0.join("corpus");
+    let pages = [Fake::Text("The Supplier shall\nnot be liable"), Fake::Text("see #secret words| here"), Fake::Text(""), Fake::Failed];
+    let meta = DocMeta { title: Some("A title".to_string()), outline: vec![(0, Some(0), "One".to_string())], renderer_only: false, file_bytes: 12 };
+    let BuildOutcome::Ready { summary, .. } = build(&root, key, &mut FakeFeed::new(&pages), &meta, &BuildLimits::default()).unwrap() else { panic!() };
+    let paths = CorpusPaths::new(&root, key);
+    assert!(!paths.agent.exists(), "a build wrote the text twice");
+    assert_eq!(agent_folder_bytes(&root, key), None);
+    assert!(summary.corpus_bytes < 32 * 1024, "{summary:?}");
+    fs::remove_file(temp.0.join("doc.pdf")).unwrap();
+
+    let made = ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    assert_eq!((made.path.as_path(), made.pages_written), (paths.agent.as_path(), 4));
+    assert!(agent_folder_bytes(&root, key).is_some());
+    let read = |page: u32| fs::read_to_string(paths.page_file(page, 4)).unwrap();
+    assert!(read(0).ends_with("--> \nThe Supplier shall\nnot be liable\n") || read(0).contains("-->\nThe Supplier shall\nnot be liable\n"), "{}", read(0));
+    assert!(read(1).contains("hidden=flagged") && read(1).contains("! see [hidden: secret words] here"), "{}", read(1));
+    assert!(read(2).contains("text=none"), "{}", read(2));
+    assert!(read(3).contains("text=failed") && read(3).contains("stopped"), "{}", read(3));
+    let manifest: Value = serde_json::from_slice(&fs::read(&paths.manifest).unwrap()).unwrap();
+    assert_eq!(manifest["untrusted"]["title"], "A title", "what the manifest says of the file came from the build, with no PDF here to ask");
+    assert_eq!(manifest["untrusted"]["outline"][0]["t"], "One");
+    assert_eq!(manifest["file_bytes"], 12);
+    assert_eq!(ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap().pages_written, 0, "there's nothing to do twice");
+}
+
+/// Failure: page files aren't synced, so after a power cut a finished folder holds an empty page or none, and an agent reads that as a page with nothing on it. Asking for the folder finds each by its size and mends it, and a missing manifest too.
+#[test]
+fn asking_for_the_agent_folder_mends_what_a_power_cut_left() {
+    let temp = Temp::new();
+    let key = key_of(&temp, b"a file");
+    let root = temp.0.join("corpus");
+    build(&root, key, &mut FakeFeed::new(&[PLAIN, PLAIN, PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    let paths = CorpusPaths::new(&root, key);
+    let whole = fs::read(paths.page_file(1, 4)).unwrap();
+    fs::write(paths.page_file(0, 4), b"").unwrap();
+    fs::remove_file(paths.page_file(1, 4)).unwrap();
+    assert_eq!(ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap().pages_written, 2);
+    assert_eq!(fs::read(paths.page_file(0, 4)).unwrap(), whole.iter().map(|byte| if *byte == b'2' { b'1' } else { *byte }).collect::<Vec<u8>>());
+    assert_eq!(fs::read(paths.page_file(1, 4)).unwrap(), whole);
+    fs::remove_file(&paths.manifest).unwrap();
+    assert_eq!(agent_folder_bytes(&root, key), None, "with no manifest it isn't finished");
+    assert_eq!(ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap().pages_written, 0);
+    assert!(paths.manifest.is_file());
+}
+
+/// Failure: the agent's folder gets made from a corpus that's being built or doesn't add up, or fills a disk with whole blocks for many small pages, or a retry leaves it saying a page failed that's since been read. And `index clear` leaves one form behind.
+#[test]
+fn the_agent_folder_is_held_to_the_same_rules() {
+    let temp = Temp::new();
+    let key = key_of(&temp, b"a file");
+    let root = temp.0.join("corpus");
+    assert_eq!(ensure_agent_folder(&root, key, &BuildLimits::default()), Err(AgentFolderError::NotReady));
+    build(&root, key, &mut FakeFeed::new(&[PLAIN, PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    let paths = CorpusPaths::new(&root, key);
+
+    let lock = local::append_private_file(&paths.lock).unwrap();
+    lock.try_lock().unwrap();
+    assert_eq!(ensure_agent_folder(&root, key, &BuildLimits::default()), Err(AgentFolderError::Busy));
+    drop(lock);
+
+    let tight = BuildLimits { max_doc_bytes: 4096, ..BuildLimits::default() };
+    assert_eq!(ensure_agent_folder(&root, key, &tight), Err(AgentFolderError::TooLarge));
+    assert!(!paths.agent.exists(), "what's too large leaves nothing behind");
+
+    let pack = fs::read(&paths.pack).unwrap();
+    let mut bad = pack.clone();
+    bad[0] = bad[0].wrapping_add(1);
+    fs::write(&paths.pack, bad).unwrap();
+    assert_eq!(ensure_agent_folder(&root, key, &BuildLimits::default()), Err(AgentFolderError::Damaged));
+    fs::write(&paths.pack, pack).unwrap();
+
+    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    assert!(paths.manifest.is_file() && paths.pack.is_file());
+    clear(&root, key).unwrap();
+    assert!(!paths.manifest.exists() && !paths.pack.exists() && !root.join(key.hex()).exists(), "a clear takes both forms");
+
+    // Failed when it was first built, and made since: a retry that reads the page must change the folder too.
+    let key = key_of(&temp, b"another file");
+    let paths = CorpusPaths::new(&root, key);
+    let flaky = [PLAIN, Fake::LostWorker];
+    build(&root, key, &mut FakeFeed::new(&flaky), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    ensure_agent_folder(&root, key, &BuildLimits::default()).unwrap();
+    assert!(fs::read_to_string(paths.page_file(1, 4)).unwrap().contains("text=failed"));
+    let mut ready: Value = serde_json::from_slice(&fs::read(&paths.ready).unwrap()).unwrap();
+    ready["retried_at"] = json!(now_seconds() - RETRY_PAUSE.as_secs() - 1);
+    fs::write(&paths.ready, ready.to_string()).unwrap();
+    let fixed = [PLAIN, Fake::Text("read at last")];
+    build(&root, key, &mut FakeFeed::new(&fixed), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    assert!(fs::read_to_string(paths.page_file(1, 4)).unwrap().contains("read at last"));
+    let manifest: Value = serde_json::from_slice(&fs::read(&paths.manifest).unwrap()).unwrap();
+    assert_eq!(manifest["failed_pages"], json!([]));
 }
 
 /// Failure: a corpus someone has damaged panics the session, or its bad bytes reach an agent as a document's text. Each way it can fail to add up is said, and a page past the end of a file or with broken UTF-8 isn't believed.
@@ -876,10 +972,10 @@ fn a_clear_that_fails_doesnt_read_as_being_built() {
     let root = temp.0.join("corpus");
     let key = CorpusKey([4; 32]);
     build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
-    let pages = CorpusPaths::new(&root, key).pages;
-    fs::set_permissions(&pages, fs::Permissions::from_mode(0o500)).unwrap();
+    let app = CorpusPaths::new(&root, key).app;
+    fs::set_permissions(&app, fs::Permissions::from_mode(0o500)).unwrap();
     let report = clear_all(&root).unwrap();
-    fs::set_permissions(&pages, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&app, fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(report, Cleared { failed: 1, ..Cleared::default() });
     assert!(clear(&root, key).is_ok(), "with the way clear, it goes");
 }

@@ -411,7 +411,7 @@ fn render_result(data: &Value) -> String {
 
 fn index(data: &Value) -> String {
     let mut out = match data["state"].as_str() {
-        Some("ready") => format!("The search index is finished: {}, {} on disk.", count(number(&data["pages"]), "page", "pages"), bytes(number(&data["corpus_bytes"]))),
+        Some("ready") => format!("The search index is finished: {}, {} on disk.", count(number(&data["pages"]), "page", "pages"), bytes(number(&data["corpus_bytes"]) + number(&data["agent_bytes"]))),
         Some(state) => format!("The search index is {}: {} done so far.", state.replace('_', " "), count(number(&data["pages_done"]), "page", "pages")),
         None => "The search index's state isn't known.".to_string(),
     };

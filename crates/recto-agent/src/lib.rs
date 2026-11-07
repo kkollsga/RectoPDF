@@ -250,6 +250,9 @@ pub enum Command {
     Index {
         #[serde(default = "active_tab")]
         tab: String,
+        /// Also writes the folder an agent reads, one file per page, once the index is finished.
+        #[serde(default)]
+        agent: bool,
     },
     /// Where a document's search index stands. Starts nothing.
     IndexStatus {
@@ -431,7 +434,7 @@ impl Command {
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
-            Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
+            Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
             Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
         }
@@ -442,7 +445,7 @@ impl Command {
     /// The selector this command acts on, if it has one.
     fn tab_selector(&self) -> Option<&str> {
         match self {
-            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::Text { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
+            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::Text { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
             _ => None,
         }
     }
@@ -740,8 +743,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         Command::Contents { tab, from, limit, depth } => reading::contents(access, tab, *from, *limit, *depth),
         Command::Signatures { tab } => reading::signatures(access, tab),
         Command::Search { tab, query, pages, limit, scan } => search::search(access, tab, query, pages.as_deref(), *limit, *scan),
-        Command::Index { tab } => index::index(access, tab, true),
-        Command::IndexStatus { tab } => index::index(access, tab, false),
+        Command::Index { tab, agent } => index::index(access, tab, true, *agent),
+        Command::IndexStatus { tab } => index::index(access, tab, false, false),
         Command::IndexClear { tab, all } => index::clear(access, tab, *all),
         Command::Edits { tab } => access.with(|s| {
             let id = select(s, tab)?;
@@ -1463,7 +1466,7 @@ mod tests {
             Command::Facts { tab: tab() },
             Command::Contents { tab: tab(), from: None, limit: None, depth: None },
             Command::Search { tab: tab(), query: "x".into(), pages: None, limit: None, scan: false },
-            Command::Index { tab: tab() },
+            Command::Index { tab: tab(), agent: false },
             Command::IndexStatus { tab: tab() },
             Command::IndexClear { tab: tab(), all: false },
             Command::Signatures { tab: tab() },
