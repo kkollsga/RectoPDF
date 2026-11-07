@@ -231,6 +231,50 @@ final class RevealLabel: FlippedView {
     }
 }
 
+/// The panel's items, in a compact block in the lower sidebar: a label, and a row of quiet buttons, the one showing picked out. All its words are Rust's. Built when it opens, and gone when it closes.
+final class PanelView: FlippedView {
+    private(set) var buttons: [String: NSButton] = [:]
+    private let line = NSView()
+    private static let rowHeight: CGFloat = 30
+    private static let labelHeight: CGFloat = 18
+
+    func show(_ model: PanelModel, target: AnyObject, action: Selector, width: CGFloat) -> CGFloat {
+        subviews.forEach { $0.removeFromSuperview() }
+        buttons = [:]
+        line.wantsLayer = true
+        line.layer?.backgroundColor = Theme.hairline.cg
+        line.frame = NSRect(x: 0, y: 0, width: width, height: 1)
+        addSubview(line)
+        var y: CGFloat = 8
+        let inset: CGFloat = 10
+        for section in model.sections {
+            if !section.title.isEmpty {
+                let label = TextLine()
+                label.set(section.title, font: .systemFont(ofSize: 11.5), color: Theme.textQuiet.ns)
+                let size = label.size()
+                label.frame = NSRect(x: inset + 6, y: y, width: size.width, height: size.height)
+                addSubview(label)
+                y += Self.labelHeight
+            }
+            let each = (width - inset * 2) / CGFloat(max(section.items.count, 1))
+            for (index, item) in section.items.enumerated() {
+                let button = NSButton(title: item.title, target: target, action: action)
+                button.isBordered = false
+                button.wantsLayer = true
+                button.layer?.cornerRadius = 6
+                button.layer?.backgroundColor = item.selected ? Theme.rowActive.cg : nil
+                button.identifier = NSUserInterfaceItemIdentifier(item.id)
+                button.attributedTitle = NSAttributedString(string: item.title, attributes: [.foregroundColor: (item.selected ? Theme.accent : Theme.textBody).ns, .font: NSFont.systemFont(ofSize: 12.5, weight: item.selected ? .semibold : .regular)])
+                button.frame = NSRect(x: inset + CGFloat(index) * each, y: y, width: each, height: Self.rowHeight - 2)
+                addSubview(button)
+                buttons[item.id] = button
+            }
+            y += Self.rowHeight + 2
+        }
+        return y + 2
+    }
+}
+
 /// The tabs, with the active tab's contents under it in a scrolling area of their own, whose height Rust decides. Both are tables with reused rows, and contents rows are fetched for what's on screen, so a thousand tabs or a 10,000-entry outline cost what fills the sidebar.
 @MainActor final class SidebarPane: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let view = FlippedView()
@@ -240,6 +284,11 @@ final class RevealLabel: FlippedView {
     let contentsTable = NSTableView()
     let footer = TextLine()
     let addButton = NSButton(title: "", target: nil, action: nil)
+    let moreButton = NSButton(title: "", target: nil, action: nil)
+    private(set) var panel: PanelView?
+    private var panelModel = PanelModel(open: false, buttonTooltip: "", sections: [])
+    private var panelHeight: CGFloat = 0
+    var performAction: ((String) -> Void)?
     private let core: AppCore
     private(set) var model = SidebarView(tabsVersion: 0, tabCount: 0, activeIndex: nil, contentsCount: 0, contentsVersion: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsPlaceShift: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false)
     /// The tabs, pulled only when their version moves.
@@ -261,13 +310,13 @@ final class RevealLabel: FlippedView {
     private var revealTimer: Timer?
     private var revealedRow: Int?
     private(set) var lastPointerRow: Int?
-    /// How long the pointer rests on a shortened name before it opens.
-    private static let revealDelay: TimeInterval = 0.5
+    private let revealDelay: TimeInterval
     /// How far rows opening and closing have moved the scroll, so what QA records is what the eye sees.
     private var rowShift = 0.0
 
     init(core: AppCore, strings: AppStrings, isQuiet: Bool) {
         self.core = core
+        revealDelay = core.limits().revealDelaySeconds
         super.init()
         frames = FrameRunner(view: contentsScroll, onScreen: !isQuiet) { [weak self] dt in
             MainActor.assumeIsolated { self?.frame(dt) ?? false }
@@ -275,10 +324,10 @@ final class RevealLabel: FlippedView {
         view.wantsLayer = true
         for (scrollView, list) in [(scroll, table), (contentsScroll as NSScrollView, contentsTable)] {
             scrollView.documentView = list
+            scrollView.automaticallyAdjustsContentInsets = false
             scrollView.hasVerticalScroller = true
             scrollView.autohidesScrollers = true
             scrollView.drawsBackground = false
-            scrollView.scrollerStyle = .overlay
             scrollView.contentView.drawsBackground = false
             list.addTableColumn(NSTableColumn(identifier: .init("row")))
             list.headerView = nil
@@ -296,8 +345,7 @@ final class RevealLabel: FlippedView {
         contentsTable.action = #selector(contentsClicked)
         // One height for every row, so the table asks nothing per row, however many there are.
         contentsTable.rowHeight = 28
-        // A move of the contents isn't the reader's, so it shows no scroller. With the pointer over them it's the system's as usual.
-        contentsScroll.hasVerticalScroller = false
+        updateContentsScroller()
         contentsScroll.userScrolled = { [weak self] in self?.noteUserScrolled() }
         contentsScroll.pointerMoved = { [weak self] inside in self?.setContentsPointer(inside) }
         NotificationCenter.default.addObserver(self, selector: #selector(contentsLiveScrolled), name: NSScrollView.didLiveScrollNotification, object: contentsScroll)
@@ -311,6 +359,15 @@ final class RevealLabel: FlippedView {
         addButton.imagePosition = .imageOnly
         addButton.target = self
         addButton.action = #selector(addClicked)
+        view.addSubview(moreButton)
+        moreButton.isBordered = false
+        moreButton.wantsLayer = true
+        moreButton.layer?.cornerRadius = 6
+        moreButton.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: core.panel().buttonTooltip)
+        moreButton.imagePosition = .imageOnly
+        moreButton.toolTip = core.panel().buttonTooltip
+        moreButton.target = self
+        moreButton.action = #selector(moreClicked)
         NotificationCenter.default.addObserver(self, selector: #selector(frameChanged), name: NSView.frameDidChangeNotification, object: view)
         view.postsFrameChangedNotifications = true
     }
@@ -333,9 +390,14 @@ final class RevealLabel: FlippedView {
     /// What the pointer entering or leaving the contents does, and what `recto qa contents-pointer` calls.
     func setContentsPointer(_ inside: Bool) {
         pointerInContents = inside
-        contentsScroll.hasVerticalScroller = inside
+        updateContentsScroller()
         core.contentsPointer(inside: inside)
         if inside { frames?.stop() }
+    }
+
+    /// A move of the contents isn't the reader's, so thin scrollers that come with movement stay off it, and with the pointer over them they're the system's as usual. A Mac set to always show them gets that.
+    func updateContentsScroller() {
+        contentsScroll.hasVerticalScroller = pointerInContents || contentsScroll.scrollerStyle == .legacy
     }
 
     private var contentsY: Double { contentsScroll.contentView.bounds.minY }
@@ -409,9 +471,11 @@ final class RevealLabel: FlippedView {
 
     @objc private func frameChanged() {
         let size = view.bounds.size
-        scroll.frame = NSRect(x: 0, y: 52, width: size.width, height: max(size.height - 52 - 40, 0))
+        scroll.frame = NSRect(x: 0, y: 52, width: size.width, height: max(size.height - 52 - 40 - panelHeight, 0))
         placeFooter()
         addButton.frame = NSRect(x: size.width - 38, y: 12, width: 22, height: 22)
+        moreButton.frame = NSRect(x: size.width - 44, y: size.height - 36, width: 30, height: 26)
+        panel?.frame = NSRect(x: 0, y: size.height - 40 - panelHeight, width: size.width, height: panelHeight)
         if let column = table.tableColumns.first { column.width = size.width }
         if let column = contentsTable.tableColumns.first { column.width = size.width }
         updateTracking()
@@ -476,11 +540,22 @@ final class RevealLabel: FlippedView {
         revealTimer = nil
         revealRow(nil)
         guard let row else { return }
-        let timer = Timer(timeInterval: Self.revealDelay, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: revealDelay, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.revealRow(row) }
         }
         RunLoop.main.add(timer, forMode: .common)
         revealTimer = timer
+    }
+
+    /// Where the pointer would be to rest on a shortened contents entry, for QA, and which row that is as the sidebar counts them.
+    func cutOffContentsPlaceInWindow() -> (point: NSPoint, row: Int)? {
+        guard let active = activeIndex, contentsScroll.superview != nil else { return nil }
+        let visible = contentsTable.rows(in: contentsTable.visibleRect)
+        for row in visible.location..<(visible.location + visible.length) {
+            guard let cell = contentsTable.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell, cell.isCutOff else { continue }
+            return (cell.convert(NSPoint(x: cell.bounds.midX, y: cell.bounds.midY), to: nil), active + 1 + row)
+        }
+        return nil
     }
 
     /// What's drawn for a row, and its data, if it's on screen.
@@ -581,7 +656,46 @@ final class RevealLabel: FlippedView {
         addPressed?()
     }
 
+    @objc private func moreClicked() {
+        performAction?("panel.toggle")
+    }
+
+    @objc private func panelItemClicked(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue else { return }
+        performAction?(id)
+    }
+
+    /// The panel as Rust has it. It docks above the footer in room taken from the list, so the height rule goes by what's left. Built only when it's opened or changed.
+    private func updatePanel() {
+        let next = core.panel()
+        guard next != panelModel else { return }
+        panelModel = next
+        moreButton.layer?.backgroundColor = next.open ? Theme.rowActive.cg : nil
+        moreButton.contentTintColor = (next.open ? Theme.accent : Theme.textQuiet).ns
+        var height: CGFloat = 0
+        if next.open {
+            let block = panel ?? PanelView()
+            if panel == nil {
+                panel = block
+                view.addSubview(block)
+                block.wantsLayer = true
+            }
+            height = block.show(next, target: self, action: #selector(panelItemClicked(_:)), width: view.bounds.width)
+        } else {
+            panel?.removeFromSuperview()
+            panel = nil
+        }
+        panelHeight = height
+        frameChanged()
+    }
+
+    /// What QA reports of the panel.
+    func panelReport() -> [String: Any] {
+        ["open": panelModel.open, "height": panelHeight, "items": panelModel.sections.flatMap(\.items).map { ["id": $0.id, "title": $0.title, "selected": $0.selected] as [String: Any] }]
+    }
+
     func update(_ new: SidebarView) {
+        updatePanel()
         let (oldTabCount, oldActive, oldOpen) = (tabs.count, activeIndex, model.tocOpen)
         let oldActiveTab = activeTabID
         let tabsChanged = new.tabsVersion != shownTabsVersion
@@ -684,6 +798,12 @@ final class RevealLabel: FlippedView {
         view.layer?.backgroundColor = Theme.sidebar.cg
         placeFooter()
         addButton.contentTintColor = Theme.textQuiet.ns
+        moreButton.contentTintColor = (panelModel.open ? Theme.accent : Theme.textQuiet).ns
+        moreButton.layer?.backgroundColor = panelModel.open ? Theme.rowActive.cg : nil
+        // Its colours are the window's too.
+        if panelModel.open, let panel {
+            panelHeight = panel.show(panelModel, target: self, action: #selector(panelItemClicked(_:)), width: view.bounds.width)
+        }
         reloadCells()
     }
 

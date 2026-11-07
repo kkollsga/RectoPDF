@@ -382,19 +382,39 @@ fn a_drive_verb_refuses_what_it_cant_do() {
     assert_eq!(reply["error"]["code"], "usage", "{reply}");
 }
 
-/// Failure: every other QA verb calls the method behind an event, so a method AppKit can't reach by name passes them all: hover never fired on a real window, as its handlers weren't Objective-C, so full names and hover details did nothing. Every owner answers what AppKit will send, and where an event can be made and handed over, what it does happens. Nothing is posted.
+/// A PDF of as many pages, each with an outline entry too long for the sidebar.
+fn long_titled(count: usize) -> TempPdf {
+    let first_page = 4 + count;
+    let mut objects = vec![
+        Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R >>".into()),
+        Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {count} >>", (0..count).map(|index| format!("{} 0 R", first_page + index)).collect::<Vec<_>>().join(" "))),
+        Object::Dict(format!("<< /Type /Outlines /First 4 0 R /Last {} 0 R /Count {count} >>", 4 + count - 1)),
+    ];
+    for index in 0..count {
+        let prev = if index > 0 { format!("/Prev {} 0 R", 4 + index - 1) } else { String::new() };
+        let next = if index + 1 < count { format!("/Next {} 0 R", 4 + index + 1) } else { String::new() };
+        objects.push(Object::Dict(format!("<< /Title (Section {index} with a name that goes on far past the edge of any sidebar there is) /Parent 3 0 R {prev} {next} /Dest [{} 0 R /Fit] >>", first_page + index)));
+    }
+    for _ in 0..count {
+        objects.push(Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()));
+    }
+    TempPdf::new("long-titles.pdf", &build(&objects))
+}
+
+/// Failure: every other QA verb calls the method behind an event, so a method AppKit can't reach by name passes them all: hover never fired on a real window, as its handlers weren't Objective-C, so full names and hover details did nothing. Events are made and handed to the real responder by AppKit's selector, and what's checked is what comes of them: the pointer resting on a shortened contents entry opens its full name, on the real timer, and goes when it leaves. Nothing is posted.
 #[test]
 fn what_appkit_calls_reaches_the_app() {
     let Some(run) = Run::start() else { return };
-    let long = outlined_with(200);
+    let long = long_titled(200);
     run.ok(&["open", long.0.to_str().unwrap()]);
     run.settled();
+    // Whatever this Mac's mouse is, what's hovering's own rule is the same.
+    run.ok(&["qa", "scroller-style", "overlay"]);
     let found = run.ok(&["qa", "entry-points"]);
     let checked = found.as_object().unwrap();
-    assert!(checked.len() >= 20, "{found}");
     let failed: Vec<&String> = checked.iter().filter(|(_, ok)| **ok != true).map(|(name, _)| name).collect();
     assert!(failed.is_empty(), "these don't reach the app: {failed:?}\n{found}");
-    for name in ["hover_shows_details", "pointer_finds_row", "hover_ends", "wheel_in_contents_stops_following", "pinch_starts"] {
+    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "corner_covers_the_buttons", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
         assert!(checked.contains_key(name), "{name} wasn't checked: {found}");
     }
     run.ok(&["view", "--focus", "on"]);
@@ -411,15 +431,29 @@ fn a_fitted_page_fits_with_classic_scrollers() {
     let file = long_document(5);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
+    // With no one asking: thin ones that fade, as in Pages, unless this Mac is set to always show them. On automatic with a mouse paired, AppKit puts classic ones back by itself, as the owner saw on a real window.
+    let setting = Command::new("/usr/bin/defaults").args(["read", "-g", "AppleShowScrollBars"]).output().unwrap();
+    let always = String::from_utf8_lossy(&setting.stdout).trim() == "Always";
+    assert_eq!(run.report()["app"]["pages"]["scroller_style"], if always { "legacy" } else { "overlay" });
     for style in ["overlay", "legacy", "overlay"] {
         run.ok(&["qa", "scroller-style", style]);
         run.settled();
         let state = run.report();
         let pages = &state["app"]["pages"];
         assert_eq!(pages["scroller_style"], style, "{pages}");
+        assert!(pages["system_scroller_style"].is_string(), "what this Mac is set to is said: {pages}");
         assert!(pages["document_width"].as_f64().unwrap() <= pages["view_width"].as_f64().unwrap() + 0.5, "{style}: {pages}");
         assert_eq!(pages["horizontal_scroller"], false, "{style}: {pages}");
     }
+    // Scrollers showing or not don't move the page: with classic ones, a page of a long document and of a one-page one, which has none to show, are the same width.
+    let short = long_document(1);
+    run.ok(&["qa", "scroller-style", "legacy"]);
+    run.settled();
+    let long_fit = run.report()["reader"]["fit"].as_f64().unwrap();
+    run.ok(&["open", short.0.to_str().unwrap()]);
+    run.settled();
+    let short_fit = run.report()["reader"]["fit"].as_f64().unwrap();
+    assert!((long_fit - short_fit).abs() < 1e-6, "{long_fit} against {short_fit}");
 }
 
 /// Failure: closing the window and opening it again sends the reader to page 1 at no zoom, as the new window's first word is taken for them moving. Other tests have a one-page file, which can't see it.
@@ -627,6 +661,7 @@ fn reading_doesnt_grow_the_app() {
 #[test]
 fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
     let Some(run) = Run::start() else { return };
+    run.ok(&["qa", "scroller-style", "overlay"]);
     let long = outlined_with(2000);
     let others: Vec<TempPdf> = (0..4).map(|_| long_document(1)).collect();
     run.ok(&["open", long.0.to_str().unwrap()]);
@@ -639,15 +674,16 @@ fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
     let contents = &state["app"]["contents"];
     assert_eq!(contents["count"], 2000, "{contents}");
     assert!(contents["height"].as_f64().unwrap() > 0.0, "{contents}");
-    assert_eq!(contents["tabs_scroll"], false, "five tabs fit: {contents}");
+    assert_eq!(contents["tabs_scroll"], false, "five tabs fit in what's left: {contents}");
     assert!(contents["height"].as_f64().unwrap() + 5.0 * 32.0 <= contents["list_height"].as_f64().unwrap() + 0.5, "{contents}");
     assert_eq!(contents["tab_rows_on_screen"], 5, "all the tabs show: {contents}");
     assert_eq!(contents["footer_on_screen"], true);
+    assert!(contents["height"].as_f64().unwrap() <= contents["list_height"].as_f64().unwrap() * 0.6 + 0.5, "it stops at the maximum: {contents}");
     assert!(contents["row_views"].as_u64().unwrap() < 80, "views for what's on screen, not 2,000: {contents}");
     // A short window.
     let short = run.ok(&["qa", "resize", "900x420"]);
-    assert_eq!(short["contents"]["tab_rows_on_screen"], 5, "{short}");
-    assert!(short["contents"]["height"].as_f64().unwrap() + 5.0 * 32.0 <= short["contents"]["list_height"].as_f64().unwrap() + 0.5, "{short}");
+    assert!(short["contents"]["height"].as_f64().unwrap() <= short["contents"]["list_height"].as_f64().unwrap() * 0.6 + 0.5, "the same maximum, and the tabs scroll in what's left: {short}");
+    assert_eq!(short["contents"]["footer_on_screen"], true, "{short}");
     assert_eq!(short["contents"]["current_in_view"], true, "a shorter window doesn't lose the place: {short}");
     run.ok(&["qa", "resize", "1440x900"]);
     run.settled();

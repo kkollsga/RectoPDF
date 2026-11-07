@@ -646,6 +646,7 @@ version = "0.1.0"
 dependencies = [
  "recto-agent",
  "recto-control",
+ "recto-core",
  "recto-platform",
  "recto-proto",
  "recto-reader",

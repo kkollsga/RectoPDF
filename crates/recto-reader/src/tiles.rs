@@ -42,6 +42,31 @@ pub const MAX_ZOOM: f64 = 8.0;
 /// Pages either side of what's visible whose sizes are asked for, so layout near the reader settles early.
 const SIZES_AROUND: u32 = 2;
 
+/// What's asked of the zoom, from anywhere: a menu, a key, the panel, or `recto view --zoom`. All the same path and limits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Zoom {
+    In,
+    Out,
+    /// The page fills the width. Magnification 1.
+    Fit,
+    /// A point of the page is a point on the screen.
+    Actual,
+    To(f64),
+}
+
+/// How much one step of zoom is.
+pub const ZOOM_STEP: f64 = 1.25;
+/// How much a point of ⌘-scroll zooms, as a power: gentle enough that a flick of two fingers goes a step or two.
+const ZOOM_PER_SCROLL_POINT: f64 = 0.006;
+
+/// The zoom after this much ⌘-scroll, in points, upwards being in. Held to the limits, as a pinch is.
+pub fn zoom_after_scroll(current: f64, points: f64) -> f64 {
+    if !current.is_finite() || !points.is_finite() {
+        return current.clamp(MIN_ZOOM, MAX_ZOOM);
+    }
+    (current * (points * ZOOM_PER_SCROLL_POINT).exp()).clamp(MIN_ZOOM, MAX_ZOOM)
+}
+
 /// The host's scrolled view, in document points, on each scroll or resize. The whole of it crosses in one call.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Viewport {
@@ -463,6 +488,22 @@ impl Reader {
             self.docs.remove(&tab);
             self.drop_tab_entries(tab);
         }
+    }
+
+    /// Zooms, wherever it's asked from. The host keeps the middle of the view where it is, and tiles stretch until new ones come, as with any zoom.
+    pub fn zoom(&mut self, zoom: Zoom) -> Option<f64> {
+        let doc = self.hot.and_then(|tab| self.docs.get_mut(&tab))?;
+        let value = match zoom {
+            Zoom::In => doc.magnification * ZOOM_STEP,
+            Zoom::Out => doc.magnification / ZOOM_STEP,
+            Zoom::Fit => 1.0,
+            Zoom::Actual => 1.0 / doc.layout.fit().max(f64::MIN_POSITIVE),
+            Zoom::To(value) => value,
+        };
+        let value = if value.is_finite() { value.clamp(MIN_ZOOM, MAX_ZOOM) } else { doc.magnification };
+        doc.magnification = value;
+        self.ops.push_back(Op::Magnify { value });
+        Some(value)
     }
 
     /// Which tabs are warm now, the hot one staying as it is. A tab that's stopped being warm, closed perhaps, holds nothing from here on, and its renderer goes.
@@ -1954,6 +1995,8 @@ mod tests {
         reader.set_viewport(Viewport { magnification: 2.0, ..view(inside) });
         reader.take_moved_page();
         settle(&mut reader);
+        // As the old window got to, with its own count of scrolls.
+        reader.scrolled_to = 0;
         reader.window_closed();
         let new_window = Viewport { scrolled_to: 0, ..view(0.0) };
         reader.set_viewport(new_window);

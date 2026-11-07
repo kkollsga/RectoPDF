@@ -4,7 +4,7 @@
 #   app/qa/shots.sh OUT_DIR READER.pdf HEAVY.pdf [more PDFs for tabs...]
 #
 # OUT_DIR gets home, reader, sidebar-open, sidebar-folded, sidebar-hover, focus, heavy and low-res, each -light and -dark with the paper that goes with the window, and dark-white-paper and light-dark-paper.
-# Given more PDFs, the first of them onward are other tabs for sidebar-long-contents.
+# Given more PDFs, the first of them onward are other tabs for sidebar-long-contents. DARK_PAGES is `name=file:page` words, for dark-name shots.
 set -euo pipefail
 out="$1"; reader="$2"; heavy="$3"; shift 3
 recto="$(cd "$(dirname "$0")/../.." && pwd)/target/debug/recto"
@@ -19,6 +19,8 @@ settle() { r qa wait-settled --timeout 60s; }
 shot() { rm -f "$out/$1.png"; r qa shot --out "$out/$1.png"; }
 
 r qa start --time-limit 5m
+# Shots look the same whatever this Mac's mouse and settings are.
+r qa scroller-style overlay
 for look in light dark; do
     r qa appearance "$look"
     shot "home-$look"
@@ -118,6 +120,45 @@ for look in light dark; do
 done
 r stop
 sleep 1
+
+# The panel, open, on each paper, and a long outline in one tab showing the contents' maximum.
+export RECTO_STATE_DIR="$root/p"
+r qa start --time-limit 5m
+r qa scroller-style overlay
+r open "$reader"
+settle
+for look in light dark; do
+    r qa appearance "$look"
+    r qa panel toggle
+    for paper in white warm dark; do
+        r view --paper "$paper"
+        settle
+        shot "panel-$paper-$look"
+    done
+    r qa panel toggle
+    r view --paper auto
+    settle
+done
+r stop
+sleep 1
+
+# Dark paper on what's judged by its pixels: pages named as FILE:PAGE in the variables below, if they're given.
+if [ -n "${DARK_PAGES:-}" ]; then
+    export RECTO_STATE_DIR="$root/d"
+    r qa start --time-limit 5m
+    r qa scroller-style overlay
+    r qa appearance dark
+    r view --paper dark
+    for spec in $DARK_PAGES; do
+        name="${spec%%=*}"; rest="${spec#*=}"; file="${rest%:*}"; page="${rest##*:}"
+        r open "$file"
+        r goto "$page"
+        settle
+        shot "dark-$name"
+    done
+    r stop
+    sleep 1
+fi
 
 # A limit under what this page needs, and the larger limit off, so it takes the path a page past 1 GiB takes.
 export RECTO_STATE_DIR="$root/l"

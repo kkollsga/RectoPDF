@@ -5,8 +5,8 @@ import QuartzCore
 @MainActor final class QAChannel {
     private unowned let delegate: AppDelegate
     private var stepCarry = 0.0
-    /// What a Mac with a mouse connected has, for `recto qa scroller-style`.
-    private(set) var scrollerStyle: NSScroller.Style = .overlay
+    /// Set by `recto qa scroller-style`, for each style on any Mac. With none, what the system says.
+    private(set) var scrollerStyle: NSScroller.Style?
 
     init(delegate: AppDelegate) {
         self.delegate = delegate
@@ -63,6 +63,13 @@ import QuartzCore
             controller?.sidebar.userScrollContents(toRow: Int(value) ?? 0)
         case "contents_pointer":
             controller?.sidebar.setContentsPointer(value == "in")
+        case "menu":
+            guard let item = menuItem(value), let action = item.action else { return fail(id, "That isn't on the menu bar.") }
+            NSApp.sendAction(action, to: item.target, from: item)
+        case "panel":
+            guard let sidebar = controller?.sidebar else { return fail(id, "The window is closed.") }
+            guard let button = value == "toggle" ? sidebar.moreButton : sidebar.panel?.buttons[value] else { return fail(id, "That isn't in the panel, or it isn't open.") }
+            button.performClick(nil)
         case "scroller_style":
             scrollerStyle = value == "legacy" ? .legacy : .overlay
             controller?.layout()
@@ -88,6 +95,11 @@ import QuartzCore
         }
         delegate.windowController?.window.layoutIfNeeded()
         answer(id, state())
+    }
+
+    /// An item of the real menu bar, by its id.
+    private func menuItem(_ id: String) -> NSMenuItem? {
+        NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).first { ($0.representedObject as? String) == id && !$0.isHidden }
     }
 
     private func state() -> [String: Any] {
@@ -117,12 +129,16 @@ import QuartzCore
             "note": controller.noteLabel.isHidden ? NSNull() as Any : controller.noteLabel.label.text,
             "place_label": controller.placeLabel.isHidden ? NSNull() as Any : controller.placeLabel.label.text,
             "agent_icon": !controller.agentIcon.isHidden,
+            "panel": sidebar.panelReport(),
+            "menu_bar": (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).map { menu -> [String: Any] in
+                ["title": menu.title, "items": menu.items.filter { !$0.isSeparatorItem && !$0.isHidden }.map { ["id": ($0.representedObject as? String) ?? "", "title": $0.title, "key": $0.keyEquivalent, "checked": $0.state == .on] as [String: Any] }]
+            },
             "pages": pages,
             "backing": controller.window.backingScaleFactor,
         ]
     }
 
-    /// What AppKit reaches this app by, which no other QA verb goes through: they call the method behind it. That the owner responds to the selector AppKit will send, and for those that can be, that going by the selector does what it should. Events are made here and handed straight to the method: nothing is posted, and nothing outside this process hears. A real pinch or click can't be made this way, so for those it's the selector and the notification.
+    /// What AppKit reaches this app by, which no other QA verb goes through: they call the method behind it. Events are made here and handed straight to the responder that would get them, by the selector AppKit sends, and what's checked is what comes of it. Nothing is posted, and nothing outside this process hears. A real pinch or click can't be made this way, so for those it's the notification, and that the target answers the action.
     private func entryPoints() -> [String: Bool] {
         guard let controller = delegate.windowController else { return ["window_open": false] }
         let sidebar = controller.sidebar
@@ -132,44 +148,125 @@ import QuartzCore
         let exited = #selector(NSResponder.mouseExited(with:))
         let moved = #selector(NSResponder.mouseMoved(with:))
         let wheel = #selector(NSResponder.scrollWheel(with:))
-        let owners: [(String, NSObject, Selector)] = [
-            ("sidebar_hover_in", sidebar, entered), ("sidebar_hover_out", sidebar, exited), ("sidebar_pointer_moved", sidebar, moved),
-            ("corner_hover_in", controller, entered), ("corner_hover_out", controller, exited),
-            ("contents_hover_in", sidebar.contentsScroll, entered), ("contents_hover_out", sidebar.contentsScroll, exited), ("contents_wheel", sidebar.contentsScroll, wheel),
-            ("pages_wheel", pages.scrollView, wheel), ("pages_magnify", pages.scrollView, #selector(NSResponder.magnify(with:))),
-        ]
+        // These two aren't responders, so nothing but their own code answers these, and tracking areas call them by name. Going by a selector nothing answers would throw, and this would never answer.
+        let owners: [(String, NSObject, Selector)] = [("sidebar_hover_in", sidebar, entered), ("sidebar_hover_out", sidebar, exited), ("sidebar_pointer_moved", sidebar, moved), ("corner_hover_in", controller, entered), ("corner_hover_out", controller, exited)]
         for (name, owner, selector) in owners { found[name] = owner.responds(to: selector) }
-        // Going by a selector nothing answers would throw, and this would never answer. What's failing is reported above.
         guard owners.allSatisfy({ $0.1.responds(to: $0.2) }) else { return found }
         let actions: [(String, NSControl)] = [("tab_row_click", sidebar.table), ("contents_row_click", sidebar.contentsTable), ("add_button", sidebar.addButton), ("home_button", controller.homeButtonForQA)]
         for (name, control) in actions {
             found[name] = control.action.flatMap { action in (control.target as? NSObject)?.responds(to: action) } ?? false
         }
-        // Through the selector, as AppKit would.
+        // The areas that send them are really there, and over what they're for.
+        found["sidebar_area_is_on_the_sidebar"] = sidebar.view.trackingAreas.contains { $0.owner === sidebar && $0.options.contains(.mouseMoved) && $0.options.contains(.inVisibleRect) }
+        sidebar.contentsScroll.updateTrackingAreas()
+        found["contents_area_is_on_the_contents"] = sidebar.contentsScroll.trackingAreas.contains { $0.owner === sidebar.contentsScroll && $0.options.contains(.inVisibleRect) }
+        let corner = controller.root.trackingAreas.first { $0.owner === controller }?.rect
+        found["corner_covers_the_buttons"] = corner.map { rect in controller.windowButtonFrames(in: controller.root).allSatisfy { rect.contains($0) } } ?? false
+
         let window = controller.window
         func crossing(_ type: NSEvent.EventType) -> NSEvent? {
             NSEvent.enterExitEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)
         }
+        func pointer(at place: NSPoint) -> NSEvent? {
+            NSEvent.mouseEvent(with: .mouseMoved, location: place, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)
+        }
         sidebar.perform(entered, with: crossing(.mouseEntered))
         found["hover_shows_details"] = sidebar.hoveredRow != nil
-        let row = NSPoint(x: 100, y: sidebar.view.bounds.height - 110)
-        let pointer = NSEvent.mouseEvent(with: .mouseMoved, location: sidebar.view.convert(row, to: nil), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)
-        sidebar.perform(moved, with: pointer)
-        found["pointer_finds_row"] = sidebar.lastPointerRow != nil
+        sidebar.perform(moved, with: pointer(at: sidebar.view.convert(NSPoint(x: 100, y: 70), to: nil)))
+        found["pointer_finds_a_tab_row"] = sidebar.lastPointerRow != nil
+
+        // The contents: the pointer coming in, as their own area says it does.
+        sidebar.contentsScroll.perform(entered, with: crossing(.mouseEntered))
+        found["contents_hover_shows_their_scroller"] = sidebar.contentsScroll.hasVerticalScroller
+        // A shortened contents entry, by where the pointer is, and left to rest as a real pointer would be, on the real timer.
+        if let place = sidebar.cutOffContentsPlaceInWindow() {
+            sidebar.perform(moved, with: pointer(at: place.point))
+            found["pointer_finds_the_contents_row"] = sidebar.lastPointerRow == place.row
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: delegate.limits.revealDelaySeconds + 0.3))
+            let report = sidebar.revealReport()
+            found["contents_hover_reveals_the_full_name"] = (report["shown"] as? Bool) == true && (report["row"] as? Int) == place.row
+        }
+        sidebar.contentsScroll.perform(exited, with: crossing(.mouseExited))
+        found["contents_hover_ends"] = !sidebar.contentsScroll.hasVerticalScroller
         sidebar.perform(exited, with: crossing(.mouseExited))
         found["hover_ends"] = sidebar.hoveredRow == nil && sidebar.lastPointerRow == nil
-        // A wheel, made and handed over.
-        let wheelEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: -120, wheel2: 0, wheel3: 0).flatMap { NSEvent(cgEvent: $0) }
-        if let wheelEvent {
-            let before = pages.scrollView.contentView.bounds.minY
-            pages.scrollView.perform(wheel, with: wheelEvent)
-            found["wheel_scrolls_pages"] = pages.scrollView.contentView.bounds.minY != before
+        found["reveal_goes_with_the_pointer"] = (sidebar.revealReport()["shown"] as? Bool) != true
+
+        // A wheel, made and handed to what a wheel reaches. With its place and window said, as a real one has them: left to itself it's wherever the real pointer is, on this Mac, over some other window.
+        func wheelEvent(_ points: Int32, _ flags: CGEventFlags, at place: NSPoint) -> NSEvent? {
+            guard let made = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: points, wheel2: 0, wheel3: 0) else { return nil }
+            made.flags = flags
+            // As two fingers send it. A mouse's wheel can be eased by AppKit on the display's beat, which a quiet run doesn't have.
+            made.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+            let onScreen = window.convertPoint(toScreen: place)
+            made.location = CGPoint(x: onScreen.x, y: (NSScreen.screens.first?.frame.height ?? 0) - onScreen.y)
+            made.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window.windowNumber))
+            made.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window.windowNumber))
+            return NSEvent(cgEvent: made)
+        }
+        let overPages = pages.scrollView.convert(NSPoint(x: pages.scrollView.bounds.midX + 100, y: pages.scrollView.bounds.midY - 80), to: nil)
+        if let event = wheelEvent(-120, [], at: overPages) {
+            // That it's handed to AppKit's own scrolling, unzoomed. What AppKit does with it is off the display's own thread, which a window off every screen doesn't have, so the scroll itself isn't seen here.
+            let (passed, zoom) = (pages.scrollView.wheelsPassedOn, pages.scrollView.magnification)
+            pages.scrollView.perform(wheel, with: event)
+            found["plain_wheel_goes_to_the_scroll_view"] = pages.scrollView.wheelsPassedOn == passed + 1 && pages.scrollView.magnification == zoom
             if sidebar.model.contentsCount > 0, sidebar.model.tocOpen {
-                sidebar.contentsScroll.perform(wheel, with: wheelEvent)
+                sidebar.contentsScroll.perform(wheel, with: event)
                 found["wheel_in_contents_stops_following"] = !delegate.core.contentsIsFollowing()
             }
         }
+        // Zoom from the keyboard, through the real menu bar and the real responder, and ⌘-scroll about the pointer.
+        func key(_ characters: String, _ flags: NSEvent.ModifierFlags) -> NSEvent? {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: 0)
+        }
+        func zoom() -> Double {
+            pages.drain()
+            return pages.scrollView.magnification
+        }
+        func pressed(_ characters: String) -> Double {
+            if let event = key(characters, .command), NSApp.mainMenu?.performKeyEquivalent(with: event) != true { return -1 }
+            return zoom()
+        }
+        var was = zoom()
+        var now = pressed("+")
+        found["command_plus_zooms_in"] = now > was
+        was = now
+        now = pressed("-")
+        found["command_minus_zooms_out"] = now < was
+        now = pressed("9")
+        found["command_9_fits"] = now == 1
+        now = pressed("0")
+        found["command_0_is_actual_size"] = now > 0 && abs(now - 1 / (delegate.engineFit())) < 0.01
+        _ = pressed("9")
+        controller.root.perform(#selector(NSResponder.keyDown(with:)), with: key("+", []))
+        now = zoom()
+        found["plain_plus_zooms_in"] = now > 1
+        controller.root.perform(#selector(NSResponder.keyDown(with:)), with: key("-", []))
+        found["plain_minus_zooms_out"] = zoom() < now
+        _ = pressed("9")
+        if let event = wheelEvent(60, .maskCommand, at: overPages) {
+            let at = pages.documentView.convert(overPages, from: nil)
+            let before = pages.scrollView.magnification
+            pages.scrollView.perform(wheel, with: event)
+            found["command_scroll_zooms"] = pages.scrollView.magnification > before
+            let after = pages.documentView.convert(overPages, from: nil)
+            found["command_scroll_keeps_the_point_still"] = abs(after.x - at.x) < 2 && abs(after.y - at.y) < 2
+        }
+        _ = pressed("9")
+        found["more_button"] = sidebar.moreButton.action.flatMap { action in (sidebar.moreButton.target as? NSObject)?.responds(to: action) } ?? false
+        // The panel, by clicking the real buttons. It's left as it was.
+        sidebar.moreButton.performClick(nil)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        let opened = (sidebar.panelReport()["open"] as? Bool) == true
+        found["panel_opens"] = opened
+        if opened, let warm = sidebar.panel?.buttons["paper.warm"] {
+            found["panel_button_answers"] = warm.action.flatMap { action in (warm.target as? NSObject)?.responds(to: action) } ?? false
+        }
+        sidebar.moreButton.performClick(nil)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        found["panel_closes"] = (sidebar.panelReport()["open"] as? Bool) == false
         // A pinch comes with these from AppKit, and they're what stops drawing until it ends.
+        found["pages_can_be_pinched"] = pages.scrollView.allowsMagnification
         NotificationCenter.default.post(name: NSScrollView.willStartLiveMagnifyNotification, object: pages.scrollView)
         found["pinch_starts"] = pages.isLive
         NotificationCenter.default.post(name: NSScrollView.didEndLiveMagnifyNotification, object: pages.scrollView)

@@ -84,7 +84,7 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         watchMainThread()
-        if !isQuiet { installMenu() }
+        installMenu()
         openWindow()
         core.ready()
     }
@@ -117,6 +117,7 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     func modelChanged() {
         windowController?.refreshModel()
+        installMenu()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -134,32 +135,57 @@ final class Bridge: AppListener, @unchecked Sendable {
         core.shutdown()
     }
 
-    /// Only File and View's few items for now, in Rust's words. The real menu bar comes from a Rust model in a later phase.
+    private var shownMenus: [MenuModel] = []
+
+    /// The menu bar, as Rust lists it, built again only when that's changed.
     private func installMenu() {
+        let menus = core.menuBar()
+        guard menus != shownMenus else { return }
+        shownMenus = menus
         let bar = NSMenu()
-        let appItem = NSMenuItem()
-        let appMenu = NSMenu()
-        appMenu.addItem(withTitle: strings.menuQuit, action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        appItem.submenu = appMenu
-        bar.addItem(appItem)
-        let fileItem = NSMenuItem()
-        let fileMenu = NSMenu(title: strings.menuFile)
-        fileMenu.addItem(withTitle: strings.menuOpen, action: #selector(openDocument(_:)), keyEquivalent: "o").target = self
-        fileMenu.addItem(withTitle: strings.menuCloseWindow, action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        fileItem.submenu = fileMenu
-        bar.addItem(fileItem)
-        let viewItem = NSMenuItem()
-        let viewMenu = NSMenu(title: strings.menuView)
-        viewMenu.addItem(withTitle: strings.menuZoomIn, action: #selector(zoomIn(_:)), keyEquivalent: "+").target = self
-        viewMenu.addItem(withTitle: strings.menuZoomOut, action: #selector(zoomOut(_:)), keyEquivalent: "-").target = self
-        viewMenu.addItem(withTitle: strings.menuActualSize, action: #selector(fitWidth(_:)), keyEquivalent: "0").target = self
-        viewMenu.addItem(.separator())
-        let focus = viewMenu.addItem(withTitle: strings.menuFocus, action: #selector(toggleFocus(_:)), keyEquivalent: "f")
-        focus.keyEquivalentModifierMask = [.command, .control]
-        focus.target = self
-        viewItem.submenu = viewMenu
-        bar.addItem(viewItem)
+        for model in menus {
+            let holder = NSMenuItem()
+            let menu = NSMenu(title: model.title)
+            for entry in model.entries {
+                if entry.id.isEmpty {
+                    menu.addItem(.separator())
+                    continue
+                }
+                let item = menu.addItem(withTitle: entry.title, action: #selector(menuChosen(_:)), keyEquivalent: entry.key)
+                item.target = self
+                item.representedObject = entry.id
+                item.keyEquivalentModifierMask = entry.withControl ? [.command, .control] : [.command]
+                item.state = entry.checked ? .on : .off
+                if entry.hidden {
+                    item.isHidden = true
+                    item.allowsKeyEquivalentWhenHidden = true
+                }
+            }
+            holder.submenu = menu
+            bar.addItem(holder)
+        }
         NSApp.mainMenu = bar
+    }
+
+    @objc func menuChosen(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        perform(id)
+    }
+
+    /// The page's fit, for QA.
+    func engineFit() -> Double {
+        windowController?.pages.fitForQA ?? 1
+    }
+
+    /// What every menu item, panel button and zoom key comes to.
+    func perform(_ id: String) {
+        switch core.perform(id: id) {
+        case .none: break
+        case .showOpenPanel: openDocument(nil)
+        case .showAbout: NSApp.orderFrontStandardAboutPanel(nil)
+        case .quit: NSApp.terminate(nil)
+        case .closeWindow: windowController?.window.performClose(nil)
+        }
     }
 
     @objc func openDocument(_ sender: Any?) {
@@ -173,9 +199,4 @@ final class Bridge: AppListener, @unchecked Sendable {
             for url in panel.urls { core.openFile(path: url.path) }
         }
     }
-
-    @objc func zoomIn(_ sender: Any?) { windowController?.pages.zoom(by: limits.zoomStep) }
-    @objc func zoomOut(_ sender: Any?) { windowController?.pages.zoom(by: 1 / limits.zoomStep) }
-    @objc func fitWidth(_ sender: Any?) { windowController?.pages.setZoom(1) }
-    @objc func toggleFocus(_ sender: Any?) { core.toggleFocus() }
 }

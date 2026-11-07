@@ -5,6 +5,7 @@
 
 #![allow(unsafe_code)] // What UniFFI's macros generate. Nothing here writes any of its own.
 
+mod menus;
 mod qa;
 mod watchdog;
 
@@ -27,12 +28,15 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
+pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use watchdog::Watchdog;
 
 uniffi::setup_scaffolding!();
 
 /// Where the chosen paper is remembered, in the state folder.
 const PAPER_FILE: &str = "paper";
+/// Whether the agent icon is hidden, there too. It's here only if it is.
+const AGENT_ICON_FILE: &str = "agent-icon-hidden";
 
 /// The most contents rows one call hands over. More than any screen shows.
 const MAX_CONTENTS_FETCH: u32 = 256;
@@ -158,6 +162,8 @@ pub struct ReaderView {
     pub paper: String,
     /// The paper's colour, `0xRRGGBB`.
     pub paper_rgb: u32,
+    /// Whether the star at the top right is hidden.
+    pub agent_icon_hidden: bool,
     /// A colour to multiply over each page in the compositor, for warm paper. No tile changes for it.
     pub page_tint: Option<u32>,
 }
@@ -178,15 +184,6 @@ pub struct AppStrings {
     pub open_panel_title: String,
     pub add_tooltip: String,
     pub agent_tooltip: String,
-    pub menu_open: String,
-    pub menu_close_window: String,
-    pub menu_quit: String,
-    pub menu_focus: String,
-    pub menu_zoom_in: String,
-    pub menu_zoom_out: String,
-    pub menu_actual_size: String,
-    pub menu_file: String,
-    pub menu_view: String,
 }
 
 /// Limits the host applies to native controls. The zoom limits are Rust's, and it says them once.
@@ -194,10 +191,11 @@ pub struct AppStrings {
 pub struct ReaderLimits {
     pub min_zoom: f64,
     pub max_zoom: f64,
-    pub zoom_step: f64,
     pub window_width: f64,
     pub window_height: f64,
     pub sidebar_width: f64,
+    /// How long the pointer rests on a shortened name before it opens.
+    pub reveal_delay_seconds: f64,
 }
 
 /// The scrolled view, on each scroll.
@@ -245,6 +243,7 @@ impl From<Op> for ReaderOp {
 
 /// The session the socket and the app share.
 pub(crate) struct AppHost {
+    engine: Engine,
     session: SessionHost<DrawableLoader>,
     core: Arc<CoreQueue>,
     qa: Option<Arc<QaBridge>>,
@@ -258,6 +257,16 @@ impl Host for AppHost {
                 Some(qa) => qa.run(command),
                 None => Err(recto_agent::qa_needs_app()),
             };
+        }
+        // Zoom is about what's on the screen, so it's the page view's. The rest of the command is the session's.
+        if let Command::View { paper, focus, agent_icon, zoom: Some(word) } = command {
+            let zoom = menus::zoom_from_word(word).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a zoom. It's `in`, `out`, `fit`, `actual` or a number.", recto_core::clean_line(word)), recto_agent::exit::USAGE))?;
+            let rest = Command::View { paper: paper.clone(), focus: focus.clone(), agent_icon: agent_icon.clone(), zoom: None };
+            let mut answer = self.session.run(level, &rest, events)?;
+            let value = self.engine.zoom(zoom).ok_or_else(|| AgentError::new("no_active_tab", "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
+            answer["zoom"] = json!(value);
+            self.core.push(CoreCall::Reconcile);
+            return Ok(answer);
         }
         let result = self.session.run(level, command, events);
         self.core.push(CoreCall::Reconcile);
@@ -366,16 +375,7 @@ impl CoreQueue {
     pub(crate) fn flush(&self, limit: Duration) -> bool {
         let marker = Arc::new(Flushed::default());
         self.push(CoreCall::Flush(Arc::clone(&marker)));
-        let deadline = Instant::now() + limit;
-        let mut done = lock(&marker.done);
-        while !*done {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return false;
-            }
-            done = marker.ready.wait_timeout(done, left).unwrap_or_else(PoisonError::into_inner).0;
-        }
-        true
+        marker.wait(limit)
     }
 
     fn next(&self) -> CoreCall {
@@ -426,7 +426,7 @@ struct Synced {
     paper: Option<PaperKind>,
     chosen_paper: Option<Option<Paper>>,
     focus: Option<bool>,
-    dark: bool,
+    agent_icon_hidden: Option<bool>,
 }
 
 /// The state the UI thread pulls, swapped whole. A short lock, never held across anything slow.
@@ -450,6 +450,7 @@ struct Inner {
     stopper: Mutex<Option<Stopper>>,
     announcer: Mutex<Option<Announcer>>,
     dark: AtomicBool,
+    panel_open: AtomicBool,
     qa: Option<Arc<QaBridge>>,
     paths: Option<StatePaths>,
     open_failure: Mutex<Option<String>>,
@@ -492,6 +493,12 @@ fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
         return Err("Those options are only for a QA run.".into());
     }
     Ok(parsed)
+}
+
+/// Whether the window's buttons show. Focus view has nothing but the page, until the pointer goes where they'd be.
+#[uniffi::export]
+pub fn window_buttons_show(focus: bool, pointer_near: bool) -> bool {
+    !focus || pointer_near
 }
 
 /// Whether this launch is a quiet run, which is decided before AppKit does anything. The same parser as the rest of the launch, so the two can't disagree. A launch that won't parse ends straight away, and shows nothing on the way.
@@ -537,7 +544,7 @@ impl AppCore {
         let engine = Engine::new(EngineConfig { service: None, policy: Some(policy) }, hooks);
         let watchdog = Watchdog::new();
         let qa = args.qa.then(|| Arc::new(QaBridge::new(Arc::clone(&listener), engine.clone(), watchdog.clone(), Arc::clone(&core))));
-        let host = Arc::new(AppHost { session: SessionHost::new(DrawableLoader), core: Arc::clone(&core), qa: qa.clone() });
+        let host = Arc::new(AppHost { engine: engine.clone(), session: SessionHost::new(DrawableLoader), core: Arc::clone(&core), qa: qa.clone() });
         let stopper = server.as_ref().and_then(|server| server.stopper().ok());
         let announcer = server.as_ref().and_then(|server| server.announcer().ok());
         let inner = Arc::new(Inner {
@@ -547,11 +554,12 @@ impl AppCore {
             listener: Arc::clone(&listener),
             contents_follow: Mutex::new(ContentsFollow::default()),
             started: Instant::now(),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
             dark: AtomicBool::new(false),
+            panel_open: AtomicBool::new(false),
             qa,
             paths: Some(paths),
             open_failure: Mutex::new(None),
@@ -562,6 +570,11 @@ impl AppCore {
             && let Some(paper) = std::str::from_utf8(&bytes).ok().and_then(Paper::from_name)
         {
             inner.host.session.with_session(|session| session.set_view(ViewSettings { paper: Some(paper), ..session.view() }));
+        }
+        if let Some(paths) = &inner.paths
+            && paths.root.join(AGENT_ICON_FILE).exists()
+        {
+            inner.host.session.with_session(|session| session.set_view(ViewSettings { agent_icon_hidden: true, ..session.view() }));
         }
         let session_side = Arc::clone(&inner);
         std::thread::Builder::new().name("recto-session".into()).stack_size(8 * 1024 * 1024).spawn(move || session_thread(&session_side)).map_err(|_| refused("The app couldn't start its session thread.".into()))?;
@@ -616,20 +629,11 @@ impl AppCore {
             open_panel_title: "Open a PDF".into(),
             add_tooltip: "Open another PDF".into(),
             agent_tooltip: "The agent isn't built yet".into(),
-            menu_open: "Open…".into(),
-            menu_close_window: "Close Window".into(),
-            menu_quit: "Quit RectoPDF".into(),
-            menu_focus: "Focus View".into(),
-            menu_zoom_in: "Zoom In".into(),
-            menu_zoom_out: "Zoom Out".into(),
-            menu_actual_size: "Fit Width".into(),
-            menu_file: "File".into(),
-            menu_view: "View".into(),
         }
     }
 
     pub fn limits(&self) -> ReaderLimits {
-        ReaderLimits { min_zoom: MIN_ZOOM, max_zoom: MAX_ZOOM, zoom_step: 1.25, window_width: 1440.0, window_height: 900.0, sidebar_width: 272.0 }
+        ReaderLimits { min_zoom: MIN_ZOOM, max_zoom: MAX_ZOOM, window_width: 1440.0, window_height: 900.0, sidebar_width: 272.0, reveal_delay_seconds: 0.5 }
     }
 
     /// The sidebar as it stands, but for its tabs. A short lock and a small copy.
@@ -753,13 +757,58 @@ impl AppCore {
 
     pub fn set_dark_appearance(&self, dark: bool) {
         self.inner.dark.store(dark, Ordering::SeqCst);
-        self.inner.core.push(CoreCall::Dark(dark));
+        self.inner.core.push(CoreCall::Reconcile);
     }
 
     /// What hovering over a row reveals: its full text, clean and bounded, and what it is.
     pub fn row_reveal(&self, row: SidebarRow) -> RowReveal {
         let full = row_full_text(&row.text, row.kind == RowKind::Tab);
         RowReveal { text: full.text, is_file_name: full.is_file_name }
+    }
+
+    /// The menu bar as it stands. The host rebuilds it only when this differs.
+    pub fn menu_bar(&self) -> Vec<MenuModel> {
+        let reader = lock(&self.inner.published).reader.clone();
+        menus::menu_bar(ViewSettings { focus: reader.focus, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() })
+    }
+
+    /// The sidebar's panel as it stands.
+    pub fn panel(&self) -> PanelModel {
+        let reader = lock(&self.inner.published).reader.clone();
+        let shown = Paper::from_name(&reader.paper).unwrap_or(Paper::White);
+        menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown, reader.focus)
+    }
+
+    /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
+    pub fn perform(&self, id: String) -> HostAction {
+        let Some(action) = menus::action(&id) else { return HostAction::None };
+        match action {
+            menus::Action::Host(host) => return host,
+            menus::Action::Zoom(zoom) => {
+                self.inner.engine.zoom(zoom);
+            }
+            menus::Action::ToggleFocus => {
+                let focus = !lock(&self.inner.published).reader.focus;
+                self.inner.core.push(CoreCall::SetFocus(focus));
+            }
+            menus::Action::ToggleAgentIcon => self.inner.core.push(CoreCall::ToggleAgentIcon),
+            menus::Action::SetPaper(paper) => self.inner.core.push(CoreCall::SetPaper(paper)),
+            menus::Action::TogglePanel => {
+                self.inner.panel_open.fetch_xor(true, Ordering::SeqCst);
+                self.inner.listener.model_changed();
+            }
+        }
+        HostAction::None
+    }
+
+    /// The id a key does with nothing held, or none.
+    pub fn plain_key_action(&self, characters: String) -> Option<String> {
+        menus::plain_key(&characters).map(str::to_string)
+    }
+
+    /// The zoom after this much ⌘-scroll, from where it is.
+    pub fn zoom_after_scroll(&self, current: f64, points: f64) -> f64 {
+        recto_reader::tiles::zoom_after_scroll(current, points)
     }
 
     pub fn toggle_focus(&self) {
@@ -1049,21 +1098,6 @@ fn rows_changed(before: &[ContentsEntry], after: &[ContentsEntry]) -> (u32, u32,
     (u32::try_from(start).unwrap_or(u32::MAX), count(before), count(after))
 }
 
-fn open_file(inner: &Inner, path: &Path, events: &mut Vec<Event>) {
-    let host = &inner.host;
-    *lock(&inner.open_failure) = None;
-    if host.session.with_session(|session| session.go_to_open_file(path)).is_some() {
-        return;
-    }
-    // The file is read with the session free, so an agent's `status` or `tabs` isn't held up by a slow volume.
-    let stamp = recto_platform::file_stamp(path).ok();
-    let opened = DrawableLoader.load(path).map_err(SessionError::Open).and_then(|facts| host.session.with_session(|session| session.open_with_facts(path, facts, stamp)));
-    match opened {
-        Ok(id) => events.push(Event::new("tab_opened", json!({ "tab": id.0 }))),
-        Err(error) => *lock(&inner.open_failure) = Some(error.message().to_string()),
-    }
-}
-
 /// Brings everything into line with the session, on the session thread. The place in a tab can move two ways, by the reader or by an agent, and each is passed to the other side.
 fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let moved = inner.engine.take_moved_page();
@@ -1152,6 +1186,15 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }
         synced.chosen_paper = Some(view.paper);
     }
+    if synced.agent_icon_hidden != Some(view.agent_icon_hidden) {
+        if synced.agent_icon_hidden.is_some()
+            && let Some(paths) = &inner.paths
+        {
+            let file = paths.root.join(AGENT_ICON_FILE);
+            let _ = if view.agent_icon_hidden { recto_platform::local::write_private_file(&file, b"1") } else { std::fs::remove_file(&file) };
+        }
+        synced.agent_icon_hidden = Some(view.agent_icon_hidden);
+    }
     if synced.paper != Some(paper) {
         synced.paper = Some(paper);
         inner.engine.set_paper(paper);
@@ -1193,7 +1236,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }
     }
     let note = lock(&inner.open_failure).clone().or(problem).or_else(|| inner.engine.note());
-    let reader = ReaderView { home: synced.tab.is_none(), note, focus: view.focus, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint };
+    let reader = ReaderView { home: synced.tab.is_none(), note, focus: view.focus, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden };
     let mut published = lock(&inner.published);
     let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {
@@ -1293,8 +1336,17 @@ mod tests {
     /// Failure: an agent at Control quits the app out from under the person using it, with no prompt, by `recto stop`. In a normal app it's refused, and the words are for whoever's asking.
     #[test]
     fn stop_is_refused_by_a_normal_app() {
-        let host = AppHost { session: SessionHost::new(DrawableLoader), core: Arc::new(CoreQueue::default()), qa: None };
+        let host = AppHost { engine: Engine::new(EngineConfig::default(), Arc::new(TestEngineEvents)), session: SessionHost::new(DrawableLoader), core: Arc::new(CoreQueue::default()), qa: None };
         assert_eq!(host.stop_refusal().expect("refused").code, "only_the_user_quits");
+    }
+
+    /// Failure: focus view's buttons show with no pointer there, or don't come back when it is, or go missing from an ordinary window.
+    #[test]
+    fn the_window_buttons_rule() {
+        assert!(window_buttons_show(false, false));
+        assert!(window_buttons_show(false, true));
+        assert!(!window_buttons_show(true, false));
+        assert!(window_buttons_show(true, true));
     }
 
     /// Failure: the host and the core decide a quiet run differently: a word after `-NS...` is that option's value here, while the host's own search found `--qa` in it. It would launch off every screen with nothing watching for a QA run, or the other way round, and take the screen.

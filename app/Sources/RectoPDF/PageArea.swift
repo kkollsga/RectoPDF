@@ -11,6 +11,22 @@ final class PageDocumentView: NSView {
     override class var isCompatibleWithResponsiveScrolling: Bool { true }
 }
 
+/// The page area's scrolling. ⌘ with a wheel or two fingers zooms instead, and doesn't also scroll.
+final class PageScrollView: NSScrollView {
+    var commandScrolled: ((NSEvent) -> Void)?
+    /// Plain wheels handed on to AppKit's own scrolling, for QA.
+    private(set) var wheelsPassedOn = 0
+
+    override func scrollWheel(with event: NSEvent) {
+        if event.modifierFlags.contains(.command) {
+            commandScrolled?(event)
+        } else {
+            wheelsPassedOn += 1
+            super.scrollWheel(with: event)
+        }
+    }
+}
+
 /// Keeps a document smaller than the window in the middle.
 final class CenteringClipView: NSClipView {
     override var isFlipped: Bool { true }
@@ -27,7 +43,7 @@ final class CenteringClipView: NSClipView {
 
 /// Page layers holding IOSurface tiles. All it does is apply what Rust says, in one transaction, and tell Rust where the view is. The surfaces are shown as they are, so there's no copy between the renderer and the compositor.
 @MainActor final class PageArea: NSObject {
-    let scrollView = NSScrollView()
+    let scrollView = PageScrollView()
     let documentView = PageDocumentView()
     private let core: AppCore
     private let isQuiet: Bool
@@ -52,10 +68,13 @@ final class CenteringClipView: NSClipView {
         let clip = CenteringClipView()
         scrollView.contentView = clip
         scrollView.documentView = documentView
+        // The page goes under the transparent title bar, with nothing above or over it.
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.commandScrolled = { [weak self] event in self?.commandScroll(event) }
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
+        // The system's own scrollers, in the system's own style: nothing here sets it. Thin ones that fade, or classic ones if the Mac is set to always show them or has a mouse that can't scroll by gesture, as in Pages.
         scrollView.autohidesScrollers = true
-        scrollView.scrollerStyle = .overlay
         scrollView.allowsMagnification = true
         scrollView.minMagnification = limits.minZoom
         scrollView.maxMagnification = limits.maxZoom
@@ -137,6 +156,35 @@ final class CenteringClipView: NSClipView {
         CATransaction.flush()
     }
 
+    private var liveEnd: Timer?
+
+    /// ⌘-scroll: zooms about the point under the pointer, which stays where it is. By Rust's sum and limits, with old tiles stretching until it stops, as in a pinch.
+    private func commandScroll(_ event: NSEvent) {
+        let points = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 10
+        let value = core.zoomAfterScroll(current: scrollView.magnification, points: points)
+        let inWindow = event.window == nil ? (scrollView.window?.convertPoint(fromScreen: event.locationInWindow) ?? event.locationInWindow) : event.locationInWindow
+        setLive(true)
+        scrollView.setMagnification(value, centeredAt: documentView.convert(inWindow, from: nil))
+        // A wheel says nothing when it stops, so a pause says it.
+        liveEnd?.invalidate()
+        let timer = Timer(timeInterval: 0.15, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.liveEnd = nil
+                self?.setLive(false)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        liveEnd = timer
+    }
+
+    /// The scroller stops below the agent icon, and goes the whole way with none there.
+    func setScrollerTop(_ top: CGFloat) {
+        guard scrollView.scrollerInsets.top != top else { return }
+        scrollView.scrollerInsets = NSEdgeInsets(top: top, left: 0, bottom: 0, right: 0)
+    }
+
+    var fitForQA: Double { fit }
+
     /// What the pinch's notifications left, for QA.
     var isLive: Bool { live }
 
@@ -216,7 +264,11 @@ final class CenteringClipView: NSClipView {
             documentView.setFrameSize(NSSize(width: width, height: height))
             viewportDirty = true
         case let .magnify(value):
-            if scrollView.magnification != value { scrollView.magnification = value }
+            if scrollView.magnification != value {
+                // About the middle of the view, for a key, a menu or an agent, which have no pointer to go by.
+                let clip = scrollView.contentView.bounds
+                scrollView.setMagnification(value, centeredAt: NSPoint(x: clip.midX, y: clip.midY))
+            }
             viewportDirty = true
         case let .scrollTo(y, seq):
             let clip = scrollView.contentView
@@ -319,6 +371,6 @@ final class CenteringClipView: NSClipView {
 
     /// What QA reads about the layers themselves, as opposed to what Rust thinks it asked for.
     func report() -> [String: Any] {
-        ["document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_layers": pageLayers.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "magnification": scrollView.magnification]
+        ["document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_layers": pageLayers.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "magnification": scrollView.magnification]
     }
 }

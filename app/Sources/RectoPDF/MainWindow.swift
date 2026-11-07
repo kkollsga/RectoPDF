@@ -14,7 +14,13 @@ final class QuietWindow: NSWindow {
 final class RootView: NSView {
     var appearanceChanged: (() -> Void)?
     var fileDropped: (([URL]) -> Void)?
+    var keyPressed: ((NSEvent) -> Bool)?
     override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if keyPressed?(event) != true { super.keyDown(with: event) }
+    }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -159,6 +165,7 @@ final class BookMark: NSView {
         sidebar = SidebarPane(core: delegate.core, strings: delegate.strings, isQuiet: delegate.isQuiet)
         reader = delegate.core.reader()
         super.init()
+        agentIcon.isHidden = reader.agentIconHidden
         window.delegate = self
         window.contentView = root
         root.wantsLayer = true
@@ -177,12 +184,21 @@ final class BookMark: NSView {
         placeLabel.isHidden = true
         buildHome()
         sidebar.addPressed = { [weak delegate] in delegate?.openDocument(nil) }
+        sidebar.performAction = { [weak delegate] id in delegate?.perform(id) }
         sidebar.revealHost = root
         root.appearanceChanged = { [weak self] in self?.appearanceChanged() }
         root.fileDropped = { [weak delegate] urls in
             for url in urls { delegate?.core.openFile(path: url.path) }
         }
         root.registerForDraggedTypes([.fileURL])
+        root.keyPressed = { [weak delegate] event in
+            // Plain keys, with nothing held. With no text field having the focus they get here, and when there is one it has them first.
+            guard let delegate, event.modifierFlags.intersection([.command, .control, .option]).isEmpty, let id = delegate.core.plainKeyAction(characters: event.charactersIgnoringModifiers ?? "") else { return false }
+            delegate.perform(id)
+            return true
+        }
+        // AppKit changes the scrollers' style itself when the system's does, with a mouse plugged in or the setting changed. What's fitted to the room they leave follows.
+        NotificationCenter.default.addObserver(self, selector: #selector(scrollerStyleChanged), name: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil)
         // In focus view the window's buttons come back with the pointer near them. One area in a fixed corner, and it costs nothing when nothing's there.
         let corner = NSTrackingArea(rect: NSRect(x: 0, y: 0, width: 100, height: 44), options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self, userInfo: nil)
         root.addTrackingArea(corner)
@@ -196,6 +212,7 @@ final class BookMark: NSView {
         pages.windowReady()
         if !delegate.isQuiet {
             window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(root)
             NSApp.activate()
         }
     }
@@ -216,17 +233,16 @@ final class BookMark: NSView {
 
     /// Whole pixels, one pass. Autoresizing would do the same work with more to go wrong.
     func layout() {
-        // Quiet runs look the same whatever this Mac's mouse and settings are, unless QA asks otherwise. A normal run has the system's scrollers.
-        if delegate.isQuiet {
-            let style = delegate.qa?.scrollerStyle ?? .overlay
-            for view in [pages.scrollView, sidebar.scroll, sidebar.contentsScroll as NSScrollView] where view.scrollerStyle != style { view.scrollerStyle = style }
-        }
+        // Thin scrollers that come with scrolling and fade, as in Pages, with nothing reserved for them, unless the Mac is set to always show them. With the setting on automatic and a mouse paired, AppKit puts classic ones back whatever a view was told, so it's said again here. QA can ask for either.
+        let style = delegate.qa?.scrollerStyle ?? (UserDefaults.standard.string(forKey: "AppleShowScrollBars") == "Always" ? .legacy : .overlay)
+        for view in [pages.scrollView, sidebar.scroll, sidebar.contentsScroll as NSScrollView] where view.scrollerStyle != style { view.scrollerStyle = style }
+        sidebar.updateContentsScroller()
         let size = window.frame.size
         root.frame = NSRect(origin: .zero, size: size)
         let focus = reader.focus
         let side = focus ? 0 : Theme.sidebarWidth
         // In focus view nothing shows but the page, its number and the agent icon. The window's buttons come back with the pointer near them.
-        setWindowButtons(shown: !focus || pointerNearButtons)
+        setWindowButtons(shown: windowButtonsShow(focus: focus, pointerNear: pointerNearButtons))
         sidebar.view.isHidden = focus
         sidebarEdge.isHidden = focus
         sidebar.view.frame = NSRect(x: 0, y: 0, width: Theme.sidebarWidth, height: size.height)
@@ -235,6 +251,8 @@ final class BookMark: NSView {
         pages.scrollView.frame = area
         home.frame = area
         agentIcon.frame = NSRect(x: size.width - 40, y: 16, width: 20, height: 20)
+        // Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon".
+        pages.setScrollerTop(agentIcon.isHidden ? 0 : agentIcon.frame.maxY + 8)
         layoutMargin(area: area)
         layoutHome()
         positionWindowButtons()
@@ -276,10 +294,22 @@ final class BookMark: NSView {
 
     private var pointerNearButtons = false
 
+    @objc private func scrollerStyleChanged() {
+        sidebar.updateContentsScroller()
+        layout()
+    }
+
     // AppKit calls these by name on a tracking area's owner. This isn't a responder, so they say so, by that name.
     @objc(mouseEntered:) func mouseEntered(with event: NSEvent) { pointerNearButtons(true) }
 
     @objc(mouseExited:) func mouseExited(with event: NSEvent) { pointerNearButtons(false) }
+
+    /// Where the window's buttons are, in a view, for QA.
+    func windowButtonFrames(in view: NSView) -> [NSRect] {
+        [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { type in
+            window.standardWindowButton(type).map { $0.convert($0.bounds, to: view) }
+        }
+    }
 
     /// Whether the window's buttons are showing, for QA.
     var windowButtonsShown: Bool { window.standardWindowButton(.closeButton)?.isHidden == false }
@@ -293,7 +323,7 @@ final class BookMark: NSView {
     /// What the pointer reaching the window's top left corner does.
     func pointerNearButtons(_ near: Bool) {
         pointerNearButtons = near
-        setWindowButtons(shown: !reader.focus || near)
+        setWindowButtons(shown: windowButtonsShow(focus: reader.focus, pointerNear: near))
     }
 
     /// Into the sidebar's top corner, where the concept has them, without a toolbar's strip across the page.
@@ -311,6 +341,7 @@ final class BookMark: NSView {
         home.isHidden = !reader.home
         pages.scrollView.isHidden = reader.home
         pages.setTint(reader.pageTint)
+        agentIcon.isHidden = reader.agentIconHidden
         layout()
     }
 

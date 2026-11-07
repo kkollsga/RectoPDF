@@ -133,7 +133,7 @@ fn a_worker_sent_too_much_is_let_go() {
     assert!(workers.len() >= 2, "one worker was sent all 16: {workers:?}");
 }
 
-/// Failure: "the job went stale" and "this page has no images" both answer empty, so a tile cancelled on the way is turned over knowing nothing, and a photo is kept as its negative. Stale isn't an answer about the page.
+/// Failure: "the job went stale" and "this page has no images" both answer empty, so a tile cancelled on the way is turned over knowing nothing, and a photo is kept as its negative. Stale isn't an answer about the page, and it isn't remembered: the next who asks is told.
 #[test]
 fn image_boxes_say_when_they_dont_know() {
     let file = TempPdf::new("boxes.pdf", &pages(&[Page::new(text_lines(&["No images here"]))]));

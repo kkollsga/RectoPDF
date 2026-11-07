@@ -158,6 +158,10 @@ pub enum Command {
         paper: Option<String>,
         #[serde(default)]
         focus: Option<String>,
+        #[serde(default)]
+        agent_icon: Option<String>,
+        #[serde(default)]
+        zoom: Option<String>,
     },
     /// Asks the running app what it shows. Only an app started in QA mode answers.
     QaRead {
@@ -410,7 +414,8 @@ impl Command {
             // Measuring with the decided limits only reads numbers. Choosing other limits decides what a hostile file may use, so it isn't reading.
             Self::BudgetRender { limit_mib: Some(_), .. } | Self::BudgetRender { retire_mib: Some(_), .. } => Access::At(Level::Full),
             // Asking how things are shown changes nothing. Changing it is moving around.
-            Self::View { paper: Some(_), .. } | Self::View { focus: Some(_), .. } => Access::At(Level::Control),
+            Self::View { paper: None, focus: None, agent_icon: None, zoom: None } => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
+            Self::View { .. } => Access::At(Level::Control),
             // A command with no row can't run: the table is the list.
             _ => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
         }
@@ -751,7 +756,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.active().map(|active| where_json(s, active)) }))
             })
         }
-        Command::View { paper, focus } => access.with(|s| {
+        Command::View { zoom: Some(_), .. } => Err(AgentError::new("zoom_needs_app", "Zoom is about what's on a screen, and this session has none.", exit::FAILED).then("It works when `recto` is talking to the app.")),
+        Command::View { paper, focus, agent_icon, zoom: None } => access.with(|s| {
             let was = s.view();
             let mut view = was;
             match paper.as_deref() {
@@ -765,11 +771,17 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
                 Some(other) => return Err(AgentError::new("usage", format!("`{}` isn't for focus. It's `on` or `off`.", recto_core::clean_line(other)), exit::USAGE)),
                 None => {}
             }
+            match agent_icon.as_deref() {
+                Some("on") => view.agent_icon_hidden = false,
+                Some("off") => view.agent_icon_hidden = true,
+                Some(other) => return Err(AgentError::new("usage", format!("`{}` isn't for the agent icon. It's `on` or `off`.", recto_core::clean_line(other)), exit::USAGE)),
+                None => {}
+            }
             s.set_view(view);
             if view != was {
                 events.push(Event::new("view_changed", json!({ "paper": paper_name(view), "focus": view.focus })));
             }
-            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "focus": view.focus }))
+            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "focus": view.focus, "agent_icon": !view.agent_icon_hidden }))
         }),
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::Budget {} => Ok(json!({
@@ -1392,7 +1404,7 @@ mod tests {
         }
     }
 
-    /// Failure: waking a cold tab reads its file with the session's lock held, so a file on a dead volume hangs `status`, `tabs` and the UI thread's every pull with it. The file is read with the lock free, for a tap and for a close that wakes what's next, and it isn't read twice.
+    /// Failure: waking a cold tab reads its file with the session's lock held, so a file on a dead volume hangs `status`, `tabs` and the UI thread's every pull with it. The file is read with the lock free, for a tap, for a close that wakes what's next, and for an open of a file whose tab is cold, and it isn't read twice.
     #[test]
     fn waking_a_cold_tab_reads_its_file_with_the_session_free() {
         use std::sync::Arc;
@@ -1582,7 +1594,7 @@ mod tests {
             Command::Watch { events: None, timeout_ms: None, count: None },
             Command::WatchStop {},
             Command::Log { last: None },
-            Command::View { paper: None, focus: None },
+            Command::View { paper: None, focus: None, agent_icon: None, zoom: None },
             Command::QaRead { verb: "state".into(), out: None, timeout_ms: None },
             Command::QaDrive { verb: "zoom".into(), value: "1".into(), timeout_ms: None },
             Command::Stop {},
@@ -1592,9 +1604,9 @@ mod tests {
     /// Failure: changing how pages are shown works at Read-only, or asking needs more than asking should, because the row can state only one level.
     #[test]
     fn view_asks_at_read_only_and_changes_at_control() {
-        assert_eq!(Command::View { paper: None, focus: None }.access(), Access::At(Level::ReadOnly));
-        assert_eq!(Command::View { paper: Some("white".into()), focus: None }.access(), Access::At(Level::Control));
-        assert_eq!(Command::View { paper: None, focus: Some("on".into()) }.access(), Access::At(Level::Control));
+        assert_eq!(Command::View { paper: None, focus: None, agent_icon: None, zoom: None }.access(), Access::At(Level::ReadOnly));
+        assert_eq!(Command::View { paper: Some("white".into()), focus: None, agent_icon: None, zoom: None }.access(), Access::At(Level::Control));
+        assert_eq!(Command::View { paper: None, focus: Some("on".into()), agent_icon: None, zoom: None }.access(), Access::At(Level::Control));
     }
 
     /// Failure: a session with no app takes a QA command and does nothing, or says something that reads as though it worked. It's refused plainly, and not as a matter of level, since no level would help.
