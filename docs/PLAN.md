@@ -93,7 +93,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Dark mode with dark or white paper; focus view; agent icon as a placeholder
 - [ ] Budget tests: cold start, one document, scrolling, idle CPU, closed window
 - [ ] Spike on the MacBook: 120 Hz and on-screen memory
-- [ ] Sandbox spike: PDFium in an XPC service (its library links AppKit)
+- [x] Sandbox spike: PDFium sandboxed in a nested helper, not XPC (`docs/research/2026-11-07-sandbox-spike.md`)
+- [ ] Build it: the worker's wall check and Mach drop, finding the helper in the bundle, the signed layout
 
 **Done when:** you can read in it, an agent can screenshot every state without touching your screen, and the budgets are measured.
 
