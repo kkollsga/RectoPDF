@@ -46,3 +46,4 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "The agent logo in the upper right is wrong, it should be a ai 4 point star".
 - "The toc should auto scroll to where you are in the document (smoothly so you don't notice it in a elegant way)".
 - "It can whoosh with smooth acceleration at both ends. It can have a \"dead-zone\" so it doesn't react to small scrolls within the window, so basically it repositions, stays still (while user is reading slowly scrolling) then repositions after the user is scrolling a bit."
+- "We have two paper color modes: white and dark, let's add a yellowed white option that's better for the eyes".
