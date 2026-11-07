@@ -44,6 +44,7 @@
 //! ink counts, however short its run: what's on that line is no longer what the file drew there, and letters alternating with visible ones could spell anything.
 
 pub mod corpus;
+pub mod generated;
 pub mod order;
 pub mod rank;
 pub mod select;

@@ -50,9 +50,11 @@ final class SidebarCell: NSView {
         let active = isTab && row.current
         pill.isHidden = !active
         pill.backgroundColor = Theme.rowActive.cg
-        let font: NSFont = active ? .systemFont(ofSize: 14, weight: .semibold) : row.current ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: isTab ? 14 : 13.5)
-        let color = active ? Theme.textStrong : row.current ? Theme.accent : row.railFilled && !isTab ? Theme.textBody : Theme.textQuiet
-        name.set(row.notice == nil ? row.text : "\(noticeMark) \(row.text)", font: font, color: color.ns)
+        let isNote = row.kind == .note
+        let font: NSFont = isNote ? Self.noteFont : active ? .systemFont(ofSize: 14, weight: .semibold) : row.current ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: isTab ? 14 : 13.5)
+        let color = isNote ? (hovered && row.action != nil ? Theme.accent : Theme.textQuiet) : active ? Theme.textStrong : row.current ? Theme.accent : row.railFilled && !isTab ? Theme.textBody : Theme.textQuiet
+        // A note's words are Rust's, and what it means comes on hover, as everything else in the sidebar does.
+        name.set(row.notice == nil || isNote ? row.text : "\(noticeMark) \(row.text)", font: font, color: color.ns)
         toolTip = row.notice
         pageNumber.set(row.page.map(String.init) ?? "", font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .regular), color: (row.current ? Theme.accent : Theme.textQuiet).ns, alignment: .right)
         pageNumber.isHidden = isTab || !hovered || row.page == nil
@@ -77,7 +79,10 @@ final class SidebarCell: NSView {
         name.convert(name.bounds, to: view)
     }
 
-    var nameFont: NSFont { row?.kind == .tab && row?.current == true ? .systemFont(ofSize: 14, weight: .semibold) : row?.current == true ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: row?.kind == .tab ? 14 : 13.5) }
+    /// A note over the contents: smaller and quieter than any entry.
+    static let noteFont = NSFont.systemFont(ofSize: 12, weight: .regular)
+
+    var nameFont: NSFont { row?.kind == .note ? Self.noteFont : row?.kind == .tab && row?.current == true ? .systemFont(ofSize: 14, weight: .semibold) : row?.current == true ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: row?.kind == .tab ? 14 : 13.5) }
 
     override func layout() {
         super.layout()

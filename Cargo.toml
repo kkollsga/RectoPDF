@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Its own workspace, so distillPDF's lopdf features stay out of the app: see its Cargo.toml.
+exclude = ["crates/recto-headings"]
 
 [workspace.package]
 version = "0.1.0"

@@ -31,6 +31,8 @@ pub struct StatePaths {
     pub server_messages: PathBuf,
     /// Where search corpora go. With the override, inside its folder, so a QA run leaves nothing of a document anywhere else. Otherwise in the user's caches, since it can all be built again (agent report, §6.1). `.noindex` is how a folder says Spotlight should leave it alone: its page files are plain text.
     pub corpus: PathBuf,
+    /// Where generated contents are kept: beside the corpus, in the user's caches, since they can all be made again. With the override, inside its folder.
+    pub generated: PathBuf,
     /// Set through [`STATE_ENV`], not the user's real folder.
     pub overridden: bool,
 }
@@ -78,6 +80,7 @@ impl StatePaths {
             old_overrides_log: root.join("activity-overrides.1.jsonl"),
             server_messages: root.join("server-messages.txt"),
             corpus: if overridden { root.join("corpus.noindex") } else { local::real_home().map_or_else(|| root.join("corpus.noindex"), |home| default_corpus_in(&home)) },
+            generated: if overridden { root.join("contents.noindex") } else { local::real_home().map_or_else(|| root.join("contents.noindex"), |home| default_corpus_in(&home).with_file_name("contents.noindex")) },
             root,
             run_dir,
             socket,

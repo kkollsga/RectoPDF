@@ -1,5 +1,6 @@
 //! What the server asks of whoever holds the session. `recto serve` uses [`SessionHost`], and the Mac app wraps one, sharing its session.
 
+use crate::generating::Generator;
 use crate::indexing::{Indexer, Notifier};
 use crate::record_store::{Flavor, Loaded, RecordStore, StoreError, notice_for};
 use crate::state::StatePaths;
@@ -7,7 +8,7 @@ use recto_agent::index::Indexing;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, SessionAccess, acted_tab, check_condition, exit, with_tab_candidates};
 use recto_session::{DocLoader, Session, TabId};
 use serde_json::{Value, json};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The session, as the server sees it. Called from job threads, never the thread watching the socket.
@@ -41,6 +42,7 @@ pub struct SessionHost<L = DrawableLoader> {
     session: Mutex<Session<L>>,
     tabs: AtomicU32,
     indexer: Option<Indexer>,
+    generator: Option<Generator>,
     /// A session with no window keeps a record of its own, written only when it's told to.
     record: Option<RecordStore>,
 }
@@ -49,6 +51,7 @@ pub struct SessionHost<L = DrawableLoader> {
 struct Hosted<'a, L> {
     session: &'a Mutex<Session<L>>,
     indexer: Option<&'a Indexer>,
+    generator: Option<&'a Generator>,
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
@@ -58,6 +61,9 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     }
     fn indexing(&self) -> Option<&dyn Indexing> {
         self.indexer.map(|indexer| indexer as &dyn Indexing)
+    }
+    fn generating(&self) -> Option<&dyn recto_agent::generated::Generating> {
+        self.generator.map(|generator| generator as &dyn recto_agent::generated::Generating)
     }
 }
 
@@ -69,7 +75,7 @@ impl Default for SessionHost<DrawableLoader> {
 
 impl<L: DocLoader + Clone> SessionHost<L> {
     pub fn new(loader: L) -> Self {
-        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0), indexer: None, record: None }
+        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0), indexer: None, generator: None, record: None }
     }
 
     /// With documents indexed on demand, under the state folder's corpus folder.
@@ -77,6 +83,18 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     pub fn with_indexing(mut self, paths: &StatePaths) -> Self {
         self.indexer = Some(Indexer::new(&paths.corpus));
         self
+    }
+
+    /// With generated contents made on demand, kept in the state folder's contents folder.
+    #[must_use]
+    pub fn with_generating(mut self, paths: &StatePaths) -> Self {
+        self.generator = Some(Generator::new(&paths.generated));
+        self
+    }
+
+    /// What makes generated contents, for the app's own sidebar.
+    pub fn generator(&self) -> Option<&Generator> {
+        self.generator.as_ref()
     }
 
     /// With `session save` and `session restore`, to a record of its own.
@@ -87,7 +105,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     }
 
     fn access(&self) -> Hosted<'_, L> {
-        Hosted { session: &self.session, indexer: self.indexer.as_ref() }
+        Hosted { session: &self.session, indexer: self.indexer.as_ref(), generator: self.generator.as_ref() }
     }
 
     /// The session itself, for whoever holds it: the app's own edits go through here, as the owner's. Nothing over the socket reaches this.
@@ -222,6 +240,9 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
     }
 
     fn attach(&self, notify: Notifier) {
+        if let Some(generator) = &self.generator {
+            generator.attach(Arc::clone(&notify));
+        }
         if let Some(indexer) = &self.indexer {
             indexer.attach(notify);
         }
@@ -231,11 +252,18 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
         if let Some(indexer) = &self.indexer {
             indexer.shut_down();
         }
+        if let Some(generator) = &self.generator {
+            generator.shut_down();
+        }
     }
 
     fn access_is_off(&self) {
         if let Some(indexer) = &self.indexer {
             indexer.cancel(None);
+        }
+        // What agents asked for stops. What the reader asked for in the sidebar does too, and they can ask again: the helper can't tell whose ask it was.
+        if let Some(generator) = &self.generator {
+            recto_agent::generated::Generating::cancel(generator, None);
         }
     }
 

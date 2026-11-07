@@ -5,6 +5,7 @@
 
 #![allow(unsafe_code)] // What UniFFI's macros generate. Nothing here writes any of its own.
 
+mod generated_contents;
 mod menus;
 mod qa;
 mod saver;
@@ -209,6 +210,8 @@ impl std::error::Error for StartError {}
 pub enum RowKind {
     Tab,
     Contents,
+    /// A quiet line of Rust's over the contents, about generated contents. Its `notice` is what it means, for the pointer resting on it, and `action` what a tap does.
+    Note,
 }
 
 /// A row of the sidebar. At rest it's a name. Its page number shows on hover.
@@ -226,8 +229,10 @@ pub struct SidebarRow {
     /// A contents row of the tab that has a rail: the first and last draw its ends.
     pub rail_first: bool,
     pub rail_last: bool,
-    /// Something's wrong with this tab's file, in Rust's words.
+    /// Something's wrong with this tab's file, in Rust's words. On a note, what it means.
     pub notice: Option<String>,
+    /// What tapping a note does, by Rust's own name for it.
+    pub action: Option<String>,
 }
 
 /// A contents row as it's kept, with no more in it than it needs. Rows are fetched by the host for what's on screen, so a long outline crosses only as far as it's shown.
@@ -237,6 +242,8 @@ struct ContentsEntry {
     text: Box<str>,
     page: Option<u32>,
     depth: u8,
+    /// A note's meaning and what it does, for a note.
+    note: Option<(&'static str, Option<recto_session::ContentsAction>)>,
 }
 
 /// Everything the sidebar draws, but for the contents' rows, which are pulled with `contents_rows` as they come on screen.
@@ -521,7 +528,14 @@ impl Host for AppHost {
     }
 
     fn attach(&self, notify: Notifier) {
-        self.session.attach(notify);
+        // The sidebar hears of generated contents as watchers do, and looks on the session thread.
+        let core = Arc::clone(&self.core);
+        self.session.attach(Arc::new(move |events: Vec<Event>| {
+            if events.iter().any(|event| event.name == "contents_generated") {
+                core.push(CoreCall::GeneratedFinished);
+            }
+            notify(events);
+        }));
     }
 
     fn shut_down(&self) {
@@ -598,6 +612,12 @@ enum CoreCall {
     Restored(Box<Loaded>),
     /// Patience is over for reading the state, or the file a restored tab is on.
     RestorePatienceOver,
+    /// The reader tapped the note over a tab's contents.
+    ContentsAction(TabId, recto_session::ContentsAction),
+    /// Generated contents were made, or failed: tabs waiting for them look.
+    GeneratedFinished,
+    /// What a look off this thread found of a tab's generated contents.
+    GeneratedView(TabId, recto_session::GeneratedView),
 }
 
 /// A marker through the session thread's queue, for QA to know what it asked for has happened.
@@ -1147,7 +1167,7 @@ impl AppCore {
         let qa = args.qa.then(|| Arc::new(QaBridge::new(Arc::clone(&listener), engine.clone(), watchdog.clone(), Arc::clone(&core))));
         // Takes the record's lock, and reads nothing: that's `begin_restore`'s, on a thread that can wait for it.
         let saver = Arc::new(Saver::new(RecordStore::open(&paths, Flavor::App), Arc::clone(&core)));
-        let host = Arc::new(AppHost { engine: engine.clone(), session: SessionHost::new(DrawableLoader).with_indexing(&paths), core: Arc::clone(&core), qa: qa.clone(), saver: Arc::clone(&saver), running: AtomicU32::new(0), handing_off: AtomicBool::new(false), notice: Mutex::new(None) });
+        let host = Arc::new(AppHost { engine: engine.clone(), session: SessionHost::new(DrawableLoader).with_indexing(&paths).with_generating(&paths), core: Arc::clone(&core), qa: qa.clone(), saver: Arc::clone(&saver), running: AtomicU32::new(0), handing_off: AtomicBool::new(false), notice: Mutex::new(None) });
         let stopper = server.as_ref().and_then(|server| server.stopper().ok());
         let announcer = server.as_ref().and_then(|server| server.announcer().ok());
         let inner = Arc::new(Inner {
@@ -1249,10 +1269,15 @@ impl AppCore {
         drop(published);
         let total = u32::try_from(contents.len()).unwrap_or(u32::MAX);
         let end = first.saturating_add(count.min(MAX_CONTENTS_FETCH)).min(total);
+        // A note goes above the entries, with no rail of its own.
+        let first_entry = u32::from(contents.first().is_some_and(|entry| entry.note.is_some()));
         (first..end)
             .filter_map(|index| {
                 let entry = contents.get(index as usize)?;
-                Some(SidebarRow { kind: RowKind::Contents, tab: entry.tab, text: entry.text.to_string(), page: entry.page, depth: entry.depth, current: current == Some(index), rail_filled: index < rail_filled, rail_first: index == 0, rail_last: index + 1 == total, notice: None })
+                if let Some((hover, action)) = entry.note {
+                    return Some(SidebarRow { kind: RowKind::Note, tab: entry.tab, text: entry.text.to_string(), page: None, depth: 0, current: false, rail_filled: false, rail_first: false, rail_last: false, notice: Some(hover.to_string()), action: action.map(|action| action.id().to_string()) });
+                }
+                Some(SidebarRow { kind: RowKind::Contents, tab: entry.tab, text: entry.text.to_string(), page: entry.page, depth: entry.depth, current: current == Some(index), rail_filled: index < rail_filled, rail_first: index == first_entry, rail_last: index + 1 == total, notice: None, action: None })
             })
             .collect()
     }
@@ -1326,6 +1351,10 @@ impl AppCore {
             (RowKind::Tab, _) => CoreCall::Tap(TabId(row.tab)),
             (RowKind::Contents, Some(page)) => CoreCall::GoTo(TabId(row.tab), page.saturating_sub(1)),
             (RowKind::Contents, None) => return,
+            (RowKind::Note, _) => match row.action.as_deref().and_then(recto_session::ContentsAction::from_id) {
+                Some(action) => CoreCall::ContentsAction(TabId(row.tab), action),
+                None => return,
+            },
         };
         self.inner.core.push(call);
     }
@@ -1961,6 +1990,9 @@ fn session_thread(inner: &Arc<Inner>) {
                 }
             }),
             CoreCall::ToggleAgentIcon => set_view(inner, &mut events, |view| view.agent_icon_hidden = !view.agent_icon_hidden),
+            CoreCall::ContentsAction(id, action) => generated_contents::act(inner, id, action),
+            CoreCall::GeneratedFinished => generated_contents::look_again(inner),
+            CoreCall::GeneratedView(id, view) => host.session.with_session(|session| session.set_generated_view(id, view)),
             CoreCall::SetFocus(focus) => {
                 let view = host.session.with_session(|session| {
                     let view = ViewSettings { focus, ..session.view() };
@@ -1989,6 +2021,7 @@ fn session_thread(inner: &Arc<Inner>) {
                 continue;
             }
         }
+        generated_contents::look_if_chosen(inner);
         reconcile(inner, &mut synced, &mut events);
         if reads.running.is_empty() {
             for marker in reads.flushes.drain(..) {
@@ -2256,7 +2289,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         let mut active_index = None;
         let (mut tab_count, mut contents_row_count) = (0u32, 0u32);
         for row in &model.rows {
-            if row.kind == SessionRowKind::Contents {
+            if row.kind != SessionRowKind::Tab {
                 if row.current {
                     current = Some(contents_row_count);
                 }
@@ -2273,20 +2306,21 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             let published = lock(&inner.published);
             (Arc::clone(&published.tabs), Arc::clone(&published.contents), Arc::clone(&published.sidebar))
         };
-        let tab_rows = || model.rows.iter().filter(|row| row.kind != SessionRowKind::Contents);
+        let tab_rows = || model.rows.iter().filter(|row| row.kind == SessionRowKind::Tab);
         let same_tabs = held_tabs.len() == tab_count as usize && tab_rows().zip(held_tabs.iter()).all(|(row, tab)| row.tab.0 == tab.tab && row.current == tab.current && row.text == tab.text.as_str() && row.notice == tab.notice.as_deref());
         let tabs = if same_tabs {
             held_tabs
         } else {
-            Arc::new(tab_rows().map(|row| SidebarRow { kind: RowKind::Tab, tab: row.tab.0, text: row.text.to_string(), page: row.page, depth: row.depth, current: row.current, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string) }).collect())
+            Arc::new(tab_rows().map(|row| SidebarRow { kind: RowKind::Tab, tab: row.tab.0, text: row.text.to_string(), page: row.page, depth: row.depth, current: row.current, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string), action: None }).collect())
         };
         let tabs_version = if same_tabs { was.tabs_version } else { was.tabs_version + 1 };
-        let same = held.len() == contents_row_count as usize && model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).zip(held.iter()).all(|(row, entry)| row.tab.0 == entry.tab && row.page == entry.page && row.depth == entry.depth && row.text == entry.text.as_ref());
+        let note_of = |row: &recto_session::SidebarRow<'_>| (row.kind == SessionRowKind::Note).then(|| (row.notice.unwrap_or(""), row.action));
+        let same = held.len() == contents_row_count as usize && model.rows.iter().filter(|row| row.kind != SessionRowKind::Tab).zip(held.iter()).all(|(row, entry)| row.tab.0 == entry.tab && row.page == entry.page && row.depth == entry.depth && row.text == entry.text.as_ref() && note_of(row) == entry.note);
         let rail_filled = u32::try_from(model.rail_filled).unwrap_or(u32::MAX);
         let (contents, contents_version, change, contents_place_shift) = if same {
             (held, was.contents_version, (was.contents_changed_from, was.contents_removed, was.contents_inserted), was.contents_place_shift)
         } else {
-            let list: Arc<Vec<ContentsEntry>> = Arc::new(model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).map(|row| ContentsEntry { tab: row.tab.0, text: row.text.into(), page: row.page, depth: row.depth }).collect());
+            let list: Arc<Vec<ContentsEntry>> = Arc::new(model.rows.iter().filter(|row| row.kind != SessionRowKind::Tab).map(|row| ContentsEntry { tab: row.tab.0, text: row.text.into(), page: row.page, depth: row.depth, note: note_of(row) }).collect());
             let change = rows_changed(&held, &list);
             let shift = place_shift(&held, &list, change, was.contents_current, current);
             (list, was.contents_version + 1, change, shift)
@@ -2407,7 +2441,7 @@ mod tests {
     /// Failure: rows opening as the reader enters a chapter jump the list under a smooth drift, because the host wasn't told which went and which came. It must say exactly, a chapter closing and the next opening together included, and a change of nothing says nothing.
     #[test]
     fn opening_and_closing_rows_says_what_changed() {
-        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: 0 };
+        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: 0, note: None };
         let list = |names: &[&str]| names.iter().map(|name| row(name)).collect::<Vec<_>>();
         let before = list(&["1", "2", "3"]);
         assert_eq!(rows_changed(&before, &list(&["1", "2", "2.1", "2.2", "3"])), (2, 0, 2));
@@ -2421,7 +2455,7 @@ mod tests {
     /// Failure: a chapter closes as the reader leaves it, the place drops up the list by the rows that went, and the contents make a second move straight after the first to bring it back. How far the place was carried has to come out right wherever it starts and ends.
     #[test]
     fn a_row_change_says_how_far_it_carried_the_place() {
-        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: u8::try_from(text.matches('.').count()).unwrap() };
+        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: u8::try_from(text.matches('.').count()).unwrap(), note: None };
         let list = |names: &[&str]| names.iter().map(|name| row(name)).collect::<Vec<_>>();
         let shift = |one: &[&str], place_before: u32, two: &[&str], place_after: u32| {
             let (before, after) = (list(one), list(two));

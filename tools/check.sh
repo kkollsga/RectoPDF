@@ -207,14 +207,19 @@ run() {
   echo "$(date +%s) $(git rev-parse HEAD) $(code_state)" > "$check_mark"
   stage clippy
   cargo clippy --workspace --all-targets --locked -- -D warnings
+  # The headings helper is a workspace of its own, kept apart so distillPDF's lopdf features never reach the app. Its own lints, then its tests below.
+  cargo clippy --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}" --all-targets --locked -- -D warnings
   # Keeps the core buildable for Windows from the first commit. Skipped only if the target isn't installed. A compile error, so it goes before anything runs.
   stage windows
   if rustup target list --installed | grep -q x86_64-pc-windows-gnu; then
     cargo check --workspace --locked --target x86_64-pc-windows-gnu
   fi
-  # Tests start the worker and the indexer, and `-p` alone wouldn't build them.
+  # Tests start the worker, the indexer and the headings helper, and `-p` alone wouldn't build them.
   stage workers
   cargo build --locked -p recto-render-service -p recto-indexer
+  cargo build --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}" --bin recto-headings
+  stage headings-tests
+  cargo test --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-target}"
   # The app's own tests run below, against an app built from this tree. An older one lying around says nothing.
   if [ -n "$tests_first" ]; then
     stage changed-tests

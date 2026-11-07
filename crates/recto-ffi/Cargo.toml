@@ -23,6 +23,7 @@ required-features = ["bindgen"]
 [dependencies]
 recto-agent.workspace = true
 recto-control.workspace = true
+recto-index.workspace = true
 recto-core.workspace = true
 recto-platform.workspace = true
 recto-proto.workspace = true

@@ -11,6 +11,7 @@ pub mod sleep;
 pub use edit::Author;
 use edit::{EditError, PageEdits};
 use record::{EditsSummary, FileNotice, FileStatus, FindRecord, JournalHeader, JournalOp, MAX_TAB_ID, PaperName, PathField, PlaceDelta, PlaceRecord, RecordError, Selection, SessionRecord, TabEntry, ViewRecord};
+use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -87,6 +88,10 @@ pub struct TabRecord {
     notice: Option<Box<FileNotice>>,
     /// Its place has changed since it was last written, so one small line says so.
     place_dirty: bool,
+    /// What's thought of its own contents, worked out once when they're read, so the sidebar needn't at every page.
+    contents_verdict: ContentsVerdict,
+    /// The reader chose generated contents over the file's own. Kept in the record.
+    pub generated_contents: bool,
 }
 
 /// Where a page of a tab comes from now.
@@ -126,14 +131,18 @@ pub struct SidebarRow<'a> {
     pub depth: u8,
     /// The active PDF, or the section being read.
     pub current: bool,
-    /// Something's wrong with this tab's file, in words of Rust's own.
+    /// Something's wrong with this tab's file, in words of Rust's own. On a note, what it means.
     pub notice: Option<&'static str>,
+    /// What tapping a note does.
+    pub action: Option<ContentsAction>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowKind {
     Tab,
     Contents,
+    /// A line of Rust's over a tab's contents: generated contents on offer, being made, or shown.
+    Note,
 }
 
 /// Everything the host draws in the sidebar.
@@ -681,6 +690,69 @@ pub struct Session<L = DiskLoader> {
     history: Option<Arc<dyn HistorySource>>,
     /// An agent is acting at Full, so losing the owner's history is the holder's call. Set for each command.
     agent_at_full: bool,
+    /// Generated contents the sidebar knows of, for tabs someone asked about: at most [`MAX_GENERATED_VIEWS`], the oldest out, so a thousand tabs can't make this grow.
+    generated: Vec<(TabId, GeneratedView)>,
+}
+
+/// Generated contents held for the sidebar. A tab whose contents went out can always look again: they're kept on disk.
+pub const MAX_GENERATED_VIEWS: usize = 8;
+
+/// Where a tab's generated contents stand, as the sidebar shows them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GeneratedView {
+    /// Asked for, and being made.
+    Making,
+    /// They couldn't be, for this reason, in Rust's words.
+    Failed(&'static str),
+    Ready(Arc<Toc>),
+    /// Looked for, for a tab that had chosen them, and they weren't kept. They're offered again.
+    NotKept,
+}
+
+/// What a tap on the contents' note does. The note is Rust's: its words and what it does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentsAction {
+    Generate,
+    ShowGenerated,
+    ShowOwn,
+}
+
+impl ContentsAction {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Generate => "contents.generate",
+            Self::ShowGenerated => "contents.show_generated",
+            Self::ShowOwn => "contents.show_own",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        [Self::Generate, Self::ShowGenerated, Self::ShowOwn].into_iter().find(|action| action.id() == id)
+    }
+}
+
+/// The note over a tab's contents: a short line at rest, and what it means on hover. `None` for contents that are fine and shown as they are. Owner, 2026-11-06: "the left sidebar menu is a bit too complicated (visually noisy)", so it's one quiet line, and the rest waits for the pointer.
+pub fn contents_note(verdict: ContentsVerdict, view: Option<&GeneratedView>, choose_generated: bool, own_entries: usize) -> Option<(&'static str, &'static str, Option<ContentsAction>)> {
+    const MADE: &str = "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.";
+    match view {
+        Some(GeneratedView::Ready(_)) if choose_generated => Some((
+            "Generated contents",
+            if own_entries > 0 { "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own." } else { MADE },
+            (own_entries > 0).then_some(ContentsAction::ShowOwn),
+        )),
+        Some(GeneratedView::Ready(_)) => Some(("Show generated contents", MADE, Some(ContentsAction::ShowGenerated))),
+        Some(GeneratedView::Making) => Some(("Generating contents\u{2026}", "Finding the headings on the pages, in the background. On a long document this can take a little while.", None)),
+        Some(GeneratedView::Failed(words)) => Some(("Couldn't generate contents", words, Some(ContentsAction::Generate))),
+        _ if verdict.offers() || choose_generated => Some((
+            "Generate contents",
+            match verdict {
+                ContentsVerdict::Missing => "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.",
+                _ => "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.",
+            },
+            Some(ContentsAction::Generate),
+        )),
+        _ => None,
+    }
 }
 
 /// Files read ahead of waking their tabs, held at once. More than wakes can be under way together.
@@ -708,7 +780,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, generated: Vec::new() }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -855,6 +927,8 @@ impl<L: DocLoader> Session<L> {
             selection: None,
             notice: None,
             place_dirty: true,
+            contents_verdict: ContentsVerdict::Fine,
+            generated_contents: false,
         });
         if let Some(tab) = self.tab_mut(id) {
             tab.encrypted = facts.encrypted;
@@ -1728,12 +1802,12 @@ impl<L: DocLoader> Session<L> {
 
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
-        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _ } = self;
+        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, generated: _ } = self;
         let ViewSettings { paper, focus, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
             .map(|tab| {
-                let TabRecord { from_sleep: _, encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, selection, notice, place_dirty: _ } = tab;
+                let TabRecord { from_sleep: _, encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, selection, notice, place_dirty: _, contents_verdict: _, generated_contents } = tab;
                 TabEntry {
                     id: id.0,
                     path: PathField::from_path(&self.path_of(*id).unwrap_or_default()),
@@ -1748,6 +1822,7 @@ impl<L: DocLoader> Session<L> {
                     notice: notice.as_deref().cloned(),
                     journal: journals.get(id).map(ToString::to_string),
                     edits: edits.get(id).map(PageEdits::summary).or_else(|| asleep.get(id).copied()),
+                    generated_contents: *generated_contents,
                 }
             })
             .collect();
@@ -1840,6 +1915,8 @@ impl<L: DocLoader> Session<L> {
                 selection: entry.selection.map(Box::new),
                 notice: notice.map(Box::new),
                 place_dirty: false,
+                contents_verdict: ContentsVerdict::Fine,
+                generated_contents: entry.generated_contents,
             });
         }
         self.active = record.active.map(TabId).filter(|id| self.tab(*id).is_some());
@@ -2027,6 +2104,7 @@ impl<L: DocLoader> Session<L> {
         self.tabs.remove(index);
         self.draws.retain(|d| d.tab != id);
         self.warm.retain(|(tab, _)| *tab != id);
+        self.generated.retain(|(tab, _)| *tab != id);
         self.woken.retain(|(tab, _, _)| *tab != id);
         if self.active == Some(id) {
             self.active = None;
@@ -2046,7 +2124,7 @@ impl<L: DocLoader> Session<L> {
         let mut toc_open = false;
         for tab in &self.tabs {
             let is_active = self.active == Some(tab.id);
-            rows.push(SidebarRow { kind: RowKind::Tab, tab: tab.id, text: &tab.name, page: None, depth: 0, current: is_active, notice: tab_notice_words(tab, self.has_list(tab.id)) });
+            rows.push(SidebarRow { kind: RowKind::Tab, tab: tab.id, text: &tab.name, page: None, depth: 0, current: is_active, notice: tab_notice_words(tab, self.has_list(tab.id)), action: None });
             if !is_active {
                 continue;
             }
@@ -2055,12 +2133,61 @@ impl<L: DocLoader> Session<L> {
             if tab.toc_open
                 && let Some((_, toc)) = self.warm.iter().find(|(id, _)| *id == tab.id)
             {
-                rail_filled = contents_rows(toc, tab, self.edits.get(&tab.id), &mut rows);
+                let view = self.generated_view(tab.id);
+                let note = contents_note(tab.contents_verdict, view, tab.generated_contents, toc.entries().len());
+                if let Some((text, hover, action)) = note {
+                    rows.push(SidebarRow { kind: RowKind::Note, tab: tab.id, text, page: None, depth: 0, current: false, notice: Some(hover), action });
+                }
+                let shown = match view {
+                    Some(GeneratedView::Ready(generated)) if tab.generated_contents => generated,
+                    _ => toc,
+                };
+                // The note isn't an entry, but it's a row above them, and the rail counts rows.
+                rail_filled = contents_rows(shown, tab, self.edits.get(&tab.id), &mut rows);
+                if note.is_some() && rail_filled > 0 {
+                    rail_filled += 1;
+                }
             }
         }
         let edited = self.active.is_some_and(|id| self.is_edited(id));
         let undone_owner_steps = self.active.is_some_and(|id| self.has_undone_owner_steps(id));
         SidebarModel { rows, rail_filled, toc_open, place, edited, undone_owner_steps }
+    }
+
+    /// Where this tab's generated contents stand, if anyone's asked.
+    pub fn generated_view(&self, id: TabId) -> Option<&GeneratedView> {
+        self.generated.iter().find(|(tab, _)| *tab == id).map(|(_, view)| view)
+    }
+
+    /// Notes where a tab's generated contents stand. The oldest note gives way past [`MAX_GENERATED_VIEWS`], but never the active tab's.
+    pub fn set_generated_view(&mut self, id: TabId, view: GeneratedView) {
+        if self.tab(id).is_none() {
+            return;
+        }
+        self.generated.retain(|(tab, _)| *tab != id);
+        self.generated.push((id, view));
+        while self.generated.len() > MAX_GENERATED_VIEWS {
+            let Some(oldest) = self.generated.iter().position(|(tab, _)| Some(*tab) != self.active) else { break };
+            self.generated.remove(oldest);
+        }
+    }
+
+    /// Tabs whose generated contents are being made.
+    pub fn generated_making(&self) -> Vec<TabId> {
+        self.generated.iter().filter(|(_, view)| *view == GeneratedView::Making).map(|(tab, _)| *tab).collect()
+    }
+
+    /// Shows a tab's generated contents, or its own. The choice is kept in the record, and the file is never changed.
+    pub fn choose_generated(&mut self, id: TabId, generated: bool) {
+        if let Some(tab) = self.tab_mut(id) {
+            tab.generated_contents = generated;
+        }
+    }
+
+    /// What's thought of a tab's own contents, once they've been read.
+    pub fn contents_verdict(&self, id: TabId) -> Option<ContentsVerdict> {
+        let known = self.warm.iter().any(|(tab, _)| *tab == id);
+        self.tab(id).filter(|_| known).map(|tab| tab.contents_verdict)
     }
 
     fn activate(&mut self, id: TabId) {
@@ -2157,6 +2284,9 @@ impl<L: DocLoader> Session<L> {
     }
 
     fn remember_warm(&mut self, id: TabId, toc: Arc<Toc>) {
+        if let Some(tab) = self.tab_mut(id) {
+            tab.contents_verdict = recto_core::verdict::judge(&toc, tab.page_count);
+        }
         self.warm.push_front((id, toc));
         while self.warm.len() > MAX_WARM {
             // The least recent's gone cold, so what its sleep file needs is kept long enough to write that.
@@ -2223,6 +2353,7 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, edits: Option<&PageEdits>, r
             depth: entry.depth,
             current,
             notice: None,
+            action: None,
         });
         if current {
             filled = rows.len() - first_row;

@@ -22,6 +22,8 @@ APP="$BUILD/RectoPDF.app"
 
 echo "==> Rust ($mode)"
 (cd "$REPO" && cargo build --locked -p recto-ffi -p recto-cli -p recto-render-service -p recto-indexer ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"})
+# The headings helper is a workspace of its own, so distillPDF's lopdf features stay out of the app: built apart, into the same folder.
+(cd "$REPO" && cargo build --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-$REPO/target}" --bin recto-headings ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"})
 mkdir -p "$BUILD/rust"
 cp "$RUST_OUT/librecto_ffi.a" "$BUILD/rust/librecto_ffi.a"
 
@@ -47,6 +49,7 @@ cp "$BIN" "$APP/Contents/MacOS/RectoPDF"
 cp "$RUST_OUT/recto" "$APP/Contents/MacOS/recto"
 cp "$RUST_OUT/recto-render-service" "$APP/Contents/MacOS/recto-render-service"
 cp "$RUST_OUT/recto-indexer" "$APP/Contents/MacOS/recto-indexer"
+cp "$RUST_OUT/recto-headings" "$APP/Contents/MacOS/recto-headings"
 cp "$REPO/target/pdfium/libpdfium.dylib" "$APP/Contents/MacOS/libpdfium.dylib"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
