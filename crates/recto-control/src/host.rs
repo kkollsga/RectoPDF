@@ -1,6 +1,6 @@
 //! What the server asks of whoever holds the session. `recto serve` uses [`SessionHost`], and the Mac app will use one that shares its own session.
 
-use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, check_condition, exit, with_tab_candidates};
+use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, acted_tab, check_condition, exit, with_tab_candidates};
 use recto_session::{DocLoader, Session, TabId};
 use serde_json::Value;
 use std::sync::Mutex;
@@ -16,6 +16,10 @@ pub trait Host: Send + Sync + 'static {
     fn tab_count(&self) -> u32;
     /// The tabs with unsaved edits, which `stop` won't throw away.
     fn unsaved_tabs(&self) -> Vec<(TabId, String)>;
+    /// The tab a command is about to act on, for the log.
+    fn acted_tab(&self, _command: &Command) -> Option<TabId> {
+        None
+    }
 }
 
 /// A session in this process.
@@ -50,6 +54,10 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
 
     fn tab_count(&self) -> u32 {
         self.tabs.load(Ordering::Relaxed)
+    }
+
+    fn acted_tab(&self, command: &Command) -> Option<TabId> {
+        acted_tab(&self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner), command)
     }
 
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {

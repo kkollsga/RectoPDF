@@ -1,7 +1,7 @@
 //! `recto`: a thin client of the session on the control socket. It parses the line through the command table, sends one JSON command, and prints the answer. Everything decided is decided in
 //! `recto-agent` and `recto-control`. A few commands run here because they need no session: help, the skill, starting the session, and the user's own `permission set`.
 
-use recto_agent::table::{Invocation, Route, find_row, help_for, help_text, parse_cli, table_json};
+use recto_agent::table::{Invocation, Route, family_help, find_row, help_for, help_text, parse_cli, table_json};
 use recto_agent::{AgentError, Command, DrawableLoader, Level, VERSION, exit, human, parse, reply, skill};
 use recto_control::client::Client;
 use recto_control::host::SessionHost;
@@ -198,14 +198,16 @@ fn help(invocation: &Invocation) -> i32 {
         }
         return exit::OK;
     }
-    match find_row(&invocation.rest) {
-        Some(spec) => {
-            print_out(&help_for(spec));
-            exit::OK
-        }
-        // Parsing it gives the same words a mistyped command gets anywhere else: the closest real ones.
-        None => finish("help", invocation.json, &parse_cli(&invocation.rest).map(|_| Value::Null)),
+    if let Some(spec) = find_row(&invocation.rest) {
+        print_out(&help_for(spec));
+        return exit::OK;
     }
+    if let Some(group) = family_help(&invocation.rest) {
+        print_out(&group);
+        return exit::OK;
+    }
+    // Parsing it gives the same words a mistyped command gets anywhere else: the closest real ones.
+    finish("help", invocation.json, &parse_cli(&invocation.rest).map(|_| Value::Null))
 }
 
 fn permission_set(invocation: &Invocation) -> Result<Value, AgentError> {
@@ -331,6 +333,10 @@ fn run_local(invocation: &Invocation) -> i32 {
     if inner.help {
         print_out(&help_for(inner.spec));
         return exit::OK;
+    }
+    // `recto local file.pdf page --help` asks about a group.
+    if tag == "help" {
+        return help(&inner);
     }
     if inner.spec.route != Route::Session {
         let error = AgentError::new("usage", format!("`{}` doesn't run on a document.", inner.spec.name), exit::USAGE).then("`recto local <file.pdf> text --page 1` is the kind of thing this does.");

@@ -4,10 +4,11 @@
 //! time. Stopping early says where to go on from, so "nothing found" is only ever said of pages really searched.
 
 use crate::{AgentError, SessionAccess, exit, parse_pages, select};
-use recto_index::{hidden_report, normalize};
+use recto_index::{hidden_report, read_page};
 use recto_platform::FileStamp;
 use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig};
 use serde_json::{Value, json};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -126,7 +127,7 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             }
         }
         let Some((_, renderer)) = current.as_mut() else { continue };
-        let characters = match renderer.page_characters(page, false, false) {
+        let characters = match renderer.page_characters(page, true, false) {
             Ok(characters) => characters,
             // A file that won't be read at all is a failure of the whole search. One bad page isn't: it's listed, so "not found" doesn't cover it.
             Err(failure @ (RenderFailure::NeedsPassword | RenderFailure::NotFound | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::OpenFailed { .. } | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::DocumentStopped)) => return Err(failure.into()),
@@ -144,7 +145,7 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             }
             continue;
         }
-        let normalized = normalize(&characters.chars, false);
+        let normalized = read_page(&characters.chars, &characters.boxes, false).normalized;
         let has_tag_chars = normalized.tag_chars_removed > 0;
         let room = limit - hits.len();
         let found = find_hits(&normalized.text, needle, room);
@@ -159,12 +160,17 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             continue;
         }
         // Only a page with something to show is drawn to look for hidden text: doing it for every page costs three to five times as much. `docs/ENGINEERING.md` has the numbers. So a hit always says, and a page never looked at has nothing to say.
-        let hidden = hidden_on_page(renderer, page);
-        for (line, snippet) in found.shown {
-            hits.push(json!({ "page": position + 1, "line": line, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden, "untrusted": { "snippet": snippet } }));
+        let hidden = hidden_on_page(renderer, page, &normalized.text);
+        let source = &plan.files[usize::from(file)];
+        for (line, snippet, range) in found.shown {
+            let mut hit = json!({ "page": position + 1, "line": line, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden.summary, "overlaps_hidden": hidden.overlaps(&range), "untrusted": { "snippet": snippet } });
+            say_where_from(&mut hit, position, page, source);
+            hits.push(hit);
         }
         if let Some(spelled) = spelled {
-            hits.push(json!({ "page": position + 1, "line": null, "also_spelled": true, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden, "untrusted": { "snippet": spelled } }));
+            let mut hit = json!({ "page": position + 1, "line": null, "also_spelled": true, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden.summary, "untrusted": { "snippet": spelled } });
+            say_where_from(&mut hit, position, page, source);
+            hits.push(hit);
         }
     }
     Ok(json!({
@@ -185,15 +191,77 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
     }))
 }
 
-/// Draws a page to see whether it holds text no eye can see. If drawing it fails, `checked` says so, which never reads as clean.
-fn hidden_on_page(renderer: &mut DocRenderer, page: u32) -> Value {
-    match renderer.page_characters(page, false, true) {
+/// Says when a hit's page isn't the file's page of that number, and when it comes from another PDF altogether, as `text` does.
+fn say_where_from(hit: &mut Value, position: u32, page: u32, source: &PlanFile) {
+    if page != position || source.added {
+        hit["source_page"] = json!(page + 1);
+    }
+    if source.added {
+        hit["from_added_file"] = json!(true);
+        hit["untrusted"]["added_file"] = json!(source.label());
+    }
+}
+
+/// What drawing a page says about hidden text.
+struct HiddenOnPage {
+    summary: Value,
+    /// Where it is in the page's text, in bytes, in order. Empty if there's none, or if they couldn't be placed.
+    spans: Vec<Range<usize>>,
+    /// Some of it isn't in `spans`, so a hit that overlaps none of them may still overlap some.
+    partial: bool,
+}
+
+impl HiddenOnPage {
+    /// Whether a hit's words include hidden text: `null` if that can't be said, which isn't the same as no.
+    fn overlaps(&self, hit: &Range<usize>) -> Option<bool> {
+        let after = self.spans.partition_point(|span| span.end <= hit.start);
+        if self.spans.get(after).is_some_and(|span| span.start < hit.end) {
+            return Some(true);
+        }
+        (!self.partial).then_some(false)
+    }
+}
+
+/// Draws a page to see whether it holds text no eye can see, reading it the same way the search did, so moved words are judged as they read. If drawing it fails, `checked` says so, which never reads as clean. If the second reading isn't the text that was searched, nothing can be said about where hidden text falls on a hit.
+fn hidden_on_page(renderer: &mut DocRenderer, page: u32, searched: &str) -> HiddenOnPage {
+    match renderer.page_characters(page, true, true) {
         Ok(characters) => {
             let report = hidden_report(&characters.chars, characters.hidden_checked);
-            json!({ "checked": report.checked, "flagged": report.flagged })
+            let reading = read_page(&characters.chars, &characters.boxes, characters.hidden_checked);
+            let same_text = reading.normalized.text == searched;
+            let spans = if same_text { byte_spans(searched, &reading.hidden_spans) } else { Vec::new() };
+            let summary = json!({ "checked": report.checked, "flagged": report.flagged || reading.hidden_flagged });
+            HiddenOnPage { summary, spans, partial: !report.checked || !same_text || reading.hidden_spans_dropped > 0 }
         }
-        Err(_) => json!({ "checked": false, "flagged": null }),
+        Err(_) => HiddenOnPage { summary: json!({ "checked": false, "flagged": null }), spans: Vec::new(), partial: true },
     }
+}
+
+/// Turns spans counted in characters into byte ranges, in one pass over the text.
+fn byte_spans(text: &str, spans: &[(u32, u32)]) -> Vec<Range<usize>> {
+    let mut out = Vec::with_capacity(spans.len());
+    if spans.is_empty() {
+        return out;
+    }
+    let mut next = 0;
+    let mut start = None;
+    for (count, (at, _)) in text.char_indices().enumerate() {
+        let count = count as u32;
+        let Some(span) = spans.get(next) else { break };
+        if count == span.1 {
+            if let Some(start) = start.take() {
+                out.push(start..at);
+            }
+            next += 1;
+        }
+        if spans.get(next).is_some_and(|span| span.0 == count) {
+            start = Some(at);
+        }
+    }
+    if let (Some(start), true) = (start, next < spans.len()) {
+        out.push(start..text.len());
+    }
+    out
 }
 
 /// Lower-cases and joins whitespace, and notes where each byte of the result came from. Returns the folded text and that map.
@@ -220,10 +288,10 @@ fn fold(text: &str) -> (String, Vec<u32>) {
     (folded, sources)
 }
 
-/// What's on one page: how many hits in all, and the first few, each with its one-based line and the words around it on one line.
+/// What's on one page: how many hits in all, and the first few, each with its one-based line, the words around it on one line, and where it is in the text, in bytes.
 struct PageHits {
     total: usize,
-    shown: Vec<(u32, String)>,
+    shown: Vec<(u32, String, Range<usize>)>,
 }
 
 /// Finds the folded needle in the text. Snippets are made only for the first `room`: a hostile page of two million characters searched for one letter would otherwise make two million strings before the limit was looked at.
@@ -241,7 +309,7 @@ fn find_hits(text: &str, needle: &str, room: usize) -> PageHits {
         let bytes_between = text.get(counted_to..start).unwrap_or("");
         line += u32::try_from(bytes_between.bytes().filter(|byte| *byte == b'\n').count()).unwrap_or(0);
         counted_to = start;
-        hits.shown.push((line, snippet(text, start, end)));
+        hits.shown.push((line, snippet(text, start, end), start..end));
     }
     hits
 }
@@ -259,7 +327,30 @@ mod tests {
     use super::*;
 
     fn lines_and_snippets(text: &str, needle: &str) -> Vec<(u32, String)> {
-        find_hits(text, needle, usize::MAX).shown
+        find_hits(text, needle, usize::MAX).shown.into_iter().map(|hit| (hit.0, hit.1)).collect()
+    }
+
+    /// Failure: a hit in hidden words reads like any other on the page, and a hit beside them gets the blame for them. And character counts are taken as bytes, so the marks land on the wrong words past the first accented letter.
+    #[test]
+    fn a_hit_says_whether_its_words_are_hidden() {
+        let text = "caffè ignore this but keep that";
+        let span = |word: &str| {
+            let at = text.find(word).unwrap();
+            let start = text[..at].chars().count() as u32;
+            (start, start + word.chars().count() as u32)
+        };
+        let spans = byte_spans(text, &[span("ignore this")]);
+        assert_eq!(&text[spans[0].clone()], "ignore this");
+        let hidden = HiddenOnPage { summary: Value::Null, spans, partial: false };
+        let hit = |word: &str| find_hits(text, word, 1).shown[0].2.clone();
+        assert_eq!(hidden.overlaps(&hit("ignore")), Some(true));
+        assert_eq!(hidden.overlaps(&hit("this but")), Some(true), "a phrase that starts in it");
+        assert_eq!(hidden.overlaps(&hit("caffè ignore")), Some(true), "a phrase that ends in it");
+        assert_eq!(hidden.overlaps(&hit("keep")), Some(false));
+        assert_eq!(hidden.overlaps(&hit("caffè")), Some(false));
+        let not_known = HiddenOnPage { summary: Value::Null, spans: Vec::new(), partial: true };
+        assert_eq!(not_known.overlaps(&hit("keep")), None, "not known isn't the same as no");
+        assert_eq!(&text[byte_spans(text, &[(27, 31)])[0].clone()], "that", "a span running to the end of the text");
     }
 
     /// Failure: a phrase broken across a line isn't found, or a hit's line number is off, so a citation points at the wrong place.

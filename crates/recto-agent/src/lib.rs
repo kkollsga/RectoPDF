@@ -393,6 +393,7 @@ impl Command {
     pub fn log_details(&self) -> Value {
         // A file's name comes from outside, so even cleaned, it goes under `untrusted`, here as everywhere.
         let file = |path: &Path| json!({ "file": file_label(path) });
+        // A tab's name as typed isn't kept. `with_acted_tab` swaps in the `#id` it turned out to mean, which is what the log is for: this is only what's left if it didn't find one, such as an ambiguous name, or a command refused before it looked.
         let tab_of = |tab: &str| if tab == "active" || tab.strip_prefix('#').is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()) && id.len() <= 10) { tab.to_string() } else { "by name".to_string() };
         match self {
             Self::Open { path, page } => json!({ "page": page, "untrusted": file(path) }),
@@ -407,6 +408,33 @@ impl Command {
             Self::Wait { .. } | Self::Watch { .. } | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
         }
     }
+}
+
+impl Command {
+    /// The selector this command acts on, if it has one.
+    fn tab_selector(&self) -> Option<&str> {
+        match self {
+            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::Text { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
+            _ => None,
+        }
+    }
+}
+
+/// Which tab a command is about to act on, as an id for the log. Never a name, and none if it means no tab or several. Asked before the command runs, because `close` leaves nothing to ask afterwards.
+pub fn acted_tab<L: DocLoader>(session: &Session<L>, command: &Command) -> Option<TabId> {
+    select(session, command.tab_selector()?).ok()
+}
+
+/// Puts the tab a command really acted on in its log entry. `open` learns its tab from its answer.
+pub fn with_acted_tab(mut details: Value, acted: Option<TabId>, result: &Result<Value, AgentError>, command: &Command) -> Value {
+    let id = match (command, result) {
+        (Command::Open { .. }, Ok(data)) => data["tab"].as_u64(),
+        _ => acted.map(|id| u64::from(id.0)),
+    };
+    if let Some(id) = id {
+        details["tab"] = json!(format!("#{id}"));
+    }
+    details
 }
 
 /// Keeps a page range in the log only if it's what a range should be.
@@ -460,6 +488,10 @@ fn next_step(code: &str, exit: i32) -> &'static str {
         "source_changed" => "Tell the user this file changed. `recto edits` shows what's unsaved. With Full access `recto discard` throws the edits away, and opening the file again starts from what's there now.",
         "nothing_to_undo" | "nothing_to_redo" => "`recto edits` shows where this tab is.",
         "not_built" => "Tell the user this isn't in this version yet.",
+        "too_large_at_this_scale" => "Try a smaller `--scale`. 2 is twice the page's size, and 1 is its own.",
+        "page_too_large_to_read" => "Tell the user this page can't be read. The rest of the document may be fine.",
+        "render_worker_missing" => "Tell the user RectoPDF's install is incomplete: `recto-render-service` must be in the same folder as `recto`. In a source tree, `cargo build --workspace` builds both, which `cargo build -p recto-cli` doesn't.",
+        "render_library_missing" => "Tell the user RectoPDF's install is incomplete. In a source tree, `tools/pdfium.sh` fetches the library.",
         "bad_command" => "`recto help` lists every command.",
         "bad_path" => "Give the whole path. `recto` does this for you.",
         "output_exists" => "Choose a new file name. An existing file is never replaced.",
@@ -642,7 +674,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         }),
         Command::Close { tab } => access.with(|s| {
             let id = select(s, tab)?;
-            keep_undone_steps(s, id, level, "Closing this tab")?;
+            refuse_close_that_loses_something(s, id, level)?;
             let before = s.active();
             s.close(id)?;
             events.push(Event::new("tab_closed", json!({ "tab": id.0 })));
@@ -942,6 +974,43 @@ fn keep_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level: Level
     let mut error = AgentError::new("would_clear_redo", format!("{what} here would throw away undone steps for good, and that needs Full access."), exit::PERMISSION);
     error.ask = Some("recto permission request full".into());
     error.next = "Run `recto redo` until there's nothing left to redo, which keeps everything, and then go on. Or run `recto permission request full` to ask for Full access.".to_string();
+    Err(error)
+}
+
+/// Stops a close that would lose edits, and says all of what it would lose and every way on that's real. Undone steps need Full to lose, like any edit that clears them. Unsaved ones can't be lost by a close at any level: `discard` is the one way, on purpose.
+fn refuse_close_that_loses_something<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
+    let edits = session.page_edits(id);
+    let (unsaved, undone) = (session.is_edited(id), edits.is_some_and(recto_session::edit::PageEdits::can_redo));
+    if !unsaved && (!undone || level >= Level::Full) {
+        return Ok(());
+    }
+    let what = match (unsaved, undone) {
+        (true, true) => "unsaved edits and undone steps",
+        (true, false) => "unsaved edits",
+        _ => "undone steps",
+    };
+    let mut ways = vec!["Leave the tab open: nothing is lost until the session ends.".to_string()];
+    if undone {
+        ways.push("`recto redo` puts the undone steps back, and that includes anything you undid on purpose.".to_string());
+    }
+    if unsaved {
+        ways.push("`recto undo` until there's nothing left to undo takes the unsaved edits off, and keeps them as undone steps.".to_string());
+    }
+    let discard = if undone { "`recto discard` throws all of it away for good, and then the tab can close" } else { "`recto discard` throws them away for good, and then the tab can close" };
+    if level >= Level::Full {
+        ways.push(format!("{discard}."));
+    } else {
+        ways.push(format!("{discard}, which needs Full access: `recto permission request full` asks for it."));
+    }
+    ways.push("Saving isn't built yet, so they can't be kept on disk.".to_string());
+    let message = format!("This tab wasn't closed: closing it would lose its {what}.");
+    // Below Full, undone steps are what the level is there to protect. Otherwise it's the edits themselves that stop it, at any level.
+    let losing_undone = undone && level < Level::Full;
+    let mut error = if losing_undone { AgentError::new("would_clear_redo", message, exit::PERMISSION) } else { AgentError::new("unsaved_changes", message, exit::FAILED) };
+    if losing_undone {
+        error.ask = Some("recto permission request full".into());
+    }
+    error.next = ways.join(" ");
     Err(error)
 }
 
@@ -1525,6 +1594,98 @@ mod tests {
         run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
         run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
         assert!(run(&mut s, Level::Full, &Command::Close { tab: tab() }).is_ok());
+    }
+
+    /// Failure: the refusal mentions only undone steps, so an agent with unsaved edits runs `redo` as told and brings back a delete it had backed out of, thinking that clears the way. It must name all that's at stake and each honest way on, including that saving doesn't exist. Nothing here may loosen the rule.
+    #[test]
+    fn a_refused_close_says_all_it_would_lose_and_every_way_on() {
+        let mut s = edit_session();
+        let tab = || "#1".to_string();
+        let rotate = || Command::PageRotate { tab: "#1".into(), pages: "1".into(), degrees: 90 };
+        run(&mut s, Level::Control, &rotate()).unwrap();
+        run(&mut s, Level::Control, &Command::PageDelete { tab: tab(), pages: "2".into() }).unwrap();
+        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+
+        let both = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
+        assert_eq!((both.code, both.exit), ("would_clear_redo", exit::PERMISSION), "below Full, this is still that refusal");
+        assert_eq!(both.ask.as_deref(), Some("recto permission request full"));
+        assert!(both.message.contains("unsaved edits and undone steps"), "{}", both.message);
+        for must in ["recto redo", "anything you undid on purpose", "recto undo", "recto discard", "needs Full", "Saving isn't built", "Leave the tab open"] {
+            assert!(both.next.contains(must), "{must}: {}", both.next);
+        }
+
+        let at_full = run(&mut s, Level::Full, &Command::Close { tab: tab() }).unwrap_err();
+        assert_eq!((at_full.code, at_full.exit), ("unsaved_changes", exit::FAILED), "unsaved edits stop a close at any level");
+        assert!(!at_full.next.contains("needs Full"), "{}", at_full.next);
+
+        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        let only_undone = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
+        assert_eq!(only_undone.code, "would_clear_redo");
+        assert!(!only_undone.message.contains("unsaved"), "nothing's unsaved now: {}", only_undone.message);
+
+        run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
+        let only_unsaved = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
+        assert_eq!(only_unsaved.code, "unsaved_changes");
+        assert!(!only_unsaved.next.contains("recto redo"), "there's nothing to redo: {}", only_unsaved.next);
+        assert_eq!(s.tabs().len(), 1, "none of these closed it");
+    }
+
+    /// Failure: `facts` says "encrypted" with nothing more, so a reader takes it the contents are protected, when anyone could open this file without a password.
+    #[test]
+    fn facts_say_when_an_encrypted_file_opened_with_no_password() {
+        #[derive(Clone)]
+        struct Encrypted;
+        impl DocLoader for Encrypted {
+            fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+                Ok(DocFacts { page_count: 1, byte_len: 1, encrypted: true, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+            }
+        }
+        let mut s = Session::new(Encrypted);
+        s.open(&PathBuf::from("/d/locked.pdf")).unwrap();
+        let facts = run(&mut s, Level::ReadOnly, &Command::Facts { tab: "active".into() }).unwrap();
+        assert!(facts["encryption_note"].as_str().unwrap().contains("no password"), "{facts}");
+        assert!(human::render("facts", &facts).contains("no password"), "{facts}");
+        let mut plain = with_tabs(&["a"]);
+        assert!(run(&mut plain, Level::ReadOnly, &Command::Facts { tab: "active".into() }).unwrap()["encryption_note"].is_null());
+    }
+
+    /// Failure: the log says "by name", so nobody can tell afterwards which tab an agent acted on. It keeps the `#id`, never the name, and `open` gives its own.
+    #[test]
+    fn the_log_says_which_tab_by_id_and_never_by_name() {
+        let mut s = with_tabs(&["secret report", "other"]);
+        let by_name = Command::Facts { tab: "secret".into() };
+        let acted = acted_tab(&s, &by_name);
+        assert_eq!(acted, Some(TabId(1)));
+        let details = with_acted_tab(by_name.log_details(), acted, &Ok(json!({})), &by_name);
+        assert_eq!(details["tab"], "#1");
+        assert!(!details.to_string().contains("secret"), "{details}");
+        let active = Command::Text { tab: "active".into(), page: 1 };
+        assert_eq!(acted_tab(&s, &active), s.active());
+        let nothing = Command::Facts { tab: "nothing like it".into() };
+        let details = with_acted_tab(nothing.log_details(), acted_tab(&s, &nothing), &Ok(json!({})), &nothing);
+        assert_eq!(details["tab"], "by name", "{details}");
+        assert!(!details.to_string().contains("nothing like it"), "{details}");
+        let mut alike = with_tabs(&["report one", "report two"]);
+        let ambiguous = Command::Facts { tab: "report".into() };
+        let acted = acted_tab(&alike, &ambiguous);
+        assert_eq!(acted, None);
+        let refused = run(&mut alike, Level::ReadOnly, &ambiguous);
+        assert_eq!(with_acted_tab(ambiguous.log_details(), acted, &refused, &ambiguous)["tab"], "by name", "two tabs matched, and saying there's no such tab would be false");
+        let open = Command::Open { path: "/d/new.pdf".into(), page: None };
+        let opened = run(&mut s, Level::Control, &open);
+        assert_eq!(with_acted_tab(open.log_details(), None, &opened, &open)["tab"], "#3");
+    }
+
+    /// Failure: a missing renderer reads as a vague install problem, so an agent can't say what to fix. The file's name and how to get it must be there.
+    #[test]
+    fn a_missing_renderer_names_what_is_missing() {
+        let worker = AgentError::from(recto_render_service::RenderFailure::WorkerMissing);
+        assert!(worker.message.contains("recto-render-service"), "{}", worker.message);
+        assert!(worker.next.contains("cargo build --workspace"), "{}", worker.next);
+        let library = AgentError::from(recto_render_service::RenderFailure::LibraryMissing);
+        assert!(library.message.contains("libpdfium.dylib"), "{}", library.message);
+        assert!(library.next.contains("tools/pdfium.sh"), "{}", library.next);
     }
 
     /// Failure: `4-x-` reads as `4-`, or a limit of none is quietly answered with one.

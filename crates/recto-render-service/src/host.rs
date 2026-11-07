@@ -408,8 +408,8 @@ impl RenderFailure {
     /// Plain words for a person.
     pub fn message(self) -> String {
         match self {
-            Self::WorkerMissing => "RectoPDF's page renderer isn't installed where it should be.".into(),
-            Self::LibraryMissing => "RectoPDF's PDF library isn't installed where it should be.".into(),
+            Self::WorkerMissing => "RectoPDF's page renderer, `recto-render-service`, wasn't found beside `recto`, so no page can be read or drawn.".into(),
+            Self::LibraryMissing => "RectoPDF's PDF library, `libpdfium.dylib`, wasn't found beside `recto-render-service` or in `../pdfium/`, so no page can be read or drawn.".into(),
             Self::Unavailable => "The page renderer couldn't be started.".into(),
             Self::NotFound => "That file couldn't be found.".into(),
             Self::NeedsPassword => "This PDF needs a password.".into(),
@@ -446,7 +446,7 @@ impl RenderFailure {
                 format!("Page {} wasn't exported, and no file was written: another heavy page was still being drawn when the wait ran out. Try again when it's done.", page + 1)
             }
             Self::ExportRefused { page, why: ExportRefusal::TooHeavy } => {
-                format!("Page {} wasn't exported, and no file was written: it needs more memory than RectoPDF allows at this size. A smaller scale may fit.", page + 1)
+                format!("Page {} wasn't exported, and no file was written: it needs more memory than RectoPDF allows one page.", page + 1)
             }
             Self::Cancelled => "This was cancelled, and nothing was written.".into(),
             Self::NotDrawableNow { page, why: LowResWhy::HeavyBusy } => {
