@@ -21,7 +21,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - Memory tests run in their own binary, on release builds where the number matters. Measure the whole process (`phys_footprint`).
 
 ## This machine
-- 16 GB Mac. **Wrap every heavy cargo build, test or bench in `tools/sysguard/heavy.sh`**, the queue shared by all agents. `check.sh` does this itself. Use `HEAVY_SOLO=1` for timing and memory measurements, which then hold every slot. `heavy.sh --status` shows the queue, and `--report` the waits.
+- 16 GB Mac. **Wrap every heavy cargo build, test or bench in `tools/sysguard/heavy.sh`**, the queue shared by all agents. `check.sh` does this itself. `HEAVY_SOLO=1` holds every slot, and takes them as they free up, so it blocks the queue while it waits: only the coordinator uses it, for final measurements at a quiet time. Workers measure under load and say so. `heavy.sh --status` shows the queue, and `--report` the waits.
 - Worktrees and temp folders are removed as soon as they're merged or finished. Never sweep a shared folder. No `timeout` binary exists here.
 
 ## Git

@@ -404,6 +404,7 @@ Guardrails from §4.2: Unix socket 0600 plus peer-UID check, named pipe with own
 | T14 | Billing surprise (`ANTHROPIC_API_KEY` in env) | Show billing source each session from `apiKeySource` | Design |
 | T15 | Document text in transcripts | `--no-session-persistence`, `CLAUDE_CODE_SKIP_PROMPT_HISTORY=1` | Spike |
 | T16 | Local process talks to socket | 0600, peer UID, levels, log. A same-user process is inside the trust boundary, as in §4.2 | Design |
+| T16b | Same-user process reads the corpus folder directly (added 2026-11-07) | 0700 stops other users, not this one: an agent with a shell, at Off, can `rg` the root. The same is true of the PDFs, except that the corpus also holds closed and deleted documents, up to its 90 days and 2 GiB. `recto index clear --all` is the way out | Residual |
 | T17 | **User's own agent has wide tools** and reads injected text through `recto read` | Can't be enforced from here. `--json` marks text `"untrusted": true`. Skill says so. Docs tell the user that their agent's permissions decide the blast radius | Residual |
 | T18 | Protected document text at rest in the cache | §5.5 | Design |
 
