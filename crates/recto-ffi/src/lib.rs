@@ -241,6 +241,9 @@ pub struct SidebarRow {
     pub notice: Option<String>,
     /// What tapping a note does, by Rust's own name for it.
     pub action: Option<String>,
+    /// A contents row with sections under it, which its chevron folds, and whether they show.
+    pub expandable: bool,
+    pub expanded: bool,
 }
 
 /// A contents row as it's kept, with no more in it than it needs. Rows are fetched by the host for what's on screen, so a long outline crosses only as far as it's shown.
@@ -250,6 +253,10 @@ struct ContentsEntry {
     text: Box<str>,
     page: Option<u32>,
     depth: u8,
+    /// Its entry in the list, and whether it folds and is open.
+    entry: u32,
+    expandable: bool,
+    expanded: bool,
 }
 
 /// Everything the sidebar draws, but for the contents' rows, which are pulled with `contents_rows` as they come on screen.
@@ -278,6 +285,22 @@ pub struct SidebarView {
     pub undone_owner_steps: bool,
     /// A quiet line over the active tab's contents, about generated contents, which stays put while they scroll. Drawn only while they're showing.
     pub contents_note: Option<SidebarRow>,
+}
+
+/// The scroll thumb, for every scrolling area of the window: `recto_session::SCROLL_THUMB`, where its widths and colours are decided and why.
+#[derive(Clone, Copy, Debug, PartialEq, uniffi::Record)]
+pub struct ScrollThumbLook {
+    pub width: f64,
+    pub hover_width: f64,
+    pub hit_width: f64,
+    pub inset: f64,
+    pub min_length: f64,
+    pub light_rgb: u32,
+    pub light_alpha: f64,
+    pub light_hover_alpha: f64,
+    pub dark_rgb: u32,
+    pub dark_alpha: f64,
+    pub dark_hover_alpha: f64,
 }
 
 /// Rust's height rule, in points.
@@ -635,6 +658,8 @@ enum CoreCall {
     GeneratedFinished,
     /// What a look off this thread found of a tab's generated contents.
     GeneratedView(TabId, recto_session::GeneratedView),
+    /// A contents section's chevron: fold it or open it.
+    ToggleSection(TabId, u32),
 }
 
 /// A marker through the session thread's queue, for QA to know what it asked for has happened.
@@ -1281,7 +1306,7 @@ impl AppCore {
     }
 
     pub fn limits(&self) -> ReaderLimits {
-        ReaderLimits { min_zoom: MIN_ZOOM, max_zoom: MAX_ZOOM, window_width: 1440.0, window_height: 900.0, sidebar_width: record::SIDEBAR_WIDTH, reveal_delay_seconds: 0.5, restore_patience_seconds: RESTORE_PATIENCE.as_secs_f64(), show_patience_seconds: SHOW_PATIENCE.as_secs_f64(), autoscroll_every_seconds: recto_reader::selection::AUTOSCROLL_EVERY, notice_seconds: 6.0 }
+        ReaderLimits { min_zoom: MIN_ZOOM, max_zoom: MAX_ZOOM, window_width: 1440.0, window_height: 900.0, sidebar_width: record::SIDEBAR_WIDTH, reveal_delay_seconds: 0.0, restore_patience_seconds: RESTORE_PATIENCE.as_secs_f64(), show_patience_seconds: SHOW_PATIENCE.as_secs_f64(), autoscroll_every_seconds: recto_reader::selection::AUTOSCROLL_EVERY, notice_seconds: 6.0 }
     }
 
     /// The sidebar as it stands, but for its tabs. A short lock and a small copy.
@@ -1305,9 +1330,15 @@ impl AppCore {
         (first..end)
             .filter_map(|index| {
                 let entry = contents.get(index as usize)?;
-                Some(SidebarRow { kind: RowKind::Contents, tab: entry.tab, text: entry.text.to_string(), page: entry.page, depth: entry.depth, current: current == Some(index), rail_filled: index < rail_filled, rail_first: index == 0, rail_last: index + 1 == total, notice: None, action: None })
+                Some(SidebarRow { kind: RowKind::Contents, tab: entry.tab, text: entry.text.to_string(), page: entry.page, depth: entry.depth, current: current == Some(index), rail_filled: index < rail_filled, rail_first: index == 0, rail_last: index + 1 == total, notice: None, action: None, expandable: entry.expandable, expanded: entry.expanded })
             })
             .collect()
+    }
+
+    /// The scroll thumb's look, the same for the sidebar's lists and the page area.
+    pub fn scroll_thumb(&self) -> ScrollThumbLook {
+        let thumb = recto_session::SCROLL_THUMB;
+        ScrollThumbLook { width: thumb.width, hover_width: thumb.hover_width, hit_width: thumb.hit_width, inset: thumb.inset, min_length: thumb.min_length, light_rgb: thumb.light.0, light_alpha: thumb.light.1, light_hover_alpha: thumb.light_hover.1, dark_rgb: thumb.dark.0, dark_alpha: thumb.dark.1, dark_hover_alpha: thumb.dark_hover.1 }
     }
 
     /// The sidebar's height rule, for this much room between its header and footer.
@@ -1372,6 +1403,14 @@ impl AppCore {
 
     pub fn reader(&self) -> ReaderView {
         lock(&self.inner.published).reader.clone()
+    }
+
+    /// A contents row's chevron was tapped: its sections fold or open. On the session thread, as every change to what the sidebar shows is.
+    pub fn toggle_contents_section(&self, first: u32) {
+        let entry = lock(&self.inner.published).contents.get(first as usize).map(|entry| (entry.tab, entry.entry, entry.expandable));
+        if let Some((tab, entry, true)) = entry {
+            self.inner.core.push(CoreCall::ToggleSection(TabId(tab), entry));
+        }
     }
 
     /// A row was tapped. Goes on the session thread, as waking a cold tab reads its file.
@@ -2113,6 +2152,7 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::ContentsAction(id, action) => generated_contents::act(inner, id, action),
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view) => host.session.with_session(|session| session.set_generated_view(id, view)),
+            CoreCall::ToggleSection(id, entry) => host.session.with_session(|session| session.toggle_contents_section(id, entry)),
             CoreCall::SetFocus(focus) => {
                 let view = host.session.with_session(|session| {
                     let view = ViewSettings { focus, ..session.view() };
@@ -2434,21 +2474,21 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         let tabs = if same_tabs {
             held_tabs
         } else {
-            Arc::new(tab_rows().map(|row| SidebarRow { kind: RowKind::Tab, tab: row.tab.0, text: row.text.to_string(), page: row.page, depth: row.depth, current: row.current, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string), action: None }).collect())
+            Arc::new(tab_rows().map(|row| SidebarRow { kind: RowKind::Tab, tab: row.tab.0, text: row.text.to_string(), page: row.page, depth: row.depth, current: row.current, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string), action: None, expandable: false, expanded: false }).collect())
         };
         let tabs_version = if same_tabs { was.tabs_version } else { was.tabs_version + 1 };
-        let same = held.len() == contents_row_count as usize && model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).zip(held.iter()).all(|(row, entry)| row.tab.0 == entry.tab && row.page == entry.page && row.depth == entry.depth && row.text == entry.text.as_ref());
+        let same = held.len() == contents_row_count as usize && model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).zip(held.iter()).all(|(row, entry)| row.tab.0 == entry.tab && row.page == entry.page && row.depth == entry.depth && row.text == entry.text.as_ref() && row.entry == entry.entry && row.expanded == entry.expanded && row.expandable == entry.expandable);
         let rail_filled = u32::try_from(model.rail_filled).unwrap_or(u32::MAX);
         let (contents, contents_version, change, contents_place_shift) = if same {
             (held, was.contents_version, (was.contents_changed_from, was.contents_removed, was.contents_inserted), was.contents_place_shift)
         } else {
-            let list: Arc<Vec<ContentsEntry>> = Arc::new(model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).map(|row| ContentsEntry { tab: row.tab.0, text: row.text.into(), page: row.page, depth: row.depth }).collect());
+            let list: Arc<Vec<ContentsEntry>> = Arc::new(model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).map(|row| ContentsEntry { tab: row.tab.0, text: row.text.into(), page: row.page, depth: row.depth, entry: row.entry, expandable: row.expandable, expanded: row.expanded }).collect());
             let change = rows_changed(&held, &list);
             let shift = place_shift(&held, &list, change, was.contents_current, current);
             (list, was.contents_version + 1, change, shift)
         };
         // The note over the contents stays put while they scroll, so it's drawn apart from them.
-        let contents_note = model.rows.iter().find(|row| row.kind == SessionRowKind::Note).map(|row| SidebarRow { kind: RowKind::Note, tab: row.tab.0, text: row.text.to_string(), page: None, depth: 0, current: false, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string), action: row.action.map(|action| action.id().to_string()) });
+        let contents_note = model.rows.iter().find(|row| row.kind == SessionRowKind::Note).map(|row| SidebarRow { kind: RowKind::Note, tab: row.tab.0, text: row.text.to_string(), page: None, depth: 0, current: false, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string), action: row.action.map(|action| action.id().to_string()), expandable: false, expanded: false });
         let view = SidebarView { contents_note, tabs_version, tab_count, active_index, contents_count: contents_row_count, contents_version, contents_changed_from: change.0, contents_removed: change.1, contents_inserted: change.2, contents_place_shift, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps };
         (snapshot, view, tabs, contents, rail_filled, session.view())
     });
@@ -2565,7 +2605,7 @@ mod tests {
     /// Failure: rows opening as the reader enters a chapter jump the list under a smooth drift, because the host wasn't told which went and which came. It must say exactly, a chapter closing and the next opening together included, and a change of nothing says nothing.
     #[test]
     fn opening_and_closing_rows_says_what_changed() {
-        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: 0 };
+        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: 0, entry: 0, expandable: false, expanded: false };
         let list = |names: &[&str]| names.iter().map(|name| row(name)).collect::<Vec<_>>();
         let before = list(&["1", "2", "3"]);
         assert_eq!(rows_changed(&before, &list(&["1", "2", "2.1", "2.2", "3"])), (2, 0, 2));
@@ -2579,7 +2619,7 @@ mod tests {
     /// Failure: a chapter closes as the reader leaves it, the place drops up the list by the rows that went, and the contents make a second move straight after the first to bring it back. How far the place was carried has to come out right wherever it starts and ends.
     #[test]
     fn a_row_change_says_how_far_it_carried_the_place() {
-        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: u8::try_from(text.matches('.').count()).unwrap() };
+        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: u8::try_from(text.matches('.').count()).unwrap(), entry: 0, expandable: false, expanded: false };
         let list = |names: &[&str]| names.iter().map(|name| row(name)).collect::<Vec<_>>();
         let shift = |one: &[&str], place_before: u32, two: &[&str], place_after: u32| {
             let (before, after) = (list(one), list(two));

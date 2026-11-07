@@ -92,6 +92,8 @@ pub struct TabRecord {
     contents_verdict: ContentsVerdict,
     /// The reader chose generated contents over the file's own. Kept in the record.
     pub generated_contents: bool,
+    /// Sections the reader opened or closed by hand, as `(entry, open)`, against what following the place opens. Nothing for a tab nobody's folded, so a cold tab pays a pointer.
+    folds: Option<Box<Vec<(u32, bool)>>>,
 }
 
 /// Where a page of a tab comes from now.
@@ -135,6 +137,12 @@ pub struct SidebarRow<'a> {
     pub notice: Option<&'static str>,
     /// What tapping a note does.
     pub action: Option<ContentsAction>,
+    /// A contents row's entry in its list.
+    pub entry: u32,
+    /// It has sections under it, so it has a chevron to fold them.
+    pub expandable: bool,
+    /// Those sections show.
+    pub expanded: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,6 +182,30 @@ pub const CONTENTS_ROW_HEIGHT: f64 = 28.0;
 pub const NOTE_ROW_HEIGHT: f64 = 24.0;
 /// The most of the sidebar's room the contents take: about 60%, by the owner's yes of 2026-11-07. The rest is for the other tabs, and it's what keeps them from being pushed off by one long outline.
 pub const CONTENTS_MAX_SHARE: f64 = 0.6;
+
+/// **The scroll thumb**, for the sidebar's lists and the page area alike, so they match. Owner, 2026-11-07: "The sidebar thumb should always be visible, and lets hide the rail", then "the thumb should be thinner", and for both scrollers "the scroll thumb always visible, the rail always hidden", whatever the system's setting. It shows only when there's something to scroll, and draws over the content's right margin, taking no width from it.
+///
+/// **Why 4 points:** the Mac's own overlay thumb is about 7 points at rest and 11 under the pointer. The owner asked for thinner, and 4 is the thinnest that still reads as a thumb on a 1x screen (2 device pixels either side of its centre line), with rounded ends. Under the pointer it widens to 6, as the system's does, and it's grabbed anywhere in a strip [`ScrollThumb::hit_width`] wide, so a slim look doesn't make it hard to drag.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollThumb {
+    /// Its width at rest, and under the pointer or while dragged, in points.
+    pub width: f64,
+    pub hover_width: f64,
+    /// The strip along the edge that takes the pointer, in points: wider than the thumb looks.
+    pub hit_width: f64,
+    /// From the thumb's right side to the edge, in points.
+    pub inset: f64,
+    /// The shortest it gets, in points.
+    pub min_length: f64,
+    /// Its colour as `0xRRGGBB` and an opacity, on light and dark, at rest and under the pointer. Black or white over whatever's behind, as the system's thumb is, so it sits on the sidebar's colour and the page area's alike.
+    pub light: (u32, f64),
+    pub light_hover: (u32, f64),
+    pub dark: (u32, f64),
+    pub dark_hover: (u32, f64),
+}
+
+/// The one scroll thumb.
+pub const SCROLL_THUMB: ScrollThumb = ScrollThumb { width: 4.0, hover_width: 6.0, hit_width: 12.0, inset: 3.0, min_length: 24.0, light: (0x000000, 0.22), light_hover: (0x000000, 0.42), dark: (0xFFFFFF, 0.24), dark_hover: (0xFFFFFF, 0.45) };
 
 /// How much of the sidebar's list goes where, in points.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -943,6 +975,7 @@ impl<L: DocLoader> Session<L> {
             place_dirty: true,
             contents_verdict: ContentsVerdict::Fine,
             generated_contents: false,
+            folds: None,
         });
         if let Some(tab) = self.tab_mut(id) {
             tab.encrypted = facts.encrypted;
@@ -1821,7 +1854,7 @@ impl<L: DocLoader> Session<L> {
         let tabs = tabs
             .iter()
             .map(|tab| {
-                let TabRecord { from_sleep: _, encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, selection, notice, place_dirty: _, contents_verdict: _, generated_contents } = tab;
+                let TabRecord { from_sleep: _, encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, selection, notice, place_dirty: _, contents_verdict: _, generated_contents, folds } = tab;
                 TabEntry {
                     id: id.0,
                     path: PathField::from_path(&self.path_of(*id).unwrap_or_default()),
@@ -1837,6 +1870,7 @@ impl<L: DocLoader> Session<L> {
                     journal: journals.get(id).map(ToString::to_string),
                     edits: edits.get(id).map(PageEdits::summary).or_else(|| asleep.get(id).copied()),
                     generated_contents: *generated_contents,
+                    contents_folds: folds.as_deref().cloned().unwrap_or_default(),
                 }
             })
             .collect();
@@ -1931,6 +1965,7 @@ impl<L: DocLoader> Session<L> {
                 place_dirty: false,
                 contents_verdict: ContentsVerdict::Fine,
                 generated_contents: entry.generated_contents,
+                folds: (!entry.contents_folds.is_empty()).then(|| Box::new(entry.contents_folds.iter().copied().take(record::MAX_CONTENTS_FOLDS).collect())),
             });
         }
         self.active = record.active.map(TabId).filter(|id| self.tab(*id).is_some());
@@ -2138,7 +2173,7 @@ impl<L: DocLoader> Session<L> {
         let mut toc_open = false;
         for tab in &self.tabs {
             let is_active = self.active == Some(tab.id);
-            rows.push(SidebarRow { kind: RowKind::Tab, tab: tab.id, text: &tab.name, page: None, depth: 0, current: is_active, notice: tab_notice_words(tab, self.has_list(tab.id)), action: None });
+            rows.push(SidebarRow { kind: RowKind::Tab, tab: tab.id, text: &tab.name, page: None, depth: 0, current: is_active, notice: tab_notice_words(tab, self.has_list(tab.id)), action: None, entry: NONE, expandable: false, expanded: false });
             if !is_active {
                 continue;
             }
@@ -2150,7 +2185,7 @@ impl<L: DocLoader> Session<L> {
                 let view = self.generated_view(tab.id);
                 let note = contents_note(tab.contents_verdict, view, tab.generated_contents, toc.entries().len());
                 if let Some((text, hover, action)) = note {
-                    rows.push(SidebarRow { kind: RowKind::Note, tab: tab.id, text, page: None, depth: 0, current: false, notice: Some(hover), action });
+                    rows.push(SidebarRow { kind: RowKind::Note, tab: tab.id, text, page: None, depth: 0, current: false, notice: Some(hover), action, entry: NONE, expandable: false, expanded: false });
                 }
                 let shown = match view {
                     Some(GeneratedView::Ready(generated)) if tab.generated_contents => generated,
@@ -2188,11 +2223,49 @@ impl<L: DocLoader> Session<L> {
         self.generated.iter().filter(|(_, view)| *view == GeneratedView::Making).map(|(tab, _)| *tab).collect()
     }
 
-    /// Shows a tab's generated contents, or its own. The choice is kept in the record, and the file is never changed.
+    /// Shows a tab's generated contents, or its own. The choice is kept in the record, and the file is never changed. What's folded goes, as it was about the other list's entries.
     pub fn choose_generated(&mut self, id: TabId, generated: bool) {
-        if let Some(tab) = self.tab_mut(id) {
+        if let Some(tab) = self.tab_mut(id)
+            && tab.generated_contents != generated
+        {
             tab.generated_contents = generated;
+            tab.folds = None;
         }
+    }
+
+    /// Opens a contents section that's closed, or closes one that's open, as its chevron does. Owner, 2026-11-07: "there should be a collapse toggle button for sections with sub chapters on the left side of the headers". What following the place opens is the default, and only what differs from it is kept, at most [`record::MAX_CONTENTS_FOLDS`], in the record.
+    pub fn toggle_contents_section(&mut self, id: TabId, entry: u32) {
+        let Some(toc) = self.shown_contents(id) else { return };
+        let Some(tab) = self.tab(id) else { return };
+        let chain = following_chain(&toc, tab, self.edits.get(&id));
+        let has_children = toc.entries().get(entry as usize + 1).is_some_and(|next| next.parent == entry);
+        if !has_children {
+            return;
+        }
+        let Some(tab) = self.tab_mut(id) else { return };
+        let open_now = section_open(tab.folds.as_deref().map(Vec::as_slice), &chain, entry);
+        let folds = tab.folds.get_or_insert_with(Default::default);
+        folds.retain(|(at, _)| *at != entry);
+        // Back to what following does is no fold at all.
+        if chain.contains(&entry) == open_now {
+            folds.push((entry, !open_now));
+        }
+        while folds.len() > record::MAX_CONTENTS_FOLDS {
+            folds.remove(0);
+        }
+        if folds.is_empty() {
+            tab.folds = None;
+        }
+        tab.place_dirty = true;
+    }
+
+    /// The contents the sidebar shows for a tab: its generated ones if they're chosen and ready, or its own.
+    fn shown_contents(&self, id: TabId) -> Option<Arc<Toc>> {
+        let (_, own) = self.warm.iter().find(|(tab, _)| *tab == id)?;
+        Some(match (self.tab(id).is_some_and(|tab| tab.generated_contents), self.generated_view(id)) {
+            (true, Some(GeneratedView::Ready(generated))) => Arc::clone(generated),
+            _ => Arc::clone(own),
+        })
     }
 
     /// What's thought of a tab's own contents, once they've been read.
@@ -2336,22 +2409,21 @@ impl<L: DocLoader> Session<L> {
 /// With unsaved page edits, entries follow their pages to their new positions. An entry whose page was deleted stays
 /// without a number, and pages added from another PDF belong to no section.
 fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, edits: Option<&PageEdits>, rows: &mut Vec<SidebarRow<'a>>) -> usize {
-    let original_page = match edits {
-        Some(edits) => edits.slots().get(tab.page as usize).filter(|s| s.source == 0).map(|s| s.page),
-        None => Some(tab.page),
-    };
-    let here = original_page.and_then(|page| toc.section_at(page));
-    let mut open = HashSet::new();
-    let mut cursor = here.map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
-    while cursor != NONE && open.insert(cursor) {
-        cursor = toc.entries().get(cursor as usize).map_or(NONE, |e| e.parent);
-    }
+    let here = section_here(toc, tab, edits);
+    let chain = following_chain(toc, tab, edits);
+    let folds = tab.folds.as_deref().map(Vec::as_slice);
+    // Whether each entry's own children show: it's shown, and open. Entries come in document order, so a parent is always decided first.
+    let mut children_show = vec![false; toc.entries().len()];
     let first_row = rows.len();
     let mut filled = 0;
     for (index, entry) in toc.entries().iter().enumerate() {
-        if entry.parent != NONE && !open.contains(&entry.parent) {
+        if entry.parent != NONE && !children_show.get(entry.parent as usize).copied().unwrap_or(false) {
             continue;
         }
+        let at = u32::try_from(index).unwrap_or(NONE);
+        let expandable = toc.entries().get(index + 1).is_some_and(|next| next.parent == at);
+        let expanded = expandable && section_open(folds, &chain, at);
+        children_show[index] = expanded;
         let current = here == Some(index);
         rows.push(SidebarRow {
             kind: RowKind::Contents,
@@ -2365,12 +2437,39 @@ fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, edits: Option<&PageEdits>, r
             current,
             notice: None,
             action: None,
+            entry: at,
+            expandable,
+            expanded,
         });
         if current {
             filled = rows.len() - first_row;
         }
     }
     filled
+}
+
+/// The entry for the section being read, in the file's own page numbers.
+fn section_here(toc: &Toc, tab: &TabRecord, edits: Option<&PageEdits>) -> Option<usize> {
+    let original_page = match edits {
+        Some(edits) => edits.slots().get(tab.page as usize).filter(|s| s.source == 0).map(|s| s.page),
+        None => Some(tab.page),
+    };
+    original_page.and_then(|page| toc.section_at(page))
+}
+
+/// The section being read and every section it's in, which following the place keeps open.
+fn following_chain(toc: &Toc, tab: &TabRecord, edits: Option<&PageEdits>) -> HashSet<u32> {
+    let mut open = HashSet::new();
+    let mut cursor = section_here(toc, tab, edits).map_or(NONE, |i| u32::try_from(i).unwrap_or(NONE));
+    while cursor != NONE && open.insert(cursor) {
+        cursor = toc.entries().get(cursor as usize).map_or(NONE, |e| e.parent);
+    }
+    open
+}
+
+/// Whether a section's children show: as the reader folded it, or else as following the place has it.
+fn section_open(folds: Option<&[(u32, bool)]>, chain: &HashSet<u32>, entry: u32) -> bool {
+    folds.and_then(|folds| folds.iter().rev().find(|(at, _)| *at == entry)).map_or_else(|| chain.contains(&entry), |(_, open)| *open)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3154,6 +3253,43 @@ mod tests {
         assert!(s.sidebar().rows.iter().all(|row| row.kind != RowKind::Contents), "the file's own, which are none");
         s.close(id).unwrap();
         assert!(s.generated_view(id).is_none());
+    }
+
+    /// Failure: a section's chevron doesn't fold it, or opens one following didn't, or the fold is lost across a restart, or a fold on a list survives switching to the other list, where its entry number means something else. Owner, 2026-11-07: "there should be a collapse toggle button for sections with sub chapters on the left side of the headers".
+    #[test]
+    fn contents_sections_fold_and_their_folds_come_back() {
+        struct Outlined;
+        impl DocLoader for Outlined {
+            fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+                let lines = [TocLine { title: "One", page: 0, parent: NONE, depth: 0 }, TocLine { title: "One a", page: 1, parent: 0, depth: 1 }, TocLine { title: "Two", page: 5, parent: NONE, depth: 0 }, TocLine { title: "Two a", page: 6, parent: 2, depth: 1 }];
+                Ok(DocFacts { page_count: 10, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::from_lines(&lines, false), renderer_only: false })
+            }
+        }
+        fn shown(s: &Session<Outlined>) -> Vec<(String, bool, bool)> {
+            s.sidebar().rows.iter().filter(|row| row.kind == RowKind::Contents).map(|row| (row.text.to_string(), row.expandable, row.expanded)).collect()
+        }
+        let mut s = Session::new(Outlined);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        // On page 1, in "One": it's open by following, and "Two" isn't.
+        assert_eq!(shown(&s), [("One".into(), true, true), ("One a".into(), false, false), ("Two".into(), true, false)]);
+        s.toggle_contents_section(id, 0);
+        s.toggle_contents_section(id, 2);
+        assert_eq!(shown(&s), [("One".into(), true, false), ("Two".into(), true, true), ("Two a".into(), false, false)]);
+        s.toggle_contents_section(id, 1);
+        assert_eq!(shown(&s).len(), 3, "an entry with nothing under it doesn't fold");
+        let record = s.to_record();
+        assert_eq!(record.tabs[0].contents_folds, [(0, false), (2, true)]);
+        let mut again = Session::new(Outlined);
+        again.restore(&record, HashMap::new()).unwrap();
+        again.wake_active();
+        assert_eq!(shown(&again), shown(&s), "the folds come back");
+        // Back to what following does is no fold at all.
+        s.toggle_contents_section(id, 0);
+        s.toggle_contents_section(id, 2);
+        assert!(s.to_record().tabs[0].contents_folds.is_empty());
+        s.toggle_contents_section(id, 2);
+        s.choose_generated(id, true);
+        assert!(s.to_record().tabs[0].contents_folds.is_empty(), "the other list's entries aren't these");
     }
 
     /// Failure: a thousand tabs that each had generated contents asked for hold every list in memory.

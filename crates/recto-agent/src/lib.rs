@@ -1669,6 +1669,8 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
                 "page": row.page,
                 "depth": row.depth,
                 "current": row.current,
+                "expandable": row.expandable,
+                "expanded": row.expanded,
                 "untrusted": { "text": row.text },
             })
         })

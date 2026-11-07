@@ -231,6 +231,63 @@ fn the_sidebar_offers_generated_contents_and_labels_them() {
     assert_eq!(run.ok(&["contents"])["total"], 0, "the file's own are untouched");
 }
 
+/// Forty chapters of a long title each, every one with a section under it, on forty pages.
+fn sectioned() -> TempPdf {
+    let chapters = 40;
+    let page = |index: usize| 3 + index * 2;
+    let outline = 3 + chapters * 2;
+    let mut objects = vec![
+        Object::Dict(format!("<< /Type /Catalog /Pages 2 0 R /Outlines {outline} 0 R >>")),
+        Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {chapters} >>", (0..chapters).map(|index| format!("{} 0 R", page(index))).collect::<Vec<_>>().join(" "))),
+    ];
+    for index in 0..chapters {
+        objects.push(Object::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {} 0 R >>", page(index) + 1)));
+        objects.push(Object::Stream { dict: String::new(), data: format!("BT /F1 12 Tf 72 700 Td (Page {index}) Tj ET").into_bytes() });
+    }
+    let chapter = |index: usize| outline + 1 + index * 2;
+    objects.push(Object::Dict(format!("<< /Type /Outlines /First {} 0 R /Last {} 0 R /Count {chapters} >>", chapter(0), chapter(chapters - 1))));
+    for index in 0..chapters {
+        let links = format!("{}{}", if index > 0 { format!(" /Prev {} 0 R", chapter(index - 1)) } else { String::new() }, if index + 1 < chapters { format!(" /Next {} 0 R", chapter(index + 1)) } else { String::new() });
+        objects.push(Object::Dict(format!("<< /Title (Chapter {index} with a title long enough to be shortened in the sidebar) /Parent {outline} 0 R{links} /First {0} 0 R /Last {0} 0 R /Count 1 /Dest [{1} 0 R /Fit] >>", chapter(index) + 1, page(index))));
+        objects.push(Object::Dict(format!("<< /Title (Section {index}.1) /Parent {} 0 R /Dest [{} 0 R /Fit] >>", chapter(index), page(index))));
+    }
+    TempPdf::new("sectioned.pdf", &build(&objects))
+}
+
+/// Failure: a section's fold doesn't fold it, the full name of a shortened entry waits on a timer or comes in another colour than its row, or the sidebar's thumb is missing while the contents scroll, or sits over their text. Owner, 2026-11-07: "there should be a collapse toggle button for sections with sub chapters on the left side of the headers", "The hover delay before showing the full toc name makes in not intuitive", and "The sidebar thumb should always be visible, and lets hide the rail".
+#[test]
+fn contents_fold_reveal_at_once_and_keep_a_thumb() {
+    let Some(run) = Run::start() else { return };
+    let file = sectioned();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let open = run.report();
+    // On page 1, chapter 0 is open by following: 40 chapters and its one section.
+    assert_eq!(open["app"]["contents"]["count"], 41, "{open}");
+    let thumb = &open["app"]["contents"]["thumb"];
+    assert_eq!(thumb["shown"], true, "{open}");
+    assert!(thumb["thumb_width"].as_f64().unwrap() < 7.0, "thinner than the system's: {thumb}");
+    assert!(thumb["right_gap"].as_f64().unwrap() >= 2.0, "{thumb}");
+    for style in ["legacy", "overlay"] {
+        run.ok(&["qa", "scroller-style", style]);
+        let state = run.report();
+        assert_eq!(state["app"]["contents"]["thumb"]["shown"], true, "{style}: {state}");
+        assert_eq!(state["app"]["contents"]["scroller"], false, "no system scroller or track: {style}");
+    }
+    // Folding chapter 0, then opening chapter 1.
+    run.ok(&["qa", "click-row", "fold:1"]);
+    wait_for(&run, |state| state["app"]["contents"]["count"] == 40);
+    run.ok(&["qa", "click-row", "fold:2"]);
+    wait_for(&run, |state| state["app"]["contents"]["count"] == 41);
+    let sidebar = run.ok(&["sidebar"]);
+    let rows = sidebar["rows"].as_array().unwrap();
+    assert_eq!((rows[1]["expanded"].clone(), rows[2]["expanded"].clone(), rows[3]["untrusted"]["text"].clone()), (json!(false), json!(true), json!("Section 1.1")), "{sidebar}");
+    // The full name, at once, in the row's own colour.
+    run.ok(&["qa", "hover", "2"]);
+    let shown = run.ok(&["qa", "reveal", "2"]);
+    assert_eq!(shown["reveal"]["shown"], true, "{shown}");
+}
+
 fn wait_for(run: &Run, holds: impl Fn(&Value) -> bool) -> Value {
     let mut last = Value::Null;
     for _ in 0..400 {
@@ -454,7 +511,7 @@ fn what_appkit_calls_reaches_the_app() {
     let checked = found.as_object().unwrap();
     let failed: Vec<&String> = checked.iter().filter(|(_, ok)| **ok != true).map(|(name, _)| name).collect();
     assert!(failed.is_empty(), "these don't reach the app: {failed:?}\n{found}");
-    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "corner_covers_the_buttons", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "copy_is_grey_with_nothing_selected", "select_all_can_be_chosen", "select_all_key_reaches_the_app", "select_all_selects", "copy_is_enabled_with_something_selected", "copy_key_reaches_the_app", "services_arent_offered_what_they_didnt_ask_for", "services_arent_offered_nothing", "services_write_nothing_with_nothing_selected", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
+    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "corner_covers_the_buttons", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_brings_no_system_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "copy_is_grey_with_nothing_selected", "select_all_can_be_chosen", "select_all_key_reaches_the_app", "select_all_selects", "copy_is_enabled_with_something_selected", "copy_key_reaches_the_app", "services_arent_offered_what_they_didnt_ask_for", "services_arent_offered_nothing", "services_write_nothing_with_nothing_selected", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
         assert!(checked.contains_key(name), "{name} wasn't checked: {found}");
     }
     run.ok(&["view", "--focus", "on"]);
@@ -749,8 +806,8 @@ fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
     run.settled();
     let again = wait_for(&run, |state| state["app"]["contents"]["frames_running"] == false && state["app"]["contents"]["current"].as_u64().unwrap_or(0) > 1000);
     assert_eq!(again["app"]["contents"]["stale_rows"], 0, "{again}");
-    // Failure: every reposition flashes a scroller the reader didn't ask for, where the sidebar is meant to be names and contents at rest.
-    assert_eq!(again["app"]["contents"]["scroller"], false, "{again}");
+    // Failure: the thumb comes and goes with each reposition, where the owner wants it always there and slim (2026-11-07: "The sidebar thumb should always be visible, and lets hide the rail").
+    assert_eq!(again["app"]["contents"]["thumb"]["shown"], true, "{again}");
     // Scrolled away, it stays where it's put, however the reader moves on.
     let away = run.ok(&["qa", "contents-scroll", "10"]);
     assert_eq!(away["contents"]["following"], false, "{away}");
