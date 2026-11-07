@@ -38,6 +38,38 @@ pub fn box_has_ink(pixels: &[u8], width: i32, height: i32, stride: usize, (x0, y
     false
 }
 
+/// How close a glyph's own colour may be to the colour most of its box is drawn in, per channel, for it to be taken as drawn in the colour of what's under it.
+pub const SAME_AS_GROUND: i32 = 24;
+
+/// Whether a glyph drawn in `rgb` can't be told from what's around it: the colour that most of its padded box is drawn in is the glyph's own. That's white text over a white page with other text under it, which [`box_has_ink`] passes because the box has ink, though not the glyph's. A glyph in ordinary text covers well under half its box, so the box's main colour is its background. BGRx pixels; never reads outside `pixels`, and at most a box's worth.
+pub fn glyph_is_ground_coloured(pixels: &[u8], width: i32, height: i32, stride: usize, (x0, y0, x1, y1): (i32, i32, i32, i32), rgb: (u8, u8, u8)) -> bool {
+    let (x0, x1) = (x0.min(x1).saturating_sub(INK_PADDING_PX).max(0), x0.max(x1).saturating_add(INK_PADDING_PX).min(width));
+    let (y0, y1) = (y0.min(y1).saturating_sub(INK_PADDING_PX).max(0), y0.max(y1).saturating_add(INK_PADDING_PX).min(height));
+    if x1 <= x0 || y1 <= y0 {
+        return false;
+    }
+    // Colours to 4 bits a channel: anti-aliasing and dithering land in the same bin.
+    let mut bins = [0u32; 4096];
+    let mut total = 0u32;
+    for y in y0..y1 {
+        let start = y as usize * stride + x0 as usize * 4;
+        let end = y as usize * stride + x1 as usize * 4;
+        let Some(row) = pixels.get(start..end) else { return false };
+        for px in row.as_chunks::<4>().0 {
+            let (b, g, r) = (usize::from(px[0] >> 4), usize::from(px[1] >> 4), usize::from(px[2] >> 4));
+            bins[(r << 8) | (g << 4) | b] += 1;
+            total += 1;
+        }
+    }
+    let Some((bin, count)) = bins.iter().enumerate().max_by_key(|(_, count)| **count) else { return false };
+    if *count * 2 < total {
+        return false;
+    }
+    let centre = |part: usize| ((part as i32) << 4) + 8;
+    let (r, g, b) = (centre(bin >> 8), centre((bin >> 4) & 15), centre(bin & 15));
+    (r - i32::from(rgb.0)).abs() <= SAME_AS_GROUND && (g - i32::from(rgb.1)).abs() <= SAME_AS_GROUND && (b - i32::from(rgb.2)).abs() <= SAME_AS_GROUND
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,6 +91,23 @@ mod tests {
     #[test]
     fn a_box_over_nothing_has_no_ink() {
         assert!(!box_has_ink(&page(), 40, 40, 160, (2, 2, 10, 10)));
+    }
+
+    /// Failure: white text drawn over a paragraph of black text counts as seen, because its box has the paragraph's ink, so a heading no one can see reaches the contents and `recto text` doesn't flag it. And ordinary black text on white, or white text on a dark box, is taken for hidden.
+    #[test]
+    fn a_glyph_in_its_grounds_colour_is_hidden_whatever_else_is_in_its_box() {
+        // A white box with a few black pixels in it, as body text under a heading's box.
+        let mut pixels = vec![255u8; 40 * 40 * 4];
+        for x in 5..15 {
+            pixels[(20 * 40 + x) * 4..(20 * 40 + x) * 4 + 3].copy_from_slice(&[0, 0, 0]);
+        }
+        let whole = (0, 0, 40, 40);
+        assert!(box_has_ink(&pixels, 40, 40, 160, whole), "the box has ink");
+        assert!(glyph_is_ground_coloured(&pixels, 40, 40, 160, whole, (255, 255, 255)), "a white glyph there can't be seen");
+        assert!(!glyph_is_ground_coloured(&pixels, 40, 40, 160, whole, (0, 0, 0)), "a black one can");
+        let dark = vec![20u8; 40 * 40 * 4];
+        assert!(!glyph_is_ground_coloured(&dark, 40, 40, 160, whole, (255, 255, 255)), "white on a dark box can be seen");
+        assert!(!glyph_is_ground_coloured(&dark, 40, 40, 160, (60, 60, 80, 80), (0, 0, 0)), "off the bitmap is nothing");
     }
 
     /// Failure: thin glyphs like `·` read as hidden, because their box lands a pixel beside the ink. Padding forgives that.

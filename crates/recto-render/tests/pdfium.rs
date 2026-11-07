@@ -411,6 +411,30 @@ fn hidden_text_is_marked_and_nothing_is_dropped() {
     }
 }
 
+/// Failure: white text drawn over a paragraph of black text isn't flagged, because each of its boxes has the paragraph's ink in it, so `recto text`, a copy and generated contents all take words no one can see for the page's own. A review's crafted file, `white_over_body`. And white text on a dark box, which can be read, isn't flagged.
+#[test]
+fn white_text_over_a_paragraph_is_marked_hidden() {
+    let _turn = turn();
+    let mut content = String::from("BT /F1 10 Tf 12 TL 72 690 Td\n");
+    for _ in 0..30 {
+        content += "(This is ordinary body text on the page, written in a smaller size than any heading.) Tj T*\n";
+    }
+    content += "ET\nq 1 1 1 rg BT /F1 20 Tf 72 600 Td (HIDDENOVERBODY) Tj ET Q\n";
+    content += "q 0 0 0 rg 60 90 400 30 re f Q q 1 1 1 rg BT /F1 20 Tf 72 100 Td (VISIBLEONDARK) Tj ET Q\n";
+    let file = TempPdf::new("over.pdf", &pages(&[Page::new(content.into_bytes())]));
+    let mut backend = open(&file);
+    let page = backend.page_text(0, TextOptions { boxes: false, hidden_check: true }).unwrap();
+    assert!(page.hidden_checked);
+    let text: String = page.chars.iter().map(|record| record.ch()).collect();
+    let marked = |word: &str| {
+        let at = text.find(word).unwrap_or_else(|| panic!("{word} missing"));
+        page.chars[at..at + word.len()].iter().filter(|record| record.has(CharRecord::NO_INK)).count()
+    };
+    assert_eq!(marked("HIDDENOVERBODY"), "HIDDENOVERBODY".len());
+    assert_eq!(marked("VISIBLEONDARK"), 0);
+    assert_eq!(marked("ordinary body"), 0, "the paragraph under it is still seen");
+}
+
 /// Failure: an ordinary page reports hidden text, so the flag means nothing and an agent learns to ignore it.
 #[test]
 fn an_ordinary_page_has_no_hidden_text() {

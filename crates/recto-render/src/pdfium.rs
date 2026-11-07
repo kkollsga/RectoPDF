@@ -750,6 +750,8 @@ impl RenderBackend for PdfiumBackend {
         let want_boxes = options.boxes || options.hidden_check;
         let mut chars = Vec::with_capacity(count as usize);
         let mut boxes: Vec<CharBox> = Vec::with_capacity(if want_boxes { count as usize } else { 0 });
+        // PDFium's own index for each character, for the check to ask the glyph's colour: a character past 16 bits is two of PDFium's.
+        let mut sources: Vec<c_int> = Vec::with_capacity(if options.hidden_check { count as usize } else { 0 });
         let mut index = 0;
         while index < count {
             // SAFETY: `text` is live and `index` is below its character count.
@@ -775,6 +777,9 @@ impl RenderBackend for PdfiumBackend {
                 flags |= CharRecord::GENERATED;
             }
             chars.push(CharRecord::new(code, flags));
+            if options.hidden_check {
+                sources.push(index);
+            }
             if want_boxes {
                 let (mut left, mut right, mut bottom, mut top) = (0.0, 0.0, 0.0, 0.0);
                 // SAFETY: as above, and the out-pointers are live for the call. On failure they stay zero: an empty box, which has no ink.
@@ -786,7 +791,7 @@ impl RenderBackend for PdfiumBackend {
         }
         // A page with no characters has nothing to hide from a text reader, and needs no drawing to say so.
         // If the page can't be drawn for the check, the text still goes back, saying it wasn't checked: nothing is marked until the drawing has worked.
-        let hidden_checked = options.hidden_check && (chars.is_empty() || self.mark_no_ink(page, &mut chars, &boxes, cancel).is_ok());
+        let hidden_checked = options.hidden_check && (chars.is_empty() || self.mark_no_ink(page, &mut chars, &boxes, (text, &sources), cancel).is_ok());
         if !options.boxes {
             boxes = Vec::new();
         }
@@ -820,7 +825,7 @@ const INK_MAX_BYTES: f32 = 64.0 * 1024.0 * 1024.0;
 impl PdfiumBackend {
     /// Draws the page and sets `NO_INK` on each visible-looking character whose box has no ink. Nothing is removed. From the spike's
     /// prototype, §10.4. Whitespace, control characters and characters PDFium generated have no ink to find, so they're skipped.
-    fn mark_no_ink(&mut self, page: u32, chars: &mut [CharRecord], boxes: &[CharBox], cancel: &dyn Cancel) -> Result<(), RenderError> {
+    fn mark_no_ink(&mut self, page: u32, chars: &mut [CharRecord], boxes: &[CharBox], (text, sources): (FPDF_TEXTPAGE, &[c_int]), cancel: &dyn Cancel) -> Result<(), RenderError> {
         let size = self.page_size(page)?;
         let area_at_ink_scale = size.width * INK_SCALE * size.height * INK_SCALE * 4.0;
         let scale = if area_at_ink_scale > INK_MAX_BYTES { INK_SCALE * (INK_MAX_BYTES / area_at_ink_scale).sqrt() } else { INK_SCALE };
@@ -841,7 +846,7 @@ impl PdfiumBackend {
             unsafe { (api.FPDF_PageToDevice)(page_handle, 0, 0, width, height, 0, f64::from(x), f64::from(y), &raw mut device_x, &raw mut device_y) };
             (device_x, device_y)
         };
-        for (record, char_box) in chars.iter_mut().zip(boxes) {
+        for ((record, char_box), index) in chars.iter_mut().zip(boxes).zip(sources) {
             let ch = record.ch();
             if ch.is_whitespace() || ch.is_control() || record.has(CharRecord::GENERATED) || record.has(CharRecord::HYPHEN) {
                 continue;
@@ -849,12 +854,33 @@ impl PdfiumBackend {
             let [left, bottom, right, top] = *char_box;
             let (x0, y0) = to_device(left, top);
             let (x1, y1) = to_device(right, bottom);
-            if !crate::box_has_ink(&pixels, width, height, stride as usize, (x0, y0, x1.saturating_add(1), y1.saturating_add(1))) {
+            let device = (x0, y0, x1.saturating_add(1), y1.saturating_add(1));
+            if !crate::box_has_ink(&pixels, width, height, stride as usize, device) || drawn_in_its_grounds_colour(api, text, *index, &pixels, (width, height, stride as usize), device) {
                 *record = CharRecord::new(ch as u32, CharRecord::NO_INK);
             }
         }
         Ok(())
     }
+}
+
+/// Whether a character is drawn in the colour of what's under it, so that its box's ink is someone else's: white text over a paragraph. Only for text that's filled or stroked: render mode 3 draws nothing, which the box test has already said if there's nothing under it, and an OCR layer over a scan is just that, and stays.
+fn drawn_in_its_grounds_colour(api: &'static Api, text: FPDF_TEXTPAGE, index: c_int, pixels: &[u8], (width, height, stride): (c_int, c_int, usize), device: (c_int, c_int, c_int, c_int)) -> bool {
+    // SAFETY: the text page is live for the caller's walk and `index` is one of its characters. The object it returns belongs to the page, which outlives this call.
+    let object = unsafe { (api.FPDFText_GetTextObject)(text, index) };
+    if object.is_null() {
+        return false;
+    }
+    // SAFETY: as above.
+    let mode = unsafe { (api.FPDFTextObj_GetTextRenderMode)(object) };
+    let (mut r, mut g, mut b, mut a) = (0, 0, 0, 0);
+    // SAFETY: as above, and the out-pointers are live for the call.
+    let known = match mode {
+        0 | 2 | 4 | 6 => unsafe { (api.FPDFPageObj_GetFillColor)(object, &raw mut r, &raw mut g, &raw mut b, &raw mut a) },
+        1 | 5 => unsafe { (api.FPDFPageObj_GetStrokeColor)(object, &raw mut r, &raw mut g, &raw mut b, &raw mut a) },
+        _ => 0,
+    };
+    let byte = |value: c_uint| u8::try_from(value).unwrap_or(u8::MAX);
+    known != 0 && crate::glyph_is_ground_coloured(pixels, width, height, stride, device, (byte(r), byte(g), byte(b)))
 }
 
 /// Draws one page onto a caller's memory, in one go: the host's watch holds it from outside, and nothing here pauses. `form` draws form fields too, when `annots` is set.

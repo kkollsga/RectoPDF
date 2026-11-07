@@ -88,3 +88,29 @@ fn it_goes_when_its_stdin_closes() {
     let (_, _, elapsed) = run(&pdf.0, key, true);
     assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
 }
+
+/// Failure: a heading set so no one can see it reaches the generated contents. Every way in `recto_testpdf::HIDDEN_HEADINGS`, including the four a review got through: no width (`0 Tz`), invisible glyphs read as a space by `/ActualText`, white text over a paragraph, and white text whose words are also in a visible speck in a corner. And every visible heading stays.
+#[test]
+fn no_way_of_hiding_a_heading_gets_it_into_the_contents() {
+    for (name, hidden) in recto_testpdf::HIDDEN_HEADINGS {
+        let pdf = TempPdf::new(&format!("{name}.pdf"), &recto_testpdf::headings_document_with(hidden, [0.0, 0.0, 612.0, 792.0], ""));
+        let key = CorpusKey::of_file(&pdf.0).unwrap();
+        let (report, generated, _) = run(&pdf.0, key, false);
+        assert_eq!(report["state"], "ready", "{name}: {report}");
+        let titles: Vec<String> = generated.expect("contents").entries.iter().map(|entry| entry.title.clone()).collect();
+        assert!(titles.iter().all(|title| !title.contains("HIDDEN")), "{name}: {titles:?}");
+        assert_eq!(titles, ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"], "{name}");
+    }
+}
+
+/// Failure: on a page whose media box doesn't start at 0, every heading is put at the top of its page, so going to one lands in the wrong place.
+#[test]
+fn place_is_right_on_a_media_box_that_doesnt_start_at_zero() {
+    let pdf = TempPdf::new("moved.pdf", &recto_testpdf::headings_document_with("", [0.0, 792.0, 612.0, 1584.0], ""));
+    let key = CorpusKey::of_file(&pdf.0).unwrap();
+    let (report, generated, _) = run(&pdf.0, key, false);
+    let generated = generated.unwrap_or_else(|| panic!("{report}"));
+    assert_eq!(generated.entries.len(), 6, "{generated:?}");
+    // The headings' baseline is 72 points from the top of 792.
+    assert!(generated.entries.iter().all(|entry| (60..140).contains(&entry.place)), "{:?}", generated.entries);
+}

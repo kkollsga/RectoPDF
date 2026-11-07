@@ -51,8 +51,8 @@ impl InkSource for WorkerInk {
                 }
             }
         }
-        let characters = self.renderer.as_mut()?.page_characters(page, false, true).ok()?;
-        Some(PageInk { chars: characters.chars, checked: characters.hidden_checked })
+        let characters = self.renderer.as_mut()?.page_characters(page, true, true).ok()?;
+        Some(PageInk { chars: characters.chars, boxes: characters.boxes, frame: characters.frame, checked: characters.hidden_checked })
     }
 }
 
