@@ -208,8 +208,11 @@ struct Running {
     position: u32,
     rect: Option<TileRect>,
     scale: f32,
+    /// A preview's scale isn't the tiles', and it's wanted as long as its page is.
+    preview: bool,
     generation: u64,
     cancel: Option<CancelHandle>,
+    cancel_asked: bool,
 }
 
 /// How a page sits.
@@ -235,6 +238,8 @@ pub struct ReaderCounts {
     /// The same, for any page. A page that's never been seen has nothing to show the first time.
     pub blank_steps: u64,
     pub discards_lost: u64,
+    /// Jobs told to stop because nobody wanted them any more.
+    pub cancels_asked: u64,
 }
 
 /// What QA reads.
@@ -502,8 +507,9 @@ impl Reader {
         } else {
             self.track_place();
         }
-        self.cancel_if_unwanted();
+        // After the refresh, which is what moves the tiles' scale on.
         self.refresh(MAX_ATTACH_PER_TURN);
+        self.cancel_if_unwanted();
         self.count_blanks();
         self.take_ops()
     }
@@ -528,11 +534,28 @@ impl Reader {
         }
     }
 
+    /// Whether what's running is still of use: on the tab showing, its page in view, and if it's a tile, at the zoom the view is at now and touching the view.
+    fn running_is_wanted(&self) -> bool {
+        let Some(running) = &self.running else { return true };
+        self.hot == Some(running.tab)
+            && self.window_open
+            && self.doc().is_some_and(|doc| {
+                self.visible_pages(doc).contains(&running.position)
+                    && (running.preview || running.rect.is_none_or(|rect| running.scale == doc.tile_scale && self.touches_view(doc, running.position, rect, running.scale)))
+            })
+    }
+
     fn cancel_if_unwanted(&mut self) {
-        let Some(running) = &self.running else { return };
-        let wanted = self.hot == Some(running.tab) && self.window_open && self.doc().is_some_and(|doc| self.visible_pages(doc).contains(&running.position) && running.rect.is_none_or(|rect| running.scale != doc.tile_scale || self.touches_view(doc, running.position, rect, running.scale)));
-        if !wanted && let Some(cancel) = &running.cancel {
-            cancel.cancel_before(running.generation + 1);
+        if self.running_is_wanted() {
+            return;
+        }
+        let Some(running) = &mut self.running else { return };
+        if !running.cancel_asked {
+            running.cancel_asked = true;
+            self.counts.cancels_asked += 1;
+            if let Some(cancel) = &running.cancel {
+                cancel.cancel_before(running.generation + 1);
+            }
         }
     }
 
@@ -1068,11 +1091,11 @@ impl Reader {
 
     /// A job has started. Its cancel handle lets the UI thread stop it the moment it stops being wanted.
     pub fn note_started(&mut self, job: &Job, cancel: Option<CancelHandle>) {
-        let (rect, scale) = match &job.kind {
-            JobKind::Draw { scale, rect, .. } => (Some(*rect), *scale),
-            _ => (None, 0.0),
+        let (rect, scale, preview) = match &job.kind {
+            JobKind::Draw { scale, rect, what, .. } => (Some(*rect), *scale, *what == DrawKind::Preview),
+            _ => (None, 0.0, false),
         };
-        self.running = Some(Running { tab: job.tab, position: job.position, rect, scale, generation: job.generation, cancel });
+        self.running = Some(Running { tab: job.tab, position: job.position, rect, scale, preview, generation: job.generation, cancel, cancel_asked: false });
     }
 
     fn note_issue(&mut self, tab: u32, page: u32, message: String, may_pass: bool) {
@@ -1412,18 +1435,30 @@ mod tests {
         assert_eq!(reader.counts().blank_seen_steps, 0);
     }
 
-    /// Failure: a burst of attachments stalls the UI thread, or the leftovers are forgotten.
+    /// Failure: a burst of attachments stalls the UI thread, or the leftovers are forgotten and part of a page stays blank until something else happens.
     #[test]
     fn at_most_eight_tiles_are_attached_in_a_turn_and_the_rest_follow() {
         let mut reader = reader_on(100);
-        settle(&mut reader);
-        reader.set_viewport(view(5000.0));
-        settle(&mut reader);
-        reader.applied();
         let big = Viewport { width: 4000.0, height: 3000.0, frame_width: 1168.0, ..view(0.0) };
+        reader.set_viewport(big);
+        settle(&mut reader);
+        reader.set_viewport(view(40_000.0));
+        settle(&mut reader);
         let ops = reader.set_viewport(big);
-        let attaches = ops.iter().filter(|op| matches!(op, Op::Attach { .. })).count();
-        assert!(attaches <= MAX_ATTACH_PER_TURN, "{attaches}");
+        reader.applied();
+        let attaches = |ops: &[Op]| ops.iter().filter(|op| matches!(op, Op::Attach { .. })).count();
+        assert_eq!(attaches(&ops), MAX_ATTACH_PER_TURN, "a full turn, or this tests nothing");
+        assert!(reader.has_ops(), "and it says there's more");
+        let mut turns = 0;
+        while reader.has_ops() {
+            let more = reader.drain(MAX_ATTACH_PER_TURN);
+            reader.applied();
+            assert!(attaches(&more) <= MAX_ATTACH_PER_TURN);
+            turns += 1;
+            assert!(turns < 100, "the leftovers never end");
+        }
+        assert!(turns >= 1);
+        assert!(reader.is_settled(), "the leftovers all came: {}", reader.report().0);
     }
 
     /// Failure: a tile from before a zoom stays on screen once its replacements are all there, or the old tiles go before the new ones arrive, leaving a blank.
@@ -1455,35 +1490,49 @@ mod tests {
         assert!(reader.next_job().is_none());
     }
 
-    /// Failure: a job for a place the reader has left runs to the end, so a fast scroll on a heavy page queues seconds of work. `cancel_before` must be called with a generation above the job's.
+    fn a_draw_job(reader: &mut Reader, what: DrawKind) -> Job {
+        loop {
+            let job = reader.next_job().expect("a job");
+            match &job.kind {
+                JobKind::Size => reader.finish(job, Outcome::Size(letter())),
+                JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
+                JobKind::Draw { what: kind, .. } if *kind == what => return job,
+                JobKind::Draw { .. } => reader.finish(job, Outcome::Drawn { kind: TileKind::Colour, low_res: None }),
+            }
+        }
+    }
+
+    /// Failure: a job for a place the reader has left runs to the end, so a fast scroll on a heavy page queues seconds of work. It's told to stop, once, and not while it's still in view.
     #[test]
     fn a_job_nobody_wants_any_more_is_cancelled() {
         let mut reader = reader_on(100);
-        settle(&mut reader);
-        reader.set_viewport(view(40_000.0));
-        let job = (0..8).find_map(|_| {
-            let job = reader.next_job()?;
-            if matches!(job.kind, JobKind::Draw { .. }) {
-                return Some(job);
-            }
-            let outcome = match job.kind {
-                JobKind::Size => Outcome::Size(letter()),
-                _ => Outcome::Heavy(false),
-            };
-            reader.finish(job, outcome);
-            None
-        });
-        let job = job.expect("a draw");
+        let job = a_draw_job(&mut reader, DrawKind::Tile);
         reader.note_started(&job, None);
-        assert!(!reader.is_settled());
-        let running = reader.running.as_ref().unwrap();
-        assert_eq!(running.generation, job.generation);
         reader.set_viewport(view(0.0));
-        // With no handle in this test, what's checked is that a later job is always of a later generation, which is what cancelling relies on.
+        assert_eq!(reader.counts().cancels_asked, 0, "still in view");
+        reader.set_viewport(view(40_000.0));
+        assert_eq!(reader.counts().cancels_asked, 1, "the reader left");
+        reader.set_viewport(view(41_000.0));
+        assert_eq!(reader.counts().cancels_asked, 1, "told once");
         reader.finish(job, Outcome::Cancelled);
-        settle(&mut reader);
-        let later = reader.next_generation;
-        assert!(later > 1);
+    }
+
+    /// Failure: a tile being drawn for the zoom before this one runs to the end, on a heavy page for seconds, since its scale not being the view's used to count as wanted, to spare previews. It stops, and a preview, whose scale never is the view's, doesn't.
+    #[test]
+    fn a_job_for_an_old_zoom_is_cancelled_and_a_preview_is_not() {
+        let mut reader = reader_on(100);
+        let job = a_draw_job(&mut reader, DrawKind::Tile);
+        reader.note_started(&job, None);
+        reader.set_viewport(Viewport { magnification: 1.5, ..view(0.0) });
+        assert_eq!(reader.counts().cancels_asked, 1, "the zoom moved on");
+        reader.finish(job, Outcome::Cancelled);
+
+        let mut reader = reader_on(100);
+        let job = a_draw_job(&mut reader, DrawKind::Preview);
+        reader.note_started(&job, None);
+        reader.set_viewport(Viewport { magnification: 1.5, ..view(0.0) });
+        assert_eq!(reader.counts().cancels_asked, 0, "its page is still in view");
+        reader.finish(job, Outcome::Cancelled);
     }
 
     /// Failure: a cold tab keeps its tiles, layout or renderer's file. Budget: 0 tiles and 0 handles for a cold tab.
