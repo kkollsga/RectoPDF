@@ -103,13 +103,15 @@ pub fn proto_seeds() -> Vec<Vec<u8>> {
 /// Pages that read like text, and ones that don't.
 pub fn index_seeds() -> Vec<Vec<u8>> {
     let mut seeds = Vec::new();
-    for mode in [0u8, 2, 0xC0, 0xD0, 0xE0, 0xF0, 1, 0xD1, 0xFE, 0xFF] {
-        for salt in 0..4u32 {
-            let mut seed = vec![mode];
-            seed.extend((0..360u32).map(|at| (at.wrapping_mul(at).wrapping_mul(salt * 2 + 1).wrapping_add(at) >> 2) as u8));
-            seeds.push(seed);
+    let body = |salt: u32| (0..360u32).map(move |at| (at.wrapping_mul(at).wrapping_mul(salt * 2 + 1).wrapping_add(at) >> 2) as u8);
+    for mode in [0u8, 2, 0xC0, 0xD0, 0xE0, 0xF0, 1, 0xD1] {
+        for salt in 0..4 {
+            seeds.push(std::iter::once(mode).chain(body(salt)).collect());
         }
     }
+    // One of each at the wire's cap: each takes a second or more, and more of them would be all a run does.
+    seeds.push(std::iter::once(0xFE).chain(body(1)).collect());
+    seeds.push(std::iter::once(0xFF).chain(body(1)).collect());
     seeds
 }
 
