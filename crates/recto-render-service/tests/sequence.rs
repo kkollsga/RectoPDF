@@ -68,7 +68,11 @@ fn fake_worker() {
                     }
                     leak_for_ever();
                 }
+                if mode == "slow" {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
                 let fits = match mode.as_str() {
+                    "slow" => true,
                     // A higher zoom is too much even for the larger limit, a lower one needs it, and a much lower one fits anywhere.
                     "heavy_below_3x" => job.scale <= 1.0 || (in_heavy && job.scale < 3.0),
                     "every_page_fits_heavy" => in_heavy,
@@ -642,11 +646,32 @@ fn what_one_zoom_learns_doesnt_take_away_what_another_learned() {
     assert_eq!(doc.page_draw_state(0), PageDrawState::Sharp);
 }
 
+/// Failure: the viewport budget's cap on time is only looked at between pages, and nothing holds it, so a page of many slow tiles runs far past it, at each tile's own deadline. Past the cap, nothing more is drawn, and what's left counts as failed rather than vanishing from the numbers.
+#[test]
+fn the_viewport_budget_stops_at_its_cap_and_says_so() {
+    let options = |max_time, strategy| ViewportOptions { first_page: 0, scale: 2.0, width: 2048, height: 2048, margin_tiles: 0, strategy, max_time };
+    for strategy in [DrawStrategy::PerTile, DrawStrategy::Region] {
+        let (mut doc, _file) = doc("slow");
+        let steps = measure_viewport(&mut doc, options(Duration::ZERO, strategy)).unwrap();
+        assert!(steps.iter().all(|step| step.passes == 0 && step.tiles == 0 && step.failed > 0), "{strategy:?}: {steps:?}");
+    }
+    let (mut doc, _file) = doc("slow");
+    let cap = Duration::from_millis(250);
+    let started = std::time::Instant::now();
+    let steps = measure_viewport(&mut doc, options(cap, DrawStrategy::PerTile)).unwrap();
+    let (passes, failed): (u32, u32) = (steps.iter().map(|step| step.passes).sum(), steps.iter().map(|step| step.failed).sum());
+    assert!(failed > 0, "4 tiles a page at 100 ms each, for 3 steps, can't fit in the cap: {steps:?}");
+    let room = (passes + 1) * 100 + 250;
+    assert!(started.elapsed() < Duration::from_millis(u64::from(room) + 5000), "it ran on past the cap: {:?}, {steps:?}", started.elapsed());
+    let total: u32 = steps.iter().map(|step| step.tiles).sum();
+    assert!(passes < total + failed, "something was left undrawn: {steps:?}");
+}
+
 /// Failure: the viewport budget counts low-resolution tiles as cached, so the next step looks cheaper than the app would find it, and the numbers we rely on flatter the page.
 #[test]
 fn the_viewport_budget_doesnt_count_low_res_tiles_as_done() {
     let (mut doc, _file) = doc("fits_low_res");
-    let options = ViewportOptions { first_page: 0, scale: 2.0, width: 1024, height: 1024, margin_tiles: 0, strategy: DrawStrategy::PerTile };
+    let options = ViewportOptions { first_page: 0, scale: 2.0, width: 1024, height: 1024, margin_tiles: 0, strategy: DrawStrategy::PerTile, max_time: recto_render_service::BUDGET_MAX_TIME };
     let steps = measure_viewport(&mut doc, options).unwrap();
     assert_eq!(steps[0].low_res, steps[0].tiles, "every tile of this page comes back low-res: {steps:?}");
     assert!(steps[1].tiles >= steps[0].tiles, "they aren't done, so the scroll asks for them again: {steps:?}");

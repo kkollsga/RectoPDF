@@ -369,6 +369,8 @@ pub struct ViewportOptions {
     /// Tiles beyond the visible area to draw, on each side.
     pub margin_tiles: u32,
     pub strategy: DrawStrategy,
+    /// The whole run stops here, and what it didn't get to counts as failed. [`BUDGET_MAX_TIME`] for a real measurement.
+    pub max_time: Duration,
 }
 
 /// One step of the simulation: what it needed and what it cost.
@@ -417,7 +419,8 @@ pub fn measure_viewport(doc: &mut DocRenderer, options: ViewportOptions) -> Resu
             if needed.is_empty() {
                 continue;
             }
-            if started_run.elapsed() >= BUDGET_MAX_TIME {
+            let deadline = started_run + options.max_time;
+            if Instant::now() >= deadline {
                 step.failed += needed.len() as u32;
                 continue;
             }
@@ -430,9 +433,9 @@ pub fn measure_viewport(doc: &mut DocRenderer, options: ViewportOptions) -> Resu
             };
             let mut sharp = Vec::new();
             if use_regions {
-                draw_regions(doc, page, scale, &needed, (width, height), &mut surface, &mut hand_out, &mut step, &mut sharp);
+                draw_regions(doc, page, scale, &needed, (width, height), deadline, &mut surface, &mut hand_out, &mut step, &mut sharp);
             } else {
-                draw_per_tile(doc, page, scale, &needed, (width, height), &mut surface, &mut step, &mut sharp);
+                draw_per_tile(doc, page, scale, &needed, (width, height), deadline, &mut surface, &mut step, &mut sharp);
             }
             // Only what really arrived, sharp. Anything else has to be asked for again on the next step, as it will in the app, and should cost that here too.
             cached.extend(sharp.into_iter().map(|(column, row)| (page, column, row)));
@@ -497,7 +500,7 @@ fn count_step(step: &mut ViewportStep, kind: TileKind) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_per_tile(doc: &mut DocRenderer, page: u32, scale: f32, needed: &[(u32, u32)], size: (u32, u32), surface: &mut Option<SharedMemory>, step: &mut ViewportStep, sharp: &mut Vec<(u32, u32)>) {
+fn draw_per_tile(doc: &mut DocRenderer, page: u32, scale: f32, needed: &[(u32, u32)], size: (u32, u32), deadline: Instant, surface: &mut Option<SharedMemory>, step: &mut ViewportStep, sharp: &mut Vec<(u32, u32)>) {
     let stride = TILE_EDGE * BYTES_PER_PIXEL;
     let bytes = (stride * TILE_EDGE) as usize;
     if surface.as_ref().is_none_or(|memory| memory.len() < bytes) {
@@ -508,6 +511,11 @@ fn draw_per_tile(doc: &mut DocRenderer, page: u32, scale: f32, needed: &[(u32, u
         return;
     };
     for &place in needed {
+        // Each tile can take its worker's whole deadline, so a page of them could run far past the cap if it were only looked at between pages.
+        if Instant::now() >= deadline {
+            step.failed += 1;
+            continue;
+        }
         step.passes += 1;
         match doc.render_tile(&TileRequest { page, rect: tile_rect(place, size), scale, stride, generation: 0 }, memory) {
             Ok(TileResult::Done(tile)) => {
@@ -556,12 +564,17 @@ fn draw_regions(
     scale: f32,
     needed: &[(u32, u32)],
     size: (u32, u32),
+    deadline: Instant,
     surface: &mut Option<SharedMemory>,
     hand_out: &mut [u8],
     step: &mut ViewportStep,
     sharp: &mut Vec<(u32, u32)>,
 ) {
     for rect in plan_regions(needed, size) {
+        if Instant::now() >= deadline {
+            step.failed += 1;
+            continue;
+        }
         let stride = rect.width * BYTES_PER_PIXEL;
         let bytes = stride as usize * rect.height as usize;
         if surface.as_ref().is_none_or(|memory| memory.len() < bytes) {

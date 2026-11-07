@@ -342,7 +342,7 @@ pub(crate) fn budget_viewport(path: &Path, viewport: &str, first: Option<u32>, s
     };
     let largest_image_pixels = doc.largest_image_pixels(first_page, 0).unwrap_or(0);
     doc.kill_worker();
-    let steps = measure_viewport(&mut doc, ViewportOptions { first_page, scale, width, height, margin_tiles: VIEWPORT_MARGIN_TILES, strategy })?;
+    let steps = measure_viewport(&mut doc, ViewportOptions { first_page, scale, width, height, margin_tiles: VIEWPORT_MARGIN_TILES, strategy, max_time: BUDGET_MAX_TIME })?;
     let steps: Vec<Value> = steps
         .iter()
         .map(|step| {
