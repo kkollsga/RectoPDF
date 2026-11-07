@@ -26,6 +26,7 @@ struct Stand {
     unsaved: Mutex<Vec<(TabId, String)>>,
     wheres: AtomicUsize,
     looks_answer: std::sync::atomic::AtomicBool,
+    told_off: AtomicUsize,
 }
 
 impl Stand {
@@ -69,6 +70,12 @@ impl Host for Stand {
         if tab == "panics" {
             panic!("a bug in a look");
         }
+        if tab == "holds" {
+            let mut released = self.release.lock().unwrap();
+            while !*released {
+                released = self.released.wait(released).unwrap();
+            }
+        }
         if self.looks_answer.load(Ordering::SeqCst) && tab == "secret" {
             return ConditionState::Met(json!({ "secret": true }));
         }
@@ -77,6 +84,10 @@ impl Host for Stand {
 
     fn tab_count(&self) -> u32 {
         7
+    }
+
+    fn access_is_off(&self) {
+        self.told_off.fetch_add(1, Ordering::SeqCst);
     }
 
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
@@ -424,6 +435,25 @@ fn a_client_catching_up_isnt_dropped_for_the_commands_it_has_waiting() {
     let mut reader = BufLine::default();
     assert!(reader.next(&mut greedy).expect("it was dropped while it had commands waiting")["data"]["huge"].is_string());
     assert!(reader.next(&mut greedy).expect("it was dropped after its first answer")["data"]["huge"].is_string());
+}
+
+/// Failure: a `wait` in flight when access goes to Off asks for an index as it finishes, after the session has already stopped indexing for Off, so a build runs at Off. Each thing that can have asked for one, finishing after the change, repeats the stop.
+#[test]
+fn a_look_finishing_after_access_goes_off_stops_indexing_again() {
+    let running = Running::start(Limits::default());
+    let mut waiting = running.connect();
+    waiting.write_all(b"{\"cmd\":\"wait\",\"condition\":\"indexing_done\",\"tab\":\"holds\",\"timeout_ms\":60000}\n").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    levels::store(&running.paths, Level::Off).unwrap();
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    assert_eq!(running.host.told_off.load(Ordering::SeqCst), 1, "going to Off stops it");
+    running.host.release();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while running.host.told_off.load(Ordering::SeqCst) < 2 {
+        assert!(std::time::Instant::now() < deadline, "the look ended at Off with no second stop");
+        assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[derive(Default)]

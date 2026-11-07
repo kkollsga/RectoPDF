@@ -680,6 +680,10 @@ impl<H: Host> Loop<H> {
             Done::Published(events) => self.publish(&events),
             Done::Looked { conn, generation, state } => {
                 self.running -= 1;
+                // A look under way when it changed may have asked for something since, as a command may.
+                if self.last_level == Level::Off {
+                    self.host.access_is_off();
+                }
                 let Some(index) = self.conns.iter().position(|c| c.id == conn) else { return };
                 // A look from an earlier wait on this connection says nothing about this one.
                 let State::Waiting { generation: current, looking, look_again, tag, .. } = &mut self.conns[index].state else { return };
