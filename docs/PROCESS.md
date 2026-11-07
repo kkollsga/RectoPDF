@@ -46,3 +46,30 @@ The coordinator is responsible for progress and quality. Owner, 2026-11-07: "Rem
 
 **Check next time.** Did CI stay green on `main`? Did a merge go through red? Did any test fail on CI without carrying its own evidence?
 
+## 2026-11-07, how many suite runs we need
+
+Owner: "13 tests at 10mins is more than two hours. There are surely ways of reducing how many tests we need, while achieving the same results and quality".
+
+**Numbers.** distillPDF's full gate: 536 to 820 s, of which the 141-document sweep is 220 to 265 s, the wheel build about 100 s and the suites the rest. Its fast mode: about 200 s, sweeping 13 documents. Owner: "Not the 10 minutes, check why 13 tests where needed. That's the problem".
+
+**Why 13.** Traced run by run. Seven were needed: the baseline freeze, the one proof the gate agrees with itself, the first look at lopdf 0.47, the final one on the pinned commit, and on the per-page branch its first pass, the pass after a performance fix, and the pass after the review's fixes. Six weren't:
+- Four used the whole gate as a diagnostic while working out two documents' changes under lopdf 0.47: a repeat alongside memory measurements, one with a proposed patch, and final runs, with and without that patch, on a pin about to be replaced because the fork's fix was still waiting to be pushed. The with-and-without pair is read from the worker's note, not from two run folders. `--docs` for those two documents answers that in a minute or so.
+- One moved lopdf and ran the whole gate, at the coordinator's instruction, when its three failing unit tests would have said so in about a minute.
+- One freeze was stopped and restarted because of how it was queued.
+
+The gate's length wasn't the cause. Nothing told anyone to ask a smaller question first.
+
+A failed run also went on to 453 s, because the gate keeps going after a failure. The 141-document sweep caught nothing on that branch that a cheaper stage didn't: the document differences were the same two throughout.
+
+**Changing.**
+- Ask the smallest question that answers it: named tests, then `--docs` for the documents in doubt, then fast mode. The whole suite is for a decision to hand back, never for finding out why.
+- Settle what's being tested first. No final gate on a dependency that isn't the final one.
+- The coordinator's instructions say which check, not "run the gate".
+- Fast mode while working. The full gate runs once on the commit being handed back, and once more only if code changed after it.
+- After distillPDF 0.1.7: the gate stops at the first failure, with `--keep-going` for when the rest is wanted, and unit tests run before the wheel is built.
+- After distillPDF 0.1.7: any document the full gate has ever flagged joins the fast set, so fast mode gets stronger as it catches things.
+- A fork's CI set: the affected tests while working, the whole set once before pushing.
+- RectoPDF's own tests are not the cost, 1,046 of them in 30 s, so none are being cut.
+
+**Check next time.** Full gates per release. Target: at most 2, about 20 minutes in place of 2 hours. Did the full gate catch anything fast mode missed? If it does, grow the fast set.
+

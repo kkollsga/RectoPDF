@@ -14,6 +14,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 
 ## Testing
 - Shortest test that can catch the failure while working: `tools/check.sh --quick`, and `tools/check.sh --failed` for only what just failed. Before handing back: `tools/check.sh --full`.
+- **Each suite runs once per hand-back** (owner, 2026-11-07: "I think the main issue is repeating tests leading to queues and bottlenecks"). `--full`, a fork's whole CI set, a corpus gate, a memory run and a long fuzz run go once, last, on the commit being handed back, and once again only if code changed after them. While working, use `--quick`, a named test or `--fast`. Fix all of a review's findings, then run once. Whole-suite repeats on the way to a working fix are the waste this rule is here for. **Ask the smallest question first** (owner: "check why 13 tests where needed"): a named test, then just the documents in doubt, then the fast mode. A whole suite decides a hand-back and is never the way to find out why something changed. Don't run a final gate until what it tests is final, dependency pins included.
 - **Don't use the queue to find out code is broken.** Fix before rerunning: the queue refuses a command that failed on unchanged code and shows the saved failure. `HEAVY_RETRY=1` is only for investigating a failure that comes and goes, which still gets a fix.
 - **A test names the failure it catches** in its doc comment. Don't pin exact pixels, wording or timings from one machine; assert the property.
 - **No manual tests and no synthetic input:** no posted mouse or key events, AppleScript or accessibility input. QA commands call the same methods the UI calls. Quiet runs never take the screen, focus or keyboard, and use temp state only.
@@ -78,5 +79,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "and edit should also keep undo, redo history of edits until save has been applied."
 - "We don't want to add the undo redo history to the file itself, but we can have a rolling save redo history on the system, so it kind of in the temp files per PDF."
 - "1000 steps and 64mb is good." On Save: "after a save you might still have regrets and want to make changes. But you definitely don't want history to leak into the pdf file".
+- "All in one release." Asked which: everything ships together, not the reader first.
+- "it's clear to me that the test program is slowing us down considerably. I need your help for us to speed up safely".
 - "Two tabs of the same pdf? This shouldn't be possible. A pdf can only be opened once".
 - "I agree, but license mit is fine" (to the coordinator's recommendations, listed in `docs/PLAN.md` under Decisions made).

@@ -5,7 +5,7 @@
 use crate::{CoreCall, CoreQueue, Inner, lock};
 use recto_control::record_store::{FlushReport, RecordStore, StoreError};
 use recto_session::JournalWork;
-use recto_session::record::{EditsRecord, PlaceDelta, PlaceRecord, SessionRecord};
+use recto_session::record::{EditsRecord, PlaceDelta, PlaceRecord, Selection, SessionRecord};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -292,7 +292,11 @@ impl Inner {
         if places.is_empty() {
             return;
         }
+        let selection = self.engine.hot_selection();
         self.host.session.with_session(|session| {
+            if let Some((tab, range)) = selection {
+                session.note_selection(recto_session::TabId(tab), range.map(|range| Selection { from_page: range.start.page, from_char: range.start.at, to_page: range.end.page, to_char: range.end.at }));
+            }
             for (tab, saved) in places {
                 let place = PlaceRecord { page: saved.page, anchor_page: saved.anchor.0, within: saved.anchor.1, x: saved.x, y: saved.y, document_height: saved.document_height, zoom: saved.magnification, page_width: saved.page_size.map_or(0.0, |size| size.width), page_height: saved.page_size.map_or(0.0, |size| size.height) };
                 session.note_place(recto_session::TabId(tab), place);

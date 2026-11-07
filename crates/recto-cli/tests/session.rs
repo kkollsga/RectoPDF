@@ -758,7 +758,7 @@ fn every_row_answers_in_plain_words_and_in_versioned_json() {
     let _serving = state.serve();
     let file = three_pages();
     state.json(&["open", path_of(&file)]);
-    let skip = ["serve", "session", "local", "budget tabs", "budget render", "budget viewport", "permission set", "stop", "wait tab-open", "wait tab-closed", "wait page-drawn", "watch", "render", "export svg", "skill install", "skill show", "help", "sidebar", "permission request", "page insert", "open", "qa start", "qa run", "qa budget"];
+    let skip = ["serve", "session", "local", "budget tabs", "budget render", "budget viewport", "permission set", "stop", "wait tab-open", "wait tab-closed", "wait page-drawn", "watch", "render", "export svg", "skill install", "skill show", "help", "sidebar", "permission request", "page insert", "open", "qa start", "qa run", "qa budget", "wait indexing-done"];
     for spec in TABLE.iter().filter(|spec| !spec.hidden && !skip.contains(&spec.name)) {
         let words = skill::shell_words(spec.examples[0]);
         let args: Vec<&str> = words[1..].iter().map(String::as_str).filter(|word| *word != "--json" && *word != "report" && *word != "--tab" && *word != "contract").collect();
@@ -777,6 +777,12 @@ fn every_row_answers_in_plain_words_and_in_versioned_json() {
             assert!(!shown.trim_start().starts_with('{'), "{} prints JSON at a person: {shown}", spec.name);
         }
     }
+    // Its example waits for an index nobody started, which took 60 of this test's 61 s: a person's and a machine's answer to the same wait, kept short.
+    let (waited, _) = state.json(&["wait", "indexing-done", "--timeout", "1s"]);
+    assert_eq!(waited["v"], recto_agent::VERSION);
+    assert!(waited["ok"].is_boolean(), "{waited}");
+    let (_, plain, _) = state.text(&["wait", "indexing-done", "--timeout", "1s"]);
+    assert!(!plain.trim_start().starts_with('{'), "it prints JSON at a person: {plain}");
     let (usage, code) = state.json(&["no-such-command"]);
     assert_eq!((usage["error"]["code"].as_str(), code), (Some("usage"), exit::USAGE));
     assert_eq!(usage["v"], recto_agent::VERSION);
@@ -827,6 +833,7 @@ fn every_row_that_runs_here_is_wired_up() {
         vec!["qa", "start", "--app", "/nonexistent/RectoPDF"],
         vec!["qa", "run", "/nonexistent/script.qa"],
         vec!["qa", "budget", "--file", path_of(&file), "--app", "/nonexistent/RectoPDF", "--runs", "1"],
+        vec!["qa", "select-budget", "--file", path_of(&file), "--app", "/nonexistent/RectoPDF"],
         vec!["budget", "index", "--file", path_of(&file), "--runs", "1", "--queries", "words"],
     ];
     let here: Vec<&str> = TABLE.iter().filter(|spec| spec.route == Route::Here).map(|spec| spec.name).collect();
@@ -1172,4 +1179,17 @@ fn the_log_says_by_name_when_it_found_no_one_tab() {
     assert_eq!(entry("render")["details"], Value::Null, "{log}");
     assert!(!log.contains("\"tab\":\"secret"), "the name typed isn't kept: {log}");
     assert!(!log.lines().any(|line| line.contains("no such tab")), "{log}");
+}
+
+/// Failure: a test fails with "isn't private to this user", on nothing to do with it, whenever its process id is one a killed run had: that run's folder is still there under the same name, at another mode. Seen in a full check, with 14 such folders in the temp folder.
+#[test]
+fn a_folder_a_killed_run_left_behind_doesnt_stop_a_test() {
+    use std::os::unix::fs::PermissionsExt;
+    let left = common::next_folder_name();
+    std::fs::create_dir(&left).unwrap();
+    std::fs::set_permissions(&left, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let state = State::at(Level::ReadOnly);
+    assert_ne!(state.root, left, "it goes elsewhere");
+    assert_eq!(std::fs::metadata(&left).unwrap().permissions().mode() & 0o777, 0o755, "and what's there is someone else's to clear");
+    std::fs::remove_dir(&left).unwrap();
 }

@@ -203,6 +203,11 @@ const EXCEPTIONS: &[(&str, &str)] = &[
     ("app.pages.tint_layers", "One per page layer."),
     ("reader.tile_scale", "Comes from a zoom settled on, and a pinch at another zoom leaves it where it was."),
     ("app.contents.row_views", "Rows the table has made so far."),
+    ("app.pages.pointer_steps", "Its own pointer moves, counted from its own start."),
+    ("app.pages.worst_pointer_step_us", "The same, timed."),
+    ("reader.selection.text_", "Page text held for a selection, which is read again when it's wanted."),
+    ("reader.selection.unit", "What the last press took, words or lines. It says what a shift-click extends by, and nothing that shows."),
+    ("app.copy_notice", "A line about a copy, which fades. A copy is over by then, or a hand-off waits for it."),
 ];
 
 /// What can be compared as numbers. Scroll positions can differ by rounding only: the test below of pixels holds them much closer than any eye.
@@ -374,13 +379,18 @@ const KNOWN_PATHS: &[&str] = &[
     "app.menu_bar.len",
     "app.menu_bar[].items.len",
     "app.menu_bar[].items[].checked",
+    "app.menu_bar[].items[].enabled",
     "app.menu_bar[].items[].id",
     "app.menu_bar[].items[].key",
     "app.menu_bar[].items[].title",
     "app.menu_bar[].title",
     "app.note",
+    "app.pages.autoscrolling",
+    "app.pages.cursor",
     "app.pages.document_height",
     "app.pages.document_width",
+    "app.pages.highlight_layers",
+    "app.pages.highlight_rects",
     "app.pages.horizontal_scroller",
     "app.pages.magnification",
     "app.pages.scroll_x",
@@ -424,6 +434,13 @@ const KNOWN_PATHS: &[&str] = &[
     "reader.scroll_x",
     "reader.scroll_y",
     "reader.settled",
+    "reader.selection.copy_waiting_for_host",
+    "reader.selection.copying",
+    "reader.selection.dragging",
+    "reader.selection.end",
+    "reader.selection.pages_with_highlight",
+    "reader.selection.selected",
+    "reader.selection.start",
     "reader.tab",
     "reader.visible_pages.len",
     "reader.visible_pages[]",
@@ -903,6 +920,30 @@ fn a_hand_off_waits_for_a_command_and_a_read() {
     run.settled();
     assert_eq!(tabs_of(&run.report()).len(), 3);
     run.hand_off();
+}
+
+/// Failure: what's selected is lost across a restart: SPEC decision 23 has it as part of what comes back. On the page it was on, the same characters, and highlighted again.
+#[test]
+fn a_selection_comes_back() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let file = long_document("selected", 8);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "2"]);
+    run.settled();
+    run.ok(&["qa", "menu", "edit.select_all"]);
+    run.settled();
+    let before = run.report();
+    assert_eq!(before["reader"]["selection"]["selected"], true, "{}", before["reader"]["selection"]);
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let after = run.report();
+    assert_eq!(after["reader"]["selection"]["selected"], true, "{}", after["reader"]["selection"]);
+    assert_eq!(after["reader"]["selection"]["start"], before["reader"]["selection"]["start"]);
+    assert_eq!(after["reader"]["selection"]["end"], before["reader"]["selection"]["end"]);
+    assert_eq!(after["session"]["tabs"][0]["selection"], before["session"]["tabs"][0]["selection"]);
 }
 
 /// Failure: a `Moved` notice is on a tab with edits, and a restart drops it, or anything else about that tab differs. What's carried is compared whole, as the rich state is.

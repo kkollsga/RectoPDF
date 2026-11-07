@@ -26,4 +26,6 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# To make an encrypted file with permissions, as nothing else here writes one.
+lopdf.workspace = true
 recto-testpdf.workspace = true

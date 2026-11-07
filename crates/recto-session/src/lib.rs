@@ -1153,11 +1153,26 @@ impl<L: DocLoader> Session<L> {
         }
     }
 
-    /// Selection work: what's selected in a tab. Carried across a restart, and nothing else here reads it.
+    /// What's selected in a tab. Carried across a restart, and nothing else here reads it.
     pub fn set_selection(&mut self, id: TabId, selection: Option<Selection>) {
         if let Some(tab) = self.tab_mut(id) {
             tab.selection = selection.map(Box::new);
         }
+    }
+
+    /// What's selected in the tab showing, as the page view says. Only that one holds a selection: one that's left has lost its.
+    pub fn note_selection(&mut self, showing: TabId, selection: Option<Selection>) {
+        for tab in &mut self.tabs {
+            if tab.selection.is_some() && tab.id != showing {
+                tab.selection = None;
+            }
+        }
+        self.set_selection(showing, selection);
+    }
+
+    /// What's selected in a tab.
+    pub fn selection_of(&self, id: TabId) -> Option<Selection> {
+        self.tab(id)?.selection.as_deref().copied()
     }
 
     /// Exactly where a tab's reader is, as the page view says. Marked to be written only if it's moved.

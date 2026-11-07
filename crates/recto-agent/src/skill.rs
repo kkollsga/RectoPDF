@@ -18,7 +18,7 @@ pub const REFERENCE_FILE: &str = "REFERENCE.md";
 pub const CLAUDE_CODE_SKILL_FOLDER: &str = ".claude/skills/recto";
 
 /// What `allowed-tools` lets an agent run without a prompt: commands that can only read. The session's level still decides what they do.
-const AUTO_APPROVED: &[&str] = &["status", "help", "tabs", "where", "facts", "contents", "search", "text", "signatures"];
+const AUTO_APPROVED: &[&str] = &["status", "help", "tabs", "where", "facts", "contents", "search", "text", "select", "copy", "signatures"];
 
 const TEACHING: &str = "\
 # Work with a PDF through `recto`

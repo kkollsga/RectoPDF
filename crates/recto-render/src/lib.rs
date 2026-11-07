@@ -10,7 +10,7 @@ mod pdfium;
 pub use classify::classify_bgrx;
 pub use ink::{INK_PADDING_PX, INK_RANGE, box_has_ink};
 pub use pdfium::{LibraryError, Pdfium, PdfiumBackend};
-pub use recto_proto::{CharBox, CharRecord, FailCode, TileKind, TileRect};
+pub use recto_proto::{CharBox, CharRecord, FailCode, PageFrame, TileKind, TileRect};
 
 /// Asks whether the job this check belongs to has gone stale. Called between PDF objects, so it must be cheap: one atomic load.
 pub trait Cancel {
@@ -62,6 +62,9 @@ pub struct PageChars {
     pub chars: Vec<CharRecord>,
     pub boxes: Vec<CharBox>,
     pub hidden_checked: bool,
+    /// The page as it's shown, if boxes were asked for.
+    pub frame: PageFrame,
+    pub copy_restricted: bool,
 }
 
 /// What draws pages. PDFium today; a second engine plugs in here. One backend holds one document.
@@ -104,7 +107,12 @@ pub trait RenderBackend {
     fn image_boxes(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError>;
 
     /// Reads a page's characters, in the order the backend understands them.
-    fn page_text(&mut self, page: u32, options: TextOptions) -> Result<PageChars, RenderError>;
+    fn page_text(&mut self, page: u32, options: TextOptions) -> Result<PageChars, RenderError> {
+        self.page_text_until(page, options, &NeverCancel)
+    }
+
+    /// As [`Self::page_text`], with the draw for the hidden-text check stopping if `cancel` says to. The text still comes back, as not checked.
+    fn page_text_until(&mut self, page: u32, options: TextOptions, cancel: &dyn Cancel) -> Result<PageChars, RenderError>;
 
     /// The next piece of a page's contents, as a whole frame in `out`, for the host to write out as SVG. `job.seq` 0 starts again from the top. Bounded: at most a frame's worth of memory beyond what the page and its current image hold.
     fn contents_frame(&mut self, job: &recto_proto::contents::ContentsJob, out: &mut Vec<u8>, cancel: &dyn Cancel) -> Result<(), RenderError>;

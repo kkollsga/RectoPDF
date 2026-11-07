@@ -46,6 +46,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "select"
+path = "fuzz_targets/select.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "agent"
 path = "fuzz_targets/agent.rs"
 test = false

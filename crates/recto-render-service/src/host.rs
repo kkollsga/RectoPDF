@@ -7,7 +7,7 @@ use crate::{control, exit_code};
 use recto_platform::isolate::{self, Channel, ChildExit, ChildProcess, Handle, IdleRule, SharedMemory, Wait};
 use recto_platform::surface::{LinkInvite, PixelSurface, SurfaceSender};
 use recto_platform::{FileStamp, file_stamp};
-use recto_proto::{self as proto, CharBox, CharRecord, FailCode, Kind, PageSize, ProtoError, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus, device_size};
+use recto_proto::{self as proto, CharBox, CharRecord, FailCode, Kind, PageFrame, PageSize, ProtoError, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus, device_size};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -649,6 +649,10 @@ pub struct PageCharacters {
     pub boxes: Vec<CharBox>,
     /// The pixel check for hidden text ran. False if it wasn't asked for, or if the page was too heavy to draw for it.
     pub hidden_checked: bool,
+    /// The page as it's shown, if boxes were asked for.
+    pub frame: PageFrame,
+    /// The file's permissions ask that its text isn't copied.
+    pub copy_restricted: bool,
 }
 
 /// How long to wait for a killed worker's final numbers.
@@ -675,7 +679,12 @@ struct PageMemory {
     counted_as_heavy: bool,
     text: Option<KillReason>,
     size: Option<KillReason>,
+    /// Drawing it for the hidden-text check stopped a worker. Nothing about drawing it for the screen follows from that.
+    check_stopped: bool,
 }
+
+/// Workers the hidden-text check may have killed in one document, past which pages go unchecked. They don't count towards `max_kills_per_document`, so a copy of a file of slow pages can't stop it drawing, and this keeps them from costing a respawn each for ever.
+const MAX_CHECK_KILLS: u32 = 16;
 
 /// How far below the scale a page's state was learned at before a zoom counts as different. So that small changes in zoom don't each run the kills again.
 const LOWER_ZOOM_RATIO: f32 = 0.7;
@@ -708,6 +717,10 @@ pub struct DocRenderer {
     slot_wait_total: Duration,
     /// Where the caps start from, moved by `forget_failures`.
     kills_counted_from: u32,
+    /// Of those since then, what the hidden-text check took.
+    check_kills: u32,
+    /// `image_places` has been forgotten, past its cap, and nobody's been told.
+    image_places_cleared: bool,
     heavy_retries_counted_from: u32,
     remembered: Vec<PageMemory>,
     /// Each page's largest image in source pixels, for those asked about.
@@ -759,6 +772,8 @@ impl DocRenderer {
             remembered: Vec::new(),
             traits: Vec::new(),
             image_places: HashMap::new(),
+            image_places_cleared: false,
+            check_kills: 0,
             file_changed: false,
             waited_ticket: None,
             open_failure: None,
@@ -785,9 +800,14 @@ impl DocRenderer {
         self.control.is_stale(generation)
     }
 
-    /// Whether the file has turned out to be a new one since this was last asked, so what was decided about its pages no longer holds.
+    /// Whether the file has been seen to be another one since this was last asked: on a page count that no longer agrees when a worker opens it, or when a failed file is tried again. So what was worked out from it no longer holds.
     pub fn take_file_changed(&mut self) -> bool {
         std::mem::take(&mut self.file_changed)
+    }
+
+    /// Whether the places of a page's images have been forgotten since this was last asked, with a lot of pages looked up. It says nothing about the file: it's for whoever decided something from those places, which might not be decided the same way twice.
+    pub fn take_image_places_cleared(&mut self) -> bool {
+        std::mem::take(&mut self.image_places_cleared)
     }
 
     /// Leaves the running worker's surface link broken, as a worker having gone in the moment since it was last looked at leaves it. That moment can't be hit from outside.
@@ -832,6 +852,7 @@ impl DocRenderer {
         self.remembered.clear();
         self.open_failure = None;
         self.kills_counted_from = self.kills();
+        self.check_kills = 0;
         self.heavy_retries_counted_from = self.stats.heavy_pages;
     }
 
@@ -976,7 +997,7 @@ impl DocRenderer {
         // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
         if self.image_places.len() >= MAX_IMAGE_PLACES {
             self.image_places.clear();
-            self.file_changed = true;
+            self.image_places_cleared = true;
         }
         self.image_places.insert(page, boxes.clone());
         boxes
@@ -1092,7 +1113,7 @@ impl DocRenderer {
 
     /// Whether this document has had too many workers killed.
     fn stopped(&self) -> bool {
-        self.kills() - self.kills_counted_from >= self.policy.max_kills_per_document
+        (self.kills() - self.kills_counted_from).saturating_sub(self.check_kills) >= self.policy.max_kills_per_document
     }
 
     fn kills(&self) -> u32 {
@@ -1210,29 +1231,40 @@ impl DocRenderer {
         RenderFailure::PageFailed { page, reason }
     }
 
-    /// A page's characters, with a box per character if `boxes`, and the hidden-text check if `hidden_check`. If drawing the page for the check stops the
-    /// worker, or is already known to, the text still comes back with `hidden_checked` false, so "not known" never reads as "nothing hidden". What the check
-    /// learned about drawing stays remembered.
+    /// A page's characters, with a box per character if `boxes`, and the hidden-text check if `hidden_check`. If drawing the page for the check stops the worker, or a page is known to, the text still comes back with `hidden_checked` false, so "not known" never reads as "nothing hidden". **A check that fails is about the check.** It draws the whole page at 2x, which says nothing about drawing a tile of it at the zoom on screen, so nothing about the page's drawing is touched: a page that drew in 3.2 s at half zoom used to say "took too long to draw" for the rest of the session after one copy. It's remembered as not to be tried again, and the kills it took don't count towards stopping the document.
     pub fn page_characters(&mut self, page: u32, boxes: bool, hidden_check: bool) -> Result<PageCharacters, RenderFailure> {
+        self.read_characters(page, boxes, hidden_check, None)
+    }
+
+    /// The same, for a job someone can lose interest in: past `generation`, the check stops where it is, and a worker that doesn't stop goes. See [`Self::cancel_handle`].
+    pub fn page_characters_for(&mut self, page: u32, boxes: bool, hidden_check: bool, generation: u64) -> Result<PageCharacters, RenderFailure> {
+        self.read_characters(page, boxes, hidden_check, Some(generation))
+    }
+
+    fn read_characters(&mut self, page: u32, boxes: bool, hidden_check: bool, generation: Option<u64>) -> Result<PageCharacters, RenderFailure> {
         if let Some(reason) = self.remembered(page).and_then(|memory| memory.text) {
             return Err(RenderFailure::PageReadFailed { page, reason });
         }
         if self.stopped() {
             return Err(RenderFailure::DocumentStopped);
         }
-        // The check draws at 2x.
-        if hidden_check && self.page_draw_state_at(page, 2.0) == PageDrawState::Sharp {
-            match self.text_job(page, boxes, true) {
-                Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.set_draw(page, 2.0, PageDrawState::NeedsHeavy),
-                Err(JobFailure::Stopped(reason @ (KillReason::Deadline | KillReason::Crashed))) => self.set_draw(page, 0.0, PageDrawState::Failed(reason)),
-                Err(JobFailure::Stopped(reason)) => {
+        let may_check = hidden_check && self.check_kills < MAX_CHECK_KILLS && !self.remembered(page).is_some_and(|memory| memory.check_stopped) && self.page_draw_state_at(page, 2.0) == PageDrawState::Sharp;
+        if may_check {
+            let kills = self.kills();
+            match self.text_job(page, boxes, true, generation) {
+                // A worker that breaks the protocol is that worker's doing, whatever it was asked.
+                Err(JobFailure::Stopped(reason @ KillReason::Rejected(_))) => {
                     self.remember(page).text = Some(reason);
                     return Err(RenderFailure::PageReadFailed { page, reason });
+                }
+                Err(JobFailure::Stopped(_)) => {
+                    self.check_kills = self.check_kills.saturating_add(self.kills() - kills);
+                    self.remember(page).check_stopped = true;
                 }
                 other => return other.map_err(RenderFailure::from),
             }
         }
-        match self.text_job(page, boxes, false) {
+        match self.text_job(page, boxes, false, generation) {
             Err(JobFailure::Stopped(reason)) => {
                 self.remember(page).text = Some(reason);
                 Err(RenderFailure::PageReadFailed { page, reason })
@@ -1241,10 +1273,10 @@ impl DocRenderer {
         }
     }
 
-    fn text_job(&mut self, page: u32, boxes: bool, hidden_check: bool) -> Result<PageCharacters, JobFailure> {
-        let job = TextJob { job_id: self.next_job_id(), page, boxes, hidden_check };
+    fn text_job(&mut self, page: u32, boxes: bool, hidden_check: bool, generation: Option<u64>) -> Result<PageCharacters, JobFailure> {
+        let job = TextJob { job_id: self.next_job_id(), page, boxes, hidden_check, generation: generation.unwrap_or(proto::NEVER_STALE) };
         let frame = job.encode();
-        let reply = self.run_job(job.job_id, page, true, WorkerClass::Normal, None, &[], &frame, |reply| match reply.kind {
+        let reply = self.run_job(job.job_id, page, true, WorkerClass::Normal, generation, &[], &frame, |reply| match reply.kind {
             Kind::Text => {
                 let text = TextReply::decode(&reply.payload)?;
                 proto::validate_text(&job, &text)?;
@@ -1252,7 +1284,7 @@ impl DocRenderer {
             }
             _ => Err(ProtoError("the wrong kind of reply to a text request")),
         })?;
-        Ok(PageCharacters { chars: reply.chars, boxes: reply.boxes, hidden_checked: reply.hidden_checked })
+        Ok(PageCharacters { chars: reply.chars, boxes: reply.boxes, hidden_checked: reply.hidden_checked, frame: reply.frame, copy_restricted: reply.copy_restricted })
     }
 
     fn remembered(&self, page: u32) -> Option<&PageMemory> {
@@ -1267,7 +1299,7 @@ impl DocRenderer {
                 if self.remembered.len() >= MAX_FAILED_PAGES {
                     self.remembered.remove(0);
                 }
-                self.remembered.push(PageMemory { page, counted_as_heavy: false, needs_heavy_from: None, low_res_from: None, failed_from: None, low_res_stopped: false, text: None, size: None });
+                self.remembered.push(PageMemory { page, counted_as_heavy: false, needs_heavy_from: None, low_res_from: None, failed_from: None, low_res_stopped: false, text: None, size: None, check_stopped: false });
                 self.remembered.len() - 1
             }
         };
@@ -1504,6 +1536,7 @@ impl DocRenderer {
             return Some(known.failure);
         }
         if file_stamp(&self.path).ok() != self.opened_stamp {
+            self.file_changed = true;
             self.forget_failures();
             self.traits.clear();
             self.image_places.clear();
@@ -1578,6 +1611,7 @@ impl DocRenderer {
             _ => return Err(rejected(&mut self.stats, "the wrong kind of reply to opening").into()),
         };
         if self.page_count.is_some_and(|known| known != pages) {
+            self.file_changed = true;
             return Err(RenderFailure::SourceChanged.into());
         }
         self.page_count = Some(pages);

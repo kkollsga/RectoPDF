@@ -64,9 +64,13 @@ final class Bridge: AppListener, @unchecked Sendable {
     func sessionEnded() {
         onMain { NSApp.terminate(nil) }
     }
+
+    func copyReady() {
+        onMain { [weak self] in self?.delegate?.copyReady() }
+    }
 }
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, @preconcurrency NSServicesMenuRequestor {
     let core: AppCore
     let isQuiet: Bool
     let strings: AppStrings
@@ -100,8 +104,11 @@ final class Bridge: AppListener, @unchecked Sendable {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // AppKit adds Dictation and Emoji to any menu called Edit. A reader has nothing to type into, so they'd do nothing, and they cost about 0.35 MiB, measured side by side.
+        UserDefaults.standard.register(defaults: ["NSDisabledDictationMenuItem": true, "NSDisabledCharacterPaletteMenuItem": true])
         watchMainThread()
         installMenu()
+        NSApp.registerServicesMenuSendTypes([.string], returnTypes: [])
         watchActivityAndInput()
         // The window comes when the state's been read, as its frame and what's on it come from there. It doesn't wait long.
         core.beginRestore()
@@ -210,6 +217,7 @@ final class Bridge: AppListener, @unchecked Sendable {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if isQuiet { pasteboard.releaseGlobally() }
         core.shutdown()
     }
 
@@ -229,9 +237,17 @@ final class Bridge: AppListener, @unchecked Sendable {
                     menu.addItem(.separator())
                     continue
                 }
-                let item = menu.addItem(withTitle: entry.title, action: #selector(menuChosen(_:)), keyEquivalent: entry.key)
-                item.target = self
+                // One that goes by a standard selector has no target, so it reaches whatever has the focus first, and comes here if nothing there wants it.
+                let isSystem = !entry.systemAction.isEmpty
+                let item = menu.addItem(withTitle: entry.title, action: isSystem ? NSSelectorFromString(entry.systemAction) : #selector(menuChosen(_:)), keyEquivalent: entry.key)
+                item.target = isSystem ? nil : self
                 item.representedObject = entry.id
+                if entry.id == "app.services" {
+                    let services = NSMenu(title: entry.title)
+                    item.submenu = services
+                    item.action = nil
+                    NSApp.servicesMenu = services
+                }
                 item.keyEquivalentModifierMask = entry.withControl ? [.command, .control] : [.command]
                 item.state = entry.checked ? .on : .off
                 if entry.hidden {
@@ -249,6 +265,44 @@ final class Bridge: AppListener, @unchecked Sendable {
         guard let id = sender.representedObject as? String else { return }
         perform(id)
     }
+
+    /// Copy and Select All, from the menu bar, a context menu or their keys, once nothing with the focus has wanted them.
+    @objc func copy(_ sender: Any?) {
+        perform("edit.copy")
+    }
+
+    @objc func selectAll(_ sender: Any?) {
+        perform("edit.select_all")
+    }
+
+    /// Rust says what can be chosen, each time a menu opens or its key is pressed.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        guard let id = item.representedObject as? String else { return item.action != nil }
+        return core.menuItemEnabled(id: id)
+    }
+
+    /// The clipboard: the system's, or a quiet run's own, which nothing else can see.
+    lazy var pasteboard: NSPasteboard = isQuiet ? NSPasteboard(name: NSPasteboard.Name("com.rectopdf.qa.\(ProcessInfo.processInfo.processIdentifier)")) : .general
+
+    /// A copy has come back from the thread that read it.
+    func copyReady() {
+        guard let text = core.takeCopied() else { return }
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    // Services: the selection as text, to anything that takes it. It has to answer now, and it can if the text's all here, as it is for a selection that's on screen.
+    @objc(validRequestorForSendType:returnType:) func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?, returnType: NSPasteboard.PasteboardType?) -> Any? {
+        (sendType == .string && returnType == nil && core.selectionCanBeSent()) ? self : nil
+    }
+
+    func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        guard types.contains(.string), let text = core.selectionTextNow() else { return false }
+        pboard.clearContents()
+        return pboard.setString(text, forType: .string)
+    }
+
+    func readSelection(from pboard: NSPasteboard) -> Bool { false }
 
     /// The page's fit, for QA.
     func engineFit() -> Double {

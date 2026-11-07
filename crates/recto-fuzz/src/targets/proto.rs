@@ -91,7 +91,7 @@ fn every_decoder(payload: &[u8]) {
         assert!(reply.boxes.iter().flatten().all(|edge| edge.is_finite()), "the decoder lets no NaN through");
         let wire = reply.encode().expect("what was decoded fits");
         assert_eq!(TextReply::decode(&wire[HEADER_LEN..]).as_ref(), Ok(&reply));
-        let job = TextJob { job_id: reply.job_id, page: reply.page, boxes: !reply.boxes.is_empty(), hidden_check: reply.hidden_checked };
+        let job = TextJob { job_id: reply.job_id, page: reply.page, boxes: !reply.boxes.is_empty(), hidden_check: reply.hidden_checked, generation: 0 };
         let _ = validate_text(&job, &reply);
         // A reply that says it holds what wasn't asked for is refused.
         assert!(reply.boxes.is_empty() || validate_text(&TextJob { boxes: false, ..job }, &reply).is_err());

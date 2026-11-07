@@ -14,6 +14,8 @@ pub struct MenuEntry {
     pub checked: bool,
     /// Not listed, but its key works: the same action under another key.
     pub hidden: bool,
+    /// The standard selector this goes by, such as `copy:`, so it reaches whatever has the focus first, as it does in any Mac app: a text field in an open panel keeps its own ⌘C. Empty for items that are this app's own.
+    pub system_action: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -36,6 +38,8 @@ pub enum HostAction {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Action {
     Host(HostAction),
+    Copy { anyway: bool },
+    SelectAll,
     Zoom(Zoom),
     ToggleFocus,
     ToggleAgentIcon,
@@ -44,7 +48,30 @@ pub(crate) enum Action {
 }
 
 fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
-    MenuEntry { id: id.into(), title: title.into(), key: key.into(), with_control: false, checked: false, hidden: false }
+    MenuEntry { id: id.into(), title: title.into(), key: key.into(), with_control: false, checked: false, hidden: false, system_action: String::new() }
+}
+
+/// The items that go by a standard selector. In the menu bar and the context menu alike.
+fn edit_entries() -> Vec<MenuEntry> {
+    vec![MenuEntry { system_action: "copy:".into(), ..entry("edit.copy", "Copy", "c") }, MenuEntry { system_action: "selectAll:".into(), ..entry("edit.select_all", "Select All", "a") }]
+}
+
+/// What a right-click on a page offers. The system adds Services and the like itself, as it does to any menu that has a selection to act on.
+pub(crate) fn context_menu() -> Vec<MenuEntry> {
+    let mut entries = edit_entries();
+    for item in &mut entries {
+        item.key = String::new();
+    }
+    entries
+}
+
+/// Whether an item can be chosen now. Asked when a menu opens and on its key, so it's cheap, and nothing's rebuilt as a selection comes and goes.
+pub(crate) fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool {
+    match id {
+        "edit.copy" | "edit.copy_anyway" => has_selection,
+        "edit.select_all" => has_document,
+        _ => true,
+    }
 }
 
 fn line() -> MenuEntry {
@@ -54,8 +81,9 @@ fn line() -> MenuEntry {
 /// The whole menu bar, as it stands.
 pub(crate) fn menu_bar(view: ViewSettings) -> Vec<MenuModel> {
     vec![
-        MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
+        MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
         MenuModel { title: "File".into(), entries: vec![entry("file.open", "Open…", "o"), entry("file.close_window", "Close Window", "w")] },
+        MenuModel { title: "Edit".into(), entries: edit_entries() },
         MenuModel {
             title: "View".into(),
             entries: vec![
@@ -112,6 +140,11 @@ pub(crate) fn panel(open: bool, shown: Paper, focus: bool) -> PanelModel {
 pub(crate) fn action(id: &str) -> Option<Action> {
     Some(match id {
         "app.about" => Action::Host(HostAction::ShowAbout),
+        // The system fills this one.
+        "app.services" => Action::Host(HostAction::None),
+        "edit.copy" => Action::Copy { anyway: false },
+        "edit.copy_anyway" => Action::Copy { anyway: true },
+        "edit.select_all" => Action::SelectAll,
         "app.quit" => Action::Host(HostAction::Quit),
         "file.open" => Action::Host(HostAction::ShowOpenPanel),
         "file.close_window" => Action::Host(HostAction::CloseWindow),
@@ -170,6 +203,22 @@ mod tests {
             }
         }
         assert_eq!(action("anything else"), None);
+    }
+
+    /// Failure: Copy can be chosen with nothing selected, or Select All with nothing open, or a menu item that has nothing to do with selection goes grey with it. And Copy goes by the app's own action, so it takes ⌘C from a text field that has the focus.
+    #[test]
+    fn copy_and_select_all_are_enabled_as_on_any_mac_app() {
+        assert!(!enabled("edit.copy", true, false));
+        assert!(enabled("edit.copy", true, true));
+        assert!(!enabled("edit.select_all", false, false));
+        assert!(enabled("edit.select_all", true, false));
+        assert!(enabled("view.zoom_in", false, false));
+        let edit = menu_bar(ViewSettings::default()).into_iter().find(|menu| menu.title == "Edit").unwrap();
+        let copy = edit.entries.iter().find(|item| item.id == "edit.copy").unwrap();
+        assert_eq!((copy.key.as_str(), copy.system_action.as_str()), ("c", "copy:"));
+        let all = edit.entries.iter().find(|item| item.id == "edit.select_all").unwrap();
+        assert_eq!((all.key.as_str(), all.system_action.as_str()), ("a", "selectAll:"));
+        assert!(context_menu().iter().all(|item| item.key.is_empty() && action(&item.id).is_some() && !item.system_action.is_empty()), "no keys shown in a context menu");
     }
 
     /// Failure: the toggle doesn't say which way it is, or the paper showing isn't picked out, or the panel has anything in it at rest.

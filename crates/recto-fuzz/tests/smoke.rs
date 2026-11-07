@@ -37,6 +37,26 @@ fn hostile_pages_keep_their_characters() {
     smoke("index", seed(), rounds(300), 4 * 1024);
 }
 
+/// Failure: a click or a drag on a hostile page lands out of bounds, a highlight isn't a number or is off the page, a copy passes its room, or a page takes long enough to be felt on a mouse move.
+#[test]
+fn hostile_pages_can_be_selected_on() {
+    recto_fuzz::targets::index::LONGEST_PAGE.store(20_000, std::sync::atomic::Ordering::Relaxed);
+    smoke("select", seed(), rounds(300), 4 * 1024);
+}
+
+/// Failure: the review's ⌘C with the button held, and the drag going on: on an input that reaches it directly, because a seeded run in a smoke test's rounds didn't happen to. The selection moves up past where the copy has got to, and a subtraction underflowed, which killed the thread that draws. Seven bytes for the page's frame, 192 twice for its two pointer checks, and then what the page view does.
+#[test]
+fn a_drag_under_a_copy_does_no_harm() {
+    let mut input = vec![0u8, 0, 0, 2, 3, 0, 0];
+    input.extend_from_slice(&[0; 384]);
+    input.push(1); // It starts with a copy waiting on a selection dragged up from page 4 to page 2.
+    input.extend_from_slice(&[6, 0, 0, 1, 1]); // Drag on to page 6.
+    input.extend_from_slice(&[6, 0, 0, 1, 9, 1, 1]); // Page 6 has been read, so the selection now starts at page 4, past the copy.
+    input.extend_from_slice(&[0, 0, 0, 1, 8]); // The copy goes on.
+    input.resize(1500, 0);
+    recto_fuzz::targets::select::check(&input);
+}
+
 /// Failure: a JSON line, command line or level file panics, a cap doesn't hold, or a document's name reaches Off.
 #[test]
 fn commands_from_outside_do_no_harm() {
