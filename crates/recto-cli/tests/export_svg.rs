@@ -214,6 +214,50 @@ fn a_stencil_keeps_its_colour_and_its_holes() {
     assert!(pixels.chunks(4).any(|pixel| pixel[3] == 0), "and its holes");
 }
 
+/// Failure: drawing an image to find its mask obeys the image's clip as well, in coordinates that mean nothing there, so a JPEG reads as having a mask, loses its original bytes, and comes out with a clip's shape cut out of its pixels. It's the reason a NASA cover's photo came out with its side missing.
+#[test]
+fn a_clip_on_an_image_stays_out_of_its_pixels() {
+    let image = first_extra_object(1);
+    let resources = format!("/XObject << /Im {image} 0 R >>");
+    let raw = |extra: &str, data: Vec<u8>| Object::Stream { dict: format!("/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 {extra}"), data };
+    let clip = "q 110 510 15 15 re W n q 40 0 0 40 100 500 cm /Im Do Q Q\n";
+    let file = TempPdf::new("doc.pdf", &pages_with(&[Page::new(clip)], &resources, vec![raw("/Filter /DCTDecode", jpeg_bytes())]));
+    let (svg, data) = svg_of(&file, &[]);
+    assert_eq!(embedded_images(svg.as_bytes()), vec![Embedded::Jpeg(jpeg_bytes())], "{data}");
+    assert!(svg.contains("<clipPath"), "the clip goes in the file instead");
+    // A real mask with a clip on top: the mask's in the pixels and the clip isn't.
+    let mask = image + 1;
+    let masked = raw(&format!("/SMask {mask} 0 R"), vec![200; 48]);
+    let mask_image = Object::Stream { dict: "/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8".into(), data: vec![255, 0, 0, 255] };
+    let file = TempPdf::new("doc.pdf", &pages_with(&[Page::new(clip)], &resources, vec![masked, mask_image]));
+    let (svg, _) = svg_of(&file, &[]);
+    let images = embedded_images(svg.as_bytes());
+    let [Embedded::Png { width: 4, height: 4, channels: 4, pixels }] = &images[..] else { panic!("{images:?}") };
+    let alphas: Vec<u8> = pixels.chunks(4).map(|pixel| pixel[3]).collect();
+    assert!(alphas[0] > 200 && alphas[3] < 60 && alphas[12] < 60 && alphas[15] > 200, "the mask's corners, whatever the clip: {alphas:?}");
+}
+
+/// Failure: a rotated image's clip is on a rotated image, and it's cut wrongly, or the image is no longer where it should be.
+#[test]
+fn a_turned_image_with_a_clip_keeps_every_pixel() {
+    let (_, pixels) = raw_image_doc(16, 8, "0 40 -40 0 300 500");
+    let image = first_extra_object(1);
+    let resources = format!("/XObject << /Im {image} 0 R >>");
+    let dict = "/Type /XObject /Subtype /Image /Width 16 /Height 8 /ColorSpace /DeviceRGB /BitsPerComponent 8".to_string();
+    let file = TempPdf::new("doc.pdf", &pages_with(&[Page::new("q 265 505 30 30 re W n q 0 40 -40 0 300 500 cm /Im Do Q Q\n")], &resources, vec![Object::Stream { dict, data: pixels.clone() }]));
+    let (svg, _) = svg_of(&file, &[]);
+    assert_eq!(embedded_images(svg.as_bytes()), vec![Embedded::Png { width: 16, height: 8, channels: 3, pixels }]);
+}
+
+/// Failure: stroked text comes out the wrong weight, because the pen's width goes by a transform PDFium doesn't tell, which made a figure's labels come out as black blobs. It's a picture, with its real characters over it.
+#[test]
+fn stroked_text_is_a_picture_with_its_characters_kept() {
+    let file = TempPdf::new("doc.pdf", &pages(&[Page::new("q 0.1 0 0 0.1 0 0 cm BT /F1 120 Tf 2 Tr 5 w 720 7000 Td (Heavy) Tj ET Q\n")]));
+    let (svg, data) = svg_of(&file, &[]);
+    assert_eq!(rasterised(&data, "text_no_outline"), 1, "{data}");
+    assert!(svg.contains(">Heavy</text>") && !svg.contains("<use"), "{svg}");
+}
+
 /// Failure: what SVG here can't express is silently dropped, so a gradient, a pattern or a blend just isn't there, and nothing says so. Each must come through as a picture, and the answer must say what and why.
 #[test]
 fn what_cant_be_vector_is_a_picture_and_is_named() {

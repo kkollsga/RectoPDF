@@ -32,7 +32,7 @@ fn why_words(why: Why) -> (&'static str, &'static str) {
         Why::ShadingPattern => ("shading_pattern", "a gradient fill, drawn as a picture of just that element"),
         Why::BlendOrMask => ("blend_or_mask", "a blend mode or soft mask: drawn with what's under it where a blend mode may matter"),
         Why::GroupEffects => ("group_effects", "a group on a page that uses blend modes or soft masks, which can't be told apart from a plain one, drawn as a picture"),
-        Why::TextOutline => ("text_no_outline", "text whose outlines can't be had, such as a Type 3 font, or a font whose letters can't be matched to its shapes, drawn as a picture, with its real characters over it where it's selectable"),
+        Why::TextOutline => ("text_no_outline", "text whose outlines can't be had, such as a Type 3 font, a font whose letters can't be matched to its shapes, or stroked text, drawn as a picture, with its real characters over it where it's selectable"),
         Why::TextClip => ("text_clip", "something clipped by text, which can't be read, drawn as a picture that obeys it"),
         Why::TooComplex => ("too_complex", "too many points, clips or nested forms to write directly, drawn as a picture"),
         Why::Annotations => ("annotations", "annotations and form fields, drawn as a picture"),

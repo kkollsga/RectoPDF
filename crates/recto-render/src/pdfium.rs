@@ -203,6 +203,7 @@ pdfium_api! {
     FPDFPageObj_GetRenderedStrokePattern: fn(FPDF_DOCUMENT, FPDF_PAGEOBJECT) -> FPDF_BITMAP;
     FPDFPageObj_GetRenderedFillPattern: fn(FPDF_DOCUMENT, FPDF_PAGEOBJECT) -> FPDF_BITMAP;
     FPDFPageObj_GetClipPath: fn(FPDF_PAGEOBJECT) -> FPDF_CLIPPATH;
+    FPDFPageObj_TransformClipPath: fn(FPDF_PAGEOBJECT, c_double, c_double, c_double, c_double, c_double, c_double);
     FPDFClipPath_CountPaths: fn(FPDF_CLIPPATH) -> c_int;
     FPDFClipPath_CountPathSegments: fn(FPDF_CLIPPATH, c_int) -> c_int;
     FPDFClipPath_GetPathSegment: fn(FPDF_CLIPPATH, c_int, c_int) -> FPDF_PATHSEGMENT;

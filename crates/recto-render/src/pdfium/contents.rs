@@ -44,6 +44,8 @@ const MAX_MASKED_BYTES: u64 = 256 * 1024 * 1024;
 const MASK_PROBE_EDGE: u32 = 64;
 /// How wide one row of an image may be, so a frame stays under its limit.
 const MAX_ROW_BYTES: u64 = 8 * 1024 * 1024;
+/// How far a clip is blown up to cover an image laid flat. With a point a quarter of a point from the clip's edge, that covers an image of 2,500 pixels from its middle, and a clip's own numbers stay within what a float can hold.
+const CLIP_BLOW_UP: f64 = 2.0e4;
 /// How far a glyph's outline may be from the box PDFium gives for the character, as a share of the font's size. Boxes are in whole thousandths and outlines aren't hinted, but a wrong glyph is usually much further off than this.
 const BOX_TOLERANCE_EM: f64 = 0.12;
 /// How close two characters' origins are, as a share of the font's size, to be parts of one ligature.
@@ -1180,6 +1182,11 @@ impl Walk {
             self.effects_patch(object, area, Why::BlendOrMask, out);
             return self.text_overlay_only_with(object, &chars, out);
         }
+        // A pen's width goes by a transform in force when the text was set, which PDFium keeps to itself, so an outline's stroke can't be drawn the right width.
+        if strokes {
+            self.patch(object, area, Why::TextOutline, PatchKind::Alone, out);
+            return self.text_overlay_only_with(object, &chars, out);
+        }
         if (fills && self.is_tiling(object, false)) || (strokes && self.is_tiling(object, true)) {
             self.patch(object, area, Why::TilingPattern, PatchKind::Alone, out);
             return self.text_overlay_only_with(object, &chars, out);
@@ -1201,13 +1208,6 @@ impl Walk {
             return self.text_overlay_only_with(object, &chars, out);
         }
         let Some(matrix) = to_f32(&run.0) else { return Ok(()) };
-        let mut width = 0.0f32;
-        if strokes {
-            // SAFETY: as above.
-            unsafe { (self.api.FPDFPageObj_GetStrokeWidth)(object, &raw mut width) };
-        }
-        let scale = ((run.0[0] * run.0[0] + run.0[1] * run.0[1]).sqrt()).max(1e-9);
-        let stroke_width = if width.is_finite() { (f64::from(width) / scale) as f32 } else { 0.0 };
         for piece in glyphs.chunks(MAX_RUN_ITEMS as usize) {
             let mut items = Vec::with_capacity(piece.len());
             for &(code, local_x, local_y) in piece {
@@ -1217,7 +1217,7 @@ impl Walk {
                 }
             }
             if !items.is_empty() {
-                put::glyph_run(out, &matrix, fill, stroke, if stroke_width.is_finite() { stroke_width } else { 0.0 }, &items);
+                put::glyph_run(out, &matrix, fill, None, 0.0, &items);
             }
         }
         self.text_overlay_only_with(object, &chars, out)
@@ -1481,8 +1481,9 @@ impl Walk {
     /// Whether an image has a mask, by drawing it small and looking for anything not opaque. An image with no mask comes back opaque at any size.
     fn has_mask(&mut self, object: FPDF_PAGEOBJECT, own: &M, width: u32, height: u32) -> bool {
         let bitmap = self.rendered_image(object, own, width.min(MASK_PROBE_EDGE), height.min(MASK_PROBE_EDGE));
+        // It couldn't be drawn to see. Saying yes leads to the drawing again, and a picture if that fails, which obeys whatever it may have.
         if bitmap.is_null() {
-            return false;
+            return true;
         }
         // SAFETY: the bitmap was just checked to be live, its buffer holds its stride times its height, and it's freed here.
         unsafe {
@@ -1506,16 +1507,83 @@ impl Walk {
     }
 
     /// The image drawn with its mask, at this size in its own pixels. It stands at its original place again afterwards.
+    ///
+    /// `FPDFImageObj_GetRenderedBitmap` also obeys the object's clip, in coordinates that mean nothing once the image is laid flat, and there's no call that takes a clip off. So the clip is blown up around a point inside it, until it covers the flat image, and put back after. A clip with no point that can be found inside it gives no bitmap, and the caller uses a picture.
     fn rendered_image(&mut self, object: FPDF_PAGEOBJECT, own: &M, width: u32, height: u32) -> FPDF_BITMAP {
         let flat = FS_MATRIX { a: width as f32, b: 0.0, c: 0.0, d: height as f32, e: 0.0, f: 0.0 };
         let back = FS_MATRIX { a: own[0] as f32, b: own[1] as f32, c: own[2] as f32, d: own[3] as f32, e: own[4] as f32, f: own[5] as f32 };
-        // SAFETY: the object is live with its page, both matrices are live for their calls, and what comes back is the caller's to free.
+        // SAFETY: the object is live with its page, and so is its clip.
+        let clip = unsafe { (self.api.FPDFPageObj_GetClipPath)(object) };
+        let paths = if clip.is_null() {
+            0
+        } else {
+            // SAFETY: as above.
+            unsafe { (self.api.FPDFClipPath_CountPaths)(clip) }.max(0)
+        };
+        let moved = if paths > 0 {
+            let Some((x, y)) = self.point_inside_clip(clip, paths) else { return std::ptr::null_mut() };
+            let (mid_x, mid_y) = (f64::from(width) / 2.0, f64::from(height) / 2.0);
+            Some(([CLIP_BLOW_UP, 0.0, 0.0, CLIP_BLOW_UP, mid_x - CLIP_BLOW_UP * x, mid_y - CLIP_BLOW_UP * y], [1.0 / CLIP_BLOW_UP, 0.0, 0.0, 1.0 / CLIP_BLOW_UP, x - mid_x / CLIP_BLOW_UP, y - mid_y / CLIP_BLOW_UP]))
+        } else {
+            None
+        };
+        // SAFETY: as above, both matrices are live for their calls, and what comes back is the caller's to free.
         unsafe {
+            if let Some(([a, b, c, d, e, f], _)) = moved {
+                (self.api.FPDFPageObj_TransformClipPath)(object, a, b, c, d, e, f);
+            }
             (self.api.FPDFPageObj_SetMatrix)(object, &raw const flat);
             let bitmap = (self.api.FPDFImageObj_GetRenderedBitmap)(self.document, self.page_handle, object);
             (self.api.FPDFPageObj_SetMatrix)(object, &raw const back);
+            if let Some((_, [a, b, c, d, e, f])) = moved {
+                (self.api.FPDFPageObj_TransformClipPath)(object, a, b, c, d, e, f);
+            }
             bitmap
         }
+    }
+
+    /// A point inside every path of a clip, from a look over the first path's box. Going by each path's corners, which for a curve is close enough to find a point well inside it, and the middle of the look's cells is what's tried.
+    fn point_inside_clip(&self, clip: FPDF_CLIPPATH, paths: c_int) -> Option<(f64, f64)> {
+        let mut outlines: Vec<Vec<(f64, f64)>> = Vec::new();
+        for path in 0..paths.min(MAX_CLIP_CHAIN as c_int) {
+            // SAFETY: the clip is live with its page, and `path` is below the count.
+            let count = unsafe { (self.api.FPDFClipPath_CountPathSegments)(clip, path) };
+            if !(1..=MAX_CLIP_SEGMENTS).contains(&count) {
+                return None;
+            }
+            let mut outline = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                let (_, _, x, y) = self.segment(SegSource::Clip(clip, path), index)?;
+                outline.push((f64::from(x), f64::from(y)));
+            }
+            outlines.push(outline);
+        }
+        let first = outlines.first()?;
+        let (mut left, mut bottom, mut right, mut top) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for &(x, y) in first {
+            left = left.min(x);
+            right = right.max(x);
+            bottom = bottom.min(y);
+            top = top.max(y);
+        }
+        // Middles first, since most clips are boxes or blobs, then the rest of a grid. As far from any path's edge as the grid can tell, so a thin sliver doesn't matter.
+        const CELLS: u32 = 16;
+        let mut best = None;
+        let mut best_margin = 0.0;
+        for row in 0..CELLS {
+            for column in 0..CELLS {
+                let x = left + (right - left) * (f64::from(column) + 0.5) / f64::from(CELLS);
+                let y = bottom + (top - bottom) * (f64::from(row) + 0.5) / f64::from(CELLS);
+                if outlines.iter().all(|outline| inside_outline(outline, x, y)) {
+                    let margin = outlines.iter().map(|outline| distance_to_outline(outline, x, y)).fold(f64::INFINITY, f64::min);
+                    if margin > best_margin {
+                        best_margin = margin;
+                        best = Some((x, y));
+                    }
+                }
+            }
+        }
+        best
     }
 
     /// Whether an image's stored bytes are exactly a JPEG that means what the page means by it. A file's other color spaces need PDFium's conversion, and so go as PNG.
@@ -1855,6 +1923,33 @@ impl Walk {
 
 }
 
+
+/// Whether a point is inside a closed outline, by the even-odd rule.
+fn inside_outline(outline: &[(f64, f64)], x: f64, y: f64) -> bool {
+    let mut inside = false;
+    let mut previous = outline[outline.len() - 1];
+    for &point in outline {
+        if (point.1 > y) != (previous.1 > y) && x < previous.0 + (y - previous.1) / (point.1 - previous.1) * (point.0 - previous.0) {
+            inside = !inside;
+        }
+        previous = point;
+    }
+    inside
+}
+
+/// How far a point is from a closed outline's edges.
+fn distance_to_outline(outline: &[(f64, f64)], x: f64, y: f64) -> f64 {
+    let mut nearest = f64::INFINITY;
+    let mut previous = outline[outline.len() - 1];
+    for &point in outline {
+        let (dx, dy) = (point.0 - previous.0, point.1 - previous.1);
+        let length = dx * dx + dy * dy;
+        let t = if length > 0.0 { (((x - previous.0) * dx + (y - previous.1) * dy) / length).clamp(0.0, 1.0) } else { 0.0 };
+        nearest = nearest.min((x - previous.0 - t * dx).hypot(y - previous.1 - t * dy));
+        previous = point;
+    }
+    nearest
+}
 
 /// The single character a ligature's parts come from. `None` if it isn't one of the usual ones.
 fn ligature_of(parts: &[u32]) -> Option<u32> {
