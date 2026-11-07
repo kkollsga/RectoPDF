@@ -77,3 +77,4 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "When it's on deep sleep, we want its state to be stored on disk, not on memory. But it needs to be stored in a way that's quick to recover without any delay."
 - "and edit should also keep undo, redo history of edits until save has been applied."
 - "We don't want to add the undo redo history to the file itself, but we can have a rolling save redo history on the system, so it kind of in the temp files per PDF."
+- "1000 steps and 64mb is good." On Save: "after a save you might still have regrets and want to make changes. But you definitely don't want history to leak into the pdf file".
