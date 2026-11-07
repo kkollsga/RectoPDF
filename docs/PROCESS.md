@@ -53,8 +53,7 @@ Owner: "13 tests at 10mins is more than two hours. There are surely ways of redu
 **Numbers.** distillPDF's full gate: 536 to 820 s, of which the 141-document sweep is 220 to 265 s, the wheel build about 100 s and the suites the rest. Its fast mode: about 200 s, sweeping 13 documents. Owner: "Not the 10 minutes, check why 13 tests where needed. That's the problem".
 
 **Why 13.** Traced run by run. Seven were needed: the baseline freeze, the one proof the gate agrees with itself, the first look at lopdf 0.47, the final one on the pinned commit, and on the per-page branch its first pass, the pass after a performance fix, and the pass after the review's fixes. Six weren't:
-- Four used the whole gate as a diagnostic while working out two documents' changes under lopdf 0.47: a repeat alongside memory measurements, one with a proposed patch, and final runs on a pin about to be replaced. `--docs` for those two documents answers that in a minute or so.
-- One was on a pin that wasn't the last: the fork's fix was still waiting to be pushed, so it was run again later. Part of the four above in spirit, and the coordinator's ordering.
+- Four used the whole gate as a diagnostic while working out two documents' changes under lopdf 0.47: a repeat alongside memory measurements, one with a proposed patch, and final runs, with and without that patch, on a pin about to be replaced because the fork's fix was still waiting to be pushed. The with-and-without pair is read from the worker's note, not from two run folders. `--docs` for those two documents answers that in a minute or so.
 - One moved lopdf and ran the whole gate, at the coordinator's instruction, when its three failing unit tests would have said so in about a minute.
 - One freeze was stopped and restarted because of how it was queued.
 
