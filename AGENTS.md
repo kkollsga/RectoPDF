@@ -45,3 +45,4 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "The left sidebar toc should have a max height within scroll so it doesn't push everything of screen".
 - "The agent logo in the upper right is wrong, it should be a ai 4 point star".
 - "The toc should auto scroll to where you are in the document (smoothly so you don't notice it in a elegant way)".
+- "It can whoosh with smooth acceleration at both ends. It can have a \"dead-zone\" so it doesn't react to small scrolls within the window, so basically it repositions, stays still (while user is reading slowly scrolling) then repositions after the user is scrolling a bit."
