@@ -646,25 +646,22 @@ fn what_one_zoom_learns_doesnt_take_away_what_another_learned() {
     assert_eq!(doc.page_draw_state(0), PageDrawState::Sharp);
 }
 
-/// Failure: the viewport budget's cap on time is only looked at between pages, and nothing holds it, so a page of many slow tiles runs far past it, at each tile's own deadline. Past the cap, nothing more is drawn, and what's left counts as failed rather than vanishing from the numbers.
+/// Failure: the viewport budget's cap on time is only looked at between pages, so a page of many slow tiles or regions runs on past it, at each one's own deadline. Here each pass takes at least 100 ms and one page alone needs more than 4 of them, so with a cap of 250 ms no more than 4 can start if it's looked at before each pass, and every one of them would if it isn't. Past the cap, what's left counts as failed rather than vanishing from the numbers.
 #[test]
-fn the_viewport_budget_stops_at_its_cap_and_says_so() {
-    let options = |max_time, strategy| ViewportOptions { first_page: 0, scale: 2.0, width: 2048, height: 2048, margin_tiles: 0, strategy, max_time };
-    for strategy in [DrawStrategy::PerTile, DrawStrategy::Region] {
-        let (mut doc, _file) = doc("slow");
-        let steps = measure_viewport(&mut doc, options(Duration::ZERO, strategy)).unwrap();
-        assert!(steps.iter().all(|step| step.passes == 0 && step.tiles == 0 && step.failed > 0), "{strategy:?}: {steps:?}");
-    }
-    let (mut doc, _file) = doc("slow");
+fn the_viewport_budget_stops_at_its_cap_within_a_page() {
     let cap = Duration::from_millis(250);
-    let started = std::time::Instant::now();
-    let steps = measure_viewport(&mut doc, options(cap, DrawStrategy::PerTile)).unwrap();
-    let (passes, failed): (u32, u32) = (steps.iter().map(|step| step.passes).sum(), steps.iter().map(|step| step.failed).sum());
-    assert!(failed > 0, "4 tiles a page at 100 ms each, for 3 steps, can't fit in the cap: {steps:?}");
-    let room = (passes + 1) * 100 + 250;
-    assert!(started.elapsed() < Duration::from_millis(u64::from(room) + 5000), "it ran on past the cap: {:?}, {steps:?}", started.elapsed());
-    let total: u32 = steps.iter().map(|step| step.tiles).sum();
-    assert!(passes < total + failed, "something was left undrawn: {steps:?}");
+    // At 2x, one page is 3 x 4 tiles. At 12x it's too large for fewer than about 10 regions of 32 MiB.
+    for (strategy, scale, window) in [(DrawStrategy::PerTile, 2.0, 2048), (DrawStrategy::Region, 12.0, 10_000)] {
+        let options = |max_time| ViewportOptions { first_page: 0, scale, width: window, height: window, margin_tiles: 0, strategy, max_time };
+        let (mut no_time, _file) = doc("slow");
+        let steps = measure_viewport(&mut no_time, options(Duration::ZERO)).unwrap();
+        assert!(steps.iter().all(|step| step.passes == 0 && step.tiles == 0 && step.failed > 0), "{strategy:?}, no time at all: {steps:?}");
+        let (mut capped, _file) = doc("slow");
+        let steps = measure_viewport(&mut capped, options(cap)).unwrap();
+        let (passes, failed): (u32, u32) = (steps.iter().map(|step| step.passes).sum(), steps.iter().map(|step| step.failed).sum());
+        assert!(passes <= 4, "{strategy:?}: {passes} passes of at least 100 ms each started inside 250 ms: {steps:?}");
+        assert!(failed > 0, "{strategy:?}: what wasn't drawn must say so: {steps:?}");
+    }
 }
 
 /// Failure: the viewport budget counts low-resolution tiles as cached, so the next step looks cheaper than the app would find it, and the numbers we rely on flatter the page.
