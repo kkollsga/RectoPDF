@@ -37,6 +37,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - **About three workers at a time.** More only lengthens the build queue.
 - **Short dev-build cycles for the owner.** The owner's use of the real app finds what screenshots can't.
 - **Process reviews,** at each phase's end and at least after every fourth merge: progress, waste and quality against the numbers (git, `heavy.sh --report`, CI, review findings), logged in `docs/PROCESS.md`, with what changes as a result. The coordinator owns progress and quality.
+- **Lessons go in the guide as we progress** (owner, 2026-11-07: "feed learnings into the rust development guide as we progress"): `docs/agent-instructions/rust_app_development.md`, in its own sections, when a merge, review or process review teaches something a future project would want. General lessons, with the number or incident behind them, not this project's details.
 
 ## Writing for the owner
 - **Show new features.** Owner, 2026-11-06: "Print screenshots as new features are added." When a feature lands, the coordinator sends real screenshots of it, after looking at them first. Label anything that is a mock-up rather than the real app.

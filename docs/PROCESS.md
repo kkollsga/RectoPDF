@@ -2,7 +2,7 @@
 
 The coordinator is responsible for progress and quality. Owner, 2026-11-07: "Remember you are responsible for the progress and quality. So add a few process reviews every once in a while to catch inefficiencies".
 
-**When:** at each phase's end, and at least after every fourth merge. **Looks at:** what landed against what's open, the queue (`tools/sysguard/heavy.sh --report`), CI, review rounds and their findings, and what the owner found that we didn't. **Ends with:** what changes, then checks at the next review whether it helped. An independent reviewer reads the numbers at each phase's end.
+**When:** at each phase's end, and at least after every fourth merge. **Looks at:** what landed against what's open, the queue (`tools/sysguard/heavy.sh --report`), CI, review rounds and their findings, and what the owner found that we didn't. **Ends with:** what changes, lessons added to `docs/agent-instructions/rust_app_development.md`, then checks at the next review whether it helped. An independent reviewer reads the numbers at each phase's end.
 
 ## 2026-11-07, about 17 hours in
 
