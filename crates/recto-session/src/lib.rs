@@ -362,9 +362,9 @@ impl<L: DocLoader> Session<L> {
         }
     }
 
-    /// An edit list with nothing in it costs 8 bytes a page for nothing, and would hold the tab to the file's length as it was.
+    /// An edit list with nothing in it costs 8 bytes a page for nothing, and would hold the tab to the file's length as it was. One that's back at the file with steps to go back through stays until those are gone.
     fn drop_list_if_idle(&mut self, id: TabId) {
-        if self.edits.get(&id).is_some_and(|edits| !edits.is_edited() && !edits.can_redo()) {
+        if self.edits.get(&id).is_some_and(|edits| !edits.is_edited() && !edits.has_history()) {
             self.edits.remove(&id);
         }
     }
@@ -747,6 +747,24 @@ mod tests {
         s.note_drawn(note);
         assert_eq!(s.edit_pages(id, |e| e.rotate(99, 1, 1)), Err(SessionError::Edit(EditError::OutOfRange)));
         assert_eq!(s.draw_note(id, 0), Some(note), "a refused edit changes nothing");
+    }
+
+    /// Failure: a tab back at its file through four quarter turns still reads as edited, and the sidebar's dot and the refusal to close stay with it. Its steps can still be undone, because the list isn't dropped while it has any. And a `page move` to where it already is must leave no list behind at all.
+    #[test]
+    fn a_tab_back_at_its_file_isnt_edited() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages(id, |e| e.move_pages(2, 1, 2)).unwrap();
+        assert!(s.page_edits(id).is_none() && !s.sidebar().edited, "nothing happened");
+        for _ in 0..4 {
+            s.edit_pages(id, |e| e.rotate(0, 1, 1)).unwrap();
+        }
+        assert!(!s.is_edited(id) && !s.sidebar().edited);
+        assert!(s.page_edits(id).unwrap().can_undo(), "it can still step back through them");
+        assert!(s.undo_edit(id));
+        assert!(s.is_edited(id));
+        assert!(s.redo_edit(id));
+        assert!(s.close(id).is_ok(), "it matches the file, and nothing's been undone");
     }
 
     /// Failure: a refused edit leaves an 8-byte-a-page list behind forever, over the budget for an idle tab, and the tab's length stops following its file.

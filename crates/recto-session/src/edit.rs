@@ -108,6 +108,8 @@ pub struct AddedSource {
 /// The edited page order of one document.
 #[derive(Clone, Debug)]
 pub struct PageEdits {
+    /// How long the file was when this list was made.
+    file_pages: usize,
     slots: Vec<PageSlot>,
     added: Vec<AddedSource>,
     undo: Vec<Entry>,
@@ -116,6 +118,8 @@ pub struct PageEdits {
     history_dropped: bool,
     /// One of those was the owner's. Its effect is still in the page order: nothing has lost it, but throwing the list away would, so it counts for as long as the list does.
     owner_step_dropped: bool,
+    /// Whether the document differs from the file, whatever steps took it there. Worked out after each step, so asking is free. See [`Self::is_edited`].
+    differs: bool,
     /// Whose steps are being made now. Only the session sets this, and the owner is the default: a path that forgets to say gets the more protected answer.
     acting: Author,
     /// What `undo` and `redo` hold, against [`MAX_HISTORY_BYTES`].
@@ -125,7 +129,7 @@ pub struct PageEdits {
 impl PageEdits {
     pub fn new(page_count: u32) -> Self {
         let slots = (0..page_count).map(|page| PageSlot { source: 0, page, quarter_turns: 0 }).collect();
-        Self { slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new(), history_dropped: false, owner_step_dropped: false, acting: Author::Owner, history_bytes: 0 }
+        Self { file_pages: page_count as usize, slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new(), history_dropped: false, owner_step_dropped: false, differs: false, acting: Author::Owner, history_bytes: 0 }
     }
 
     pub fn slots(&self) -> &[PageSlot] {
@@ -146,9 +150,19 @@ impl PageEdits {
         &self.added
     }
 
-    /// Whether anything is waiting to be saved. Undoing everything brings this back to false.
+    /// Whether the document differs from the file, and so whether anything is waiting to be saved. Undoing everything brings this back to false, and so does getting back to the file by other steps: four quarter turns, or a page moved and moved back. Costs a look along the list after each step, stopping at the first page out of place, which is at most about 100 µs at the 200,000 pages a document may have. See `docs/ENGINEERING.md`.
     pub fn is_edited(&self) -> bool {
-        !self.undo.is_empty() || self.history_dropped
+        self.differs
+    }
+
+    /// Whether there's anything to go back through, or anything lost to the cap on it. A list with none of this and no difference from the file has nothing left to keep it.
+    pub(crate) fn has_history(&self) -> bool {
+        !self.undo.is_empty() || !self.redo.is_empty() || (self.history_dropped && self.differs)
+    }
+
+    fn differs_from_the_file(&self) -> bool {
+        // Every page in its own place, from its own file, with no turn.
+        self.slots.iter().enumerate().any(|(position, slot)| slot.source != 0 || slot.quarter_turns != 0 || slot.page as usize != position) || self.slots.len() != self.file_pages
     }
 
     /// Whether there's a step to undo.
@@ -168,12 +182,12 @@ impl PageEdits {
 
     /// Whether throwing this list away would lose anything of the owner's: a step still in the history, undone or not, or one that fell off the capped list and whose effect is still in the page order.
     pub fn holds_owner_edits(&self) -> bool {
-        self.owner_step_dropped || self.owner_steps_undone() || self.undo.iter().any(|entry| entry.by == Author::Owner)
+        (self.owner_step_dropped && self.differs) || self.owner_steps_undone() || self.undo.iter().any(|entry| entry.by == Author::Owner)
     }
 
     /// Whether some step fell off the capped undo list, so `undo` can't take everything off.
     pub fn history_dropped(&self) -> bool {
-        self.history_dropped
+        self.history_dropped && self.differs
     }
 
     /// Sets whose steps the next edits are. For the session alone.
@@ -191,6 +205,10 @@ impl PageEdits {
     pub fn rotate(&mut self, start: u32, len: u32, quarter_turns: i32) -> Result<(), EditError> {
         self.check_range(start, len)?;
         let turns = u8::try_from(quarter_turns.rem_euclid(4)).unwrap_or(0);
+        // A whole turn is nothing done, and isn't a step.
+        if turns == 0 {
+            return Ok(());
+        }
         self.commit(Step::Rotate { start, len, quarter_turns: turns })
     }
 
@@ -199,6 +217,10 @@ impl PageEdits {
         self.check_range(start, len)?;
         if u64::from(to) + u64::from(len) > u64::from(self.len()) {
             return Err(EditError::OutOfRange);
+        }
+        // Already there, so nothing's done, and it isn't a step that clears what's been undone.
+        if start == to {
+            return Ok(());
         }
         self.commit(Step::Move { start, len, to })
     }
@@ -238,6 +260,7 @@ impl PageEdits {
         self.history_bytes += inverse.held_bytes();
         self.redo.push(Entry { step: inverse, by });
         self.trim_history();
+        self.differs = self.differs_from_the_file();
         true
     }
 
@@ -249,6 +272,7 @@ impl PageEdits {
         self.history_bytes += inverse.held_bytes();
         self.undo.push(Entry { step: inverse, by });
         self.trim_history();
+        self.differs = self.differs_from_the_file();
         true
     }
 
@@ -260,6 +284,7 @@ impl PageEdits {
             self.history_bytes -= dropped.step.held_bytes();
         }
         self.trim_history();
+        self.differs = self.differs_from_the_file();
         Ok(())
     }
 
@@ -421,6 +446,56 @@ mod tests {
         assert!(!edits.is_edited());
         while edits.redo() {}
         assert_eq!(edits.slots(), end);
+    }
+
+    /// Failure: `page move 3 --to 3` does nothing, and commits a step anyway, so the tab reads as edited and won't close, and what had been undone is lost for it. A whole turn is the same.
+    #[test]
+    fn a_step_that_does_nothing_isnt_a_step() {
+        let mut edits = PageEdits::new(5);
+        edits.move_pages(2, 1, 2).unwrap();
+        edits.move_pages(1, 3, 1).unwrap();
+        edits.rotate(0, 2, 4).unwrap();
+        assert!(!edits.is_edited() && !edits.can_undo(), "{:?}", edits.undo);
+        edits.rotate(0, 1, 1).unwrap();
+        edits.undo();
+        edits.move_pages(2, 1, 2).unwrap();
+        assert!(edits.can_redo(), "doing nothing mustn't lose what's undone");
+    }
+
+    /// Failure: four quarter turns, or a page moved and moved back, leave a document that's the same as its file reading as edited, so it won't close and asks to be saved with nothing to save. And past the cap, `history_dropped` says it can't get back when it just has.
+    #[test]
+    fn edited_means_it_differs_from_the_file() {
+        let mut turned = PageEdits::new(3);
+        for turns_so_far in 1..=4 {
+            turned.rotate(1, 1, 1).unwrap();
+            assert_eq!(turned.is_edited(), turns_so_far != 4, "after {turns_so_far}");
+        }
+        assert!(turned.can_undo(), "the steps are still there to go back through");
+        turned.undo();
+        assert!(turned.is_edited(), "one turn back is three turns on");
+        let mut moved = PageEdits::new(4);
+        moved.move_pages(0, 1, 3).unwrap();
+        assert!(moved.is_edited());
+        moved.move_pages(3, 1, 0).unwrap();
+        assert!(!moved.is_edited());
+        let mut added = PageEdits::new(2);
+        added.insert_pdf(2, Path::new("/d/a.pdf"), 1).unwrap();
+        assert!(added.is_edited(), "an added page is a difference");
+        added.delete(2, 1).unwrap();
+        assert!(!added.is_edited(), "and taking it away again isn't");
+        let mut swapped = PageEdits::new(2);
+        swapped.delete(1, 1).unwrap();
+        swapped.insert_pdf(1, Path::new("/d/same.pdf"), 1).unwrap();
+        assert!(swapped.is_edited(), "a page from another file isn't this file's, whatever its number");
+        // Past the cap, an odd number of swaps differs and an even number doesn't, whatever fell off.
+        let mut past = PageEdits::new(2);
+        for _ in 0..MAX_UNDO + 2 {
+            past.move_pages(0, 1, 1).unwrap();
+        }
+        assert!(!past.is_edited() && !past.history_dropped(), "it's back at the file, so nothing has been lost");
+        assert!(past.undo.len() == MAX_UNDO);
+        past.move_pages(0, 1, 1).unwrap();
+        assert!(past.is_edited() && past.history_dropped());
     }
 
     /// Failure: a new step keeps the old redo list, so redo jumps to a state the user never had.
