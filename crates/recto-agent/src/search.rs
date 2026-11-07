@@ -1282,7 +1282,8 @@ mod tests {
         let page = "a".repeat(MAX_PATTERN_PAGE_BYTES);
         let fixture = fixture("pattern-time", b"a file", vec![Some((page, true)), Some(("a clean page".to_string(), true)), Some(("another".to_string(), true))]);
         let started = Instant::now();
-        let settings = Settings { deadline: started + Duration::from_millis(100), ..settings(&fixture) };
+        // Long enough to reach the page on a Mac under any load, and far short of the many seconds this page takes.
+        let settings = Settings { deadline: started + Duration::from_secs(3), ..settings(&fixture) };
         let answer = run(&fixture.plan, &Query::regex(r"\w+\d|\w").unwrap(), "regex", &settings).unwrap();
         assert!(started.elapsed() < Duration::from_secs(30), "{:?}", started.elapsed());
         let coverage = &answer["coverage"];
