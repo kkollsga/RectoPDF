@@ -1756,10 +1756,10 @@ mod tests {
         assert!(reader.cover.is_empty());
     }
 
-    /// Failure: a surface that held one file's page is handed to another file's worker, so a hostile file reads a page of the one before it. Both ways round: the next file's worker gets surfaces a cold tab's tiles had, and a hostile file that kept a reference, answered "blank" and got its surface taken back then sees the next file's pixels and can repaint them. No surface may ever serve two files.
+    /// Failure: a surface that held one file's page is handed to another file's worker, so a hostile file reads a page of the one before it. Both ways round: the next file's worker gets surfaces a cold tab's tiles had, and a hostile file that kept a reference, answered "blank" and got its surface taken back then sees the next file's pixels and can repaint them. No surface may ever serve two files. Each is held here, as a hostile worker holds it, so its name can't be given to a new one by chance.
     #[test]
     fn no_surface_serves_two_files() {
-        fn run(reader: &mut Reader, answer: TileKind) -> HashSet<u32> {
+        fn run(reader: &mut Reader, answer: TileKind, held: &mut Vec<PixelSurface>) -> HashSet<u32> {
             let mut seen = HashSet::new();
             for _ in 0..1000 {
                 reader.take_ops();
