@@ -6,7 +6,7 @@
 //! There's no name in any registry, and nothing else can reach it. Measured on an M4 (64 surfaces of 512 x 512): the host's footprint grows by 1 MiB a tile, the worker's by nothing, and creating a surface,
 //! sending it, looking it up, filling it and hearing back takes 0.13 ms.
 //!
-//! Everything here is a seam: when the renderer moves into an XPC service, `IOSurfaceCreateXPCObject` replaces the port and nothing above this file changes.
+//! The worker stays a launched child at release, in a nested sandboxed helper (`docs/research/2026-11-07-sandbox-spike.md`), started the same way. That report's drop of Mach send rights must keep this link's receive right, and comes after it's made.
 
 use std::ffi::{c_char, c_int, c_void};
 use std::io;
