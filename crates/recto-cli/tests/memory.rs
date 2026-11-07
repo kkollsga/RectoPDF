@@ -134,3 +134,43 @@ fn after_drawing_nothing_is_left_running() {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+/// Failure: out of descriptors, accepting fails and the session spins at 100%, or doesn't recover. On macOS a failed accept drops the waiting connection, so there's nothing to spin on, and those clients see the connection end. This holds that if it ever changes.
+#[test]
+fn out_of_descriptors_the_session_doesnt_spin() {
+    let state = State::at(Level::ReadOnly);
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", &format!("ulimit -n 32; exec '{}' serve --json", common::bin())])
+        .env(recto_control::state::STATE_ENV, &state.root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(child.stdout.take().unwrap()), &mut line).unwrap();
+    assert!(line.contains("\"ok\":true"), "{line}");
+    let pid = child.id();
+    // More than it has descriptors for.
+    let mut held: Vec<std::os::unix::net::UnixStream> = (0..60).map(|_| std::os::unix::net::UnixStream::connect(state.socket()).unwrap()).collect();
+    std::thread::sleep(Duration::from_millis(100));
+    let before = process_counters(pid).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let after = process_counters(pid).unwrap();
+    let cpu = after.cpu_ns - before.cpu_ns;
+    println!("out of descriptors, over 500 ms: {} ms of CPU, {} context switches", cpu / 1_000_000, after.context_switches - before.context_switches);
+    assert!(cpu < 100_000_000, "{} ms of CPU in 500 ms: it's spinning", cpu / 1_000_000);
+    held.clear();
+    // The session finds out they've gone as it next reads them, so the very next connection can still be one too many.
+    let started = std::time::Instant::now();
+    loop {
+        let mut raw = Raw::connect(&state);
+        raw.send(&json!({ "cmd": "status" }).to_string());
+        if raw.read().is_some_and(|reply| reply["ok"] == true) {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "with descriptors free again, it must take connections again");
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+}

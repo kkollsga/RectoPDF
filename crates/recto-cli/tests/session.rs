@@ -553,7 +553,7 @@ fn what_cant_be_read_is_refused_and_nothing_hangs() {
     assert_eq!(tabs["data"]["count"], 0);
 }
 
-/// Failure: a relative path is read from the session's own folder rather than where the agent is, so it opens the wrong file or none. And a password-protected file reads as a plain failure.
+/// Failure: a relative path is read from the session's own folder rather than where the agent is, so it opens the wrong file or none.
 #[test]
 fn a_relative_path_means_where_the_agent_is() {
     let state = State::at(Level::Control);
@@ -566,6 +566,33 @@ fn a_relative_path_means_where_the_agent_is() {
     // On the wire, a path must already be whole: the session has no folder to read it from.
     let mut raw = Raw::connect(&state);
     assert_eq!(raw.call(&open_cmd(Path::new("three.pdf")))["error"]["code"], "bad_path");
+}
+
+/// A file that takes a password: the standard handler's check values match no empty password.
+fn password_protected() -> Vec<u8> {
+    let bytes = pages(&[Page::new(text_lines(&["Secret words"]))]);
+    let key = "AB".repeat(32);
+    String::from_utf8_lossy(&bytes).replace("/Root 1 0 R", &format!("/Root 1 0 R /Encrypt << /Filter /Standard /V 1 /R 2 /O <{key}> /U <{key}> /P -4 >> /ID [<00> <00>]")).into_bytes()
+}
+
+/// Failure: a password-protected file reads as a plain failure, or its text comes out. `open`, and `text` and `search` on a tab whose file became one, each say exit 8, and no words get through.
+#[test]
+fn a_password_protected_file_is_refused_end_to_end() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let locked = TempPdf::new("locked.pdf", &password_protected());
+    let (reply, code) = state.json(&["open", path_of(&locked)]);
+    assert_eq!((reply["error"]["code"].as_str(), code), (Some("password_needed"), exit::PROTECTED), "{reply}");
+    assert!(reply["error"]["next"].as_str().unwrap().contains("Passwords are never taken"), "{reply}");
+    // A tab opened on the plain file, whose file is then replaced with one that takes a password.
+    let file = three_pages();
+    state.json(&["open", path_of(&file)]);
+    std::fs::write(&file.0, password_protected()).unwrap();
+    for args in [&["text", "--page", "1"][..], &["search", "Secret"][..]] {
+        let (reply, code) = state.json(args);
+        assert_eq!((reply["error"]["code"].as_str(), code), (Some("needs_password"), exit::PROTECTED), "{args:?}: {reply}");
+        assert!(!reply.to_string().contains("Secret words"), "{reply}");
+    }
 }
 
 /// Failure: an ambiguous name acts on the first match over the socket, rather than listing them. Exit 4, with ids to choose from.

@@ -421,7 +421,6 @@ mod tests {
     #[test]
     fn undo_history_is_capped_in_bytes_and_says_so() {
         let pages = MAX_PAGES as u32;
-        let mut edits = PageEdits::new(pages);
         let mut heavy = PageEdits::new(pages);
         for round in 0..64 {
             heavy.delete(0, pages - 1).unwrap();

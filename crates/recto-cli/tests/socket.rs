@@ -361,9 +361,8 @@ fn a_watcher_that_stops_reading_is_dropped_rather_than_buffered_for() {
     assert_eq!(watcher.read().unwrap()["data"]["watching"], true);
     let mut raw = Raw::connect(&state);
     assert_eq!(raw.call(&open_cmd(&file.0))["ok"], true);
-    // Each goto tells the watcher, which reads nothing. Far past its allowance.
-    let mut sent = 0u32;
-    while sent < 40_000 {
+    // Each goto tells the watcher, which reads nothing. 40,000 of them is over 3 MiB, well past its 1 MiB allowance.
+    for sent in 0..40_000u32 {
         let reply = raw.call(&json!({ "cmd": "goto", "page": 1 + sent % 2 }));
         assert_eq!(reply["ok"], true, "{reply}");
         sent += 1;
@@ -446,7 +445,50 @@ fn wait_blocks_until_it_happens_and_sees_what_already_did() {
     assert_eq!((closer.1, &closer.0["data"]["closed"]), (0, &json!(true)), "{}", closer.0);
 }
 
-/// Failure: a wait that can never end runs out its time, or the timeout isn't exit 7. A page that fails says so at once, and a closed tab's page isn't "drawn".
+/// Failure: a page that can't be drawn leaves a waiter waiting, rather than saying so at once. Here lopdf reads the file and PDFium refuses it, which is cheap and real.
+#[test]
+fn a_page_that_fails_to_draw_ends_the_wait_and_says_so() {
+    let state = State::at(Level::Full);
+    let _serving = state.serve();
+    let whole = pages(&[Page::new(text_lines(&["Words"]))]);
+    let cut = whole.windows(4).position(|window| window == b"xref").unwrap();
+    let file = TempPdf::new("no-tail.pdf", &whole[..cut]);
+    let (opened, code) = state.json(&["open", file.0.to_str().unwrap()]);
+    assert_eq!(code, 0, "{opened}");
+    let out = file.0.with_file_name("fails.png");
+    let (drawn, code) = state.json(&["render", "--page", "1", "--out", out.to_str().unwrap()]);
+    assert_ne!(code, 0, "this fixture must be one PDFium refuses: {drawn}");
+    let (reply, code) = state.json(&["wait", "page-drawn", "--page", "1", "--timeout", "30s"]);
+    assert_eq!((reply["error"]["code"].as_str(), code), (Some("page_failed"), exit::FAILED), "it must say so at once: {reply}");
+    assert!(reply["error"]["message"].as_str().unwrap().contains("couldn't be drawn"), "{reply}");
+    assert!(!out.exists());
+}
+
+/// Failure: a refused file name tells a waiter the page can't be drawn, or a closed tab's page reads as drawn. One says nothing about the page, and the other's tab isn't there.
+#[test]
+fn a_refused_output_and_a_closed_tab_arent_a_drawn_page() {
+    let state = State::at(Level::Full);
+    let _serving = state.serve();
+    let file = doc();
+    state.json(&["open", file.0.to_str().unwrap()]);
+    let taken = file.0.with_file_name("taken.png");
+    std::fs::write(&taken, b"keep").unwrap();
+    let (refused, _) = state.json(&["render", "--page", "1", "--out", taken.to_str().unwrap()]);
+    assert_eq!(refused["error"]["code"], "output_exists");
+    let (reply, code) = state.json(&["wait", "page-drawn", "--page", "1", "--timeout", "50ms"]);
+    assert_eq!((reply["error"]["code"].as_str(), code), (Some("timed_out"), exit::TIMED_OUT), "{reply}");
+    std::fs::remove_file(&taken).unwrap();
+    let out = file.0.with_file_name("then-closed.png");
+    state.json(&["render", "--page", "1", "--out", out.to_str().unwrap()]);
+    std::fs::remove_file(&out).unwrap();
+    let (drawn, code) = state.json(&["wait", "page-drawn", "--page", "1", "--tab", "#1", "--timeout", "5s"]);
+    assert_eq!((code, &drawn["data"]["drawn"]), (0, &json!(true)), "{drawn}");
+    state.json(&["close", "--tab", "#1"]);
+    let (reply, code) = state.json(&["wait", "page-drawn", "--page", "1", "--tab", "#1", "--timeout", "50ms"]);
+    assert_eq!((reply["error"]["code"].as_str(), code), (Some("timed_out"), exit::TIMED_OUT), "{reply}");
+}
+
+/// Failure: a wait that can never end runs out its time, or the timeout isn't exit 7.
 #[test]
 fn a_wait_ends_with_a_fixed_exit_or_a_plain_reason() {
     let state = State::at(Level::Full);

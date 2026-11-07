@@ -337,7 +337,7 @@ impl<H: Host> Loop<H> {
         loop {
             match listener.accept() {
                 Ok(Some(stream)) => self.take_client(stream),
-                // A failed accept isn't this client's concern, and the next wake tries again.
+                // Out of descriptors, the kernel here drops the waiting connection as accept fails, so the listener doesn't stay ready and there's nothing to spin on. `out_of_descriptors_the_session_doesnt_spin` holds that.
                 Ok(None) | Err(_) => return,
             }
         }
