@@ -33,50 +33,83 @@ pub fn page_effects(path: &Path, page: u32) -> Option<PageEffects> {
     let entry = map.get(page as usize)?;
     let owner = entry.inherited().resources().unwrap_or(entry.id());
     let page_dict = dict_at(&reader, owner)?;
-    let resources = value_dict(&reader, page_dict.get(b"Resources").ok()?)?;
-    let deadline = Instant::now() + MAX_TIME;
-    let mut effects = PageEffects { hidden_layers: has_hidden_layers(&reader), ..PageEffects::default() };
-    let mut stack = vec![resources];
-    let mut seen = HashSet::new();
-    let mut visits = 0;
-    while let Some(dict) = stack.pop() {
-        visits += 1;
-        if visits > MAX_VISITS || Instant::now() >= deadline {
-            return None;
-        }
-        if let Some(states) = entry_dict(&reader, &dict, b"ExtGState") {
-            for (_, state) in states.iter() {
-                visits += 1;
-                if let Some(state) = value_dict(&reader, state) {
-                    effects.soft_mask |= has_soft_mask(&reader, &state);
-                    effects.blend |= has_blend(&state);
-                }
-            }
-        }
-        for (key, is_pattern) in [(&b"XObject"[..], false), (&b"Pattern"[..], true)] {
-            let Some(entries) = entry_dict(&reader, &dict, key) else { continue };
-            for (_, value) in entries.iter() {
-                visits += 1;
-                if visits > MAX_VISITS {
-                    return None;
-                }
-                if let Object::Reference(id) = value
-                    && !seen.insert(*id)
-                {
-                    continue;
-                }
-                let Some(inner) = stream_or_dict(&reader, value) else { continue };
-                if is_pattern && inner.get(b"PatternType").and_then(Object::as_i64).is_ok_and(|kind| kind == 2) {
-                    effects.shading_pattern = true;
-                }
-                if let Some(next) = entry_dict(&reader, &inner, b"Resources") {
-                    stack.push(next);
-                }
-                // A soft mask's group has resources of its own, and its forms can have soft masks.
-            }
+    let resources = page_dict.get(b"Resources").ok()?;
+    let mut walk = Walk { reader: &reader, deadline: Instant::now() + MAX_TIME, visits: 0, effects: PageEffects { hidden_layers: has_hidden_layers(&reader), ..PageEffects::default() }, waiting: Vec::new(), seen: HashSet::new() };
+    walk.resources(resources)?;
+    while let Some(id) = walk.waiting.pop() {
+        walk.tick()?;
+        let Some(inner) = stream_or_dict(&reader, &Object::Reference(id)) else { continue };
+        walk.look_at_pattern(&inner);
+        if let Ok(next) = inner.get(b"Resources") {
+            walk.resources(next)?;
         }
     }
-    Some(effects)
+    Some(walk.effects)
+}
+
+/// Where a look has got to. It holds only ids: a dictionary is read, looked through and dropped, and each is read once, so forms that all name one large dictionary cost one read of it and no copies.
+struct Walk<'a> {
+    reader: &'a IndexedReader,
+    deadline: Instant,
+    visits: usize,
+    effects: PageEffects,
+    waiting: Vec<ObjectId>,
+    seen: HashSet<ObjectId>,
+}
+
+impl Walk<'_> {
+    /// One step closer to the limits. `None` is past them, which is no answer.
+    fn tick(&mut self) -> Option<()> {
+        self.visits += 1;
+        (self.visits <= MAX_VISITS && Instant::now() < self.deadline).then_some(())
+    }
+
+    fn resources(&mut self, value: &Object) -> Option<()> {
+        let dict = match value {
+            Object::Reference(id) => {
+                if !self.seen.insert(*id) {
+                    return Some(());
+                }
+                self.tick()?;
+                let Some(dict) = dict_at(self.reader, *id) else { return Some(()) };
+                dict
+            }
+            Object::Dictionary(dict) => dict.clone(),
+            _ => return Some(()),
+        };
+        if let Some(states) = entry_dict(self.reader, &dict, b"ExtGState") {
+            for (_, state) in states.iter() {
+                self.tick()?;
+                if let Some(state) = value_dict(self.reader, state) {
+                    self.effects.soft_mask |= has_soft_mask(self.reader, &state);
+                    self.effects.blend |= has_blend(&state);
+                }
+            }
+        }
+        for key in [&b"XObject"[..], &b"Pattern"[..]] {
+            let Some(entries) = entry_dict(self.reader, &dict, key) else { continue };
+            for (_, value) in entries.iter() {
+                self.tick()?;
+                match value {
+                    Object::Reference(id) => {
+                        if self.seen.insert(*id) {
+                            self.waiting.push(*id);
+                        }
+                    }
+                    // Only a pattern can be written in place, and a shading has no resources of its own to go down into.
+                    Object::Dictionary(inner) => self.look_at_pattern(inner),
+                    _ => {}
+                }
+            }
+        }
+        Some(())
+    }
+
+    fn look_at_pattern(&mut self, dict: &Dictionary) {
+        if dict.get(b"PatternType").and_then(Object::as_i64).is_ok_and(|kind| kind == 2) {
+            self.effects.shading_pattern = true;
+        }
+    }
 }
 
 fn dict_at(reader: &IndexedReader, id: ObjectId) -> Option<Dictionary> {

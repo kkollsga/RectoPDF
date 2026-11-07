@@ -215,6 +215,7 @@ fn an_export_holds_nothing_of_the_page() {
         std::thread::sleep(Duration::from_millis(5));
     };
     assert!(status.success());
+    assert!(peak > 0, "the process was never measured, so this would prove nothing");
     let written = std::fs::metadata(&out).unwrap().len();
     println!("export: {written} bytes written, host peak {peak} bytes, image alone {raw} bytes");
     assert!(written > raw, "the image can't be in the file: {written}");
