@@ -735,17 +735,16 @@ fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
     wait_for(&run, |state| state["app"]["contents"]["following"] == true && state["app"]["contents"]["current_in_view"] == true && state["app"]["contents"]["frames_running"] == false);
 }
 
-/// What the app says it's doing and where its threads are, for a test that found it awake when it should be resting. CI's machines don't behave like this one, so a failure there has to carry its own evidence.
-fn whats_awake(run: &Run) -> String {
-    let file = std::env::temp_dir().join(format!("recto-awake-{}.txt", run.pid));
-    let sampled = std::process::Command::new("/usr/bin/sample").arg(run.pid.to_string()).args(["1", "-mayDie", "-file"]).arg(&file).output();
+/// Where the app's threads are over the next 2 s, for a test that finds it awake when it should be resting. CI's machines don't behave like this one, so a failure there has to carry its own evidence.
+fn whats_awake(pid: u32) -> String {
+    let file = std::env::temp_dir().join(format!("recto-awake-{pid}.txt"));
+    let sampled = std::process::Command::new("/usr/bin/sample").arg(pid.to_string()).args(["2", "-mayDie", "-file"]).arg(&file).output();
     let text = std::fs::read_to_string(&file).unwrap_or_else(|_| format!("no sample: {sampled:?}"));
     let _ = std::fs::remove_file(&file);
     // The stacks that were running most, then the threads. Long lines and the library list say nothing here.
     let from = text.find("Call graph:").unwrap_or(0);
     let to = text.find("Binary Images:").unwrap_or(text.len());
-    let stacks: String = text[from..to].lines().take(220).map(|line| format!("{}\n", line.chars().take(130).collect::<String>())).collect();
-    format!("state: {}\n{stacks}", run.report())
+    text[from..to].lines().take(320).map(|line| format!("{}\n", line.chars().take(130).collect::<String>())).collect()
 }
 
 /// Failure: following makes page scrolling slower, the contents stutter, the place drops out of view while reading, or something's left running once they've arrived. Records the contents on every step of a real sweep, and holds the properties: a small largest step, the place in view, and no frames or wake-ups at rest.
@@ -772,22 +771,19 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
     assert_eq!(settled["app"]["contents"]["moving"], false);
     run.settled();
     // With nothing to do there's nothing to wake for. Taken over a few goes: something running at rest wakes it in every one of them, and a busy shared machine only gets in the way of some. The noisiest has a bound too, so a burst or something that wakes now and then doesn't pass for rest.
-    let mut caught = None;
+    // The first window is the one that has failed on CI, and it's over before anything that starts after it can look. Sampling adds a handful of wake-ups at most, far under the limits, and the result is only read on a failure.
+    let pid = run.pid;
+    let sampling = std::thread::spawn(move || whats_awake(pid));
     let wakeups: Vec<u64> = (0..4)
         .map(|_| {
             let before = recto_platform::local::process_counters(run.pid).unwrap();
             std::thread::sleep(std::time::Duration::from_secs(2));
             let after = recto_platform::local::process_counters(run.pid).unwrap();
-            let woke = after.wakeups.saturating_sub(before.wakeups);
-            // Already failing, so looking can't change the verdict, and it's the only moment to see what's awake.
-            if woke > 80 && caught.is_none() {
-                caught = Some(whats_awake(&run));
-            }
-            woke
+            after.wakeups.saturating_sub(before.wakeups)
         })
         .collect();
     eprintln!("wake-ups in each 2 s at rest: {wakeups:?}");
-    let caught = caught.unwrap_or_default();
+    let caught = format!("state: {}\n{}", run.report(), sampling.join().unwrap());
     assert!(wakeups.iter().min().unwrap() <= &8, "wake-ups in each 2 s at rest: {wakeups:?}\n{caught}");
     assert!(wakeups.iter().max().unwrap() <= &80, "wake-ups in each 2 s at rest: {wakeups:?}\n{caught}");
     // Reduce Motion: it stays in view, with no frames at all.
