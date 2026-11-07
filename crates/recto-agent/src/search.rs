@@ -644,7 +644,12 @@ impl<'a> Reader<'a> {
         } else if self.plan.pages.is_empty() {
             ("not_used", "There were no pages to read.".to_string())
         } else if let Some(indexing) = self.indexing {
-            let note = self.not_ready.first().map_or_else(|| "Answered from the index.".to_string(), |state| state.scan_note(indexing.starts_builds()));
+            let note = match self.not_ready.first() {
+                Some(state) => state.scan_note(indexing.starts_builds()),
+                None if self.used_scan && self.used_index => "Answered from the index, apart from pages it couldn't read when it was built, which were read again just now.".to_string(),
+                None if self.used_scan => "None of these pages could be read when the index was built, so they were read again just now.".to_string(),
+                None => "Answered from the index.".to_string(),
+            };
             let note = if self.not_read_again > 0 { format!("{note} {} that couldn't be read when it was built weren't read again, for time, and are listed as failed.", self.not_read_again) } else { note };
             (self.not_ready.first().map_or("ready", FileIndex::word), note)
         } else {
@@ -1305,6 +1310,7 @@ mod tests {
         assert_eq!(answer["route"], "mixed", "{answer}");
         assert_eq!(answer["coverage"]["failed_pages_not_read_again"], 299, "{answer}");
         assert_eq!(answer["hits"][0]["page"], 301, "{answer}");
+        assert!(answer["index"]["note"].as_str().unwrap().contains("read again just now"), "the note says what happened, on any route that read one: {answer}");
     }
 
     /// Failure: a ranked search's second pass, or any search with many hits, draws each page the build couldn't check, 5 s a page, up to 1,000 s past the 30 s cap with `--limit 200`. Past the time it says `checked: false`, and past a little more, a ranked search leaves out the pages it hasn't read and says how many.

@@ -647,6 +647,7 @@ fn a_search_reads_a_page_the_build_couldnt() {
     assert_eq!(found["data"]["hits"].as_array().unwrap().len(), 1, "{found}");
     assert_eq!(found["data"]["hits"][0]["page"], 3, "{found}");
     assert_eq!(found["data"]["route"], "mixed", "{found}");
+    assert!(found["data"]["index"]["note"].as_str().unwrap().contains("read again just now"), "a page read live isn't said to have come from the index: {found}");
     let (scanned, code) = state.json(&["search", "page 3 of", "--scan"]);
     assert_eq!(code, 0, "{scanned}");
     assert_eq!(the_same_answer(found), the_same_answer(scanned));
