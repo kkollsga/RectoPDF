@@ -708,15 +708,17 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
     assert!(contents["steps_with_place_in_view"].as_f64().unwrap() >= steps * 0.95, "{sweep}");
     let settled = wait_for(&run, |state| state["app"]["contents"]["frames_running"] == false);
     assert_eq!(settled["app"]["contents"]["moving"], false);
-    // With nothing to do there's nothing to wake for. Taken over a few goes: something running at rest wakes it in every one of them, while a busy shared machine only gets in the way of some.
-    let wakeups = (0..4).map(|_| {
-        let before = recto_platform::local::process_counters(run.pid).unwrap();
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        let after = recto_platform::local::process_counters(run.pid).unwrap();
-        after.wakeups.saturating_sub(before.wakeups)
-    });
-    let fewest = wakeups.min().unwrap();
-    assert!(fewest <= 8, "{fewest} wake-ups in the quietest 2 s at rest");
+    // With nothing to do there's nothing to wake for. Taken over a few goes: something running at rest wakes it in every one of them, and a busy shared machine only gets in the way of some. The noisiest has a bound too, so a burst or something that wakes now and then doesn't pass for rest.
+    let wakeups: Vec<u64> = (0..4)
+        .map(|_| {
+            let before = recto_platform::local::process_counters(run.pid).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let after = recto_platform::local::process_counters(run.pid).unwrap();
+            after.wakeups.saturating_sub(before.wakeups)
+        })
+        .collect();
+    assert!(wakeups.iter().min().unwrap() <= &8, "wake-ups in each 2 s at rest: {wakeups:?}");
+    assert!(wakeups.iter().max().unwrap() <= &80, "wake-ups in each 2 s at rest: {wakeups:?}");
     // Reduce Motion: it stays in view, with no frames at all.
     run.ok(&["qa", "reduce-motion", "on"]);
     run.ok(&["goto", "400"]);

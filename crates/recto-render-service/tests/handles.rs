@@ -19,6 +19,20 @@ fn turn() -> MutexGuard<'static, ()> {
     ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// How many handles there are once they've stopped changing. The test before this one's worker is reaped on a thread of its own, and its descriptors can still be closing when the next test starts. Counted then, the count goes below `before` and never comes back to it, which is what made these tests fail now and then.
+fn steady_handle_count() -> Option<usize> {
+    let mut last = recto_platform::open_handle_count();
+    let mut same = 0;
+    let started = Instant::now();
+    while same < 20 && started.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(5));
+        let now = recto_platform::open_handle_count();
+        same = if now == last { same + 1 } else { 0 };
+        last = now;
+    }
+    last
+}
+
 /// Sends `count` descriptors in one message, past anything `Channel::send` would allow, as a compromised worker could.
 fn flood(fd: i32, count: usize) {
     let file = std::fs::File::open("/dev/null").unwrap();
@@ -139,13 +153,13 @@ fn a_page_gets_one_decision_about_its_images() {
 fn a_handle_from_a_worker_is_a_violation_and_isnt_kept() {
     let _turn = turn();
     let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
-    let before = recto_platform::open_handle_count();
+    let before = steady_handle_count();
     let mut doc = DocRenderer::new(&file.0, None, config("one_handle"), Policy::default()).unwrap();
     let surface = SharedMemory::create(512 * 512 * 4).unwrap();
     let failure = doc.render_tile(&request(), &surface).unwrap_err();
     assert!(matches!(failure, RenderFailure::PageFailed { reason: KillReason::Rejected(_), .. }), "{failure:?}");
     drop((doc, surface));
-    wait_until("descriptors to go back to where they were", || recto_platform::open_handle_count() <= before);
+    wait_until("descriptors to go back to where they were", || recto_platform::open_handle_count() == before);
 }
 
 /// Failure: a worker sends ~200 descriptors in one message. The old code read past its control buffer, wrapped what it found as descriptors, and could close
@@ -155,14 +169,14 @@ fn a_flood_of_handles_kills_the_worker_and_closes_every_one() {
     let _turn = turn();
     let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
     let held = std::fs::File::open("/etc/hosts").unwrap();
-    let before = recto_platform::open_handle_count();
+    let before = steady_handle_count();
     let mut doc = DocRenderer::new(&file.0, None, config("flood"), Policy::default()).unwrap();
     let surface = SharedMemory::create(512 * 512 * 4).unwrap();
     let failure = doc.render_tile(&request(), &surface).unwrap_err();
     assert!(matches!(failure, RenderFailure::PageFailed { reason: KillReason::Rejected(_), .. }), "{failure:?}");
     assert!(!doc.has_worker());
     drop((doc, surface));
-    wait_until("descriptors to go back to where they were", || recto_platform::open_handle_count() <= before);
+    wait_until("descriptors to go back to where they were", || recto_platform::open_handle_count() == before);
     assert!(std::fs::read_to_string("/etc/hosts").is_ok());
     assert!(held.metadata().is_ok(), "a file the host held open was closed under it");
 }
@@ -182,10 +196,10 @@ fn a_handle_on_the_hello_is_refused() {
 fn no_workers_means_no_handle_left_behind() {
     let _turn = turn();
     let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
-    let before = recto_platform::open_handle_count();
+    let before = steady_handle_count();
     let mut doc = DocRenderer::new(&file.0, None, config("good"), Policy::default()).unwrap();
     assert_eq!(doc.page_count().unwrap(), 1);
     assert!(recto_platform::open_handle_count() > before);
     drop(doc);
-    wait_until("the last handle to close", || recto_platform::open_handle_count() <= before);
+    wait_until("the last handle to close", || recto_platform::open_handle_count() == before);
 }

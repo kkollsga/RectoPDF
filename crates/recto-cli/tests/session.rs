@@ -226,8 +226,14 @@ fn a_search_across_many_files_runs_one_worker_at_a_time() {
         let watcher = scope.spawn(|| {
             let mut most = 0;
             while !done.load(std::sync::atomic::Ordering::SeqCst) {
-                let output = std::process::Command::new("/usr/bin/pgrep").args(["-P", &serving.pid().to_string()]).output().unwrap();
-                most = most.max(String::from_utf8_lossy(&output.stdout).lines().count());
+                // Those still working. One already dead and not yet collected isn't using anything, and on a loaded machine it can sit a moment.
+                let output = std::process::Command::new("/bin/ps").args(["-A", "-o", "ppid=,stat="]).output().unwrap();
+                let parent = serving.pid().to_string();
+                let working = String::from_utf8_lossy(&output.stdout).lines().filter(|line| {
+                    let mut words = line.split_whitespace();
+                    words.next() == Some(parent.as_str()) && !words.next().is_some_and(|stat| stat.starts_with(['Z', 'E']))
+                }).count();
+                most = most.max(working);
             }
             most
         });
@@ -238,7 +244,7 @@ fn a_search_across_many_files_runs_one_worker_at_a_time() {
         done.store(true, std::sync::atomic::Ordering::SeqCst);
         watcher.join().unwrap()
     });
-    assert!(most <= 2, "{most} workers at once. One is working, and a killed one can take a moment to be collected");
+    assert!(most <= 2, "{most} workers at once. One is working, and one being killed can take a moment to stop");
 }
 
 /// Failure: over the real socket, an agent that does `page move`, `undo`, then anything else is refused, can't close, and has to ask for Full to clean up its own edits. A blind agent got stuck exactly here. Every command over the socket is an agent's, so it's all its own to clear. The owner's side of this is in `recto-control`'s `tests/owner_edits.rs`.
