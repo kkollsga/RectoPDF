@@ -226,12 +226,12 @@ fn a_search_across_many_files_runs_one_worker_at_a_time() {
         let watcher = scope.spawn(|| {
             let mut most = 0;
             while !done.load(std::sync::atomic::Ordering::SeqCst) {
-                // Those still working. One already dead and not yet collected isn't using anything, and on a loaded machine it can sit a moment.
-                let output = std::process::Command::new("/bin/ps").args(["-A", "-o", "ppid=,stat="]).output().unwrap();
+                // Render workers still working. One already dead and not yet collected isn't using anything, and on a loaded machine it can sit a moment. A search also asks for an index, whose helper is a child of the session too, with a worker of its own under it, and isn't what this is counting.
+                let output = std::process::Command::new("/bin/ps").args(["-A", "-o", "ppid=,stat=,comm="]).output().unwrap();
                 let parent = serving.pid().to_string();
                 let working = String::from_utf8_lossy(&output.stdout).lines().filter(|line| {
                     let mut words = line.split_whitespace();
-                    words.next() == Some(parent.as_str()) && !words.next().is_some_and(|stat| stat.starts_with(['Z', 'E']))
+                    words.next() == Some(parent.as_str()) && !words.next().is_some_and(|stat| stat.starts_with(['Z', 'E'])) && words.next().is_some_and(|name| name.ends_with("recto-render-service"))
                 }).count();
                 most = most.max(working);
             }
