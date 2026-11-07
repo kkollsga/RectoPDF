@@ -630,3 +630,43 @@ fn a_clip_with_a_hole_keeps_its_hole() {
     assert_eq!(data["all_vector"], true, "{data}");
     assert!(svg.contains("<clipPath"), "{svg}");
 }
+
+/// Failure: a box hands over what's outside it. A path crossing the edge keeps all its points, and a turned image all its pixels, which a browser clips and an editor doesn't, so exporting a region to share it shares the rest. SPEC: left out rather than hidden. Nothing outside the box may be in the file at all.
+#[test]
+fn nothing_outside_a_box_is_in_the_file_at_all() {
+    // A path from inside the box to far outside it, at a point nothing else is at.
+    let path = "1 0 0 RG 2 w 100 700 m 593.25 111.75 l S\n";
+    let file = TempPdf::new("doc.pdf", &pages(&[Page::new(path)]));
+    let (svg, data) = svg_of(&file, &["--rect", "90,80,50,50"]);
+    assert!(rasterised(&data, "outside_box") >= 1, "{data}");
+    assert!(!svg.contains("<path"), "the path's own points: {svg}");
+    // The picture covers only the box.
+    let images = embedded_images(svg.as_bytes());
+    let [Embedded::Png { width, height, .. }] = &images[..] else { panic!("{images:?}") };
+    assert!(*width <= 102 && *height <= 102, "{width} x {height} at 2x");
+    // A path wholly inside stays a path.
+    let inside = TempPdf::new("doc.pdf", &pages(&[Page::new("1 0 0 RG 2 w 100 700 m 120 680 l S\n")]));
+    let (svg, data) = svg_of(&inside, &["--rect", "90,80,50,50"]);
+    assert_eq!(data["all_vector"], true, "{data}");
+    assert!(svg.contains("<path"), "{svg}");
+    // A turned image crossing the edge: every pixel in the file would be the whole image.
+    let (_, pixels) = raw_image_doc(64, 64, "0 40 -40 0 300 500");
+    let image = first_extra_object(1);
+    let dict = "/Type /XObject /Subtype /Image /Width 64 /Height 64 /ColorSpace /DeviceRGB /BitsPerComponent 8".to_string();
+    let file = TempPdf::new("doc.pdf", &pages_with(&[Page::new("q 28 28 -28 28 300 500 cm /Im Do Q\n")], &format!("/XObject << /Im {image} 0 R >>"), vec![Object::Stream { dict, data: pixels }]));
+    let (svg, data) = svg_of(&file, &["--rect", "280,250,20,20"]);
+    assert!(rasterised(&data, "outside_box") >= 1, "{data}");
+    let images = embedded_images(svg.as_bytes());
+    let [Embedded::Png { width, height, .. }] = &images[..] else { panic!("{images:?}") };
+    assert!(*width <= 42 && *height <= 42, "{width} x {height}: only the box, at 2x");
+    // A clip shape reaching outside the box isn't in the file either.
+    let clipped = "q 100 700 m 593.25 111.75 l 593.25 700 l h W n 1 0 0 rg 95 690 30 15 re f Q\n";
+    let file = TempPdf::new("doc.pdf", &pages(&[Page::new(clipped)]));
+    let (svg, _) = svg_of(&file, &["--rect", "90,80,50,50"]);
+    assert!(!svg.contains("<clipPath"), "{svg}");
+    // A plain box of a clip, cut to the box, is still vector.
+    let plain = TempPdf::new("doc.pdf", &pages(&[Page::new("q 0 0 612 792 re W n 1 0 0 rg 100 690 20 20 re f Q\n")]));
+    let (svg, data) = svg_of(&plain, &["--rect", "90,80,50,50"]);
+    assert_eq!(data["all_vector"], true, "{data}");
+    assert!(!svg.contains("612") && !svg.contains("792"), "the page's clip, not cut to the box: {svg}");
+}

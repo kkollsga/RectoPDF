@@ -436,6 +436,8 @@ enum Clipped {
     NotFinite,
     /// A shape the fill rule would change, and PDFium doesn't say which it has.
     RuleUnknown,
+    /// A shape reaching outside a box that isn't a plain rectangle, so it can't be cut to it.
+    CrossesBox,
 }
 
 impl Clipped {
@@ -444,6 +446,7 @@ impl Clipped {
         match self {
             Self::TooComplex => Some(Why::TooComplex),
             Self::RuleUnknown => Some(Why::ClipRule),
+            Self::CrossesBox => Some(Why::OutsideBox),
             Self::Id(..) | Self::NotFinite => None,
         }
     }
@@ -675,6 +678,20 @@ impl Walk {
             if !is_one_plain_shape(&points) {
                 return Clipped::RuleUnknown;
             }
+            // A shape in the file is a shape handed over. So in a box, what reaches outside it is cut to it, or if it can't be, what it clips goes as a picture.
+            let mut cut = None;
+            if self.partial && !points.is_empty() {
+                let area = points_area(&points, &matrix);
+                if !area.inside(self.view) {
+                    let Some(rect) = upright_rectangle(&points, &matrix) else { return Clipped::CrossesBox };
+                    let kept = Area { left: rect.left.max(self.view.left), bottom: rect.bottom.max(self.view.bottom), right: rect.right.min(self.view.right), top: rect.top.min(self.view.top) };
+                    // All of the box is in it, so it clips nothing in the file.
+                    if rect.left <= self.view.left && rect.bottom <= self.view.bottom && rect.right >= self.view.right && rect.top >= self.view.top {
+                        continue;
+                    }
+                    cut = Some(kept);
+                }
+            }
             if let Some(&(known, known_depth)) = self.clips.get(&hash.0) {
                 id = known;
                 depth = known_depth;
@@ -683,13 +700,27 @@ impl Walk {
             if depth >= MAX_CLIP_CHAIN || self.next_clip > MAX_CLIPS {
                 return Clipped::TooComplex;
             }
-            let Some(wire) = to_f32(&matrix) else { return Clipped::NotFinite };
             let new = self.next_clip;
-            put::clip_define_begin(out, new, id, &wire);
-            if self.write_segments(source, segments, out).is_none() {
-                // Read once already, so only a hostile library could get here, and the record must still be whole.
+            if let Some(kept) = cut {
+                // In page coordinates by now, and empty if the box and the shape don't meet, which clips everything, as it should.
+                let Some(wire) = to_f32(&IDENTITY) else { return Clipped::NotFinite };
+                put::clip_define_begin(out, new, id, &wire);
                 let at = put::segs_begin(out);
-                put::segs_end(out, at, 0);
+                let (left, bottom) = (kept.left as f32, kept.bottom as f32);
+                let (right, top) = (kept.right.max(kept.left) as f32, kept.top.max(kept.bottom) as f32);
+                put::seg(out, SEG_MOVE, false, left, bottom);
+                put::seg(out, SEG_LINE, false, right, bottom);
+                put::seg(out, SEG_LINE, false, right, top);
+                put::seg(out, SEG_LINE, true, left, top);
+                put::segs_end(out, at, 4);
+            } else {
+                let Some(wire) = to_f32(&matrix) else { return Clipped::NotFinite };
+                put::clip_define_begin(out, new, id, &wire);
+                if self.write_segments(source, segments, out).is_none() {
+                    // Read once already, so only a hostile library could get here, and the record must still be whole.
+                    let at = put::segs_begin(out);
+                    put::segs_end(out, at, 0);
+                }
             }
             self.next_clip += 1;
             depth += 1;
@@ -880,6 +911,11 @@ impl Walk {
                 self.patch(object, area, Why::ShadingPattern, PatchKind::Alone, out);
                 return Ok(());
             }
+        }
+        // A path's points are in the file whatever a browser shows of them. So in a box, one that isn't all inside goes as a picture cut to it.
+        if self.partial && !area.inside(self.view) {
+            self.patch(object, area, Why::OutsideBox, PatchKind::Alone, out);
+            return Ok(());
         }
         let Some(matrix) = self.object_matrix(object).map(|m| then(&m, &self.level().matrix)).and_then(|m| to_f32(&m)) else {
             self.note(NoteCode::NotFinite);
@@ -1483,6 +1519,11 @@ impl Walk {
             self.effects_patch(object, area, Why::BlendOrMask, out);
             return Ok(());
         }
+        // A turned image can't be cut to a box by its own pixels, and all of them would be in the file.
+        if self.partial && !area.inside(self.view) && (matrix[1].abs() > 1e-6 || matrix[2].abs() > 1e-6) {
+            self.patch(object, area, Why::OutsideBox, PatchKind::Alone, out);
+            return Ok(());
+        }
         let (mut width, mut height): (c_uint, c_uint) = (0, 0);
         // SAFETY: as above.
         if unsafe { (self.api.FPDFImageObj_GetImagePixelSize)(object, &raw mut width, &raw mut height) } == 0 || width == 0 || height == 0 {
@@ -2010,6 +2051,37 @@ impl Walk {
 
 }
 
+
+/// The area of some points on the page.
+fn points_area(points: &[(u8, f32, f32)], matrix: &M) -> Area {
+    let mut area = Area { left: f64::INFINITY, bottom: f64::INFINITY, right: f64::NEG_INFINITY, top: f64::NEG_INFINITY };
+    for &(_, x, y) in points {
+        let (x, y) = apply(matrix, f64::from(x), f64::from(y));
+        area.left = area.left.min(x);
+        area.right = area.right.max(x);
+        area.bottom = area.bottom.min(y);
+        area.top = area.top.max(y);
+    }
+    area
+}
+
+/// The rectangle these points make on the page, if they're just that, upright.
+fn upright_rectangle(points: &[(u8, f32, f32)], matrix: &M) -> Option<Area> {
+    if !(4..=5).contains(&points.len()) || points.iter().skip(1).any(|(kind, _, _)| *kind != SEG_LINE) {
+        return None;
+    }
+    let area = points_area(points, matrix);
+    let on_edge = |value: f64, low: f64, high: f64| (value - low).abs() < 1e-3 || (value - high).abs() < 1e-3;
+    let mut corners = [false; 4];
+    for &(_, x, y) in points {
+        let (x, y) = apply(matrix, f64::from(x), f64::from(y));
+        if !on_edge(x, area.left, area.right) || !on_edge(y, area.bottom, area.top) {
+            return None;
+        }
+        corners[usize::from((x - area.left).abs() < 1e-3) * 2 + usize::from((y - area.bottom).abs() < 1e-3)] = true;
+    }
+    corners.iter().all(|corner| *corner).then_some(area)
+}
 
 /// Whether a path is one shape that doesn't cross itself, so that a fill rule can't change what it covers. Going by its corners, which for a curve can read as crossing when it doesn't: that only makes a picture. A subpath of one point covers nothing. Long ones aren't looked through, and count as not.
 fn is_one_plain_shape(points: &[(u8, f32, f32)]) -> bool {
