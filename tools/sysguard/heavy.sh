@@ -104,6 +104,12 @@ tickets_waiting() {
 }
 swap_used() { sysctl -n vm.swapusage | sed -E 's/.*used = ([0-9.,]+)M.*/\1/' | tr ',' '.' | cut -d. -f1; }
 folder_key() { pwd | hash_of; }
+# What the stats keep of a command, in 100 characters: its start says what ran, and its end which script or test, which is all that differs under one long path.
+short_cmd() {
+  local flat
+  flat=$(printf '%s' "$CMD" | tr '\t\n' '  ')
+  if [ "${#flat}" -le 100 ]; then printf '%s' "$flat"; else printf '%s...%s' "${flat:0:37}" "${flat: -60}"; fi
+}
 
 case "${1:-}" in
   --status)
@@ -186,6 +192,16 @@ case "${1:-}" in
         if ($7 > peak) peak = $7
         if ($8 > swap) swap = $8
         busy += $4; if (first == "" || $1 - $4 < first) first = $1 - $4; if ($1 > last) last = $1
+        if (whole_suite($9)) {
+          where = NF >= 11 ? $10 " " $11 : "(branch not recorded)"
+          suites[where]++; suite_s[where] += $4; if ($5 != 0) suite_failed[where]++
+        }
+      }
+      # The biggest test a project has, with no filter. A check.sh run recorded before it named its mode may have been a --quick.
+      function whole_suite(c) {
+        if (c ~ /check\.sh--full|tests=\(\$tests_joined\); run$/) return 1
+        if (c ~ /regression-gate\.sh/ && c !~ /--docs|--fast/) return 1
+        return c ~ /cargo (test|nextest run)/ && c ~ /--workspace/ && c !~ / -E | --test |--lib/
       }
       function sorted(a, count,    i, j, t) { for (i = 1; i <= count; i++) s[i] = a[i]
         for (i = 2; i <= count; i++) { t = s[i]; for (j = i - 1; j > 0 && s[j] > t; j--) s[j + 1] = s[j]; s[j + 1] = t } }
@@ -196,6 +212,10 @@ case "${1:-}" in
         sorted(wait_s, n); printf "Wait in queue, seconds: median %d, p90 %d, longest %d.\n", at(n, .5), at(n, .9), s[n]
         sorted(run_s, n); printf "Run time, seconds: median %d, p90 %d, longest %d.\n", at(n, .5), at(n, .9), s[n]
         if (last > first) printf "Average jobs running: %.2f.\n", busy / (last - first)
+        print "Whole suites by branch:"
+        if (length(suites) == 0) print "  none."
+        fflush()
+        for (w in suites) printf "  %3d runs, %3d failed, %6d s  %s\n", suites[w], suite_failed[w], suite_s[w], w | "sort -rn"
       }' "$STATS" 2>/dev/null
     exit 0
     ;;
@@ -233,6 +253,13 @@ fingerprint() {
   } | hash_of
 }
 FP=$(fingerprint)
+# Which project and branch this is, for the stats, from the working directory. The main checkout's name for any of its worktrees.
+JOB_REPO=-
+JOB_BRANCH=-
+if common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+  JOB_REPO=$(basename "$(dirname "$common")")
+  JOB_BRANCH=$(git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)
+fi
 if [ -n "$FP" ] && [ -f "$FAILS/$FP" ] && [ "${HEAVY_RETRY:-}" != 1 ]; then
   read -r failed_code failed_at < "$FAILS/$FP"
   if [ "$(($(now) - failed_at))" -lt "$FAILURE_MEMORY" ]; then
@@ -242,7 +269,7 @@ if [ -n "$FP" ] && [ -f "$FAILS/$FP" ] && [ "${HEAVY_RETRY:-}" != 1 ]; then
       tail -30 "$FAILS/$FP.log" 2>/dev/null
       echo "heavy: fix the code and run it again. HEAVY_RETRY=1 runs it anyway, to investigate a failure that comes and goes."
     } >&2
-    printf '%s\trefused\t%s\n' "$(now)" "$(printf '%s' "$CMD" | tr '\t\n' '  ' | cut -c1-100)" >> "$STATS" 2>/dev/null
+    printf '%s\trefused\t%s\t%s\t%s\n' "$(now)" "$(short_cmd)" "$JOB_REPO" "$JOB_BRANCH" >> "$STATS" 2>/dev/null
     exit "$failed_code"
   fi
 fi
@@ -431,7 +458,8 @@ if [ -n "$FP" ]; then
       ;;
   esac
 fi
-# A line per finished job: time, end, seconds waited, seconds run, exit, memory free at start, jobs running, swap MiB, command.
-printf '%s\tend\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(now)" "$((RUN_STARTED - QUEUED_AT))" "$(($(now) - RUN_STARTED))" \
-  "$status" "$START_FREE" "$RUNNING" "$(swap_used)" "$(printf '%s' "$CMD" | tr '\t\n' '  ' | cut -c1-100)" >> "$STATS" 2>/dev/null
+# A line per finished job: time, end, seconds waited, seconds run, exit, memory free at start, jobs running, swap MiB, command, repo, branch.
+# The last two are new at the end, so older lines and older copies of this script still read the same. Older lines just don't have them.
+printf '%s\tend\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(now)" "$((RUN_STARTED - QUEUED_AT))" "$(($(now) - RUN_STARTED))" \
+  "$status" "$START_FREE" "$RUNNING" "$(swap_used)" "$(short_cmd)" "$JOB_REPO" "$JOB_BRANCH" >> "$STATS" 2>/dev/null
 exit "$status"
