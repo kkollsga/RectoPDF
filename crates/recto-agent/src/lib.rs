@@ -393,8 +393,8 @@ impl Command {
     pub fn log_details(&self) -> Value {
         // A file's name comes from outside, so even cleaned, it goes under `untrusted`, here as everywhere.
         let file = |path: &Path| json!({ "file": file_label(path) });
-        // A tab's name as typed isn't kept. `with_acted_tab` swaps in the `#id` it turned out to mean, which is what the log is for: this is only what's left if it meant none.
-        let tab_of = |tab: &str| if tab == "active" || tab.strip_prefix('#').is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()) && id.len() <= 10) { tab.to_string() } else { "no such tab".to_string() };
+        // A tab's name as typed isn't kept. `with_acted_tab` swaps in the `#id` it turned out to mean, which is what the log is for: this is only what's left if it didn't find one, such as an ambiguous name, or a command refused before it looked.
+        let tab_of = |tab: &str| if tab == "active" || tab.strip_prefix('#').is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()) && id.len() <= 10) { tab.to_string() } else { "by name".to_string() };
         match self {
             Self::Open { path, page } => json!({ "page": page, "untrusted": file(path) }),
             Self::PageInsert { tab, path, at } => json!({ "tab": tab_of(tab), "at": at, "untrusted": file(path) }),
@@ -488,6 +488,7 @@ fn next_step(code: &str, exit: i32) -> &'static str {
         "source_changed" => "Tell the user this file changed. `recto edits` shows what's unsaved. With Full access `recto discard` throws the edits away, and opening the file again starts from what's there now.",
         "nothing_to_undo" | "nothing_to_redo" => "`recto edits` shows where this tab is.",
         "not_built" => "Tell the user this isn't in this version yet.",
+        "too_large_at_this_scale" => "Try a smaller `--scale`. 2 is twice the page's size, and 1 is its own.",
         "page_too_large_to_read" => "Tell the user this page can't be read. The rest of the document may be fine.",
         "render_worker_missing" => "Tell the user RectoPDF's install is incomplete: `recto-render-service` must be in the same folder as `recto`. In a source tree, `cargo build --workspace` builds both, which `cargo build -p recto-cli` doesn't.",
         "render_library_missing" => "Tell the user RectoPDF's install is incomplete. In a source tree, `tools/pdfium.sh` fetches the library.",
@@ -1663,8 +1664,14 @@ mod tests {
         assert_eq!(acted_tab(&s, &active), s.active());
         let nothing = Command::Facts { tab: "nothing like it".into() };
         let details = with_acted_tab(nothing.log_details(), acted_tab(&s, &nothing), &Ok(json!({})), &nothing);
-        assert_eq!(details["tab"], "no such tab", "{details}");
+        assert_eq!(details["tab"], "by name", "{details}");
         assert!(!details.to_string().contains("nothing like it"), "{details}");
+        let mut alike = with_tabs(&["report one", "report two"]);
+        let ambiguous = Command::Facts { tab: "report".into() };
+        let acted = acted_tab(&alike, &ambiguous);
+        assert_eq!(acted, None);
+        let refused = run(&mut alike, Level::ReadOnly, &ambiguous);
+        assert_eq!(with_acted_tab(ambiguous.log_details(), acted, &refused, &ambiguous)["tab"], "by name", "two tabs matched, and saying there's no such tab would be false");
         let open = Command::Open { path: "/d/new.pdf".into(), page: None };
         let opened = run(&mut s, Level::Control, &open);
         assert_eq!(with_acted_tab(open.log_details(), None, &opened, &open)["tab"], "#3");

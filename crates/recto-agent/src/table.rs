@@ -211,7 +211,7 @@ pub static TABLE: &[Spec] = &[
             Arg { key: "pages", flag: Some("--pages"), kind: Kind::PagesOpen, required: false, help: "Only these pages: `4`, `4-6`, or `4-` to the end." },
             Arg { key: "limit", flag: Some("--limit"), kind: Kind::Positive(200), required: false, help: "Most hits in this answer. 20 if left out." },
         ],
-        data: "`{ tab, hits: [ { page, source_page, from_added_file, line, also_spelled, page_has_tag_chars, hidden_text: { checked, flagged }, untrusted: { snippet, added_file } } ], hidden_text_checked, coverage: { pages_searched, pages_in_scope, pages_with_no_text, no_text_pages, failed_pages, hits_not_shown: [ { page, hits } ], pages_with_tag_chars, changed_files: [ { untrusted: { file } } ], next_page } }`. `source_page` and `from_added_file` say where a hit's page really comes from, once it's been edited. It searches the same text `text` gives. A page in `failed_pages` couldn't be read, or its file changed since its number was recorded (`changed_files`). Only pages with hits are checked for hidden text, as `hidden_text_checked` says. `also_spelled: true` means the hit is another spelling of a word broken across lines, with no line of its own. `next_page` is where to go on from with `--pages`.",
+        data: "`{ tab, hits: [ { page, source_page, from_added_file, line, also_spelled, page_has_tag_chars, hidden_text: { checked, flagged }, overlaps_hidden, untrusted: { snippet, added_file } } ], hidden_text_checked, coverage: { pages_searched, pages_in_scope, pages_with_no_text, no_text_pages, failed_pages, hits_not_shown: [ { page, hits } ], pages_with_tag_chars, changed_files: [ { untrusted: { file } } ], next_page } }`. `source_page` and `from_added_file` say where a hit's page really comes from, once it's been edited. `overlaps_hidden: true` means the words matched include text no eye can see, and `null` that it can't be said. It searches the same text `text` gives. A page in `failed_pages` couldn't be read, or its file changed since its number was recorded (`changed_files`). Only pages with hits are checked for hidden text, as `hidden_text_checked` says. `also_spelled: true` means the hit is another spelling of a word broken across lines, with no line of its own. `next_page` is where to go on from with `--pages`.",
         examples: &["recto search \"force majeure\"", "recto search termination --pages 10-40 --limit 5 --json"],
         client_wait_s: 180,
         ..BASE
@@ -750,10 +750,16 @@ fn read_args(spec: &'static Spec, words: &[&str], literal_from: usize, help: boo
 
 /// The flag a stray page number was probably meant for: `recto text 1` for `--page 1`. Measurements count pages rather than name them, so they're left out.
 fn page_flag_for(spec: &Spec, word: &str) -> Option<&'static str> {
-    if spec.group == GROUP_MEASURE || crate::parse_pages(word, true).is_err() {
+    if spec.group == GROUP_MEASURE {
         return None;
     }
-    spec.args.iter().filter(|arg| matches!(arg.kind, Kind::Page | Kind::Pages | Kind::PagesOpen)).find_map(|arg| arg.flag)
+    // Advice it would then refuse is worse than none: `--page` takes one page, and `--pages` can take a range.
+    spec.args.iter().filter(|arg| arg.flag.is_some()).find_map(|arg| match arg.kind {
+        Kind::Page if whole_number(word).is_some_and(|page| page > 0) => arg.flag,
+        Kind::Pages if crate::parse_pages(word, false).is_ok() => arg.flag,
+        Kind::PagesOpen if crate::parse_pages(word, true).is_ok() => arg.flag,
+        _ => None,
+    })
 }
 
 fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
@@ -1095,6 +1101,12 @@ mod tests {
             assert_eq!(error.exit, exit::USAGE, "{typed}");
             assert!(error.message.contains(wanted), "{typed}: {}", error.message);
         }
+        for typed in ["text 1-3", "render 1-3 --out /d/a.png", "wait page-drawn 1-3", "open /d/a.pdf 1-3", "page insert /d/a.pdf 1-3", "page move 3 1-3", "text 0"] {
+            let error = line(typed).unwrap_err();
+            let advised = error.message.split('`').find(|piece| piece.starts_with("--"));
+            assert!(advised.is_none(), "{typed} advises {advised:?}, which would be refused: {}", error.message);
+        }
+        assert!(line("search word 1-").unwrap_err().message.contains("--pages 1-"), "`--pages` can take that");
         assert!(!line("tabs 1").unwrap_err().message.contains("--page"), "it has none");
         assert!(!line("text word").unwrap_err().message.contains("--page word"), "that's no page");
         assert!(!line("budget render 5").unwrap_err().message.contains("--first"), "a measurement's number is a count");

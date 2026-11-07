@@ -6,7 +6,7 @@
 //! runs of eight characters, spaces taken out, that `pdftotext -layout` also has. Pairs of words would be simpler, but pdftotext splits `F′` into `F ′`, so a pair of words marks every
 //! superscript put right as a mistake. `changes.txt` gets each changed page's scores and the pairs that are new.
 
-use recto_index::{normalize, read_page};
+use recto_index::{hidden_report, normalize, read_page};
 use recto_render_service::{DocRenderer, HeavySlot, Policy, ServiceConfig};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -71,6 +71,7 @@ fn main() {
     let (mut better, mut same, mut worse) = (0u32, 0u32, 0u32);
     let (mut better_plain, mut worse_plain) = (0u32, 0u32);
     let (mut better_pairs, mut worse_pairs) = (0u32, 0u32);
+    let (mut hidden_in_file, mut hidden_also_read) = (0u32, 0u32);
     let mut repair_ns: Vec<u64> = Vec::new();
     let mut read_page_chars = 0u64;
     let mut most_lines = 0usize;
@@ -94,6 +95,16 @@ fn main() {
             repair_ns.push(started.elapsed().as_nanos() as u64);
             if reading.runs_moved == 0 {
                 continue;
+            }
+            // What a move adds to the hidden-text flag on real pages, so it can't quietly start firing on them.
+            if let Ok(drawn) = doc.page_characters(page, true, true) {
+                let in_file = hidden_report(&drawn.chars, drawn.hidden_checked).flagged;
+                hidden_in_file += u32::from(in_file);
+                let also = read_page(&drawn.chars, &drawn.boxes, drawn.hidden_checked).hidden_flagged && !in_file;
+                hidden_also_read += u32::from(also);
+                if also {
+                    println!("hidden only once moved: {name} p{}", page + 1);
+                }
             }
             let before = normalize(&text.chars, false).text;
             let after = reading.normalized.text;
@@ -148,5 +159,6 @@ fn main() {
     println!("against pdftotext -layout, by runs of 8 characters: {better} better, {same} same, {worse} worse");
     println!("against pdftotext (reading order), by runs of 8 characters: {better_plain} better, {worse_plain} worse");
     println!("against pdftotext -layout, by pairs of words: {better_pairs} better, {worse_pairs} worse");
+    println!("of the changed pages, hidden text flagged in the file's order: {hidden_in_file}; flagged only once words moved: {hidden_also_read}");
     println!("read_page, us: p50 {:.1}, p95 {:.1}, p99 {:.1}, max {:.1}", at(0.5), at(0.95), at(0.99), at(1.0));
 }

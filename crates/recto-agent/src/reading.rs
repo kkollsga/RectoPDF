@@ -95,8 +95,8 @@ pub(crate) fn contents<A: SessionAccess>(access: &A, tab: &str, from: Option<u32
     let limit = crate::positive_limit(limit, DEFAULT_CONTENTS, MAX_CONTENTS)?;
     let from = from.unwrap_or(0) as usize;
     let shape = OutlineShape::of(toc.entries().iter().map(|entry| (entry.depth, entry.page)));
-    // Decided from the most it could show rather than a page's worth, so asking for the next piece with `--from` keeps to the same entries.
-    let shown_depth = depth.unwrap_or_else(|| shape.depth_that_fits(limit.max(DEFAULT_CONTENTS as usize)));
+    // Decided from a fixed room, not from `--limit`, so asking for the next piece keeps to the same entries, however large a piece it asks for.
+    let shown_depth = depth.unwrap_or_else(|| shape.depth_that_fits(DEFAULT_CONTENTS as usize));
     let visible: Vec<_> = toc.entries().iter().filter(|entry| entry.depth <= shown_depth).collect();
     let entries: Vec<Value> = visible
         .iter()

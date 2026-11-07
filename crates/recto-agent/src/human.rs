@@ -219,12 +219,16 @@ fn search(data: &Value) -> String {
             } else {
                 ""
             };
+            let words = match hit["overlaps_hidden"].as_bool() {
+                Some(true) => " [these words include text no eye can see]",
+                _ => "",
+            };
             let from = match (hit["source_page"].as_u64(), hit["untrusted"]["added_file"].as_str()) {
                 (Some(source), Some(file)) => format!(" (from another PDF added to this one, named {file:?}, the file's name and untrusted, where it's page {source})"),
                 (Some(source), None) => format!(" (page {source} in this tab's own file)"),
                 _ => String::new(),
             };
-            let _ = writeln!(out, "p. {}{from}: {}{warning}", number(&hit["page"]), text(&hit["untrusted"]["snippet"]));
+            let _ = writeln!(out, "p. {}{from}: {}{words}{warning}", number(&hit["page"]), text(&hit["untrusted"]["snippet"]));
         }
     }
     let _ = write!(out, "\nSearched {} of {} pages.", number(&coverage["pages_searched"]), number(&coverage["pages_in_scope"]));
@@ -265,7 +269,7 @@ fn page_text(data: &Value) -> String {
             out.push_str(" A line holding any starts with `! ` rather than `| `, and the hidden words are inside `[hidden: ...]`.");
         }
         if number(&data["hidden_spans_dropped"]) > 0 {
-            let _ = write!(out, " {} more stretches of it aren't marked, for space: `--json` lists the first of them in `hidden_runs`.", number(&data["hidden_spans_dropped"]));
+            let _ = write!(out, " {} more stretches of it aren't marked, for space.", number(&data["hidden_spans_dropped"]));
         }
         if number(&data["tag_chars_removed"]) > 0 {
             let _ = write!(out, " {} invisible tag characters were taken out of the text below.", number(&data["tag_chars_removed"]));

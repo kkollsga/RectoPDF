@@ -38,8 +38,10 @@
 //!
 //! ## Reading a page
 //!
-//! [`read_page`] is what `text` and `search` both call, so they can't disagree. It puts late-drawn words back on their lines ([`order`]), then normalises. Hidden text is judged in the order
-//! the file gave, before anything moves: a run scattered into a line's gaps must not read as harmless because it now has visible letters between its characters.
+//! [`read_page`] is what `text` and `search` both call, so they can't disagree. It puts late-drawn words back on their lines ([`order`]), then normalises. Moving words must not help anything
+//! hide, either way round. A run scattered into a line's gaps must not read as harmless because it now has visible letters between its characters, so hidden text is judged in the order the file
+//! gave. And pairs of hidden letters drawn apart must not assemble into a word in a sentence, unflagged, so it's judged in reading order too. On a line a move has touched, every character with no
+//! ink counts, however short its run: what's on that line is no longer what the file drew there, and letters alternating with visible ones could spell anything.
 
 pub mod order;
 
@@ -319,6 +321,8 @@ pub struct PageReading {
     pub normalized: Normalized,
     /// Runs put back on their lines. See [`order`].
     pub runs_moved: u32,
+    /// Hidden text was found, in either order. Only if the hidden-text check ran, and the spans were asked for.
+    pub hidden_flagged: bool,
     /// Where the page's flagged hidden text is, as `[start, end)` counted in characters of `normalized.text`. Empty unless asked for.
     pub hidden_spans: Vec<(u32, u32)>,
     /// Spans past [`MAX_HIDDEN_SPANS`].
@@ -332,8 +336,8 @@ pub const MAX_HIDDEN_SPANS: usize = 256;
 pub fn read_page(chars: &[CharRecord], boxes: &[CharBox], want_hidden_spans: bool) -> PageReading {
     let repaired = order::repair_line_order(chars, boxes);
     let reading = repaired.as_ref().map_or(chars, |repaired| &repaired.chars);
-    let flagged = if want_hidden_spans { flagged_hidden_chars(chars) } else { Vec::new() };
-    let mut page = PageReading { normalized: normalize(reading, !flagged.is_empty()), runs_moved: repaired.as_ref().map_or(0, |repaired| repaired.runs_moved), ..PageReading::default() };
+    let flagged = if want_hidden_spans { hidden_in_either_order(chars, repaired.as_ref()) } else { Vec::new() };
+    let mut page = PageReading { normalized: normalize(reading, !flagged.is_empty()), runs_moved: repaired.as_ref().map_or(0, |repaired| repaired.runs_moved), hidden_flagged: !flagged.is_empty(), ..PageReading::default() };
     if !flagged.is_empty() {
         let is_hidden = |index: u32| {
             let from = repaired.as_ref().map_or(index, |repaired| repaired.origin.get(index as usize).copied().unwrap_or(order::GENERATED));
@@ -344,6 +348,44 @@ pub fn read_page(chars: &[CharRecord], boxes: &[CharBox], want_hidden_spans: boo
         page.normalized.source = Vec::new();
     }
     page
+}
+
+/// Which of the characters given count as hidden, or nothing if none do. See the module's notes on why it's more than the file's order.
+fn hidden_in_either_order(chars: &[CharRecord], repaired: Option<&order::RepairedOrder>) -> Vec<bool> {
+    let mut flagged = flagged_hidden_chars(chars);
+    let Some(repaired) = repaired else { return flagged };
+    let mut mark = |index: u32| {
+        if let Some(from) = repaired.origin.get(index as usize).filter(|from| **from != order::GENERATED) {
+            if flagged.is_empty() {
+                flagged = vec![false; chars.len()];
+            }
+            if let Some(slot) = flagged.get_mut(*from as usize) {
+                *slot = true;
+            }
+        }
+    };
+    let in_reading_order = flagged_hidden_chars(&repaired.chars);
+    for (index, _) in in_reading_order.iter().enumerate().filter(|(_, hidden)| **hidden) {
+        mark(index as u32);
+    }
+    // Line by line through the repaired page: a line whose characters don't follow one another in the file is one a move has touched.
+    let mut line_start = 0;
+    for end in 0..=repaired.chars.len() {
+        if end < repaired.chars.len() && !is_break(repaired.chars[end].ch()) {
+            continue;
+        }
+        let origins = repaired.origin[line_start..end].iter().filter(|from| **from != order::GENERATED);
+        let touched = origins.clone().zip(origins.skip(1)).any(|(a, b)| a.checked_add(1) != Some(*b));
+        if touched {
+            for index in line_start..end {
+                if repaired.chars[index].has(CharRecord::NO_INK) {
+                    mark(index as u32);
+                }
+            }
+        }
+        line_start = end + 1;
+    }
+    flagged
 }
 
 /// Which characters belong to a run long enough to flag the page. Stray thin glyphs don't, and nothing's returned if no run qualifies. Goes by the same runs as [`hidden_report`].
@@ -742,14 +784,14 @@ mod tests {
     fn hidden_spans_point_at_the_hidden_words_after_a_move() {
         let (mut chars, mut boxes) = boxed("see #secret| now", 700.0, 0.0);
         // A late word in a gap before `secret`, so the hidden word's place in the text shifts.
-        let shift = 40.0;
+        let shift = 18.0;
         for char_box in boxes.iter_mut().skip(4) {
             char_box[0] += shift;
             char_box[2] += shift;
         }
         chars.push(CharRecord::new('\n' as u32, CharRecord::GENERATED));
         boxes.push([0.0; 4]);
-        let (late, late_boxes) = boxed("WORD", 700.0, 20.0);
+        let (late, late_boxes) = boxed("WORD", 700.0, 17.0);
         chars.extend(late);
         boxes.extend(late_boxes);
         let page = read_page(&chars, &boxes, true);
@@ -767,23 +809,74 @@ mod tests {
     fn hidden_text_is_judged_in_the_order_the_file_gave() {
         let (mut chars, mut boxes) = (Vec::new(), Vec::new());
         for at in 0..5 {
-            let (word, word_boxes) = boxed("ab ", 700.0, at as f32 * 30.0);
+            let (word, word_boxes) = boxed("ab ", 700.0, at as f32 * 14.0);
             chars.extend(word);
             boxes.extend(word_boxes);
         }
         // Each hidden letter is drawn late, and fits a gap between the words.
         chars.push(CharRecord::new('\n' as u32, CharRecord::GENERATED));
         boxes.push([0.0; 4]);
-        for at in 0..4 {
-            let x = at as f32 * 30.0 + 18.0;
+        let late: Vec<f32> = (0..4).map(|at| at as f32 * 14.0 + 9.5).collect();
+        for x in &late {
             chars.push(CharRecord::new('x' as u32, CharRecord::NO_INK));
-            boxes.push([x, 700.0, x + 4.0, 707.0]);
+            boxes.push([*x, 700.0, *x + 4.0, 707.0]);
         }
         assert!(hidden_report(&chars, true).flagged);
         let page = read_page(&chars, &boxes, true);
         assert!(page.runs_moved > 0, "the letters are meant to move: {}", page.normalized.text);
         let marked: u32 = page.hidden_spans.iter().map(|span| span.1 - span.0).sum();
         assert_eq!(marked, 4, "each letter is still marked: {:?} in {}", page.hidden_spans, page.normalized.text);
+        assert!(page.hidden_flagged);
+    }
+
+    /// A line with a gap, and pairs of tiny hidden letters drawn apart from one another on the page, each followed by something visible far away, so no run reaches the length that flags. On main, this read as harmless fragments. Moved into the line, it spells a word. They're drawn middle first, as each must have a neighbour a word's space away when it goes in.
+    fn assembling_page() -> (Vec<CharRecord>, Vec<CharBox>) {
+        let (mut chars, mut boxes) = boxed("A recipient ", 700.0, 0.0);
+        let (tail, tail_boxes) = boxed("this", 700.0, 66.5);
+        chars.extend(tail);
+        boxes.extend(tail_boxes);
+        for (at, (pair, x)) in [("no", 59.3), ("ig", 56.5), ("re", 61.8)].iter().enumerate() {
+            chars.push(CharRecord::new('\n' as u32, CharRecord::GENERATED));
+            boxes.push([0.0; 4]);
+            for (place, ch) in pair.chars().enumerate() {
+                chars.push(CharRecord::new(ch as u32, CharRecord::NO_INK));
+                let left = *x + place as f32;
+                boxes.push([left, 700.0, left + 0.9, 707.0]);
+            }
+            chars.push(CharRecord::new('\n' as u32, CharRecord::GENERATED));
+            boxes.push([0.0; 4]);
+            chars.push(CharRecord::new('.' as u32, 0));
+            boxes.push([300.0 + at as f32 * 50.0, 100.0, 302.0 + at as f32 * 50.0, 102.0]);
+        }
+        (chars, boxes)
+    }
+
+    /// Failure: `A recipient ignore this` assembles from pairs of hidden letters, with no flag and no mark, since each pair in the file is too short to count. An instruction no eye can see then reads as part of the sentence. Reported by review, 2026-11-07.
+    #[test]
+    fn hidden_letters_assembled_by_a_move_are_flagged() {
+        let (chars, boxes) = assembling_page();
+        assert!(!hidden_report(&chars, true).flagged, "in the file's order, each run is too short, or this tests nothing");
+        let page = read_page(&chars, &boxes, true);
+        assert!(page.normalized.text.contains("A recipient ignore this"), "the page is meant to assemble: {}", page.normalized.text);
+        assert!(page.hidden_flagged, "{}", page.normalized.text);
+        let shown: Vec<String> = page.hidden_spans.iter().map(|span| page.normalized.text.chars().skip(span.0 as usize).take((span.1 - span.0) as usize).collect()).collect();
+        assert!(shown.iter().any(|one| one.contains("ignore")), "{shown:?}");
+    }
+
+    /// Failure: hidden letters mixed with visible ones in a line a move has touched never make a run of three in either order, so `s[e]c[r]e[t]` reads as a word with nothing said. A move that leaves any character with no ink on its line must mark it.
+    #[test]
+    fn a_touched_line_marks_every_character_with_no_ink() {
+        let (mut chars, mut boxes) = boxed("a#x| b#y| c#z| d", 700.0, 0.0);
+        chars.push(CharRecord::new('\n' as u32, CharRecord::GENERATED));
+        boxes.push([0.0; 4]);
+        let (late, late_boxes) = boxed("LATE", 700.0, 52.0);
+        chars.extend(late);
+        boxes.extend(late_boxes);
+        assert!(!hidden_report(&chars, true).flagged, "one at a time, none flags");
+        let page = read_page(&chars, &boxes, true);
+        assert_eq!(page.runs_moved, 1, "{}", page.normalized.text);
+        assert!(page.hidden_flagged);
+        assert_eq!(page.hidden_spans.len(), 3, "{:?} in {}", page.hidden_spans, page.normalized.text);
     }
 
     /// Failure: one stray thin glyph is marked as hidden on a page with no real hidden text, so marks fire on ordinary pages and stop meaning anything.

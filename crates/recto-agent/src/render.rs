@@ -203,14 +203,18 @@ fn write_page(doc: &mut DocRenderer, page: u32, scale: f32, out: &Path, caps: &O
 /// What a picture must weigh, as a share of the limit, before a smaller scale can honestly be suggested. Below this, what's using the memory is the page's content: a hostile form takes all it's given at any size, and even a heavy map's peak barely moves with scale (468 MiB at 4x, 394 MiB at 2x).
 const SCALE_MATTERS_SHARE: u64 = 8;
 
-/// Says the limit, and suggests a smaller scale only if that can help: the picture itself must be a real share of the limit, and the scale must have somewhere useful to go.
+/// Says the limit, and suggests a smaller scale only if that can help: the picture itself must be a real share of the limit, and the scale must have somewhere to go.
 fn too_heavy_to_export(failure: RenderFailure, page: u32, scale: f32, (width, height): (u32, u32), limit: u64) -> AgentError {
     let picture = u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL);
     let mut error = AgentError::from(failure);
     error.message = format!("Page {} wasn't exported, and no file was written: drawing it needs more than the {} one page may use.", page + 1, crate::human::bytes(limit));
-    if picture.saturating_mul(SCALE_MATTERS_SHARE) >= limit && scale > 1.0 {
+    let large = picture.saturating_mul(SCALE_MATTERS_SHARE) >= limit;
+    if large && scale > recto_proto::MIN_SCALE {
         error.message.push_str(&format!(" The picture alone is {} at {scale}x.", crate::human::bytes(picture)));
         error.next = "A smaller `--scale` may fit.".to_string();
+    } else if large {
+        error.message.push_str(&format!(" The picture alone is {} at {scale}x, the smallest scale there is.", crate::human::bytes(picture)));
+        error.next = "Tell the user this page can't be drawn.".to_string();
     } else {
         error.message.push_str(&format!(" The picture is only {} at {scale}x, so it's what's on the page that uses the memory.", crate::human::bytes(picture)));
         error.next = "A smaller scale won't help. Tell the user this page can't be drawn.".to_string();
@@ -267,7 +271,7 @@ pub(crate) fn text(path: &Path, page: u32) -> Result<Value, AgentError> {
         "also_spelled_dropped": normalized.also_spelled_dropped,
         // Words the file drew late, put back on their lines. `search` reads the same text.
         "runs_moved": reading.runs_moved,
-        "hidden_text": { "checked": hidden.checked, "flagged": hidden.flagged || normalized.tag_chars_removed > 0, "chars": hidden.chars },
+        "hidden_text": { "checked": hidden.checked, "flagged": hidden.flagged || reading.hidden_flagged || normalized.tag_chars_removed > 0, "chars": hidden.chars },
         // Where `hidden_runs` lie in the text, in characters. Numbers only, so it isn't untrusted.
         "hidden_spans": reading.hidden_spans.iter().map(|span| [span.0, span.1]).collect::<Vec<_>>(),
         "hidden_spans_dropped": reading.hidden_spans_dropped,
@@ -540,8 +544,11 @@ mod tests {
         assert!(small.message.contains("no file was written"), "{}", small.message);
         let large = too_heavy_to_export(refused, 0, 8.0, (8000, 8000), gib);
         assert!(large.next.contains("smaller `--scale` may fit"), "{}", large.next);
-        let low_already = too_heavy_to_export(refused, 0, 0.5, (8000, 8000), gib);
-        assert!(!low_already.next.contains("may fit"), "at a low scale, there's nowhere to go: {}", low_already.next);
+        // A 7200 x 7200 pt page at 1x really is too large a picture, and at half the scale it's a quarter of that. Scale 1 isn't the floor. Only the smallest scale is.
+        let huge_page = too_heavy_to_export(refused, 0, 1.0, (7200, 7200), gib);
+        assert!(huge_page.next.contains("may fit"), "{}", huge_page.next);
+        let at_the_floor = too_heavy_to_export(refused, 0, recto_proto::MIN_SCALE, (8000, 8000), gib);
+        assert!(!at_the_floor.next.contains("may fit"), "there's nowhere to go: {}", at_the_floor.next);
         assert_eq!(small.code, "export_page_too_heavy");
     }
 
