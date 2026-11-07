@@ -102,6 +102,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 
 ## Phase 3: Complete reader
 
+- [ ] Native text selection: drag, double and triple click, select across pages, ⌘C, the system's highlight colour and I-beam cursor
 - [ ] Search corpus and index, with the text normaliser
 - [ ] Find in the sidebar, with the hit list
 - [ ] macOS menu bar, driven by a Rust model; `⋯` panel; ⌘K
