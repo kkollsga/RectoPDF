@@ -115,7 +115,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
 - [ ] ⌘K
 - [x] Session restore: the whole app state on every launch, unsaved edits included (SPEC decision 23). A whole-state comparison across quit, hand-off and kill, journals for edits, `recto session`, `AppCore::hand_off` for the updater
-- [ ] Saved point in the history, so undo works past a Save, and Clear Edit History (SPEC decision 25). Next on `build/restore`'s follow-on
+- [x] Saved point in the history, so undo works past a Save, and Clear Edit History (SPEC decision 25). `Session::saved`, `save_prepared`, `clear_history`, `recto clear-history`, Edit > Clear Edit History. Tested directly, with `qa save-from`, as Save isn't built
+- [ ] On Save's gate: call `save_prepared`, then `saved`, on the real path, with a redaction keeping nothing; keep `never_in_pdf.rs` on that path rather than its stand-in writer; have the reader take up the new file; and keep only the pages a save removes rather than a copy of the whole file, so a PDF over 64 MiB can undo past a save too. Today it's a whole-file clone or nothing
 - [ ] On Save's gate: check every page against the real file when writing, as `validate_edits` checks against what a journal says of itself, which can be forged; and check the save marker again once it's on disk
 - [ ] Deep sleep for idle tabs, with sleep files and a byte budget across documents (SPEC decision 25). Next after that
 - [ ] Find's field, edit mode and view rotation draw what the state record already carries

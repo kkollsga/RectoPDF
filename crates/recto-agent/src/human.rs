@@ -120,7 +120,7 @@ pub fn render(tag: &str, data: &Value) -> String {
             }
             out
         }
-        "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" => edit_state(data),
+        "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" | "clear_history" => edit_state(data),
         "edits" => edits(data),
         "render" => render_result(data),
         "export_svg" => export_svg_result(data),
