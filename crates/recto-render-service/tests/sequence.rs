@@ -153,6 +153,24 @@ fn done(result: Result<TileResult, RenderFailure>) -> recto_render_service::Tile
     }
 }
 
+/// Failure: every start of a heavy worker uses up the document's allowance, whether it was let go for resting, sent its fill of surfaces or truly overran. A page that needs the larger limit goes to a lower resolution for good after eight rests, and nothing ever restores it. Only overrunning counts.
+#[test]
+fn a_heavy_worker_let_go_again_and_again_uses_up_nothing() {
+    let slot = HeavySlot::new();
+    let (mut doc, _file) = doc_with("fits_heavy", policy(), &slot);
+    let rests = policy().max_heavy_retries * 2 + 1;
+    for _ in 0..rests {
+        let tile = done(doc.render_tile(&request(0), &surface()));
+        assert_eq!(tile.low_res, None, "still sharp, after {} starts", doc.stats().heavy_retries);
+        doc.kill_worker();
+        // The heavy slot is free when that process has really gone.
+        common::wait_until("the heavy slot", || !slot.is_taken());
+    }
+    assert!(doc.stats().heavy_retries > policy().max_heavy_retries, "this has to pass the old allowance: {:?}", doc.stats());
+    assert_eq!(doc.stats().heavy_pages, 1, "one page");
+    assert_eq!(doc.page_draw_state(0), PageDrawState::NeedsHeavy);
+}
+
 /// Failure: an ordinary page goes near the sequence at all, costing it a kill or a larger worker.
 #[test]
 fn step_1_an_ordinary_page_stays_at_the_normal_limit() {

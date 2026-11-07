@@ -535,6 +535,8 @@ pub struct RenderStats {
     pub idle_exits: u32,
     /// Times a page was retried alone at the larger limit.
     pub heavy_retries: u32,
+    /// Pages that have needed a heavy worker: it's these that count towards [`Policy::max_heavy_retries`]. Starting one again for the same page, after a rest or after it was sent its fill of surfaces, says nothing new about the document.
+    pub heavy_pages: u32,
     /// Tiles that came back at a lower resolution.
     pub low_res_tiles: u32,
     pub jobs: u64,
@@ -661,6 +663,8 @@ struct PageMemory {
     failed_from: Option<(f32, KillReason)>,
     /// Its lower-resolution version stopped a worker while the larger limit was out of reach. Once that's been tried and failed too, every step has failed once.
     low_res_stopped: bool,
+    /// It's counted towards the document's allowance of pages that need a heavy worker.
+    counted_as_heavy: bool,
     text: Option<KillReason>,
     size: Option<KillReason>,
 }
@@ -813,7 +817,7 @@ impl DocRenderer {
         self.remembered.clear();
         self.open_failure = None;
         self.kills_counted_from = self.kills();
-        self.heavy_retries_counted_from = self.stats.heavy_retries;
+        self.heavy_retries_counted_from = self.stats.heavy_pages;
     }
 
     /// Starts a worker if none is running, and returns the page count. Most callers can just ask for what they want.
@@ -1010,9 +1014,10 @@ impl DocRenderer {
                     other => return other_result(other),
                 },
                 PageDrawState::NeedsHeavy => {
-                    let retries = self.stats.heavy_retries - self.heavy_retries_counted_from;
+                    let retries = self.stats.heavy_pages - self.heavy_retries_counted_from;
+                    let counted = self.remembered(page).is_some_and(|memory| memory.counted_as_heavy);
                     let already_heavy = self.worker.as_ref().is_some_and(|worker| worker.heavy);
-                    if self.policy.heavy_limit_bytes <= self.policy.memory_limit_bytes || (!already_heavy && retries >= self.policy.max_heavy_retries) {
+                    if self.policy.heavy_limit_bytes <= self.policy.memory_limit_bytes || (!already_heavy && !counted && retries >= self.policy.max_heavy_retries) {
                         self.set_draw(page, scale, PageDrawState::LowResOnly);
                         continue;
                     }
@@ -1021,6 +1026,10 @@ impl DocRenderer {
                             DrawPurpose::OnScreen => self.low_res_for_now(request, surface, LowResWhy::MemoryTight),
                             DrawPurpose::Export => Err(RenderFailure::ExportRefused { page, why: ExportRefusal::MemoryTight }),
                         };
+                    }
+                    if !counted {
+                        self.remember(page).counted_as_heavy = true;
+                        self.stats.heavy_pages += 1;
                     }
                     if purpose == DrawPurpose::Export && !already_heavy && self.waited_ticket.is_none() {
                         match self.wait_for_slot(request.generation) {
@@ -1229,7 +1238,7 @@ impl DocRenderer {
                 if self.remembered.len() >= MAX_FAILED_PAGES {
                     self.remembered.remove(0);
                 }
-                self.remembered.push(PageMemory { page, needs_heavy_from: None, low_res_from: None, failed_from: None, low_res_stopped: false, text: None, size: None });
+                self.remembered.push(PageMemory { page, counted_as_heavy: false, needs_heavy_from: None, low_res_from: None, failed_from: None, low_res_stopped: false, text: None, size: None });
                 self.remembered.len() - 1
             }
         };
