@@ -252,11 +252,11 @@ pub fn unpack_entries<R: Read + Seek>(file: &mut R, entries: &[Entry], into: &Pa
         }
         let path = into.join(entry.name.trim_end_matches('/'));
         if entry.is_folder {
-            std::fs::create_dir_all(&path)?;
+            make_folders(&path)?;
             continue;
         }
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            make_folders(parent)?;
         }
         // Never over something: a link can't be there, as nothing here makes them, and a second file of a name can't.
         let mut options = OpenOptions::new();
@@ -295,6 +295,15 @@ pub fn unpack_entries<R: Read + Seek>(file: &mut R, entries: &[Entry], into: &Pa
         }
     }
     Ok(())
+}
+
+/// Folders open to read and closed to write, whatever this process's umask would have let through.
+fn make_folders(path: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o755);
+    builder.create(path)
 }
 
 /// Checks and unpacks a zip into an empty folder of its own.

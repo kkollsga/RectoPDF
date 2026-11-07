@@ -174,6 +174,8 @@ struct St {
     install_look_at: Option<u64>,
     /// What this launch came from, if it's an update that's still to reach its first frame.
     arrived: Option<Plan>,
+    /// This launch is an update arriving. It stays so after the first frame.
+    arrived_by_update: bool,
     first_frame_done: bool,
     /// The first frame came before what's remembered had been read, off a slow disk. It's dealt with as soon as it has.
     first_frame_early: Option<u64>,
@@ -231,7 +233,7 @@ fn ago(at_ms: u64, now_ms: u64) -> String {
 impl Updater {
     #[must_use]
     pub fn new(root: &Path, source: Source, host: Arc<dyn Host>) -> Arc<Self> {
-        let st = St { status: Status::Idle, saved: Saved::default(), launched_ms: crate::wall_ms(), facts: None, second_copy: false, notice: None, install_look_at: None, arrived: None, first_frame_done: false, first_frame_early: None };
+        let st = St { status: Status::Idle, saved: Saved::default(), launched_ms: crate::wall_ms(), facts: None, second_copy: false, notice: None, install_look_at: None, arrived: None, arrived_by_update: false, first_frame_done: false, first_frame_early: None };
         Arc::new(Self { files: Files::in_state(root), source, host, st: Mutex::new(st), writing: Mutex::new(()), clock_ahead_ms: AtomicI64::new(0), stopping: AtomicBool::new(false) })
     }
 
@@ -347,6 +349,7 @@ impl Updater {
             st.second_copy = second_copy;
             st.status = status;
             st.notice = settled.notice;
+            st.arrived_by_update = settled.arrived.is_some();
             st.arrived = settled.arrived;
             if may_replace && offered.is_some() {
                 st.install_look_at = Some(now.saturating_add(rules::MIN_GAP_MS));
@@ -389,7 +392,7 @@ impl Updater {
     /// Whether this launch is an update arriving, so what comes back is exactly what was left, down to a window that was closed. Any other launch opens a window, as an app does.
     #[must_use]
     pub fn arrived_by_update(&self) -> bool {
-        lock(&self.st).arrived.is_some()
+        lock(&self.st).arrived_by_update
     }
 
     /// What the last install left behind. The installer tidies up when it finishes: this is for when it didn't get to.
@@ -420,10 +423,11 @@ impl Updater {
                 }
                 OutcomeKind::NotInstalled => {
                     saved.install_failures = saved.install_failures.saturating_add(1);
+                    saved.quits_for_nothing = saved.quits_for_nothing.saturating_add(1);
                     saved.last_install_ms = Some(now);
                     let (why, lasting) = why_not_installed(&outcome.why);
                     // Whatever it was, the app went away and came back for nothing, and the user may have seen that. Say so, and don't do it for ever.
-                    if lasting || saved.install_failures >= QUITS_FOR_NOTHING {
+                    if lasting || saved.quits_for_nothing >= QUITS_FOR_NOTHING {
                         saved.note_failed_version(&outcome.to);
                     }
                     settled.status = Some(Status::Failed { version: outcome.to.clone(), why: why.to_owned() });
@@ -444,6 +448,7 @@ impl Updater {
             settled.notice = Some(Notice { text: format!("Updated to {}.", plan.to), fades: true });
             saved.offered = None;
             saved.install_failures = 0;
+            saved.quits_for_nothing = 0;
             saved.failures = 0;
             if !alive {
                 self.tidy_after_swap(&plan, &beside);
@@ -455,8 +460,9 @@ impl Updater {
         } else {
             // The installer was stopped before it swapped, so this is the old app, and there's no harm done.
             saved.install_failures = saved.install_failures.saturating_add(1);
+            saved.quits_for_nothing = saved.quits_for_nothing.saturating_add(1);
             saved.last_install_ms = Some(now);
-            if saved.install_failures >= QUITS_FOR_NOTHING {
+            if saved.quits_for_nothing >= QUITS_FOR_NOTHING {
                 saved.note_failed_version(&plan.to);
             }
             settled.status = Some(Status::Failed { version: plan.to.clone(), why: "the installer stopped before it finished".to_owned() });
@@ -1361,7 +1367,7 @@ mod tests {
         assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0, "the app never hears of it");
     }
 
-    /// Failure: the 30-minute rule is broken: an install goes while the user's in the app, or doesn't go when they've been away, or it goes when they've come back during the download. With a clock moved on rather than half an hour's sleep, by the same call the timer makes.
+    /// Failure: the 30-minute rule is broken: an install goes while the user's in the app, or doesn't go when they've been away. With a clock moved on rather than half an hour's sleep, by the same call the timer makes. Someone coming back later than the timer's look is the two tests after this.
     #[test]
     fn an_automatic_install_goes_only_after_thirty_quiet_minutes() {
         let bed = Bed::new("thirty");
@@ -1592,7 +1598,7 @@ mod tests {
         assert_eq!(lock(&updater.st).saved.failed, vec!["0.2.0".to_string()], "not by itself again");
         lock(&updater.st).saved.failed.clear();
         let cleared = lock(&updater.st).saved.clone();
-        Saved { install_failures: 0, ..cleared }.write(&files.saved);
+        Saved { install_failures: 0, quits_for_nothing: 0, ..cleared }.write(&files.saved);
         for tries in 1..=QUITS_FOR_NOTHING {
             let updater = launch_with("old_app_stayed");
             assert!(updater.notice().is_some(), "said each time");

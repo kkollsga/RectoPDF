@@ -301,6 +301,34 @@ fn two_installers_on_one_plan_do_it_once() {
     }
 }
 
+/// Failure: an installer goes ahead while another's at work. **The lock on its own,** as the plan's name and the last look catch most of what two at once do, and neither closes the moment between a look and a swap. Held by someone else, it waits and touches nothing, and goes when it's let go. If it isn't let go, it stands down and says so.
+#[test]
+fn an_installer_waits_its_turn() {
+    let mut bed = Bed::new("turn", "ok");
+    let holder = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(bed.files.installer_lock()).unwrap();
+    holder.try_lock().unwrap();
+    let mut gone = Command::new("/usr/bin/true").spawn().unwrap();
+    gone.wait().unwrap();
+    let mut installer = bed.start(gone.id(), None);
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(installer.try_wait().unwrap().is_none(), "it's waiting");
+    assert_eq!(bed.installed(), "0.1.0");
+    assert!(!bed.files.helper_pid().exists(), "and has touched nothing");
+    assert!(!bed.files.before().exists());
+    holder.unlock().unwrap();
+    assert!(installer.wait().unwrap().success(), "{}", std::fs::read_to_string(&bed.files.log).unwrap());
+    assert_eq!(bed.installed(), "0.2.0");
+
+    let mut bed = Bed::new("turn-never", "ok");
+    bed.plan.quit_limit_ms = 200;
+    let holder = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(bed.files.installer_lock()).unwrap();
+    holder.try_lock().unwrap();
+    assert!(!bed.run(None).success());
+    assert_eq!(bed.installed(), "0.1.0");
+    assert_eq!(Outcome::read(&bed.files.outcome()).unwrap().why, "another_installer");
+    assert!(new_app_in(&bed.plan.beside).exists());
+}
+
 /// Failure: an installer whose app took its plan back, and then a retry wrote another, goes ahead when the old process ends, alongside the new one. How the review's case comes about: an app that takes over 15 s to quit, then an agent asking again. The first sees the plan isn't its own, and gets out of the way while the old app's still running; the second goes ahead when it's gone.
 #[test]
 fn an_installer_whose_plan_was_replaced_stands_down() {

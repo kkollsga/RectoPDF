@@ -23,6 +23,8 @@ pub struct Saved {
     /// Installs that failed in a row since one that worked, and when the last one tried, for going easy on a transient failure.
     pub install_failures: u32,
     pub last_install_ms: Option<u64>,
+    /// Times in a row an install got as far as quitting the app and reopening it with nothing to show for it.
+    pub quits_for_nothing: u32,
     /// Versions that were refused or didn't start. Never tried by itself again.
     pub failed: Vec<String>,
     /// The version that last reached its first frame. A launch of any other counts towards going back.
