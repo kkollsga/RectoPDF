@@ -418,7 +418,9 @@ final class BookMark: NSView {
         let area = NSRect(x: side, y: 0, width: size.width - side, height: size.height)
         pages.scrollView.frame = area
         home.frame = area
-        agentIcon.frame = NSRect(x: size.width - 40, y: 16, width: 20, height: 20)
+        // The same margin to the right as above, and less above than the 16 it had. Owner, 2026-11-07: "The margin left of the ai icon is too large. It should have the same margin to the right and above. Above should have slightly smaller margin then now (and right gets the same one)."
+        let iconMargin: CGFloat = 12
+        agentIcon.frame = NSRect(x: size.width - iconMargin - 20, y: iconMargin, width: 20, height: 20)
         // Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon".
         pages.setScrollerTop(agentIcon.isHidden ? 0 : agentIcon.frame.maxY + 8)
         layoutMargin(area: area)

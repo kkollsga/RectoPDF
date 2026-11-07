@@ -675,7 +675,7 @@ fn the_panel_opens_and_does_what_it_says() {
     wait_for(&run, |state| state["app"]["panel"]["open"] == false);
 }
 
-/// Failure: the menu bar isn't what Rust lists, or Show Agent Icon doesn't hide the star, or isn't remembered, or the page's scroller still runs under where the star is, or the full way with a star there. Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon. Add an option in the macos top bar to turn off agent bar (hides the icon), enable + - and command - scroll for zooming".
+/// Failure: the menu bar isn't what Rust lists, or the star's margins aren't the same to the right and above, or Show Agent Icon doesn't hide the star, or isn't remembered, or the page's scroller still runs under where the star is, or the full way with a star there. Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon. Add an option in the macos top bar to turn off agent bar (hides the icon), enable + - and command - scroll for zooming".
 #[test]
 fn the_menu_bar_and_the_agent_icon() {
     let Some(run) = Run::start() else { return };
@@ -689,7 +689,10 @@ fn the_menu_bar_and_the_agent_icon() {
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
     assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon"]);
     assert_eq!(state["app"]["agent_icon"], true);
-    assert!(state["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() > 30.0, "below the star: {state}");
+    // Owner, 2026-11-07: the same margin to the right as above, and less above than the 16 it had.
+    let (top, right) = (state["app"]["agent_icon_margins"]["top"].as_f64().unwrap(), state["app"]["agent_icon_margins"]["right"].as_f64().unwrap());
+    assert!((top - right).abs() < 0.5 && top < 16.0 && top >= 8.0, "top {top}, right {right}");
+    assert!(state["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() > 28.0, "below the star: {state}");
     run.ok(&["qa", "menu", "view.agent_icon"]);
     let hidden = wait_for(&run, |state| state["app"]["agent_icon"] == false);
     assert_eq!(hidden["app"]["pages"]["scroller_top_inset"], 0.0, "the whole way with no star: {hidden}");

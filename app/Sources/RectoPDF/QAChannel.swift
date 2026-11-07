@@ -248,6 +248,7 @@ import QuartzCore
             "place_label": controller.placeLabel.isHidden ? NSNull() as Any : controller.placeLabel.label.text,
             "place_label_in_lower_right": !controller.placeLabel.isHidden && controller.placeLabel.frame.maxX > controller.root.bounds.maxX - 40 && controller.placeLabel.frame.maxY > controller.root.bounds.maxY - 40 && controller.root.bounds.contains(controller.placeLabel.frame),
             "agent_icon": !controller.agentIcon.isHidden,
+            "agent_icon_margins": ["top": controller.agentIcon.frame.minY, "right": controller.root.bounds.maxX - controller.agentIcon.frame.maxX] as [String: Any],
             "panel": sidebar.panelReport(),
             "settings": delegate.settings?.report() ?? ["open": false],
             "context_menu": { () -> [[String: Any]] in

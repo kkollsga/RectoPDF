@@ -365,6 +365,8 @@ fn everything_comes_back_after_a_quit() {
 const KNOWN_PATHS: &[&str] = &[
     "app.activation",
     "app.agent_icon",
+    "app.agent_icon_margins.right",
+    "app.agent_icon_margins.top",
     "app.appearance",
     "app.backing",
     "app.context_menu.len",

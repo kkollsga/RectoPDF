@@ -156,7 +156,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
   - [x] Right-click: single page, side by side, and side by side with the first page alone, per tab and restored
   - [x] File > Settings…
   - [ ] Rotate in the `⋯` panel turns every page as one unsaved edit, outside edit mode
-  - [ ] The agent icon's margins: the same to the right and above, and less above than before
+  - [x] The agent icon's margins: the same to the right and above, and less above than before
   - [x] Margin above the first page and below the last
   - [ ] The page's scroller: a slim thumb always shown, no rail, the sidebar's width and colours
   - [ ] Comparison view: several PDFs side by side, separate or synced scroll, zoom synced
