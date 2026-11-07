@@ -139,6 +139,9 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Failure tests from the research: no lost edits on any exit path, never damage a signed file
 - [ ] Close the gap in edit ownership: an agent at Control can delete a page the owner rotated, then edit past the undo cap so the delete can't be undone
 - [ ] A file lopdf refuses for hitting a limit must not fall back to PDFium in `crates/recto-agent/src/loader.rs`: a hostile file with 100,000 `/Prev` sections takes PDFium 3.4 s to load, though the fork's cap refuses it in about 3 ms
+- [ ] Save uses only the fork's `append_atomically` with `prepare_replacement`. Its `AppendWriter` can't be given a `File`, but `Writer::write_object`, the eager `Document` and `IncrementalDocument` saves and `copy_revision_to` still take any `Write`, so add a check that nothing in RectoPDF calls them, and never `File::create` the original before `copy_revision_to`
+- [ ] Opening a file with lopdf never runs on the UI thread: a 2 MiB hostile file relisting a million numbers takes 3.7 s of CPU and 96 MiB, bounded but over the 2 s stall rule
+- [ ] Writer checks not run: Windows paths and renames (compiled only, its tests don't build for Windows), SMB, a real power cut, the fork's WASM browser tests
 
 **Done when:** edited files open correctly in other readers and pass external validators, with no data-loss failures across the test matrix.
 
