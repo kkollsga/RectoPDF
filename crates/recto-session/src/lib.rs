@@ -323,12 +323,14 @@ impl<L: DocLoader> Session<L> {
         }
         // Woken from cold: rebuild from disk. If that fails, the tab stays and says why.
         let loaded = self.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path));
+        // An edited tab's length is its edit list's, not the file's: added pages must stay reachable.
+        let pages_with_edits = self.edits.get(&id).map(PageEdits::len);
         let tab = self.tab_mut(id);
         match loaded {
             Ok(facts) => {
                 if let Some(tab) = tab {
                     tab.page_count = facts.page_count;
-                    tab.page = tab.page.min(facts.page_count.saturating_sub(1));
+                    tab.page = tab.page.min(pages_with_edits.unwrap_or(facts.page_count).saturating_sub(1));
                     tab.problem = None;
                 }
                 self.remember_warm(id, Arc::new(facts.toc));
@@ -485,6 +487,21 @@ mod tests {
     #[test]
     fn tab_record_stays_small() {
         assert!(std::mem::size_of::<TabRecord>() <= 256);
+    }
+
+    /// Failure: a tab with added pages wakes from cold and lands back inside the file's own length, so the reader jumps away from the page they were on.
+    #[test]
+    fn waking_an_edited_tab_keeps_its_place_in_the_edited_length() {
+        let mut s = session(5);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.insert_pdf(a, 5, Path::new("/d/added.pdf")).unwrap();
+        s.go_to(a, 8).unwrap();
+        for i in 0..MAX_WARM + 1 {
+            s.open(Path::new(&format!("/d/other{i}.pdf"))).unwrap();
+        }
+        assert_eq!(s.tier(a), Tier::Cold);
+        s.tap(a).unwrap();
+        assert_eq!(s.tab(a).unwrap().page, 8);
     }
 
     /// Failure: a field added carelessly raises the cost of every visible row.
