@@ -20,6 +20,18 @@ struct TabFile {
     renderer_only: bool,
     /// For each of the file's pages, its place now. Only for an edited tab.
     positions: Option<Vec<u32>>,
+    /// The file isn't the one those edits' page numbers came from.
+    changed: bool,
+}
+
+impl TabFile {
+    /// Refuses when page numbers here would be about a different version of the file.
+    fn require_current(&self) -> Result<(), AgentError> {
+        if self.changed {
+            return Err(crate::source_changed(&self.path));
+        }
+        Ok(())
+    }
 }
 
 fn tab_file<A: SessionAccess>(access: &A, tab: &str) -> Result<TabFile, AgentError> {
@@ -37,7 +49,7 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &str) -> Result<TabFile, AgentErr
             }
             positions
         });
-        Ok(TabFile { id: id.0, path: s.path_of(id).ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?, name: record.name.to_string(), pages: s.pages_in(id), edited: s.is_edited(id), renderer_only: record.renderer_only, positions })
+        Ok(TabFile { id: id.0, path: s.path_of(id).ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?, name: record.name.to_string(), pages: s.pages_in(id), edited: s.is_edited(id), renderer_only: record.renderer_only, positions, changed: !s.own_file_is_current(id) })
     })
 }
 
@@ -56,6 +68,7 @@ pub(crate) fn facts<A: SessionAccess>(access: &A, tab: &str) -> Result<Value, Ag
         "has_contents": !facts.toc.is_empty(),
         "contents_entries": facts.toc.entries().len(),
         "edited": file.edited,
+        "file_changed_since_edits": file.changed,
         "note": facts.renderer_only.then_some("Only the renderer could read this file. Its text and pages can be read, but its title, contents and signatures can't be, and it can't be edited."),
         "untrusted": { "name": file.name, "title": facts.title.as_deref() },
     }))
@@ -63,6 +76,8 @@ pub(crate) fn facts<A: SessionAccess>(access: &A, tab: &str) -> Result<Value, Ag
 
 pub(crate) fn contents<A: SessionAccess>(access: &A, tab: &str, from: Option<u32>, limit: Option<u32>, depth: Option<u8>) -> Result<Value, AgentError> {
     let file = tab_file(access, tab)?;
+    file.require_current()?;
+    let unavailable = || json!({ "tab": file.id, "available": false, "note": "Only the renderer can read this file, so its contents can't be read. That doesn't mean it has none.", "entries": [], "total": null, "next_from": null });
     if file.renderer_only {
         return Ok(json!({ "tab": file.id, "available": false, "note": "Only the renderer could read this file, so its contents can't be read. That doesn't mean it has none.", "entries": [], "total": 0, "next_from": null }));
     }
@@ -91,6 +106,7 @@ pub(crate) fn contents<A: SessionAccess>(access: &A, tab: &str, from: Option<u32
 
 pub(crate) fn signatures<A: SessionAccess>(access: &A, tab: &str) -> Result<Value, AgentError> {
     let file = tab_file(access, tab)?;
+    file.require_current()?;
     let not_read = || {
         json!({
             "tab": file.id,

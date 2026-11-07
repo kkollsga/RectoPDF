@@ -4,6 +4,7 @@
 //! cost about 8 bytes a page, whatever the size of the PDFs. A tab with no edits has no list at all. Undo stores the
 //! inverse of each step rather than copies of the list. The original files stay as they are until Save.
 
+use recto_platform::FileStamp;
 use std::path::{Path, PathBuf};
 
 /// Most pages one edited document may have.
@@ -33,6 +34,8 @@ pub enum EditError {
     LastPage,
     TooManyPages,
     TooManySources,
+    /// A PDF already in this document has changed since it was added, so its pages can't be mixed with what's there.
+    SourceChanged,
 }
 
 impl EditError {
@@ -42,6 +45,7 @@ impl EditError {
             Self::LastPage => "last_page",
             Self::TooManyPages => "too_many_pages",
             Self::TooManySources => "too_many_sources",
+            Self::SourceChanged => "source_changed",
         }
     }
 
@@ -51,6 +55,7 @@ impl EditError {
             Self::LastPage => "A PDF has to keep at least one page.",
             Self::TooManyPages => "That would make this document too long.",
             Self::TooManySources => "Too many PDFs have been added to this document.",
+            Self::SourceChanged => "That PDF has changed since it was added, so it can't be added again.",
         }
     }
 }
@@ -87,7 +92,7 @@ pub struct AddedSource {
 #[derive(Clone, Debug)]
 pub struct PageEdits {
     slots: Vec<PageSlot>,
-    added: Vec<(Box<Path>, u32)>,
+    added: Vec<AddedSource>,
     undo: Vec<Step>,
     redo: Vec<Step>,
     /// A step fell off the capped undo list, so this document can't get back to the original by undoing.
@@ -115,8 +120,8 @@ impl PageEdits {
         self.slots.is_empty()
     }
 
-    /// The PDFs dropped into this document, with their page counts. Slot source `n` is entry `n - 1`.
-    pub fn added_sources(&self) -> &[(Box<Path>, u32)] {
+    /// The PDFs dropped into this document. Slot source `n` is entry `n - 1`.
+    pub fn added_sources(&self) -> &[AddedSource] {
         &self.added
     }
 
@@ -168,13 +173,18 @@ impl PageEdits {
 
     /// Adds every page of another PDF at a position, as dropping it into the page view does.
     pub fn insert_pdf(&mut self, at: u32, path: &Path, page_count: u32) -> Result<(), EditError> {
+        self.insert_pdf_stamped(at, path, page_count, None)
+    }
+
+    /// [`Self::insert_pdf`], noting which version of the file this is.
+    pub fn insert_pdf_stamped(&mut self, at: u32, path: &Path, page_count: u32, stamp: Option<FileStamp>) -> Result<(), EditError> {
         if at > self.len() {
             return Err(EditError::OutOfRange);
         }
         if self.slots.len() + page_count as usize > MAX_PAGES {
             return Err(EditError::TooManyPages);
         }
-        let source = self.source_for(path, page_count)?;
+        let source = self.source_for(path, page_count, stamp)?;
         let slots: Box<[PageSlot]> = (0..page_count).map(|page| PageSlot { source, page, quarter_turns: 0 }).collect();
         self.commit(Step::Restore { start: at, slots })
     }
@@ -276,14 +286,18 @@ impl PageEdits {
         Ok(())
     }
 
-    fn source_for(&mut self, path: &Path, page_count: u32) -> Result<u16, EditError> {
-        if let Some(found) = self.added.iter().position(|(p, _)| &**p == path) {
+    fn source_for(&mut self, path: &Path, page_count: u32, stamp: Option<FileStamp>) -> Result<u16, EditError> {
+        if let Some(found) = self.added.iter().position(|added| &*added.path == path) {
+            // Slots already point at the old version's pages, so the new version can't share them.
+            if self.added[found].stamp != stamp {
+                return Err(EditError::SourceChanged);
+            }
             return u16::try_from(found + 1).map_err(|_| EditError::TooManySources);
         }
         if self.added.len() >= MAX_SOURCES {
             return Err(EditError::TooManySources);
         }
-        self.added.push((PathBuf::from(path).into_boxed_path(), page_count));
+        self.added.push(AddedSource { path: PathBuf::from(path).into_boxed_path(), page_count, stamp });
         u16::try_from(self.added.len()).map_err(|_| EditError::TooManySources)
     }
 }

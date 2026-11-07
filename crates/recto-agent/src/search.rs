@@ -4,7 +4,8 @@
 //! time. Stopping early says where to go on from, so "nothing found" is only ever said of pages really searched.
 
 use crate::{AgentError, SessionAccess, exit, parse_pages, select};
-use recto_index::normalize;
+use recto_index::{hidden_report, normalize};
+use recto_platform::FileStamp;
 use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -22,9 +23,26 @@ const MAX_LISTED_EMPTY: usize = 200;
 
 /// Which pages to look at, in order: position in the document as edited, which file, and which page there.
 struct Plan {
-    files: Vec<PathBuf>,
+    files: Vec<PlanFile>,
     pages: Vec<(u32, u16, u32)>,
     tab: u32,
+}
+
+struct PlanFile {
+    path: PathBuf,
+    /// What it must still be, for page numbers recorded from it to mean anything. `None` if nothing was recorded, as with a tab with no edits.
+    expected: Option<FileStamp>,
+    added: bool,
+}
+
+impl PlanFile {
+    fn is_current(&self) -> bool {
+        self.expected.is_none_or(|stamp| recto_platform::file_stamp(&self.path).ok() == Some(stamp))
+    }
+
+    fn label(&self) -> String {
+        self.path.file_name().map_or_else(String::new, |name| recto_core::clean_line(&name.to_string_lossy()))
+    }
 }
 
 pub(crate) fn search<A: SessionAccess>(access: &A, tab: &str, query: &str, pages: Option<&str>, limit: Option<u32>) -> Result<Value, AgentError> {
@@ -52,11 +70,11 @@ fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<
             return Err(AgentError::new("no_such_page", "Those pages aren't in this document.", exit::NOT_FOUND));
         }
         let path = s.path_of(id).ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
-        let mut files = vec![path];
+        let mut files = vec![PlanFile { path, expected: s.page_edits(id).and_then(|_| s.own_stamp(id)), added: false }];
         let list = match s.page_edits(id) {
             None => (start..start.saturating_add(len)).map(|page| (page, 0, page)).collect(),
             Some(edits) => {
-                files.extend(edits.added_sources().iter().map(|(file, _)| file.to_path_buf()));
+                files.extend(edits.added_sources().iter().map(|added| PlanFile { path: added.path.to_path_buf(), expected: added.stamp, added: true }));
                 edits.slots().iter().enumerate().skip(start as usize).take(len as usize).map(|(position, slot)| (u32::try_from(position).unwrap_or(u32::MAX), slot.source, slot.page)).collect()
             }
         };
@@ -80,11 +98,26 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             next_page = Some(position + 1);
             break;
         }
-        let renderer = match &mut renderers[usize::from(file)] {
-            Some(renderer) => renderer,
-            slot => {
-                let opened = DocRenderer::new(&plan.files[usize::from(file)], None, ServiceConfig::discover()?, Policy::default())?;
-                slot.insert(opened)
+        if changed.contains(&file) {
+            searched += 1;
+            failed.push(position + 1);
+            continue;
+        }
+        if current.as_ref().is_none_or(|(open_file, _)| *open_file != file) {
+            // The old one goes first, so there's never more than one.
+            current = None;
+            let source = &plan.files[usize::from(file)];
+            let opened = if source.is_current() { DocRenderer::new(&source.path, None, ServiceConfig::discover()?, Policy::default()).map(Some) } else { Ok(None) };
+            match opened {
+                Ok(Some(renderer)) => current = Some((file, renderer)),
+                Ok(None) | Err(RenderFailure::NotFound) if source.added || source.expected.is_some() => {
+                    changed.push(file);
+                    searched += 1;
+                    failed.push(position + 1);
+                    continue;
+                }
+                Ok(None) => continue,
+                Err(failure) => return Err(failure.into()),
             }
         };
         let characters = match renderer.page_characters(page, false, false) {
@@ -132,6 +165,8 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             "no_text_pages": empty,
             "failed_pages": failed,
             "hits_not_shown": not_shown,
+            "pages_with_tag_chars": tag_pages,
+            "changed_files": changed.iter().map(|file| json!({ "untrusted": { "file": plan.files[usize::from(*file)].label() } })).collect::<Vec<_>>(),
             "next_page": next_page,
         },
     }))

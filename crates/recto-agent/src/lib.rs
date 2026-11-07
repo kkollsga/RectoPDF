@@ -12,7 +12,7 @@ mod search;
 pub mod skill;
 pub mod table;
 
-use recto_session::{DocLoader, DrawNote, RowKind, Session, SessionError, TabId};
+use recto_session::{DocLoader, DrawNote, PageSource, RowKind, Session, SessionError, TabId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::cell::RefCell;
@@ -424,11 +424,13 @@ pub struct AgentError {
     pub next: String,
     /// The one command that asks the user for what's missing, on a refusal.
     pub ask: Option<String>,
+    /// Anything from outside this error needs to name, which only ever goes under `untrusted`.
+    pub untrusted: Value,
 }
 
 impl AgentError {
     pub fn new(code: &'static str, message: impl Into<String>, exit: i32) -> Self {
-        Self { code, message: message.into(), candidates: Vec::new(), exit, next: next_step(code, exit).to_string(), ask: None }
+        Self { code, message: message.into(), candidates: Vec::new(), exit, next: next_step(code, exit).to_string(), ask: None, untrusted: Value::Null }
     }
 
     /// Replaces the next step with one that knows more.
@@ -454,6 +456,7 @@ fn next_step(code: &str, exit: i32) -> &'static str {
         "too_many_pages" | "too_many_sources" => "Add less to this document.",
         "too_many_tabs" => "`recto close` closes a tab.",
         "renderer_only" => "This file can still be read and drawn. To change it, it first needs repairing in another tool.",
+        "source_changed" => "Tell the user this file changed. `recto edits` shows what's unsaved. With Full access `recto discard` throws the edits away, and opening the file again starts from what's there now.",
         "nothing_to_undo" | "nothing_to_redo" => "`recto edits` shows where this tab is.",
         "not_built" => "Tell the user this isn't in this version yet.",
         "bad_command" => "`recto help` lists every command.",
@@ -502,6 +505,9 @@ fn error_json(error: &AgentError) -> Value {
     let mut out = json!({ "code": error.code, "message": error.message, "candidates": error.candidates, "exit": error.exit, "next": error.next });
     if let Some(ask) = &error.ask {
         out["ask"] = json!(ask);
+    }
+    if !error.untrusted.is_null() {
+        out["untrusted"] = error.untrusted.clone();
     }
     out
 }
@@ -659,24 +665,24 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         }),
         Command::Render { tab, page, scale, out } => {
             require_absolute(out)?;
-            let (id, position, source, source_page, turns) = locate(access, tab, *page)?;
-            let drawn = render::render(&source, source_page + 1, *scale, out);
-            note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code), events);
+            let (id, position, source) = locate(access, tab, *page)?;
+            let drawn = render::render(&source.path, source.page + 1, *scale, out);
+            if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
+                note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code), events);
+            }
             let mut data = drawn?;
-            data["page"] = json!(*page);
-            describe_source(&mut data, *page, source_page, turns);
+            describe_source(&mut data, *page, &source);
             Ok(data)
         }
         Command::Text { tab, page } => {
-            let (id, position, source, source_page, turns) = locate(access, tab, *page)?;
-            let read = render::text(&source, source_page + 1);
+            let (id, position, source) = locate(access, tab, *page)?;
+            let read = render::text(&source.path, source.page + 1);
             let drew = read.as_ref().is_ok_and(|data| data["hidden_text"]["checked"] == true);
             if drew || read.is_err() {
                 note_draw(access, id, position, read.as_ref().err().map(|error| error.code), events);
             }
             let mut data = read?;
-            data["page"] = json!(*page);
-            describe_source(&mut data, *page, source_page, turns);
+            describe_source(&mut data, *page, &source);
             Ok(data)
         }
         Command::BudgetViewport { tab, viewport, first, scale, strategy } => {
@@ -716,10 +722,11 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             let position = one_based(*at)?;
             // The file is read first and outside the session, so a slow one holds nobody else up.
             let loader = access.with(|s| s.loader().clone());
+            let stamp = recto_platform::file_stamp(path).ok();
             let facts = loader.load(path)?;
             access.with(|s| {
                 let id = select(s, tab)?;
-                s.insert_pdf_with_facts(id, position, path, &facts)?;
+                s.insert_pdf_with_facts(id, position, path, &facts, stamp)?;
                 events.push(edits_event(s, id));
                 let data = edit_state_json(s, id);
                 Ok(with_place_note(s, id, data))
@@ -772,24 +779,50 @@ fn note_draw<A: SessionAccess>(access: &A, tab: TabId, position: u32, failure: O
     });
 }
 
-/// Says when a page isn't the file's page of that number, and that a drawing doesn't show an unsaved turn.
-fn describe_source(data: &mut Value, page: u32, source_page: u32, turns: u8) {
-    if source_page + 1 != page {
-        data["source_page"] = json!(source_page + 1);
+/// A refused file name says nothing about whether a page can be drawn, so a wait on that page mustn't hear of it.
+fn is_about_the_output(failure: Option<&str>) -> bool {
+    matches!(failure, Some("output_exists" | "bad_output" | "bad_scale" | "write_failed" | "output_too_large"))
+}
+
+/// Says when a page isn't the file's page of that number, when it comes from another PDF altogether, and that a drawing doesn't show an unsaved turn.
+fn describe_source(data: &mut Value, page: u32, source: &PageSource) {
+    data["page"] = json!(page);
+    if source.page + 1 != page || source.added {
+        data["source_page"] = json!(source.page + 1);
     }
-    if turns != 0 {
-        data["unsaved_rotation_degrees"] = json!(u32::from(turns) * 90);
+    if source.added {
+        data["from_added_file"] = json!(true);
+        data["untrusted"]["added_file"] = json!(file_label(&source.path));
+    }
+    if source.quarter_turns != 0 {
+        data["unsaved_rotation_degrees"] = json!(u32::from(source.quarter_turns) * 90);
     }
 }
 
-/// Finds a tab's page as things stand now, edits included: tab, zero-based position, the file it comes from, its page there, its unsaved turns.
-fn locate<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<(TabId, u32, PathBuf, u32, u8), AgentError> {
-    access.with(|s| {
+/// A file's name, made safe to pass on. It's still only what the file is called.
+fn file_label(path: &Path) -> String {
+    path.file_name().map_or_else(String::new, |name| recto_core::clean_line(&name.to_string_lossy()))
+}
+
+/// The refusal when a file has changed under the page numbers that were recorded from it.
+fn source_changed(path: &Path) -> AgentError {
+    let mut error = AgentError::new("source_changed", "The file this page comes from has changed or gone since its page numbers were recorded, so the page can't be trusted to be the same one.", exit::FAILED);
+    error.untrusted = json!({ "file": file_label(path) });
+    error
+}
+
+/// Finds a tab's page as things stand now, edits included. Refuses if its file isn't the one the page's number is about.
+fn locate<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<(TabId, u32, PageSource), AgentError> {
+    let (id, position, source) = access.with(|s| {
         let id = select(s, tab)?;
         let position = page.checked_sub(1).ok_or_else(no_such_page)?;
-        let (path, source_page, turns) = s.page_source(id, position).ok_or_else(no_such_page)?;
-        Ok((id, position, path, source_page, turns))
-    })
+        let source = s.page_source(id, position).ok_or_else(no_such_page)?;
+        Ok::<_, AgentError>((id, position, source))
+    })?;
+    if !source.is_current() {
+        return Err(source_changed(&source.path));
+    }
+    Ok((id, position, source))
 }
 
 fn no_such_page() -> AgentError {
@@ -802,15 +835,30 @@ fn require_absolute(path: &Path) -> Result<(), AgentError> {
 
 fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     require_absolute(path)?;
-    // The file is read outside the session, so a slow or hostile one holds nobody else up.
-    let existing = access.with(|s| s.go_to_open_file(path));
+    let wrong_page = |pages: u32| AgentError::new("no_such_page", format!("Nothing was opened: it has {pages} pages, and page {} isn't one of them.", page.unwrap_or(0)), exit::NOT_FOUND).then("Open it with a page it has, or with no `--page`.");
+    let fits = |pages: u32| page.is_none_or(|page| page >= 1 && page <= pages);
+    // Already open: check the page before anything moves.
+    let existing = access.with(|s| {
+        let id = s.tab_for_path(path)?;
+        let pages = s.pages_in(id);
+        if !fits(pages) {
+            return Some(Err(wrong_page(pages)));
+        }
+        s.go_to_open_file(path);
+        Some(Ok(id))
+    });
     let (id, is_new) = match existing {
         Some(id) => (id, false),
         None => {
             let loader = access.with(|s| s.loader().clone());
+            let stamp = recto_platform::file_stamp(path).ok();
             let facts = loader.load(path)?;
+            // No tab for a page that isn't there: failing here leaves nothing to explain.
+            if !fits(facts.page_count) {
+                return Err(wrong_page(facts.page_count));
+            }
             let before = access.with(|s| s.tabs().len());
-            let id = access.with(|s| s.open_with_facts(path, facts))?;
+            let id = access.with(|s| s.open_with_facts(path, facts, stamp))?;
             (id, access.with(|s| s.tabs().len()) > before)
         }
     };
@@ -927,7 +975,7 @@ fn edits_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         }
         let file = match first.source {
             0 => None,
-            source => edits.added_sources().get(usize::from(source) - 1).and_then(|(path, _)| path.file_name()).map(|name| recto_core::clean_line(&name.to_string_lossy())),
+            source => edits.added_sources().get(usize::from(source) - 1).map(|added| file_label(&added.path)),
         };
         runs.push(json!({
             "pages": page_span(position + 1, position + len),
@@ -1308,6 +1356,7 @@ mod tests {
             SessionError::Edit(EditError::LastPage),
             SessionError::Edit(EditError::TooManyPages),
             SessionError::Edit(EditError::TooManySources),
+            SessionError::Edit(EditError::SourceChanged),
             SessionError::Open(OpenError::NotFound),
             SessionError::Open(OpenError::NotAllowed),
             SessionError::Open(OpenError::PasswordNeeded),

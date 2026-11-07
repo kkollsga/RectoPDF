@@ -8,6 +8,7 @@ pub mod edit;
 
 use edit::{EditError, PageEdits};
 use recto_core::{DocFacts, NONE, OpenError, Toc};
+use recto_platform::{FileStamp, file_stamp};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -64,6 +65,32 @@ pub struct TabRecord {
     pub problem: Option<OpenError>,
     /// Only the renderer could read this file. See [`DocFacts::renderer_only`].
     pub renderer_only: bool,
+    /// Which version of the file this tab's facts and any edits are about. `None` if it couldn't be looked at.
+    stamp: Option<FileStamp>,
+}
+
+/// Where a page of a tab comes from now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageSource {
+    pub path: PathBuf,
+    /// Zero-based page in that file.
+    pub page: u32,
+    /// Unsaved quarter turns on it.
+    pub quarter_turns: u8,
+    /// It came from another PDF added to this one, rather than the tab's own file.
+    pub added: bool,
+    /// What the file was when its page numbers were recorded, if this page's number depends on that: an added file, or the tab's own file once it's been edited.
+    pub expected: Option<Option<FileStamp>>,
+}
+
+impl PageSource {
+    /// Whether the file is still the one the page number is about. A file that's gone isn't. One that couldn't be looked at when it was recorded makes no claim.
+    pub fn is_current(&self) -> bool {
+        match self.expected {
+            None | Some(None) => true,
+            Some(Some(stamp)) => file_stamp(&self.path).ok() == Some(stamp),
+        }
+    }
 }
 
 /// A row in the sidebar. Borrows its text from the session, so building the model allocates little.
@@ -182,8 +209,10 @@ impl<L: DocLoader> Session<L> {
         if let Some(id) = self.go_to_open_file(path) {
             return Ok(id);
         }
+        // Looked at first, so a change during the read shows as a change.
+        let stamp = file_stamp(path).ok();
         let facts = self.loader.load(path).map_err(SessionError::Open)?;
-        self.open_with_facts(path, facts)
+        self.open_with_facts(path, facts, stamp)
     }
 
     /// Activates the tab already showing this file, if there is one. The first half of [`Self::open`], for a caller that reads the file without holding the session.
@@ -193,14 +222,15 @@ impl<L: DocLoader> Session<L> {
         Some(id)
     }
 
-    fn tab_for_path(&self, path: &Path) -> Option<TabId> {
+    /// The tab already showing this file, if there is one.
+    pub fn tab_for_path(&self, path: &Path) -> Option<TabId> {
         let dir = *self.dir_ids.get(path.parent().unwrap_or(Path::new("")))?;
         let file_name = path.file_name()?;
         self.tabs.iter().find(|t| t.dir == dir && &*t.file_name == file_name).map(|t| t.id)
     }
 
     /// The second half of [`Self::open`]: makes the tab from facts already read. Someone may have opened the same file meanwhile, and then that's the tab.
-    pub fn open_with_facts(&mut self, path: &Path, facts: DocFacts) -> Result<TabId, SessionError> {
+    pub fn open_with_facts(&mut self, path: &Path, facts: DocFacts, stamp: Option<FileStamp>) -> Result<TabId, SessionError> {
         if let Some(id) = self.go_to_open_file(path) {
             return Ok(id);
         }
@@ -228,6 +258,7 @@ impl<L: DocLoader> Session<L> {
             toc_open: true,
             problem: None,
             renderer_only: facts.renderer_only,
+            stamp,
         });
         self.remember_warm(id, Arc::new(facts.toc));
         self.active = Some(id);
@@ -329,32 +360,50 @@ impl<L: DocLoader> Session<L> {
 
     /// Adds every page of another PDF at a position, as dropping it into the page view does. Only its facts are read.
     pub fn insert_pdf(&mut self, id: TabId, at: u32, path: &Path) -> Result<(), SessionError> {
+        let stamp = file_stamp(path).ok();
         let facts = self.loader.load(path).map_err(SessionError::Open)?;
-        self.insert_pdf_with_facts(id, at, path, &facts)
+        self.insert_pdf_with_facts(id, at, path, &facts, stamp)
     }
 
     /// Adds another PDF's pages from facts already read, for a caller that reads the file without holding the session. A file only the renderer can read can't be added: Save couldn't write it.
-    pub fn insert_pdf_with_facts(&mut self, id: TabId, at: u32, path: &Path, facts: &DocFacts) -> Result<(), SessionError> {
+    pub fn insert_pdf_with_facts(&mut self, id: TabId, at: u32, path: &Path, facts: &DocFacts, stamp: Option<FileStamp>) -> Result<(), SessionError> {
         if facts.renderer_only {
             return Err(SessionError::RendererOnly);
         }
         if facts.page_count == 0 {
             return Err(SessionError::Open(OpenError::NotPdf));
         }
-        self.edit_pages(id, |edits| edits.insert_pdf(at, path, facts.page_count))
+        self.edit_pages(id, |edits| edits.insert_pdf_stamped(at, path, facts.page_count, stamp))
     }
 
-    /// Where a page of a tab comes from now: which file, which page there, and the unsaved quarter turns on it. Counts unsaved edits. Zero-based.
-    pub fn page_source(&self, id: TabId, position: u32) -> Option<(PathBuf, u32, u8)> {
+    /// Where a page of a tab comes from now, counting unsaved edits. Zero-based.
+    pub fn page_source(&self, id: TabId, position: u32) -> Option<PageSource> {
+        let tab = self.tab(id)?;
         let Some(edits) = self.edits.get(&id) else {
-            return (position < self.tab(id)?.page_count).then(|| Some((self.path_of(id)?, position, 0))).flatten();
+            return (position < tab.page_count).then(|| Some(PageSource { path: self.path_of(id)?, page: position, quarter_turns: 0, added: false, expected: None })).flatten();
         };
         let slot = *edits.slots().get(position as usize)?;
-        let path = match slot.source {
-            0 => self.path_of(id)?,
-            source => edits.added_sources().get(usize::from(source) - 1)?.0.to_path_buf(),
-        };
-        Some((path, slot.page, slot.quarter_turns))
+        match slot.source {
+            0 => Some(PageSource { path: self.path_of(id)?, page: slot.page, quarter_turns: slot.quarter_turns, added: false, expected: Some(tab.stamp) }),
+            source => {
+                let added = edits.added_sources().get(usize::from(source) - 1)?;
+                Some(PageSource { path: added.path.to_path_buf(), page: slot.page, quarter_turns: slot.quarter_turns, added: true, expected: Some(added.stamp) })
+            }
+        }
+    }
+
+    /// Whether a tab with edits still has the file those edits are about. A tab with none has no page numbers to get wrong: reading from the file as it is now is what's wanted.
+    pub fn own_file_is_current(&self, id: TabId) -> bool {
+        let Some(tab) = self.tab(id) else { return true };
+        if !self.edits.contains_key(&id) {
+            return true;
+        }
+        tab.stamp.is_none() || self.path_of(id).and_then(|path| file_stamp(&path).ok()) == tab.stamp
+    }
+
+    /// What a tab's own file was when its page numbers were recorded, for a caller listing pages by file.
+    pub fn own_stamp(&self, id: TabId) -> Option<FileStamp> {
+        self.tab(id).and_then(|tab| tab.stamp)
     }
 
     /// Notes that a page finished drawing, or couldn't be.
@@ -453,6 +502,7 @@ impl<L: DocLoader> Session<L> {
             return;
         }
         // Woken from cold: rebuild from disk. If that fails, the tab stays and says why.
+        let stamp = self.path_of(id).and_then(|path| file_stamp(&path).ok());
         let loaded = self.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path));
         // An edited tab's length is its edit list's, not the file's: added pages must stay reachable.
         let pages_with_edits = self.edits.get(&id).map(PageEdits::len);
@@ -464,6 +514,10 @@ impl<L: DocLoader> Session<L> {
                     tab.page = tab.page.min(pages_with_edits.unwrap_or(facts.page_count).saturating_sub(1));
                     tab.problem = None;
                     tab.renderer_only = facts.renderer_only;
+                    // With edits, the numbers in them are about the version they were made on, and that must stay known.
+                    if pages_with_edits.is_none() {
+                        tab.stamp = stamp;
+                    }
                 }
                 self.remember_warm(id, Arc::new(facts.toc));
             }
@@ -743,13 +797,16 @@ mod tests {
     fn a_pages_source_follows_edits() {
         let mut s = session(3);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
-        assert_eq!(s.page_source(a, 2), Some((PathBuf::from("/d/a.pdf"), 2, 0)));
+        let three = s.page_source(a, 2).unwrap();
+        assert_eq!((three.path.as_path(), three.page, three.quarter_turns, three.added), (Path::new("/d/a.pdf"), 2, 0, false));
         assert_eq!(s.page_source(a, 3), None);
         s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
         s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
-        assert_eq!(s.page_source(a, 0), Some((PathBuf::from("/d/a.pdf"), 1, 1)));
+        let first = s.page_source(a, 0).unwrap();
+        assert_eq!((first.path.as_path(), first.page, first.quarter_turns, first.added), (Path::new("/d/a.pdf"), 1, 1, false));
         s.insert_pdf(a, 0, Path::new("/d/b.pdf")).unwrap();
-        assert_eq!(s.page_source(a, 1), Some((PathBuf::from("/d/b.pdf"), 1, 0)));
+        let second = s.page_source(a, 1).unwrap();
+        assert_eq!((second.path.as_path(), second.page, second.added), (Path::new("/d/b.pdf"), 1, true));
     }
 
     struct RendererOnlyLoader;

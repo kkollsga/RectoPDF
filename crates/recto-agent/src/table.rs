@@ -204,7 +204,7 @@ pub static TABLE: &[Spec] = &[
             Arg { key: "pages", flag: Some("--pages"), kind: Kind::Pages, required: false, help: "Only these pages: `4`, `4-6`, or `4-` to the end." },
             Arg { key: "limit", flag: Some("--limit"), kind: Kind::Count(200), required: false, help: "Most hits in this answer. 20 if left out." },
         ],
-        data: "`{ tab, hits: [ { page, line, untrusted: { snippet } } ], coverage: { pages_searched, pages_in_scope, pages_with_no_text, no_text_pages, failed_pages, next_page } }`. `next_page` is where to go on from with `--pages`.",
+        data: "`{ tab, hits: [ { page, line, also_spelled, page_has_tag_chars, hidden_text: { checked, flagged }, untrusted: { snippet } } ], hidden_text_checked, coverage: { pages_searched, pages_in_scope, pages_with_no_text, no_text_pages, failed_pages, hits_not_shown: [ { page, hits } ], pages_with_tag_chars, changed_files: [ { untrusted: { file } } ], next_page } }`. A page in `failed_pages` couldn't be read, or its file changed since its number was recorded (`changed_files`). Only pages with hits are checked for hidden text, as `hidden_text_checked` says. `also_spelled: true` means the hit is another spelling of a word broken across lines, with no line of its own. `next_page` is where to go on from with `--pages`.",
         examples: &["recto search \"force majeure\"", "recto search termination --pages 10-40 --limit 5 --json"],
         client_wait_s: 180,
         ..BASE
@@ -215,7 +215,7 @@ pub static TABLE: &[Spec] = &[
         group: GROUP_READ,
         summary: "One page's text, normalised for reading and search, with a flag for text no eye can see.",
         args: &[PAGE, TAB],
-        data: "`{ page, source_page, chars, hyphens_joined, hyphens_kept, invisible_chars_removed, tag_chars_removed, hidden_text: { checked, flagged, chars }, untrusted: { text, also_spelled, hidden_runs } }`. `hidden_text.checked: false` means it wasn't checked, not that there's none.",
+        data: "`{ page, source_page, from_added_file, chars, hyphens_joined, hyphens_kept, invisible_chars_removed, tag_chars_removed, hidden_text: { checked, flagged, chars }, untrusted: { text, also_spelled, hidden_runs, added_file } }`. `source_page` and `from_added_file` say where the page really comes from, once it's been edited. `hidden_text.checked: false` means it wasn't checked, not that there's none.",
         emits: &["page_drawn", "page_failed"],
         examples: &["recto text --page 3", "recto text --page 3 --tab \"#2\" --json"],
         ..BASE
@@ -227,7 +227,7 @@ pub static TABLE: &[Spec] = &[
         access: Access::At(Level::Full),
         summary: "Draws a page to a new PNG file, sharp or not at all. It never replaces a file, and doesn't show an unsaved rotation.",
         args: &[PAGE, Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "A new file ending in `.png`." }, SCALE, TAB],
-        data: "`{ page, source_page, scale, out, width, height, bytes, kind, unsaved_rotation_degrees }`.",
+        data: "`{ page, source_page, from_added_file, scale, out, width, height, bytes, kind, unsaved_rotation_degrees, untrusted: { added_file } }`.",
         emits: &["page_drawn", "page_failed"],
         examples: &["recto render --page 1 --out page1.png", "recto render --page 2 --scale 3x --out /tmp/p2.png --json"],
         client_wait_s: 600,
