@@ -152,7 +152,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - From the owner's first use of the restore build (2026-11-07 and 08):
   - [x] A sidebar button beside the window's controls replaces focus view; View > Hide Sidebar on ⌃⌘S; `recto view --sidebar`
   - [x] The zoom level in the top left, clicked to type a level or fit again; no zoom in the `⋯` panel; `recto view --zoom 150%`
-  - [ ] The page number always in the lower right
+  - [x] The page number always in the lower right
   - [ ] Right-click: single page, side by side, and side by side with the first page alone, per tab and restored
   - [ ] File > Settings…
   - [ ] Rotate in the `⋯` panel turns every page as one unsaved edit, outside edit mode

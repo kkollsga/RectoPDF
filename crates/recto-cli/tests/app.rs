@@ -331,6 +331,25 @@ fn dark_mode_paper_and_the_sidebar_change_what_is_drawn() {
     wait_for(&run, |state| state["app"]["sidebar_visible"] == true);
 }
 
+/// Failure: the page number isn't in the lower right with the sidebar showing, or goes with it hidden, or doesn't follow the page. Owner, 2026-11-07: "The page number should always be visible in the lower right."
+#[test]
+fn the_page_number_is_always_in_the_lower_right() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(5);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let first = run.report();
+    assert_eq!((&first["app"]["place_label"], &first["app"]["place_label_in_lower_right"]), (&json!("1 of 5"), &json!(true)), "{first}");
+    run.ok(&["goto", "4"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "4 of 5");
+    run.ok(&["view", "--sidebar", "off"]);
+    let hidden = wait_for(&run, |state| state["app"]["sidebar_visible"] == false);
+    assert_eq!((&hidden["app"]["place_label"], &hidden["app"]["place_label_in_lower_right"]), (&json!("4 of 5"), &json!(true)), "{hidden}");
+    run.ok(&["qa", "resize", "700x500"]);
+    let narrow = run.report();
+    assert_eq!(narrow["app"]["place_label_in_lower_right"], true, "in a small window too: {narrow}");
+}
+
 /// Failure: the zoom level in the top left isn't there, says a level the page isn't at, crowds the sidebar's button or leaves the window's row, or clicking it doesn't let the reader type a level or fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". 100% is the page's real size.
 #[test]
 fn the_zoom_level_shows_and_takes_a_typed_level() {

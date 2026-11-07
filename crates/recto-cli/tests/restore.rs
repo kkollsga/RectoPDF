@@ -418,6 +418,7 @@ const KNOWN_PATHS: &[&str] = &[
     "app.paper",
     "app.place",
     "app.place_label",
+    "app.place_label_in_lower_right",
     "app.reveal.row",
     "app.reveal.shown",
     "app.settings.open",

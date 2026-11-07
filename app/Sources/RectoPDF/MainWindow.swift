@@ -431,7 +431,8 @@ final class BookMark: NSView {
     private func layoutMargin(area: NSRect) {
         let marginWidth = max(pages.marginWidth(), 140)
         var bottom = NSPoint(x: area.maxX - 16, y: area.maxY - 16)
-        if reader.sidebarHidden && !reader.home {
+        // Owner, 2026-11-07: "The page number should always be visible in the lower right." In the margin's corner, quiet, over the page only when a page fills the width there.
+        if !reader.home {
             placeLabel.isHidden = false
             placeLabel.place(text: reader.place, maxWidth: 160, bottomRight: bottom)
             bottom.y = placeLabel.frame.minY - 8
