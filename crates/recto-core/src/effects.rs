@@ -26,6 +26,8 @@ pub struct PageEffects {
     pub hidden_layers: bool,
     /// Two of its layers have one name, or their names can't be read, so a name can't stand for a layer.
     pub layer_names_repeat: bool,
+    /// A JPEG here has a `/Decode` or `/ColorTransform` that changes what its bytes mean.
+    pub jpeg_read_differently: bool,
 }
 
 /// What this page uses, or `None` if that can't be said. `page` is zero-based.
@@ -42,6 +44,7 @@ pub fn page_effects(path: &Path, page: u32) -> Option<PageEffects> {
         walk.tick()?;
         let Some(inner) = stream_or_dict(&reader, &Object::Reference(id)) else { continue };
         walk.look_at_pattern(&inner);
+        walk.look_at_image(&inner);
         if let Ok(next) = inner.get(b"Resources") {
             walk.resources(next)?;
         }
@@ -105,6 +108,34 @@ impl Walk<'_> {
             }
         }
         Some(())
+    }
+
+    /// A stored JPEG can be passed on as it is only if the page means by it what a reader of the bytes would.
+    fn look_at_image(&mut self, dict: &Dictionary) {
+        let names_dct = |value: &Object| matches!(value, Object::Name(name) if name == b"DCTDecode" || name == b"DCT");
+        let filter = dict.get(b"Filter").ok().and_then(|filter| deref(self.reader, filter));
+        let is_jpeg = filter.is_some_and(|filter| match &filter {
+            Object::Array(filters) => filters.iter().any(names_dct),
+            other => names_dct(other),
+        });
+        if !is_jpeg {
+            return;
+        }
+        let decode_changes = dict.get(b"Decode").ok().and_then(|decode| deref(self.reader, decode)).is_some_and(|decode| match decode.as_array() {
+            Ok(values) => values.iter().enumerate().any(|(at, value)| {
+                let number = deref(self.reader, value).and_then(|value| value.as_float().ok().or_else(|| value.as_i64().ok().map(|whole| whole as f32)));
+                number != Some(if at % 2 == 0 { 0.0 } else { 1.0 })
+            }),
+            Err(_) => true,
+        });
+        let parms = dict.get(b"DecodeParms").ok().and_then(|parms| deref(self.reader, parms));
+        let transform_of = |parms: &Dictionary| parms.get(b"ColorTransform").ok().and_then(|value| deref(self.reader, value)).is_some_and(|value| value.as_i64().ok() != Some(1));
+        let transform_changes = parms.is_some_and(|parms| match &parms {
+            Object::Dictionary(parms) => transform_of(parms),
+            Object::Array(list) => list.iter().any(|one| deref(self.reader, one).is_some_and(|one| one.as_dict().is_ok_and(transform_of))),
+            _ => false,
+        });
+        self.effects.jpeg_read_differently |= decode_changes || transform_changes;
     }
 
     fn look_at_pattern(&mut self, dict: &Dictionary) {
@@ -274,6 +305,22 @@ mod tests {
         };
         assert!(page_effects(&doc("Layer 1", "Layer 1").0, 0).unwrap().layer_names_repeat);
         assert!(!page_effects(&doc("Roads", "Rivers").0, 0).unwrap().layer_names_repeat);
+    }
+
+    /// Failure: a JPEG's bytes pass through though the page reads them differently: inverted by `/Decode`, or in other colours by `/ColorTransform`. Neither shows through PDFium's calls. A `/Decode` that changes nothing, or a transform that's already the default, shouldn't cost a JPEG its original bytes.
+    #[test]
+    fn jpegs_the_page_reads_differently_are_noticed() {
+        let with = |extra: &str| {
+            let image = first_extra_object(1);
+            let stream = Object::Stream { dict: format!("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode {extra}"), data: vec![0xFF, 0xD8] };
+            effects(&format!("/XObject << /I {image} 0 R >>"), vec![stream]).jpeg_read_differently
+        };
+        assert!(with("/Decode [1 0 1 0 1 0]"));
+        assert!(with("/DecodeParms << /ColorTransform 0 >>"));
+        assert!(with("/DecodeParms [<< /ColorTransform 0 >>]"));
+        assert!(!with(""));
+        assert!(!with("/Decode [0 1 0 1 0 1]"));
+        assert!(!with("/DecodeParms << /ColorTransform 1 >>"));
     }
 
     /// Failure: something that can't be read reads as "uses nothing", which would be a claim about what it hasn't seen. There's no answer, and the caller assumes anything.

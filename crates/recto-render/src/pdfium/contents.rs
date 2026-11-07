@@ -40,6 +40,8 @@ const STRIP_BYTES: u64 = recto_proto::MAX_REGION_BYTES;
 const MAX_MASKED_BYTES: u64 = 256 * 1024 * 1024;
 /// An image with a mask has its mask found by drawing it this small first. Below this size, it's drawn whole anyway.
 const MASK_PROBE_EDGE: u32 = 64;
+/// The largest colour profile read. sRGB's is a few kilobytes.
+const MAX_PROFILE_BYTES: usize = 16 * 1024 * 1024;
 /// How far a clip is blown up to cover an image laid flat. A point a quarter of a point inside the clip then covers 5,000 pixels from the image's middle, and a page's clip stays within what a float can hold.
 const CLIP_BLOW_UP: f64 = 2.0e4;
 /// How far a glyph's outline may be from the box PDFium gives for the character, as a share of the font's size. Boxes are in whole thousandths and outlines aren't hinted, but a wrong glyph is usually much further off than this.
@@ -61,8 +63,6 @@ const FPDF_FILLMODE_WINDING: c_int = 2;
 const FPDF_COLORSPACE_UNKNOWN: c_int = 0;
 const FPDF_COLORSPACE_DEVICEGRAY: c_int = 1;
 const FPDF_COLORSPACE_DEVICERGB: c_int = 2;
-const FPDF_COLORSPACE_CALGRAY: c_int = 4;
-const FPDF_COLORSPACE_CALRGB: c_int = 5;
 const FPDF_COLORSPACE_ICCBASED: c_int = 7;
 /// `fpdfview.h`: bitmap formats. `FORMAT_BGRX` is in the parent, by PDFium's own name.
 const FORMAT_GRAY: c_int = 1;
@@ -1714,9 +1714,16 @@ impl Walk {
         best
     }
 
-    /// Whether an image's stored bytes are exactly a JPEG that means what the page means by it. A file's other color spaces need PDFium's conversion, and so go as PNG.
+    /// Whether an image's stored bytes mean what the page means by them. "Lossless" is the same picture, so anything else goes as PNG, in the colours PDFium gives: other colour spaces, one with a profile that isn't sRGB, since a reader would take its bytes for sRGB, and what the file's structure says is decoded differently.
     fn jpeg_passes(&self, object: FPDF_PAGEOBJECT, metadata: &FPDF_IMAGEOBJ_METADATA) -> bool {
-        let usual = matches!(metadata.colorspace, FPDF_COLORSPACE_DEVICEGRAY | FPDF_COLORSPACE_DEVICERGB | FPDF_COLORSPACE_CALGRAY | FPDF_COLORSPACE_CALRGB) || (metadata.colorspace == FPDF_COLORSPACE_ICCBASED && matches!(metadata.bits_per_pixel, 8 | 24));
+        if self.job.hints & hints::JPEG_READ_DIFFERENTLY != 0 {
+            return false;
+        }
+        let usual = match metadata.colorspace {
+            FPDF_COLORSPACE_DEVICEGRAY | FPDF_COLORSPACE_DEVICERGB => true,
+            FPDF_COLORSPACE_ICCBASED => self.profile_says_srgb(object),
+            _ => false,
+        };
         if !usual {
             return false;
         }
@@ -1724,6 +1731,19 @@ impl Walk {
         // SAFETY: the object is live with its page, and `name` holds as many as is passed.
         let (count, len) = unsafe { ((self.api.FPDFImageObj_GetImageFilterCount)(object), (self.api.FPDFImageObj_GetImageFilter)(object, 0, name.as_mut_ptr().cast(), name.len() as c_ulong)) };
         count == 1 && len as usize <= name.len() && name.starts_with(b"DCTDecode\0")
+    }
+
+    fn profile_says_srgb(&self, object: FPDF_PAGEOBJECT) -> bool {
+        let mut len = 0usize;
+        // SAFETY: the object and page are live, and the second call's buffer holds what the first said, up to a limit no real profile comes near.
+        unsafe {
+            if (self.api.FPDFImageObj_GetIccProfileDataDecoded)(object, self.page_handle, std::ptr::null_mut(), 0, &raw mut len) == 0 || len > MAX_PROFILE_BYTES {
+                return false;
+            }
+            let mut profile = vec![0u8; len];
+            let mut got = 0usize;
+            (self.api.FPDFImageObj_GetIccProfileDataDecoded)(object, self.page_handle, profile.as_mut_ptr(), len, &raw mut got) != 0 && got == len && icc_says_srgb(&profile)
+        }
     }
 
     /// Everything off but this and the forms it's in.
@@ -2052,6 +2072,23 @@ impl Walk {
 }
 
 
+/// Whether an ICC profile's description says sRGB. It's only what it says, and a file lying about it only changes its own colours.
+fn icc_says_srgb(profile: &[u8]) -> bool {
+    let word = |at: usize| profile.get(at..at + 4).map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize);
+    let Some(tags) = word(128) else { return false };
+    for tag in 0..tags.min(256) {
+        let entry = 132 + tag * 12;
+        if profile.get(entry..entry + 4) != Some(b"desc") {
+            continue;
+        }
+        let (Some(at), Some(len)) = (word(entry + 4), word(entry + 8)) else { return false };
+        let Some(text) = profile.get(at..at.saturating_add(len)) else { return false };
+        // A plain string in older profiles, and UTF-16 in newer ones.
+        return text.windows(4).any(|bytes| bytes == b"sRGB") || text.windows(8).any(|bytes| bytes == b"\0s\0R\0G\0B");
+    }
+    false
+}
+
 /// The area of some points on the page.
 fn points_area(points: &[(u8, f32, f32)], matrix: &M) -> Area {
     let mut area = Area { left: f64::INFINITY, bottom: f64::INFINITY, right: f64::NEG_INFINITY, top: f64::NEG_INFINITY };
@@ -2258,6 +2295,31 @@ mod tests {
         assert!(!shape(&hole), "a second shape");
         let star = [(SEG_MOVE, 0.0, 0.0), (SEG_LINE, 10.0, 10.0), (SEG_LINE, 10.0, 0.0), (SEG_LINE, 0.0, 10.0), (SEG_LINE, 0.0, 0.0)];
         assert!(!shape(&star), "a shape crossing itself");
+    }
+
+    /// Failure: a wide-gamut photo reads as sRGB and passes through, so its colours come out wrong, or a real sRGB profile doesn't and every such photo loses its original bytes. Hostile lengths in a profile mustn't panic.
+    #[test]
+    fn a_profile_says_srgb_only_in_its_description() {
+        let profile = |text: &[u8]| {
+            let mut out = vec![0u8; 128];
+            out.extend_from_slice(&1u32.to_be_bytes());
+            out.extend_from_slice(b"desc");
+            out.extend_from_slice(&144u32.to_be_bytes());
+            out.extend_from_slice(&(text.len() as u32).to_be_bytes());
+            out.extend_from_slice(text);
+            out
+        };
+        assert!(icc_says_srgb(&profile(b"descxxxxsRGB IEC61966-2.1")));
+        assert!(icc_says_srgb(&profile(b"mluc\0s\0R\0G\0B\0 \0I")));
+        assert!(!icc_says_srgb(&profile(b"descxxxxAdobe RGB (1998)")));
+        assert!(!icc_says_srgb(b"sRGB but not a profile"));
+        assert!(!icc_says_srgb(&[]));
+        let mut hostile = vec![0u8; 128];
+        hostile.extend_from_slice(&u32::MAX.to_be_bytes());
+        hostile.extend_from_slice(b"desc");
+        hostile.extend_from_slice(&u32::MAX.to_be_bytes());
+        hostile.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert!(!icc_says_srgb(&hostile));
     }
 
     /// Failure: the matrix maths is wrong in some rare composition, and nested forms land in the wrong place.

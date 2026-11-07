@@ -200,7 +200,7 @@ fn text_mode(word: Option<&str>) -> Result<TextMode, AgentError> {
 
 fn hints_for(path: &Path, page: u32) -> u8 {
     let Some(effects) = recto_core::page_effects(path, page) else { return hints::ALL };
-    (u8::from(effects.soft_mask) * hints::SOFT_MASK) | (u8::from(effects.blend) * hints::BLEND) | (u8::from(effects.shading_pattern) * hints::SHADING_PATTERN) | (u8::from(effects.hidden_layers) * hints::HIDDEN_LAYERS) | (u8::from(effects.layer_names_repeat) * hints::LAYER_NAMES_REPEAT)
+    (u8::from(effects.soft_mask) * hints::SOFT_MASK) | (u8::from(effects.blend) * hints::BLEND) | (u8::from(effects.shading_pattern) * hints::SHADING_PATTERN) | (u8::from(effects.hidden_layers) * hints::HIDDEN_LAYERS) | (u8::from(effects.layer_names_repeat) * hints::LAYER_NAMES_REPEAT) | (u8::from(effects.jpeg_read_differently) * hints::JPEG_READ_DIFFERENTLY)
 }
 
 const WRITE_FAILED: &str = "The SVG couldn't be saved there.";

@@ -233,6 +233,7 @@ pdfium_api! {
     FPDFImageObj_GetImageDataRaw: fn(FPDF_PAGEOBJECT, *mut c_void, c_ulong) -> c_ulong;
     FPDFImageObj_GetImageFilterCount: fn(FPDF_PAGEOBJECT) -> c_int;
     FPDFImageObj_GetImageFilter: fn(FPDF_PAGEOBJECT, c_int, *mut c_void, c_ulong) -> c_ulong;
+    FPDFImageObj_GetIccProfileDataDecoded: fn(FPDF_PAGEOBJECT, FPDF_PAGE, *mut u8, usize, *mut usize) -> FPDF_BOOL;
     FPDFImageObj_GetImageMetadata: fn(FPDF_PAGEOBJECT, FPDF_PAGE, *mut FPDF_IMAGEOBJ_METADATA) -> FPDF_BOOL;
     FPDFBitmap_GetFormat: fn(FPDF_BITMAP) -> c_int;
     FPDFBitmap_GetBuffer: fn(FPDF_BITMAP) -> *mut c_void;

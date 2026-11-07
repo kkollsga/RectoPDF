@@ -53,8 +53,10 @@ pub mod hints {
     pub const HIDDEN_LAYERS: u8 = 8;
     /// Two layers may share a name, so a name can't stand for a layer.
     pub const LAYER_NAMES_REPEAT: u8 = 16;
+    /// Some JPEG on the page has a `/Decode` or `/ColorTransform` that changes what its bytes mean, so its bytes alone wouldn't be the same picture. PDFium's calls don't show those.
+    pub const JPEG_READ_DIFFERENTLY: u8 = 32;
     /// Every hint. For a file the structure reader couldn't read, which says nothing about what it uses.
-    pub const ALL: u8 = SOFT_MASK | BLEND | SHADING_PATTERN | HIDDEN_LAYERS | LAYER_NAMES_REPEAT;
+    pub const ALL: u8 = SOFT_MASK | BLEND | SHADING_PATTERN | HIDDEN_LAYERS | LAYER_NAMES_REPEAT | JPEG_READ_DIFFERENTLY;
 }
 
 /// Ask for a page's contents, or the next piece of them.

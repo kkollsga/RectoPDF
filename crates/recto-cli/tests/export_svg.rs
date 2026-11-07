@@ -679,3 +679,40 @@ fn a_zero_width_line_stays_visible() {
     assert!(svg.contains("vector-effect=\"non-scaling-stroke\"") && svg.contains("stroke-width=\"1\""), "{svg}");
     assert!(!svg.contains("stroke-width=\"0\""), "{svg}");
 }
+
+/// Failure: a JPEG passes through though the page changes what its bytes mean. `/Decode [1 0 1 0 1 0]` is the inverse in the PDF and normal in the SVG, `/ColorTransform 0` different colours, and a colour profile that isn't sRGB is dropped. "Lossless" means the same picture, so these go as PNG, with the colours PDFium gives.
+#[test]
+fn a_jpeg_the_page_reads_differently_isnt_passed_through() {
+    for extra in ["/Decode [1 0 1 0 1 0]", "/DecodeParms << /ColorTransform 0 >>"] {
+        let file = TempPdf::new("doc.pdf", &jpeg_doc(extra, "40 0 0 40 100 500"));
+        let (svg, data) = svg_of(&file, &[]);
+        assert_eq!(data["objects"]["images_original_jpeg"], 0, "{extra}: {data}");
+        assert!(matches!(&embedded_images(svg.as_bytes())[..], [Embedded::Png { .. }]), "{extra}");
+    }
+    // A /Decode that changes nothing still passes.
+    let file = TempPdf::new("doc.pdf", &jpeg_doc("/Decode [0 1 0 1 0 1]", "40 0 0 40 100 500"));
+    let (_, data) = svg_of(&file, &[]);
+    assert_eq!(data["objects"]["images_original_jpeg"], 1, "{data}");
+    // The inverse is really the inverse: red comes out as cyan.
+    let file = TempPdf::new("doc.pdf", &jpeg_doc("/Decode [1 0 1 0 1 0]", "40 0 0 40 100 500"));
+    let (svg, _) = svg_of(&file, &[]);
+    let images = embedded_images(svg.as_bytes());
+    let [Embedded::Png { pixels, .. }] = &images[..] else { panic!("{images:?}") };
+    assert!(pixels[0] < 100 && pixels[1] > 180, "{:?}", &pixels[..3]);
+}
+
+fn icc_doc(profile: Vec<u8>, components: u32) -> Vec<u8> {
+    let image = first_extra_object(1);
+    let icc = image + 1;
+    let resources = format!("/XObject << /Im {image} 0 R >>");
+    let dict = format!("/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace [/ICCBased {icc} 0 R] /BitsPerComponent 8 /Filter /DCTDecode");
+    pages_with(&[Page::new("q 40 0 0 40 100 500 cm /Im Do Q\n")], &resources, vec![Object::Stream { dict, data: jpeg_bytes() }, Object::Stream { dict: format!("/N {components} /Alternate /DeviceRGB"), data: profile }])
+}
+
+/// Failure: a JPEG with a colour profile passes through, profile dropped, so a reader takes it for sRGB, and a wide-gamut photo looks wrong. Only a profile that says it's sRGB may pass.
+#[test]
+fn only_an_srgb_profile_lets_a_jpeg_through() {
+    let file = TempPdf::new("doc.pdf", &icc_doc(b"not a profile that says anything we know".to_vec(), 3));
+    let (_, data) = svg_of(&file, &[]);
+    assert_eq!(data["objects"]["images_original_jpeg"], 0, "{data}");
+}
