@@ -103,7 +103,7 @@ import QuartzCore
         case "hover":
             controller?.sidebar.setHover(value == "none" ? nil : Int(value))
         case "click_row":
-            controller?.sidebar.clickRow(Int(value) ?? 0)
+            if value == "note" { controller?.sidebar.clickNote() } else { controller?.sidebar.clickRow(Int(value) ?? 0) }
         case "contents_scroll":
             controller?.sidebar.userScrollContents(toRow: Int(value) ?? 0)
         case "contents_pointer":

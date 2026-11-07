@@ -204,6 +204,33 @@ fn the_sidebar_folds_switches_and_goes_to_contents() {
     assert!(run.ok(&["qa", "hover", "none"])["hover"].is_null());
 }
 
+/// Failure: the sidebar's offer of generated contents doesn't reach the screen for a file with none, a click on it doesn't make them, or the generated list shows with nothing to say it's generated, or with a heading no one can see. The click is what `qa click-row note` calls, the same method the note's own click calls.
+#[test]
+fn the_sidebar_offers_generated_contents_and_labels_them() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("headings.pdf", &recto_testpdf::headings_document());
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let offered = run.report();
+    assert_eq!(offered["app"]["contents"]["note"], "Generate contents", "{offered}");
+    assert!(offered["app"]["contents"]["note_height"].as_f64().unwrap() > 0.0);
+    run.ok(&["qa", "click-row", "note"]);
+    // The helper is at background priority, which a busy Mac can starve, so the wait is the agent's own, as long as it needs.
+    loop {
+        let (done, code) = run.state.json(&["wait", "contents-generated", "--timeout", "120s"]);
+        if code != recto_agent::exit::TIMED_OUT {
+            assert_eq!(code, 0, "{done}");
+            break;
+        }
+    }
+    let shown = wait_for(&run, |state| state["app"]["contents"]["note"] == "Generated contents");
+    assert_eq!(shown["app"]["contents"]["count"], 6, "{shown}");
+    let sidebar = run.ok(&["sidebar"]);
+    let titles: Vec<&str> = sidebar["rows"].as_array().unwrap().iter().filter(|row| row["kind"] == "contents").map(|row| row["untrusted"]["text"].as_str().unwrap()).collect();
+    assert_eq!(titles, ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"]);
+    assert_eq!(run.ok(&["contents"])["total"], 0, "the file's own are untouched");
+}
+
 fn wait_for(run: &Run, holds: impl Fn(&Value) -> bool) -> Value {
     let mut last = Value::Null;
     for _ in 0..400 {

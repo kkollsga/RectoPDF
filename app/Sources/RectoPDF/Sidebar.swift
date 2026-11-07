@@ -2,7 +2,7 @@ import AppKit
 import QuartzCore
 
 /// A row: only its name at rest. Its chevron and page number come with hover, and all it draws comes from Rust's row.
-final class SidebarCell: NSView {
+class SidebarCell: NSView {
     let name = TextLine()
     let pageNumber = TextLine()
     let chevron = TextLine()
@@ -179,14 +179,35 @@ final class ContentsScrollView: NSScrollView {
     }
 }
 
-/// The active tab's row: its name, and the contents under it in a scrolling area of their own.
+/// The note over a tab's contents. A click on it does what Rust's row says, and the pointer resting on it shows what it means.
+final class NoteCell: SidebarCell {
+    var clicked: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        clicked?()
+    }
+}
+
+/// The active tab's row: its name, the note over its contents if Rust has one, and the contents under them in a scrolling area of their own. The note stays put while the contents scroll, so a generated list is labelled wherever it's scrolled to.
 final class ActiveTabCell: FlippedView {
     let tab = SidebarCell(frame: .zero)
+    let note = NoteCell(frame: .zero)
     private weak var box: NSView?
+    private var noteHeight: CGFloat = 0
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         addSubview(tab)
+        addSubview(note)
+        note.isHidden = true
+    }
+
+    /// Shows the note, or hides it with no height.
+    func showNote(_ row: SidebarRow?, height: CGFloat, hovered: Bool) {
+        noteHeight = row == nil ? 0 : height
+        note.isHidden = row == nil
+        if let row { note.show(row: row, foldedActive: false, hovered: hovered) }
+        needsLayout = true
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -207,7 +228,8 @@ final class ActiveTabCell: FlippedView {
     override func layout() {
         super.layout()
         tab.frame = NSRect(x: 0, y: 0, width: bounds.width, height: tabHeight)
-        box?.frame = NSRect(x: 0, y: tabHeight, width: bounds.width, height: max(bounds.height - tabHeight, 0))
+        note.frame = NSRect(x: 0, y: tabHeight, width: bounds.width, height: noteHeight)
+        box?.frame = NSRect(x: 0, y: tabHeight + noteHeight, width: bounds.width, height: max(bounds.height - tabHeight - noteHeight, 0))
     }
 }
 
@@ -300,13 +322,13 @@ final class PanelView: FlippedView {
     var performAction: ((String) -> Void)?
     private let core: AppCore
     private let noticeMark: String
-    private(set) var model = SidebarView(tabsVersion: 0, tabCount: 0, activeIndex: nil, contentsCount: 0, contentsVersion: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsPlaceShift: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false)
+    private(set) var model = SidebarView(tabsVersion: 0, tabCount: 0, activeIndex: nil, contentsCount: 0, contentsVersion: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsPlaceShift: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false, contentsNote: nil)
     /// The tabs, pulled only when their version moves.
     private(set) var tabs: [SidebarRow] = []
     private var shownTabsVersion: UInt64 = 0
     private var shownContentsVersion: UInt64 = 0
     private var activeIndex: Int?
-    private var layout = SidebarLayout(tabRow: 32, contentsRow: 28, contentsHeight: 0, tabsScroll: false)
+    private var layout = SidebarLayout(tabRow: 32, contentsRow: 28, contentsHeight: 0, tabsScroll: false, noteHeight: 0)
     private(set) var hoveredRow: Int?
     var addPressed: (() -> Void)?
     private var tracking: NSTrackingArea?
@@ -472,6 +494,8 @@ final class PanelView: FlippedView {
             "tabs_scroll": layout.tabsScroll,
             "list_height": scroll.frame.height,
             "footer_on_screen": footer.frame.maxY <= view.bounds.height && !footer.isHidden,
+            "note": model.tocOpen ? (model.contentsNote?.text ?? "") : "",
+            "note_height": noteHeight,
         ]
     }
 
@@ -489,6 +513,13 @@ final class PanelView: FlippedView {
     var rowCount: Int { tabs.count + Int(model.tocOpen ? model.contentsCount : 0) }
 
     private var contentsHeight: CGFloat { model.tocOpen ? layout.contentsHeight : 0 }
+    private var noteHeight: CGFloat { model.tocOpen && model.contentsNote != nil ? layout.noteHeight : 0 }
+
+    /// What a click on the note over the contents does, and what `recto qa click-row note` calls.
+    func clickNote() {
+        guard let note = model.contentsNote, model.tocOpen else { return }
+        core.tapRow(row: note)
+    }
 
     @objc private func frameChanged() {
         let size = view.bounds.size
@@ -625,6 +656,7 @@ final class PanelView: FlippedView {
             guard index < tabs.count, let view = table.view(atColumn: 0, row: index, makeIfNecessary: false) else { return }
             let cell = (view as? ActiveTabCell)?.tab ?? view as? SidebarCell
             cell?.show(row: tabs[index], foldedActive: !model.tocOpen, hovered: hoveredRow != nil)
+            (view as? ActiveTabCell)?.showNote(model.tocOpen ? model.contentsNote : nil, height: layout.noteHeight, hovered: hoveredRow != nil)
         }
         reloadContentsCells()
     }
@@ -718,6 +750,7 @@ final class PanelView: FlippedView {
     func update(_ new: SidebarView) {
         updatePanel()
         let (oldTabCount, oldActive, oldOpen) = (tabs.count, activeIndex, model.tocOpen)
+        let noteChanged = new.contentsNote != model.contentsNote
         let oldActiveTab = activeTabID
         let tabsChanged = new.tabsVersion != shownTabsVersion
         if tabsChanged {
@@ -748,7 +781,7 @@ final class PanelView: FlippedView {
             if heightChanged {
                 // The area's height moved with the count, and that can clamp the scroll.
                 keepingScrollAccount { table.reloadData() }
-            } else if tabsChanged {
+            } else if tabsChanged || noteChanged {
                 reloadCells()
             }
         } else {
@@ -834,7 +867,7 @@ final class PanelView: FlippedView {
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         if tableView === contentsTable { return layout.contentsRow }
-        return layout.tabRow + (row == activeIndex ? contentsHeight : 0)
+        return layout.tabRow + (row == activeIndex ? noteHeight + contentsHeight : 0)
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -854,6 +887,8 @@ final class PanelView: FlippedView {
                 return made
             }()
             holder.hold(contentsHeight > 0 ? contentsScroll : nil, tabHeight: layout.tabRow)
+            holder.showNote(model.tocOpen ? model.contentsNote : nil, height: layout.noteHeight, hovered: hoveredRow != nil)
+            holder.note.clicked = { [weak self] in self?.clickNote() }
             holder.tab.show(row: tab, foldedActive: !model.tocOpen, hovered: hoveredRow != nil)
             return holder
         }

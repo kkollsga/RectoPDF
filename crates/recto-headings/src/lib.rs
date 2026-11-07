@@ -115,7 +115,28 @@ pub fn find_headings(path: &Path, scan: Scan, cancel: Option<&CancelToken>, prog
         }
         progress(number, total);
     }
+    drop_running_heads(&mut headings);
     Ok(headings)
+}
+
+/// A title on this many pages or more is a running head or a page's furniture, such as the EU's `EN` at the top of every page of the AI Act, which distillPDF 0.1.7 keeps as a heading because it's too short for its own check. A real document repeats a heading on two or three pages at most, as "Introduction" in each part.
+pub const RUNNING_HEAD_PAGES: usize = 4;
+
+/// Leaves out every heading whose words are on [`RUNNING_HEAD_PAGES`] pages or more, and counts them as not found.
+fn drop_running_heads(headings: &mut Headings) {
+    let key = |title: &str| {
+        let mut key = String::new();
+        letters(title, |c| key.push(c));
+        key
+    };
+    let mut pages: std::collections::HashMap<String, (u32, usize)> = std::collections::HashMap::new();
+    for found in &headings.found {
+        let entry = pages.entry(key(&found.title)).or_insert((u32::MAX, 0));
+        if entry.0 != found.page {
+            *entry = (found.page, entry.1 + 1);
+        }
+    }
+    headings.found.retain(|found| pages.get(&key(&found.title)).is_none_or(|(_, count)| *count < RUNNING_HEAD_PAGES));
 }
 
 /// A heading's text as words. distillPDF's `text` keeps inline markup, `<b>`, `<i>`, `<sup>` and the like, with `&`, `<` and `>` written as entities, so a tag is never the file's own text.
@@ -343,6 +364,21 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(!seen_on(&format!("{}b", "a".repeat(239)), &page, true));
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+    }
+
+    /// Failure: a running head, `EN` at the top of each of a law's 144 pages, fills the generated contents with one line a page, so the real headings can't be found among them. Three pages of "Introduction", one a part, stay.
+    #[test]
+    fn running_heads_are_left_out() {
+        let mut headings = Headings { pages: 10, ..Headings::default() };
+        for page in 0..10 {
+            headings.found.push(found(page, "EN"));
+        }
+        for page in [1, 4, 7] {
+            headings.found.push(found(page, "Introduction"));
+        }
+        drop_running_heads(&mut headings);
+        let titles: Vec<&str> = headings.found.iter().map(|found| found.title.as_str()).collect();
+        assert_eq!(titles, ["Introduction"; 3]);
     }
 
     /// Failure: levels start at whatever distillPDF's lowest was, so a document whose headings are all level 3 shows them indented under nothing.

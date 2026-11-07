@@ -142,7 +142,7 @@ fn generated_contents<A: SessionAccess>(access: &A, tab: &str, from: Option<u32>
     let mut answer = listing(&file, &toc, Some(&places), from, limit, depth)?;
     answer["generated"] = json!(true);
     answer["state"] = json!("ready");
-    answer["note"] = json!(GENERATED_NOTE);
+    answer["note"] = json!(if made.entries.is_empty() { "No headings were found on its pages, so there are no generated contents. A scan with no text has none to find, and neither has a document set all in one size." } else { GENERATED_NOTE });
     answer["hidden_left_out"] = json!(made.hidden_dropped);
     answer["pages_not_checked"] = json!(made.pages_not_checked);
     answer["pages_not_read"] = json!(made.pages_failed);

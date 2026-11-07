@@ -28,7 +28,7 @@ use recto_render_service::Policy;
 use recto_reader::tiles::SavedPlace;
 use recto_session::HistorySource;
 use recto_session::record::{self, Appearance, AppRecord, ContentsScroll, FileStatus, FocusRecord, FocusView, Rect, ScreenNow, ScreenRecord, WindowRecord, look_at_file, place_window};
-use recto_session::{CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsRowChange, ContentsView, DocLoader, FollowMove, WARM_PAPER, row_full_text, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TAB_ROW_HEIGHT, TabId, ViewSettings, sidebar_heights};
+use recto_session::{CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsRowChange, ContentsView, DocLoader, FollowMove, WARM_PAPER, row_full_text, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TAB_ROW_HEIGHT, TabId, ViewSettings, sidebar_heights_with_note};
 use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
 use std::io::Write;
@@ -242,8 +242,6 @@ struct ContentsEntry {
     text: Box<str>,
     page: Option<u32>,
     depth: u8,
-    /// A note's meaning and what it does, for a note.
-    note: Option<(&'static str, Option<recto_session::ContentsAction>)>,
 }
 
 /// Everything the sidebar draws, but for the contents' rows, which are pulled with `contents_rows` as they come on screen.
@@ -270,6 +268,8 @@ pub struct SidebarView {
     pub place: String,
     pub edited: bool,
     pub undone_owner_steps: bool,
+    /// A quiet line over the active tab's contents, about generated contents, which stays put while they scroll. Drawn only while they're showing.
+    pub contents_note: Option<SidebarRow>,
 }
 
 /// Rust's height rule, in points.
@@ -279,6 +279,8 @@ pub struct SidebarLayout {
     pub contents_row: f64,
     pub contents_height: f64,
     pub tabs_scroll: bool,
+    /// The note's height over the contents, or nothing.
+    pub note_height: f64,
 }
 
 /// What to do with the contents' scroll, from Rust's rule about following.
@@ -1189,7 +1191,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1269,15 +1271,10 @@ impl AppCore {
         drop(published);
         let total = u32::try_from(contents.len()).unwrap_or(u32::MAX);
         let end = first.saturating_add(count.min(MAX_CONTENTS_FETCH)).min(total);
-        // A note goes above the entries, with no rail of its own.
-        let first_entry = u32::from(contents.first().is_some_and(|entry| entry.note.is_some()));
         (first..end)
             .filter_map(|index| {
                 let entry = contents.get(index as usize)?;
-                if let Some((hover, action)) = entry.note {
-                    return Some(SidebarRow { kind: RowKind::Note, tab: entry.tab, text: entry.text.to_string(), page: None, depth: 0, current: false, rail_filled: false, rail_first: false, rail_last: false, notice: Some(hover.to_string()), action: action.map(|action| action.id().to_string()) });
-                }
-                Some(SidebarRow { kind: RowKind::Contents, tab: entry.tab, text: entry.text.to_string(), page: entry.page, depth: entry.depth, current: current == Some(index), rail_filled: index < rail_filled, rail_first: index == first_entry, rail_last: index + 1 == total, notice: None, action: None })
+                Some(SidebarRow { kind: RowKind::Contents, tab: entry.tab, text: entry.text.to_string(), page: entry.page, depth: entry.depth, current: current == Some(index), rail_filled: index < rail_filled, rail_first: index == 0, rail_last: index + 1 == total, notice: None, action: None })
             })
             .collect()
     }
@@ -1287,9 +1284,10 @@ impl AppCore {
         let published = lock(&self.inner.published);
         let tabs = published.sidebar.tab_count;
         let rows = if published.sidebar.toc_open { published.sidebar.contents_count } else { 0 };
+        let note = published.sidebar.toc_open && published.sidebar.contents_note.is_some();
         drop(published);
-        let heights = sidebar_heights(room, tabs, rows);
-        SidebarLayout { tab_row: TAB_ROW_HEIGHT, contents_row: CONTENTS_ROW_HEIGHT, contents_height: heights.contents, tabs_scroll: heights.tabs_scroll }
+        let heights = sidebar_heights_with_note(room, tabs, rows, note);
+        SidebarLayout { tab_row: TAB_ROW_HEIGHT, contents_row: CONTENTS_ROW_HEIGHT, contents_height: heights.contents, tabs_scroll: heights.tabs_scroll, note_height: heights.note }
     }
 
     /// The reader scrolled the contents themselves.
@@ -2289,7 +2287,10 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         let mut active_index = None;
         let (mut tab_count, mut contents_row_count) = (0u32, 0u32);
         for row in &model.rows {
-            if row.kind != SessionRowKind::Tab {
+            if row.kind == SessionRowKind::Note {
+                continue;
+            }
+            if row.kind == SessionRowKind::Contents {
                 if row.current {
                     current = Some(contents_row_count);
                 }
@@ -2314,18 +2315,19 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             Arc::new(tab_rows().map(|row| SidebarRow { kind: RowKind::Tab, tab: row.tab.0, text: row.text.to_string(), page: row.page, depth: row.depth, current: row.current, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string), action: None }).collect())
         };
         let tabs_version = if same_tabs { was.tabs_version } else { was.tabs_version + 1 };
-        let note_of = |row: &recto_session::SidebarRow<'_>| (row.kind == SessionRowKind::Note).then(|| (row.notice.unwrap_or(""), row.action));
-        let same = held.len() == contents_row_count as usize && model.rows.iter().filter(|row| row.kind != SessionRowKind::Tab).zip(held.iter()).all(|(row, entry)| row.tab.0 == entry.tab && row.page == entry.page && row.depth == entry.depth && row.text == entry.text.as_ref() && note_of(row) == entry.note);
+        let same = held.len() == contents_row_count as usize && model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).zip(held.iter()).all(|(row, entry)| row.tab.0 == entry.tab && row.page == entry.page && row.depth == entry.depth && row.text == entry.text.as_ref());
         let rail_filled = u32::try_from(model.rail_filled).unwrap_or(u32::MAX);
         let (contents, contents_version, change, contents_place_shift) = if same {
             (held, was.contents_version, (was.contents_changed_from, was.contents_removed, was.contents_inserted), was.contents_place_shift)
         } else {
-            let list: Arc<Vec<ContentsEntry>> = Arc::new(model.rows.iter().filter(|row| row.kind != SessionRowKind::Tab).map(|row| ContentsEntry { tab: row.tab.0, text: row.text.into(), page: row.page, depth: row.depth, note: note_of(row) }).collect());
+            let list: Arc<Vec<ContentsEntry>> = Arc::new(model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).map(|row| ContentsEntry { tab: row.tab.0, text: row.text.into(), page: row.page, depth: row.depth }).collect());
             let change = rows_changed(&held, &list);
             let shift = place_shift(&held, &list, change, was.contents_current, current);
             (list, was.contents_version + 1, change, shift)
         };
-        let view = SidebarView { tabs_version, tab_count, active_index, contents_count: contents_row_count, contents_version, contents_changed_from: change.0, contents_removed: change.1, contents_inserted: change.2, contents_place_shift, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps };
+        // The note over the contents stays put while they scroll, so it's drawn apart from them.
+        let contents_note = model.rows.iter().find(|row| row.kind == SessionRowKind::Note).map(|row| SidebarRow { kind: RowKind::Note, tab: row.tab.0, text: row.text.to_string(), page: None, depth: 0, current: false, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string), action: row.action.map(|action| action.id().to_string()) });
+        let view = SidebarView { contents_note, tabs_version, tab_count, active_index, contents_count: contents_row_count, contents_version, contents_changed_from: change.0, contents_removed: change.1, contents_inserted: change.2, contents_place_shift, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps };
         (snapshot, view, tabs, contents, rail_filled, session.view())
     });
     // The paper and focus first, so what's asked for next is drawn right.
@@ -2441,7 +2443,7 @@ mod tests {
     /// Failure: rows opening as the reader enters a chapter jump the list under a smooth drift, because the host wasn't told which went and which came. It must say exactly, a chapter closing and the next opening together included, and a change of nothing says nothing.
     #[test]
     fn opening_and_closing_rows_says_what_changed() {
-        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: 0, note: None };
+        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: 0 };
         let list = |names: &[&str]| names.iter().map(|name| row(name)).collect::<Vec<_>>();
         let before = list(&["1", "2", "3"]);
         assert_eq!(rows_changed(&before, &list(&["1", "2", "2.1", "2.2", "3"])), (2, 0, 2));
@@ -2455,7 +2457,7 @@ mod tests {
     /// Failure: a chapter closes as the reader leaves it, the place drops up the list by the rows that went, and the contents make a second move straight after the first to bring it back. How far the place was carried has to come out right wherever it starts and ends.
     #[test]
     fn a_row_change_says_how_far_it_carried_the_place() {
-        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: u8::try_from(text.matches('.').count()).unwrap(), note: None };
+        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: u8::try_from(text.matches('.').count()).unwrap() };
         let list = |names: &[&str]| names.iter().map(|name| row(name)).collect::<Vec<_>>();
         let shift = |one: &[&str], place_before: u32, two: &[&str], place_after: u32| {
             let (before, after) = (list(one), list(two));

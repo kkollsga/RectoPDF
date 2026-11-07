@@ -79,3 +79,10 @@ path = "fuzz_targets/edits.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "generated"
+path = "fuzz_targets/generated.rs"
+test = false
+doc = false
+bench = false

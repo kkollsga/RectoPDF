@@ -69,6 +69,10 @@ fn look(inner: &Inner, id: TabId, ask: bool) {
 fn where_they_stand(generator: &Generator, path: &Path, pages: u32, ask: bool) -> Option<GeneratedView> {
     let Ok(key) = CorpusKey::of_file(path) else { return Some(GeneratedView::Failed("The file can't be looked at just now.")) };
     if let Some(made) = generated::find(generator, path, key) {
+        // A scan with no text layer, or a document set all in one size, has nothing to list: said, rather than shown as an empty list.
+        if made.entries.is_empty() {
+            return Some(GeneratedView::NoneFound);
+        }
         return Some(GeneratedView::Ready(Arc::new(made.toc())));
     }
     if ask {

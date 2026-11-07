@@ -170,6 +170,8 @@ pub fn tab_notice_words(tab: &TabRecord, has_edits: bool) -> Option<&'static str
 pub const TAB_ROW_HEIGHT: f64 = 32.0;
 /// A contents row in the sidebar, in points.
 pub const CONTENTS_ROW_HEIGHT: f64 = 28.0;
+/// The note over the contents, in points: a line of small text.
+pub const NOTE_ROW_HEIGHT: f64 = 24.0;
 /// The most of the sidebar's room the contents take: about 60%, by the owner's yes of 2026-11-07. The rest is for the other tabs, and it's what keeps them from being pushed off by one long outline.
 pub const CONTENTS_MAX_SHARE: f64 = 0.6;
 
@@ -178,17 +180,26 @@ pub const CONTENTS_MAX_SHARE: f64 = 0.6;
 pub struct SidebarHeights {
     /// The height of the contents' own scrolling area. Less than their rows' total means they scroll.
     pub contents: f64,
+    /// The note's height over them, or nothing.
+    pub note: f64,
     /// Whether the list of tabs doesn't fit, and scrolls by itself.
     pub tabs_scroll: bool,
 }
 
 /// **The sidebar's height rule.** Owner, 2026-11-07: "The max height of toc does not seem to be working", then yes to a true maximum: the contents take what they need, up to [`CONTENTS_MAX_SHARE`] of the room, and scroll inside that. The other tabs have what's left, and a long list of them scrolls by itself in it. It takes the room it's told of, so anything else docked in the sidebar comes off first.
 pub fn sidebar_heights(room: f64, tabs: u32, contents_rows: u32) -> SidebarHeights {
+    sidebar_heights_with_note(room, tabs, contents_rows, false)
+}
+
+/// The same, with a note over the contents, such as "Generated contents". It stays put above them while they scroll, so a generated list is labelled wherever it's scrolled to, and it comes out of the same share.
+pub fn sidebar_heights_with_note(room: f64, tabs: u32, contents_rows: u32, note: bool) -> SidebarHeights {
     let room = if room.is_finite() { room.max(0.0) } else { 0.0 };
+    let tab_row = if tabs > 0 { TAB_ROW_HEIGHT } else { 0.0 };
+    let note = if note && room - tab_row >= NOTE_ROW_HEIGHT { NOTE_ROW_HEIGHT } else { 0.0 };
     let natural = f64::from(contents_rows) * CONTENTS_ROW_HEIGHT;
     // With a window too short for the rest, the active tab's own row comes first.
-    let contents = natural.min(room * CONTENTS_MAX_SHARE).min(room - if tabs > 0 { TAB_ROW_HEIGHT } else { 0.0 }).max(0.0);
-    SidebarHeights { contents, tabs_scroll: f64::from(tabs) * TAB_ROW_HEIGHT + contents > room }
+    let contents = natural.min(room * CONTENTS_MAX_SHARE - note).min(room - tab_row - note).max(0.0);
+    SidebarHeights { contents, note, tabs_scroll: f64::from(tabs) * TAB_ROW_HEIGHT + note + contents > room }
 }
 
 /// How long after the reader stops using the contents, with the pointer out of them, before they may follow again.
@@ -705,6 +716,8 @@ pub enum GeneratedView {
     /// They couldn't be, for this reason, in Rust's words.
     Failed(&'static str),
     Ready(Arc<Toc>),
+    /// Made, and there were no headings to list: a scan with no text, or a document set all in one size.
+    NoneFound,
     /// Looked for, for a tab that had chosen them, and they weren't kept. They're offered again.
     NotKept,
 }
@@ -743,6 +756,7 @@ pub fn contents_note(verdict: ContentsVerdict, view: Option<&GeneratedView>, cho
         Some(GeneratedView::Ready(_)) => Some(("Show generated contents", MADE, Some(ContentsAction::ShowGenerated))),
         Some(GeneratedView::Making) => Some(("Generating contents\u{2026}", "Finding the headings on the pages, in the background. On a long document this can take a little while.", None)),
         Some(GeneratedView::Failed(words)) => Some(("Couldn't generate contents", words, Some(ContentsAction::Generate))),
+        Some(GeneratedView::NoneFound) => Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None)),
         _ if verdict.offers() || choose_generated => Some((
             "Generate contents",
             match verdict {
@@ -2142,11 +2156,8 @@ impl<L: DocLoader> Session<L> {
                     Some(GeneratedView::Ready(generated)) if tab.generated_contents => generated,
                     _ => toc,
                 };
-                // The note isn't an entry, but it's a row above them, and the rail counts rows.
+                // The note isn't an entry: the host draws it over the contents, and the rail counts entries.
                 rail_filled = contents_rows(shown, tab, self.edits.get(&tab.id), &mut rows);
-                if note.is_some() && rail_filled > 0 {
-                    rail_filled += 1;
-                }
             }
         }
         let edited = self.active.is_some_and(|id| self.is_edited(id));
@@ -2404,6 +2415,7 @@ impl SessionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use recto_core::TocLine;
     use std::cell::Cell;
 
     struct FakeLoader {
@@ -2521,6 +2533,12 @@ mod tests {
         assert!(sidebar_heights(100.0, 1, 1000).contents <= 100.0 - TAB_ROW_HEIGHT, "a short window keeps the tab's own row");
         assert_eq!(sidebar_heights(f64::NAN, 2, 1000).contents, 0.0);
         assert_eq!(sidebar_heights(10.0, 1, 1000).contents, 0.0);
+        // A note over them comes out of the same share, so the tabs keep what they had.
+        let noted = sidebar_heights_with_note(700.0, 1, 1000, true);
+        assert_eq!(noted.note, NOTE_ROW_HEIGHT);
+        assert!((noted.contents + noted.note - most).abs() < 1e-9, "{noted:?}");
+        assert_eq!(sidebar_heights_with_note(700.0, 1, 0, true).contents, 0.0, "a note alone, for a file with no contents");
+        assert_eq!(sidebar_heights_with_note(40.0, 1, 10, true).note, 0.0, "no room for it");
     }
 
     /// Failure: in a short contents area, a place that's just been brought to its anchor is outside the dead zone, so it moves again at every section, or for ever. Wherever the list is short, landing on the anchor is at rest.
@@ -3109,6 +3127,52 @@ mod tests {
         assert!(s.draw_note(a, last).is_some());
         s.close(a).unwrap();
         assert!(s.draw_note(a, last).is_none());
+    }
+
+    /// Failure: a file with no contents of its own gets no offer, or the offer, the list while it's made and the generated list are told apart only by guessing. And a generated list must never take the place of the file's own once the reader goes back to them, nor follow a closed tab.
+    #[test]
+    fn generated_contents_are_offered_labelled_and_never_replace_the_files_own() {
+        let mut s = session(40);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        assert_eq!(s.contents_verdict(id), Some(ContentsVerdict::Missing));
+        fn note(s: &Session<FakeLoader>) -> Option<(String, Option<ContentsAction>)> {
+            s.sidebar().rows.iter().find(|row| row.kind == RowKind::Note).map(|row| (row.text.to_string(), row.action))
+        }
+        assert_eq!(note(&s), Some(("Generate contents".into(), Some(ContentsAction::Generate))));
+        s.choose_generated(id, true);
+        s.set_generated_view(id, GeneratedView::Making);
+        assert_eq!(note(&s).map(|(_, action)| action), Some(None), "nothing to tap while they're made");
+        let lines = [TocLine { title: "1 Introduction", page: 0, parent: NONE, depth: 0 }, TocLine { title: "2 Method", page: 5, parent: NONE, depth: 0 }];
+        s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
+        let model = s.sidebar();
+        assert_eq!(model.rows.iter().filter(|row| row.kind == RowKind::Contents).map(|row| row.text).collect::<Vec<_>>(), ["1 Introduction", "2 Method"]);
+        assert_eq!(note(&s), Some(("Generated contents".into(), None)), "labelled, and with no contents of its own there's nothing to go back to");
+        assert_eq!(model.rail_filled, 1, "the rail counts entries, not the note");
+        assert!(s.to_record().tabs[0].generated_contents, "the choice is kept");
+        s.choose_generated(id, false);
+        assert_eq!(note(&s), Some(("Show generated contents".into(), Some(ContentsAction::ShowGenerated))));
+        assert!(s.sidebar().rows.iter().all(|row| row.kind != RowKind::Contents), "the file's own, which are none");
+        s.close(id).unwrap();
+        assert!(s.generated_view(id).is_none());
+    }
+
+    /// Failure: a thousand tabs that each had generated contents asked for hold every list in memory.
+    #[test]
+    fn generated_lists_held_are_capped() {
+        let mut s = session(40);
+        let ids: Vec<TabId> = (0..20).map(|n| s.open(Path::new(&format!("/d/{n}.pdf"))).unwrap()).collect();
+        for id in &ids {
+            s.set_generated_view(*id, GeneratedView::Making);
+        }
+        assert!(s.generated.len() <= MAX_GENERATED_VIEWS);
+        assert!(s.generated_view(*ids.last().unwrap()).is_some());
+    }
+
+    /// Failure: contents that are fine get an offer, so the sidebar nags about a good file.
+    #[test]
+    fn fine_contents_get_no_note() {
+        assert_eq!(contents_note(ContentsVerdict::Fine, None, false, 12), None);
+        assert!(contents_note(ContentsVerdict::LooksBad(recto_core::verdict::BadReason::TooFew), None, false, 1).is_some());
     }
 
     /// Failure: a field added carelessly raises the cost of every visible row.

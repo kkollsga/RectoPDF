@@ -21,9 +21,9 @@ use crate::indexing::Notifier;
 pub const MAX_WAITING: usize = 8;
 /// The helper's own footprint, which is distillPDF reading one page at a time. Its render worker has a limit of its own, half a reader's. With `MallocLargeCache=0`, all 141 PDFs of bench100 peaked under 100 MiB: see `docs/ENGINEERING.md`.
 pub const MEMORY_LIMIT: u64 = 512 * 1024 * 1024;
-/// A job's time: a minute, and a quarter of a second for each page, up to half an hour. The 383-page NASA report took about 15 s at normal priority.
+/// A job's time: three minutes, and a second for each page, up to an hour, the indexer's limit. It's there for a helper that's stuck, not to hurry one: at background priority a busy Mac can starve it for minutes, and a debug build is many times slower. The 383-page NASA report took about 15 s in a release build at normal priority.
 pub fn time_limit(pages: u32) -> Duration {
-    (Duration::from_secs(60) + Duration::from_millis(250) * pages).min(Duration::from_secs(30 * 60))
+    (Duration::from_secs(180) + Duration::from_secs(1) * pages).min(Duration::from_secs(60 * 60))
 }
 /// How often the helper is looked at while it runs.
 const WATCH_EVERY: Duration = Duration::from_millis(25);
@@ -518,6 +518,6 @@ mod tests {
     #[test]
     fn the_time_allowed_grows_with_pages_and_has_a_ceiling() {
         assert!(time_limit(383) > time_limit(10));
-        assert_eq!(time_limit(u32::MAX), Duration::from_secs(30 * 60));
+        assert_eq!(time_limit(u32::MAX), Duration::from_secs(60 * 60));
     }
 }
