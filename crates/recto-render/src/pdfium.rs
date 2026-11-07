@@ -16,7 +16,7 @@
 
 use crate::{Cancel, PageChars, PagePoints, RenderBackend, RenderError, TextOptions, TileOutcome, classify_bgrx};
 use recto_platform::isolate::Library;
-use recto_proto::{CharBox, CharRecord, FailCode, MAX_PAGE_CHARS, MAX_PAGE_COUNT, TileKind, TileRect, device_size, merge_kinds, region_tiles};
+use recto_proto::{CharBox, CharRecord, FailCode, MAX_PAGE_CHARS, MAX_PAGE_COUNT, PageFrame, TileKind, TileRect, device_size, merge_kinds, region_tiles};
 use std::cell::Cell;
 use std::ffi::{CString, c_double, c_float, c_int, c_uchar, c_uint, c_ulong, c_void};
 use std::fs::File;
@@ -68,6 +68,8 @@ const FPDF_ERR_FILE: c_ulong = 2;
 const FPDF_ERR_FORMAT: c_ulong = 3;
 const FPDF_ERR_PASSWORD: c_ulong = 4;
 const FPDF_ERR_SECURITY: c_ulong = 5;
+/// `fpdf_doc.h`'s permission bit for copying or extracting text. The table in the PDF standard, 7.6.4.2, bit 5.
+const PERMISSION_COPY: c_ulong = 1 << 4;
 /// `fpdf_edit.h`: object types.
 const FPDF_PAGEOBJ_IMAGE: c_int = 3;
 const FPDF_PAGEOBJ_FORM: c_int = 5;
@@ -107,6 +109,9 @@ pdfium_api! {
     FPDF_GetPageSizeByIndex: fn(FPDF_DOCUMENT, c_int, *mut c_double, *mut c_double) -> c_int;
     FPDF_LoadPage: fn(FPDF_DOCUMENT, c_int) -> FPDF_PAGE;
     FPDF_ClosePage: fn(FPDF_PAGE);
+    FPDF_GetPageBoundingBox: fn(FPDF_PAGE, *mut FS_RECTF) -> FPDF_BOOL;
+    FPDFPage_GetRotation: fn(FPDF_PAGE) -> c_int;
+    FPDF_GetDocPermissions: fn(FPDF_DOCUMENT) -> c_ulong;
     FPDF_PageToDevice: fn(FPDF_PAGE, c_int, c_int, c_int, c_int, c_int, c_double, c_double, *mut c_int, *mut c_int) -> FPDF_BOOL;
     FPDFBitmap_CreateEx: fn(c_int, c_int, c_int, *mut c_void, c_int) -> FPDF_BITMAP;
     FPDFBitmap_FillRect: fn(FPDF_BITMAP, c_int, c_int, c_int, c_int, c_ulong) -> FPDF_BOOL;
@@ -196,6 +201,16 @@ unsafe extern "C" fn need_to_pause(this: *mut IFSDK_PAUSE) -> FPDF_BOOL {
     let cancelled = state.cancel.is_cancelled();
     state.cancelled.set(cancelled);
     FPDF_BOOL::from(cancelled)
+}
+
+/// `fpdfview.h`: a rectangle of page points.
+#[repr(C)]
+#[allow(non_camel_case_types)]
+struct FS_RECTF {
+    left: c_float,
+    top: c_float,
+    right: c_float,
+    bottom: c_float,
 }
 
 /// The one open page, kept because tiles arrive in runs for the same page and `FPDF_LoadPage` is the slow part.
@@ -599,7 +614,26 @@ impl RenderBackend for PdfiumBackend {
         if !options.boxes {
             boxes = Vec::new();
         }
-        Ok(PageChars { chars, boxes, hidden_checked })
+        let frame = if options.boxes { self.page_frame() } else { PageFrame::default() };
+        // SAFETY: the document is live. A file with no encryption answers all ones.
+        let permissions = unsafe { (api.FPDF_GetDocPermissions)(self.document) };
+        Ok(PageChars { chars, boxes, hidden_checked, frame, copy_restricted: permissions & PERMISSION_COPY == 0 })
+    }
+}
+
+impl PdfiumBackend {
+    /// The area of the open page that's shown, and how far it's turned. All zero if PDFium can't say, which leaves the page with nowhere to select.
+    fn page_frame(&self) -> PageFrame {
+        let Some(open) = self.open_page.as_ref() else { return PageFrame::default() };
+        let mut area = FS_RECTF { left: 0.0, top: 0.0, right: 0.0, bottom: 0.0 };
+        // SAFETY: the page is live, and the out-pointer is live for the call.
+        let known = unsafe { (self.api.FPDF_GetPageBoundingBox)(open.page, &raw mut area) };
+        if known == 0 {
+            return PageFrame::default();
+        }
+        // SAFETY: the page is live.
+        let turns = unsafe { (self.api.FPDFPage_GetRotation)(open.page) };
+        PageFrame { turns: (turns & 3) as u8, left: area.left.min(area.right), bottom: area.bottom.min(area.top), right: area.left.max(area.right), top: area.bottom.max(area.top) }
     }
 }
 

@@ -94,6 +94,7 @@ pub fn render(tag: &str, data: &Value) -> String {
         "index" | "index_status" => index(data),
         "index_clear" => format!("Cleared {}.{}", count(number(&data["cleared"]), "document's index", "documents' indexes"), if number(&data["being_built"]) > 0 { format!(" {} being built, and stayed.", count(number(&data["being_built"]), "is", "are")) } else { String::new() }),
         "text" => page_text(data),
+        "select" | "copy" => selected(data),
         "signatures" => signatures(data),
         "sidebar" | "tap" => sidebar(data),
         "view" => format!("Paper: {}. Focus view: {}. Agent icon: {}.", text(&data["paper"]), if data["focus"] == true { "on" } else { "off" }, if data["agent_icon"] == true { "on" } else { "off" }),
@@ -340,6 +341,48 @@ fn page_text(data: &Value) -> String {
     // Every line marked, so a page's own text can't pass as anything this program says: a page can say "Next: ..." as easily as a title can.
     out.push_str("\n---");
     write_page_lines(&mut out, text(&data["untrusted"]["text"]), spans);
+    out
+}
+
+fn selected(data: &Value) -> String {
+    let (first, last) = (number(&data["start"]["page"]), number(&data["end"]["page"]));
+    let pages = if first == last { format!("page {first}") } else { format!("pages {first} to {last}") };
+    let mut out = match data["chars"].as_u64() {
+        Some(chars) => format!("{} on {pages}.", count(chars, "character", "characters")),
+        None => format!("On {pages}."),
+    };
+    for row in data["pages"].as_array().map_or(&[][..], Vec::as_slice) {
+        if row["failed"] == true {
+            let _ = write!(out, "\nPage {} couldn't be read.", number(&row["page"]));
+            continue;
+        }
+        let shapes = row["rects"].as_array().map_or(&[][..], Vec::as_slice);
+        let _ = write!(out, "\nPage {}: {}", number(&row["page"]), count(shapes.len() as u64, "rectangle", "rectangles"));
+        if let Some(shape) = shapes.first() {
+            let _ = write!(out, ", the first at {} , {}", shape[0], shape[1]);
+        }
+        out.push('.');
+    }
+    if number(&data["pages_unchecked"]) > 0 {
+        let _ = write!(out, "\n{} couldn't be checked for hidden text.", count(number(&data["pages_unchecked"]), "page", "pages"));
+    }
+    if number(&data["pages_failed"]) > 0 && data["pages"].is_null() {
+        let _ = write!(out, "\n{} couldn't be read.", count(number(&data["pages_failed"]), "page", "pages"));
+    }
+    if number(&data["pages_too_long"]) > 0 {
+        let _ = write!(out, "\n{} too long to select.", count(number(&data["pages_too_long"]), "page is", "pages are"));
+    }
+    if data["stopped_at_page"].is_number() {
+        let _ = write!(out, "\nIt stopped at page {}: that's as far as one goes.", number(&data["stopped_at_page"]));
+    }
+    if data["note"].is_string() {
+        let _ = write!(out, "\n{}", text(&data["note"]));
+    }
+    if data["untrusted"]["text"].is_string() {
+        // Every line marked, as `text` marks them: it's a page's own words.
+        out.push_str("\n---");
+        write_page_lines(&mut out, text(&data["untrusted"]["text"]), &[]);
+    }
     out
 }
 

@@ -150,7 +150,7 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
             let Some(backend) = backend else { return Some(proto::encode_failed(job.job_id, FailCode::NoDocument)) };
             Some(match backend.page_text(job.page, TextOptions { boxes: job.boxes, hidden_check: job.hidden_check }) {
                 Ok(page) => {
-                    let reply = TextReply { job_id: job.job_id, page: job.page, hidden_checked: page.hidden_checked, chars: page.chars, boxes: page.boxes };
+                    let reply = TextReply { job_id: job.job_id, page: job.page, hidden_checked: page.hidden_checked, chars: page.chars, boxes: page.boxes, frame: page.frame, copy_restricted: page.copy_restricted };
                     reply.encode().unwrap_or_else(|_| proto::encode_failed(job.job_id, FailCode::TooLarge))
                 }
                 Err(code) => proto::encode_failed(job.job_id, code),

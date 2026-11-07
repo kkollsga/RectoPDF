@@ -305,6 +305,11 @@ fn kind_name(kind: TileKind) -> &'static str {
     }
 }
 
+/// A renderer for reading a page's text over several pages, under a reader's limits.
+pub(crate) fn open_for_text(path: &Path) -> Result<DocRenderer, AgentError> {
+    open(path, Policy::default())
+}
+
 pub(crate) fn text(path: &Path, page: u32) -> Result<Value, AgentError> {
     let page = page_index(page)?;
     let mut doc = open(path, Policy::default())?;

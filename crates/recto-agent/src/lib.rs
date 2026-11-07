@@ -11,6 +11,7 @@ mod reading;
 mod render;
 pub use render::{output_exists, publish_picture};
 mod search;
+mod selecting;
 pub mod skill;
 pub mod table;
 
@@ -194,6 +195,48 @@ pub enum Command {
         #[serde(default = "active_tab")]
         tab: String,
         page: u32,
+    },
+    /// What a click, a drag or a range of characters takes: the text, and where it shows on each page.
+    Select {
+        #[serde(default = "active_tab")]
+        tab: String,
+        #[serde(default)]
+        page: Option<u32>,
+        #[serde(default)]
+        to_page: Option<u32>,
+        #[serde(default)]
+        chars: Option<String>,
+        #[serde(default)]
+        at: Option<String>,
+        #[serde(default)]
+        to: Option<String>,
+        #[serde(default)]
+        unit: Option<String>,
+        #[serde(default)]
+        all: bool,
+        #[serde(default)]
+        anyway: bool,
+    },
+    /// The text ⌘C would put on the clipboard for the same pick. It comes back here, and no clipboard is touched.
+    Copy {
+        #[serde(default = "active_tab")]
+        tab: String,
+        #[serde(default)]
+        page: Option<u32>,
+        #[serde(default)]
+        to_page: Option<u32>,
+        #[serde(default)]
+        chars: Option<String>,
+        #[serde(default)]
+        at: Option<String>,
+        #[serde(default)]
+        to: Option<String>,
+        #[serde(default)]
+        unit: Option<String>,
+        #[serde(default)]
+        all: bool,
+        #[serde(default)]
+        anyway: bool,
     },
     /// What a worker costs: idle, per page, peak, and how often it was retired.
     BudgetRender {
@@ -412,6 +455,8 @@ impl Command {
             Self::QaDrive { .. } => "qa_drive",
             Self::Render { .. } => "render",
             Self::Text { .. } => "text",
+            Self::Select { .. } => "select",
+            Self::Copy { .. } => "copy",
             Self::BudgetRender { .. } => "budget_render",
             Self::BudgetViewport { .. } => "budget_viewport",
             Self::Where { .. } => "where",
@@ -459,7 +504,7 @@ impl Command {
 
     /// Whether this draws or reads pages through a worker. These run at most a few at a time, because each can use hundreds of megabytes.
     pub fn draws(&self) -> bool {
-        matches!(self, Self::Render { .. } | Self::Text { .. } | Self::Search { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. })
+        matches!(self, Self::Render { .. } | Self::Text { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. })
     }
 
     /// What goes in the activity log about this command's arguments. Numbers and cleaned file names, and never anything that could hold document text: a tab's name as typed or a search's words aren't kept.
@@ -473,6 +518,8 @@ impl Command {
             Self::PageInsert { tab, path, at } => json!({ "tab": tab_of(tab), "at": at, "untrusted": file(path) }),
             Self::Render { tab, page, out, .. } => json!({ "tab": tab_of(tab), "page": page, "untrusted": file(out) }),
             Self::Text { tab, page } | Self::Goto { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
+            // Which pages, and not where on them or what's there.
+            Self::Select { tab, page, to_page, all, .. } | Self::Copy { tab, page, to_page, all, .. } => json!({ "tab": tab_of(tab), "page": page, "to_page": to_page, "all": all }),
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
@@ -488,7 +535,7 @@ impl Command {
     /// The selector this command acts on, if it has one.
     fn tab_selector(&self) -> Option<&str> {
         match self {
-            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::Text { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
+            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
             _ => None,
         }
     }
@@ -871,6 +918,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             describe_source(&mut data, *page, &source);
             Ok(data)
         }
+        Command::Select { tab, page, to_page, chars, at, to, unit, all, anyway } => selecting::run(access, &selecting::Pick { tab, page: *page, to_page: *to_page, chars: chars.as_deref(), at: at.as_deref(), to: to.as_deref(), unit: unit.as_deref(), all: *all, anyway: *anyway }, true),
+        Command::Copy { tab, page, to_page, chars, at, to, unit, all, anyway } => selecting::run(access, &selecting::Pick { tab, page: *page, to_page: *to_page, chars: chars.as_deref(), at: at.as_deref(), to: to.as_deref(), unit: unit.as_deref(), all: *all, anyway: *anyway }, false),
         Command::BudgetViewport { tab, viewport, first, scale, strategy } => {
             let path = access.with(|s| tab_path(s, select(s, tab)?))?;
             render::budget_viewport(&path, viewport, *first, *scale, strategy.as_deref())
@@ -1624,6 +1673,8 @@ mod tests {
             Command::Budget {},
             Command::Render { tab: tab(), page: 1, scale: 2.0, out: "/d/x.png".into() },
             Command::Text { tab: tab(), page: 1 },
+            Command::Select { tab: tab(), page: Some(1), to_page: None, chars: None, at: None, to: None, unit: None, all: false, anyway: false },
+            Command::Copy { tab: tab(), page: Some(1), to_page: None, chars: None, at: None, to: None, unit: None, all: false, anyway: false },
             budget_command(None, None),
             Command::BudgetViewport { tab: tab(), viewport: "10x10".into(), first: None, scale: 2.0, strategy: None },
             Command::Where { tab: tab() },

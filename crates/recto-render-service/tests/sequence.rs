@@ -57,7 +57,7 @@ fn fake_worker() {
             }
             Kind::TextRequest => {
                 let job = TextJob::decode(&frame.payload).unwrap();
-                TextReply { job_id: job.job_id, page: job.page, hidden_checked: job.hidden_check, chars: vec![CharRecord::new('a' as u32, 0)], boxes: Vec::new() }.encode().unwrap()
+                TextReply { job_id: job.job_id, page: job.page, hidden_checked: job.hidden_check, chars: vec![CharRecord::new('a' as u32, 0)], ..TextReply::default() }.encode().unwrap()
             }
             Kind::Render => {
                 let job = RenderJob::decode(&frame.payload).unwrap();

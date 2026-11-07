@@ -37,6 +37,13 @@ fn hostile_pages_keep_their_characters() {
     smoke("index", seed(), rounds(300), 4 * 1024);
 }
 
+/// Failure: a click or a drag on a hostile page lands out of bounds, a highlight isn't a number or is off the page, a copy passes its room, or a page takes long enough to be felt on a mouse move.
+#[test]
+fn hostile_pages_can_be_selected_on() {
+    recto_fuzz::targets::index::LONGEST_PAGE.store(20_000, std::sync::atomic::Ordering::Relaxed);
+    smoke("select", seed(), rounds(300), 4 * 1024);
+}
+
 /// Failure: a JSON line, command line or level file panics, a cap doesn't hold, or a document's name reaches Off.
 #[test]
 fn commands_from_outside_do_no_harm() {

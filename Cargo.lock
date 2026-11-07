@@ -654,11 +654,13 @@ dependencies = [
 name = "recto-cli"
 version = "0.1.0"
 dependencies = [
+ "lopdf",
  "recto-agent",
  "recto-control",
  "recto-core",
  "recto-index",
  "recto-platform",
+ "recto-proto",
  "recto-render-service",
  "recto-session",
  "recto-testpdf",

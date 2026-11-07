@@ -140,6 +140,14 @@ const BASE: Spec = Spec {
 const TAB: Arg = Arg { key: "tab", flag: Some("--tab"), kind: Kind::Tab, required: false, help: "Which tab: `#3`, `active`, or part of its name. The active tab if left out." };
 const PAGE: Arg = Arg { key: "page", flag: Some("--page"), kind: Kind::Page, required: true, help: "The page, counted from 1." };
 const PAGE_OR_BARE: Arg = Arg { key: "page", flag: Some("--page"), kind: Kind::Page, required: true, help: "The page, counted from 1. A bare number means the same: `60` or `--page 60`." };
+const PICK_PAGE: Arg = Arg { key: "page", flag: Some("--page"), kind: Kind::Page, required: false, help: "The page it starts on, counted from 1. A bare number means the same. With nothing else, the whole page." };
+const PICK_TO_PAGE: Arg = Arg { key: "to_page", flag: Some("--to-page"), kind: Kind::Page, required: false, help: "The page it ends on, if that's a later one." };
+const PICK_CHARS: Arg = Arg { key: "chars", flag: Some("--chars"), kind: Kind::Text, required: false, help: "`START-END` in characters of `recto text`, the end not included. With `--to-page`, the start is on the first page and the end on the last." };
+const PICK_AT: Arg = Arg { key: "at", flag: Some("--at"), kind: Kind::Text, required: false, help: "`X,Y` on the page as it's shown, in points from its top left: where a click lands, whatever the page's rotation." };
+const PICK_TO: Arg = Arg { key: "to", flag: Some("--to"), kind: Kind::Text, required: false, help: "`X,Y` where a drag from `--at` ends, on `--to-page` if that's given." };
+const PICK_UNIT: Arg = Arg { key: "unit", flag: Some("--unit"), kind: Kind::Choice(&["char", "word", "line"]), required: false, help: "What `--at` takes: `word` as a double-click does and `line` as a triple-click does, going by those if there's a drag too. `word` for a click and `char` for a drag if left out." };
+const PICK_ALL: Arg = Arg { key: "all", flag: Some("--all"), kind: Kind::Switch, required: false, help: "The whole document, as ⌘A does." };
+const PICK_ANYWAY: Arg = Arg { key: "anyway", flag: Some("--anyway"), kind: Kind::Switch, required: false, help: "Give the text of a file whose permissions ask that it isn't copied. Only once the user has said to." };
 const SCALE_OR_MAX: Arg = Arg { key: "scale", flag: Some("--scale"), kind: Kind::ScaleOrMax, required: false, help: "How large: `2` or `2x` is twice the page's size, and `max` is the largest that fits, which the answer names. 2x if left out." };
 const SCALE: Arg = Arg { key: "scale", flag: Some("--scale"), kind: Kind::Scale, required: false, help: "How large: `2` or `2x` is twice the page's size. 2x if left out." };
 const TIMEOUT: Arg = Arg { key: "timeout_ms", flag: Some("--timeout"), kind: Kind::Duration, required: false, help: "How long to wait: `500ms`, `30s`, `5m`. 30s if left out." };
@@ -264,6 +272,29 @@ pub static TABLE: &[Spec] = &[
         data: "`{ page, source_page, from_added_file, chars, hyphens_joined, hyphens_kept, invisible_chars_removed, tag_chars_removed, runs_moved, hidden_text: { checked, flagged, chars }, hidden_spans: [ [start, end] ], hidden_spans_dropped, untrusted: { text, also_spelled, hidden_runs, added_file } }`. `runs_moved` is how many runs drawn late were put back on their lines. `hidden_spans` says where flagged hidden text is in `text`, counted in characters, end not included. In plain output, a line holding any starts with `! `, and it's inside `[hidden: ...]`. `source_page` and `from_added_file` say where the page really comes from, once it's been edited. `hidden_text.checked: false` means it wasn't checked, not that there's none.",
         emits: &["page_drawn", "page_failed"],
         examples: &["recto text --page 3", "recto text 3", "recto text --page 3 --tab \"#2\" --json"],
+        ..BASE
+    },
+    Spec {
+        name: "select",
+        tag: "select",
+        group: GROUP_READ,
+        summary: "What a click, a drag or a stretch of characters takes on a page: the text, in reading order, and where it shows. It reads, and changes nothing the app shows. Text that looks hidden is left out and counted.",
+        args: &[PICK_PAGE, PICK_TO_PAGE, PICK_CHARS, PICK_AT, PICK_TO, PICK_UNIT, PICK_ALL, PICK_ANYWAY, TAB],
+        bare_page: true,
+        data: "`{ tab, start: { page, at }, end: { page, at }, chars, pages: [ { page, start, end, width, height, rects: [ [x, y, width, height] ], failed } ], hidden_left_out, pages_read, pages_unchecked, pages_failed, pages_too_long, stopped_at_page, restricted, note, untrusted: { text } }`. `rects` and `--at` are in points on the page as it's shown, from its top left, y down. `at` counts characters of `recto text`. Up to 32 pages: `stopped_at_page` says where it stopped. `restricted` with `text` null means the file's permissions ask that it isn't copied. A page with no text has no `rects`, and that's not an error.",
+        examples: &["recto select 3", "recto select --page 3 --chars 120-180", "recto select --page 3 --at 150,220", "recto select --page 3 --at 150,220 --unit line", "recto select --page 3 --at 72,700 --to-page 4 --to 200,90", "recto select --all --json"],
+        ..BASE
+    },
+    Spec {
+        name: "copy",
+        tag: "copy",
+        group: GROUP_READ,
+        summary: "The text ⌘C would copy for the same pick, as far as one copy goes: 16 MiB, 100,000 pages or 2 minutes. It comes back here, and no clipboard is touched.",
+        args: &[PICK_PAGE, PICK_TO_PAGE, PICK_CHARS, PICK_AT, PICK_TO, PICK_UNIT, PICK_ALL, PICK_ANYWAY, TAB],
+        bare_page: true,
+        data: "`{ tab, start: { page, at }, end: { page, at }, chars, hidden_left_out, pages_read, pages_unchecked, pages_failed, pages_too_long, stopped_at_page, restricted, note, untrusted: { text } }`. `stopped_at_page` says where it stopped if it did. A file whose permissions ask that it isn't copied is exit 8, `copy_restricted`, unless `--anyway` is given.",
+        examples: &["recto copy 3", "recto copy --page 3 --to-page 5", "recto copy --all", "recto copy --page 3 --at 72,700 --to-page 4 --to 200,90 --json"],
+        client_wait_s: 180,
         ..BASE
     },
     Spec {

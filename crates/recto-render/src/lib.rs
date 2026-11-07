@@ -10,7 +10,7 @@ mod pdfium;
 pub use classify::classify_bgrx;
 pub use ink::{INK_PADDING_PX, INK_RANGE, box_has_ink};
 pub use pdfium::{LibraryError, Pdfium, PdfiumBackend};
-pub use recto_proto::{CharBox, CharRecord, FailCode, TileKind, TileRect};
+pub use recto_proto::{CharBox, CharRecord, FailCode, PageFrame, TileKind, TileRect};
 
 /// Asks whether the job this check belongs to has gone stale. Called between PDF objects, so it must be cheap: one atomic load.
 pub trait Cancel {
@@ -62,6 +62,9 @@ pub struct PageChars {
     pub chars: Vec<CharRecord>,
     pub boxes: Vec<CharBox>,
     pub hidden_checked: bool,
+    /// The page as it's shown, if boxes were asked for.
+    pub frame: PageFrame,
+    pub copy_restricted: bool,
 }
 
 /// What draws pages. PDFium today; a second engine plugs in here. One backend holds one document.

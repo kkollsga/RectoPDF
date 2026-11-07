@@ -19,7 +19,7 @@ while [ $# -gt 0 ]; do
     *) targets+=("$1"); shift ;;
   esac
 done
-[ ${#targets[@]} -gt 0 ] || targets=(pdf_bytes pdf_tree proto index agent control edits)
+[ ${#targets[@]} -gt 0 ] || targets=(pdf_bytes pdf_tree proto index select agent control edits)
 toolchain="${FUZZ_TOOLCHAIN:-nightly}"
 sanitizer="${FUZZ_SANITIZER:-none}"
 mkdir -p "$work"

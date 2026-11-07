@@ -5,7 +5,7 @@ use crate::{control, exit_code};
 use recto_platform::isolate::{self, Channel, ChildExit, ChildProcess, Handle, IdleRule, SharedMemory, Wait};
 use recto_platform::surface::{LinkInvite, PixelSurface, SurfaceSender};
 use recto_platform::{FileStamp, file_stamp};
-use recto_proto::{self as proto, CharBox, CharRecord, FailCode, Kind, PageSize, ProtoError, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus, device_size};
+use recto_proto::{self as proto, CharBox, CharRecord, FailCode, Kind, PageFrame, PageSize, ProtoError, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus, device_size};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -647,6 +647,10 @@ pub struct PageCharacters {
     pub boxes: Vec<CharBox>,
     /// The pixel check for hidden text ran. False if it wasn't asked for, or if the page was too heavy to draw for it.
     pub hidden_checked: bool,
+    /// The page as it's shown, if boxes were asked for.
+    pub frame: PageFrame,
+    /// The file's permissions ask that its text isn't copied.
+    pub copy_restricted: bool,
 }
 
 /// How long to wait for a killed worker's final numbers.
@@ -1250,7 +1254,7 @@ impl DocRenderer {
             }
             _ => Err(ProtoError("the wrong kind of reply to a text request")),
         })?;
-        Ok(PageCharacters { chars: reply.chars, boxes: reply.boxes, hidden_checked: reply.hidden_checked })
+        Ok(PageCharacters { chars: reply.chars, boxes: reply.boxes, hidden_checked: reply.hidden_checked, frame: reply.frame, copy_restricted: reply.copy_restricted })
     }
 
     fn remembered(&self, page: u32) -> Option<&PageMemory> {
