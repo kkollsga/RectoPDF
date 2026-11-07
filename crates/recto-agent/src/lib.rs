@@ -164,6 +164,9 @@ pub enum Command {
         agent_icon: Option<String>,
         #[serde(default)]
         zoom: Option<String>,
+        /// The active tab's layout: `single`, `two-up` or `two-up-cover`.
+        #[serde(default)]
+        layout: Option<String>,
     },
     /// Asks the running app what it shows. Only an app started in QA mode answers.
     QaRead {
@@ -554,7 +557,7 @@ impl Command {
             // Measuring with the decided limits only reads numbers. Choosing other limits decides what a hostile file may use, so it isn't reading.
             Self::BudgetRender { limit_mib: Some(_), .. } | Self::BudgetRender { retire_mib: Some(_), .. } => Access::At(Level::Full),
             // Asking how things are shown changes nothing. Changing it is moving around.
-            Self::View { paper: None, sidebar: None, agent_icon: None, zoom: None } => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
+            Self::View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None } => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
             Self::View { .. } => Access::At(Level::Control),
             // Asking is reading. Whether this app replaces itself is as far-reaching as installing, so it's the same level.
             Self::Settings { auto_update: Some(_) } => Access::At(Level::Full),
@@ -880,7 +883,7 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
         .map(|tab| {
             let notice = session.tab_notice(tab.id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(tab.id) }));
             let place = session.place_to_show(tab.id);
-            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.map(|place| place.within), "edited": session.is_edited(tab.id), "can_undo": session.undo_and_redo(tab.id).0, "can_redo": session.undo_and_redo(tab.id).1, "notice": notice })
+            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.map(|place| place.within), "layout": tab.spread.name(), "edited": session.is_edited(tab.id), "can_undo": session.undo_and_redo(tab.id).0, "can_redo": session.undo_and_redo(tab.id).1, "notice": notice })
         })
         .collect();
     let find = session.find();
@@ -980,8 +983,15 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             })
         }
         Command::View { zoom: Some(_), .. } => Err(AgentError::new("zoom_needs_app", "Zoom is about what's on a screen, and this session has none.", exit::FAILED).then("It works when `recto` is talking to the app.")),
-        Command::View { paper, sidebar, agent_icon, zoom: None } => access.with(|s| {
+        Command::View { paper, sidebar, agent_icon, zoom: None, layout } => access.with(|s| {
             let was = s.view();
+            if let Some(name) = layout.as_deref() {
+                let spread = recto_session::record::Spread::from_name(name).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a layout. It's one of {}.", recto_core::clean_line(name), recto_session::record::Spread::ALL.map(recto_session::record::Spread::name).join(", ")), exit::USAGE))?;
+                let id = s.active().ok_or_else(|| AgentError::new("no_active_tab", "There's no tab showing to lay out.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
+                if s.set_spread(id, spread) {
+                    events.push(Event::new("view_changed", json!({ "tab": id.0, "layout": spread.name() })));
+                }
+            }
             let mut view = was;
             match paper.as_deref() {
                 Some("auto") => view.paper = None,
@@ -1004,7 +1014,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             if view != was {
                 events.push(view_changed(view));
             }
-            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden }))
+            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden, "layout": s.active().and_then(|id| s.spread_of(id)).map(recto_session::record::Spread::name) }))
         }),
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. } => Err(update_needs_app()),
@@ -1876,7 +1886,7 @@ mod tests {
             Command::Watch { events: None, timeout_ms: None, count: None },
             Command::WatchStop {},
             Command::Log { last: None },
-            Command::View { paper: None, sidebar: None, agent_icon: None, zoom: None },
+            Command::View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None },
             Command::QaRead { verb: "state".into(), out: None, timeout_ms: None },
             Command::QaDrive { verb: "zoom".into(), value: "1".into(), timeout_ms: None },
             Command::Stop {},
@@ -1912,9 +1922,9 @@ mod tests {
     /// Failure: changing how pages are shown works at Read-only, or asking needs more than asking should, because the row can state only one level.
     #[test]
     fn view_asks_at_read_only_and_changes_at_control() {
-        assert_eq!(Command::View { paper: None, sidebar: None, agent_icon: None, zoom: None }.access(), Access::At(Level::ReadOnly));
-        assert_eq!(Command::View { paper: Some("white".into()), sidebar: None, agent_icon: None, zoom: None }.access(), Access::At(Level::Control));
-        assert_eq!(Command::View { paper: None, sidebar: Some("off".into()), agent_icon: None, zoom: None }.access(), Access::At(Level::Control));
+        assert_eq!(Command::View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None }.access(), Access::At(Level::ReadOnly));
+        assert_eq!(Command::View { paper: Some("white".into()), sidebar: None, agent_icon: None, zoom: None, layout: None }.access(), Access::At(Level::Control));
+        assert_eq!(Command::View { paper: None, sidebar: Some("off".into()), agent_icon: None, zoom: None, layout: None }.access(), Access::At(Level::Control));
     }
 
     /// Failure: a session with no app takes a QA command and does nothing, or says something that reads as though it worked. It's refused plainly, and not as a matter of level, since no level would help.

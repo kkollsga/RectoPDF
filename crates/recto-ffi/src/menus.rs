@@ -1,6 +1,7 @@
 //! The menu bar and the sidebar's panel, as Rust's lists. The host only draws them and says which was chosen. Later phases add to these lists, and what's on them is what exists: no placeholders for what doesn't.
 
 use recto_reader::tiles::Zoom;
+use recto_session::record::Spread;
 use recto_session::{Paper, ViewSettings};
 
 /// One item of a menu. An empty `id` is a line between items.
@@ -44,6 +45,8 @@ pub(crate) enum Action {
     Copy { anyway: bool },
     SelectAll,
     Zoom(Zoom),
+    /// Lays the tab showing out another way.
+    SetSpread(Spread),
     /// Shows the sidebar, or hides it: its button beside the window's controls, and the View menu.
     ToggleSidebar,
     ToggleAgentIcon,
@@ -62,12 +65,23 @@ fn edit_entries() -> Vec<MenuEntry> {
     vec![MenuEntry { system_action: "copy:".into(), ..entry("edit.copy", "Copy", "c") }, MenuEntry { system_action: "selectAll:".into(), ..entry("edit.select_all", "Select All", "a") }]
 }
 
-/// What a right-click on a page offers. The system adds Services and the like itself, as it does to any menu that has a selection to act on.
-pub(crate) fn context_menu() -> Vec<MenuEntry> {
+/// The layouts, the one showing ticked. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
+fn layout_entries(shown: Option<Spread>) -> Vec<MenuEntry> {
+    Spread::ALL.iter().map(|spread| MenuEntry { checked: shown == Some(*spread), ..entry(&layout_id(*spread), spread.label(), "") }).collect()
+}
+
+fn layout_id(spread: Spread) -> String {
+    format!("layout.{}", spread.name().replace('-', "_"))
+}
+
+/// What a right-click on a page offers: Copy and Select All, then the layouts. The system adds Services and the like itself, as it does to any menu that has a selection to act on.
+pub(crate) fn context_menu(shown: Option<Spread>) -> Vec<MenuEntry> {
     let mut entries = edit_entries();
     for item in &mut entries {
         item.key = String::new();
     }
+    entries.push(line());
+    entries.extend(layout_entries(shown));
     entries
 }
 
@@ -76,6 +90,7 @@ pub(crate) fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool
     match id {
         "edit.copy" | "edit.copy_anyway" => has_selection,
         "edit.select_all" | "edit.clear_history" => has_document,
+        layout if layout.starts_with("layout.") => has_document,
         _ => true,
     }
 }
@@ -85,7 +100,7 @@ fn line() -> MenuEntry {
 }
 
 /// The whole menu bar, as it stands.
-pub(crate) fn menu_bar(view: ViewSettings, update_title: &str) -> Vec<MenuModel> {
+pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: &str) -> Vec<MenuModel> {
     vec![
         MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), entry("app.update", update_title, ""), line(), entry("app.settings", "Settings…", ","), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
         MenuModel { title: "File".into(), entries: vec![entry("file.open", "Open…", "o"), entry("file.close_window", "Close Window", "w")] },
@@ -101,8 +116,15 @@ pub(crate) fn menu_bar(view: ViewSettings, update_title: &str) -> Vec<MenuModel>
                 line(),
                 // ⌃⌘S, as on any Mac app with a sidebar. The title says what choosing it does.
                 MenuEntry { with_control: true, ..entry("view.sidebar", if view.sidebar_hidden { "Show Sidebar" } else { "Hide Sidebar" }, "s") },
+                line(),
+            ]
+            .into_iter()
+            .chain(layout_entries(shown))
+            .chain([
+                line(),
                 MenuEntry { checked: !view.agent_icon_hidden, ..entry("view.agent_icon", "Show Agent Icon", "") },
-            ],
+            ])
+            .collect(),
         },
     ]
 }
@@ -179,6 +201,9 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "view.actual_size" => Action::Zoom(Zoom::Actual),
         "view.fit" => Action::Zoom(Zoom::Fit),
         "view.sidebar" => Action::ToggleSidebar,
+        "layout.single" => Action::SetSpread(Spread::Single),
+        "layout.two_up" => Action::SetSpread(Spread::TwoUp),
+        "layout.two_up_cover" => Action::SetSpread(Spread::TwoUpCover),
         "view.agent_icon" => Action::ToggleAgentIcon,
         "panel.toggle" => Action::TogglePanel,
         "paper.white" => Action::SetPaper(Paper::White),
@@ -217,7 +242,7 @@ mod tests {
     #[test]
     fn everything_listed_does_something() {
         for view in [ViewSettings::default(), ViewSettings { sidebar_hidden: true, agent_icon_hidden: true, ..ViewSettings::default() }] {
-            for menu in menu_bar(view, "Check for Updates…") {
+            for menu in menu_bar(view, None, "Check for Updates…") {
                 assert!(!menu.title.is_empty());
                 for item in menu.entries {
                     assert!(item.id.is_empty() || action(&item.id).is_some(), "{}", item.id);
@@ -240,18 +265,18 @@ mod tests {
         assert!(!enabled("edit.select_all", false, false));
         assert!(enabled("edit.select_all", true, false));
         assert!(enabled("view.zoom_in", false, false));
-        let edit = menu_bar(ViewSettings::default(), "Check for Updates…").into_iter().find(|menu| menu.title == "Edit").unwrap();
+        let edit = menu_bar(ViewSettings::default(), None, "Check for Updates…").into_iter().find(|menu| menu.title == "Edit").unwrap();
         let copy = edit.entries.iter().find(|item| item.id == "edit.copy").unwrap();
         assert_eq!((copy.key.as_str(), copy.system_action.as_str()), ("c", "copy:"));
         let all = edit.entries.iter().find(|item| item.id == "edit.select_all").unwrap();
         assert_eq!((all.key.as_str(), all.system_action.as_str()), ("a", "selectAll:"));
-        assert!(context_menu().iter().all(|item| item.key.is_empty() && action(&item.id).is_some() && !item.system_action.is_empty()), "no keys shown in a context menu");
+        assert!(context_menu(None).iter().all(|item| item.key.is_empty() && (item.id.is_empty() || action(&item.id).is_some())), "no keys shown in a context menu");
     }
 
     /// Failure: the toggle doesn't say which way it is, or the paper showing isn't picked out, or the panel has anything in it at rest.
     #[test]
     fn the_lists_say_how_things_stand() {
-        let checked = |view, id: &str| menu_bar(view, "Check for Updates…").into_iter().flat_map(|menu| menu.entries).find(|item| item.id == id).unwrap().checked;
+        let checked = |view, id: &str| menu_bar(view, None, "Check for Updates…").into_iter().flat_map(|menu| menu.entries).find(|item| item.id == id).unwrap().checked;
         assert!(checked(ViewSettings::default(), "view.agent_icon"));
         assert!(!checked(ViewSettings { agent_icon_hidden: true, ..ViewSettings::default() }, "view.agent_icon"));
         assert!(panel(false, Paper::White).sections.is_empty(), "only the button at rest");
@@ -263,19 +288,34 @@ mod tests {
     /// Failure: the sidebar's menu item doesn't say what choosing it does, or hasn't the Mac's usual ⌃⌘S, or focus view is still there. Owner, 2026-11-08: "No need mor a separate mode".
     #[test]
     fn the_view_menu_shows_and_hides_the_sidebar() {
-        let item = |view| menu_bar(view, "Check for Updates…").into_iter().flat_map(|menu| menu.entries).find(|item| item.id == "view.sidebar").unwrap();
+        let item = |view| menu_bar(view, None, "Check for Updates…").into_iter().flat_map(|menu| menu.entries).find(|item| item.id == "view.sidebar").unwrap();
         let shown = item(ViewSettings::default());
         assert_eq!((shown.title.as_str(), shown.key.as_str(), shown.with_control), ("Hide Sidebar", "s", true));
         assert_eq!(item(ViewSettings { sidebar_hidden: true, ..ViewSettings::default() }).title, "Show Sidebar");
         assert_eq!(action("view.sidebar"), Some(Action::ToggleSidebar));
         assert_eq!(action("view.focus"), None);
-        assert!(menu_bar(ViewSettings::default(), "").iter().flat_map(|menu| &menu.entries).all(|item| !item.title.contains("Focus")));
+        assert!(menu_bar(ViewSettings::default(), None, "").iter().flat_map(|menu| &menu.entries).all(|item| !item.title.contains("Focus")));
+    }
+
+    /// Failure: the right-click menu doesn't offer the three layouts, or doesn't tick the one showing, or offers focus view, which is gone; or a layout can be chosen with nothing open. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
+    #[test]
+    fn the_right_click_menu_offers_the_layouts() {
+        let menu = context_menu(Some(Spread::TwoUpCover));
+        let layouts: Vec<(&str, bool)> = menu.iter().filter(|item| item.id.starts_with("layout.")).map(|item| (item.id.as_str(), item.checked)).collect();
+        assert_eq!(layouts, [("layout.single", false), ("layout.two_up", false), ("layout.two_up_cover", true)]);
+        assert!(menu.iter().all(|item| !item.title.contains("Focus")));
+        for spread in Spread::ALL {
+            assert_eq!(action(&layout_id(spread)), Some(Action::SetSpread(spread)));
+        }
+        assert!(!enabled("layout.two_up", false, false) && enabled("layout.two_up", true, false));
+        let view = menu_bar(ViewSettings::default(), Some(Spread::TwoUp), "").into_iter().find(|menu| menu.title == "View").unwrap();
+        assert!(view.entries.iter().any(|item| item.id == "layout.two_up" && item.checked), "and in the View menu, as on a Mac");
     }
 
     /// Failure: the owner's *Check for Updates…* isn't where it was asked for, doesn't turn into the offer, or Settings has no ⌘, as on any Mac app.
     #[test]
     fn the_app_menu_has_the_update_item_and_settings() {
-        let items = menu_bar(ViewSettings::default(), "Update to 0.2.0…").into_iter().find(|menu| menu.title == "RectoPDF").unwrap().entries;
+        let items = menu_bar(ViewSettings::default(), None, "Update to 0.2.0…").into_iter().find(|menu| menu.title == "RectoPDF").unwrap().entries;
         let item = |id: &str| items.iter().find(|item| item.id == id).unwrap().clone();
         assert_eq!(item("app.update").title, "Update to 0.2.0…");
         assert_eq!((item("app.settings").title.as_str(), item("app.settings").key.as_str()), ("Settings…", ","));

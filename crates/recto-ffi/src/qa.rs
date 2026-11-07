@@ -265,7 +265,7 @@ impl QaBridge {
                 // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
                 return self.ask(verb, value);
             }
-            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
+            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
             "entry_points" | "services" => return self.ask(verb, value),
             // A place is said as an agent has it, on a page, and goes in by the document's coordinates, on the way to the window's, so it goes through what a real pointer's position does.
             "mouse_down" | "mouse_drag" | "pointer" => {
@@ -452,6 +452,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "menu" => !matches!(value, "file.open" | "app.about" | "app.quit") && crate::menus::action(value).is_some(),
         "panel" => value == "toggle" || value.starts_with("paper.") || value.starts_with("view."),
         "button" => one_of(&["sidebar", "zoom", "zoom_reset"]),
+        "context_menu" => crate::menus::context_menu(None).iter().any(|item| !item.id.is_empty() && item.id == value),
         // What a person can type in a short field, and no more. Whether it's a level is the field's to find out, as it is for a person.
         "zoom_type" => value.chars().count() <= 32,
         "hover" | "reveal" => value == "none" || row(),

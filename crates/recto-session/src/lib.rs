@@ -81,6 +81,8 @@ pub struct TabRecord {
     place: Option<PlaceRecord>,
     /// Quarter turns of the view. Nothing turns the view yet.
     pub view_rotation: u8,
+    /// How its pages are laid out: a page to a row, or two side by side.
+    pub spread: record::Spread,
     /// Selection work: what's selected. Nothing sets it yet.
     selection: Option<Box<Selection>>,
     /// What the reader should be told about this tab's file, which is rare enough to be a pointer.
@@ -852,6 +854,7 @@ impl<L: DocLoader> Session<L> {
             stamp,
             place: None,
             view_rotation: 0,
+            spread: record::Spread::Single,
             selection: None,
             notice: None,
             place_dirty: true,
@@ -1622,6 +1625,22 @@ impl<L: DocLoader> Session<L> {
         }
     }
 
+    /// Lays a tab's pages out another way. Says whether that changed anything.
+    pub fn set_spread(&mut self, id: TabId, spread: record::Spread) -> bool {
+        match self.tab_mut(id) {
+            Some(tab) if tab.spread != spread => {
+                tab.spread = spread;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// How a tab's pages are laid out.
+    pub fn spread_of(&self, id: TabId) -> Option<record::Spread> {
+        self.tab(id).map(|tab| tab.spread)
+    }
+
     /// What's selected in a tab. Carried across a restart, and nothing else here reads it.
     pub fn set_selection(&mut self, id: TabId, selection: Option<Selection>) {
         if let Some(tab) = self.tab_mut(id) {
@@ -1733,7 +1752,7 @@ impl<L: DocLoader> Session<L> {
         let tabs = tabs
             .iter()
             .map(|tab| {
-                let TabRecord { from_sleep: _, encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, selection, notice, place_dirty: _ } = tab;
+                let TabRecord { from_sleep: _, encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, spread, selection, notice, place_dirty: _ } = tab;
                 TabEntry {
                     id: id.0,
                     path: PathField::from_path(&self.path_of(*id).unwrap_or_default()),
@@ -1743,6 +1762,7 @@ impl<L: DocLoader> Session<L> {
                     place: *place,
                     view_rotation: *view_rotation,
                     toc_open: *toc_open,
+                    layout: *spread,
                     renderer_only: *renderer_only,
                     selection: selection.as_deref().copied(),
                     notice: notice.as_deref().cloned(),
@@ -1838,6 +1858,7 @@ impl<L: DocLoader> Session<L> {
                 stamp: entry.file.map(Into::into),
                 place: entry.place,
                 view_rotation: entry.view_rotation,
+                spread: entry.layout,
                 selection: entry.selection.map(Box::new),
                 notice: notice.map(Box::new),
                 place_dirty: false,
@@ -3235,6 +3256,8 @@ mod tests {
         s.set_find(true, "ran", "typed but not run");
         s.set_edit_mode(true);
         s.set_view_rotation(a, 1);
+        assert!(s.set_spread(a, record::Spread::TwoUpCover));
+        assert!(!s.set_spread(a, record::Spread::TwoUpCover), "the same again changes nothing");
         s.set_selection(a, Some(Selection { from_page: 1, from_char: 2, to_page: 2, to_char: 9 }));
         s.set_view(ViewSettings { paper: Some(Paper::Warm), sidebar_hidden: true, agent_icon_hidden: true });
         let mut files = HashMap::new();
@@ -3246,6 +3269,7 @@ mod tests {
         assert_eq!(back.to_record(), s.to_record());
         assert_eq!(back.edits_record(a), s.edits_record(a));
         assert_eq!(back.view(), s.view());
+        assert_eq!(back.spread_of(a), Some(record::Spread::TwoUpCover), "a tab's layout comes back with it");
         assert_eq!(back.active(), s.active());
         assert_eq!(back.tier(a), Tier::Hot, "it's the active one");
         assert!(back.warm_tabs().next().is_none(), "and nothing's been opened");

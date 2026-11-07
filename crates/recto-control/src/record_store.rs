@@ -1192,7 +1192,7 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
         }
         let id = record.next_id;
         record.next_id += 1;
-        record.tabs.push(TabEntry { id, path: parsed.header.path.clone(), file: parsed.header.file, page: 0, page_count: parsed.header.file_pages, place: None, view_rotation: 0, toc_open: true, renderer_only: false, selection: None, notice: None, journal: Some(name.clone()), edits: Some(restored.edits.summary()) });
+        record.tabs.push(TabEntry { id, path: parsed.header.path.clone(), file: parsed.header.file, page: 0, page_count: parsed.header.file_pages, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: Some(name.clone()), edits: Some(restored.edits.summary()) });
         taken_tabs.push(true);
         if record.active.is_none() {
             record.active = Some(id);
@@ -1317,7 +1317,7 @@ mod tests {
             edit_mode: false,
             active: (tabs > 0).then_some(1),
             next_id: tabs + 1,
-            tabs: (1..=tabs).map(|id| TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, renderer_only: false, selection: None, notice: None, journal: None, edits: None }).collect(),
+            tabs: (1..=tabs).map(|id| TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None }).collect(),
         }
     }
 

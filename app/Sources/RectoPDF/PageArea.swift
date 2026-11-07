@@ -412,11 +412,18 @@ final class CenteringClipView: NSClipView {
         return NSPoint(x: layer.position.x + layer.bounds.midX * fit, y: layer.position.y + layer.bounds.midY * fit)
     }
 
+    /// Rust's list: Copy and Select All by their standard selectors, then the layouts, which go to the app's own action as the menu bar's items do.
     func contextMenu() -> NSMenu {
         let menu = NSMenu()
         for entry in core.contextMenu() {
-            let item = menu.addItem(withTitle: entry.title, action: NSSelectorFromString(entry.systemAction), keyEquivalent: "")
+            if entry.id.isEmpty {
+                menu.addItem(.separator())
+                continue
+            }
+            let isSystem = !entry.systemAction.isEmpty
+            let item = menu.addItem(withTitle: entry.title, action: isSystem ? NSSelectorFromString(entry.systemAction) : #selector(AppDelegate.menuChosen(_:)), keyEquivalent: "")
             item.representedObject = entry.id
+            item.state = entry.checked ? .on : .off
         }
         return menu
     }

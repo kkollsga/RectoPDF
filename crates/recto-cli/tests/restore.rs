@@ -253,7 +253,7 @@ fn assert_same_but(before: &Value, after: &Value, known: &[&str], also: &[&str])
     }
 }
 
-/// Puts the app in a rich state: several tabs at various zoom and pages, folded contents, a wide sidebar, Find open with text typed, edit mode, unsaved rotate and delete with undo history by both owner and agent.
+/// Puts the app in a rich state: several tabs at various zoom and pages and two of them side by side, folded contents, a wide sidebar, Find open with text typed, edit mode, unsaved rotate and delete with undo history by both owner and agent.
 fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
     for file in files {
         run.ok(&["open", file.0.to_str().unwrap()]);
@@ -281,6 +281,8 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
     // The second: another zoom, and folded.
     run.ok(&["tap", "#2"]);
     run.settled();
+    run.ok(&["view", "--layout", "two-up-cover"]);
+    run.settled();
     run.ok(&["goto", "11"]);
     run.settled();
     run.ok(&["qa", "zoom", "0.8"]);
@@ -291,6 +293,9 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
     run.settled();
     // The third, which stays active: its contents scrolled by the reader.
     run.ok(&["tap", "#3"]);
+    run.settled();
+    // Side by side on the tab that stays showing, so its pixel scroll is about that layout.
+    run.ok(&["view", "--layout", "two-up"]);
     run.settled();
     run.ok(&["goto", "120"]);
     run.settled();
@@ -362,6 +367,11 @@ const KNOWN_PATHS: &[&str] = &[
     "app.agent_icon",
     "app.appearance",
     "app.backing",
+    "app.context_menu.len",
+    "app.context_menu[].checked",
+    "app.context_menu[].enabled",
+    "app.context_menu[].id",
+    "app.context_menu[].title",
     "app.contents.count",
     "app.contents.current",
     "app.contents.current_in_view",
@@ -384,6 +394,7 @@ const KNOWN_PATHS: &[&str] = &[
     "app.home",
     "app.hover",
     "app.is_active",
+    "app.layout",
     "app.menu_bar.len",
     "app.menu_bar[].items.len",
     "app.menu_bar[].items[].checked",
@@ -467,6 +478,7 @@ const KNOWN_PATHS: &[&str] = &[
     "reader.scroll_x",
     "reader.scroll_y",
     "reader.settled",
+    "reader.spread",
     "reader.selection.copy_waiting_for_host",
     "reader.selection.copying",
     "reader.selection.dragging",
@@ -565,6 +577,7 @@ const KNOWN_PATHS: &[&str] = &[
     "session.tabs[].place.zoom",
     "session.tabs[].renderer_only",
     "session.tabs[].selection",
+    "session.tabs[].layout",
     "session.tabs[].toc_open",
     "session.tabs[].view_rotation",
     "session.view.agent_icon_hidden",
@@ -1678,6 +1691,41 @@ fn a_hand_off_waits_for_a_command_and_a_read() {
     run.settled();
     assert_eq!(tabs_of(&run.report()).len(), 3);
     run.hand_off();
+}
+
+/// Failure: the sidebar hidden by its button comes back shown, or its button doesn't come back to bring it back, or a tab's layout comes back as another tab's or as a page to a row, across a quit and a hand-off alike. The rich state's comparison has the layouts; this has the sidebar hidden, which leaves the contents unlaid until it's shown again.
+#[test]
+fn the_hidden_sidebar_and_each_tabs_layout_come_back() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let (one, two) = (long_document("one", 9), long_document("two", 9));
+    run.ok(&["open", one.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["view", "--layout", "two-up-cover"]);
+    run.ok(&["open", two.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["view", "--layout", "two-up", "--sidebar", "off"]);
+    run.ok(&["goto", "6"]);
+    run.settled();
+    let before = run.report();
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let after = run.report();
+    assert_eq!((&after["app"]["sidebar_hidden"], &after["app"]["sidebar_visible"], &after["app"]["sidebar_button"]["visible"]), (&json!(true), &json!(false), &json!(true)), "{}", after["app"]);
+    assert_eq!(after["app"]["layout"], "two-up");
+    assert_eq!(after["reader"]["page"], 6);
+    assert_eq!(after["app"]["pages"]["scroll_y"], before["app"]["pages"]["scroll_y"], "to the pixel");
+    let layouts: Vec<&Value> = after["session"]["tabs"].as_array().unwrap().iter().map(|tab| &tab["layout"]).collect();
+    assert_eq!(layouts, [&json!("two-up-cover"), &json!("two-up")]);
+    run.hand_off();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let handed = run.report();
+    assert_eq!((&handed["app"]["sidebar_hidden"], &handed["app"]["layout"]), (&json!(true), &json!("two-up")), "{}", handed["app"]);
+    run.ok(&["qa", "button", "sidebar"]);
+    let shown = run.report();
+    assert_eq!(shown["app"]["sidebar_visible"], true, "{}", shown["app"]);
 }
 
 /// Failure: what's selected is lost across a restart: SPEC decision 23 has it as part of what comes back. On the page it was on, the same characters, and highlighted again.

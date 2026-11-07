@@ -144,6 +144,13 @@ import QuartzCore
                 controller.zoomReset.performClick(nil)
             default: return fail(id, "That isn't one of the window's buttons.")
             }
+        case "context_menu":
+            guard let controller else { return fail(id, "The window is closed.") }
+            let menu = controller.pages.contextMenu()
+            menu.update()
+            guard let item = menu.items.first(where: { ($0.representedObject as? String) == value }), let action = item.action else { return fail(id, "That isn't in the right-click menu.") }
+            guard item.isEnabled else { return fail(id, "That's greyed out in the right-click menu right now.") }
+            NSApp.sendAction(action, to: item.target, from: item)
         case "zoom_type":
             guard let controller else { return fail(id, "The window is closed.") }
             if !controller.zoomEditing {
@@ -227,6 +234,12 @@ import QuartzCore
             "agent_icon": !controller.agentIcon.isHidden,
             "panel": sidebar.panelReport(),
             "settings": delegate.settings?.report() ?? ["open": false],
+            "context_menu": { () -> [[String: Any]] in
+                let menu = controller.pages.contextMenu()
+                menu.update()
+                return menu.items.filter { !$0.isSeparatorItem }.map { ["id": ($0.representedObject as? String) ?? "", "title": $0.title, "checked": $0.state == .on, "enabled": $0.isEnabled] as [String: Any] }
+            }(),
+            "layout": reader.layout,
             "menu_bar": (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).map { menu -> [String: Any] in
                 // What AppKit itself says after asking whoever answers, as it does on opening a menu, and no copy of the rule.
                 menu.update()

@@ -122,9 +122,16 @@ impl Engine {
     }
 
     /// Makes a tab the visible one. Off the UI thread, as the session decides this.
-    pub fn activate(&self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>) {
+    pub fn activate(&self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: crate::layout::Spread) {
         let mut reader = lock(&self.shared.reader);
-        reader.activate(tab, pages, page, map, warm, saved);
+        reader.activate(tab, pages, page, map, warm, saved, spread);
+        self.after(reader);
+    }
+
+    /// Lays the tab showing out another way, keeping the place in it.
+    pub fn set_spread(&self, spread: crate::layout::Spread) {
+        let mut reader = lock(&self.shared.reader);
+        reader.set_spread(spread);
         self.after(reader);
     }
 

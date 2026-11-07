@@ -350,6 +350,59 @@ fn the_page_number_is_always_in_the_lower_right() {
     assert_eq!(narrow["app"]["place_label_in_lower_right"], true, "in a small window too: {narrow}");
 }
 
+/// Failure: the right-click menu doesn't offer the layouts or tick the one showing; side by side doesn't put two pages to a row, loses the reader's place, or leaves a click or a drag on the right-hand page landing on the left one; zoom or the page number stop working in it; or one tab's layout changes another's. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
+#[test]
+fn side_by_side_lays_out_selects_and_keeps_the_place() {
+    let Some(run) = Run::start() else { return };
+    let (file, other) = (long_document(9), TempPdf::new("other.pdf", &pages(&[Page::new(text_lines(&["Another document"]))])));
+    run.ok(&["open", other.0.to_str().unwrap()]);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let single = run.report();
+    let layouts = |state: &Value| -> Vec<(String, bool)> { state["app"]["context_menu"].as_array().unwrap().iter().filter(|item| item["id"].as_str().unwrap().starts_with("layout.")).map(|item| (item["id"].as_str().unwrap().to_string(), item["checked"] == true)).collect() };
+    assert_eq!(layouts(&single), [("layout.single".to_string(), true), ("layout.two_up".to_string(), false), ("layout.two_up_cover".to_string(), false)], "{single}");
+    run.ok(&["goto", "5"]);
+    run.settled();
+    let single_height = run.report()["reader"]["document_height"].as_f64().unwrap();
+    run.ok(&["qa", "context-menu", "layout.two_up"]);
+    wait_for(&run, |state| state["app"]["layout"] == "two-up");
+    run.settled();
+    let two = run.report();
+    assert_eq!(layouts(&two)[1].1, true, "the one showing is ticked: {two}");
+    assert!(two["reader"]["document_height"].as_f64().unwrap() < single_height * 0.7, "two to a row: {two}");
+    assert!(two["reader"]["visible_pages"].as_array().unwrap().contains(&json!(5)), "still on page 5: {two}");
+    assert!(two["app"]["place_label"].as_str().is_some_and(|place| place.ends_with("of 9")), "{two}");
+    assert_eq!(run.ok(&["view"])["layout"], "two-up", "the same setting `recto view` has");
+    // A double click on the right-hand page's first word selects on that page, and a drag from the left page to the right takes both, in order.
+    run.ok(&["goto", "1"]);
+    run.settled();
+    run.ok(&["qa", "mouse-down", &format!("{}:2", place_on(&run, 2, 0, 0.3))]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let word = run.report();
+    assert_eq!(word["reader"]["selection"]["start"]["page"], 2, "{word}");
+    run.ok(&["qa", "mouse-down", &place_on(&run, 1, 0, 0.0)]);
+    run.ok(&["qa", "mouse-drag", &place_on(&run, 2, 0, 1.0)]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    copy_now(&run);
+    let text = copied(&run);
+    assert!(text.starts_with("Page number 0") && text.contains("Page number 1"), "{text:?}");
+    assert_eq!(run.ok(&["view", "--zoom", "150%"])["zoom_level"], "150%", "zoom works side by side");
+    run.ok(&["qa", "context-menu", "layout.two_up_cover"]);
+    wait_for(&run, |state| state["app"]["layout"] == "two-up-cover" && state["reader"]["spread"] == "TwoUpCover");
+    // Each tab its own.
+    run.ok(&["tap", "#1"]);
+    let first = wait_for(&run, |state| state["app"]["layout"] == "single");
+    assert_eq!(first["reader"]["spread"], "Single", "{first}");
+    run.ok(&["tap", "#2"]);
+    wait_for(&run, |state| state["app"]["layout"] == "two-up-cover");
+    run.ok(&["view", "--layout", "single"]);
+    wait_for(&run, |state| state["reader"]["spread"] == "Single");
+    let (reply, code) = run.state.json(&["view", "--layout", "three-up"]);
+    assert_eq!(code, exit::USAGE, "{reply}");
+}
+
 /// Failure: the zoom level in the top left isn't there, says a level the page isn't at, crowds the sidebar's button or leaves the window's row, or clicking it doesn't let the reader type a level or fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". 100% is the page's real size.
 #[test]
 fn the_zoom_level_shows_and_takes_a_typed_level() {
@@ -634,13 +687,13 @@ fn the_menu_bar_and_the_agent_icon() {
     assert_eq!(titles, ["RectoPDF", "File", "Edit", "View"], "{state}");
     let view = &state["app"]["menu_bar"][3]["items"];
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
-    assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Focus View", "Show Agent Icon"]);
+    assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon"]);
     assert_eq!(state["app"]["agent_icon"], true);
     assert!(state["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() > 30.0, "below the star: {state}");
     run.ok(&["qa", "menu", "view.agent_icon"]);
     let hidden = wait_for(&run, |state| state["app"]["agent_icon"] == false);
     assert_eq!(hidden["app"]["pages"]["scroller_top_inset"], 0.0, "the whole way with no star: {hidden}");
-    assert_eq!(hidden["app"]["menu_bar"][3]["items"][5]["checked"], false, "{hidden}");
+    assert_eq!(hidden["app"]["menu_bar"][3]["items"][8]["checked"], false, "{hidden}");
     assert_eq!(run.ok(&["view"])["agent_icon"], false, "the same setting `recto view` has");
     assert_eq!(hidden["session"]["view"]["agent_icon_hidden"], true, "remembered, as the state record has it");
     run.ok(&["view", "--agent-icon", "on"]);
