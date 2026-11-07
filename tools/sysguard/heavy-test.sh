@@ -73,6 +73,44 @@ job n2 1 &
 wait
 check "solo waits for all, and runs before later jobs" "n1 solo n2" "$(order)"
 
+# Waits for this many lines in the log, then ends whatever's still there, so a job stuck for ever fails its check and doesn't hang this.
+settle() {
+  for _ in $(seq 1 "${2:-40}"); do [ "$(wc -l < "$X/log" | tr -d ' ')" -ge "$1" ] && break; pause 0.5; done
+  pkill -f "$X/log" 2>/dev/null
+  wait
+}
+
+# Failure: a quick job comes while solo is collecting slots. It sorts ahead of solo, which waits for its turn holding the slots that job needs, and neither ever moves: everything on the Mac waited over an hour behind this. And short of that, a measurement waiting for someone's long build holds up every small job for as long as the build lasts: 25 minutes, one time.
+bash "$HEAVY" --slots 2 >/dev/null
+bash "$HEAVY" bash -c "echo long >> '$X/log'; sleep 4; echo long-done >> '$X/log'" 2>>"$X/err" & pause 0.8
+( HEAVY_SOLO=1 job solo 1 ) & pause 0.8
+( HEAVY_CLASS=quick job quick 0 ) &
+settle 4
+check "quick jobs go past solo while it waits for a long job, and it holds nothing" "long quick long-done solo" "$(order)"
+
+# The same once solo has waited too long: it's the long job that's holding it up, and quick jobs can't make that any better.
+bash "$HEAVY" bash -c "echo long >> '$X/log'; sleep 4; echo long-done >> '$X/log'" 2>>"$X/err" & pause 0.8
+( HEAVY_AGE_LIMIT=0 HEAVY_SOLO=1 job solo 1 ) & pause 1.5
+( HEAVY_AGE_LIMIT=0 HEAVY_CLASS=quick job quick 0 ) &
+settle 4
+check "that holds however long solo has waited" "long quick long-done solo" "$(order)"
+
+# Failure: a stream of quick jobs keeps solo out for good.
+bash "$HEAVY" --slots 2 >/dev/null
+( HEAVY_AGE_LIMIT=0 HEAVY_CLASS=quick job q1 3 ) & pause 0.8
+( HEAVY_AGE_LIMIT=0 HEAVY_SOLO=1 job solo 1 ) & pause 1.5
+( HEAVY_AGE_LIMIT=0 HEAVY_CLASS=quick job q2 0 ) &
+settle 3
+check "solo that has waited too long goes before new quick jobs" "q1 solo q2" "$(order)"
+
+# Failure: a normal job that has waited too long and a quick job each count the other as ahead, and with one slot neither ever goes.
+bash "$HEAVY" --slots 1 >/dev/null
+job first 3 & pause 0.8
+( HEAVY_AGE_LIMIT=0 job old 0 ) & pause 1.2
+( HEAVY_AGE_LIMIT=0 HEAVY_CLASS=quick job young 0 ) &
+settle 3
+check "a job that waited too long and a quick one can't wait for each other" "first old young" "$(order)"
+
 # Failure: the command's exit code lost, so a failed build reads as a pass.
 bash "$HEAVY" bash -c 'exit 7' 2>/dev/null
 check "exit code comes through" "7" "$?"
