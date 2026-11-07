@@ -19,6 +19,7 @@ recto-proto = { path = "crates/recto-proto" }
 recto-render = { path = "crates/recto-render" }
 recto-render-service = { path = "crates/recto-render-service" }
 recto-index = { path = "crates/recto-index" }
+recto-indexer = { path = "crates/recto-indexer" }
 recto-testpdf = { path = "crates/recto-testpdf" }
 # The owner's fork, for its lazy IndexedReader, at the 0.47 merge. Pinned to a revision so builds repeat.
 lopdf = { git = "https://github.com/kkollsga/lopdf.git", rev = "bc73ca505e44e6f03716531cec8326afa62ab8dc", default-features = false }
@@ -26,6 +27,7 @@ serde = { version = "1", default-features = false, features = ["derive", "std"] 
 serde_json = { version = "1", default-features = false, features = ["std"] }
 libc = { version = "0.2", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+sha2 = { version = "0.11", default-features = false }
 
 [workspace.lints.rust]
 # Denied, not forbidden, so a memory test can install a counting allocator. Only recto-platform allows it in library code.

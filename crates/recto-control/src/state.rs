@@ -27,6 +27,8 @@ pub struct StatePaths {
     pub old_other_log: PathBuf,
     /// Where a background session's own messages go.
     pub server_messages: PathBuf,
+    /// Where search corpora go. With the override, inside its folder, so a QA run leaves nothing of a document anywhere else. Otherwise in the user's caches, since it can all be built again (agent report, §6.1).
+    pub corpus: PathBuf,
     /// Set through [`STATE_ENV`], not the user's real folder.
     pub overridden: bool,
 }
@@ -71,6 +73,7 @@ impl StatePaths {
             other_log: root.join("activity-other.jsonl"),
             old_other_log: root.join("activity-other.1.jsonl"),
             server_messages: root.join("server-messages.txt"),
+            corpus: if overridden { root.join("corpus") } else { local::real_home().map_or_else(|| root.join("corpus"), |home| default_corpus_in(&home)) },
             root,
             run_dir,
             socket,
@@ -99,6 +102,10 @@ fn refused(path: &Path) -> AgentError {
 /// The user's own folder. Under the real home, whatever `$HOME` says.
 fn default_root() -> Result<PathBuf, AgentError> {
     local::real_home().map(|home| default_root_in(&home)).ok_or_else(|| AgentError::new("state_refused", "This user's home folder couldn't be found.", exit::FAILED))
+}
+
+fn default_corpus_in(home: &Path) -> PathBuf {
+    home.join("Library").join("Caches").join("RectoPDF").join("corpus")
 }
 
 fn default_root_in(home: &Path) -> PathBuf {

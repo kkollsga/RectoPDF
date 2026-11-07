@@ -5,6 +5,7 @@
 //! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
 pub mod human;
+pub mod index;
 mod loader;
 mod reading;
 mod render;
@@ -114,7 +115,7 @@ pub enum Condition {
     TabClosed,
     /// The page has finished drawing, or failed to.
     PageDrawn,
-    /// The document's search index is ready. Doesn't exist yet, and says so.
+    /// The search index for every file behind this tab is finished. Asking counts as wanting it built.
     IndexingDone,
 }
 
@@ -231,7 +232,7 @@ pub enum Command {
         #[serde(default)]
         depth: Option<u8>,
     },
-    /// Finds words across a document, without an index for now.
+    /// Finds words across a document, from its index if that's finished, and otherwise by reading its pages.
     Search {
         #[serde(default = "active_tab")]
         tab: String,
@@ -241,6 +242,26 @@ pub enum Command {
         pages: Option<String>,
         #[serde(default)]
         limit: Option<u32>,
+        /// Reads the pages even if there's an index, to check one against the other.
+        #[serde(default)]
+        scan: bool,
+    },
+    /// Asks for a document's search index to be built if it isn't, and says where it stands. Never waits.
+    Index {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
+    /// Where a document's search index stands. Starts nothing.
+    IndexStatus {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
+    /// Throws away a document's search index, or all of them. It's extracted text, so someone may want it gone.
+    IndexClear {
+        #[serde(default = "active_tab")]
+        tab: String,
+        #[serde(default)]
+        all: bool,
     },
     /// What the file says about signatures. Facts only, never a verdict.
     Signatures {
@@ -355,6 +376,9 @@ impl Command {
             Self::Facts { .. } => "facts",
             Self::Contents { .. } => "contents",
             Self::Search { .. } => "search",
+            Self::Index { .. } => "index",
+            Self::IndexStatus { .. } => "index_status",
+            Self::IndexClear { .. } => "index_clear",
             Self::Signatures { .. } => "signatures",
             Self::Edits { .. } => "edits",
             Self::PageMove { .. } => "page_move",
@@ -407,7 +431,7 @@ impl Command {
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
-            Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
+            Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
             Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
         }
@@ -418,7 +442,7 @@ impl Command {
     /// The selector this command acts on, if it has one.
     fn tab_selector(&self) -> Option<&str> {
         match self {
-            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::Text { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
+            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::Text { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
             _ => None,
         }
     }
@@ -627,6 +651,10 @@ impl Event {
 pub trait SessionAccess {
     type Loader: DocLoader + Clone;
     fn with<R>(&self, step: impl FnOnce(&mut Session<Self::Loader>) -> R) -> R;
+    /// How documents get indexed here, if they do.
+    fn indexing(&self) -> Option<&dyn index::Indexing> {
+        None
+    }
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {
@@ -637,18 +665,26 @@ impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {
     }
 }
 
-struct Direct<'a, L>(RefCell<&'a mut Session<L>>);
+struct Direct<'a, L>(RefCell<&'a mut Session<L>>, Option<&'a dyn index::Indexing>);
 
 impl<L: DocLoader + Clone> SessionAccess for Direct<'_, L> {
     type Loader = L;
     fn with<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
         step(&mut self.0.borrow_mut())
     }
+    fn indexing(&self) -> Option<&dyn index::Indexing> {
+        self.1
+    }
 }
 
 /// Runs one command against a session, if the level allows it.
 pub fn run<L: DocLoader + Clone>(session: &mut Session<L>, level: Level, command: &Command) -> Result<Value, AgentError> {
-    execute(&Direct(RefCell::new(session)), level, command, &mut Vec::new())
+    run_indexed(session, level, command, None)
+}
+
+/// The same, with a way to read or build indexes.
+pub fn run_indexed<L: DocLoader + Clone>(session: &mut Session<L>, level: Level, command: &Command, indexing: Option<&dyn index::Indexing>) -> Result<Value, AgentError> {
+    execute(&Direct(RefCell::new(session), indexing), level, command, &mut Vec::new())
 }
 
 /// Runs one command, noting what happened in `events`. Commands that only a long-running session can answer say so.
@@ -703,7 +739,10 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         Command::Facts { tab } => reading::facts(access, tab),
         Command::Contents { tab, from, limit, depth } => reading::contents(access, tab, *from, *limit, *depth),
         Command::Signatures { tab } => reading::signatures(access, tab),
-        Command::Search { tab, query, pages, limit } => search::search(access, tab, query, pages.as_deref(), *limit),
+        Command::Search { tab, query, pages, limit, scan } => search::search(access, tab, query, pages.as_deref(), *limit, *scan),
+        Command::Index { tab } => index::index(access, tab, true),
+        Command::IndexStatus { tab } => index::index(access, tab, false),
+        Command::IndexClear { tab, all } => index::clear(access, tab, *all),
         Command::Edits { tab } => access.with(|s| {
             let id = select(s, tab)?;
             Ok(edits_json(s, id))
@@ -1200,8 +1239,12 @@ pub enum ConditionState {
 
 /// Looks at a condition once. Blocks for nothing but the session's lock.
 pub fn check_condition<A: SessionAccess>(access: &A, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState {
+    // Looks at files, so it goes outside the lock.
+    if condition == Condition::IndexingDone {
+        return index::look(access, tab);
+    }
     access.with(|s| match condition {
-        Condition::IndexingDone => ConditionState::Failed(AgentError::new("not_built", "The search index isn't built yet, so there's nothing to wait for. `recto search` works without one.", exit::FAILED)),
+        Condition::IndexingDone => ConditionState::Waiting,
         Condition::TabOpen => match select(s, tab) {
             Ok(id) => ConditionState::Met(where_json(s, id)),
             Err(error) if error.exit == exit::AMBIGUOUS => ConditionState::Failed(error),
@@ -1234,7 +1277,7 @@ pub fn condition_topics(condition: Condition) -> &'static [&'static str] {
     match condition {
         Condition::TabOpen | Condition::TabClosed => &["tabs"],
         Condition::PageDrawn => &["tabs", "draws"],
-        Condition::IndexingDone => &[],
+        Condition::IndexingDone => &["tabs", "indexing"],
     }
 }
 
@@ -1419,7 +1462,10 @@ mod tests {
             Command::Where { tab: tab() },
             Command::Facts { tab: tab() },
             Command::Contents { tab: tab(), from: None, limit: None, depth: None },
-            Command::Search { tab: tab(), query: "x".into(), pages: None, limit: None },
+            Command::Search { tab: tab(), query: "x".into(), pages: None, limit: None, scan: false },
+            Command::Index { tab: tab() },
+            Command::IndexStatus { tab: tab() },
+            Command::IndexClear { tab: tab(), all: false },
             Command::Signatures { tab: tab() },
             Command::Edits { tab: tab() },
             Command::PageMove { tab: tab(), pages: "1".into(), to: 1 },
@@ -1947,7 +1993,7 @@ mod tests {
         let open = Command::Open { path: hostile.into(), page: Some(3) }.log_details();
         assert_eq!(open["untrusted"]["file"], "a b.pdf");
         assert_eq!(open["page"], 3);
-        let search = Command::Search { tab: "secret report".into(), query: "the secret words".into(), pages: None, limit: None }.log_details().to_string();
+        let search = Command::Search { tab: "secret report".into(), query: "the secret words".into(), pages: None, limit: None, scan: false }.log_details().to_string();
         assert!(!search.contains("secret"), "{search}");
         assert_eq!(Command::Text { tab: "#4".into(), page: 2 }.log_details()["tab"], "#4");
         assert_eq!(Command::PageDelete { tab: "active".into(), pages: "ignore all".into() }.log_details()["pages"], "?");

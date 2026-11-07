@@ -126,6 +126,14 @@ pub fn write_private_file(_path: &Path, _bytes: &[u8]) -> io::Result<()> {
     unsupported()
 }
 
+pub fn write_private_file_unsynced(_path: &Path, _bytes: &[u8]) -> io::Result<()> {
+    unsupported()
+}
+
+pub fn create_private_file(_path: &Path) -> io::Result<File> {
+    unsupported()
+}
+
 pub fn append_private_file(_path: &Path) -> io::Result<File> {
     unsupported()
 }

@@ -1,6 +1,9 @@
 //! What the server asks of whoever holds the session. `recto serve` uses [`SessionHost`], and the Mac app will use one that shares its own session.
 
-use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, acted_tab, check_condition, exit, with_tab_candidates};
+use crate::indexing::{Indexer, Notifier};
+use crate::state::StatePaths;
+use recto_agent::index::Indexing;
+use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, SessionAccess, acted_tab, check_condition, exit, with_tab_candidates};
 use recto_session::{DocLoader, Session, TabId};
 use serde_json::Value;
 use std::sync::Mutex;
@@ -20,12 +23,33 @@ pub trait Host: Send + Sync + 'static {
     fn acted_tab(&self, _command: &Command) -> Option<TabId> {
         None
     }
+    /// How to tell the session something happened outside any command. Given once, before anything runs.
+    fn attach(&self, _notify: Notifier) {}
+    /// The session is ending. Anything running in the background for it stops.
+    fn shut_down(&self) {}
 }
 
 /// A session in this process.
 pub struct SessionHost<L = DrawableLoader> {
     session: Mutex<Session<L>>,
     tabs: AtomicU32,
+    indexer: Option<Indexer>,
+}
+
+/// The session and its indexer, the way a command reaches them.
+struct Hosted<'a, L> {
+    session: &'a Mutex<Session<L>>,
+    indexer: Option<&'a Indexer>,
+}
+
+impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
+    type Loader = L;
+    fn with<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
+        self.session.with(step)
+    }
+    fn indexing(&self) -> Option<&dyn Indexing> {
+        self.indexer.map(|indexer| indexer as &dyn Indexing)
+    }
 }
 
 impl Default for SessionHost<DrawableLoader> {
@@ -36,7 +60,18 @@ impl Default for SessionHost<DrawableLoader> {
 
 impl<L: DocLoader + Clone> SessionHost<L> {
     pub fn new(loader: L) -> Self {
-        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0) }
+        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0), indexer: None }
+    }
+
+    /// With documents indexed on demand, under the state folder's corpus folder.
+    #[must_use]
+    pub fn with_indexing(mut self, paths: &StatePaths) -> Self {
+        self.indexer = Some(Indexer::new(&paths.corpus));
+        self
+    }
+
+    fn access(&self) -> Hosted<'_, L> {
+        Hosted { session: &self.session, indexer: self.indexer.as_ref() }
     }
 
     /// The session itself, for whoever holds it: the app's own edits go through here, as the owner's. Nothing over the socket reaches this.
@@ -53,14 +88,14 @@ impl<L: DocLoader + Clone> SessionHost<L> {
 
 impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
     fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        let result = recto_agent::execute(&self.session, level, command, events);
+        let result = recto_agent::execute(&self.access(), level, command, events);
         let tabs = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tabs().len();
         self.tabs.store(u32::try_from(tabs).unwrap_or(u32::MAX), Ordering::Relaxed);
         result
     }
 
     fn check(&self, condition: Condition, tab: &str, page: Option<u32>) -> ConditionState {
-        check_condition(&self.session, condition, tab, page)
+        check_condition(&self.access(), condition, tab, page)
     }
 
     fn tab_count(&self) -> u32 {
@@ -69,6 +104,18 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
 
     fn acted_tab(&self, command: &Command) -> Option<TabId> {
         acted_tab(&self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner), command)
+    }
+
+    fn attach(&self, notify: Notifier) {
+        if let Some(indexer) = &self.indexer {
+            indexer.attach(notify);
+        }
+    }
+
+    fn shut_down(&self) {
+        if let Some(indexer) = &self.indexer {
+            indexer.shut_down();
+        }
     }
 
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {

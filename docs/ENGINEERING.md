@@ -11,7 +11,8 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `recto-proto` | **Started** | Job and tile wire types, no dependencies. The host validates everything from the renderer | |
 | `recto-render` | **Started** | `render_tile(page, rect, scale, &mut [u8], cancel)` behind `RenderBackend`, page text. PDFium, by raw FFI | Allocate surfaces, name an OS, decide policy |
 | `recto-render-service` | **Started** | Library: the host's side, `DocRenderer`, limits, validation. Binary: the worker. Plain child process for now; sandbox is a separate spike | Link PDFium into the host |
-| `recto-index` | **Started** | Line order, text normaliser and hidden-text report: pure functions on the host's side. Later the page-text corpus | Touch the UI |
+| `recto-index` | **Started** | Line order, text normaliser and hidden-text report: pure functions on the host's side. The page-text corpus on disk: its format, its builder over any page source, its reader and eviction | Touch the UI; name a renderer |
+| `recto-indexer` | **Started** | A helper process: builds one document's corpus through a render worker, at background priority, and exits | Hold PDFium; decide what gets indexed |
 | `recto-svg` | Planned | Streaming SVG writer | Build a document in memory |
 | `recto-sign` | **Started (placeholder)** | Final seams for PAdES creation and the honest report; `PlaceholderSigner` always refuses | Depend on `recto-render`; produce anything that looks like a signature |
 | `recto-session` | **Started** | Tabs, tiers, sidebar and view models: all the rules | Name a UI toolkit |
@@ -42,6 +43,8 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `edit::Entry` | Step of an edited tab's undo history, at most 256 and their undone ones | ≤ 32 B |
 | `Conn` | Connected client, at most 128 | ≤ 320 B plus what it's sending and being sent |
 | `recto_index::order::Line` | Line of a page in hand, at most 16,384, only while it's being read | ≤ 72 B |
+| `corpus::PageRecord` | Page in a corpus, on disk, read back one at a time | 24 B on disk |
+| `indexing::IndexJob` | File waiting for an index, at most 16 and one running. No tab holds one | A path and 32 B |
 
 ## Dependencies
 
@@ -51,6 +54,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `serde`, `serde_json` | The agent JSON envelope |
 | `libc` | `proc_pid_rusage` for footprint, process, channel and shared-memory calls, and the control socket's `poll` and `getpeereid`, `recto-platform` only |
 | `flate2` | Compresses `render`'s PNG. Already in the tree through lopdf, so it adds no crate. `recto-agent` only |
+| `sha2` | Names a corpus for its file, from its identity and samples of its bytes. Already in the tree through lopdf, so it adds no crate. `recto-index` only |
 | PDFium (not a crate) | Draws pages. `bblanchon/pdfium-binaries` release `chromium/8125`, PDFium 158.0.8125.0, no V8, no XFA. Loaded at run time, by the worker alone. `tools/pdfium.sh` fetches it from that release's URL to `target/pdfium/` and stops unless the tarball is SHA-256 `4939bd93…139d` and the library `a45c4464…373a`; `--attest` also runs `gh attestation verify`. It links AppKit; see the sandbox note below |
 
 **No `pdfium-render`.** The spike used it only for raw bindings, because its high-level loaders can't take a `pread` callback and `PdfDocument::handle()` is crate-private. 27 signatures in one file cost no crate; `pdfium-render` costs 24 in the tree. The worker is 0.48 MB here against the spike's 1.3 MB, which also carried JSON.
@@ -177,6 +181,54 @@ What made them look wrong is that **most of it is harmless, and the check can't 
 
 **Fetching PDFium.** Run `tools/pdfium.sh`, which `tools/check.sh` also runs. The worker finds the library beside itself or in `../pdfium/`. The worker binary is `recto-render-service`, found beside `recto`. `RECTO_PDFIUM_LIB` and `RECTO_RENDER_SERVICE` override, in debug builds only: nothing shipped loads code from a path in its environment. The digest is checked when the script fetches, not at each load; code signing covers that in the app. `cargo build -p recto-cli` alone doesn't build it: use `--workspace`.
 
+## The search index
+
+**The corpus.** A document's pages as text on disk, one folder per version of a file, under `~/Library/Caches/RectoPDF/corpus/<key>/v1/`, or the state folder's `corpus/` with `RECTO_STATE_DIR`, so a QA run leaves nothing anywhere else. `agent/` holds `manifest.json` and `pages/0001.md` onwards, as the agent report's §6.1 has it, ready for Phase 6's `Read` and `Grep`. `app/` holds what the search reads: `text.pack`, each page's exact normalised text in turn, and `pages.bin`, a fixed record per page. No page's text is in memory past that page, and the session holds no state about any of it. `crates/recto-index/src/corpus.rs` has the layout.
+
+**A page's file** starts with a line a page can't write, `<!-- recto page=12 cite="PDF p. 12" text=native hidden=clean untrusted=document_text -->`, and line `n` of the page is line `n + 1`. It's the page's text as it is, so a plain `rg` works and a phrase over two lines is a plain multi-line search, which a `| ` on every line, as `text` prints them, would break. A line holding text that looks hidden starts `! `, with the words inside `[hidden: ...]`, by the same code as `text`. A page's own line that would read as one of those marks gets a `\` first, so `! ` at the start of a line means what it says, and no page can write the first line's comment. The other spellings of hyphen decisions go last, so `Grep` can find those too. Pages that couldn't be read or have no text say so in words. `cite` is only `PDF p. N` until page labels exist.
+
+**Keyed to what the file is.** The key hashes the inode, size, modification and change times and first and last 64 KiB. A file replaced with its size and time put back has another inode, or another change time if written in place, so its old text can't answer for it. It takes one `fstat` and two small reads, because every search asks for it, which is why it isn't the agent report's hash of the whole file: 2 GB takes seconds. So a copy gets its own corpus, and a moved or touched file is built again. That costs time and is never wrong. A build checks the key every 64 pages and at the end, and throws away what it's read if the file changed. Reading a finished corpus only ever answers for the version just looked at. Its name and path aren't in the key or in the folder.
+
+**What makes it build.** Someone asking: a `search`, `recto index`, or `recto wait indexing-done`, which would otherwise wait out its time on something nobody started. **Never opening a tab or switching to one,** so 200 open tabs cost nothing here, and a tab holds nothing about its index. One helper runs at a time for the whole session, and at most 16 files wait, the newest ask first and the oldest giving way. Whoever still wants one asks again, so nothing's lost. `crates/recto-control/src/indexing.rs` has the rest.
+
+**The helper.** `recto-indexer` is a process of its own at `PRIO_DARWIN_BG`, which its render worker inherits (`ps` shows both at priority 4, against 31), and it exits when done, as `SPEC.md` §2 has it. So what it uses ends when it does: a page of two million characters takes tens of megabytes to read, and the session's footprint stays where it was. It takes its job on stdin, so a file's name stays out of `ps`, and it ends as soon as stdin closes, so it can't outlive whoever started it however they ended. The session's one thread for it exists only while there's something to build. `stop` closes that pipe. Anything that stops it leaves a usable state.
+
+**Killed at any moment, it's sound.** A page's text is written, then its page file goes in place in one step, then its record, and only a record counts. Starting again checks every record against what's there, cuts off anything past the last that holds up, and goes on from there, coming out byte for byte the same as a build never stopped. `ready.json` goes last, after a sync, and nothing is used without it. Until then `manifest.json` says `building`.
+
+**Its limits,** from outside. 256 MiB for its worker, half a reader's, with no heavy step: only the hidden-text check draws, and by the numbers above 17 of 5,872 real pages need more at 2x. Such a page reads as `hidden=not_checked`, and a search draws it if it ever finds something on it, under a reader's limits. After 16 such failures in a document the rest go unchecked, because kills are capped per document, and spending them all on a check would leave pages unread. 10 s a page, twice a reader's, since this is on the slower cores. 512 MiB a document, past which it's refused and its text removed. 200,000 pages. An hour for a build, after which the next ask goes on from there. All corpora together 2 GiB, the least recently used going first when a build ends, and anything unused for 90 days (agent report, D6). Only folders named as keys are ever looked at or removed. A file that needs a password has nothing written, and `refused.json` holds only that. A file readable with no password is indexed, as `text` reads it: `aes_128` and the like. A page that fails is listed in `failed_pages`, and the rest carry on. The real `form_bomb` fails its page in 2.4 s, where a reader's limit sequence takes 3.1.
+
+**Not trusted when read back.** Lengths are checked against the file, text as UTF-8, and a corpus that doesn't add up is thrown away and built again, which only costs time. The search goes on by reading pages, in the same answer.
+
+**No index in front of the text, because it isn't needed yet.** A search is one pass over `text.pack`, folding each page with no map back to the text, and placing hits with the normal code only on a page with one. So the same code that reads a live page makes each hit, which is what makes the answers the same. A trigram or word index would shorten a pass that's already this quick, take more room on disk, and need its results checked against the text anyway. **Measured** below: 37 MB of text takes 42 ms, and that's the largest tested. By arithmetic, the 200,000 pages a document may have would take about a second, which wasn't tried. If documents that large turn out to be common, that's the next step, behind the same command.
+
+**The same answers, proven.** `real_pages_answer_the_same_from_the_index` holds every field of an answer from the index to `--scan`, apart from `route`, `index` and the three new count fields, for 8 searches at 2 limits each. Set `RECTO_BENCH100`, and `RECTO_INDEX_ALL` for every file. On all 141 PDFs of bench100, 5,872 pages, release build, 2026-11-07: 2,256 searches compared and none differed, with no page failing to read. It covers line-order repair, hidden text and hyphen spellings because `read_page` is the one way both get a page's text. `an_edited_tab_keeps_its_page_numbers_and_marks_added_files` holds the same through moves, deletes, inserts and undo.
+
+**Measured** 2026-11-07, release build, this Mac, other agents building throughout (load about 5 to 7, memory 30 to 80% free), so the coordinator re-measures final budgets alone. Whole process from start to exit, `recto local F search Q`, 11 runs each, against the build before this work. It's a process start and an open each time. Through a running session, the search and client together are p50 5 to 10 ms on all but USGS.
+
+| | Pages | Word nothing has, p50 / p95 ms | Then | `the`, stops at the limit | Then | Peak, before | Then |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `rfc9110` | 194 | 326 / 340 | 18 / 19 | 44 / 71 | 18 / 19 | 4.4 MiB | 3.4 MiB |
+| NASA | 383 | 1,734 / 1,840 | 30 / 32 | 58 / 61 | 30 / 33 | 6.4 MiB | 5.4 MiB |
+| `math_AG_2607.28411` | 83 | 126 / 132 | 13 / 14 | 46 / 56 | 13 / 15 | 3.8 MiB | 3.2 MiB |
+| `un_sdg2024` | 51 | 254 / 269 | 10 / 11 | 66 / 70 | 10 / 11 | 3.9 MiB | 2.8 MiB |
+| USGS map | 1 | 85 / 90 | 5.3 / 7.4 | 681 / 689 | 682 / 723 | 3.1 MiB | 2.9 MiB |
+| A made 10,000-page PDF, 3.7 KB a page, in process (`budget index`, 3 runs) | 10,000 | 7,476 / 7,646 | 42 / 42 | 37 / 41 | 51 / 52 | | 5.9 MiB |
+
+Peaks are `recto`'s own: the worker's are on top of the "before" column, and there's none "then". USGS's `the` is no faster because its one page is over the build's limit, so it's drawn at the hit, as it always was. Reaching the limit now costs a pass over the rest to count: `the` on NASA gives `hits_total` 6,113 and shows 20.
+
+| | PDF | Corpus, by `du` | Share | Build, normal / background | Worker peak | Helper peak |
+|---|---:|---:|---:|---:|---:|---:|
+| `rfc9110` | 2.7 MiB | 1.3 MiB | 47% | 0.64 / 1.36 s | 33 MiB | 4.8 MiB |
+| NASA | 97.6 MiB | 2.3 MiB | 2.3% | 5.95 / 14.8 s | 122 MiB | 6.7 MiB |
+| `math_AG_2607.28411` | 0.8 MiB | 0.58 MiB | 73% | 0.27 / 1.22 s | 27 MiB | 4.0 MiB |
+| `un_sdg2024` | 8 MiB | 0.66 MiB | 8% | 0.87 / 3.4 s | 83 MiB | 3.9 MiB |
+| USGS map | 330 MiB | 36 KiB | 0.01% | 0.19 / 0.57 s | 309 MiB, killed at 256 | 2.7 MiB |
+| The made 10,000-page PDF, its streams uncompressed | 41.7 MiB | about 75 MiB by the build's own count | 181% | 17.7 s normal | 67 MiB | 6.3 MiB |
+
+Most of a small PDF's share is each page's file taking a whole 4 KiB block. The text is twice over, in the pack and the page files: the pack makes the pass fast, and without it, each page would need its own open and close. NASA's worker peak is within the 170 MiB budget, with 23 retirements on the way, and the whole tree during its build is about 134 MiB: 5.1 session, 6.7 helper, 122 worker.
+
+The session itself, NASA, by `recto budget`: 1.41 MiB at the start, 5.05 once it's open, **5.14 after indexing all 383 pages**, 5.63 after 10 searches. The build before this: 1.44, 4.77, and 6.88 after the same searches, with a worker on top of that during each. Handles are the same before and after, and a test holds that, and one thread once it's done. Whole-process `budget index` reports all of the build's numbers itself: `recto budget index --file F`.
+
 ## The agent interface
 
 `recto` is the interface every test and agent uses from here on, and the Mac app and agent sidebar sit on it. It's three layers: the command table and dispatch (`recto-agent`), the session on a socket (`recto-control`), and a thin client (`recto-cli`).
@@ -229,13 +281,13 @@ At Control: an edit that clears undone steps, `discard` and `close` with undone 
 
 **Activity log.** One line per action with its time, command, level and outcome, refusals included. It holds numbers, and cleaned file names under `untrusted`, and never document text: `Command::log_details` is the one place that decides, and a tab's name as typed and a search's words aren't kept. `tab` is the `#id` the command really acted on, found before it runs because `close` leaves nothing to ask afterwards. If it found no one tab, as with an ambiguous name, it says `by name`. A refusal for the level is counted rather than written out, so it keeps no details at all. At a real terminal `recto log` reads the files with no session or level, for the user. Otherwise it needs Read-only, even with no session.
 
-An agent mustn't be able to erase its own record, so there are two files, 1 MiB each and rotated once. `activity.jsonl` has what changed something: `open`, `close`, page edits, `render`, `stop` and `permission set`, when they worked. `activity-other.jsonl` has the rest, so no flood of reading, refusals or other failures can reach the first. `status`, bad lines, asks and refusals are written once, then as one line with a count, at most once a minute each. **Limit:** an agent at Control can still push out its own changes with enough of them, since each one is an action to record.
+An agent mustn't be able to erase its own record, so there are two files, 1 MiB each and rotated once. `activity.jsonl` has what changed something: `open`, `close`, page edits, `render`, `index clear`, `stop` and `permission set`, when they worked. `activity-other.jsonl` has the rest, so no flood of reading, refusals or other failures can reach the first. `status`, bad lines, asks and refusals are written once, then as one line with a count, at most once a minute each. **Limit:** an agent at Control can still push out its own changes with enough of them, since each one is an action to record.
 
 **Contents.** A first look at an outline needs its sections, and a root can hold only the title, as on RFC 9110, where `--depth 0` gives `RFC 9110` and `HTTP Semantics` and nothing else. So `sections_at` is the first depth whose entries are on more than one page. With no `--depth`, `contents` shows down to the deepest level that fits in 200 entries, never above the sections, and `depth_rule` says which that is, which entries are the top-level sections, and what to ask for instead, ahead of the list in plain output. An agent took two calls to work out what "top-level" meant. On RFC 9110 that's depth 2 of 4, 154 of 311 entries, in one call. Paging keeps to the same entries: the depth is decided from a fixed room of 200, not from `--limit`.
 
 **A file only the renderer can read.** lopdf refuses some damaged files PDFium repairs, or finds no pages in them, and commands go through `session.open`. So `DrawableLoader` asks PDFium, in its worker, when lopdf says "not a PDF" or "no pages": the tab opens with PDFium's page count and `renderer_only` set. Facts stay trustworthy because nothing is made up. `facts` says `structure: renderer_only`, `contents` says `available: false`, and `signatures` says `structure_read: false`, each meaning "couldn't be read" and never "none". Editing it, or inserting it into another document, is refused, since only the structure reader's writer may change a PDF. A password-protected, missing or forbidden file stays that way: only those two answers get a second opinion.
 
-**Search for now.** `recto search` reads each page's text through one worker at a time, in order, ignoring case and line breaks, with no index: at most 200 hits and 30 s, stopping only between pages so `next_page` always moves on. Snippets are built only for hits that will be shown, and the count stays whole. It's slow on a long document, and the Phase 3 corpus goes behind the same command.
+**Search.** `recto search` looks at each page's text in order, ignoring case and line breaks: at most 200 hits and 30 s, stopping only between pages so `next_page` always moves on. A file with a finished corpus is read from that, and any other is read through one worker at a time, and asked to be indexed for next time. `route` says which, `index.note` says why in words, and `--scan` reads the pages regardless, for checking one against the other. Snippets are built only for hits that will be shown, and the count stays whole. `coverage.hits_total` counts every hit in scope past the limit too, which only a corpus makes cheap, so reading page by page gives null there once it stops, with `hits_at_least`.
 
 **Added files in search.** Every hit says `from_added_file` and `source_page`, whatever they are, and one from an inserted PDF also says `added_file` under `untrusted`. Plain output says so only when it isn't the number shown. Plain output also opens with what it covered: hits shown, pages really read of how many, how many couldn't be read or had no text, and whether there's more. `pages_searched` counts only pages read, and "Nothing found" isn't said if any page couldn't be. An agent read past "stopped early" at the bottom. That stays at the bottom too, with where to go on from.
 
@@ -274,6 +326,7 @@ The two per-open numbers for that PDF aren't comparing like with like: the earli
 | With tabs of any tier | 10: the second log file, once it's been written | none |
 | During a job that draws or reads a page | 17: adds the worker's channel, shared memory, the document, a kqueue | 8: stdin, stdout, stderr to `/dev/null`, its channel, the document, shared memory, the system's font folder, one more that PDFium holds |
 | After the job | 10 | gone |
+| While an index builds | 12: adds the helper's stdin and stdout, and its worker counts as above against the helper | as during a job |
 
 ## Machine notes
 

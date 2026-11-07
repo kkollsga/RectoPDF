@@ -143,10 +143,17 @@ impl Server {
     pub fn run<H: Host>(self, host: Arc<H>, limits: Limits) -> std::io::Result<()> {
         let (done_tx, done_rx) = channel();
         let last_level = levels::current(&self.paths);
+        let wake = Arc::new(self.wake_tx.try_clone()?);
+        // Something happening outside any command, such as an index being finished, reaches the loop the way a finished job does. It uses the same wake and costs no descriptor of its own.
+        let (notify_tx, notify_wake) = (done_tx.clone(), Arc::clone(&wake));
+        host.attach(Arc::new(move |events: Vec<Event>| {
+            let _ = notify_tx.send(Done::Published(events));
+            let _ = (&*notify_wake).write(&[WAKE_BYTE]);
+        }));
         let mut state = Loop {
             log: ActivityLog::new(&self.paths),
             paths: self.paths.clone(),
-            host,
+            host: Arc::clone(&host),
             limits,
             started: Instant::now(),
             conns: Vec::new(),
@@ -156,7 +163,7 @@ impl Server {
             running_draws: 0,
             done_tx,
             done_rx,
-            wake: self.wake_tx.try_clone()?,
+            wake,
             queued_bytes: 0,
             generations: 0,
             pending: None,
@@ -167,6 +174,7 @@ impl Server {
             stopping: None,
         };
         let result = state.run(&self.listener, &self.wake_rx);
+        host.shut_down();
         // Tidy on the way out. A kill skips this, and the next start clears up.
         let _ = std::fs::remove_file(&self.paths.socket);
         result
@@ -245,6 +253,8 @@ impl Job {
 enum Done {
     Answered { conn: u64, line: Vec<u8>, tag: &'static str, level: Level, outcome: &'static str, details: Value, events: Vec<Event>, draws: bool, stop: bool },
     Looked { conn: u64, generation: u64, state: ConditionState },
+    /// Something happened that no command caused. It takes up no job's place.
+    Published(Vec<Event>),
 }
 
 struct Loop<H> {
@@ -260,7 +270,7 @@ struct Loop<H> {
     running_draws: usize,
     done_tx: Sender<Done>,
     done_rx: Receiver<Done>,
-    wake: Stream,
+    wake: Arc<Stream>,
     /// Everything waiting in clients' `output`.
     queued_bytes: usize,
     generations: u64,
@@ -660,6 +670,7 @@ impl<H: Host> Loop<H> {
                     self.begin_stop();
                 }
             }
+            Done::Published(events) => self.publish(&events),
             Done::Looked { conn, generation, state } => {
                 self.running -= 1;
                 let Some(index) = self.conns.iter().position(|c| c.id == conn) else { return };

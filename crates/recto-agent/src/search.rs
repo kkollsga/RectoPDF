@@ -1,9 +1,11 @@
-//! `search`: finds words across a document by reading its pages' text through one worker per file, in order, with no index yet. The later corpus and index go behind this same command.
+//! `search`: finds words across a document. A file with a finished corpus is read from that, a pass over text already on disk. Any other is read through one worker per file, in order, and asked to be indexed for next time. Which way a page was read changes nothing about what's said of it, and `route` says which it was.
 //!
 //! What it compares: the normaliser's text, lower-cased, with any run of space or line break as one space, so a phrase across a line break still matches. Bounded by a limit on hits and a limit on
 //! time. Stopping early says where to go on from, so "nothing found" is only ever said of pages really searched.
 
+use crate::index::{FileIndex, Indexing};
 use crate::{AgentError, SessionAccess, exit, parse_pages, select};
+use recto_index::corpus::{CorpusKey, Damaged, PageKind, ReadyCorpus, StoredPage};
 use recto_index::{hidden_report, read_page};
 use recto_platform::FileStamp;
 use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig};
@@ -46,7 +48,7 @@ impl PlanFile {
     }
 }
 
-pub(crate) fn search<A: SessionAccess>(access: &A, tab: &str, query: &str, pages: Option<&str>, limit: Option<u32>) -> Result<Value, AgentError> {
+pub(crate) fn search<A: SessionAccess>(access: &A, tab: &str, query: &str, pages: Option<&str>, limit: Option<u32>, scan: bool) -> Result<Value, AgentError> {
     if query.len() > MAX_QUERY_BYTES {
         return Err(AgentError::new("bad_query", "That search is too long.", exit::FAILED).then("Search for a few words."));
     }
@@ -56,7 +58,7 @@ pub(crate) fn search<A: SessionAccess>(access: &A, tab: &str, query: &str, pages
     }
     let plan = plan(access, tab, pages)?;
     let limit = crate::positive_limit(limit, DEFAULT_LIMIT, MAX_LIMIT)?;
-    run(&plan, &needle, limit, MAX_TIME, Instant::now)
+    run(&plan, &needle, limit, MAX_TIME, Instant::now, access.indexing(), scan)
 }
 
 fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<Plan, AgentError> {
@@ -84,108 +86,315 @@ fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<
     })
 }
 
-fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn() -> Instant) -> Result<Value, AgentError> {
+/// How one file's pages get read in this search. Worked out when its first page comes up, and never again: a corpus doesn't change.
+#[derive(Clone, Copy)]
+enum FileRoute {
+    NotLookedAt,
+    Index(CorpusKey),
+    Scan,
+}
+
+/// The corpus for this page, opened if it isn't the one that's open. One at a time, as with workers: a document of a thousand added files mustn't hold a thousand descriptors.
+fn corpus_for<'a>(open: &'a mut Option<(u16, ReadyCorpus)>, file: u16, key: CorpusKey, indexing: Option<&dyn Indexing>) -> Result<&'a ReadyCorpus, Damaged> {
+    if open.as_ref().is_none_or(|(open_file, _)| *open_file != file) {
+        *open = None;
+        let indexing = indexing.ok_or(Damaged)?;
+        *open = Some((file, ReadyCorpus::open(indexing.root(), key)?.ok_or(Damaged)?));
+    }
+    open.as_ref().map(|(_, corpus)| corpus).ok_or(Damaged)
+}
+
+/// A corpus that doesn't add up is thrown away, and made again. Page by page is always right.
+fn throw_away_corpus(indexing: Option<&dyn Indexing>, source: &PlanFile, key: CorpusKey) {
+    if let Some(indexing) = indexing {
+        let _ = recto_index::corpus::clear(indexing.root(), key);
+        indexing.want(&source.path, key);
+    }
+}
+
+/// What's been found so far. The same whichever way a page was read.
+#[derive(Default)]
+struct Found {
+    hits: Vec<Value>,
+    searched: u32,
+    empty: Vec<u32>,
+    empty_count: u32,
+    failed: Vec<u32>,
+    next_page: Option<u32>,
+    not_shown: Vec<Value>,
+    tag_pages: Vec<u32>,
+    /// A file that isn't what its page numbers were recorded from: its pages can't be trusted, and the rest of the document still can.
+    changed: Vec<u16>,
+    /// Every hit, including those past the limit. The other spelling of a word counts as one, as it does in `hits`.
+    total: u64,
+    /// `total` may be short, because of pages past `next_page` that couldn't be counted.
+    total_cut_short: bool,
+    /// Pages past `next_page` that couldn't be read, so they aren't in `total`.
+    uncounted: u32,
+    used_index: bool,
+    used_scan: bool,
+}
+
+/// One page's text, whichever way it was read.
+struct PageText<'a> {
+    position: u32,
+    /// Its page in its own file.
+    page: u32,
+    text: &'a str,
+    also_spelled: &'a [&'a str],
+    has_tag_chars: bool,
+}
+
+impl Found {
+    fn no_text(&mut self, position: u32) {
+        self.searched += 1;
+        self.empty_count += 1;
+        if self.empty.len() < MAX_LISTED_EMPTY {
+            self.empty.push(position + 1);
+        }
+    }
+
+    /// Takes what's on a page. `hidden` is only asked for if the page has something to show, as finding out can mean drawing it.
+    fn take(&mut self, page: &PageText<'_>, needle: &str, limit: usize, source: &PlanFile, hidden: impl FnOnce() -> HiddenOnPage) {
+        let position = page.position;
+        let room = limit - self.hits.len();
+        let found = find_hits(page.text, needle, room);
+        self.total += found.total as u64;
+        if found.total > found.shown.len() {
+            self.not_shown.push(json!({ "page": position + 1, "hits": found.total - found.shown.len() }));
+        }
+        if page.has_tag_chars && found.total > 0 && self.tag_pages.len() < MAX_LISTED_EMPTY {
+            self.tag_pages.push(position + 1);
+        }
+        let spelled = if found.total > 0 { None } else { page.also_spelled.iter().find(|spelled| fold(spelled).0.contains(needle)).filter(|_| self.hits.len() < limit) };
+        if found.shown.is_empty() && spelled.is_none() {
+            return;
+        }
+        // Only a page with something to show is checked for hidden text: doing it for every page by drawing it costs three to five times as much. `docs/ENGINEERING.md` has the numbers. So a hit always says, and a page never looked at has nothing to say.
+        let hidden = hidden();
+        for (line, snippet, range) in found.shown {
+            let mut hit = json!({ "page": position + 1, "line": line, "page_has_tag_chars": page.has_tag_chars, "hidden_text": hidden.summary, "overlaps_hidden": hidden.overlaps(&range), "untrusted": { "snippet": snippet } });
+            say_where_from(&mut hit, page.page, source);
+            self.hits.push(hit);
+        }
+        if let Some(spelled) = spelled {
+            self.total += 1;
+            let mut hit = json!({ "page": position + 1, "line": null, "also_spelled": true, "page_has_tag_chars": page.has_tag_chars, "hidden_text": hidden.summary, "untrusted": { "snippet": spelled } });
+            say_where_from(&mut hit, page.page, source);
+            self.hits.push(hit);
+        }
+    }
+}
+
+/// Opens this page's worker if it isn't the one already open. One at a time, whichever file it's for: a document with a thousand added files must not mean a thousand processes. `None` if the file isn't what its page numbers were recorded from, or can't be found.
+fn worker_for<'a>(current: &'a mut Option<(u16, DocRenderer)>, file: u16, source: &PlanFile) -> Result<Option<&'a mut DocRenderer>, RenderFailure> {
+    if current.as_ref().is_none_or(|(open_file, _)| *open_file != file) {
+        // The old one goes first, so there's never more than one.
+        *current = None;
+        if !source.is_current() {
+            return Ok(None);
+        }
+        *current = Some((file, DocRenderer::new(&source.path, None, ServiceConfig::discover()?, Policy::default())?));
+    }
+    Ok(current.as_mut().map(|(_, renderer)| renderer))
+}
+
+/// Works out how a file's pages get read: from its corpus if there's a finished one for the file as it is now, or else page by page, asking for a corpus to be built for next time.
+fn look_at_file(indexing: Option<&dyn Indexing>, source: &PlanFile, force_scan: bool, not_ready: &mut Vec<FileIndex>) -> FileRoute {
+    let Some(indexing) = indexing.filter(|_| !force_scan) else { return FileRoute::Scan };
+    if !source.is_current() {
+        return FileRoute::Scan;
+    }
+    match crate::index::file_index(indexing, &source.path, true) {
+        (Some(key), FileIndex::Ready(_)) => FileRoute::Index(key),
+        (_, state) => {
+            not_ready.push(state);
+            FileRoute::Scan
+        }
+    }
+}
+
+fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn() -> Instant, indexing: Option<&dyn Indexing>, force_scan: bool) -> Result<Value, AgentError> {
     let started = now();
-    // One worker at a time, whichever file it's for. A document with a thousand added files must not mean a thousand processes.
     let mut current: Option<(u16, DocRenderer)> = None;
-    let mut hits = Vec::new();
-    let mut searched = 0u32;
-    let mut empty = Vec::new();
-    let mut empty_count = 0u32;
-    let mut failed = Vec::new();
-    let mut next_page = None;
-    let mut not_shown = Vec::new();
-    let mut tag_pages = Vec::new();
-    // A file that isn't what its page numbers were recorded from: its pages can't be trusted, and the rest of the document still can.
-    let mut changed: Vec<u16> = Vec::new();
+    let mut corpus_open: Option<(u16, ReadyCorpus)> = None;
+    let mut found = Found::default();
+    let mut routes = vec![FileRoute::NotLookedAt; plan.files.len()];
+    let mut not_ready = Vec::new();
+    let (mut buffer, mut folded) = (Vec::new(), String::new());
+    let mut counting_only = false;
     for &(position, file, page) in &plan.pages {
+        let source = &plan.files[usize::from(file)];
+        let out_of_time = now().duration_since(started) >= max_time;
         // Stopping only between pages, so asking again from `next_page` always moves on, however many hits a page has.
-        if hits.len() >= limit || now().duration_since(started) >= max_time {
-            next_page = Some(position + 1);
+        if !counting_only && (found.hits.len() >= limit || out_of_time) {
+            found.next_page = Some(position + 1);
+            counting_only = true;
+        }
+        if counting_only && out_of_time {
+            found.total_cut_short = true;
             break;
         }
-        if changed.contains(&file) {
-            failed.push(position + 1);
+        if !counting_only && found.changed.contains(&file) {
+            found.failed.push(position + 1);
             continue;
         }
-        if current.as_ref().is_none_or(|(open_file, _)| *open_file != file) {
-            // The old one goes first, so there's never more than one.
-            current = None;
-            let source = &plan.files[usize::from(file)];
-            let opened = if source.is_current() { DocRenderer::new(&source.path, None, ServiceConfig::discover()?, Policy::default()).map(Some) } else { Ok(None) };
-            match opened {
-                Ok(Some(renderer)) => current = Some((file, renderer)),
-                Ok(None) | Err(RenderFailure::NotFound) if source.added || source.expected.is_some() => {
-                    changed.push(file);
-                    failed.push(position + 1);
+        if matches!(routes[usize::from(file)], FileRoute::NotLookedAt) {
+            // A file reached only for the count doesn't change how the answer's hits were read, so it isn't said to have.
+            let mut not_said = Vec::new();
+            routes[usize::from(file)] = look_at_file(indexing, source, force_scan, if counting_only { &mut not_said } else { &mut not_ready });
+        }
+        if counting_only {
+            // Past the limit, only a corpus makes it cheap to go on, and only for the count.
+            let FileRoute::Index(key) = routes[usize::from(file)] else {
+                found.total_cut_short = true;
+                break;
+            };
+            let read = match corpus_for(&mut corpus_open, file, key, indexing) {
+                Ok(corpus) if page >= corpus.pages() => {
+                    found.uncounted += 1;
                     continue;
                 }
-                Ok(None) => continue,
-                Err(failure) => return Err(failure.into()),
+                Ok(corpus) => corpus.page(page, &mut buffer),
+                Err(Damaged) => Err(Damaged),
+            };
+            match read {
+                Ok(stored) if stored.kind == PageKind::Text => found.total += count_on_page(&stored, needle, &mut folded),
+                Ok(stored) if stored.kind == PageKind::Failed => found.uncounted += 1,
+                Ok(_) => {}
+                Err(Damaged) => {
+                    throw_away_corpus(indexing, source, key);
+                    found.total_cut_short = true;
+                    break;
+                }
+            }
+            continue;
+        }
+        if let FileRoute::Index(key) = routes[usize::from(file)] {
+            let read = match corpus_for(&mut corpus_open, file, key, indexing) {
+                // Pages it hasn't got are pages the file hasn't got: the same as a worker saying so.
+                Ok(corpus) if page >= corpus.pages() => Ok(None),
+                Ok(corpus) => corpus.page(page, &mut buffer).map(Some),
+                Err(Damaged) => Err(Damaged),
+            };
+            match read {
+                Ok(None) => {
+                    found.used_index = true;
+                    found.failed.push(position + 1);
+                    continue;
+                }
+                Ok(Some(stored)) => {
+                    found.used_index = true;
+                    match stored.kind {
+                        PageKind::Failed => found.failed.push(position + 1),
+                        PageKind::NoText => found.no_text(position),
+                        PageKind::Text => {
+                            found.searched += 1;
+                            let also_spelled = stored.also_spelled();
+                            fold_into(stored.text, &mut folded);
+                            if !folded.contains(needle) && !also_spelled.iter().any(|spelled| fold(spelled).0.contains(needle)) {
+                                continue;
+                            }
+                            let text = PageText { position, page, text: stored.text, also_spelled: &also_spelled, has_tag_chars: stored.has_tag_chars };
+                            found.take(&text, needle, limit, source, || {
+                                if stored.hidden_checked {
+                                    HiddenOnPage { summary: json!({ "checked": true, "flagged": stored.hidden_flagged }), spans: byte_spans(stored.text, &stored.hidden_spans()), partial: stored.spans_dropped }
+                                } else {
+                                    // The build couldn't check this page under its own limits. A search can.
+                                    match worker_for(&mut current, file, source) {
+                                        Ok(Some(renderer)) => hidden_on_page(renderer, page, stored.text),
+                                        Ok(None) | Err(_) => HiddenOnPage { summary: json!({ "checked": false, "flagged": null }), spans: Vec::new(), partial: true },
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    continue;
+                }
+                // This page and the rest of the file are read one by one.
+                Err(Damaged) => {
+                    corpus_open = None;
+                    throw_away_corpus(indexing, source, key);
+                    not_ready.push(FileIndex::Failed("damaged".to_string()));
+                    routes[usize::from(file)] = FileRoute::Scan;
+                }
             }
         }
-        let Some((_, renderer)) = current.as_mut() else { continue };
+        found.used_scan = true;
+        let renderer = match worker_for(&mut current, file, source) {
+            Ok(Some(renderer)) => renderer,
+            Ok(None) | Err(RenderFailure::NotFound) if source.added || source.expected.is_some() => {
+                found.changed.push(file);
+                found.failed.push(position + 1);
+                continue;
+            }
+            Ok(None) => continue,
+            Err(failure) => return Err(failure.into()),
+        };
         let characters = match renderer.page_characters(page, true, false) {
             Ok(characters) => characters,
             // A file that won't be read at all is a failure of the whole search. One bad page isn't: it's listed, so "not found" doesn't cover it.
             Err(failure @ (RenderFailure::NeedsPassword | RenderFailure::NotFound | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::OpenFailed { .. } | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::DocumentStopped)) => return Err(failure.into()),
             Err(_) => {
-                failed.push(position + 1);
+                found.failed.push(position + 1);
                 continue;
             }
         };
-        searched += 1;
         if characters.chars.is_empty() {
-            empty_count += 1;
-            if empty.len() < MAX_LISTED_EMPTY {
-                empty.push(position + 1);
-            }
+            found.no_text(position);
             continue;
         }
+        found.searched += 1;
         let normalized = read_page(&characters.chars, &characters.boxes, false).normalized;
-        let has_tag_chars = normalized.tag_chars_removed > 0;
-        let room = limit - hits.len();
-        let found = find_hits(&normalized.text, needle, room);
-        if found.total > found.shown.len() {
-            not_shown.push(json!({ "page": position + 1, "hits": found.total - found.shown.len() }));
-        }
-        if has_tag_chars && found.total > 0 && tag_pages.len() < MAX_LISTED_EMPTY {
-            tag_pages.push(position + 1);
-        }
-        let spelled = if found.total > 0 { None } else { normalized.also_spelled.iter().find(|spelled| fold(spelled).0.contains(needle)).filter(|_| hits.len() < limit) };
-        if found.shown.is_empty() && spelled.is_none() {
-            continue;
-        }
-        // Only a page with something to show is drawn to look for hidden text: doing it for every page costs three to five times as much. `docs/ENGINEERING.md` has the numbers. So a hit always says, and a page never looked at has nothing to say.
-        let hidden = hidden_on_page(renderer, page, &normalized.text);
-        let source = &plan.files[usize::from(file)];
-        for (line, snippet, range) in found.shown {
-            let mut hit = json!({ "page": position + 1, "line": line, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden.summary, "overlaps_hidden": hidden.overlaps(&range), "untrusted": { "snippet": snippet } });
-            say_where_from(&mut hit, page, source);
-            hits.push(hit);
-        }
-        if let Some(spelled) = spelled {
-            let mut hit = json!({ "page": position + 1, "line": null, "also_spelled": true, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden.summary, "untrusted": { "snippet": spelled } });
-            say_where_from(&mut hit, page, source);
-            hits.push(hit);
-        }
+        let also_spelled: Vec<&str> = normalized.also_spelled.iter().map(String::as_str).collect();
+        let text = PageText { position, page, text: &normalized.text, also_spelled: &also_spelled, has_tag_chars: normalized.tag_chars_removed > 0 };
+        found.take(&text, needle, limit, source, || hidden_on_page(renderer, page, &normalized.text));
     }
+    let route = match (found.used_index, found.used_scan) {
+        (true, true) => "mixed",
+        (true, false) => "index",
+        _ => "scan",
+    };
+    let (index_state, index_note) = if force_scan {
+        ("not_used", "Read the pages one by one, as asked.".to_string())
+    } else if plan.pages.is_empty() {
+        ("not_used", "There were no pages to read.".to_string())
+    } else if let Some(indexing) = indexing {
+        (not_ready.first().map_or("ready", FileIndex::word), not_ready.first().map_or_else(|| "Answered from the index.".to_string(), |state| state.scan_note(indexing.starts_builds())))
+    } else {
+        ("off", "This session has no index, so this read the pages one by one.".to_string())
+    };
     Ok(json!({
         "tab": plan.tab,
-        "hits": hits,
+        "hits": found.hits,
         "hidden_text_checked": "pages_with_hits",
+        "route": route,
+        "index": { "state": index_state, "note": index_note },
         "coverage": {
-            "pages_searched": searched,
+            "pages_searched": found.searched,
             "pages_in_scope": plan.pages.len(),
-            "pages_with_no_text": empty_count,
-            "no_text_pages": empty,
-            "failed_pages": failed,
-            "hits_not_shown": not_shown,
-            "pages_with_tag_chars": tag_pages,
-            "changed_files": changed.iter().map(|file| json!({ "untrusted": { "file": plan.files[usize::from(*file)].label() } })).collect::<Vec<_>>(),
-            "next_page": next_page,
+            "pages_with_no_text": found.empty_count,
+            "no_text_pages": found.empty,
+            "failed_pages": found.failed,
+            "hits_not_shown": found.not_shown,
+            "pages_with_tag_chars": found.tag_pages,
+            "changed_files": found.changed.iter().map(|file| json!({ "untrusted": { "file": plan.files[usize::from(*file)].label() } })).collect::<Vec<_>>(),
+            "next_page": found.next_page,
+            "hits_total": (!found.total_cut_short).then_some(found.total),
+            "hits_at_least": found.total,
+            "uncounted_pages": found.uncounted,
         },
     }))
+}
+
+/// How many hits a page has, for the total, with nothing built. The same count [`find_hits`] gives: its own spelling, and if there's none of that, another spelling counts as one.
+fn count_on_page(stored: &StoredPage<'_>, needle: &str, folded: &mut String) -> u64 {
+    fold_into(stored.text, folded);
+    let on_page = folded.matches(needle).count() as u64;
+    if on_page > 0 {
+        return on_page;
+    }
+    u64::from(stored.also_spelled().iter().any(|spelled| fold(spelled).0.contains(needle)))
 }
 
 /// Says where a hit's page really comes from, on every hit, so an agent reading these needn't know what it means for a field to be missing.
@@ -257,6 +466,39 @@ fn byte_spans(text: &str, spans: &[(u32, u32)]) -> Vec<Range<usize>> {
         out.push(start..text.len());
     }
     out
+}
+
+/// What [`fold`] makes, into a buffer that's used again, with no map back to the text. It runs on every page of a search, and the map only matters on a page with a hit. An all-ASCII page, most of them, takes a shorter way.
+fn fold_into(text: &str, folded: &mut String) {
+    folded.clear();
+    folded.reserve(text.len());
+    let mut pending_space = false;
+    if text.is_ascii() {
+        for byte in text.bytes() {
+            // `char::is_whitespace`, which is what `fold` goes by, includes vertical tab, and `u8::is_ascii_whitespace` doesn't.
+            if byte.is_ascii_whitespace() || byte == 0x0B {
+                pending_space = !folded.is_empty();
+                continue;
+            }
+            if pending_space {
+                folded.push(' ');
+                pending_space = false;
+            }
+            folded.push(char::from(byte.to_ascii_lowercase()));
+        }
+        return;
+    }
+    for c in text.chars() {
+        if c.is_whitespace() {
+            pending_space = !folded.is_empty();
+            continue;
+        }
+        if pending_space {
+            folded.push(' ');
+            pending_space = false;
+        }
+        folded.extend(c.to_lowercase());
+    }
 }
 
 /// Lower-cases and joins whitespace, and notes where each byte of the result came from. Returns the folded text and that map.
@@ -408,5 +650,15 @@ mod tests {
         let lines: Vec<u32> = found.shown.iter().map(|hit| hit.0).collect();
         assert_eq!(lines, (1..=10).collect::<Vec<u32>>());
         assert!(found.shown[9].1.contains("word 9"), "{}", found.shown[9].1);
+    }
+
+    /// Failure: the shorter way of folding reads a page differently from the way a hit is placed, so a hit is missed, or found where nothing can be placed. Both must make the same text, on odd spaces and letters that change length and pages that are nearly all ASCII.
+    #[test]
+    fn the_quick_fold_makes_what_the_full_one_does() {
+        let mut quick = String::from("left over from the last page");
+        for page in ["", " ", "\n\n", "plain text\nON two LINES", "  leading\ttabs\x0Bvertical\x0Cfeed\r\nend  ", "\x1Cnot space\x1Fin unicode", "İİİ  Æbc\u{A0}non\u{2003}break\u{85}nel", "caffè ﬁnal ß Σίσυφος", "a\u{2028}b\u{2029}c"] {
+            fold_into(page, &mut quick);
+            assert_eq!(quick, fold(page).0, "{page:?}");
+        }
     }
 }

@@ -293,7 +293,7 @@ fn hostile_messages_are_refused_and_nothing_falls_over() {
         (json!({ "cmd": "render", "page": 1, "out": "relative.png" }), "bad_path"),
         (json!({ "cmd": "budget_viewport", "viewport": "99999999x99999999" }), "bad_viewport"),
         (json!({ "cmd": "wait", "condition": "page_drawn", "timeout_ms": 1 }), "no_such_page"),
-        (json!({ "cmd": "wait", "condition": "indexing_done" }), "not_built"),
+        (json!({ "cmd": "wait", "condition": "indexing_done", "tab": "#99", "timeout_ms": 1 }), "timed_out"),
         (json!({ "cmd": "watch", "events": ["nonsense"] }), "bad_events"),
         (json!({ "cmd": "search", "query": "x".repeat(5000) }), "bad_query"),
         (json!({ "cmd": "contents", "from": u32::MAX, "limit": u32::MAX, "depth": 255 }), ""),
@@ -632,8 +632,8 @@ fn a_wait_ends_with_a_fixed_exit_or_a_plain_reason() {
     let (reply, code) = state.json(&["wait", "tab-open", "never", "--timeout", "50ms"]);
     assert_eq!((reply["error"]["code"].as_str(), code), (Some("timed_out"), exit::TIMED_OUT), "{reply}");
     assert!(started.elapsed() < Duration::from_secs(30));
-    let (reply, code) = state.json(&["wait", "indexing-done"]);
-    assert_eq!((reply["error"]["code"].as_str(), code), (Some("not_built"), exit::FAILED), "it must say so now, not wait: {reply}");
+    let (reply, code) = state.json(&["wait", "indexing-done", "--tab", "#99", "--timeout", "50ms"]);
+    assert_eq!((reply["error"]["code"].as_str(), code), (Some("timed_out"), exit::TIMED_OUT), "a tab that isn't there may yet be: {reply}");
     let file = doc();
     let dir = file.0.parent().unwrap();
     let other = dir.join("other-doc.pdf");

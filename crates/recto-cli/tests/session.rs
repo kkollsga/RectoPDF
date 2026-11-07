@@ -824,6 +824,7 @@ fn every_row_that_runs_here_is_wired_up() {
         vec!["local", path_of(&file), "tabs"],
         vec!["session"],
         vec!["budget", "tabs", "--file", path_of(&file), "--count", "1", "--in-process"],
+        vec!["budget", "index", "--file", path_of(&file), "--runs", "1", "--queries", "words"],
     ];
     let here: Vec<&str> = TABLE.iter().filter(|spec| spec.route == Route::Here).map(|spec| spec.name).collect();
     for name in &here {

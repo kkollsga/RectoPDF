@@ -403,6 +403,7 @@ dependencies = [
  "recto-agent",
  "recto-control",
  "recto-core",
+ "recto-index",
  "recto-platform",
  "recto-render-service",
  "recto-session",
@@ -416,6 +417,7 @@ version = "0.1.0"
 dependencies = [
  "recto-agent",
  "recto-core",
+ "recto-index",
  "recto-platform",
  "recto-session",
  "recto-testpdf",
@@ -435,7 +437,21 @@ name = "recto-index"
 version = "0.1.0"
 dependencies = [
  "recto-core",
+ "recto-platform",
  "recto-proto",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "recto-indexer"
+version = "0.1.0"
+dependencies = [
+ "recto-core",
+ "recto-index",
+ "recto-platform",
+ "recto-render-service",
+ "serde_json",
 ]
 
 [[package]]

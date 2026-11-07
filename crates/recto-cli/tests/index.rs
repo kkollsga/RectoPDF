@@ -1,0 +1,537 @@
+//! The search index through the real commands, the way an agent uses them: a session, a real helper process and real PDFium, on temp state.
+
+mod common;
+
+use common::State;
+use recto_agent::{Level, exit};
+use recto_index::corpus::CorpusKey;
+use recto_testpdf::{Page, TempPdf, form_bomb, hidden_text_page, pages, text_lines};
+use serde_json::Value;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+fn doc(name: &str, count: usize) -> TempPdf {
+    let bodies: Vec<String> = (1..=count).map(|at| format!("This is page {at} of the alpha document\nand every page says the word common here\nalso common again on page {at}")).collect();
+    let list: Vec<Page> = bodies.iter().map(|body| Page::new(text_lines(&body.lines().collect::<Vec<_>>()))).collect();
+    TempPdf::new(name, &pages(&list))
+}
+
+fn path(file: &TempPdf) -> &str {
+    file.0.to_str().unwrap()
+}
+
+/// Everything but what's expected to differ between the two ways of reading a page: how it was read, and how far the count reached.
+fn the_same_answer(mut answer: Value) -> Value {
+    let data = answer["data"].as_object_mut().unwrap();
+    data.remove("route");
+    data.remove("index");
+    let coverage = data["coverage"].as_object_mut().unwrap();
+    coverage.remove("hits_total");
+    coverage.remove("hits_at_least");
+    coverage.remove("uncounted_pages");
+    answer
+}
+
+fn wait_done(state: &State, tab: &str) -> Value {
+    let (done, code) = state.json(&["wait", "indexing-done", "--tab", tab, "--timeout", "120s"]);
+    assert_eq!(code, 0, "{done}");
+    assert_eq!(done["data"]["state"], "ready", "{done}");
+    done
+}
+
+/// Holds a search answered from the index to the same search read page by page, field by field, and says which route each took.
+fn index_matches_scan(state: &State, args: &[&str]) -> Value {
+    let (indexed, code) = state.json(args);
+    assert_eq!(code, 0, "{args:?}: {indexed}");
+    assert_eq!(indexed["data"]["route"], "index", "{args:?} wasn't answered from the index: {indexed}");
+    let mut with_scan = args.to_vec();
+    with_scan.push("--scan");
+    let (scanned, code) = state.json(&with_scan);
+    assert_eq!(code, 0, "{args:?}: {scanned}");
+    assert_eq!(scanned["data"]["route"], "scan", "{scanned}");
+    let answer = indexed.clone();
+    assert_eq!(the_same_answer(indexed), the_same_answer(scanned), "{args:?}");
+    answer
+}
+
+/// Failure: the fast route says something the page-by-page route wouldn't: a hit, a line, a snippet, a hidden-text flag, a tag character, a page with no text or where to go on from. **Reading the corpus must make no difference but the time.** Line-order repair and hidden text included, since `hidden_text_page` has every technique the check knows.
+#[test]
+fn the_index_answers_as_reading_the_pages_does() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let mut list: Vec<Page> = (1..=12).map(|at| Page::new(text_lines(&[&format!("Page {at} says common and common"), "A second line"]))).collect();
+    list.push(Page::new(hidden_text_page()));
+    list.push(Page::new(Vec::new()));
+    list.push(Page::new(text_lines(&["word broken at a line", "VISIBLE-SENTINEL again common"])));
+    let file = TempPdf::new("matches.pdf", &pages(&list));
+    state.json(&["open", path(&file)]);
+    state.json(&["index"]);
+    wait_done(&state, "active");
+    for args in [
+        &["search", "common"][..],
+        &["search", "COMMON", "--limit", "3"][..],
+        &["search", "common", "--limit", "1"][..],
+        &["search", "common", "--pages", "2-4"][..],
+        &["search", "common", "--pages", "13-"][..],
+        &["search", "says common"][..],
+        &["search", "second line"][..],
+        &["search", "HIDDEN-WHITE"][..],
+        &["search", "VISIBLE-SENTINEL"][..],
+        &["search", "zzzqqqxx"][..],
+    ] {
+        index_matches_scan(&state, args);
+    }
+    let hidden = index_matches_scan(&state, &["search", "HIDDEN-WHITE"]);
+    let hit = &hidden["data"]["hits"][0];
+    assert_eq!((hit["hidden_text"]["checked"].as_bool(), hit["hidden_text"]["flagged"].as_bool(), hit["overlaps_hidden"].as_bool()), (Some(true), Some(true), Some(true)), "{hit}");
+    let visible = index_matches_scan(&state, &["search", "VISIBLE-SENTINEL normal"]);
+    assert_eq!(visible["data"]["hits"][0]["overlaps_hidden"], false, "{visible}");
+    let (no_text, _) = state.json(&["search", "zzzqqqxx"]);
+    assert_eq!(no_text["data"]["coverage"]["no_text_pages"], serde_json::json!([14]), "{no_text}");
+}
+
+/// Failure: a blind agent's request: an answer stopped at its limit says nothing about how many there are in all, so it pages through a document to count. It must count past the limit from the index, and page by page must say it can't.
+#[test]
+fn the_index_gives_a_whole_document_total() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("total.pdf", 30);
+    state.json(&["open", path(&file)]);
+    let (first, code) = state.json(&["search", "common", "--limit", "3"]);
+    assert_eq!(code, 0, "{first}");
+    assert_eq!(first["data"]["route"], "scan", "there's no index yet: {first}");
+    assert_eq!(first["data"]["coverage"]["hits_total"], Value::Null, "it stopped at the limit, so it can't know: {first}");
+    assert!(first["data"]["coverage"]["hits_at_least"].as_u64().unwrap() >= 3);
+    assert!(first["data"]["index"]["note"].as_str().unwrap().contains("wait indexing-done"), "{first}");
+    wait_done(&state, "active");
+    let (limited, _) = state.json(&["search", "common", "--limit", "3"]);
+    assert_eq!(limited["data"]["route"], "index", "{limited}");
+    assert_eq!(limited["data"]["hits"].as_array().unwrap().len(), 3);
+    assert_eq!(limited["data"]["coverage"]["hits_total"], 60, "{limited}");
+    assert_eq!(limited["data"]["coverage"]["next_page"], 3, "two a page, and the limit falls on the second: {limited}");
+    let (scoped, _) = state.json(&["search", "common", "--limit", "1", "--pages", "2-3"]);
+    assert_eq!(scoped["data"]["coverage"]["hits_total"], 4, "the count is of what was asked about: {scoped}");
+    let (whole, _) = state.json(&["search", "common", "--limit", "200"]);
+    assert_eq!(whole["data"]["coverage"]["hits_total"], 60);
+    let (plain, _, _) = state.text(&["search", "common", "--limit", "3"]);
+    assert!(plain.lines().next().unwrap().contains("60 hits in all"), "{plain}");
+}
+
+/// Failure: on an edited tab the index answers with the file's page numbers rather than the tab's, misses what's been added, or calls a page from an added file its own. **Page numbers follow the edit order, and added files are marked**, the same as reading the pages.
+#[test]
+fn an_edited_tab_keeps_its_page_numbers_and_marks_added_files() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("edited.pdf", 6);
+    let extra = TempPdf::new("added.pdf", &pages(&[Page::new(text_lines(&["A page from elsewhere with the word common"])), Page::new(text_lines(&["Second added page"]))]));
+    state.json(&["open", path(&file)]);
+    state.json(&["index"]);
+    wait_done(&state, "active");
+    let (moved, code) = state.json(&["page", "move", "6", "--to", "1"]);
+    assert_eq!(code, 0, "{moved}");
+    let (deleted, code) = state.json(&["page", "delete", "3"]);
+    assert_eq!(code, 0, "{deleted}");
+    let (inserted, code) = state.json(&["page", "insert", path(&extra), "--at", "2"]);
+    assert_eq!(code, 0, "{inserted}");
+    // The added file has no index yet, so this one's mixed, and it starts one.
+    let (mixed, code) = state.json(&["search", "common"]);
+    assert_eq!(code, 0, "{mixed}");
+    assert_eq!(mixed["data"]["route"], "mixed", "{mixed}");
+    wait_done(&state, "active");
+    let answer = index_matches_scan(&state, &["search", "elsewhere"]);
+    let hit = &answer["data"]["hits"][0];
+    assert_eq!((hit["page"].as_u64(), hit["source_page"].as_u64(), hit["from_added_file"].as_bool()), (Some(2), Some(1), Some(true)), "{hit}");
+    assert_eq!(hit["untrusted"]["added_file"], "added.pdf", "{hit}");
+    let moved_hit = index_matches_scan(&state, &["search", "page 6 of"]);
+    assert_eq!((moved_hit["data"]["hits"][0]["page"].as_u64(), moved_hit["data"]["hits"][0]["source_page"].as_u64()), (Some(1), Some(6)), "{moved_hit}");
+    let gone = index_matches_scan(&state, &["search", "page 2 of"]);
+    assert_eq!(gone["data"]["hits"].as_array().unwrap().len(), 0, "a deleted page isn't searched: {gone}");
+    index_matches_scan(&state, &["search", "common", "--limit", "2"]);
+    index_matches_scan(&state, &["search", "common", "--pages", "2-4"]);
+    let (undone, code) = state.json(&["undo"]);
+    assert_eq!(code, 0, "{undone}");
+    let back = index_matches_scan(&state, &["search", "common", "--limit", "200"]);
+    assert_eq!(back["data"]["coverage"]["hits_total"], 10, "{back}");
+}
+
+/// Failure: a file replaced under an open tab answers from its old text, even with its size and time put back. **A replaced file gets a new corpus, and never a stale answer.** Tried both ways a file gets replaced: in place, and moved in.
+#[test]
+fn a_replaced_file_doesnt_answer_from_old_text() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let one_page = |word: &str| pages(&[Page::new(text_lines(&[&format!("Only this word: {word}")]))]);
+    let file = TempPdf::new("replaced.pdf", &one_page("oldword"));
+    state.json(&["open", path(&file)]);
+    state.json(&["index"]);
+    wait_done(&state, "active");
+    let (old, _) = state.json(&["search", "oldword"]);
+    assert_eq!((old["data"]["route"].as_str(), old["data"]["hits"].as_array().unwrap().len()), (Some("index"), 1), "{old}");
+
+    // In place, the same length, and the old time put back.
+    let when = std::fs::metadata(&file.0).unwrap().modified().unwrap();
+    std::fs::write(&file.0, one_page("newword")).unwrap();
+    std::fs::File::options().write(true).open(&file.0).unwrap().set_modified(when).unwrap();
+    let (stale, code) = state.json(&["search", "oldword"]);
+    assert_eq!(code, 0, "{stale}");
+    assert_eq!(stale["data"]["route"], "scan", "there's no corpus for this version yet: {stale}");
+    assert_eq!(stale["data"]["hits"].as_array().unwrap().len(), 0, "old text answered for a replaced file: {stale}");
+    wait_done(&state, "active");
+    let (fresh, _) = state.json(&["search", "newword"]);
+    assert_eq!((fresh["data"]["route"].as_str(), fresh["data"]["hits"].as_array().unwrap().len()), (Some("index"), 1), "{fresh}");
+    let (stale, _) = state.json(&["search", "oldword"]);
+    assert_eq!(stale["data"]["hits"].as_array().unwrap().len(), 0, "{stale}");
+
+    // Moved into its place.
+    let other = file.0.with_extension("other");
+    std::fs::write(&other, one_page("oldword")).unwrap();
+    std::fs::File::options().write(true).open(&other).unwrap().set_modified(when).unwrap();
+    std::fs::rename(&other, &file.0).unwrap();
+    let (back, _) = state.json(&["search", "newword"]);
+    assert_eq!(back["data"]["hits"].as_array().unwrap().len(), 0, "{back}");
+}
+
+/// Starts the real helper by hand, on a job as the session would give it. Returns once it's written at least `until` pages.
+fn start_helper(file: &Path, root: &Path, key: CorpusKey) -> std::process::Child {
+    let exe = Path::new(common::bin()).with_file_name("recto-indexer");
+    assert!(exe.is_file(), "{} isn't built. `tools/check.sh` builds it.", exe.display());
+    let mut child = Command::new(exe).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let line = serde_json::json!({ "file": file, "root": root, "key": key.hex(), "background": false }).to_string() + "\n";
+    child.stdin.as_mut().unwrap().write_all(line.as_bytes()).unwrap();
+    child
+}
+
+fn pages_done(root: &Path, key: CorpusKey) -> u32 {
+    match recto_index::corpus::disk_state(root, key) {
+        recto_index::corpus::DiskState::Partial { pages_done } => pages_done,
+        _ => 0,
+    }
+}
+
+/// Failure: a killed indexer leaves something unusable: a search answers from half a document, the session refuses to go on, or the next build starts over or comes out different. **It's killed with SIGKILL partway, for real,** and then: the search still reads pages and is right, and the next build goes on from there and comes out the same as an unbroken one.
+#[test]
+fn a_killed_indexer_leaves_a_usable_state() {
+    let state = State::at(Level::Control);
+    let file = doc("killed.pdf", 400);
+    let key = CorpusKey::of_file(&file.0).unwrap();
+    let root = state.paths.corpus.clone();
+    std::fs::create_dir_all(state.root.as_path()).unwrap();
+    state.paths.prepare().unwrap();
+    let mut child = start_helper(&file.0, &root, key);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while pages_done(&root, key) < 20 {
+        assert!(Instant::now() < deadline && child.try_wait().unwrap().is_none(), "the helper ended before it was killed");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let done = pages_done(&root, key);
+    assert!((20..400).contains(&done), "it was meant to be killed partway: {done}");
+
+    let _serving = state.serve();
+    state.json(&["open", path(&file)]);
+    let (status, code) = state.json(&["index", "status"]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!(status["data"]["state"], "not_started", "{status}");
+    let (found, code) = state.json(&["search", "page 390 of", "--scan"]);
+    assert_eq!(code, 0, "{found}");
+    assert_eq!(found["data"]["hits"].as_array().unwrap().len(), 1, "{found}");
+    let (asked, code) = state.json(&["index"]);
+    assert_eq!(code, 0, "{asked}");
+    assert!(matches!(asked["data"]["state"].as_str(), Some("queued" | "building" | "ready")), "{asked}");
+    wait_done(&state, "active");
+    let (found, _) = state.json(&["search", "page 390 of"]);
+    assert_eq!((found["data"]["route"].as_str(), found["data"]["hits"].as_array().unwrap().len()), (Some("index"), 1), "{found}");
+    let (found, _) = state.json(&["search", "page 1 of"]);
+    assert_eq!(found["data"]["hits"].as_array().unwrap().len(), 1, "pages from before the kill are there too: {found}");
+    let (all, _) = state.json(&["search", "common", "--limit", "1"]);
+    assert_eq!(all["data"]["coverage"]["hits_total"], 800, "nothing doubled and nothing lost: {all}");
+}
+
+/// Failure: closing a session leaves its indexer running, on a file nobody's looking at, with nothing to stop it. And a session killed outright does the same. It goes when whoever started it goes, however that happens.
+#[test]
+fn an_indexer_doesnt_outlive_its_session() {
+    let state = State::at(Level::Control);
+    state.paths.prepare().unwrap();
+    let file = doc("outlive.pdf", 400);
+    let key = CorpusKey::of_file(&file.0).unwrap();
+    let mut child = start_helper(&file.0, &state.paths.corpus, key);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while pages_done(&state.paths.corpus, key) < 2 {
+        assert!(Instant::now() < deadline, "it never started");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    drop(child.stdin.take());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "it's still there after its parent's end of stdin closed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(pages_done(&state.paths.corpus, key) < 400, "it was meant to stop partway");
+}
+
+/// Failure: an adversarial page ends the index, stalls a build for good, or reads as "nothing found", so an agent says a fact isn't in a document it never read. It fails its own page, and a page after it is found, in a run of a few seconds rather than minutes.
+#[test]
+fn an_adversarial_page_fails_alone_and_says_so() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = TempPdf::new("bomb.pdf", &form_bomb());
+    state.json(&["open", path(&file)]);
+    let started = Instant::now();
+    state.json(&["index"]);
+    let done = wait_done(&state, "active");
+    println!("{done}");
+    let (found, code) = state.json(&["search", "ordinary page"]);
+    assert_eq!(code, 0, "{found}");
+    assert_eq!(found["data"]["route"], "index", "{found}");
+    assert_eq!(found["data"]["hits"].as_array().unwrap().len(), 1, "the page after the bomb: {found}");
+    let hit = &found["data"]["hits"][0];
+    assert_eq!(hit["page"], 2);
+    // The bomb's page has no text, and it can't be drawn for the check. Which of those shows is the renderer's business: it must show one.
+    let said = done["data"]["failed_pages"].as_u64().unwrap() + done["data"]["hidden_unchecked_pages"].as_u64().unwrap() + done["data"]["no_text_pages"].as_u64().unwrap();
+    assert!(said >= 1, "the bomb's page must show up in what's said: {done}");
+    assert!(started.elapsed() < Duration::from_secs(120), "{:?}", started.elapsed());
+}
+
+/// Failure: opening a file starts an indexer, so 200 tabs start 200 of them, or leave a process, a thread or a folder behind. **Only asking starts one.** And once it's done there's nothing left of it in the session.
+#[test]
+fn opening_tabs_indexes_nothing_and_asking_leaves_nothing_behind() {
+    use recto_platform::local::process_counters;
+    let state = State::at(Level::Control);
+    let serving = state.serve();
+    let file = doc("tabs.pdf", 3);
+    let folder = file.0.parent().unwrap().join("links");
+    std::fs::create_dir_all(&folder).unwrap();
+    for at in 0..200 {
+        let link = folder.join(format!("t{at}.pdf"));
+        std::os::unix::fs::symlink(&file.0, &link).unwrap();
+        let (opened, code) = state.json(&["open", link.to_str().unwrap()]);
+        assert_eq!(code, 0, "{opened}");
+    }
+    assert!(!state.paths.corpus.exists(), "opening 200 tabs wrote to the corpus folder");
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(process_counters(serving.pid()).unwrap().threads, 1, "200 open tabs hold a thread");
+    let (status, _) = state.json(&["index", "status"]);
+    assert_eq!((status["data"]["indexers_running"].as_u64(), status["data"]["indexers_waiting"].as_u64()), (Some(0), Some(0)), "{status}");
+    assert_eq!(status["data"]["state"], "not_started", "{status}");
+
+    // All 200 are one file, so asking for each is one build.
+    for tab in [1, 50, 100, 150, 200] {
+        let (searched, code) = state.json(&["search", "common", "--tab", &format!("#{tab}")]);
+        assert_eq!(code, 0, "{searched}");
+    }
+    let done = wait_done(&state, "#7");
+    assert_eq!(done["data"]["pages"], 3, "{done}");
+    assert_eq!(std::fs::read_dir(&state.paths.corpus).unwrap().count(), 1, "one file, one corpus, however many tabs it's in");
+    let (status, _) = state.json(&["index", "status", "--tab", "#200"]);
+    assert_eq!(status["data"]["state"], "ready", "{status}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while process_counters(serving.pid()).unwrap().threads > 1 {
+        assert!(Instant::now() < deadline, "a thread stayed behind after indexing");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for at in 0..200 {
+        let _ = std::fs::remove_file(folder.join(format!("t{at}.pdf")));
+    }
+    let _ = std::fs::remove_dir(&folder);
+}
+
+/// Failure: `wait indexing-done` waits out its time, or never hears the index finish, so an agent polls. It starts the build if nobody has, and a `watch` hears it too.
+#[test]
+fn waiting_for_the_index_starts_it_and_hears_it_finish() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("waited.pdf", 5);
+    state.json(&["open", path(&file)]);
+    let (watch_tx, watch_rx) = std::sync::mpsc::channel();
+    let mut watch = state.command();
+    let output = watch.args(["watch", "--events", "indexing", "--count", "2", "--timeout", "60s", "--json"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    std::thread::spawn(move || {
+        let out = output.wait_with_output().unwrap();
+        let _ = watch_tx.send(String::from_utf8(out.stdout).unwrap());
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let started = Instant::now();
+    let done = wait_done(&state, "active");
+    assert!(started.elapsed() < Duration::from_secs(120));
+    assert_eq!(done["data"]["pages"], 5, "{done}");
+    let folder = PathBuf::from(done["data"]["folder"].as_str().unwrap());
+    assert!(folder.join("manifest.json").is_file() && folder.join("pages/0005.md").is_file(), "{done}");
+    assert!(folder.starts_with(&state.paths.corpus), "QA state must keep it in the temp folder: {}", folder.display());
+    assert!(!folder.to_string_lossy().contains("waited"), "a document's name is in the folder's path: {}", folder.display());
+    let said = watch_rx.recv_timeout(Duration::from_secs(60)).unwrap();
+    assert!(said.contains("indexing_started") && said.contains("indexing_finished"), "{said}");
+    // Already finished: it's said at once.
+    let again = Instant::now();
+    wait_done(&state, "active");
+    assert!(again.elapsed() < Duration::from_secs(5));
+}
+
+/// Failure: a level lets a command touch an index it shouldn't. An agent at Off reads nothing about it, and clearing, which throws away what took work to build, needs Control.
+#[test]
+fn levels_hold_on_the_index_commands() {
+    let state = State::at(Level::Off);
+    let _serving = state.serve();
+    let file = doc("levels.pdf", 2);
+    for args in [&["index"][..], &["index", "status"][..], &["index", "clear"][..], &["wait", "indexing-done"][..]] {
+        let (refused, code) = state.json(args);
+        assert_eq!(code, exit::PERMISSION, "{args:?}: {refused}");
+    }
+    state.set_level(Level::Control);
+    state.json(&["open", path(&file)]);
+    state.set_level(Level::ReadOnly);
+    let (asked, code) = state.json(&["index"]);
+    assert_eq!(code, 0, "{asked}");
+    let (refused, code) = state.json(&["index", "clear"]);
+    assert_eq!(code, exit::PERMISSION, "{refused}");
+    wait_done(&state, "active");
+    state.set_level(Level::Control);
+    let (cleared, code) = state.json(&["index", "clear"]);
+    assert_eq!((code, cleared["data"]["cleared"].as_u64()), (0, Some(1)), "{cleared}");
+    let (status, _) = state.json(&["index", "status"]);
+    assert_eq!(status["data"]["state"], "not_started", "{status}");
+    let (all, code) = state.json(&["index", "clear", "--all"]);
+    assert_eq!((code, all["data"]["cleared"].as_u64()), (0, Some(0)), "{all}");
+}
+
+/// Failure: a corpus damaged on disk answers with its bad bytes, or takes the search down with it. It isn't believed, the search is right, and a good one replaces it.
+#[test]
+fn a_damaged_corpus_answers_by_reading_the_pages() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("damaged.pdf", 4);
+    state.json(&["open", path(&file)]);
+    state.json(&["index"]);
+    wait_done(&state, "active");
+    let key = CorpusKey::of_file(&file.0).unwrap();
+    let paths = recto_index::corpus::CorpusPaths::new(&state.paths.corpus, key);
+    let pack = paths.app.join("text.pack");
+    let mut bytes = std::fs::read(&pack).unwrap();
+    bytes[0] = 0xFF;
+    std::fs::write(&pack, bytes).unwrap();
+    let (found, code) = state.json(&["search", "page 1 of"]);
+    assert_eq!(code, 0, "{found}");
+    assert_eq!(found["data"]["hits"].as_array().unwrap().len(), 1, "{found}");
+    assert_eq!(found["data"]["route"], "scan", "{found}");
+    assert_eq!(found["data"]["index"]["state"], "failed", "{found}");
+    wait_done(&state, "active");
+    let (found, _) = state.json(&["search", "page 1 of"]);
+    assert_eq!((found["data"]["route"].as_str(), found["data"]["hits"].as_array().unwrap().len()), (Some("index"), 1), "a good one takes its place: {found}");
+}
+
+/// Failure: `recto local`, used by QA, starts a build it can't finish, or doesn't use what's built. Its route reads what's there and starts nothing.
+#[test]
+fn the_local_route_reads_an_index_and_builds_none() {
+    let state = State::at(Level::Control);
+    let file = doc("local.pdf", 3);
+    let (scan, code) = state.json(&["local", path(&file), "search", "common"]);
+    assert_eq!(code, 0, "{scan}");
+    assert_eq!(scan["data"]["route"], "scan", "{scan}");
+    assert!(scan["data"]["index"]["note"].as_str().unwrap().contains("doesn't build"), "{scan}");
+    assert!(!state.paths.corpus.exists());
+    let (refused, code) = state.json(&["local", path(&file), "index", "clear"]);
+    assert_eq!((code, refused["data"]["cleared"].as_u64()), (0, Some(0)), "{refused}");
+    {
+        let _serving = state.serve();
+        state.json(&["open", path(&file)]);
+        state.json(&["index"]);
+        wait_done(&state, "active");
+    }
+    let (indexed, code) = state.json(&["local", path(&file), "search", "common"]);
+    assert_eq!(code, 0, "{indexed}");
+    assert_eq!(indexed["data"]["route"], "index", "{indexed}");
+}
+
+/// Failure: `budget index` reports nothing real, or leaves its folder behind. It's what the coordinator measures with.
+#[test]
+fn the_budget_reports_and_cleans_up() {
+    let state = State::at(Level::Control);
+    state.paths.prepare().unwrap();
+    let file = doc("budget.pdf", 5);
+    let (answer, code) = state.json(&["budget", "index", "--file", path(&file), "--runs", "2", "--foreground", "--queries", "common,zzzqqqxx"]);
+    assert_eq!(code, 0, "{answer}");
+    let data = &answer["data"];
+    assert_eq!((data["build"]["state"].as_str(), data["build"]["pages"].as_u64()), (Some("ready"), Some(5)), "{answer}");
+    assert!(data["build"]["worker_peak_bytes"].as_u64().unwrap() > 0, "{answer}");
+    assert!(data["build"]["helper_peak_bytes"].as_u64().unwrap() > 0, "{answer}");
+    assert!(data["build"]["corpus_bytes"].as_u64().unwrap() > 0, "{answer}");
+    let searches = data["searches"].as_array().unwrap();
+    assert_eq!(searches.len(), 2);
+    assert_eq!((searches[0]["index"]["route"].as_str(), searches[0]["scan"]["route"].as_str()), (Some("index"), Some("scan")), "{answer}");
+    assert_eq!(searches[0]["index"]["hits_total"], 10, "{answer}");
+    let left: Vec<String> = std::fs::read_dir(&state.root).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.contains("budget")).collect();
+    assert!(left.is_empty(), "{left:?}");
+    state.set_level(Level::ReadOnly);
+    let (refused, code) = state.json(&["budget", "index", "--file", path(&file)]);
+    assert_eq!(code, exit::PERMISSION, "{refused}");
+}
+
+/// Failure: over real pages, the index answers differently from reading the pages: line-order repair, hidden text, the normaliser and hyphen spellings are all in play here, as they aren't in a test file. Set `RECTO_BENCH100` to run; `RECTO_INDEX_ALL` takes in every file there, rather than a handful of kinds.
+#[test]
+fn real_pages_answer_the_same_from_the_index() {
+    let Some(folder) = std::env::var_os("RECTO_BENCH100") else {
+        eprintln!("RECTO_BENCH100 isn't set, so no corpus files were read.");
+        return;
+    };
+    let folder = PathBuf::from(folder);
+    let mut files: Vec<PathBuf> = if std::env::var_os("RECTO_INDEX_ALL").is_some() {
+        std::fs::read_dir(&folder).unwrap().flatten().map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|extension| extension == "pdf")).collect()
+    } else {
+        ["standards_ietf_rfc9110.pdf", "policy_worldbank_wbD34442277.pdf", "math_AG_2607.28411.pdf", "gov_nasa_ntrs20240002628.pdf"].iter().map(|name| folder.join(name)).filter(|path| path.is_file()).collect()
+    };
+    files.sort();
+    let state = State::at(Level::Full);
+    let _serving = state.serve();
+    let (mut documents, mut compared) = (0, 0);
+    for file in files {
+        let text = file.to_str().unwrap().to_string();
+        let (opened, code) = state.json(&["open", &text]);
+        if code != 0 {
+            eprintln!("{text} didn't open: {opened}");
+            continue;
+        }
+        let tab = format!("#{}", opened["data"]["tab"]);
+        let (done, code) = state.json(&["wait", "indexing-done", "--tab", &tab, "--timeout", "1h"]);
+        if code != 0 {
+            eprintln!("{text} wasn't indexed: {done}");
+            continue;
+        }
+        eprintln!("{text}: {} pages, {} failed, {} flagged, {} bytes", done["data"]["pages"], done["data"]["failed_pages"], done["data"]["hidden_flagged_pages"], done["data"]["corpus_bytes"]);
+        documents += 1;
+        for query in ["the", "of the", "zzzqqqxx", "simulation-based", "data", "must not", "figure", "a"] {
+            for limit in ["20", "200"] {
+                index_matches_scan(&state, &["search", query, "--tab", &tab, "--limit", limit]);
+                compared += 1;
+            }
+        }
+        state.json(&["close", &tab]);
+    }
+    eprintln!("{documents} documents, {compared} searches compared");
+}
+
+/// Failure: a password-protected file's text ends up on disk, or it reads as "still building" for ever. It's refused, with its own exit code, and nothing's there but the reason. Needs `RECTO_ENCRYPTED_PDF`, a file that needs a password: this repo generates no encrypted fixture.
+#[test]
+fn a_password_protected_file_leaves_no_text() {
+    let Some(protected) = std::env::var_os("RECTO_ENCRYPTED_PDF") else {
+        eprintln!("RECTO_ENCRYPTED_PDF isn't set, so no encrypted file was tried.");
+        return;
+    };
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("was-open.pdf", 2);
+    state.json(&["open", path(&file)]);
+    // A tab can't open such a file, so this is the way one gets here: replaced under an open tab.
+    std::fs::copy(protected, &file.0).unwrap();
+    let (refused, code) = state.json(&["wait", "indexing-done", "--timeout", "60s"]);
+    assert_eq!((code, refused["error"]["code"].as_str()), (exit::PROTECTED, Some("not_indexed")), "{refused}");
+    let key = CorpusKey::of_file(&file.0).unwrap();
+    let paths = recto_index::corpus::CorpusPaths::new(&state.paths.corpus, key);
+    assert!(!paths.app.join("text.pack").exists(), "there's text on disk");
+    assert!(!paths.pages.exists() || std::fs::read_dir(&paths.pages).is_ok_and(|mut pages| pages.next().is_none()), "there are page files on disk");
+    let (searched, code) = state.json(&["search", "anything"]);
+    assert_eq!(code, exit::PROTECTED, "{searched}");
+}

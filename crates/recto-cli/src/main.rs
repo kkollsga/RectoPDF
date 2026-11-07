@@ -183,6 +183,7 @@ fn here(invocation: &Invocation) -> i32 {
         "local" => return run_local(invocation),
         "session" => return session(),
         "budget_tabs" => budget_tabs(invocation),
+        "budget_index" => budget_index(invocation),
         // A row with no handler is a bug here, and a test walks the table for it.
         _ => Err(AgentError::new("internal", "This command isn't wired up.", exit::FAILED)),
     };
@@ -261,7 +262,7 @@ fn serve(invocation: &Invocation) -> i32 {
     };
     let ready = json!({ "running": true, "pid": std::process::id(), "socket": paths.socket, "already": false });
     finish("serve", json_wanted, &Ok(ready));
-    match server.run(Arc::new(SessionHost::default()), Limits::default()) {
+    match server.run(Arc::new(SessionHost::default().with_indexing(&paths)), Limits::default()) {
         Ok(()) => exit::OK,
         Err(_) => {
             print_err("The session stopped because its socket failed.");
@@ -390,6 +391,63 @@ fn budget_tabs(invocation: &Invocation) -> Result<Value, AgentError> {
     let paths = paths()?;
     let result = if invocation.fields.contains_key("in_process") { measure_in_process(&paths, &file, &dir, count) } else { measure_through_session(&paths, &file, &dir, count) };
     let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// What's a search without an index if nothing's named. A word nothing has, so every page is read; a common word, so the limit is reached; and a phrase.
+const DEFAULT_BUDGET_QUERIES: &str = "zzzqqqxx,the,of the";
+
+/// Builds a PDF's index in a folder of its own, and reports what that costs and what it gets you. The build is the helper's own numbers, since it's the real one, and the searches are timed here, in this process.
+fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
+    let paths = paths()?;
+    let level = levels::current(&paths);
+    let needed = invocation.spec.access;
+    if !recto_agent::allowed(level, needed) {
+        return Err(recto_agent::refusal(invocation.spec.name, level, needed));
+    }
+    paths.prepare()?;
+    let file = invocation.fields.get("file").and_then(Value::as_str).map(PathBuf::from).unwrap_or_default();
+    let file = file.canonicalize().map_err(|_| AgentError::new("not_found", "That file couldn't be found.", exit::NOT_FOUND))?;
+    let runs = invocation.fields.get("runs").and_then(Value::as_u64).unwrap_or(7) as usize;
+    let queries = invocation.fields.get("queries").and_then(Value::as_str).unwrap_or(DEFAULT_BUDGET_QUERIES);
+    let foreground = invocation.fields.contains_key("foreground");
+    let key = recto_index::corpus::CorpusKey::of_file(&file).map_err(|_| AgentError::new("not_found", "That file couldn't be read.", exit::NOT_FOUND))?;
+    let root = paths.root.join(format!("budget-corpus-{}", std::process::id()));
+    let result = (|| {
+        let build = recto_control::indexing::build_now(&file, key, &root, !foreground);
+        if build["state"] != "ready" {
+            let code = build["code"].as_str().unwrap_or("unknown");
+            return Err(AgentError::new("index_failed", format!("The index couldn't be built ({code})."), exit::FAILED));
+        }
+        let corpus = recto_agent::index::ReadOnlyCorpus(root.clone());
+        let mut session = Session::new(DrawableLoader);
+        recto_agent::run(&mut session, Level::Full, &Command::Open { path: file.clone(), page: None })?;
+        let mut searches = Vec::new();
+        for query in queries.split(',').filter(|query| !query.trim().is_empty()) {
+            let mut one = json!({ "untrusted": { "query": query } });
+            for (word, scan) in [("index", false), ("scan", true)] {
+                let command = Command::Search { tab: "active".to_string(), query: query.to_string(), pages: None, limit: None, scan };
+                let mut times = Vec::with_capacity(runs);
+                let mut last = Value::Null;
+                for _ in 0..runs {
+                    let started = std::time::Instant::now();
+                    last = recto_agent::run_indexed(&mut session, Level::Full, &command, Some(&corpus))?;
+                    times.push(started.elapsed().as_secs_f64() * 1000.0);
+                }
+                times.sort_by(f64::total_cmp);
+                let at = |share: usize| times[(times.len() * share / 100).min(times.len() - 1)];
+                one[word] = json!({ "route": last["route"], "p50_ms": at(50), "p95_ms": at(95), "hits_total": last["coverage"]["hits_total"], "hits_shown": last["hits"].as_array().map_or(0, Vec::len) });
+            }
+            searches.push(one);
+        }
+        Ok(json!({
+            "file_bytes": std::fs::metadata(&file).map(|meta| meta.len()).ok(),
+            "build": build,
+            "searches": searches,
+            "this_process_peak_bytes": recto_platform::isolate::process_memory(std::process::id()).map(|memory| memory.peak_footprint_bytes),
+        }))
+    })();
+    let _ = std::fs::remove_dir_all(&root);
     result
 }
 

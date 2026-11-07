@@ -18,8 +18,8 @@ esac
 run() {
   set -e
   cargo clippy --workspace --all-targets --locked -- -D warnings
-  # Tests start the worker binary, and `-p` alone wouldn't build it.
-  cargo build --locked -p recto-render-service
+  # Tests start the worker and the indexer, and `-p` alone wouldn't build them.
+  cargo build --locked -p recto-render-service -p recto-indexer
   cargo nextest run --locked "${tests[@]}"
   # Keeps the core buildable for Windows from the first commit. Skipped only if the target isn't installed.
   if rustup target list --installed | grep -q x86_64-pc-windows-gnu; then

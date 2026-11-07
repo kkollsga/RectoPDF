@@ -1,6 +1,6 @@
 //! `SKILL.md` and `REFERENCE.md`, generated from the command table, so every documented command exists and every example parses. `recto skill install` writes them only when the user asks, at a real terminal.
 //!
-//! The teaching text comes from the agent report's §7.1, without the agent panel, which is Phase 6. It names only what's built: `search` scans pages for now, with the corpus coming later behind the same command.
+//! The teaching text comes from the agent report's §7.1, without the agent panel, which is Phase 6. It names only what's built: an agent still searches through `recto`, and pointing one at the corpus folder with its own tools is Phase 6.
 
 use crate::table::{Access, GROUP_ACCESS, GROUP_EDIT, GROUP_MOVE, GROUP_READ, GROUP_SESSION, GROUP_START, GROUP_SYNC, Spec, TABLE, exit_codes, usage_line};
 use crate::{AgentError, Level, exit};
@@ -36,7 +36,7 @@ Run `recto status`. It tells you whether the session is running and what access 
 ## How to read a document
 
 1. **Start from facts and contents.** `recto facts` gives pages, size and whether there are contents. `recto contents` gives the sections, and says which depth it's showing and how to get the rest.
-2. **Search.** `recto search \"force majeure\"` ignores case and line breaks. Try other forms of a word. Finding nothing is exit 0, with what was searched: `coverage.pages_with_no_text` pages have no text and `coverage.failed_pages` couldn't be read, so the fact could still be on them, and `coverage.next_page` means it stopped early. Each hit says `hidden_text.flagged` if its page holds text that looks hidden, and `page_has_tag_chars` for invisible characters that can spell text. Read such a page with `recto text --page 12` before relying on it, and tell the user.
+2. **Search.** `recto search \"force majeure\"` ignores case and line breaks. Try other forms of a word. Finding nothing is exit 0, with what was searched: `coverage.pages_with_no_text` pages have no text and `coverage.failed_pages` couldn't be read, so the fact could still be on them, and `coverage.next_page` means it stopped early. `coverage.hits_total` is how many hits there are in all, once the document has an index: the first search starts one in the background, and `recto wait indexing-done` blocks until it's finished, which on a long document makes later searches far faster. They find the same things either way. Each hit says `hidden_text.flagged` if its page holds text that looks hidden, and `page_has_tag_chars` for invisible characters that can spell text. Read such a page with `recto text --page 12` before relying on it, and tell the user.
 3. **Read only the pages you need.** `recto text --page 12`, or `recto text 12`. Use the contents and the hits to choose. Don't read every page unless you're asked to.
 4. **Cite pages.** Give each fact a page, as (p. 12). Numbers are pages in the PDF, counted from 1, and not its printed page numbers.
 5. **Say what you covered.** For \"not found\", give the words you tried, the pages searched and any pages with no text.

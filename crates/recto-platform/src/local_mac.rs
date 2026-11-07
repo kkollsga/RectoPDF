@@ -272,6 +272,25 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
 }
 
+/// The same with nothing synced, for what a kill or a power cut may lose: a cache that can be made again. A sync per small file costs milliseconds on a real disk.
+pub fn write_private_file_unsynced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temp = path.with_extension(format!("tmp{}", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    let written = create_private_file(&temp).and_then(|mut file| file.write_all(bytes));
+    match written.and_then(|()| std::fs::rename(&temp, path)) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(error)
+        }
+    }
+}
+
+/// Makes a new file, mode 0600, for writing. Refuses if anything's already at that name, and a planted link isn't followed.
+pub fn create_private_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)
+}
+
 /// Opens a file for appending, made with mode 0600 if new. A link isn't followed.
 pub fn append_private_file(path: &Path) -> io::Result<File> {
     OpenOptions::new().append(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)
