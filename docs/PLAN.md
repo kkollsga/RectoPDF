@@ -108,7 +108,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 
 - [x] Native text selection: drag, double and triple click, select across pages, ⌘C, the system's highlight colour and I-beam cursor; `recto select`, `recto copy`, Services and a context menu from AppKit. Real mouse events, the Services menu itself and the compositor's blend aren't checked on a screen: a dev build for the owner is what shows them
 - [x] Search corpus and index, with the text normaliser: `recto index`, `recto wait indexing-done`, and `recto search` answering from it, with `route` saying how
-- [ ] Selecting, from its review: hidden text the check doesn't flag still reaches a copy, as pairs of white letters split by a visible dot, under `MIN_FLAGGED_RUN`, and white text printed over black, which has ink under it
+- [ ] Selecting, from its review, and the owner's to tighten in the planned hidden-text work: hidden text the check doesn't flag still reaches a copy, as pairs of white letters split by a visible dot, under `MIN_FLAGGED_RUN`, and white text printed over black, which has ink under it
 - [ ] Selecting, from its review: a pointer move at rest starts a worker to read its page, 0 to 4.5 MiB on a tiny file, and that hasn't been measured on a heavy page
 - [ ] Selecting, from its review: 16 MiB on the real clipboard hasn't been measured, and `setString` is synchronous on the UI thread
 - [ ] Find in the sidebar, with the hit list
@@ -212,14 +212,27 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 Real digital signatures to the official standards, signature trust checks, Windows, Link and Join text, document-wide reflow, a second agent CLI.
 
+## Decisions made by the owner, 2026-11-07
+
+"I agree, but license mit is fine", to these recommendations:
+- **Licence: MIT.** Third-party notices remain a Phase 7 item.
+- **lopdf fork:** tag the commit a published distillPDF depends on, and move the fork's `main` to the new code once distillPDF has published.
+- **Quit doesn't ask about unsaved edits,** which come back on the next launch. Closing a document still asks.
+- **Agents and copy-restricted PDFs:** stays as it is, and each use of `--anyway` goes in the activity log.
+- **Hidden text past today's detection:** tightened in the planned hidden-text work, without holding up selection.
+- **Copies:** notice with Copy anyway; hidden text left out, with a notice.
+- **SVG:** no WebP flag for now.
+- **Updates:** *Check for Updates…* in the RectoPDF menu, automatic updates on, the daily check always runs. Signing secrets are added when the updater needs them.
+- **State:** dormant after 5 minutes; history kept 30 days within 1 GiB, out of backups; redaction and hidden-data removal clear it.
+- **Agents:** below Full an agent throws away only agents' edits; the skill keeps auto-approving read-only commands; a same-user process faking a terminal is accepted until Settings exists.
+- **Exports:** peaks of 465–494 MiB at 3× and 4× are accepted.
+- **Tab names:** the file name, with the full name and title on hover.
+- **Before a public release:** a name search for the trademark, no registration yet; wait for Anthropic's written answer and add an API-key route.
+
 ## Decisions waiting on you
 
 | Decision | Needed by | Current default |
 |---|---|---|
-| A same-user process faking a terminal or writing the level file: accept until the app's settings exist? | Phase 2 | Yes |
-| `SKILL.md` auto-approves read-only `recto` commands in Claude Code; the session's level still applies | Phase 6 | Keep |
-| Whole-page exports at 3× and 4× peak at 465–469 MiB, above the 415–450 MiB accepted | Phase 2 | Accept |
-| Image copy and snapshot on copy-restricted PDFs: the same notice with Copy anyway as text has, which the owner has decided? | Phase 3 | Yes |
+| Image copy and snapshot on copy-restricted PDFs: the same notice with Copy anyway as text has? | Phase 3 | Yes |
 | What Save does the first time: keep one backup of the original? | Phase 4 | Yes |
 | Anthropic's answer before public release; API-key route | Phase 6 | Wait; add it |
-| Licence: permissive or closed | Phase 7 | Permissive or closed, undecided which |
