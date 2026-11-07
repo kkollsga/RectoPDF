@@ -1090,3 +1090,32 @@ fn a_page_too_long_for_a_pattern_is_listed() {
     let (plain, _) = state.json(&["search", "repeat and", "--limit", "1"]);
     assert_eq!(plain["data"]["coverage"]["failed_pages"], serde_json::json!([]), "{plain}");
 }
+
+/// Failure: an earlier build's `corpus` folder keeps plain text outside `.noindex`, eviction and `clear --all` for good, with nothing to take it away. It goes when a session starts, and nothing else does: not a folder named nearly the same, and not what a link there points at.
+#[test]
+fn the_old_corpus_folder_goes_at_startup() {
+    let state = State::at(Level::Control);
+    state.paths.prepare().unwrap();
+    let old = state.root.join("corpus");
+    std::fs::create_dir_all(old.join("abc").join("v1")).unwrap();
+    std::fs::write(old.join("abc").join("v1").join("page.md"), "old plain text").unwrap();
+    let nearly = state.root.join("corpus.keep");
+    std::fs::create_dir_all(&nearly).unwrap();
+    std::fs::write(nearly.join("mine"), "someone's").unwrap();
+    {
+        let _serving = state.serve();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while old.exists() {
+            assert!(Instant::now() < deadline, "the old folder's still there");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(std::fs::read_to_string(nearly.join("mine")).unwrap(), "someone's");
+    }
+    // A link there isn't the old folder, and what it points at stays.
+    std::os::unix::fs::symlink(&nearly, &old).unwrap();
+    let serving = state.serve();
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(recto_platform::local::process_counters(serving.pid()).unwrap().threads, 1, "a start with nothing to remove holds a thread");
+    assert!(std::fs::symlink_metadata(&old).unwrap().file_type().is_symlink());
+    assert_eq!(std::fs::read_to_string(nearly.join("mine")).unwrap(), "someone's");
+}

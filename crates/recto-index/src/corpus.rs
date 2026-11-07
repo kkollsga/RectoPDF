@@ -960,6 +960,25 @@ pub fn forget_file(root: &Path, path: &Path) {
     }
 }
 
+/// An older build's folder, `corpus` beside `corpus.noindex`, with plain text outside everything that looks after this one. Nothing else: not a link there, nor a folder of another name.
+fn old_folder(root: &Path) -> Option<PathBuf> {
+    (root.file_name()? == "corpus.noindex").then(|| root.with_file_name("corpus"))
+}
+
+/// Whether there's an older build's folder to remove.
+pub fn old_folder_is_there(root: &Path) -> bool {
+    old_folder(root).is_some_and(|old| fs::symlink_metadata(old).is_ok_and(|meta| meta.is_dir()))
+}
+
+/// Removes an older build's folder, if there is one.
+pub fn remove_old_folder(root: &Path) {
+    if old_folder_is_there(root)
+        && let Some(old) = old_folder(root)
+    {
+        let _ = fs::remove_dir_all(old);
+    }
+}
+
 /// Clears out notes about corpora that are gone, so these can't pile up.
 fn tidy_versions(root: &Path) {
     let Ok(entries) = fs::read_dir(root.join(VERSIONS_FOLDER)) else { return };

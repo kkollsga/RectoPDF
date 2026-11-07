@@ -73,7 +73,12 @@ impl std::fmt::Debug for Indexer {
 
 impl Indexer {
     pub fn new(root: &Path) -> Self {
-        Self::with_runner(root, Box::new(HelperProcess { background: true }))
+        let indexer = Self::with_runner(root, Box::new(HelperProcess { background: true }));
+        // Only if there's something to do: an ordinary start stays one thread, with one look at a folder.
+        if corpus::old_folder_is_there(root) {
+            indexer.start_working(&mut indexer.0.lock());
+        }
+        indexer
     }
 
     pub fn with_runner(root: &Path, runner: Box<dyn Runner>) -> Self {
@@ -140,6 +145,7 @@ impl Shared {
         loop {
             // First, before anything's built, and on this thread because it walks a folder of any size.
             if std::mem::take(&mut self.lock().sweep_due) {
+                corpus::remove_old_folder(&self.root);
                 let _ = corpus::evict(&self.root, &self.limits, None);
             }
             let job = {
