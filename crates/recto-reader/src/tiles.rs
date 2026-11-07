@@ -1065,6 +1065,7 @@ impl Reader {
     pub fn finish(&mut self, job: Job, outcome: Outcome) {
         self.running = None;
         self.counts.jobs += 1;
+        let mut kept = None;
         let Job { tab, position, kind, generation, .. } = job;
         // Asked about the pages as they were. An edit has changed what's at this position since.
         if self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) {
@@ -1091,7 +1092,7 @@ impl Reader {
             (JobKind::Draw { scale, rect, surface, what, paper }, Outcome::Drawn { kind, low_res }) => {
                 self.counts.drawn += 1;
                 if self.docs.contains_key(&tab) && self.window_open {
-                    self.keep_drawn(tab, position, scale, rect, surface, what, paper, kind, low_res);
+                    kept = Some(self.keep_drawn(tab, position, scale, rect, surface, what, paper, kind, low_res));
                 }
             }
             (JobKind::Draw { .. }, Outcome::Cancelled) => {
@@ -1110,10 +1111,22 @@ impl Reader {
             }
         }
         self.refresh(MAX_ATTACH_PER_TURN);
+        // It came too late for the view, or for another zoom, paper or a warm tab. Nothing's showing it, so it counts for nothing: drawn is no reason to hold memory.
+        if let Some(id) = kept
+            && let Some(entry) = self.entries.get_mut(&id)
+            && !entry.attached
+            && !entry.discardable
+        {
+            if let Some(surface) = &entry.surface {
+                surface.set_discardable();
+            }
+            entry.discardable = true;
+            self.evict();
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn keep_drawn(&mut self, tab: u32, page: u32, scale: f32, rect: TileRect, surface: PixelSurface, what: DrawKind, paper: PaperKind, kind: TileKind, low_res: Option<(TileRect, LowResWhy)>) {
+    fn keep_drawn(&mut self, tab: u32, page: u32, scale: f32, rect: TileRect, surface: PixelSurface, what: DrawKind, paper: PaperKind, kind: TileKind, low_res: Option<(TileRect, LowResWhy)>) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let preview = what == DrawKind::Preview;
@@ -1138,6 +1151,7 @@ impl Reader {
         if let Some(doc) = self.docs.get_mut(&tab) {
             doc.seen.insert(page);
         }
+        id
     }
 
     /// Something drawn over an older copy of the same place. The older one comes off when no key points at it.
@@ -1721,6 +1735,24 @@ mod tests {
         reader.take_ops();
         reader.applied();
         assert!(reader.entries[&id].discardable, "now the host has been told");
+    }
+
+    /// Failure: a tile finishes after the reader has left it, or for an old zoom or paper or a warm tab, and it's held in the footprint with nothing showing it. Only what's on a layer may count, or memory has no bound the budgets can rely on.
+    #[test]
+    fn a_tile_nothing_is_showing_when_it_arrives_is_discardable() {
+        let mut reader = reader_on(100);
+        let draw = loop {
+            let job = reader.next_job().expect("a job");
+            match job.kind {
+                JobKind::Size => reader.finish(job, Outcome::Size(letter())),
+                JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
+                JobKind::Draw { .. } => break job,
+            }
+        };
+        reader.set_viewport(view(40_000.0));
+        reader.finish(draw, Outcome::Drawn { kind: TileKind::Colour, low_res: None });
+        let entry = reader.entries.values().next().expect("kept");
+        assert!(!entry.attached && entry.discardable, "{entry:?}");
     }
 
     /// Failure: the host's size change moves the reader away from what they were reading.
