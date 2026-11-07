@@ -672,6 +672,43 @@ fn a_full_disk_gets_room_back() {
     assert_eq!(make_room(&root, &BuildLimits::default(), keys[2]).unwrap().corpora, 0, "what's being built stays");
 }
 
+/// Failure: notes about old versions hold a file's path, so a folder meant to say nothing about a document says where it is, or pile up for ever after their corpora have gone. Or one file's new version takes away a different file's text.
+#[test]
+fn notes_about_versions_say_nothing_and_dont_pile_up() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let (file, other) = (temp.file("a-very-distinctive-name.pdf", b"one"), temp.file("other.pdf", b"other"));
+    let (first, other_key) = (CorpusKey::of_file(&file).unwrap(), CorpusKey::of_file(&other).unwrap());
+    build_for_file(&file, &root, first, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    build_for_file(&other, &root, other_key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    let notes = every_file(&root.join(VERSIONS_FOLDER));
+    assert!(!notes.is_empty());
+    for (name, bytes) in &notes {
+        let shown = format!("{name:?} {}", String::from_utf8_lossy(bytes));
+        assert!(!shown.contains("distinctive") && !shown.contains("recto-corpus"), "{shown}");
+    }
+    assert_eq!(keys_of_file(&root, &file), vec![first]);
+    fs::write(&file, b"two").unwrap();
+    let second = CorpusKey::of_file(&file).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(keys_of_file(&root, &file), vec![second, first], "the old one can still be found");
+    build_for_file(&file, &root, second, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    assert!(!root.join(first.hex()).exists());
+    assert!(root.join(other_key.hex()).exists(), "another file's stays");
+    assert_eq!(keys_of_file(&root, &file), vec![second]);
+
+    // A corpus that went some other way leaves its notes to be cleared.
+    let count = every_file(&root.join(VERSIONS_FOLDER)).len();
+    clear(&root, other_key).unwrap();
+    evict(&root, &BuildLimits::default(), None).unwrap();
+    assert!(every_file(&root.join(VERSIONS_FOLDER)).len() < count, "notes outlive their corpus");
+
+    fs::remove_file(&file).unwrap();
+    assert_eq!(keys_of_file(&root, &file), vec![second], "with the file gone, its path still finds what it had");
+    forget_file(&root, &file);
+    assert_eq!(keys_of_file(&root, &file), Vec::new());
+}
+
 /// Failure: two sessions on one folder both build a document, and one's pack interleaves with the other's.
 #[test]
 fn only_one_builds_at_a_time() {

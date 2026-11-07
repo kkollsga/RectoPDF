@@ -12,11 +12,14 @@
 //!     refused.json        Why this version of the file won't be indexed. It holds no text
 //!     build.lock          Held by whoever is building
 //!     used                Its modification time says when this was last used, for eviction
+//! <root>/by-file/<hash>   Which corpus a file last had: see below
 //! ```
 //!
 //! **The key is the file's identity:** a hash of its inode, size, modification time, change time and first and last 64 KiB. A replaced file has a new key, so its old text can't answer for it, even if its
 //! size and modification time were put back. The file's name and path aren't in it, and aren't anywhere in the folder. It's not a hash of the whole file, because every search asks for it, and hashing a 2 GB
 //! file takes seconds. So a copy of a file gets a corpus of its own. A file that's only been moved or had `touch` run on it gets rebuilt, which costs time and is never wrong.
+//!
+//! **A new version takes the old one's text away.** Each key stands alone, so a saved edit, a redaction or a file since encrypted would leave the old version's plain text behind. `by-file/` connects them, with a small file per hash of a file's path, of what that path really leads to and of its inode, each holding the key it last had: so a new version at the same path is connected, and so is one that's been renamed. They hold no path. When a build for a key finishes, whatever those last held goes.
 //!
 //! **Killed at any moment, this is still sound.** A page's text goes in first, then its page file, then its record, and only a record counts. Starting again checks every record against what's there,
 //! cuts off anything past the last good one, and goes on from there. Only `ready.json` makes a corpus usable, and it's written once everything under it has been synced.
@@ -51,6 +54,8 @@ pub const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const MAX_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 /// Longest one build runs before it stops and leaves the rest for next time.
 pub const MAX_BUILD_TIME: Duration = Duration::from_secs(60 * 60);
+/// Where a file's last key is noted. Not named as a key, so nothing takes it for a corpus.
+const VERSIONS_FOLDER: &str = "by-file";
 /// How much a full disk gets back, at least.
 const ROOM_ON_A_FULL_DISK: u64 = 64 * 1024 * 1024;
 /// How many times pages that failed for a temporary reason are read again, how far apart, and how many in one go. A hostile file can fail any number of pages, each costing a worker and up to a page's time.
@@ -802,6 +807,87 @@ fn read_table(paths: &CorpusPaths, pages: u32) -> io::Result<Vec<u8>> {
     Ok(table)
 }
 
+/// The same as [`build`], for a file, so that a new version's finishing takes the old one's text away. That includes being refused: a file that's since been encrypted must leave no plain text of how it used to be.
+pub fn build_for_file(file: &Path, root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: &DocMeta, limits: &BuildLimits) -> io::Result<BuildOutcome> {
+    let outcome = build(root, key, feed, meta, limits);
+    if matches!(outcome, Ok(BuildOutcome::Ready { .. } | BuildOutcome::AlreadyReady(_) | BuildOutcome::Refused(_))) {
+        let _ = note_version(root, file, key);
+    }
+    outcome
+}
+
+/// What a file's versions are found by. None of them says what the file is.
+fn file_aliases(path: &Path) -> Vec<String> {
+    let hash_of = |kind: &str, bytes: &[u8]| {
+        let mut hash = Sha256::new();
+        hash.update(kind.as_bytes());
+        hash.update([0]);
+        hash.update(bytes);
+        CorpusKey(hash.finalize().into()).hex()
+    };
+    let mut aliases = vec![hash_of("path", path.as_os_str().as_encoded_bytes())];
+    if let Ok(real) = fs::canonicalize(path) {
+        let real = hash_of("path", real.as_os_str().as_encoded_bytes());
+        if !aliases.contains(&real) {
+            aliases.push(real);
+        }
+    }
+    if let Some(identity) = File::open(path).ok().and_then(|file| recto_platform::file_identity(&file).ok()) {
+        aliases.push(hash_of("inode", &identity.inode.to_le_bytes()));
+    }
+    aliases
+}
+
+fn read_alias(path: &Path) -> Option<CorpusKey> {
+    let bytes = local::read_private_file(path, 128).ok()??;
+    CorpusKey::from_hex(std::str::from_utf8(&bytes).ok()?)
+}
+
+/// Notes which corpus this file has now, and throws away what it had. One being built stays, and goes with the cache's ordinary rules.
+fn note_version(root: &Path, file: &Path, key: CorpusKey) -> io::Result<()> {
+    let folder = root.join(VERSIONS_FOLDER);
+    local::ensure_private_dir(&folder)?;
+    for alias in file_aliases(file) {
+        let path = folder.join(alias);
+        if let Some(old) = read_alias(&path).filter(|old| *old != key) {
+            let _ = remove_unless_building(root, old);
+        }
+        local::write_private_file_unsynced(&path, key.hex().as_bytes())?;
+    }
+    Ok(())
+}
+
+/// Every version of a file there's a corpus for, as far as can be told, even if the file itself has gone. In no order, and each once.
+pub fn keys_of_file(root: &Path, path: &Path) -> Vec<CorpusKey> {
+    let folder = root.join(VERSIONS_FOLDER);
+    let mut keys: Vec<CorpusKey> = CorpusKey::of_file(path).into_iter().collect();
+    for alias in file_aliases(path) {
+        if let Some(key) = read_alias(&folder.join(alias))
+            && !keys.contains(&key)
+        {
+            keys.push(key);
+        }
+    }
+    keys
+}
+
+/// Forgets which versions a file had. They've been thrown away.
+pub fn forget_file(root: &Path, path: &Path) {
+    for alias in file_aliases(path) {
+        let _ = fs::remove_file(root.join(VERSIONS_FOLDER).join(alias));
+    }
+}
+
+/// Clears out notes about corpora that are gone, so these can't pile up.
+fn tidy_versions(root: &Path) {
+    let Ok(entries) = fs::read_dir(root.join(VERSIONS_FOLDER)) else { return };
+    for entry in entries.flatten() {
+        if read_alias(&entry.path()).is_none_or(|key| !root.join(key.hex()).exists()) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Turns what was read into what's stored: reading it the one way `text` and `search` read a page, and judging hidden text the same.
 fn digest(read: Result<FedPage, FailReason>, offset: u64) -> (PageRecord, Vec<String>, Vec<(u32, u32)>, String) {
     let page = match read {
@@ -1112,6 +1198,7 @@ pub fn evict(root: &Path, limits: &BuildLimits, keep: Option<CorpusKey>) -> io::
         report.bytes += bytes;
     }
     report.kept_bytes = total;
+    tidy_versions(root);
     Ok(report)
 }
 
@@ -1151,6 +1238,7 @@ pub fn clear_all(root: &Path) -> io::Result<(u32, u32)> {
             Err(_) => building += 1,
         }
     }
+    let _ = fs::remove_dir_all(root.join(VERSIONS_FOLDER));
     Ok((cleared, building))
 }
 

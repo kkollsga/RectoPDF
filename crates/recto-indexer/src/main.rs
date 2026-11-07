@@ -182,13 +182,13 @@ fn main() {
         Ok(meta) => meta,
         Err(OpenError::PasswordNeeded) => {
             let mut feed = RefusedFeed("needs_password");
-            report(corpus::build(&root, key, &mut feed, &DocMeta::default(), &limits), RenderStats::default(), 0);
+            report(corpus::build_for_file(&file, &root, key, &mut feed, &DocMeta::default(), &limits), RenderStats::default(), 0);
             return;
         }
         Err(_) => DocMeta::default(),
     };
-    let mut feed = WorkerFeed { path: file, key, renderer: None, check_hidden: true, hidden_check_failures: 0 };
-    let built = corpus::build(&root, key, &mut feed, &meta, &limits);
+    let mut feed = WorkerFeed { path: file.clone(), key, renderer: None, check_hidden: true, hidden_check_failures: 0 };
+    let built = corpus::build_for_file(&file, &root, key, &mut feed, &meta, &limits);
     report(built, feed.stats(), feed.hidden_check_failures);
 }
 

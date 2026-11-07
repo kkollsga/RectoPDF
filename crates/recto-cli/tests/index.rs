@@ -658,3 +658,53 @@ fn a_deleted_pdfs_text_goes_when_its_time_is_up_with_nothing_being_built() {
     }
     assert!(root.join(kept_key.hex()).exists(), "what's in use stays");
 }
+
+/// Failure: a saved edit that removes something, a redaction, or a file that's since been encrypted, gets a new key, and nothing connects it to the old one. So the old version's plain text stays, for as long as the cache keeps it, after a new version has been indexed and after `index clear`. That matters most for just the edits meant to take something out.
+#[test]
+fn an_old_versions_text_goes_when_a_new_version_is_indexed_or_the_index_is_cleared() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let one_page = |word: &str| pages(&[Page::new(text_lines(&[&format!("This page says {word} once")]))]);
+    let file = TempPdf::new("versions.pdf", &one_page("redactedword"));
+    let root = state.paths.corpus.clone();
+    state.json(&["open", path(&file)]);
+    state.json(&["index"]);
+    wait_done(&state, "active");
+    assert!(all_text_under(&root).contains("redactedword"));
+
+    // A new version, saved in place: indexing it takes the old one's text away.
+    std::fs::write(&file.0, one_page("secondword")).unwrap();
+    wait_done(&state, "active");
+    let text = all_text_under(&root);
+    assert!(text.contains("secondword"), "{text}");
+    assert!(!text.contains("redactedword"), "the old version's text is still on disk after the new one was indexed");
+
+    // A new version moved into place, not indexed: clearing takes what's there.
+    let other = file.0.with_extension("new");
+    std::fs::write(&other, one_page("thirdword")).unwrap();
+    std::fs::rename(&other, &file.0).unwrap();
+    let (cleared, code) = state.json(&["index", "clear"]);
+    assert_eq!(code, 0, "{cleared}");
+    assert!(!all_text_under(&root).contains("secondword"), "clearing left the text of the version before this one");
+
+    // Renamed, which the path can't connect but the file itself can.
+    wait_done(&state, "active");
+    assert!(all_text_under(&root).contains("thirdword"));
+    let renamed = file.0.with_file_name("versions-renamed.pdf");
+    std::fs::rename(&file.0, &renamed).unwrap();
+    state.json(&["close"]);
+    state.json(&["open", renamed.to_str().unwrap()]);
+    std::fs::write(&renamed, one_page("fourthword")).unwrap();
+    wait_done(&state, "active");
+    let text = all_text_under(&root);
+    assert!(text.contains("fourthword") && !text.contains("thirdword"), "{text}");
+
+    // Gone altogether: it can't be looked at, and clearing still finds its text through its path.
+    std::fs::remove_file(&renamed).unwrap();
+    let (cleared, code) = state.json(&["index", "clear"]);
+    assert_eq!(code, 0, "{cleared}");
+    assert!(!all_text_under(&root).contains("fourthword"), "clearing left a deleted file's text");
+    let text = all_text_under(&root);
+    assert!(!text.contains("versions"), "a sidecar holds a file's name: {text}");
+    std::fs::write(&file.0, b"").unwrap();
+}

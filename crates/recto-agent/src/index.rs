@@ -281,12 +281,15 @@ pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &str, all: bool) -> Resul
     let (_, files) = tab_files(access, tab)?;
     let (mut cleared, mut building) = (0, 0);
     for file in &files {
-        let Ok(key) = CorpusKey::of_file(&file.path) else { continue };
-        match corpus::clear(indexing.root(), key) {
-            Ok(()) => cleared += 1,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => building += 1,
+        // Every version there's a record of, even if the file's gone, or the text of the last one stays behind what's there now.
+        for key in corpus::keys_of_file(indexing.root(), &file.path) {
+            match corpus::clear(indexing.root(), key) {
+                Ok(()) => cleared += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => building += 1,
+            }
         }
+        corpus::forget_file(indexing.root(), &file.path);
     }
     Ok(json!({ "cleared": cleared, "being_built": building }))
 }
