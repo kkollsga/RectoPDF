@@ -298,6 +298,7 @@ impl QaBridge {
         let app = self.ask("state", "")?;
         let (worker_bytes, worker_peak) = self.engine.workers_footprint();
         let own = recto_platform::footprint_bytes().unwrap_or(0);
+        let mine = recto_platform::own_memory().unwrap_or_default();
         let counters = recto_platform::local::process_counters(std::process::id());
         let (over_note, over_fail, worst) = self.watchdog.report();
         Ok(json!({
@@ -308,6 +309,8 @@ impl QaBridge {
             "record": self.inner().map_or(Value::Null, |inner| inner.record_report()),
             "memory": {
                 "footprint_bytes": own,
+                "compressed_bytes": mine.compressed,
+                "heap_bytes": mine.heap,
                 "worker_bytes": worker_bytes,
                 "worker_peak_bytes": worker_peak,
                 "tree_bytes": own + worker_bytes,
