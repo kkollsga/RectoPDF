@@ -1783,7 +1783,9 @@ mod tests {
     fn every_documented_command_exists_and_every_example_parses() {
         let reference = skill::reference_md();
         let fenced = fenced_commands(&reference);
-        assert!(fenced.len() >= TABLE.len(), "only {} examples", fenced.len());
+        // At least one for each command the reference is about. QA's rows aren't in it, as they're for whoever builds the app, and with enough of them the count against the whole table failed on two branches' worth of rows that had their examples.
+        let documented = TABLE.iter().filter(|spec| !spec.hidden && spec.group != GROUP_QA).count();
+        assert!(fenced.len() >= documented, "only {} examples for {documented} commands", fenced.len());
         for line in &fenced {
             parse_line(line).unwrap_or_else(|error| panic!("{line}: {}", error.message));
         }
