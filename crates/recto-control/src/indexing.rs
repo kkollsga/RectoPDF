@@ -4,7 +4,7 @@
 
 use recto_agent::Event;
 use recto_agent::index::{Indexing, JobState};
-use recto_index::corpus::CorpusKey;
+use recto_index::corpus::{self, BuildLimits, CorpusKey};
 use serde_json::{Value, json};
 use std::any::Any;
 use std::collections::VecDeque;
@@ -48,6 +48,8 @@ struct Inner {
     /// The thread that works through `waiting` is there.
     working: bool,
     stopped: bool,
+    /// Nobody's looked at what's past its time in this session yet.
+    sweep_due: bool,
 }
 
 struct Shared {
@@ -72,7 +74,7 @@ impl Indexer {
     }
 
     pub fn with_runner(root: &Path, runner: Box<dyn Runner>) -> Self {
-        Self(Arc::new(Shared { root: root.to_path_buf(), runner, inner: Mutex::new(Inner::default()), notify: OnceLock::new() }))
+        Self(Arc::new(Shared { root: root.to_path_buf(), runner, inner: Mutex::new(Inner { sweep_due: true, ..Inner::default() }), notify: OnceLock::new() }))
     }
 
     pub fn attach(&self, notify: Notifier) {
@@ -96,11 +98,16 @@ impl Indexer {
         inner.waiting.retain(|waiting| waiting.key != job.key);
         inner.waiting.push_front(job);
         inner.waiting.truncate(MAX_WAITING);
+        self.start_working(&mut inner);
+    }
+
+    /// Starts the thread if it isn't there. Only ever while there's something for it to do.
+    fn start_working(&self, inner: &mut Inner) {
         if inner.working {
             return;
         }
         let shared = Arc::clone(&self.0);
-        // It does no work of its own, so a small stack will do.
+        // It does no work of its own but a walk over a folder, so a small stack will do.
         let spawned = std::thread::Builder::new().name("recto-indexer".into()).stack_size(256 * 1024).spawn(move || shared.work());
         match spawned {
             Ok(_) => inner.working = true,
@@ -124,6 +131,10 @@ impl Shared {
     /// Works through what's waiting, one at a time, and goes when there's nothing left.
     fn work(self: Arc<Self>) {
         loop {
+            // First, before anything's built, and on this thread because it walks a folder of any size.
+            if std::mem::take(&mut self.lock().sweep_due) {
+                let _ = corpus::evict(&self.root, &BuildLimits::default(), None);
+            }
             let job = {
                 let mut inner = self.lock();
                 let next = if inner.stopped { None } else { inner.waiting.pop_front() };
@@ -193,6 +204,13 @@ impl Indexing for Indexer {
     fn load(&self) -> (u32, u32) {
         let inner = self.0.lock();
         (u32::from(inner.running.is_some()), inner.waiting.len() as u32)
+    }
+
+    fn note_asked(&self) {
+        let mut inner = self.0.lock();
+        if inner.sweep_due && !inner.stopped {
+            self.start_working(&mut inner);
+        }
     }
 }
 

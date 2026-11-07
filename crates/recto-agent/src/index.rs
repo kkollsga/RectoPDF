@@ -26,6 +26,8 @@ pub trait Indexing: Send + Sync {
     fn job(&self, key: CorpusKey) -> JobState;
     /// Indexers running and files waiting, for anyone checking what's going on.
     fn load(&self) -> (u32, u32);
+    /// Someone's using indexes in this session. The first time, it's the moment to clear what's past its time, since a deleted file's text may have nothing else to make that happen.
+    fn note_asked(&self) {}
     /// Whether asking here gets anything built.
     fn starts_builds(&self) -> bool {
         true
@@ -120,6 +122,7 @@ fn refused_words(code: &str) -> &'static str {
 
 /// Where a file's corpus stands, asking for it to be built if `want` says to.
 pub(crate) fn file_index(indexing: &dyn Indexing, path: &Path, want: bool) -> (Option<CorpusKey>, FileIndex) {
+    indexing.note_asked();
     let Ok(key) = CorpusKey::of_file(path) else { return (None, FileIndex::Unavailable) };
     let disk = corpus::disk_state(indexing.root(), key);
     let pages_done = match &disk {

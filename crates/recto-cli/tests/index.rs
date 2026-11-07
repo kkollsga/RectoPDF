@@ -602,3 +602,59 @@ fn index_or_mixed_matches_scan(state: &State, args: &[&str]) {
     assert_eq!(code, 0, "{args:?}: {scanned}");
     assert_eq!(the_same_answer(indexed), the_same_answer(scanned), "{args:?}");
 }
+
+/// Every byte under a folder, read as text, for looking for a document's words.
+fn all_text_under(folder: &Path) -> String {
+    let mut found = String::new();
+    let mut stack = vec![folder.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else { continue };
+        for entry in entries.flatten() {
+            if entry.file_type().unwrap().is_dir() {
+                stack.push(entry.path());
+            } else if let Ok(bytes) = std::fs::read(entry.path()) {
+                found.push_str(&String::from_utf8_lossy(&bytes));
+            }
+        }
+    }
+    found
+}
+
+/// Failure: a deleted PDF's text stays on disk for good, and the rule of 90 days never fires, because only a build that succeeds ever makes room. A session that only reads what's already built, or whose builds all fail, must still clear what's past its age, the first time anyone asks.
+#[test]
+fn a_deleted_pdfs_text_goes_when_its_time_is_up_with_nothing_being_built() {
+    let state = State::at(Level::Control);
+    let deleted = TempPdf::new("deleted.pdf", &pages(&[Page::new(text_lines(&["Words only the deleted file has: vanishingword"]))]));
+    let kept = doc("kept.pdf", 2);
+    let (deleted_key, kept_key);
+    {
+        let _serving = state.serve();
+        state.json(&["open", path(&deleted)]);
+        state.json(&["index"]);
+        wait_done(&state, "active");
+        state.json(&["open", path(&kept)]);
+        state.json(&["index"]);
+        wait_done(&state, "active");
+        deleted_key = CorpusKey::of_file(&deleted.0).unwrap();
+        kept_key = CorpusKey::of_file(&kept.0).unwrap();
+    }
+    let root = state.paths.corpus.clone();
+    assert!(all_text_under(&root).contains("vanishingword"));
+    std::fs::remove_file(&deleted.0).unwrap();
+    // Its last use was 100 days ago, and the file's gone.
+    let used = recto_index::corpus::CorpusPaths::new(&root, deleted_key).app.join("used");
+    let long_ago = std::time::SystemTime::now() - Duration::from_secs(100 * 24 * 3600);
+    std::fs::File::options().write(true).open(&used).unwrap().set_modified(long_ago).unwrap();
+
+    let _serving = state.serve();
+    state.json(&["open", path(&kept)]);
+    let (found, code) = state.json(&["search", "common"]);
+    assert_eq!(code, 0, "{found}");
+    assert_eq!(found["data"]["route"], "index", "nothing here needs building: {found}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while all_text_under(&root).contains("vanishingword") {
+        assert!(Instant::now() < deadline, "a deleted file's text is still there, 100 days after its last use");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(root.join(kept_key.hex()).exists(), "what's in use stays");
+}

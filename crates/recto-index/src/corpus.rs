@@ -51,6 +51,8 @@ pub const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const MAX_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 /// Longest one build runs before it stops and leaves the rest for next time.
 pub const MAX_BUILD_TIME: Duration = Duration::from_secs(60 * 60);
+/// How much a full disk gets back, at least.
+const ROOM_ON_A_FULL_DISK: u64 = 64 * 1024 * 1024;
 /// How many times pages that failed for a temporary reason are read again, how far apart, and how many in one go. A hostile file can fail any number of pages, each costing a worker and up to a page's time.
 pub const MAX_RETRIES: u32 = 3;
 pub const RETRY_PAUSE: Duration = Duration::from_secs(10 * 60);
@@ -635,6 +637,21 @@ pub enum BuildOutcome {
 
 /// Builds one document's corpus, going on from wherever an earlier build stopped. Blocks for as long as that takes. The caller is a helper process, never the UI, and may be killed at any point.
 pub fn build(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: &DocMeta, limits: &BuildLimits) -> io::Result<BuildOutcome> {
+    let outcome = build_with_lock(root, key, feed, meta, limits);
+    // However it came out. A build that's refused or failed mustn't be why old text stays. Nothing's asked of the one being built, unless the disk is full.
+    match &outcome {
+        Ok(BuildOutcome::Busy) => {}
+        Err(error) if error.kind() == io::ErrorKind::StorageFull => {
+            let _ = make_room(root, limits, key);
+        }
+        _ => {
+            let _ = evict(root, limits, Some(key));
+        }
+    }
+    outcome
+}
+
+fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: &DocMeta, limits: &BuildLimits) -> io::Result<BuildOutcome> {
     let started = Instant::now();
     let paths = CorpusPaths::new(root, key);
     paths.prepare(root)?;
@@ -710,7 +727,6 @@ pub fn build(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: &DocMe
         };
     }
     drop(lock);
-    let _ = evict(root, limits, Some(key));
     Ok(BuildOutcome::Ready { summary, stats })
 }
 
@@ -1097,6 +1113,18 @@ pub fn evict(root: &Path, limits: &BuildLimits, keep: Option<CorpusKey>) -> io::
     }
     report.kept_bytes = total;
     Ok(report)
+}
+
+/// The disk is full, so caps don't come into it: this takes the least recently used, past however much is there now, until there's a good deal more room, or nothing else left to take. A corpus can always be built again, and a user's disk filling up is worse.
+pub fn make_room(root: &Path, limits: &BuildLimits, keep: CorpusKey) -> io::Result<Evicted> {
+    let mut total = 0;
+    for entry in fs::read_dir(root)?.flatten() {
+        if entry.file_name().to_str().and_then(CorpusKey::from_hex).is_some() && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            total += folder_bytes(&entry.path());
+        }
+    }
+    let tighter = BuildLimits { max_total_bytes: total.saturating_sub(ROOM_ON_A_FULL_DISK.max(total / 4)), ..*limits };
+    evict(root, &tighter, Some(keep))
 }
 
 /// Throws away one version of a file's corpus. Refused while it's being built.

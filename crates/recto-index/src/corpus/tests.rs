@@ -641,6 +641,37 @@ fn a_finished_build_makes_room() {
     assert!(ReadyCorpus::open(&root, second).unwrap().is_some(), "and the one just built stays, whatever the cap");
 }
 
+/// Failure: only a build that succeeds ever makes room, so a session whose builds are refused, paused or out of disk leaves the folder past its cap and past its age for good.
+#[test]
+fn a_build_makes_room_however_it_comes_out() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let tight = BuildLimits { max_total_bytes: 1, ..BuildLimits::default() };
+    let old = CorpusKey([1; 32]);
+    build(&root, old, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    assert_eq!(build(&root, CorpusKey([2; 32]), &mut FakeFeed::new(&[Fake::Stop]), &DocMeta::default(), &tight).unwrap(), BuildOutcome::Paused("stopped_here"));
+    assert!(!root.join(old.hex()).exists(), "a build that paused left the folder over its cap");
+
+    build(&root, old, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    assert_eq!(build(&root, CorpusKey([3; 32]), &mut FakeFeed::new(&[Fake::Refuse]), &DocMeta::default(), &tight).unwrap(), BuildOutcome::Refused("needs_password".to_string()));
+    assert!(!root.join(old.hex()).exists(), "a build that was refused left the folder over its cap");
+}
+
+/// Failure: the disk fills up and the cache, well under its own cap, keeps everything it has, so every build fails on it for ever and the rest of the Mac has no room either. Here it gives back room however little it's holding against its cap, and never what's being built.
+#[test]
+fn a_full_disk_gets_room_back() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let keys: Vec<CorpusKey> = (1..=3u8).map(|at| CorpusKey([at; 32])).collect();
+    for key in &keys {
+        build(&root, *key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    }
+    let report = make_room(&root, &BuildLimits::default(), keys[2]).unwrap();
+    assert_eq!(report.corpora, 2, "{report:?}");
+    assert!(root.join(keys[2].hex()).exists());
+    assert_eq!(make_room(&root, &BuildLimits::default(), keys[2]).unwrap().corpora, 0, "what's being built stays");
+}
+
 /// Failure: two sessions on one folder both build a document, and one's pack interleaves with the other's.
 #[test]
 fn only_one_builds_at_a_time() {
