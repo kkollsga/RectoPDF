@@ -46,3 +46,18 @@ The coordinator is responsible for progress and quality. Owner, 2026-11-07: "Rem
 
 **Check next time.** Did CI stay green on `main`? Did a merge go through red? Did any test fail on CI without carrying its own evidence?
 
+## 2026-11-07, how many suite runs we need
+
+Owner: "13 tests at 10mins is more than two hours. There are surely ways of reducing how many tests we need, while achieving the same results and quality".
+
+**Numbers.** distillPDF's full gate: 536 to 820 s, of which the 141-document sweep is 220 to 265 s, the wheel build about 100 s and the suites the rest. Its fast mode: about 200 s, sweeping 13 documents. Of the 13 full runs, 8 were the baseline worker building the gate, and 5 were on the per-page branch. Those 5 had one failure: three unit tests, 32 s into the suites, yet the run went on to 453 s, because the gate keeps going after a failure. The 141-document sweep caught nothing on that branch that a cheaper stage didn't: the document differences were the same two throughout.
+
+**Changing.**
+- Fast mode while working. The full gate runs once on the commit being handed back, and once more only if code changed after it.
+- After distillPDF 0.1.7: the gate stops at the first failure, with `--keep-going` for when the rest is wanted, and unit tests run before the wheel is built.
+- After distillPDF 0.1.7: any document the full gate has ever flagged joins the fast set, so fast mode gets stronger as it catches things.
+- A fork's CI set: the affected tests while working, the whole set once before pushing.
+- RectoPDF's own tests are not the cost, 1,046 of them in 30 s, so none are being cut.
+
+**Check next time.** Full gates per release. Target: at most 2, about 20 minutes in place of 2 hours. Did the full gate catch anything fast mode missed? If it does, grow the fast set.
+
