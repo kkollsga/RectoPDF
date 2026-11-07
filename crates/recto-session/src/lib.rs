@@ -216,6 +216,11 @@ pub struct ContentsRowChange {
     pub place_shift: i32,
 }
 
+/// How much faster a move gets each time a section goes by with the place out of the view.
+const FOLLOW_CATCH_UP: f64 = 1.15;
+/// The chain's fastest rate, per second: its lag behind what it's chasing is about 3 divided by this.
+const FOLLOW_FASTEST_RATE: f64 = 120.0;
+
 /// A move under way.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Motion {
@@ -269,9 +274,13 @@ impl ContentsFollow {
 
     /// The contents' area changed height, as the window did. The place is looked at again next, and goes straight to where it should be, since nothing about a resize wants moving.
     pub fn view_changed(&mut self) {
+        self.moving = None;
+        // A list the reader has scrolled themselves stays where they left it, resized or not. Clearing this would count as a change of section, and snap it back once they'd stopped.
+        if self.paused {
+            return;
+        }
         self.current = None;
         self.placed = false;
-        self.moving = None;
     }
 
     pub fn is_following(self) -> bool {
@@ -307,7 +316,13 @@ impl ContentsFollow {
             return FollowMove::Stay;
         }
         self.current = row;
-        let Some(row) = row else { return FollowMove::Stay };
+        // Folded: there's nothing to follow, and what's under way stops. Opened again, the place is straight where it should be, and nothing whooshes from the top.
+        let Some(row) = row else {
+            self.moving = None;
+            self.placed = false;
+            self.paused = false;
+            return FollowMove::Stay;
+        };
         if self.paused {
             if self.pointer_inside || now - self.last_user_scroll < FOLLOW_RESUME_AFTER {
                 return FollowMove::Stay;
@@ -336,7 +351,9 @@ impl ContentsFollow {
                 return FollowMove::Move;
             }
             motion.target = target;
-            motion.rate = motion.rate.min(follow_rate(target - motion.at.unwrap_or(view.scroll_y), view.height));
+            if !in_view {
+                motion.rate = (motion.rate * FOLLOW_CATCH_UP).min(FOLLOW_FASTEST_RATE);
+            }
             return FollowMove::Move;
         }
         let zone = (view.scroll_y + view.height * FOLLOW_DEAD_ZONE.0)..=(view.scroll_y + view.height * FOLLOW_DEAD_ZONE.1);
@@ -1112,6 +1129,66 @@ mod tests {
     }
 
     /// Runs a move to its end, at 60 frames a second, and returns each position.
+    /// Failure: a window's resize counts as a change of place, so a list the reader had scrolled themselves snaps back once they've stopped. It stays where they put it.
+    #[test]
+    fn a_resize_leaves_a_list_the_reader_scrolled_alone() {
+        let mut follow = ContentsFollow::default();
+        let view = ContentsView { scroll_y: 0.0, height: 400.0, rows: 200 };
+        follow.reached(Some(50), view, 0.0, false);
+        follow.user_scrolled(1.0);
+        follow.view_changed();
+        let later = ContentsView { scroll_y: 2000.0, height: 300.0, rows: 200 };
+        assert_eq!(follow.reached(Some(50), later, 10.0, false), FollowMove::Stay, "the same section, and it's been left alone");
+        assert!(!follow.is_following(), "still theirs until the section changes");
+    }
+
+    /// Failure: folding leaves a move running, so opening the contents again whooshes from the top. Opened, the place is straight where it should be.
+    #[test]
+    fn folding_ends_a_move_and_opening_goes_straight_there() {
+        let mut follow = ContentsFollow::default();
+        let view = |scroll_y: f64| ContentsView { scroll_y, height: 400.0, rows: 200 };
+        follow.reached(Some(0), view(0.0), 0.0, false);
+        assert_eq!(follow.reached(Some(100), view(0.0), 1.0, false), FollowMove::Move);
+        assert_eq!(follow.reached(None, view(0.0), 1.1, false), FollowMove::Stay);
+        assert!(!follow.is_moving(), "nothing's left running");
+        assert_eq!(follow.step(0.0, 1.0 / 60.0), None);
+        assert!(matches!(follow.reached(Some(100), view(0.0), 2.0, false), FollowMove::SetTo(_)));
+        assert!(!follow.is_moving());
+    }
+
+    /// The share of steps with the place in the view, with sections going by at this many rows a second.
+    fn place_in_view(rows_per_second: f64, seconds: f64) -> f64 {
+        const DT: f64 = 1.0 / 120.0;
+        let mut follow = ContentsFollow::default();
+        let (height, rows) = (680.0, 100_000);
+        let mut position = 0.0;
+        follow.reached(Some(0), ContentsView { scroll_y: position, height, rows }, 0.0, false);
+        let steps = (seconds / DT) as u32;
+        let mut shown = 0;
+        for step in 0..steps {
+            let now = f64::from(step) * DT;
+            let row = (now * rows_per_second) as u32;
+            follow.reached(Some(row), ContentsView { scroll_y: position, height, rows }, now, false);
+            if let Some(next) = follow.step(position, DT) {
+                position = next;
+            }
+            let place = (f64::from(row) + 0.5) * CONTENTS_ROW_HEIGHT;
+            if (position..=position + height).contains(&place) {
+                shown += 1;
+            }
+        }
+        f64::from(shown) / f64::from(steps)
+    }
+
+    /// Failure: scrolling fast, the view trails past the place: the target only moves once the place has passed the last target's zone, and a move never gets quicker, so at 40 pages a second the place is out of the list about one step in ten, on `rfc9110` as measured. The first moment aside, it stays in view at any speed a reader can scroll.
+    #[test]
+    fn the_place_stays_in_view_at_any_speed() {
+        for rows_per_second in [20.0, 120.0, 400.0] {
+            let share = place_in_view(rows_per_second, 5.0);
+            assert!(share >= 0.97, "{rows_per_second} rows a second: in view {share}");
+        }
+    }
+
     /// Failure: a chapter closes just after a reposition. The place drops up the list by the rows that went, past the dead zone, and the contents move straight back, so one change of section makes two moves in opposite directions.
     #[test]
     fn a_chapter_closing_above_the_place_makes_no_second_move() {
