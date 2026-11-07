@@ -217,5 +217,67 @@ bash "$HEAVY" --slots 2 >/dev/null
 case "$(bash "$HEAVY" --status)" in *"Watchdog: NOT RUNNING"*) r=says ;; *) r=silent ;; esac
 check "status says when no watchdog is running" "says" "$r"
 
+# The stats line. Failure: scripts under one long path all read the same, and nobody can tell which project or branch ran what.
+long="/private/tmp/$(printf 'a-long-scratch-path/%.0s' 1 2 3 4 5 6 7 8)"
+git checkout -q -b build/stats
+bash "$HEAVY" bash -c 'exit 0' "${long}first.sh" 2>/dev/null
+bash "$HEAVY" bash -c 'exit 0' "${long}second.sh" 2>/dev/null
+stat_field() { tail -"${2:-1}" "$X/lock.stats" | head -1 | cut -f"$1"; }
+case "$(stat_field 9 2)" in *first.sh) r=kept ;; *) r=lost ;; esac
+check "the end of a long command stays" "kept" "$r"
+case "$(stat_field 9)" in *second.sh) r=kept ;; *) r=lost ;; esac
+check "so two scripts under one path differ" "kept" "$r"
+case "$(stat_field 9)" in "bash -c exit 0 "*) r=kept ;; *) r=lost ;; esac
+check "and its start stays" "kept" "$r"
+check "and it stays 100 characters" "100" "$(stat_field 9 | tr -d '\n' | wc -c | tr -d ' ')"
+bash "$HEAVY" bash -c 'exit 0' 2>/dev/null
+check "a short command is kept whole" "bash -c exit 0" "$(stat_field 9)"
+check "the old columns stay where they were" "end 0" "$(stat_field 2) $(stat_field 5)"
+check "the repo is recorded" "repo" "$(stat_field 10)"
+check "and the branch" "build/stats" "$(stat_field 11)"
+git worktree add -q -b build/tree "$X/tree"
+( cd "$X/tree" && bash "$HEAVY" bash -c 'exit 0' 2>/dev/null )
+check "a worktree counts as its main checkout's repo" "repo" "$(stat_field 10)"
+check "on its own branch" "build/tree" "$(stat_field 11)"
+mkdir "$X/plain"
+( cd "$X/plain" && bash "$HEAVY" bash -c 'exit 0' 2>/dev/null )
+check "outside a repo, the columns say so and still line up" "- -" "$(stat_field 10) $(stat_field 11)"
+bash "$HEAVY" bash -c 'exit 9' >/dev/null 2>&1
+bash "$HEAVY" bash -c 'exit 9' >/dev/null 2>&1
+check "a refusal is recorded with the repo and branch" "refused repo build/stats" "$(stat_field 2) $(stat_field 4) $(stat_field 5)"
+git checkout -q -
+
+# --report. Failure: a change to the line stops older lines parsing, or a small run called a whole suite, or whole suites can't be told apart by branch.
+now_s=$(date +%s)
+end_line() { printf '%s\tend\t0\t%s\t%s\t50\t1\t0\t%s' "$now_s" "$1" "$2" "$3"; [ -z "${4:-}" ] || printf '\t%s\t%s' "$4" "$5"; printf '\n'; }
+{
+  end_line 100 0 'bash -c tests=($tests_joined); run'
+  end_line 90 100 'bash -c tests=($tests_joined); run'
+  end_line 60 0 'bash -c tests=($tests_joined); run check.sh--full' proj build/a
+  end_line 40 100 'bash -c tests=($tests_joined); run check.sh--full' proj build/a
+  end_line 30 0 'cargo nextest run --locked --workspace' proj build/b
+  end_line 20 0 'scripts/regression-gate.sh check --full --run /x' other main
+  end_line 5 0 'bash -c tests=($tests_joined); run check.sh--quick' proj build/a
+  end_line 5 0 'cargo clippy --workspace --all-targets' proj build/a
+  end_line 5 0 'cargo nextest run --workspace -E test(=x)' proj build/a
+  end_line 5 0 'cargo test -p x --test y --workspace' proj build/a
+  end_line 5 0 'scripts/regression-gate.sh check --fast' other main
+  end_line 5 0 '/x/regression-gate/venv/bin/maturin build' other main
+  printf '%s\trefused\tan old refusal\n' "$now_s"
+  printf '%s\trefused\ta new refusal\tproj\tbuild/a\n' "$now_s"
+} > "$X/report.stats"
+report=$(HEAVY_LOCK="$X/report" bash "$HEAVY" --report)
+has_line() { case "$report" in *"$2"*) echo "ok    $1" ;; *) echo "FAIL  $1: no [$2] in [$report]"; fails=$((fails + 1)) ;; esac; }
+has_line "older and newer lines both count" "12 jobs, 2 failed"
+has_line "older and newer refusals both count" "2 reruns refused"
+has_line "whole suites are grouped by repo and branch" "  2 runs,   1 failed,    100 s  proj build/a"
+has_line "a whole workspace's tests count" "  1 runs,   0 failed,     30 s  proj build/b"
+has_line "a project's gate counts" "  1 runs,   0 failed,     20 s  other main"
+has_line "older lines have no branch, and say so" "  2 runs,   1 failed,    190 s  (branch not recorded)"
+check "and nothing small is in that section" "4" "$(printf '%s\n' "$report" | sed -n '/^Whole suites/,$p' | grep -c ' runs, ')"
+printf '%s\tend\t0\t5\t0\t50\t1\t0\tcargo check\n' "$now_s" > "$X/none.stats"
+case "$(HEAVY_LOCK="$X/none" bash "$HEAVY" --report)" in *"Whole suites by branch:"*"none."*) r=says ;; *) r=silent ;; esac
+check "no whole suites, and it says so" "says" "$r"
+
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

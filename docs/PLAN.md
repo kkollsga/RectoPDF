@@ -9,8 +9,8 @@ Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it ar
 | **0. Research and foundations** | Spec, concepts, benchmarks, first core | **Done** | |
 | **1. CLI and renderer** | An agent can open, read and draw any PDF, and test everything without a window | **Done** | 5–8 |
 | **2. First real app** | A native window you can read in, with real screenshots | **In progress** | 8–12 |
-| **3. Complete reader** | Find, menus, ⌘K, session restore, image copy, snapshot and SVG | Not started | 10–15 |
-| **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | Not started | 25–40 |
+| **3. Complete reader** | Find, menus, ⌘K, session restore, image copy, snapshot and SVG | **In progress** | 10–15 |
+| **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | **Started:** the fork's writer is done | 25–40 |
 | **5. Tools** | Compress, OCR, passwords, compare, redaction, watermarks and more | Not started | 20–35 |
 | **6. Agent sidebar** | Ask a question about a PDF, with your own `claude` | Not started | 8–12 |
 | **7. Release** | Hardened, signed, installable first release | Not started | 8–12 |
@@ -142,7 +142,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 
 ## Phase 4: Saving and editing
 
-- [ ] Fork: append writer, reopen after append, revision chain
+- [x] Fork: append writer, reopen after append, revision chain (`work/append-writer` at `0e89b89` on the fork; RectoPDF still to repin)
 - [ ] Agreement gate between lopdf and PDFium
 - [ ] Native Save, Save As, close prompt, atomic writes, one backup
 - [ ] Edit mode: page grid, drag, drop PDFs, rotate, delete, extract, split, merge
