@@ -44,3 +44,4 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 ## Product rules from the owner (2026-11-07)
 - "The left sidebar toc should have a max height within scroll so it doesn't push everything of screen".
 - "The agent logo in the upper right is wrong, it should be a ai 4 point star".
+- "The toc should auto scroll to where you are in the document (smoothly so you don't notice it in a elegant way)".
