@@ -48,6 +48,7 @@ max_len() {
   esac
 }
 
+failed=()
 for target in "${targets[@]}"; do
   corpus="$work/corpus/$target"
   artifacts="$work/artifacts/$target"
@@ -56,8 +57,17 @@ for target in "${targets[@]}"; do
   extra=()
   case "$target" in pdf_bytes|pdf_tree) extra+=("-dict=$PWD/fuzz/dict/pdf.dict") ;; esac
   # A check's own limits come first, so what hangs says which it was. These are the backstop, for what never returns at all.
-  "$heavy" cargo "+$toolchain" fuzz run --sanitizer "$sanitizer" "$target" "$corpus" -- \
+  # A crash in one target doesn't stop the others. Its whole log is in <work>/<target>.log.
+  if ! "$heavy" cargo "+$toolchain" fuzz run --sanitizer "$sanitizer" "$target" "$corpus" -- \
     -max_total_time="$seconds" -timeout=90 -rss_limit_mb=4096 -max_len="$(max_len "$target")" \
-    -artifact_prefix="$artifacts/" -print_final_stats=1 ${extra[@]+"${extra[@]}"} 2>&1 | tail -n 25
+    -artifact_prefix="$artifacts/" -print_final_stats=1 ${extra[@]+"${extra[@]}"} >"$work/$target.log" 2>&1; then
+    failed+=("$target")
+    grep -E "panicked|recto-fuzz:|ERROR|SUMMARY" -A1 "$work/$target.log" || true
+  fi
+  grep -E "^stat::(number_of_executed_units|average_exec_per_sec|peak_rss_mb)" "$work/$target.log" | sort -u | sed "s/^stat::/$target: /"
   rm -rf "$RECTO_FUZZ_STATE"
 done
+if [ ${#failed[@]} -gt 0 ]; then
+  echo "failed: ${failed[*]}, with inputs in $work/artifacts/" >&2
+  exit 1
+fi

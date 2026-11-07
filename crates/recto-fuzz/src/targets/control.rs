@@ -100,13 +100,8 @@ pub fn check(data: &[u8]) {
         }
         let running = guard.as_ref().expect("just started");
         talk(running, data);
-        // A `stop` a moment ago is the one reason the next client mightn't get in, and then the server ends, within its grace.
         if !answers_status(running) {
-            let started = Instant::now();
-            while !running.thread.is_finished() {
-                assert!(started.elapsed() < Duration::from_secs(20), "the session stopped answering a new client, and hasn't ended");
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            must_be_ending(running);
         }
         // What this input opened goes, so one input's tabs aren't the next one's.
         running.host.0.with_session(|session| {
@@ -117,6 +112,15 @@ pub fn check(data: &[u8]) {
             }
         });
     });
+}
+
+/// A `stop` a moment ago is the one reason the next client mightn't get in, and then the server ends, within its grace. It can have said yes to one client and be gone for the next.
+fn must_be_ending(running: &Running) {
+    let started = Instant::now();
+    while !running.thread.is_finished() {
+        assert!(started.elapsed() < Duration::from_secs(20), "a new client couldn't get in, and the session hasn't ended");
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 fn connect(running: &Running) -> Option<Stream> {
@@ -147,7 +151,7 @@ fn talk(running: &Running, data: &[u8]) {
     let bytes = take.rest();
     let bytes = &bytes[..bytes.len().min(MAX_INPUT)];
     let Some(stream) = connect(running) else {
-        assert!(running.thread.is_finished(), "a new client couldn't connect");
+        must_be_ending(running);
         return;
     };
     let waits = asks_to_wait(bytes);
