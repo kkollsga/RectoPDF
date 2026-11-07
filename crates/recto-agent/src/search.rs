@@ -24,6 +24,10 @@ const MAX_LIMIT: u32 = 200;
 const MAX_QUERY_BYTES: usize = 1024;
 /// How long one search may run before it stops and says where to go on from.
 const MAX_TIME: Duration = Duration::from_secs(30);
+/// How long one search may spend reading again pages that failed when their corpus was built, since each can cost a worker and a page's whole time. Past that they're said to have failed, as they did, and the clean pages behind them are still reached.
+const LIVE_REREAD_BUDGET: Duration = Duration::from_secs(5);
+/// How long past that a ranked search may go on reading its top pages for their snippets, a page at a time when there's no corpus. Past that, the rest are left out and it says how many.
+const SECOND_PASS_TIME: Duration = Duration::from_secs(5);
 /// Characters of context on each side of a hit.
 const SNIPPET_CONTEXT: usize = 70;
 /// Most lines of context on each side of a hit, and most characters shown of each: a page can be one line.
@@ -79,7 +83,10 @@ pub(crate) fn search<A: SessionAccess>(access: &A, asked: &Asked<'_>) -> Result<
     }
     let context = asked.context.unwrap_or(0).min(MAX_CONTEXT) as usize;
     let default_limit = if asked.rank { DEFAULT_RANKED } else { DEFAULT_LIMIT };
-    let settings = |limit| Settings { limit, context, max_time: MAX_TIME, indexing: access.indexing(), force_scan: asked.scan };
+    let settings = |limit| {
+        let deadline = Instant::now() + MAX_TIME;
+        Settings { limit, context, deadline, draw_until: deadline, second_pass_until: deadline + SECOND_PASS_TIME, live_budget: LIVE_REREAD_BUDGET, indexing: access.indexing(), force_scan: asked.scan }
+    };
     if asked.rank {
         let terms = terms_of(asked.query);
         if terms.terms.is_empty() {
@@ -87,7 +94,7 @@ pub(crate) fn search<A: SessionAccess>(access: &A, asked: &Asked<'_>) -> Result<
         }
         let plan = plan(access, asked.tab, asked.pages)?;
         let limit = crate::positive_limit(asked.limit, default_limit, MAX_LIMIT)?;
-        return run_ranked(&plan, &terms, &settings(limit), Instant::now);
+        return run_ranked(&plan, &terms, &settings(limit));
     }
     let (query, mode) = if asked.regex {
         if asked.query.is_empty() {
@@ -103,7 +110,7 @@ pub(crate) fn search<A: SessionAccess>(access: &A, asked: &Asked<'_>) -> Result<
     };
     let plan = plan(access, asked.tab, asked.pages)?;
     let limit = crate::positive_limit(asked.limit, default_limit, MAX_LIMIT)?;
-    run(&plan, &query, mode, &settings(limit), Instant::now)
+    run(&plan, &query, mode, &settings(limit))
 }
 
 fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<Plan, AgentError> {
@@ -168,8 +175,8 @@ enum Query {
 const REGEX_SIZE_LIMIT: usize = 1024 * 1024;
 const REGEX_DFA_LIMIT: usize = 2 * 1024 * 1024;
 const REGEX_NEST_LIMIT: u32 = 64;
-/// The longest page a pattern runs over. A pattern's worst cost is its size times the page's, and the time cap only applies between pages: at the size limit, the worst pattern found took 47 s on a page of 2 MB. This keeps that to about 12 s a page, and real pages are far shorter. Longer ones are listed as not read, and a plain search still reads them. `examples/regex_worst.rs` has the numbers.
-const MAX_PATTERN_PAGE_BYTES: usize = 512 * 1024;
+/// The longest page a pattern runs over. A deadline gets a look between matches, and the engine's one pass can't be stopped, so this and the size limit are what bound how far past it a search can go: 3.5 s for the worst pattern found. `examples/regex_worst.rs` has the numbers. The longest of 5,872 real pages is 11 KB. Longer ones are listed as not read, and a plain search still reads them.
+const MAX_PATTERN_PAGE_BYTES: usize = 128 * 1024;
 
 impl Query {
     /// A pattern, through ripgrep's own engine, run here: no program is started, so nothing like `rg --pre` can run anything. Ignores case like any other search, which `(?-i)` turns off. `^` and `$` go by lines, `.` stops at a line's end and `\s` doesn't, so `force\s+majeure` finds the phrase broken across two lines.
@@ -193,67 +200,91 @@ impl Query {
     }
 
     /// Whether a page has it, with nothing built. Runs on every page.
-    fn on_page(&self, text: &str, folded: &mut String) -> bool {
+    fn on_page(&self, text: &str, folded: &mut String, deadline: Instant) -> OnPage {
         match self {
             Self::Phrase(needle) => {
                 fold_into(text, folded);
-                folded.contains(needle.as_str())
+                if folded.contains(needle.as_str()) { OnPage::Yes } else { OnPage::No }
             }
-            Self::Regex(matcher) => Self::first_match(matcher, text).is_some(),
+            Self::Regex(matcher) => match Self::first_match(matcher, text, deadline) {
+                (Some(_), _) => OnPage::Yes,
+                (None, true) => OnPage::OutOfTime,
+                (None, false) => OnPage::No,
+            },
         }
     }
 
-    /// A page's hits, for the total, with nothing built.
-    fn count(&self, text: &str, folded: &mut String) -> u64 {
+    /// A page's hits, for the total, with nothing built. `None` if the time ran out on it.
+    fn count(&self, text: &str, folded: &mut String, deadline: Instant) -> Option<u64> {
         match self {
             Self::Phrase(needle) => {
                 fold_into(text, folded);
-                folded.matches(needle.as_str()).count() as u64
+                Some(folded.matches(needle.as_str()).count() as u64)
             }
             Self::Regex(matcher) => {
-                let mut total = 0;
+                let (mut total, mut out_of_time) = (0, false);
                 let _ = matcher.find_iter(text.as_bytes(), |found| {
                     total += u64::from(!found.is_empty());
-                    true
+                    out_of_time = Instant::now() >= deadline;
+                    !out_of_time
                 });
-                total
+                (!out_of_time).then_some(total)
             }
         }
     }
 
-    fn first_match(matcher: &RegexMatcher, text: &str) -> Option<Range<usize>> {
-        let mut first = None;
+    /// The first real match, and whether the time ran out looking. It's looked at between matches, empty ones included, which is all a pass allows.
+    fn first_match(matcher: &RegexMatcher, text: &str, deadline: Instant) -> (Option<Range<usize>>, bool) {
+        let (mut first, mut out_of_time) = (None, false);
         let _ = matcher.find_iter(text.as_bytes(), |found| {
-            if found.is_empty() {
-                return true;
+            if !found.is_empty() {
+                first = Some(found.start()..found.end());
+                return false;
             }
-            first = Some(found.start()..found.end());
-            false
+            out_of_time = Instant::now() >= deadline;
+            !out_of_time
         });
-        first
+        (first, out_of_time)
     }
 
-    /// Whether another spelling of a word on the page is this.
+    /// Whether another spelling of a word on the page is this. It's one word, so the time doesn't come into it.
     fn spelled(&self, word: &str) -> bool {
         match self {
             Self::Phrase(needle) => fold(word).0.contains(needle.as_str()),
-            Self::Regex(matcher) => Self::first_match(matcher, word).is_some(),
+            Self::Regex(matcher) => Self::first_match(matcher, word, far_future()).0.is_some(),
         }
     }
 
-    fn find(&self, text: &str, room: usize) -> PageHits {
+    fn find(&self, text: &str, room: usize, deadline: Instant) -> PageHits {
         match self {
             Self::Phrase(needle) => find_hits(text, needle, room),
-            Self::Regex(matcher) => find_regex_hits(text, matcher, room),
+            Self::Regex(matcher) => find_regex_hits(text, matcher, room, deadline),
         }
     }
 }
 
+/// Whether a page has what's being looked for.
+enum OnPage {
+    Yes,
+    No,
+    OutOfTime,
+}
+
+/// A deadline nothing reaches.
+fn far_future() -> Instant {
+    Instant::now() + Duration::from_secs(365 * 24 * 60 * 60)
+}
+
 /// What the pattern finds on a page, in the same shape as [`find_hits`]. A match of nothing at all isn't a hit: `x*` on a page of two million characters would otherwise be that many, each about nothing. Bytes it gives lie on character boundaries unless a pattern asks otherwise with `(?-u)`, and a snippet of those comes out empty rather than wrong.
-fn find_regex_hits(text: &str, matcher: &RegexMatcher, room: usize) -> PageHits {
-    let mut hits = PageHits { total: 0, shown: Vec::with_capacity(room.min(MAX_LIMIT as usize)) };
+fn find_regex_hits(text: &str, matcher: &RegexMatcher, room: usize, deadline: Instant) -> PageHits {
+    let mut hits = PageHits { total: 0, shown: Vec::with_capacity(room.min(MAX_LIMIT as usize)), out_of_time: false };
     let (mut line, mut counted_to) = (1u32, 0usize);
     let _ = matcher.find_iter(text.as_bytes(), |found| {
+        // A pattern can restart a pass for every match, so this is where a page of them gets stopped.
+        if Instant::now() >= deadline {
+            hits.out_of_time = true;
+            return false;
+        }
         if found.is_empty() {
             return true;
         }
@@ -274,7 +305,14 @@ fn find_regex_hits(text: &str, matcher: &RegexMatcher, room: usize) -> PageHits 
 struct Settings<'a> {
     limit: usize,
     context: usize,
-    max_time: Duration,
+    /// When it stops reading, and stops counting.
+    deadline: Instant,
+    /// Past this no page is drawn to look for hidden text, and a page that needed it says it wasn't checked.
+    draw_until: Instant,
+    /// Past this a ranked search reads no more of its top pages.
+    second_pass_until: Instant,
+    /// How long it may spend reading again pages that failed when they were built.
+    live_budget: Duration,
     indexing: Option<&'a dyn Indexing>,
     force_scan: bool,
 }
@@ -298,6 +336,8 @@ struct Found {
     uncounted: u32,
     /// Of `failed`, those too long for a pattern to be run over.
     too_long: u32,
+    /// Of `failed`, those a pattern ran out of time on.
+    out_of_time: u32,
 }
 
 impl Found {
@@ -318,7 +358,14 @@ impl Found {
     /// Takes what's on a page. `hidden` is only asked for if the page has something to show, as finding out can mean drawing it.
     fn take(&mut self, (position, page): (u32, u32), view: &PageView<'_>, query: &Query, settings: &Settings<'_>, source: &PlanFile, hidden: impl FnOnce() -> HiddenOnPage) {
         let room = settings.limit - self.hits.len();
-        let found = query.find(view.text, room);
+        let found = query.find(view.text, room, settings.deadline);
+        // What it found stands, and the page isn't said to have been searched.
+        if found.out_of_time {
+            self.failed.push(position + 1);
+            self.out_of_time += 1;
+        } else {
+            self.searched += 1;
+        }
         self.total += found.total as u64;
         if found.total > found.shown.len() {
             self.not_shown.push(json!({ "page": position + 1, "hits": found.total - found.shown.len() }));
@@ -362,6 +409,8 @@ impl Found {
             "hits_at_least": self.total,
             "uncounted_pages": self.uncounted,
             "pages_too_long_for_a_pattern": self.too_long,
+            "pages_a_pattern_ran_out_of_time_on": self.out_of_time,
+            "failed_pages_not_read_again": reader.not_read_again,
         })
     }
 }
@@ -418,11 +467,17 @@ struct Reader<'a> {
     changed: Vec<u16>,
     used_index: bool,
     used_scan: bool,
+    draw_until: Instant,
+    live_budget: Duration,
+    /// How much of that's gone.
+    live_spent: Duration,
+    not_read_again: u32,
+    deadline: Instant,
 }
 
 impl<'a> Reader<'a> {
     fn new(plan: &'a Plan, settings: &Settings<'a>) -> Self {
-        Self { plan, indexing: settings.indexing, force_scan: settings.force_scan, current: None, corpus_open: None, routes: vec![FileRoute::NotLookedAt; plan.files.len()], not_ready: Vec::new(), changed: Vec::new(), used_index: false, used_scan: false }
+        Self { plan, indexing: settings.indexing, force_scan: settings.force_scan, current: None, corpus_open: None, routes: vec![FileRoute::NotLookedAt; plan.files.len()], not_ready: Vec::new(), changed: Vec::new(), used_index: false, used_scan: false, draw_until: settings.draw_until, live_budget: settings.live_budget, live_spent: Duration::ZERO, not_read_again: 0, deadline: settings.deadline }
     }
 
     /// Works out how a file's pages get read: from its corpus if there's a finished one for the file as it is now, or else page by page, asking for a corpus to be built for next time. A file reached only for the count doesn't change how the answer's hits were read, so it isn't said to have.
@@ -481,6 +536,12 @@ impl<'a> Reader<'a> {
                     self.used_index = true;
                     return Ok(Got::NoText);
                 }
+                // Time's up for reading these again: each can cost a worker and a page's whole time, and there may be clean pages behind them.
+                Ok(_) if self.live_spent >= self.live_budget => {
+                    self.used_index = true;
+                    self.not_read_again += 1;
+                    return Ok(Got::Failed);
+                }
                 // That's only what happened when it was built, which may have been the moment rather than the page, so it's read now. It can't then end the search: past this, the rest of the corpus is still good.
                 Ok(_) => read_again_live = true,
                 // This page and the rest of the file are read one by one.
@@ -492,6 +553,18 @@ impl<'a> Reader<'a> {
                 }
             }
         }
+        if !read_again_live {
+            return self.read_live(file, page, live, false);
+        }
+        let began = Instant::now();
+        let got = self.read_live(file, page, live, true);
+        self.live_spent += began.elapsed();
+        got
+    }
+
+    /// One page's text, by a worker. `read_again_live` is that its corpus has it as failed, so this can only say it still is.
+    fn read_live<'s>(&mut self, file: u16, page: u32, live: &'s mut Option<recto_index::Normalized>, read_again_live: bool) -> Result<Got<'s>, AgentError> {
+        let source = &self.plan.files[usize::from(file)];
         self.used_scan = true;
         let renderer = match worker_for(&mut self.current, file, source) {
             Ok(Some(renderer)) => renderer,
@@ -512,7 +585,7 @@ impl<'a> Reader<'a> {
         if characters.chars.is_empty() {
             return Ok(Got::NoText);
         }
-        let normalized = live.insert(read_page(&characters.chars, &characters.boxes, false).normalized);
+        let normalized: &'s recto_index::Normalized = live.insert(read_page(&characters.chars, &characters.boxes, false).normalized);
         Ok(Got::Page(PageView { text: &normalized.text, also_spelled: normalized.also_spelled.iter().map(String::as_str).collect(), has_tag_chars: normalized.tag_chars_removed > 0, stored: None }))
     }
 
@@ -520,6 +593,10 @@ impl<'a> Reader<'a> {
     fn hidden(&mut self, file: u16, page: u32, view: &PageView<'_>) -> HiddenOnPage {
         if let Some(stored) = view.stored.as_ref().filter(|stored| stored.hidden_checked) {
             return HiddenOnPage { summary: json!({ "checked": true, "flagged": stored.hidden_flagged }), spans: byte_spans(view.text, &stored.hidden_spans()), partial: stored.spans_dropped };
+        }
+        // Drawing can cost a page's whole time, for each of up to 200 hits. Past the time it isn't done, which says so.
+        if Instant::now() >= self.draw_until {
+            return HiddenOnPage { summary: json!({ "checked": false, "flagged": null }), spans: Vec::new(), partial: true };
         }
         match worker_for(&mut self.current, file, &self.plan.files[usize::from(file)]) {
             Ok(Some(renderer)) => hidden_on_page(renderer, page, view.text),
@@ -542,7 +619,7 @@ impl<'a> Reader<'a> {
         match read {
             Ok(stored) if stored.kind == PageKind::Text && query.too_long_for(stored.text) => found.uncounted += 1,
             Ok(stored) if stored.kind == PageKind::Text => {
-                let on_page = query.count(stored.text, folded);
+                let on_page = query.count(stored.text, folded, self.deadline)?;
                 found.total += if on_page > 0 { on_page } else { u64::from(stored.also_spelled().iter().any(|spelled| query.spelled(spelled))) };
             }
             Ok(stored) if stored.kind == PageKind::Failed => found.uncounted += 1,
@@ -567,7 +644,9 @@ impl<'a> Reader<'a> {
         } else if self.plan.pages.is_empty() {
             ("not_used", "There were no pages to read.".to_string())
         } else if let Some(indexing) = self.indexing {
-            (self.not_ready.first().map_or("ready", FileIndex::word), self.not_ready.first().map_or_else(|| "Answered from the index.".to_string(), |state| state.scan_note(indexing.starts_builds())))
+            let note = self.not_ready.first().map_or_else(|| "Answered from the index.".to_string(), |state| state.scan_note(indexing.starts_builds()));
+            let note = if self.not_read_again > 0 { format!("{note} {} that couldn't be read when it was built weren't read again, for time, and are listed as failed.", self.not_read_again) } else { note };
+            (self.not_ready.first().map_or("ready", FileIndex::word), note)
         } else {
             ("off", "This session has no index, so this read the pages one by one.".to_string())
         };
@@ -589,15 +668,14 @@ fn worker_for<'a>(current: &'a mut Option<(u16, DocRenderer)>, file: u16, source
     Ok(current.as_mut().map(|(_, renderer)| renderer))
 }
 
-fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>, now: impl Fn() -> Instant) -> Result<Value, AgentError> {
-    let started = now();
+fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>) -> Result<Value, AgentError> {
     let mut reader = Reader::new(plan, settings);
     let mut found = Found::default();
     let mut slot = Slot::default();
     let mut folded = String::new();
     let mut counting_only = false;
     for &(position, file, page) in &plan.pages {
-        let out_of_time = now().duration_since(started) >= settings.max_time;
+        let out_of_time = Instant::now() >= settings.deadline;
         // Stopping only between pages, so asking again from `next_page` always moves on, however many hits a page has.
         if !counting_only && (found.hits.len() >= settings.limit || out_of_time) {
             found.next_page = Some(position + 1);
@@ -620,9 +698,17 @@ fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>, now: imp
                 found.too_long += 1;
             }
             Got::Page(view) => {
-                found.searched += 1;
-                if !query.on_page(view.text, &mut folded) && !view.also_spelled.iter().any(|spelled| query.spelled(spelled)) {
-                    continue;
+                match query.on_page(view.text, &mut folded, settings.deadline) {
+                    OnPage::OutOfTime => {
+                        found.failed.push(position + 1);
+                        found.out_of_time += 1;
+                        continue;
+                    }
+                    OnPage::No if !view.also_spelled.iter().any(|spelled| query.spelled(spelled)) => {
+                        found.searched += 1;
+                        continue;
+                    }
+                    OnPage::Yes | OnPage::No => {}
                 }
                 let source = &plan.files[usize::from(file)];
                 found.take((position, page), &view, query, settings, source, || reader.hidden(file, page, &view));
@@ -641,8 +727,7 @@ fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>, now: imp
 }
 
 /// Best-matching pages first, by BM25 over their words: see `recto_index::rank`. One pass over the pages for the counts, holding numbers for pages with any of the words and no text at all, then the top pages are read once more for their snippets.
-fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>, now: impl Fn() -> Instant) -> Result<Value, AgentError> {
-    let started = now();
+fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Value, AgentError> {
     let mut reader = Reader::new(plan, settings);
     let mut found = Found::default();
     let mut slot = Slot::default();
@@ -654,7 +739,7 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>, now: impl Fn(
     let mut pages_with = vec![0u32; words];
     let mut collection = Collection { pages: 0, words: 0 };
     for (index, &(position, file, page)) in plan.pages.iter().enumerate() {
-        if now().duration_since(started) >= settings.max_time {
+        if Instant::now() >= settings.deadline {
             found.next_page = Some(position + 1);
             break;
         }
@@ -687,7 +772,13 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>, now: impl Fn(
     let mut scored: Vec<(f64, usize)> = matched.iter().enumerate().map(|(at, (_, length))| (score(collection, *length, &matched_counts[at * words..(at + 1) * words], &pages_with), at)).collect();
     // Highest first, and by page among equals, so the same search gives the same order every time.
     scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    for (value, at) in scored.iter().take(settings.limit) {
+    let mut left_out = 0;
+    for (shown, (value, at)) in scored.iter().take(settings.limit).enumerate() {
+        // With no corpus, each of these is a page to read again.
+        if Instant::now() >= settings.second_pass_until {
+            left_out = scored.len().min(settings.limit) - shown;
+            break;
+        }
         let (index, _) = matched[*at];
         let (position, file, page) = plan.pages[index as usize];
         let page_counts = &matched_counts[*at * words..(*at + 1) * words];
@@ -721,6 +812,7 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>, now: impl Fn(
     found.total_cut_short = true;
     let mut coverage = found.coverage(plan, &reader);
     coverage["pages_with_these_words"] = json!(matched.len());
+    coverage["top_pages_left_out_for_time"] = json!(left_out);
     let mut answer = json!({
         "tab": plan.tab,
         "mode": "ranked",
@@ -870,12 +962,14 @@ fn fold(text: &str) -> (String, Vec<u32>) {
 struct PageHits {
     total: usize,
     shown: Vec<(u32, String, Range<usize>)>,
+    /// The time ran out partway down the page, so there may be more.
+    out_of_time: bool,
 }
 
 /// Finds the folded needle in the text. Snippets are made only for the first `room`: a hostile page of two million characters searched for one letter would otherwise make two million strings before the limit was looked at.
 fn find_hits(text: &str, needle: &str, room: usize) -> PageHits {
     let (folded, sources) = fold(text);
-    let mut hits = PageHits { total: 0, shown: Vec::with_capacity(room.min(MAX_LIMIT as usize)) };
+    let mut hits = PageHits { total: 0, shown: Vec::with_capacity(room.min(MAX_LIMIT as usize)), out_of_time: false };
     let (mut line, mut counted_to) = (1u32, 0usize);
     for (at, found) in folded.match_indices(needle) {
         hits.total += 1;
@@ -1010,20 +1104,25 @@ mod tests {
         matcher
     }
 
+    /// With all the time there is.
+    fn find_regex(text: &str, matcher: &RegexMatcher, room: usize) -> PageHits {
+        find_regex_hits(text, matcher, room, far_future())
+    }
+
     /// Failure: a pattern's hits are placed on the wrong line, a phrase across a line break isn't found, or a match of nothing counts as a hit, so `x*` is two million hits about nothing on a hostile page.
     #[test]
     fn a_pattern_finds_what_it_says_on_the_lines_it_says() {
         let page = "first line\nThe Force\nMajeure clause\nFORCE majeure again";
-        let found = find_regex_hits(page, &pattern(r"force\s+majeure"), 10);
+        let found = find_regex(page, &pattern(r"force\s+majeure"), 10);
         assert_eq!(found.total, 2, "across a line break, in any case");
         assert_eq!((found.shown[0].0, found.shown[1].0), (2, 4));
         assert_eq!(&page[found.shown[0].2.clone()], "Force\nMajeure", "and where it is, as hidden-text marks need it");
-        assert_eq!(find_regex_hits(page, &pattern(r"(?-i)force"), 10).total, 0, "case is one flag away");
-        assert_eq!(find_regex_hits(page, &pattern(r"^the"), 10).total, 1, "`^` goes by lines");
-        assert_eq!(find_regex_hits(page, &pattern(r"line.The"), 10).total, 0, "`.` stops at a line's end");
-        let nothing = find_regex_hits(page, &pattern(r"x*"), 10);
+        assert_eq!(find_regex(page, &pattern(r"(?-i)force"), 10).total, 0, "case is one flag away");
+        assert_eq!(find_regex(page, &pattern(r"^the"), 10).total, 1, "`^` goes by lines");
+        assert_eq!(find_regex(page, &pattern(r"line.The"), 10).total, 0, "`.` stops at a line's end");
+        let nothing = find_regex(page, &pattern(r"x*"), 10);
         assert_eq!((nothing.total, nothing.shown.len()), (0, 0), "matching nothing isn't a hit");
-        let some = find_regex_hits(page, &pattern(r"[a-z]+"), 2);
+        let some = find_regex(page, &pattern(r"[a-z]+"), 2);
         assert!(some.total > 2 && some.shown.len() == 2, "past the room they're counted and not built");
     }
 
@@ -1033,9 +1132,9 @@ mod tests {
         for (page, text) in [("caffè İ line\nand more\n", r"\w+"), ("", "x"), ("x", "x"), ("xxxx", "x*"), ("a\nb", "(?s).")] {
             let query = Query::regex(text).unwrap();
             let mut folded = String::new();
-            let found = query.find(page, usize::MAX);
-            assert_eq!(query.count(page, &mut folded), found.total as u64, "{page:?} {text}");
-            assert_eq!(query.on_page(page, &mut folded), found.total > 0, "{page:?} {text}");
+            let found = query.find(page, usize::MAX, far_future());
+            assert_eq!(query.count(page, &mut folded, far_future()), Some(found.total as u64), "{page:?} {text}");
+            assert_eq!(matches!(query.on_page(page, &mut folded, far_future()), OnPage::Yes), found.total > 0, "{page:?} {text}");
         }
     }
 
@@ -1058,7 +1157,7 @@ mod tests {
     #[test]
     fn a_pattern_matching_a_whole_page_is_shown_in_part() {
         let page = "word ".repeat(100_000);
-        let found = find_regex_hits(&page, &pattern(r"(?s).+"), 1);
+        let found = find_regex(&page, &pattern(r"(?s).+"), 1);
         assert_eq!(found.total, 1);
         assert!(found.shown[0].1.len() < 2 * MAX_MATCH_SHOWN, "{}", found.shown[0].1.len());
         assert!(snippet(&page, 0, page.len()).len() < 2 * MAX_MATCH_SHOWN);
@@ -1097,16 +1196,134 @@ mod tests {
         }
     }
 
-    /// Failure: on the worst pair there is, a pattern at its size limit and a page at its largest, one page holds its job thread for most of a minute, with the time cap only applying between pages. Such a page isn't run over, and the rest of the search goes on. Nothing changes for plain words.
+    /// Failure: a pattern that matches over and over restarts a pass for every match, so one page of `a` holds its job thread for minutes or hours by the review's arithmetic, 37 s measured for the second of these at 512 KiB, with the time cap only applying between pages. These stop at the deadline: a look comes between matches, empty ones included.
     #[test]
-    fn the_worst_pattern_isnt_run_over_the_longest_page() {
-        let query = Query::regex(r"(?:a|b|c|d|e|f|g|h|i|j){1,3000}\d").unwrap();
-        let page = "a".repeat(MAX_PATTERN_PAGE_BYTES + 1);
-        assert!(query.too_long_for(&page));
-        assert!(!query.too_long_for(&page[1..]), "up to the limit it runs");
-        assert!(!Query::Phrase("a".to_string()).too_long_for(&page));
-        let mut folded = String::new();
-        assert!(!query.on_page(&"a".repeat(1000), &mut folded), "and short of it, it ends");
+    fn a_pattern_that_matches_over_and_over_stops_at_the_deadline() {
+        let page = "a".repeat(MAX_PATTERN_PAGE_BYTES);
+        for text in [r"(?:a|b|c|d|e|f|g|h|i|j){1,3000}\d|.", r"\w+\d|\w", r"(a|aa|aaa|aaaa){1,100}\d|x*"] {
+            let query = Query::regex(text).unwrap();
+            let started = Instant::now();
+            let deadline = started + Duration::from_millis(50);
+            let found = query.find(&page, 5, deadline);
+            assert!(found.out_of_time, "{text}");
+            assert!(found.total < page.len(), "{text} went to the end of the page");
+            assert_eq!(query.count(&page, &mut String::new(), Instant::now()), None, "{text}");
+            // Far above one pass on any machine, debug build included, and far below a pass per match.
+            assert!(started.elapsed() < Duration::from_secs(30), "{text}: {:?}", started.elapsed());
+        }
+        // Empty matches are all that comes back from this one, so finding whether it's there at all has to stop too.
+        let query = Query::regex(r"(a|aa|aaa|aaaa){1,100}\d|x*").unwrap();
+        assert!(matches!(query.on_page(&page, &mut String::new(), Instant::now()), OnPage::OutOfTime));
+        assert!(!Query::Phrase("a".to_string()).too_long_for(&page), "and nothing changes for plain words");
+        assert!(query.too_long_for(&"a".repeat(MAX_PATTERN_PAGE_BYTES + 1)));
+        assert!(!query.too_long_for(&page), "up to the limit it runs");
+    }
+
+    /// A corpus of these pages, and a plan to read all of them. A page with no text failed when it was built. The file is whatever's given.
+    struct Fixture {
+        folder: PathBuf,
+        plan: Plan,
+        indexing: crate::index::ReadOnlyCorpus,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.folder);
+        }
+    }
+
+    struct Pages(Vec<Option<(String, bool)>>);
+
+    impl recto_index::corpus::PageFeed for Pages {
+        fn page_count(&mut self) -> Result<u32, recto_index::corpus::FeedError> {
+            Ok(self.0.len() as u32)
+        }
+        fn read(&mut self, page: u32) -> Result<recto_index::corpus::FedPage, recto_index::corpus::FeedError> {
+            match &self.0[page as usize] {
+                Some((text, checked)) => Ok(recto_index::corpus::FedPage { chars: text.chars().map(|c| recto_proto::CharRecord::new(c as u32, 0)).collect(), boxes: Vec::new(), hidden_checked: *checked }),
+                None => Err(recto_index::corpus::FeedError::Page(recto_index::corpus::FailReason::Stopped)),
+            }
+        }
+        fn still_the_same_file(&mut self) -> bool {
+            true
+        }
+    }
+
+    fn fixture(name: &str, file: &[u8], pages: Vec<Option<(String, bool)>>) -> Fixture {
+        let folder = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-search-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        recto_platform::local::ensure_private_dir(&folder).unwrap();
+        let path = folder.join("doc.pdf");
+        std::fs::write(&path, file).unwrap();
+        let root = folder.join("corpus.noindex");
+        let key = CorpusKey::of_file(&path).unwrap();
+        let count = pages.len() as u32;
+        recto_index::corpus::build(&root, key, &mut Pages(pages), &recto_index::corpus::DocMeta::default(), &recto_index::corpus::BuildLimits::default()).unwrap();
+        Fixture { folder, plan: Plan { files: vec![PlanFile { path, expected: None, added: false }], pages: (0..count).map(|page| (page, 0, page)).collect(), tab: 1 }, indexing: crate::index::ReadOnlyCorpus(root) }
+    }
+
+    fn settings(fixture: &Fixture) -> Settings<'_> {
+        let far = far_future();
+        Settings { limit: 20, context: 0, deadline: far, draw_until: far, second_pass_until: far, live_budget: Duration::from_secs(5), indexing: Some(&fixture.indexing), force_scan: false }
+    }
+
+    /// Failure: a hostile pattern on one page uses up the search, and the answer reads as "nothing found" for it, or says a total, or never says where to go on from. The page is listed, and that's said to be why.
+    #[test]
+    fn a_page_a_pattern_ran_out_of_time_on_is_listed() {
+        let page = "a".repeat(MAX_PATTERN_PAGE_BYTES);
+        let fixture = fixture("pattern-time", b"a file", vec![Some((page, true)), Some(("a clean page".to_string(), true)), Some(("another".to_string(), true))]);
+        let started = Instant::now();
+        let settings = Settings { deadline: started + Duration::from_millis(100), ..settings(&fixture) };
+        let answer = run(&fixture.plan, &Query::regex(r"\w+\d|\w").unwrap(), "regex", &settings).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(30), "{:?}", started.elapsed());
+        let coverage = &answer["coverage"];
+        assert_eq!(coverage["failed_pages"], json!([1]), "{answer}");
+        assert_eq!(coverage["pages_a_pattern_ran_out_of_time_on"], 1, "{answer}");
+        assert_eq!(coverage["hits_total"], Value::Null, "{answer}");
+        assert_eq!(coverage["next_page"], 2, "{answer}");
+        assert_eq!(coverage["pages_searched"], 0, "{answer}");
+    }
+
+    /// Failure: every failed page in a corpus is read again by a worker, each costing up to a page's whole time, so a file of many bad pages uses up every search on the first few, with clean pages behind them never reached. Past a budget they're said to have failed, as they did, with no worker, and the clean ones are read.
+    #[test]
+    fn failed_pages_past_the_budget_arent_read_again() {
+        let mut pages: Vec<Option<(String, bool)>> = vec![None; 300];
+        pages.push(Some(("the clean page at the end says needleword".to_string(), true)));
+        let fixture = fixture("budget", b"not a pdf at all", pages);
+        let settings = Settings { live_budget: Duration::ZERO, ..settings(&fixture) };
+        let started = Instant::now();
+        let answer = run(&fixture.plan, &Query::Phrase("needleword".to_string()), "phrase", &settings).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        assert_eq!(answer["route"], "index", "no worker was to be started: {answer}");
+        assert_eq!(answer["coverage"]["failed_pages_not_read_again"], 300, "{answer}");
+        assert_eq!(answer["coverage"]["failed_pages"].as_array().unwrap().len(), 300, "{answer}");
+        assert_eq!(answer["hits"][0]["page"], 301, "the clean page behind them was reached: {answer}");
+        assert!(answer["index"]["note"].as_str().unwrap().contains("weren't read again"), "{answer}");
+        // With the budget it gets, the first goes live, and it runs out.
+        let settings = Settings { live_budget: Duration::from_nanos(1), ..settings };
+        let answer = run(&fixture.plan, &Query::Phrase("needleword".to_string()), "phrase", &settings).unwrap();
+        assert_eq!(answer["route"], "mixed", "{answer}");
+        assert_eq!(answer["coverage"]["failed_pages_not_read_again"], 299, "{answer}");
+        assert_eq!(answer["hits"][0]["page"], 301, "{answer}");
+    }
+
+    /// Failure: a ranked search's second pass, or any search with many hits, draws each page the build couldn't check, 5 s a page, up to 1,000 s past the 30 s cap with `--limit 200`. Past the time it says `checked: false`, and past a little more, a ranked search leaves out the pages it hasn't read and says how many.
+    #[test]
+    fn past_the_time_nothing_more_is_drawn_or_read() {
+        let pdf = recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["a word on a page"]))]);
+        let fixture = fixture("draw", &pdf, vec![Some(("a word on a page".to_string(), false))]);
+        let terms = terms_of("word");
+        let drawn = run_ranked(&fixture.plan, &terms, &settings(&fixture)).unwrap();
+        assert_eq!(drawn["hits"][0]["hidden_text"]["checked"], true, "with time to spare, it's drawn: {drawn}");
+        let past = Instant::now() - Duration::from_millis(1);
+        let not = Settings { draw_until: past, ..settings(&fixture) };
+        let answer = run_ranked(&fixture.plan, &terms, &not).unwrap();
+        assert_eq!(answer["hits"][0]["hidden_text"], json!({ "checked": false, "flagged": null }), "{answer}");
+        let phrase = run(&fixture.plan, &Query::Phrase("word".to_string()), "phrase", &not).unwrap();
+        assert_eq!(phrase["hits"][0]["hidden_text"]["checked"], false, "{phrase}");
+        let none = Settings { second_pass_until: past, ..settings(&fixture) };
+        let answer = run_ranked(&fixture.plan, &terms, &none).unwrap();
+        assert_eq!((answer["hits"].as_array().unwrap().len(), answer["coverage"]["top_pages_left_out_for_time"].as_u64()), (0, Some(1)), "{answer}");
     }
 
     /// Failure: Greek's two lower-case sigmas and Turkish's dotted capital keep a plain search or a pattern from finding the word as printed in another case. A pattern goes by the engine's folding, which has both sigmas and not the dotted `İ`, and that's said in `docs/ENGINEERING.md`.
@@ -1119,7 +1336,7 @@ mod tests {
             assert!(folded.contains(&fold(query).0), "{query} on {page}");
         }
         for (text, page) in [("ΟΔΟΣ", "στην οδος εδώ"), ("οδος", "στην ΟΔΟΣ εδώ"), ("οδοσ", "στην οδος εδώ"), ("İSTANBUL", "in İstanbul")] {
-            assert_eq!(find_regex_hits(page, &pattern(text), 5).total, 1, "{text} on {page}");
+            assert_eq!(find_regex(page, &pattern(text), 5).total, 1, "{text} on {page}");
         }
     }
 }

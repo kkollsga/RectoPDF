@@ -495,10 +495,54 @@ fn the_budget_reports_and_cleans_up() {
     assert_eq!(code, exit::PERMISSION, "{refused}");
 }
 
+/// Every kind of search on one tab, from the index and from its pages, each held to the other. Returns how many of each.
+fn compare_every_mode(state: &State, tab: &str) -> (u32, u32, u32) {
+    let (mut plain, mut patterns, mut ranked) = (0, 0, 0);
+    for query in ["the", "of the", "zzzqqqxx", "simulation-based", "data", "must not", "figure", "a"] {
+        for limit in ["20", "200"] {
+            index_matches_scan(state, &["search", query, "--tab", tab, "--limit", limit]);
+            plain += 1;
+        }
+    }
+    for pattern in [r"\bthe\b", r"must\s+not", r"(?-i)[A-Z]{3,}", r"\d{4}", r"^figure", r"zzzqqqxx", r"[a-z]+-[a-z]+"] {
+        index_matches_scan(state, &["search", pattern, "--regex", "--tab", tab, "--limit", "50"]);
+        patterns += 1;
+    }
+    for words in ["the", "simulation data model", "zzzqqqxx", "must not", "figure results", "数学"] {
+        index_matches_scan(state, &["search", words, "--rank", "--tab", tab]);
+        ranked += 1;
+    }
+    (plain, patterns, ranked)
+}
+
+/// Failure: reading from the index differs from reading the pages on what real files have that a plain test page doesn't: a word drawn late and put back on its line, a word broken by a hyphen at a line's end, text with no ink, and an empty page. **This one always runs,** so the check holds this with no folder of PDFs. The full run over real files is `tools/check.sh --corpus`.
+#[test]
+fn the_hard_cases_answer_the_same_every_way() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let late_word = b"BT /F1 12 Tf 72 700 Td (A recipient) Tj ET BT /F1 12 Tf 72 680 Td (ignore the header figure of the data) Tj ET BT /F1 12 Tf 131 700 Td (must not) Tj ET".to_vec();
+    let list = [
+        Page::new(late_word),
+        Page::new(text_lines(&["A simulation-", "based data-", "driven model of the figure from 2019", "THE RESULTS and a word broken at simula-", "tion here"])),
+        Page::new(hidden_text_page()),
+        Page::new(Vec::new()),
+        Page::new(text_lines(&["Plain words, the data and the figure, and 数学"])),
+    ];
+    let file = TempPdf::new("hard-cases.pdf", &pages(&list));
+    state.json(&["open", path(&file)]);
+    wait_done(&state, "active");
+    let (late, _) = state.json(&["text", "--page", "1"]);
+    assert!(late["data"]["untrusted"]["text"].as_str().unwrap().contains("A recipient must not"), "this page is meant to need its line put back: {late}");
+    let (plain, patterns, ranked) = compare_every_mode(&state, "#1");
+    assert!(plain > 0 && patterns > 0 && ranked > 0);
+}
+
 /// Failure: over real pages, the index answers differently from reading the pages: line-order repair, hidden text, the normaliser and hyphen spellings are all in play here, as they aren't in a test file. Set `RECTO_BENCH100` to run; `RECTO_INDEX_ALL` takes in every file there, rather than a handful of kinds.
 #[test]
 fn real_pages_answer_the_same_from_the_index() {
     let Some(folder) = std::env::var_os("RECTO_BENCH100") else {
+        // Asked for by name, with nothing to read: that must not read as a pass. `the_hard_cases_answer_the_same_every_way` is what always runs.
+        assert!(std::env::var_os("RECTO_INDEX_ALL").is_none(), "RECTO_INDEX_ALL is set and RECTO_BENCH100 isn't, so nothing would be compared");
         eprintln!("RECTO_BENCH100 isn't set, so no corpus files were read.");
         return;
     };
@@ -527,20 +571,10 @@ fn real_pages_answer_the_same_from_the_index() {
         }
         eprintln!("{text}: {} pages, {} failed, {} flagged, {} bytes", done["data"]["pages"], done["data"]["failed_pages"], done["data"]["hidden_flagged_pages"], done["data"]["corpus_bytes"]);
         documents += 1;
-        for query in ["the", "of the", "zzzqqqxx", "simulation-based", "data", "must not", "figure", "a"] {
-            for limit in ["20", "200"] {
-                index_matches_scan(&state, &["search", query, "--tab", &tab, "--limit", limit]);
-                compared += 1;
-            }
-        }
-        for pattern in [r"\bthe\b", r"must\s+not", r"(?-i)[A-Z]{3,}", r"\d{4}", r"^figure", r"zzzqqqxx", r"[a-z]+-[a-z]+"] {
-            index_matches_scan(&state, &["search", pattern, "--regex", "--tab", &tab, "--limit", "50"]);
-            compared_regex += 1;
-        }
-        for words in ["the", "simulation data model", "zzzqqqxx", "must not", "figure results", "数学"] {
-            index_matches_scan(&state, &["search", words, "--rank", "--tab", &tab]);
-            compared_ranked += 1;
-        }
+        let (plain, patterns, ranked) = compare_every_mode(&state, &tab);
+        compared += plain;
+        compared_regex += patterns;
+        compared_ranked += ranked;
         state.json(&["close", &tab]);
     }
     eprintln!("{documents} documents, {compared} plain searches, {compared_regex} patterns and {compared_ranked} ranked searches compared");
@@ -1075,7 +1109,7 @@ fn a_page_too_long_for_a_pattern_is_listed() {
     let _serving = state.serve();
     // Many short lines of the same words, past what a pattern is run over.
     let line = "long page words here that repeat and repeat and repeat and repeat and repeat";
-    let lines: Vec<&str> = std::iter::repeat_n(line, 8000).collect();
+    let lines: Vec<&str> = std::iter::repeat_n(line, 2000).collect();
     let list = [Page::new(text_lines(&["A short page with a word like needleword"])), Page::new(text_lines(&lines))];
     let file = TempPdf::new("long-page.pdf", &pages(&list));
     state.json(&["open", path(&file)]);
