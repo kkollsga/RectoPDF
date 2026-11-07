@@ -107,6 +107,24 @@ pub(crate) fn menu_bar(view: ViewSettings, update_title: &str) -> Vec<MenuModel>
     ]
 }
 
+/// The zoom level in the top left, and what clicking it offers. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset".
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ZoomLabel {
+    /// As it's shown: `125%`.
+    pub text: String,
+    /// What's put in the field to type over: the number alone.
+    pub editing_text: String,
+    pub tooltip: String,
+    /// The button beside the field, which goes back to the fitted width.
+    pub reset_title: String,
+}
+
+/// The zoom level's words, from the magnification and the page's fit.
+pub(crate) fn zoom_label(magnification: f64, fit: f64) -> ZoomLabel {
+    let percent = recto_reader::tiles::zoom_percent(magnification, fit).round().clamp(1.0, 100_000.0);
+    ZoomLabel { text: format!("{percent:.0}%"), editing_text: format!("{percent:.0}"), tooltip: "Zoom. Click to type a level, or to fit the page again".into(), reset_title: "Fit".into() }
+}
+
 /// What's in the sidebar's panel, for now: one tab's worth.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct PanelItem {
@@ -134,7 +152,6 @@ pub(crate) fn panel(open: bool, shown: Paper) -> PanelModel {
     let sections = if open {
         vec![
             PanelSection { title: "Paper".into(), items: Paper::ALL.iter().map(|paper| item(&format!("paper.{}", paper.name()), paper.label(), *paper == shown)).collect() },
-            PanelSection { title: "Zoom".into(), items: vec![item("view.zoom_out", "Zoom out", false), item("view.zoom_in", "Zoom in", false), item("view.fit", "Fit", false)] },
         ]
     } else {
         Vec::new()
@@ -187,6 +204,7 @@ pub(crate) fn zoom_from_word(word: &str) -> Option<Zoom> {
         "out" => Some(Zoom::Out),
         "fit" => Some(Zoom::Fit),
         "actual" => Some(Zoom::Actual),
+        level if level.trim_end().ends_with('%') => recto_reader::tiles::typed_zoom(level),
         number => number.parse::<f64>().ok().filter(|value| value.is_finite()).map(Zoom::To),
     }
 }
@@ -265,6 +283,16 @@ mod tests {
         assert_eq!(action("app.settings"), Some(Action::Host(HostAction::ShowSettings)));
     }
 
+    /// Failure: the zoom level reads oddly, as `124.99999%` or `0%`, or the field to type in starts with a sign in it to delete.
+    #[test]
+    fn the_zoom_level_reads_as_a_whole_percentage() {
+        assert_eq!(zoom_label(1.0, 1.2418).text, "124%");
+        assert_eq!(zoom_label(1.0, 1.2418).editing_text, "124");
+        assert_eq!(zoom_label(0.25, 0.01).text, "1%", "never 0%");
+        assert_eq!(zoom_label(f64::NAN, 1.0).text, "100%");
+        assert!(!zoom_label(1.0, 1.0).reset_title.is_empty());
+    }
+
     /// Failure: a key meant for typing or for something else zooms, or `+` on a keyboard that has it as shifted `=` doesn't.
     #[test]
     fn only_plus_and_minus_are_zoom_keys() {
@@ -276,6 +304,8 @@ mod tests {
         }
         assert_eq!(zoom_from_word("in"), Some(Zoom::In));
         assert_eq!(zoom_from_word("2.5"), Some(Zoom::To(2.5)));
+        assert_eq!(zoom_from_word("150%"), Some(Zoom::Percent(150.0)), "a level, as the top left shows it");
+        assert_eq!(zoom_from_word("x%"), None);
         assert_eq!(zoom_from_word("NaN"), None);
         assert_eq!(zoom_from_word("zzz"), None);
     }

@@ -168,7 +168,7 @@ final class BookMark: NSView {
 }
 
 /// The window, and everything in it. It draws what it's told and passes on what the user does.
-@MainActor final class MainWindowController: NSObject, NSWindowDelegate {
+@MainActor final class MainWindowController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     unowned let delegate: AppDelegate
     let window: NSWindow
     let root = RootView()
@@ -179,6 +179,12 @@ final class BookMark: NSView {
     let agentIcon = AgentIcon()
     /// Beside the window's controls: shows and hides the sidebar. Owner, 2026-11-08: "simply have a sidebar icon to the right of the traffic light buttons that toggles sidebar on and of".
     let sidebarButton = NSButton(title: "", target: nil, action: nil)
+    /// The zoom level, beside the sidebar's button. Clicking it opens a field to type a level in, with a button to fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". Its words are Rust's.
+    let zoomButton = NSButton(title: "", target: nil, action: nil)
+    let zoomField = NSTextField(string: "")
+    let zoomReset = NSButton(title: "", target: nil, action: nil)
+    private(set) var zoomEditing = false
+    private var zoomLabel: ZoomLabel?
     let noteLabel = MarginLabel()
     let placeLabel = MarginLabel()
     let copyNotice = CopyNotice()
@@ -242,6 +248,9 @@ final class BookMark: NSView {
         root.addSubview(placeLabel)
         root.addSubview(copyNotice)
         root.addSubview(sidebarButton)
+        for view in [zoomButton, zoomField, zoomReset] as [NSView] { root.addSubview(view) }
+        buildZoomLevel()
+        pages.zoomChanged = { [weak self] in self?.updateZoomLevel() }
         sidebarButton.isBordered = false
         sidebarButton.imagePosition = .imageOnly
         sidebarButton.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: delegate.strings.sidebarButtonTooltip)?.withSymbolConfiguration(.init(pointSize: 14, weight: .regular))
@@ -330,6 +339,11 @@ final class BookMark: NSView {
 
     private func firstResponderChanged() {
         guard let responder = window.firstResponder else { return }
+        // Going somewhere else with the zoom level's field open leaves the level as it was, as Escape does.
+        if zoomEditing, responder === root || responder === sidebar.table || responder === sidebar.contentsTable {
+            endZoomEditing()
+            return
+        }
         if responder === sidebar.table || responder === sidebar.contentsTable {
             delegate.core.focusChanged(view: "sidebar")
         } else if responder === root || responder === window {
@@ -501,10 +515,91 @@ final class BookMark: NSView {
         let row = windowButtonsRow()
         let size: CGFloat = 24
         sidebarButton.frame = NSRect(x: (row.right + 10).rounded(), y: (row.middle - size / 2).rounded(), width: size, height: size)
+        // The zoom level after it, in the same row, with room between so it doesn't crowd the button.
+        let x = sidebarButton.frame.maxX + 10
+        let text = zoomButton.attributedTitle.size()
+        zoomButton.frame = NSRect(x: x, y: (row.middle - 11).rounded(), width: (text.width + 12).rounded(.up), height: 22)
+        zoomField.frame = NSRect(x: x, y: (row.middle - 11).rounded(), width: 54, height: 22)
+        let reset = zoomReset.attributedTitle.size()
+        zoomReset.frame = NSRect(x: zoomField.frame.maxX + 6, y: (row.middle - 11).rounded(), width: (reset.width + 10).rounded(.up), height: 22)
     }
 
     @objc private func sidebarButtonPressed() {
         delegate.perform("view.sidebar")
+    }
+
+    private static let zoomFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+
+    private func buildZoomLevel() {
+        zoomButton.isBordered = false
+        zoomButton.target = self
+        zoomButton.action = #selector(zoomButtonPressed)
+        zoomField.font = Self.zoomFont
+        zoomField.alignment = .center
+        zoomField.bezelStyle = .roundedBezel
+        zoomField.controlSize = .small
+        zoomField.target = self
+        zoomField.action = #selector(zoomTyped)
+        // Return applies a level, and nothing else does: leaving the field leaves it as it was.
+        zoomField.cell?.sendsActionOnEndEditing = false
+        zoomField.delegate = self
+        zoomField.isHidden = true
+        zoomReset.isBordered = false
+        zoomReset.target = self
+        zoomReset.action = #selector(zoomResetPressed)
+        zoomReset.isHidden = true
+    }
+
+    /// The level as it stands, from the page's magnification and fit, in Rust's words. Not while it's being typed over.
+    func updateZoomLevel() {
+        let label = delegate.core.zoomLabel(magnification: pages.scrollView.magnification, fit: pages.fitForQA)
+        zoomButton.isHidden = reader.home || zoomEditing
+        guard label != zoomLabel else { return }
+        zoomLabel = label
+        zoomButton.toolTip = label.tooltip
+        zoomReset.toolTip = label.tooltip
+        styleZoomLevel()
+        layoutTopLeft()
+    }
+
+    private func styleZoomLevel() {
+        guard let label = zoomLabel else { return }
+        zoomButton.attributedTitle = NSAttributedString(string: label.text, attributes: [.font: Self.zoomFont, .foregroundColor: Theme.textQuiet.ns])
+        zoomReset.attributedTitle = NSAttributedString(string: label.resetTitle, attributes: [.font: Self.zoomFont, .foregroundColor: Theme.accent.ns])
+    }
+
+    @objc private func zoomButtonPressed() {
+        guard !reader.home, let label = zoomLabel else { return }
+        zoomEditing = true
+        zoomField.stringValue = label.editingText
+        zoomButton.isHidden = true
+        zoomField.isHidden = false
+        zoomReset.isHidden = false
+        layoutTopLeft()
+        window.makeFirstResponder(zoomField)
+        zoomField.selectText(nil)
+    }
+
+    /// Return in the field. Rust says whether it was a level, and if it wasn't, nothing changes.
+    @objc private func zoomTyped() {
+        guard zoomEditing else { return }
+        _ = delegate.core.zoomTyped(text: zoomField.stringValue)
+        endZoomEditing()
+    }
+
+    @objc private func zoomResetPressed() {
+        delegate.perform("view.fit")
+        endZoomEditing()
+    }
+
+    func endZoomEditing() {
+        guard zoomEditing else { return }
+        zoomEditing = false
+        zoomField.isHidden = true
+        zoomReset.isHidden = true
+        if window.firstResponder === zoomField.currentEditor() || window.firstResponder === zoomField { window.makeFirstResponder(root) }
+        updateZoomLevel()
+        layoutTopLeft()
     }
 
     /// Into the sidebar's top corner, where the concept has them, without a toolbar's strip across the page.
@@ -525,6 +620,8 @@ final class BookMark: NSView {
         pages.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: window.isKeyWindow || delegate.isQuiet)
         fadeNoticeIfItSaysTo()
         agentIcon.isHidden = reader.agentIconHidden
+        if reader.home { endZoomEditing() }
+        updateZoomLevel()
         layout()
     }
 
@@ -541,10 +638,25 @@ final class BookMark: NSView {
         sidebar.appearanceChanged()
         for view in [agentIcon, homeBook] { view.needsDisplay = true }
         sidebarButton.contentTintColor = Theme.textQuiet.ns
+        styleZoomLevel()
         for label in [noteLabel, placeLabel, copyNotice as MarginLabel] {
             label.layer?.backgroundColor = Theme.pill.cg
             if !label.label.text.isEmpty { label.label.set(label.label.text, font: .systemFont(ofSize: 11.5), color: Theme.textBody.ns, wraps: true) }
         }
+    }
+
+    /// Escape in the zoom level's field leaves it as it was.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard control === zoomField, selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        endZoomEditing()
+        return true
+    }
+
+    /// Going somewhere else with the field open, by Tab or a click, leaves the level as it was, as Escape does. A quiet run's window can't hold the keyboard, so there the field stays open until QA says what's typed.
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard (notification.object as? NSTextField) === zoomField, zoomEditing, window.canBecomeKey else { return }
+        let movement = (notification.userInfo?["NSTextMovement"] as? Int).flatMap(NSTextMovement.init(rawValue:))
+        if movement != .return { endZoomEditing() }
     }
 
     func windowDidResize(_ notification: Notification) {

@@ -560,6 +560,9 @@ impl AppHost {
             let mut answer = self.session.run(level, &rest, events)?;
             let value = self.engine.zoom(zoom).ok_or_else(|| AgentError::new("no_active_tab", "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
             answer["zoom"] = json!(value);
+            if let Some(fit) = self.engine.fit() {
+                answer["zoom_level"] = json!(menus::zoom_label(value, fit).text);
+            }
             self.core.push(CoreCall::Reconcile);
             return Ok(answer);
         }
@@ -1503,6 +1506,17 @@ impl AppCore {
     /// The id a key does with nothing held, or none.
     pub fn plain_key_action(&self, characters: String) -> Option<String> {
         menus::plain_key(&characters).map(str::to_string)
+    }
+
+    /// The zoom level in the top left, as the host's magnification and the page's fit make it. Cheap: on every change of zoom.
+    pub fn zoom_label(&self, magnification: f64, fit: f64) -> menus::ZoomLabel {
+        menus::zoom_label(magnification, fit)
+    }
+
+    /// What the reader typed in the zoom level's field. Says whether it was a level: if not, nothing changes and the field shows what it was. Held to the limits as every zoom is.
+    pub fn zoom_typed(&self, text: String) -> bool {
+        let Some(zoom) = recto_reader::tiles::typed_zoom(&text) else { return false };
+        self.inner.engine.zoom(zoom).is_some()
     }
 
     /// The zoom after this much ⌘-scroll, from where it is.

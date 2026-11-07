@@ -149,6 +149,17 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [x] `recto search --regex` by ripgrep's engine in process, and `--rank` by BM25, with no new index (owner, 2026-11-07)
 - [x] What blind agents asked for: a whole-document hit total in `search`
 - [ ] The rest of what they asked for: an unwrapped quote form of `text`, `edits` saying when turns cancel out, `watch` to a file, and what an encrypted file restricts in `facts`
+- From the owner's first use of the restore build (2026-11-07 and 08):
+  - [x] A sidebar button beside the window's controls replaces focus view; View > Hide Sidebar on ⌃⌘S; `recto view --sidebar`
+  - [x] The zoom level in the top left, clicked to type a level or fit again; no zoom in the `⋯` panel; `recto view --zoom 150%`
+  - [ ] The page number always in the lower right
+  - [ ] Right-click: single page, side by side, and side by side with the first page alone, per tab and restored
+  - [ ] File > Settings…
+  - [ ] Rotate in the `⋯` panel turns every page as one unsaved edit, outside edit mode
+  - [ ] The agent icon's margins: the same to the right and above, and less above than before
+  - [ ] Margin above the first page and below the last
+  - [ ] The page's scroller: a slim thumb always shown, no rail, the sidebar's width and colours
+  - [ ] Comparison view: several PDFs side by side, separate or synced scroll, zoom synced
 - [ ] **Blind agent test, next round**
 
 **Done when:** it can replace your everyday reader for reading only.

@@ -195,6 +195,11 @@ impl Engine {
         value
     }
 
+    /// The tab showing's fit, document points per PDF point, if a tab is showing: what a zoom level is worked out from.
+    pub fn fit(&self) -> Option<f64> {
+        lock(&self.shared.reader).fit()
+    }
+
     /// Which tabs are warm now, with no change of tab. Anything that's stopped being warm lets go of what it holds.
     pub fn set_warm(&self, warm: &[u32]) {
         let mut reader = lock(&self.shared.reader);

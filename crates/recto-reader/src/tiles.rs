@@ -55,6 +55,25 @@ pub enum Zoom {
     /// A point of the page is a point on the screen.
     Actual,
     To(f64),
+    /// A share of the page's real size, where 100 is [`Zoom::Actual`]: what the zoom level in the top left says and takes.
+    Percent(f64),
+}
+
+/// The zoom level as the reader is told it: a share of the page's real size, so 100% is a point of the page to a point on the screen, as in any Mac app that shows a zoom. A magnification of 1 is the fitted width, whatever that is.
+pub fn zoom_percent(magnification: f64, fit: f64) -> f64 {
+    let percent = magnification * fit * 100.0;
+    if percent.is_finite() { percent } else { 100.0 }
+}
+
+/// What a zoom level typed by the reader asks for, or nothing if it isn't one. `150`, `150%` and ` 150 % ` are all 150%. It's held to the limits when it's applied, like any zoom.
+pub fn typed_zoom(text: &str) -> Option<Zoom> {
+    let text = text.trim();
+    let number = text.strip_suffix('%').unwrap_or(text).trim();
+    // A number, and nothing a hostile paste could make long: past this it isn't a zoom level anyone typed.
+    if number.is_empty() || number.len() > 12 {
+        return None;
+    }
+    number.replace(',', ".").parse::<f64>().ok().filter(|value| value.is_finite() && *value > 0.0).map(Zoom::Percent)
 }
 
 /// How much one step of zoom is.
@@ -1016,11 +1035,17 @@ impl Reader {
             Zoom::Fit => 1.0,
             Zoom::Actual => 1.0 / doc.layout.fit().max(f64::MIN_POSITIVE),
             Zoom::To(value) => value,
+            Zoom::Percent(percent) => percent / 100.0 / doc.layout.fit().max(f64::MIN_POSITIVE),
         };
         let value = if value.is_finite() { value.clamp(MIN_ZOOM, MAX_ZOOM) } else { doc.magnification };
         doc.magnification = value;
         self.ops.push_back(Op::Magnify { value });
         Some(value)
+    }
+
+    /// The tab showing's fit, if one is.
+    pub fn fit(&self) -> Option<f64> {
+        self.doc().map(|doc| doc.layout.fit())
     }
 
     /// Exactly where each tab it holds is, for the session to keep. Hot and warm tabs: a few at most, and a cold tab's is already kept.

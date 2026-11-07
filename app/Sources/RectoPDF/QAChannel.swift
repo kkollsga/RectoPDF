@@ -136,8 +136,24 @@ import QuartzCore
             guard let controller else { return fail(id, "The window is closed.") }
             switch value {
             case "sidebar": controller.sidebarButton.performClick(nil)
+            case "zoom":
+                guard !controller.zoomButton.isHidden else { return fail(id, "The zoom level isn't showing.") }
+                controller.zoomButton.performClick(nil)
+            case "zoom_reset":
+                guard controller.zoomEditing else { return fail(id, "The zoom level's field isn't open.") }
+                controller.zoomReset.performClick(nil)
             default: return fail(id, "That isn't one of the window's buttons.")
             }
+        case "zoom_type":
+            guard let controller else { return fail(id, "The window is closed.") }
+            if !controller.zoomEditing {
+                guard !controller.zoomButton.isHidden else { return fail(id, "The zoom level isn't showing.") }
+                controller.zoomButton.performClick(nil)
+            }
+            controller.zoomField.stringValue = value
+            // Return, by the field's own action.
+            controller.zoomField.sendAction(controller.zoomField.action, to: controller.zoomField.target)
+            controller.pages.drain()
         case "panel":
             guard let sidebar = controller?.sidebar else { return fail(id, "The window is closed.") }
             guard let button = value == "toggle" ? sidebar.moreButton : sidebar.panel?.buttons[value] else { return fail(id, "That isn't in the panel, or it isn't open.") }
@@ -193,6 +209,7 @@ import QuartzCore
             "sidebar_hidden": reader.sidebarHidden,
             "sidebar_button": ["visible": !controller.sidebarButton.isHidden && controller.sidebarButton.superview != nil, "frame": [controller.sidebarButton.frame.minX, controller.sidebarButton.frame.minY, controller.sidebarButton.frame.width, controller.sidebarButton.frame.height], "clear_of_window_buttons": controller.windowButtonFrames(in: controller.root).allSatisfy { !$0.intersects(controller.sidebarButton.frame) }] as [String: Any],
             "window_buttons_shown": controller.windowButtonsShown,
+            "zoom_level": ["text": controller.zoomButton.attributedTitle.string, "visible": !controller.zoomButton.isHidden, "editing": controller.zoomEditing, "field": controller.zoomEditing ? controller.zoomField.stringValue : NSNull() as Any, "reset": controller.zoomReset.isHidden ? NSNull() as Any : controller.zoomReset.attributedTitle.string, "clear_of_sidebar_button": !controller.zoomButton.frame.intersects(controller.sidebarButton.frame) && controller.zoomButton.frame.minX >= controller.sidebarButton.frame.maxX + 6, "in_the_window_buttons_row": abs(controller.zoomButton.frame.midY - controller.sidebarButton.frame.midY) < 1] as [String: Any],
             "home": !controller.home.isHidden,
             "sidebar_visible": !sidebar.view.isHidden,
             "sidebar_width": sidebar.view.frame.width,
@@ -233,7 +250,7 @@ import QuartzCore
         let owners: [(String, NSObject, Selector)] = [("sidebar_hover_in", sidebar, entered), ("sidebar_hover_out", sidebar, exited), ("sidebar_pointer_moved", sidebar, moved)]
         for (name, owner, selector) in owners { found[name] = owner.responds(to: selector) }
         guard owners.allSatisfy({ $0.1.responds(to: $0.2) }) else { return found }
-        let actions: [(String, NSControl)] = [("tab_row_click", sidebar.table), ("contents_row_click", sidebar.contentsTable), ("add_button", sidebar.addButton), ("home_button", controller.homeButtonForQA), ("sidebar_button", controller.sidebarButton)]
+        let actions: [(String, NSControl)] = [("tab_row_click", sidebar.table), ("contents_row_click", sidebar.contentsTable), ("add_button", sidebar.addButton), ("home_button", controller.homeButtonForQA), ("sidebar_button", controller.sidebarButton), ("zoom_level", controller.zoomButton), ("zoom_field", controller.zoomField), ("zoom_reset", controller.zoomReset)]
         for (name, control) in actions {
             found[name] = control.action.flatMap { action in (control.target as? NSObject)?.responds(to: action) } ?? false
         }

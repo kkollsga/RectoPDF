@@ -331,6 +331,45 @@ fn dark_mode_paper_and_the_sidebar_change_what_is_drawn() {
     wait_for(&run, |state| state["app"]["sidebar_visible"] == true);
 }
 
+/// Failure: the zoom level in the top left isn't there, says a level the page isn't at, crowds the sidebar's button or leaves the window's row, or clicking it doesn't let the reader type a level or fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". 100% is the page's real size.
+#[test]
+fn the_zoom_level_shows_and_takes_a_typed_level() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(5);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let magnification = |state: &Value| state["app"]["pages"]["magnification"].as_f64().unwrap();
+    let rest = run.report();
+    let level = &rest["app"]["zoom_level"];
+    assert_eq!((&level["visible"], &level["editing"], &level["clear_of_sidebar_button"], &level["in_the_window_buttons_row"]), (&json!(true), &json!(false), &json!(true), &json!(true)), "{rest}");
+    let fit = rest["reader"]["fit"].as_f64().unwrap();
+    assert_eq!(level["text"], format!("{:.0}%", (magnification(&rest) * fit * 100.0).round()), "it says the level the page is at: {rest}");
+    let open = run.ok(&["qa", "button", "zoom"]);
+    assert_eq!(open["zoom_level"]["editing"], true, "{open}");
+    assert!(open["zoom_level"]["field"].as_str().is_some_and(|text| text.parse::<f64>().is_ok()), "the number alone, to type over: {open}");
+    assert!(open["zoom_level"]["reset"].is_string(), "{open}");
+    run.ok(&["qa", "zoom-type", "200"]);
+    let at_200 = wait_for(&run, |state| state["app"]["zoom_level"]["text"] == "200%");
+    assert!((magnification(&at_200) * fit - 2.0).abs() < 0.01, "200% is twice the real size: {at_200}");
+    assert_eq!(at_200["app"]["zoom_level"]["editing"], false);
+    run.ok(&["qa", "zoom-type", "banana"]);
+    run.settled();
+    let same = run.report();
+    assert_eq!(same["app"]["zoom_level"]["text"], "200%", "what isn't a level changes nothing: {same}");
+    assert_eq!(same["app"]["zoom_level"]["editing"], false);
+    run.ok(&["qa", "zoom-type", "100000"]);
+    let most = wait_for(&run, |state| state["app"]["zoom_level"]["text"] != "200%");
+    assert!(magnification(&most) <= 8.0 + 1e-9, "held to the limits: {most}");
+    run.ok(&["qa", "button", "zoom"]);
+    run.ok(&["qa", "button", "zoom_reset"]);
+    let fitted = wait_for(&run, |state| (state["app"]["pages"]["magnification"].as_f64().unwrap() - 1.0).abs() < 1e-6);
+    assert_eq!(fitted["app"]["zoom_level"]["editing"], false, "{fitted}");
+    assert_eq!(run.ok(&["view", "--zoom", "50%"])["zoom_level"], "50%", "the same level an agent can ask for");
+    run.ok(&["view", "--sidebar", "off"]);
+    let hidden = wait_for(&run, |state| state["app"]["sidebar_visible"] == false);
+    assert_eq!((&hidden["app"]["zoom_level"]["visible"], &hidden["app"]["zoom_level"]["clear_of_sidebar_button"]), (&json!(true), &json!(true)), "{hidden}");
+}
+
 /// Failure: closing the window keeps tiles and a worker, so it's over budget, or the app quits, or the tabs are lost. The red button's path, and back. The agent's socket stays.
 #[test]
 fn closing_the_window_frees_tiles_and_keeps_the_session() {
@@ -434,7 +473,7 @@ fn what_appkit_calls_reaches_the_app() {
     let checked = found.as_object().unwrap();
     let failed: Vec<&String> = checked.iter().filter(|(_, ok)| **ok != true).map(|(name, _)| name).collect();
     assert!(failed.is_empty(), "these don't reach the app: {failed:?}\n{found}");
-    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "sidebar_button", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "copy_is_grey_with_nothing_selected", "select_all_can_be_chosen", "select_all_key_reaches_the_app", "select_all_selects", "copy_is_enabled_with_something_selected", "copy_key_reaches_the_app", "services_arent_offered_what_they_didnt_ask_for", "services_arent_offered_nothing", "services_write_nothing_with_nothing_selected", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
+    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "sidebar_button", "zoom_level", "zoom_field", "zoom_reset", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "copy_is_grey_with_nothing_selected", "select_all_can_be_chosen", "select_all_key_reaches_the_app", "select_all_selects", "copy_is_enabled_with_something_selected", "copy_key_reaches_the_app", "services_arent_offered_what_they_didnt_ask_for", "services_arent_offered_nothing", "services_write_nothing_with_nothing_selected", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
         assert!(checked.contains_key(name), "{name} wasn't checked: {found}");
     }
 }
@@ -549,7 +588,7 @@ fn the_panel_opens_and_does_what_it_says() {
     run.settled();
     let open = run.report();
     let ids: Vec<&str> = open["app"]["panel"]["items"].as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["paper.white", "paper.warm", "paper.dark", "view.zoom_out", "view.zoom_in", "view.fit"], "this and nothing else");
+    assert_eq!(ids, ["paper.white", "paper.warm", "paper.dark"], "this and nothing else: zoom is the top left's, by the owner's word");
     assert!(open["app"]["contents"]["list_height"].as_f64().unwrap() < list_at_rest, "it docks in room from the list: {open}");
     let drawn = open["reader"]["counts"]["drawn"].clone();
     run.ok(&["qa", "panel", "paper.warm"]);
@@ -560,10 +599,6 @@ fn the_panel_opens_and_does_what_it_says() {
     assert_eq!(picked.len(), 1);
     assert_eq!(picked[0]["id"], "paper.warm");
     assert_eq!(run.ok(&["view"])["paper"], "warm", "the same setting `recto view` has");
-    run.ok(&["qa", "panel", "view.zoom_in"]);
-    wait_for(&run, |state| state["app"]["pages"]["magnification"].as_f64().unwrap_or(0.0) > 1.0);
-    run.ok(&["qa", "panel", "view.fit"]);
-    wait_for(&run, |state| state["app"]["pages"]["magnification"] == 1.0);
     run.ok(&["qa", "panel", "toggle"]);
     wait_for(&run, |state| state["app"]["panel"]["open"] == false);
 }

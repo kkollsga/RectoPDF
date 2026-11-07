@@ -130,6 +130,9 @@ final class CenteringClipView: NSClipView {
     private(set) var pointerSteps: UInt64 = 0
 
     private let delegateAutoscrollEvery: TimeInterval
+    /// Told when the zoom or the page's fit has changed, for the zoom level in the top left. Asked on each viewport, and only called on a change.
+    var zoomChanged: (() -> Void)?
+    private var toldZoom: (Double, Double) = (0, 0)
 
     init(core: AppCore, limits: ReaderLimits, isQuiet: Bool) {
         self.core = core
@@ -489,6 +492,10 @@ final class CenteringClipView: NSClipView {
         guard frameWidth > 0 else { return }
         let ops = core.setViewport(viewport: ViewportInput(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height, frameWidth: frameWidth, magnification: scrollView.magnification, backing: backing, live: live, scrolledTo: scrolledTo))
         apply(ops)
+        if toldZoom != (scrollView.magnification, fit) {
+            toldZoom = (scrollView.magnification, fit)
+            zoomChanged?()
+        }
     }
 
     /// There's more from Rust: tiles that have arrived, a change of tab. Called when it says so.
