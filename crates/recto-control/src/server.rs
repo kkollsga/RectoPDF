@@ -146,6 +146,7 @@ impl Server {
             generations: 0,
             pending: None,
             last_level,
+            stop_request: None,
             stopping: None,
         };
         let result = state.run(&self.listener, &self.wake_rx);
@@ -247,9 +248,26 @@ struct Loop<H> {
     /// The latest level an agent has asked for. One slot: this tells the user something's wanted, and can't grow.
     pending: Option<Level>,
     last_level: Level,
-    /// Set by `stop`: when to give up on what's running.
+    /// `stop` is waiting for what's running to end, before it checks for unsaved edits and either ends this or says why not.
+    stop_request: Option<StopRequest>,
+    /// Ending for certain: when to give up on what's running.
     stopping: Option<Instant>,
 }
+
+#[derive(Clone, Copy, Debug)]
+struct StopRequest {
+    conn: u64,
+    deadline: Instant,
+    /// The check is on its way, so only one goes.
+    checking: bool,
+}
+
+/// How much of a sent answer can sit in front of the rest of `output` before the room is taken back.
+const MAX_SENT_KEPT: usize = 64 * 1024;
+/// An answer this small can go past `max_queued_bytes`, so `status` and errors still work while large answers are refused.
+const SMALL_ANSWER_BYTES: usize = 64 * 1024;
+/// Announcements in one session's life.
+const MAX_ANNOUNCEMENTS: u32 = 1024;
 
 impl<H: Host> Loop<H> {
     fn run(&mut self, listener: &Listener, wake_rx: &Stream) -> std::io::Result<()> {
@@ -287,6 +305,7 @@ impl<H: Host> Loop<H> {
             self.flush_all();
             self.take_lines();
             self.expire();
+            self.advance_stop();
             self.start_jobs();
             self.reap();
             if self.finished_stopping() {
@@ -389,7 +408,31 @@ impl<H: Host> Loop<H> {
             return;
         }
         let tag = command.tag();
+        // Past the connection cap, only what must always get through.
+        if self.conns[index].overflow && !matches!(command, Command::Status {} | Command::LevelChanged {} | Command::PermissionShow {} | Command::Stop {}) {
+            self.answer(index, tag, &Err(AgentError::new("busy", "The session has too many connections right now.", exit::BUSY)));
+            self.conns[index].closing = true;
+            return;
+        }
+        // Only the quick answers while `stop` waits: anything else could change what it's about to check.
+        if self.stop_request.is_some() && !matches!(command, Command::Status {} | Command::LevelChanged {} | Command::PermissionShow {} | Command::Log { .. }) {
+            self.answer(index, tag, &Err(stopping_now()));
+            return;
+        }
         match command {
+            Command::Stop {} => {
+                self.conns[index].state = State::Busy;
+                let conn = self.conns[index].id;
+                self.stop_request = Some(StopRequest { conn, deadline: Instant::now() + self.limits.stop_grace, checking: false });
+                // Anything still waiting its turn could be an edit that `stop` would then lose.
+                let queued: Vec<u64> = self.queue.iter().filter(|job| matches!(job, Job::Command { .. })).map(Job::conn).collect();
+                self.queue.retain(|job| !matches!(job, Job::Command { .. }));
+                for conn in queued {
+                    if let Some(index) = self.conns.iter().position(|c| c.id == conn) {
+                        self.answer(index, "unknown", &Err(stopping_now()));
+                    }
+                }
+            }
             Command::Status {} => {
                 let data = self.status(level);
                 self.log.record(tag, level, "ok", &Value::Null);
@@ -552,6 +595,9 @@ impl<H: Host> Loop<H> {
                 }
                 self.log.record(tag, level, outcome, &details);
                 self.publish(&events);
+                if tag == "stop" {
+                    self.stop_request = None;
+                }
                 if let Some(index) = self.conns.iter().position(|c| c.id == conn) {
                     let now = Instant::now();
                     let client = &mut self.conns[index];
@@ -766,7 +812,16 @@ impl<H: Host> Loop<H> {
             return;
         }
         self.stopping = Some(Instant::now() + self.limits.stop_grace);
-        self.queue.retain(|job| matches!(job, Job::Command { .. }));
+        // An edit still waiting its turn would answer ok and then be lost.
+        let queued: Vec<u64> = self.queue.iter().map(Job::conn).collect();
+        self.queue.clear();
+        for conn in queued {
+            if let Some(index) = self.conns.iter().position(|c| c.id == conn)
+                && matches!(self.conns[index].state, State::Busy)
+            {
+                self.answer(index, "unknown", &Err(stopping_now()));
+            }
+        }
         for index in 0..self.conns.len() {
             match &self.conns[index].state {
                 State::Waiting { tag, .. } => {
@@ -782,6 +837,29 @@ impl<H: Host> Loop<H> {
         }
     }
 
+    /// `stop` waits for what's running to end, and only then checks for unsaved edits. Anything checked earlier could change.
+    fn advance_stop(&mut self) {
+        let Some(request) = self.stop_request else { return };
+        if request.checking {
+            return;
+        }
+        let queued_commands = self.queue.iter().any(|job| matches!(job, Job::Command { .. }));
+        if self.running == 0 && !queued_commands {
+            self.queue.push_front(Job::Command { conn: request.conn, command: Command::Stop {} });
+            self.stop_request = Some(StopRequest { checking: true, ..request });
+        } else if Instant::now() >= request.deadline {
+            self.stop_request = None;
+            if let Some(index) = self.conns.iter().position(|c| c.id == request.conn) {
+                let error = AgentError::new("busy", "A command is still running, so the session wasn't stopped.", exit::BUSY).then("Try again when it's finished. `recto status` shows the session is alive.");
+                self.answer(index, "stop", &Err(error));
+            }
+        }
+    }
+
+    fn subscribers(&self) -> usize {
+        self.conns.iter().filter(|conn| matches!(conn.state, State::Waiting { .. } | State::Watching { .. })).count()
+    }
+
     fn finished_stopping(&self) -> bool {
         let Some(deadline) = self.stopping else { return false };
         let busy = self.running > 0 || !self.queue.is_empty() || self.conns.iter().any(Conn::has_output);
@@ -791,6 +869,11 @@ impl<H: Host> Loop<H> {
     fn next_deadline(&self) -> Option<Instant> {
         let mut soonest = self.stopping;
         let mut consider = |at: Instant| soonest = Some(soonest.map_or(at, |so_far| so_far.min(at)));
+        if let Some(request) = self.stop_request
+            && !request.checking
+        {
+            consider(request.deadline);
+        }
         for conn in &self.conns {
             if conn.has_output() {
                 consider(conn.output_since + self.limits.write_deadline);
@@ -958,6 +1041,14 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
             Done::Answered { conn, line, tag, level, outcome, details, events, draws, stop }
         }
     }
+}
+
+fn stopping_now() -> AgentError {
+    AgentError::new("busy", "The session is stopping, so this wasn't done.", exit::BUSY).then("If it didn't stop, try again. `recto status` shows whether it's still there.")
+}
+
+fn too_many_waiting() -> AgentError {
+    AgentError::new("busy", "Too many clients are waiting on this session right now.", exit::BUSY)
 }
 
 fn internal() -> AgentError {
