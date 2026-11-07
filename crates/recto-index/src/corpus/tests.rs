@@ -596,6 +596,22 @@ fn a_pack_may_be_longer_than_it_says_and_never_shorter() {
     assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged);
 }
 
+/// Failure: making agents' folders adds up to as much again per document, past the cap on all of them, with nothing to bring it back until the next build or session.
+#[test]
+fn an_agent_folder_makes_room_too() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let (old, wanted) = (CorpusKey([1; 32]), CorpusKey([2; 32]));
+    for key in [old, wanted] {
+        build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    }
+    File::options().write(true).open(CorpusPaths::new(&root, old).used).unwrap().set_modified(SystemTime::now() - Duration::from_secs(3600)).unwrap();
+    let tight = BuildLimits { max_total_bytes: folder_bytes(&root.join(wanted.hex())) + 1, ..BuildLimits::default() };
+    ensure_agent_folder(&root, wanted, &tight).unwrap();
+    assert!(!root.join(old.hex()).exists(), "the total stayed over its cap");
+    assert!(CorpusPaths::new(&root, wanted).manifest.is_file(), "and what was asked for stays");
+}
+
 /// Failure: every page is kept on disk twice, once for a search and once for an agent, though nothing reads the second until there's an agent to read it. A build makes one, and only asking makes the other, from the pack alone: the PDF needn't even be there. **And it's the same text** in the form the agent report set out.
 #[test]
 fn the_agent_folder_is_made_on_demand_from_the_pack() {

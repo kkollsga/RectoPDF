@@ -1268,7 +1268,13 @@ pub fn ensure_agent_folder(root: &Path, key: CorpusKey, limits: &BuildLimits) ->
     if lock.try_lock().is_err() {
         return Err(AgentFolderError::Busy);
     }
-    make_agent_folder(&paths, limits)
+    let made = make_agent_folder(&paths, limits);
+    drop(lock);
+    // It can add as much again as the corpus, so the total may be over now.
+    if made.is_ok() {
+        let _ = evict(root, limits, Some(key));
+    }
+    made
 }
 
 fn make_agent_folder(paths: &CorpusPaths, limits: &BuildLimits) -> Result<AgentFolder, AgentFolderError> {
