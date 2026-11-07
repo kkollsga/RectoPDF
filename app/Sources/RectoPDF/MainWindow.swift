@@ -131,6 +131,7 @@ final class BookMark: NSView {
     private let homeTitle = TextLine()
     private let homeHint = TextLine()
     private let homeButton = NSButton(title: "", target: nil, action: nil)
+    var homeButtonForQA: NSControl { homeButton }
     private let homeBook = BookMark()
     private(set) var reader: ReaderView
 
@@ -182,6 +183,9 @@ final class BookMark: NSView {
             for url in urls { delegate?.core.openFile(path: url.path) }
         }
         root.registerForDraggedTypes([.fileURL])
+        // In focus view the window's buttons come back with the pointer near them. One area in a fixed corner, and it costs nothing when nothing's there.
+        let corner = NSTrackingArea(rect: NSRect(x: 0, y: 0, width: 100, height: 44), options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self, userInfo: nil)
+        root.addTrackingArea(corner)
         layout()
         appearanceChanged()
         if delegate.isQuiet { QAChannel.drawActive(window) }
@@ -266,7 +270,14 @@ final class BookMark: NSView {
     }
 
     private var pointerNearButtons = false
-    private var buttonsTracking: NSTrackingArea?
+
+    // AppKit calls these by name on a tracking area's owner. This isn't a responder, so they say so, by that name.
+    @objc(mouseEntered:) func mouseEntered(with event: NSEvent) { pointerNearButtons(true) }
+
+    @objc(mouseExited:) func mouseExited(with event: NSEvent) { pointerNearButtons(false) }
+
+    /// Whether the window's buttons are showing, for QA.
+    var windowButtonsShown: Bool { window.standardWindowButton(.closeButton)?.isHidden == false }
 
     private func setWindowButtons(shown: Bool) {
         for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {

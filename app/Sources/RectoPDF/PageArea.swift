@@ -134,6 +134,9 @@ final class CenteringClipView: NSClipView {
         CATransaction.flush()
     }
 
+    /// What the pinch's notifications left, for QA.
+    var isLive: Bool { live }
+
     func windowReady() {
         layoutChanged()
     }

@@ -172,13 +172,7 @@ impl QaBridge {
             Command::QaRead { verb, out, timeout_ms } => match verb.as_str() {
                 "state" => self.state(),
                 "settled" => self.settled(timeout_ms.map_or(DEFAULT_SETTLE_WAIT, Duration::from_millis)),
-                "shot" => {
-                    let out = out.as_deref().ok_or_else(|| bad("`qa shot` needs `--out`."))?;
-                    if !out.is_absolute() {
-                        return Err(bad("That path isn't whole. A session has no folder of its own to start from."));
-                    }
-                    self.ask("shot", &out.to_string_lossy())
-                }
+                "shot" => self.shot(out.as_deref().ok_or_else(|| bad("`qa shot` needs `--out`."))?),
                 _ => Err(bad("That isn't a QA command.")),
             },
             Command::QaDrive { verb, value, timeout_ms } => self.drive(verb, value, *timeout_ms),

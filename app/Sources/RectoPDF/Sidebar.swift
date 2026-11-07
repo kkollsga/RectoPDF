@@ -260,7 +260,7 @@ final class RevealLabel: FlippedView {
     private let reveal = RevealLabel()
     private var revealTimer: Timer?
     private var revealedRow: Int?
-    private var lastPointerRow: Int?
+    private(set) var lastPointerRow: Int?
     /// How long the pointer rests on a shortened name before it opens.
     private static let revealDelay: TimeInterval = 0.5
     /// How far rows opening and closing have moved the scroll, so what QA records is what the eye sees.
@@ -444,14 +444,15 @@ final class RevealLabel: FlippedView {
         tracking = area
     }
 
-    func mouseEntered(with event: NSEvent) { setHover(0) }
+    // AppKit calls these by name on a tracking area's owner. This class isn't a responder, so nothing makes them Objective-C but saying so, by the name AppKit uses: a plain `@objc` here would be `mouseEnteredWith:`, which nothing calls.
+    @objc(mouseEntered:) func mouseEntered(with event: NSEvent) { setHover(0) }
 
-    func mouseExited(with event: NSEvent) {
+    @objc(mouseExited:) func mouseExited(with event: NSEvent) {
         setHover(nil)
         pointerAt(nil)
     }
 
-    func mouseMoved(with event: NSEvent) {
+    @objc(mouseMoved:) func mouseMoved(with event: NSEvent) {
         pointerAt(sidebarRow(atWindowPoint: event.locationInWindow))
     }
 
@@ -620,6 +621,7 @@ final class RevealLabel: FlippedView {
             contentsTable.reloadData()
             if let active = activeIndex { table.scrollRowToVisible(active) }
         }
+        shownContentsVersion = new.contentsVersion
         revealPlace()
     }
 
@@ -654,29 +656,28 @@ final class RevealLabel: FlippedView {
     private func applyRowChange(_ new: SidebarView) {
         let from = Int(new.contentsChangedFrom)
         let (removed, inserted) = (Int(new.contentsRemoved), Int(new.contentsInserted))
-        if let by = core.contentsRowChange(scrollY: contentsY, from: new.contentsChangedFrom, removed: new.contentsRemoved, inserted: new.contentsInserted, placeShift: new.contentsPlaceShift) {
-            // Rows going in the view, with no slide to show it, fade over. A layer the size of the view for a moment, and it's gone.
-            if !shouldReduceMotion, Int(contentsY / layout.contentsRow) < from + removed, Double(from) * layout.contentsRow < contentsY + contentsHeight {
-                let fade = CATransition()
-                fade.type = .fade
-                fade.duration = 0.15
-                contentsScroll.layer?.add(fade, forKey: "rows")
-            }
-            contentsTable.reloadData()
+        keepingScrollAccount {
             let before = contentsY
-            setContentsY(before + by)
-            let moved = contentsY - before
-            rowShift += moved
-            core.contentsShifted(by: moved)
-            return
+            if let by = core.contentsRowChange(scrollY: before, from: new.contentsChangedFrom, removed: new.contentsRemoved, inserted: new.contentsInserted, placeShift: new.contentsPlaceShift) {
+                // Rows going in the view, with no slide to show it, fade over. A layer the size of the view for a moment, and it's gone.
+                if !shouldReduceMotion, Int(before / layout.contentsRow) < from + removed, Double(from) * layout.contentsRow < before + contentsHeight {
+                    let fade = CATransition()
+                    fade.type = .fade
+                    fade.duration = 0.15
+                    contentsScroll.layer?.add(fade, forKey: "rows")
+                }
+                contentsTable.reloadData()
+                setContentsY(before + by)
+                return
+            }
+            let motion: NSTableView.AnimationOptions = shouldReduceMotion ? [] : [.effectFade, .slideUp]
+            contentsTable.beginUpdates()
+            if removed > 0 { contentsTable.removeRows(at: IndexSet(from..<(from + removed)), withAnimation: motion) }
+            if inserted > 0 { contentsTable.insertRows(at: IndexSet(from..<(from + inserted)), withAnimation: motion) }
+            contentsTable.endUpdates()
+            // The rail and which row is the place are about every row, and they're drawn from Rust's model.
+            reloadContentsCells()
         }
-        let motion: NSTableView.AnimationOptions = shouldReduceMotion ? [] : [.effectFade, .slideUp]
-        contentsTable.beginUpdates()
-        if removed > 0 { contentsTable.removeRows(at: IndexSet(from..<(from + removed)), withAnimation: motion) }
-        if inserted > 0 { contentsTable.insertRows(at: IndexSet(from..<(from + inserted)), withAnimation: motion) }
-        contentsTable.endUpdates()
-        // The rail and which row is the place are about every row, and they're drawn from Rust's model.
-        reloadContentsCells()
     }
 
     func appearanceChanged() {

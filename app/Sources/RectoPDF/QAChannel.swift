@@ -40,6 +40,9 @@ import QuartzCore
         case "state":
             answer(id, state())
             return
+        case "entry_points":
+            answer(id, entryPoints())
+            return
         case "shot":
             shot(id: id, path: value)
             return
@@ -53,11 +56,9 @@ import QuartzCore
         case "hover":
             controller?.sidebar.setHover(value == "none" ? nil : Int(value))
         case "click_row":
-            guard let row = Int(value) else { return fail(id, "`\(value)` isn't a row.") }
-            controller?.sidebar.clickRow(row)
+            controller?.sidebar.clickRow(Int(value) ?? 0)
         case "contents_scroll":
-            guard let row = Int(value), row >= 0 else { return fail(id, "`\(value)` isn't a row.") }
-            controller?.sidebar.userScrollContents(toRow: row)
+            controller?.sidebar.userScrollContents(toRow: Int(value) ?? 0)
         case "contents_pointer":
             controller?.sidebar.setContentsPointer(value == "in")
         case "reduce_motion":
@@ -66,7 +67,7 @@ import QuartzCore
             controller?.sidebar.revealRow(value == "none" ? nil : Int(value))
         case "resize":
             let parts = value.split(separator: "x").compactMap { Double($0) }
-            guard parts.count == 2, parts[0] >= 400, parts[1] >= 300, parts[0] <= 8000, parts[1] <= 8000 else { return fail(id, "`\(value)` isn't a size. It's WIDTHxHEIGHT.") }
+            guard parts.count == 2 else { return fail(id, "That isn't a size.") }
             controller?.window.setFrame(NSRect(x: -40_000, y: -40_000, width: parts[0], height: parts[1]), display: false)
             controller?.layout()
         case "window":
@@ -114,6 +115,68 @@ import QuartzCore
             "pages": pages,
             "backing": controller.window.backingScaleFactor,
         ]
+    }
+
+    /// What AppKit reaches this app by, which no other QA verb goes through: they call the method behind it. That the owner responds to the selector AppKit will send, and for those that can be, that going by the selector does what it should. Events are made here and handed straight to the method: nothing is posted, and nothing outside this process hears. A real pinch or click can't be made this way, so for those it's the selector and the notification.
+    private func entryPoints() -> [String: Bool] {
+        guard let controller = delegate.windowController else { return ["window_open": false] }
+        let sidebar = controller.sidebar
+        let pages = controller.pages
+        var found: [String: Bool] = ["window_open": true]
+        let entered = #selector(NSResponder.mouseEntered(with:))
+        let exited = #selector(NSResponder.mouseExited(with:))
+        let moved = #selector(NSResponder.mouseMoved(with:))
+        let wheel = #selector(NSResponder.scrollWheel(with:))
+        let owners: [(String, NSObject, Selector)] = [
+            ("sidebar_hover_in", sidebar, entered), ("sidebar_hover_out", sidebar, exited), ("sidebar_pointer_moved", sidebar, moved),
+            ("corner_hover_in", controller, entered), ("corner_hover_out", controller, exited),
+            ("contents_hover_in", sidebar.contentsScroll, entered), ("contents_hover_out", sidebar.contentsScroll, exited), ("contents_wheel", sidebar.contentsScroll, wheel),
+            ("pages_wheel", pages.scrollView, wheel), ("pages_magnify", pages.scrollView, #selector(NSResponder.magnify(with:))),
+        ]
+        for (name, owner, selector) in owners { found[name] = owner.responds(to: selector) }
+        // Going by a selector nothing answers would throw, and this would never answer. What's failing is reported above.
+        guard owners.allSatisfy({ $0.1.responds(to: $0.2) }) else { return found }
+        let actions: [(String, NSControl)] = [("tab_row_click", sidebar.table), ("contents_row_click", sidebar.contentsTable), ("add_button", sidebar.addButton), ("home_button", controller.homeButtonForQA)]
+        for (name, control) in actions {
+            found[name] = control.action.flatMap { action in (control.target as? NSObject)?.responds(to: action) } ?? false
+        }
+        // Through the selector, as AppKit would.
+        let window = controller.window
+        func crossing(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.enterExitEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)
+        }
+        sidebar.perform(entered, with: crossing(.mouseEntered))
+        found["hover_shows_details"] = sidebar.hoveredRow != nil
+        let row = NSPoint(x: 100, y: sidebar.view.bounds.height - 110)
+        let pointer = NSEvent.mouseEvent(with: .mouseMoved, location: sidebar.view.convert(row, to: nil), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)
+        sidebar.perform(moved, with: pointer)
+        found["pointer_finds_row"] = sidebar.lastPointerRow != nil
+        sidebar.perform(exited, with: crossing(.mouseExited))
+        found["hover_ends"] = sidebar.hoveredRow == nil && sidebar.lastPointerRow == nil
+        // A wheel, made and handed over.
+        let wheelEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: -120, wheel2: 0, wheel3: 0).flatMap { NSEvent(cgEvent: $0) }
+        if let wheelEvent {
+            let before = pages.scrollView.contentView.bounds.minY
+            pages.scrollView.perform(wheel, with: wheelEvent)
+            found["wheel_scrolls_pages"] = pages.scrollView.contentView.bounds.minY != before
+            if sidebar.model.contentsCount > 0, sidebar.model.tocOpen {
+                sidebar.contentsScroll.perform(wheel, with: wheelEvent)
+                found["wheel_in_contents_stops_following"] = !delegate.core.contentsIsFollowing()
+            }
+        }
+        // A pinch comes with these from AppKit, and they're what stops drawing until it ends.
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveMagnifyNotification, object: pages.scrollView)
+        found["pinch_starts"] = pages.isLive
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveMagnifyNotification, object: pages.scrollView)
+        found["pinch_ends"] = !pages.isLive
+        // Focus view: the window's buttons, hidden, come back with the pointer near them.
+        if delegate.core.reader().focus {
+            controller.perform(entered, with: crossing(.mouseEntered))
+            found["buttons_come_back"] = controller.windowButtonsShown
+            controller.perform(exited, with: crossing(.mouseExited))
+            found["buttons_go_again"] = !controller.windowButtonsShown
+        }
+        return found
     }
 
     private func policyName() -> String {
