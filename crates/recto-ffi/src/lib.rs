@@ -884,7 +884,7 @@ impl Inner {
     pub(crate) fn state_json(&self) -> Value {
         let (record, _) = self.gather_record();
         let mut value = serde_json::to_value(&record).unwrap_or(Value::Null);
-        let lists = self.host.session.with_session(|session| session.tabs().iter().filter_map(|tab| Some((tab.id.0.to_string(), serde_json::to_value(session.edits_record(tab.id)?).ok()?))).collect::<serde_json::Map<_, _>>());
+        let lists = self.host.session.with_session(|session| session.tabs().iter().filter_map(|tab| Some((tab.id.0.to_string(), serde_json::to_value(session.list_record_anywhere(tab.id)?).ok()?))).collect::<serde_json::Map<_, _>>());
         value["edits_full"] = Value::Object(lists);
         value
     }

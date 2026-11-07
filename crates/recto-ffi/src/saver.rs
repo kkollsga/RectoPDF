@@ -5,7 +5,7 @@
 use crate::{CoreCall, CoreQueue, Inner, lock};
 use recto_control::record_store::{FlushReport, RecordStore, StoreError};
 use recto_session::JournalWork;
-use recto_session::record::{EditsRecord, PlaceDelta, PlaceRecord, Selection, SessionRecord};
+use recto_session::record::{EditsRecord, EditsSummary, PlaceDelta, PlaceRecord, Selection, SessionRecord};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -268,11 +268,12 @@ impl Saver {
         let verified = Instant::now();
         // Only if a name had to change is it asked again, as an edit since would differ from what was just written, and a hand-off has stopped those anyway.
         let lists = if renamed { inner.host.session.with_session(|session| session.lists_by_journal()) } else { lists };
-        if let Err(first) = self.store.verify(&record, &lists) {
+        let asleep: HashMap<String, EditsSummary> = inner.host.session.with_session(|session| session.asleep_by_journal());
+        if let Err(first) = self.store.verify_with_asleep(&record, &lists, &asleep) {
             // A line that didn't say enough is mended by the whole record. Anything else fails.
             self.store.next_write_whole();
             self.store.write_record(&record, &delta, force)?;
-            self.store.verify(&record, &lists).map_err(|_| first)?;
+            self.store.verify_with_asleep(&record, &lists, &asleep).map_err(|_| first)?;
         }
         let verify_us = micros(verified);
         let (record_bytes, journal_bytes) = self.store.sizes();

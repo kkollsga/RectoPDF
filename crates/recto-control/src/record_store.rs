@@ -746,6 +746,11 @@ impl RecordStore {
 
     /// Reads back what's on disk, as a launch would, and compares it with what's in memory: the main record whole, and every tab's list in full. Part of a hand-off.
     pub fn verify(&self, want: &SessionRecord, lists: &HashMap<String, record::EditsRecord>) -> Result<(), StoreError> {
+        self.verify_with_asleep(want, lists, &HashMap::new())
+    }
+
+    /// [`Self::verify`], and lists that have gone to disk have to read as what's known of them.
+    pub fn verify_with_asleep(&self, want: &SessionRecord, lists: &HashMap<String, record::EditsRecord>, asleep: &HashMap<String, record::EditsSummary>) -> Result<(), StoreError> {
         let dir = self.dir();
         let mismatch = |what: &str| StoreError::new("read_back_differs", format!("What was written doesn't read back the same: {what}."));
         let (decoded, _) = Self::read_slots(&dir, self.version).ok().flatten().ok_or_else(|| mismatch("the main record"))?;
@@ -764,6 +769,13 @@ impl RecordStore {
             let parsed = read_journal(&path).map_err(|_| mismatch("a journal"))?.ok_or_else(|| mismatch("a journal that isn't there"))?.0;
             let restored = restored_from(&parsed).ok_or_else(|| mismatch("a journal"))?;
             if restored.lost_lines || restored.edits.to_record() != *list {
+                return Err(mismatch("unsaved edits"));
+            }
+        }
+        for (name, summary) in asleep {
+            let parsed = read_journal(&dir.join(JOURNALS).join(name)).map_err(|_| mismatch("a journal"))?.ok_or_else(|| mismatch("a journal that isn't there"))?.0;
+            let restored = restored_from(&parsed).ok_or_else(|| mismatch("a journal"))?;
+            if restored.lost_lines || restored.edits.summary() != *summary {
                 return Err(mismatch("unsaved edits"));
             }
         }
@@ -838,6 +850,12 @@ impl RecordStore {
         Some(AddedSource { path: kept.into_boxed_path(), page_count: pages, stamp: Some(stamp), kept: true })
     }
 
+    /// **What going dormant does to a list on disk:** the journal's checkpoint moves up, if that's worth it, and it's read back and compared, as what's in memory is about to go. Says whether it's all there.
+    pub fn settle_list(&self, name: &str, header: &JournalHeader, base: &record::EditsRecord) -> bool {
+        let _ = self.compact(name, header, base);
+        self.read_list(name).is_some_and(|restored| restored.edits.to_record() == *base)
+    }
+
     /// Removes a journal found to be stale.
     pub fn remove_journal(&self, name: &str) {
         if is_journal_name(name) || record::is_kept_name(name) {
@@ -848,6 +866,19 @@ impl RecordStore {
 }
 
 impl HistorySource for RecordStore {
+    fn read_list(&self, name: &str) -> Option<RestoredEdits> {
+        if !is_journal_name(name) {
+            return None;
+        }
+        let (parsed, _) = read_journal(&self.dir().join(JOURNALS).join(name)).ok().flatten()?;
+        let mut restored = restored_from(&parsed)?;
+        if restored.lost_lines {
+            return None;
+        }
+        restored.rolled_off = roll_off_what_isnt_kept(&mut restored.edits);
+        Some(restored)
+    }
+
     /// A PDF being opened: what's left of its history, if any, from when it was closed. On whatever thread is reading the file. It must be about this file, as the name only says it's likely to be: a forged or stale one is left where it is. If it's all there, it's open again.
     fn history_of(&self, stamp: Option<FileStamp>, path: &Path) -> Option<TakenHistory> {
         if self.refuses_writes().is_some() {

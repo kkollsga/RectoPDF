@@ -867,6 +867,15 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     if !allowed(level, needed) {
         return Err(refusal(table::display_name(command.tag()), level, needed));
     }
+    // A command about a tab is someone working on it, so it doesn't go dormant from under them, and what it reads is there to read. Every route's through here.
+    if let Some(selector) = command.tab_selector() {
+        access.with(|s| {
+            if let Ok(id) = select(s, selector) {
+                s.wake_list(id);
+                s.touch(id);
+            }
+        });
+    }
     match command {
         Command::Open { path, page } => open(access, path, *page, events),
         Command::Tabs { from, limit } => access.with(|s| tabs_json(s, *from, *limit)),
