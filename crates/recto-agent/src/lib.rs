@@ -156,7 +156,8 @@ pub enum Command {
         #[serde(default = "active_tab")]
         tab: String,
         page: u32,
-        #[serde(default = "render::default_scale")]
+        /// A number, or `"max"` for the largest that fits, which reads as [`render::LARGEST_THAT_FITS`].
+        #[serde(default = "render::default_scale", deserialize_with = "render::scale_or_max")]
         scale: f32,
         out: PathBuf,
     },

@@ -21,6 +21,18 @@ pub(crate) fn default_scale() -> f32 {
     DEFAULT_SCALE
 }
 
+/// `render --scale max`, on its way to where the page's size is known. Nothing else can reach this: JSON has no infinity, and a number too big for a scale is refused on the way in.
+pub(crate) const LARGEST_THAT_FITS: f32 = f32::INFINITY;
+
+/// A scale off the wire: a number, or the word `max`.
+pub(crate) fn scale_or_max<'de, D: serde::Deserializer<'de>>(from: D) -> Result<f32, D::Error> {
+    match <Value as serde::Deserialize>::deserialize(from)? {
+        Value::String(word) if word == "max" => Ok(LARGEST_THAT_FITS),
+        Value::Number(number) => number.as_f64().map(|scale| scale as f32).filter(|scale| scale.is_finite()).ok_or_else(|| serde::de::Error::custom("that scale is out of range")),
+        _ => Err(serde::de::Error::custom("a scale is a number, or max")),
+    }
+}
+
 /// How high `budget render` may raise a worker's limit. A measurement shouldn't be a way to take the whole Mac.
 const MAX_LIMIT_MIB: u32 = 4096;
 
@@ -120,7 +132,8 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     if out.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("png")) {
         return Err(AgentError::new("bad_output", "The output file must end in .png.", exit::FAILED));
     }
-    if !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&scale) {
+    let largest = scale == LARGEST_THAT_FITS;
+    if !largest && !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&scale) {
         return Err(AgentError::new("bad_scale", format!("Scale must be between {} and {}.", recto_proto::MIN_SCALE, recto_proto::MAX_SCALE), exit::FAILED));
     }
     // `symlink_metadata`, so a dangling link counts as being there. Early, to save the drawing. The link below is what actually holds.
@@ -131,6 +144,7 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     let policy = Policy::default();
     let limit = policy.heavy_limit_bytes;
     let mut doc = DocRenderer::new(path, None, config, policy)?;
+    let scale = if largest { largest_scale(&mut doc, page, caps)? } else { scale };
     let (temp, drawn, kind) = write_page(&mut doc, page, scale, out, caps, limit).map_err(|error| {
         let error = if error.code == "too_large_at_this_scale" { naming_the_largest_scale(error, &mut doc, page, scale, caps) } else { error };
         with_time_taken(error, started)
@@ -140,6 +154,7 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     Ok(json!({
         "page": page + 1,
         "scale": as_written(scale),
+        "largest_that_fits": largest,
         "out": out,
         "took_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         "width": drawn.width,
@@ -147,6 +162,12 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
         "bytes": std::fs::metadata(out).map(|meta| meta.len()).ok(),
         "kind": kind,
     }))
+}
+
+/// The largest scale this page can be drawn at, or a plain refusal if there's none. An export still goes down the same limits from here: a page whose content is too heavy at this scale is refused for that, sharp or not at all.
+fn largest_scale(doc: &mut DocRenderer, page: u32, caps: &OutputCaps) -> Result<f32, AgentError> {
+    let (width, height) = doc.page_size(page)?;
+    largest_scale_that_fits(width, height, caps).ok_or_else(|| AgentError::new("too_large_at_this_scale", format!("Page {} is {width} x {height} points, and no scale fits: a picture is at most {} Mpx.", page + 1, caps.max_pixels / 1_000_000), exit::FAILED).then("Tell the user this page can't be drawn."))
 }
 
 /// A scale as it was written. A float widened as it stands reads 4.71 as 4.71000003814697, in JSON and in plain words.
@@ -608,6 +629,38 @@ mod tests {
         assert_eq!(drawn["scale"], 0.71, "{drawn}");
         assert!(crate::human::render("render", &drawn).contains("at 0.71x"), "{drawn}");
         std::fs::remove_file(&out).unwrap();
+    }
+
+    /// Failure: `--scale max` draws at something other than the largest that fits, or doesn't say which, and so leaves an agent where it was: trying numbers. It must be the same edge the refusal names, and be drawn.
+    #[test]
+    fn the_largest_scale_is_drawn_and_named() {
+        let file = TempPdf::new("map.pdf", &pages(&[Page { content: text_lines(&["A map"]), page_extra: String::new(), media: (2232.0, 2016.0) }]));
+        let out = file.0.with_file_name("max.png");
+        let caps = OutputCaps { max_pixels: 400_000, ..OutputCaps::default() };
+        let drawn = render_with_caps(&file.0, 1, LARGEST_THAT_FITS, &out, &caps).unwrap();
+        let named = drawn["scale"].as_f64().unwrap() as f32;
+        assert_eq!(drawn["largest_that_fits"], true, "{drawn}");
+        assert_eq!(Some(named), largest_scale_that_fits(2232.0, 2016.0, &caps), "{drawn}");
+        assert!(drawn["width"].as_u64().unwrap() * drawn["height"].as_u64().unwrap() <= caps.max_pixels, "{drawn}");
+        let said = crate::human::render("render", &drawn);
+        assert!(said.contains(&format!("at {named}x")) && said.contains("largest"), "{said}");
+        std::fs::remove_file(&out).unwrap();
+        let at_a_number = render_with_caps(&file.0, 1, 0.1, &out, &caps).unwrap();
+        assert_eq!(at_a_number["largest_that_fits"], false);
+        assert!(!crate::human::render("render", &at_a_number).contains("largest"));
+        std::fs::remove_file(&out).unwrap();
+    }
+
+    /// Failure: `--scale max` on a page its memory limit stops comes out at a lower resolution, or leaves a file, or says nothing plain. Owner, 2026-11-07: an export is sharp or isn't written, and asking for the largest doesn't change that.
+    #[test]
+    fn the_largest_scale_still_fails_plainly_at_the_memory_limit() {
+        let file = doc();
+        let before = folder_entries(&file);
+        let out = file.0.with_file_name("heavy.png");
+        let error = render_with(stand_in(), &file.0, 1, LARGEST_THAT_FITS, &out, &OutputCaps::default()).unwrap_err();
+        assert!(matches!(error.code, "export_page_too_heavy" | "export_memory_tight"), "{}", error.code);
+        assert!(error.message.contains("no file was written"), "{}", error.message);
+        assert_eq!(folder_entries(&file), before);
     }
 
     /// Failure: nobody can tell a slow draw from a fast one, so a slow page or a bad scale goes unnoticed.

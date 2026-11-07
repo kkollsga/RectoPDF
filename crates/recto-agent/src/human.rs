@@ -421,7 +421,8 @@ fn edits(data: &Value) -> String {
 }
 
 fn render_result(data: &Value) -> String {
-    let mut out = format!("Page {} drawn at {}x to {} in {}: {} x {} px, {}.", number(&data["page"]), data["scale"], text(&data["out"]), duration(number(&data["took_ms"])), number(&data["width"]), number(&data["height"]), bytes(number(&data["bytes"])));
+    let largest = if data["largest_that_fits"] == true { ", the largest that fits," } else { "" };
+    let mut out = format!("Page {} drawn at {}x{largest} to {} in {}: {} x {} px, {}.", number(&data["page"]), data["scale"], text(&data["out"]), duration(number(&data["took_ms"])), number(&data["width"]), number(&data["height"]), bytes(number(&data["bytes"])));
     if let Some(degrees) = data["unsaved_rotation_degrees"].as_u64() {
         let _ = write!(out, " It doesn't show the unsaved turn of {degrees} degrees.");
     }

@@ -54,6 +54,8 @@ pub enum Kind {
     Path,
     /// `2` or `2x`.
     Scale,
+    /// `2`, `2x`, or `max` for the largest that fits.
+    ScaleOrMax,
     /// `500ms`, `30s`, `5m`, `1h`. A bare number could mean anything, so it's refused.
     Duration,
     /// `90`, `180`, `270` or `-90`.
@@ -135,6 +137,7 @@ const BASE: Spec = Spec {
 const TAB: Arg = Arg { key: "tab", flag: Some("--tab"), kind: Kind::Tab, required: false, help: "Which tab: `#3`, `active`, or part of its name. The active tab if left out." };
 const PAGE: Arg = Arg { key: "page", flag: Some("--page"), kind: Kind::Page, required: true, help: "The page, counted from 1." };
 const PAGE_OR_BARE: Arg = Arg { key: "page", flag: Some("--page"), kind: Kind::Page, required: true, help: "The page, counted from 1. A bare number means the same: `60` or `--page 60`." };
+const SCALE_OR_MAX: Arg = Arg { key: "scale", flag: Some("--scale"), kind: Kind::ScaleOrMax, required: false, help: "How large: `2` or `2x` is twice the page's size, and `max` is the largest that fits, which the answer names. 2x if left out." };
 const SCALE: Arg = Arg { key: "scale", flag: Some("--scale"), kind: Kind::Scale, required: false, help: "How large: `2` or `2x` is twice the page's size. 2x if left out." };
 const TIMEOUT: Arg = Arg { key: "timeout_ms", flag: Some("--timeout"), kind: Kind::Duration, required: false, help: "How long to wait: `500ms`, `30s`, `5m`. 30s if left out." };
 const FIRST: Arg = Arg { key: "first", flag: Some("--first"), kind: Kind::Page, required: false, help: "The page to start from. The first page if left out." };
@@ -238,11 +241,11 @@ pub static TABLE: &[Spec] = &[
         group: GROUP_READ,
         access: Access::At(Level::Full),
         summary: "Draws a page to a new PNG file, sharp or not at all. It never replaces a file, and doesn't show an unsaved rotation.",
-        args: &[PAGE_OR_BARE, Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "A new file ending in `.png`." }, SCALE, TAB],
+        args: &[PAGE_OR_BARE, Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "A new file ending in `.png`." }, SCALE_OR_MAX, TAB],
         bare_page: true,
-        data: "`{ page, source_page, from_added_file, scale, out, took_ms, width, height, bytes, kind, unsaved_rotation_degrees, untrusted: { added_file } }`.",
+        data: "`{ page, source_page, from_added_file, scale, largest_that_fits, out, took_ms, width, height, bytes, kind, unsaved_rotation_degrees, untrusted: { added_file } }`.",
         emits: &["page_drawn", "page_failed"],
-        examples: &["recto render --page 1 --out page1.png", "recto render 1 --out page1.png", "recto render --page 2 --scale 3x --out /tmp/p2.png --json"],
+        examples: &["recto render --page 1 --out page1.png", "recto render 1 --out page1.png", "recto render --page 2 --scale 3x --out /tmp/p2.png --json", "recto render 2 --scale max --out /tmp/p2.png"],
         client_wait_s: 600,
         ..BASE
     },
@@ -1005,7 +1008,8 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
             let path = std::path::absolute(PathBuf::from(value)).map_err(|_| "That path couldn't be read.".to_string())?;
             path.to_str().map(|path| json!(path)).ok_or_else(|| "That path isn't valid text.".to_string())
         }
-        Kind::Scale => {
+        Kind::ScaleOrMax if value == "max" => Ok(json!("max")),
+        Kind::Scale | Kind::ScaleOrMax => {
             let number: f32 = value.strip_suffix('x').unwrap_or(value).parse().map_err(|_| format!("`{}` isn't a scale. Write 2 or 2x.", recto_core::clean_line(value)))?;
             if number.is_finite() && number > 0.0 { Ok(json!(number)) } else { Err("A scale is more than 0.".to_string()) }
         }
@@ -1204,7 +1208,7 @@ mod tests {
             Kind::Page | Kind::Count(_) | Kind::Positive(_) => "1",
             Kind::Pages | Kind::PagesOpen => "1-2",
             Kind::Path => "/d/out.png",
-            Kind::Scale => "2x",
+            Kind::Scale | Kind::ScaleOrMax => "2x",
             Kind::Duration => "5s",
             Kind::Degrees => "90",
             Kind::Level => "read_only",
@@ -1537,6 +1541,14 @@ mod tests {
         assert_eq!(scale("2x").unwrap().fields["scale"], 2.0);
         assert_eq!(scale("2").unwrap().fields["scale"], 2.0);
         assert!(scale("nanx").is_err() && scale("-1").is_err() && scale("inf").is_err());
+        // Failure: `max` reads as a scale anywhere one's taken, or only on the command line, so the socket refuses it.
+        let max = scale("max").unwrap();
+        assert_eq!(max.fields["scale"], "max");
+        assert!(matches!(max.command().unwrap(), Command::Render { scale, .. } if scale == crate::render::LARGEST_THAT_FITS));
+        assert!(parse_cli(&["budget".into(), "render".into(), "--count".into(), "1".into(), "--scale".into(), "max".into()]).is_err(), "a measurement goes by a scale it's given");
+        for wire in [r#"{"cmd":"render","page":1,"out":"/d/a.png","scale":"big"}"#, r#"{"cmd":"render","page":1,"out":"/d/a.png","scale":1e999}"#, r#"{"cmd":"render","page":1,"out":"/d/a.png","scale":1e300}"#] {
+            assert!(parse(wire).is_err(), "{wire}: a number too big isn't `max`");
+        }
     }
 
     /// Failure: a relative path goes to the session as it is, and is read from the session's folder rather than the one the agent is in.
