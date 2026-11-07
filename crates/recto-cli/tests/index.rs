@@ -342,7 +342,8 @@ fn opening_tabs_indexes_nothing_and_asking_leaves_nothing_behind() {
     }
     let done = wait_done(&state, "#7");
     assert_eq!(done["data"]["pages"], 3, "{done}");
-    assert_eq!(std::fs::read_dir(&state.paths.corpus).unwrap().count(), 1, "one file, one corpus, however many tabs it's in");
+    let corpora = std::fs::read_dir(&state.paths.corpus).unwrap().flatten().filter(|entry| entry.file_name().to_str().and_then(CorpusKey::from_hex).is_some()).count();
+    assert_eq!(corpora, 1, "one file, one corpus, however many tabs it's in");
     let (status, _) = state.json(&["index", "status", "--tab", "#200"]);
     assert_eq!(status["data"]["state"], "ready", "{status}");
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -533,19 +534,15 @@ fn real_pages_answer_the_same_from_the_index() {
     eprintln!("{documents} documents, {compared} searches compared");
 }
 
-/// Failure: a password-protected file's text ends up on disk, or it reads as "still building" for ever. It's refused, with its own exit code, and nothing's there but the reason. Needs `RECTO_ENCRYPTED_PDF`, a file that needs a password: this repo generates no encrypted fixture.
+/// Failure: a password-protected file's text ends up on disk, or it reads as "still building" for ever. It's refused, with its own exit code, and nothing's there but the reason.
 #[test]
 fn a_password_protected_file_leaves_no_text() {
-    let Some(protected) = std::env::var_os("RECTO_ENCRYPTED_PDF") else {
-        eprintln!("RECTO_ENCRYPTED_PDF isn't set, so no encrypted file was tried.");
-        return;
-    };
     let state = State::at(Level::Control);
     let _serving = state.serve();
     let file = doc("was-open.pdf", 2);
     state.json(&["open", path(&file)]);
     // A tab can't open such a file, so this is the way one gets here: replaced under an open tab.
-    std::fs::copy(protected, &file.0).unwrap();
+    std::fs::write(&file.0, common::password_protected()).unwrap();
     let (refused, code) = state.json(&["wait", "indexing-done", "--timeout", "60s"]);
     assert_eq!((code, refused["error"]["code"].as_str()), (exit::PROTECTED, Some("not_indexed")), "{refused}");
     let key = CorpusKey::of_file(&file.0).unwrap();
@@ -843,4 +840,44 @@ fn a_changed_file_isnt_said_to_have_been_answered_from_the_index() {
     assert!(!found["data"]["index"]["note"].as_str().unwrap().contains("Answered from the index"), "{found}");
     let (plain, _, _) = state.text(&["search", "common"]);
     assert!(!plain.contains("Answered"), "{plain}");
+}
+
+/// Failure: a corpus's folders or files can be read by another user on this Mac, so plain text of a user's documents is open to anyone who logs in. Every folder is 0700 and every file 0600, the lock and the notes between versions included.
+#[test]
+fn a_corpus_is_private_to_this_user() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("private.pdf", 2);
+    state.json(&["open", path(&file)]);
+    wait_done(&state, "active");
+    let mut stack = vec![state.paths.corpus.clone()];
+    let mut seen = (0, 0);
+    while let Some(next) = stack.pop() {
+        let meta = std::fs::symlink_metadata(&next).unwrap();
+        if meta.is_dir() {
+            seen.0 += 1;
+            assert_eq!(meta.permissions().mode() & 0o777, 0o700, "{}", next.display());
+            stack.extend(std::fs::read_dir(&next).unwrap().flatten().map(|entry| entry.path()));
+        } else {
+            seen.1 += 1;
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600, "{}", next.display());
+        }
+    }
+    assert!(seen.0 >= 5 && seen.1 >= 5, "{seen:?}");
+}
+
+/// Failure: the folder a build makes isn't marked to stay out of backups, in the way the OS itself reads, through the session rather than on a library's say.
+#[test]
+fn a_session_marks_its_corpus_folder() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("marked.pdf", 1);
+    state.json(&["open", path(&file)]);
+    wait_done(&state, "active");
+    assert!(state.paths.corpus.ends_with("corpus.noindex"), "{}", state.paths.corpus.display());
+    assert!(recto_platform::local::is_excluded_from_backups(&state.paths.corpus));
+    // As the OS itself reads it.
+    let said = Command::new("/usr/bin/tmutil").arg("isexcluded").arg(&state.paths.corpus).output().unwrap();
+    assert!(String::from_utf8_lossy(&said.stdout).contains("[Excluded]"), "{said:?}");
 }

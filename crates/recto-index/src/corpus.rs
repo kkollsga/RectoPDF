@@ -162,6 +162,7 @@ pub fn can_be_indexed(path: &Path) -> bool {
 /// Where everything for one key lives.
 #[derive(Clone, Debug)]
 pub struct CorpusPaths {
+    pub key: CorpusKey,
     pub dir: PathBuf,
     pub agent: PathBuf,
     pub pages: PathBuf,
@@ -182,6 +183,7 @@ impl CorpusPaths {
         let dir = root.join(key.hex()).join(FORMAT);
         let (agent, app) = (dir.join("agent"), dir.join("app"));
         Self {
+            key,
             pages: agent.join("pages"),
             manifest: agent.join("manifest.json"),
             table: app.join("pages.bin"),
@@ -717,7 +719,7 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
         return Ok(BuildOutcome::Busy);
     }
     match disk_state(root, key) {
-        DiskState::Ready(summary) if summary.retry_is_due() => return retry_failed_pages(&paths, key, feed, meta, summary),
+        DiskState::Ready(summary) if summary.retry_is_due() => return retry_failed_pages(&paths, feed, meta, summary),
         DiskState::Ready(summary) => return Ok(BuildOutcome::AlreadyReady(summary)),
         DiskState::Refused(code) => return Ok(BuildOutcome::Refused(code)),
         DiskState::Partial { .. } | DiskState::Nothing => {}
@@ -774,11 +776,11 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
     // Only now is any of it believed, so what a search reads must really be there before the mark that says so.
     pack.sync_all()?;
     table.sync_all()?;
-    let summary = finish(&paths, key, pages, width, offset, bytes, meta, 0)?;
+    let summary = finish(&paths, pages, width, offset, bytes, meta, 0)?;
     let stats = BuildStats { pages_built: pages - resumed.pages, pages_resumed: resumed.pages, elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX) };
     // What failed only because of the moment gets one more try at once, now that the rest of the document isn't in its way.
     if summary.retry_pages > 0 {
-        return match retry_failed_pages(&paths, key, feed, meta, summary)? {
+        return match retry_failed_pages(&paths, feed, meta, summary)? {
             BuildOutcome::AlreadyReady(summary) => Ok(BuildOutcome::Ready { summary, stats }),
             other => Ok(other),
         };
@@ -788,7 +790,7 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
 }
 
 /// Reads pages that failed for a temporary reason again, and puts in place what comes back. A search may be reading this corpus now, so what it holds stays good throughout: the new text goes on the end of the pack, then its page file goes in place, and then the table, each in one step. A reader takes the table before the pack, so any table it has only points at text it can see. Killed partway, the worst left is text nothing points at.
-fn retry_failed_pages(paths: &CorpusPaths, key: CorpusKey, feed: &mut impl PageFeed, meta: &DocMeta, summary: Summary) -> io::Result<BuildOutcome> {
+fn retry_failed_pages(paths: &CorpusPaths, feed: &mut impl PageFeed, meta: &DocMeta, summary: Summary) -> io::Result<BuildOutcome> {
     let mut table = read_table(paths, summary.pages)?;
     let width = summary.width as usize;
     let mut pack = local::append_private_file(&paths.pack)?;
@@ -833,7 +835,7 @@ fn retry_failed_pages(paths: &CorpusPaths, key: CorpusKey, feed: &mut impl PageF
     }
     pack.sync_all()?;
     local::write_private_file(&paths.table, &table)?;
-    let summary = finish(paths, key, summary.pages, width, offset, bytes, meta, summary.retries + 1)?;
+    let summary = finish(paths, summary.pages, width, offset, bytes, meta, summary.retries + 1)?;
     Ok(BuildOutcome::AlreadyReady(summary))
 }
 
@@ -1157,7 +1159,7 @@ fn write_building_manifest(paths: &CorpusPaths, pages: u32, width: usize) -> io:
 }
 
 /// Writes the manifest from the table, a line per page, then the mark that makes it all usable.
-fn finish(paths: &CorpusPaths, key: CorpusKey, pages: u32, width: usize, pack_bytes: u64, bytes: u64, meta: &DocMeta, retries: u32) -> io::Result<Summary> {
+fn finish(paths: &CorpusPaths, pages: u32, width: usize, pack_bytes: u64, bytes: u64, meta: &DocMeta, retries: u32) -> io::Result<Summary> {
     let table = read_table(paths, pages)?;
     let mut summary = Summary { pages, width: width as u32, table_bytes: table.len() as u64, pack_bytes, retries, retried_at: now_seconds(), ..Summary::default() };
     let mut index = String::with_capacity(table.len() * 3);
@@ -1215,7 +1217,7 @@ fn finish(paths: &CorpusPaths, key: CorpusKey, pages: u32, width: usize, pack_by
     let manifest_bytes = disk_size(manifest.len() as u64);
     local::write_private_file(&paths.manifest, manifest.as_bytes())?;
     summary.corpus_bytes = bytes + manifest_bytes;
-    local::write_private_file(&paths.ready, summary.to_json(key).to_string().as_bytes())?;
+    local::write_private_file(&paths.ready, summary.to_json(paths.key).to_string().as_bytes())?;
     note_used(paths);
     Ok(summary)
 }

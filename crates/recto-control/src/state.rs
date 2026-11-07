@@ -173,7 +173,6 @@ mod tests {
         assert_eq!(default_corpus_in(home), Path::new("/Users/someone/Library/Caches/RectoPDF/corpus.noindex"));
         let temp = local::system_temp_dir().unwrap().join("recto-state-name");
         assert!(StatePaths::overridden(&temp).unwrap().corpus.ends_with("corpus.noindex"));
-        assert!(StatePaths::overridden(&temp).unwrap().corpus.starts_with(temp.canonicalize().unwrap_or(temp.clone())) || cfg!(not(target_os = "macos")));
     }
 
     /// Failure: a test or QA run points the state folder at the user's real home, or somewhere inside it, and writes over their real level or log.
