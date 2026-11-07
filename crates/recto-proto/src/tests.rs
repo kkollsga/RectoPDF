@@ -306,3 +306,19 @@ fn decoders_are_total_on_arbitrary_bytes() {
     cut_all(payload(&tile().encode()), &|b| TileReply::decode(b).is_ok());
     cut_all(payload(&PageSize { job_id: 1, width: 1.0, height: 1.0 }.encode()), &|b| PageSize::decode(b).is_ok());
 }
+
+/// Failure: a job far off any page passes its check, and walking its region's tiles adds past the end of a `u32`: a panic with overflow checks on, and rectangles that wrap round to the top of the page without them. Found by the `proto` fuzz target, whose input this is, cut down.
+#[test]
+fn a_job_off_every_page_is_refused() {
+    let far = RenderJob { rect: TileRect { x: 0xFFFF_FE00, y: 0, width: 1024, height: 512 }, stride: 4096, tile_edge: 512, ..job() };
+    assert!(far.check().is_err());
+    assert!(RenderJob::decode(payload(&far.encode())).is_err());
+    let low = RenderJob { rect: TileRect { x: 0, y: 0xFFFF_FE00, width: 512, height: 1024 }, stride: 2048, tile_edge: 512, ..job() };
+    assert!(low.check().is_err());
+    let single = RenderJob { rect: TileRect { x: MAX_PAGE_EDGE_PX, y: 0, width: 1, height: 1 }, stride: 4, tile_edge: 0, ..job() };
+    assert!(single.check().is_err());
+    // The last place a tile can really be, on the largest page there is.
+    let last = RenderJob { rect: TileRect { x: MAX_PAGE_EDGE_PX - 512, y: MAX_PAGE_EDGE_PX - 512, width: 512, height: 512 }, stride: 2048, tile_edge: 512, ..job() };
+    assert!(last.check().is_ok());
+    assert_eq!(region_tiles(last.rect, last.tile_edge).count(), 1);
+}

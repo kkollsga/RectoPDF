@@ -280,6 +280,12 @@ impl RenderJob {
             return Err(ProtoError("scale out of range"));
         }
         check_dimensions(self.rect.width, self.rect.height, self.stride)?;
+        // Past this, it's on no page at any scale, and adding to its position can overflow.
+        for (start, length) in [(self.rect.x, self.rect.width), (self.rect.y, self.rect.height)] {
+            if u64::from(start) + u64::from(length) > u64::from(MAX_PAGE_EDGE_PX) {
+                return Err(ProtoError("tile off the edge of any page"));
+            }
+        }
         if self.tile_edge != 0 {
             check_region(self.rect, self.tile_edge)?;
             if self.bytes_needed() > MAX_REGION_BYTES {
