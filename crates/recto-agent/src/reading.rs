@@ -125,6 +125,7 @@ pub(crate) fn contents<A: SessionAccess>(access: &A, tab: &str, from: Option<u32
         "depth_shown": shown_depth,
         "deepest": shape.deepest,
         "sections_at": shape.sections_at,
+        "sections": shape.counts[usize::from(shape.sections_at)],
         "depth_rule": rule,
     }))
 }
@@ -185,10 +186,13 @@ impl OutlineShape {
         } else {
             format!("Down to depth {depth} of {}, which is what fits: {shown} of {all} entries. `recto contents --depth {}` shows them all.", self.deepest, self.deepest)
         };
+        let sections = self.counts[usize::from(self.sections_at)];
         if depth < self.sections_at {
-            rule.push_str(&format!(" That's only the document's title: its sections start at depth {0}, so `recto contents --depth {0}` shows them.", self.sections_at));
+            rule.push_str(&format!(" That's only the document's title: its top-level sections are the {sections} entries at depth {0}, so `recto contents --depth {0}` shows them.", self.sections_at));
         } else if self.sections_at > 0 {
-            rule.push_str(&format!(" Sections start at depth {}.", self.sections_at));
+            rule.push_str(&format!(" What's above depth {0} is the document's title: its top-level sections are the {sections} entries at depth {0}.", self.sections_at));
+        } else if self.deepest > 0 {
+            rule.push_str(&format!(" Its top-level sections are the {sections} entries at depth 0."));
         }
         rule
     }
@@ -289,6 +293,10 @@ mod tests {
         assert!(just_the_title.contains("recto contents --depth 1"), "{just_the_title}");
         let default = shape.rule(190, 2, false);
         assert!(default.contains("depth 2") && default.contains("--depth 3"), "{default}");
+        // Failure: an agent took two calls to work out what "top-level" meant on an outline with title entries at depth 0, so it's said in words, with how many.
+        assert!(default.contains("top-level sections are the 39 entries at depth 1"), "{default}");
+        let plain = OutlineShape::of([(0, 0), (0, 3), (1, 4)].into_iter());
+        assert!(plain.rule(3, 1, false).contains("top-level sections are the 2 entries at depth 0"), "{}", plain.rule(3, 1, false));
 
         let flat = OutlineShape::of((0..300).map(|at| (0, at)));
         assert_eq!((flat.sections_at, flat.depth_that_fits(200)), (0, 0), "there's nothing else to show");

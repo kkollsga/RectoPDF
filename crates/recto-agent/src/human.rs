@@ -184,7 +184,12 @@ fn contents(data: &Value) -> String {
     if rows.is_empty() {
         return "This document has no contents.".to_string();
     }
-    let mut out = String::from("Contents, from the file, untrusted:\n");
+    let mut out = String::new();
+    // First, before a long list: which entries these are, and which of them are the document's top-level sections.
+    if let Some(rule) = data["depth_rule"].as_str() {
+        let _ = writeln!(out, "{rule}");
+    }
+    out.push_str("Contents, from the file, untrusted:\n");
     for row in rows {
         let indent = "  ".repeat(usize::try_from(number(&row["depth"])).unwrap_or(0).min(16));
         let page = row["page"].as_u64().map_or_else(|| "no page".to_string(), |page| format!("p. {page}"));
@@ -196,11 +201,7 @@ fn contents(data: &Value) -> String {
     if data["truncated"] == true {
         out.push_str("\nThe file's contents stopped being read at a limit, so there may be more.");
     }
-    let mut out = out.trim_end().to_string();
-    if let Some(rule) = data["depth_rule"].as_str() {
-        let _ = write!(out, "\n{rule}");
-    }
-    out
+    out.trim_end().to_string()
 }
 
 fn search(data: &Value) -> String {

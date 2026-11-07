@@ -194,9 +194,9 @@ pub static TABLE: &[Spec] = &[
             TAB,
             Arg { key: "from", flag: Some("--from"), kind: Kind::Count(100_000), required: false, help: "Entries to skip: `next_from` from the last answer." },
             Arg { key: "limit", flag: Some("--limit"), kind: Kind::Positive(2000), required: false, help: "Entries in this answer. 200 if left out." },
-            Arg { key: "depth", flag: Some("--depth"), kind: Kind::Count(32), required: false, help: "Deepest nesting to include. 0 is the top level, which can be just the title. As much as fits if left out." },
+            Arg { key: "depth", flag: Some("--depth"), kind: Kind::Count(32), required: false, help: "Deepest nesting to include. 0 is the top of the outline, which can be just the document's title: `sections_at` says where its top-level sections are. As much as fits if left out." },
         ],
-        data: "`{ tab, available, total, all_entries, entries: [ { depth, page, untrusted: { title } } ], next_from, truncated, depth_shown, deepest, sections_at, depth_rule }`. `total` counts the entries at the depth shown, and `all_entries` every entry. `sections_at` is the first depth whose entries are on more than one page, and `depth_rule` says all this in words. `available: false` means it couldn't be read, not that there's none. `truncated: true` means the file's contents stopped being read at a limit.",
+        data: "`{ tab, available, total, all_entries, entries: [ { depth, page, untrusted: { title } } ], next_from, truncated, depth_shown, deepest, sections_at, sections, depth_rule }`. `total` counts the entries at the depth shown, and `all_entries` every entry. The document's top-level sections are the `sections` entries at depth `sections_at`, the first depth whose entries are on more than one page: anything above that is its title. `depth_rule` says all this in words. `available: false` means it couldn't be read, not that there's none. `truncated: true` means the file's contents stopped being read at a limit.",
         examples: &["recto contents", "recto contents --depth 1 --limit 50", "recto contents --from 200 --json"],
         ..BASE
     },
