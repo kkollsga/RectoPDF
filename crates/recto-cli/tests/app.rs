@@ -422,6 +422,30 @@ fn a_fitted_page_fits_with_classic_scrollers() {
     }
 }
 
+/// Failure: closing the window and opening it again sends the reader to page 1 at no zoom, as the new window's first word is taken for them moving. Other tests have a one-page file, which can't see it.
+#[test]
+fn reopening_the_window_keeps_the_place_and_the_zoom() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(60);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "40"]);
+    run.settled();
+    run.ok(&["qa", "zoom", "2"]);
+    run.settled();
+    let before = run.report();
+    let page = before["reader"]["page"].clone();
+    run.ok(&["qa", "window", "close"]);
+    // Closed, it's settled: there's nothing to wait for, and nothing held for a window that isn't there.
+    run.settled();
+    run.ok(&["qa", "window", "open"]);
+    run.settled();
+    let back = run.report();
+    assert_eq!(back["reader"]["page"], page, "{back}");
+    assert_eq!(back["app"]["pages"]["magnification"], 2.0, "{back}");
+    assert_eq!(run.ok(&["where"])["page"], page, "the session's place too");
+}
+
 /// Failure: a file that can't be drawn hangs the view, kills the app, or shows a blank page with no reason. A page past every memory limit must come out as words, with the UI thread free.
 #[test]
 fn a_page_that_cant_be_drawn_says_so() {

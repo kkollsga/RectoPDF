@@ -501,12 +501,17 @@ impl Reader {
         self.viewport = viewport;
         self.counts.viewport_steps += 1;
         self.scrolled_to = viewport.scrolled_to.max(self.scrolled_to);
+        // A new window's first word, before it's been told anything: the top of the document at no zoom. That's nobody's place.
+        if !self.window_open {
+            return self.take_ops();
+        }
         let mut moved_layout = false;
         if let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) {
             if doc.layout.set_frame(viewport.frame_width, self.focus) && was.frame_width != viewport.frame_width {
                 moved_layout = true;
             }
-            if !viewport.live {
+            // A jump under way says the host hasn't caught up with what it's been told, and that includes the zoom.
+            if !viewport.live && self.jump.is_none() {
                 doc.magnification = viewport.magnification;
             }
         }
@@ -976,6 +981,12 @@ impl Reader {
         let hot = self.hot;
         let warm: Vec<u32> = self.docs.keys().copied().filter(|tab| Some(*tab) != hot).collect();
         self.recount_wanted_files(&warm);
+        // The window is new, at the top of the document and no zoom. It's sent back to the place and zoom this tab was left at, and until it's got there, what it says about where it is isn't the reader moving.
+        if let Some(magnification) = self.doc().map(|doc| doc.magnification) {
+            self.viewport.magnification = magnification;
+            self.ops.push_back(Op::Magnify { value: magnification });
+            self.jump = Some(u64::MAX);
+        }
         self.lay_out();
         self.refresh(MAX_ATTACH_PER_TURN);
     }
@@ -1871,6 +1882,31 @@ mod tests {
         assert!(reader.entries.values().all(|entry| entry.tab != 1), "closed");
         assert!(!reader.docs.contains_key(&1));
         assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")], "and its worker goes");
+    }
+
+    /// Failure: a new window's first viewport, at the top and no zoom, comes before it's opened and is taken for the reader moving, so closing the window and opening it again loses the place and the zoom. Before and after it's told, what it says doesn't count till it's arrived.
+    #[test]
+    fn reopening_the_window_keeps_the_place_and_the_zoom() {
+        let mut reader = reader_on(100);
+        settle(&mut reader);
+        reader.set_viewport(Viewport { magnification: 2.0, ..view(0.0) });
+        let inside = reader.doc().unwrap().layout.top(40) + 300.0;
+        reader.set_viewport(Viewport { magnification: 2.0, ..view(inside) });
+        reader.take_moved_page();
+        settle(&mut reader);
+        reader.window_closed();
+        let new_window = Viewport { scrolled_to: 0, ..view(0.0) };
+        reader.set_viewport(new_window);
+        assert_eq!(reader.take_moved_page(), None, "the new window isn't the reader moving");
+        reader.window_opened();
+        let ops = reader.set_viewport(new_window);
+        assert_eq!(reader.take_moved_page(), None, "nor is it before it has got there");
+        assert!(ops.iter().any(|op| matches!(op, Op::Magnify { value } if *value == 2.0)), "{ops:?}");
+        let Some(Op::ScrollTo { y, seq }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("{ops:?}") };
+        assert!((y - inside).abs() < 1.0, "{y} against {inside}");
+        reader.set_viewport(Viewport { magnification: 2.0, scrolled_to: *seq, ..view(*y) });
+        assert_eq!(reader.take_moved_page(), None, "arriving isn't a move");
+        assert_eq!(reader.doc().unwrap().magnification, 2.0);
     }
 
     /// Failure: the host's size change moves the reader away from what they were reading.
