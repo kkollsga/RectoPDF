@@ -21,9 +21,9 @@ use crate::indexing::Notifier;
 pub const MAX_WAITING: usize = 8;
 /// The helper's own footprint, which is distillPDF reading one page at a time. Its render worker has a limit of its own, half a reader's. With `MallocLargeCache=0`, all 141 PDFs of bench100 peaked under 100 MiB: see `docs/ENGINEERING.md`.
 pub const MEMORY_LIMIT: u64 = 512 * 1024 * 1024;
-/// A job's time: three minutes, and a second for each page, up to an hour, the indexer's limit. It's there for a helper that's stuck, not to hurry one: at background priority a busy Mac can starve it for minutes, and a debug build is many times slower. The 383-page NASA report took about 15 s in a release build at normal priority.
+/// A job's time: three minutes, and a second for each page, up to half an hour, so one file can't hold the only slot for long. It's there for a helper that's stuck, not to hurry one: at background priority a busy Mac can starve it for minutes, and a debug build is many times slower. The 383-page NASA report took about 15 s in a release build at normal priority.
 pub fn time_limit(pages: u32) -> Duration {
-    (Duration::from_secs(180) + Duration::from_secs(1) * pages).min(Duration::from_secs(60 * 60))
+    (Duration::from_secs(180) + Duration::from_secs(1) * pages).min(Duration::from_secs(30 * 60))
 }
 /// How often the helper is looked at while it runs.
 const WATCH_EVERY: Duration = Duration::from_millis(25);
@@ -62,14 +62,12 @@ pub trait Runner: Send + Sync {
 #[derive(Default)]
 struct Inner {
     waiting: VecDeque<GenJob>,
-    running: Option<(CorpusKey, Arc<AtomicBool>)>,
+    running: Option<(CorpusKey, Arc<AtomicBool>, PathBuf)>,
     failures: VecDeque<(CorpusKey, String, Instant)>,
     refused: VecDeque<(CorpusKey, String)>,
     held: VecDeque<(CorpusKey, Arc<Generated>)>,
     working: bool,
     stopped: bool,
-    /// The last helper's numbers, for `budget` and the measurements.
-    last_report: Value,
 }
 
 struct Shared {
@@ -107,14 +105,9 @@ impl Generator {
         let mut inner = self.0.lock();
         inner.stopped = true;
         inner.waiting.clear();
-        if let Some((_, stop)) = &inner.running {
+        if let Some((_, stop, _)) = &inner.running {
             stop.store(true, Ordering::SeqCst);
         }
-    }
-
-    /// The last helper's report, for measuring.
-    pub fn last_report(&self) -> Value {
-        self.0.lock().last_report.clone()
     }
 
     fn start_working(&self, inner: &mut Inner) {
@@ -151,7 +144,7 @@ impl Shared {
                     return;
                 };
                 let stop = Arc::new(AtomicBool::new(false));
-                inner.running = Some((job.key, Arc::clone(&stop)));
+                inner.running = Some((job.key, Arc::clone(&stop), job.path.clone()));
                 (job, stop)
             };
             self.tell(Event::new("contents_generating", json!({ "file": job.key.short() })));
@@ -168,7 +161,6 @@ impl Shared {
             let state = {
                 let mut inner = self.lock();
                 inner.running = None;
-                inner.last_report = report;
                 if let Some(made) = held {
                     if inner.held.len() >= MAX_HELD {
                         inner.held.pop_front();
@@ -184,6 +176,11 @@ impl Shared {
                         "refused"
                     }
                     Outcome::Changed => "changed",
+                    // Past a limit is this version's own doing, so it isn't run again for it, as a refusal isn't: a hostile file could otherwise take a gigabyte every minute.
+                    Outcome::Failed(code) if code == "over_memory" || code == "out_of_time" => {
+                        remember(&mut inner.refused, (job.key, code.clone()));
+                        "failed"
+                    }
                     Outcome::Failed(code) => {
                         inner.failures.retain(|(key, ..)| *key != job.key);
                         remember(&mut inner.failures, (job.key, code.clone(), Instant::now()));
@@ -191,7 +188,8 @@ impl Shared {
                     }
                 }
             };
-            self.tell(Event::new("contents_generated", json!({ "file": job.key.short(), "state": state, "code": outcome.code() })));
+            // What it took, for whoever's watching: numbers only.
+            self.tell(Event::new("contents_generated", json!({ "file": job.key.short(), "state": state, "code": outcome.code(), "elapsed_ms": report["elapsed_ms"], "helper_peak_bytes": report["helper_peak_watched_bytes"] })));
         }
     }
 }
@@ -219,7 +217,7 @@ impl Generating for Generator {
 
     fn want(&self, path: &Path, key: CorpusKey, pages: u32) {
         let mut inner = self.0.lock();
-        if inner.stopped || inner.running.as_ref().is_some_and(|(running, _)| *running == key) || inner.refused.iter().any(|(refused, _)| *refused == key) || failure(&mut inner, key).is_some() {
+        if inner.stopped || inner.running.as_ref().is_some_and(|(running, ..)| *running == key) || inner.refused.iter().any(|(refused, _)| *refused == key) || failure(&mut inner, key).is_some() {
             return;
         }
         inner.waiting.retain(|waiting| waiting.key != key);
@@ -230,7 +228,7 @@ impl Generating for Generator {
 
     fn state(&self, key: CorpusKey) -> GenState {
         let mut inner = self.0.lock();
-        if inner.running.as_ref().is_some_and(|(running, _)| *running == key) {
+        if inner.running.as_ref().is_some_and(|(running, ..)| *running == key) {
             GenState::Running
         } else if inner.waiting.iter().any(|job| job.key == key) {
             GenState::Queued
@@ -253,8 +251,21 @@ impl Generating for Generator {
             Some(key) => inner.waiting.retain(|job| job.key != key),
             None => inner.waiting.clear(),
         }
-        if let Some((running, stop)) = &inner.running
+        if let Some((running, stop, _)) = &inner.running
             && key.is_none_or(|key| key == *running)
+        {
+            stop.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Generator {
+    /// Stops what's on its way for a file, by its path: a tab closed, or the reader saying stop. Nothing's read for it.
+    pub fn cancel_path(&self, path: &Path) {
+        let mut inner = self.0.lock();
+        inner.waiting.retain(|job| job.path != path);
+        if let Some((_, stop, running)) = &inner.running
+            && running == path
         {
             stop.store(true, Ordering::SeqCst);
         }
@@ -384,11 +395,6 @@ pub fn read_answer(said: &[u8], key: CorpusKey) -> (Outcome, Value) {
     (outcome, Value::Object(numbers))
 }
 
-/// Runs one job here and now, blocking until it's over, for `budget contents`.
-pub fn generate_now(path: &Path, key: CorpusKey, pages: u32, background: bool) -> (Outcome, Value) {
-    HelperProcess { background }.run(&GenJob { path: path.to_path_buf(), key, pages }, &AtomicBool::new(false))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,7 +463,7 @@ mod tests {
         assert_eq!(stand.most_at_once.load(Ordering::SeqCst), 1);
     }
 
-    /// Failure: a file distillPDF refuses, or a helper killed at its limit, is started again by every ask, so a loop of asks keeps a process busy for nothing. And a refusal of one version stands for another.
+    /// Failure: a file distillPDF refuses, or a helper killed at its limit, is started again by every ask, or every minute, so a hostile file keeps a gigabyte busy. A limit is that version's own, as a refusal is. And a refusal of one version stands for another.
     #[test]
     fn a_refusal_and_a_failure_are_remembered() {
         struct Says(&'static str);
@@ -466,7 +472,7 @@ mod tests {
                 (if self.0 == "refused" { Outcome::Refused("couldnt_read".into()) } else { Outcome::Failed("over_memory".into()) }, Value::Null)
             }
         }
-        for (says, expected) in [("refused", GenState::Refused("couldnt_read".into())), ("failed", GenState::Failed("over_memory".into()))] {
+        for (says, expected) in [("refused", GenState::Refused("couldnt_read".into())), ("failed", GenState::Refused("over_memory".into()))] {
             let generator = Generator::with_runner(Path::new("/nowhere"), Box::new(Says(says)));
             generator.want(Path::new("/nowhere/a.pdf"), key(1), 10);
             settle(&generator);
@@ -497,6 +503,25 @@ mod tests {
         assert_eq!(generator.state(key(1)), GenState::Idle, "nothing starts after shutting down");
     }
 
+    /// Failure: closing a tab, or the reader saying stop, leaves its helper running to the end of its time.
+    #[test]
+    fn a_closed_tabs_job_stops() {
+        let stand = Arc::new(Stand::default());
+        let generator = Generator::with_runner(Path::new("/nowhere"), Box::new(Runs(Arc::clone(&stand))));
+        generator.want(Path::new("/nowhere/a.pdf"), key(1), 10);
+        generator.want(Path::new("/nowhere/b.pdf"), key(2), 10);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while generator.state(key(2)) != GenState::Running {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        generator.cancel_path(Path::new("/nowhere/a.pdf"));
+        assert_eq!(generator.state(key(1)), GenState::Idle, "taken off the queue");
+        generator.cancel_path(Path::new("/nowhere/b.pdf"));
+        settle(&generator);
+        assert!(generator.held(key(2)).is_none());
+    }
+
     /// Failure: a hostile or broken helper's answer is believed: contents for another file, an unknown refusal code shown as words, a report that isn't one, or one cut short.
     #[test]
     fn a_helper_answer_is_read_as_hostile() {
@@ -518,6 +543,6 @@ mod tests {
     #[test]
     fn the_time_allowed_grows_with_pages_and_has_a_ceiling() {
         assert!(time_limit(383) > time_limit(10));
-        assert_eq!(time_limit(u32::MAX), Duration::from_secs(60 * 60));
+        assert_eq!(time_limit(u32::MAX), Duration::from_secs(30 * 60));
     }
 }

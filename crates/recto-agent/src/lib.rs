@@ -590,6 +590,8 @@ impl Command {
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
+            // Making generated contents starts a helper, which is heavier work than reading the file's own, so the log can tell them apart.
+            Self::Contents { tab, generated: true, .. } => json!({ "tab": tab_of(tab), "generated": true }),
             Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
@@ -2449,6 +2451,8 @@ mod tests {
     /// Failure: the log gets what an agent typed or a search's words, which can hold document text, or a file name with hidden characters in it.
     #[test]
     fn log_details_hold_no_text_and_clean_file_names() {
+        // Failure: the log can't tell asking for generated contents, which starts a helper, from reading the file's own.
+        assert_eq!(Command::Contents { tab: "#1".into(), from: None, limit: None, depth: None, generated: true }.log_details()["generated"], true);
         let hostile = format!("/d/a{}\nb.pdf", char::from_u32(0xE0041).unwrap());
         let open = Command::Open { path: hostile.into(), page: Some(3) }.log_details();
         assert_eq!(open["untrusted"]["file"], "a b.pdf");

@@ -221,7 +221,12 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
         if let Some(answer) = self.run_record_command(level, command) {
             return answer;
         }
+        // A tab that closes takes its generated contents' job with it, if one's running or waiting.
+        let closing = matches!(command, Command::Close { .. }).then(|| self.acted_tab(command).and_then(|id| self.with_session(|session| session.path_of(id)))).flatten();
         let result = recto_agent::execute(&self.access(), level, command, events);
+        if let (Some(path), Ok(_), Some(generator)) = (&closing, &result, &self.generator) {
+            generator.cancel_path(path);
+        }
         let tabs = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tabs().len();
         self.tabs.store(u32::try_from(tabs).unwrap_or(u32::MAX), Ordering::Relaxed);
         result

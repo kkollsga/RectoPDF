@@ -14,6 +14,16 @@ pub(crate) fn act(inner: &Inner, id: TabId, action: ContentsAction) {
     match action {
         ContentsAction::ShowOwn => session.with_session(|session| session.choose_generated(id, false)),
         ContentsAction::ShowGenerated => session.with_session(|session| session.choose_generated(id, true)),
+        ContentsAction::Stop => {
+            // Stopped by the reader: the helper goes, and the offer's back. Nothing's read for it.
+            if let (Some(generator), Some(path)) = (session.generator(), session.with_session(|session| session.path_of(id))) {
+                generator.cancel_path(&path);
+            }
+            session.with_session(|session| {
+                session.choose_generated(id, false);
+                session.forget_generated(id);
+            });
+        }
         ContentsAction::Generate => {
             session.with_session(|session| {
                 session.choose_generated(id, true);

@@ -215,8 +215,10 @@ fn the_sidebar_offers_generated_contents_and_labels_them() {
     assert_eq!(offered["app"]["contents"]["note"], "Generate contents", "{offered}");
     assert!(offered["app"]["contents"]["note_height"].as_f64().unwrap() > 0.0);
     run.ok(&["qa", "click-row", "note"]);
-    // The helper is at background priority, which a busy Mac can starve, so the wait is the agent's own, as long as it needs.
+    // The helper is at background priority, which a busy Mac can starve, so the wait is the agent's own, up to ten minutes.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
     loop {
+        assert!(std::time::Instant::now() < deadline, "they weren't made in ten minutes");
         let (done, code) = run.state.json(&["wait", "contents-generated", "--timeout", "120s"]);
         if code != recto_agent::exit::TIMED_OUT {
             assert_eq!(code, 0, "{done}");

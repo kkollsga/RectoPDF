@@ -760,6 +760,8 @@ pub enum ContentsAction {
     Generate,
     ShowGenerated,
     ShowOwn,
+    /// Stop making them.
+    Stop,
 }
 
 impl ContentsAction {
@@ -768,11 +770,12 @@ impl ContentsAction {
             Self::Generate => "contents.generate",
             Self::ShowGenerated => "contents.show_generated",
             Self::ShowOwn => "contents.show_own",
+            Self::Stop => "contents.stop",
         }
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
-        [Self::Generate, Self::ShowGenerated, Self::ShowOwn].into_iter().find(|action| action.id() == id)
+        [Self::Generate, Self::ShowGenerated, Self::ShowOwn, Self::Stop].into_iter().find(|action| action.id() == id)
     }
 }
 
@@ -786,7 +789,7 @@ pub fn contents_note(verdict: ContentsVerdict, view: Option<&GeneratedView>, cho
             (own_entries > 0).then_some(ContentsAction::ShowOwn),
         )),
         Some(GeneratedView::Ready(_)) => Some(("Show generated contents", MADE, Some(ContentsAction::ShowGenerated))),
-        Some(GeneratedView::Making) => Some(("Generating contents\u{2026}", "Finding the headings on the pages, in the background. On a long document this can take a little while.", None)),
+        Some(GeneratedView::Making) => Some(("Generating contents\u{2026}", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some(ContentsAction::Stop))),
         Some(GeneratedView::Failed(words)) => Some(("Couldn't generate contents", words, Some(ContentsAction::Generate))),
         Some(GeneratedView::NoneFound) => Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None)),
         _ if verdict.offers() || choose_generated => Some((
@@ -982,6 +985,7 @@ impl<L: DocLoader> Session<L> {
         }
         self.remember_warm(id, Arc::new(facts.toc));
         self.active = Some(id);
+        self.generated.retain(|(tab, view)| *tab == id || !matches!(view, GeneratedView::Ready(_)));
         if let Some(history) = history {
             let rolled_off = history.restored.rolled_off;
             self.take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
@@ -1279,6 +1283,8 @@ impl<L: DocLoader> Session<L> {
 
     /// **A tab goes dormant, SPEC decision 25: it costs a cold tab's memory from here on.** Its contents go, and its list goes if [`Self::list_to_sleep`] says it can, as all of it's on disk. Said once for each, and read back only if it's touched again. Says whether the list went, or there wasn't one.
     pub fn go_dormant(&mut self, id: TabId) -> bool {
+        // A dormant tab holds no list: its generated contents are on disk, and found again when it's shown.
+        self.generated.retain(|(tab, _)| *tab != id);
         if !self.can_go_dormant(id) {
             return false;
         }
@@ -1459,6 +1465,7 @@ impl<L: DocLoader> Session<L> {
 
     /// What was read of a tab goes, so it's read again: its file's turned out to be something else.
     pub fn forget_read(&mut self, id: TabId) {
+        self.generated.retain(|(tab, _)| *tab != id);
         if let Some(tab) = self.tab_mut(id) {
             tab.from_sleep = None;
         }
@@ -1601,6 +1608,8 @@ impl<L: DocLoader> Session<L> {
 
     /// **The one method a confirmed Save or Save As calls, and it marks a saved point.** Owner, 2026-11-07: "after a save you might still have regrets and want to make changes. But you definitely don't want history to leak into the pdf file". What was written is the file now, so the document reads as saved, and the history goes on: undoing past this makes it unsaved again, and back to here reads as saved. A failed save calls nothing, and everything stays. `saved_as` moves the tab if it went to another file, and the history goes with it. `kept` is what [`Self::save_prepared`] was told, and a Save As has the old file itself for that. What a step can't get pages from rolls off: see [`PageEdits::rebase_on_saved`], and the tab says so. The steps around it, and what a crash at each does, are in `docs/ENGINEERING.md`. Says how many steps rolled off.
     pub fn saved(&mut self, id: TabId, now: FileStamp, pages: u32, saved_as: Option<&Path>, kept: Option<edit::AddedSource>) -> usize {
+        // Another version of the file now: the old one's generated contents aren't about it.
+        self.generated.retain(|(tab, _)| *tab != id);
         if !self.wake_list(id) {
             self.give_up_on_asleep(id);
         }
@@ -1793,6 +1802,10 @@ impl<L: DocLoader> Session<L> {
 
     /// What a look at a tab's file found, from [`record::look_at_file`], made on whatever thread could afford it. Nothing's written to any PDF. A file that moved is followed. One that's changed under edits keeps the stamp they were made on, so the edits' own checks go on saying so.
     pub fn apply_file_status(&mut self, id: TabId, status: FileStatus) {
+        // A file changed or gone takes its generated contents with it, so the sidebar shows what an agent's `contents --generated` finds, which goes by the file as it is now.
+        if matches!(status, FileStatus::Changed(_) | FileStatus::Missing) {
+            self.generated.retain(|(tab, _)| *tab != id);
+        }
         let has_edits = self.has_list(id);
         match status {
             FileStatus::NotLooked => {}
@@ -2218,6 +2231,11 @@ impl<L: DocLoader> Session<L> {
         }
     }
 
+    /// Forgets where a tab's generated contents stand, so it offers them again.
+    pub fn forget_generated(&mut self, id: TabId) {
+        self.generated.retain(|(tab, _)| *tab != id);
+    }
+
     /// Tabs whose generated contents are being made.
     pub fn generated_making(&self) -> Vec<TabId> {
         self.generated.iter().filter(|(_, view)| *view == GeneratedView::Making).map(|(tab, _)| *tab).collect()
@@ -2275,6 +2293,8 @@ impl<L: DocLoader> Session<L> {
     }
 
     fn activate(&mut self, id: TabId) {
+        // Only the tab on screen holds a generated list in memory. The rest are on disk, and a cold tab stays a cold tab's size.
+        self.generated.retain(|(tab, view)| *tab == id || !matches!(view, GeneratedView::Ready(_)));
         self.wake_list(id);
         // A moved or changed file with nothing riding on it has been said on the way past.
         if let Some(left) = self.active.filter(|left| *left != id) {
@@ -3240,7 +3260,7 @@ mod tests {
         assert_eq!(note(&s), Some(("Generate contents".into(), Some(ContentsAction::Generate))));
         s.choose_generated(id, true);
         s.set_generated_view(id, GeneratedView::Making);
-        assert_eq!(note(&s).map(|(_, action)| action), Some(None), "nothing to tap while they're made");
+        assert_eq!(note(&s).map(|(_, action)| action), Some(Some(ContentsAction::Stop)), "the reader can stop them");
         let lines = [TocLine { title: "1 Introduction", page: 0, parent: NONE, depth: 0 }, TocLine { title: "2 Method", page: 5, parent: NONE, depth: 0 }];
         s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
         let model = s.sidebar();
@@ -3251,6 +3271,19 @@ mod tests {
         s.choose_generated(id, false);
         assert_eq!(note(&s), Some(("Show generated contents".into(), Some(ContentsAction::ShowGenerated))));
         assert!(s.sidebar().rows.iter().all(|row| row.kind != RowKind::Contents), "the file's own, which are none");
+        // A file changed underneath: the old version's list goes, as an agent's `contents --generated` would find none for the new one.
+        s.choose_generated(id, true);
+        s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
+        s.apply_file_status(id, FileStatus::Changed(FileStamp { size: 9, mtime_ns: 9, device: 1, inode: 2 }));
+        assert!(s.generated_view(id).is_none(), "an old version's list stayed");
+        s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
+        s.go_dormant(id);
+        assert!(s.generated_view(id).is_none(), "a dormant tab held its list");
+        // Another tab shown: this one's list leaves memory.
+        s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
+        let other = s.open(Path::new("/d/b.pdf")).unwrap();
+        s.tap(other).unwrap();
+        assert!(s.generated_view(id).is_none(), "a tab off screen held its list");
         s.close(id).unwrap();
         assert!(s.generated_view(id).is_none());
     }

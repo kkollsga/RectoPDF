@@ -93,8 +93,9 @@ pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
     let Some(generating) = access.generating() else { return ConditionState::Failed(no_generating()) };
     let (file, keyed) = match crate::reading::tab_file_keyed(access, tab) {
         Ok(found) => found,
-        Err(error) if error.exit == exit::AMBIGUOUS => return ConditionState::Failed(error),
-        Err(_) => return ConditionState::Waiting,
+        // A tab that isn't open yet may be; a file that's changed under its edits or can't be looked at won't be, so the wait ends now rather than at its time.
+        Err(error) if error.code == "no_such_tab" && error.exit != exit::AMBIGUOUS => return ConditionState::Waiting,
+        Err(error) => return ConditionState::Failed(error),
     };
     match not_ready(generating, &keyed, file.pages, true) {
         None => match crate::reading::contents(access, tab, None, None, None, true) {
