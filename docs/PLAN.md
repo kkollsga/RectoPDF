@@ -209,14 +209,26 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 Real digital signatures to the official standards, signature trust checks, Windows, Link and Join text, document-wide reflow, a second agent CLI.
 
+## Decisions made by the owner, 2026-11-07
+
+"I agree, but license mit is fine", to these recommendations:
+- **Licence: MIT.** Third-party notices remain a Phase 7 item.
+- **lopdf fork:** tag the commit a published distillPDF depends on, and move the fork's `main` to the new code once distillPDF has published.
+- **Quit doesn't ask about unsaved edits,** which come back on the next launch. Closing a document still asks.
+- **Agents and copy-restricted PDFs:** stays as it is, and each use of `--anyway` goes in the activity log.
+- **Hidden text past today's detection:** tightened in the planned hidden-text work, without holding up selection.
+- **Copies:** notice with Copy anyway; hidden text left out, with a notice.
+- **SVG:** no WebP flag for now.
+- **Updates:** *Check for Updates…* in the RectoPDF menu, automatic updates on, the daily check always runs. Signing secrets are added when the updater needs them.
+- **State:** dormant after 5 minutes; history kept 30 days within 1 GiB, out of backups; redaction and hidden-data removal clear it.
+- **Agents:** below Full an agent throws away only agents' edits; the skill keeps auto-approving read-only commands; a same-user process faking a terminal is accepted until Settings exists.
+- **Exports:** peaks of 465–494 MiB at 3× and 4× are accepted.
+- **Tab names:** the file name, with the full name and title on hover.
+- **Before a public release:** a name search for the trademark, no registration yet; wait for Anthropic's written answer and add an API-key route.
+
 ## Decisions waiting on you
 
 | Decision | Needed by | Current default |
 |---|---|---|
-| A same-user process faking a terminal or writing the level file: accept until the app's settings exist? | Phase 2 | Yes |
-| `SKILL.md` auto-approves read-only `recto` commands in Claude Code; the session's level still applies | Phase 6 | Keep |
-| Whole-page exports at 3× and 4× peak at 465–469 MiB, above the 415–450 MiB accepted | Phase 2 | Accept |
-| Copy-restricted PDFs: notice with Copy anyway? | Phase 3 | Yes |
 | What Save does the first time: keep one backup of the original? | Phase 4 | Yes |
 | Anthropic's answer before public release; API-key route | Phase 6 | Wait; add it |
-| Licence: permissive or closed | Phase 7 | Permissive or closed, undecided which |

@@ -78,3 +78,4 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "and edit should also keep undo, redo history of edits until save has been applied."
 - "We don't want to add the undo redo history to the file itself, but we can have a rolling save redo history on the system, so it kind of in the temp files per PDF."
 - "1000 steps and 64mb is good." On Save: "after a save you might still have regrets and want to make changes. But you definitely don't want history to leak into the pdf file".
+- "I agree, but license mit is fine" (to the coordinator's recommendations, listed in `docs/PLAN.md` under Decisions made).
