@@ -754,6 +754,15 @@ const RED: &str = "1 0 0";
 const BLUE: &str = "0 0 1";
 const GREEN: &str = "0 1 0";
 
+/// A PDF of pages of one colour with a file ID, as anything that writes PDFs gives one: what a version is told by when a stamp can't.
+fn coloured_with_id(colours: &[&str], id: &str) -> Vec<u8> {
+    let mut document = lopdf::Document::load_mem(&pages(&colours.iter().map(|colour| page_of(colour)).collect::<Vec<_>>())).unwrap();
+    document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal(id), lopdf::Object::string_literal(id)]));
+    let mut out = Vec::new();
+    document.save_to(&mut out).unwrap();
+    out
+}
+
 /// Which of red, green and blue each sleep file's pictures mostly are, read as anything else would, by the file's name.
 fn colours_in_sleep_files(state: &State) -> Vec<(String, Vec<&'static str>)> {
     sleep_files(state)
@@ -776,6 +785,7 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
     let state = State::at(Level::Full);
     let Some(run) = Run::start(&state) else { return };
     run.ok(&["qa", "appearance", "light"]);
+    run.ok(&["qa", "sleep-write-gap", "0"]);
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let (file, other) = (folder.join("colour.pdf"), text_document(&folder, "other.pdf", 2));
@@ -827,6 +837,142 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
     run.ok(&["session", "sleep", "--tab", &on_tab]);
     let colours = colours_in_sleep_files(&state);
     assert!(!colours.iter().any(|(_, colours)| colours.contains(&"red") || colours.contains(&"blue")), "{colours:?}");
+}
+
+fn tab_on(run: &Run<'_>, name: &str) -> String {
+    format!("#{}", tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with(name)).unwrap()["id"])
+}
+
+/// Failure (review follow-up 1, the red frames, reproduced here before the fix): a warm tab's file is replaced, by a save or another app, and tapping it shows the old pages from what's held and from a worker that still has the old file open, with nothing said. Its file's looked at before it's shown, and the old pages go.
+#[test]
+fn a_warm_tab_shows_its_file_as_it_is_now() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    run.ok(&["qa", "appearance", "light"]);
+    run.ok(&["qa", "sleep-write-gap", "0"]);
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (file, other) = (folder.join("colour.pdf"), text_document(&folder, "other.pdf", 2));
+    std::fs::write(&file, pages(&[page_of(RED), page_of(RED)])).unwrap();
+    run.ok(&["open", file.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["open", other.to_str().unwrap()]);
+    run.settled();
+    assert_eq!(run.report()["reader"]["documents_held"], 2, "it's warm, with its pages held");
+    let replacement = folder.join("replacement.pdf");
+    std::fs::write(&replacement, pages(&[page_of(BLUE), page_of(BLUE)])).unwrap();
+    std::fs::rename(&replacement, &file).unwrap();
+    run.ok(&["tap", &tab_on(&run, "colour.pdf")]);
+    run.settled();
+    assert_eq!(tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with("colour.pdf")).unwrap()["notice"], "changed");
+    run.ok(&["tap", &tab_on(&run, "other.pdf")]);
+    run.settled();
+    run.ok(&["session", "sleep", "--tab", &tab_on(&run, "colour.pdf")]);
+    let colours = colours_in_sleep_files(&state);
+    assert!(colours.iter().any(|(_, colours)| colours.contains(&"blue")) && !colours.iter().any(|(_, colours)| colours.contains(&"red")), "{colours:?}");
+}
+
+/// Failure (review follow-up 1): a file replaced while the app was closed, and its tab the one on screen: the window goes up with the old file's picture from its sleep file, before anything's looked at the file.
+#[test]
+fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    run.ok(&["qa", "appearance", "light"]);
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join("colour.pdf");
+    std::fs::write(&file, pages(&[page_of(RED)])).unwrap();
+    run.ok(&["open", file.to_str().unwrap()]);
+    run.settled();
+    run.hand_off();
+    assert!(colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"red")), "there's a red picture to come up with");
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&file, pages(&[page_of(BLUE), page_of(BLUE)])).unwrap();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let report = run.report();
+    assert_eq!(report["reader"]["last_wake"]["from_sleep"], false, "no picture of the old one: {}", report["reader"]["last_wake"]);
+    assert_eq!(run.ok(&["where"])["pages"], 2);
+}
+
+/// Failure (review follow-up 3): a file rewritten with its size, time and number as they were keeps the old picture in its next sleep file, as nothing but the stamp was compared. Which version of a file it is comes from what opening it reads anyway, its ID and where its trailers end, and a picture of another goes. A file with no ID whose every object's at the same place can't be told this way: see `docs/ENGINEERING.md`.
+#[test]
+fn a_rewrite_that_keeps_its_stamp_doesnt_keep_its_picture() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    run.ok(&["qa", "appearance", "light"]);
+    run.ok(&["qa", "sleep-write-gap", "0"]);
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (file, other) = (folder.join("colour.pdf"), text_document(&folder, "other.pdf", 2));
+    std::fs::write(&file, coloured_with_id(&[RED], "first-version-id")).unwrap();
+    let stamp = recto_platform::file_stamp(&file).unwrap();
+    run.ok(&["open", file.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["open", other.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["session", "sleep", "--tab", &tab_on(&run, "colour.pdf")]);
+    assert!(colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"red")));
+    // The same length, the same file, and its time put back.
+    let modified = std::fs::metadata(&file).unwrap().modified().unwrap();
+    std::fs::write(&file, coloured_with_id(&[BLUE], "other-version-id")).unwrap();
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(modified).unwrap();
+    assert_eq!(recto_platform::file_stamp(&file).unwrap(), stamp, "no stamp can tell");
+    run.ok(&["tap", &tab_on(&run, "colour.pdf")]);
+    run.settled();
+    run.ok(&["tap", &tab_on(&run, "other.pdf")]);
+    run.settled();
+    run.ok(&["session", "sleep", "--tab", &tab_on(&run, "colour.pdf")]);
+    let colours = colours_in_sleep_files(&state);
+    assert!(!colours.iter().any(|(_, colours)| colours.contains(&"red")), "{colours:?}");
+}
+
+/// Failure (review follow-up 2): `session sleep` writes a new sleep file every time it's asked, so an agent going tap, move, sleep writes most of a megabyte in ten turns. It keeps to the same limits as anything else that isn't a quit or a hand-off.
+#[test]
+fn session_sleep_keeps_to_the_limits_on_writing() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (file, other) = (text_document(&folder, "doc.pdf", 12), text_document(&folder, "other.pdf", 2));
+    run.ok(&["open", file.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["open", other.to_str().unwrap()]);
+    run.settled();
+    for turn in 0..5 {
+        run.ok(&["tap", &tab_on(&run, "doc.pdf")]);
+        run.settled();
+        run.ok(&["goto", &format!("{}", turn * 2 + 2)]);
+        run.settled();
+        run.ok(&["tap", &tab_on(&run, "other.pdf")]);
+        run.settled();
+        run.ok(&["session", "sleep", "--tab", &tab_on(&run, "doc.pdf")]);
+    }
+    let sleep = run.report()["record"]["sleep"].clone();
+    assert_eq!(sleep["sleep_files_written"], 1, "one, the first: {sleep}");
+    assert!(sleep["writes_put_off"].as_u64().unwrap() >= 4, "{sleep}");
+}
+
+/// Failure (review follow-up 4): with a tab's edits unreadable just now, `recto text` says there's no such page, for every page, which says nothing of why. It says its edits can't be read.
+#[test]
+fn reading_a_page_says_when_its_edits_cant_be_read() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (file, other) = (text_document(&folder, "doc.pdf", 4), text_document(&folder, "other.pdf", 2));
+    run.ok(&["open", file.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "delete:2"]);
+    run.settled();
+    run.ok(&["open", other.to_str().unwrap()]);
+    run.settled();
+    let slept = run.ok(&["session", "sleep", "--tab", &tab_on(&run, "doc.pdf")]);
+    assert_eq!(slept["list_asleep"], true);
+    let journal = std::fs::read_dir(state.root.join("session").join("journals")).unwrap().flatten().find(|entry| entry.file_name().to_string_lossy().starts_with("journal-")).unwrap().path();
+    std::fs::write(&journal, b"not a journal").unwrap();
+    let (reply, _) = state.json(&["text", "--tab", &tab_on(&run, "doc.pdf"), "--page", "1"]);
+    assert_eq!(reply["error"]["code"], "edits_unreadable", "{reply}");
 }
 
 /// Failure (review, blocks the merge): a protected PDF's pages go in a sleep file in the clear, when it's been added to a plain document: only the tab's own file was looked at. A document with a page from one has no pictures, and that's known after a restart.

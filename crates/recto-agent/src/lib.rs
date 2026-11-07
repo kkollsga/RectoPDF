@@ -577,6 +577,11 @@ impl Command {
 
 impl Command {
     /// The selector this command acts on, if it has one.
+    /// Whether it reads what's on a tab's pages, which a tab's edits say.
+    fn reads_pages(&self) -> bool {
+        matches!(self, Self::Text { .. } | Self::Render { .. } | Self::ExportSvg { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::Index { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. })
+    }
+
     fn tab_selector(&self) -> Option<&str> {
         match self {
             Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
@@ -877,13 +882,18 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     let held = command.tab_selector().and_then(|selector| {
         access.with(|s| {
             let id = select(s, selector).ok()?;
-            s.wake_list(id);
+            let awake = s.wake_list(id);
             s.touch(id);
             s.hold(id);
-            Some(id)
+            Some((id, awake))
         })
     });
-    let result = execute_held(access, level, command, events);
+    // Its edits say what's on its pages, and they can't be read just now: anything that reads a page says so, rather than that there's no such page (review).
+    let result = match held {
+        Some((_, false)) if command.reads_pages() => Err(AgentError::new(recto_session::SessionError::EditsUnreadable.code(), recto_session::SessionError::EditsUnreadable.message(), exit::FAILED).then("`recto discard` gives up on them, and `recto session show` says what's known of them.")),
+        _ => execute_held(access, level, command, events),
+    };
+    let held = held.map(|(id, _)| id);
     if let Some(id) = held {
         access.with(|s| s.let_go(id));
     }

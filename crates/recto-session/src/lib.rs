@@ -56,8 +56,8 @@ pub enum Tier {
 // size: asserted <= 256 by `tab_record_stays_small`. Held per tab, including cold ones.
 #[derive(Debug)]
 pub struct TabRecord {
-    /// What's known of its file came from a sleep file, and the PDF hasn't said so yet.
-    from_sleep: bool,
+    /// What's known of its file came from a sleep file, and the PDF hasn't said so yet: which version that file said it was of, or zero for none said.
+    from_sleep: Option<u64>,
     /// Its file's protected. Its contents and pages are never written anywhere, so it has no sleep file.
     encrypted: bool,
     /// When it was last active, edited or worked on, in seconds of the session. What going dormant goes by, with no timer of its own.
@@ -837,7 +837,7 @@ impl<L: DocLoader> Session<L> {
         self.next_id += 1;
         let name = tab_name(path);
         self.tabs.push(TabRecord {
-            from_sleep: false,
+            from_sleep: None,
             encrypted: false,
             touched: 0,
             id,
@@ -1251,12 +1251,12 @@ impl<L: DocLoader> Session<L> {
         let tab = self.tab(id)?;
         let stamp = tab.stamp?;
         // What's come from a sleep file and hasn't been checked against the PDF isn't written again as if it had. Nor anything of a file that's not what it was.
-        if tab.encrypted || tab.from_sleep || self.asleep.contains_key(&id) || matches!(tab.notice.as_deref(), Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword)) {
+        if tab.encrypted || tab.from_sleep.is_some() || self.asleep.contains_key(&id) || matches!(tab.notice.as_deref(), Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword)) {
             return None;
         }
         let list = self.edits.get(&id);
         let (pages, list_seq) = list.map_or((tab.page_count, 0), |list| (list.len(), list.order_mark()));
-        let sleep = sleep::SleepFile { file: stamp, file_pages: tab.page_count, pages, list_seq, renderer_only: tab.renderer_only, toc: toc.clone(), usual: None, sizes: Vec::new(), pictures: Vec::new() };
+        let sleep = sleep::SleepFile { file: stamp, file_pages: tab.page_count, pages, list_seq, renderer_only: tab.renderer_only, version: None, toc: toc.clone(), usual: None, sizes: Vec::new(), pictures: Vec::new() };
         // A page from a protected file on any page means pictures of none, and it's the same for each of them.
         Some(SleepFacts { id, path: self.path_of(id)?, sleep, pictures_allowed: !list.is_some_and(PageEdits::has_protected_pages) })
     }
@@ -1319,17 +1319,16 @@ impl<L: DocLoader> Session<L> {
         let facts = DocFacts { page_count: sleep.file_pages, byte_len: sleep.file.size, encrypted: false, version: "".into(), title: None, toc: sleep.toc.clone(), renderer_only: sleep.renderer_only };
         self.give_woken(id, Ok(facts), Some(sleep.file));
         if let Some(tab) = self.tab_mut(id) {
-            tab.from_sleep = true;
+            tab.from_sleep = Some(sleep.version.unwrap_or(0));
         }
     }
 
     /// **The worker has the file open, and says how long it is.** A sleep file's word goes only until now. If it's said something else, it's gone, and the file's read: says so, for that to be done. A list's own length is compared with what that read finds, on its way in. A file read in the usual way isn't looked at, as the two readers of a damaged PDF can differ, and neither is wrong.
-    pub fn file_length_is(&mut self, id: TabId, pages: u32) -> bool {
+    pub fn file_length_is(&mut self, id: TabId, pages: u32, version: u64) -> bool {
         let Some(tab) = self.tab_mut(id) else { return false };
-        if !std::mem::take(&mut tab.from_sleep) {
-            return false;
-        }
-        if tab.page_count == pages {
+        let Some(said) = tab.from_sleep.take() else { return false };
+        // The same length and, if it said, the same version: it was right. A sleep file that didn't say is right about the length only, which is all it's been used for, its pictures having gone if they weren't.
+        if tab.page_count == pages && (said == 0 || said == version) {
             return false;
         }
         self.retire_sleep_file(id);
@@ -1340,7 +1339,7 @@ impl<L: DocLoader> Session<L> {
     /// What was read of a tab goes, so it's read again: its file's turned out to be something else.
     pub fn forget_read(&mut self, id: TabId) {
         if let Some(tab) = self.tab_mut(id) {
-            tab.from_sleep = false;
+            tab.from_sleep = None;
         }
         self.warm.retain(|(tab, _)| *tab != id);
         self.woken.retain(|(tab, _, _)| *tab != id);
@@ -1823,7 +1822,7 @@ impl<L: DocLoader> Session<L> {
             }
             let pages = self.edits.get(&id).map_or(entry.page_count, PageEdits::len);
             self.tabs.push(TabRecord {
-                from_sleep: false,
+                from_sleep: None,
                 encrypted: false,
                 touched: 0,
                 id,
@@ -3795,16 +3794,16 @@ mod tests {
         let stamp = file_stamp(&path).unwrap();
         let mut s = session(3);
         let a = s.open(&path).unwrap();
-        assert!(!s.file_length_is(a, 2), "read the usual way, that's nothing to go on");
+        assert!(!s.file_length_is(a, 2, 5), "read the usual way, that's nothing to go on");
         s.open(Path::new("/d/b.pdf")).unwrap();
         s.warm.retain(|(id, _)| *id != a);
         // Forged: a hundred pages.
-        let forged = |file_pages: u32| sleep::SleepFile { file: stamp, file_pages, pages: file_pages, list_seq: 0, renderer_only: false, toc: Toc::default(), usual: None, sizes: Vec::new(), pictures: Vec::new() };
+        let forged = |file_pages: u32| sleep::SleepFile { file: stamp, file_pages, pages: file_pages, list_seq: 0, renderer_only: false, version: Some(5), toc: Toc::default(), usual: None, sizes: Vec::new(), pictures: Vec::new() };
         s.wake_from_sleep(a, &forged(100));
         s.tap(a).unwrap();
         assert_eq!(s.pages_in(a), 100, "believed for now");
         assert!(s.sleep_facts(a).is_none(), "and not written on, unchecked");
-        assert!(s.file_length_is(a, 3), "it says to read the file");
+        assert!(s.file_length_is(a, 3, 5), "it says to read the file");
         assert!(!s.warm.iter().any(|(id, _)| *id == a));
         assert!(s.journal_work().retired.iter().any(|name| *name == record::sleep_file_name(stamp, &path)), "and the file's gone");
         s.give_woken(a, Ok(DocFacts { page_count: 3, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false }), Some(stamp));
@@ -3817,8 +3816,14 @@ mod tests {
         s.warm.retain(|(id, _)| *id != a);
         s.wake_from_sleep(a, &forged(3));
         s.tap(a).unwrap();
-        assert!(!s.file_length_is(a, 3));
+        assert!(!s.file_length_is(a, 3, 5));
         assert!(s.sleep_facts(a).is_some());
+        // The right length, and another version: a rewrite that kept its size, time and number. Read after all.
+        s.open(Path::new("/d/d.pdf")).unwrap();
+        s.warm.retain(|(id, _)| *id != a);
+        s.wake_from_sleep(a, &forged(3));
+        s.tap(a).unwrap();
+        assert!(s.file_length_is(a, 3, 6), "another version");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

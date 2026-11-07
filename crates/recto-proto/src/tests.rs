@@ -39,7 +39,7 @@ fn every_message_survives_a_round_trip() {
         assert_eq!(TileReply::decode(payload(&reply.encode())), Ok(reply));
     }
     assert_eq!(decode_hello(payload(&encode_hello(42))), Ok(42));
-    assert_eq!(decode_opened(payload(&encode_opened(9))), Ok(9));
+    assert_eq!(decode_opened(payload(&encode_opened(9, 77))), Ok((9, 77)));
     let traits = PageTraits { job_id: 3, largest_image_pixels: 1 << 40 };
     assert_eq!(PageTraits::decode(payload(&traits.encode())), Ok(traits));
     assert_eq!(decode_size_request(payload(&encode_traits_request(1, 2))), Ok((1, 2)));
@@ -264,9 +264,9 @@ fn kinds_merge_truthfully() {
 /// Failure: a worker claims billions of pages and the host believes it, so anything sized by the page count allocates without limit.
 #[test]
 fn a_page_count_past_the_cap_is_refused() {
-    assert_eq!(decode_opened(payload(&encode_opened(MAX_PAGE_COUNT))), Ok(MAX_PAGE_COUNT));
-    assert!(decode_opened(payload(&encode_opened(MAX_PAGE_COUNT + 1))).is_err());
-    assert!(decode_opened(payload(&encode_opened(u32::MAX))).is_err());
+    assert_eq!(decode_opened(payload(&encode_opened(MAX_PAGE_COUNT, 1))), Ok((MAX_PAGE_COUNT, 1)));
+    assert!(decode_opened(payload(&encode_opened(MAX_PAGE_COUNT + 1, 1))).is_err());
+    assert!(decode_opened(payload(&encode_opened(u32::MAX, 1))).is_err());
 }
 
 /// Failure: a decoder panics or hangs on hostile bytes. Not a fuzzer, only a cheap floor until the real targets exist.

@@ -39,6 +39,50 @@ fn a_damaged_file_replaced_with_a_good_one_opens_with_nobody_asking() {
     assert!(matches!(draws(&mut doc, 1), TileKind::Grey | TileKind::Colour));
 }
 
+/// What colour a page mostly is, drawn.
+fn colour_drawn(doc: &mut DocRenderer) -> (u8, u8, u8) {
+    let surface = tile_surface();
+    assert!(matches!(doc.render_tile(&tile_request(0, 0), &surface).unwrap(), TileResult::Done(_)));
+    let mut pixel = [0u8; 4];
+    assert!(surface.copy_out(4 * (256 * 512 + 256), &mut pixel));
+    (pixel[2], pixel[1], pixel[0])
+}
+
+/// Failure (review, the red frames): a worker that has a file open goes on drawing it after the file's been replaced, by a save or by another app, so a tab shows and keeps the old pages. It's opened again before the next job, says the file changed, and says another version, which is what lets everything drawn of the old one be thrown away. And a file rewritten with its size, time and number put back, which no stamp can tell, is told by its version as soon as it's opened again.
+#[test]
+fn a_replaced_file_is_drawn_as_it_is_now() {
+    // With a file ID, as anything that writes PDFs gives one: it's what tells two versions of the same length apart.
+    let colour = |rgb: &str| {
+        let mut document = lopdf::Document::load_mem(&pages(&[Page::new(format!("{rgb} rg 0 0 612 792 re f").into_bytes())])).unwrap();
+        document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal(rgb), lopdf::Object::string_literal(rgb)]));
+        let mut out = Vec::new();
+        document.save_to(&mut out).unwrap();
+        out
+    };
+    let file = TempPdf::new("colour.pdf", &colour("1 0 0"));
+    let mut doc = renderer(&file.0, Policy::default());
+    let (red, _, blue) = colour_drawn(&mut doc);
+    assert!(red > 200 && blue < 50, "red to begin with");
+    let first = doc.known_version().expect("a worker says which version");
+    assert!(!doc.take_file_changed());
+    // Replaced, as a save does: a new file put in its place.
+    let replacement = file.0.with_extension("new");
+    std::fs::write(&replacement, colour("0 0 1")).unwrap();
+    std::fs::rename(&replacement, &file.0).unwrap();
+    let (red, _, blue) = colour_drawn(&mut doc);
+    assert!(blue > 200 && red < 50, "the new one, not what was open: {red} {blue}");
+    assert!(doc.take_file_changed());
+    let second = doc.known_version().unwrap();
+    assert_ne!(first, second);
+    // Rewritten in place with the same size, its time put back: the stamp's the same. Opened again, its version isn't.
+    let modified = std::fs::metadata(&file.0).unwrap().modified().unwrap();
+    std::fs::write(&file.0, colour("0 1 0")).unwrap();
+    std::fs::File::options().write(true).open(&file.0).unwrap().set_modified(modified).unwrap();
+    doc.kill_worker();
+    let drawn = doc.render_tile(&tile_request(0, 0), &tile_surface());
+    assert!(doc.take_file_changed() || drawn.is_err(), "it's seen to be another");
+}
+
 /// Failure: pixels don't reach the host's surface through the shared memory, the whole point of the worker.
 #[test]
 fn a_tile_drawn_in_the_worker_arrives_in_the_hosts_surface() {

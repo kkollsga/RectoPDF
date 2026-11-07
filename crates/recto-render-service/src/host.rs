@@ -709,6 +709,8 @@ pub struct DocRenderer {
     file: File,
     /// What the file was when it was opened. A failure about its bytes holds only as long as this does.
     opened_stamp: Option<FileStamp>,
+    /// Which version of the file the worker found, by what PDFium read to open it.
+    version: Option<u64>,
     password: Option<Vec<u8>>,
     control: Arc<CancelWord>,
     worker: Option<Worker>,
@@ -760,6 +762,7 @@ impl DocRenderer {
             policy,
             path: path.to_path_buf(),
             opened_stamp: file_stamp(path).ok(),
+            version: None,
             file,
             password: password.map(<[u8]>::to_vec),
             control: Arc::new(CancelWord { shared, cutoff: AtomicU64::new(0), slot }),
@@ -801,6 +804,11 @@ impl DocRenderer {
     }
 
     /// Whether the file has been seen to be another one since this was last asked: on a page count that no longer agrees when a worker opens it, or when a failed file is tried again. So what was worked out from it no longer holds.
+    /// Which version of the file a worker's said this is, if one has. Asks nothing.
+    pub fn known_version(&self) -> Option<u64> {
+        self.version
+    }
+
     pub fn take_file_changed(&mut self) -> bool {
         std::mem::take(&mut self.file_changed)
     }
@@ -1488,6 +1496,10 @@ impl DocRenderer {
         if let Some(failure) = self.known_open_failure() {
             return Err(failure.into());
         }
+        self.reopen_if_replaced();
+        if let Some(failure) = self.known_open_failure() {
+            return Err(failure.into());
+        }
         self.reap_if_gone();
         let needs_heavy = class == WorkerClass::Heavy && !self.worker.as_ref().is_some_and(|worker| worker.heavy);
         if !needs_heavy && self.worker.is_some() {
@@ -1533,6 +1545,32 @@ impl DocRenderer {
         self.open_failure = Some(KnownOpenFailure { failure, try_again_at });
     }
 
+    /// **A file that's been replaced since it was opened is opened again, before a job goes to a worker that has the old one.** A worker reads through the file it was given, so after a save or another app's, without this it would go on drawing what was there. A look at the file's stamp, which is microseconds. What's been drawn till now says it's of another version: [`Self::take_file_changed`].
+    fn reopen_if_replaced(&mut self) {
+        // Gone from its path isn't replaced: the file that's open is still there to read, as it is for anyone who has it open.
+        let Ok(now) = file_stamp(&self.path) else { return };
+        if self.open_failure.is_some() || Some(now) == self.opened_stamp {
+            return;
+        }
+        self.bury_worker();
+        self.file_changed = true;
+        self.forget_failures();
+        self.traits.clear();
+        self.image_places.clear();
+        self.page_count = None;
+        self.version = None;
+        match File::open(&self.path) {
+            Ok(file) => {
+                self.file = file;
+                self.opened_stamp = file_stamp(&self.path).ok();
+            }
+            Err(error) => {
+                self.opened_stamp = None;
+                self.note_open_failure(if error.kind() == io::ErrorKind::NotFound { RenderFailure::NotFound } else { RenderFailure::Unavailable });
+            }
+        }
+    }
+
     /// What's known about opening this file, if that still holds. The app shouldn't have to remember to ask again: a file that's been replaced gets a fresh try, opened anew, and so does one whose moment has passed. Costs a `stat` only once something has failed, and nothing for a file that opens.
     fn known_open_failure(&mut self) -> Option<RenderFailure> {
         let known = self.open_failure?;
@@ -1546,6 +1584,7 @@ impl DocRenderer {
             self.traits.clear();
             self.image_places.clear();
             self.page_count = None;
+            self.version = None;
             return match File::open(&self.path) {
                 Ok(file) => {
                     self.file = file;
@@ -1615,11 +1654,14 @@ impl DocRenderer {
             }
             _ => return Err(rejected(&mut self.stats, "the wrong kind of reply to opening").into()),
         };
-        if self.page_count.is_some_and(|known| known != pages) {
+        let (pages, version) = pages;
+        // The same file can't come back as another: the pages anyone has are of the one it was.
+        if self.page_count.is_some_and(|known| known != pages) || self.version.is_some_and(|known| known != version) {
             self.file_changed = true;
             return Err(RenderFailure::SourceChanged.into());
         }
         self.page_count = Some(pages);
+        self.version = Some(version);
         if let Some(memory) = worker.child.memory() {
             self.stats.opened_footprint_bytes = memory.footprint_bytes;
             self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(memory.peak_footprint_bytes);

@@ -44,7 +44,7 @@ fn fake_worker() {
                 match mode.as_str() {
                     "open_unreadable" => proto::encode_failed(0, FailCode::Unreadable),
                     "open_not_pdf" => proto::encode_failed(0, FailCode::NotPdf),
-                    _ => proto::encode_opened(3),
+                    _ => proto::encode_opened(3, 1),
                 }
             }
             Kind::SizeRequest => {

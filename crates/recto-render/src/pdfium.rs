@@ -152,6 +152,7 @@ pdfium_api! {
     FPDF_LoadCustomDocument: fn(*mut FPDF_FILEACCESS, *const std::ffi::c_char) -> FPDF_DOCUMENT;
     FPDF_CloseDocument: fn(FPDF_DOCUMENT);
     FPDF_GetPageCount: fn(FPDF_DOCUMENT) -> c_int;
+    FPDF_GetFileIdentifier: fn(FPDF_DOCUMENT, c_int, *mut c_void, c_ulong) -> c_ulong;
     FPDF_GetPageSizeByIndex: fn(FPDF_DOCUMENT, c_int, *mut c_double, *mut c_double) -> c_int;
     FPDF_LoadPage: fn(FPDF_DOCUMENT, c_int) -> FPDF_PAGE;
     FPDF_ClosePage: fn(FPDF_PAGE);
@@ -331,6 +332,8 @@ pub struct PdfiumBackend {
     form_info: Box<FPDF_FORMFILLINFO>,
     open_page: Option<OpenPage>,
     page_count: u32,
+    /// Which version of the file this is, from what opening it read anyway: see [`Self::version`].
+    version: u64,
     /// Holds `m_Param`'s `File` and the access struct for as long as the document reads them.
     _access: Box<FPDF_FILEACCESS>,
     _file: Box<File>,
@@ -340,7 +343,38 @@ pub struct PdfiumBackend {
     walk: Option<Box<Walk>>,
 }
 
+/// Most bytes of an ID that go in a version. A real one is 16 bytes.
+const VERSION_ID_BYTES: usize = 64;
+
+/// **Which version of a file this is,** from what PDFium read to open it: its length, its page count, and both halves of its ID, the second of which a writer changes on every save. Nothing more is read for it. Where each trailer ends would say more, and `FPDF_GetTrailerEnds` reads the whole file for that: on a 330 MiB map it changed what the worker held enough to be seen, so it isn't used. It says two files are different with certainty only when it differs, and that's what it's for: a file rewritten with its size, time and number put back, which a stamp can't tell, as long as whatever wrote it gave it a new ID, as writers do. One with no ID and every object where it was can't be told by this.
+// `c_ulong` is 64 bits here and 32 on Windows, so the conversion is only useless on one of them.
+#[allow(clippy::useless_conversion)]
+fn version_of(api: &Api, document: FPDF_DOCUMENT, length: c_ulong, pages: u32) -> u64 {
+    let length = u64::from(length);
+    // FNV-1a: nothing here's secret or chosen by anyone it would help.
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut take = |bytes: &[u8]| {
+        for byte in bytes {
+            hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    take(&length.to_le_bytes());
+    take(&pages.to_le_bytes());
+    for kind in 0..2 {
+        let mut id = [0u8; VERSION_ID_BYTES];
+        // SAFETY: the buffer's length is what's said, and PDFium writes no more than that. `document` is live.
+        let wrote = unsafe { (api.FPDF_GetFileIdentifier)(document, kind, id.as_mut_ptr().cast(), VERSION_ID_BYTES as c_ulong) } as usize;
+        take(&id[..wrote.min(VERSION_ID_BYTES)]);
+    }
+    hash
+}
+
 impl PdfiumBackend {
+    /// Which version of the file this is: see [`version_of`].
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
     /// Opens a document on an open file. PDFium reads it through `pread` as it needs bytes, with no file path anywhere in the process.
     pub fn open(pdfium: &Pdfium, file: File, password: Option<&[u8]>) -> Result<Self, RenderError> {
         if DOCUMENT_OPEN.swap(true, Ordering::AcqRel) {
@@ -380,6 +414,7 @@ impl PdfiumBackend {
         }
         // SAFETY: `document` was just checked to be live.
         let page_count = u32::try_from(unsafe { (api.FPDF_GetPageCount)(document) }).unwrap_or(0).min(MAX_PAGE_COUNT);
+        let version = version_of(api, document, len, page_count);
         Ok(Self {
             api,
             document,
@@ -387,6 +422,7 @@ impl PdfiumBackend {
             form_info: Box::new(FPDF_FORMFILLINFO { version: 2, callbacks: [std::ptr::null_mut(); 64] }),
             open_page: None,
             page_count,
+            version,
             _access: access,
             _file: file,
             _one_thread: PhantomData,

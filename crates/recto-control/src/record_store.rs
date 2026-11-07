@@ -1759,7 +1759,7 @@ mod tests {
         let file = root.join("doc.pdf");
         std::fs::write(&file, b"contents").unwrap();
         let stamp = file_stamp(&file).unwrap();
-        let sleep = SleepFile { file: stamp, file_pages: 3, pages: 3, list_seq: 0, renderer_only: false, toc: recto_core::Toc::default(), usual: Some((612.0, 792.0)), sizes: Vec::new(), pictures: Vec::new() };
+        let sleep = SleepFile { file: stamp, file_pages: 3, pages: 3, list_seq: 0, renderer_only: false, version: None, toc: recto_core::Toc::default(), usual: Some((612.0, 792.0)), sizes: Vec::new(), pictures: Vec::new() };
         assert!(store.write_sleep(&file, &sleep) > 0);
         assert_eq!(store.read_sleep(stamp, &file), Some(sleep.clone()));
         let on_disk = root.join("session").join(JOURNALS).join(record::sleep_file_name(stamp, &file));
