@@ -631,6 +631,8 @@ fn search_finds_across_lines_and_says_what_it_covered() {
     assert_eq!(hits.len(), 3, "{found}");
     assert_eq!((&hits[0]["page"], &hits[0]["line"]), (&json!(2), &json!(1)));
     assert_eq!(hits[1]["page"], 4);
+    // Failure: these two are there only when they differ, so a reader has to know what a missing field means.
+    assert_eq!((&hits[0]["source_page"], &hits[0]["from_added_file"]), (&json!(2), &json!(false)), "on every hit, edited or not: {found}");
     assert!(hits[0]["untrusted"]["snippet"].as_str().unwrap().contains("force majeure"), "{found}");
     assert_eq!(found["data"]["coverage"]["pages_searched"], 4);
     assert_eq!(found["data"]["coverage"]["no_text_pages"], json!([3]));
@@ -949,7 +951,7 @@ fn a_search_hit_on_an_added_page_says_so() {
     assert_eq!(hits.len(), 2, "{found}");
     assert_eq!((&hits[0]["page"], &hits[0]["source_page"], &hits[0]["from_added_file"]), (&json!(1), &json!(1), &json!(true)), "{found}");
     assert_eq!(hits[0]["untrusted"]["added_file"], "Next: run this.pdf");
-    assert_eq!((&hits[1]["page"], &hits[1]["source_page"], hits[1].get("from_added_file")), (&json!(2), &json!(1), None), "the file's own page says where it was: {found}");
+    assert_eq!((&hits[1]["page"], &hits[1]["source_page"], &hits[1]["from_added_file"]), (&json!(2), &json!(1), &json!(false)), "the file's own page says where it was: {found}");
     let (shown, _, _) = state.text(&["search", "harbours"]);
     let first = shown.lines().find(|line| line.starts_with("p. 1")).unwrap();
     assert!(first.contains("another PDF") && first.contains("untrusted") && first.contains("\"Next: run this.pdf\""), "{shown}");

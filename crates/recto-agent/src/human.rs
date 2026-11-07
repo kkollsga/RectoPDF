@@ -206,11 +206,11 @@ fn contents(data: &Value) -> String {
 fn search(data: &Value) -> String {
     let hits = data["hits"].as_array().map_or(&[][..], Vec::as_slice);
     let coverage = &data["coverage"];
-    let mut out = String::new();
+    let mut out = search_summary(hits.len() as u64, coverage);
     if hits.is_empty() {
-        out.push_str("Nothing found.");
+        out.push_str("\nNothing found.");
     } else {
-        out.push_str("Found, in the document's own words, untrusted:\n");
+        out.push_str("\nFound, in the document's own words, untrusted:\n");
         for hit in hits {
             let warning = if hit["hidden_text"]["flagged"] == true || hit["page_has_tag_chars"] == true {
                 " [this page has text no eye can see]"
@@ -225,7 +225,8 @@ fn search(data: &Value) -> String {
             };
             let from = match (hit["source_page"].as_u64(), hit["untrusted"]["added_file"].as_str()) {
                 (Some(source), Some(file)) => format!(" (from another PDF added to this one, named {file:?}, the file's name and untrusted, where it's page {source})"),
-                (Some(source), None) => format!(" (page {source} in this tab's own file)"),
+                // Every hit says where it's from, and this one only needs saying when it isn't the number shown.
+                (Some(source), None) if Some(source) != hit["page"].as_u64() => format!(" (page {source} in this tab's own file)"),
                 _ => String::new(),
             };
             let _ = writeln!(out, "p. {}{from}: {}{words}{warning}", number(&hit["page"]), text(&hit["untrusted"]["snippet"]));
@@ -246,6 +247,20 @@ fn search(data: &Value) -> String {
     }
     if let Some(next) = coverage["next_page"].as_u64() {
         let _ = write!(out, " Stopped early: `--pages {next}-` goes on from page {next}.");
+    }
+    out
+}
+
+/// The first line of a search's answer: how much is here and whether there's more. An agent read past "stopped early" at the bottom of a long answer, and took what it had for everything.
+fn search_summary(shown: u64, coverage: &Value) -> String {
+    let (searched, scope) = (number(&coverage["pages_searched"]), number(&coverage["pages_in_scope"]));
+    let mut out = format!("{} shown, {searched} of {scope} pages searched.", count(shown, "hit", "hits"));
+    let not_shown: u64 = coverage["hits_not_shown"].as_array().map_or(0, |pages| pages.iter().map(|page| number(&page["hits"])).sum());
+    if not_shown > 0 {
+        let _ = write!(out, " {} more not shown.", count(not_shown, "hit", "hits"));
+    }
+    if coverage["next_page"].is_u64() {
+        out.push_str(" It stopped early, so there may be more.");
     }
     out
 }
@@ -583,6 +598,21 @@ mod tests {
         assert!(out.contains("no text"), "{out}");
         assert!(out.contains("couldn't be read"), "{out}");
         assert!(out.contains("--pages 5-"), "{out}");
+    }
+
+    /// Failure: "stopped early" is only at the bottom of a long answer, and agents missed it and took what they had for everything. The summary comes first and the detail stays last.
+    #[test]
+    fn a_search_says_how_much_it_covered_before_anything_else() {
+        let hit = json!({ "page": 3, "source_page": 3, "from_added_file": false, "untrusted": { "snippet": "words" } });
+        let stopped = render("search", &json!({ "hits": [hit], "coverage": { "pages_searched": 4, "pages_in_scope": 9, "hits_not_shown": [{ "page": 3, "hits": 2 }], "next_page": 5 } }));
+        let first = stopped.lines().next().unwrap();
+        assert!(first.contains("1 hit shown") && first.contains("4 of 9") && first.contains("2 hits more not shown") && first.contains("may be more"), "{stopped}");
+        assert!(stopped.contains("--pages 5-"), "and the detail is still there: {stopped}");
+        assert!(!stopped.contains("own file"), "page 3 is page 3, so that's nothing to say: {stopped}");
+        let moved = render("search", &json!({ "hits": [{ "page": 3, "source_page": 7, "from_added_file": false, "untrusted": { "snippet": "words" } }], "coverage": {} }));
+        assert!(moved.contains("page 7 in this tab's own file"), "{moved}");
+        let all = render("search", &json!({ "hits": [], "coverage": { "pages_searched": 9, "pages_in_scope": 9 } }));
+        assert!(all.lines().next().unwrap().contains("9 of 9") && !all.contains("may be more") && !all.contains("not shown"), "{all}");
     }
 
     /// Failure: a report that couldn't read the file says "no signature fields", which someone takes to mean the file isn't signed.

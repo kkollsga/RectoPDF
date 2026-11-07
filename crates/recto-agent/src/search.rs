@@ -164,12 +164,12 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
         let source = &plan.files[usize::from(file)];
         for (line, snippet, range) in found.shown {
             let mut hit = json!({ "page": position + 1, "line": line, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden.summary, "overlaps_hidden": hidden.overlaps(&range), "untrusted": { "snippet": snippet } });
-            say_where_from(&mut hit, position, page, source);
+            say_where_from(&mut hit, page, source);
             hits.push(hit);
         }
         if let Some(spelled) = spelled {
             let mut hit = json!({ "page": position + 1, "line": null, "also_spelled": true, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden.summary, "untrusted": { "snippet": spelled } });
-            say_where_from(&mut hit, position, page, source);
+            say_where_from(&mut hit, page, source);
             hits.push(hit);
         }
     }
@@ -191,13 +191,11 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
     }))
 }
 
-/// Says when a hit's page isn't the file's page of that number, and when it comes from another PDF altogether, as `text` does.
-fn say_where_from(hit: &mut Value, position: u32, page: u32, source: &PlanFile) {
-    if page != position || source.added {
-        hit["source_page"] = json!(page + 1);
-    }
+/// Says where a hit's page really comes from, on every hit, so an agent reading these needn't know what it means for a field to be missing.
+fn say_where_from(hit: &mut Value, page: u32, source: &PlanFile) {
+    hit["source_page"] = json!(page + 1);
+    hit["from_added_file"] = json!(source.added);
     if source.added {
-        hit["from_added_file"] = json!(true);
         hit["untrusted"]["added_file"] = json!(source.label());
     }
 }
