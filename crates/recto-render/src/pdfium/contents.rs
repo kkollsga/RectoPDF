@@ -10,7 +10,7 @@
 //! PDFium gives for the real character, and text whose outlines don't match, or that has none, as in a Type 3 font, goes as a picture. The real characters stay over it, selectable.
 
 use super::*;
-use recto_proto::contents::{CONTENTS_CHUNK, ContentsJob, ImageCoding, MAX_CLIP_CHAIN, MAX_CLIPS, MAX_GLYPHS, MAX_GROUP_NESTING, MAX_PATH_SEGMENTS, MAX_RUN_ITEMS, NoteCode, SEG_CURVE, SEG_LINE, SEG_MOVE, TextMode, Why, begin_contents, finish_contents, hints, put};
+use recto_proto::contents::{CONTENTS_CHUNK, ContentsJob, ImageCoding, MAX_CLIP_CHAIN, MAX_CLIPS, MAX_GLYPHS, MAX_GROUP_NESTING, MAX_IMAGE_ROW_BYTES, MAX_PATH_SEGMENTS, MAX_RUN_ITEMS, NoteCode, SEG_CURVE, SEG_LINE, SEG_MOVE, TextMode, Why, begin_contents, finish_contents, hints, put};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -42,8 +42,6 @@ const STRIP_BYTES: u64 = recto_proto::MAX_REGION_BYTES;
 const MAX_MASKED_BYTES: u64 = 256 * 1024 * 1024;
 /// An image with a mask has its mask found by drawing it this small first. Below this size, it's drawn whole anyway.
 const MASK_PROBE_EDGE: u32 = 64;
-/// How wide one row of an image may be, so a frame stays under its limit.
-const MAX_ROW_BYTES: u64 = 8 * 1024 * 1024;
 /// How far a clip is blown up to cover an image laid flat. A point a quarter of a point inside the clip then covers 5,000 pixels from the image's middle, and a page's clip stays within what a float can hold.
 const CLIP_BLOW_UP: f64 = 2.0e4;
 /// How far a glyph's outline may be from the box PDFium gives for the character, as a share of the font's size. Boxes are in whole thousandths and outlines aren't hinted, but a wrong glyph is usually much further off than this.
@@ -1402,7 +1400,7 @@ impl Walk {
             self.patch(object, area, Why::ImageUnreadable, PatchKind::Alone, out);
             return Ok(());
         }
-        if u64::from(width) * 4 > MAX_ROW_BYTES {
+        if u64::from(width) * 4 > MAX_IMAGE_ROW_BYTES {
             self.patch(object, area, Why::TooComplex, PatchKind::Alone, out);
             return Ok(());
         }

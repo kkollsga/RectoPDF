@@ -22,6 +22,8 @@ pub const MAX_FAMILY: usize = 64;
 pub const MAX_CLIP_CHAIN: u8 = 32;
 /// The most clips one page may define.
 pub const MAX_CLIPS: u32 = 1 << 20;
+/// The longest row an image may have. What's being written holds a row or two of it, so this is what a worker can make the host hold, before anything has reached a file or a cap on one. Past this, the worker draws a picture instead.
+pub const MAX_IMAGE_ROW_BYTES: u64 = 8 * 1024 * 1024;
 /// The most glyphs one page may define.
 pub const MAX_GLYPHS: u32 = 1 << 20;
 /// How deep opacity groups nest. Same reason as [`MAX_CLIP_CHAIN`], and a form this deep is drawn as a picture.
@@ -796,7 +798,11 @@ impl StreamCheck {
                         if *width == 0 || *height == 0 {
                             return Err(ProtoError("an image with no size"));
                         }
-                        let bytes = u64::from(*width) * u64::from(*height) * u64::from(*channels);
+                        let row = u64::from(*width).saturating_mul(u64::from(*channels));
+                        if row > MAX_IMAGE_ROW_BYTES {
+                            return Err(ProtoError("an image's row is too long"));
+                        }
+                        let bytes = row.checked_mul(u64::from(*height)).ok_or(ProtoError("an image's bytes differ from its size"))?;
                         if bytes != *total {
                             return Err(ProtoError("an image's bytes differ from its size"));
                         }
@@ -973,6 +979,11 @@ mod tests {
         assert_eq!(chain(u32::from(MAX_CLIP_CHAIN) + 1), Err(ProtoError("clips stacked too deep")));
         assert_eq!(with_page(|out| put::glyph_run(out, &identity(), None, None, 0.0, &[(1, 0.0, 0.0)])), Err(ProtoError("a glyph nobody defined")));
         assert_eq!(with_page(|out| put::image_begin(out, ImageCoding::Pixels { channels: 3 }, Why::Image, 255, 2, 2, 1, &identity())), Err(ProtoError("an image's bytes differ from its size")));
+        // Three rows of 8 GiB in the host, filled by frames, with nothing reaching a cap on the file until a row ends. And at the largest of everything, no overflow in the checking.
+        let row_limit = (MAX_IMAGE_ROW_BYTES / 4) as u32;
+        assert_eq!(with_page(|out| put::image_begin(out, ImageCoding::Pixels { channels: 4 }, Why::Image, 255, row_limit + 1, 1, u64::from(row_limit + 1) * 4, &identity())), Err(ProtoError("an image's row is too long")));
+        assert_eq!(with_page(|out| put::image_begin(out, ImageCoding::Pixels { channels: 4 }, Why::Image, 255, u32::MAX, u32::MAX, u64::MAX, &identity())), Err(ProtoError("an image's row is too long")));
+        assert!(with_page(|out| put::image_begin(out, ImageCoding::Pixels { channels: 4 }, Why::Image, 255, row_limit, 1, u64::from(row_limit) * 4, &identity())).is_err_and(|error| error == ProtoError("an image left open")), "a row at the limit is fine");
         assert_eq!(
             with_page(|out| {
                 put::image_begin(out, ImageCoding::Pixels { channels: 1 }, Why::Image, 255, 2, 2, 4, &identity());

@@ -9,6 +9,8 @@ const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 const CHUNK: usize = 64 * 1024;
 /// PNG's `Up` filter: each byte less the one above it. Cheap, needs one row of memory, and what's above is usually the best guess in a scan or a map.
 const FILTER_UP: u8 = 2;
+/// The longest row this will hold. It holds three at a time, so this is what it costs at most, whatever a caller says the size is.
+const MAX_ROW: u64 = 64 * 1024 * 1024;
 /// Compression. Lossless either way: this trades size for time. 6 is zlib's own default; see `docs/ENGINEERING.md` for what it costs.
 const LEVEL: u32 = 3;
 
@@ -57,7 +59,7 @@ pub struct PngWriter<W: Write> {
 impl<W: Write> PngWriter<W> {
     /// Starts a picture, refusing a size PNG can't say.
     pub fn new(mut out: W, width: u32, height: u32, channels: PngChannels) -> io::Result<Self> {
-        if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
+        if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 || u64::from(width) * channels as u64 > MAX_ROW {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "no such picture"));
         }
         out.write_all(&SIGNATURE)?;
@@ -336,5 +338,6 @@ mod tests {
         let mut long = PngWriter::new(Vec::new(), 2, 2, PngChannels::Grey).unwrap();
         assert!(long.write_all(&[0; 5]).is_err(), "a byte over");
         assert!(PngWriter::new(Vec::new(), 0, 2, PngChannels::Grey).is_err(), "no picture has no width");
+        assert!(PngWriter::new(Vec::new(), i32::MAX as u32, 1, PngChannels::Rgba).is_err(), "rows it would have to hold 8 GiB of");
     }
 }
