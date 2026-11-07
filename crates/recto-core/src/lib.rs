@@ -11,6 +11,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 mod signatures;
+mod effects;
+pub use effects::{PageEffects, page_effects};
 
 pub use signatures::{MAX_FIELD_VISITS, MAX_SIGNATURES, SignatureEntry, SignatureInventory, SignatureState, signatures, signatures_within};
 
@@ -148,6 +150,11 @@ pub fn inspect(path: &Path) -> Result<DocFacts, OpenError> {
         toc: read_toc(&reader).unwrap_or_default(),
         renderer_only: false,
     })
+}
+
+/// A document's title, as it says, cleaned. `None` if it has none or can't be read.
+pub fn document_title(path: &Path) -> Option<Box<str>> {
+    read_title(&open_reader(path).ok()?)
 }
 
 fn read_title(reader: &IndexedReader) -> Option<Box<str>> {

@@ -71,6 +71,8 @@ pub enum Kind {
     List(&'static [&'static str]),
     /// `WIDTHxHEIGHT`.
     Size,
+    /// `x,y,width,height` in points.
+    Rect,
     /// Everything left on the line.
     Rest,
 }
@@ -246,6 +248,27 @@ pub static TABLE: &[Spec] = &[
         data: "`{ page, source_page, from_added_file, scale, largest_that_fits, out, took_ms, width, height, bytes, kind, unsaved_rotation_degrees, untrusted: { added_file } }`.",
         emits: &["page_drawn", "page_failed"],
         examples: &["recto render --page 1 --out page1.png", "recto render 1 --out page1.png", "recto render --page 2 --scale 3x --out /tmp/p2.png --json", "recto render 2 --scale max --out /tmp/p2.png"],
+        client_wait_s: 600,
+        ..BASE
+    },
+    Spec {
+        name: "export svg",
+        tag: "export_svg",
+        group: GROUP_READ,
+        access: Access::At(Level::Full),
+        summary: "Writes a page, or a box on it, to a new SVG file, whole or not at all. It never replaces a file, and doesn't show an unsaved rotation. Paths, clips, outlines and selectable text are vector, and images stay at their own resolution: original JPEG bytes where they can be, otherwise PNG. What can't be vector goes as a picture of just that element, and the answer lists each kind.",
+        args: &[
+            PAGE_OR_BARE,
+            Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "A new file ending in `.svg`." },
+            Arg { key: "rect", flag: Some("--rect"), kind: Kind::Rect, required: false, help: "A box on the page: `x,y,width,height` in points from its top left, as the page is shown. What's wholly outside is left out, and images are cut to it. The whole page if left out." },
+            Arg { key: "text", flag: Some("--text"), kind: Kind::Choice(&["both", "paths", "selectable"]), required: false, help: "`both`: exact outlines, with invisible real text over them. `paths`: exact outlines, smaller, can't be selected. `selectable`: real text only, smallest, in the named font if the reader has it, so it can look different. `both` if left out." },
+            Arg { key: "scale", flag: Some("--scale"), kind: Kind::Scale, required: false, help: "The scale of anything that has to go as a picture: `2` or `2x`. 2x if left out. The rest has no scale." },
+            TAB,
+        ],
+        bare_page: true,
+        data: "`{ page, source_page, from_added_file, out, took_ms, width_pt, height_pt, rect, text, raster_scale, raster_scale_lowered, bytes, all_vector, objects: { paths, clips, glyphs, glyph_runs, text_runs, text_chars, images_png, images_original_jpeg, chars_dropped }, rasterised: [ { why, count, says } ], notes: [ { note, count, says } ], worker_peak_bytes, restarts, unsaved_rotation_degrees, untrusted: { added_file } }`. `all_vector: false` means `rasterised` lists what's a picture and why. `notes` says what was left out or kept unseen, such as text that draws nothing. `raster_scale_lowered: true` means a page too large for the scale asked had its pictures drawn at the largest that fits. `restarts` counts starts over in a larger worker, past a memory limit. Text from the file goes into the file, escaped, and nothing from it reaches this answer.",
+        emits: &["page_drawn", "page_failed"],
+        examples: &["recto export svg --page 1 --out page1.svg", "recto export svg 1 --out page1.svg", "recto export svg --page 2 --rect 72,72,300,200 --out /tmp/box.svg --json", "recto export svg 3 --text paths --scale 3x --out /tmp/p3.svg"],
         client_wait_s: 600,
         ..BASE
     },
@@ -1035,6 +1058,14 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
             Some((Some(_), Some(_))) => Ok(json!(value)),
             _ => Err(format!("`{}` isn't a size. Write WIDTHxHEIGHT, such as 3024x1964.", recto_core::clean_line(value))),
         },
+        Kind::Rect => {
+            let bad = || format!("`{}` isn't a box. Write x,y,width,height in points, such as 72,72,300,200.", recto_core::clean_line(value));
+            let numbers = value.split(',').map(str::parse::<f32>).collect::<Result<Vec<_>, _>>().map_err(|_| bad())?;
+            match numbers[..] {
+                [x, y, width, height] if [x, y, width, height].iter().all(|number| number.is_finite()) && x >= 0.0 && y >= 0.0 && width > 0.0 && height > 0.0 => Ok(json!(numbers)),
+                _ => Err(bad()),
+            }
+        }
         Kind::Switch | Kind::Rest => Err("That doesn't take a value.".to_string()),
     }
 }
@@ -1216,6 +1247,7 @@ mod tests {
             Kind::Text => "words",
             Kind::Choice(words) | Kind::List(words) => words[0],
             Kind::Size => "10x10",
+            Kind::Rect => "1,2,3,4",
             Kind::Switch | Kind::Rest => "",
         }
     }

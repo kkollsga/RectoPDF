@@ -13,3 +13,4 @@ lopdf.workspace = true
 
 [dev-dependencies]
 recto-platform.workspace = true
+recto-testpdf.workspace = true

@@ -104,6 +104,7 @@ pub fn render(tag: &str, data: &Value) -> String {
         "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" => edit_state(data),
         "edits" => edits(data),
         "render" => render_result(data),
+        "export_svg" => export_svg_result(data),
         "wait" => wait(data),
         "permission_show" => permission_show(data),
         "permission_request" => permission_request(data),
@@ -427,6 +428,29 @@ fn render_result(data: &Value) -> String {
     let mut out = format!("Page {} drawn at {}x{largest} to {} in {}: {} x {} px, {}.", number(&data["page"]), data["scale"], text(&data["out"]), duration(number(&data["took_ms"])), number(&data["width"]), number(&data["height"]), bytes(number(&data["bytes"])));
     if let Some(degrees) = data["unsaved_rotation_degrees"].as_u64() {
         let _ = write!(out, " It doesn't show the unsaved turn of {degrees} degrees.");
+    }
+    out
+}
+
+fn export_svg_result(data: &Value) -> String {
+    let part = if data["rect"].is_array() { "A box of page" } else { "Page" };
+    let mut out = format!("{part} {} exported to {} in {}: {} x {} pt, {}.", number(&data["page"]), text(&data["out"]), duration(number(&data["took_ms"])), data["width_pt"].as_f64().unwrap_or(0.0), data["height_pt"].as_f64().unwrap_or(0.0), bytes(number(&data["bytes"])));
+    let objects = &data["objects"];
+    let _ = write!(out, "\n{} paths, {} of text, {} images ({} as the original JPEG bytes, {} as PNG at their own resolution).", number(&objects["paths"]), count(number(&objects["text_chars"]), "character", "characters"), number(&objects["images_png"]) + number(&objects["images_original_jpeg"]), number(&objects["images_original_jpeg"]), number(&objects["images_png"]));
+    if data["all_vector"] == true {
+        out.push_str("\nNothing had to become a picture.");
+    }
+    for item in data["rasterised"].as_array().map_or(&[][..], Vec::as_slice) {
+        let _ = write!(out, "\nAs a picture at {}x, {}: {}.", data["raster_scale"].as_f64().unwrap_or(0.0), number(&item["count"]), text(&item["says"]));
+    }
+    for note in data["notes"].as_array().map_or(&[][..], Vec::as_slice) {
+        let _ = write!(out, "\n{} {}.", number(&note["count"]), text(&note["says"]));
+    }
+    if data["raster_scale_lowered"] == true {
+        let _ = write!(out, "\nThis page is too large for the scale asked, so its pictures are at {}x, the largest that fits.", data["raster_scale"].as_f64().unwrap_or(0.0));
+    }
+    if let Some(degrees) = data["unsaved_rotation_degrees"].as_u64() {
+        let _ = write!(out, "\nIt doesn't show the unsaved turn of {degrees} degrees.");
     }
     out
 }

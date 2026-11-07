@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 mod png;
+mod svg;
+
+pub(crate) use svg::{SvgArgs, export_svg};
 
 pub const DEFAULT_SCALE: f32 = 2.0;
 

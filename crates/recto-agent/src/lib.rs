@@ -161,6 +161,22 @@ pub enum Command {
         scale: f32,
         out: PathBuf,
     },
+    /// Writes a page, or a box on it, to a new SVG file.
+    ExportSvg {
+        #[serde(default = "active_tab")]
+        tab: String,
+        page: u32,
+        out: PathBuf,
+        /// `x, y, width, height`, in points from the page's top left.
+        #[serde(default)]
+        rect: Option<[f32; 4]>,
+        /// `both`, `paths` or `selectable`.
+        #[serde(default)]
+        text: Option<String>,
+        /// The scale of anything that has to go as a picture.
+        #[serde(default = "render::default_scale")]
+        scale: f32,
+    },
     /// A page's text, normalised for search, with the hidden-text flag.
     Text {
         #[serde(default = "active_tab")]
@@ -348,6 +364,7 @@ impl Command {
             Self::Close { .. } => "close",
             Self::Budget {} => "budget",
             Self::Render { .. } => "render",
+            Self::ExportSvg { .. } => "export_svg",
             Self::Text { .. } => "text",
             Self::BudgetRender { .. } => "budget_render",
             Self::BudgetViewport { .. } => "budget_viewport",
@@ -390,7 +407,7 @@ impl Command {
 
     /// Whether this draws or reads pages through a worker. These run at most a few at a time, because each can use hundreds of megabytes.
     pub fn draws(&self) -> bool {
-        matches!(self, Self::Render { .. } | Self::Text { .. } | Self::Search { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. })
+        matches!(self, Self::Render { .. } | Self::ExportSvg { .. } | Self::Text { .. } | Self::Search { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. })
     }
 
     /// What goes in the activity log about this command's arguments. Numbers and cleaned file names, and never anything that could hold document text: a tab's name as typed or a search's words aren't kept.
@@ -402,7 +419,7 @@ impl Command {
         match self {
             Self::Open { path, page } => json!({ "page": page, "untrusted": file(path) }),
             Self::PageInsert { tab, path, at } => json!({ "tab": tab_of(tab), "at": at, "untrusted": file(path) }),
-            Self::Render { tab, page, out, .. } => json!({ "tab": tab_of(tab), "page": page, "untrusted": file(out) }),
+            Self::Render { tab, page, out, .. } | Self::ExportSvg { tab, page, out, .. } => json!({ "tab": tab_of(tab), "page": page, "untrusted": file(out) }),
             Self::Text { tab, page } | Self::Goto { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
@@ -418,7 +435,7 @@ impl Command {
     /// The selector this command acts on, if it has one.
     fn tab_selector(&self) -> Option<&str> {
         match self {
-            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::Text { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
+            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Text { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
             _ => None,
         }
     }
@@ -500,6 +517,8 @@ fn next_step(code: &str, exit: i32) -> &'static str {
         "bad_path" => "Give the whole path. `recto` does this for you.",
         "output_exists" => "Choose a new file name. An existing file is never replaced.",
         "bad_output" => "Choose a file name ending in .png.",
+        "bad_rect" => "Write it as `--rect 10,20,300,200`, in points from the page's top left.",
+        "bad_text_mode" => "Use `--text both`, `paths` or `selectable`.",
         "needs_server" => "Start the session with `recto serve --background`, then use `recto` without `local`.",
         "not_running" => "Start it with `recto serve --background`.",
         "needs_terminal" => "Ask the user to run this command themselves, in their own terminal.",
@@ -719,6 +738,18 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             describe_source(&mut data, *page, &source);
             Ok(data)
         }
+        Command::ExportSvg { tab, page, out, rect, text, scale } => {
+            require_absolute(out)?;
+            let (id, position, source) = locate(access, tab, *page)?;
+            let args = render::SvgArgs { path: &source.path, page: source.page + 1, out, rect: *rect, text: text.as_deref(), scale: *scale };
+            let drawn = render::export_svg(&args);
+            if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
+                note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code), events);
+            }
+            let mut data = drawn?;
+            describe_source(&mut data, *page, &source);
+            Ok(data)
+        }
         Command::Text { tab, page } => {
             let (id, position, source) = locate(access, tab, *page)?;
             let read = render::text(&source.path, source.page + 1);
@@ -834,7 +865,7 @@ fn note_draw<A: SessionAccess>(access: &A, tab: TabId, position: u32, failure: O
 
 /// A refused file name says nothing about whether a page can be drawn, so a wait on that page mustn't hear of it.
 fn is_about_the_output(failure: Option<&str>) -> bool {
-    matches!(failure, Some("output_exists" | "bad_output" | "bad_scale" | "write_failed" | "output_too_large"))
+    matches!(failure, Some("output_exists" | "bad_output" | "bad_scale" | "bad_rect" | "bad_text_mode" | "write_failed" | "output_too_large"))
 }
 
 /// Says when a page isn't the file's page of that number, when it comes from another PDF altogether, and that a drawing doesn't show an unsaved turn.
@@ -1413,6 +1444,7 @@ mod tests {
             Command::Close { tab: tab() },
             Command::Budget {},
             Command::Render { tab: tab(), page: 1, scale: 2.0, out: "/d/x.png".into() },
+            Command::ExportSvg { tab: tab(), page: 1, out: "/d/x.svg".into(), rect: None, text: None, scale: 2.0 },
             Command::Text { tab: tab(), page: 1 },
             budget_command(None, None),
             Command::BudgetViewport { tab: tab(), viewport: "10x10".into(), first: None, scale: 2.0, strategy: None },

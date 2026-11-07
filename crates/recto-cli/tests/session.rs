@@ -759,7 +759,7 @@ fn every_row_answers_in_plain_words_and_in_versioned_json() {
     let _serving = state.serve();
     let file = three_pages();
     state.json(&["open", path_of(&file)]);
-    let skip = ["serve", "session", "local", "budget tabs", "budget render", "budget viewport", "permission set", "stop", "wait tab-open", "wait tab-closed", "wait page-drawn", "watch", "render", "skill install", "skill show", "help", "sidebar", "permission request", "page insert", "open"];
+    let skip = ["serve", "session", "local", "budget tabs", "budget render", "budget viewport", "permission set", "stop", "wait tab-open", "wait tab-closed", "wait page-drawn", "watch", "render", "export svg", "skill install", "skill show", "help", "sidebar", "permission request", "page insert", "open"];
     for spec in TABLE.iter().filter(|spec| !spec.hidden && !skip.contains(&spec.name)) {
         let words = skill::shell_words(spec.examples[0]);
         let args: Vec<&str> = words[1..].iter().map(String::as_str).filter(|word| *word != "--json" && *word != "report" && *word != "--tab" && *word != "contract").collect();

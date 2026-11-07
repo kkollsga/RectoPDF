@@ -16,6 +16,7 @@ recto-sign.workspace = true
 recto-proto.workspace = true
 recto-index.workspace = true
 recto-render-service.workspace = true
+recto-svg.workspace = true
 flate2.workspace = true
 serde.workspace = true
 serde_json.workspace = true

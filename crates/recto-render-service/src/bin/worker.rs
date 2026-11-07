@@ -3,6 +3,7 @@
 //! the library, the document arrives as a descriptor, and the process has no file path to it.
 
 use recto_platform::isolate::{self, Channel, Handle, SharedMemory, Wait};
+use recto_proto::contents::ContentsJob;
 use recto_proto::{self as proto, FailCode, Kind, PageSize, RegionReply, RenderJob, TextJob, TextReply, TileReply, TileStatus};
 use recto_render::{Cancel, Pdfium, PdfiumBackend, RenderBackend, TextOptions, TileOutcome};
 use recto_render_service::{control, exit_code, transport};
@@ -132,6 +133,16 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
             Some(match backend.largest_image_pixels(page) {
                 Ok(largest_image_pixels) => proto::PageTraits { job_id, largest_image_pixels }.encode(),
                 Err(code) => proto::encode_failed(job_id, code),
+            })
+        }
+        Kind::ContentsRequest => {
+            let job = ContentsJob::decode(&frame.payload).ok()?;
+            let Some(backend) = backend else { return Some(proto::encode_failed(job.job_id, FailCode::NoDocument)) };
+            let cancel = Generation { word: control_page.as_ref().and_then(|page| page.atomic_u64(control::CANCEL_BEFORE_OFFSET)), job: job.generation };
+            let mut out = Vec::new();
+            Some(match backend.contents_frame(&job, &mut out, &cancel) {
+                Ok(()) => out,
+                Err(code) => proto::encode_failed(job.job_id, code),
             })
         }
         Kind::TextRequest => {
