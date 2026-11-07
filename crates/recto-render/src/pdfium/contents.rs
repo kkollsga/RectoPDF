@@ -1601,7 +1601,9 @@ impl Walk {
         };
         // A mask is drawn with its opacity already in it, and must count once.
         let opacity = if masked { 255 } else { alpha };
-        put::image_begin(out, ImageCoding::Pixels { channels }, Why::Image, opacity, crop.2, crop.3, u64::from(crop.2) * u64::from(crop.3) * u64::from(channels), &wire);
+        // Drawn to apply its mask, it's not byte for byte, and a mask finer than the image is resampled, so it's told apart.
+        let why = if masked { Why::ImageWithMask } else { Why::Image };
+        put::image_begin(out, ImageCoding::Pixels { channels }, why, opacity, crop.2, crop.3, u64::from(crop.2) * u64::from(crop.3) * u64::from(channels), &wire);
         self.pending = Some(Pending::Bitmap { bitmap, format, stride, crop, channels, y: 0 });
         Ok(())
     }

@@ -716,3 +716,25 @@ fn only_an_srgb_profile_lets_a_jpeg_through() {
     let (_, data) = svg_of(&file, &[]);
     assert_eq!(data["objects"]["images_original_jpeg"], 0, "{data}");
 }
+
+/// Failure: an image drawn through PDFium to apply its mask reads as a lossless copy of its pixels. It's been through a drawing: a mask finer than the image is resampled to it. It's counted apart, and says so.
+#[test]
+fn an_image_drawn_with_its_mask_is_counted_apart() {
+    let mask = first_extra_object(1) + 1;
+    let image = first_extra_object(1);
+    let resources = format!("/XObject << /Im {image} 0 R >>");
+    let dict = format!("/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask {mask} 0 R");
+    let mask_dict = "/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8";
+    let fine: Vec<u8> = (0..64).map(|i| if (i / 8 + i % 8) % 2 == 0 { 255 } else { 0 }).collect();
+    let file = TempPdf::new("doc.pdf", &pages_with(&[Page::new("q 40 0 0 40 100 500 cm /Im Do Q\n")], &resources, vec![Object::Stream { dict, data: vec![200; 12] }, Object::Stream { dict: mask_dict.into(), data: fine }]));
+    let (svg, data) = svg_of(&file, &[]);
+    assert_eq!(data["objects"]["images_drawn_with_mask"], 1, "{data}");
+    assert_eq!(data["objects"]["images_png"], 0, "{data}");
+    // Its 64 mask pixels can't be in 4: this is the resampling that makes it not byte for byte.
+    let images = embedded_images(svg.as_bytes());
+    assert!(matches!(&images[..], [Embedded::Png { width: 2, height: 2, channels: 4, .. }]), "{images:?}");
+    let out = file.0.with_file_name("said.svg");
+    let (said, _, _) = State::at(Level::Full).text(&["local", file.0.to_str().unwrap(), "export", "svg", "1", "--out", out.to_str().unwrap()]);
+    assert!(said.contains("drawn with their masks"), "{said}");
+    std::fs::remove_file(&out).unwrap();
+}

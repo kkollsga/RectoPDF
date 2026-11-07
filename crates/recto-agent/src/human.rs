@@ -436,7 +436,7 @@ fn export_svg_result(data: &Value) -> String {
     let part = if data["rect"].is_array() { "A box of page" } else { "Page" };
     let mut out = format!("{part} {} exported to {} in {}: {} x {} pt, {}.", number(&data["page"]), text(&data["out"]), duration(number(&data["took_ms"])), data["width_pt"].as_f64().unwrap_or(0.0), data["height_pt"].as_f64().unwrap_or(0.0), bytes(number(&data["bytes"])));
     let objects = &data["objects"];
-    let _ = write!(out, "\n{} paths, {} of text, {} images ({} as the original JPEG bytes, {} as PNG at their own resolution).", number(&objects["paths"]), count(number(&objects["text_chars"]), "character", "characters"), number(&objects["images_png"]) + number(&objects["images_original_jpeg"]), number(&objects["images_original_jpeg"]), number(&objects["images_png"]));
+    let _ = write!(out, "\n{} paths, {} of text, {} images ({} as the original JPEG bytes, {} as PNG with every pixel as decoded, {} drawn with their masks at their own size, which isn't byte for byte).", number(&objects["paths"]), count(number(&objects["text_chars"]), "character", "characters"), number(&objects["images_png"]) + number(&objects["images_original_jpeg"]) + number(&objects["images_drawn_with_mask"]), number(&objects["images_original_jpeg"]), number(&objects["images_png"]), number(&objects["images_drawn_with_mask"]));
     if data["all_vector"] == true {
         out.push_str("\nNothing had to become a picture.");
     }

@@ -86,6 +86,7 @@ struct Tally {
     text_chars: u64,
     images_png: u64,
     images_jpeg: u64,
+    images_masked: u64,
     rasterised: BTreeMap<u8, u64>,
     notes: BTreeMap<u8, (NoteCode, u64)>,
     chars_dropped: u64,
@@ -178,9 +179,10 @@ fn write_record<'file>(svg: &mut Option<SvgWriter<Capped<'file>>>, file: &'file 
             match (why, coding) {
                 (Why::Image, ImageCoding::Jpeg) => tally.images_jpeg += 1,
                 (Why::Image, _) => tally.images_png += 1,
+                (Why::ImageWithMask, _) => tally.images_masked += 1,
                 _ => *tally.rasterised.entry(*why as u8).or_default() += 1,
             }
-            writer.image_begin(data, &mat(matrix), *opacity, *why != Why::Image)?;
+            writer.image_begin(data, &mat(matrix), *opacity, !matches!(why, Why::Image | Why::ImageWithMask))?;
         }
         Record::ImageBytes(bytes) => writer.image_bytes(bytes)?,
         Record::ImageEnd => writer.image_end()?,
@@ -311,7 +313,7 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
         "raster_scale_lowered": raster_scale < args.scale,
         "bytes": bytes,
         "all_vector": rasterised.is_empty(),
-        "objects": { "paths": tally.paths, "clips": tally.clips, "glyphs": tally.glyphs, "glyph_runs": tally.glyph_runs, "text_runs": tally.text_runs, "text_chars": tally.text_chars, "images_png": tally.images_png, "images_original_jpeg": tally.images_jpeg, "chars_dropped": tally.chars_dropped },
+        "objects": { "paths": tally.paths, "clips": tally.clips, "glyphs": tally.glyphs, "glyph_runs": tally.glyph_runs, "text_runs": tally.text_runs, "text_chars": tally.text_chars, "images_png": tally.images_png, "images_original_jpeg": tally.images_jpeg, "images_drawn_with_mask": tally.images_masked, "chars_dropped": tally.chars_dropped },
         "rasterised": rasterised,
         "notes": notes,
         "worker_peak_bytes": doc.stats().peak_footprint_bytes,
