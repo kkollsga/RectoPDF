@@ -446,8 +446,10 @@ mod tests {
         }
         indexer.cancel(Some(key(2)));
         assert_ne!(indexer.job(key(2)), JobState::Queued);
-        let (running, waiting) = indexer.load();
-        assert_eq!(running + waiting, 2, "the other two are still there, {running} running and {waiting} waiting");
+        // Whichever of them it reached first. With the helper thread late to start, on a busy Mac, the one running can be the one cancelled, and it's still counted until it's stopped, so what's asked is about the others.
+        for other in [1, 3] {
+            assert_ne!(indexer.job(key(other)), JobState::Idle, "{other} is still there");
+        }
         indexer.cancel(None);
         assert_eq!(indexer.load().1, 0);
         *stand.gate.lock().unwrap() = 1000;
