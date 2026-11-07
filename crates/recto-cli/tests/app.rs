@@ -439,9 +439,9 @@ fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
     // The place stays in view as the reader reads on, and a far `goto` lands rather than whooshes.
     run.ok(&["goto", "1500"]);
     run.settled();
-    let reading = wait_for(&run, |state| state["app"]["contents"]["current_in_view"] == true && state["app"]["contents"]["moving"] == false && state["app"]["contents"]["current"].as_u64().unwrap_or(0) > 1000);
+    let reading = wait_for(&run, |state| state["app"]["contents"]["current_in_view"] == true && state["app"]["contents"]["frames_running"] == false && state["app"]["contents"]["current"].as_u64().unwrap_or(0) > 1000);
     assert_eq!(reading["app"]["contents"]["following"], true);
-    assert_eq!(reading["app"]["contents"]["frames_running"], false, "nothing runs once it's arrived: {reading}");
+    assert_eq!(reading["app"]["contents"]["moving"], false, "nothing runs once it's arrived: {reading}");
     // Scrolled away, it stays where it's put, however the reader moves on.
     let away = run.ok(&["qa", "contents-scroll", "10"]);
     assert_eq!(away["contents"]["following"], false, "{away}");
@@ -467,7 +467,10 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
     let long = outlined_with(600);
     run.ok(&["open", long.0.to_str().unwrap()]);
     run.settled();
-    let sweep = run.ok(&["qa", "sweep", "4", "--for", "3s"]);
+    // Past the first screenful, or the place stays in the calm band at the top and nothing need move.
+    run.ok(&["goto", "100"]);
+    run.settled();
+    let sweep = run.ok(&["qa", "sweep", "6", "--for", "4s"]);
     let contents = &sweep["contents"];
     let steps = sweep["steps"].as_u64().unwrap() as f64;
     assert!(contents["steps_that_moved"].as_u64().unwrap() > 0, "they did follow: {sweep}");

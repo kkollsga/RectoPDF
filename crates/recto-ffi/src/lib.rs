@@ -102,9 +102,10 @@ pub struct SidebarView {
     /// One row per tab. The active tab's contents go under it, as many as `contents_count`.
     pub tabs: Vec<SidebarRow>,
     pub contents_count: u32,
-    /// Rows from here on were opened or closed by the last change, moving what's below by `contents_moved` rows. The host keeps what's on screen where it is by moving its scroll the same.
+    /// The last change closed `contents_removed` rows here and opened `contents_inserted`: a chapter closing as the reader leaves it, and the next one opening. Above the view the host moves its scroll to match, so it can't be seen. In it, the rows slide.
     pub contents_changed_from: u32,
-    pub contents_moved: i32,
+    pub contents_removed: u32,
+    pub contents_inserted: u32,
     /// The contents row of the place being read.
     pub contents_current: Option<u32>,
     pub toc_open: bool,
@@ -473,7 +474,7 @@ impl AppCore {
             listener: Arc::clone(&listener),
             contents_follow: Mutex::new(ContentsFollow::default()),
             started: Instant::now(),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, sidebar: Arc::new(SidebarView { tabs: Vec::new(), contents_count: 0, contents_changed_from: 0, contents_moved: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper_rgb: PaperKind::White.rgb() } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, sidebar: Arc::new(SidebarView { tabs: Vec::new(), contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper_rgb: PaperKind::White.rgb() } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -778,15 +779,15 @@ fn session_thread(inner: &Arc<Inner>) {
     }
 }
 
-/// Where two lists of contents rows differ and how much what's below moved: the rows opened or closed as the reader enters a chapter. Each list's matching start and end are compared, which is the whole of what changes, and it's only looked at when the lists differ.
-fn rows_moved(before: &[ContentsEntry], after: &[ContentsEntry]) -> (u32, i32) {
-    if std::ptr::eq(before, after) || before.is_empty() || after.is_empty() {
-        return (0, 0);
+/// Where two lists of contents rows differ: from which row, how many went, and how many came. Their matching starts and ends are compared, and it's only asked when the lists differ, which is when a chapter closes or opens.
+fn rows_changed(before: &[ContentsEntry], after: &[ContentsEntry]) -> (u32, u32, u32) {
+    if std::ptr::eq(before, after) {
+        return (0, 0, 0);
     }
-    let same_start = before.iter().zip(after).take_while(|(one, two)| one == two).count();
-    // Past the matching start, whole rows were added or removed if everything after matches at the end.
-    let moved = i32::try_from(after.len()).unwrap_or(i32::MAX) - i32::try_from(before.len()).unwrap_or(i32::MAX);
-    (u32::try_from(same_start).unwrap_or(u32::MAX), moved)
+    let start = before.iter().zip(after).take_while(|(one, two)| one == two).count();
+    let end = before[start..].iter().rev().zip(after[start..].iter().rev()).take_while(|(one, two)| one == two).count();
+    let count = |list: &[ContentsEntry]| u32::try_from(list.len() - start - end).unwrap_or(u32::MAX);
+    (u32::try_from(start).unwrap_or(u32::MAX), count(before), count(after))
 }
 
 fn open_file(inner: &Inner, path: &Path, events: &mut Vec<Event>) {
@@ -857,8 +858,8 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             Arc::new(model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).map(|row| ContentsEntry { tab: row.tab.0, text: row.text.into(), page: row.page, depth: row.depth }).collect())
         };
         let rail_filled = u32::try_from(model.rail_filled).unwrap_or(u32::MAX);
-        let (contents_changed_from, contents_moved) = rows_moved(&held_before, &contents);
-        (snapshot, SidebarView { tabs, contents_count: contents_row_count, contents_changed_from, contents_moved, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps }, contents, rail_filled, session.view())
+        let (contents_changed_from, contents_removed, contents_inserted) = rows_changed(&held_before, &contents);
+        (snapshot, SidebarView { tabs, contents_count: contents_row_count, contents_changed_from, contents_removed, contents_inserted, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps }, contents, rail_filled, session.view())
     });
     // The paper and focus first, so what's asked for next is drawn right.
     let dark = inner.dark.load(Ordering::SeqCst) || synced.dark;
@@ -915,16 +916,18 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
 mod tests {
     use super::*;
 
-    /// Failure: rows opening as the reader enters a chapter shift everything below, so the list seems to jump under a smooth drift. It must say from where and by how much, and a change of nothing says nothing.
+    /// Failure: rows opening as the reader enters a chapter jump the list under a smooth drift, because the host wasn't told which went and which came. It must say exactly, a chapter closing and the next opening together included, and a change of nothing says nothing.
     #[test]
-    fn opening_and_closing_rows_says_what_moved() {
+    fn opening_and_closing_rows_says_what_changed() {
         let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: 0 };
-        let before = vec![row("1"), row("2"), row("3")];
-        let after = vec![row("1"), row("2"), row("2.1"), row("2.2"), row("3")];
-        assert_eq!(rows_moved(&before, &after), (2, 2));
-        assert_eq!(rows_moved(&after, &before), (2, -2));
-        assert_eq!(rows_moved(&before, &before), (0, 0));
-        assert_eq!(rows_moved(&[], &after), (0, 0));
+        let list = |names: &[&str]| names.iter().map(|name| row(name)).collect::<Vec<_>>();
+        let before = list(&["1", "2", "3"]);
+        assert_eq!(rows_changed(&before, &list(&["1", "2", "2.1", "2.2", "3"])), (2, 0, 2));
+        assert_eq!(rows_changed(&list(&["1", "2", "2.1", "2.2", "3"]), &before), (2, 2, 0));
+        assert_eq!(rows_changed(&list(&["1", "2", "2.1", "3", "4"]), &list(&["1", "2", "3", "3.1", "4"])), (2, 2, 2), "2.1 and 3 go, and 3 and 3.1 come");
+        assert_eq!(rows_changed(&before, &before), (0, 0, 0));
+        assert_eq!(rows_changed(&[], &before), (0, 0, 3));
+        assert_eq!(rows_changed(&before, &[]), (0, 3, 0));
     }
 
     /// Failure: QA options work on a normal launch, so a shipped app can be started with its limits changed, or a file named at launch is taken for an option.

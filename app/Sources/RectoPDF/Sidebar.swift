@@ -197,7 +197,7 @@ final class ActiveTabCell: FlippedView {
     let footer = TextLine()
     let addButton = NSButton(title: "", target: nil, action: nil)
     private let core: AppCore
-    private(set) var model = SidebarView(tabs: [], contentsCount: 0, contentsChangedFrom: 0, contentsMoved: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false)
+    private(set) var model = SidebarView(tabs: [], contentsCount: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false)
     private var layout = SidebarLayout(tabRow: 32, contentsRow: 28, contentsHeight: 0, tabsScroll: false)
     private(set) var hoveredRow: Int?
     var addPressed: (() -> Void)?
@@ -449,14 +449,14 @@ final class ActiveTabCell: FlippedView {
         contentsTable.isHidden = !new.tocOpen
         if !sameTab { rowShift = 0 }
         if sameShape && new.tabs == old.tabs {
-            if new.contentsCount != old.contentsCount {
-                reloadKeepingPlace(new)
+            if new.contentsRemoved > 0 || new.contentsInserted > 0 {
+                applyRowChange(new)
             } else {
                 reloadContentsCells()
             }
         } else if sameShape {
             reloadCells()
-            if new.contentsCount != old.contentsCount { reloadKeepingPlace(new) }
+            if new.contentsRemoved > 0 || new.contentsInserted > 0 { applyRowChange(new) }
         } else {
             table.reloadData()
             contentsTable.reloadData()
@@ -480,16 +480,28 @@ final class ActiveTabCell: FlippedView {
         }
     }
 
-    /// Rows opened or closed as the reader moved. What's on screen stays where it is: the scroll moves by what's opened above it, in the same transaction, so it can't be seen.
-    private func reloadKeepingPlace(_ new: SidebarView) {
-        let topRow = contentsY / layout.contentsRow
-        let by = topRow >= Double(new.contentsChangedFrom) ? Double(new.contentsMoved) * layout.contentsRow : 0
-        contentsTable.reloadData()
-        if by != 0 {
-            setContentsY(contentsY + by)
-            rowShift += by
-            core.contentsShifted(by: by)
+    /// Rows opened or closed as the reader moved. Above the view, the scroll moves by what changed, in the same transaction, so nothing can be seen to move. In the view, they slide, and with Reduce Motion they don't.
+    private func applyRowChange(_ new: SidebarView) {
+        let from = Int(new.contentsChangedFrom)
+        let (removed, inserted) = (Int(new.contentsRemoved), Int(new.contentsInserted))
+        let topRow = Int(contentsY / layout.contentsRow)
+        if topRow >= from + removed {
+            let by = Double(inserted - removed) * layout.contentsRow
+            contentsTable.reloadData()
+            let before = contentsY
+            setContentsY(before + by)
+            let moved = contentsY - before
+            rowShift += moved
+            core.contentsShifted(by: moved)
+            return
         }
+        let motion: NSTableView.AnimationOptions = shouldReduceMotion ? [] : [.effectFade, .slideUp]
+        contentsTable.beginUpdates()
+        if removed > 0 { contentsTable.removeRows(at: IndexSet(from..<(from + removed)), withAnimation: motion) }
+        if inserted > 0 { contentsTable.insertRows(at: IndexSet(from..<(from + inserted)), withAnimation: motion) }
+        contentsTable.endUpdates()
+        // The rail and which row is the place are about every row, and they're drawn from Rust's model.
+        reloadContentsCells()
     }
 
     func appearanceChanged() {

@@ -163,8 +163,12 @@ pub const FOLLOW_RESUME_AFTER: f64 = 3.0;
 const FOLLOW_BAND: (f64, f64) = (0.25, 0.75);
 /// How quickly a drift closes in, per second. At this rate it reads as drifting: about a second to arrive.
 const FOLLOW_RATE: f64 = 5.0;
-/// The fastest the contents ever move, in points a second: about 15 rows.
+/// The fastest the contents move on their own, in points a second: about 15 rows.
 const FOLLOW_MAX_SPEED: f64 = 420.0;
+/// The fastest they move keeping up with a reader going fast through sections, which is the reader's own speed: about 85 rows.
+const FOLLOW_CHASE_SPEED: f64 = 2400.0;
+/// How many heights behind a chase may fall before it lands instead. Further than a plain long way, so a fast reader doesn't see it land at each one.
+const FOLLOW_CHASE_LONG_WAY: f64 = 6.0;
 /// Further than this many of its own heights is a long way, and it isn't travelled.
 const FOLLOW_LONG_WAY: f64 = 2.0;
 /// How far the last of a long jump travels, in points, so it lands rather than appears.
@@ -211,6 +215,8 @@ pub struct ContentsFollow {
 struct Drift {
     target: f64,
     velocity: f64,
+    /// A new target came while it was moving, so the reader's going faster than one drift: it may keep up.
+    chasing: bool,
     /// Where it really is. A scroll view rounds to whole device pixels, and a slow drift reading that back would never get anywhere. Taken from the host on the first frame.
     at: Option<f64>,
 }
@@ -301,12 +307,14 @@ impl ContentsFollow {
             return if self.drift.is_some() { FollowMove::Drift { from: None } } else { FollowMove::Stay };
         }
         let distance = target - view.scroll_y;
-        if distance.abs() > view.height.max(1.0) * FOLLOW_LONG_WAY {
-            self.drift = Some(Drift { target, velocity: 0.0, at: None });
+        let chasing = self.drift.is_some();
+        let long_way = if chasing { FOLLOW_CHASE_LONG_WAY } else { FOLLOW_LONG_WAY };
+        if distance.abs() > view.height.max(1.0) * long_way {
+            self.drift = Some(Drift { target, velocity: 0.0, chasing: false, at: None });
             return FollowMove::Drift { from: Some((target - FOLLOW_LANDING.copysign(distance)).clamp(0.0, furthest)) };
         }
         let (velocity, at) = self.drift.map_or((0.0, None), |drift| (drift.velocity, drift.at));
-        self.drift = Some(Drift { target, velocity, at });
+        self.drift = Some(Drift { target, velocity, chasing, at });
         FollowMove::Drift { from: None }
     }
 
@@ -321,8 +329,9 @@ impl ContentsFollow {
         let next_offset = (offset + spring * dt) * decay;
         let mut velocity = (spring - FOLLOW_RATE * (offset + spring * dt)) * decay;
         let mut next = drift.target + next_offset;
-        if velocity.abs() > FOLLOW_MAX_SPEED {
-            velocity = FOLLOW_MAX_SPEED.copysign(velocity);
+        let top = if drift.chasing { FOLLOW_CHASE_SPEED } else { FOLLOW_MAX_SPEED };
+        if velocity.abs() > top {
+            velocity = top.copysign(velocity);
             next = position + velocity * dt;
         }
         if next_offset.abs() < 0.25 && velocity.abs() < 4.0 {
@@ -1039,6 +1048,30 @@ mod tests {
         let next = follow.step(y, 1.0 / 60.0).unwrap();
         let step = next - y;
         assert!((step - last_step).abs() < 3.0, "{last_step} then {step}");
+    }
+
+    /// Failure: reading very fast leaves the contents behind, or they land again and again in big jumps, as the first version did: at 40 sections a second, a step of 1,536 points and the place in view on one step in five. They keep up, at the reader's own speed, without landing.
+    #[test]
+    fn keeping_up_with_a_fast_reader_never_lands() {
+        let view_at = |y: f64| ContentsView { scroll_y: y, height: 776.0, rows: 10_000 };
+        let mut follow = ContentsFollow::default();
+        follow.reached(Some(1000), view_at(0.0), 100.0, false);
+        let mut y = 1000.5 * CONTENTS_ROW_HEIGHT - 388.0;
+        let mut in_view = 0;
+        let frames = 60 * 5;
+        for frame in 0..frames {
+            // 40 sections a second, at 60 frames.
+            let row = 1000 + frame * 2 / 3;
+            let moved = follow.reached(Some(row), view_at(y), 100.0, false);
+            assert!(!matches!(moved, FollowMove::Drift { from: Some(_) } | FollowMove::SetTo(_)), "frame {frame}: {moved:?}");
+            if let Some(next) = follow.step(y, 1.0 / 60.0) {
+                assert!((next - y).abs() <= FOLLOW_CHASE_SPEED / 60.0 + 0.5, "frame {frame}: {} a frame", next - y);
+                y = next;
+            }
+            let place = (f64::from(row) + 0.5) * CONTENTS_ROW_HEIGHT;
+            in_view += u32::from(place >= y && place <= y + 776.0);
+        }
+        assert!(in_view >= frames * 95 / 100, "the place showed on {in_view} frames of {frames}");
     }
 
     /// Failure: `recto goto` or a far entry sets off a long fast whoosh through hundreds of rows. It starts a short way from the target, and travels only that.
