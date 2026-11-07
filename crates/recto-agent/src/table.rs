@@ -326,7 +326,7 @@ pub static TABLE: &[Spec] = &[
         name: "watch",
         tag: "watch",
         group: GROUP_SYNC,
-        summary: "Prints events as they happen, one per line, until the time or count runs out. Stops if access drops below Read-only.",
+        summary: "Prints events from now on, one per line. It reports only what happens after it starts, and nothing from before: `recto tabs` and `recto edits` say how things stand. It ends when `--timeout` or `--count` runs out, if access drops below Read-only, or if the session stops. No command ends a watch early: kill the process to end it, which is safe and stops it at once.",
         args: &[
             Arg { key: "events", flag: Some("--events"), kind: Kind::List(EVENT_GROUPS), required: false, help: "Which: `tabs`, `pages`, `edits`, `draws`, `access`, with commas between. All if left out." },
             Arg { key: "timeout_ms", flag: Some("--timeout"), kind: Kind::Duration, required: false, help: "How long to watch: `30s`, `5m`. 10m if left out." },
@@ -1307,6 +1307,16 @@ mod tests {
         assert_eq!(line(&["statuss"]).unwrap_err().candidates[0], "status", "the nearest comes first");
         assert_eq!(line(&["serach", "word"]).unwrap_err().candidates[0], "search");
         assert!(line(&["zzzzzzzz"]).unwrap_err().candidates.is_empty(), "nothing near isn't made up");
+    }
+
+    /// Failure: an agent starts `watch` expecting to hear what's already happened, or looks for a command that ends one, since nothing says it reports only from now on or how it ends.
+    #[test]
+    fn watch_says_what_it_reports_and_how_it_ends() {
+        let help = help_for(TABLE.iter().find(|row| row.name == "watch").unwrap());
+        for must in ["from now on", "nothing from before", "--timeout", "--count", "No command ends a watch", "kill the process"] {
+            assert!(help.contains(must), "{must}: {help}");
+        }
+        assert!(help_text().contains("from now on"), "and in the list, which shows only the first sentence");
     }
 
     /// Failure: a command that isn't built says `Needs: Off`, which reads as though it works, and an agent believes its edits can be saved.
