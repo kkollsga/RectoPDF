@@ -584,7 +584,7 @@ pub fn parse_cli(args: &[String]) -> Result<Invocation, AgentError> {
         return Err(unknown_command(&kept));
     };
     let words = spec.name.split(' ').count();
-    let (fields, rest) = read_args(spec, &kept[words..], literal_from.saturating_sub(words), help_flag)?;
+    let (fields, rest) = read_args(spec, &kept[words..], literal_from.saturating_sub(words), help_flag, json_flag)?;
     Ok(Invocation { spec, fields, json: json_flag, help: help_flag, rest })
 }
 
@@ -712,9 +712,29 @@ fn distance(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
+/// What's wrong with a line, for whoever can do something about it.
+enum Wrong<'a> {
+    /// A flag this row doesn't have.
+    Flag { at: usize, flag: &'a str, inline: Option<&'a str> },
+    /// A word with no place to go, and what the line had filled by then.
+    Stray { at: usize, fields: Map<String, Value> },
+    Other(AgentError),
+}
+
+fn read_args(spec: &'static Spec, words: &[&str], literal_from: usize, help: bool, json: bool) -> Result<(Map<String, Value>, Vec<String>), AgentError> {
+    scan(spec, words, literal_from, help).map_err(|wrong| {
+        let advice = || advised_line(spec, words, literal_from, json);
+        match wrong {
+            Wrong::Other(error) => error,
+            Wrong::Flag { flag, .. } => unknown_flag(spec, flag, advice()),
+            Wrong::Stray { at, fields } => stray_word(spec, words[at], &fields, advice()),
+        }
+    })
+}
+
 /// `literal_from` is where `--` was: from there on, nothing is a flag, so a search can look for `--force`.
-fn read_args(spec: &'static Spec, words: &[&str], literal_from: usize, help: bool) -> Result<(Map<String, Value>, Vec<String>), AgentError> {
-    let wrong = |message: String| usage_error(message, format!("`recto help {}` shows how to use it.", spec.name));
+fn scan<'a>(spec: &'static Spec, words: &[&'a str], literal_from: usize, help: bool) -> Result<(Map<String, Value>, Vec<String>), Wrong<'a>> {
+    let wrong = |message: String| Wrong::Other(usage_error(message, format!("`recto help {}` shows how to use it.", spec.name)));
     let mut fields = Map::new();
     let mut rest = Vec::new();
     for (key, value) in spec.fixed {
@@ -728,7 +748,7 @@ fn read_args(spec: &'static Spec, words: &[&str], literal_from: usize, help: boo
             // `--page=3` and `--page 3` are the same thing.
             let (flag, inline) = word.split_once('=').map_or((word, None), |(flag, value)| (flag, Some(value)));
             let Some(arg) = spec.args.iter().find(|arg| arg.flag == Some(flag)) else {
-                return Err(unknown_flag(spec, flag, inline.or_else(|| words.get(index).copied().filter(|next| !next.starts_with("--")))));
+                return Err(Wrong::Flag { at: index - 1, flag, inline });
             };
             if arg.kind == Kind::Switch {
                 if inline.is_some() {
@@ -750,7 +770,7 @@ fn read_args(spec: &'static Spec, words: &[&str], literal_from: usize, help: boo
             fields.insert(arg.key.into(), read_value(arg, value).map_err(wrong)?);
         } else {
             let Some(arg) = places.next() else {
-                return Err(stray_word(spec, word, &fields));
+                return Err(Wrong::Stray { at: index - 1, fields });
             };
             if arg.kind == Kind::Rest {
                 rest = words[index - 1..].iter().map(|word| (*word).to_string()).collect();
@@ -801,39 +821,82 @@ fn flag_distance(typed: &str, real: &str) -> Option<usize> {
     (apart <= 2 && apart < typed.chars().count().min(real.chars().count())).then_some(apart)
 }
 
-/// The argument a flag that doesn't exist most likely meant: one named that, whatever its flag is, or else one spelled nearly that.
+/// The argument a flag that doesn't exist most likely meant: one named that, whatever its flag is, or else one spelled nearly that, a value with no flag going by its name.
 fn nearest_arg(spec: &Spec, flag: &str) -> Option<&'static Arg> {
     let named = flag.trim_start_matches('-').replace('-', "_");
     let by_name = spec.args.iter().find(|arg| arg.key == named || arg.key.trim_end_matches("_ms") == named);
-    by_name.or_else(|| spec.args.iter().filter_map(|arg| Some((flag_distance(flag, arg.flag?)?, arg))).min_by_key(|(apart, _)| *apart).map(|(_, arg)| arg))
+    by_name.or_else(|| spec.args.iter().filter_map(|arg| Some((flag_distance(flag, arg.flag.unwrap_or(arg.key))?, arg))).min_by_key(|(apart, _)| *apart).map(|(_, arg)| arg))
 }
 
-/// Refuses a flag the row doesn't have, with the closest form that would work: a flag spelled nearly that (`--pages 19` for `--page 19`), or the place a value goes that has no flag (`recto goto 5` for `--page 5`). Advice it would then refuse is worse than none, so a value is only put in if its argument takes it.
-fn unknown_flag(spec: &'static Spec, flag: &str, value: Option<&str>) -> AgentError {
+/// The most times advice will mend one line.
+const MAX_MENDS: usize = 8;
+
+/// The whole line as it should have been typed: this line, with every wrong word mended and every other word where it was, ready to run. `page delete --pages 3 --tab report` must come back with its `--tab`, or the advice deletes page 3 of whichever tab is active. So nothing is offered unless all of the line can be mended and put back, and each mend goes through the same reading as a real line. Anything still missing stays missing, as it was typed, and is refused for that when it's run.
+fn advised_line(spec: &'static Spec, words: &[&str], literal_from: usize, json: bool) -> Option<String> {
+    // Past `--`, nothing can be moved or renamed without changing what it means.
+    if literal_from <= words.len() {
+        return None;
+    }
+    let mut line: Vec<String> = words.iter().map(|word| (*word).to_string()).collect();
+    for _ in 0..MAX_MENDS {
+        let view: Vec<&str> = line.iter().map(String::as_str).collect();
+        let (range, mended) = match scan(spec, &view, usize::MAX, true) {
+            Ok(_) => {
+                let mut typed = vec!["recto".to_string()];
+                typed.extend(spec.name.split(' ').map(str::to_string));
+                for word in &line {
+                    typed.push(shell_quote(word)?);
+                }
+                if json {
+                    typed.push("--json".to_string());
+                }
+                return Some(typed.join(" "));
+            }
+            Err(Wrong::Flag { at, flag, inline }) => mend_flag(spec, &view, at, flag, inline)?,
+            Err(Wrong::Stray { at, .. }) => (at..at + 1, flag_for_stray_word(spec, view[at]).filter(|(flag, _)| !view.contains(flag)).map(|(flag, value)| vec![flag.to_string(), value])?),
+            Err(Wrong::Other(_)) => return None,
+        };
+        line.splice(range, mended);
+    }
+    None
+}
+
+/// What should replace a flag this row doesn't have, and the value after it if that goes too. A value is only moved if its argument takes it.
+fn mend_flag(spec: &Spec, line: &[&str], at: usize, flag: &str, inline: Option<&str>) -> Option<(std::ops::Range<usize>, Vec<String>)> {
+    let arg = nearest_arg(spec, flag)?;
+    if arg.flag.is_some_and(|real| line.iter().any(|word| word.split('=').next() == Some(real))) {
+        return None;
+    }
+    if arg.kind == Kind::Switch {
+        return inline.is_none().then(|| (at..at + 1, vec![arg.flag.unwrap_or(flag).to_string()]));
+    }
+    let (value, taken) = match inline {
+        Some(value) => (value, 1),
+        None => (line.get(at + 1).copied().filter(|next| !next.starts_with("--"))?, 2),
+    };
+    read_value(arg, value).ok()?;
+    let mended = arg.flag.map_or_else(|| vec![value.to_string()], |real| vec![real.to_string(), value.to_string()]);
+    Some((at..at + taken, mended))
+}
+
+/// Refuses a flag the row doesn't have, with the closest form that would work: the whole line mended if it can be, and otherwise the flag or the place a value was probably meant for.
+fn unknown_flag(spec: &'static Spec, flag: &str, advice: Option<String>) -> AgentError {
     let typed_flag = recto_core::clean_line(flag);
     let mut message = format!("`recto {}` has no `{typed_flag}`.", spec.name);
     let mut candidates = Vec::new();
-    match nearest_arg(spec, flag) {
-        Some(arg) => {
-            let fits = value.filter(|value| read_value(arg, value).is_ok()).and_then(shell_quote);
-            match (arg.flag, fits) {
-                (Some(real), Some(value)) => {
-                    message.push_str(&format!(" Perhaps `{real} {value}`."));
-                    candidates.push(format!("{real} {value}"));
-                }
-                (Some(real), None) => {
-                    message.push_str(&format!(" The nearest is `{real}`: {}", arg.help));
-                    candidates.push(real.to_string());
-                }
-                (None, Some(value)) => {
-                    let form = format!("recto {} {value}", spec.name);
-                    message.push_str(&format!(" That goes in its place, with no flag: `{form}`."));
-                    candidates.push(form);
-                }
-                (None, None) => message.push_str(&format!(" `<{}>` goes in its place, with no flag: {}", arg.key, arg.help)),
-            }
+    match (advice, nearest_arg(spec, flag)) {
+        (Some(line), _) => {
+            message.push_str(&format!(" Perhaps `{line}`."));
+            candidates.push(line);
         }
-        None => {
+        (None, Some(arg)) => match arg.flag {
+            Some(real) => {
+                message.push_str(&format!(" The nearest is `{real}`: {}", arg.help));
+                candidates.push(real.to_string());
+            }
+            None => message.push_str(&format!(" `<{}>` goes in its place, with no flag: {}", arg.key, arg.help)),
+        },
+        (None, None) => {
             let flags: Vec<&str> = spec.args.iter().filter_map(|arg| arg.flag).collect();
             if !flags.is_empty() {
                 message.push_str(&format!(" It has `{}`.", flags.join("`, `")));
@@ -844,15 +907,21 @@ fn unknown_flag(spec: &'static Spec, flag: &str, value: Option<&str>) -> AgentEr
 }
 
 /// Refuses a word with no place to go, and says the form that would take it, if there's a good guess: a page number for its flag, a tab for `--tab`, more words for quotes around the words. Measurements count pages rather than name them, so they're left out.
-fn stray_word(spec: &'static Spec, word: &str, fields: &Map<String, Value>) -> AgentError {
+fn stray_word(spec: &'static Spec, word: &str, fields: &Map<String, Value>, advice: Option<String>) -> AgentError {
     let shown = recto_core::clean_line(word);
     let mut message = format!("`recto {}` doesn't take `{shown}` here.", spec.name);
     let mut candidates = Vec::new();
     if spec.group != GROUP_MEASURE {
         let text_taken = spec.args.iter().find(|arg| arg.kind == Kind::Text && arg.flag.is_none()).and_then(|arg| fields.get(arg.key)).and_then(Value::as_str);
-        if let Some((flag, value)) = flag_for_stray_word(spec, word) {
+        if let Some((flag, value)) = flag_for_stray_word(spec, word).and_then(|(flag, value)| Some((flag, shell_quote(&value)?))) {
             message = format!("`recto {}` takes that as `{flag} {value}`.", spec.name);
-            candidates.push(format!("{flag} {value}"));
+            match advice {
+                Some(line) => {
+                    message.push_str(&format!(" Perhaps `{line}`."));
+                    candidates.push(line);
+                }
+                None => candidates.push(format!("{flag} {value}")),
+            }
         } else if let Some(words) = text_taken.and_then(|before| shell_quote(&format!("{before} {word}"))) {
             message = format!("`recto {}` takes one piece of text. Several words go in quotes: `recto {} {words}`.", spec.name, spec.name);
         } else if word.to_ascii_lowercase().ends_with(".pdf") && spec.args.iter().any(|arg| arg.kind == Kind::Tab) {
@@ -863,8 +932,11 @@ fn stray_word(spec: &'static Spec, word: &str, fields: &Map<String, Value>) -> A
     usage_error(message, how_it_goes(spec)).with_candidates(candidates)
 }
 
-/// The flag a stray word was probably meant for, and how to write its value: `recto text 1` for `--page 1`, and `recto close "#1"` for `--tab "#1"`. Advice it would then refuse is worse than none: `--page` takes one page, and `--pages` can take a range.
+/// The flag a stray word was probably meant for, and the value as it means it: `recto text 1` for `--page 1`, and `recto close "#1"` for `--tab "#1"`. Advice it would then refuse is worse than none: `--page` takes one page, and `--pages` can take a range. Measurements count pages rather than name them, so they're left out.
 fn flag_for_stray_word(spec: &Spec, word: &str) -> Option<(&'static str, String)> {
+    if spec.group == GROUP_MEASURE {
+        return None;
+    }
     let flagged = || spec.args.iter().filter(|arg| arg.flag.is_some());
     let for_a_page = flagged().find_map(|arg| match arg.kind {
         Kind::Page if whole_number(word).is_some_and(|page| page > 0) => arg.flag,
@@ -873,20 +945,20 @@ fn flag_for_stray_word(spec: &Spec, word: &str) -> Option<(&'static str, String)
         _ => None,
     });
     if let Some(flag) = for_a_page {
-        return Some((flag, recto_core::clean_line(word)));
+        return Some((flag, word.to_string()));
     }
     // Another word after a piece of text is more of that text, and quotes are the answer.
     if spec.args.iter().any(|arg| arg.kind == Kind::Text && arg.flag.is_none()) {
         return None;
     }
     let tab_flag = flagged().find(|arg| arg.kind == Kind::Tab)?.flag?;
-    let has_pages = flagged().any(|arg| matches!(arg.kind, Kind::Page | Kind::Pages | Kind::PagesOpen));
+    let has_pages = spec.args.iter().any(|arg| matches!(arg.kind, Kind::Page | Kind::Pages | Kind::PagesOpen));
     // A bare number is a tab's only where a page can't be what's meant. A word is a tab's if it could be part of a name, and not a file or a flag.
     let value = match whole_number(word) {
-        Some(number) if number > 0 && !has_pages => shell_quote(&format!("#{number}"))?,
+        Some(number) if number > 0 && !has_pages => format!("#{number}"),
         Some(_) => return None,
         None if word.ends_with('-') || word.starts_with('-') || word.contains('/') || word.to_ascii_lowercase().ends_with(".pdf") => return None,
-        None if word.chars().any(char::is_alphabetic) || word.strip_prefix('#').and_then(whole_number).is_some() => shell_quote(word)?,
+        None if word.chars().any(char::is_alphabetic) || word.strip_prefix('#').and_then(whole_number).is_some() => word.to_string(),
         None => return None,
     };
     Some((tab_flag, value))
@@ -1273,6 +1345,7 @@ mod tests {
         // Advice that would be refused is worse than none.
         let range = line(&["text", "--pages", "1-3"]).unwrap_err();
         assert!(range.message.contains("`--page`") && !range.message.contains("--page 1-3"), "{}", range.message);
+        assert_eq!(range.candidates, ["--page"], "only the flag, since a whole line would be refused");
         let far = line(&["tabs", "--nope", "1"]).unwrap_err();
         assert!(far.message.contains("`--from`, `--limit`") && far.candidates.is_empty(), "with nothing close, it says what there is: {}", far.message);
         assert!(!line(&["close", "--page", "3"]).unwrap_err().message.contains("--tab 3"), "`--page` isn't near `--tab`");
@@ -1281,27 +1354,60 @@ mod tests {
         for level_attempt in [&["tabs", "--level", "full"][..], &["tabs", "--force"][..], &["tabs", "--yes"][..]] {
             assert!(line(level_attempt).unwrap_err().candidates.is_empty(), "{level_attempt:?}: there's nothing to offer");
         }
-        // Whatever it offers, on any row, must itself be taken. Each flag of each row, mistyped, on a line that's otherwise right: putting the advice in its place must parse.
-        for spec in TABLE.iter().filter(|spec| !spec.hidden) {
-            for arg in spec.args.iter().filter(|arg| arg.flag.is_some() && arg.kind != Kind::Switch) {
-                let flag = arg.flag.unwrap();
-                let mut rest: Vec<String> = spec.name.split(' ').map(str::to_string).collect();
-                for other in spec.args.iter().filter(|other| other.required && other.key != arg.key && other.kind != Kind::Rest) {
-                    rest.extend(other.flag.map(str::to_string));
-                    rest.push(sample_of(other.kind).to_string());
+    }
+
+    /// The fields a whole line of advice comes to, as if it were run.
+    fn fields_of(advice: &str) -> Map<String, Value> {
+        let words = shell_words(advice);
+        assert_eq!(words[0], "recto", "{advice}");
+        parse_cli(&words[1..]).unwrap_or_else(|refused| panic!("{advice} is refused: {}", refused.message)).fields
+    }
+
+    /// Failure: advice drops the rest of the line. `page delete --pages 3 --tab report` advised `recto page delete 3`, which parses, and deletes page 3 of the active tab, the wrong document, and `page rotate --pages 1 --by 90` advised `page rotate 1`, which is refused. Every flag and every value of every row, mistyped with all the others present: what's advised must parse, and mean what the right line means, field for field.
+    #[test]
+    fn advice_keeps_the_rest_of_the_line_and_means_the_same() {
+        let advice = |line: &[&str]| parse_cli(&line.iter().map(|word| (*word).to_string()).collect::<Vec<_>>()).unwrap_err().candidates.first().filter(|candidate| candidate.starts_with("recto ")).cloned();
+        assert_eq!(advice(&["page", "delete", "--pages", "3", "--tab", "report"]).as_deref(), Some("recto page delete 3 --tab report"));
+        assert_eq!(advice(&["page", "rotate", "--pages", "1", "--by", "90"]).as_deref(), Some("recto page rotate 1 --by 90"));
+        assert_eq!(advice(&["page", "rotate", "--page", "1", "--degrees", "90"]).as_deref(), Some("recto page rotate 1 --by 90"), "more than one wrong word on a line");
+        assert_eq!(advice(&["text", "--pages", "19", "--json"]).as_deref(), Some("recto text --page 19 --json"), "a line that wanted JSON still gets it");
+        assert_eq!(advice(&["search", "--", "--force", "stray"]), None, "past `--`, nothing can be moved");
+        assert_eq!(advice(&["text", "--page", "1", "--pages", "2"]), None, "it can't have the page twice, and choosing would be a guess");
+        assert_eq!(advice(&["page", "delete", "3", "4"]), None, "that's not a tab, and a guess here deletes something");
+        let mut lines_checked = 0;
+        for spec in TABLE.iter().filter(|spec| !spec.hidden && spec.args.iter().all(|arg| arg.kind != Kind::Rest)) {
+            let value_of = |arg: &Arg| sample_of(arg.kind).to_string();
+            let right: Vec<(Vec<String>, &Arg)> = spec.args.iter().map(|arg| {
+                let mut words: Vec<String> = arg.flag.iter().map(|flag| (*flag).to_string()).collect();
+                if arg.kind != Kind::Switch {
+                    words.push(value_of(arg));
                 }
-                let typed: Vec<String> = rest.iter().cloned().chain([format!("{flag}x"), sample_of(arg.kind).to_string()]).collect();
-                if spec.args.iter().any(|other| other.required && other.kind == Kind::Rest) {
-                    continue;
+                (words, arg)
+            }).collect();
+            let name: Vec<String> = spec.name.split(' ').map(str::to_string).collect();
+            let whole: Vec<String> = name.iter().cloned().chain(right.iter().flat_map(|(words, _)| words.iter().cloned())).collect();
+            let meant = parse_cli(&whole).unwrap_or_else(|refused| panic!("{whole:?}: {}", refused.message)).fields;
+            for (wrong, (_, arg)) in right.iter().enumerate() {
+                let typo = arg.flag.map_or_else(|| format!("--{}", arg.key.replace('_', "-")), |flag| format!("{flag}x"));
+                let mut typed = name.clone();
+                for (at, (words, _)) in right.iter().enumerate() {
+                    if at == wrong {
+                        typed.push(typo.clone());
+                        if arg.kind != Kind::Switch {
+                            typed.push(value_of(arg));
+                        }
+                    } else {
+                        typed.extend(words.iter().cloned());
+                    }
                 }
                 let error = parse_cli(&typed).unwrap_err();
-                assert!(error.next.contains(&usage_line(spec)), "{}: {}", spec.name, error.next);
-                let advice = error.candidates.first().unwrap_or_else(|| panic!("{typed:?} got no advice: {}", error.message));
-                assert!(advice.starts_with(flag), "{typed:?}: {advice}");
-                let fixed: Vec<String> = rest.iter().cloned().chain(shell_words(advice)).collect();
-                parse_cli(&fixed).unwrap_or_else(|refused| panic!("{typed:?} was told {advice}, and that's refused: {}", refused.message));
+                assert!(error.next.contains(&usage_line(spec)), "{typed:?}: the usage line goes with it: {}", error.next);
+                let advised = error.candidates.first().unwrap_or_else(|| panic!("{typed:?} got no advice: {}", error.message));
+                assert_eq!(fields_of(advised), meant, "{typed:?} was told {advised}, which means something else");
+                lines_checked += 1;
             }
         }
+        assert!(lines_checked > 40, "{lines_checked}");
     }
 
     /// Runs what a shell would make of a line of advice, and returns the words it would pass on. `$(...)` and the like print a mark if they run, and the words are compared with what was typed, so a shell that did anything but pass them on fails this.
@@ -1317,9 +1423,9 @@ mod tests {
         for hostile in ["R&D", "a;echo pwned", "$(echo pwned)", "`echo pwned`", "a\"b", "a'b", "it's $(echo pwned)", "a|b", "a>b", "a b", "#1", "*", "~", "!x", "back\\slash", "(x)", "ca\u{308}fe"] {
             let error = parse_cli(&["facts".to_string(), "--tabs".to_string(), hostile.to_string()]).unwrap_err();
             let advice = error.candidates.first().unwrap_or_else(|| panic!("{hostile} got no advice: {}", error.message));
-            assert_eq!(as_a_shell_reads_it(advice), ["--tab", hostile], "{hostile}: {advice}");
+            assert_eq!(as_a_shell_reads_it(advice), ["recto", "facts", "--tab", hostile], "{hostile}: {advice}");
             assert!(error.message.contains(advice.as_str()), "{}", error.message);
-            assert_eq!(shell_words(advice), ["--tab", hostile], "{hostile}: the tests' own reading of a line agrees");
+            assert_eq!(shell_words(advice), ["recto", "facts", "--tab", hostile], "{hostile}: the tests' own reading of a line agrees");
         }
         for not_printable in ["a\nb", "a\u{202E}b", &"x".repeat(MAX_QUOTED_WORD + 1)] {
             let error = parse_cli(&["facts".to_string(), "--tabs".to_string(), not_printable.to_string()]).unwrap_err();
@@ -1327,7 +1433,7 @@ mod tests {
             assert!(!error.message.contains('\n'), "{}", error.message);
         }
         let stray = parse_cli(&["facts".to_string(), "$(echo pwned)".to_string()]).unwrap_err();
-        assert_eq!(as_a_shell_reads_it(&stray.candidates[0]), ["--tab", "$(echo pwned)"]);
+        assert_eq!(as_a_shell_reads_it(&stray.candidates[0]), ["recto", "facts", "--tab", "$(echo pwned)"]);
         let file = parse_cli(&["facts".to_string(), "$(echo pwned).pdf".to_string()]).unwrap_err();
         assert!(file.message.contains("recto open '$(echo pwned).pdf'"), "{}", file.message);
         let quoted = parse_cli(&["search".to_string(), "a".to_string(), "$(echo pwned)".to_string()]).unwrap_err();
