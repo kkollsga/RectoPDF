@@ -193,6 +193,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] Privacy statement and first-run wording
 - [ ] Final budget report against every line of `SPEC.md` §2
 - [ ] At a quiet time, by the coordinator: 1,000 tabs' worst UI stall, 81 ms against 53 before and only under load; the one 3.31 MiB rise over 1,000 tabs that `heap` didn't catch; the `HEAVY_SOLO` stall comparison of surfaces made outside the reader's lock
+- [ ] On CI's virtual machines the app reads about 80 wake-ups a second for up to 6 s after settling ([132, 123, 42, 7], [176, 165, 94, 9], [117, 1, 0, 0], [157, 163, 4, 7]), while a sample of every thread in that window shows none working. This Mac reads 0 to 4. Not explained. Look at the CPU the test now reports, and check on the MacBook
 - [ ] `qa budget`'s idle window starts 1 s after settling, so the tail of settling reads as up to 1.35 wake-ups a second: start it later
 - [ ] Commit `184f5a7` doesn't compile alone: it uses `JobPlan` from the next commit. The tip is fine, and a bisect has to skip it
 
