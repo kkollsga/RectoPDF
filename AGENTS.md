@@ -89,6 +89,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 ## Product rules from the owner, first use of the restore build (2026-11-07)
 - "We dont need detailed zoom options in the left sidebar menu. Zoom is pretty natural to people. Instead lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset."
 - "Focus mode enable disable should be in the right click menu. In the right click menu you can select side by side layout, with and without header page."
+- Replaces the focus part of that: "Actually instead of focus view, simply have a sidebar icon to the right of the traffic light buttons that toggles sidebar on and of. No need mor a separate mode". So there is no focus mode; a sidebar button beside the window controls shows and hides the sidebar.
 - Contents: "The hover delay before showing the full toc name makes in not intuitive, and the expanded name should have the color of the title." "there should be a collapse toggle button for sections with sub chapters on the left side of the headers." Page numbers on the right that don't make sense, and section indents, are bugs.
 - "When selecting across pages the page number is copied. Both footer and header should be ignored when coppying body text."
 - "The page number should always be visible in the lower right."
