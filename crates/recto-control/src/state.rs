@@ -122,7 +122,20 @@ pub fn refuses_real_home(wanted: &Path, home: &Path, temp: Option<&Path>) -> boo
 /// Whether a path, wherever links and `..` really take it, is in this user's real home.
 pub fn is_in_real_home(path: &Path) -> bool {
     let Some(home) = local::real_home().and_then(|home| home.canonicalize().ok()) else { return true };
-    resolved(path).is_none_or(|real| real.starts_with(&home))
+    resolved(path).is_none_or(|real| real.starts_with(&home) || is_inside(&real, &home))
+}
+
+/// Whether any folder up from a path is this one by what the filesystem says it is, and not by its name. `canonicalize` doesn't see through a firmlink, so `/System/Volumes/Data/...` is the same folder as the path without it, under a name that doesn't start the same.
+#[cfg(unix)]
+fn is_inside(path: &Path, folder: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(wanted) = std::fs::metadata(folder) else { return true };
+    path.ancestors().filter_map(|up| std::fs::metadata(up).ok()).any(|found| found.dev() == wanted.dev() && found.ino() == wanted.ino())
+}
+
+#[cfg(not(unix))]
+fn is_inside(_path: &Path, _folder: &Path) -> bool {
+    false
 }
 
 /// A path's real location, following links as far as it exists. Without this a link to the home would pass.
@@ -246,5 +259,24 @@ mod tests {
         std::fs::set_permissions(&paths.run_dir, std::fs::Permissions::from_mode(0o775)).unwrap();
         assert_eq!(paths.prepare().unwrap_err().code, "state_refused");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure: a firmlink's other name for the home folder gets past a check by name, so a QA shot can land in the real home. Run for real on this Mac's own firmlink: the path is only tried if it's there and it is the home, and the home's own path is always tried.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_real_home_is_known_by_any_name() {
+        use std::os::unix::fs::MetadataExt;
+        let home = local::real_home().unwrap().canonicalize().unwrap();
+        assert!(is_in_real_home(&home.join("x.png")));
+        assert!(is_in_real_home(&home.join("a/folder/that/isnt/there/x.png")));
+        let other_name = PathBuf::from("/System/Volumes/Data").join(home.strip_prefix("/").unwrap());
+        if let (Ok(there), Ok(here)) = (std::fs::metadata(&other_name), std::fs::metadata(&home))
+            && there.dev() == here.dev()
+            && there.ino() == here.ino()
+        {
+            assert!(is_in_real_home(&other_name.join("x.png")), "{other_name:?}");
+            assert!(is_in_real_home(&other_name.join("a/folder/that/isnt/there/x.png")));
+        }
+        assert!(!is_in_real_home(&std::env::temp_dir().join("x.png")) || std::env::temp_dir().canonicalize().unwrap().starts_with(&home));
     }
 }
