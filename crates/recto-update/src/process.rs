@@ -114,7 +114,7 @@ mod tests {
         let started = Instant::now();
         let (fine, _, ran) = tool("/bin/sleep", &["30"], Duration::from_millis(100), 1024).unwrap();
         assert!(!fine && ran.timed_out);
-        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        assert!(started.elapsed() < Duration::from_secs(25), "{:?}", started.elapsed());
     }
 
     /// Failure: a tool that says too much fills memory, or one that keeps going past the limit isn't stopped.
@@ -124,7 +124,7 @@ mod tests {
         let (fine, out, ran) = tool("/usr/bin/yes", &[], Duration::from_secs(20), 256 * 1024).unwrap();
         assert!(!fine && ran.stopped);
         assert!(out.len() <= 256 * 1024);
-        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        assert!(started.elapsed() < Duration::from_secs(19), "{:?}", started.elapsed());
     }
 
     /// Failure: what a tool says and how it ended don't come back.

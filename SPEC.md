@@ -33,6 +33,7 @@ A missed budget is a bug. The whole process tree counts, on release builds, on a
 | Cold start to first sharp page | ≤ 300 ms p50, ≤ 500 ms p95 | Met off screen: 134, 154 ms |
 | Open 2 GB, 10k pages | Page 1 sharp ≤ 250 ms warm, ≤ 600 ms cold; main never stalls > 16 ms | About 190 ms warm. Cold not tested. **Worst stall 17 to 18 ms** under load |
 | Idle CPU | ~0%, ≤ 1 wake-up per second | Met off screen: 0.0%, 0.65 at most |
+| An update, from the old app told to quit to the new one's first correct frame | One quit and one launch, as everything slow comes first (SPEC decision 24) | Off screen, release build, under the build queue's load: 292 to 488 ms, median 305 |
 | Scroll | 120 fps on ProMotion, ≥ 99% of frames on time, 0 blank frames on seen pages | UI thread 0.5 ms p99 a step, off screen. **Blank steps on seen pages past the last 128 pages** at 40 pages a second, until disk previews. Frames not tested: needs the MacBook |
 | Sharp after scroll stops | ≤ 100 ms on a text page | Met: 7 ms typical, 17 at worst |
 | Background work (OCR, indexing, compress) | Helper process, background QoS, exits when done | Indexing tested; OCR and compress pending |

@@ -288,7 +288,7 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(gap.is_u64(), "{}", bed.status(&run));
-    eprintln!("update gap: {gap} ms from quit to the first correct frame, in a quiet run, on a debug build, under the queue's load");
+    eprintln!("update gap: {gap} ms from quit to the first correct frame, in a quiet run, on the app as built, under whatever load this machine has");
     let log = bed.log();
     for line in log.lines().filter(|line| line.contains("first frame")) {
         eprintln!("{line}");
@@ -679,5 +679,37 @@ fn settings_and_the_menu_say_how_things_stand() {
     assert_eq!(now["app"]["settings"]["rows"][0]["on"], false, "off stays off");
     run.ok(&["qa", "settings", "close"]);
     assert_eq!(run.ok(&["qa", "state"])["app"]["settings"]["open"], false);
+    run.quit();
+}
+
+/// Failure: the updater costs something at rest: a thread, memory past small state, or wake-ups. A run with the timer armed and an offer waiting, against one with nothing armed, each settled and then watched. The numbers are what `SPEC.md` holds to. Only with `RECTO_UPDATE_MEASURE` set, as it takes half a minute, and on a release build if the number's to mean anything. The thread count is asserted, as it can't vary with load. Wake-ups and memory are printed, for a person to compare.
+#[test]
+fn at_rest_the_updater_costs_nothing() {
+    if std::env::var_os("RECTO_UPDATE_MEASURE").is_none() {
+        return;
+    }
+    let watch = |run: &Run<'_>| {
+        std::thread::sleep(Duration::from_secs(5));
+        let before = local::process_counters(run.pid).unwrap();
+        std::thread::sleep(Duration::from_secs(20));
+        let after = local::process_counters(run.pid).unwrap();
+        let report = run.report();
+        (after.wakeups - before.wakeups, (after.cpu_ns - before.cpu_ns) / 1_000_000, report["memory"]["threads"].as_u64().unwrap(), report["memory"]["footprint_bytes"].as_u64().unwrap(), report["update"]["next_wake_in_ms"].clone())
+    };
+    let Some(bed) = Bed::new() else { return };
+    let dev_state = State::new();
+    let dev = Run::start(&dev_state).unwrap();
+    let dev_numbers = watch(&dev);
+    dev.quit();
+    let run = bed.start();
+    bed.release_of(NEW, false);
+    run.ok(&["settings", "--auto-update", "off"]);
+    let armed_before_a_check = watch(&run);
+    assert_eq!(run.ok(&["update", "check"])["status"], "available");
+    let armed_numbers = watch(&run);
+    eprintln!("over 20 s at rest, wake-ups, CPU ms, threads, footprint bytes, next wake in ms:\n  nothing armed: {dev_numbers:?}\n  timer armed, before any check: {armed_before_a_check:?}\n  an offer waiting and a check done: {armed_numbers:?}");
+    assert_eq!(armed_numbers.2, dev_numbers.2, "no thread of its own at rest");
+    assert!(armed_numbers.4.as_u64().is_some(), "and there's a timer armed");
+    assert_eq!(dev_numbers.4, Value::Null, "with none for a development build");
     run.quit();
 }

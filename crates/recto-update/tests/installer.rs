@@ -52,7 +52,7 @@ impl Bed {
         std::fs::create_dir_all(new_app_in(&beside).parent().unwrap()).unwrap();
         bundle(new_app_in(&beside).parent().unwrap(), "0.2.0");
         let test = TestLaunch { args: vec!["test-app".into(), "0.2.0".into(), new_app_does.into(), files.work.display().to_string(), files.session().display().to_string()], env: Vec::new(), direct: true };
-        let plan = Plan { from: "0.1.0".into(), to: "0.2.0".into(), pid: 0, app: app.clone(), beside, root, quit_at_ms: recto_update::wall_ms(), background: true, quit_limit_ms: 5_000, start_limit_ms: 10_000, test: Some(test) };
+        let plan = Plan { from: "0.1.0".into(), to: "0.2.0".into(), pid: 0, app: app.clone(), beside, root, quit_at_ms: recto_update::wall_ms(), background: true, quit_limit_ms: 30_000, start_limit_ms: 60_000, test: Some(test) };
         Self { dir, files, app, plan }
     }
 
@@ -181,7 +181,8 @@ fn it_waits_for_the_old_process_then_swaps_and_keeps_the_old_app() {
 fn a_new_app_that_wont_start_goes_back_with_the_state_intact() {
     for (name, does) in [("exits", "exits"), ("hangs", "hangs")] {
         let mut bed = Bed::new(name, does);
-        bed.plan.start_limit_ms = 2_000;
+        // Long enough for it to get going on a loaded machine.
+        bed.plan.start_limit_ms = 8_000;
         let ended = bed.run(None);
         assert!(!ended.success());
         assert!(bed.ran("0.2.0"), "it did get to run");

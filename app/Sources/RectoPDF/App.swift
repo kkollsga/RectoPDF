@@ -138,14 +138,15 @@ final class Bridge: AppListener, @unchecked Sendable {
             core.noWindowToShow()
         }
         // It's part of what comes back.
-        if core.settingsWindowPlace() != nil { showSettings() }
+        if core.settingsWindowPlace() != nil { showSettings(takingKey: false) }
         core.ready()
     }
 
-    /// Opens Settings, or brings it forward. Nothing's made for it until it's asked for.
-    func showSettings() {
+    /// Opens Settings, or brings it forward. Nothing's made for it until it's asked for. Coming back at a launch it doesn't take the keyboard, which is the main window's as it was.
+    func showSettings(takingKey: Bool = true) {
         if settings == nil { settings = SettingsWindowController(delegate: self, place: core.settingsWindowPlace()) }
-        if !isQuiet { settings?.window.makeKeyAndOrderFront(nil) }
+        guard !isQuiet else { return }
+        if takingKey { settings?.window.makeKeyAndOrderFront(nil) } else { settings?.window.orderFront(nil) }
     }
 
     func settingsClosed() {

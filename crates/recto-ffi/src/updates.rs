@@ -171,7 +171,7 @@ impl Inner {
 
     pub(crate) fn settings_model(&self) -> SettingsModel {
         let development = self.updates.source().mode == Mode::Development;
-        let hint = if development { "A development build checks only when you ask, and doesn't replace itself." } else { "Once a new version's out, RectoPDF updates itself when you haven't touched it for 30 minutes, and comes back just as you left it." };
+        let hint = if development { "A development build checks only when you ask, and doesn't replace itself." } else { "RectoPDF updates itself once you haven't touched it for 30 minutes, and comes back just as you left it." };
         SettingsModel { title: "Settings".to_owned(), rows: vec![SettingRow { id: AUTO_UPDATE_ROW.to_owned(), title: "Update automatically".to_owned(), hint: hint.to_owned(), on: self.updates.switch_on(), enabled: !development }], status: self.updates.status_line() }
     }
 

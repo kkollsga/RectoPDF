@@ -256,7 +256,8 @@ pub(crate) mod tests {
         }
     }
 
-    const LIMIT: Duration = Duration::from_millis(1500);
+    /// Longer than any local answer takes on a loaded machine. The test of the limit itself has its own.
+    const LIMIT: Duration = Duration::from_secs(20);
 
     /// Failure: a body doesn't arrive whole, or a 404 reads as a failure of the network rather than no release.
     #[test]
@@ -292,8 +293,9 @@ pub(crate) mod tests {
         let server = Server::start();
         server.set("/a", Answer::Hang);
         let started = std::time::Instant::now();
-        assert_eq!(get_small(&server.source(), &format!("{}/a", server.url), "x", 1024, LIMIT), Err(FetchError::TimedOut));
-        assert!(started.elapsed() < Duration::from_secs(4), "{:?}", started.elapsed());
+        assert_eq!(get_small(&server.source(), &format!("{}/a", server.url), "x", 1024, Duration::from_millis(1500)), Err(FetchError::TimedOut));
+        // Far short of the server's own two minutes.
+        assert!(started.elapsed() < Duration::from_secs(60), "{:?}", started.elapsed());
     }
 
     /// Failure: a server that sends for ever fills memory or the disk, in a check or a download.

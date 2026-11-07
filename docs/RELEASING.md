@@ -18,7 +18,7 @@ Once, by you: the certificate and the key are tied to your Apple account. Never 
    gh secret set NOTARY_ISSUER_ID --repo kkollsga/RectoPDF         # the Issuer ID
    ```
    Then delete the `.p12` and the `.p8` from Desktop and Downloads.
-5. **The repository has to be public, or the updater can't read it:** it fetches `releases/latest/download/latest.json` with no credentials, on purpose. A private repository answers 404, which reads as "no releases yet".
+5. **The repository has to stay public, or the updater can't read it:** it fetches `releases/latest/download/latest.json` with no credentials, on purpose. A private repository answers 404, which reads as "no releases yet".
 
 Without those secrets the release workflow fails at once. There's no unsigned release.
 

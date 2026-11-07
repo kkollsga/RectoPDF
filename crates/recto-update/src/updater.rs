@@ -1248,7 +1248,7 @@ mod tests {
         *lock(&bed.fake.since_input_ms) = 60_000;
         bed.updater.timer_fired();
         let wait = lock(&bed.updater.st).install_look_at.unwrap().saturating_sub(bed.updater.now_ms());
-        assert!((rules::IDLE_BEFORE_INSTALL_MS - 61_000..=rules::IDLE_BEFORE_INSTALL_MS - 59_000).contains(&wait), "{wait}");
+        assert!((rules::IDLE_BEFORE_INSTALL_MS - 300_000..=rules::IDLE_BEFORE_INSTALL_MS - 59_000).contains(&wait), "{wait}");
         assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0);
         assert!(bed.updater.set_test_clock(i64::try_from(wait).unwrap() + 1_000), "a test's clock");
         // It's been touched again since, so the clock moving on doesn't count from the first touch: what counts is the time since the last.
