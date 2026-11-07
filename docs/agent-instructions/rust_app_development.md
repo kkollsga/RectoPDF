@@ -1308,7 +1308,7 @@ so **anything that must hold everywhere goes into a skill or the repo, not only 
 
 Slow suites usually get blamed for lost time. Here the cause was how often they ran, and the owner had to point that out twice before it was looked at properly.
 
-**Numbers.** About 91 full checks were asked for against 20 commits recorded as passing. A 13-minute fork CI set ran 6 times for very small changes. One regression gate ran 13 times, and tracing each run showed only 7 were needed. Median queue wait was already 0 s, so a faster queue wouldn't have helped.
+**Numbers.** On five branches, 41 real full checks: 14 were needed for a hand-back or a review, 18 repeated a failing check after a fix, and 9 repeated what a smaller test would have answered. On `main`, about 24 real runs, of which 9 were on code identical to a worker's pass. A 13-minute fork CI set ran 6 times for very small changes. One regression gate ran 13 times, and only 7 were needed. Median queue wait was already 0 s, so a faster queue wouldn't have helped. Count real runs: a first count by searching the logs read 91, because it included mentions.
 
 **Why the 6 extra runs happened:**
 - The whole gate was used to investigate. Once the first run showed only two documents had changed, the question was small, and a check on just those two would have answered it in about a minute.
@@ -1321,9 +1321,9 @@ Slow suites usually get blamed for lost time. Here the cause was how often they 
 - **Run each suite once, last,** on the commit being handed back, and again only if code changed. Fix all of a review's findings first, then run once.
 - **Settle what you're testing first,** dependency pins included.
 - **Brief with the exact check.** "Run the gate" gets the whole gate.
-- **Cheap failures first.** Run unit tests before building a package, and stop at the first failure. A failed gate here ran on to 453 s after three unit tests had already failed.
+- **Cheap failures first, and all of a stage's failures at once.** Run unit tests before building a package, and stop between stages at the first failed one. But inside a test stage, run every test: repeating after a failure was the largest group, and runs that stopped at one failed test showed the next only on the following run.
 - **Find the slowest single test.** One row waiting out a 60 s timeout for an index nobody started was most of a full check's test time. It now takes a 1 s timeout and checks the same answers.
-- **Put it in the tools, because agents under pressure default to the biggest test.** A pass on identical code counts, so reverts and doc-only commits don't rerun. Each branch has a small budget of full runs, and going over it needs a stated reason. A ledger shows runs per branch at every process review. Keep these as speed bumps that can always be passed, never locks on a needed push.
+- **Put it in the tools, because agents under pressure default to the biggest test.** A pass on identical code counts, so reverts and doc-only commits don't rerun. Each branch has a small budget of full runs, and going over it needs a stated reason. A ledger shows runs per branch at every process review. Keep these as speed bumps that can always be passed, never locks on a needed push. Include what the code doesn't track in the fingerprint: tool versions, the OS, and which stages are skipped. The cost is honest: one of those 9 identical reruns found a real load-sensitive bug, so keep a way to force a run, and let CI run everything.
 - **Keep the safety.** None of this removes a stage, a review, CI or fuzzing.
 
 ### Failures that only happen elsewhere

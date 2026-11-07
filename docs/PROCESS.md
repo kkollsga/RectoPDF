@@ -73,3 +73,13 @@ A failed run also went on to 453 s, because the gate keeps going after a failure
 
 **Check next time.** Full gates per release. Target: at most 2, about 20 minutes in place of 2 hours. Did the full gate catch anything fast mode missed? If it does, grow the fast set.
 
+## 2026-11-07, the trace of full checks, and what enforces the rules
+
+**Trace.** `build/app`, `build/index`, `build/svg`, `build/select` and `build/render`: 41 real runs. 14 needed, 18 a failing check repeated after a fix, 9 a repeat a smaller test would answer. `main`: about 24 real runs: 9 on identical code (all skipped by the new memory), 6 on new code, 3 first-day setup, 3 chasing a CI-only failure, 1 a failure and its fix, 2 not classified. Classifying a run is a judgement; the detail is in the worker's report.
+
+**Now in the tools.** `tools/check.sh` skips code that has already passed, counts full runs per branch and asks for a reason on the third, keeps a ledger (`--runs`), and shows all of a test stage's failures in one run. `heavy.sh` records repo and branch. `tools/check-test.sh` proves `check.sh`'s rules with no real build.
+
+**The cost, accepted.** One of the 9 identical reruns found a real load-sensitive failure. CI still runs everything, and `CHECK_AGAIN=1` forces a run.
+
+**Check next time.** `tools/check.sh --runs`: real full runs per branch, how many asked for a reason, and whether those reasons were real. Did the budget move agents to `--failed`? That's unknown until it's been used.
+
