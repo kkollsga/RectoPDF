@@ -197,6 +197,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] Fuzzing on every parser of untrusted input
 - [ ] Corpus run across all benchmark PDFs, with a dated report
 - [ ] Fuzz `recto_index::corpus`'s reader with damaged files on disk, as for every parser
+- [ ] Session restore's same-inode rule is tested by a move and a rewrite on one volume, not on the real case the review found: two disk images giving the same device and inode. Run that with two scratch images
 - [ ] Test line order on a real right-to-left PDF (none among the 454 in distillPDF)
 - [ ] 24-hour soak, flat memory
 - [ ] Developer ID signing and notarization, release workflow, installer that checks checksum, team and Gatekeeper, and goes back to the previous app if the new one fails
