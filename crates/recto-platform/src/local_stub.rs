@@ -19,6 +19,10 @@ pub fn real_home() -> Option<PathBuf> {
     None
 }
 
+pub fn system_temp_dir() -> Option<PathBuf> {
+    None
+}
+
 #[derive(Debug)]
 pub struct Listener(());
 

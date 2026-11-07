@@ -39,6 +39,20 @@ pub fn real_home() -> Option<PathBuf> {
     Some(PathBuf::from(OsStr::from_bytes(home.to_bytes())))
 }
 
+/// This user's own temp folder, from the OS rather than `$TMPDIR`, which a run can point anywhere.
+pub fn system_temp_dir() -> Option<PathBuf> {
+    // _CS_DARWIN_USER_TEMP_DIR, from <unistd.h>.
+    const USER_TEMP_DIR: libc::c_int = 65537;
+    let mut text = vec![0u8; 1024];
+    // SAFETY: the pointer and length describe `text`, and confstr writes at most that many bytes including the end marker.
+    let needed = unsafe { libc::confstr(USER_TEMP_DIR, text.as_mut_ptr().cast(), text.len()) };
+    if needed == 0 || needed > text.len() {
+        return None;
+    }
+    text.truncate(needed - 1);
+    Some(PathBuf::from(OsStr::from_bytes(&text)))
+}
+
 /// A listening socket. Non-blocking: `accept` returns `None` when nobody is waiting, and [`poll`] is what blocks.
 #[derive(Debug)]
 pub struct Listener(UnixListener);
@@ -438,5 +452,6 @@ mod tests {
         assert!(after.cpu_ns > before.cpu_ns);
         assert!(after.threads >= 1);
         assert!(real_home().is_some());
+        assert!(system_temp_dir().is_some_and(|temp| temp.is_absolute()), "{:?}", system_temp_dir());
     }
 }

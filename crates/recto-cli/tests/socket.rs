@@ -384,7 +384,7 @@ fn a_watcher_that_stops_reading_is_dropped_rather_than_buffered_for() {
     assert!(bytes < 4 * 1024 * 1024, "it should have been dropped long before {bytes} bytes");
 }
 
-/// Failure: a test or QA run points at the real home and overwrites the user's level, log or session. Refused with nothing created, whatever `$HOME` claims.
+/// Failure: a test or QA run points at the real home and overwrites the user's level, log or session. Refused with nothing created, whatever `$HOME` or `$TMPDIR` claims.
 #[test]
 fn the_state_override_refuses_the_real_home_and_home_cant_fool_it() {
     let home = recto_platform::local::real_home().unwrap();
@@ -393,7 +393,7 @@ fn the_state_override_refuses_the_real_home_and_home_cant_fool_it() {
     let real_state = home.join("Library/Application Support/RectoPDF/agent");
     for target in [&home, &inside, &real_state] {
         for command in [&["serve", "--json"][..], &["serve", "--background", "--json"][..], &["status", "--json"][..], &["permission", "set", "full", "--json"][..], &["skill", "install", "--path", "/tmp/nope", "--json"][..]] {
-            let output = std::process::Command::new(common::bin()).env(STATE_ENV, target).env("HOME", &fake_home).args(command).stdin(Stdio::null()).output().unwrap();
+            let output = std::process::Command::new(common::bin()).env(STATE_ENV, target).env("HOME", &fake_home).env("TMPDIR", &home).args(command).stdin(Stdio::null()).output().unwrap();
             let reply: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{command:?}: {}", String::from_utf8_lossy(&output.stdout)));
             assert_eq!(reply["error"]["code"], "state_refused", "{target:?} {command:?}: {reply}");
         }
@@ -648,6 +648,17 @@ fn skill_install_needs_a_real_terminal_and_show_doesnt() {
     // Pointed at the real home by a test state folder, it's refused before it even asks.
     let (reply, code) = state.json(&["skill", "install", "--target", "claude-code"]);
     assert_eq!((reply["error"]["code"].as_str(), code), (Some("state_refused"), exit::PERMISSION), "{reply}");
+    // However the path is written.
+    let home = recto_platform::local::real_home().unwrap();
+    let climbing = format!("/usr/..{}/recto-should-never-exist", home.display());
+    let link = state.root.with_extension("home-link");
+    std::os::unix::fs::symlink(&home, &link).unwrap();
+    let through_link = link.join("recto-should-never-exist");
+    for path in [climbing.as_str(), through_link.to_str().unwrap()] {
+        let (reply, code) = state.json(&["skill", "install", "--path", path]);
+        assert_eq!((reply["error"]["code"].as_str(), code), (Some("state_refused"), exit::PERMISSION), "{path}: {reply}");
+    }
+    std::fs::remove_file(&link).unwrap();
     let (shown, _, code) = state.text(&["skill", "show"]);
     assert_eq!(code, 0, "an agent at Off must still be able to read it");
     assert!(shown.starts_with("---\nname: recto\n"), "{shown}");

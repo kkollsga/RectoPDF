@@ -234,10 +234,7 @@ fn skill_install(invocation: &Invocation) -> Result<Value, AgentError> {
         _ => return Err(AgentError::new("usage", "Say where: `--path <folder>`, or `--target claude-code`.", exit::USAGE).then("`recto help skill install` shows both.")),
     };
     // A QA run writes nothing of the user's own, however it's been pointed.
-    if paths()?.overridden
-        && let Some(home) = recto_platform::local::real_home()
-        && std::path::absolute(&folder).is_ok_and(|folder| folder.starts_with(&home))
-    {
+    if paths()?.overridden && recto_control::state::is_in_real_home(&folder) {
         return Err(AgentError::new("state_refused", "This run uses a test state folder, so it won't write into the real home.", exit::PERMISSION).then("Use `--path` with a temp folder, or set `HOME` to one."));
     }
     let flag = |key: &str| invocation.fields.get(key).and_then(Value::as_bool).unwrap_or(false);

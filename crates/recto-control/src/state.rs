@@ -44,7 +44,8 @@ impl StatePaths {
     pub fn overridden(path: &Path) -> Result<Self, AgentError> {
         let wanted = resolved(path).ok_or_else(|| refused(path))?;
         let home = local::real_home().and_then(|home| home.canonicalize().ok()).ok_or_else(|| refused(path))?;
-        let temp = std::env::temp_dir().canonicalize().ok();
+        // From the OS, because `$TMPDIR` can say anything, including somewhere in the home.
+        let temp = local::system_temp_dir().and_then(|temp| temp.canonicalize().ok());
         if refuses_real_home(&wanted, &home, temp.as_deref()) {
             return Err(refused(path));
         }
@@ -118,6 +119,12 @@ pub fn refuses_real_home(wanted: &Path, home: &Path, temp: Option<&Path>) -> boo
     !temp.is_some_and(|temp| !home.starts_with(temp) && wanted.starts_with(temp))
 }
 
+/// Whether a path, wherever links and `..` really take it, is in this user's real home.
+pub fn is_in_real_home(path: &Path) -> bool {
+    let Some(home) = local::real_home().and_then(|home| home.canonicalize().ok()) else { return true };
+    resolved(path).is_none_or(|real| real.starts_with(&home))
+}
+
 /// A path's real location, following links as far as it exists. Without this a link to the home would pass.
 fn resolved(path: &Path) -> Option<PathBuf> {
     let absolute = std::path::absolute(path).ok()?;
@@ -185,6 +192,31 @@ mod tests {
         assert!(StatePaths::overridden(&home).is_err());
         assert!(StatePaths::overridden(&home.join("no-such-folder-recto/deeper")).is_err());
         std::fs::remove_file(&link).unwrap();
+    }
+
+    /// Failure: `$TMPDIR` set inside the home makes that count as a temp folder, so a test state there passes. The temp folder comes from the OS.
+    #[test]
+    fn tmpdir_cant_vouch_for_a_folder_in_the_home() {
+        let home = local::real_home().unwrap().canonicalize().unwrap();
+        let temp = local::system_temp_dir().unwrap().canonicalize().unwrap();
+        assert!(!temp.starts_with(&home), "this Mac's own temp folder is outside the home");
+        // SAFETY of the rule rather than of `$TMPDIR`: what's checked is only ever the OS's answer.
+        assert!(refuses_real_home(&home.join("somewhere"), &home, Some(&temp)));
+    }
+
+    /// Failure: a path that climbs out of somewhere else and back into the home, or a link into it, reads as being outside.
+    #[test]
+    fn the_real_location_decides_what_is_in_the_home() {
+        let home = local::real_home().unwrap().canonicalize().unwrap();
+        assert!(is_in_real_home(&home.join("no-such-folder-recto/skill")));
+        let climbing = PathBuf::from(format!("/usr/..{}/no-such-folder-recto", home.display()));
+        assert!(is_in_real_home(&climbing), "{climbing:?}");
+        let link = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-in-home-{}", std::process::id()));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&home, &link).unwrap();
+        assert!(is_in_real_home(&link.join("no-such-folder-recto")));
+        std::fs::remove_file(&link).unwrap();
+        assert!(!is_in_real_home(&std::env::temp_dir().canonicalize().unwrap().join("skill")));
     }
 
     /// Failure: a long state folder makes a socket path the kernel refuses, which is what happens on a real home on a long path. The owner's own is close to the limit.
