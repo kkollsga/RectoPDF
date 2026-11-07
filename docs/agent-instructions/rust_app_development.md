@@ -729,6 +729,18 @@ scratchpad, and one run's `check.log` overwrote another's.
   it found three race conditions, an unrelated secret being pasted into a password field, a log line printing half
   a credential, and tests pinning exact text: all after every test passed.
 - **Send review findings back to the same worker** (resume it with its context) rather than a fresh one.
+- **Run the review again on what the fixes added.** On one reader, the first review of a search index found 15 real
+  defects and a second, on the fixes and the two search modes added with them, found 14 more, one of them a regex that
+  could hold a thread for hours. A clean full check said nothing about any of them.
+- **Name the likely weak spot in the brief, then let the reviewer read the code, not your conclusion.** Reviewers given
+  "hunt for these failures" found surfaces shared across documents, an agent route that erased the owner's edits, and
+  a save that overwrote a newer file while returning success. Check their findings: they read only, so they can be
+  wrong, and the worker confirms each one or rejects it with evidence.
+- **The worker runs the project's own CI commands, not its favourite subset.** A corpus run of 140 of 141 files and 835
+  passing tests came back from a worker whose new example didn't compile with `--all-features`, the exact command CI
+  runs.
+- **Read a sample of what a score calls fine.** A line-order repair scored only slightly worse on a table whose
+  columns it had merged; reading the worst pages found it, and a tighter rule took "worse" pages from 207 to 51.
 - **Remove a worktree only after its review is done and its branch is merged.** One was removed before review, so its
   worker couldn't be resumed and the whole brief had to be given again.
 - Merge with `--no-ff` and a message that says what users get.
@@ -739,6 +751,10 @@ scratchpad, and one run's `check.log` overwrote another's.
   Serial core → PC → core loops of 1–2 h each were the main reason development felt slow.
 - Never hold a push or a release for something whose result doesn't depend on it. Push when the other platform's
   pending result can't change what you push.
+- **Agents wait on builds more than they build.** With seven workers on one lock, jobs spent over twice as long waiting
+  as running. Three or four workers suited that lock; more only lengthened the queue until it had more slots.
+- **Workers doing the same fix separately is a cost of parallel work.** Two workers fixed one server bug in two ways,
+  and one fix had a CPU spin. Give each a merge-main step early, and reconcile on purpose at merge.
 - When the user asks for something mid-flight, queue it to the worker already on that area (a message to it) rather
   than starting a second worker on the same files.
 
@@ -769,6 +785,13 @@ hour. The user: "I got fed up with waiting. Development is so slow." The rules t
 6. **Every CI failure gets the cheapest local guard** that would have caught it: a host-like test, a line in the
    timing list, a rule in the portability scan, a step in `--quick`. Say in the fix's commit which guard was added.
 7. `--full` (the whole workspace) only when the user asks or after a toolchain or dependency change.
+8. **Don't use the queue to find out code is broken.** Measured on one project: 10 of 46 queued jobs failed, using 20% of
+   build time, and 4 of 7 full checks failed. So: order every check cheapest first and stop at the first failure;
+   test what changed before the rest; save failing test names so the next run covers only those; run quick jobs ahead
+   of long ones; and have the queue **refuse a command that just failed on code that hasn't changed**, showing the saved
+   failure, with an explicit override for investigating one that comes and goes.
+9. **Let tooling hold the rule.** A pre-push hook that refuses `main` unless the full check passed on that commit
+   replaces a habit with a guard.
 
 ### 6.2 What makes a good test
 
@@ -787,6 +810,14 @@ hour. The user: "I got fed up with waiting. Development is so slow." The rules t
   console). When a host reports a bug, write this test first and see it fail on the old code.
 - **Prove a fix by forcing the failure on the old code**: a stress loop, or a temporary delay that isn't committed.
   Then run the new code repeatedly (for example 20 times).
+
+- **Test the real entry point, not only the method behind it.** QA commands called a hover method directly, so its tests
+  passed and its screenshots looked right, while AppKit's real mouse events never reached it because the callbacks
+  weren't exposed to Objective-C. Add a test that the object really answers the framework's selectors.
+- **Check a test can fail.** Reviews keep finding them: a backlog test whose 3.1 MiB could never pass its 4 MiB limit, a
+  dark-paper test that never read a surface. Break the code on purpose where it matters, and name the result in the report.
+- **Build a regression gate before changing a library others use.** Freeze output, scores, memory and time per document,
+  then break something on purpose to prove the gate fails.
 
 ### 6.3 Tests that hold on CI's slower machines
 
@@ -830,6 +861,11 @@ movements or clicks. Only tool calls."
 - **Blind agent tests** for agent-facing features (a CLI, a messaging system): fresh agents get only a one-line hint
   and real tasks on throwaway daemons, then rate the experience 1–10 and name three changes. Fix, and run another
   round. Scripted tests pass while real agents still guess and misread; ratings plateaued at 8–9 after six rounds.
+  What they found that tests didn't: text extraction that moved a styled "MUST" out of its sentence, changing what a
+  standard said; and an access rule, added after a review, that trapped ordinary undo work. **Check answers against an
+  independent tool** rather than trusting a rating. If you change a test's brief between rounds, say so, because the
+  ratings aren't comparable after that. An agent refused by design rates that low, so judge it on whether it stopped
+  and asked correctly.
 
 ### 6.5 No bugs left behind
 
@@ -848,6 +884,12 @@ recreating a folder mid-rename, a counter reset during a wait).
   (`tools/sysguard/heavy.sh`; `check.sh` takes it itself). Parallel release builds from three agents with separate
   target folders (about 15 rustc processes at 1–2.5 GB each, plus a 6 GB VM) made WindowServer stall and the Mac
   reboot, twice. No VM next to builds; benches alone.
+- **A queue instead of a bare lock, once several workers share the Mac:** first come first served, each running job raising
+  the free memory the next one needs, compiler jobs per build falling as slots rise, a solo mode for measurements, and
+  a log of waits. Move up a slot only on measured numbers: lowest free memory, swap growth, and whether jobs really
+  wait. **Read this section before raising it:** a check at job start doesn't catch memory falling later, so keep
+  the watcher (`tools/sysguard/sysguard.sh`) running whenever more than one slot is open.
+- **Look for strays when builds feel slow.** Three test scripts from another project sat at 100% CPU for six days.
 - The lock is for memory only. QA scripts, renders, reviews and git don't wait for it, and **nobody waits for a
   "quiet machine"**: load doesn't let an error go uncaught.
 - **Disk:** each worker worktree's build folder is 10–35 GB; 33 of them filled 496 GB in one day. Remove a worktree as
@@ -1222,6 +1264,11 @@ so **anything that must hold everywhere goes into a skill or the repo, not only 
 - Never `git add -A` / `git add .` when tracked files might be missing; check `git status` first.
 - Outward-facing steps (create a repo, push, tag, publish, deploy) need the user's explicit go-ahead each time,
   except inside a release the user started with the release command.
+
+- **Before a repo goes public,** scan its files and history for secrets, personal details and third-party files, and tell
+  the user what becomes visible, including commit emails. A file removed later stays in the history.
+- **Check what a push triggers.** In one repo, pushing `main` publishes a package. Write that in the worker's brief.
+- **A worker doesn't grant itself permission.** Standing permissions go in the rules only in the user's own words.
 
 ### 11.2 Releases
 
