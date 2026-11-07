@@ -30,7 +30,7 @@ RectoPDF holds PDFs open in one long-running session, and `recto` talks to it. P
 Run `recto status`. It tells you whether the session is running and what access you have.
 
 - **Exit 6, not running:** start it with `recto serve --background`.
-- **Agent access Off:** almost nothing works yet. Run `recto permission request read_only`, and tell the user what it prints. Only the user can raise access, at their own terminal. Never try to get around that, and don't guess at another way. Then carry on with what you can: don't wait for an answer unless someone's at the keyboard.
+- **Agent access Off:** almost nothing works yet, though `recto status` still says how many PDFs are open, so you can tell whether it's worth asking. Run `recto permission request read_only`, and tell the user what it prints. Only the user can raise access, at their own terminal. Never try to get around that, and don't guess at another way. Then carry on with what you can: don't wait for an answer unless someone's at the keyboard.
 - **A refused command (exit 5)** gives `error.ask`: the one command that asks for what's missing.
 
 ## How to read a document
@@ -83,7 +83,7 @@ pub fn reference_md() -> String {
     out.push_str("## Units\n\n- Pages count from 1, in the PDF's own order: `4`, or `4-6` for a range.\n- Times: `500ms`, `30s`, `5m`, `1h`. A bare number is refused, because it could mean anything. In JSON, fields ending `_ms` are milliseconds.\n- Scale: `2` or `2x`.\n- Rotation: `90`, `180`, `270`, `-90` degrees, clockwise.\n- In JSON, fields ending `_bytes` are bytes. Plain output uses KiB, MiB and GiB.\n\n");
     out.push_str("## Selectors\n\n`--tab` takes `#3`, `active`, or part of a tab's name. Leaving it out means the active tab. They never guess: if two tabs match, it's exit 4 with `error.candidates`.\n\n");
     out.push_str("## The envelope\n\n```json\n{\"v\":1,\"ok\":true,\"cmd\":\"tabs\",\"data\":{}}\n{\"v\":1,\"ok\":false,\"cmd\":\"text\",\"error\":{\"code\":\"permission_denied\",\"message\":\"...\",\"candidates\":[],\"exit\":5,\"next\":\"...\",\"ask\":\"recto permission request read_only\"}}\n```\n\nFields are only added within a version. Anything from a document is under `untrusted`.\n\n");
-    out.push_str("## Levels\n\n- **Off**, the default: `status`, `help`, `permission`, `skill`, nothing from a document.\n- **Read-only**: read and search, and measure.\n- **Control**: open, move around, edit pages in memory, and throw away agents' own edits, never the user's.\n- **Full**: write a new picture to disk, and throw away the user's edits too.\n\nOnly the user raises a level, at their own terminal. No command, flag or variable does it.\n\n");
+    out.push_str("## Levels\n\n- **Off**, the default: `status`, which says how many PDFs are open, `help`, `permission` and `skill`. Nothing from a document, not even a name.\n- **Read-only**: read and search, and measure.\n- **Control**: open, move around, edit pages in memory, and throw away agents' own edits, never the user's.\n- **Full**: write a new picture to disk, and throw away the user's edits too.\n\nOnly the user raises a level, at their own terminal. No command, flag or variable does it.\n\n");
     out.push_str("## Events\n\n`recto watch --events` groups: `tabs` (`tab_opened`, `tab_closed`, `tab_activated`), `pages` (`page_changed`), `edits` (`edits_changed`), `draws` (`page_drawn`, `page_failed`), `access` (`level_changed`).\n\n");
     out.push_str("## Exit codes\n\n");
     write_exit_codes(&mut out);

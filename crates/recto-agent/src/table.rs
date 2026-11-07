@@ -147,7 +147,7 @@ pub const GROUP_MEASURE: &str = "Measuring";
 
 const AGENT_EXITS_PAGE: &str = "`{ tab, sel, page, pages, active, edited, structure, problem, note, untrusted: { name } }`.";
 const EDIT_STATE: &str = "`{ tab, pages, file_pages, page, edited, saved, can_undo, can_redo, note, page_was_removed, place_note }`. The tab stays on the page it was reading, wherever that goes. If that page was removed, `page_was_removed` says so and it's on the nearest one.";
-const STATUS_DATA: &str = "`{ running, pid, version, api, level, uptime_ms, socket, tabs }`. `tabs` needs Read-only.";
+const STATUS_DATA: &str = "`{ running, pid, version, api, level, uptime_ms, socket, tabs }`. `tabs` is how many PDFs are open, at every level, and never their names.";
 
 /// Every command, in the order `recto help` shows them.
 pub static TABLE: &[Spec] = &[

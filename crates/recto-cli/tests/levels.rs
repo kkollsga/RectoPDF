@@ -104,7 +104,11 @@ fn nothing_from_a_document_is_available_at_off() {
     let (status, code) = state.json(&["status"]);
     assert_eq!(code, 0, "{status}");
     assert_eq!(status["data"]["level"], "off");
-    assert!(status["data"].get("tabs").is_none(), "at Off it says nothing of what's open: {status}");
+    // Failure: an agent at Off can't tell whether asking for access is worthwhile. A count is all it gets: no name of a PDF, in JSON or plain words.
+    assert_eq!(status["data"]["tabs"], 1, "{status}");
+    assert!(!status.to_string().contains("private.pdf") && !status.to_string().contains("Private"), "{status}");
+    let (shown, _, _) = state.text(&["status"]);
+    assert!(shown.contains("Open PDFs: 1") && !shown.contains("private.pdf"), "{shown}");
     let (raised, _) = state.json(&["permission", "show"]);
     assert_eq!(raised["data"]["level"], "off");
 }

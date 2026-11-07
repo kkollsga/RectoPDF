@@ -121,7 +121,7 @@ pub fn render(tag: &str, data: &Value) -> String {
 fn status(data: &Value) -> String {
     let mut out = format!("RectoPDF is running: process {}, version {}, API version {}.\nAgent access: {}.", number(&data["pid"]), text(&data["version"]), number(&data["api"]), text(&data["label"]));
     if let Some(tabs) = data["tabs"].as_u64() {
-        let _ = write!(out, "\nOpen tabs: {tabs}.");
+        let _ = write!(out, "\nOpen PDFs: {tabs}.");
     }
     if data["level"] == "off" {
         out.push_str("\nAt Off, only status, help, permission and skill commands work. `recto permission request read_only` asks the user for more.");

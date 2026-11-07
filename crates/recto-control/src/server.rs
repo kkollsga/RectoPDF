@@ -551,11 +551,9 @@ impl<H: Host> Loop<H> {
             "label": level.label(),
             "uptime_ms": u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
             "socket": self.paths.socket,
+            // How many, at every level, so an agent at Off can tell whether asking for more is worthwhile. A count holds nothing from a document. Names need Read-only.
+            "tabs": self.host.tab_count(),
         });
-        // Not even how many at Off: at Off an agent learns nothing about what the user has open.
-        if level >= Level::ReadOnly {
-            data["tabs"] = json!(self.host.tab_count());
-        }
         if !self.log.healthy() {
             data["warning"] = json!("The activity log can't be written.");
         }
