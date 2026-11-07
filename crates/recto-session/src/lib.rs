@@ -135,8 +135,8 @@ pub struct SidebarModel<'a> {
 pub const TAB_ROW_HEIGHT: f64 = 32.0;
 /// A contents row in the sidebar, in points.
 pub const CONTENTS_ROW_HEIGHT: f64 = 28.0;
-/// How many other tabs always keep their room beside a PDF's contents. Owner, 2026-11-07: "The left sidebar toc should have a max height within scroll so it doesn't push everything of screen". A longer list scrolls by itself.
-pub const OTHER_TABS_KEPT: u32 = 5;
+/// The most of the sidebar's room the contents take: about 60%, by the owner's yes of 2026-11-07. The rest is for the other tabs, and it's what keeps them from being pushed off by one long outline.
+pub const CONTENTS_MAX_SHARE: f64 = 0.6;
 
 /// How much of the sidebar's list goes where, in points.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -147,13 +147,12 @@ pub struct SidebarHeights {
     pub tabs_scroll: bool,
 }
 
-/// **The sidebar's height rule.** The contents get what the tabs leave, with room kept for the active tab and up to [`OTHER_TABS_KEPT`] others, so however long an outline is it can't push them away. `room` is what's between the sidebar's header and footer.
+/// **The sidebar's height rule.** Owner, 2026-11-07: "The max height of toc does not seem to be working", then yes to a true maximum: the contents take what they need, up to [`CONTENTS_MAX_SHARE`] of the room, and scroll inside that. The other tabs have what's left, and a long list of them scrolls by itself in it. It takes the room it's told of, so anything else docked in the sidebar comes off first.
 pub fn sidebar_heights(room: f64, tabs: u32, contents_rows: u32) -> SidebarHeights {
     let room = if room.is_finite() { room.max(0.0) } else { 0.0 };
-    let others_kept = tabs.saturating_sub(1).min(OTHER_TABS_KEPT);
-    let kept = f64::from(u32::from(tabs > 0) + others_kept) * TAB_ROW_HEIGHT;
     let natural = f64::from(contents_rows) * CONTENTS_ROW_HEIGHT;
-    let contents = natural.min(room - kept).max(0.0);
+    // With a window too short for the rest, the active tab's own row comes first.
+    let contents = natural.min(room * CONTENTS_MAX_SHARE).min(room - if tabs > 0 { TAB_ROW_HEIGHT } else { 0.0 }).max(0.0);
     SidebarHeights { contents, tabs_scroll: f64::from(tabs) * TAB_ROW_HEIGHT + contents > room }
 }
 
@@ -473,6 +472,8 @@ pub struct ViewSettings {
     pub paper: Option<Paper>,
     /// Sidebar hidden, page number only, agent icon kept.
     pub focus: bool,
+    /// Owner, 2026-11-07: "Add an option in the macos top bar to turn off agent bar (hides the icon)".
+    pub agent_icon_hidden: bool,
 }
 
 /// All open tabs and which one is active.
@@ -1147,9 +1148,8 @@ mod tests {
                 for rows in [0u32, 1, 3, 40, 10_000, 8_000_000] {
                     let heights = sidebar_heights(room, tabs, rows);
                     assert!(heights.contents >= 0.0 && heights.contents <= f64::from(rows) * CONTENTS_ROW_HEIGHT);
-                    let kept = f64::from(tabs.min(OTHER_TABS_KEPT + 1)) * TAB_ROW_HEIGHT;
-                    assert!(heights.contents + kept <= room.max(kept), "{room} {tabs} {rows}: {heights:?}");
-                    if tabs <= OTHER_TABS_KEPT + 1 && kept <= room {
+                    assert!(heights.contents <= room * CONTENTS_MAX_SHARE + 1e-9, "{room} {tabs} {rows}: {heights:?}");
+                    if f64::from(tabs) * TAB_ROW_HEIGHT + heights.contents <= room {
                         assert!(!heights.tabs_scroll, "{room} {tabs} {rows}: all of it fits, so nothing scrolls but the contents");
                     }
                 }
@@ -1157,14 +1157,35 @@ mod tests {
         }
     }
 
-    /// Failure: a short outline scrolls for no reason, or leaves space under it that a longer one would use. It takes what it needs, and a long one takes all that's left.
+    /// Failure: a long outline pushes the other tabs and the footer off, as a rule of "what the tabs leave" did with one tab: the owner saw no maximum at all. It stops at the maximum however few tabs there are, a short outline takes only what it needs, and the tabs scroll only if they don't fit in what's left.
     #[test]
-    fn the_contents_take_what_they_need_and_what_is_left() {
-        assert_eq!(sidebar_heights(700.0, 2, 3).contents, 3.0 * CONTENTS_ROW_HEIGHT);
-        assert_eq!(sidebar_heights(700.0, 2, 1000).contents, 700.0 - 2.0 * TAB_ROW_HEIGHT);
-        assert_eq!(sidebar_heights(700.0, 9, 1000).contents, 700.0 - 6.0 * TAB_ROW_HEIGHT, "room for five others, and the rest scroll");
-        assert!(sidebar_heights(700.0, 9, 1000).tabs_scroll);
+    fn the_contents_have_a_true_maximum() {
+        let most = 700.0 * CONTENTS_MAX_SHARE;
+        assert_eq!(sidebar_heights(700.0, 1, 1000).contents, most, "one tab, and it still stops");
+        assert_eq!(sidebar_heights(700.0, 9, 1000).contents, most);
+        assert_eq!(sidebar_heights(700.0, 2, 3).contents, 3.0 * CONTENTS_ROW_HEIGHT, "only what it needs");
+        assert!(!sidebar_heights(700.0, 5, 1000).tabs_scroll, "what's left holds these");
+        assert!(sidebar_heights(700.0, 40, 1000).tabs_scroll, "and these scroll in it");
+        assert!(sidebar_heights(100.0, 1, 1000).contents <= 100.0 - TAB_ROW_HEIGHT, "a short window keeps the tab's own row");
         assert_eq!(sidebar_heights(f64::NAN, 2, 1000).contents, 0.0);
+        assert_eq!(sidebar_heights(10.0, 1, 1000).contents, 0.0);
+    }
+
+    /// Failure: in a short contents area, a place that's just been brought to its anchor is outside the dead zone, so it moves again at every section, or for ever. Wherever the list is short, landing on the anchor is at rest.
+    #[test]
+    fn the_dead_zone_holds_in_a_short_contents_area() {
+        for height in [CONTENTS_ROW_HEIGHT, 56.0, 100.0, 168.0, 300.0, 420.0] {
+            let mut follow = ContentsFollow::default();
+            let view = |scroll_y: f64| ContentsView { scroll_y, height, rows: 2000 };
+            follow.reached(Some(0), view(0.0), 0.0, false);
+            assert_eq!(follow.reached(Some(500), view(0.0), 1.0, false), FollowMove::Move, "height {height}");
+            let landed = *run_frames(&mut follow, 0.0).last().unwrap();
+            assert!(!follow.is_moving());
+            // The same section again, and the next: nothing moves until the place has really left.
+            assert_eq!(follow.reached(Some(500), view(landed), 2.0, false), FollowMove::Stay, "height {height}");
+            let place = 500.5 * CONTENTS_ROW_HEIGHT;
+            assert!(place >= landed + height * FOLLOW_DEAD_ZONE.0 && place <= landed + height * FOLLOW_DEAD_ZONE.1, "height {height}: {place} from {landed}");
+        }
     }
 
     const HEIGHT: f64 = 560.0;
