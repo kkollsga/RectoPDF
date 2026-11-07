@@ -2,7 +2,7 @@
 # heavy: the build queue. Runs one heavy command (cargo build/test, a bench, a VM) when its turn comes and the Mac has
 # room, first come first served, across every agent and shell.
 #
-#   tools/sysguard/heavy.sh cargo test --release -p trs-engine
+#   tools/sysguard/heavy.sh cargo test --release -p recto-core
 #   HEAVY_SOLO=1 tools/sysguard/heavy.sh <command>       Holds every slot: for timing and memory measurements.
 #   HEAVY_PRIORITY=high tools/sysguard/heavy.sh <command> Goes ahead of normal jobs, for a short job someone waits on.
 #   tools/sysguard/heavy.sh --status                     Slots, queue, memory.
