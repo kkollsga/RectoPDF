@@ -827,6 +827,7 @@ fn every_row_that_runs_here_is_wired_up() {
         vec!["qa", "start", "--app", "/nonexistent/RectoPDF"],
         vec!["qa", "run", "/nonexistent/script.qa"],
         vec!["qa", "budget", "--file", path_of(&file), "--app", "/nonexistent/RectoPDF", "--runs", "1"],
+        vec!["qa", "select-budget", "--file", path_of(&file), "--app", "/nonexistent/RectoPDF"],
         vec!["budget", "index", "--file", path_of(&file), "--runs", "1", "--queries", "words"],
     ];
     let here: Vec<&str> = TABLE.iter().filter(|spec| spec.route == Route::Here).map(|spec| spec.name).collect();
