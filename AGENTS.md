@@ -99,4 +99,5 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "The full app settings should be accessible from file -> settings"
 - "The sidebar menu is more for tools, like edit mode etc. When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment). Usefull when there is a scan issue or similar, for a quick fix."
 - "The margin left of the ai icon is too large. It should have the same margin to the right and above. Above should have slightly smaller margin then now (and right gets the same one)."
+- "and improve the styling of the scrollbar. The sidebar thumb should always be visible, and lets hide the rail."
 - "Ctrl clicking more then one pdf should enable comparison view, right click menu can enable separate scroll (default) and synced scroll. Zoom is always synced."
