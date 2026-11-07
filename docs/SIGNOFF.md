@@ -11,7 +11,7 @@ that searches a document instead of receiving all of it. CLI: `recto`.
 | Area | Recommendation | Evidence | Status |
 |---|---|---|---|
 | App | AppKit host, Rust core over UniFFI; no SwiftUI in the main window | Sidebar window 17.6 MiB vs 27.9 SwiftUI; a Metal swapchain adds 105–184 MiB; blank webview 56.7 MiB | Measured off-screen only |
-| Page drawing | PDFium without V8 or XFA, in a sandboxed XPC worker, on IOSurface tiles | XPC floor 2.2 MiB, 0.12 ms per tile, restart 15–17 ms; purgeable tiles fell from 271 to 15 MiB | **PDFium's own memory and speed unmeasured** |
+| Page drawing | PDFium without V8 or XFA, in a sandboxed worker (nested helper, not XPC: see `docs/research/2026-11-07-sandbox-spike.md`), on IOSurface tiles | XPC floor 2.2 MiB, 0.12 ms per tile, restart 15–17 ms; purgeable tiles fell from 271 to 15 MiB | **PDFium's own memory and speed unmeasured** |
 | lopdf fork | Owns structure and is the only writer | Opened a 330 MiB file in 1.2 ms using 2.3 MiB (eager: 179 ms, 655 MiB) | Measured warm-cache. It draws no pixels and needs an append writer |
 | Agent search | A `claude` run limited to `Read` and `Grep` over a per-document folder of page text | `rg` 7–12 ms per document; about 60–1,400 tokens per search vs about 100,000 for Folio's dump | Search measured; the full `claude` command has never been run |
 | distillPDF | **Parked by you, 2026-11-06.** Search text and highlight positions come from PDFium for now | Earlier audit: whole-document calls peak at 200 MiB–1 GiB and can't be cancelled | PDFium text quality and its hidden-text handling are untested |
