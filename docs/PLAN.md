@@ -110,6 +110,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Click to copy an image losslessly
 - [ ] Snapshot tool with text, PNG, JPG and the hand-rolled streaming `recto-svg`
 - [ ] Print
+- [x] `recto search --regex` by ripgrep's engine in process, and `--rank` by BM25, with no new index (owner, 2026-11-07)
 - [x] What blind agents asked for: a whole-document hit total in `search`
 - [ ] The rest of what they asked for: an unwrapped quote form of `text`, `edits` saying when turns cancel out, `watch` to a file, and what an encrypted file restricts in `facts`
 - [ ] **Blind agent test, next round**
@@ -151,7 +152,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 Built last among features because it stands on the CLI, the corpus and OCR.
 
 - [ ] Spike: the locked-down `claude` command, using a small amount of your quota, with your approval
-- [x] Per-document folder and `manifest.json`, built with the corpus in Phase 3
+- [x] Per-document folder and `manifest.json`, made from the corpus on demand by `recto index --agent`
 - [ ] First-prompt facts, and pointing the run at that folder; the agent requests what it needs
 - [ ] Hidden-text and prompt-injection tests
 - [ ] Panel: visible steps, clickable citations, token count

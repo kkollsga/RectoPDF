@@ -1067,3 +1067,26 @@ fn stuffing_a_page_gets_it_first_and_no_further() {
     assert_eq!(hits.len(), 2, "the honest page is still there: {ranked}");
     assert!(hits[0]["score"].as_f64().unwrap() < 4.0 * hits[1]["score"].as_f64().unwrap(), "{ranked}");
 }
+
+/// Failure: a page too long for a pattern reads as having nothing on it, or takes one route and not the other. It's listed as not read, so "nothing found" doesn't cover it, no total is given over it, and a plain search still finds what's there.
+#[test]
+fn a_page_too_long_for_a_pattern_is_listed() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    // Many short lines of the same words, past what a pattern is run over.
+    let line = "long page words here that repeat and repeat and repeat and repeat and repeat";
+    let lines: Vec<&str> = std::iter::repeat_n(line, 8000).collect();
+    let list = [Page::new(text_lines(&["A short page with a word like needleword"])), Page::new(text_lines(&lines))];
+    let file = TempPdf::new("long-page.pdf", &pages(&list));
+    state.json(&["open", path(&file)]);
+    wait_done(&state, "active");
+    let (found, code) = state.json(&["search", "needleword|repeat", "--regex", "--limit", "5"]);
+    assert_eq!(code, 0, "{found}");
+    let coverage = &found["data"]["coverage"];
+    assert_eq!((coverage["failed_pages"].clone(), coverage["pages_too_long_for_a_pattern"].as_u64(), coverage["hits_total"].clone()), (serde_json::json!([2]), Some(1), Value::Null), "{found}");
+    assert_eq!(found["data"]["hits"].as_array().unwrap().len(), 1, "the short page is still searched: {found}");
+    let (scanned, _) = state.json(&["search", "needleword|repeat", "--regex", "--limit", "5", "--scan"]);
+    assert_eq!(the_same_answer(found), the_same_answer(scanned));
+    let (plain, _) = state.json(&["search", "repeat and", "--limit", "1"]);
+    assert_eq!(plain["data"]["coverage"]["failed_pages"], serde_json::json!([]), "{plain}");
+}

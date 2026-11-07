@@ -5,7 +5,8 @@ use grep_regex::RegexMatcherBuilder;
 use std::time::Instant;
 
 fn main() {
-    let pages = [("ab ", 2_000_000 / 3), ("word\n", 2_000_000 / 5), ("é", 2_000_000), ("a", 2_000_000)];
+    // A page at the most a pattern is run over, and then at the most there is.
+    let pages = [("ab ", 512 * 1024 / 3), ("word\n", 512 * 1024 / 5), ("é", 256 * 1024), ("a", 512 * 1024), ("a", 2_000_000)];
     let patterns = [
         r"(?:\w{1,40}\s?){1,25}[0-9]",
         r"(?:[a-z ]{1,60}){1,60}[0-9]",

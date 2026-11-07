@@ -168,6 +168,8 @@ enum Query {
 const REGEX_SIZE_LIMIT: usize = 1024 * 1024;
 const REGEX_DFA_LIMIT: usize = 2 * 1024 * 1024;
 const REGEX_NEST_LIMIT: u32 = 64;
+/// The longest page a pattern runs over. A pattern's worst cost is its size times the page's, and the time cap only applies between pages: at the size limit, the worst pattern found took 47 s on a page of 2 MB. This keeps that to about 12 s a page, and real pages are far shorter. Longer ones are listed as not read, and a plain search still reads them. `examples/regex_worst.rs` has the numbers.
+const MAX_PATTERN_PAGE_BYTES: usize = 512 * 1024;
 
 impl Query {
     /// A pattern, through ripgrep's own engine, run here: no program is started, so nothing like `rg --pre` can run anything. Ignores case like any other search, which `(?-i)` turns off. `^` and `$` go by lines, `.` stops at a line's end and `\s` doesn't, so `force\s+majeure` finds the phrase broken across two lines.
@@ -183,6 +185,11 @@ impl Query {
                 AgentError::new("bad_pattern", format!("That pattern can't be read: {said}"), exit::FAILED).then("It's a Rust regex. There's no look-around or back-reference. For plain words, leave out `--regex`.")
             }
         })
+    }
+
+    /// Whether this page is past what a pattern may run over.
+    fn too_long_for(&self, text: &str) -> bool {
+        matches!(self, Self::Regex(_)) && text.len() > MAX_PATTERN_PAGE_BYTES
     }
 
     /// Whether a page has it, with nothing built. Runs on every page.
@@ -289,6 +296,8 @@ struct Found {
     total_cut_short: bool,
     /// Pages past `next_page` that couldn't be read, so they aren't in `total`.
     uncounted: u32,
+    /// Of `failed`, those too long for a pattern to be run over.
+    too_long: u32,
 }
 
 impl Found {
@@ -352,6 +361,7 @@ impl Found {
             "hits_total": (!self.total_cut_short && self.uncounted == 0 && self.failed.is_empty()).then_some(self.total),
             "hits_at_least": self.total,
             "uncounted_pages": self.uncounted,
+            "pages_too_long_for_a_pattern": self.too_long,
         })
     }
 }
@@ -530,6 +540,7 @@ impl<'a> Reader<'a> {
             Err(Damaged) => Err(Damaged),
         };
         match read {
+            Ok(stored) if stored.kind == PageKind::Text && query.too_long_for(stored.text) => found.uncounted += 1,
             Ok(stored) if stored.kind == PageKind::Text => {
                 let on_page = query.count(stored.text, folded);
                 found.total += if on_page > 0 { on_page } else { u64::from(stored.also_spelled().iter().any(|spelled| query.spelled(spelled))) };
@@ -604,6 +615,10 @@ fn run(plan: &Plan, query: &Query, mode: &str, settings: &Settings<'_>, now: imp
             Got::Failed => found.failed.push(position + 1),
             Got::NoText => found.no_text(position),
             Got::Nothing => {}
+            Got::Page(view) if query.too_long_for(view.text) => {
+                found.failed.push(position + 1);
+                found.too_long += 1;
+            }
             Got::Page(view) => {
                 found.searched += 1;
                 if !query.on_page(view.text, &mut folded) && !view.also_spelled.iter().any(|spelled| query.spelled(spelled)) {
@@ -1082,14 +1097,15 @@ mod tests {
         }
     }
 
-    /// Failure: on the worst pair there is, a pattern at its size limit and a page at its largest, one page holds its job thread for minutes, with the time cap only applying between pages.
+    /// Failure: on the worst pair there is, a pattern at its size limit and a page at its largest, one page holds its job thread for most of a minute, with the time cap only applying between pages. Such a page isn't run over, and the rest of the search goes on. Nothing changes for plain words.
     #[test]
-    fn a_large_pattern_on_a_large_page_ends() {
-        let page = "ab ".repeat(600_000);
-        let matcher = pattern(r"(?:[a-z ]{1,30}){1,30}zzz");
-        let started = Instant::now();
-        assert_eq!(find_regex_hits(&page, &matcher, 1).total, 0);
-        println!("took {:?}", started.elapsed());
-        assert!(started.elapsed() < Duration::from_secs(120), "{:?}", started.elapsed());
+    fn the_worst_pattern_isnt_run_over_the_longest_page() {
+        let query = Query::regex(r"(?:a|b|c|d|e|f|g|h|i|j){1,3000}\d").unwrap();
+        let page = "a".repeat(MAX_PATTERN_PAGE_BYTES + 1);
+        assert!(query.too_long_for(&page));
+        assert!(!query.too_long_for(&page[1..]), "up to the limit it runs");
+        assert!(!Query::Phrase("a".to_string()).too_long_for(&page));
+        let mut folded = String::new();
+        assert!(!query.on_page(&"a".repeat(1000), &mut folded), "and short of it, it ends");
     }
 }
