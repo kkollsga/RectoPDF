@@ -29,6 +29,8 @@ libc = { version = "0.2", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 sha2 = { version = "0.11", default-features = false }
 crc32fast = { version = "1", default-features = false }
+grep-regex = { version = "0.1", default-features = false }
+grep-matcher = { version = "0.1", default-features = false }
 
 [workspace.lints.rust]
 # Denied, not forbidden, so a memory test can install a counting allocator. Only recto-platform allows it in library code.

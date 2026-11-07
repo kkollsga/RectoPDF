@@ -511,7 +511,7 @@ fn real_pages_answer_the_same_from_the_index() {
     files.sort();
     let state = State::at(Level::Full);
     let _serving = state.serve();
-    let (mut documents, mut compared) = (0, 0);
+    let (mut documents, mut compared, mut compared_regex, mut compared_ranked) = (0, 0, 0, 0);
     for file in files {
         let text = file.to_str().unwrap().to_string();
         let (opened, code) = state.json(&["open", &text]);
@@ -533,9 +533,17 @@ fn real_pages_answer_the_same_from_the_index() {
                 compared += 1;
             }
         }
+        for pattern in [r"\bthe\b", r"must\s+not", r"(?-i)[A-Z]{3,}", r"\d{4}", r"^figure", r"zzzqqqxx", r"[a-z]+-[a-z]+"] {
+            index_matches_scan(&state, &["search", pattern, "--regex", "--tab", &tab, "--limit", "50"]);
+            compared_regex += 1;
+        }
+        for words in ["the", "simulation data model", "zzzqqqxx", "must not", "figure results", "数学"] {
+            index_matches_scan(&state, &["search", words, "--rank", "--tab", &tab]);
+            compared_ranked += 1;
+        }
         state.json(&["close", &tab]);
     }
-    eprintln!("{documents} documents, {compared} searches compared");
+    eprintln!("{documents} documents, {compared} plain searches, {compared_regex} patterns and {compared_ranked} ranked searches compared");
 }
 
 /// Failure: a password-protected file's text ends up on disk, or it reads as "still building" for ever. It's refused, with its own exit code, and nothing's there but the reason.
@@ -919,4 +927,143 @@ fn the_agent_folder_comes_only_when_asked_for_and_goes_with_a_clear() {
     let (cleared, code) = state.json(&["index", "clear"]);
     assert_eq!((code, cleared["data"]["cleared"].as_u64()), (0, Some(1)), "{cleared}");
     assert!(!all_text_under(&root).contains("alpha document"), "a clear left a form of the text");
+}
+
+/// A document for telling searches apart: words on some pages and not others, one page about them far more than the rest, a hidden run, and a page with nothing on it.
+fn searchable(name: &str) -> TempPdf {
+    let mut list: Vec<Page> = (1..=8).map(|at| Page::new(text_lines(&[&format!("Page {at} is about nothing much at all"), "with an aside on liability", "and a date 2019-03 here"]))).collect();
+    list.push(Page::new(text_lines(&["Liability and insurance, liability and caps", "liability insurance covers liability for insurance"])));
+    list.push(Page::new(hidden_text_page()));
+    list.push(Page::new(Vec::new()));
+    TempPdf::new(name, &pages(&list))
+}
+
+/// Failure: a pattern or a ranking says something different read from the index than read from the pages: a hit, a score, an order, a snippet, a hidden-text flag or what was covered. **Which way a page was read makes no difference, in every mode.**
+#[test]
+fn regex_and_ranked_searches_answer_the_same_either_way() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = searchable("modes.pdf");
+    state.json(&["open", path(&file)]);
+    wait_done(&state, "active");
+    for args in [
+        &["search", r"\d{4}-\d{2}", "--regex"][..],
+        &["search", r"liability\s+and", "--regex", "--limit", "3"][..],
+        &["search", r"(?-i)Liability", "--regex"][..],
+        &["search", r"^with", "--regex", "--pages", "2-4"][..],
+        &["search", r"HIDDEN-\w+", "--regex", "--context", "1"][..],
+        &["search", r"zzzqqqxx", "--regex"][..],
+        &["search", "liability insurance", "--rank"][..],
+        &["search", "liability", "--rank", "--limit", "2"][..],
+        &["search", "liability", "--rank", "--pages", "1-5", "-C", "1"][..],
+        &["search", "HIDDEN-WHITE", "--rank"][..],
+        &["search", "zzzqqqxx nothing", "--rank"][..],
+        &["search", "common words", "-C", "2"][..],
+    ] {
+        index_matches_scan(&state, args);
+    }
+}
+
+/// Failure: a pattern's hit lacks what a plain hit has: a page number from the edit order, the mark of an added file, the hidden-text flags, or coverage, so someone switching to `--regex` loses what stops them being misled.
+#[test]
+fn a_pattern_keeps_all_that_a_hit_says() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = searchable("shape.pdf");
+    let extra = TempPdf::new("shape-added.pdf", &pages(&[Page::new(text_lines(&["From elsewhere with a date 2024-11"]))]));
+    state.json(&["open", path(&file)]);
+    wait_done(&state, "active");
+    let (hidden, _) = state.json(&["search", r"hidden-white\s+\w+", "--regex"]);
+    let hit = &hidden["data"]["hits"][0];
+    assert_eq!((hit["hidden_text"]["checked"].as_bool(), hit["hidden_text"]["flagged"].as_bool(), hit["overlaps_hidden"].as_bool(), hit["page"].as_u64()), (Some(true), Some(true), Some(true), Some(10)), "{hit}");
+    assert_eq!(hidden["data"]["mode"], "regex");
+    let (no_text, _) = state.json(&["search", r"zzz", "--regex"]);
+    assert_eq!(no_text["data"]["coverage"]["no_text_pages"], serde_json::json!([11]), "{no_text}");
+    assert_eq!(no_text["data"]["coverage"]["hits_total"], 0, "{no_text}");
+    state.json(&["page", "move", "9", "--to", "1"]);
+    state.json(&["page", "insert", path(&extra), "--at", "2"]);
+    wait_done(&state, "active");
+    let (found, code) = state.json(&["search", r"2024-\d+", "--regex"]);
+    assert_eq!(code, 0, "{found}");
+    let hit = &found["data"]["hits"][0];
+    assert_eq!((hit["page"].as_u64(), hit["source_page"].as_u64(), hit["from_added_file"].as_bool(), hit["untrusted"]["added_file"].as_str()), (Some(2), Some(1), Some(true), Some("shape-added.pdf")), "{hit}");
+    let (moved, _) = state.json(&["search", r"caps$", "--regex"]);
+    assert_eq!((moved["data"]["hits"][0]["page"].as_u64(), moved["data"]["hits"][0]["source_page"].as_u64()), (Some(1), Some(9)), "{moved}");
+    let (context, _) = state.json(&["search", r"an aside", "--regex", "-C", "1", "--limit", "1"]);
+    let around = &context["data"]["hits"][0]["untrusted"]["context"];
+    assert!(around["before"][0].as_str().unwrap().contains("about nothing"), "{context}");
+    assert!(around["after"][0].as_str().unwrap().contains("a date"), "{context}");
+    let (plain, _, _) = state.text(&["search", r"an aside", "--regex", "-C", "1", "--limit", "1"]);
+    assert!(plain.contains("- ") && plain.contains("+ "), "{plain}");
+}
+
+/// Failure: a mistyped or hostile pattern reads as "nothing found", or takes the session down, or two search modes at once picks one silently. Each is refused plainly, and the session's fine after.
+#[test]
+fn a_bad_pattern_is_refused_and_the_session_carries_on() {
+    let state = State::at(Level::Control);
+    let serving = state.serve();
+    let file = doc("patterns.pdf", 1);
+    state.json(&["open", path(&file)]);
+    for (pattern, code) in [("(unclosed", "bad_pattern"), (r"(a)\1", "bad_pattern"), (r"(?:\w{1000}){1000}", "pattern_too_large")] {
+        let (refused, exit_code) = state.json(&["search", pattern, "--regex"]);
+        assert_eq!((refused["error"]["code"].as_str(), exit_code), (Some(code), exit::FAILED), "{refused}");
+        assert!(!refused["error"]["next"].as_str().unwrap().is_empty(), "{refused}");
+    }
+    let (both, code) = state.json(&["search", "x", "--regex", "--rank"]);
+    assert_eq!((both["error"]["code"].as_str(), code), (Some("bad_query"), exit::FAILED), "{both}");
+    let (nothing, code) = state.json(&["search", "!!! ...", "--rank"]);
+    assert_eq!((nothing["error"]["code"].as_str(), code), (Some("bad_query"), exit::FAILED), "{nothing}");
+    let (status, code) = state.json(&["status"]);
+    assert_eq!((status["data"]["pid"].as_u64(), code), (Some(u64::from(serving.pid())), 0));
+}
+
+/// Failure: a ranked answer reads as every hit, or as a verdict on the pages: nothing says it's ordered by a count of words, a total is claimed, the page with most of the words isn't first, or a failed page drops out of sight. Text stays under `untrusted`, and the flags stay on.
+#[test]
+fn a_ranked_answer_says_what_it_is() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = searchable("ranked.pdf");
+    corpus_with_a_failed_page(&state, &file, 3);
+    state.json(&["open", path(&file)]);
+    let (ranked, code) = state.json(&["search", "Liability, insurance", "--rank"]);
+    assert_eq!(code, 0, "{ranked}");
+    let data = &ranked["data"];
+    assert_eq!(data["mode"], "ranked");
+    assert_eq!(data["terms"], serde_json::json!(["liability", "insurance"]), "{ranked}");
+    let hits = data["hits"].as_array().unwrap();
+    assert_eq!((hits[0]["page"].as_u64(), hits[0]["terms"].clone()), (Some(9), serde_json::json!(["liability", "insurance"])), "the page with the most of them is first: {ranked}");
+    assert_eq!(hits[0]["term_counts"], serde_json::json!([4, 3]), "{ranked}");
+    assert!(hits.windows(2).all(|pair| pair[0]["score"].as_f64() >= pair[1]["score"].as_f64()), "{ranked}");
+    assert!(hits[0]["untrusted"]["snippet"].as_str().unwrap().contains("Liability"), "{ranked}");
+    assert!(hits[0]["hidden_text"]["checked"].is_boolean(), "{ranked}");
+    assert_eq!(hits[0]["line"], 1);
+    assert_eq!(data["coverage"]["pages_with_these_words"], 9, "{ranked}");
+    assert_eq!(data["coverage"]["hits_total"], Value::Null, "a ranked answer isn't every hit, so it gives no total: {ranked}");
+    assert_eq!(data["coverage"]["no_text_pages"], serde_json::json!([11]), "{ranked}");
+    let note = data["ranked_note"].as_str().unwrap();
+    assert!(note.contains("isn't every hit") && note.contains("count") && !note.contains("relevan"), "{note}");
+    let (plain, _, _) = state.text(&["search", "Liability, insurance", "--rank"]);
+    assert!(plain.contains("isn't every hit") && plain.contains("score "), "{plain}");
+    let (limited, _) = state.json(&["search", "liability", "--rank", "--limit", "1"]);
+    assert_eq!(limited["data"]["hits"].as_array().unwrap().len(), 1, "{limited}");
+    let (hidden, _) = state.json(&["search", "HIDDEN-WHITE", "--rank"]);
+    assert_eq!((hidden["data"]["hits"][0]["hidden_text"]["flagged"].as_bool(), hidden["data"]["hits"][0]["overlaps_hidden"].as_bool()), (Some(true), Some(true)), "{hidden}");
+}
+
+/// Failure: a hostile page that repeats a word reaches the top, which can't be stopped, and comes out reading as trustworthy rather than marked as the document's words. Or one word makes a page score without limit, so nothing else shows.
+#[test]
+fn stuffing_a_page_gets_it_first_and_no_further() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let stuffed = "keyword ".repeat(60);
+    let list = [Page::new(text_lines(&["a page that mentions keyword once and other words beside"])), Page::new(text_lines(&[&stuffed]))];
+    let file = TempPdf::new("stuffed.pdf", &pages(&list));
+    state.json(&["open", path(&file)]);
+    let (ranked, code) = state.json(&["search", "keyword", "--rank"]);
+    assert_eq!(code, 0, "{ranked}");
+    let hits = ranked["data"]["hits"].as_array().unwrap();
+    assert_eq!(hits[0]["page"], 2, "{ranked}");
+    assert!(hits[0].get("snippet").is_none() && hits[0]["untrusted"]["snippet"].is_string(), "{ranked}");
+    assert_eq!(hits.len(), 2, "the honest page is still there: {ranked}");
+    assert!(hits[0]["score"].as_f64().unwrap() < 4.0 * hits[1]["score"].as_f64().unwrap(), "{ranked}");
 }

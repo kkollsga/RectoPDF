@@ -116,6 +116,9 @@ pub struct Spec {
     pub bare_page: bool,
 }
 
+/// Most lines of context a search gives each side of a hit.
+const MAX_SEARCH_CONTEXT: u32 = 20;
+
 const BASE: Spec = Spec {
     name: "",
     tag: "",
@@ -211,16 +214,19 @@ pub static TABLE: &[Spec] = &[
         name: "search",
         tag: "search",
         group: GROUP_READ,
-        summary: "Finds words across a document. Ignores case and line breaks. Finding nothing is still exit 0, with what was searched.",
+        summary: "Finds words across a document. Ignores case and line breaks. Finding nothing is still exit 0, with what was searched. `--regex` takes a pattern, and `--rank` puts the pages most about these words first.",
         args: &[
             Arg { key: "query", flag: None, kind: Kind::Text, required: true, help: "The words to find." },
             TAB,
             Arg { key: "pages", flag: Some("--pages"), kind: Kind::PagesOpen, required: false, help: "Only these pages: `4`, `4-6`, or `4-` to the end." },
             Arg { key: "limit", flag: Some("--limit"), kind: Kind::Positive(200), required: false, help: "Most hits in this answer. 20 if left out." },
+            Arg { key: "regex", flag: Some("--regex"), kind: Kind::Switch, required: false, help: "The words are a pattern, a Rust regex, by ripgrep's engine, in this process. Case is ignored, and `(?-i)` turns that back on. `^` and `$` go by lines, `.` stops at a line's end and `\\s` doesn't, so `force\\s+majeure` finds it across a line break. No look-around or back-references." },
+            Arg { key: "rank", flag: Some("--rank"), kind: Kind::Switch, required: false, help: "Best pages first, by a count of these words, with one line from each. For \"which pages are about this\". It isn't every hit, and `--limit` is pages, 10 if left out." },
+            Arg { key: "context", flag: Some("--context"), kind: Kind::Count(MAX_SEARCH_CONTEXT), required: false, help: "Lines around each hit, as `-C` does, under `untrusted.context`." },
             Arg { key: "scan", flag: Some("--scan"), kind: Kind::Switch, required: false, help: "Read the pages even if there's an index, to check one against the other." },
         ],
-        data: "`{ tab, hits: [ { page, source_page, from_added_file, line, also_spelled, page_has_tag_chars, hidden_text: { checked, flagged }, overlaps_hidden, untrusted: { snippet, added_file } } ], hidden_text_checked, route, index: { state, note }, coverage: { pages_searched, pages_in_scope, pages_with_no_text, no_text_pages, failed_pages, hits_not_shown: [ { page, hits } ], pages_with_tag_chars, changed_files: [ { untrusted: { file } } ], next_page, hits_total, hits_at_least, uncounted_pages } }`. `route` is `index`, `scan` or `mixed`: how pages were read, which changes nothing about what's found, and `index.note` says why in words. The first search of a document starts its index, so later ones are fast. `hits_total` is every hit on the pages in scope, past the limit too, or null if any page couldn't be counted: one that failed, or any past the limit when reading page by page. `hits_at_least` is what was counted, and `uncounted_pages` those past `next_page` that couldn't be read. `source_page` and `from_added_file` are on every hit, and say where its page really comes from once it's been edited. `overlaps_hidden: true` means the words matched include text that looks hidden, and `null` that it can't be said. It searches the same text `text` gives. `pages_searched` counts only pages really read. A page in `failed_pages` couldn't be read, or its file changed since its number was recorded (`changed_files`), so finding nothing says nothing about it. Only pages with hits are checked for hidden text, as `hidden_text_checked` says. `also_spelled: true` means the hit is another spelling of a word broken across lines, with no line of its own. `next_page` is where to go on from with `--pages`.",
-        examples: &["recto search \"force majeure\"", "recto search termination --pages 10-40 --limit 5 --json"],
+        data: "`{ tab, mode, hits: [ { page, source_page, from_added_file, line, also_spelled, page_has_tag_chars, hidden_text: { checked, flagged }, overlaps_hidden, score, terms, term_counts, untrusted: { snippet, added_file, context: { before, after } } } ], ranked_note, terms, terms_dropped, hidden_text_checked, route, index: { state, note }, coverage: { pages_searched, pages_in_scope, pages_with_no_text, no_text_pages, failed_pages, hits_not_shown: [ { page, hits } ], pages_with_tag_chars, changed_files: [ { untrusted: { file } } ], next_page, hits_total, hits_at_least, uncounted_pages, pages_with_these_words } }`. `mode` is `phrase`, `regex` or `ranked`. In a ranked answer `hits` is one per page, best first, with `score` and which `terms` it has, and `hits_total` is null, since it isn't every hit: `ranked_note` says so, and a score is a count of words, never a judgement of a page. `route` is `index`, `scan` or `mixed`: how pages were read, which changes nothing about what's found, and `index.note` says why in words. The first search of a document starts its index, so later ones are fast. `hits_total` is every hit on the pages in scope, past the limit too, or null if any page couldn't be counted: one that failed, or any past the limit when reading page by page. `hits_at_least` is what was counted, and `uncounted_pages` those past `next_page` that couldn't be read. `source_page` and `from_added_file` are on every hit, and say where its page really comes from once it's been edited. `overlaps_hidden: true` means the words matched include text that looks hidden, and `null` that it can't be said. It searches the same text `text` gives. `pages_searched` counts only pages really read. A page in `failed_pages` couldn't be read, or its file changed since its number was recorded (`changed_files`), so finding nothing says nothing about it. Only pages with hits are checked for hidden text, as `hidden_text_checked` says. `also_spelled: true` means the hit is another spelling of a word broken across lines, with no line of its own. `next_page` is where to go on from with `--pages`.",
+        examples: &["recto search \"force majeure\"", "recto search termination --pages 10-40 --limit 5 --json", "recto search \"indemni(ty|fies)\\s+\\w+\" --regex -C 1", "recto search \"liability cap insurance\" --rank"],
         client_wait_s: 180,
         ..BASE
     },
@@ -615,6 +621,8 @@ pub fn parse_cli(args: &[String]) -> Result<Invocation, AgentError> {
             }
             "--json" if !words_only => json_flag = true,
             "--help" | "-h" if !words_only => help_flag = true,
+            // What grep and ripgrep call it, which is what anyone reaching for it will type.
+            "-C" if !words_only => kept.push("--context"),
             other => kept.push(other),
         }
     }

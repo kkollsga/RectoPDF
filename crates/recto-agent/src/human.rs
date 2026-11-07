@@ -216,6 +216,9 @@ fn search(data: &Value) -> String {
     let hits = data["hits"].as_array().map_or(&[][..], Vec::as_slice);
     let coverage = &data["coverage"];
     let mut out = search_summary(hits.len() as u64, coverage);
+    if let Some(note) = data["ranked_note"].as_str() {
+        let _ = write!(out, "\n{note}");
+    }
     let failed = coverage["failed_pages"].as_array().map_or(0, Vec::len);
     if hits.is_empty() {
         // "Nothing found" would be a claim about pages it couldn't read.
@@ -240,7 +243,14 @@ fn search(data: &Value) -> String {
                 (Some(source), None) if Some(source) != hit["page"].as_u64() => format!(" (page {source} in this tab's own file)"),
                 _ => String::new(),
             };
-            let _ = writeln!(out, "p. {}{from}: {}{words}{warning}", number(&hit["page"]), text(&hit["untrusted"]["snippet"]));
+            let score = hit["score"].as_f64().map_or_else(String::new, |score| format!(", score {score:.2}, for {}", hit["terms"].as_array().map_or_else(String::new, |terms| terms.iter().map(text).collect::<Vec<_>>().join(", "))));
+            for line in hit["untrusted"]["context"]["before"].as_array().map_or(&[][..], Vec::as_slice) {
+                let _ = writeln!(out, "  - {}", text(line));
+            }
+            let _ = writeln!(out, "p. {}{from}{score}: {}{words}{warning}", number(&hit["page"]), text(&hit["untrusted"]["snippet"]));
+            for line in hit["untrusted"]["context"]["after"].as_array().map_or(&[][..], Vec::as_slice) {
+                let _ = writeln!(out, "  + {}", text(line));
+            }
         }
     }
     let _ = write!(out, "\nSearched {} of {} pages.", number(&coverage["pages_searched"]), number(&coverage["pages_in_scope"]));
@@ -286,6 +296,9 @@ fn search_summary(shown: u64, coverage: &Value) -> String {
     let not_shown: u64 = coverage["hits_not_shown"].as_array().map_or(0, |pages| pages.iter().map(|page| number(&page["hits"])).sum());
     if not_shown > 0 {
         let _ = write!(out, " {} more not shown.", count(not_shown, "hit", "hits"));
+    }
+    if let Some(pages) = coverage["pages_with_these_words"].as_u64() {
+        let _ = write!(out, " {} have any of these words.", count(pages, "page", "pages"));
     }
     if coverage["next_page"].is_u64() {
         out.push_str(" It stopped early, so there may be more.");

@@ -45,6 +45,7 @@
 
 pub mod corpus;
 pub mod order;
+pub mod rank;
 
 use recto_core::is_invisible_format;
 use recto_proto::{CharBox, CharRecord};

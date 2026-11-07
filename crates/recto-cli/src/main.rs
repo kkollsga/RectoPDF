@@ -427,17 +427,18 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
         let mut searches = Vec::new();
         for query in queries.split(',').filter(|query| !query.trim().is_empty()) {
             let mut one = json!({ "untrusted": { "query": query } });
-            for (word, scan) in [("index", false), ("scan", true)] {
-                let command = Command::Search { tab: "active".to_string(), query: query.to_string(), pages: None, limit: None, scan };
+            for (word, scan, regex, rank) in [("index", false, false, false), ("scan", true, false, false), ("regex_index", false, true, false), ("regex_scan", true, true, false), ("rank_index", false, false, true), ("rank_scan", true, false, true)] {
+                let command = Command::Search { tab: "active".to_string(), query: query.to_string(), pages: None, limit: None, scan, regex, rank, context: None };
                 let mut times = Vec::with_capacity(runs);
-                let mut last = Value::Null;
+                let mut last = Ok(Value::Null);
                 for _ in 0..runs {
                     let started = std::time::Instant::now();
-                    last = recto_agent::run_indexed(&mut session, Level::Full, &command, Some(&corpus))?;
+                    last = recto_agent::run_indexed(&mut session, Level::Full, &command, Some(&corpus));
                     times.push(started.elapsed().as_secs_f64() * 1000.0);
                 }
                 times.sort_by(f64::total_cmp);
                 let at = |share: usize| times[(times.len() * share / 100).min(times.len() - 1)];
+                let last = last?;
                 one[word] = json!({ "route": last["route"], "p50_ms": at(50), "p95_ms": at(95), "hits_total": last["coverage"]["hits_total"], "hits_shown": last["hits"].as_array().map_or(0, Vec::len) });
             }
             searches.push(one);

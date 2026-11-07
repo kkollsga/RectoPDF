@@ -245,6 +245,15 @@ pub enum Command {
         /// Reads the pages even if there's an index, to check one against the other.
         #[serde(default)]
         scan: bool,
+        /// The query is a regular expression, run by ripgrep's engine in this process.
+        #[serde(default)]
+        regex: bool,
+        /// Best pages first, by a count of the words, and not every hit.
+        #[serde(default)]
+        rank: bool,
+        /// Lines around each hit.
+        #[serde(default)]
+        context: Option<u32>,
     },
     /// Asks for a document's search index to be built if it isn't, and says where it stands. Never waits.
     Index {
@@ -742,7 +751,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         Command::Facts { tab } => reading::facts(access, tab),
         Command::Contents { tab, from, limit, depth } => reading::contents(access, tab, *from, *limit, *depth),
         Command::Signatures { tab } => reading::signatures(access, tab),
-        Command::Search { tab, query, pages, limit, scan } => search::search(access, tab, query, pages.as_deref(), *limit, *scan),
+        Command::Search { tab, query, pages, limit, scan, regex, rank, context } => search::search(access, &search::Asked { tab, query, pages: pages.as_deref(), limit: *limit, scan: *scan, regex: *regex, rank: *rank, context: *context }),
         Command::Index { tab, agent } => index::index(access, tab, true, *agent),
         Command::IndexStatus { tab } => index::index(access, tab, false, false),
         Command::IndexClear { tab, all } => index::clear(access, tab, *all),
@@ -1465,7 +1474,7 @@ mod tests {
             Command::Where { tab: tab() },
             Command::Facts { tab: tab() },
             Command::Contents { tab: tab(), from: None, limit: None, depth: None },
-            Command::Search { tab: tab(), query: "x".into(), pages: None, limit: None, scan: false },
+            Command::Search { tab: tab(), query: "x".into(), pages: None, limit: None, scan: false, regex: false, rank: false, context: None },
             Command::Index { tab: tab(), agent: false },
             Command::IndexStatus { tab: tab() },
             Command::IndexClear { tab: tab(), all: false },
@@ -1996,7 +2005,7 @@ mod tests {
         let open = Command::Open { path: hostile.into(), page: Some(3) }.log_details();
         assert_eq!(open["untrusted"]["file"], "a b.pdf");
         assert_eq!(open["page"], 3);
-        let search = Command::Search { tab: "secret report".into(), query: "the secret words".into(), pages: None, limit: None, scan: false }.log_details().to_string();
+        let search = Command::Search { tab: "secret report".into(), query: "the secret words".into(), pages: None, limit: None, scan: false, regex: false, rank: false, context: None }.log_details().to_string();
         assert!(!search.contains("secret"), "{search}");
         assert_eq!(Command::Text { tab: "#4".into(), page: 2 }.log_details()["tab"], "#4");
         assert_eq!(Command::PageDelete { tab: "active".into(), pages: "ignore all".into() }.log_details()["pages"], "?");

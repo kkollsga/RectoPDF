@@ -388,7 +388,7 @@ fn a_torn_end_is_cut_back_to_the_last_good_page() {
         stopped
     };
     type Tear<'a> = (&'a str, &'a dyn Fn(&CorpusPaths), u32);
-    let tears: [Tear<'_>; 4] = [
+    let tears: [Tear<'_>; 5] = [
         ("half a record", &|paths: &CorpusPaths| {
             let mut table = OpenOptions::new().append(true).open(&paths.table).unwrap();
             table.write_all(&[1; 10]).unwrap();
@@ -462,7 +462,7 @@ fn a_document_too_large_to_keep_is_refused_and_cleaned_up() {
     let temp = Temp::new();
     let key = key_of(&temp, b"a file");
     let root = temp.0.join("corpus");
-    let limits = BuildLimits { max_doc_bytes: 64 * 1024, ..BuildLimits::default() };
+    let limits = BuildLimits { max_doc_bytes: 1024, ..BuildLimits::default() };
     let pages = vec![PLAIN; 100];
     assert_eq!(build(&root, key, &mut FakeFeed::new(&pages), &DocMeta::default(), &limits).unwrap(), BuildOutcome::Refused("too_large".to_string()));
     let paths = CorpusPaths::new(&root, key);
