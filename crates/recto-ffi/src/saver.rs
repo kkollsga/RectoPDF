@@ -212,6 +212,12 @@ impl Saver {
         self.write_work(inner, &work, force)
     }
 
+    /// Whatever's waiting goes in its journal now, as a tab's about to go dormant, whose list can't till it's all there. With the gate, so it's one visit to the disk at a time.
+    pub(crate) fn write_journals_now(&self, inner: &Inner) {
+        let _gate = lock(&self.gate);
+        let _ = self.write_journals(inner, false);
+    }
+
     fn write_work(&self, inner: &Inner, work: &JournalWork, force: bool) -> Option<StoreError> {
         if work.retired.is_empty() && work.appends.is_empty() {
             return None;
@@ -240,6 +246,10 @@ impl Saver {
         // A hand-off can wait, and an update mustn't go on something unfinished. A quit is going anyway, so it writes what there is.
         if !inner.core.flush(limit) && force {
             return Err(StoreError { code: "still_busy", message: "Something the app was asked to do hasn't finished, so its state can't be said to be whole.".to_string() });
+        }
+        // The tab on screen's sleep file, for the next launch's first frame. Nothing depends on it, so it's no part of what's read back or forced to the drive. If nothing's changed, nothing's written.
+        if let Some(id) = inner.host.session.with_session(|session| session.active()) {
+            inner.write_sleep_for(id);
         }
         let _gate = lock(&self.gate);
         self.first_edit.store(0, Ordering::SeqCst);

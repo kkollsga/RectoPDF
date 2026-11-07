@@ -872,7 +872,12 @@ impl RecordStore {
         self.note_going_back(&dir);
         let bytes = encode_sleep(sleep);
         let folder = dir.join(JOURNALS);
-        if bytes.len() > MAX_SLEEP_FILE_BYTES || replace(&folder.join(record::sleep_file_name(sleep.file, path)), &bytes, false).is_err() {
+        let file = folder.join(record::sleep_file_name(sleep.file, path));
+        // What's there is this already: nothing's changed, so nothing's written.
+        if read_ours(&file, MAX_SLEEP_FILE_BYTES).ok().flatten().is_some_and(|there| there == bytes) {
+            return 0;
+        }
+        if bytes.len() > MAX_SLEEP_FILE_BYTES || replace(&file, &bytes, false).is_err() {
             return 0;
         }
         self.progress().wrote_bytes += bytes.len() as u64;
@@ -905,6 +910,10 @@ impl RecordStore {
 }
 
 impl HistorySource for RecordStore {
+    fn read_sleep(&self, stamp: FileStamp, path: &Path) -> Option<SleepFile> {
+        RecordStore::read_sleep(self, stamp, path)
+    }
+
     fn read_list(&self, name: &str) -> Option<RestoredEdits> {
         if !is_journal_name(name) {
             return None;
@@ -1149,6 +1158,12 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
         let Some(about) = parsed.header.path.to_path() else { continue };
         let now = file_stamp(&about).ok();
         if let Some(now) = now.filter(|_| saved_into_its_file(&parsed, now)) {
+            // A tab's on what this would carry on as, so it's only that a remove failed: the live one's not to be touched, and this one's done with.
+            let carries_on_as = record::journal_file_name(Some(now), &about, None);
+            if record.tabs.iter().any(|tab| tab.journal.as_deref() == Some(carries_on_as.as_str())) && carried_name_differs(&path, &about, now) {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
             // Saved, with no tab to hold it: its history waits for the PDF to be opened again.
             if let Some((carried, _, _)) = carried_over(&folder, &parsed, now, &about, progress) {
                 progress.journal_bytes.remove(&carried);
@@ -1688,6 +1703,48 @@ mod tests {
         std::fs::remove_file(&kept_again.path).unwrap();
         let taken = store.history_of(Some(now), &file).unwrap();
         assert!(taken.restored.rolled_off && !taken.restored.edits.can_undo());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure (review R7): an old journal a remove failed on is still there, with the record already naming the new one. Going over it again overwrites the live journal, and moves it to `closed-`, so the next `session save` says it doesn't read back and a kill loses what's kept.
+    #[test]
+    fn a_leftover_old_journal_doesnt_touch_the_live_one() {
+        let (root, paths) = state();
+        let file = root.join("doc.pdf");
+        std::fs::write(&file, b"before").unwrap();
+        let before = file_stamp(&file).unwrap();
+        let old = record::journal_file_name(Some(before), &file, None);
+        let temp = root.join("doc.saving");
+        std::fs::write(&temp, b"after, and longer").unwrap();
+        let target = file_stamp(&temp).unwrap();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let header = JournalHeader::new(1, &file, Some(before), 5, 0);
+        let work = JournalWork { retired: Vec::new(), appends: vec![recto_session::JournalAppend { tab: TabId(1), name: old.clone(), header, through: 2, ops: vec![rotation(), JournalOp::Saving(target.into())], closing: false, base: None, replaces: None }] };
+        assert!(store.write_journals(&work, false).1.is_none());
+        std::fs::rename(&temp, &file).unwrap();
+        let (mut list, _) = PageEdits::replay(5, None, &[rotation(), rotation()]).unwrap();
+        list.rebase_on_saved(5, None).unwrap();
+        let name = record::journal_file_name(Some(target), &file, None);
+        let header = JournalHeader::new(1, &file, Some(target), 5, 3);
+        let work = JournalWork { retired: Vec::new(), appends: vec![recto_session::JournalAppend { tab: TabId(1), name: name.clone(), header, through: 3, ops: Vec::new(), closing: false, base: Some(list.to_record()), replaces: None }] };
+        assert!(store.write_journals(&work, false).1.is_none());
+        let live = std::fs::read(root.join("session").join(JOURNALS).join(&name)).unwrap();
+        let mut record = sample(1);
+        record.tabs[0].path = PathField::from_path(&file);
+        record.tabs[0].file = Some(FileRecord::from(target));
+        record.tabs[0].journal = Some(name.clone());
+        store.write_record(&record, &PlaceDelta::default(), false).unwrap();
+        drop(store);
+        let store = RecordStore::open(&paths, Flavor::App);
+        let Loaded::Restored(restored) = store.load() else { panic!() };
+        let folder = root.join("session").join(JOURNALS);
+        assert_eq!(std::fs::read(folder.join(&name)).unwrap(), live, "the live one's as it was");
+        assert!(!folder.join(closed_journal_name(&name).unwrap()).exists());
+        assert!(!folder.join(&old).exists(), "and the leftover's gone");
+        assert_eq!(restored.journals[&name].edits.to_record(), list.to_record());
+        let lists = HashMap::from([(name.clone(), list.to_record())]);
+        store.write_record(&restored.record, &PlaceDelta::default(), false).unwrap();
+        store.verify(&restored.record, &lists).expect("it reads back");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

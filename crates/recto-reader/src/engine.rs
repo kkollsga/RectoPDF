@@ -129,6 +129,11 @@ impl Engine {
         lock(&self.shared.reader).give_sleep(tab, view);
     }
 
+    /// The window's gone up.
+    pub fn window_up(&self) {
+        lock(&self.shared.reader).window_up();
+    }
+
     /// A tab's being woken, as of now.
     pub fn note_wake(&self, tab: u32, began: Instant) {
         lock(&self.shared.reader).note_wake(tab, began);

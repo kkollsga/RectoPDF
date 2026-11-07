@@ -477,6 +477,8 @@ pub struct Reader {
     gave_up: bool,
     /// What's come from a tab's sleep file, for when it's made the hot tab.
     sleep_view: Option<(u32, SleepView)>,
+    /// The window's on the screen, so what the host applies is a frame someone can see.
+    window_up: bool,
     /// When the wake under way was asked for, and how it's gone.
     waking: Option<(Instant, WakeReport)>,
     last_wake: Option<WakeReport>,
@@ -524,6 +526,7 @@ impl Reader {
             selecting: Selecting::default(),
             gave_up: false,
             sleep_view: None,
+            window_up: false,
             waking: None,
             last_wake: None,
         }
@@ -536,7 +539,10 @@ impl Reader {
 
     /// A tab's being woken, as of now. For how long it takes.
     pub fn note_wake(&mut self, tab: u32, began: Instant) {
-        self.waking = Some((began, WakeReport { tab, from_sleep: false, ..WakeReport::default() }));
+        // Said when it was asked for, and said again on its way to the screen: the first is when it began.
+        if self.hot != Some(tab) && !self.waking.is_some_and(|(_, report)| report.tab == tab) {
+            self.waking = Some((began, WakeReport { tab, from_sleep: false, ..WakeReport::default() }));
+        }
     }
 
     /// The files a tab it holds has.
@@ -547,6 +553,11 @@ impl Reader {
     /// Whether this tab's anything here: a view of it's held, so a sleep file has nothing to add.
     pub fn holds(&self, tab: u32) -> bool {
         self.docs.contains_key(&tab)
+    }
+
+    /// The window's gone up. From here, a bare page is one that's seen.
+    pub fn window_up(&mut self) {
+        self.window_up = true;
     }
 
     /// How the last wake went.
@@ -575,7 +586,7 @@ impl Reader {
             let covered = self.visible_pages(doc).all(|page| self.attached.get(&page).is_some_and(|ids| !ids.is_empty()));
             if covered && report.first_frame_us.is_none() {
                 report.first_frame_us = Some(u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX));
-            } else if !covered && report.first_frame_us.is_none() {
+            } else if !covered && report.first_frame_us.is_none() && self.window_up {
                 report.blank_frames += 1;
             }
         }
@@ -2779,6 +2790,19 @@ mod tests {
         assert!(wake.first_frame_us.is_some(), "{wake:?}");
         assert_eq!(wake.sharp_us, None, "not sharp yet");
         assert_eq!(wake.blank_frames, 0);
+        // With no sleep file and the window up, a bare page is counted, which is what the budget's about.
+        let mut bare = Reader::new();
+        bare.window_up();
+        bare.set_viewport(view(0.0));
+        bare.note_wake(1, Instant::now());
+        bare.activate(1, 5, 0, map(), &[], Some(saved));
+        bare.take_ops();
+        let scrolled = bare.jump.unwrap_or(0);
+        bare.set_viewport(Viewport { scrolled_to: scrolled, ..view(0.0) });
+        bare.take_ops();
+        bare.unapplied = true;
+        bare.applied();
+        assert_eq!(bare.last_wake().unwrap().blank_frames, 1);
         // A worker's asked for what's sharp, as if there'd been none of this, and no preview as it's got one.
         let jobs = settle(&mut reader);
         assert!(!jobs.iter().any(|job| matches!(job.kind, JobKind::Draw { what: DrawKind::Preview, .. }) && job.position == 0));

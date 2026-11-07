@@ -105,7 +105,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
 impl<L: DocLoader + Clone> SessionHost<L> {
     /// The record's commands, for a session with no window: nothing writes until it's told to, and each save is the whole of it. The app has its own, as it keeps its record as it goes.
     fn run_record_command(&self, level: Level, command: &Command) -> Option<Result<Value, AgentError>> {
-        if !matches!(command, Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {}) {
+        if !matches!(command, Command::SessionSleep { .. } | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {}) {
             return None;
         }
         // The level was checked by the server against the row. Checked here too, as `execute` would.
@@ -116,8 +116,18 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         Some(match command {
             Command::SessionShow {} => Ok(self.with_session(|session| recto_agent::session_show_json(session, level, kept_json(store, None)))),
             Command::SessionCheck {} => Ok(json!({ "safe": true, "busy": [], "seconds_since_input": null })),
+            Command::SessionSleep { tab } => self.sleep_here(tab),
             Command::SessionSave {} => self.save_to(store),
             _ => self.restore_from(store, level),
+        })
+    }
+
+    /// A session with no window has no pictures for a tab, and keeps no journals as it goes, so all it can let go of is what it's read.
+    fn sleep_here(&self, tab: &str) -> Result<Value, AgentError> {
+        self.with_session(|session| {
+            let id = recto_agent::select_tab(session, tab)?;
+            let dormant = session.go_dormant(id);
+            Ok(json!({ "tab": id.0, "dormant": dormant, "list_asleep": session.list_is_asleep(id) }))
         })
     }
 

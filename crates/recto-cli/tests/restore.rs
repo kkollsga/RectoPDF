@@ -638,6 +638,180 @@ fn a_tab_gone_cold_comes_back_where_it_was() {
 }
 
 /// Waits until what's been edited has gone to its journal, which takes seconds, and says what the lists are.
+fn sleep_files(state: &State) -> Vec<PathBuf> {
+    std::fs::read_dir(state.root.join("session").join("journals")).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("sleep-")).map(|entry| entry.path()).collect()
+}
+
+fn text_document(folder: &Path, name: &str, count: usize) -> PathBuf {
+    let path = folder.join(name);
+    std::fs::write(&path, pages(&(0..count).map(|at| Page::new(text_lines(&[&format!("{name} page {at}")]))).collect::<Vec<_>>())).unwrap();
+    path
+}
+
+/// Failure (decision 25, in the real app): a tab left alone stays in memory, or goes with its edits lost, or wakes bare, at the wrong place, or by reading its PDF. It goes dormant on the one deadline: no worker, no view, no list in memory, and a sleep file. Tapped, it's up from that file at its place, with a picture on every page before anything's drawn, then sharp, edits and history there.
+#[test]
+fn a_tab_left_alone_goes_dormant_and_wakes_from_its_file() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (left, read) = (text_document(&folder, "left.pdf", 12), text_document(&folder, "read.pdf", 3));
+    run.ok(&["open", left.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "6"]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "rotate:1"]);
+    run.settled();
+    let place = |run: &Run<'_>| run.report()["reader"]["scroll_y"].as_f64().unwrap();
+    let at_page_6 = place(&run);
+    run.ok(&["open", read.to_str().unwrap()]);
+    run.settled();
+    let tabs = tabs_of(&run.report());
+    let left_tab = tabs.iter().find(|tab| tab["path"].as_str().unwrap().ends_with("left.pdf")).unwrap()["id"].as_u64().unwrap();
+    assert_eq!(run.report()["reader"]["documents_held"], 2, "it's warm for now");
+    let workers_before = run.report()["reader_workers"].clone();
+    // Left alone, a second counting as five minutes.
+    run.ok(&["qa", "dormant-after", "1"]);
+    wait_until("it goes dormant", || run.report()["record"]["sleep"]["gone_dormant"]["left_alone"].as_u64().unwrap() >= 1 && run.report()["reader"]["documents_held"] == 1);
+    let after = run.report();
+    assert_eq!(after["session"]["edits_full"].as_object().unwrap().len(), 1, "its edits are still there, read from disk for this: {workers_before}");
+    assert_eq!(sleep_files(&state).len(), 1, "with a sleep file");
+    assert!(tabs_of(&after).iter().any(|tab| tab["id"] == left_tab), "and the tab's there");
+    // Nothing more's written with nothing happening, and there's nothing left to come due but what's on hand.
+    let wrote = after["record"]["wrote_bytes"].as_u64().unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(run.report()["record"]["wrote_bytes"].as_u64().unwrap(), wrote, "no more to write");
+    run.ok(&["qa", "dormant-after", "300"]);
+    // Tapped.
+    run.ok(&["tap", &format!("#{left_tab}")]);
+    run.settled();
+    let woken = run.report();
+    let wake = &woken["reader"]["last_wake"];
+    assert_eq!(wake["from_sleep"], true, "{woken}");
+    assert_eq!(wake["blank_frames"], 0, "{wake}");
+    assert!(wake["first_frame_us"].as_u64().is_some(), "{wake}");
+    assert!(wake["sharp_us"].as_u64().unwrap() >= wake["first_frame_us"].as_u64().unwrap(), "{wake}");
+    assert!((place(&run) - at_page_6).abs() < 1.0, "at its place: {} and {at_page_6}", place(&run));
+    assert_eq!(run.ok(&["edits"])["edited"], true);
+    assert_eq!(run.ok(&["edits"])["can_undo"], true);
+    assert!(run.report()["record"]["sleep"]["woken_from_file"].as_u64().unwrap() >= 1);
+    run.ok(&["undo"]);
+    assert_eq!(run.ok(&["edits"])["edited"], false, "and its history works");
+    run.ok(&["redo"]);
+}
+
+/// Failure: a sleep file's believed when it's been tampered with, or about a file that's since changed, so a tab wakes to a stranger's contents and pictures; or a bad one stops it opening. It's thrown away, and the tab reads its PDF, as if there'd been none.
+#[test]
+fn a_sleep_file_thats_wrong_only_costs_the_quick_way() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (one, two) = (text_document(&folder, "one.pdf", 5), text_document(&folder, "two.pdf", 3));
+    run.ok(&["open", one.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["open", two.to_str().unwrap()]);
+    run.settled();
+    let on = |name: &str, run: &Run<'_>| tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with(name)).unwrap()["id"].as_u64().unwrap();
+    let first = on("one.pdf", &run);
+    run.ok(&["session", "sleep", "--tab", &format!("#{first}")]);
+    wait_until("the file's there", || sleep_files(&state).len() == 1);
+    // Damaged.
+    let file = sleep_files(&state).pop().unwrap();
+    let mut bytes = std::fs::read(&file).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0x55;
+    std::fs::write(&file, &bytes).unwrap();
+    run.ok(&["tap", &format!("#{first}")]);
+    run.settled();
+    assert_eq!(run.report()["reader"]["last_wake"]["from_sleep"], false);
+    assert_eq!(run.ok(&["where"])["pages"], 5, "it's read from its PDF");
+    assert!(sleep_files(&state).is_empty(), "and it's gone");
+    // Changed while it slept: the old one's found, shown for a moment, then seen to be wrong on the way past.
+    run.ok(&["tap", &format!("#{}", on("two.pdf", &run))]);
+    run.settled();
+    run.ok(&["session", "sleep", "--tab", &format!("#{first}")]);
+    wait_until("the file's there again", || sleep_files(&state).len() == 1);
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&one, pages(&(0..9).map(|at| Page::new(text_lines(&[&format!("New {at}")]))).collect::<Vec<_>>())).unwrap();
+    run.ok(&["tap", &format!("#{first}")]);
+    wait_until("it finds the new one", || run.ok(&["where"])["pages"] == 9);
+    run.settled();
+    assert_eq!(tabs_of(&run.report()).iter().find(|tab| tab["id"] == first).unwrap()["notice"]["code"], Value::Null, "nothing to say: no edits, and it's on screen now: {}", run.report()["session"]["tabs"]);
+    let mut gone = false;
+    for _ in 0..200 {
+        gone = sleep_files(&state).is_empty();
+        if gone {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(gone, "its old picture's still there: {:?} {}", sleep_files(&state), run.report()["record"]["sleep"]);
+}
+
+/// Failure: the system says memory's short and tabs off screen stay, or the budget across documents isn't kept, or what's being read goes blank. Everything off screen goes dormant at once, oldest first, and what's on screen stays. And a window of many tabs can't go over its budget.
+#[test]
+fn pressure_and_the_budget_do_what_being_left_alone_does() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let files: Vec<PathBuf> = (0..3).map(|at| text_document(&folder, &format!("d{at}.pdf"), 4)).collect();
+    for file in &files {
+        run.ok(&["open", file.to_str().unwrap()]);
+        run.settled();
+    }
+    assert_eq!(run.report()["reader"]["documents_held"], 3);
+    run.ok(&["qa", "memory-pressure", "warning"]);
+    wait_until("they go", || run.report()["reader"]["documents_held"] == 1);
+    let after = run.report();
+    assert_eq!(after["record"]["sleep"]["pressure_events"], 1);
+    assert_eq!(after["record"]["sleep"]["gone_dormant"]["pressure"], 2);
+    run.settled();
+    assert!(run.report()["reader"]["tiles"]["attached"].as_u64().unwrap() > 0, "and what's on screen is still there");
+    // Over the budget, however it's set: a document off screen holds its worker, so any at all is over nothing.
+    run.ok(&["qa", "live-budget", "0"]);
+    let tabs = tabs_of(&run.report());
+    run.ok(&["tap", &format!("#{}", tabs[0]["id"])]);
+    run.settled();
+    run.ok(&["tap", &format!("#{}", tabs[1]["id"])]);
+    run.settled();
+    wait_until("the one with a worker goes", || run.report()["record"]["sleep"]["gone_dormant"]["budget"].as_u64().unwrap() >= 1);
+}
+
+/// Failure (decision 24): a launch or a hand-off waits for sharp pages before there's a window, which on a heavy page is most of a second; or its first frame's anything but the place with something on every page. It goes up from the sleep file with the picture on, and the file's not rewritten when nothing's changed.
+#[test]
+fn a_launch_goes_up_from_the_sleep_file() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = text_document(&folder, "doc.pdf", 9);
+    run.ok(&["open", file.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "4"]);
+    run.settled();
+    let before = run.report();
+    run.hand_off();
+    assert_eq!(sleep_files(&state).len(), 1, "the hand-off wrote it");
+    let written = std::fs::read(&sleep_files(&state)[0]).unwrap();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let after = run.report();
+    let shown = &after["record"]["first_shown"];
+    assert_eq!(shown["page"], before["reader"]["page"], "{shown}");
+    assert!((shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 1.0, "{shown}");
+    assert!(shown["tile_layers"].as_u64().unwrap() > 0, "something on it: {shown}");
+    assert_eq!(after["reader"]["last_wake"]["from_sleep"], true, "{} {} {} {}", after["reader"]["last_wake"], after["record"]["sleep"], after["reader"]["tiles"], written.len());
+    assert_eq!(after["reader"]["last_wake"]["blank_frames"], 0);
+    assert_eq!(after["record"]["sleep"]["woken_from_file"], 1);
+    // Nothing's changed, so a quit writes nothing to it.
+    let modified = std::fs::metadata(&sleep_files(&state)[0]).unwrap().modified().unwrap();
+    run.quit();
+    assert_eq!(std::fs::metadata(&sleep_files(&state)[0]).unwrap().modified().unwrap(), modified);
+    assert_eq!(std::fs::read(&sleep_files(&state)[0]).unwrap(), written);
+}
+
 /// What a Save would write, for this test: the document's pages, as lopdf has them.
 fn written_without(source: &Path, delete: &[u32], to: &Path) {
     let mut document = lopdf::Document::load(source).unwrap();
