@@ -325,6 +325,8 @@ pub enum Command {
         #[serde(default)]
         count: Option<u32>,
     },
+    /// Ends every watch running on this session.
+    WatchStop {},
     /// What agents have done, newest last.
     Log {
         #[serde(default)]
@@ -370,6 +372,7 @@ impl Command {
             Self::LevelChanged {} => "level_changed",
             Self::Wait { .. } => "wait",
             Self::Watch { .. } => "watch",
+            Self::WatchStop {} => "watch_stop",
             Self::Log { .. } => "log",
             Self::Stop {} => "stop",
         }
@@ -406,7 +409,7 @@ impl Command {
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
             Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
-            Self::Wait { .. } | Self::Watch { .. } | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
+            Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
         }
     }
 }
@@ -807,7 +810,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             exit::FAILED,
         )),
         Command::Sign {} => Err(refusal("sign", level, Access::Nobody)),
-        Command::Status {} | Command::PermissionShow {} | Command::PermissionRequest { .. } | Command::LevelChanged {} | Command::Wait { .. } | Command::Watch { .. } | Command::Log { .. } | Command::Stop {} => {
+        Command::Status {} | Command::PermissionShow {} | Command::PermissionRequest { .. } | Command::LevelChanged {} | Command::Wait { .. } | Command::Watch { .. } | Command::WatchStop {} | Command::Log { .. } | Command::Stop {} => {
             Err(AgentError::new("needs_server", "This needs the long-running session.", exit::NOT_RUNNING))
         }
     }
@@ -1419,6 +1422,7 @@ mod tests {
             Command::LevelChanged {},
             Command::Wait { condition: Condition::TabOpen, tab: tab(), page: None, timeout_ms: 1 },
             Command::Watch { events: None, timeout_ms: None, count: None },
+            Command::WatchStop {},
             Command::Log { last: None },
             Command::Stop {},
         ]

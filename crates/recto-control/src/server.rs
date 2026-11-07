@@ -485,6 +485,18 @@ impl<H: Host> Loop<H> {
                 self.look(index);
             }
             Command::Watch { events, timeout_ms, count } => self.watch(index, level, events, timeout_ms, count),
+            Command::WatchStop {} => {
+                let watching: Vec<(usize, u64)> = self.conns.iter().enumerate().filter_map(|(at, conn)| match conn.state {
+                    State::Watching { delivered, .. } => Some((at, delivered)),
+                    _ => None,
+                }).collect();
+                for (at, delivered) in &watching {
+                    self.end_watch(*at, "ended by `recto watch stop`", *delivered);
+                }
+                let stopped = watching.len();
+                self.log.record(tag, level, "ok", &json!({ "stopped": stopped }));
+                self.answer(index, tag, &Ok(json!({ "stopped": stopped })));
+            }
             Command::Log { last } => {
                 self.log.flush();
                 let data = log::recent(&self.paths, last);

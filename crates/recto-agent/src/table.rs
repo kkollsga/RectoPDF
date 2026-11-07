@@ -335,7 +335,7 @@ pub static TABLE: &[Spec] = &[
         name: "watch",
         tag: "watch",
         group: GROUP_SYNC,
-        summary: "Prints events from now on, one per line. It reports only what happens after it starts, and nothing from before: `recto tabs` and `recto edits` say how things stand. It ends when `--timeout` or `--count` runs out, if access drops below Read-only, or if the session stops. No command ends a watch early: kill the process to end it, which is safe and stops it at once.",
+        summary: "Prints events from now on, one per line. It reports only what happens after it starts, and nothing from before: `recto tabs` and `recto edits` say how things stand. It ends when `--timeout` or `--count` runs out, if access drops below Read-only, if the session stops, or when `recto watch stop` is run. Killing the process ends it too, at once.",
         args: &[
             Arg { key: "events", flag: Some("--events"), kind: Kind::List(EVENT_GROUPS), required: false, help: "Which: `tabs`, `pages`, `edits`, `draws`, `access`, with commas between. All if left out." },
             Arg { key: "timeout_ms", flag: Some("--timeout"), kind: Kind::Duration, required: false, help: "How long to watch: `30s`, `5m`. 10m if left out." },
@@ -345,6 +345,7 @@ pub static TABLE: &[Spec] = &[
         examples: &["recto watch --events tabs,pages --timeout 30s", "recto watch --count 1 --timeout 1m --json"],
         ..BASE
     },
+    Spec { name: "watch stop", tag: "watch_stop", group: GROUP_SYNC, summary: "Ends every watch running on this session, each with its last line as usual. For a watch left running in the background.", data: "`{ stopped }`: how many.", examples: &["recto watch stop"], client_wait_s: 5, ..BASE },
     Spec {
         name: "permission show",
         tag: "permission_show",
@@ -1483,7 +1484,7 @@ mod tests {
     #[test]
     fn watch_says_what_it_reports_and_how_it_ends() {
         let help = help_for(TABLE.iter().find(|row| row.name == "watch").unwrap());
-        for must in ["from now on", "nothing from before", "--timeout", "--count", "No command ends a watch", "kill the process"] {
+        for must in ["from now on", "nothing from before", "--timeout", "--count", "recto watch stop", "Killing the process"] {
             assert!(help.contains(must), "{must}: {help}");
         }
         assert!(help_text().contains("from now on"), "and in the list, which shows only the first sentence");

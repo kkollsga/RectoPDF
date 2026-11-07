@@ -109,6 +109,7 @@ pub fn render(tag: &str, data: &Value) -> String {
         "permission_set" => format!("Agent access is now {} (was {}).", text(&data["label"]), text(&data["was_label"])),
         "log" => log(data),
         "stop" => "The session is stopping.".to_string(),
+        "watch_stop" => format!("Ended {}.", count(number(&data["stopped"]), "watch", "watches")),
         "serve" => {
             let word = if data["already"] == true { "already running" } else { "running" };
             format!("RectoPDF is {word}, process {}, on {}", number(&data["pid"]), text(&data["socket"]))
