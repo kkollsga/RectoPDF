@@ -596,6 +596,94 @@ fn outlined_with(count: usize) -> TempPdf {
     TempPdf::new("long-outline.pdf", &build(&objects))
 }
 
+/// A PDF with chapters of sections, each on a page, so the contents open and close as the reader moves.
+fn chaptered(chapters: usize, sections: usize) -> TempPdf {
+    let each = sections + 1;
+    let total = chapters * each;
+    let first_page = 4 + total;
+    let item = |chapter: usize, section: usize| 4 + chapter * each + section;
+    let mut objects = vec![
+        Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R >>".into()),
+        Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {total} >>", (0..total).map(|index| format!("{} 0 R", first_page + index)).collect::<Vec<_>>().join(" "))),
+        Object::Dict(format!("<< /Type /Outlines /First 4 0 R /Last {} 0 R /Count {chapters} >>", item(chapters - 1, 0))),
+    ];
+    for chapter in 0..chapters {
+        let prev = if chapter > 0 { format!("/Prev {} 0 R", item(chapter - 1, 0)) } else { String::new() };
+        let next = if chapter + 1 < chapters { format!("/Next {} 0 R", item(chapter + 1, 0)) } else { String::new() };
+        objects.push(Object::Dict(format!("<< /Title (Chapter {chapter}) /Parent 3 0 R {prev} {next} /First {} 0 R /Last {} 0 R /Count -{sections} /Dest [{} 0 R /Fit] >>", item(chapter, 1), item(chapter, sections), first_page + chapter * each)));
+        for section in 1..=sections {
+            let prev = if section > 1 { format!("/Prev {} 0 R", item(chapter, section - 1)) } else { String::new() };
+            let next = if section < sections { format!("/Next {} 0 R", item(chapter, section + 1)) } else { String::new() };
+            objects.push(Object::Dict(format!("<< /Title (Section {chapter}.{section}) /Parent {} 0 R {prev} {next} /Dest [{} 0 R /Fit] >>", item(chapter, 0), first_page + chapter * each + section)));
+        }
+    }
+    for _ in 0..total {
+        objects.push(Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()));
+    }
+    TempPdf::new("chapters.pdf", &build(&objects))
+}
+
+/// Failure: a chapter's change is published once and the next look republishes "nothing changed", and the host reads only the latest, so the table keeps its old row count, and later row changes go at the wrong places. Or a change is applied twice. The table must hold exactly what the model says through every kind of move, and reading forward never moves the contents back.
+#[test]
+fn the_contents_table_follows_chapters_opening_and_closing() {
+    let Some(run) = Run::start() else { return };
+    let (chapters, sections) = (40, 8);
+    let file = chaptered(chapters, sections);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let holds = |state: &Value, when: &str| {
+        let contents = &state["app"]["contents"];
+        assert_eq!(contents["table_rows"], contents["count"], "{when}: {contents}");
+        assert_eq!(contents["stale_rows"], 0, "{when}: {contents}");
+        assert_eq!(contents["current_in_view"], true, "{when}: {contents}");
+    };
+    let at_rest = |state: &Value| state["app"]["contents"]["frames_running"] == false;
+    for chapter in [1, 2, 3, 10, 9, 30, 0] {
+        run.ok(&["goto", &(chapter * (sections + 1) + 1).to_string()]);
+        run.settled();
+        let state = wait_for(&run, at_rest);
+        holds(&state, &format!("chapter {chapter}"));
+        assert_eq!(state["app"]["contents"]["count"].as_u64().unwrap() as usize, chapters + sections, "one chapter open: {state}");
+    }
+    let sweep = run.ok(&["qa", "sweep", "6", "--for", "6s"]);
+    let back: Vec<&Value> = sweep["contents"]["listed"].as_array().unwrap().iter().filter(|one| one["points"].as_f64().unwrap() < -1.0).collect();
+    assert!(back.is_empty(), "reading forward, and the contents moved back: {back:?} of {}", sweep["contents"]);
+    run.settled();
+    holds(&wait_for(&run, at_rest), "after a sweep");
+    run.ok(&["qa", "sweep", "60", "--for", "3s"]);
+    run.settled();
+    holds(&wait_for(&run, at_rest), "after a fast sweep");
+}
+
+/// Failure: closing a warm tab leaves its document, tiles and worker held until the next switch of tab, which may never come.
+#[test]
+fn closing_a_warm_tab_lets_go_of_it() {
+    let Some(run) = Run::start() else { return };
+    let (one, two) = (long_document(2), TempPdf::new("second.pdf", &pages(&[Page::new(text_lines(&["Second"]))])));
+    run.ok(&["open", one.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["open", two.0.to_str().unwrap()]);
+    run.settled();
+    assert_eq!(run.report()["reader"]["documents_held"], 2, "the first is warm");
+    run.ok(&["close", "--tab", "#1"]);
+    let state = wait_for(&run, |state| state["reader"]["documents_held"] == 1);
+    assert_eq!(state["reader"]["documents_held"], 1);
+}
+
+/// Failure: a shot's tint isn't clipped to where the pages show, so a zoomed page's rectangle tints the sidebar in the picture, though the compositor's own tint never would.
+#[test]
+fn a_shots_tint_stays_on_the_pages() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(2);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["view", "--paper", "warm"]);
+    run.ok(&["qa", "zoom", "6"]);
+    run.settled();
+    let state = run.report();
+    assert!(state["app"]["pages"]["shot_tint_left"].as_f64().unwrap() >= 200.0, "the sidebar is left of this: {state}");
+}
+
 /// Failure: warm paper redraws every tile, so it's slow and costs memory, or it changes what's saved and exported, or it doesn't work in a dark window, or it isn't remembered. Going to it draws nothing, `recto render` gives the same bytes, every paper works in every window, and a new run on this state has it back.
 #[test]
 fn warm_paper_only_changes_what_is_on_screen() {

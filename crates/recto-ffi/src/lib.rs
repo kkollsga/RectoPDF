@@ -386,6 +386,7 @@ struct Synced {
     page: u32,
     pages: u32,
     map: PageMap,
+    warm: Vec<u32>,
     paper: Option<PaperKind>,
     chosen_paper: Option<Option<Paper>>,
     focus: Option<bool>,
@@ -985,9 +986,17 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
                 synced.pages = pages;
                 synced.map = map;
                 synced.page = page;
-            } else if synced.page != page {
-                inner.engine.jump_to(page);
-                synced.page = page;
+                synced.warm = warm;
+            } else {
+                if synced.page != page {
+                    inner.engine.jump_to(page);
+                    synced.page = page;
+                }
+                // A warm tab closed or gone cold: what it held goes now, and not at the next switch.
+                if synced.warm != warm {
+                    inner.engine.set_warm(&warm);
+                    synced.warm = warm;
+                }
             }
         }
     }

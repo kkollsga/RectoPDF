@@ -415,6 +415,14 @@ impl Reader {
         }
     }
 
+    /// Which tabs are warm now, the hot one staying as it is. A tab that's stopped being warm, closed perhaps, holds nothing from here on, and its renderer goes.
+    pub fn set_warm(&mut self, warm: &[u32]) {
+        let Some(hot) = self.hot else { return };
+        self.keep_only(warm, hot);
+        self.recount_wanted_files(warm);
+        self.cancel_if_unwanted();
+    }
+
     /// No PDF is open: the home state.
     pub fn deactivate(&mut self) {
         self.clear_screen();
@@ -1770,6 +1778,7 @@ mod tests {
                     JobKind::Traits => Outcome::Heavy(false),
                     JobKind::Draw { surface, .. } => {
                         seen.insert(surface.id());
+                        held.push(surface.clone());
                         Outcome::Drawn { kind: answer, low_res: None }
                     }
                 };
@@ -1779,11 +1788,12 @@ mod tests {
         }
         let other = |name: &str| PageMap { files: vec![PathBuf::from(name)], slots: None };
         for answer in [TileKind::Colour, TileKind::Blank { rgb: 0xFF_FF_FF }] {
+            let mut held = Vec::new();
             let mut reader = reader_on(3);
-            let first = run(&mut reader, answer);
+            let first = run(&mut reader, answer, &mut held);
             reader.activate(2, 3, 0, other("/d/b.pdf"), &[]);
             reader.set_viewport(view(0.0));
-            let second = run(&mut reader, TileKind::Colour);
+            let second = run(&mut reader, TileKind::Colour, &mut held);
             assert!(!first.is_empty() && !second.is_empty());
             assert!(first.is_disjoint(&second), "served both: {:?}", first.intersection(&second).collect::<Vec<_>>());
         }
@@ -1847,6 +1857,20 @@ mod tests {
         let scrolled: Vec<f64> = reader.take_ops().into_iter().filter_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None }).collect();
         let top = tops(&reader, page + 3);
         assert!((scrolled.last().unwrap() - top).abs() < 1.0, "sent somewhere else, it starts at the top: {scrolled:?} against {top}");
+    }
+
+    /// Failure: closing a warm tab leaves its layout, tiles, worker and open file until the next switch of tab, which may never come.
+    #[test]
+    fn a_warm_tab_that_goes_holds_nothing_at_once() {
+        let mut reader = reader_on(10);
+        settle(&mut reader);
+        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None }, &[1]);
+        assert!(reader.entries.values().any(|entry| entry.tab == 1), "still warm");
+        assert_eq!(reader.wanted_files().len(), 2);
+        reader.set_warm(&[]);
+        assert!(reader.entries.values().all(|entry| entry.tab != 1), "closed");
+        assert!(!reader.docs.contains_key(&1));
+        assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")], "and its worker goes");
     }
 
     /// Failure: the host's size change moves the reader away from what they were reading.
