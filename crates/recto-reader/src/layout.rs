@@ -85,6 +85,20 @@ impl PageLayout {
         self.known.contains(&page)
     }
 
+    /// Takes every page to be this size to begin with, as it was found to be the last time, so the first frame has nothing to correct. A real size that differs wins when it comes.
+    pub fn seed_usual(&mut self, size: PageBox) {
+        if !self.usual_known && size.width.is_finite() && size.height.is_finite() && size.width > 0.0 && size.height > 0.0 {
+            self.usual = size;
+            self.usual_known = true;
+            self.refit();
+        }
+    }
+
+    /// The size every page is taken to be, if it came from a real page.
+    pub fn usual_size(&self) -> Option<PageBox> {
+        self.usual_known.then_some(self.usual)
+    }
+
     /// Sets the window's reading area and focus. Returns whether anything moved.
     pub fn set_frame(&mut self, frame_width: f64, focus: bool) -> bool {
         if frame_width == self.frame_width && focus == self.focus {

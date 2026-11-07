@@ -171,8 +171,31 @@ pub struct ProcessCounters {
     pub wakeups: u64,
     pub context_switches: u64,
     pub threads: u32,
+    pub disk_bytes_written: u64,
 }
 
 pub fn process_counters(_pid: u32) -> Option<ProcessCounters> {
+    None
+}
+
+/// Replaces a file and syncs. There's no folder sync here yet: not used at run time on this platform.
+pub fn write_private_file_durably(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_private_file(path, bytes)
+}
+
+pub fn open_private_for_writing(_path: &Path, _append: bool) -> io::Result<File> {
+    unsupported()
+}
+
+pub fn hand_to_drive(file: &File) -> io::Result<()> {
+    file.sync_all()
+}
+
+pub fn sync_folder_of(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Nothing on this platform can say where a file went.
+pub fn path_of_file_number(_device: u64, _inode: u64) -> Option<PathBuf> {
     None
 }

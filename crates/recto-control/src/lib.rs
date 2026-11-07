@@ -9,6 +9,7 @@ pub mod indexing;
 pub mod levels;
 pub mod local;
 pub mod log;
+pub mod record_store;
 pub mod server;
 pub mod state;
 pub mod terminal;

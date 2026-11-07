@@ -3,14 +3,24 @@
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-/// What identifies a file's version without reading it. Compared to notice a replaced file.
+/// What identifies a file's version without reading it. Compared to notice a replaced file. Device and inode say which file it is, wherever it's been moved to on that volume, and they're zero where there's no such thing.
+// size: 32 B. Held per tab, including cold ones, in `TabRecord`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileStamp {
     pub size: u64,
     pub mtime_ns: i64,
+    pub device: u64,
+    pub inode: u64,
 }
 
-/// Reads a file's size and modification time.
+impl FileStamp {
+    /// Whether two looks at a file saw the same contents, going by size and time. The file's own number may differ: a volume can come back under another device number, and a backup comes back under another inode.
+    pub fn same_contents(self, other: Self) -> bool {
+        self.size == other.size && self.mtime_ns == other.mtime_ns
+    }
+}
+
+/// Reads a file's size, modification time and number.
 pub fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {
     let meta = std::fs::metadata(path)?;
     let mtime_ns = meta
@@ -18,7 +28,14 @@ pub fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX));
-    Ok(FileStamp { size: meta.len(), mtime_ns })
+    #[cfg(unix)]
+    let (device, inode) = {
+        use std::os::unix::fs::MetadataExt;
+        (meta.dev(), meta.ino())
+    };
+    #[cfg(not(unix))]
+    let (device, inode) = (0, 0);
+    Ok(FileStamp { size: meta.len(), mtime_ns, device, inode })
 }
 
 /// What tells one version of a file from another, stronger than [`FileStamp`]: a file put in its place has another inode, and writing to it or setting its modification time moves its change time, which can't be set back without moving the clock.

@@ -50,7 +50,22 @@ import QuartzCore
             return
         case "appearance":
             NSApp.appearance = NSAppearance(named: value == "dark" ? .darkAqua : .aqua)
+            delegate.core.setAppearanceChoice(choice: value)
             controller?.appearanceChanged()
+        case "full_screen":
+            controller?.setQuietFullScreen(value == "on")
+        case "focus":
+            controller?.applyFocus(value)
+        case "frontmost":
+            delegate.core.frontmostChanged(app: value == "on", windowKey: value == "on")
+        case "sheet":
+            delegate.core.sheetChanged(open: value == "open")
+        case "sidebar_width":
+            delegate.core.setSidebarWidth(width: Double(value) ?? 0)
+        case "quit":
+            answer(id, ["quitting": true])
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+            return
         case "scroll":
             controller?.pages.scroll(by: Double(value) ?? 0)
         case "zoom":
@@ -82,6 +97,7 @@ import QuartzCore
             guard parts.count == 2 else { return fail(id, "That isn't a size.") }
             controller?.window.setFrame(NSRect(x: -40_000, y: -40_000, width: parts[0], height: parts[1]), display: false)
             controller?.layout()
+            controller?.noteWindow()
         case "window":
             if value == "close" {
                 controller?.window.close()
@@ -113,13 +129,15 @@ import QuartzCore
         let frame = controller.window.frame
         return [
             "window_open": true,
-            "window": ["width": frame.width, "height": frame.height, "on_any_screen": NSScreen.screens.contains { $0.frame.intersects(frame) }, "is_visible": controller.window.isVisible],
+            "window": ["x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height, "full_screen": controller.isFullScreen, "on_any_screen": NSScreen.screens.contains { $0.frame.intersects(frame) }, "is_visible": controller.window.isVisible],
             "is_active": NSApp.isActive,
             "activation": policyName(),
             "appearance": Theme.isDark(controller.root) ? "dark" : "light",
             "focus": reader.focus,
             "home": !controller.home.isHidden,
             "sidebar_visible": !sidebar.view.isHidden,
+            "sidebar_width": sidebar.view.frame.width,
+            "focus_view": delegate.core.focusView(),
             "sidebar_rows": sidebar.rowCount,
             "reveal": sidebar.revealReport(),
             "paper": reader.paper,

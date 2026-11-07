@@ -111,7 +111,10 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Find in the sidebar, with the hit list
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
 - [ ] ⌘K
-- [ ] Session restore: the whole app state on every launch, unsaved edits included (SPEC decision 23)
+- [x] Session restore: the whole app state on every launch, unsaved edits included (SPEC decision 23). A whole-state comparison across quit, hand-off and kill, journals for edits, `recto session`, `AppCore::hand_off` for the updater
+- [ ] Saved point in the history, so undo works past a Save, and Clear Edit History (SPEC decision 25). Next on `build/restore`'s follow-on
+- [ ] Deep sleep for idle tabs, with sleep files and a byte budget across documents (SPEC decision 25). Next after that
+- [ ] Find's field, edit mode and view rotation draw what the state record already carries
 - [ ] Deep sleep, with session restore as one piece of work (SPEC decision 25): dormant tabs go to disk, sleep files wake a tab within one frame, a byte budget across documents, a response to memory pressure, previews written once when a tab goes dormant
 - [ ] Recent files, replaced-file handling, password prompt
 - [ ] Settings window (⌘,), starting with *Update automatically*

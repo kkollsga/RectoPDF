@@ -75,7 +75,7 @@ run() {
   if [ "$mode" = "--full" ]; then
     app/build.sh
     # At most two at once: each is a real app, and this Mac is in use.
-    RECTO_REQUIRE_APP=1 cargo nextest run --locked -p recto-cli --test app -j 2
+    RECTO_REQUIRE_APP=1 cargo nextest run --locked -p recto-cli --test app --test restore -j 2
   fi
 }
 # PDFium's digest-checked library, which the render tests need. Does nothing if it's already there.

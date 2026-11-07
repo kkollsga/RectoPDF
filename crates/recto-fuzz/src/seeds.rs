@@ -190,6 +190,15 @@ pub fn control_seeds() -> Vec<Vec<u8>> {
 }
 
 /// A target's starting points.
+/// Samples of the state record's files, and their bodies alone, which the target seals itself.
+fn record_seeds() -> Vec<Vec<u8>> {
+    let record = include_bytes!("../../recto-session/tests/fixtures/record-v1.json").to_vec();
+    let journal = include_bytes!("../../recto-session/tests/fixtures/journal-v1.log").to_vec();
+    let body = record.split(|byte| *byte == b'\n').nth(1).unwrap_or_default().to_vec();
+    let lines: Vec<u8> = journal.split(|byte| *byte == b'\n').skip(1).filter(|line| line.len() > 9).flat_map(|line| line[9..].iter().copied().chain(std::iter::once(b'\n'))).collect();
+    vec![record, journal, body, lines, br#"{"seq":1,"active":1,"places":[[1,3,{"page":3,"anchor_page":3,"within":0.5,"x":0,"y":10,"document_height":900,"zoom":1.5}]]}"#.to_vec()]
+}
+
 pub fn for_target(name: &str) -> Vec<Vec<u8>> {
     match name {
         "pdf_bytes" => {
@@ -203,12 +212,13 @@ pub fn for_target(name: &str) -> Vec<Vec<u8>> {
         "agent" => agent_seeds(),
         "control" => control_seeds(),
         "edits" => sequence_seeds(),
+        "record" => record_seeds(),
         _ => Vec::new(),
     }
 }
 
 /// Every target's name.
-pub const TARGET_NAMES: &[&str] = &["pdf_bytes", "pdf_tree", "proto", "index", "agent", "control", "edits"];
+pub const TARGET_NAMES: &[&str] = &["pdf_bytes", "pdf_tree", "proto", "index", "agent", "control", "edits", "record"];
 
 /// The check a target runs, by name.
 pub fn check_for(name: &str) -> Option<fn(&[u8])> {
@@ -220,6 +230,7 @@ pub fn check_for(name: &str) -> Option<fn(&[u8])> {
         "agent" => targets::agent::check,
         "control" => targets::control::check,
         "edits" => targets::edits::check,
+        "record" => targets::record::check,
         _ => return None,
     })
 }

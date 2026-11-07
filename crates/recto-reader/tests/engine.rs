@@ -57,7 +57,7 @@ fn started(file: &TempPdf, count: u32) -> (Engine, Arc<Events>) {
     let events = Arc::new(Events::default());
     let engine = Engine::new(EngineConfig::default(), events.clone());
     engine.set_viewport(view(0.0));
-    engine.activate(1, count, 0, PageMap { files: vec![file.0.clone()], slots: None }, &[]);
+    engine.activate(1, count, 0, PageMap { files: vec![file.0.clone()], slots: None }, &[], None);
     engine.set_viewport(view(0.0));
     (engine, events)
 }
@@ -193,12 +193,12 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
     let events = Arc::new(Events::default());
     let engine = Engine::new(EngineConfig::default(), events);
     engine.set_viewport(view(0.0));
-    engine.activate(1, 1, 0, PageMap { files: vec![dead.clone()], slots: None }, &[]);
+    engine.activate(1, 1, 0, PageMap { files: vec![dead.clone()], slots: None }, &[], None);
     engine.set_viewport(view(0.0));
     // Its open is under way and stuck. A healthy tab comes up.
     std::thread::sleep(Duration::from_millis(100));
     let file = document(1);
-    engine.activate(2, 1, 0, PageMap { files: vec![file.0.clone()], slots: None }, &[1]);
+    engine.activate(2, 1, 0, PageMap { files: vec![file.0.clone()], slots: None }, &[1], None);
     engine.set_viewport(view(0.0));
     let began = Instant::now();
     pump(&engine, Duration::from_secs(10));
@@ -206,7 +206,7 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
     assert!(began.elapsed() < Duration::from_secs(8), "{:?}", began.elapsed());
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
     // And back on it, it says so rather than waiting for ever.
-    engine.activate(1, 1, 0, PageMap { files: vec![dead.clone()], slots: None }, &[2]);
+    engine.activate(1, 1, 0, PageMap { files: vec![dead.clone()], slots: None }, &[2], None);
     engine.set_viewport(view(0.0));
     let deadline = Instant::now() + Duration::from_secs(8);
     while engine.note().is_none() && Instant::now() < deadline {
@@ -271,7 +271,7 @@ fn a_worker_holding_a_lot_is_let_go_at_rest() {
     let policy = recto_render_service::Policy { retire_bytes: 1, ..recto_render_service::Policy::default() };
     let engine = Engine::new(EngineConfig { service: None, policy: Some(policy) }, events);
     engine.set_viewport(view(0.0));
-    engine.activate(1, 1, 0, PageMap { files: vec![file.0.clone()], slots: None }, &[]);
+    engine.activate(1, 1, 0, PageMap { files: vec![file.0.clone()], slots: None }, &[], None);
     engine.set_viewport(view(0.0));
     pump(&engine, Duration::from_secs(20));
     assert!(engine.wait_settled(Duration::from_secs(5)));

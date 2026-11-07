@@ -298,6 +298,36 @@ impl Measured {
     }
 }
 
+impl Measured {
+    /// Hands off as an update does, ends, and starts again on the same state, as far as its first correct frame with the active page drawn. Says how long each part took. What's measured is the gap the reader sees.
+    fn hand_off_and_relaunch(&mut self, app: &Path) -> Result<Value, AgentError> {
+        let began = Instant::now();
+        let flushed = self.call(json!({ "cmd": "qa_drive", "verb": "handoff", "value": "now" }))?;
+        let told = began.elapsed();
+        let _ = self.child.wait();
+        let ended = began.elapsed();
+        let (child, ready) = launch(app, &self.paths, &Launch::default())?;
+        self.child = child;
+        self.pid = ready["pid"].as_u64().unwrap_or(0) as u32;
+        let up = began.elapsed();
+        self.settled()?;
+        let settled = began.elapsed();
+        let state = self.state()?;
+        let ms = |duration: Duration| round(duration.as_secs_f64() * 1000.0);
+        Ok(json!({
+            "flush_and_read_back_ms": round(flushed["total_us"].as_f64().unwrap_or(0.0) / 1000.0),
+            "told_ms": ms(told),
+            "old_app_gone_ms": ms(ended),
+            "new_app_ready_ms": ms(up),
+            "gap_to_page_drawn_ms": ms(settled),
+            "first_shown": state["record"]["first_shown"],
+            "wrote_bytes": flushed["wrote_bytes"],
+            "record_bytes": flushed["record_bytes"],
+            "journal_bytes": flushed["journal_bytes"],
+        }))
+    }
+}
+
 impl Drop for Measured {
     fn drop(&mut self) {
         let _ = self.call(json!({ "cmd": "stop" }));
@@ -452,6 +482,60 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     }
     let (first_tabs, last) = (measures[0]["app_mib"].as_f64().unwrap_or(0.0), measures[2]["app_mib"].as_f64().unwrap_or(0.0));
     report["tabs"] = json!({ "file": tab_file.file_name().map(|name| name.to_string_lossy().to_string()), "measures": measures, "app_mib_over_2_tabs_at_1000": round(last - first_tabs), "budget_mib_over_2_tabs": 4, "switch_to_a_cold_tab_ms": round(switch_ms), "sidebar_opens_ms": round(sidebar_ms), "budget_sidebar_ms": 150 });
+    // The same 1,000 tabs across an update: what they come back at, against what they cost opened one by one.
+    let mut run = run;
+    let hand_off = run.hand_off_and_relaunch(&app)?;
+    let restored = run.state()?;
+    report["restored_tabs"] = json!({
+        "tabs": restored["session"]["tabs"].as_array().map_or(0, Vec::len),
+        "hand_off": hand_off,
+        "tree_mib": mib(restored["memory"]["tree_bytes"].as_u64().unwrap_or(0)),
+        "app_mib": mib(restored["memory"]["footprint_bytes"].as_u64().unwrap_or(0)),
+        "threads": restored["memory"]["threads"],
+        "handles": restored["memory"]["open_handles"],
+        "documents_held": restored["reader"]["documents_held"],
+        "note": "Against `tabs.measures`' line for 1,000. A process that's just started hasn't had its caches grow.",
+    });
+    drop(run);
+
+    // The gap an update makes, in the middle of reading and editing: from the old app being told, to the new one's first correct frame with the active page drawn.
+    let mut run = Measured::start(&app, &Launch { open: vec![file.clone()], ..Launch::default() })?;
+    run.settled()?;
+    let pages = run.state()?["reader"]["pages"].as_u64().unwrap_or(1);
+    run.call(json!({ "cmd": "goto", "page": (pages / 2).max(1) }))?;
+    run.settled()?;
+    run.drive("scroll", "120")?;
+    run.drive("owner_edit", "rotate:1")?;
+    run.settled()?;
+    let mut gaps = Vec::new();
+    let mut last_gap = Value::Null;
+    for _ in 0..runs.min(11) {
+        let gap = run.hand_off_and_relaunch(&app)?;
+        gaps.push(gap["gap_to_page_drawn_ms"].as_f64().unwrap_or(0.0));
+        last_gap = gap;
+    }
+    gaps.sort_by(f64::total_cmp);
+    report["hand_off_gap"] = json!({ "runs": gaps.len(), "p50_ms": round(percentile(&gaps, 0.5)), "worst_ms": round(percentile(&gaps, 1.0)), "last": last_gap, "note": "From telling the old app, through its flush and quit, the new app's start and restore, to the page settled. A process launch here, from a folder on this Mac, so it doesn't include LaunchServices or Gatekeeper." });
+    // Bytes: nothing at rest, a line for a burst of edits, as the process's own counter says.
+    let written = |pid: u32| recto_platform::local::process_counters(pid).map_or(0, |counters| counters.disk_bytes_written);
+    let _ = Command::new("/bin/sync").status();
+    let before = written(run.pid);
+    std::thread::sleep(Duration::from_secs(10));
+    let idle_bytes = written(run.pid).saturating_sub(before);
+    let before = written(run.pid);
+    let sweep = run.call(json!({ "cmd": "qa_drive", "verb": "sweep", "value": "6", "timeout_ms": 5000 }))?;
+    let _ = Command::new("/bin/sync").status();
+    let scroll_bytes = written(run.pid).saturating_sub(before);
+    let store_before = run.call(json!({ "cmd": "session_show" }))?["record"]["wrote_bytes"].as_u64().unwrap_or(0);
+    let before = written(run.pid);
+    for page in 0..200 {
+        run.drive("owner_edit", &format!("rotate:{}", page % pages + 1))?;
+    }
+    std::thread::sleep(Duration::from_secs(6));
+    let _ = Command::new("/bin/sync").status();
+    let burst_bytes = written(run.pid).saturating_sub(before);
+    let store_after = run.call(json!({ "cmd": "session_show" }))?["record"]["wrote_bytes"].as_u64().unwrap_or(0);
+    report["disk_writes"] = json!({ "idle_bytes_in_10_s": idle_bytes, "scroll_bytes_in_5_s": scroll_bytes, "scroll_steps": sweep["steps"], "edits": 200, "edit_burst_process_bytes": burst_bytes, "edit_burst_journal_bytes": store_after.saturating_sub(store_before), "note": "The process's own counter, which includes the activity log's line per command here. An agent's commands are what writes that." });
     drop(run);
 
     if let Some(heavy) = heavy {

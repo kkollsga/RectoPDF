@@ -1,11 +1,12 @@
 //! What the server asks of whoever holds the session. `recto serve` uses [`SessionHost`], and the Mac app wraps one, sharing its session.
 
 use crate::indexing::{Indexer, Notifier};
+use crate::record_store::{Flavor, Loaded, RecordStore, StoreError, notice_for};
 use crate::state::StatePaths;
 use recto_agent::index::Indexing;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, SessionAccess, acted_tab, check_condition, exit, with_tab_candidates};
 use recto_session::{DocLoader, Session, TabId};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -40,6 +41,8 @@ pub struct SessionHost<L = DrawableLoader> {
     session: Mutex<Session<L>>,
     tabs: AtomicU32,
     indexer: Option<Indexer>,
+    /// A session with no window keeps a record of its own, written only when it's told to.
+    record: Option<RecordStore>,
 }
 
 /// The session and its indexer, the way a command reaches them.
@@ -66,13 +69,20 @@ impl Default for SessionHost<DrawableLoader> {
 
 impl<L: DocLoader + Clone> SessionHost<L> {
     pub fn new(loader: L) -> Self {
-        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0), indexer: None }
+        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0), indexer: None, record: None }
     }
 
     /// With documents indexed on demand, under the state folder's corpus folder.
     #[must_use]
     pub fn with_indexing(mut self, paths: &StatePaths) -> Self {
         self.indexer = Some(Indexer::new(&paths.corpus));
+        self
+    }
+
+    /// With `session save` and `session restore`, to a record of its own.
+    #[must_use]
+    pub fn with_own_record(mut self, paths: &StatePaths) -> Self {
+        self.record = Some(RecordStore::open(paths, Flavor::Windowless));
         self
     }
 
@@ -92,8 +102,82 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     }
 }
 
+impl<L: DocLoader + Clone> SessionHost<L> {
+    /// The record's commands, for a session with no window: nothing writes until it's told to, and each save is the whole of it. The app has its own, as it keeps its record as it goes.
+    fn run_record_command(&self, level: Level, command: &Command) -> Option<Result<Value, AgentError>> {
+        if !matches!(command, Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {}) {
+            return None;
+        }
+        // The level was checked by the server against the row. Checked here too, as `execute` would.
+        if !recto_agent::allowed(level, command.access()) {
+            return Some(Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access())));
+        }
+        let Some(store) = &self.record else { return Some(Err(no_record())) };
+        Some(match command {
+            Command::SessionShow {} => Ok(self.with_session(|session| recto_agent::session_show_json(session, level, kept_json(store, None)))),
+            Command::SessionCheck {} => Ok(json!({ "safe": true, "busy": [], "seconds_since_input": null })),
+            Command::SessionSave {} => self.save_to(store),
+            _ => self.restore_from(store, level),
+        })
+    }
+
+    fn save_to(&self, store: &RecordStore) -> Result<Value, AgentError> {
+        let started = std::time::Instant::now();
+        let (record, checkpoints, lists, edited) = self.with_session(|session| {
+            let checkpoints = session.checkpoints();
+            let lists = session.lists_by_journal();
+            let edited = session.tabs().iter().filter(|tab| session.page_edits(tab.id).is_some()).count();
+            (session.to_record(), checkpoints, lists, edited)
+        });
+        for (name, header, list) in &checkpoints {
+            store.write_checkpoint(name, header, list).map_err(store_error)?;
+        }
+        store.next_write_whole();
+        store.write_record(&record, &recto_session::record::PlaceDelta::default(), true).map_err(store_error)?;
+        store.verify(&record, &lists).map_err(store_error)?;
+        let (record_bytes, journal_bytes) = store.sizes();
+        Ok(json!({ "saved": true, "tabs": record.tabs.len(), "edited_tabs": edited, "record_bytes": record_bytes, "journal_bytes": journal_bytes, "wrote_bytes": store.wrote_bytes(), "total_ms": started.elapsed().as_millis() as u64 }))
+    }
+
+    fn restore_from(&self, store: &RecordStore, level: Level) -> Result<Value, AgentError> {
+        if level < Level::Full && self.with_session(|session| session.holds_owner_edits()) {
+            return Err(recto_agent::restore_would_lose_owners_edits());
+        }
+        let loaded = store.load();
+        let notice = notice_for(&loaded);
+        let Loaded::Restored(restored) = loaded else {
+            return Ok(json!({ "restored": false, "count": self.tabs.load(Ordering::Relaxed), "notice": notice }));
+        };
+        self.with_session(|session| {
+            session.restore(&restored.record, restored.journals).map_err(|error| AgentError::new(error.code(), "The record can't be used.", exit::FAILED))?;
+            // The active tab's facts are what a session with no window would otherwise have to find out at its next look.
+            session.wake_active();
+            Ok(json!({ "restored": true, "count": session.tabs().len(), "active": session.active().map(|id| id.0), "notice": notice }))
+        })
+    }
+}
+
+/// What's known about a record, for `session show`. Numbers, and Rust's own words.
+pub fn kept_json(store: &RecordStore, notice: Option<&str>) -> Value {
+    let (record_bytes, journal_bytes) = store.sizes();
+    let (writes, appends) = store.writes();
+    json!({ "kept": record_bytes > 0, "holds_the_record": store.holds_the_record(), "beside_newer": store.beside_newer(), "record_bytes": record_bytes, "journal_bytes": journal_bytes, "writes": writes, "appends": appends, "wrote_bytes": store.wrote_bytes(), "notice": notice })
+}
+
+/// A store's failure, for whoever asked.
+pub fn store_error(error: StoreError) -> AgentError {
+    AgentError::new(error.code, error.message, exit::FAILED)
+}
+
+fn no_record() -> AgentError {
+    AgentError::new("no_record", "This session doesn't keep a state record.", exit::FAILED)
+}
+
 impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
     fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+        if let Some(answer) = self.run_record_command(level, command) {
+            return answer;
+        }
         let result = recto_agent::execute(&self.access(), level, command, events);
         let tabs = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).tabs().len();
         self.tabs.store(u32::try_from(tabs).unwrap_or(u32::MAX), Ordering::Relaxed);

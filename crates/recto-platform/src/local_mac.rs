@@ -296,6 +296,58 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
 }
 
+/// [`write_private_file`], and the folder synced after the rename, so that a power cut straight afterwards can't bring the old name back. For what a person's work depends on.
+pub fn write_private_file_durably(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_private_file(path, bytes)?;
+    sync_folder_of(path)
+}
+
+/// Opens a file of ours for writing, making it mode 0600 if it's new, with a planted link at its name not followed. Nothing's cut short: where to write is the caller's to say.
+pub fn open_private_for_writing(path: &Path, append: bool) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(false);
+    }
+    options.open(path)
+}
+
+/// Hands a file's bytes to the drive, with a plain `fsync`, and doesn't make the drive flush its own cache, which `File::sync_all` does on this OS and which is what costs time and wear.
+pub fn hand_to_drive(file: &File) -> io::Result<()> {
+    // SAFETY: the descriptor is valid for as long as the file, and fsync takes nothing else.
+    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Syncs the folder a file is in, so what was just renamed or removed there stays that way.
+pub fn sync_folder_of(path: &Path) -> io::Result<()> {
+    let Some(folder) = path.parent() else { return Ok(()) };
+    File::open(folder)?.sync_all()
+}
+
+/// Where a file of this number on this volume is now. Asks the file system, so nothing is searched, and a volume that's gone or a number nothing has says `None`. The answer may be a different file that has since taken the number, so a caller compares what it finds.
+pub fn path_of_file_number(device: u64, inode: u64) -> Option<PathBuf> {
+    #[repr(C)]
+    struct Fsid {
+        val: [i32; 2],
+    }
+    unsafe extern "C" {
+        // sys/fsgetpath.h, public since macOS 10.13. `libc` keeps `fsid_t`'s field private.
+        fn fsgetpath(buf: *mut libc::c_char, buflen: libc::size_t, fsid: *mut Fsid, obj_id: u64) -> libc::ssize_t;
+    }
+    let mut fsid = Fsid { val: [i32::try_from(device).ok()?, 0] };
+    let mut buffer = vec![0u8; 4096];
+    // SAFETY: the buffer is its stated length and lives for the call, and `fsid` is a valid struct for it. The kernel writes at most that length.
+    let written = unsafe { fsgetpath(buffer.as_mut_ptr().cast(), buffer.len(), &raw mut fsid, inode) };
+    let written = usize::try_from(written).ok().filter(|written| *written > 0)?;
+    buffer.truncate(written);
+    if buffer.last() == Some(&0) {
+        buffer.pop();
+    }
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buffer)))
+}
+
 /// The same with nothing synced, for what a kill or a power cut may lose: a cache that can be made again. A sync per small file costs milliseconds on a real disk.
 pub fn write_private_file_unsynced(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temp = path.with_extension(format!("tmp{}", std::process::id()));
@@ -392,6 +444,8 @@ pub struct ProcessCounters {
     pub wakeups: u64,
     pub context_switches: u64,
     pub threads: u32,
+    /// Bytes it's had written to disk in its life, the number SSD wear goes by. Counted when the write reaches the file system, whatever happens to the file after.
+    pub disk_bytes_written: u64,
 }
 
 /// A process's counters. `None` if it's gone or belongs to someone else.
@@ -419,6 +473,7 @@ pub fn process_counters(pid: u32) -> Option<ProcessCounters> {
         wakeups: info.ri_pkg_idle_wkups.saturating_add(info.ri_interrupt_wkups),
         context_switches: u64::try_from(task.pti_csw).unwrap_or(0),
         threads: u32::try_from(task.pti_threadnum).unwrap_or(0),
+        disk_bytes_written: info.ri_diskio_byteswritten,
     })
 }
 
@@ -488,6 +543,25 @@ mod tests {
         std::os::unix::fs::symlink(&dir, &link).unwrap();
         assert!(ensure_private_dir(&link).is_err(), "a link was accepted");
         std::fs::remove_file(&link).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Failure: a file moved to another folder can't be found, so a tab that could have followed it says it's gone. Or a number nothing has, or a volume that isn't there, answers with something other than nothing.
+    #[test]
+    fn a_moved_file_is_found_by_its_number() {
+        let dir = temp("moved");
+        ensure_private_dir(&dir).unwrap();
+        ensure_private_dir(&dir.join("elsewhere")).unwrap();
+        let (from, to) = (dir.join("a.pdf"), dir.join("elsewhere/b.pdf"));
+        std::fs::write(&from, b"x").unwrap();
+        let meta = std::fs::metadata(&from).unwrap();
+        let (device, inode) = (meta.dev(), meta.ino());
+        std::fs::rename(&from, &to).unwrap();
+        let found = path_of_file_number(device, inode).expect("found").canonicalize().unwrap();
+        assert_eq!(found, to.canonicalize().unwrap());
+        std::fs::remove_file(&to).unwrap();
+        assert!(path_of_file_number(device, inode).is_none_or(|path| path != found), "it's gone");
+        assert_eq!(path_of_file_number(0x7fff_fff0, 2), None, "no such volume");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
