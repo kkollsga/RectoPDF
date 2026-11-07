@@ -30,6 +30,8 @@ const CHECK_STACK: usize = 1024 * 1024;
 const UNSTARTED_LIMIT: u32 = 3;
 /// Times an install gets as far as quitting the app and reopening it with nothing to show for it. Past this it's not tried by itself again, as each one's the user's app going away and coming back for nothing.
 const QUITS_FOR_NOTHING: u32 = 3;
+/// How long the record as it was before an update is kept. A new version that comes up and then misreads the record, starting empty or wrong, has thrown away nothing it can't be given back, for this long. Nothing goes back by itself after the first frame: this is what makes going back by hand possible, and the next update replaces it. A clone on APFS, so it costs no disk until the record changes.
+pub const KEEP_RECORD_COPY_MS: u64 = 7 * 24 * 3600 * 1000;
 /// How long the installer waits in a test's run for a new app to come up, as its broken ones are the point.
 const TEST_START_LIMIT_MS: u64 = 30_000;
 
@@ -325,6 +327,7 @@ impl Updater {
         // What's staged and no longer on offer is the size of the app, for nothing. Only with no installer at work.
         if !second_copy && settled.plan_gone && !helper_alive(&self.files) {
             self.clear_leftovers(&app, &current, offered.is_some());
+            self.drop_an_old_record_copy();
         }
         let status = settled.status.unwrap_or_else(|| match &offered {
             Some(offered) if may_replace => Status::Available(offered.clone()),
@@ -389,6 +392,15 @@ impl Updater {
         }
     }
 
+    /// What's kept of the record from before the last update goes once it's a week old. One look at one file's time.
+    fn drop_an_old_record_copy(&self) {
+        let whole = self.files.before().join(".whole");
+        let age = std::fs::metadata(&whole).ok().and_then(|meta| meta.modified().ok()).and_then(|at| at.elapsed().ok());
+        if age.is_some_and(|age| age.as_millis() > u128::from(KEEP_RECORD_COPY_MS)) {
+            let _ = std::fs::remove_dir_all(self.files.before());
+        }
+    }
+
     /// Whether this launch is an update arriving, so what comes back is exactly what was left, down to a window that was closed. Any other launch opens a window, as an app does.
     #[must_use]
     pub fn arrived_by_update(&self) -> bool {
@@ -403,7 +415,10 @@ impl Updater {
             let _ = std::fs::remove_file(self.files.outcome());
             let _ = std::fs::remove_file(self.files.plan());
             let _ = std::fs::remove_file(self.files.helper_pid());
-            let _ = std::fs::remove_dir_all(self.files.before());
+            // Gone back, the copy's been put back and is for nothing. Stuck on a version that didn't come up, it's the state before it, and stays.
+            if outcome.kind != OutcomeKind::CouldntGoBack {
+                let _ = std::fs::remove_dir_all(self.files.before());
+            }
             settled.changed = true;
             settled.plan_gone = true;
             match outcome.kind {
@@ -557,10 +572,6 @@ impl Updater {
             }
             changed
         };
-        // It's come up, so there's nothing the record's copy would be for. The installer clears its own if it's still around.
-        if to_prove && !helper_alive(&self.files) {
-            let _ = std::fs::remove_dir_all(self.files.before());
-        }
         if let Some(plan) = arrived {
             self.ready_folder();
             let _ = local::write_private_file(&self.files.launch_ok(), format!("{version} {} {shown_at_ms}", std::process::id()).as_bytes());
@@ -1604,6 +1615,33 @@ mod tests {
             assert!(updater.notice().is_some(), "said each time");
             assert_eq!(lock(&updater.st).saved.failed.contains(&"0.2.0".to_string()), tries == QUITS_FOR_NOTHING, "{tries}");
         }
+    }
+
+    /// Failure: a new version that comes up and then misreads the record, starting empty or wrong, has already thrown away the record from before it, which was deleted at its first frame. It's kept for a week, and then it goes.
+    #[test]
+    fn the_record_from_before_an_update_is_kept_for_a_while() {
+        let bed = Bed::new("before");
+        let root = bed.dir.join("state");
+        let files = Files::in_state(&root);
+        local::ensure_private_dir(&files.work).unwrap();
+        std::fs::create_dir_all(files.before()).unwrap();
+        std::fs::write(files.before().join(".whole"), "").unwrap();
+        std::fs::write(files.before().join("record.a.json"), "the state before").unwrap();
+        let plan = Plan { id: "1-1".into(), cdhash: "a".repeat(40), team_required: false, from: "0.1.0".into(), to: "0.2.0".into(), pid: 1, app: bed.app.clone(), beside: beside_app(&bed.app).unwrap(), root: root.clone(), quit_at_ms: 5, background: false, quit_limit_ms: 1, start_limit_ms: 1, test: None };
+        plan.write(&files.plan()).unwrap();
+        let launch = |version: &str| {
+            let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
+            updater.launched(Facts { version: version.into(), app: bed.app.clone(), system: "15.0".into() });
+            updater
+        };
+        launch("0.2.0").first_frame(100);
+        assert!(files.before().join("record.a.json").exists(), "come up, and kept");
+        launch("0.2.0").first_frame(100);
+        assert!(files.before().join("record.a.json").exists(), "and at the next launch");
+        let week_and_more = std::time::SystemTime::now() - Duration::from_millis(KEEP_RECORD_COPY_MS + 60_000);
+        std::fs::File::options().write(true).open(files.before().join(".whole")).unwrap().set_modified(week_and_more).unwrap();
+        launch("0.2.0");
+        assert!(!files.before().exists(), "a week on, it goes");
     }
 
     /// Failure: a launch tidying up deletes the only good copy, as `new/` after a keep that failed, or says the version that's here came back. All that's old in there is kept; a version it couldn't go back from says just that.

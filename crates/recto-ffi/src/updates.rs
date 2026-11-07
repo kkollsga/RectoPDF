@@ -108,8 +108,9 @@ impl Host for Hooks {
         TestLaunch { args, env: vec![("RECTO_STATE_DIR".to_owned(), root)], direct: false }
     }
 
+    /// Asked on the thread that reads the state, before it does: so it waits for the lock as long as reading would, as an app that's just quit can still be letting go of it, and a quick quit and reopen isn't a second copy.
     fn keeps_the_record(&self) -> bool {
-        self.inner().is_some_and(|inner| inner.saver.store.holds_the_record())
+        self.inner().is_some_and(|inner| inner.saver.store.wait_for_lock())
     }
 
     fn can_draw(&self) -> bool {

@@ -129,6 +129,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [x] Update check: *Check for Updates…* in the RectoPDF menu, *Update to X.Y.Z…* when one is found, once a day (SPEC decision 24)
 - [x] The hands-off update itself: `recto-update` and its `recto-updater`, `recto update`, `recto settings`, automatic after 30 quiet minutes, a real end-to-end test with the whole state compared, and every kill of the installer proven whole
 - [ ] Explain the footprint of 14.47 MiB one run of the updater's measuring test read after a check, against 11.64 in a plain sequence. Likeliest: a test's copy of the app reads about 13.5 MiB with nothing armed, from its own bundle id and `LSUIElement`. Not reproduced since, and why those cost that isn't known
+- [ ] Going back after the first frame: a new version that crash-loops once it's up, or misreads the record and starts empty, stays. The record from before is kept a week for it, and nothing uses it yet
 - [ ] What a background reopen does on a real desktop: the window behind everything, no Space change, full screen when they come to it. Only a signed release on a real screen can show it
 - [ ] Whether the hidden `previous/` copy gets registered with Launch Services, and installing during dark wake or a locked screen
 - [ ] A check by hand with the window closed says its result only in Settings, as the notice has nowhere to show

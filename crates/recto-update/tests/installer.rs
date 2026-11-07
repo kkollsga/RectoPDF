@@ -185,7 +185,8 @@ fn it_waits_for_the_old_process_then_swaps_and_keeps_the_old_app() {
     assert_eq!(bed.kept().as_deref(), Some("0.1.0"), "the previous app is kept");
     assert!(bed.ran("0.2.0"));
     assert_eq!(bed.record(), "the state");
-    assert!(!bed.files.plan().exists() && !bed.files.before().exists() && !new_app_in(&bed.plan.beside).exists(), "it tidies up after itself");
+    assert!(!bed.files.plan().exists() && !new_app_in(&bed.plan.beside).exists(), "it tidies up after itself");
+    assert!(bed.files.before().join(".whole").exists(), "and keeps the record from before, for a while");
     assert!(std::fs::read_to_string(&bed.files.log).unwrap().contains("0.2.0 started"), "it says how it went");
 }
 

@@ -81,9 +81,8 @@ impl Run<'_> {
         let _ = std::fs::remove_file(self.files.plan());
     }
 
-    /// Everything this run made in the state folder, for when it's gone well.
+    /// Everything this run made in the state folder, for when it's gone well. Not the record's copy: see [`crate::updater::KEEP_RECORD_COPY_MS`].
     fn clear_own_files(&self) {
-        let _ = std::fs::remove_dir_all(self.files.before());
         let _ = std::fs::remove_file(self.files.plan());
         let _ = std::fs::remove_file(self.files.launch_ok());
         let _ = std::fs::remove_file(self.files.launch_failed());
