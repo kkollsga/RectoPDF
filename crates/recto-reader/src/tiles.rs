@@ -956,7 +956,8 @@ impl Reader {
             return None;
         }
         let around = first.saturating_sub(SIZES_AROUND)..=(last + SIZES_AROUND).min(doc.layout.count().saturating_sub(1));
-        if let Some(page) = visible.clone().chain(around).find(|page| !doc.layout.is_known(*page)) {
+        // A page whose size couldn't be read has its reason on it, and isn't asked again: nothing about it will be different straight away.
+        if let Some(page) = visible.clone().chain(around).find(|page| !doc.layout.is_known(*page) && !doc.issues.contains_key(page)) {
             let (file, source_page) = doc.map.source(page)?;
             let generation = self.fresh_generation();
             return Some(Job { tab, position: page, file, source_page, generation, kind: JobKind::Size });
@@ -1195,11 +1196,11 @@ impl Reader {
             return false;
         }
         for page in self.visible_pages(doc) {
-            if !doc.layout.is_known(page) {
-                return false;
-            }
             if doc.issues.contains_key(&page) {
                 continue;
+            }
+            if !doc.layout.is_known(page) {
+                return false;
             }
             let Ok(cells) = self.visible_cells(doc, page, scale) else { continue };
             for cell in cells {
@@ -1621,6 +1622,33 @@ mod tests {
         assert_eq!(reader.doc().unwrap().layout.count(), 2);
         assert_eq!(edited.source(0), Some((PathBuf::from("/d/a.pdf"), 1)));
         assert_eq!(edited.source(9), None);
+    }
+
+    /// Failure: a page whose size can't be read is asked about again at once, for ever: 100% of a core on a hostile page, nothing else is drawn, and everything waiting for it to settle times out.
+    #[test]
+    fn a_page_whose_size_cant_be_read_is_asked_once() {
+        let mut reader = reader_on(3);
+        let mut asked = 0;
+        for _ in 0..200 {
+            reader.take_ops();
+            reader.applied();
+            let Some(job) = reader.next_job() else { break };
+            let outcome = match &job.kind {
+                JobKind::Size if job.position == 0 => {
+                    asked += 1;
+                    Outcome::PageFailed { message: "This page couldn't be read.".into(), may_pass: false }
+                }
+                JobKind::Size => Outcome::Size(letter()),
+                JobKind::Traits => Outcome::Heavy(false),
+                JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
+            };
+            reader.finish(job, outcome);
+            reader.drain(64);
+            reader.applied();
+        }
+        assert_eq!(asked, 1);
+        assert!(reader.is_settled(), "{}", reader.report().0);
+        assert_eq!(reader.note(), Some("This page couldn't be read."));
     }
 
     /// Failure: the host's size change moves the reader away from what they were reading.
