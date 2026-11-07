@@ -48,7 +48,8 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `recto_index::select::Line` | Line of a page held for selecting, at most 16,384, on at most 8 pages past what's in use | ≤ 32 B |
 | `recto_index::select::Selection` | One, on the page view, for what's on screen. No tab holds one | ≤ 64 B |
 | `recto_index::order::Line` | Line of a page in hand, at most 16,384, only while it's being read | ≤ 72 B |
-| `recto_reader::layout::Override` | Visited page whose size isn't the document's usual one, at most 65,536, hot and warm tabs only | ≤ 32 B |
+| `recto_reader::layout::Override` | Visited page whose size isn't the document's usual one, or turned the other way from most, at most 65,536, hot and warm tabs only. Turning every page adds none | ≤ 32 B |
+| `recto_reader::tiles::PageMap::turns` | Page of an edited tab, hot and warm only, and only once a page of it is turned | 1 B |
 | `corpus::PageRecord` | Page in a corpus, on disk, read back one at a time | 28 B on disk |
 | `indexing::IndexJob` | File waiting for an index, at most 16 and one running. No tab holds one | A path and 32 B |
 
