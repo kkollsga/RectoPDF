@@ -454,7 +454,7 @@ fn a_worker_that_outstays_its_idle_time_is_killed_with_nobody_asking() {
 }
 
 /// Failure: the hidden-text check's drawing stops the worker and the page's text is lost with it, though the text itself is fine. It must come back marked as not
-/// checked, and the page must stay remembered as one that can't be drawn.
+/// checked, the check isn't tried again, and what stopped a draw at 2x of the whole page says nothing about drawing a tile: this used to leave the page failed at every scale.
 #[test]
 fn text_comes_back_unchecked_when_the_check_stops_the_worker() {
     let (mut doc, _file) = doc("dies_drawing_for_the_check", policy());
@@ -466,7 +466,7 @@ fn text_comes_back_unchecked_when_the_check_stops_the_worker() {
     assert!(!again.hidden_checked);
     assert_eq!(doc.stats().crashes, 1, "the check was retried on a page known to stop it");
     assert_eq!(doc.stats().spawns, spawns);
-    assert_eq!(doc.render_tile(&request(), &surface()).unwrap_err(), RenderFailure::PageFailed { page: 0, reason: KillReason::Crashed }, "getting text back mustn't erase what drawing did");
+    assert!(matches!(doc.render_tile(&request(), &surface()), Ok(TileResult::Done(_))), "a check that failed doesn't stop the page being drawn");
 }
 
 /// Failure: a file that stops every worker while opening starts a new one on every call, and the error blames "page 1", which isn't what happened.
