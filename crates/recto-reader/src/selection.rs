@@ -513,7 +513,7 @@ impl Selecting {
             "text_pages_held": self.texts.len(),
             "text_bytes_held": self.held_bytes(),
             "text_reads": self.reads,
-            "edge_pages_held": self.edges.len(),
+            "text_edge_pages_held": self.edges.len(),
             "copying": self.copy.is_some(),
             "copy_waiting_for_host": self.copied.is_some(),
         })
@@ -618,7 +618,7 @@ mod tests {
             services.page_read(wanted.page, report_page(wanted.page), false, &[1]);
         }
         assert_eq!(services.text_now(pages).as_deref(), Some("Body of page 1"));
-        assert!(services.report()["edge_pages_held"].as_u64().unwrap() as usize <= MAX_EDGE_PAGES);
+        assert!(services.report()["text_edge_pages_held"].as_u64().unwrap() as usize <= MAX_EDGE_PAGES);
     }
 
     fn restricted(line: &str) -> Arc<PageText> {
