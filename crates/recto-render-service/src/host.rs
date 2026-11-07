@@ -748,6 +748,11 @@ impl DocRenderer {
         CancelHandle(self.control.clone())
     }
 
+    /// Whether this generation has been cancelled, so an answer given for it may only mean that.
+    pub fn is_stale(&self, generation: u64) -> bool {
+        self.control.is_stale(generation)
+    }
+
     /// Whether a worker is running. Never true for a cold tab, because a cold tab has no `DocRenderer`.
     pub fn has_worker(&mut self) -> bool {
         self.reap_if_gone();
