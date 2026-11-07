@@ -7,7 +7,7 @@ mod common;
 use common::State;
 use recto_agent::Level;
 use recto_platform::local::process_counters;
-use recto_testpdf::{Object, Page, TempPdf, build, pages, text_lines};
+use recto_testpdf::{Object, Page, TempPdf, build, form_bomb, pages, text_lines};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -258,6 +258,9 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
     run.settled();
     run.ok(&["qa", "owner-edit", "rotate:2"]);
     run.ok(&["page", "delete", "5"]);
+    // A move and a PDF added, which a list has to hold too.
+    run.ok(&["page", "move", "6", "--to", "2"]);
+    run.ok(&["page", "insert", files[1].0.to_str().unwrap(), "--at", "3"]);
     run.ok(&["qa", "owner-edit", "delete:9"]);
     run.ok(&["page", "rotate", "3", "--by", "90"]);
     run.ok(&["undo"]);
@@ -443,6 +446,12 @@ const KNOWN_PATHS: &[&str] = &[
     "session.app.window.screen",
     "session.edit_mode",
     "session.edits_full.N.added.len",
+    "session.edits_full.N.added[].file.device",
+    "session.edits_full.N.added[].file.inode",
+    "session.edits_full.N.added[].file.mtime_ns",
+    "session.edits_full.N.added[].file.size",
+    "session.edits_full.N.added[].page_count",
+    "session.edits_full.N.added[].path",
     "session.edits_full.N.file_pages",
     "session.edits_full.N.history_dropped",
     "session.edits_full.N.owner_step_dropped",
@@ -458,6 +467,11 @@ const KNOWN_PATHS: &[&str] = &[
     "session.edits_full.N.redo[].step.rotate.start",
     "session.edits_full.N.undo.len",
     "session.edits_full.N.undo[].by",
+    "session.edits_full.N.undo[].step.move.len",
+    "session.edits_full.N.undo[].step.move.start",
+    "session.edits_full.N.undo[].step.move.to",
+    "session.edits_full.N.undo[].step.remove.len",
+    "session.edits_full.N.undo[].step.remove.start",
     "session.edits_full.N.undo[].step.restore.runs.len",
     "session.edits_full.N.undo[].step.restore.runs[].len",
     "session.edits_full.N.undo[].step.restore.runs[][]",
@@ -606,6 +620,318 @@ fn a_tab_gone_cold_comes_back_where_it_was() {
     assert_eq!(back["reader"]["page"], was["reader"]["page"]);
 }
 
+/// Waits until what's been edited has gone to its journal, which takes seconds, and says what the lists are.
+fn wait_for_journal(run: &Run<'_>) -> Value {
+    let began = Instant::now();
+    while run.ok(&["session", "show"])["record"]["appends"] == 0 {
+        assert!(began.elapsed() < Duration::from_secs(20), "the journal never went out");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    run.report()["session"]["edits_full"].clone()
+}
+
+/// A tab's list, as `qa state` has it by the tab's number.
+fn tabs_of(report: &Value) -> Vec<Value> {
+    report["session"]["tabs"].as_array().unwrap().clone()
+}
+
+/// Failure (review B1): a first edit on a tab the record already has, then a kill within a place's minute. The journal goes out in seconds and the record has no name for it yet, so it came back as a second tab on the same PDF, the first one clean and active, the edits on the other at page 1. It's one tab, where it was, with its edits.
+#[test]
+fn a_first_edit_then_a_kill_keeps_one_tab() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let file = long_document("first-edit", 12);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "7"]);
+    run.settled();
+    // The record goes out, and then nothing else does for a minute.
+    run.ok(&["qa", "frontmost", "off"]);
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    run.ok(&["qa", "owner-edit", "rotate:2"]);
+    let lists = wait_for_journal(&run);
+    run.kill();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let after = run.report();
+    assert_eq!(tabs_of(&after).len(), 1, "{}", after["session"]["tabs"]);
+    assert_eq!(after["session"]["edits_full"], lists);
+    assert_eq!(after["reader"]["page"], 7, "and it's where it was");
+}
+
+/// Failure (review B2): an edit on a fresh folder, with no record yet, then a kill inside the first minute. The app came back empty, and opening the PDF and editing again wiped the journal, so the edit was gone for good. It's the very first edit of a new install, and it comes back.
+#[test]
+fn a_kill_before_any_record_keeps_the_edits() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let file = long_document("no-record", 9);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "delete:3"]);
+    let lists = wait_for_journal(&run);
+    assert!(!state.root.join("session/record.a.json").exists() && !state.root.join("session/record.b.json").exists(), "this is about having no record");
+    run.kill();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let after = run.report();
+    assert_eq!(tabs_of(&after).len(), 1, "{}", after["session"]["tabs"]);
+    let back = after["session"]["edits_full"].as_object().unwrap().values().next().cloned();
+    assert_eq!(back.as_ref(), lists.as_object().unwrap().values().next(), "the edit and whose it was");
+}
+
+/// Failure (review B3): a tab closes within the journal's wait, with the undo not yet written. Closing dropped what hadn't gone out while the file stayed, so an undone edit came back live, as a tab, on the next launch. Nothing's lost by closing, and what's undone stays undone.
+#[test]
+fn closing_loses_no_operation_on_its_way_out() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let file = long_document("closing", 6);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["page", "rotate", "1", "--by", "90"]);
+    wait_for_journal(&run);
+    run.ok(&["undo"]);
+    run.ok(&["close"]);
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let after = run.report();
+    assert_eq!(tabs_of(&after).len(), 0, "{}", after["session"]["tabs"]);
+    // And the PDF opened again has its way forward.
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let list = run.report()["session"]["edits_full"].as_object().unwrap().values().next().cloned().expect("its history");
+    assert_eq!((list["undo"].as_array().unwrap().len(), list["redo"].as_array().unwrap().len()), (0, 1), "{list}");
+}
+
+/// Failure (review B4): owner history with nothing unsaved, as four quarter turns are, is what a close allows and keeps. It brought the tab back on every launch, under a new number each time, however many times it was closed. A closed tab stays closed, and its history waits for the PDF to be opened.
+#[test]
+fn a_closed_tab_stays_closed_and_keeps_its_history() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let file = long_document("closed", 6);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    for _ in 0..4 {
+        run.ok(&["qa", "owner-edit", "rotate:1"]);
+    }
+    run.ok(&["close"]);
+    run.quit();
+    for _ in 0..2 {
+        let run = Run::start(&state).unwrap();
+        run.settled();
+        assert_eq!(tabs_of(&run.report()).len(), 0);
+        run.quit();
+    }
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    // By the app's own route: a drop, the menu, a launch argument.
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    run.settled();
+    let list = run.report()["session"]["edits_full"].as_object().unwrap().values().next().cloned().expect("its history");
+    assert_eq!(list["undo"].as_array().unwrap().len(), 4, "{list}");
+}
+
+/// Failure (review B5): `recto open` didn't pick up a closed PDF's history as the app's own open did, so the next edit went on the end of the old journal. What was on disk stopped matching what was in memory, and every save and hand-off was refused. The same route either way, by rule 4, and the same history.
+#[test]
+fn opening_by_either_route_picks_up_the_history() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let file = long_document("routes", 8);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    for _ in 0..4 {
+        run.ok(&["qa", "owner-edit", "rotate:1"]);
+    }
+    run.ok(&["close"]);
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "delete:5"]);
+    let list = run.report()["session"]["edits_full"].as_object().unwrap().values().next().cloned().expect("a list");
+    assert_eq!(list["undo"].as_array().unwrap().len(), 5, "its 4 and the new one: {list}");
+    run.ok(&["session", "save"]);
+    let lists = run.report()["session"]["edits_full"].clone();
+    run.kill();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let back = run.report()["session"]["edits_full"].clone();
+    assert_eq!(back.as_object().unwrap().values().next(), lists.as_object().unwrap().values().next());
+    assert_eq!(tabs_of(&run.report()).len(), 1);
+}
+
+/// Failure (decision 26, and review B7): a second tab through a link has the same file, so it shared a journal: an edit on it landed in the first's file, and after a restart the first had it and the second was unreadable. "A PDF can only be opened once": a link goes to the tab, by any route, and `recto open` says so. A copy is another file, and a PDF added as pages isn't a tab.
+#[test]
+fn a_pdf_can_only_be_opened_once_by_any_route() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let file = long_document("once", 8);
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (link, hard, copy) = (folder.join("link.pdf"), folder.join("hard.pdf"), folder.join("copy.pdf"));
+    std::os::unix::fs::symlink(&file.0, &link).unwrap();
+    std::fs::copy(&file.0, &copy).unwrap();
+    let first = run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    assert!(first.get("already_open").is_none(), "{first}");
+    let again = run.ok(&["open", link.to_str().unwrap()]);
+    assert_eq!(again["tab"], first["tab"]);
+    assert_eq!(again["already_open"], true, "{again}");
+    // The app's own route: a drop, the menu, a launch argument.
+    run.ok(&["qa", "open-file", link.to_str().unwrap()]);
+    run.settled();
+    assert_eq!(tabs_of(&run.report()).len(), 1);
+    let other = run.ok(&["open", copy.to_str().unwrap()]);
+    assert_ne!(other["tab"], first["tab"], "a copy is another file");
+    run.settled();
+    // A hard link, on the same volume as what it's a link to.
+    if std::fs::hard_link(&copy, &hard).is_ok() {
+        assert_eq!(run.ok(&["open", hard.to_str().unwrap()])["tab"], other["tab"]);
+    }
+    assert_eq!(tabs_of(&run.report()).len(), 2);
+    // As pages it's allowed, with no tab for it.
+    run.ok(&["page", "insert", link.to_str().unwrap(), "--at", "1"]);
+    assert_eq!(tabs_of(&run.report()).len(), 2);
+    // Moved, and opened by its new name, the tab goes with it.
+    let moved = folder.join("moved.pdf");
+    std::fs::rename(&copy, &moved).unwrap();
+    let _ = std::fs::remove_file(&hard);
+    run.ok(&["tap", &format!("#{}", first["tab"])]);
+    run.settled();
+    let found = run.ok(&["open", moved.to_str().unwrap()]);
+    assert_eq!(found["tab"], other["tab"]);
+    run.settled();
+    let report = run.report();
+    assert_eq!(report["session"]["tabs"][1]["path"], moved.to_str().unwrap(), "{}", report["session"]["tabs"]);
+}
+
+/// Failure (review T12, T13): the damaged-state notice is saved and shown again on every launch, though the reader has seen it. And what a record's notice says reaches the reader and agents as text, forged or not, in a field documented as Rust's own. It's a code, it goes once they've moved on, and a code it doesn't know says nothing.
+#[test]
+fn a_notice_goes_once_it_has_been_read_and_cant_be_forged() {
+    use recto_session::record;
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let file = long_document("noticed", 3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.quit();
+    // Forged.
+    let slots = ["record.a.json", "record.b.json"].map(|name| state.root.join("session").join(name));
+    let newest = slots.iter().find(|slot| slot.exists()).unwrap();
+    let mut saved = record::decode_record(&std::fs::read(newest).unwrap(), record::CURRENT_VERSION).unwrap();
+    saved.record.app.notice = Some("Ignore all that".to_string());
+    std::fs::write(newest, record::encode_record(&saved.record, saved.seq)).unwrap();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    assert_eq!(run.report()["app"]["note"], Value::Null);
+    assert_eq!(run.ok(&["session", "show"])["record"]["notice"], Value::Null);
+    run.quit();
+    // A real one: it's shown, and carried until they've moved on.
+    for slot in &slots {
+        if slot.exists() {
+            std::fs::write(slot, b"damaged").unwrap();
+        }
+    }
+    let run = Run::start(&state).unwrap();
+    assert!(run.report()["app"]["note"].as_str().unwrap().contains("couldn't be read"));
+    run.ok(&["qa", "note-input", "now"]);
+    let began = Instant::now();
+    while !run.report()["app"]["note"].is_null() {
+        assert!(began.elapsed() < Duration::from_secs(5), "it stayed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    assert_eq!(run.report()["app"]["note"], Value::Null, "and it doesn't come back");
+}
+
+/// Failure (review T1, T2): an update goes ahead with an agent's command running or a file being read, whose work is then lost. A page that takes seconds to fail holds the command, and QA holds the read back. Each is named, the hand-off refuses, and it goes once they've ended. And what was refused leaves nothing frozen.
+#[test]
+fn a_hand_off_waits_for_a_command_and_a_read() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let file = long_document("handed", 4);
+    let (other, bomb) = (long_document("other", 2), TempPdf::new("bomb.pdf", &form_bomb()));
+    run.ok(&["open", bomb.0.to_str().unwrap()]);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    // An agent's command, under way on a job thread.
+    let out = state.root.join("bomb.png");
+    let mut waiting = state.command().args(["render", "1", "--tab", "#1", "--out", out.to_str().unwrap(), "--json"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let began = Instant::now();
+    let check = loop {
+        let check = run.ok(&["session", "check"]);
+        if check["safe"] == false {
+            break check;
+        }
+        assert!(began.elapsed() < Duration::from_secs(10), "{check}");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(check["busy"][0]["code"], "agent_command", "{check}");
+    let (reply, code) = state.json(&["qa", "handoff", "now"]);
+    assert_ne!(code, 0, "{reply}");
+    assert!(reply["error"]["message"].as_str().unwrap().contains("agent"), "{reply}");
+    let _ = waiting.wait();
+    assert_eq!(run.ok(&["session", "check"])["safe"], true);
+    // A file being opened by the app's own route, held back here.
+    run.ok(&["qa", "hold-reads", "on"]);
+    run.ok(&["qa", "open-file", other.0.to_str().unwrap()]);
+    let began = Instant::now();
+    let check = loop {
+        let check = run.ok(&["session", "check"]);
+        if check["safe"] == false {
+            break check;
+        }
+        assert!(began.elapsed() < Duration::from_secs(10), "{check}");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(check["busy"][0]["code"], "file_opening", "{check}");
+    let (reply, code) = state.json(&["qa", "handoff", "now"]);
+    assert_ne!(code, 0, "{reply}");
+    assert!(process_counters(run.pid).is_some(), "it's still here");
+    run.ok(&["qa", "hold-reads", "off"]);
+    run.settled();
+    assert_eq!(run.ok(&["session", "check"])["safe"], true);
+    // A quit for an update that hasn't happened does nothing.
+    assert_eq!(run.ok(&["qa", "hand-off-quit", "now"])["quit"], false);
+    assert!(process_counters(run.pid).is_some(), "still here");
+    // What was refused left nothing frozen: it's still working.
+    run.ok(&["goto", "1"]);
+    run.settled();
+    assert_eq!(tabs_of(&run.report()).len(), 3);
+    run.hand_off();
+}
+
+/// Failure: a `Moved` notice is on a tab with edits, and a restart drops it, or anything else about that tab differs. What's carried is compared whole, as the rich state is.
+#[test]
+fn a_moved_file_and_its_notice_come_back() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(folder.join("there")).unwrap();
+    let path = folder.join("a.pdf");
+    std::fs::write(&path, pages(&(0..6).map(|at| Page::new(text_lines(&[&format!("Page {at}")]))).collect::<Vec<_>>())).unwrap();
+    run.ok(&["open", path.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "rotate:2"]);
+    run.ok(&["qa", "scroller-style", "overlay"]);
+    run.quit();
+    std::fs::rename(&path, folder.join("there/b.pdf")).unwrap();
+    let run = Run::start(&state).unwrap();
+    run.ok(&["qa", "scroller-style", "overlay"]);
+    run.settled();
+    let before = run.report();
+    assert_eq!(before["session"]["tabs"][0]["notice"]["moved"]["from"], path.to_str().unwrap(), "{}", before["session"]["tabs"]);
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    run.ok(&["qa", "scroller-style", "overlay"]);
+    run.settled();
+    assert_same(&before, &run.report(), &[]);
+}
+
 /// Failure: killed outright mid-work, the app comes back with nothing, or a broken record. What had gone to disk by then is there: edits past their wait, whose each is, and the record's whole however it was caught.
 #[test]
 fn killed_outright_it_comes_back_with_what_was_written() {
@@ -619,22 +945,19 @@ fn killed_outright_it_comes_back_with_what_was_written() {
     run.settled();
     run.ok(&["qa", "owner-edit", "rotate:1"]);
     run.ok(&["page", "delete", "2"]);
-    // A write of the record is due only at going to the background, here.
-    run.ok(&["qa", "frontmost", "off"]);
-    // The journal's wait is seconds, and this is the one test that waits it out.
-    let began = Instant::now();
-    while run.report()["session"]["tabs"][0]["journal"].is_null() || run.ok(&["session", "show"])["record"]["appends"] == 0 {
-        assert!(began.elapsed() < Duration::from_secs(20));
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let lists = run.report()["session"]["edits_full"].clone();
+    // Nothing forces the record out here: a kill has to work from the first edit on, within a place's minute.
+    let lists = wait_for_journal(&run);
     run.kill();
     let run = Run::start(&state).unwrap();
     run.settled();
     let after = run.report();
-    assert_eq!(after["session"]["edits_full"], lists, "the edits and whose they were");
+    let mut lists_back = BTreeMap::new();
+    for (_, list) in after["session"]["edits_full"].as_object().unwrap() {
+        lists_back.insert("one", list.clone());
+    }
+    assert_eq!(lists_back.get("one"), lists.as_object().unwrap().values().next(), "the edits and whose they were");
     assert_eq!(after["app"]["note"], Value::Null, "it isn't reported as damaged");
-    assert_eq!(after["session"]["tabs"].as_array().unwrap().len(), 2);
+    let lists = after["session"]["edits_full"].clone();
     // Killed again at once, with something on its way: still whole.
     run.ok(&["goto", "3"]);
     run.kill();
@@ -667,7 +990,7 @@ fn quitting_twice_in_a_row_changes_nothing() {
     assert_same(&second, &third, &[]);
 }
 
-/// Failure: a record of 1,000 tabs comes back slowly, or with a handle or a thread for each, or wakes them all. It has 0 more handles and threads than 2 tabs do, and only the active tab holds a document.
+/// Failure: a record of 1,000 tabs comes back slowly, or with a handle or a thread for each, or wakes them all. Only the active tab holds a document, and it has no more handles or threads than 2 tabs do, but for the one read of the active tab's file and the one look at the others, which may not have ended yet.
 #[test]
 fn a_thousand_tabs_come_back_cold() {
     let state = State::new();
@@ -676,8 +999,9 @@ fn a_thousand_tabs_come_back_cold() {
     let folder = state.root.join("tabs");
     std::fs::create_dir_all(&folder).unwrap();
     let link = |at: usize| folder.join(format!("t{at}.pdf"));
+    // Files of their own, as a link is the same PDF.
     for at in 0..1000 {
-        std::os::unix::fs::symlink(&file.0, link(at)).unwrap();
+        recto_platform::local::clone_file(&file.0, &link(at)).unwrap();
     }
     run.ok(&["open", link(0).to_str().unwrap()]);
     run.ok(&["open", link(1).to_str().unwrap()]);
@@ -831,6 +1155,8 @@ fn levels_and_ownership_hold_after_a_restart() {
     assert_eq!(code, recto_agent::exit::PERMISSION, "{reply}");
     let (reply, code) = state.json(&["session", "restore"]);
     assert_eq!(code, recto_agent::exit::PERMISSION, "restoring over the owner's edits: {reply}");
+    // A level is only ever in its own file: a record saying otherwise is nothing, as an unknown field.
+    assert_eq!(state.json(&["permission", "show"]).0["data"]["level"], "control");
     assert_eq!(run.ok(&["session", "show"])["find"]["query"], "something private");
     state.set_level(Level::ReadOnly);
     let show = run.ok(&["session", "show"]);
@@ -908,4 +1234,22 @@ fn a_session_with_no_window_has_its_own_record() {
     assert!(state.root.join("session-windowless").exists());
     assert!(!state.root.join("session").exists(), "the app's isn't touched");
     let _ = state.json(&["discard"]);
+}
+
+/// Failure (review T11): in a session with no window a discard doesn't reach the journal, so restoring brings back what was discarded, as a second tab. Saving after it takes the file away.
+#[test]
+fn a_discard_stays_discarded_in_a_session_with_no_window() {
+    let state = State::at(Level::Full);
+    let _serving = state.serve();
+    let file = long_document("discarded", 6);
+    state.json(&["open", file.0.to_str().unwrap()]);
+    state.json(&["page", "rotate", "2", "--by", "90"]);
+    state.json(&["session", "save"]);
+    state.json(&["discard"]);
+    state.json(&["session", "save"]);
+    let (restored, code) = state.json(&["session", "restore"]);
+    assert_eq!(code, 0, "{restored}");
+    assert_eq!(restored["data"]["count"], 1, "{restored}");
+    let (place, _) = state.json(&["where"]);
+    assert_eq!(place["data"]["edited"], false);
 }

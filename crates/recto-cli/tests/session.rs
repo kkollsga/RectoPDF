@@ -870,7 +870,7 @@ fn a_long_list_of_tabs_comes_in_pieces() {
     let mut raw = Raw::connect(&state);
     for index in 0..5 {
         let link = dir.join(format!("t{index}.pdf"));
-        std::os::unix::fs::symlink(&file.0, &link).unwrap();
+        std::fs::copy(&file.0, &link).unwrap();
         assert_eq!(raw.call(&open_cmd(&link))["ok"], true);
     }
     let first = raw.call(&json!({ "cmd": "tabs", "limit": 2 }));

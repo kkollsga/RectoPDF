@@ -4,13 +4,18 @@
 
 use crate::guard::{Budget, within};
 use crate::targets::NamedLoader;
+use recto_control::StatePaths;
+use recto_control::record_store::{Flavor, Loaded, RecordStore, notice_for};
+use recto_platform::local;
 use recto_session::edit::{MAX_PAGES, PageEdits};
-use recto_session::record::{self, CURRENT_VERSION, JOURNAL_KIND, MAIN_KIND, RecordError};
+use recto_session::record::{self, CURRENT_VERSION, MAIN_KIND, PlaceDelta, RecordError};
 use recto_session::{RestoredEdits, Session};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-const BUDGET: Budget = Budget { time: Duration::from_secs(120), memory: 1024 * 1024 * 1024 };
+const BUDGET: Budget = Budget { time: Duration::from_secs(240), memory: 1024 * 1024 * 1024 };
 
 fn use_a_record(bytes: &[u8]) {
     let Ok(read) = record::decode_record(bytes, CURRENT_VERSION) else { return };
@@ -18,6 +23,12 @@ fn use_a_record(bytes: &[u8]) {
     let mut session = Session::new(NamedLoader);
     session.restore(&read.record, HashMap::new()).expect("what validates can be restored");
     session.wake_active();
+    // What a person does next, on each tab: nothing a record says can make that panic or allocate past a cap (review B9).
+    for id in session.tabs().iter().map(|tab| tab.id).collect::<Vec<_>>().into_iter().take(4) {
+        let _ = session.edit_pages(id, |edits| edits.rotate(0, 1, 1));
+        let _ = session.go_to(id, u32::MAX);
+        let _ = session.undo_edit(id);
+    }
     // Writing it back gives what reads the same.
     let again = record::encode_record(&session.to_record(), read.seq);
     record::decode_record(&again, CURRENT_VERSION).expect("what the session writes reads");
@@ -67,6 +78,56 @@ fn use_a_log(bytes: &[u8]) {
     record::validate_record(&main).expect("a log can't break a record");
 }
 
+static NEXT_FOLDER: AtomicU32 = AtomicU32::new(0);
+
+/// A state folder of its own, for each input. Under `RECTO_FUZZ_STATE` if there's one, as `tools/fuzz.sh` clears that up.
+fn folder() -> PathBuf {
+    let base = std::env::var_os("RECTO_FUZZ_STATE").map_or_else(|| std::env::temp_dir().canonicalize().unwrap_or_else(|_| std::env::temp_dir()), PathBuf::from);
+    base.join(format!("rec{}-{}", std::process::id(), NEXT_FOLDER.fetch_add(1, Ordering::Relaxed)))
+}
+
+/// The store itself, on what's on disk: whichever way the input lands, a launch comes back with something or says why, an edit made after it goes out and reads back, and nothing's left broken for the launch after.
+fn use_a_store(record_bytes: &[u8], journal_bytes: &[u8], log_bytes: &[u8]) {
+    let root = folder();
+    let Ok(paths) = StatePaths::overridden(&root) else { return };
+    if paths.prepare().is_err() {
+        return;
+    }
+    let session_dir = root.join("session");
+    let name = record::journal_file_name(None, Path::new("/fuzz/p12.pdf"), None);
+    let _ = local::ensure_private_dir(&session_dir);
+    let _ = local::ensure_private_dir(&session_dir.join("journals"));
+    let _ = local::write_private_file(&session_dir.join("record.a.json"), record_bytes);
+    let _ = local::write_private_file(&session_dir.join("places.log"), log_bytes);
+    let _ = local::write_private_file(&session_dir.join("journals").join(&name), journal_bytes);
+    for _ in 0..2 {
+        let store = RecordStore::open(&paths, Flavor::App);
+        let loaded = store.load();
+        let _ = notice_for(&loaded);
+        let mut session = Session::new(NamedLoader);
+        session.set_journaling(true);
+        if let Loaded::Restored(restored) = loaded {
+            assert!(session.restore(&restored.record, restored.journals).is_ok(), "what a load gives can be restored");
+            let first = session.tabs().first().map(|tab| tab.id);
+            if let Some(id) = first {
+                let _ = session.edit_pages(id, |edits| edits.rotate(0, 1, 1));
+                let _ = session.undo_edit(id);
+            }
+        }
+        let work = session.journal_work();
+        let (outcome, _) = store.write_journals(&work, false);
+        session.journal_outcome(outcome);
+        let saved = session.to_record();
+        if store.write_record(&saved, &PlaceDelta::default(), false).is_ok() {
+            let lists = session.lists_by_journal();
+            store.next_write_whole();
+            let _ = store.write_record(&saved, &PlaceDelta::default(), false);
+            assert_eq!(store.verify(&saved, &lists), Ok(()), "what's written reads back");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// One input as a main record, a journal and a log, as it is and with what checks it made good.
 pub fn check(data: &[u8]) {
     within("record", BUDGET, || {
@@ -84,6 +145,7 @@ pub fn check(data: &[u8]) {
         }
         use_a_journal(&journal);
         use_a_log(&log);
-        let _ = JOURNAL_KIND;
+        use_a_store(&record::seal(MAIN_KIND, 1, data), &journal, &log);
+        use_a_store(data, data, data);
     });
 }

@@ -996,7 +996,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         }
         Command::Undo { tab } => access.with(|s| {
             let id = select(s, tab)?;
-            if !s.undo_edit(id) {
+            s.set_agent_at_full(level >= Level::Full);
+            if !s.undo_edit_as(id, Author::Agent)? {
                 return Err(AgentError::new("nothing_to_undo", "There's nothing to undo on this tab.", exit::FAILED));
             }
             events.push(edits_event(s, id));
@@ -1006,7 +1007,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         }),
         Command::Redo { tab } => access.with(|s| {
             let id = select(s, tab)?;
-            if !s.redo_edit(id) {
+            s.set_agent_at_full(level >= Level::Full);
+            if !s.redo_edit_as(id, Author::Agent)? {
                 return Err(AgentError::new("nothing_to_redo", "There's nothing to redo on this tab.", exit::FAILED));
             }
             events.push(edits_event(s, id));
@@ -1113,16 +1115,18 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
     require_absolute(path)?;
     let wrong_page = |pages: u32| AgentError::new("no_such_page", format!("Nothing was opened: it has {pages} pages, and page {} isn't one of them.", page.unwrap_or(0)), exit::NOT_FOUND).then("Open it with a page it has, or with no `--page`.");
     let fits = |pages: u32| page.is_none_or(|page| page >= 1 && page <= pages);
+    // Looked at first, so a change during a read shows as a change, and what's the same file can be told. A slow file holds up nobody: the session isn't held.
+    let stamp = recto_platform::file_stamp(path).ok();
     // A file already open, in a tab gone cold, is read with the session free too.
-    read_ahead(access, |s| s.tab_for_path(path).and_then(|id| s.wake_for_tap(id)));
-    // Already open: check the page before anything moves.
+    read_ahead(access, |s| s.tab_for_file(path, stamp).and_then(|id| s.wake_for_tap(id)));
+    // Already open, by this name or another: SPEC decision 26. Check the page before anything moves.
     let existing = access.with(|s| {
-        let id = s.tab_for_path(path)?;
+        let id = s.tab_for_file(path, stamp)?;
         let pages = s.pages_in(id);
         if !fits(pages) {
             return Some(Err(wrong_page(pages)));
         }
-        s.go_to_open_file(path);
+        s.go_to_file(path, stamp);
         Some(Ok(id))
     });
     let (id, is_new) = match existing {
@@ -1130,14 +1134,16 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
         None => {
             // The file is read outside the session, so a slow or hostile one holds nobody else up.
             let loader = access.with(|s| s.loader().clone());
-            let stamp = recto_platform::file_stamp(path).ok();
             let facts = loader.load(path)?;
             // No tab for a page that isn't there: failing here leaves nothing to explain.
             if !fits(facts.page_count) {
                 return Err(wrong_page(facts.page_count));
             }
             let before = access.with(|s| s.tabs().len());
-            let id = access.with(|s| s.open_with_facts(path, facts, stamp))?;
+            // A closed PDF's history comes back on this route as on any, read with the session free too.
+            let source = access.with(|s| if s.tab_for_file(path, stamp).is_some() { None } else { s.history_source() });
+            let history = source.and_then(|source| source.history_of(stamp, path));
+            let id = access.with(|s| s.open_with_facts(path, facts, stamp, history))?;
             (id, access.with(|s| s.tabs().len()) > before)
         }
     };
@@ -1150,7 +1156,13 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
         if page.is_some() {
             events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page })));
         }
-        Ok(where_json(s, id))
+        let mut data = where_json(s, id);
+        // A PDF is open once, so what's asked for by any name is this tab, and an agent is told.
+        if !is_new {
+            data["already_open"] = json!(true);
+            data["open_note"] = json!("That PDF was already open, so this is its tab. A link to a file is the same file.");
+        }
+        Ok(data)
     })
 }
 

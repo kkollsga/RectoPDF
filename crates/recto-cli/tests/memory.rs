@@ -71,7 +71,8 @@ fn a_thousand_tabs_through_the_socket_stay_cheap() {
     let open_links = |raw: &mut Raw, from: usize, to: usize| {
         for index in from..to {
             let link = dir.join(format!("tab{index}.pdf"));
-            std::os::unix::fs::symlink(&file.0, &link).unwrap();
+            // Another file each, as a link is the same PDF, opened once.
+            recto_platform::local::clone_file(&file.0, &link).unwrap();
             let reply: Value = raw.call(&json!({ "cmd": "open", "path": link }));
             assert_eq!(reply["ok"], true, "{reply}");
         }
@@ -89,6 +90,46 @@ fn a_thousand_tabs_through_the_socket_stay_cheap() {
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(process_counters(serving.pid()).unwrap().threads, 1, "tabs must hold no threads");
     drop(raw);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Failure: a tab that comes back from a record costs more than one that was opened: anything a restore keeps per tab beyond what a cold tab has. A cold tab costs at most 4 KiB, with no handle and no thread, however it got there. Two fresh sessions, one restoring 2 tabs and the other 1,000.
+#[test]
+fn a_restored_cold_tab_costs_what_a_cold_tab_costs() {
+    let file = TempPdf::new("restored.pdf", &pages(&[Page::new(text_lines(&["Words"]))]));
+    let dir = file.0.parent().unwrap().join("restored");
+    std::fs::create_dir_all(&dir).unwrap();
+    for index in 0..1000 {
+        recto_platform::local::clone_file(&file.0, &dir.join(format!("tab{index}.pdf"))).unwrap();
+    }
+    let footprint_of_restored = |count: usize| -> (u64, u64, u32) {
+        let state = State::at(Level::Control);
+        {
+            let _serving = state.serve();
+            let mut raw = Raw::connect(&state);
+            for index in 0..count {
+                let reply: Value = raw.call(&json!({ "cmd": "open", "path": dir.join(format!("tab{index}.pdf")) }));
+                assert_eq!(reply["ok"], true, "{reply}");
+            }
+            assert_eq!(raw.call(&json!({ "cmd": "session_save" }))["ok"], true);
+            for index in (1..=count).rev() {
+                let _ = raw.call(&json!({ "cmd": "close", "tab": format!("#{index}") }));
+            }
+        }
+        let serving = state.serve();
+        let mut raw = Raw::connect(&state);
+        let restored = raw.call(&json!({ "cmd": "session_restore" }));
+        assert_eq!(restored["data"]["count"], count, "{restored}");
+        std::thread::sleep(Duration::from_millis(100));
+        (footprint(&mut raw), raw.call(&json!({ "cmd": "budget" }))["data"]["open_handles"].as_u64().unwrap(), process_counters(serving.pid()).unwrap().threads)
+    };
+    let (few, few_handles, few_threads) = footprint_of_restored(2);
+    let (many, many_handles, many_threads) = footprint_of_restored(1000);
+    let per_tab = many.saturating_sub(few) / 998;
+    println!("footprint restored: 2 tabs {few} B, 1000 tabs {many} B, {per_tab} B a tab");
+    assert!(per_tab <= 4096, "a restored tab costs {per_tab} B");
+    assert_eq!(many_handles, few_handles, "they hold no handles");
+    assert_eq!(many_threads, few_threads, "and no threads");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

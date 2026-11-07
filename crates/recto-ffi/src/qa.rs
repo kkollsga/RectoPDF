@@ -228,9 +228,17 @@ impl QaBridge {
                 let quitting = Arc::clone(&inner);
                 let _ = std::thread::Builder::new().name("recto-qa-quit".into()).stack_size(64 * 1024).spawn(move || {
                     std::thread::sleep(HANDOFF_ANSWER_WAIT);
-                    quitting.listener.hand_off_quit();
+                    quitting.hand_off_quit_now();
                 });
-                return Ok(json!({ "handed_off": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_us": report.total_us }));
+                return Ok(json!({ "handed_off": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_us": report.total_us, "force_us": report.force_us }));
+            }
+            "hand_off_quit" => {
+                let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+                return Ok(json!({ "quit": inner.hand_off_quit_now() }));
+            }
+            "open_file" => {
+                // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
+                return self.ask(verb, value);
             }
             "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
             "entry_points" => return self.ask(verb, value),

@@ -58,6 +58,8 @@ import QuartzCore
             controller?.applyFocus(value)
         case "frontmost":
             delegate.core.frontmostChanged(app: value == "on", windowKey: value == "on")
+        case "open_file":
+            delegate.core.openFile(path: value)
         case "sheet":
             delegate.core.sheetChanged(open: value == "open")
         case "sidebar_width":

@@ -451,18 +451,24 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     let tabs_dir = run.root.join("tabs");
     std::fs::create_dir_all(&tabs_dir).map_err(|_| failed("write_failed", "The temp folder couldn't be written to."))?;
     let tab_file = heavy.clone().unwrap_or_else(|| file.clone());
+    let clone_from = recto_platform::local::clone_source_in(&tab_file, &tabs_dir).map_err(|_| failed("write_failed", "A file to clone couldn't be made."))?;
     let mut measures = Vec::new();
     let mut opened = 0u32;
     for count in [2u32, 100, 1000] {
         while opened < count {
+            // A clone, as a link would be the same PDF, and a PDF is open once (SPEC decision 26). It costs next to nothing on this disk.
             let link = tabs_dir.join(format!("t{opened}.pdf"));
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&tab_file, &link).map_err(|_| failed("write_failed", "A link couldn't be made."))?;
+            recto_platform::local::clone_file(&clone_from, &link).map_err(|_| failed("write_failed", "A copy couldn't be made."))?;
             run.call(json!({ "cmd": "open", "path": link }))?;
             opened += 1;
         }
         run.settled()?;
         let state = run.state()?;
+        // Numbers for 1,000 tabs from fewer than that would be worse than none.
+        let got = state["session"]["tabs"].as_array().map_or(0, Vec::len);
+        if got != count as usize {
+            return Err(failed("qa_failed", format!("Asked for {count} tabs and got {got}, so these numbers wouldn't mean what they say.")));
+        }
         measures.push(json!({ "tabs": count, "tree_mib": mib(state["memory"]["tree_bytes"].as_u64().unwrap_or(0)), "app_mib": mib(state["memory"]["footprint_bytes"].as_u64().unwrap_or(0)), "worker_mib": mib(state["memory"]["worker_bytes"].as_u64().unwrap_or(0)), "threads": state["memory"]["threads"], "handles": state["memory"]["open_handles"], "documents_held": state["reader"]["documents_held"], "tile_layers": state["app"]["pages"]["tile_layers"] }));
     }
     let started = Instant::now();

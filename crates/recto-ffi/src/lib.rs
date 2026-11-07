@@ -24,6 +24,7 @@ use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Op, PageMap, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_render_service::Policy;
 use recto_reader::tiles::SavedPlace;
+use recto_session::HistorySource;
 use recto_session::record::{self, Appearance, AppRecord, ContentsScroll, FileStatus, FocusRecord, FocusView, Rect, ScreenNow, ScreenRecord, WindowRecord, look_at_file, place_window};
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsRowChange, ContentsView, DocLoader, FollowMove, WARM_PAPER, row_full_text, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TAB_ROW_HEIGHT, TabId, ViewSettings, sidebar_heights};
 use serde_json::{Value, json};
@@ -31,7 +32,7 @@ use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use saver::Saver;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
@@ -48,6 +49,17 @@ const AGENT_ICON_FILE: &str = "agent-icon-hidden";
 const RESTORE_PATIENCE: Duration = Duration::from_secs(1);
 /// How long the window waits for the page to be drawn before it shows anyway. About what a heavy page takes.
 const SHOW_PATIENCE: Duration = Duration::from_millis(1200);
+/// Where a hand-off has got to. Rust's to know, so the app can't quit on one that didn't happen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum HandOffState {
+    Idle = 0,
+    /// Taking no commands, and no user's changes, and writing.
+    Writing = 1,
+    /// Written, forced to the drive and read back. Quitting now is what's left.
+    Done = 2,
+}
+
 /// How long a socket that's taken is tried again, in case what has it is on its way out.
 const SOCKET_PATIENCE: Duration = Duration::from_secs(1);
 /// How long a quit waits for the state to go out, before asking.
@@ -164,12 +176,14 @@ pub struct HandOffReport {
     pub record_bytes: u64,
     pub journal_bytes: u64,
     pub wrote_bytes: u64,
+    /// How much of the total was making the drive flush.
+    pub force_us: u64,
     pub total_us: u64,
 }
 
 impl From<FlushReport> for HandOffReport {
     fn from(report: FlushReport) -> Self {
-        Self { tabs: report.tabs as u64, edited_tabs: report.edited_tabs as u64, record_bytes: report.record_bytes, journal_bytes: report.journal_bytes, wrote_bytes: report.wrote_bytes, total_us: report.total_us }
+        Self { tabs: report.tabs as u64, edited_tabs: report.edited_tabs as u64, record_bytes: report.record_bytes, journal_bytes: report.journal_bytes, wrote_bytes: report.wrote_bytes, force_us: report.force_us, total_us: report.total_us }
     }
 }
 
@@ -387,19 +401,19 @@ impl AppHost {
         match command {
             Command::SessionShow {} => {
                 let notice = lock(&self.notice).clone();
-                let kept = kept_json(&self.saver.store, notice.as_deref());
+                let kept = kept_json(&self.saver.store, notice.as_deref().and_then(record::notices::words));
                 Ok(self.session.with_session(|session| recto_agent::session_show_json(session, level, kept)))
             }
             Command::SessionSave {} => {
                 let report = self.saver.flush(false, Duration::from_secs(5)).map_err(store_error)?;
-                Ok(json!({ "saved": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_ms": report.total_us / 1000, "total_us": report.total_us, "write_us": report.write_us, "verify_us": report.verify_us }))
+                Ok(json!({ "saved": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_ms": report.total_us / 1000, "total_us": report.total_us, "write_us": report.write_us, "force_us": report.force_us, "verify_us": report.verify_us }))
             }
             Command::SessionRestore {} => {
                 if level < Level::Full && self.session.with_session(|session| session.holds_owner_edits()) {
                     return Err(recto_agent::restore_would_lose_owners_edits());
                 }
                 let loaded = self.saver.store.load();
-                let notice = notice_for(&loaded);
+                let notice = notice_for(&loaded).and_then(record::notices::words);
                 let restored = matches!(loaded, Loaded::Restored(_));
                 self.core.push(CoreCall::Restored(Box::new(loaded)));
                 self.core.flush(Duration::from_secs(5));
@@ -413,16 +427,21 @@ impl AppHost {
 
 impl Host for AppHost {
     fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        // Past the last look of a hand-off, a change would be lost: what's been written is what comes back.
-        if self.handing_off.load(Ordering::SeqCst) {
-            return Err(AgentError::new("busy", "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY).then("Try again in a moment, when it's back."));
-        }
-        if matches!(command, Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {}) {
-            return self.record_command(level, command);
-        }
-        let asks_only = matches!(command, Command::QaRead { .. } | Command::QaDrive { .. } | Command::SessionCheck {});
+        let asks_only = matches!(command, Command::QaRead { .. } | Command::QaDrive { .. } | Command::SessionCheck {} | Command::SessionShow {} | Command::SessionSave {});
+        // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
         if !asks_only {
             self.running.fetch_add(1, Ordering::SeqCst);
+            if self.handing_off.load(Ordering::SeqCst) {
+                self.running.fetch_sub(1, Ordering::SeqCst);
+                return Err(AgentError::new("busy", "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY).then("Try again in a moment, when it's back."));
+            }
+        }
+        if matches!(command, Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {}) {
+            let result = self.record_command(level, command);
+            if !asks_only {
+                self.running.fetch_sub(1, Ordering::SeqCst);
+            }
+            return result;
         }
         let result = self.run_counted(level, command, events);
         if !asks_only {
@@ -518,8 +537,6 @@ enum CoreCall {
     Flush(Arc<Flushed>),
     /// The state record has been read, on a thread that could wait for it.
     Restored(Box<Loaded>),
-    /// There's state to write and nobody writing it.
-    StartWriter,
     /// Patience is over for reading the state, or the file a restored tab is on.
     RestorePatienceOver,
 }
@@ -558,12 +575,17 @@ pub(crate) struct CoreQueue {
     calls: Mutex<VecDeque<CoreCall>>,
     ready: Condvar,
     reconcile_queued: AtomicBool,
+    /// A hand-off or a quit is writing what comes back, so what a person does from here wouldn't: taps, opens and the rest aren't taken.
+    frozen: AtomicBool,
 }
 
 impl CoreQueue {
     pub(crate) fn push(&self, call: CoreCall) {
         // Many reasons to look can wait for one look.
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetFocus(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
             return;
         }
         let mut calls = lock(&self.calls);
@@ -585,16 +607,36 @@ impl CoreQueue {
         marker.wait(limit)
     }
 
-    fn next(&self) -> CoreCall {
+    /// Wakes whoever's waiting on this, to look at its deadline again.
+    pub(crate) fn nudge(&self) {
+        let _calls = lock(&self.calls);
+        self.ready.notify_one();
+    }
+
+    /// The next call, or `None` when `deadline` says something's due: one wait for both, so the state's one deadline costs no thread or timer of its own. `deadline` is asked again on every wake, and no more than that.
+    fn next_or_due(&self, deadline: impl Fn() -> Option<Duration>) -> Option<CoreCall> {
         let mut calls = lock(&self.calls);
         loop {
             if let Some(call) = calls.pop_front() {
                 if matches!(call, CoreCall::Reconcile) {
                     self.reconcile_queued.store(false, Ordering::SeqCst);
                 }
+                return Some(call);
+            }
+            calls = match deadline() {
+                None => self.ready.wait(calls).unwrap_or_else(PoisonError::into_inner),
+                Some(wait) if wait.is_zero() => return None,
+                Some(wait) => self.ready.wait_timeout(calls, wait).unwrap_or_else(PoisonError::into_inner).0,
+            };
+        }
+    }
+
+    #[cfg(test)]
+    fn next(&self) -> CoreCall {
+        loop {
+            if let Some(call) = self.next_or_due(|| None) {
                 return call;
             }
-            calls = self.ready.wait(calls).unwrap_or_else(PoisonError::into_inner);
         }
     }
 }
@@ -659,6 +701,10 @@ struct Inner {
     waiting_server: Mutex<Option<Server>>,
     /// Reading the file a restored active tab is on. Nothing's drawn until it's looked at, so the wrong thing can't show.
     holding_tab: Mutex<Option<TabId>>,
+    /// Where a hand-off has got to.
+    hand_off_state: AtomicU8,
+    /// In a QA run, files being read wait here, as they would for a slow disk.
+    qa_hold_reads: AtomicBool,
     /// Files being read now, which a hand-off waits for.
     reads_running: AtomicU32,
     /// Sheets and panels over the window now, which a hand-off waits for.
@@ -720,25 +766,62 @@ impl Inner {
         HandOffCheck { safe: busy.is_empty(), busy, seconds_since_input: now.saturating_sub(last) as f64 / 1000.0 }
     }
 
-    /// **The hand-off.** If nothing's in flight, stops taking commands, writes everything, forces the drive to flush, and reads it back. On success the state is exactly what comes back, and the caller quits with no prompt: [`AppListener::hand_off_quit`] is how. Otherwise it says why, it starts taking commands again, and nothing's changed. Waits on the disk, so never on the UI thread.
+    /// **The hand-off.** If nothing's in flight, stops taking commands and what a person does, writes everything, forces it all to the drive, and reads it back. On success the state is exactly what comes back, and the caller quits with no prompt, by [`AppCore::hand_off_quit_now`], which goes only after this has said yes. Otherwise it says why, everything's taken again, and nothing's changed. Waits on the disk, so never on the UI thread.
     fn hand_off(&self, limit: Duration) -> Result<HandOffReport, HandOffError> {
         let check = self.hand_off_check();
         if !check.safe {
             return Err(HandOffError::Busy { items: check.busy });
         }
-        self.host.handing_off.store(true, Ordering::SeqCst);
-        // Something may have slipped in as that was set.
+        self.set_frozen(true);
+        self.hand_off_state.store(HandOffState::Writing as u8, Ordering::SeqCst);
+        let undo = || {
+            self.hand_off_state.store(HandOffState::Idle as u8, Ordering::SeqCst);
+            self.set_frozen(false);
+        };
+        // What slipped in as that was set is counted by now, and what's coming will see the flag.
         let check = self.hand_off_check();
         if !check.safe {
-            self.host.handing_off.store(false, Ordering::SeqCst);
+            undo();
             return Err(HandOffError::Busy { items: check.busy });
         }
         match self.saver.flush(true, limit) {
-            Ok(report) => Ok(report.into()),
+            Ok(report) => {
+                // A file still being read when that gave up would have shown as an error: this is what says nothing's left over.
+                let check = self.hand_off_check();
+                if !check.safe {
+                    undo();
+                    return Err(HandOffError::Busy { items: check.busy });
+                }
+                self.hand_off_state.store(HandOffState::Done as u8, Ordering::SeqCst);
+                Ok(report.into())
+            }
             Err(error) => {
-                self.host.handing_off.store(false, Ordering::SeqCst);
+                undo();
                 Err(HandOffError::NotSaved { code: error.code.to_string(), message: error.message })
             }
+        }
+    }
+
+    /// Whether commands and what a person does are being taken.
+    fn set_frozen(&self, frozen: bool) {
+        self.host.handing_off.store(frozen, Ordering::SeqCst);
+        self.core.frozen.store(frozen, Ordering::SeqCst);
+    }
+
+    /// Quits now, if a hand-off has really got this far. Says whether it did.
+    fn hand_off_quit_now(&self) -> bool {
+        if self.hand_off_state.load(Ordering::SeqCst) != HandOffState::Done as u8 {
+            return false;
+        }
+        self.listener.hand_off_quit();
+        true
+    }
+
+    /// The reader's moved on from what they were told about the session as a whole.
+    fn notice_read(&self) {
+        if lock(&self.host.notice).take().is_some() {
+            self.saver.view_changed();
+            self.core.push(CoreCall::Reconcile);
         }
     }
 
@@ -803,6 +886,10 @@ impl Inner {
                 self.note_input();
                 Ok(())
             }
+            "hold_reads" => {
+                self.qa_hold_reads.store(value == "on", Ordering::SeqCst);
+                Ok(())
+            }
             _ => return None,
         };
         self.core.push(CoreCall::Reconcile);
@@ -838,6 +925,8 @@ impl Inner {
 
     fn note_input(&self) {
         self.last_input_ms.store(u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+        // One lock per input, and an uncontended one. It's what lets a notice go when the reader has moved on.
+        self.notice_read();
     }
 }
 
@@ -918,7 +1007,7 @@ impl AppCore {
             Err(error) if args.qa => return Err(refused(AgentError::from(error).message)),
             Err(_) => None,
         };
-        let core = Arc::new(CoreQueue { calls: Mutex::new(VecDeque::new()), ready: Condvar::new(), reconcile_queued: AtomicBool::new(false) });
+        let core = Arc::new(CoreQueue::default());
         let hooks: Arc<dyn EngineEvents> = Arc::new(EngineHooks { core: Arc::clone(&core), listener: Arc::clone(&listener) });
         let mut policy = Policy::default();
         if let Some(limit) = args.memory_limit_mib {
@@ -946,6 +1035,8 @@ impl AppCore {
             restored: AtomicBool::new(false),
             waiting_server: Mutex::new(server),
             holding_tab: Mutex::new(None),
+            hand_off_state: AtomicU8::new(HandOffState::Idle as u8),
+            qa_hold_reads: AtomicBool::new(false),
             reads_running: AtomicU32::new(0),
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
@@ -1159,6 +1250,10 @@ impl AppCore {
     /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
     pub fn perform(&self, id: String) -> HostAction {
         let Some(action) = menus::action(&id) else { return HostAction::None };
+        // Past a hand-off's last look, what's done here wouldn't come back.
+        if self.inner.core.frozen.load(Ordering::SeqCst) {
+            return HostAction::None;
+        }
         match action {
             menus::Action::Host(host) => return host,
             menus::Action::Zoom(zoom) => {
@@ -1365,19 +1460,22 @@ impl AppCore {
         self.inner.hand_off(Duration::from_millis(limit_ms))
     }
 
-    /// After a good `hand_off`: quits with no prompt.
-    pub fn hand_off_quit_now(&self) {
-        self.inner.listener.hand_off_quit();
+    /// After a good `hand_off`: quits with no prompt. Does nothing, and says so, if there hasn't been one.
+    pub fn hand_off_quit_now(&self) -> bool {
+        self.inner.hand_off_quit_now()
     }
 
-    /// The hand-off isn't going ahead after all: commands are taken again.
+    /// The hand-off isn't going ahead after all: commands and what a person does are taken again.
     pub fn hand_off_cancelled(&self) {
-        self.inner.host.handing_off.store(false, Ordering::SeqCst);
+        self.inner.hand_off_state.store(HandOffState::Idle as u8, Ordering::SeqCst);
+        self.inner.set_frozen(false);
     }
 
     /// A quit was asked for, by the menu or the system. Everything's written, on a thread of its own, and `quit_answer` says what to do. Mac apps with Resume don't ask on the way out, and neither does this, as unsaved edits come back: closing a tab with them is where Don't Save, Cancel or Save belongs. It asks only if they couldn't be kept.
     pub fn quit_requested(&self) {
         let inner = Arc::clone(&self.inner);
+        // What's done from here wouldn't come back. If it turns out it isn't quitting, it's taken again.
+        inner.set_frozen(true);
         let _ = std::thread::Builder::new().name("recto-quit".into()).stack_size(256 * 1024).spawn(move || {
             let (sender, receiver) = std::sync::mpsc::channel();
             let flushing = Arc::clone(&inner);
@@ -1387,6 +1485,9 @@ impl AppCore {
             let outcome = receiver.recv_timeout(QUIT_PATIENCE);
             let fine = matches!(outcome, Ok(Ok(_))) || !inner.saver.store.holds_the_record();
             let unsaved = inner.host.session.unsaved_tabs();
+            if !(fine || unsaved.is_empty()) {
+                inner.set_frozen(false);
+            }
             inner.listener.quit_answer(if fine || unsaved.is_empty() {
                 QuitAnswer { go: true, title: String::new(), message: String::new(), quit_button: String::new(), stay_button: String::new() }
             } else {
@@ -1405,11 +1506,13 @@ impl AppCore {
 
 /// Puts the session as what was read says, and lets everything that was waiting for that go on: the window, the socket, files named at launch.
 fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads: &mut FileReads, deferred: &mut Vec<PathBuf>) {
+    let source: Arc<dyn HistorySource> = Arc::clone(&inner.saver.store) as Arc<dyn HistorySource>;
+    inner.host.session.with_session(|session| session.set_history_source(source));
     // This goes for `session restore` too: nothing drawn stays from before.
     if synced.tab.take().is_some() {
         inner.engine.deactivate();
     }
-    let notice = notice_for(&loaded);
+    let mut notice = notice_for(&loaded);
     let host = &inner.host;
     let mut holding = None;
     let holds_the_record = inner.saver.store.holds_the_record();
@@ -1419,6 +1522,10 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
         Loaded::Restored(restored) => {
             let restored = *restored;
             let application = host.session.with_session(|session| session.restore(&restored.record, restored.journals));
+            // It's been through every check, so this isn't expected, and it isn't to be passed over.
+            if application.is_err() {
+                notice = Some(record::notices::DAMAGED);
+            }
             if application.is_ok() {
                 let saved = &restored.record.app;
                 if let Some(paper_set) = saved.sidebar_width {
@@ -1434,7 +1541,8 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
                     app.contents_resume = active.zip(saved.contents_scroll);
                     app.contents_y = saved.contents_scroll.map(|scroll| scroll.y);
                 }
-                *lock(&host.notice) = saved.notice.clone();
+                // A code this build doesn't know has no words, and goes.
+                *lock(&host.notice) = saved.notice.clone().filter(|code| record::notices::words(code).is_some());
                 holding = host.session.with_session(|session| session.active().and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id)))));
             }
         }
@@ -1532,15 +1640,15 @@ fn session_thread(inner: &Arc<Inner>) {
     let mut reads = FileReads::default();
     let mut deferred: Vec<PathBuf> = Vec::new();
     loop {
-        let call = inner.core.next();
+        // Parked for the queue and the state's one deadline, and nothing else.
+        let Some(call) = inner.core.next_or_due(|| inner.saver.wait_for_due()) else {
+            inner.saver.spawn_writer();
+            continue;
+        };
         let mut events = Vec::new();
         let host = &inner.host;
         match call {
             CoreCall::Reconcile => {}
-            CoreCall::StartWriter => {
-                inner.saver.spawn_writer();
-                continue;
-            }
             CoreCall::Restored(loaded) => {
                 let first_time = !inner.restored.load(Ordering::SeqCst);
                 apply_restored(inner, *loaded, &mut synced, &mut reads, &mut deferred);
@@ -1592,6 +1700,7 @@ fn session_thread(inner: &Arc<Inner>) {
                 } else if host.session.with_session(|session| session.go_to_open_file(&path)).is_some() {
                     reads.wanted_tab = None;
                 } else {
+                    // A link or a moved name is found once it's been looked at, on the thread reading it.
                     reads.wanted_tab = None;
                     reads.start(inner, Reading::File(path.clone()), path);
                 }
@@ -1659,7 +1768,7 @@ struct FileRead {
     /// What a look found, for a restored tab.
     status: Option<FileStatus>,
     /// The history it was left with, for a file being opened.
-    history: Option<(String, recto_session::RestoredEdits)>,
+    history: Option<recto_session::TakenHistory>,
 }
 
 /// Reads of files under way off the session thread. A file on a dead volume holds up the one thread reading it, and neither this one nor anyone else's tap.
@@ -1720,10 +1829,16 @@ impl FileReads {
         };
         let reading = what.clone();
         let saver = Arc::clone(&inner.saver);
+        let inner_for_read = Arc::clone(inner);
         let spawned = std::thread::Builder::new().name("recto-read".into()).stack_size(1024 * 1024).spawn(move || {
+            while inner_for_read.qa_hold_reads.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
             let stamp = recto_platform::file_stamp(&path).ok();
             let loaded = DrawableLoader.load(&path);
-            let history = if matches!(reading, Reading::File(_)) { saver.store.history_of(stamp, &path) } else { None };
+            // A PDF already open by another name keeps what it has. The session says for sure when this gets there.
+            let already = matches!(reading, Reading::File(_)) && inner_for_read.host.session.with_session(|session| session.tab_for_file(&path, stamp).is_some());
+            let history = if matches!(reading, Reading::File(_)) && !already { saver.store.history_of(stamp, &path) } else { None };
             if let Some(before) = before {
                 before.wait(OPEN_ORDER_WAIT);
             }
@@ -1764,11 +1879,8 @@ impl FileReads {
                     tap_now(inner, tab, events);
                 }
             }
-            Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| host.session.with_session(|session| session.open_with_facts(&path, facts, read.stamp))) {
+            Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| host.session.with_session(|session| session.open_with_facts(&path, facts, read.stamp, read.history))) {
                 Ok(id) => {
-                    if let Some((name, restored)) = read.history {
-                        host.session.with_session(|session| session.take_up_history(id, &name, restored.edits, restored.seq));
-                    }
                     events.push(Event::new("tab_opened", json!({ "tab": id.0 })));
                 }
                 Err(error) => *lock(&inner.open_failure) = Some(error.message().to_string()),
@@ -1978,7 +2090,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             }
         }
     }
-    let session_notice = lock(&inner.host.notice).clone();
+    let session_notice = lock(&inner.host.notice).as_deref().and_then(record::notices::words).map(str::to_string);
     let save_failed = inner.saver.has_failed().then(|| record::notices::SAVE_FAILED.to_string());
     let note = lock(&inner.open_failure).clone().or(save_failed).or(problem).or(session_notice).or_else(|| inner.engine.note());
     let holding = lock(&inner.holding_tab).is_some();
@@ -2066,6 +2178,26 @@ mod tests {
         assert!(!queue.reconcile_queued.load(Ordering::SeqCst));
         queue.push(CoreCall::Reconcile);
         assert_eq!(lock(&queue.calls).len(), 1);
+    }
+
+    /// Failure (review T4): past a hand-off's last look, a tap or an open is taken, and it's lost as what's on disk is what comes back. They aren't taken while it's frozen, and what isn't a person's doing still gets through, or the session would stop answering.
+    #[test]
+    fn a_frozen_queue_takes_nothing_a_person_does() {
+        let queue = CoreQueue::default();
+        queue.frozen.store(true, Ordering::SeqCst);
+        queue.push(CoreCall::Tap(TabId(1)));
+        queue.push(CoreCall::GoTo(TabId(1), 2));
+        queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
+        queue.push(CoreCall::SetFocus(true));
+        queue.push(CoreCall::SetPaper(Paper::Dark));
+        queue.push(CoreCall::ToggleAgentIcon);
+        assert_eq!(lock(&queue.calls).len(), 0);
+        queue.push(CoreCall::Reconcile);
+        queue.push(CoreCall::Flush(Arc::new(Flushed::default())));
+        assert_eq!(lock(&queue.calls).len(), 2);
+        queue.frozen.store(false, Ordering::SeqCst);
+        queue.push(CoreCall::Tap(TabId(1)));
+        assert_eq!(lock(&queue.calls).len(), 3);
     }
 
     /// Failure: each tile of a page is a note, so an ordinary page of tiles uses a dozen places, and the queue's cap is reached by reading alone. In a row, one note for one page is enough.

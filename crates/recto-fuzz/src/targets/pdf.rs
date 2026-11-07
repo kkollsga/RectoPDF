@@ -83,7 +83,7 @@ fn assert_inventory_holds(inventory: &SignatureInventory, file_bytes: u64) {
 fn through_the_session(facts: DocFacts) {
     let path = Path::new("/fuzz/doc.pdf");
     let mut session = Session::new(DocOnly(Arc::new(facts.clone())));
-    let Ok(id) = session.open_with_facts(path, facts, None) else { return };
+    let Ok(id) = session.open_with_facts(path, facts, None, None) else { return };
     let _ = session.sidebar();
     let _ = session.tap(id);
     for line in [r#"{"cmd":"contents"}"#, r#"{"cmd":"contents","depth":0,"limit":3}"#, r#"{"cmd":"contents","from":4294967295,"depth":255}"#, r#"{"cmd":"facts"}"#, r#"{"cmd":"where"}"#, r#"{"cmd":"sidebar"}"#] {

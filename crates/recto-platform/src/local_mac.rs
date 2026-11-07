@@ -320,6 +320,32 @@ pub fn hand_to_drive(file: &File) -> io::Result<()> {
     if unsafe { libc::fsync(file.as_raw_fd()) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
+/// Hands a folder's new names to the drive, as [`hand_to_drive`] does for a file's bytes.
+pub fn hand_folder_to_drive(folder: &Path) -> io::Result<()> {
+    hand_to_drive(&File::open(folder)?)
+}
+
+/// An instant copy of a file on the same volume, sharing its blocks until one is changed, under a new inode. What a test wants for many distinct files at no cost. Fails if it can't, as across two volumes, and never quietly copies: a thousand copies of a large PDF is hundreds of gigabytes.
+pub fn clone_file(from: &Path, to: &Path) -> io::Result<()> {
+    let (from_c, to_c) = (c_path(from)?, c_path(to)?);
+    // SAFETY: both are NUL-terminated, valid for the call, and clonefile writes nothing through them.
+    if unsafe { libc::clonefile(from_c.as_ptr(), to_c.as_ptr(), 0) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Where to clone a file from into this folder: the file itself if a clone works from there, or else one copy of it in the folder, once, on the volume the clones will be on.
+pub fn clone_source_in(file: &Path, folder: &Path) -> io::Result<PathBuf> {
+    let probe = folder.join(".clone-probe");
+    let _ = std::fs::remove_file(&probe);
+    if clone_file(file, &probe).is_ok() {
+        std::fs::remove_file(&probe)?;
+        return Ok(file.to_path_buf());
+    }
+    let master = folder.join(".clone-source.pdf");
+    let _ = std::fs::remove_file(&master);
+    std::fs::copy(file, &master)?;
+    Ok(master)
+}
+
 /// Syncs the folder a file is in, so what was just renamed or removed there stays that way.
 pub fn sync_folder_of(path: &Path) -> io::Result<()> {
     let Some(folder) = path.parent() else { return Ok(()) };

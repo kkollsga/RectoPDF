@@ -123,12 +123,17 @@ impl<L: DocLoader + Clone> SessionHost<L> {
 
     fn save_to(&self, store: &RecordStore) -> Result<Value, AgentError> {
         let started = std::time::Instant::now();
-        let (record, checkpoints, lists, edited) = self.with_session(|session| {
+        let (record, checkpoints, lists, edited, retired) = self.with_session(|session| {
+            // What's been discarded goes, or it would come back at the next restore.
+            let retired = session.journal_work().retired;
             let checkpoints = session.checkpoints();
             let lists = session.lists_by_journal();
             let edited = session.tabs().iter().filter(|tab| session.page_edits(tab.id).is_some()).count();
-            (session.to_record(), checkpoints, lists, edited)
+            (session.to_record(), checkpoints, lists, edited, retired)
         });
+        for name in &retired {
+            store.remove_journal(name);
+        }
         for (name, header, list) in &checkpoints {
             store.write_checkpoint(name, header, list).map_err(store_error)?;
         }
@@ -144,7 +149,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             return Err(recto_agent::restore_would_lose_owners_edits());
         }
         let loaded = store.load();
-        let notice = notice_for(&loaded);
+        let notice = notice_for(&loaded).and_then(recto_session::record::notices::words);
         let Loaded::Restored(restored) = loaded else {
             return Ok(json!({ "restored": false, "count": self.tabs.load(Ordering::Relaxed), "notice": notice }));
         };

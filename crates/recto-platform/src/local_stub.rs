@@ -187,6 +187,18 @@ pub fn open_private_for_writing(_path: &Path, _append: bool) -> io::Result<File>
     unsupported()
 }
 
+pub fn hand_folder_to_drive(_folder: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+pub fn clone_file(_from: &Path, _to: &Path) -> io::Result<()> {
+    unsupported()
+}
+
+pub fn clone_source_in(file: &Path, _folder: &Path) -> io::Result<PathBuf> {
+    Ok(file.to_path_buf())
+}
+
 pub fn hand_to_drive(file: &File) -> io::Result<()> {
     file.sync_all()
 }
