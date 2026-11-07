@@ -41,7 +41,11 @@ fn fake_worker() {
             Kind::Open => {
                 let mut handles = frame.handles;
                 cancel_word = Some(SharedMemory::map(handles.pop().unwrap(), control::LEN).unwrap());
-                if mode == "open_unreadable" { proto::encode_failed(0, FailCode::Unreadable) } else { proto::encode_opened(3) }
+                match mode.as_str() {
+                    "open_unreadable" => proto::encode_failed(0, FailCode::Unreadable),
+                    "open_not_pdf" => proto::encode_failed(0, FailCode::NotPdf),
+                    _ => proto::encode_opened(3),
+                }
             }
             Kind::SizeRequest => {
                 let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
@@ -610,18 +614,42 @@ fn a_cancel_between_steps_ends_the_sequence() {
     assert!(!slot.is_taken());
 }
 
-/// Failure: a file the worker looks at and refuses as unreadable isn't remembered, because the word for that is also the word for not getting as far as asking. So each page of a search starts a process to hear the same answer. It may be asked again only when someone says to.
+/// Failure: a file the worker refuses as unreadable isn't remembered, because that word is also for not getting as far as asking, so each page of a search starts a process to hear the same answer. Or it's remembered for the renderer's life, though it covers a failed read of the file's size and errors with no reason given, and may pass. It holds for a moment, and no more.
 #[test]
-fn a_file_the_worker_refuses_is_remembered_after_the_first_time() {
-    let (mut doc, _file) = doc("open_unreadable");
+fn a_temporary_open_failure_holds_only_for_a_moment() {
+    let (mut held, _file) = doc_with("open_unreadable", Policy { open_retry_pause: Duration::from_secs(60), ..policy() }, &HeavySlot::new());
     for _ in 0..5 {
-        assert_eq!(doc.page_characters(0, false, false).unwrap_err(), RenderFailure::Unavailable);
+        assert_eq!(held.page_characters(0, false, false).unwrap_err(), RenderFailure::Unavailable);
     }
-    assert_eq!(doc.stats().spawns, 1, "one process was enough to learn that");
-    assert!(!doc.has_worker());
-    doc.forget_failures();
-    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::Unavailable);
-    assert_eq!(doc.stats().spawns, 2, "asking again is what forgetting is for");
+    assert_eq!(held.stats().spawns, 1, "one process was enough to learn that");
+    assert!(!held.has_worker());
+    let (mut passes, _file) = doc_with("open_unreadable", Policy { open_retry_pause: Duration::from_millis(50), ..policy() }, &HeavySlot::new());
+    assert_eq!(passes.page_count().unwrap_err(), RenderFailure::Unavailable);
+    std::thread::sleep(Duration::from_millis(60));
+    assert_eq!(passes.page_count().unwrap_err(), RenderFailure::Unavailable);
+    assert_eq!(passes.stats().spawns, 2, "the moment has passed, with nobody having to say so");
+    held.forget_failures();
+    assert_eq!(held.page_count().unwrap_err(), RenderFailure::Unavailable);
+    assert_eq!(held.stats().spawns, 2, "and asking again is what forgetting is for");
+}
+
+/// Failure: what's learned about a file's bytes sticks for the renderer's life, so a damaged file the user replaces stays "not a PDF" until the tab closes, and no production code calls `forget_failures`. It holds for that file, and a different one gets a fresh try.
+#[test]
+fn a_failure_about_the_bytes_holds_for_that_file_and_no_other() {
+    let (mut doc, file) = doc("open_not_pdf");
+    for _ in 0..5 {
+        assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotPdf);
+    }
+    assert_eq!(doc.stats().spawns, 1, "the same file gets the same answer, for as long as it takes");
+    std::fs::write(&file.0, b"%PDF-1.7\nand now it's a different file").unwrap();
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotPdf, "the stand-in says the same of everything");
+    assert_eq!(doc.stats().spawns, 2, "but it was asked again");
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotPdf);
+    assert_eq!(doc.stats().spawns, 2, "and the new file's answer holds in turn");
+    std::fs::remove_file(&file.0).unwrap();
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotFound, "a file that's gone says so");
+    std::fs::write(&file.0, b"%PDF-1.7\nback").unwrap();
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotPdf);
 }
 
 /// Failure: a kill at a lower zoom overwrites what a higher zoom learned, and the other way round, so a reader going between two zooms runs the same kills again each time, for as long as its heavy retries last. Each scale keeps what it learned.

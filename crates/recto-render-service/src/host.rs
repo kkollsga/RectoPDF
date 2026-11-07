@@ -3,6 +3,7 @@
 use crate::transport::{Frame, FrameReader, ReadError};
 use crate::{control, exit_code};
 use recto_platform::isolate::{self, Channel, ChildExit, ChildProcess, Handle, IdleRule, SharedMemory, Wait};
+use recto_platform::{FileStamp, file_stamp};
 use recto_proto::{self as proto, CharBox, CharRecord, FailCode, Kind, PageSize, ProtoError, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus, device_size};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -47,6 +48,8 @@ pub struct Policy {
     pub watch_step: Duration,
     /// How long a new worker gets to say it's ready. Loading PDFium took 2 ms in the spike, so this is only for one that isn't going to.
     pub start_timeout: Duration,
+    /// How long a worker's "this can't be opened right now" is taken as the answer, where that isn't about the file's bytes. Long enough that a search of a thousand pages doesn't start a thousand processes, and short enough that it passes by itself.
+    pub open_retry_pause: Duration,
 }
 
 impl Default for Policy {
@@ -75,6 +78,7 @@ impl Default for Policy {
             // The worst growth measured is about 650 MiB/s, so this overshoots by a few MiB.
             watch_step: Duration::from_millis(5),
             start_timeout: Duration::from_secs(10),
+            open_retry_pause: Duration::from_secs(2),
         }
     }
 }
@@ -617,11 +621,23 @@ const LOWER_ZOOM_RATIO: f32 = 0.7;
 /// How much lower the lower-resolution version is, from the platform report's page texture at about a quarter of the scale (§2.5).
 const LOW_RES_DIVISOR: u32 = 4;
 
+/// What a failed open is known to mean, and for how long.
+#[derive(Clone, Copy, Debug)]
+struct KnownOpenFailure {
+    failure: RenderFailure,
+    /// When it may have passed. `None` if it's about the file's bytes, which holds until the file is a different one.
+    try_again_at: Option<Instant>,
+}
+
 /// One document's renderer. Holds the file and a control page, and a worker only while one is needed. A cold tab never has one of these.
 pub struct DocRenderer {
     config: ServiceConfig,
     policy: Policy,
+    /// Kept to see whether the file there is still this one, and to open it again if a failure was about the old one.
+    path: PathBuf,
     file: File,
+    /// What the file was when it was opened. A failure about its bytes holds only as long as this does.
+    opened_stamp: Option<FileStamp>,
     password: Option<Vec<u8>>,
     control: Arc<CancelWord>,
     worker: Option<Worker>,
@@ -636,8 +652,8 @@ pub struct DocRenderer {
     traits: Vec<(u32, u64)>,
     /// The slot, from an export's wait, on its way to the worker it's for.
     waited_ticket: Option<HeavyTicket>,
-    /// Why opening the file failed, if it's something trying again wouldn't change. The descriptor is fixed, so its bytes are too.
-    open_failure: Option<RenderFailure>,
+    /// Why opening the file failed, for as long as that can be taken as the answer. See [`Self::known_open_failure`].
+    open_failure: Option<KnownOpenFailure>,
     /// The page the worker last worked on, while its footprint is past the retirement line. It goes before the next job for any other page.
     retire_after_page: Option<u32>,
     stats: RenderStats,
@@ -655,6 +671,8 @@ impl DocRenderer {
         Ok(Self {
             config,
             policy,
+            path: path.to_path_buf(),
+            opened_stamp: file_stamp(path).ok(),
             file,
             password: password.map(<[u8]>::to_vec),
             control: Arc::new(CancelWord { shared, cutoff: AtomicU64::new(0), slot }),
@@ -715,7 +733,7 @@ impl DocRenderer {
     }
 
     /// Clears the memory of which pages stopped a worker, and the count that stops a document. For the reader's "try again". In ordinary use failures also clear by themselves: a lower zoom gets its
-    /// own try, and closing the tab drops all of this. An agent's command starts with a clean slate each time.
+    /// own try, a failed open is tried again once the file is a different one or the moment has passed, and closing the tab drops all of this. An agent's command starts with a clean slate each time.
     pub fn forget_failures(&mut self) {
         self.remembered.clear();
         self.open_failure = None;
@@ -1256,7 +1274,7 @@ impl DocRenderer {
     /// Starts a worker of this class and opens the document in it, unless one that will do is already running. A normal job will do in a heavy worker, but not the other way round. A failure
     /// that trying again wouldn't change is remembered, so the next call doesn't start another process to learn the same thing. `generation` is the job this is for, so a long open can be cancelled.
     fn ensure_worker(&mut self, class: WorkerClass, generation: Option<u64>) -> Result<(), JobFailure> {
-        if let Some(failure) = self.open_failure {
+        if let Some(failure) = self.known_open_failure() {
             return Err(failure.into());
         }
         self.reap_if_gone();
@@ -1288,9 +1306,48 @@ impl DocRenderer {
                 if let JobFailure::Failed(failure) = failure
                     && !matches!(failure, RenderFailure::Unavailable)
                 {
-                    self.open_failure = Some(*failure);
+                    self.note_open_failure(*failure);
                 }
             })
+    }
+
+    /// Remembers a failed open. "Not a PDF", a password, a worker the file stopped: those are about the file's bytes, and hold while it's the same file. `Unavailable` covers a failed read of its size and errors PDFium gives no reason for, so it holds only for a moment.
+    fn note_open_failure(&mut self, failure: RenderFailure) {
+        let try_again_at = matches!(failure, RenderFailure::Unavailable).then(|| Instant::now() + self.policy.open_retry_pause);
+        self.open_failure = Some(KnownOpenFailure { failure, try_again_at });
+    }
+
+    /// What's known about opening this file, if that still holds. The app shouldn't have to remember to ask again: a file that's been replaced gets a fresh try, opened anew, and so does one whose moment has passed. Costs a `stat` only once something has failed, and nothing for a file that opens.
+    fn known_open_failure(&mut self) -> Option<RenderFailure> {
+        let known = self.open_failure?;
+        // A file seen to change while it was open is what that failure says. The page numbers it went by are no good, and someone has to start again.
+        if matches!(known.failure, RenderFailure::SourceChanged) {
+            return Some(known.failure);
+        }
+        if file_stamp(&self.path).ok() != self.opened_stamp {
+            self.forget_failures();
+            self.traits.clear();
+            self.page_count = None;
+            return match File::open(&self.path) {
+                Ok(file) => {
+                    self.file = file;
+                    self.opened_stamp = file_stamp(&self.path).ok();
+                    None
+                }
+                // It's not there to open, or not now. That holds in the same way, and this renderer's old file isn't what anyone's asking about.
+                Err(error) => {
+                    self.opened_stamp = None;
+                    let failure = if error.kind() == io::ErrorKind::NotFound { RenderFailure::NotFound } else { RenderFailure::Unavailable };
+                    self.note_open_failure(failure);
+                    Some(failure)
+                }
+            };
+        }
+        if known.try_again_at.is_some_and(|at| Instant::now() >= at) {
+            self.open_failure = None;
+            return None;
+        }
+        Some(known.failure)
     }
 
     fn open_in(&mut self, mut worker: Worker, generation: Option<u64>) -> Result<(), JobFailure> {
@@ -1330,9 +1387,9 @@ impl DocRenderer {
                 if answered != 0 {
                     return Err(rejected(&mut self.stats, "a failure for a different job").into());
                 }
-                // The worker looked and says no, about bytes that can't change, however that word reads. `Unavailable` from anywhere else is a failure to get as far as asking, and may pass. Without this, a search of a file PDFium can't read starts a process per page to hear the same answer.
+                // Without this, a search of a file PDFium can't read starts a process per page to hear the same answer.
                 let failure = failure_from_code(code);
-                self.open_failure = Some(failure);
+                self.note_open_failure(failure);
                 return Err(failure.into());
             }
             _ => return Err(rejected(&mut self.stats, "the wrong kind of reply to opening").into()),
