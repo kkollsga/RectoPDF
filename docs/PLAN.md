@@ -242,6 +242,7 @@ Real digital signatures to the official standards, signature trust checks, Windo
 - **State:** dormant after 5 minutes; history kept 30 days within 1 GiB, out of backups; redaction and hidden-data removal clear it.
 - **Agents:** below Full an agent throws away only agents' edits; the skill keeps auto-approving read-only commands; a same-user process faking a terminal is accepted until Settings exists.
 - **Exports:** peaks of 465–494 MiB at 3× and 4× are accepted.
+- **A heavy tab sleeps when you leave it.** Off-screen workers stay within the 256 MiB budget, so a map whose worker alone is over it goes dormant on leaving, and coming back costs its redraw of about 750 ms over an instant preview. Memory comes first. (Owner: "I agree".)
 - **Undoing a delete past a Save** keeps only the removed pages, within the 64 MiB per PDF, so it works whatever the size of the PDF. Built with Save, on the streaming rewrite. Until then a PDF over 64 MiB can undo turns and moves past a Save, not a delete. Clones aren't allowed past 64 MiB. (Owner: "I agree with you".)
 - **Tab names:** the file name, with the full name and title on hover.
 - **Before a public release:** a name search for the trademark, no registration yet; wait for Anthropic's written answer and add an API-key route.
