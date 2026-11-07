@@ -76,7 +76,7 @@ git checkout -qb work
 commit_code alpha-change
 out=$(full); rc=$?
 check "a full run passes" "0" "$rc"
-sed -E 's/^(clippy).*/\1/; s/^check --workspace.*windows.*/windows/; s/^build.*/workers/; s/^nextest run --locked -p alpha.*/changed-tests/; s/^nextest run --locked --no-tests.*/other-tests/; s/^nextest run --locked -p recto-cli --test app.*/app-tests/' "$CALLS" > "$X/order"
+sed -E 's/^(clippy).*/\1/; s/^check --workspace.*windows.*/windows/; s/^build.*/workers/; s/^nextest run --locked (--no-fail-fast )?-p alpha.*/changed-tests/; s/^nextest run --locked (--no-fail-fast )?--no-tests.*/other-tests/; s/^nextest run --locked (--no-fail-fast )?-p recto-cli --test app.*/app-tests/' "$CALLS" > "$X/order"
 check "every stage runs, cheapest and likeliest first" "clippy windows workers changed-tests other-tests app-build app-tests" "$(tr '\n' ' ' < "$X/order" | sed 's/ $//')"
 has "each stage says how long it took" "check: app-tests took" "$out"
 : > "$CALLS"
