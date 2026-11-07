@@ -400,15 +400,15 @@ pub fn select_budget(invocation: &Invocation) -> Result<Value, AgentError> {
         std::thread::sleep(Duration::from_millis(20));
     }
     let copy_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let copied = run.call(json!({ "cmd": "qa_read", "verb": "copied" }))?;
     let notice = run.state()?["app"]["copy_notice"].clone();
 
-    // Back at rest, with the selection cleared and a moment for the allocator.
+    // Back at rest, with the selection cleared and a moment for the allocator, before anything reads the clipboard back, which is QA's own cost. What's left is what the clipboard holds in this process.
     run.drive("mouse_down", &format!("{page}:{x},{y}"))?;
     run.drive("mouse_up", "all")?;
     run.settled()?;
     std::thread::sleep(Duration::from_secs(1));
     let after = run.state()?;
+    let copied = run.call(json!({ "cmd": "qa_read", "verb": "copied" }))?;
     Ok(json!({
         "file": file.file_name().map(|name| name.to_string_lossy().to_string()),
         "build": if cfg!(debug_assertions) { "debug" } else { "release" },

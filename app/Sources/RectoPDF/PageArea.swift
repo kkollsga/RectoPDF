@@ -159,6 +159,7 @@ final class CenteringClipView: NSClipView {
         center.addObserver(self, selector: #selector(viewMoved), name: NSView.boundsDidChangeNotification, object: clip)
         center.addObserver(self, selector: #selector(pinchStarted), name: NSScrollView.willStartLiveMagnifyNotification, object: scrollView)
         center.addObserver(self, selector: #selector(pinchEnded), name: NSScrollView.didEndLiveMagnifyNotification, object: scrollView)
+        center.addObserver(self, selector: #selector(systemColoursChanged), name: NSColor.systemColorsDidChangeNotification, object: nil)
     }
 
     @objc private func viewMoved() {
@@ -234,6 +235,14 @@ final class CenteringClipView: NSClipView {
         highlightDark = darkColour
         highlightLighten = lighten
         windowIsActive = active
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for layer in highlightLayers.values { styleHighlight(layer) }
+        CATransaction.commit()
+    }
+
+    /// The Mac's accent colour changed.
+    @objc private func systemColoursChanged() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for layer in highlightLayers.values { styleHighlight(layer) }

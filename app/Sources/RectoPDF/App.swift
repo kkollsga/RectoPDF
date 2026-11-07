@@ -87,6 +87,8 @@ final class Bridge: AppListener, @unchecked Sendable {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // AppKit adds Dictation and Emoji to any menu called Edit. A reader has nothing to type into, so they'd do nothing, and they cost about 0.35 MiB, measured side by side.
+        UserDefaults.standard.register(defaults: ["NSDisabledDictationMenuItem": true, "NSDisabledCharacterPaletteMenuItem": true])
         watchMainThread()
         installMenu()
         NSApp.registerServicesMenuSendTypes([.string], returnTypes: [])

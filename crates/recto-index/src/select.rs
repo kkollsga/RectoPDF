@@ -6,12 +6,12 @@
 //!
 //! **What's left out.** Text that looks hidden, by the same check as `recto text`, and printed characters wholly off the page: neither can be seen, so neither is hit, highlighted or copied, and [`CopiedText::hidden_left_out`] says how many went. Text with no box can't be hit either, but it stays in a copy, since a font with empty boxes doesn't make its text hidden.
 //!
-//! **Cost.** A page held here is about 20 B a character, 76 KiB for a page of 3,800. Past [`MAX_SELECTABLE_CHARS`] a page selects nothing. A hit looks along the page's lines, at most [`MAX_LINES`], and then one line. The model holds two points, so a selection of a whole document costs what one word's does: nothing per page.
+//! **Cost.** A page held here is about 20 B a character: over bench100's pages with text, 55 KiB at the middle, and 242 at most. Past [`MAX_SELECTABLE_CHARS`] a page selects nothing. A hit looks along the page's lines, at most [`MAX_LINES`], and then one line. The model holds two points, so a selection of a whole document costs what one word's does: nothing per page.
 
 use crate::{hidden_in_either_order, normalize, order};
 use recto_proto::{CharBox, CharRecord, PageFrame};
 
-/// The longest page that can be selected. The busiest real page has about 32,768 characters.
+/// The longest page that can be selected. The busiest page in bench100 has 11,093 characters.
 pub const MAX_SELECTABLE_CHARS: usize = 128 * 1024;
 /// Lines kept for a page. Past this the rest are one line: a real page has a few hundred.
 pub const MAX_LINES: usize = 16_384;
@@ -1055,6 +1055,24 @@ mod tests {
         let rects = page.rects(0, PAGE_END);
         assert!(rects.iter().all(|rect| rect.x + rect.width <= 612.0), "{rects:?}");
         assert!(!page.is_over_text(2010.0, shown(680.0)), "no I-beam on what's off the page");
+    }
+
+    /// Failure: the second read of a page, with the hidden-text check, moves what's already been worked out from the first: a selection jumps when the check comes back, a moment after it's made.
+    #[test]
+    fn checking_for_hidden_text_moves_no_place() {
+        let (mut chars, mut boxes) = (Vec::new(), Vec::new());
+        add_line(&mut chars, &mut boxes, "see the secret words now", 72.0, 700.0);
+        add_line(&mut chars, &mut boxes, "and a second line", 72.0, 680.0);
+        let first = PageText::build(&chars, &boxes, FRAME, false, false);
+        for record in chars.iter_mut().skip(8).take(6) {
+            *record = CharRecord::new(record.ch() as u32, CharRecord::NO_INK);
+        }
+        let checked = PageText::build(&chars, &boxes, FRAME, true, false);
+        assert_eq!(first.len(), checked.len());
+        assert_eq!(first.text, checked.text);
+        assert_eq!(first.unit_at(80.0, shown(680.0), Unit::Line), checked.unit_at(80.0, shown(680.0), Unit::Line));
+        assert_eq!(first.unit_at(400.0, shown(700.0), Unit::Char), checked.unit_at(400.0, shown(700.0), Unit::Char));
+        assert_ne!(first.text_of(0, PAGE_END), checked.text_of(0, PAGE_END), "it's only what's flagged that changes");
     }
 
     /// Failure: copying a long selection grows without end, or stops without saying where, or runs pages together with no line between.

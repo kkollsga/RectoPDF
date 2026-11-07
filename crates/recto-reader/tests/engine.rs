@@ -316,12 +316,12 @@ fn a_press_returns_at_once_and_the_highlight_comes_when_the_text_does() {
     let at = |page_x: f64, page_y: f64| (x + page_x * fit, y + page_y * fit);
     // The first line's baseline, from the top of a page 792 tall.
     let (press_x, press_y) = at(74.0, 792.0 - 720.0 - 4.0);
-    let started_at = Instant::now();
+    // Had this waited for the worker, it would have the answer. It's the host's next look that does.
     let ops = engine.selection_press(press_x, press_y, 2, false);
-    assert!(started_at.elapsed() < Duration::from_millis(50), "a press took {:?}", started_at.elapsed());
     assert_eq!(highlight_on(&ops, 0), None, "its page hasn't been read, so it can't be known");
-    assert_eq!(engine.selection_release(), Vec::new());
-    let later = pump(&engine, Duration::from_secs(20));
+    let mut later = engine.selection_release();
+    engine.applied();
+    later.extend(pump(&engine, Duration::from_secs(20)));
     let rects = highlight_on(&later, 0).expect("a double-click takes a word, once its page is read");
     assert_eq!(rects.len(), 1);
     assert!(rects[0].width > 10.0 && rects[0].width < 60.0, "one word: {:?}", rects[0]);

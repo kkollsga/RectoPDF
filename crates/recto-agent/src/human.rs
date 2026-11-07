@@ -359,7 +359,7 @@ fn selected(data: &Value) -> String {
         let shapes = row["rects"].as_array().map_or(&[][..], Vec::as_slice);
         let _ = write!(out, "\nPage {}: {}", number(&row["page"]), count(shapes.len() as u64, "rectangle", "rectangles"));
         if let Some(shape) = shapes.first() {
-            let _ = write!(out, ", the first at {} , {}", shape[0], shape[1]);
+            let _ = write!(out, ", the first at {}, {}", shape[0], shape[1]);
         }
         out.push('.');
     }

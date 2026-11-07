@@ -12,9 +12,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Pages of text kept, past what's in use.
-pub const MAX_TEXT_PAGES: usize = 16;
-/// Text kept, past what's in use. A page of 3,800 characters is about 76 KiB.
+/// Pages of text kept, past what's in use. Enough for a drag going back and forth over a few pages, and about half a MiB of ordinary ones.
+pub const MAX_TEXT_PAGES: usize = 8;
+/// Text kept, past what's in use. A middling real page is 55 KiB, and the largest in bench100 is 242.
 pub const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
 /// Visible pages a selection draws on. More than show at the lowest zoom on an ordinary page, and what keeps tiny hostile pages from wanting all their text at once.
 pub const MAX_SELECTED_VISIBLE: usize = 12;
