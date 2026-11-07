@@ -89,6 +89,7 @@ Reference: `docs/concepts/`. Rules from the owner:
   setup steps and the reader works as normal.
 - **The agent requests what it needs.** The first prompt holds facts about the PDF (size, pages, text status, outline) plus the question,
   the current page number and any selection. Page text is never included.
+- **`recto search` offers ripgrep-style and BM25 search directly** (owner, 2026-11-07: "Shouldn't we enable ripgrep and bm25 directly in our search? That way the agent can use it through cli, and the user can use it if they want. My repo mcp-methods have a working ripgrep implementation you can copy if you want."). In process, so no `rg` binary is run.
 - Tools limited to `Read` and `Grep` over a per-document folder, in a fully locked-down run. Never `Bash(rg ...)`: `rg --pre` executes text
   that comes from the PDF. Exact arguments: agent report, §1.
 - `recto` CLI on a local socket with levels Off, Read-only, Control and Full (*default:* Off). Signing needs a human gesture and is never
