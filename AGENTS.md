@@ -51,3 +51,4 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "It can whoosh with smooth acceleration at both ends. It can have a \"dead-zone\" so it doesn't react to small scrolls within the window, so basically it repositions, stays still (while user is reading slowly scrolling) then repositions after the user is scrolling a bit."
 - "We have two paper color modes: white and dark, let's add a yellowed white option that's better for the eyes".
 - "Im seeing an issue: in dark mode scanned pages appear bright white: We need to detect scanned images (with predominently white bg, and flip and match grey tone paper color".
+- "similar with images with white bg" (dark paper: an image with a white background flips with the page, as a scan does).
