@@ -446,6 +446,9 @@ fn export_svg_result(data: &Value) -> String {
     for note in data["notes"].as_array().map_or(&[][..], Vec::as_slice) {
         let _ = write!(out, "\n{} {}.", number(&note["count"]), text(&note["says"]));
     }
+    if data["hidden_text"]["flagged"] == true {
+        let _ = write!(out, "\nThis page has text that looks hidden, {}: `recto text` shows where. It's in the file as selectable text, like the rest.", count(number(&data["hidden_text"]["chars"]), "character", "characters"));
+    }
     if data["raster_scale_lowered"] == true {
         let _ = write!(out, "\nThis page is too large for the scale asked, so its pictures are at {}x, the largest that fits.", data["raster_scale"].as_f64().unwrap_or(0.0));
     }

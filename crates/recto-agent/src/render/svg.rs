@@ -1,6 +1,6 @@
 //! `export svg`: a page, or a box on it, as a new SVG file, written as it's read. Nothing is held: records come from the worker a frame at a time, and go straight through `recto-svg` to a temp file that's only published if the whole page got there. So a worker that's stopped, or a limit that's hit, leaves nothing behind under the real name.
 
-use super::{OwnTemp, largest_scale_that_fits, output_exists, page_index, publish, too_heavy_to_export, with_time_taken};
+use super::{OwnTemp, hidden_text_facts, largest_scale_that_fits, output_exists, page_index, publish, too_heavy_to_export, with_time_taken};
 use crate::{AgentError, exit};
 use recto_proto::jpeg::{JpegFacts, JpegScan};
 use recto_proto::contents::{ImageCoding, NoteCode, PaintStyle, Record, SEG_CURVE, SEG_LINE, TextMode, WireSeg, Why, hints};
@@ -309,6 +309,12 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
     let writer = svg.take().ok_or_else(|| with_time_taken(RenderFailure::Unavailable.into(), started))?;
     tally.chars_dropped = writer.stats().chars_dropped;
     let bytes = writer.finish().map_err(|error| from_io(&error))?.written;
+    // The same check `text` gives, after the page is known to draw, so a refused page pays nothing for it. It's about the whole page, and only matters if text is going in the file.
+    let hidden_text = if text == TextMode::Paths {
+        json!({ "checked": false })
+    } else {
+        doc.page_characters(page, true, true).map_or_else(|_| json!({ "checked": false }), |characters| hidden_text_facts(&characters))
+    };
     publish(&temp.path, args.out, |from, to| std::fs::hard_link(from, to))?;
     drop(temp);
     let rasterised: Vec<Value> = tally
@@ -343,6 +349,7 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
         "all_vector": rasterised.is_empty(),
         "objects": { "paths": tally.paths, "clips": tally.clips, "glyphs": tally.glyphs, "glyph_runs": tally.glyph_runs, "text_runs": tally.text_runs, "text_chars": tally.text_chars, "images_png": tally.images_png, "images_original_jpeg": tally.images_jpeg, "images_drawn_with_mask": tally.images_masked, "images_jpeg_metadata_removed": tally.images_jpeg_stripped, "chars_dropped": tally.chars_dropped },
         "strip_metadata": args.strip_metadata,
+        "hidden_text": hidden_text,
         "rasterised": rasterised,
         "notes": notes,
         "worker_peak_bytes": doc.stats().peak_footprint_bytes,

@@ -12,7 +12,7 @@
 use super::*;
 use recto_proto::jpeg::JpegScan;
 use recto_proto::contents::{CONTENTS_CHUNK, ContentsJob, ImageCoding, MAX_CLIP_CHAIN, MAX_CLIPS, MAX_GLYPHS, MAX_GROUP_NESTING, MAX_IMAGE_ROW_BYTES, MAX_PATH_SEGMENTS, MAX_RUN_ITEMS, NoteCode, SEG_CURVE, SEG_LINE, SEG_MOVE, TextMode, Why, begin_contents, finish_contents, hints, put};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 /// A frame goes back at least this often, so a page of many small objects keeps showing the host it's alive and can be cancelled.
@@ -269,6 +269,7 @@ pub(super) struct Walk {
     flatten: bool,
     probes: u32,
     layers: HashMap<u64, bool>,
+    invisible_counted: HashSet<usize>,
     notes: [u32; 9],
     buffer: Vec<(u32, f32, f32)>,
 }
@@ -389,6 +390,7 @@ impl PdfiumBackend {
             flatten: false,
             probes: 0,
             layers: HashMap::new(),
+            invisible_counted: HashSet::new(),
             notes: [0; 9],
             buffer: Vec::new(),
         };
@@ -1128,6 +1130,13 @@ impl Walk {
         if self.partial {
             chars.retain(|&(_, x, y, index)| index == NOT_DRAWN || self.char_in_view(index, x, y));
         }
+        // The one place all text passes, by every route, so none of it goes uncounted. Once for each object, since text under a picture is gathered again. Only if it's going in the file.
+        // SAFETY: the object is live with its page.
+        let mode = unsafe { (self.api.FPDFTextObj_GetTextRenderMode)(object) };
+        if matches!(mode, 3 | 7) && self.job.text != TextMode::Paths && self.invisible_counted.insert(object as usize) {
+            let drawn_chars = chars.iter().filter(|&&(_, _, _, index)| index != NOT_DRAWN).count();
+            self.notes[NoteCode::InvisibleText as usize] = self.notes[NoteCode::InvisibleText as usize].saturating_add(drawn_chars as u32);
+        }
         chars
     }
 
@@ -1241,7 +1250,6 @@ impl Walk {
             level.text_clip = true;
         }
         if !draws {
-            self.notes[NoteCode::InvisibleText as usize] = self.notes[NoteCode::InvisibleText as usize].saturating_add(chars.len() as u32);
             return self.text_overlay_only_with(object, &chars, out);
         }
         if chars.iter().all(|&(_, _, _, index)| index == NOT_DRAWN) {
@@ -1967,6 +1975,7 @@ impl Walk {
                 let source = unsafe {
                     let base = (self.api.FPDFBitmap_GetBuffer)(*bitmap).cast::<u8>().cast_const();
                     if base.is_null() {
+                        (self.api.FPDFBitmap_Destroy)(*bitmap);
                         return Err(FailCode::Internal);
                     }
                     let h = (self.api.FPDFBitmap_GetHeight)(*bitmap).max(0) as usize;
@@ -1980,7 +1989,11 @@ impl Walk {
                 };
                 for row in *y..end {
                     let start = (y0 + row) as usize * *stride + x0 as usize * in_bytes;
-                    let Some(line) = source.get(start..start + width as usize * in_bytes) else { return Err(FailCode::Internal) };
+                    let Some(line) = source.get(start..start + width as usize * in_bytes) else {
+                        // SAFETY: as above, and `pending` goes with this return, so nothing can reach it after.
+                        unsafe { (self.api.FPDFBitmap_Destroy)(*bitmap) };
+                        return Err(FailCode::Internal);
+                    };
                     if in_bytes == 1 {
                         out.extend_from_slice(line);
                     } else {

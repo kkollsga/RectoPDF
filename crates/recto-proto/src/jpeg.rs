@@ -434,7 +434,8 @@ mod tests {
     #[test]
     fn exif_says_where_and_what_it_holds() {
         let block = |little: bool, tag: u16, value: u16, next: u32| {
-            let (w, l): (fn(u16) -> [u8; 2], fn(u32) -> [u8; 4]) = if little { (u16::to_le_bytes, u32::to_le_bytes) } else { (u16::to_be_bytes, u32::to_be_bytes) };
+            let w = |value: u16| if little { value.to_le_bytes() } else { value.to_be_bytes() };
+            let l = |value: u32| if little { value.to_le_bytes() } else { value.to_be_bytes() };
             let mut out = b"Exif\0\0".to_vec();
             out.extend_from_slice(if little { b"II" } else { b"MM" });
             out.extend_from_slice(&w(42));
