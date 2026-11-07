@@ -86,15 +86,14 @@ pub struct ActivityLog {
     failing: bool,
 }
 
-/// What changes something. A flood of anything else can't push these out.
+/// What changed something: a command of that kind that worked. A failed one changed nothing, whatever it was stopped by, and a flood of those can't push the changes out. A list of refusals would miss the next one added, as `would_discard_user_edits` was. **Limit:** an agent's own working commands can still push out older ones, since each is a change to record.
 fn is_change(cmd: &str, outcome: &str) -> bool {
-    let refused = matches!(outcome, "permission_denied" | "needs_terminal" | "would_clear_redo" | "sign_refused");
-    !refused && matches!(cmd, "open" | "close" | "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" | "render" | "stop" | "permission_set")
+    outcome == "ok" && matches!(cmd, "open" | "close" | "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" | "render" | "stop" | "permission_set")
 }
 
 /// What an agent can repeat for nothing, so it's counted rather than written each time.
 fn collapses(cmd: &str, outcome: &str) -> bool {
-    matches!(cmd, "status" | "unknown" | "connect" | "permission_show" | "permission_request") || matches!(outcome, "permission_denied" | "needs_terminal" | "would_clear_redo" | "sign_refused" | "busy")
+    matches!(cmd, "status" | "unknown" | "connect" | "permission_show" | "permission_request") || matches!(outcome, "permission_denied" | "needs_terminal" | "would_clear_redo" | "would_discard_user_edits" | "sign_refused" | "busy")
 }
 
 impl ActivityLog {
@@ -254,6 +253,29 @@ mod tests {
         log.record("newest", Level::Full, "ok", &Value::Null);
         let shown = recent(&paths, Some(1));
         assert_eq!(shown["entries"][0]["cmd"], "newest");
+        std::fs::remove_dir_all(&paths.root).unwrap();
+    }
+
+    /// Failure: a refused `discard`, or a failed command of any kind that changes things when it works, writes to the file of changes, so repeating it pushes out real edits. Going by a list of refusals, this fails again on the next code nobody added to it, so these include codes the list never had.
+    #[test]
+    fn a_failed_command_isnt_a_change() {
+        let paths = temp_paths("failed");
+        let mut log = ActivityLog::new(&paths);
+        log.record("page_delete", Level::Control, "ok", &json!({ "pages": "2" }));
+        let size = std::fs::metadata(&paths.log).unwrap().len();
+        for (cmd, outcome) in [("discard", "would_discard_user_edits"), ("undo", "nothing_to_undo"), ("redo", "nothing_to_redo"), ("page_rotate", "page_out_of_range"), ("close", "unsaved_changes"), ("open", "not_found"), ("render", "too_large_at_this_scale"), ("stop", "busy"), ("page_move", "some_code_nobody_has_thought_of_yet")] {
+            for _ in 0..3 {
+                log.record(cmd, Level::Control, outcome, &Value::Null);
+            }
+            assert_eq!(std::fs::metadata(&paths.log).unwrap().len(), size, "{cmd} {outcome} wrote to the changes");
+        }
+        // Still in the record, and repeating a refusal is counted rather than written out.
+        log.flush();
+        let shown = recent(&paths, Some(1000));
+        let entries = shown["entries"].as_array().unwrap();
+        assert!(entries.iter().any(|entry| entry["cmd"] == "undo" && entry["outcome"] == "nothing_to_undo"), "{shown}");
+        let refused: Vec<&Value> = entries.iter().filter(|entry| entry["outcome"] == "would_discard_user_edits").collect();
+        assert_eq!(refused.len(), 2, "one written, and one for the rest: {refused:?}");
         std::fs::remove_dir_all(&paths.root).unwrap();
     }
 
