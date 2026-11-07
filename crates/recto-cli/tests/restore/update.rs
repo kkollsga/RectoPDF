@@ -324,7 +324,7 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
     assert!(gap.is_u64(), "{}", bed.status(&run));
     eprintln!("update gap: {gap} ms from quit to the first correct frame, in a quiet run, on the app as built, under whatever load this machine has");
     let log = bed.log();
-    for line in log.lines().filter(|line| line.contains("first frame")) {
+    for line in log.lines().filter(|line| line.contains("first frame") || line.contains(" started.")) {
         eprintln!("{line}");
     }
     assert!(log.contains("in the background"), "`frontmost off` means it reopens without taking the focus: {log}");
