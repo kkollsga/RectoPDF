@@ -1,10 +1,15 @@
 //! The one control API. The UI, the CLI, QA and agents all go through these typed, versioned commands, and they call the
 //! same session methods the UI calls.
 
+mod render;
+
 use recto_session::{DocLoader, RowKind, Session, SessionError, TabId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+
+use render::BudgetArgs;
+pub use render::DEFAULT_SCALE;
 
 /// The envelope's version. Within a version, fields are only ever added.
 pub const VERSION: u32 = 1;
@@ -16,6 +21,10 @@ pub mod exit {
     pub const NOT_FOUND: i32 = 3;
     pub const AMBIGUOUS: i32 = 4;
     pub const PERMISSION: i32 = 5;
+    /// Something ran out of time. Agent report, §5.
+    pub const TIMED_OUT: i32 = 7;
+    /// The document is protected or locked, and only the user can do something about it. Agent report, §5.
+    pub const PROTECTED: i32 = 8;
 }
 
 /// What an agent is allowed to do, set by the user. Ordered from least to most.
@@ -51,13 +60,68 @@ pub enum Command {
     Goto { tab: String, page: u32 },
     Close { tab: String },
     Budget {},
+    /// Draws a page to a PNG file.
+    Render {
+        tab: String,
+        page: u32,
+        #[serde(default = "render::default_scale")]
+        scale: f32,
+        out: PathBuf,
+    },
+    /// A page's text, normalised for search, with the hidden-text flag.
+    Text { tab: String, page: u32 },
+    /// What a worker costs: idle, per page, peak, and how often it was retired.
+    BudgetRender {
+        tab: String,
+        pages: u32,
+        /// One-based first page. The first page of the file if left out.
+        #[serde(default)]
+        first: Option<u32>,
+        #[serde(default = "render::default_scale")]
+        scale: f32,
+        /// A fresh worker for every page, to see what one page costs by itself.
+        #[serde(default)]
+        fresh: bool,
+        /// 512 px tiles across each page, rather than whole pages.
+        #[serde(default)]
+        tiles: bool,
+        /// Each page's numbers, as well as the summary.
+        #[serde(default)]
+        samples: bool,
+        /// Overrides the hard memory limit for this measurement, up to 4 GiB.
+        #[serde(default)]
+        limit_mib: Option<u32>,
+        /// Overrides the retirement footprint for this measurement.
+        #[serde(default)]
+        retire_mib: Option<u32>,
+    },
+    /// What a reader's window costs: first view, one scroll step, one zoom step, with peak footprint.
+    BudgetViewport {
+        tab: String,
+        /// `WIDTHxHEIGHT` in device pixels, such as `3024x1964`.
+        viewport: String,
+        /// One-based first page. The first page of the file if left out.
+        #[serde(default)]
+        first: Option<u32>,
+        #[serde(default = "render::default_scale")]
+        scale: f32,
+        /// `per_tile` or `region`, for comparing with the default, which picks by page.
+        #[serde(default)]
+        strategy: Option<String>,
+    },
 }
 
 impl Command {
     /// The level this command needs. Nothing reads document content at Off.
     pub fn level(&self) -> Level {
         match self {
-            Self::Tabs {} | Self::Sidebar {} | Self::Budget {} => Level::ReadOnly,
+            // Measuring with the decided limits only reads numbers. Choosing other limits decides what a hostile file may use, so it isn't reading.
+            Self::BudgetRender { limit_mib: Some(_), .. } | Self::BudgetRender { retire_mib: Some(_), .. } => Level::Full,
+            Self::Tabs {} | Self::Sidebar {} | Self::Budget {} | Self::BudgetRender { .. } | Self::BudgetViewport { .. } => Level::ReadOnly,
+            // Reading a page's text is what read-only access is for, and it's what Off exists to refuse.
+            Self::Text { .. } => Level::ReadOnly,
+            // Writes to disk, so it's with `save` and `export` in the agent report's §5.2.
+            Self::Render { .. } => Level::Full,
             Self::Open { .. } | Self::Tap { .. } | Self::Goto { .. } | Self::Close { .. } => Level::Control,
         }
     }
@@ -82,6 +146,7 @@ impl From<SessionError> for AgentError {
     fn from(error: SessionError) -> Self {
         let exit = match error {
             SessionError::NoSuchTab | SessionError::Open(recto_core::OpenError::NotFound) => exit::NOT_FOUND,
+            SessionError::Open(recto_core::OpenError::PasswordNeeded) => exit::PROTECTED,
             _ => exit::FAILED,
         };
         Self::new(error.code(), error.message(), exit)
@@ -140,7 +205,37 @@ pub fn run<L: DocLoader>(session: &mut Session<L>, level: Level, command: &Comma
             "footprint_bytes": recto_platform::footprint_bytes(),
             "open_handles": recto_platform::open_handle_count(),
         })),
+        Command::Render { tab, page, scale, out } => {
+            let id = select(session, tab)?;
+            render::render(&tab_path(session, id)?, *page, *scale, out)
+        }
+        Command::Text { tab, page } => {
+            let id = select(session, tab)?;
+            render::text(&tab_path(session, id)?, *page)
+        }
+        Command::BudgetViewport { tab, viewport, first, scale, strategy } => {
+            let id = select(session, tab)?;
+            render::budget_viewport(&tab_path(session, id)?, viewport, *first, *scale, strategy.as_deref())
+        }
+        Command::BudgetRender { tab, pages, first, scale, fresh, tiles, samples, limit_mib, retire_mib } => {
+            let id = select(session, tab)?;
+            let args = BudgetArgs {
+                pages: *pages,
+                first: *first,
+                scale: *scale,
+                fresh: *fresh,
+                tiles: *tiles,
+                samples: *samples,
+                limit_mib: *limit_mib,
+                retire_mib: *retire_mib,
+            };
+            render::budget(&tab_path(session, id)?, &args)
+        }
     }
+}
+
+fn tab_path<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<PathBuf, AgentError> {
+    session.path_of(id).ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))
 }
 
 /// Finds a tab by `#id` or by a piece of its name. Selectors never guess: an ambiguous name lists the candidates.
@@ -233,6 +328,57 @@ mod tests {
         assert_eq!(read_only.code, "permission_denied");
         assert_eq!(session.tabs().len(), 1);
         assert!(run(&mut session, Level::ReadOnly, &Command::Tabs {}).is_ok());
+    }
+
+    /// Failure: an agent the user turned off reads a page's text, the one thing Off exists to stop. Asserted on the level itself and on the
+    /// call, which must refuse before any worker starts.
+    #[test]
+    fn reading_page_text_needs_more_than_off() {
+        let text = Command::Text { tab: "#1".into(), page: 1 };
+        assert!(text.level() > Level::Off);
+        assert_eq!(text.level(), Level::ReadOnly);
+        let mut session = with_tabs(&["a"]);
+        let refused = run(&mut session, Level::Off, &text).unwrap_err();
+        assert_eq!((refused.code, refused.exit), ("permission_denied", exit::PERMISSION));
+        let render = Command::Render { tab: "#1".into(), page: 1, scale: 2.0, out: "/tmp/x.png".into() };
+        assert_eq!(run(&mut session, Level::Control, &render).unwrap_err().code, "permission_denied", "it writes to disk, so it needs Full");
+    }
+
+    fn budget_command(limit_mib: Option<u32>, retire_mib: Option<u32>) -> Command {
+        Command::BudgetRender { tab: "#1".into(), pages: 1, first: None, scale: 2.0, fresh: false, tiles: false, samples: false, limit_mib, retire_mib }
+    }
+
+    /// Failure: a read-only agent raises a worker's memory limit to 4 GiB and points it at a hostile file. Choosing limits needs Full, measuring doesn't.
+    #[test]
+    fn raising_a_workers_limits_needs_full() {
+        assert_eq!(budget_command(None, None).level(), Level::ReadOnly);
+        assert_eq!(budget_command(Some(4096), None).level(), Level::Full);
+        assert_eq!(budget_command(None, Some(4096)).level(), Level::Full);
+        let mut session = with_tabs(&["a"]);
+        let refused = run(&mut session, Level::Control, &budget_command(Some(4096), None)).unwrap_err();
+        assert_eq!(refused.code, "permission_denied");
+    }
+
+    /// Failure: a password-protected document reads as a general failure, so an agent retries rather than asking the user. The agent report gives it its own code.
+    #[test]
+    fn a_protected_document_has_its_own_exit_code() {
+        let error = AgentError::from(recto_render_service::RenderFailure::NeedsPassword);
+        assert_eq!((error.code, error.exit), ("needs_password", exit::PROTECTED));
+        assert_eq!(exit::PROTECTED, 8);
+        let opening = AgentError::from(SessionError::Open(OpenError::PasswordNeeded));
+        assert_eq!(opening.exit, exit::PROTECTED, "the session refusing it first must say the same");
+    }
+
+    /// Failure: a mistyped or extra field on the new commands is silently ignored, and an agent believes it did something.
+    #[test]
+    fn render_commands_parse_strictly() {
+        assert!(matches!(parse(r##"{"cmd":"text","tab":"#1","page":2}"##), Ok(Command::Text { page: 2, .. })));
+        assert!(parse(r##"{"cmd":"text","tab":"#1"}"##).is_err(), "the page is required");
+        assert!(parse(r##"{"cmd":"text","tab":"#1","page":1,"extra":1}"##).is_err());
+        let Ok(Command::Render { scale, .. }) = parse(r##"{"cmd":"render","tab":"#1","page":1,"out":"a.png"}"##) else { panic!() };
+        assert_eq!(scale, DEFAULT_SCALE);
+        assert!(matches!(parse(r##"{"cmd":"budget_render","tab":"#1","pages":5}"##), Ok(Command::BudgetRender { .. })));
+        assert!(parse(r##"{"cmd":"budget_render","tab":"#1","pages":5,"typo":1}"##).is_err());
     }
 
     /// Failure: an ambiguous name acts on whichever tab came first, rather than listing the candidates.

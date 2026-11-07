@@ -1,0 +1,31 @@
+[package]
+name = "recto-render-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# The library is the host's side: spawn, limits, validation. It never loads PDFium.
+[lib]
+name = "recto_render_service"
+path = "src/lib.rs"
+
+# The binary is the worker. Only it uses recto-render, so only it reaches PDFium.
+[[bin]]
+name = "recto-render-service"
+path = "src/bin/worker.rs"
+
+[dependencies]
+recto-platform.workspace = true
+recto-proto.workspace = true
+recto-render.workspace = true
+
+[dev-dependencies]
+recto-testpdf.workspace = true
+
+# A stand-in worker in `tests/handles.rs` sends what `Channel::send` wouldn't.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libc.workspace = true

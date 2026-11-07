@@ -48,11 +48,11 @@ The goal: an agent can do everything headless, as you'd expect from the finished
 - [ ] Signature report command (placeholder: present, not checked)
 
 **Renderer**
-- [ ] PDFium in a killable worker: memory limit, per-page deadline, retirement at 64 MiB *(worker running)*
-- [ ] Memory limit sequence: 512 MiB, retry alone up to 1 GiB, then a labelled low-resolution page *(worker running)*
-- [ ] Draw the visible region in one pass, so heavy pages aren't slowed by tile count *(worker running)*
-- [ ] `recto render`: any page to PNG
-- [ ] `recto text`: normalised page text, with a hidden-text flag
+- [x] PDFium in a killable worker: memory limit with the 512 MiB, 1 GiB, lower-resolution sequence, per-page deadline, retirement at 64 MiB
+- [x] `recto render`: any page to PNG, in strips under the same limits
+- [x] `recto text`: normalised page text, with a hidden-text flag
+- [x] `recto budget render`: idle worker, pages, peak, retirement, and a simulated viewport
+- [x] Heavy image pages drawn in one pass per region, not one per tile: USGS map first view 2.1 s to 0.53 s
 
 **The real agent interface**
 - [ ] `recto` as a client of a long-running session on a local socket (owner-only, no network)
@@ -135,6 +135,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] Hidden-text and prompt-injection tests
 - [ ] Panel: visible steps, clickable citations, token count
 - [ ] Setup steps when `claude` isn't installed; first-use consent per document
+- [ ] Protected documents: reading a password-protected document's text needs the user's consent for that document, per the agent report's §5.5. Until then `recto text` refuses with exit 8
 - [ ] Room for a second CLI
 - [ ] **Blind agent test, round 3**
 
@@ -144,6 +145,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 ## Phase 7: Release
 
+- [ ] **Release blocker:** the renderer runs in the sandbox, tested on the signed build
 - [ ] Fuzzing on every parser of untrusted input
 - [ ] Corpus run across all benchmark PDFs, with a dated report
 - [ ] 24-hour soak, flat memory

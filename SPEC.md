@@ -51,7 +51,7 @@ fast because everything is rebuilt from disk.
 - **PDFium without V8 or XFA** draws pages and supplies selection, search text and highlight positions. It runs in a sandboxed,
   killable worker behind a `RenderBackend` seam. Measured in `docs/research/2026-11-06-renderer-spike.md`: text and vector pages at 2x
   are p50 2.06 ms, p95 8.64 ms. Cancelling isn't always prompt and one hostile file reached 4 GiB, so the worker gets a **hard memory
-  limit, a per-page deadline with kill, and retirement at 64 MiB** (amends the benchmark's rule).
+  limit, a per-page deadline with kill, and retirement at 64 MiB** (amends the benchmark's rule). Built in `recto-render-service`: details in `docs/ENGINEERING.md`. **Not sandboxed yet; shipping without the sandbox is a release blocker.**
 - **Memory limit sequence** (owner approved, 2026-11-06): 512 MiB per worker; a page that hits it retries alone with up to 1 GiB if the Mac has memory free; failing that, a lower-resolution version that says so, so a page is never blank. A page that fails all the way down isn't retried, and one heavy worker runs at a time. Exports and printing draw in tiles under the same limits. **An on-screen page never waits and may show low resolution; an export waits for the heavy slot and never saves a low-resolution file** (owner, 2026-11-07).
   *Rejected:* MuPDF (AGPL), poppler (GPL). hayro stays the challenger: as fast, pure Rust, but no cancel call and it reached 843 MiB where PDFium peaks at 113.
 - **Visible regions are drawn in one pass** (owner, 2026-11-06: "4s to render a map is too slow. We can do better"). Tiles stay the cache unit, but a separate render call per tile cost 46–55 ms each on a heavy map, so 72 tiles took 3.7 s against 0.7 s for one pass.
@@ -150,3 +150,4 @@ Numbered so they can be cited. Newest last.
 16. **Normal Save and Save As.** Owner, 2026-11-06. Replaces the earlier save-to-a-copy default.
 18. **Edit mode is in, including text editing.** Owner, 2026-11-06. Reverses the earlier call to leave text editing out. Text edits work on a whole block, matching Foxit's baseline.
 17. **Commands live in the macOS menu bar;** the sidebar panel keeps only what you use while reading. Owner, 2026-11-06.
+19. **Exports wait for the heavy slot; they never come out at low resolution.** Owner, 2026-11-07. An export needing the larger limit waits, bounded and cancellable, and draws sharp, or is refused with no file written. On-screen pages stay as they were: low-res at once, never waiting.

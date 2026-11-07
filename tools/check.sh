@@ -18,12 +18,16 @@ esac
 run() {
   set -e
   cargo clippy --workspace --all-targets --locked -- -D warnings
+  # Tests start the worker binary, and `-p` alone wouldn't build it.
+  cargo build --locked -p recto-render-service
   cargo nextest run --locked "${tests[@]}"
   # Keeps the core buildable for Windows from the first commit. Skipped only if the target isn't installed.
   if rustup target list --installed | grep -q x86_64-pc-windows-gnu; then
     cargo check --workspace --locked --target x86_64-pc-windows-gnu
   fi
 }
+# PDFium's digest-checked library, which the render tests need. Does nothing if it's already there.
+tools/pdfium.sh >/dev/null
 export -f run
 export tests_joined="${tests[*]}"
 tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run'
