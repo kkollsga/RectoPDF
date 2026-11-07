@@ -104,6 +104,8 @@ pub fn render(tag: &str, data: &Value) -> String {
             Some(notice) => format!("{}\n{notice}", if data["restored"] == true { format!("Restored {}.", count(number(&data["count"]), "tab", "tabs")) } else { "Nothing was restored.".to_string() }),
             None => if data["restored"] == true { format!("Restored {}.", count(number(&data["count"]), "tab", "tabs")) } else { "There's no record to restore.".to_string() },
         },
+        "update_status" | "update_check" => update_status(data),
+        "update_install" | "settings" => text(&data["words"]).to_string(),
         "session_check" => {
             let mut out = if data["safe"] == true { "Safe to hand off.".to_string() } else { "Not now:".to_string() };
             if let Some(busy) = data["busy"].as_array() {
@@ -449,6 +451,19 @@ fn session_show(data: &Value) -> String {
                 let _ = write!(out, "\n#{}: {notice}", number(&tab["tab"]));
             }
         }
+    }
+    out
+}
+
+/// What `update status` says to a person.
+fn update_status(data: &Value) -> String {
+    let mut out = text(&data["words"]).to_string();
+    let _ = write!(out, "\nAutomatic updates: {}.", if data["auto_update"] == true { "on" } else { "off" });
+    if let Some(kept) = data["kept"].as_str() {
+        let _ = write!(out, "\nKept to go back to: {kept}.");
+    }
+    if let (Some(from), Some(to), Some(gap)) = (data["last_update"]["from"].as_str(), data["last_update"]["to"].as_str(), data["last_update"]["gap_ms"].as_u64()) {
+        let _ = write!(out, "\nLast update: {from} to {to}, {gap} ms from quit to first frame.");
     }
     out
 }

@@ -91,7 +91,7 @@ pub struct ActivityLog {
 
 /// What changed something: a command of that kind that worked. A failed one changed nothing, whatever it was stopped by, and a flood of those can't push the changes out. A list of refusals would miss the next one added, as `would_discard_user_edits` was. **Limit:** an agent's own working commands can still push out older ones, since each is a change to record.
 fn is_change(cmd: &str, outcome: &str) -> bool {
-    outcome == "ok" && matches!(cmd, "open" | "close" | "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" | "render" | "export_svg" | "index_clear" | "stop" | "permission_set")
+    outcome == "ok" && matches!(cmd, "open" | "close" | "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" | "render" | "export_svg" | "index_clear" | "stop" | "permission_set" | "update_install")
 }
 
 /// Text given past what a file's permissions ask. Only an answer that worked gave anything.
@@ -130,7 +130,7 @@ impl ActivityLog {
         line.push('\n');
         let wrote = if is_override(cmd, outcome, details) {
             self.overrides.append(&self.paths, line.as_bytes())
-        } else if is_change(cmd, outcome) {
+        } else if is_change(cmd, outcome) || (cmd == "settings" && outcome == "ok" && !details["auto_update"].is_null()) {
             self.changes.append(&self.paths, line.as_bytes())
         } else {
             self.others.append(&self.paths, line.as_bytes())

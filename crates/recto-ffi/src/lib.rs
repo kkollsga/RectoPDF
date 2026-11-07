@@ -8,6 +8,7 @@
 mod menus;
 mod qa;
 mod saver;
+pub mod updates;
 mod watchdog;
 
 use qa::QaBridge;
@@ -25,7 +26,7 @@ use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_render_service::Policy;
 use recto_reader::tiles::SavedPlace;
 use recto_session::HistorySource;
-use recto_session::record::{self, Appearance, AppRecord, ContentsScroll, FileStatus, FocusRecord, FocusView, Rect, ScreenNow, ScreenRecord, WindowRecord, look_at_file, place_window};
+use recto_session::record::{self, Appearance, AppRecord, AppSettings, ContentsScroll, FileStatus, FocusRecord, FocusView, Rect, ScreenNow, ScreenRecord, SettingsWindow, WindowRecord, look_at_file, place_window};
 use recto_session::{CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsRowChange, ContentsView, DocLoader, FollowMove, WARM_PAPER, row_full_text, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TAB_ROW_HEIGHT, TabId, ViewSettings, sidebar_heights};
 use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
@@ -52,7 +53,7 @@ const SHOW_PATIENCE: Duration = Duration::from_millis(1200);
 /// Where a hand-off has got to. Rust's to know, so the app can't quit on one that didn't happen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
-enum HandOffState {
+pub(crate) enum HandOffState {
     Idle = 0,
     /// Taking no commands, and no user's changes, and writing.
     Writing = 1,
@@ -467,7 +468,7 @@ impl AppHost {
 
 impl Host for AppHost {
     fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        let asks_only = matches!(command, Command::QaRead { .. } | Command::QaDrive { .. } | Command::SessionCheck {} | Command::SessionShow {} | Command::SessionSave {});
+        let asks_only = matches!(command, Command::QaRead { .. } | Command::QaDrive { .. } | Command::SessionCheck {} | Command::SessionShow {} | Command::SessionSave {} | Command::UpdateStatus {} | Command::Settings { auto_update: None });
         // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
         if !asks_only {
             self.running.fetch_add(1, Ordering::SeqCst);
@@ -543,6 +544,13 @@ impl AppHost {
             answer["zoom"] = json!(value);
             self.core.push(CoreCall::Reconcile);
             return Ok(answer);
+        }
+        if matches!(command, Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. }) {
+            if !recto_agent::allowed(level, command.access()) {
+                return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
+            }
+            let inner = self.saver.inner().ok_or_else(recto_agent::update_needs_app)?;
+            return inner.update_command(command);
         }
         if matches!(command, Command::SessionCheck {}) {
             let check = hand_off_check(self);
@@ -730,6 +738,10 @@ struct Published {
 }
 
 struct Inner {
+    /// Small state, and no thread or timer of its own at rest.
+    updates: Arc<recto_update::updater::Updater>,
+    /// What the host knows of this copy, for the thread that reads the state.
+    update_facts: Mutex<Option<recto_update::updater::Facts>>,
     host: Arc<AppHost>,
     engine: Engine,
     core: Arc<CoreQueue>,
@@ -781,6 +793,8 @@ struct AppState {
     /// What was selected, to put back on the tab's first showing.
     selection_resume: Option<(TabId, record::Selection)>,
     focus: FocusRecord,
+    settings_window: Option<SettingsWindow>,
+    window_closed: bool,
 }
 
 /// What's in flight, for an update to wait for. A running save goes here when it exists, and an export is a command.
@@ -876,7 +890,7 @@ impl Inner {
         let app = lock(&self.app).clone();
         let following = lock(&self.contents_follow).is_following();
         let notice = lock(&self.host.notice).clone();
-        AppRecord { window: app.window, appearance: app.appearance, sidebar_width: Some(app.sidebar_width), panel_open: self.panel_open.load(Ordering::SeqCst), contents_scroll: Some(ContentsScroll { y: app.contents_y.unwrap_or(0.0), following }), focus: app.focus, notice }
+        AppRecord { window: app.window, appearance: app.appearance, sidebar_width: Some(app.sidebar_width), panel_open: self.panel_open.load(Ordering::SeqCst), contents_scroll: Some(ContentsScroll { y: app.contents_y.unwrap_or(0.0), following }), focus: app.focus, notice, settings: AppSettings { auto_update: self.updates.switch_choice() }, settings_window: app.settings_window, window_closed: app.window_closed }
     }
 
     /// Everything the record holds and QA compares: the record as it would be written, and each tab's edits in full.
@@ -1069,7 +1083,12 @@ impl AppCore {
         let host = Arc::new(AppHost { engine: engine.clone(), session: SessionHost::new(DrawableLoader).with_indexing(&paths), core: Arc::clone(&core), qa: qa.clone(), saver: Arc::clone(&saver), running: AtomicU32::new(0), handing_off: AtomicBool::new(false), notice: Mutex::new(None) });
         let stopper = server.as_ref().and_then(|server| server.stopper().ok());
         let announcer = server.as_ref().and_then(|server| server.announcer().ok());
+        let update_hooks = updates::Hooks::new();
+        let update_source = recto_update::source::from_env(paths.overridden);
+        let updates = recto_update::updater::Updater::new(&paths.root, update_source, Arc::clone(&update_hooks) as Arc<dyn recto_update::updater::Host>);
         let inner = Arc::new(Inner {
+            updates,
+            update_facts: Mutex::new(None),
             host: Arc::clone(&host),
             engine,
             core: Arc::clone(&core),
@@ -1077,7 +1096,7 @@ impl AppCore {
             contents_follow: Mutex::new(ContentsFollow::default()),
             started: Instant::now(),
             saver: Arc::clone(&saver),
-            app: Mutex::new(AppState { window: None, appearance: Appearance::System, sidebar_width: record::SIDEBAR_WIDTH, contents_y: None, contents_resume: None, selection_resume: None, focus: FocusRecord::default() }),
+            app: Mutex::new(AppState { window: None, appearance: Appearance::System, sidebar_width: record::SIDEBAR_WIDTH, contents_y: None, contents_resume: None, selection_resume: None, focus: FocusRecord::default(), settings_window: None, window_closed: false }),
             restored: AtomicBool::new(false),
             waiting_server: Mutex::new(server),
             holding_tab: Mutex::new(None),
@@ -1098,6 +1117,7 @@ impl AppCore {
             open_failure: Mutex::new(None),
         });
         saver.attach(Arc::downgrade(&inner));
+        update_hooks.attach(Arc::downgrade(&inner));
         if let Some(qa) = &inner.qa {
             qa.attach(Arc::downgrade(&inner));
         }
@@ -1283,7 +1303,7 @@ impl AppCore {
     /// The menu bar as it stands. The host rebuilds it only when this differs.
     pub fn menu_bar(&self) -> Vec<MenuModel> {
         let reader = lock(&self.inner.published).reader.clone();
-        menus::menu_bar(ViewSettings { focus: reader.focus, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() })
+        menus::menu_bar(ViewSettings { focus: reader.focus, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() }, &self.inner.updates.menu_item().title)
     }
 
     /// The sidebar's panel as it stands.
@@ -1317,12 +1337,17 @@ impl AppCore {
                 self.inner.panel_open.fetch_xor(true, Ordering::SeqCst);
                 self.inner.listener.model_changed();
             }
+            // Off this thread by itself, and it says how it went.
+            menus::Action::Update => self.inner.updates.menu_chosen(),
         }
         HostAction::None
     }
 
     /// Whether a menu item can be chosen now. Asked when a menu opens and on its key.
     pub fn menu_item_enabled(&self, id: String) -> bool {
+        if id == "app.update" {
+            return self.inner.updates.menu_item().enabled;
+        }
         menus::enabled(&id, self.inner.engine.has_document(), self.inner.engine.has_selection())
     }
 
@@ -1372,6 +1397,8 @@ impl AppCore {
     /// The reader has dismissed the notice, or its time's up.
     pub fn dismiss_selection_notice(&self) {
         self.inner.engine.dismiss_selection_notice();
+        self.inner.updates.dismiss_notice();
+        self.inner.core.push(CoreCall::Reconcile);
     }
 
     /// Where a point on a page is in the document, for QA to go through what the mouse goes through.
@@ -1396,10 +1423,25 @@ impl AppCore {
 
     pub fn window_closed(&self) {
         self.inner.engine.window_closed();
+        lock(&self.inner.app).window_closed = true;
+        self.inner.saver.view_changed();
     }
 
     pub fn window_opened(&self) {
         self.inner.engine.window_opened();
+        lock(&self.inner.app).window_closed = false;
+        self.inner.saver.view_changed();
+    }
+
+    /// Whether this launch opens a window. Any launch does but an update's arrival, which leaves things as they were: a window closed stays closed, rather than appearing behind whatever the user's doing.
+    pub fn window_should_open(&self) -> bool {
+        !(lock(&self.inner.app).window_closed && self.inner.updates.arrived_by_update())
+    }
+
+    /// There's no window to wait for, so this launch has come up as far as it goes.
+    pub fn no_window_to_show(&self) {
+        let updates = Arc::clone(&self.inner.updates);
+        let _ = std::thread::Builder::new().name("recto-update-frame".into()).stack_size(128 * 1024).spawn(move || updates.first_frame(recto_update::wall_ms()));
     }
 
     /// The UI thread has woken.
@@ -1430,6 +1472,12 @@ impl AppCore {
     pub fn begin_restore(&self) {
         let inner = Arc::clone(&self.inner);
         let spawned = std::thread::Builder::new().name("recto-restore".into()).stack_size(1024 * 1024).spawn(move || {
+            // Before the record: a version that keeps failing goes back here, and not by reading on.
+            if let Some(facts) = lock(&inner.update_facts).take()
+                && inner.updates.launched(facts) == recto_update::updater::AtLaunch::Exit
+            {
+                std::process::exit(0);
+            }
             let loaded = inner.saver.store.load();
             inner.core.push(CoreCall::Restored(Box::new(loaded)));
         });
@@ -1459,6 +1507,9 @@ impl AppCore {
     pub fn window_shown(&self, home: bool, tile_layers: u32) {
         let report = self.inner.engine.report().0;
         *lock(&self.inner.first_shown) = Some(json!({ "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"], "tile_layers": tile_layers, "ms_from_start": self.inner.started.elapsed().as_secs_f64() * 1000.0 }));
+        // The installer's waiting for this, off this thread, as it writes a small file only after an update.
+        let updates = Arc::clone(&self.inner.updates);
+        let _ = std::thread::Builder::new().name("recto-update-frame".into()).stack_size(128 * 1024).spawn(move || updates.first_frame(recto_update::wall_ms()));
     }
 
     /// Where the new window goes, on the screens there are now. Rust's rule, from what was saved. In a quiet run it keeps its place off every screen, and only its size comes back.
@@ -1573,8 +1624,42 @@ impl AppCore {
 
     /// The hand-off isn't going ahead after all: commands and what a person does are taken again.
     pub fn hand_off_cancelled(&self) {
-        self.inner.hand_off_state.store(HandOffState::Idle as u8, Ordering::SeqCst);
-        self.inner.set_frozen(false);
+        self.inner.hand_off_cancelled();
+    }
+
+    /// What this copy of the app is, from the host. Before `begin_restore`, which is what reads what the updater remembers.
+    pub fn set_update_facts(&self, version: String, bundle_path: String, system_version: String) {
+        self.inner.note_update_facts(version, bundle_path, system_version);
+    }
+
+    /// When the host's one timer should go off, if at all. It's the same until something happens, and the host arms again only when it isn't.
+    pub fn update_timer(&self) -> Option<updates::UpdateTimer> {
+        updates::timer_for(self.inner.updates.next_wake(), self.inner.updates.now_ms())
+    }
+
+    /// The timer's gone off. Quick: what it starts is on a thread of its own.
+    pub fn update_timer_fired(&self) {
+        self.inner.update_timer_fired();
+    }
+
+    /// The Settings window, as it stands.
+    pub fn settings_model(&self) -> updates::SettingsModel {
+        self.inner.settings_model()
+    }
+
+    /// A switch in Settings was flipped.
+    pub fn setting_chosen(&self, id: String, on: bool) {
+        self.inner.setting_chosen(&id, on);
+    }
+
+    /// The Settings window opened, moved or closed. It's part of what comes back.
+    pub fn settings_window_changed(&self, open: bool, x: f64, y: f64) {
+        self.inner.settings_window_changed(open.then_some(SettingsWindow { x, y }));
+    }
+
+    /// Where the Settings window was, if it was open.
+    pub fn settings_window_place(&self) -> Option<Vec<f64>> {
+        self.inner.settings_window().map(|place| vec![place.x, place.y])
     }
 
     /// A quit was asked for, by the menu or the system. Everything's written, on a thread of its own, and `quit_answer` says what to do. Mac apps with Resume don't ask on the way out, and neither does this, as unsaved edits come back: closing a tab with them is where Don't Save, Cancel or Save belongs. It asks only if they couldn't be kept.
@@ -1582,6 +1667,7 @@ impl AppCore {
         let inner = Arc::clone(&self.inner);
         // What's done from here wouldn't come back. If it turns out it isn't quitting, it's taken again.
         inner.set_frozen(true);
+        inner.updates.stop();
         let _ = std::thread::Builder::new().name("recto-quit".into()).stack_size(256 * 1024).spawn(move || {
             let (sender, receiver) = std::sync::mpsc::channel();
             let flushing = Arc::clone(&inner);
@@ -1593,6 +1679,7 @@ impl AppCore {
             let unsaved = inner.host.session.unsaved_tabs();
             if !(fine || unsaved.is_empty()) {
                 inner.set_frozen(false);
+                inner.updates.stop_over();
             }
             inner.listener.quit_answer(if fine || unsaved.is_empty() {
                 QuitAnswer { go: true, title: String::new(), message: String::new(), quit_button: String::new(), stay_button: String::new() }
@@ -1638,8 +1725,11 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
                     lock(&inner.app).sidebar_width = record::sidebar_width(paper_set);
                 }
                 inner.panel_open.store(saved.panel_open, Ordering::SeqCst);
+                inner.updates.set_switch(saved.settings.auto_update);
                 {
                     let mut app = lock(&inner.app);
+                    app.settings_window = saved.settings_window;
+                    app.window_closed = saved.window_closed;
                     app.window = saved.window.clone();
                     app.appearance = saved.appearance;
                     app.focus = saved.focus;
@@ -2209,7 +2299,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let holding = lock(&inner.holding_tab).is_some();
     let sidebar_width = lock(&inner.app).sidebar_width;
     let highlight = paper.highlight();
-    let selection_notice = inner.engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades });
+    let selection_notice = inner.engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
     let reader = ReaderView { home: synced.tab.is_none() && !holding, note, focus: view.focus, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice };
     let mut published = lock(&inner.published);
     let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);

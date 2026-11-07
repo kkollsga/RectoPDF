@@ -207,6 +207,26 @@ pub fn sync_folder_of(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+pub fn swap_paths(_a: &Path, _b: &Path) -> io::Result<()> {
+    unsupported()
+}
+
+pub fn processes_running(_executable: &Path) -> Vec<u32> {
+    Vec::new()
+}
+
+pub fn process_path(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
+pub fn signal_process(_pid: u32, _kill: bool) -> bool {
+    false
+}
+
+pub fn spawn_detached(_program: &Path, _args: &[String], _envs: &[(String, String)], _log: &Path) -> io::Result<u32> {
+    unsupported()
+}
+
 /// Nothing on this platform can say where a file went.
 pub fn path_of_file_number(_device: u64, _inode: u64) -> Option<PathBuf> {
     None

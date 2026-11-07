@@ -185,7 +185,7 @@ impl QaBridge {
             Command::QaRead { verb, out, timeout_ms } => match verb.as_str() {
                 "state" => self.state(),
                 "settled" => self.settled(timeout_ms.map_or(DEFAULT_SETTLE_WAIT, Duration::from_millis)),
-                "shot" => self.shot(out.as_deref().ok_or_else(|| bad("`qa shot` needs `--out`."))?),
+                "shot" | "shot_settings" | "shot_menu" => self.shot(verb, out.as_deref().ok_or_else(|| bad("A shot needs `--out`."))?),
                 "copied" => self.ask("copied", ""),
                 _ => Err(bad("That isn't a QA command.")),
             },
@@ -195,10 +195,10 @@ impl QaBridge {
     }
 
     /// The host draws it into a temp file of ours, and it's published here, by the rule `render` keeps to: nothing already there is replaced. A QA run can be started from Off, and this is at Read-only.
-    fn shot(&self, out: &Path) -> Result<Value, AgentError> {
+    fn shot(&self, verb: &str, out: &Path) -> Result<Value, AgentError> {
         refuse_shot_path(out, is_in_real_home)?;
         let temp = std::env::temp_dir().join(format!("recto-shot-{}-{}.png", std::process::id(), self.next_id.fetch_add(1, Ordering::SeqCst)));
-        let answer = self.ask("shot", &temp.to_string_lossy());
+        let answer = self.ask(verb, &temp.to_string_lossy());
         let published = answer.and_then(|mut answer| {
             recto_agent::publish_picture(&temp, out)?;
             answer["out"] = json!(out);
@@ -236,6 +236,30 @@ impl QaBridge {
             "hand_off_quit" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
                 return Ok(json!({ "quit": inner.hand_off_quit_now() }));
+            }
+            // What the timer does, by the same call, and a test's clock. It's the same call whichever way it comes.
+            "update_tick" => {
+                let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+                inner.update_timer_fired();
+                self.core.flush(ANSWER_AFTER_CLICK);
+                return self.ask("state", "");
+            }
+            "update_clock" => {
+                let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+                let ahead = value.parse::<i64>().map_err(|_| bad("It's a number of milliseconds."))?;
+                if !inner.update_test_clock(ahead) {
+                    return Err(bad("Only a test run with its own update server has a clock to move."));
+                }
+                return self.ask("state", "");
+            }
+            "settings" => {
+                let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+                if !matches!(value, "open" | "close") && !inner.has_setting(value) {
+                    return Err(bad(format!("`{}` isn't something `settings` takes.", cleaned(value))));
+                }
+                self.ask(verb, value)?;
+                self.core.flush(ANSWER_AFTER_CLICK);
+                return self.ask("state", "");
             }
             "open_file" => {
                 // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
@@ -280,6 +304,7 @@ impl QaBridge {
             "app": app,
             "reader": self.engine.report().0,
             "session": self.inner().map_or(Value::Null, |inner| inner.state_json()),
+            "update": self.inner().map_or(Value::Null, |inner| inner.update_report()),
             "record": self.inner().map_or(Value::Null, |inner| inner.record_report()),
             "memory": {
                 "footprint_bytes": own,

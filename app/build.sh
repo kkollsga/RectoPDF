@@ -17,11 +17,16 @@ case "$mode" in
 esac
 BUILD="$APP_DIR/build"
 APP="$BUILD/RectoPDF.app"
+# One version, from one place. It's what the updater compares with, and it's in every copy's Info.plist.
+VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' "$REPO/Cargo.toml" | head -1)"
+# The identity a release is signed with. `app/release-zip.sh --signed` sets it, and without it this is ad hoc.
+SIGN_IDENTITY="${RECTO_SIGN_IDENTITY:--}"
+if [ "$SIGN_IDENTITY" = - ]; then SIGN_ARGS=(--force --sign -); else SIGN_ARGS=(--force --sign "$SIGN_IDENTITY" --options runtime --timestamp); fi
 
 "$REPO/tools/pdfium.sh" >/dev/null
 
 echo "==> Rust ($mode)"
-(cd "$REPO" && cargo build --locked -p recto-ffi -p recto-cli -p recto-render-service -p recto-indexer ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"})
+(cd "$REPO" && cargo build --locked -p recto-ffi -p recto-cli -p recto-render-service -p recto-indexer -p recto-update ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"})
 mkdir -p "$BUILD/rust"
 cp "$RUST_OUT/librecto_ffi.a" "$BUILD/rust/librecto_ffi.a"
 
@@ -47,6 +52,7 @@ cp "$BIN" "$APP/Contents/MacOS/RectoPDF"
 cp "$RUST_OUT/recto" "$APP/Contents/MacOS/recto"
 cp "$RUST_OUT/recto-render-service" "$APP/Contents/MacOS/recto-render-service"
 cp "$RUST_OUT/recto-indexer" "$APP/Contents/MacOS/recto-indexer"
+cp "$RUST_OUT/recto-updater" "$APP/Contents/MacOS/recto-updater"
 cp "$REPO/target/pdfium/libpdfium.dylib" "$APP/Contents/MacOS/libpdfium.dylib"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -58,7 +64,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key><string>RectoPDF</string>
     <key>CFBundleExecutable</key><string>RectoPDF</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>NSHighResolutionCapable</key><true/>
@@ -81,9 +87,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign --force --sign - "$APP/Contents/MacOS/libpdfium.dylib"
-codesign --force --sign - "$APP/Contents/MacOS/recto-render-service"
-codesign --force --sign - "$APP/Contents/MacOS/recto-indexer"
-codesign --force --sign - "$APP/Contents/MacOS/recto"
-codesign --force --sign - "$APP"
+codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/libpdfium.dylib"
+codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-render-service"
+codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-indexer"
+codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-updater"
+codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto"
+codesign "${SIGN_ARGS[@]}" "$APP"
 echo "==> built $APP"

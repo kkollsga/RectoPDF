@@ -24,6 +24,7 @@ recto-svg = { path = "crates/recto-svg" }
 recto-reader = { path = "crates/recto-reader" }
 recto-indexer = { path = "crates/recto-indexer" }
 recto-testpdf = { path = "crates/recto-testpdf" }
+recto-update = { path = "crates/recto-update" }
 # The owner's fork, for its lazy IndexedReader, at the 0.47 merge. Pinned to a revision so builds repeat.
 lopdf = { git = "https://github.com/kkollsga/lopdf.git", rev = "bc73ca505e44e6f03716531cec8326afa62ab8dc", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "std"] }
