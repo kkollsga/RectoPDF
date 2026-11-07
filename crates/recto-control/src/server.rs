@@ -830,8 +830,7 @@ impl<H: Host> Loop<H> {
             let conn = &self.conns[index];
             let stalled_output = conn.has_output() && now.saturating_duration_since(conn.output_since) >= self.limits.write_deadline;
             // Only while it's its turn to speak: a client may send its next command while the last one runs.
-            // A whole line waiting its turn behind an answer not yet read isn't half a line: it's the client that's being held back, and the write deadline looks after a client that's stopped reading.
-            let stalled_line = matches!(conn.state, State::Idle) && conn.line_started.is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline) && !conn.input.contains(&b'\n');
+            let stalled_line = matches!(conn.state, State::Idle) && conn.half_line_since().is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline);
             let idle_limit = if conn.overflow { self.limits.overflow_idle } else { self.limits.idle_deadline };
             let idle = matches!(conn.state, State::Idle) && conn.input.is_empty() && !conn.has_output() && now.saturating_duration_since(conn.last_activity) >= idle_limit;
             if stalled_output || stalled_line || idle {
@@ -949,7 +948,7 @@ impl<H: Host> Loop<H> {
             }
             match &conn.state {
                 State::Idle => {
-                    if let Some(started) = conn.line_started {
+                    if let Some(started) = conn.half_line_since() {
                         consider(started + self.limits.line_deadline);
                     }
                     if conn.input.is_empty() && !conn.has_output() {
@@ -981,6 +980,11 @@ impl Conn {
     /// What's been queued for this client and not yet taken.
     fn unsent(&self) -> usize {
         self.output.len() - self.sent
+    }
+
+    /// When half a line began, if that's what's waiting. A whole line waiting its turn behind an answer not yet read isn't half a line: it's the client that's being held back, and the write deadline looks after one that's stopped reading. `expire` and `next_deadline` both go by this, or one would wake for a deadline the other won't act on, and the session would spin.
+    fn half_line_since(&self) -> Option<Instant> {
+        self.line_started.filter(|_| !self.input.contains(&b'\n'))
     }
 
     fn has_output(&self) -> bool {

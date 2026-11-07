@@ -1,6 +1,7 @@
 //! The server with a stand-in host and short limits, on a real socket: what a real session is too well-behaved, or too slow, to show.
 
 use recto_agent::{AgentError, Command, Condition, ConditionState, Event, Level, exit};
+use recto_platform::local::process_counters;
 use recto_control::StatePaths;
 use recto_control::client::Client;
 use recto_control::host::Host;
@@ -424,6 +425,26 @@ fn a_whole_line_waiting_behind_an_unread_answer_isnt_half_a_line() {
     for answer in 0..2 {
         assert!(reader.next(&mut slow).unwrap_or_else(|| panic!("answer {answer}: the connection was dropped"))["data"]["huge"].is_string());
     }
+}
+
+/// Failure: with a whole line held back behind an unread answer, the session's next wake-up is a line deadline that nothing acts on, so `poll` returns at once, for ever, and the session's one thread spins at 100%. Measured as the process's CPU time and wake-ups while nothing is happening.
+#[test]
+fn a_line_held_back_behind_an_unread_answer_doesnt_spin_the_session() {
+    let limits = Limits { line_deadline: Duration::from_millis(50), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut slow = running.connect();
+    slow.write_all(b"{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n").unwrap();
+    // Past the deadline it would have spun on, with the answer unread.
+    std::thread::sleep(Duration::from_millis(200));
+    let before = process_counters(std::process::id()).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let after = process_counters(std::process::id()).unwrap();
+    let cpu_ms = (after.cpu_ns - before.cpu_ns) / 1_000_000;
+    let wakes = after.context_switches - before.context_switches;
+    assert!(cpu_ms < 100, "{cpu_ms} ms of CPU in 500 ms: it's spinning");
+    assert!(wakes < 200, "{wakes} wake-ups in 500 ms: it's spinning");
+    let mut reader = BufLine::default();
+    assert!(reader.next(&mut slow).expect("and the client still gets its answer")["data"]["huge"].is_string());
 }
 
 #[derive(Default)]
