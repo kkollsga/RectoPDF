@@ -262,7 +262,7 @@ pub static TABLE: &[Spec] = &[
     },
     Spec { name: "goto", tag: "goto", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Goes to a page. A page that isn't there is refused.", args: &[Arg { key: "page", flag: None, kind: Kind::Page, required: true, help: "The page, counted from 1." }, TAB], data: AGENT_EXITS_PAGE, emits: &["page_changed"], examples: &["recto goto 12", "recto goto 12 --tab report"], ..BASE },
     Spec { name: "tap", tag: "tap", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Taps a tab in the sidebar: switches to it, or folds its contents if it's already active.", args: &[Arg { key: "tab", flag: None, kind: Kind::Tab, required: true, help: "Which tab: `#3`, or part of its name." }], data: "The sidebar, as `sidebar` gives it.", emits: &["tab_activated"], examples: &["recto tap \"#2\"", "recto tap report"], ..BASE },
-    Spec { name: "close", tag: "close", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Closes a tab. Refused while it has unsaved edits.", args: &[TAB], data: "`{ closed, count, active }`, with `active` as `where` gives it.", emits: &["tab_closed", "tab_activated"], examples: &["recto close", "recto close --tab \"#2\""], ..BASE },
+    Spec { name: "close", tag: "close", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Closes a tab. Refused while it has unsaved edits, and below Full while it has undone ones.", args: &[TAB], data: "`{ closed, count, active }`, with `active` as `where` gives it.", emits: &["tab_closed", "tab_activated"], examples: &["recto close", "recto close --tab \"#2\""], ..BASE },
     Spec {
         name: "page move",
         tag: "page_move",
@@ -287,7 +287,7 @@ pub static TABLE: &[Spec] = &[
         examples: &["recto page rotate 2 --by 90", "recto page rotate 1-4 --by -90 --json"],
         ..BASE
     },
-    Spec { name: "page delete", tag: "page_delete", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Removes pages from the edited document. A document keeps at least one page.", args: &[Arg { key: "pages", flag: None, kind: Kind::Pages, required: true, help: "Which: `4` or `4-6`." }, TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto page delete 5", "recto page delete 2-3 --tab report"], ..BASE },
+    Spec { name: "page delete", tag: "page_delete", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Removes pages from the edited document. A document keeps at least one page. Any edit that would clear undone steps needs Full.", args: &[Arg { key: "pages", flag: None, kind: Kind::Pages, required: true, help: "Which: `4` or `4-6`." }, TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto page delete 5", "recto page delete 2-3 --tab report"], ..BASE },
     Spec {
         name: "page insert",
         tag: "page_insert",
@@ -300,7 +300,7 @@ pub static TABLE: &[Spec] = &[
         examples: &["recto page insert appendix.pdf --at 4"],
         ..BASE
     },
-    Spec { name: "undo", tag: "undo", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Reverses the last page edit.", args: &[TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto undo"], ..BASE },
+    Spec { name: "undo", tag: "undo", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Reverses the last page edit. It can be redone, so a new edit after this, which would lose that, needs Full until you've redone it.", args: &[TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto undo"], ..BASE },
     Spec { name: "redo", tag: "redo", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Repeats the last undone page edit.", args: &[TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto redo"], ..BASE },
     Spec { name: "edits", tag: "edits", group: GROUP_EDIT, summary: "A tab's unsaved edits, as runs of pages.", args: &[TAB], data: "`{ ...same as undo, runs: [ { pages, from_file_pages, rotation_degrees, added, untrusted: { added_file } } ], runs_truncated }`.", examples: &["recto edits", "recto edits --json"], ..BASE },
     Spec { name: "discard", tag: "discard", group: GROUP_EDIT, access: Access::At(Level::Full), summary: "Throws away a tab's unsaved edits. They can't be got back.", args: &[TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto discard --tab report"], ..BASE },
@@ -399,7 +399,7 @@ pub static TABLE: &[Spec] = &[
         examples: &["recto serve --background", "recto serve"],
         ..BASE
     },
-    Spec { name: "stop", tag: "stop", group: GROUP_SESSION, access: Access::At(Level::Control), summary: "Ends the session. Refused while a tab has unsaved edits.", data: "`{ stopping }`.", examples: &["recto stop"], client_wait_s: 15, ..BASE },
+    Spec { name: "stop", tag: "stop", group: GROUP_SESSION, access: Access::At(Level::Control), summary: "Ends the session. Refused while a tab has unsaved or undone edits.", data: "`{ stopping }`.", examples: &["recto stop"], client_wait_s: 15, ..BASE },
     Spec {
         name: "local",
         tag: "local",

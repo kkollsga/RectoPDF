@@ -451,7 +451,7 @@ fn next_step(code: &str, exit: i32) -> &'static str {
         "not_pdf" => "This file can't be opened. Try another file.",
         "password_needed" | "needs_password" => "Ask the user to open it in the app and allow it. Passwords are never taken here.",
         "ambiguous" => "Use one of the candidates, written as `#id`.",
-        "unsaved_changes" => "`recto undo` steps back through them, or with Full access `recto discard` throws them away. Saving isn't built yet.",
+        "unsaved_changes" => "With Full access `recto discard` throws them away. Saving isn't built yet.",
         "last_page" => "Keep at least one page, or delete fewer.",
         "too_many_pages" | "too_many_sources" => "Add less to this document.",
         "too_many_tabs" => "`recto close` closes a tab.",
@@ -638,6 +638,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         }),
         Command::Close { tab } => access.with(|s| {
             let id = select(s, tab)?;
+            keep_undone_steps(s, id, level, "Closing this tab")?;
             let before = s.active();
             s.close(id)?;
             events.push(Event::new("tab_closed", json!({ "tab": id.0 })));
@@ -706,16 +707,16 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         Command::PageMove { tab, pages, to } => {
             let (start, len) = parse_pages(pages, false)?;
             let destination = one_based(*to)?;
-            edit(access, tab, events, |e| e.move_pages(start, len, destination))
+            edit(access, level, tab, events, |e| e.move_pages(start, len, destination))
         }
         Command::PageRotate { tab, pages, degrees } => {
             let (start, len) = parse_pages(pages, false)?;
             let turns = quarter_turns(*degrees)?;
-            edit(access, tab, events, |e| e.rotate(start, len, turns))
+            edit(access, level, tab, events, |e| e.rotate(start, len, turns))
         }
         Command::PageDelete { tab, pages } => {
             let (start, len) = parse_pages(pages, false)?;
-            edit(access, tab, events, |e| e.delete(start, len))
+            edit(access, level, tab, events, |e| e.delete(start, len))
         }
         Command::PageInsert { tab, path, at } => {
             require_absolute(path)?;
@@ -726,6 +727,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             let facts = loader.load(path)?;
             access.with(|s| {
                 let id = select(s, tab)?;
+                keep_undone_steps(s, id, level, "A new edit")?;
                 s.insert_pdf_with_facts(id, position, path, &facts, stamp)?;
                 events.push(edits_event(s, id));
                 let data = edit_state_json(s, id);
@@ -917,14 +919,26 @@ fn quarter_turns(degrees: i32) -> Result<i32, AgentError> {
     Ok(degrees / 90)
 }
 
-fn edit<A: SessionAccess>(access: &A, tab: &str, events: &mut Vec<Event>, change: impl FnOnce(&mut recto_session::edit::PageEdits) -> Result<(), recto_session::edit::EditError>) -> Result<Value, AgentError> {
+fn edit<A: SessionAccess>(access: &A, level: Level, tab: &str, events: &mut Vec<Event>, change: impl FnOnce(&mut recto_session::edit::PageEdits) -> Result<(), recto_session::edit::EditError>) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
+        keep_undone_steps(s, id, level, "A new edit")?;
         s.edit_pages(id, change)?;
         events.push(edits_event(s, id));
         let data = edit_state_json(s, id);
         Ok(with_place_note(s, id, data))
     })
+}
+
+/// Undone steps are edits that can still be got back. A new edit clears them for good, and so does closing the tab, which would make `discard` pointless: at Control, undo everything, make one edit, undo it, and the originals are gone. So below Full, whatever would clear them is refused. Owner's coordinator, 2026-11-07: nothing is lost without Full.
+fn keep_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level: Level, what: &str) -> Result<(), AgentError> {
+    if level >= Level::Full || !session.page_edits(id).is_some_and(recto_session::edit::PageEdits::can_redo) {
+        return Ok(());
+    }
+    let mut error = AgentError::new("would_clear_redo", format!("{what} here would throw away undone steps for good, and that needs Full access."), exit::PERMISSION);
+    error.ask = Some("recto permission request full".to_string());
+    error.next = "Run `recto redo` until there's nothing left to redo, which keeps everything, and then go on. Or run `recto permission request full` to ask for Full access.".to_string();
+    Err(error)
 }
 
 /// Says when the page being read went away, so the tab is on another one.
@@ -1454,11 +1468,43 @@ mod tests {
         assert!(save.message.contains("nothing was written"), "{}", save.message);
         let close = run(&mut s, Level::Full, &Command::Close { tab: "#1".into() }).unwrap_err();
         assert_eq!(close.code, "unsaved_changes");
-        assert!(close.next.contains("undo") && close.next.contains("discard"), "{}", close.next);
+        assert!(close.next.contains("discard"), "{}", close.next);
         assert_eq!(run(&mut s, Level::Control, &Command::Discard { tab: "#1".into() }).unwrap_err().code, "permission_denied", "throwing edits away asks for more than making them");
         run(&mut s, Level::Full, &Command::Discard { tab: "#1".into() }).unwrap();
         assert!(!s.is_edited(TabId(1)));
         assert!(run(&mut s, Level::Control, &Command::Close { tab: "#1".into() }).is_ok());
+    }
+
+    /// Failure: at Control, undo to the start, make one edit, undo it, and the original edits are gone with no Full access asked for, and `close` is then allowed. `discard` asks for Full, so this was a way round it.
+    #[test]
+    fn nothing_is_lost_without_full() {
+        let mut s = edit_session();
+        let id = TabId(1);
+        let tab = || "#1".to_string();
+        let rotate = || Command::PageRotate { tab: "#1".into(), pages: "1".into(), degrees: 90 };
+        run(&mut s, Level::Control, &Command::PageDelete { tab: tab(), pages: "2".into() }).unwrap();
+        run(&mut s, Level::Control, &rotate()).unwrap();
+        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        assert!(!s.is_edited(id));
+        for attempt in [rotate(), Command::PageDelete { tab: tab(), pages: "1".into() }, Command::PageMove { tab: tab(), pages: "1".into(), to: 2 }, Command::PageInsert { tab: tab(), path: "/d/b.pdf".into(), at: 1 }, Command::Close { tab: tab() }] {
+            let refused = run(&mut s, Level::Control, &attempt).unwrap_err();
+            assert_eq!((refused.code, refused.exit), ("would_clear_redo", exit::PERMISSION), "{}", attempt.tag());
+            assert!(refused.next.contains("recto redo") && refused.next.contains("recto permission request full"), "{}", refused.next);
+            assert_eq!(refused.ask.as_deref(), Some("recto permission request full"));
+        }
+        assert!(s.page_edits(id).unwrap().can_redo(), "nothing was lost");
+        // Redoing everything keeps it all, and then editing is fine.
+        run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
+        assert!(run(&mut s, Level::Control, &rotate()).is_ok());
+        // At Full, it's the holder's call.
+        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        assert!(run(&mut s, Level::Full, &rotate()).is_ok());
+        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        assert!(run(&mut s, Level::Full, &Command::Close { tab: tab() }).is_ok());
     }
 
     /// Failure: `4-x-` reads as `4-`, or a limit of none is quietly answered with one.

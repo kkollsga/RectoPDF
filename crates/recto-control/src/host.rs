@@ -54,7 +54,8 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
 
     fn unsaved_tabs(&self) -> Vec<String> {
         let session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        session.tabs().iter().filter(|tab| session.is_edited(tab.id)).map(|tab| format!("#{} {}", tab.id.0, tab.name)).collect()
+        // Undone steps count: they can still be got back, and stopping would lose them.
+        session.tabs().iter().filter(|tab| session.is_edited(tab.id) || session.page_edits(tab.id).is_some_and(recto_session::edit::PageEdits::can_redo)).map(|tab| format!("#{} {}", tab.id.0, tab.name)).collect()
     }
 }
 

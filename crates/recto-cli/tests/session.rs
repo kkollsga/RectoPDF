@@ -237,6 +237,28 @@ fn a_search_across_many_files_runs_one_worker_at_a_time() {
     assert!(most <= 2, "{most} workers at once. One is working, and a killed one can take a moment to be collected");
 }
 
+/// Failure: over the real socket, undone edits can be wiped out at Control, or the refusal has no way forward.
+#[test]
+fn a_new_edit_after_undo_needs_full_over_the_socket() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = three_pages();
+    state.json(&["open", path_of(&file)]);
+    state.json(&["page", "delete", "2"]);
+    state.json(&["undo"]);
+    let (refused, code) = state.json(&["page", "rotate", "1", "--by", "90"]);
+    assert_eq!((refused["error"]["code"].as_str(), code), (Some("would_clear_redo"), exit::PERMISSION), "{refused}");
+    assert_eq!(refused["error"]["ask"], "recto permission request full");
+    let (closed, code) = state.json(&["close"]);
+    assert_eq!((closed["error"]["code"].as_str(), code), (Some("would_clear_redo"), exit::PERMISSION), "{closed}");
+    let (stop, _) = state.json(&["stop"]);
+    assert_eq!(stop["error"]["code"], "unsaved_changes", "stopping would lose them too: {stop}");
+    let (redone, code) = state.json(&["redo"]);
+    assert_eq!((code, &redone["data"]["pages"]), (0, &json!(2)), "{redone}");
+    let (rotated, code) = state.json(&["page", "rotate", "1", "--by", "90"]);
+    assert_eq!(code, 0, "{rotated}");
+}
+
 /// Failure: `open new.pdf --page 999` exits 3 with the tab open anyway, and nothing told watchers. It opens nothing and says so.
 #[test]
 fn opening_at_a_page_it_doesnt_have_opens_nothing() {
