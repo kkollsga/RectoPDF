@@ -103,10 +103,24 @@ final class Bridge: AppListener, @unchecked Sendable {
         if isQuiet { qa = QAChannel(delegate: self) }
     }
 
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+
+    /// The system says memory's short. What's done about it is Rust's.
+    private func watchMemoryPressure() {
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler { [weak self, weak source] in
+            guard let self, let source else { return }
+            self.core.memoryPressure(critical: source.data.contains(.critical))
+        }
+        source.resume()
+        memoryPressureSource = source
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // AppKit adds Dictation and Emoji to any menu called Edit. A reader has nothing to type into, so they'd do nothing, and they cost about 0.35 MiB, measured side by side.
         UserDefaults.standard.register(defaults: ["NSDisabledDictationMenuItem": true, "NSDisabledCharacterPaletteMenuItem": true])
         watchMainThread()
+        watchMemoryPressure()
         installMenu()
         NSApp.registerServicesMenuSendTypes([.string], returnTypes: [])
         watchActivityAndInput()

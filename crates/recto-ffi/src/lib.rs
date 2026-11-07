@@ -8,6 +8,7 @@
 mod menus;
 mod qa;
 mod saver;
+mod sleeper;
 mod watchdog;
 
 use qa::QaBridge;
@@ -444,6 +445,13 @@ impl AppHost {
                 let kept = kept_json(&self.saver.store, notice.as_deref().and_then(record::notices::words));
                 Ok(self.session.with_session(|session| recto_agent::session_show_json(session, level, kept)))
             }
+            Command::SessionSleep { tab } => {
+                let id = self.session.with_session(|session| recto_agent::select_tab(session, tab))?;
+                self.core.push(CoreCall::SleepTabs(vec![id], sleeper::Why::Asked));
+                self.core.flush(Duration::from_secs(5));
+                let (warm, list_asleep) = self.session.with_session(|session| (session.warm_tabs().any(|other| other == id), session.list_is_asleep(id)));
+                Ok(json!({ "tab": id.0, "dormant": !warm, "list_asleep": list_asleep }))
+            }
             Command::SessionSave {} => {
                 let report = self.saver.flush(false, Duration::from_secs(5)).map_err(store_error)?;
                 Ok(json!({ "saved": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_ms": report.total_us / 1000, "total_us": report.total_us, "write_us": report.write_us, "force_us": report.force_us, "verify_us": report.verify_us }))
@@ -476,7 +484,7 @@ impl Host for AppHost {
                 return Err(AgentError::new("busy", "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY).then("Try again in a moment, when it's back."));
             }
         }
-        if matches!(command, Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {}) {
+        if matches!(command, Command::SessionSleep { .. } | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {}) {
             let result = self.record_command(level, command);
             if !asks_only {
                 self.running.fetch_sub(1, Ordering::SeqCst);
@@ -571,6 +579,14 @@ enum CoreCall {
     SetPaper(Paper),
     ToggleAgentIcon,
     ClearEditHistory,
+    /// Those tabs go dormant.
+    SleepTabs(Vec<TabId>, sleeper::Why),
+    /// The system's short of memory, and whether it's critical.
+    MemoryPressure(bool),
+    /// A tab woken from its sleep file has another file there now.
+    WokenFileIsOther(TabId, FileStatus),
+    /// The worker says how long a tab's own file is.
+    FileLength(TabId, u32),
     Page(u32, Option<&'static str>, TabId),
     /// A file read off the session thread, for a tab being woken or a file being opened.
     Read(Box<FileRead>),
@@ -704,6 +720,10 @@ impl EngineEvents for EngineHooks {
         self.core.push(CoreCall::Page(page, failure, TabId(tab)));
     }
 
+    fn file_length(&self, tab: u32, pages: u32) {
+        self.core.push(CoreCall::FileLength(TabId(tab), pages));
+    }
+
     fn copy_ready(&self) {
         self.listener.copy_ready();
     }
@@ -746,6 +766,7 @@ struct Inner {
     waiting_server: Mutex<Option<Server>>,
     /// Reading the file a restored active tab is on. Nothing's drawn until it's looked at, so the wrong thing can't show.
     holding_tab: Mutex<Option<TabId>>,
+    sleeper: sleeper::Sleeper,
     /// Where a hand-off has got to.
     hand_off_state: AtomicU8,
     /// In a QA run, files being read wait here, as they would for a slow disk.
@@ -884,7 +905,7 @@ impl Inner {
     pub(crate) fn state_json(&self) -> Value {
         let (record, _) = self.gather_record();
         let mut value = serde_json::to_value(&record).unwrap_or(Value::Null);
-        let lists = self.host.session.with_session(|session| session.tabs().iter().filter_map(|tab| Some((tab.id.0.to_string(), serde_json::to_value(session.edits_record(tab.id)?).ok()?))).collect::<serde_json::Map<_, _>>());
+        let lists = self.host.session.with_session(|session| session.tabs().iter().filter_map(|tab| Some((tab.id.0.to_string(), serde_json::to_value(session.list_record_anywhere(tab.id)?).ok()?))).collect::<serde_json::Map<_, _>>());
         value["edits_full"] = Value::Object(lists);
         value
     }
@@ -892,7 +913,7 @@ impl Inner {
     /// What QA reads of how a restore and the record went, none of it what the user sees.
     pub(crate) fn record_report(&self) -> Value {
         let (writes, appends) = self.saver.store.writes();
-        json!({ "first_shown": *lock(&self.first_shown), "writes": writes, "appends": appends, "wrote_bytes": self.saver.store.wrote_bytes(), "failed": self.saver.has_failed() })
+        json!({ "first_shown": *lock(&self.first_shown), "sleep": self.sleeper.report(), "writes": writes, "appends": appends, "wrote_bytes": self.saver.store.wrote_bytes(), "failed": self.saver.has_failed() })
     }
 
     /// A QA verb that needs no window. `None` if it's for the host. Calls what the UI will.
@@ -930,6 +951,39 @@ impl Inner {
             },
             "owner_edit" => self.owner_edit(value),
             "save_from" => self.qa_save_from(value),
+            "dormant_after" => match value.parse::<u32>() {
+                Ok(seconds) => {
+                    self.sleeper.set_after(seconds);
+                    self.core.push(CoreCall::Reconcile);
+                    Ok(())
+                }
+                Err(_) => Err(usage("It's a number of seconds.".to_string())),
+            },
+            "live_budget" => match value.parse::<u64>() {
+                Ok(mib) => {
+                    self.sleeper.set_budget(mib.saturating_mul(1024 * 1024));
+                    Ok(())
+                }
+                Err(_) => Err(usage("It's a number of MiB.".to_string())),
+            },
+            "hold_drawing" => {
+                self.engine.hold_drawing(value == "on");
+                Ok(())
+            }
+            "sleep_write_gap" => match value.parse::<u32>() {
+                Ok(seconds) => {
+                    self.sleeper.set_write_gap(seconds);
+                    Ok(())
+                }
+                Err(_) => Err(usage("It's a number of seconds.".to_string())),
+            },
+            "memory_pressure" => match value {
+                "warning" | "critical" => {
+                    self.core.push(CoreCall::MemoryPressure(value == "critical"));
+                    Ok(())
+                }
+                _ => Err(usage("It's `warning` or `critical`.".to_string())),
+            },
             "note_input" => {
                 self.note_input();
                 Ok(())
@@ -1098,6 +1152,7 @@ impl AppCore {
             contents_follow: Mutex::new(ContentsFollow::default()),
             started: Instant::now(),
             saver: Arc::clone(&saver),
+            sleeper: sleeper::Sleeper::new(),
             app: Mutex::new(AppState { window: None, appearance: Appearance::System, sidebar_width: record::SIDEBAR_WIDTH, contents_y: None, contents_resume: None, selection_resume: None, focus: FocusRecord::default() }),
             restored: AtomicBool::new(false),
             waiting_server: Mutex::new(server),
@@ -1348,6 +1403,11 @@ impl AppCore {
         menus::enabled(&id, self.inner.engine.has_document(), self.inner.engine.has_selection())
     }
 
+    /// The system says memory's short. From a dispatch source the host keeps, which is all that's the host's about it.
+    pub fn memory_pressure(&self, critical: bool) {
+        self.inner.core.push(CoreCall::MemoryPressure(critical));
+    }
+
     /// What a right-click on a page offers.
     pub fn context_menu(&self) -> Vec<MenuEntry> {
         menus::context_menu()
@@ -1473,12 +1533,14 @@ impl AppCore {
         if !self.inner.restored.load(Ordering::SeqCst) || lock(&self.inner.holding_tab).is_some() {
             return false;
         }
-        let active = self.inner.host.session.with_session(|session| session.active());
-        active.is_none() || self.inner.engine.is_on_place()
+        // It's asked on the UI thread, which doesn't wait for whatever has the session: this comes round again.
+        let Some(active) = self.inner.host.session.try_with_session(|session| session.active()) else { return false };
+        active.is_none() || self.inner.engine.is_on_place() || self.inner.engine.is_showable()
     }
 
     /// The window has just been put on the screen, showing this. For QA to see what the first frame was.
     pub fn window_shown(&self, home: bool, tile_layers: u32) {
+        self.inner.engine.window_up();
         let report = self.inner.engine.report().0;
         *lock(&self.inner.first_shown) = Some(json!({ "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"], "tile_layers": tile_layers, "ms_from_start": self.inner.started.elapsed().as_secs_f64() * 1000.0 }));
     }
@@ -1635,7 +1697,10 @@ impl AppCore {
 /// Puts the session as what was read says, and lets everything that was waiting for that go on: the window, the socket, files named at launch.
 fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads: &mut FileReads, deferred: &mut Vec<PathBuf>) {
     let source: Arc<dyn HistorySource> = Arc::clone(&inner.saver.store) as Arc<dyn HistorySource>;
-    inner.host.session.with_session(|session| session.set_history_source(source));
+    inner.host.session.with_session(|session| {
+        session.set_history_source(source);
+        session.set_sleep_files(true);
+    });
     // This goes for `session restore` too: nothing drawn stays from before.
     if synced.tab.take().is_some() {
         inner.engine.deactivate();
@@ -1682,9 +1747,15 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
         *lock(&host.notice) = Some(words.to_string());
     }
     if let Some((id, path, stamp)) = holding {
-        *lock(&inner.holding_tab) = Some(id);
-        reads.wanted_tab = Some(id);
-        reads.start_restored(inner, id, path, stamp);
+        // With a sleep file, the first frame has what it needs. Nothing waits for the PDF, and it's looked at on the way past.
+        if inner.host.session.with_session(|session| session.wake_from_sleep_file(id)) {
+            inner.host.session.with_session(|session| session.wake_active());
+            inner.engine.note_wake(id.0, Instant::now());
+        } else {
+            *lock(&inner.holding_tab) = Some(id);
+            reads.wanted_tab = Some(id);
+            reads.start_restored(inner, id, path, stamp);
+        }
         look_at_other_files(inner, id);
     }
     inner.saver.start();
@@ -1770,8 +1841,20 @@ fn session_thread(inner: &Arc<Inner>) {
     let mut deferred: Vec<PathBuf> = Vec::new();
     loop {
         // Parked for the queue and the state's one deadline, and nothing else.
-        let Some(call) = inner.core.next_or_due(|| inner.saver.wait_for_due()) else {
-            inner.saver.spawn_writer();
+        let Some(call) = inner.core.next_or_due(|| match (inner.saver.wait_for_due(), inner.sleeper.wait_for_due()) {
+            (Some(one), Some(other)) => Some(one.min(other)),
+            (one, other) => one.or(other),
+        }) else {
+            if inner.saver.wait_for_due().is_some_and(|wait| wait.is_zero()) {
+                inner.saver.spawn_writer();
+            }
+            if inner.sleeper.wait_for_due().is_some_and(|wait| wait.is_zero())
+                && let Some(due) = inner.dormancy_due()
+            {
+                inner.go_dormant(&due, sleeper::Why::LeftAlone);
+                // With what's gone, the page view lets go of it too, and the next deadline's worked out.
+                inner.core.push(CoreCall::Reconcile);
+            }
             continue;
         };
         let mut events = Vec::new();
@@ -1802,6 +1885,7 @@ fn session_thread(inner: &Arc<Inner>) {
                 continue;
             }
             CoreCall::Tap(id) => {
+                inner.engine.note_wake(id.0, Instant::now());
                 // A cold tab's file is read on a thread of its own, as an `open` is, so a file on a dead volume holds up neither this thread nor anything that asks about tabs, and a later tap goes ahead.
                 match host.session.with_session(|session| session.wake_for_tap(id)) {
                     Some((tab, path)) => {
@@ -1836,6 +1920,30 @@ fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::Read(read) => reads.finished(inner, *read, &mut events),
             CoreCall::SetPaper(paper) => set_view(inner, &mut events, |view| view.paper = Some(paper)),
+            CoreCall::SleepTabs(tabs, why) => {
+                inner.go_dormant(&tabs, why);
+            }
+            CoreCall::MemoryPressure(critical) => inner.memory_pressure(critical),
+            CoreCall::WokenFileIsOther(id, status) => {
+                host.session.with_session(|session| {
+                    session.apply_file_status(id, status);
+                    session.forget_read(id);
+                });
+                let reread = host.session.with_session(|session| session.active().filter(|active| *active == id).and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id)))));
+                if let Some((id, path, stamp)) = reread {
+                    reads.wanted_tab = Some(id);
+                    reads.start_restored(inner, id, path, stamp);
+                }
+            }
+            CoreCall::FileLength(id, pages) => {
+                // What a sleep file said of it is wrong, so it's read after all.
+                let wrong = host.session.with_session(|session| session.file_length_is(id, pages));
+                let reread = host.session.with_session(|session| session.active().filter(|active| wrong && *active == id).and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id)))));
+                if let Some((id, path, stamp)) = reread {
+                    reads.wanted_tab = Some(id);
+                    reads.start_restored(inner, id, path, stamp);
+                }
+            }
             CoreCall::ClearEditHistory => inner.host.session.with_session(|session| {
                 if let Some(id) = session.active() {
                     session.clear_history(id, recto_session::ClearReason::UserAsked);
@@ -2111,18 +2219,21 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         let snapshot = active.and_then(|id| {
             let tab = session.tab(id)?;
             let own = session.path_of(id)?;
+            let same_file = session.own_stamp(id).map(sleeper::version_of);
             let map = match session.page_edits(id) {
-                None => PageMap { files: vec![own], slots: None },
+                None => PageMap { files: vec![own], slots: None, own: same_file },
                 Some(edits) => {
                     let mut files = vec![own];
                     files.extend(edits.added_sources().iter().map(|added| added.path.to_path_buf()));
-                    PageMap { files, slots: Some(edits.slots().iter().map(|slot| (slot.source, slot.page)).collect()) }
+                    PageMap { files, slots: Some(edits.slots().iter().map(|slot| (slot.source, slot.page)).collect()), own: same_file }
                 }
             };
             let warm: Vec<u32> = session.warm_tabs().filter(|other| *other != id).map(|other| other.0).collect();
             let problem = session.tab_notice_message(id).map(str::to_string).or_else(|| tab.problem.map(|problem| problem.message().to_string()));
             let saved = session.place_to_show(id).map(|place| SavedPlace { page: place.page, anchor: (place.anchor_page, place.within), x: place.x, y: place.y, document_height: place.document_height, magnification: place.zoom, page_size: (place.page_width > 0.0 && place.page_height > 0.0).then_some(recto_reader::layout::PageBox { width: place.page_width, height: place.page_height }) });
-            Some((id, session.pages_in(id), tab.page, map, warm, problem, saved))
+            // Edits that can't be read just now can't say what's on the pages, so it's the file that's shown.
+            let pages = if session.list_is_asleep(id) { tab.page_count } else { session.pages_in(id) };
+            Some((id, pages, tab.page, map, warm, problem, saved))
         });
         let model = session.sidebar();
         let mut current = None;
@@ -2206,12 +2317,19 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             }
             if holding {
             } else if synced.tab != Some(id) || synced.pages != pages || synced.map != map {
+                let left = inner.pictures_of_those_leaving();
+                // Whichever way it's been asked for, the first frame's what its sleep file has, if it's got one and nothing's held of this tab.
+                if !inner.engine.holds(id.0) {
+                    inner.engine.note_wake(id.0, Instant::now());
+                    inner.give_sleep_view(id);
+                }
                 inner.engine.activate(id.0, pages, page, map.clone(), &warm, saved);
                 // What was selected comes back on the tab it was on, once.
                 let selection = lock(&inner.app).selection_resume.take().filter(|(tab, _)| *tab == id).map(|(_, selection)| selection);
                 if let Some(selection) = selection {
                     inner.engine.restore_selection((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
                 }
+                inner.write_those_leaving(left);
                 synced.tab = Some(id);
                 synced.pages = pages;
                 synced.map = map;
@@ -2251,6 +2369,10 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     if changed {
         inner.listener.model_changed();
     }
+    // What's left alone comes due from here, and what's off screen may be over its budget.
+    inner.check_woken_files();
+    inner.rearm_dormancy();
+    inner.look_at_budget();
     // Whatever just happened may be something to keep. Nothing's written unless it really differs when its time comes.
     if inner.host.session.with_session(|session| session.has_retired_journals()) {
         inner.saver.write_soon();

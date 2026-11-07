@@ -856,6 +856,11 @@ impl DocRenderer {
         self.heavy_retries_counted_from = self.stats.heavy_pages;
     }
 
+    /// The page count, if a worker's said. Asks nothing.
+    pub fn known_page_count(&self) -> Option<u32> {
+        self.page_count
+    }
+
     /// Starts a worker if none is running, and returns the page count. Most callers can just ask for what they want.
     pub fn page_count(&mut self) -> Result<u32, RenderFailure> {
         self.ensure_worker(WorkerClass::Normal, None).map_err(RenderFailure::from)?;

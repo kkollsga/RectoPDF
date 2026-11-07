@@ -410,6 +410,11 @@ pub enum Command {
         #[serde(default = "active_tab")]
         tab: String,
     },
+    /// Puts a tab to sleep now, as being left alone for five minutes would.
+    SessionSleep {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
     /// Clears a tab's edit history: every step undo or redo could take, and its file. Unsaved edits stay. Below Full it refuses if any are the user's.
     ClearHistory {
         #[serde(default = "active_tab")]
@@ -509,6 +514,7 @@ impl Command {
             Self::Redo { .. } => "redo",
             Self::Discard { .. } => "discard",
             Self::ClearHistory { .. } => "clear_history",
+            Self::SessionSleep { .. } => "session_sleep",
             Self::Save { .. } => "save",
             Self::Sign {} => "sign",
             Self::Status {} => "status",
@@ -561,7 +567,7 @@ impl Command {
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
-            Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
+            Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
             Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} => Value::Null,
@@ -573,7 +579,7 @@ impl Command {
     /// The selector this command acts on, if it has one.
     fn tab_selector(&self) -> Option<&str> {
         match self {
-            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
+            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
             _ => None,
         }
     }
@@ -846,7 +852,7 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
         .map(|tab| {
             let notice = session.tab_notice(tab.id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(tab.id) }));
             let place = session.place_to_show(tab.id);
-            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.map(|place| place.within), "edited": session.is_edited(tab.id), "can_undo": session.page_edits(tab.id).is_some_and(recto_session::edit::PageEdits::can_undo), "can_redo": session.page_edits(tab.id).is_some_and(recto_session::edit::PageEdits::can_redo), "notice": notice })
+            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.map(|place| place.within), "edited": session.is_edited(tab.id), "can_undo": session.undo_and_redo(tab.id).0, "can_redo": session.undo_and_redo(tab.id).1, "notice": notice })
         })
         .collect();
     let find = session.find();
@@ -867,6 +873,24 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     if !allowed(level, needed) {
         return Err(refusal(table::display_name(command.tag()), level, needed));
     }
+    // A command about a tab is someone working on it, so it doesn't go dormant from under them, and what it reads is there to read. Every route's through here.
+    let held = command.tab_selector().and_then(|selector| {
+        access.with(|s| {
+            let id = select(s, selector).ok()?;
+            s.wake_list(id);
+            s.touch(id);
+            s.hold(id);
+            Some(id)
+        })
+    });
+    let result = execute_held(access, level, command, events);
+    if let Some(id) = held {
+        access.with(|s| s.let_go(id));
+    }
+    result
+}
+
+fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     match command {
         Command::Open { path, page } => open(access, path, *page, events),
         Command::Tabs { from, limit } => access.with(|s| tabs_json(s, *from, *limit)),
@@ -1097,7 +1121,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             exit::FAILED,
         )),
         Command::Sign {} => Err(refusal("sign", level, Access::Nobody)),
-        Command::Status {} | Command::PermissionShow {} | Command::PermissionRequest { .. } | Command::LevelChanged {} | Command::Wait { .. } | Command::Watch { .. } | Command::WatchStop {} | Command::Log { .. } | Command::Stop {} | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {} => {
+        Command::SessionSleep { .. } | Command::Status {} | Command::PermissionShow {} | Command::PermissionRequest { .. } | Command::LevelChanged {} | Command::Wait { .. } | Command::Watch { .. } | Command::WatchStop {} | Command::Log { .. } | Command::Stop {} | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {} => {
             Err(AgentError::new("needs_server", "This needs the long-running session.", exit::NOT_RUNNING))
         }
     }
@@ -1168,7 +1192,7 @@ fn require_absolute(path: &Path) -> Result<(), AgentError> {
 }
 
 /// Reads a cold tab's file, if what's about to happen would wake one, with the session free. A file on a dead volume holds up this command and no other.
-fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&Session<A::Loader>) -> Option<(TabId, PathBuf)>) {
+fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&mut Session<A::Loader>) -> Option<(TabId, PathBuf)>) {
     let Some((id, path)) = access.with(|s| plan(s)) else { return };
     let loader = access.with(|s| s.loader().clone());
     let stamp = recto_platform::file_stamp(&path).ok();
@@ -1383,7 +1407,6 @@ pub const UNSAVED_NOTE: &str = "These edits are in this session only. Saving isn
 pub const USER_EDITS_UNDONE_NOTE: &str = "The user's edits on this tab are undone, not gone: `recto redo` brings them back, and closing would lose them. Nothing has been saved.";
 
 fn edit_state_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
-    let edits = session.page_edits(id);
     let edited = session.is_edited(id);
     let user_edits_undone = session.has_undone_owner_steps(id);
     json!({
@@ -1395,8 +1418,8 @@ fn edit_state_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         // The user's undone edits aren't in the file, and closing would lose them, so nothing about this says "saved".
         "saved": !edited && !user_edits_undone,
         "user_edits_undone": user_edits_undone,
-        "can_undo": edits.is_some_and(recto_session::edit::PageEdits::can_undo),
-        "can_redo": edits.is_some_and(recto_session::edit::PageEdits::can_redo),
+        "can_undo": session.undo_and_redo(id).0,
+        "can_redo": session.undo_and_redo(id).1,
         "note": if edited { Some(UNSAVED_NOTE) } else { user_edits_undone.then_some(USER_EDITS_UNDONE_NOTE) },
     })
 }
@@ -1453,6 +1476,11 @@ fn tab_path<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<PathBuf, Ag
 }
 
 /// Finds a tab by `#id`, by `active`, or by a piece of its name. Selectors never guess: an ambiguous name lists the candidates.
+/// Which tab a selector means, for a host that handles a command itself.
+pub fn select_tab<L: DocLoader>(session: &Session<L>, selector: &str) -> Result<TabId, AgentError> {
+    select(session, selector)
+}
+
 pub(crate) fn select<L: DocLoader>(session: &Session<L>, selector: &str) -> Result<TabId, AgentError> {
     let not_found = || AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND);
     if selector.len() > MAX_SELECTOR_BYTES {
@@ -1798,6 +1826,7 @@ mod tests {
             Command::Redo { tab: tab() },
             Command::Discard { tab: tab() },
             Command::ClearHistory { tab: tab() },
+            Command::SessionSleep { tab: tab() },
             Command::Save { tab: tab() },
             Command::Sign {},
             Command::Status {},

@@ -162,6 +162,8 @@ pub struct AddedSource {
     pub stamp: Option<FileStamp>,
     /// A file of the history's own, an earlier version of this PDF, which goes when nothing needs it.
     pub kept: bool,
+    /// It's protected, so nothing of its pages is written anywhere in the clear: a document with one has no pictures in its sleep file.
+    pub protected: bool,
 }
 
 /// What came of a save, for a list that goes on.
@@ -213,11 +215,11 @@ struct Outbox {
 
 impl AddedSource {
     pub fn to_record(&self) -> AddedRecord {
-        AddedRecord { path: PathField::from_path(&self.path), page_count: self.page_count, file: self.stamp.map(FileRecord::from), kept: self.kept }
+        AddedRecord { path: PathField::from_path(&self.path), page_count: self.page_count, file: self.stamp.map(FileRecord::from), kept: self.kept, protected: self.protected }
     }
 
     pub fn from_record(record: &AddedRecord) -> Option<Self> {
-        Some(Self { path: record.path.to_path()?.into_boxed_path(), page_count: record.page_count, stamp: record.file.map(FileStamp::from), kept: record.kept })
+        Some(Self { path: record.path.to_path()?.into_boxed_path(), page_count: record.page_count, stamp: record.file.map(FileStamp::from), kept: record.kept, protected: record.protected })
     }
 }
 
@@ -300,6 +302,35 @@ impl PageEdits {
     /// What a save said it was about to put in place, if one has.
     pub fn saving(&self) -> Option<FileStamp> {
         self.saving
+    }
+
+    /// Whether the document has a page from a protected file.
+    pub fn has_protected_pages(&self) -> bool {
+        self.slots.iter().any(|slot| slot.source != 0 && self.added.get(usize::from(slot.source) - 1).is_some_and(|added| added.protected))
+    }
+
+    /// What's on each page of the document, as a number: pictures of it are about this order of these files, and no other. Zero when it's the file as it is, however it got back there, so a discard and a new edit can't come to match by counting.
+    pub fn order_mark(&self) -> u64 {
+        if !self.differs {
+            return 0;
+        }
+        let mut hash = crc32fast::Hasher::new();
+        hash.update(&(self.slots.len() as u64).to_le_bytes());
+        for slot in &self.slots {
+            hash.update(&slot.source.to_le_bytes());
+            hash.update(&slot.page.to_le_bytes());
+            hash.update(&[slot.quarter_turns]);
+        }
+        let low = hash.finalize();
+        let mut hash = crc32fast::Hasher::new_with_initial(low ^ 0x5bd1_e995);
+        for added in &self.added {
+            hash.update(added.path.as_os_str().as_encoded_bytes());
+            if let Some(stamp) = added.stamp {
+                hash.update(&stamp.size.to_le_bytes());
+                hash.update(&stamp.inode.to_le_bytes());
+            }
+        }
+        (u64::from(hash.finalize()) << 32) | u64::from(low) | 1
     }
 
     /// What a save said it had kept, if it did.
@@ -704,6 +735,11 @@ impl PageEdits {
 
     /// [`Self::insert_pdf`], noting which version of the file this is.
     pub fn insert_pdf_stamped(&mut self, at: u32, path: &Path, page_count: u32, stamp: Option<FileStamp>) -> Result<(), EditError> {
+        self.insert_pdf_noting(at, path, page_count, stamp, false)
+    }
+
+    /// [`Self::insert_pdf_stamped`], noting whether it's a protected file.
+    pub fn insert_pdf_noting(&mut self, at: u32, path: &Path, page_count: u32, stamp: Option<FileStamp>, protected: bool) -> Result<(), EditError> {
         if at > self.len() {
             return Err(EditError::OutOfRange);
         }
@@ -714,7 +750,7 @@ impl PageEdits {
         if page_count == 0 {
             return Ok(());
         }
-        let source = self.source_for(path, page_count, stamp)?;
+        let source = self.source_for(path, page_count, stamp, protected)?;
         let slots: Box<[PageSlot]> = (0..page_count).map(|page| PageSlot { source, page, quarter_turns: 0 }).collect();
         self.commit(Step::Restore { start: at, slots })
     }
@@ -876,7 +912,7 @@ impl PageEdits {
         Ok(())
     }
 
-    fn source_for(&mut self, path: &Path, page_count: u32, stamp: Option<FileStamp>) -> Result<u16, EditError> {
+    fn source_for(&mut self, path: &Path, page_count: u32, stamp: Option<FileStamp>, protected: bool) -> Result<u16, EditError> {
         if let Some(found) = self.added.iter().position(|added| &*added.path == path) {
             // Slots already point at the old version's pages, so the new version can't share them.
             if self.added[found].stamp != stamp {
@@ -887,7 +923,7 @@ impl PageEdits {
         if self.added.len() >= MAX_SOURCES {
             return Err(EditError::TooManySources);
         }
-        let added = AddedSource { path: PathBuf::from(path).into_boxed_path(), page_count, stamp, kept: false };
+        let added = AddedSource { path: PathBuf::from(path).into_boxed_path(), page_count, stamp, kept: false, protected };
         self.note(|| JournalOp::AddSource(added.to_record()));
         self.added.push(added);
         u16::try_from(self.added.len()).map_err(|_| EditError::TooManySources)

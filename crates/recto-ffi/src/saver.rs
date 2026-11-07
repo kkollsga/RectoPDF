@@ -5,7 +5,7 @@
 use crate::{CoreCall, CoreQueue, Inner, lock};
 use recto_control::record_store::{FlushReport, RecordStore, StoreError};
 use recto_session::JournalWork;
-use recto_session::record::{EditsRecord, PlaceDelta, PlaceRecord, Selection, SessionRecord};
+use recto_session::record::{EditsRecord, EditsSummary, PlaceDelta, PlaceRecord, Selection, SessionRecord};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -212,6 +212,12 @@ impl Saver {
         self.write_work(inner, &work, force)
     }
 
+    /// Whatever's waiting goes in its journal now, as a tab's about to go dormant, whose list can't till it's all there. With the gate, so it's one visit to the disk at a time.
+    pub(crate) fn write_journals_now(&self, inner: &Inner) {
+        let _gate = lock(&self.gate);
+        let _ = self.write_journals(inner, false);
+    }
+
     fn write_work(&self, inner: &Inner, work: &JournalWork, force: bool) -> Option<StoreError> {
         if work.retired.is_empty() && work.appends.is_empty() {
             return None;
@@ -241,6 +247,10 @@ impl Saver {
         if !inner.core.flush(limit) && force {
             return Err(StoreError { code: "still_busy", message: "Something the app was asked to do hasn't finished, so its state can't be said to be whole.".to_string() });
         }
+        // The tab on screen's sleep file, for the next launch's first frame. Nothing depends on it, so it's no part of what's read back or forced to the drive. If nothing's changed, nothing's written.
+        if let Some(id) = inner.host.session.with_session(|session| session.active()) {
+            inner.write_sleep_for(id, true);
+        }
         let _gate = lock(&self.gate);
         self.first_edit.store(0, Ordering::SeqCst);
         self.view_changed.store(false, Ordering::Relaxed);
@@ -268,11 +278,12 @@ impl Saver {
         let verified = Instant::now();
         // Only if a name had to change is it asked again, as an edit since would differ from what was just written, and a hand-off has stopped those anyway.
         let lists = if renamed { inner.host.session.with_session(|session| session.lists_by_journal()) } else { lists };
-        if let Err(first) = self.store.verify(&record, &lists) {
+        let asleep: HashMap<String, EditsSummary> = inner.host.session.with_session(|session| session.asleep_by_journal());
+        if let Err(first) = self.store.verify_with_asleep(&record, &lists, &asleep) {
             // A line that didn't say enough is mended by the whole record. Anything else fails.
             self.store.next_write_whole();
             self.store.write_record(&record, &delta, force)?;
-            self.store.verify(&record, &lists).map_err(|_| first)?;
+            self.store.verify_with_asleep(&record, &lists, &asleep).map_err(|_| first)?;
         }
         let verify_us = micros(verified);
         let (record_bytes, journal_bytes) = self.store.sizes();

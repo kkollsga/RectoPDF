@@ -26,7 +26,7 @@ A missed budget is a bug. The whole process tree counts, on release builds, on a
 |---|---|---|
 | **One more idle tab** | **≤ 4 KiB, 0 file handles, 0 threads, 0 layers, 0 tiles**, whatever the PDF's size | Met off screen: 0.3 to 2.5 KiB each in the app, no handles, threads, layers or tiles |
 | 1,000 tabs | ≤ 4 MiB over 2 tabs; sidebar opens < 150 ms | Met off screen: 0.3 to 2.5 MiB, 2.9 ms |
-| Live documents | Active plus at most 2 recent; a byte budget frees the oldest first | Count tested. Tile bytes are capped, and a big worker goes 3 s into a pause. No byte budget across documents yet |
+| Live documents | Active plus at most 2 recent; a byte budget frees the oldest first | Tested. What's off screen, workers and histories, is held to 256 MiB, oldest out, looked at on every change of tab. Tile bytes are capped, and a big worker goes 3 s into a pause |
 | One document, text page | ≤ 60 MiB | Met off screen: 32 MiB |
 | Colour full-bleed page | ≤ 100 MiB | 38 MiB on an image page. **Missed at 210 MiB** on a page of shaded backgrounds, from PDFium |
 | Fast scrolling, peak | ≤ 170 MiB. **Named exception:** pages with huge images can exceed this, under the memory limit sequence in §3. Accepted by the owner, 2026-11-07: about 415–450 MiB on a 330 MiB map with one-pass drawing, in exchange for a first view about four times faster | Text 40 to 50 MiB, images 61 to 90. The map: 377 fitted, 433 at 2x, **489 at 3x**, by the tree |
@@ -37,9 +37,9 @@ A missed budget is a bug. The whole process tree counts, on release builds, on a
 | Sharp after scroll stops | ≤ 100 ms on a text page | Met: 7 ms typical, 17 at worst |
 | Background work (OCR, indexing, compress) | Helper process, background QoS, exits when done | Indexing tested; OCR and compress pending |
 | Window closed | ≤ 20 MiB | Met: 11.5 MiB |
-| Waking a sleeping tab | Correct place on screen within one frame (≤ 16 ms), from its sleep file; sharp ≤ 100 ms on a text page; no blank frame | Target, not measured |
-| Live documents across a whole session | A byte budget across documents and a response to memory pressure; memory flat over a 24-hour session | Target, not built |
-| Disk writes (owner, 2026-11-07: "reduce SSD wear as much as we can") | Idle or nothing changed: 0 bytes. Reading: at most one small write a minute. Editing: appended steps only, written after 2 s of quiet or every 5 s at most, nothing rewritten. About 10 MiB of state on a heavy day | Target, not measured. Estimated from 5,000 edits at about 200 bytes and a minute-by-minute place over 8 hours |
+| Waking a sleeping tab | Correct place on screen within one frame (≤ 16 ms), from its sleep file; sharp ≤ 100 ms on a text page; no blank frame | See `docs/ENGINEERING.md` for what's measured. Off screen, from asking to the host having applied it: not on a real display. A page under 5% of the view isn't counted |
+| Live documents across a whole session | A byte budget across documents and a response to memory pressure; memory flat over a 24-hour session | Built and tested over 30 tabs going round, not over 24 hours: `long_session.rs` |
+| Disk writes (owner, 2026-11-07: "reduce SSD wear as much as we can") | Idle or nothing changed: 0 bytes. Reading: at most one small write a minute. Editing: appended steps only, written after 2 s of quiet or every 5 s at most, nothing rewritten. About 10 MiB of state on a heavy day | Idle and scrolling measured at 0 bytes. Sleep files: at most one per tab a minute and 1 MiB an hour, so about 8 MiB over 8 hours, and 100 KiB a picture. Moving among 5 tabs of photographs, 36 visits with the page moved, wrote 1.06 MB over 9 minutes and 0.18 MB as fast as it would go, against 20.7 MB before those limits. The heavy day's total is still an estimate, not measured |
 
 ## 3. Architecture
 

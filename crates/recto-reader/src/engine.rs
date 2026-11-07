@@ -30,6 +30,8 @@ pub trait EngineEvents: Send + Sync {
     fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>);
     /// A copy is ready for the host to take.
     fn copy_ready(&self) {}
+    /// The worker has a tab's own file open, and this is how long it says it is.
+    fn file_length(&self, _tab: u32, _pages: u32) {}
 }
 
 /// How the engine runs.
@@ -63,6 +65,9 @@ struct Shared {
     events: Arc<dyn EngineEvents>,
     ops_signalled: AtomicBool,
     worker_pids: Mutex<Vec<u32>>,
+    workers_by_file: Mutex<Vec<(PathBuf, u32)>>,
+    /// The system's asked for memory back: workers with nothing to do go the next time this thread comes round.
+    kill_idle_workers: AtomicBool,
     last_note: Mutex<Option<String>>,
     last_notice: Mutex<Option<Notice>>,
     config: EngineConfig,
@@ -81,7 +86,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Engine {
     pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self {
-        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), last_note: Mutex::new(None), last_notice: Mutex::new(None), config });
+        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), workers_by_file: Mutex::new(Vec::new()), kill_idle_workers: AtomicBool::new(false), last_note: Mutex::new(None), last_notice: Mutex::new(None), config });
         Self { shared, thread: Arc::new(Mutex::new(None)) }
     }
 
@@ -119,6 +124,55 @@ impl Engine {
         let mut reader = lock(&self.shared.reader);
         reader.activate(tab, pages, page, map, warm, saved);
         self.after(reader);
+    }
+
+    /// What a tab's first frame shows, for its next [`Self::activate`].
+    pub fn give_sleep(&self, tab: u32, view: crate::tiles::SleepView) {
+        lock(&self.shared.reader).give_sleep(tab, view);
+    }
+
+    /// The window's gone up.
+    pub fn window_up(&self) {
+        lock(&self.shared.reader).window_up();
+    }
+
+    /// A tab's being woken, as of now.
+    pub fn note_wake(&self, tab: u32, began: Instant) {
+        lock(&self.shared.reader).note_wake(tab, began);
+    }
+
+    /// Whether a view of this tab's held.
+    pub fn holds(&self, tab: u32) -> bool {
+        lock(&self.shared.reader).holds(tab)
+    }
+
+    /// What a tab's sleep file gets from here.
+    pub fn sleep_material(&self, tab: u32, own: Option<recto_platform::FileStamp>) -> Option<crate::tiles::SleepMaterial> {
+        lock(&self.shared.reader).sleep_material(tab, own)
+    }
+
+    /// For QA: nothing's drawn till this is let go, so a first frame stays to be looked at.
+    pub fn hold_drawing(&self, on: bool) {
+        lock(&self.shared.reader).hold_drawing(on);
+        self.wake();
+    }
+
+    /// Whether a window can go up with what's on the layers.
+    pub fn is_showable(&self) -> bool {
+        lock(&self.shared.reader).is_showable()
+    }
+
+    /// The system wants memory back, so what's off screen goes, and workers with nothing to do.
+    pub fn memory_pressure(&self, critical: bool) {
+        lock(&self.shared.reader).memory_pressure(critical);
+        self.shared.kill_idle_workers.store(true, Ordering::SeqCst);
+        self.wake();
+    }
+
+    /// What this tab's files' workers hold now, from outside. A call to the kernel for each, of which there are few.
+    pub fn worker_bytes(&self, tab: u32) -> u64 {
+        let files = lock(&self.shared.reader).files_of(tab);
+        lock(&self.shared.workers_by_file).iter().filter(|(path, _)| files.contains(path)).filter_map(|(_, pid)| isolate::process_memory(*pid)).map(|memory| memory.footprint_bytes).sum()
     }
 
     /// Exactly where each tab it holds is. A short lock.
@@ -456,6 +510,11 @@ fn run(shared: &Shared) {
             if !Arc::ptr_eq(&files, &wanted) {
                 wanted = files;
             }
+            // Dropping one kills its worker and closes its file, and the next job opens what's there now.
+            for file in reader.take_reopen_files() {
+                renderers.remove(&file);
+                openings.remove(&file);
+            }
             reader.next_plan()
         };
         // Its surface is made with the lock let go, which the UI thread needs on every scroll.
@@ -466,6 +525,12 @@ fn run(shared: &Shared) {
         publish_workers(shared, &mut renderers);
         let Some(job) = job else {
             shared.settled.notify_all();
+            if shared.kill_idle_workers.swap(false, Ordering::SeqCst) {
+                for open in renderers.values_mut() {
+                    open.doc.kill_worker();
+                }
+                publish_workers(shared, &mut renderers);
+            }
             // With nothing to do, this thread is asleep and costs nothing. The one exception: a worker holding a heavy page's memory, which only goes when it does. It gets long enough to bridge a pause in scrolling, and then it's let go, so a heavy page at rest doesn't hold hundreds of megabytes for the 30 s of the idle rule.
             let big = renderers.values_mut().any(|open| open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes));
             if !big {
@@ -497,6 +562,15 @@ fn run(shared: &Shared) {
                 file_changed = open.doc.take_file_changed();
                 if file_changed {
                     open.looks.clear();
+                    open.length_told = false;
+                }
+                if !open.length_told
+                    && let Some(pages) = open.doc.known_page_count()
+                {
+                    open.length_told = true;
+                    if lock(&shared.reader).is_own_file(job.tab, &job.file) {
+                        shared.events.file_length(job.tab, pages);
+                    }
                 }
                 outcome
             }
@@ -535,12 +609,15 @@ fn run(shared: &Shared) {
 }
 
 fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
-    let pids: Vec<u32> = renderers.values_mut().filter_map(|open| open.doc.worker_pid()).collect();
-    *lock(&shared.worker_pids) = pids;
+    let by_file: Vec<(PathBuf, u32)> = renderers.iter_mut().filter_map(|(path, open)| Some((path.clone(), open.doc.worker_pid()?))).collect();
+    *lock(&shared.worker_pids) = by_file.iter().map(|(_, pid)| *pid).collect();
+    *lock(&shared.workers_by_file) = by_file;
 }
 
 /// A file's renderer, and what's been decided about its pages on dark paper. Each page gets one decision, however many tiles it comes to, at whatever scale.
 struct OpenDoc {
+    /// Whoever's asked has been told how long this file is.
+    length_told: bool,
     doc: DocRenderer,
     looks: HashMap<u32, Arc<PageLook>>,
 }
@@ -643,7 +720,7 @@ fn renderer_for<'a>(shared: &Shared, renderers: &'a mut HashMap<PathBuf, OpenDoc
         openings.remove(path);
         let file = opened.map_err(Unopened::Failed)?;
         let doc = DocRenderer::with_file(file, path, None, config, policy.clone()).map_err(Unopened::Failed)?;
-        renderers.insert(path.to_path_buf(), OpenDoc { doc, looks: HashMap::new() });
+        renderers.insert(path.to_path_buf(), OpenDoc { length_told: false, doc, looks: HashMap::new() });
     }
     renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))
 }
