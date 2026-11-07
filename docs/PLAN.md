@@ -208,6 +208,8 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] Fuzz `recto_index::corpus`'s reader with damaged files on disk, as for every parser
 - [ ] Session restore's same-inode rule is tested by a move and a rewrite on one volume, not on the real case the review found: two disk images giving the same device and inode. Run that with two scratch images
 - [ ] On the first version bump's gate: `copy_folder` copies kept files into `session.vN` with no pruning, and a clear doesn't reach them, which would keep redacted text
+- [ ] Deep sleep, from its last review: `session sleep` writes don't count against the hourly 1 MiB, so an agent alternating a tap, a page move and `session sleep` wrote 957 KB in about ten cycles; a same-size, same-mtime, same-inode rewrite keeps an old picture in the next sleep file; `recto text` answers `no_such_page` while a list is unreadable
+- [ ] Red frames from an old file seen three times in one review batch and not in eleven reruns: find the cause
 - [ ] Test line order on a real right-to-left PDF (none among the 454 in distillPDF)
 - [ ] 24-hour soak, flat memory
 - [ ] Developer ID signing and notarization, release workflow, installer that checks checksum, team and Gatekeeper, and goes back to the previous app if the new one fails
