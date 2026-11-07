@@ -424,14 +424,14 @@ pub struct AgentError {
     /// What to do about it, in plain words.
     pub next: String,
     /// The one command that asks the user for what's missing, on a refusal.
-    pub ask: Option<String>,
+    pub ask: Option<Box<str>>,
     /// Anything from outside this error needs to name, which only ever goes under `untrusted`.
-    pub untrusted: Value,
+    pub untrusted: Option<Box<Value>>,
 }
 
 impl AgentError {
     pub fn new(code: &'static str, message: impl Into<String>, exit: i32) -> Self {
-        Self { code, message: message.into(), candidates: Vec::new(), exit, next: next_step(code, exit).to_string(), ask: None, untrusted: Value::Null }
+        Self { code, message: message.into(), candidates: Vec::new(), exit, next: next_step(code, exit).to_string(), ask: None, untrusted: None }
     }
 
     /// Replaces the next step with one that knows more.
@@ -507,8 +507,8 @@ fn error_json(error: &AgentError) -> Value {
     if let Some(ask) = &error.ask {
         out["ask"] = json!(ask);
     }
-    if !error.untrusted.is_null() {
-        out["untrusted"] = error.untrusted.clone();
+    if let Some(untrusted) = &error.untrusted {
+        out["untrusted"] = (**untrusted).clone();
     }
     out
 }
@@ -549,7 +549,7 @@ pub fn refusal(command_name: &str, have: Level, needed: Access) -> AgentError {
             let mut error = AgentError::new("permission_denied", format!("`{command_name}` needs {} access, and agent access is {} now.", level.label(), have.label()), exit::PERMISSION);
             let ask = format!("recto permission request {}", level.name());
             error.next = format!("Run `{ask}`, which tells the user what to allow. Nothing else raises this.");
-            error.ask = Some(ask);
+            error.ask = Some(ask.into());
             error
         }
         Access::UserOnly => AgentError::new("needs_terminal", format!("`{command_name}` is for the user, at their own terminal."), exit::PERMISSION),
@@ -813,7 +813,7 @@ fn file_label(path: &Path) -> String {
 /// The refusal when a file has changed under the page numbers that were recorded from it.
 fn source_changed(path: &Path) -> AgentError {
     let mut error = AgentError::new("source_changed", "The file this page comes from has changed or gone since its page numbers were recorded, so the page can't be trusted to be the same one.", exit::FAILED);
-    error.untrusted = json!({ "file": file_label(path) });
+    error.untrusted = Some(Box::new(json!({ "file": file_label(path) })));
     error
 }
 
@@ -940,7 +940,7 @@ fn keep_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level: Level
         return Ok(());
     }
     let mut error = AgentError::new("would_clear_redo", format!("{what} here would throw away undone steps for good, and that needs Full access."), exit::PERMISSION);
-    error.ask = Some("recto permission request full".to_string());
+    error.ask = Some("recto permission request full".into());
     error.next = "Run `recto redo` until there's nothing left to redo, which keeps everything, and then go on. Or run `recto permission request full` to ask for Full access.".to_string();
     Err(error)
 }
@@ -1065,7 +1065,7 @@ pub fn with_tab_candidates<'a>(error: &mut AgentError, tabs: impl Iterator<Item 
         names.push(json!({ "sel": sel, "name": name }));
         error.candidates.push(sel);
     }
-    error.untrusted = json!({ "candidates": names });
+    error.untrusted = Some(Box::new(json!({ "candidates": names })));
 }
 
 /// Most candidates listed for an ambiguous name. Enough to choose from, and the rest of a thousand tabs isn't help.
@@ -1261,7 +1261,7 @@ mod tests {
         assert_eq!(error.code, "ambiguous");
         assert_eq!(error.exit, exit::AMBIGUOUS);
         assert_eq!(error.candidates, ["#1", "#2"], "ids to use, and no names outside `untrusted`");
-        assert_eq!(error.untrusted["candidates"][0]["name"], "Report 2025");
+        assert_eq!(error.untrusted.unwrap()["candidates"][0]["name"], "Report 2025");
         assert!(run(&mut session, Level::Control, &Command::Tap { tab: "invoice".into() }).is_ok());
     }
 
