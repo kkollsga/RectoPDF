@@ -69,12 +69,14 @@ pub struct PageEdits {
     added: Vec<(Box<Path>, u32)>,
     undo: Vec<Step>,
     redo: Vec<Step>,
+    /// A step fell off the capped undo list, so this document can't get back to the original by undoing.
+    history_dropped: bool,
 }
 
 impl PageEdits {
     pub fn new(page_count: u32) -> Self {
         let slots = (0..page_count).map(|page| PageSlot { source: 0, page, quarter_turns: 0 }).collect();
-        Self { slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new() }
+        Self { slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new(), history_dropped: false }
     }
 
     pub fn slots(&self) -> &[PageSlot] {
@@ -97,7 +99,17 @@ impl PageEdits {
 
     /// Whether anything is waiting to be saved. Undoing everything brings this back to false.
     pub fn is_edited(&self) -> bool {
+        !self.undo.is_empty() || self.history_dropped
+    }
+
+    /// Whether there's a step to undo.
+    pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
+    }
+
+    /// Whether there's an undone step to redo.
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
     }
 
     /// Where a page of the tab's own PDF now sits, if it's still there.
@@ -165,6 +177,7 @@ impl PageEdits {
         self.undo.push(inverse);
         if self.undo.len() > MAX_UNDO {
             self.undo.remove(0);
+            self.history_dropped = true;
         }
         self.redo.clear();
         Ok(())
@@ -322,6 +335,18 @@ mod tests {
         assert_eq!(edits.insert_pdf(0, Path::new("/d/a.pdf"), MAX_PAGES as u32), Err(EditError::TooManyPages));
         assert_eq!(order(&edits), [0, 1]);
         assert!(!edits.is_edited());
+    }
+
+    /// Failure: past the undo cap, undoing everything reads as "no edits" while the document still differs, so the tab closes and silently loses them.
+    #[test]
+    fn a_document_past_the_undo_cap_stays_edited_after_undoing_everything() {
+        let mut edits = PageEdits::new(2);
+        for _ in 0..MAX_UNDO + 1 {
+            edits.move_pages(0, 1, 1).unwrap();
+        }
+        while edits.undo() {}
+        assert_ne!(order(&edits), [0, 1], "the oldest step can't be undone any more");
+        assert!(edits.is_edited(), "it still differs from the file");
     }
 
     /// Failure: undo history grows without limit on a long editing session.
