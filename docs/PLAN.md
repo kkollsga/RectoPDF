@@ -7,8 +7,8 @@ Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it ar
 | Phase | What you get | Status | Size (agent-days) |
 |---|---|---|---:|
 | **0. Research and foundations** | Spec, concepts, benchmarks, first core | **Done** | |
-| **1. CLI and renderer** | An agent can open, read and draw any PDF, and test everything without a window | **In progress** | 5–8 |
-| **2. First real app** | A native window you can read in, with real screenshots | Not started | 8–12 |
+| **1. CLI and renderer** | An agent can open, read and draw any PDF, and test everything without a window | **Done** | 5–8 |
+| **2. First real app** | A native window you can read in, with real screenshots | **In progress** | 8–12 |
 | **3. Complete reader** | Find, menus, ⌘K, session restore, image copy, snapshot and SVG | Not started | 10–15 |
 | **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | Not started | 25–40 |
 | **5. Tools** | Compress, OCR, passwords, compare, redaction, watermarks and more | Not started | 20–35 |
@@ -36,7 +36,7 @@ Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it ar
 - [x] Spec, engineering rules, local repo, `tools/check.sh`
 - [x] lopdf fork merged to 0.47 on a local branch
 
-## Phase 1: CLI and renderer (in progress)
+## Phase 1: CLI and renderer (done)
 
 The goal: an agent can do everything headless, as you'd expect from the finished product's agent interface. Later phases and the agent sidebar build on this.
 
@@ -61,9 +61,24 @@ The goal: an agent can do everything headless, as you'd expect from the finished
 - [x] Activity log of every agent action
 - [x] Generated `SKILL.md` and `REFERENCE.md`, and `recto skill install`
 - [x] Human-readable output by default, and `--json` on every command
-- [ ] **Blind agent test, round 1:** fresh agents with a one-line hint do real tasks and rate the CLI
+- [x] **Blind agent test:** fresh agents with a one-line hint do real tasks and rate the CLI. Four rounds until every agent rated 8 or more; see the report below
 
 **Done when:** fresh agents complete the tasks with no help beyond the skill, rate it 8 or more, and memory budgets hold with 200 tabs of your largest PDFs.
+
+**Phase 1 report, 2026-11-07.**
+
+| Agent's job | Round 1 | Round 2 | Round 3 | Round 4 |
+|---|---:|---:|---:|---:|
+| Reader, smallest model | 8 | 7 | 7 | **8** |
+| Editor | 7 | 7 | 9 | **9** |
+| Hostile and difficult files | 8 | 9 | 9 | **9** |
+| Starts with no access | | 7 | 7 | **8** |
+
+From round 3 the brief added that a clear refusal of access the agent wasn't given isn't a fault, so rounds 3 and 4 may read slightly higher. The agents can see this project's own rules, and reach `recto` through a small wrapper, so they aren't fully blind. No agent tried to get around the levels, and none obeyed text planted in a PDF. Answers were checked against `pdftotext` where they could be.
+
+- **Found only by blind agents:** text in drawing order dropped `MUST` from its sentence, and an undo rule that trapped ordinary work.
+- **Measured on release builds:** `recto status --json` about 3.2 ms typical and under 10 ms at worst, idle or with 1,000 tabs (budget 30 ms). Idle server 1 thread, about 1.7 MiB, 0 wake-ups in 30 s. 1,000 tabs of the 330 MiB PDF: about 3.0 MiB in total, handles unchanged. Whole-page export at 3× and 4× peaks at 465–469 MiB, above the 415–450 MiB accepted for heavy pages.
+- **Not tested:** a peer from a real other user (simulated), a dead volume, a soak, Windows at runtime, a real right-to-left PDF. The real-terminal route ran only under a pseudo-terminal. Hot tabs at scale are Phase 2's budget tests.
 
 ## Phase 2: First real app
 
@@ -94,7 +109,8 @@ The goal: an agent can do everything headless, as you'd expect from the finished
 - [ ] Click to copy an image losslessly
 - [ ] Snapshot tool with text, PNG, JPG and the hand-rolled streaming `recto-svg`
 - [ ] Print
-- [ ] **Blind agent test, round 2**
+- [ ] What blind agents asked for: a whole-document hit total in `search`, an unwrapped quote form of `text`, `edits` saying when turns cancel out, `watch` to a file, and what an encrypted file restricts in `facts`
+- [ ] **Blind agent test, next round**
 
 **Done when:** it can replace your everyday reader for reading only.
 
@@ -109,6 +125,8 @@ The goal: an agent can do everything headless, as you'd expect from the finished
 - [ ] Edit text: block editing, line breaking, font reuse, embedded fallback
 - [ ] Signature image, and the honest signature report
 - [ ] Failure tests from the research: no lost edits on any exit path, never damage a signed file
+- [ ] Close the gap in edit ownership: an agent at Control can delete a page the owner rotated, then edit past the undo cap so the delete can't be undone
+- [ ] Fork: a cap on `/Prev` chains in `IndexedReaderOptions` (100,000 sections in 8 MiB take 2–4 s per open)
 
 **Done when:** edited files open correctly in other readers and pass external validators, with no data-loss failures across the test matrix.
 
@@ -148,6 +166,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] **Release blocker:** the renderer runs in the sandbox, tested on the signed build
 - [ ] Fuzzing on every parser of untrusted input
 - [ ] Corpus run across all benchmark PDFs, with a dated report
+- [ ] Test line order on a real right-to-left PDF (none among the 454 in distillPDF)
 - [ ] 24-hour soak, flat memory
 - [ ] Developer ID signing and notarization, installer, update check
 - [ ] Licences and notices for PDFium, Tesseract and the rest
@@ -168,6 +187,9 @@ Real digital signatures to the official standards, signature trust checks, Windo
 
 | Decision | Needed by | Current default |
 |---|---|---|
+| A same-user process faking a terminal or writing the level file: accept until the app's settings exist? | Phase 2 | Yes |
+| `SKILL.md` auto-approves read-only `recto` commands in Claude Code; the session's level still applies | Phase 6 | Keep |
+| Whole-page exports at 3× and 4× peak at 465–469 MiB, above the 415–450 MiB accepted | Phase 2 | Accept |
 | Copy-restricted PDFs: notice with Copy anyway? | Phase 3 | Yes |
 | What Save does the first time: keep one backup of the original? | Phase 4 | Yes |
 | Anthropic's answer before public release; API-key route | Phase 6 | Wait; add it |
