@@ -1,0 +1,43 @@
+# The sandbox spike. Not part of the main workspace, and nothing in `crates/` depends on it. See docs/research/2026-11-07-sandbox-spike.md.
+[package]
+name = "recto-sandbox-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[workspace]
+
+[[bin]]
+name = "sandbox-probe"
+path = "src/bin/sandbox-probe.rs"
+
+[[bin]]
+name = "worker-dropmach"
+path = "src/bin/worker-dropmach.rs"
+
+[[bin]]
+name = "plain-worker"
+path = "src/bin/plain-worker.rs"
+
+[[bin]]
+name = "selfbox-sbpl"
+path = "src/bin/selfbox-sbpl.rs"
+
+[[bin]]
+name = "xpc-service"
+path = "src/bin/xpc-service.rs"
+
+[[bin]]
+name = "xpc-host"
+path = "src/bin/xpc-host.rs"
+
+[dependencies]
+libc = "0.2"
+recto-platform = { path = "../../crates/recto-platform" }
+recto-proto = { path = "../../crates/recto-proto" }
+recto-render = { path = "../../crates/recto-render" }
+recto-render-service = { path = "../../crates/recto-render-service" }
+
+[dev-dependencies]
+recto-testpdf = { path = "../../crates/recto-testpdf" }
