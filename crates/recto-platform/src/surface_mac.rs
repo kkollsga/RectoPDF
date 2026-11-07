@@ -371,6 +371,12 @@ pub struct SurfaceSender {
 }
 
 impl SurfaceSender {
+    /// A sender to nothing, whose every send fails, as one to a worker that has gone does.
+    #[doc(hidden)]
+    pub fn dead() -> Self {
+        Self { port: 0 }
+    }
+
     /// Hands the worker a surface. Never blocks: a worker that isn't reading, or has gone, is an error here.
     pub fn send(&self, surface: &PixelSurface) -> io::Result<()> {
         // SAFETY: the surface is live, and the right made here is moved into the message or released below.

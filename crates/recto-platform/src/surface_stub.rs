@@ -76,6 +76,10 @@ impl LinkInvite {
 pub struct SurfaceSender(());
 
 impl SurfaceSender {
+    #[doc(hidden)]
+    pub fn dead() -> Self {
+        Self(())
+    }
     pub fn send(&self, _surface: &PixelSurface) -> io::Result<()> {
         unsupported()
     }

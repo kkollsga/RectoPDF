@@ -72,6 +72,8 @@ pub struct Policy {
     pub export_slot_wait: Duration,
     /// Past this footprint after a job, the worker is retired before its next job for another page.
     pub retire_bytes: u64,
+    /// Bytes of surfaces a worker may be sent before it's retired, as it could be holding on to them all, and no limit on its own memory would see that. Twice this and it goes at once. What a worker can pin is held to this.
+    pub surface_bytes_cap: u64,
     /// A job running longer than this has its worker killed.
     pub page_deadline: Duration,
     /// How long a stale job may take to return before its worker is killed.
@@ -107,6 +109,8 @@ impl Default for Policy {
             // Far longer than an idle heavy worker can hold the slot, which is 8 s at most, so only real use of it can make an export time out.
             export_slot_wait: Duration::from_secs(60),
             retire_bytes: 64 * 1024 * 1024,
+            // About 80 pages of text a tile at a time, or 30 regions of a heavy map, for a restart of 17 ms or the map's own load.
+            surface_bytes_cap: 1024 * 1024 * 1024,
             // Platform §2.6. The slowest real page at 2x took 939 ms.
             page_deadline: Duration::from_secs(5),
             // Spike §12: a stale render is gone within 100 ms, by return or kill.
@@ -553,6 +557,8 @@ struct Worker {
     jobs_done: u32,
     /// This worker's own hard limit.
     limit: u64,
+    /// The bytes of surfaces this worker has been sent. Its own footprint doesn't show them, since the host is charged, and a compromised worker can hold on to every one it's given, for as long as it lives.
+    surface_bytes_sent: u64,
     /// A heavy worker. Its ticket is in its process's end action, so the slot goes free when the process has really gone.
     heavy: bool,
 }
@@ -756,6 +762,14 @@ impl DocRenderer {
         self.control.is_stale(generation)
     }
 
+    /// Leaves the running worker's surface link broken, as a worker having gone in the moment since it was last looked at leaves it. That moment can't be hit from outside.
+    #[doc(hidden)]
+    pub fn break_surface_link_for_test(&mut self) {
+        if let Some(worker) = &mut self.worker {
+            worker.surfaces = Some(SurfaceSender::dead());
+        }
+    }
+
     /// Whether a worker is running. Never true for a cold tab, because a cold tab has no `DocRenderer`.
     pub fn has_worker(&mut self) -> bool {
         self.reap_if_gone();
@@ -918,12 +932,12 @@ impl DocRenderer {
             }
             _ => Err(ProtoError("the wrong kind of reply to an images request")),
         });
-        let Ok(boxes) = reply else { return Vec::new() };
+        let boxes = reply.ok()?;
         if self.image_places.len() >= MAX_FAILED_PAGES {
             self.image_places.remove(0);
         }
         self.image_places.push((page, boxes.clone()));
-        boxes
+        Some(boxes)
     }
 
     /// Draws a region of the page in one pass, cut into tiles of `tile_edge` for the caller to hand out. Cheaper than one pass per tile whenever several tiles are needed: see
@@ -1259,6 +1273,11 @@ impl DocRenderer {
         decode: impl Fn(&Frame) -> Result<T, ProtoError>,
     ) -> Result<T, JobFailure> {
         self.retire_if_other_page(page);
+        // Past twice the cap it goes whatever page it's on: a one-page file would otherwise never get to its retirement.
+        if self.worker.as_ref().is_some_and(|worker| worker.surface_bytes_sent > self.policy.surface_bytes_cap.saturating_mul(2)) {
+            self.stats.retirements += 1;
+            self.bury_worker();
+        }
         let mut retried = false;
         let mut idle_retries = 0;
         loop {
@@ -1269,10 +1288,19 @@ impl DocRenderer {
             let watch = Watch { limit: worker.limit, policy: &self.policy, control: &self.control, generation };
             // A worker with no link can't take this. That's only a stand-in, so it's a plain failure rather than a kill.
             if let Some(surface) = surface {
-                match &worker.surfaces {
-                    Some(link) if link.send(surface).is_ok() => {}
-                    _ => return Err(RenderFailure::Unavailable.into()),
+                let Some(link) = &worker.surfaces else { return Err(RenderFailure::Unavailable.into()) };
+                // The send failing means the worker's gone, likely by its own idle rule since it was last looked at. The same as finding that out from its reply: it's nothing about the document.
+                if link.send(surface).is_err() {
+                    self.bury_worker();
+                    self.stats.idle_exits += 1;
+                    idle_retries += 1;
+                    if idle_retries > 2 {
+                        self.stats.crashes += 1;
+                        return Err(JobFailure::Stopped(KillReason::Crashed));
+                    }
+                    continue;
                 }
+                worker.surface_bytes_sent += surface.len() as u64;
             }
             let outcome = worker.exchange(frame, handles, &watch).and_then(|reply| {
                 if reply.kind == Kind::Failed {
@@ -1341,7 +1369,7 @@ impl DocRenderer {
             memory.footprint_bytes
         });
         // A heavy worker holds one page alone, so it goes before any other page whatever its size.
-        self.retire_after_page = (footprint > self.policy.retire_bytes || worker.heavy).then_some(page);
+        self.retire_after_page = (footprint > self.policy.retire_bytes || worker.heavy || worker.surface_bytes_sent > self.policy.surface_bytes_cap).then_some(page);
     }
 
     /// Takes the worker away, killed and collected, keeping its last numbers.
@@ -1603,7 +1631,7 @@ impl Worker {
         let child = ChildProcess::spawn_linked(&config.worker_exe, &arg_refs, &env_refs, theirs, Some(rule), invite.as_ref())?;
         child.note_activity(false);
         ours.set_nonblocking(true)?;
-        let mut worker = Self { child, channel: ours, reader: FrameReader::default(), surfaces: None, jobs_done: 0, limit, heavy: false };
+        let mut worker = Self { child, channel: ours, reader: FrameReader::default(), surfaces: None, jobs_done: 0, surface_bytes_sent: 0, limit, heavy: false };
         let started = Instant::now();
         let limit = policy.start_timeout;
         let hello = loop {
