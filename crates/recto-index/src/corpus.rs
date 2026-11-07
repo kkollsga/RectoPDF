@@ -24,8 +24,7 @@
 //! **Killed at any moment, this is still sound.** A page's text goes in first, then its page file, then its record, and only a record counts. Starting again checks every record against what's there,
 //! cuts off anything past the last good one, and goes on from there. Only `ready.json` makes a corpus usable, and it's written once everything under it has been synced.
 //!
-//! **Everything here came from a hostile file, or sits in a folder someone may have changed.** Nothing read back is believed: lengths are checked against the file, text is checked as UTF-8, and a corpus
-//! that doesn't add up is thrown away, which only costs a rebuild.
+//! **Everything here came from a hostile file, or sits in a folder something may have changed.** Reading it back checks that the folders are private with no links on the way, that the files are plain files of bounded size, that lengths agree and text is UTF-8. A corpus that doesn't add up is thrown away, which only costs a rebuild.
 //!
 //! **How it's searched** is a pass over `text.pack`, with no index in front of it. See `docs/ENGINEERING.md` for the numbers that say that's enough.
 
@@ -183,6 +182,12 @@ impl CorpusPaths {
             local::ensure_private_dir(dir)?;
         }
         Ok(())
+    }
+
+    /// Whether every folder on the way here is really this user's alone, so nothing read through them can have been put there by a link. It's four looks at a folder, per search of a file, which is nothing beside the search.
+    fn folders_are_private(&self, root: &Path) -> bool {
+        let Some(by_key) = self.dir.parent() else { return false };
+        [root, by_key, &self.dir, &self.app].iter().all(|folder| local::check_private_dir(folder).is_ok())
     }
 
     pub fn page_file(&self, page: u32, width: usize) -> PathBuf {
@@ -387,13 +392,16 @@ pub enum DiskState {
 
 pub fn disk_state(root: &Path, key: CorpusKey) -> DiskState {
     let paths = CorpusPaths::new(root, key);
+    if !paths.folders_are_private(root) {
+        return DiskState::Nothing;
+    }
     if let Some(summary) = read_json(&paths.ready).as_ref().and_then(Summary::from_json) {
         return DiskState::Ready(summary);
     }
     if let Some(code) = read_json(&paths.refused).and_then(|refused| refused["code"].as_str().map(str::to_string)) {
         return DiskState::Refused(code);
     }
-    match fs::metadata(&paths.table) {
+    match fs::symlink_metadata(&paths.table) {
         Ok(meta) => DiskState::Partial { pages_done: u32::try_from(meta.len() / RECORD_LEN as u64).unwrap_or(u32::MAX) },
         Err(_) => DiskState::Nothing,
     }
@@ -502,17 +510,20 @@ impl ReadyCorpus {
     /// Opens a finished corpus. `Ok(None)` if there isn't one, and `Err` if there is but it doesn't add up.
     pub fn open(root: &Path, key: CorpusKey) -> Result<Option<Self>, Damaged> {
         let paths = CorpusPaths::new(root, key);
+        if !paths.folders_are_private(root) {
+            return Err(Damaged);
+        }
         let Some(ready) = read_json(&paths.ready) else { return Ok(None) };
         let summary = Summary::from_json(&ready).ok_or(Damaged)?;
         if summary.pages > MAX_PAGES || summary.table_bytes != u64::from(summary.pages) * RECORD_LEN as u64 {
             return Err(Damaged);
         }
         // In this order: a retry of failed pages adds to the pack before it changes the table, so this table only points at text in this pack. The pack can be longer than said, and never shorter.
-        let table = fs::read(&paths.table).map_err(|_| Damaged)?;
+        let table = local::read_private_file(&paths.table, summary.table_bytes).map_err(|_| Damaged)?.ok_or(Damaged)?;
         if table.len() as u64 != summary.table_bytes {
             return Err(Damaged);
         }
-        let pack = File::open(&paths.pack).map_err(|_| Damaged)?;
+        let pack = local::open_private_file(&paths.pack).map_err(|_| Damaged)?;
         let pack_len = pack.metadata().map_err(|_| Damaged)?.len();
         if pack_len < summary.pack_bytes {
             return Err(Damaged);
@@ -662,7 +673,7 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
     let started = Instant::now();
     let paths = CorpusPaths::new(root, key);
     paths.prepare(root)?;
-    let lock = OpenOptions::new().create(true).truncate(false).write(true).open(&paths.lock)?;
+    let lock = local::append_private_file(&paths.lock)?;
     if lock.try_lock().is_err() {
         return Ok(BuildOutcome::Busy);
     }
@@ -802,7 +813,7 @@ fn now_seconds() -> u64 {
 
 /// A corpus's table, as long as it should be and no longer.
 fn read_table(paths: &CorpusPaths, pages: u32) -> io::Result<Vec<u8>> {
-    let table = fs::read(&paths.table)?;
+    let table = local::read_private_file(&paths.table, u64::from(pages) * RECORD_LEN as u64)?.ok_or(io::ErrorKind::NotFound)?;
     if table.len() != pages as usize * RECORD_LEN {
         return Err(io::ErrorKind::InvalidData.into());
     }
@@ -965,12 +976,9 @@ struct ResumePoint {
 /// Checks every record an earlier build left, in order, against what's there, and cuts both files back to the last that holds up. A kill can leave a record's text with no record, or half of a record. Power lost at the wrong moment can leave a record with no text, or zeros where it should be.
 fn resume_point(paths: &CorpusPaths, pages: u32, width: usize) -> io::Result<ResumePoint> {
     let mut point = ResumePoint::default();
-    let table = match fs::read(&paths.table) {
-        Ok(table) => table,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error),
-    };
-    let pack = File::open(&paths.pack).ok();
+    // An earlier build's table holds at most what this file has pages for, and some part of a record.
+    let table = local::read_private_file(&paths.table, (u64::from(pages) + 1) * RECORD_LEN as u64)?.unwrap_or_default();
+    let pack = local::open_private_file(&paths.pack).ok();
     let pack_len = pack.as_ref().and_then(|pack| pack.metadata().ok()).map_or(0, |meta| meta.len());
     let mut buffer = Vec::new();
     for (page, bytes) in table.as_chunks::<RECORD_LEN>().0.iter().take(pages as usize).enumerate() {

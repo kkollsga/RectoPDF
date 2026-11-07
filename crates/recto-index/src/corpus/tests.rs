@@ -579,6 +579,60 @@ fn a_damaged_corpus_is_not_believed() {
     assert!(Aux::read(&[0xFF, 0xFF]).is_none() && Aux::read(&[1, 0, 200, 0]).is_none() && Aux::read(&[0, 0, 200, 0, 0, 0]).is_none(), "what's beside the text is checked too");
 }
 
+/// Failure: a search's job thread blocks for ever on a pipe left where a corpus's file goes, reads a table of any size into memory before looking at its length, or follows a link to read something else as a document's text. Each is refused with no wait, however it got there.
+#[test]
+fn reading_back_doesnt_wait_or_follow_or_fill_memory() {
+    let temp = Temp::new();
+    let key = key_of(&temp, b"a file");
+    let root = temp.0.join("corpus");
+    build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    let paths = CorpusPaths::new(&root, key);
+    let (table, pack) = (fs::read(&paths.table).unwrap(), fs::read(&paths.pack).unwrap());
+    let restore = |path: &Path, bytes: &[u8]| {
+        let _ = fs::remove_file(path);
+        fs::write(path, bytes).unwrap();
+        fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    };
+    let fifo = |path: &Path| {
+        fs::remove_file(path).unwrap();
+        assert!(std::process::Command::new("/usr/bin/mkfifo").arg(path).status().unwrap().success());
+    };
+    let started = Instant::now();
+    fifo(&paths.table);
+    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a pipe at the table");
+    restore(&paths.table, &table);
+    fifo(&paths.pack);
+    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a pipe at the pack");
+    restore(&paths.pack, &pack);
+    assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+
+    // Sparse, so it's 64 GiB to anyone who reads it and nothing to the disk.
+    File::options().write(true).open(&paths.table).unwrap().set_len(64 * 1024 * 1024 * 1024).unwrap();
+    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a huge table is read before its length is looked at");
+    restore(&paths.table, &table);
+    assert!(ReadyCorpus::open(&root, key).unwrap().is_some(), "and it's all there again");
+
+    // A link at the pack, at the table, at the folder and at the root.
+    let elsewhere = temp.file("elsewhere", &pack);
+    fs::remove_file(&paths.pack).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &paths.pack).unwrap();
+    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a link at the pack");
+    restore(&paths.pack, &pack);
+    let key_folder = root.join(key.hex());
+    let moved = temp.0.join("moved-away");
+    fs::rename(&key_folder, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &key_folder).unwrap();
+    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a link at the key's folder");
+    assert_eq!(disk_state(&root, key), DiskState::Nothing);
+    fs::remove_file(&key_folder).unwrap();
+    fs::rename(&moved, &key_folder).unwrap();
+    let linked_root = temp.0.join("linked-root");
+    std::os::unix::fs::symlink(&root, &linked_root).unwrap();
+    assert_eq!(ReadyCorpus::open(&linked_root, key).unwrap_err(), Damaged, "a link at the root");
+    assert_eq!(disk_state(&linked_root, key), DiskState::Nothing);
+    assert!(ReadyCorpus::open(&root, key).unwrap().is_some());
+}
+
 /// Failure: the corpus folder grows for ever, one that's in use goes, one being built is pulled out from under its builder, or anything in the folder that isn't a corpus gets deleted.
 #[test]
 fn eviction_takes_the_oldest_and_nothing_else() {
@@ -726,7 +780,7 @@ fn only_one_builds_at_a_time() {
     let root = temp.0.join("corpus");
     let key = CorpusKey([3; 32]);
     CorpusPaths::new(&root, key).prepare(&root).unwrap();
-    let lock = OpenOptions::new().create(true).truncate(false).write(true).open(CorpusPaths::new(&root, key).lock).unwrap();
+    let lock = local::append_private_file(&CorpusPaths::new(&root, key).lock).unwrap();
     lock.try_lock().unwrap();
     assert_eq!(build(&root, key, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap(), BuildOutcome::Busy);
     assert_eq!(clear(&root, key).unwrap_err().kind(), io::ErrorKind::WouldBlock, "and clearing leaves it alone");

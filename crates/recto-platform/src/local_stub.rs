@@ -118,6 +118,10 @@ pub fn check_private_dir(_path: &Path) -> io::Result<()> {
     unsupported()
 }
 
+pub fn open_private_file(_path: &Path) -> io::Result<File> {
+    unsupported()
+}
+
 pub fn read_private_file(_path: &Path, _max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
     unsupported()
 }

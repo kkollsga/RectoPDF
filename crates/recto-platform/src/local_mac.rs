@@ -242,16 +242,26 @@ pub fn check_private_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Opens a file for reading, only if it's a plain file of this user's that nobody else can write. A link isn't followed, and a pipe left in its place doesn't wait for a writer.
+pub fn open_private_file(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)?;
+    let meta = file.metadata()?;
+    if !meta.file_type().is_file() || meta.uid() != current_uid() || meta.mode() & 0o022 != 0 {
+        return Err(refused("this file isn't a private file of this user's"));
+    }
+    Ok(file)
+}
+
 /// Reads a file only if it's a plain file of this user's that nobody else can write, in at most `max_bytes`. `None` if it isn't there. Anything else is an error, which callers take as "don't trust it".
 pub fn read_private_file(path: &Path, max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
-    let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) {
+    let file = match open_private_file(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
     let meta = file.metadata()?;
-    if !meta.file_type().is_file() || meta.uid() != current_uid() || meta.mode() & 0o022 != 0 || meta.len() > max_bytes {
-        return Err(refused("this file isn't a private file of this user's"));
+    if meta.len() > max_bytes {
+        return Err(refused("this file is larger than it can be"));
     }
     let mut bytes = Vec::with_capacity(meta.len() as usize);
     file.take(max_bytes).read_to_end(&mut bytes)?;
@@ -317,7 +327,8 @@ pub fn is_excluded_from_backups(path: &Path) -> bool {
 
 /// Opens a file for appending, made with mode 0600 if new. A link isn't followed.
 pub fn append_private_file(path: &Path) -> io::Result<File> {
-    OpenOptions::new().append(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)
+    // Not blocking: opening a pipe to write would otherwise wait for a reader for ever.
+    OpenOptions::new().append(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
 }
 
 /// What's at a socket's path.
