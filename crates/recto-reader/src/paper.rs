@@ -23,8 +23,8 @@ pub const DARK_PAPER: u32 = 0x1E_20_23;
 const DARK_INK: [i32; 3] = [0xE4, 0xE5, 0xE7];
 /// How bright an image on a page of text stays, in 256ths.
 const IMAGE_DIM: u32 = 218;
-/// How bright a page that's mostly a picture stays, in 256ths. White paper at this is what the eye gets beside a dark window, so it takes the glare off, and it leaves black text on it, in a map's legend say, at well over WCAG AA, by a test. Chosen by looking at the USGS map's `heavy-dark` and `low-res-dark`.
-pub const PICTURE_PAGE_DIM: u32 = 192;
+/// How bright a page that's mostly a picture stays, in 256ths. White at this gives off under half the light of white, beside a dark window, and black text on it, in a map's legend say, stays at about 9.7:1 against WCAG AA's 4.5, by a test. Chosen by looking at the USGS map's `heavy-dark` and `low-res-dark`: 192 still glared, and darker loses the hillshade.
+pub const PICTURE_PAGE_DIM: u32 = 176;
 
 impl PaperKind {
     pub fn rgb(self) -> u32 {

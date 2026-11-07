@@ -121,7 +121,7 @@ sleep 1
 
 # A limit under what this page needs, and the larger limit off, so it takes the path a page past 1 GiB takes.
 export RECTO_STATE_DIR="$root/l"
-r qa start --memory-limit-mib "${LOW_RES_LIMIT_MIB:-340}" --time-limit 5m
+r qa start --memory-limit-mib "${LOW_RES_LIMIT_MIB:-350}" --time-limit 5m
 r open "$heavy"
 for look in light dark; do
     r qa appearance "$look"
