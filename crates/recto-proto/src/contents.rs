@@ -813,9 +813,15 @@ impl StreamCheck {
                 self.glyphs = *id;
                 Ok(())
             }
-            Record::ImageBegin { coding, width, height, total, .. } => {
+            Record::ImageBegin { coding, why, width, height, total, .. } => {
                 let (left, jpeg) = match coding {
-                    ImageCoding::Jpeg => (*total, Some(JpegScan::new(false))),
+                    ImageCoding::Jpeg => {
+                        // Only an image is a JPEG, and what's counted of it goes by that.
+                        if *why != Why::Image {
+                            return Err(ProtoError("a JPEG that isn't an image"));
+                        }
+                        (*total, Some(JpegScan::new(false)))
+                    }
                     ImageCoding::Pixels { channels } => {
                         if *width == 0 || *height == 0 {
                             return Err(ProtoError("an image with no size"));

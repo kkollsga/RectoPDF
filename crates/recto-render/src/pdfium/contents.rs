@@ -10,7 +10,7 @@
 //! PDFium gives for the real character, and text whose outlines don't match, or that has none, as in a Type 3 font, goes as a picture. The real characters stay over it, selectable.
 
 use super::*;
-use recto_proto::jpeg::JpegScan;
+use recto_proto::jpeg::{JpegScan, profile_says_srgb};
 use recto_proto::contents::{CONTENTS_CHUNK, ContentsJob, ImageCoding, MAX_CLIP_CHAIN, MAX_CLIPS, MAX_GLYPHS, MAX_GROUP_NESTING, MAX_IMAGE_ROW_BYTES, MAX_PATH_SEGMENTS, MAX_RUN_ITEMS, NoteCode, SEG_CURVE, SEG_LINE, SEG_MOVE, TextMode, Why, begin_contents, finish_contents, hints, put};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -1767,7 +1767,7 @@ impl Walk {
             }
             let mut profile = vec![0u8; len];
             let mut got = 0usize;
-            (self.api.FPDFImageObj_GetIccProfileDataDecoded)(object, self.page_handle, profile.as_mut_ptr(), len, &raw mut got) != 0 && got == len && icc_says_srgb(&profile)
+            (self.api.FPDFImageObj_GetIccProfileDataDecoded)(object, self.page_handle, profile.as_mut_ptr(), len, &raw mut got) != 0 && got == len && profile_says_srgb(&profile)
         }
     }
 
@@ -2120,23 +2120,6 @@ fn with_ids(plan: &[(u32, f32, f32)], mut id_of: impl FnMut(u32) -> u32) -> Opti
         .collect()
 }
 
-/// Whether an ICC profile's description says sRGB. It's only what it says, and a file lying about it only changes its own colours.
-fn icc_says_srgb(profile: &[u8]) -> bool {
-    let word = |at: usize| profile.get(at..at + 4).map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize);
-    let Some(tags) = word(128) else { return false };
-    for tag in 0..tags.min(256) {
-        let entry = 132 + tag * 12;
-        if profile.get(entry..entry + 4) != Some(b"desc") {
-            continue;
-        }
-        let (Some(at), Some(len)) = (word(entry + 4), word(entry + 8)) else { return false };
-        let Some(text) = profile.get(at..at.saturating_add(len)) else { return false };
-        // A plain string in older profiles, and UTF-16 in newer ones.
-        return text.windows(4).any(|bytes| bytes == b"sRGB") || text.windows(8).any(|bytes| bytes == b"\0s\0R\0G\0B");
-    }
-    false
-}
-
 /// The area of some points on the page.
 fn points_area(points: &[(u8, f32, f32)], matrix: &M) -> Area {
     let mut area = Area { left: f64::INFINITY, bottom: f64::INFINITY, right: f64::NEG_INFINITY, top: f64::NEG_INFINITY };
@@ -2376,17 +2359,17 @@ mod tests {
             out.extend_from_slice(text);
             out
         };
-        assert!(icc_says_srgb(&profile(b"descxxxxsRGB IEC61966-2.1")));
-        assert!(icc_says_srgb(&profile(b"mluc\0s\0R\0G\0B\0 \0I")));
-        assert!(!icc_says_srgb(&profile(b"descxxxxAdobe RGB (1998)")));
-        assert!(!icc_says_srgb(b"sRGB but not a profile"));
-        assert!(!icc_says_srgb(&[]));
+        assert!(profile_says_srgb(&profile(b"descxxxxsRGB IEC61966-2.1")));
+        assert!(profile_says_srgb(&profile(b"mluc\0s\0R\0G\0B\0 \0I")));
+        assert!(!profile_says_srgb(&profile(b"descxxxxAdobe RGB (1998)")));
+        assert!(!profile_says_srgb(b"sRGB but not a profile"));
+        assert!(!profile_says_srgb(&[]));
         let mut hostile = vec![0u8; 128];
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
         hostile.extend_from_slice(b"desc");
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
-        assert!(!icc_says_srgb(&hostile));
+        assert!(!profile_says_srgb(&hostile));
     }
 
     /// Failure: the matrix maths is wrong in some rare composition, and nested forms land in the wrong place.

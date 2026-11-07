@@ -16,6 +16,8 @@ pub struct JpegFacts {
     pub comments: u32,
     /// Any other application segment.
     pub other_app: u32,
+    /// A colour profile that isn't one sound sRGB profile, which a reader would apply and a page takes no notice of.
+    pub foreign_profile: bool,
     /// Bytes after the end of the picture.
     pub trailing_bytes: u64,
     /// What EXIF says about turning it, 0 if nothing. A PDF takes no notice of this and browsers do, so it changes the picture.
@@ -31,6 +33,7 @@ impl JpegFacts {
         self.color_profiles += other.color_profiles;
         self.comments += other.comments;
         self.other_app += other.other_app;
+        self.foreign_profile |= other.foreign_profile;
         self.trailing_bytes += other.trailing_bytes;
     }
 
@@ -69,6 +72,9 @@ pub struct JpegScan {
     changed: bool,
     seen_frame: bool,
     seen_scan: bool,
+    /// The next segment of a colour profile expected, and how many it said there'd be.
+    profile_next: u8,
+    profile_parts: u8,
     facts: JpegFacts,
 }
 
@@ -77,7 +83,7 @@ const BAD: ProtoError = ProtoError("a JPEG without a JPEG's structure");
 impl JpegScan {
     /// With `strip`, [`Self::feed`] writes out the JPEG without what doesn't affect the picture: see [`Self::keeps`].
     pub fn new(strip: bool) -> Self {
-        Self { state: State::Soi0, code: 0, high: 0, left: 0, held: Vec::new(), strip, changed: false, seen_frame: false, seen_scan: false, facts: JpegFacts::default() }
+        Self { state: State::Soi0, code: 0, high: 0, left: 0, held: Vec::new(), strip, changed: false, seen_frame: false, seen_scan: false, profile_next: 1, profile_parts: 0, facts: JpegFacts::default() }
     }
 
     pub fn facts(&self) -> JpegFacts {
@@ -198,8 +204,8 @@ impl JpegScan {
 
     fn marker(&mut self, code: u8, out: &mut Vec<u8>) -> Result<(), ProtoError> {
         match code {
-            // A fill byte before a marker.
-            0xFF => {}
+            // A fill byte before a marker. What's written has none.
+            0xFF => self.changed |= self.strip,
             0xD9 => {
                 if !self.seen_scan {
                     return Err(BAD);
@@ -210,7 +216,11 @@ impl JpegScan {
             // Only ever inside a picture's data, or at its very start.
             0x00 | 0x01 | 0xD0..=0xD8 => return Err(BAD),
             _ => {
-                if matches!(code, 0xC0..=0xCF) && !matches!(code, 0xC4 | 0xC8 | 0xCC) {
+                // What a browser's decoder reads and nothing else: a marker it skips could hold anything, and a frame it can't decode isn't a picture to it.
+                if !matches!(code, 0xC0..=0xC2 | 0xC4 | 0xCC | 0xDA..=0xDD | 0xE0..=0xEF | 0xFE) {
+                    return Err(ProtoError("a JPEG with a marker that isn't known"));
+                }
+                if matches!(code, 0xC0..=0xC2) {
                     self.seen_frame = true;
                 }
                 if code == 0xDA {
@@ -232,11 +242,21 @@ impl JpegScan {
             let kept = self.look_at(&held);
             if !self.strip || kept {
                 self.put(out, &[0xFF, self.code]);
-                // JFIF can hold a thumbnail, and its other fields are all that's wanted of it.
-                let body = if self.strip && held.starts_with(b"JFIF\0") && held.len() > 14 { &held[..14] } else { &held[..] };
-                self.changed |= self.strip && body.len() != held.len();
-                self.put(out, &((body.len() + 2) as u16).to_be_bytes());
-                if self.strip && body.len() != held.len() {
+                // JFIF can hold a thumbnail and an Adobe marker anything at all after what it says, and their own fields are all that's wanted of them.
+                let is_jfif = held.starts_with(b"JFIF\0");
+                let keep = if !self.strip {
+                    held.len()
+                } else if is_jfif {
+                    held.len().min(14)
+                } else if self.code == 0xEE {
+                    held.len().min(ADOBE_LEN)
+                } else {
+                    held.len()
+                };
+                let body = &held[..keep];
+                self.changed |= self.strip && keep != held.len();
+                self.put(out, &((keep + 2) as u16).to_be_bytes());
+                if self.strip && is_jfif && keep != held.len() {
                     self.put(out, &body[..12]);
                     self.put(out, &[0, 0]);
                 } else {
@@ -267,9 +287,8 @@ impl JpegScan {
                 let exif = read_exif(&body[6..]);
                 self.facts.gps += u32::from(exif.gps);
                 self.facts.thumbnails += u32::from(exif.thumbnail);
-                if exif.orientation != 0 {
-                    self.facts.orientation = exif.orientation;
-                }
+                // More than one can say, and any that says to turn it may be the one a reader goes by.
+                self.facts.orientation = self.facts.orientation.max(exif.orientation);
                 false
             }
             0xE1 if body.starts_with(b"http://ns.adobe.com/x") => {
@@ -277,11 +296,19 @@ impl JpegScan {
                 false
             }
             0xE2 if body.starts_with(b"ICC_PROFILE\0") => {
-                // A profile can run across several segments, numbered from 1.
-                self.facts.color_profiles += u32::from(body.get(12) == Some(&1));
-                true
+                let sound = self.profile_part(body);
+                if !sound {
+                    self.facts.foreign_profile = true;
+                    self.facts.other_app += 1;
+                }
+                sound
             }
-            0xEE if body.starts_with(b"Adobe") => true,
+            0xEE if body.starts_with(b"Adobe") && body.len() >= ADOBE_LEN => true,
+            0xED if body.starts_with(b"Photoshop 3.0\0") => {
+                self.facts.other_app += 1;
+                self.facts.thumbnails += u32::from(photoshop_has_thumbnail(&body[14..]));
+                false
+            }
             0xFE => {
                 self.facts.comments += 1;
                 false
@@ -292,6 +319,64 @@ impl JpegScan {
             }
         }
     }
+}
+
+impl JpegScan {
+    /// Whether this is the next part of a colour profile that holds together: numbered in order from 1 out of one total, starting with a profile's own signature. Anything else is left out when stripping, as a label on who knows what.
+    fn profile_part(&mut self, body: &[u8]) -> bool {
+        let (Some(&part), Some(&parts)) = (body.get(12), body.get(13)) else { return false };
+        let data = &body[14..];
+        let first = part == 1;
+        if part == 0 || part > parts || part != self.profile_next || (!first && parts != self.profile_parts) || (first && data.get(36..40) != Some(b"acsp")) {
+            return false;
+        }
+        self.profile_next = part.saturating_add(1);
+        self.profile_parts = parts;
+        if first {
+            self.facts.color_profiles += 1;
+            // One that takes several segments isn't sRGB's, which is about 3 KiB.
+            self.facts.foreign_profile |= parts != 1 || !profile_says_srgb(data);
+        }
+        true
+    }
+}
+
+/// How much of an Adobe marker there is to it: its name, version, two sets of flags and the colour transform.
+const ADOBE_LEN: usize = 12;
+
+/// Whether an ICC profile's description says sRGB.
+pub fn profile_says_srgb(profile: &[u8]) -> bool {
+    let word = |at: usize| profile.get(at..at + 4).map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize);
+    let Some(tags) = word(128) else { return false };
+    for tag in 0..tags.min(256) {
+        let entry = 132 + tag * 12;
+        if profile.get(entry..entry + 4) != Some(b"desc") {
+            continue;
+        }
+        let (Some(at), Some(len)) = (word(entry + 4), word(entry + 8)) else { return false };
+        let Some(text) = profile.get(at..at.saturating_add(len)) else { return false };
+        // A plain string in older profiles, and UTF-16 in newer ones.
+        return text.windows(4).any(|bytes| bytes == b"sRGB") || text.windows(8).any(|bytes| bytes == b"\0s\0R\0G\0B");
+    }
+    false
+}
+
+/// Whether Photoshop's resource blocks hold a thumbnail. Lengths that lie just end the look.
+fn photoshop_has_thumbnail(mut blocks: &[u8]) -> bool {
+    while let Some(rest) = blocks.strip_prefix(b"8BIM") {
+        let Some(&[high, low, name_len]) = rest.first_chunk::<3>() else { return false };
+        // The name is padded so that it and its length are even.
+        let name_end = 2 + (1 + usize::from(name_len)).next_multiple_of(2);
+        let Some(size) = rest.get(name_end..name_end + 4) else { return false };
+        let size = u32::from_be_bytes([size[0], size[1], size[2], size[3]]) as usize;
+        if matches!(u16::from_be_bytes([high, low]), 0x0409 | 0x040C) {
+            return true;
+        }
+        let Some(next) = (name_end + 4).checked_add(size.next_multiple_of(2)) else { return false };
+        let Some(after) = rest.get(next..) else { return false };
+        blocks = after;
+    }
+    false
 }
 
 fn is_metadata(code: u8) -> bool {
@@ -414,7 +499,8 @@ mod tests {
             assert_eq!(out, plain(), "{code:x}");
             assert!(jpeg.changed());
         }
-        for (code, body) in [(0xEEu8, &b"Adobe\0\0\0\0\0\0\x01"[..]), (0xE2, b"ICC_PROFILE\0\x01\x01data"), (0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0")] {
+        let profile = profile_segment(1, 1, b"Adobe RGB (1998)");
+        for (code, body) in [(0xEEu8, &b"Adobe\0\0\0\0\0\0\x01"[..]), (0xE2, &profile), (0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0")] {
             let bytes = with((code, body), b"");
             let (jpeg, out) = scan(&bytes, true).unwrap();
             assert_eq!(out, bytes, "{code:x}: kept whole");
@@ -428,6 +514,116 @@ mod tests {
         let (jpeg, out) = scan(&with((0xFE, b"note"), b"12345"), false).unwrap();
         assert!(out.is_empty() && !jpeg.changed());
         assert_eq!((jpeg.facts().comments, jpeg.facts().trailing_bytes), (1, 5));
+    }
+
+    /// A colour profile's first segment, with a real signature, saying what it's called.
+    fn profile_segment(part: u8, parts: u8, name: &[u8]) -> Vec<u8> {
+        let mut profile = vec![0u8; 128];
+        profile[36..40].copy_from_slice(b"acsp");
+        profile.extend_from_slice(&1u32.to_be_bytes());
+        profile.extend_from_slice(b"desc");
+        profile.extend_from_slice(&144u32.to_be_bytes());
+        profile.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        profile.extend_from_slice(name);
+        let mut body = b"ICC_PROFILE\0".to_vec();
+        body.extend_from_slice(&[part, parts]);
+        body.extend_from_slice(&profile);
+        body
+    }
+
+    /// Failure: `--strip-metadata` keeps what's labelled as something a decoder wants, up to 64 KiB a segment, so a thumbnail or GPS goes straight through under the label, or under a marker no decoder reads. What's kept must be what it says it is, cut to its size, and an unknown marker isn't kept in a JPEG at all.
+    #[test]
+    fn a_label_doesnt_keep_what_isnt_that_thing() {
+        let plain_bytes = plain();
+        let mut padded = b"Adobe\0\0\0\0\0\0\x01".to_vec();
+        padded.extend_from_slice(b"a whole thumbnail or anything else");
+        let (jpeg, out) = scan(&with((0xEE, &padded), b""), true).unwrap();
+        assert_eq!(out, with((0xEE, b"Adobe\0\0\0\0\0\0\x01"), b""), "cut to what an Adobe marker is");
+        assert!(jpeg.changed());
+        let (_, out) = scan(&with((0xEE, b"Adobe"), b""), true).unwrap();
+        assert_eq!(out, plain_bytes, "too short to be one");
+        let (jpeg, out) = scan(&with((0xE2, b"ICC_PROFILE\0\x01\x01a payload, no signature"), b""), true).unwrap();
+        assert_eq!(out, plain_bytes, "no profile's signature");
+        assert!(jpeg.facts().foreign_profile);
+        let (_, out) = scan(&with((0xE2, &profile_segment(2, 1, b"sRGB")), b""), true).unwrap();
+        assert_eq!(out, plain_bytes, "numbered past its own total");
+        let (_, out) = scan(&with((0xE2, &profile_segment(2, 2, b"sRGB")), b""), true).unwrap();
+        assert_eq!(out, plain_bytes, "a second part with no first");
+        let good = with((0xE2, &profile_segment(1, 1, b"sRGB")), b"");
+        let (jpeg, out) = scan(&good, true).unwrap();
+        assert_eq!(out, good, "a real one stays");
+        assert!(!jpeg.facts().foreign_profile && jpeg.facts().color_profiles == 1);
+        for code in [0xF0u8, 0xF7, 0xFD, 0x02, 0xBF, 0xC8, 0xC3, 0xC9, 0xDE, 0xDF] {
+            assert!(scan(&with((code, b"hidden"), b""), false).is_err(), "{code:x}");
+            assert!(scan(&with((code, b"hidden"), b""), true).is_err(), "{code:x}");
+        }
+    }
+
+    /// Failure: a JPEG's own wide-gamut profile goes unnoticed, so a browser colour-manages a picture the page doesn't, or sRGB's own is mistaken for one and costs the JPEG its bytes.
+    #[test]
+    fn a_profile_thats_not_srgb_is_noticed() {
+        let foreign = |bytes: &[u8]| scan(bytes, false).unwrap().0.facts().foreign_profile;
+        assert!(foreign(&with((0xE2, &profile_segment(1, 1, b"Adobe RGB (1998)")), b"")));
+        assert!(foreign(&with((0xE2, &profile_segment(1, 2, b"sRGB")), b"")), "too long to be it");
+        assert!(!foreign(&with((0xE2, &profile_segment(1, 1, b"sRGB IEC61966-2.1")), b"")));
+        assert!(!foreign(&with((0xE2, &profile_segment(1, 1, b"\0s\0R\0G\0B")), b"")), "in UTF-16");
+        assert!(!foreign(&plain()));
+    }
+
+    /// Failure: Photoshop's block holds a copy of the picture, perhaps from before a crop, and it's only counted as "other", so nobody's told. Lengths that lie mustn't panic.
+    #[test]
+    fn a_photoshop_thumbnail_is_counted() {
+        let block = |id: u16, data: &[u8]| {
+            let mut out = b"Photoshop 3.0\08BIM".to_vec();
+            out.extend_from_slice(&id.to_be_bytes());
+            out.extend_from_slice(&[0, 0]);
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            out.extend_from_slice(data);
+            out
+        };
+        let facts = scan(&with((0xED, &block(0x040C, b"thumb")), b""), false).unwrap().0.facts();
+        assert_eq!((facts.thumbnails, facts.other_app), (1, 1));
+        assert_eq!(scan(&with((0xED, &block(0x0404, b"iptc!")), b""), false).unwrap().0.facts().thumbnails, 0);
+        assert!(!photoshop_has_thumbnail(b"8BIM\x04"));
+        assert!(!photoshop_has_thumbnail(b"8BIM\x04\x04\xFF\0\0"));
+        assert!(!photoshop_has_thumbnail(b"8BIM\x04\x04\0\0\xFF\xFF\xFF\xFF"));
+    }
+
+    /// Failure: two EXIF blocks, the second saying upright, read as not turned, where a reader going by the first turns the picture.
+    #[test]
+    fn any_block_saying_to_turn_it_counts() {
+        let exif = |value: u8| -> Vec<u8> {
+            let mut out = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0".to_vec();
+            out.extend_from_slice(&[value, 0, 0, 0, 0, 0, 0, 0]);
+            out
+        };
+        let mut bytes = with((0xE1, &exif(1)), b"");
+        let second = exif(6);
+        let mut segment = vec![0xFF, 0xE1];
+        segment.extend_from_slice(&((second.len() + 2) as u16).to_be_bytes());
+        segment.extend_from_slice(&second);
+        bytes.splice(2..2, segment);
+        assert_eq!(scan(&bytes, false).unwrap().0.facts().orientation, 6, "turned, then upright");
+        let reversed = {
+            let mut out = with((0xE1, &exif(6)), b"");
+            let first = exif(1);
+            let mut segment = vec![0xFF, 0xE1];
+            segment.extend_from_slice(&((first.len() + 2) as u16).to_be_bytes());
+            segment.extend_from_slice(&first);
+            out.splice(2..2, segment);
+            out
+        };
+        assert_eq!(scan(&reversed, false).unwrap().0.facts().orientation, 6, "upright, then turned");
+    }
+
+    /// Failure: a fill byte before a marker is dropped when stripping and the JPEG still reads as unchanged, so it's counted as original bytes that aren't.
+    #[test]
+    fn dropping_a_fill_byte_counts_as_a_change() {
+        let mut bytes = plain();
+        bytes.splice(2..3, [0xFF, 0xFF]);
+        let (jpeg, out) = scan(&bytes, true).unwrap();
+        assert_eq!(out, plain());
+        assert!(jpeg.changed());
     }
 
     /// Failure: GPS or a thumbnail goes unnoticed, in either byte order, so nobody's told a photo says where it was taken. Lengths that lie mustn't panic.
