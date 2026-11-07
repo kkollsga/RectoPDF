@@ -69,6 +69,8 @@ fn fake_worker() {
                     leak_for_ever();
                 }
                 let fits = match mode.as_str() {
+                    // A higher zoom is too much even for the larger limit, a lower one needs it, and a much lower one fits anywhere.
+                    "heavy_below_3x" => job.scale <= 1.0 || (in_heavy && job.scale < 3.0),
                     "every_page_fits_heavy" => in_heavy,
                     "every_page_fits_nothing" => false,
                     _ if job.page != 0 => true,
@@ -616,6 +618,28 @@ fn a_file_the_worker_refuses_is_remembered_after_the_first_time() {
     doc.forget_failures();
     assert_eq!(doc.page_count().unwrap_err(), RenderFailure::Unavailable);
     assert_eq!(doc.stats().spawns, 2, "asking again is what forgetting is for");
+}
+
+/// Failure: a kill at a lower zoom overwrites what a higher zoom learned, and the other way round, so a reader going between two zooms runs the same kills again each time, for as long as its heavy retries last. Each scale keeps what it learned.
+#[test]
+fn what_one_zoom_learns_doesnt_take_away_what_another_learned() {
+    let (mut doc, _file) = doc("heavy_below_3x");
+    let at = |scale: f32| TileRequest { scale, ..request(0) };
+    assert!(done(doc.render_tile(&at(4.0), &surface())).low_res.is_some(), "too much even for the larger limit at 4x");
+    assert_eq!(doc.page_draw_state_at(0, 4.0), PageDrawState::LowResOnly);
+    assert_eq!(doc.page_draw_state_at(0, 2.0), PageDrawState::Sharp, "a much lower zoom gets its own try");
+    assert_eq!(done(doc.render_tile(&at(2.0), &surface())).low_res, None, "and fits the larger limit at 2x");
+    assert_eq!(doc.page_draw_state_at(0, 2.0), PageDrawState::NeedsHeavy);
+    assert_eq!(doc.page_draw_state_at(0, 4.0), PageDrawState::LowResOnly, "what 2x learned mustn't take away what 4x did");
+    assert_eq!(doc.page_draw_state(0), PageDrawState::LowResOnly, "the worst that's known");
+    let kills = doc.stats().memory_kills;
+    for _ in 0..3 {
+        assert!(done(doc.render_tile(&at(4.0), &surface())).low_res.is_some());
+        assert_eq!(done(doc.render_tile(&at(2.0), &surface())).low_res, None);
+    }
+    assert_eq!(doc.stats().memory_kills, kills, "going between the two runs no kill it has run already");
+    doc.forget_failures();
+    assert_eq!(doc.page_draw_state(0), PageDrawState::Sharp);
 }
 
 /// Failure: the viewport budget counts low-resolution tiles as cached, so the next step looks cheaper than the app would find it, and the numbers we rely on flatter the page.

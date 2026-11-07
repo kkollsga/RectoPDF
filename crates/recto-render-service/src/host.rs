@@ -599,9 +599,12 @@ const MAX_FAILED_PAGES: usize = 64;
 #[derive(Clone, Copy, Debug)]
 struct PageMemory {
     page: u32,
-    draw: PageDrawState,
-    /// The scale `draw` was learned at. It holds at this scale and above, since a higher zoom costs more, and a lower zoom gets its own try.
-    draw_scale: f32,
+    /// The lowest scale at which it has passed the normal limit, if any. What's learned at a scale holds at that scale and above, since a higher zoom costs more, and a lower zoom gets its own try. Each of these only ever moves down, so what a lower zoom learns doesn't take away what a higher one learned, nor the other way round.
+    needs_heavy_from: Option<f32>,
+    /// The lowest scale at which it has passed the larger limit too.
+    low_res_from: Option<f32>,
+    /// The lowest scale at which it couldn't be drawn at all, and why.
+    failed_from: Option<(f32, KillReason)>,
     /// Its lower-resolution version stopped a worker while the larger limit was out of reach. Once that's been tried and failed too, every step has failed once.
     low_res_stopped: bool,
     text: Option<KillReason>,
@@ -726,23 +729,33 @@ impl DocRenderer {
         self.page_count.ok_or(RenderFailure::Unavailable)
     }
 
-    /// What's known about drawing a page at the scale that taught it, for the view model.
+    /// The worst that's known about drawing a page, at whatever scale taught it, for the view model.
     pub fn page_draw_state(&self, page: u32) -> PageDrawState {
-        self.remembered(page).map_or(PageDrawState::Sharp, |memory| memory.draw)
+        self.page_draw_state_at(page, f32::INFINITY)
     }
 
-    /// What's known about drawing a page at this scale. A page too heavy at a high zoom may be fine at a lower one, so a lower one starts clean.
+    /// What's known about drawing a page at this scale. A page too heavy at a high zoom may be fine at a lower one, so a lower one has its own answer, and what each zoom learned stays with it.
     pub fn page_draw_state_at(&self, page: u32, scale: f32) -> PageDrawState {
-        match self.remembered(page) {
-            Some(memory) if scale >= memory.draw_scale * LOWER_ZOOM_RATIO => memory.draw,
+        let Some(memory) = self.remembered(page) else { return PageDrawState::Sharp };
+        let reaches = |from: f32| scale >= from * LOWER_ZOOM_RATIO;
+        match memory {
+            PageMemory { failed_from: Some((from, reason)), .. } if reaches(*from) => PageDrawState::Failed(*reason),
+            PageMemory { low_res_from: Some(from), .. } if reaches(*from) => PageDrawState::LowResOnly,
+            PageMemory { needs_heavy_from: Some(from), .. } if reaches(*from) => PageDrawState::NeedsHeavy,
             _ => PageDrawState::Sharp,
         }
     }
 
+    /// Notes what a scale taught. Each only moves down: a page that needed more at a lower zoom needs at least that at a higher one.
     fn set_draw(&mut self, page: u32, scale: f32, draw: PageDrawState) {
+        let lowest = |known: Option<f32>| Some(known.map_or(scale, |known| known.min(scale)));
         let memory = self.remember(page);
-        memory.draw = draw;
-        memory.draw_scale = scale;
+        match draw {
+            PageDrawState::Sharp => {}
+            PageDrawState::NeedsHeavy => memory.needs_heavy_from = lowest(memory.needs_heavy_from),
+            PageDrawState::LowResOnly => memory.low_res_from = lowest(memory.low_res_from),
+            PageDrawState::Failed(reason) => memory.failed_from = Some((lowest(memory.failed_from.map(|(from, _)| from)).unwrap_or(scale), reason)),
+        }
     }
 
     /// A page's size in points, after rotation, validated.
@@ -1100,7 +1113,7 @@ impl DocRenderer {
                 if self.remembered.len() >= MAX_FAILED_PAGES {
                     self.remembered.remove(0);
                 }
-                self.remembered.push(PageMemory { page, draw: PageDrawState::Sharp, draw_scale: 0.0, low_res_stopped: false, text: None, size: None });
+                self.remembered.push(PageMemory { page, needs_heavy_from: None, low_res_from: None, failed_from: None, low_res_stopped: false, text: None, size: None });
                 self.remembered.len() - 1
             }
         };
