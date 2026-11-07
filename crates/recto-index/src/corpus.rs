@@ -20,7 +20,7 @@
 //! size and modification time were put back. The file's name and path aren't in it, and aren't anywhere in the folder. It's not a hash of the whole file, because every search asks for it, and hashing a 2 GB
 //! file takes seconds. So a copy of a file gets a corpus of its own. A file that's only been moved or had `touch` run on it gets rebuilt, which costs time and is never wrong.
 //!
-//! **A new version takes the old one's text away.** Each key stands alone, so a saved edit, a redaction or a file since encrypted would leave the old version's plain text behind. `by-file/` connects them, with a small file per hash of a file's path, of what that path really leads to and of its inode, each holding the key it last had: so a new version at the same path is connected, and so is one that's been renamed. They hold no path. When a build for a key finishes, whatever those last held goes.
+//! **A new version takes the old one's text away.** Each key stands alone, so a saved edit, a redaction or a file since encrypted would leave the old version's plain text behind. `by-file/` connects them, with a small file per hash of a file's path, of what that path really leads to and of its inode, each holding the keys it's had that may still have text: so a new version at the same path is connected, and so is one that's been renamed. They hold no path. A key is noted before a page is written, and when a build for a key finishes, whatever else is noted goes, and stays noted if it can't.
 //!
 //! **The text is kept once.** A build writes `app/`. `agent/` holds every page again in another form, and nothing reads that until the agent sidebar, so it's made on demand by [`ensure_agent_folder`], from the pack alone, with no PDF involved.
 //!
@@ -60,6 +60,8 @@ pub const MAX_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 pub const MAX_BUILD_TIME: Duration = Duration::from_secs(60 * 60);
 /// Where a file's last key is noted. Not named as a key, so nothing takes it for a corpus.
 const VERSIONS_FOLDER: &str = "by-file";
+/// Most versions noted for one file. Only builds that stop partway leave more than one or two.
+const MAX_KEYS_PER_ALIAS: usize = 32;
 /// How much a full disk gets back, at least.
 const ROOM_ON_A_FULL_DISK: u64 = 64 * 1024 * 1024;
 /// How many times pages that failed for a temporary reason are read again, how far apart, and how many in one go. A hostile file can fail any number of pages, each costing a worker and up to a page's time.
@@ -848,11 +850,13 @@ fn read_table(paths: &CorpusPaths, pages: u32) -> io::Result<Vec<u8>> {
     Ok(table)
 }
 
-/// The same as [`build`], for a file, so that a new version's finishing takes the old one's text away. That includes being refused: a file that's since been encrypted must leave no plain text of how it used to be.
+/// The same as [`build`], for a file, so that a new version's finishing takes the old one's text away. That includes being refused: a file that's since been encrypted must leave no plain text of how it used to be. Its key is noted before a page is written, so a build stopped partway has left text that can still be found: that's the redaction case, a build killed, the file redacted, and the new version indexed.
 pub fn build_for_file(file: &Path, root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: &DocMeta, limits: &BuildLimits) -> io::Result<BuildOutcome> {
+    local::ensure_private_dir(root)?;
+    note_starting(root, file, key)?;
     let outcome = build(root, key, feed, meta, limits);
     if matches!(outcome, Ok(BuildOutcome::Ready { .. } | BuildOutcome::AlreadyReady(_) | BuildOutcome::Refused(_))) {
-        let _ = note_version(root, file, key);
+        let _ = note_finished(root, file, key);
     }
     outcome
 }
@@ -879,21 +883,54 @@ fn file_aliases(path: &Path) -> Vec<String> {
     aliases
 }
 
-fn read_alias(path: &Path) -> Option<CorpusKey> {
-    let bytes = local::read_private_file(path, 128).ok()??;
-    CorpusKey::from_hex(std::str::from_utf8(&bytes).ok()?)
+/// The keys a file has had that may still have text on disk, oldest first. Anything that isn't a key is left out.
+fn read_alias(path: &Path) -> Vec<CorpusKey> {
+    let Ok(Some(bytes)) = local::read_private_file(path, MAX_KEYS_PER_ALIAS as u64 * 65) else { return Vec::new() };
+    String::from_utf8_lossy(&bytes).lines().filter_map(CorpusKey::from_hex).collect()
 }
 
-/// Notes which corpus this file has now, and throws away what it had. One being built stays, and goes with the cache's ordinary rules.
-fn note_version(root: &Path, file: &Path, key: CorpusKey) -> io::Result<()> {
+fn write_alias(path: &Path, keys: &[CorpusKey]) -> io::Result<()> {
+    if keys.is_empty() {
+        return match fs::remove_file(path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        };
+    }
+    let text: Vec<String> = keys.iter().map(CorpusKey::hex).collect();
+    local::write_private_file_unsynced(path, text.join("\n").as_bytes())
+}
+
+/// Notes a key that's about to have text on disk. If it can't be noted, nothing should be written.
+fn note_starting(root: &Path, file: &Path, key: CorpusKey) -> io::Result<()> {
     let folder = root.join(VERSIONS_FOLDER);
     local::ensure_private_dir(&folder)?;
     for alias in file_aliases(file) {
         let path = folder.join(alias);
-        if let Some(old) = read_alias(&path).filter(|old| *old != key) {
-            let _ = remove_unless_building(root, old);
+        let mut keys = read_alias(&path);
+        if keys.contains(&key) {
+            continue;
         }
-        local::write_private_file_unsynced(&path, key.hex().as_bytes())?;
+        keys.push(key);
+        // A file that keeps changing under builds never stopped: the oldest of its partial text goes, so this can't grow for ever.
+        while keys.len() > MAX_KEYS_PER_ALIAS {
+            let _ = remove_unless_building(root, keys.remove(0));
+        }
+        write_alias(&path, &keys)?;
+    }
+    Ok(())
+}
+
+/// This key is what the file has now, so what it had goes. A key stays noted if its text couldn't be removed, so it's still found next time, and by a clear.
+fn note_finished(root: &Path, file: &Path, key: CorpusKey) -> io::Result<()> {
+    let folder = root.join(VERSIONS_FOLDER);
+    for alias in file_aliases(file) {
+        let path = folder.join(alias);
+        let mut keys = read_alias(&path);
+        keys.retain(|old| *old == key || matches!(remove_unless_building(root, *old), Err(error) if error.kind() != io::ErrorKind::NotFound));
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+        write_alias(&path, &keys)?;
     }
     Ok(())
 }
@@ -903,10 +940,10 @@ pub fn keys_of_file(root: &Path, path: &Path) -> Vec<CorpusKey> {
     let folder = root.join(VERSIONS_FOLDER);
     let mut keys: Vec<CorpusKey> = CorpusKey::of_file(path).into_iter().collect();
     for alias in file_aliases(path) {
-        if let Some(key) = read_alias(&folder.join(alias))
-            && !keys.contains(&key)
-        {
-            keys.push(key);
+        for key in read_alias(&folder.join(alias)) {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
         }
     }
     keys
@@ -923,8 +960,10 @@ pub fn forget_file(root: &Path, path: &Path) {
 fn tidy_versions(root: &Path) {
     let Ok(entries) = fs::read_dir(root.join(VERSIONS_FOLDER)) else { return };
     for entry in entries.flatten() {
-        if read_alias(&entry.path()).is_none_or(|key| !root.join(key.hex()).exists()) {
-            let _ = fs::remove_file(entry.path());
+        let keys = read_alias(&entry.path());
+        let left: Vec<CorpusKey> = keys.iter().copied().filter(|key| root.join(key.hex()).exists()).collect();
+        if left.len() != keys.len() || keys.is_empty() {
+            let _ = write_alias(&entry.path(), &left);
         }
     }
 }

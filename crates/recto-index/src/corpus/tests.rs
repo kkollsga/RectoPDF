@@ -947,6 +947,55 @@ fn the_corpus_folder_stays_out_of_backups() {
     assert!(!local::is_excluded_from_backups(&temp.0), "this only marks what it's given");
 }
 
+/// Failure: the redaction case. A build's killed partway, the file is redacted, and the new version is indexed. The text the first build wrote was never noted, because only finished builds were, so neither that finish nor `index clear` finds it, and it stays for 90 days. Or removing the old one fails, and its note is overwritten, so nothing can ever find it.
+#[test]
+fn a_partial_build_of_an_old_version_can_be_found_and_goes() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let file = temp.file("redact.pdf", b"before the redaction");
+    let first = CorpusKey::of_file(&file).unwrap();
+    let secret: &'static str = "the secret that gets redacted";
+    let stopped = [Fake::Text(secret), Fake::Stop];
+    assert_eq!(build_for_file(&file, &root, first, &mut FakeFeed::new(&stopped), &DocMeta::default(), &BuildLimits::default()).unwrap(), BuildOutcome::Paused("stopped_here"));
+    assert!(String::from_utf8_lossy(&fs::read(CorpusPaths::new(&root, first).pack).unwrap()).contains(secret), "it's meant to have been written");
+    assert!(keys_of_file(&root, &file).contains(&first), "a partial build's text can't be found");
+
+    fs::write(&file, b"after the redaction!").unwrap();
+    let second = CorpusKey::of_file(&file).unwrap();
+    assert_ne!(first, second);
+    assert!(keys_of_file(&root, &file).contains(&first), "and it can still be found by the path, for a clear");
+
+    // Its removal fails the first time, as it's locked: the note must stay.
+    let lock = local::append_private_file(&CorpusPaths::new(&root, first).lock).unwrap();
+    lock.try_lock().unwrap();
+    build_for_file(&file, &root, second, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    assert!(root.join(first.hex()).exists(), "it's being built by something, so it stays");
+    assert_eq!(keys_of_file(&root, &file), vec![second, first], "and it's still noted");
+    drop(lock);
+    // The next finish takes it.
+    build_for_file(&file, &root, second, &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    assert!(!root.join(first.hex()).exists(), "the old partial text is still on disk");
+    assert_eq!(keys_of_file(&root, &file), vec![second]);
+    for (name, bytes) in every_file(&root) {
+        assert!(!String::from_utf8_lossy(&bytes).contains(secret), "{name:?} kept the redacted text");
+    }
+}
+
+/// Failure: a file that keeps changing under builds that never finish piles up notes and partial text for ever.
+#[test]
+fn notes_on_a_file_are_capped_and_the_oldest_text_goes() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus");
+    let file = temp.file("busy.pdf", b"a doc");
+    let first = CorpusKey([1; 32]);
+    for at in 0..(MAX_KEYS_PER_ALIAS + 3) {
+        build_for_file(&file, &root, CorpusKey([at as u8 + 1; 32]), &mut FakeFeed::new(&[Fake::Text("text"), Fake::Stop]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    }
+    assert!(!root.join(first.hex()).exists(), "the oldest partial build's text stays past the cap");
+    let now = CorpusKey::of_file(&file).unwrap();
+    assert_eq!(keys_of_file(&root, &file).iter().filter(|key| **key != now).count(), MAX_KEYS_PER_ALIAS);
+}
+
 /// Failure: two sessions on one folder both build a document, and one's pack interleaves with the other's.
 #[test]
 fn only_one_builds_at_a_time() {
