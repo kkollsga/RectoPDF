@@ -5,6 +5,7 @@
 
 pub mod client;
 pub mod host;
+pub mod indexing;
 pub mod levels;
 pub mod local;
 pub mod log;

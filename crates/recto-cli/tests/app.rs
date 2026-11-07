@@ -162,6 +162,19 @@ fn recto_acts_on_the_running_app_and_sees_what_it_does() {
     assert_eq!(edited["reader"]["pages"], 29, "an edit reaches the page view: {edited}");
 }
 
+/// Failure: the app's session has no indexer, or the bundle has no helper, so a search in the app never has an index, and `recto wait indexing-done` waits out its time on something nobody can start. The CLI's own session passes all of this while the app's doesn't.
+#[test]
+fn a_search_in_the_app_gets_its_index() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    let done = run.ok(&["wait", "indexing-done", "--tab", "active", "--timeout", "60s"]);
+    assert_eq!(done["state"], "ready", "{done}");
+    let found = run.ok(&["search", "number"]);
+    assert_eq!(found["route"], "index", "{found}");
+    assert_eq!(found["hits"].as_array().unwrap().len(), 4, "{found}");
+}
+
 /// Failure: tapping the active PDF switches tabs or does nothing, tapping another folds this one, or a contents row doesn't go to its page. The sidebar's rules, by what a click calls, and read back from what's drawn.
 #[test]
 fn the_sidebar_folds_switches_and_goes_to_contents() {

@@ -15,6 +15,7 @@ use recto_platform::FileStamp;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost};
+use recto_control::indexing::Notifier;
 use recto_control::server::{Announcer, Limits, Server, Stopper};
 use recto_reader::engine::EngineEvents;
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Op, PageMap, Viewport};
@@ -293,6 +294,18 @@ impl Host for AppHost {
     fn acted_tab(&self, command: &Command) -> Option<TabId> {
         self.session.acted_tab(command)
     }
+
+    fn attach(&self, notify: Notifier) {
+        self.session.attach(notify);
+    }
+
+    fn shut_down(&self) {
+        self.session.shut_down();
+    }
+
+    fn access_is_off(&self) {
+        self.session.access_is_off();
+    }
 }
 
 /// How many calls can wait for the session thread before notes of pages drawn stop being added.
@@ -544,7 +557,7 @@ impl AppCore {
         let engine = Engine::new(EngineConfig { service: None, policy: Some(policy) }, hooks);
         let watchdog = Watchdog::new();
         let qa = args.qa.then(|| Arc::new(QaBridge::new(Arc::clone(&listener), engine.clone(), watchdog.clone(), Arc::clone(&core))));
-        let host = Arc::new(AppHost { engine: engine.clone(), session: SessionHost::new(DrawableLoader), core: Arc::clone(&core), qa: qa.clone() });
+        let host = Arc::new(AppHost { engine: engine.clone(), session: SessionHost::new(DrawableLoader).with_indexing(&paths), core: Arc::clone(&core), qa: qa.clone() });
         let stopper = server.as_ref().and_then(|server| server.stopper().ok());
         let announcer = server.as_ref().and_then(|server| server.announcer().ok());
         let inner = Arc::new(Inner {

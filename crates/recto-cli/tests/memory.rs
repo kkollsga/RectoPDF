@@ -175,3 +175,28 @@ fn out_of_descriptors_the_session_doesnt_spin() {
     }
     serving.kill();
 }
+
+/// Failure: indexing leaves something in the session: a page's text, a table, a thread or a descriptor, or a helper still running. All of that belongs to the helper, whose memory goes when it exits. **The budget is the same session as before,** with nothing to show for it but what's on disk.
+#[test]
+fn an_index_leaves_nothing_in_the_session() {
+    let state = State::at(Level::Control);
+    let serving = state.serve();
+    let bodies: Vec<String> = (1..=300).map(|at| format!("Line of text on page {at} that is long enough to read")).collect();
+    let list: Vec<Page> = bodies.iter().map(|body| Page::new(text_lines(&[body.as_str()]))).collect();
+    let file = TempPdf::new("indexed.pdf", &pages(&list));
+    let mut raw = Raw::connect(&state);
+    assert_eq!(raw.call(&common::open_cmd(&file.0))["ok"], true);
+    let before = footprint(&mut raw);
+    let handles_before = raw.call(&json!({ "cmd": "budget" }))["data"]["open_handles"].as_u64().unwrap();
+    assert_eq!(raw.call(&json!({ "cmd": "wait", "condition": "indexing_done", "timeout_ms": 120_000 }))["data"]["state"], "ready");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while process_counters(serving.pid()).unwrap().threads > 1 {
+        assert!(std::time::Instant::now() < deadline, "a thread stayed behind");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let after = footprint(&mut raw);
+    println!("session before {before}, after indexing 300 pages {after}");
+    // Well under what any page's text would cost, and over what a few logged lines and a thread's stack do.
+    assert!(after < before + 2 * 1024 * 1024, "{before} to {after}");
+    assert_eq!(raw.call(&json!({ "cmd": "budget" }))["data"]["open_handles"].as_u64().unwrap(), handles_before, "a descriptor stayed behind");
+}

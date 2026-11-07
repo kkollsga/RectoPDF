@@ -21,7 +21,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - Memory tests run in their own binary, on release builds where the number matters. Measure the whole process (`phys_footprint`).
 
 ## This machine
-- 16 GB Mac. **Wrap every heavy cargo build, test or bench in `tools/sysguard/heavy.sh`**, the queue shared by all agents. `check.sh` does this itself. Use `HEAVY_SOLO=1` for timing and memory measurements, which then hold every slot. `heavy.sh --status` shows the queue, and `--report` the waits.
+- 16 GB Mac. **Wrap every heavy cargo build, test or bench in `tools/sysguard/heavy.sh`**, the queue shared by all agents. `check.sh` does this itself. `HEAVY_SOLO=1` holds every slot, and takes them as they free up, so it blocks the queue while it waits: only the coordinator uses it, for final measurements at a quiet time. Workers measure under load and say so. `heavy.sh --status` shows the queue, and `--report` the waits.
 - Worktrees and temp folders are removed as soon as they're merged or finished. Never sweep a shared folder. No `timeout` binary exists here.
 
 ## Git
@@ -50,3 +50,9 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "The toc should auto scroll to where you are in the document (smoothly so you don't notice it in a elegant way)".
 - "It can whoosh with smooth acceleration at both ends. It can have a \"dead-zone\" so it doesn't react to small scrolls within the window, so basically it repositions, stays still (while user is reading slowly scrolling) then repositions after the user is scrolling a bit."
 - "We have two paper color modes: white and dark, let's add a yellowed white option that's better for the eyes".
+- "Im seeing an issue: in dark mode scanned pages appear bright white: We need to detect scanned images (with predominently white bg, and flip and match grey tone paper color".
+- "similar with images with white bg" (dark paper: an image with a white background flips with the page, as a scan does).
+- "Lets style the scrollbar better. Lets use the mac native option, as seen in pages".
+- "I think option 4 is the best one, dont modify the bad toc, but offer a generated toc using distillpdf".
+- "To save horizontal space the scrollbar can stop below the agent icon. Add an option in the macos top bar to turn off agent bar (hides the icon), enable + - and command - scroll for zooming".
+- "And select text should work natively".

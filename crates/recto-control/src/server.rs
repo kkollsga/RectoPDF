@@ -151,10 +151,17 @@ impl Server {
     pub fn run<H: Host>(self, host: Arc<H>, limits: Limits) -> std::io::Result<()> {
         let (done_tx, done_rx) = (self.done_tx.clone(), self.done_rx);
         let last_level = levels::current(&self.paths);
+        let wake = Arc::new(self.wake_tx.try_clone()?);
+        // Something happening outside any command, such as an index being finished, reaches the loop the way a finished job does. It uses the same wake and costs no descriptor of its own.
+        let (notify_tx, notify_wake) = (done_tx.clone(), Arc::clone(&wake));
+        host.attach(Arc::new(move |events: Vec<Event>| {
+            let _ = notify_tx.send(Done::Published(events));
+            let _ = (&*notify_wake).write(&[WAKE_BYTE]);
+        }));
         let mut state = Loop {
             log: ActivityLog::new(&self.paths),
             paths: self.paths.clone(),
-            host,
+            host: Arc::clone(&host),
             limits,
             started: Instant::now(),
             conns: Vec::new(),
@@ -164,7 +171,7 @@ impl Server {
             running_draws: 0,
             done_tx,
             done_rx,
-            wake: self.wake_tx.try_clone()?,
+            wake,
             queued_bytes: 0,
             generations: 0,
             pending: None,
@@ -175,6 +182,7 @@ impl Server {
             stopping: None,
         };
         let result = state.run(&self.listener, &self.wake_rx);
+        host.shut_down();
         // Tidy on the way out. A kill skips this, and the next start clears up.
         let _ = std::fs::remove_file(&self.paths.socket);
         result
@@ -201,7 +209,7 @@ pub struct Announcer {
 impl Announcer {
     /// Never blocks: the channel has no limit and only holds what's published between two turns of the loop, and a full wake pipe already means the loop will look.
     pub fn announce(&self, events: Vec<Event>) {
-        if self.done.send(Done::Announced(events)).is_ok() {
+        if self.done.send(Done::Published(events)).is_ok() {
             let _ = (&self.wake).write(&[WAKE_BYTE]);
         }
     }
@@ -268,9 +276,10 @@ impl Job {
 
 #[derive(Debug)]
 enum Done {
-    Announced(Vec<Event>),
     Answered { conn: u64, line: Vec<u8>, tag: &'static str, level: Level, outcome: &'static str, details: Value, events: Vec<Event>, draws: bool, stop: bool },
     Looked { conn: u64, generation: u64, state: ConditionState },
+    /// Something happened that no command caused. It takes up no job's place.
+    Published(Vec<Event>),
 }
 
 struct Loop<H> {
@@ -286,7 +295,7 @@ struct Loop<H> {
     running_draws: usize,
     done_tx: Sender<Done>,
     done_rx: Receiver<Done>,
-    wake: Stream,
+    wake: Arc<Stream>,
     /// Everything waiting in clients' `output`.
     queued_bytes: usize,
     generations: u64,
@@ -551,6 +560,9 @@ impl<H: Host> Loop<H> {
         }
         self.publish(&[Event::new("level_changed", json!({ "level": level.name(), "was": was.name() }))]);
         self.settle_subscribers(level);
+        if level == Level::Off {
+            self.host.access_is_off();
+        }
         level
     }
 
@@ -664,7 +676,6 @@ impl<H: Host> Loop<H> {
 
     fn finish(&mut self, done: Done) {
         match done {
-            Done::Announced(events) => self.publish(&events),
             Done::Answered { conn, line, tag, level, outcome, details, events, draws, stop } => {
                 self.running -= 1;
                 if draws {
@@ -672,6 +683,10 @@ impl<H: Host> Loop<H> {
                 }
                 self.log.record(tag, level, outcome, &details);
                 self.publish(&events);
+                // A command running when it changed may have asked for something since.
+                if self.last_level == Level::Off {
+                    self.host.access_is_off();
+                }
                 if tag == "stop" {
                     self.stop_request = None;
                 }
@@ -687,8 +702,13 @@ impl<H: Host> Loop<H> {
                     self.begin_stop();
                 }
             }
+            Done::Published(events) => self.publish(&events),
             Done::Looked { conn, generation, state } => {
                 self.running -= 1;
+                // A look under way when it changed may have asked for something since, as a command may.
+                if self.last_level == Level::Off {
+                    self.host.access_is_off();
+                }
                 let Some(index) = self.conns.iter().position(|c| c.id == conn) else { return };
                 // A look from an earlier wait on this connection says nothing about this one.
                 let State::Waiting { generation: current, looking, look_again, tag, .. } = &mut self.conns[index].state else { return };
@@ -802,8 +822,13 @@ impl<H: Host> Loop<H> {
     fn flush_all(&mut self) {
         for conn in &mut self.conns {
             if conn.has_output() {
+                let was_paused = conn.unsent() > self.limits.max_unsent_before_pause;
                 let flushed = conn.flush();
                 self.queued_bytes -= flushed;
+                // Its time for the rest of a line starts again now it's being read in again.
+                if was_paused && conn.unsent() <= self.limits.max_unsent_before_pause && conn.line_started.is_some() {
+                    conn.line_started = Some(Instant::now());
+                }
             }
         }
     }
@@ -857,7 +882,7 @@ impl<H: Host> Loop<H> {
             let conn = &self.conns[index];
             let stalled_output = conn.has_output() && now.saturating_duration_since(conn.output_since) >= self.limits.write_deadline;
             // Only while it's its turn to speak: a client may send its next command while the last one runs.
-            let stalled_line = matches!(conn.state, State::Idle) && conn.is_midway_through_a_line() && conn.line_started.is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline);
+            let stalled_line = matches!(conn.state, State::Idle) && conn.is_halfway_through_a_line(self.limits.max_unsent_before_pause) && conn.line_started.is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline);
             let idle_limit = if conn.overflow { self.limits.overflow_idle } else { self.limits.idle_deadline };
             let idle = matches!(conn.state, State::Idle) && conn.input.is_empty() && !conn.has_output() && now.saturating_duration_since(conn.last_activity) >= idle_limit;
             if stalled_output || stalled_line || idle {
@@ -975,9 +1000,7 @@ impl<H: Host> Loop<H> {
             }
             match &conn.state {
                 State::Idle => {
-                    if conn.is_midway_through_a_line()
-                        && let Some(started) = conn.line_started
-                    {
+                    if let Some(started) = conn.line_started.filter(|_| conn.is_halfway_through_a_line(self.limits.max_unsent_before_pause)) {
                         consider(started + self.limits.line_deadline);
                     }
                     if conn.input.is_empty() && !conn.has_output() {
@@ -1002,6 +1025,11 @@ fn too_large(tag: &str) -> Vec<u8> {
 }
 
 impl Conn {
+    /// Whether what's holding things up is this client not finishing a line, which is all that has a deadline. A whole command waiting behind answers it hasn't read isn't, and neither is the rest of a line that isn't being read in for that reason.
+    fn is_halfway_through_a_line(&self, max_unsent: usize) -> bool {
+        self.unsent() <= max_unsent && !self.input.contains(&b'\n')
+    }
+
     fn wants_input(&self, max_line: usize, max_unsent: usize) -> bool {
         !self.input_closed && !self.gone && !self.closing && self.input.len() <= max_line && self.unsent() <= max_unsent
     }
@@ -1066,11 +1094,6 @@ impl Conn {
     }
 
     /// The next whole line, if there is one and it isn't blank.
-    /// It has begun a line and not finished it. Whole lines waiting their turn aren't this: their client has said all it means to, and may only be waiting because it's still reading the last answer.
-    fn is_midway_through_a_line(&self) -> bool {
-        !self.input.is_empty() && !self.input.contains(&b'\n')
-    }
-
     fn next_line(&mut self) -> Option<Vec<u8>> {
         loop {
             let at = self.input.iter().position(|byte| *byte == b'\n')?;

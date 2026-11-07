@@ -17,6 +17,9 @@ recto-proto.workspace = true
 recto-index.workspace = true
 recto-render-service.workspace = true
 flate2.workspace = true
+# `search --regex`: ripgrep's own engine, in this process. Its size is in `docs/ENGINEERING.md`.
+grep-regex.workspace = true
+grep-matcher.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

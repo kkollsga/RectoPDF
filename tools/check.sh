@@ -2,6 +2,7 @@
 # check: the one local check, cheapest step first, stopping at the first failure.
 #
 #   tools/check.sh --quick    Changed crates' tests, clippy for the workspace, a Windows compile check (while working)
+#   tools/check.sh --corpus   The index against the pages over every PDF in RECTO_BENCH100, about a quarter of an hour
 #   tools/check.sh --failed   Only the tests that failed last time in this folder (while fixing them)
 #   tools/check.sh --full     Clippy, the tests of crates changed since main, every other test, a Windows compile check,
 #                             then the app built and driven in quiet runs (before handing back). A pass on a clean tree is what lets `main` be pushed.
@@ -22,6 +23,12 @@ case "$mode" in
     changed=$( { git diff --name-only HEAD 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | crates_in)
     tests=()
     if [ -n "$changed" ]; then for c in $changed; do tests+=(-p "$c"); done; else tests=(--workspace); fi
+    ;;
+  --corpus)
+    # Every kind of search from the index and from the pages, over a folder of real PDFs. Slow, so not part of --full, which always runs a small version.
+    : "${RECTO_BENCH100:?Set RECTO_BENCH100 to a folder of PDFs}"
+    tools/pdfium.sh >/dev/null
+    RECTO_INDEX_ALL=1 exec tools/sysguard/heavy.sh cargo test --release --locked -p recto-cli --test index real_pages -- --nocapture
     ;;
   --full)
     tests=(--workspace)
@@ -52,8 +59,8 @@ esac
 run() {
   set -e
   cargo clippy --workspace --all-targets --locked -- -D warnings
-  # Tests start the worker binary, and `-p` alone wouldn't build it.
-  cargo build --locked -p recto-render-service
+  # Tests start the worker and the indexer, and `-p` alone wouldn't build them.
+  cargo build --locked -p recto-render-service -p recto-indexer
   # The app's own tests run below, against an app built from this tree. An older one lying around says nothing.
   if [ -n "$tests_first" ]; then
     # shellcheck disable=SC2086

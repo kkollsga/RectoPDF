@@ -578,26 +578,19 @@ fn a_relative_path_means_where_the_agent_is() {
     assert_eq!(raw.call(&open_cmd(Path::new("three.pdf")))["error"]["code"], "bad_path");
 }
 
-/// A file that takes a password: the standard handler's check values match no empty password.
-fn password_protected() -> Vec<u8> {
-    let bytes = pages(&[Page::new(text_lines(&["Secret words"]))]);
-    let key = "AB".repeat(32);
-    String::from_utf8_lossy(&bytes).replace("/Root 1 0 R", &format!("/Root 1 0 R /Encrypt << /Filter /Standard /V 1 /R 2 /O <{key}> /U <{key}> /P -4 >> /ID [<00> <00>]")).into_bytes()
-}
-
 /// Failure: a password-protected file reads as a plain failure, or its text comes out. `open`, and `text` and `search` on a tab whose file became one, each say exit 8, and no words get through.
 #[test]
 fn a_password_protected_file_is_refused_end_to_end() {
     let state = State::at(Level::Control);
     let _serving = state.serve();
-    let locked = TempPdf::new("locked.pdf", &password_protected());
+    let locked = TempPdf::new("locked.pdf", &common::password_protected());
     let (reply, code) = state.json(&["open", path_of(&locked)]);
     assert_eq!((reply["error"]["code"].as_str(), code), (Some("password_needed"), exit::PROTECTED), "{reply}");
     assert!(reply["error"]["next"].as_str().unwrap().contains("Passwords are never taken"), "{reply}");
     // A tab opened on the plain file, whose file is then replaced with one that takes a password.
     let file = three_pages();
     state.json(&["open", path_of(&file)]);
-    std::fs::write(&file.0, password_protected()).unwrap();
+    std::fs::write(&file.0, common::password_protected()).unwrap();
     for args in [&["text", "--page", "1"][..], &["search", "Secret"][..]] {
         let (reply, code) = state.json(args);
         assert_eq!((reply["error"]["code"].as_str(), code), (Some("needs_password"), exit::PROTECTED), "{args:?}: {reply}");
@@ -834,6 +827,7 @@ fn every_row_that_runs_here_is_wired_up() {
         vec!["qa", "start", "--app", "/nonexistent/RectoPDF"],
         vec!["qa", "run", "/nonexistent/script.qa"],
         vec!["qa", "budget", "--file", path_of(&file), "--app", "/nonexistent/RectoPDF", "--runs", "1"],
+        vec!["budget", "index", "--file", path_of(&file), "--runs", "1", "--queries", "words"],
     ];
     let here: Vec<&str> = TABLE.iter().filter(|spec| spec.route == Route::Here).map(|spec| spec.name).collect();
     for name in &here {

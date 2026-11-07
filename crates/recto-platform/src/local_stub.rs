@@ -118,12 +118,36 @@ pub fn check_private_dir(_path: &Path) -> io::Result<()> {
     unsupported()
 }
 
+pub fn file_system_name(_file: &File) -> io::Result<String> {
+    unsupported()
+}
+
+pub fn open_private_file(_path: &Path) -> io::Result<File> {
+    unsupported()
+}
+
 pub fn read_private_file(_path: &Path, _max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
     unsupported()
 }
 
 pub fn write_private_file(_path: &Path, _bytes: &[u8]) -> io::Result<()> {
     unsupported()
+}
+
+pub fn write_private_file_unsynced(_path: &Path, _bytes: &[u8]) -> io::Result<()> {
+    unsupported()
+}
+
+pub fn create_private_file(_path: &Path) -> io::Result<File> {
+    unsupported()
+}
+
+pub fn exclude_from_backups(_path: &Path) -> io::Result<()> {
+    unsupported()
+}
+
+pub fn is_excluded_from_backups(_path: &Path) -> bool {
+    false
 }
 
 pub fn append_private_file(_path: &Path) -> io::Result<File> {

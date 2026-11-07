@@ -21,7 +21,7 @@ APP="$BUILD/RectoPDF.app"
 "$REPO/tools/pdfium.sh" >/dev/null
 
 echo "==> Rust ($mode)"
-(cd "$REPO" && cargo build --locked -p recto-ffi -p recto-cli -p recto-render-service ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"})
+(cd "$REPO" && cargo build --locked -p recto-ffi -p recto-cli -p recto-render-service -p recto-indexer ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"})
 mkdir -p "$BUILD/rust"
 cp "$RUST_OUT/librecto_ffi.a" "$BUILD/rust/librecto_ffi.a"
 
@@ -46,6 +46,7 @@ cp "$BIN" "$APP/Contents/MacOS/RectoPDF"
 # Worker and library beside the app, where `ServiceConfig::discover` looks. Each is what `tools/pdfium.sh` checked.
 cp "$RUST_OUT/recto" "$APP/Contents/MacOS/recto"
 cp "$RUST_OUT/recto-render-service" "$APP/Contents/MacOS/recto-render-service"
+cp "$RUST_OUT/recto-indexer" "$APP/Contents/MacOS/recto-indexer"
 cp "$REPO/target/pdfium/libpdfium.dylib" "$APP/Contents/MacOS/libpdfium.dylib"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -82,6 +83,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 codesign --force --sign - "$APP/Contents/MacOS/libpdfium.dylib"
 codesign --force --sign - "$APP/Contents/MacOS/recto-render-service"
+codesign --force --sign - "$APP/Contents/MacOS/recto-indexer"
 codesign --force --sign - "$APP/Contents/MacOS/recto"
 codesign --force --sign - "$APP"
 echo "==> built $APP"

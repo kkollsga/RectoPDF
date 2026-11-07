@@ -200,3 +200,10 @@ pub fn last_json(shown: &str) -> Value {
 pub fn open_cmd(path: &Path) -> Value {
     json!({ "cmd": "open", "path": path })
 }
+
+/// A file that takes a password: the standard handler's check values match no empty password.
+pub fn password_protected() -> Vec<u8> {
+    let bytes = recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Secret words"]))]);
+    let key = "AB".repeat(32);
+    String::from_utf8_lossy(&bytes).replace("/Root 1 0 R", &format!("/Root 1 0 R /Encrypt << /Filter /Standard /V 1 /R 2 /O <{key}> /U <{key}> /P -4 >> /ID [<00> <00>]")).into_bytes()
+}

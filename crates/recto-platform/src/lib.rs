@@ -21,6 +21,52 @@ pub fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {
     Ok(FileStamp { size: meta.len(), mtime_ns })
 }
 
+/// What tells one version of a file from another, stronger than [`FileStamp`]: a file put in its place has another inode, and writing to it or setting its modification time moves its change time, which can't be set back without moving the clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileIdentity {
+    pub device: u64,
+    pub inode: u64,
+    pub size: u64,
+    pub mtime_ns: i64,
+    pub ctime_ns: i64,
+}
+
+/// An open file's identity.
+#[cfg(unix)]
+pub fn file_identity(file: &std::fs::File) -> std::io::Result<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = file.metadata()?;
+    let nanos = |seconds: i64, nanos: i64| seconds.saturating_mul(1_000_000_000).saturating_add(nanos);
+    Ok(FileIdentity { device: meta.dev(), inode: meta.ino(), size: meta.size(), mtime_ns: nanos(meta.mtime(), meta.mtime_nsec()), ctime_ns: nanos(meta.ctime(), meta.ctime_nsec()) })
+}
+
+/// An open file's identity. Windows has no inode or change time through the standard library, so its contents' samples carry more of the weight there. Not used at run time yet.
+#[cfg(not(unix))]
+pub fn file_identity(file: &std::fs::File) -> std::io::Result<FileIdentity> {
+    let meta = file.metadata()?;
+    let nanos = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX));
+    Ok(FileIdentity { device: 0, inode: 0, size: meta.len(), mtime_ns: nanos, ctime_ns: nanos })
+}
+
+/// A file's device and inode, with no opening of it: opening a pipe would wait for a writer for ever. `None` where there's no such thing, or it can't be looked at.
+pub fn file_device_and_inode(path: &Path) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).ok().map(|meta| (meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Puts this process at background priority: slower CPUs and slower disk, so it gets out of the way of whatever someone's waiting for. A failure leaves it as it was, which only costs politeness. The children it starts after this inherit it.
+pub fn run_in_background() {
+    isolate::run_in_background();
+}
+
 /// This process's physical footprint in bytes, the number Activity Monitor shows. `None` where it isn't implemented.
 pub fn footprint_bytes() -> Option<u64> {
     isolate::process_memory(std::process::id()).map(|memory| memory.footprint_bytes)
