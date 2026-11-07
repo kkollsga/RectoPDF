@@ -101,5 +101,6 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "The margin left of the ai icon is too large. It should have the same margin to the right and above. Above should have slightly smaller margin then now (and right gets the same one)."
 - "and improve the styling of the scrollbar. The sidebar thumb should always be visible, and lets hide the rail."
 - "the thumb should be thinner": slimmer than the system's default thumb, in the sidebar and the page area.
+- "add some margin above the first page, and below the last page"
 - "the scroll thumb always visible, the rail always hidden": for the page area too, whatever the system's scroll bar setting.
 - "Ctrl clicking more then one pdf should enable comparison view, right click menu can enable separate scroll (default) and synced scroll. Zoom is always synced."
