@@ -565,3 +565,15 @@ fn plain_output_says_whats_a_picture_and_why() {
     assert!(said.contains("Nothing had to become a picture"), "{said}");
     std::fs::remove_file(&out).unwrap();
 }
+
+/// Failure: an image whose edge only touches the box panics the worker on an ordinary request, because the cut starts one past its last pixel. Holds on both axes, and on every side.
+#[test]
+fn an_image_that_only_touches_the_box_is_left_out() {
+    let (bytes, _) = raw_image_doc(10, 10, "100 0 0 100 50 50");
+    let file = TempPdf::new("doc.pdf", &bytes);
+    // The image runs 50 to 150 across, and 642 to 742 down.
+    for rect in ["150,650,10,10", "40,650,10,10", "60,742,10,10", "60,632,10,10", "150,742,10,10"] {
+        let (svg, data) = svg_of(&file, &["--rect", rect]);
+        assert!(embedded_images(svg.as_bytes()).is_empty(), "{rect}: {data}");
+    }
+}

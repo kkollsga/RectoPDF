@@ -141,6 +141,11 @@ impl Area {
         self.left <= other.right && other.left <= self.right && self.bottom <= other.top && other.bottom <= self.top
     }
 
+    /// More than touching.
+    fn overlaps(self, other: Self) -> bool {
+        self.left < other.right && other.left < self.right && self.bottom < other.top && other.bottom < self.top
+    }
+
     fn inside(self, other: Self) -> bool {
         self.left >= other.left && self.right <= other.right && self.bottom >= other.bottom && self.top <= other.top
     }
@@ -1384,6 +1389,10 @@ impl Walk {
 
     /// An image, as itself if it can go as itself.
     fn image(&mut self, object: FPDF_PAGEOBJECT, area: Area, out: &mut Vec<u8>) -> Result<(), RenderError> {
+        // Only touching the box is nothing of it inside.
+        if self.partial && !area.overlaps(self.view) {
+            return Ok(());
+        }
         let Some(own) = self.object_matrix(object) else {
             self.note(NoteCode::NotFinite);
             return Ok(());
@@ -1974,12 +1983,12 @@ fn crop_to(width: u32, height: u32, matrix: &M, view: Area) -> ((u32, u32, u32, 
     let to_y = |y: f64| (y - matrix[5]) / matrix[3];
     let (u0, u1) = (to_x(view.left).min(to_x(view.right)).clamp(0.0, 1.0), to_x(view.left).max(to_x(view.right)).clamp(0.0, 1.0));
     let (v0, v1) = (to_y(view.bottom).min(to_y(view.top)).clamp(0.0, 1.0), to_y(view.bottom).max(to_y(view.top)).clamp(0.0, 1.0));
-    let left = (u0 * f64::from(width)).floor() as u32;
+    // At least one pixel, whichever edge of the image the box only touches.
+    let left = ((u0 * f64::from(width)).floor() as u32).min(width - 1);
     let right = ((u1 * f64::from(width)).ceil() as u32).clamp(left + 1, width);
     // A row counts from y = 1, the image's top.
-    let top = ((1.0 - v1) * f64::from(height)).floor() as u32;
+    let top = (((1.0 - v1) * f64::from(height)).floor() as u32).min(height - 1);
     let bottom = (((1.0 - v0) * f64::from(height)).ceil() as u32).clamp(top + 1, height);
-    let (left, top) = (left.min(width - 1), top.min(height - 1));
     let (cut_w, cut_h) = (right - left, bottom - top);
     if cut_w == width && cut_h == height {
         return whole;
@@ -2009,6 +2018,22 @@ mod tests {
         // All of it, or a turned one: nothing's cut.
         assert_eq!(crop_to(100, 200, &matrix, Area { left: 0.0, bottom: 0.0, right: 100.0, top: 100.0 }).0, (0, 0, 100, 200));
         assert_eq!(crop_to(100, 200, &[0.0, 10.0, -20.0, 0.0, 5.0, 7.0], view).0, (0, 0, 100, 200));
+    }
+
+    /// Failure: a box that only touches an image's edge starts its cut one past the last pixel, and the worker panics on an ordinary request. On every edge it must come out as something that can be drawn.
+    #[test]
+    fn a_box_touching_any_edge_of_an_image_cuts_something_real() {
+        let matrix = [10.0, 0.0, 0.0, 20.0, 5.0, 7.0];
+        for view in [
+            Area { left: 15.0, bottom: 10.0, right: 20.0, top: 20.0 },
+            Area { left: 0.0, bottom: 10.0, right: 5.0, top: 20.0 },
+            Area { left: 7.0, bottom: 27.0, right: 9.0, top: 30.0 },
+            Area { left: 7.0, bottom: 0.0, right: 9.0, top: 7.0 },
+            Area { left: 15.0, bottom: 27.0, right: 20.0, top: 30.0 },
+        ] {
+            let ((x, y, w, h), _) = crop_to(100, 200, &matrix, view);
+            assert!(w >= 1 && h >= 1 && x + w <= 100 && y + h <= 200, "{view:?}: {x} {y} {w} {h}");
+        }
     }
 
     /// Failure: a rotated page's objects land off the document, because the matrix doesn't agree with how PDFium displays that rotation.
