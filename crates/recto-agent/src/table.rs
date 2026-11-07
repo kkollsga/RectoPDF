@@ -108,6 +108,8 @@ pub struct Spec {
     pub client_wait_s: u64,
     /// Not for people or the docs, though it's a real command.
     pub hidden: bool,
+    /// It isn't built yet, and only says so.
+    pub not_built: bool,
 }
 
 const BASE: Spec = Spec {
@@ -124,6 +126,7 @@ const BASE: Spec = Spec {
     examples: &[],
     client_wait_s: 120,
     hidden: false,
+    not_built: false,
 };
 
 const TAB: Arg = Arg { key: "tab", flag: Some("--tab"), kind: Kind::Tab, required: false, help: "Which tab: `#3`, `active`, or part of its name. The active tab if left out." };
@@ -178,7 +181,7 @@ pub static TABLE: &[Spec] = &[
         group: GROUP_READ,
         summary: "A document's facts: pages, size, version, and whether it has contents.",
         args: &[TAB],
-        data: "`{ tab, pages, file_pages, file_bytes, encrypted, pdf_version, structure, has_contents, contents_entries, edited, note, untrusted: { name, title } }`.",
+        data: "`{ tab, pages, file_pages, file_bytes, encrypted, encryption_note, pdf_version, structure, has_contents, contents_entries, edited, note, untrusted: { name, title } }`. `encryption_note` says when an encrypted file opened with no password.",
         examples: &["recto facts", "recto facts --tab report --json"],
         ..BASE
     },
@@ -186,15 +189,15 @@ pub static TABLE: &[Spec] = &[
         name: "contents",
         tag: "contents",
         group: GROUP_READ,
-        summary: "A document's table of contents, a piece at a time.",
+        summary: "A document's table of contents, a piece at a time. By default the document's sections and as far down as fits, and it says which depth that is.",
         args: &[
             TAB,
             Arg { key: "from", flag: Some("--from"), kind: Kind::Count(100_000), required: false, help: "Entries to skip: `next_from` from the last answer." },
             Arg { key: "limit", flag: Some("--limit"), kind: Kind::Positive(2000), required: false, help: "Entries in this answer. 200 if left out." },
-            Arg { key: "depth", flag: Some("--depth"), kind: Kind::Count(32), required: false, help: "Deepest nesting to include. 0 is the top level." },
+            Arg { key: "depth", flag: Some("--depth"), kind: Kind::Count(32), required: false, help: "Deepest nesting to include. 0 is the top level, which can be just the title. As much as fits if left out." },
         ],
-        data: "`{ tab, available, total, entries: [ { depth, page, untrusted: { title } } ], next_from, truncated }`. `available: false` means it couldn't be read, not that there's none. `truncated: true` means the file's contents stopped being read at a limit.",
-        examples: &["recto contents", "recto contents --depth 0 --limit 50", "recto contents --from 200 --json"],
+        data: "`{ tab, available, total, all_entries, entries: [ { depth, page, untrusted: { title } } ], next_from, truncated, depth_shown, deepest, sections_at, depth_rule }`. `total` counts the entries at the depth shown, and `all_entries` every entry. `sections_at` is the first depth whose entries are on more than one page, and `depth_rule` says all this in words. `available: false` means it couldn't be read, not that there's none. `truncated: true` means the file's contents stopped being read at a limit.",
+        examples: &["recto contents", "recto contents --depth 1 --limit 50", "recto contents --from 200 --json"],
         ..BASE
     },
     Spec {
@@ -208,7 +211,7 @@ pub static TABLE: &[Spec] = &[
             Arg { key: "pages", flag: Some("--pages"), kind: Kind::PagesOpen, required: false, help: "Only these pages: `4`, `4-6`, or `4-` to the end." },
             Arg { key: "limit", flag: Some("--limit"), kind: Kind::Positive(200), required: false, help: "Most hits in this answer. 20 if left out." },
         ],
-        data: "`{ tab, hits: [ { page, line, also_spelled, page_has_tag_chars, hidden_text: { checked, flagged }, untrusted: { snippet } } ], hidden_text_checked, coverage: { pages_searched, pages_in_scope, pages_with_no_text, no_text_pages, failed_pages, hits_not_shown: [ { page, hits } ], pages_with_tag_chars, changed_files: [ { untrusted: { file } } ], next_page } }`. A page in `failed_pages` couldn't be read, or its file changed since its number was recorded (`changed_files`). Only pages with hits are checked for hidden text, as `hidden_text_checked` says. `also_spelled: true` means the hit is another spelling of a word broken across lines, with no line of its own. `next_page` is where to go on from with `--pages`.",
+        data: "`{ tab, hits: [ { page, source_page, from_added_file, line, also_spelled, page_has_tag_chars, hidden_text: { checked, flagged }, untrusted: { snippet, added_file } } ], hidden_text_checked, coverage: { pages_searched, pages_in_scope, pages_with_no_text, no_text_pages, failed_pages, hits_not_shown: [ { page, hits } ], pages_with_tag_chars, changed_files: [ { untrusted: { file } } ], next_page } }`. `source_page` and `from_added_file` say where a hit's page really comes from, once it's been edited. It searches the same text `text` gives. A page in `failed_pages` couldn't be read, or its file changed since its number was recorded (`changed_files`). Only pages with hits are checked for hidden text, as `hidden_text_checked` says. `also_spelled: true` means the hit is another spelling of a word broken across lines, with no line of its own. `next_page` is where to go on from with `--pages`.",
         examples: &["recto search \"force majeure\"", "recto search termination --pages 10-40 --limit 5 --json"],
         client_wait_s: 180,
         ..BASE
@@ -217,9 +220,9 @@ pub static TABLE: &[Spec] = &[
         name: "text",
         tag: "text",
         group: GROUP_READ,
-        summary: "One page's text, normalised for reading and search, with a flag for text no eye can see.",
+        summary: "One page's text, normalised for reading and search, with a flag for text no eye can see. Words a file draws out of order are put back on their lines.",
         args: &[PAGE, TAB],
-        data: "`{ page, source_page, from_added_file, chars, hyphens_joined, hyphens_kept, invisible_chars_removed, tag_chars_removed, hidden_text: { checked, flagged, chars }, untrusted: { text, also_spelled, hidden_runs, added_file } }`. `source_page` and `from_added_file` say where the page really comes from, once it's been edited. `hidden_text.checked: false` means it wasn't checked, not that there's none.",
+        data: "`{ page, source_page, from_added_file, chars, hyphens_joined, hyphens_kept, invisible_chars_removed, tag_chars_removed, runs_moved, hidden_text: { checked, flagged, chars }, hidden_spans: [ [start, end] ], hidden_spans_dropped, untrusted: { text, also_spelled, hidden_runs, added_file } }`. `runs_moved` is how many runs drawn late were put back on their lines. `hidden_spans` says where flagged hidden text is in `text`, counted in characters, end not included. In plain output, a line holding any starts with `! `, and it's inside `[hidden: ...]`. `source_page` and `from_added_file` say where the page really comes from, once it's been edited. `hidden_text.checked: false` means it wasn't checked, not that there's none.",
         emits: &["page_drawn", "page_failed"],
         examples: &["recto text --page 3", "recto text --page 3 --tab \"#2\" --json"],
         ..BASE
@@ -231,7 +234,7 @@ pub static TABLE: &[Spec] = &[
         access: Access::At(Level::Full),
         summary: "Draws a page to a new PNG file, sharp or not at all. It never replaces a file, and doesn't show an unsaved rotation.",
         args: &[PAGE, Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "A new file ending in `.png`." }, SCALE, TAB],
-        data: "`{ page, source_page, from_added_file, scale, out, width, height, bytes, kind, unsaved_rotation_degrees, untrusted: { added_file } }`.",
+        data: "`{ page, source_page, from_added_file, scale, out, took_ms, width, height, bytes, kind, unsaved_rotation_degrees, untrusted: { added_file } }`.",
         emits: &["page_drawn", "page_failed"],
         examples: &["recto render --page 1 --out page1.png", "recto render --page 2 --scale 3x --out /tmp/p2.png --json"],
         client_wait_s: 600,
@@ -262,7 +265,7 @@ pub static TABLE: &[Spec] = &[
     },
     Spec { name: "goto", tag: "goto", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Goes to a page. A page that isn't there is refused.", args: &[Arg { key: "page", flag: None, kind: Kind::Page, required: true, help: "The page, counted from 1." }, TAB], data: AGENT_EXITS_PAGE, emits: &["page_changed"], examples: &["recto goto 12", "recto goto 12 --tab report"], ..BASE },
     Spec { name: "tap", tag: "tap", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Taps a tab in the sidebar: switches to it, or folds its contents if it's already active.", args: &[Arg { key: "tab", flag: None, kind: Kind::Tab, required: true, help: "Which tab: `#3`, or part of its name." }], data: "The sidebar, as `sidebar` gives it.", emits: &["tab_activated"], examples: &["recto tap \"#2\"", "recto tap report"], ..BASE },
-    Spec { name: "close", tag: "close", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Closes a tab. Refused while it has unsaved edits, and below Full while it has undone ones.", args: &[TAB], data: "`{ closed, count, active }`, with `active` as `where` gives it.", emits: &["tab_closed", "tab_activated"], examples: &["recto close", "recto close --tab \"#2\""], ..BASE },
+    Spec { name: "close", tag: "close", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Closes a tab. Refused while it has unsaved edits, and below Full while it has undone ones. The refusal says what's at stake and each way on.", args: &[TAB], data: "`{ closed, count, active }`, with `active` as `where` gives it.", emits: &["tab_closed", "tab_activated"], examples: &["recto close", "recto close --tab \"#2\""], ..BASE },
     Spec {
         name: "page move",
         tag: "page_move",
@@ -304,7 +307,7 @@ pub static TABLE: &[Spec] = &[
     Spec { name: "redo", tag: "redo", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Repeats the last undone page edit.", args: &[TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto redo"], ..BASE },
     Spec { name: "edits", tag: "edits", group: GROUP_EDIT, summary: "A tab's unsaved edits, as runs of pages.", args: &[TAB], data: "`{ ...same as undo, runs: [ { pages, from_file_pages, rotation_degrees, added, untrusted: { added_file } } ], runs_truncated }`.", examples: &["recto edits", "recto edits --json"], ..BASE },
     Spec { name: "discard", tag: "discard", group: GROUP_EDIT, access: Access::At(Level::Full), summary: "Throws away a tab's unsaved edits. They can't be got back.", args: &[TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto discard --tab report"], ..BASE },
-    Spec { name: "save", tag: "save", group: GROUP_EDIT, access: Access::At(Level::Off), summary: "Saving isn't built yet. This says so and writes nothing.", args: &[TAB], data: "Always refuses with `not_built`.", examples: &["recto save"], ..BASE },
+    Spec { name: "save", tag: "save", group: GROUP_EDIT, access: Access::At(Level::Off), summary: "Saving isn't built yet. This says so and writes nothing.", args: &[TAB], data: "Always refuses with `not_built`.", examples: &["recto save"], not_built: true, ..BASE },
     Spec {
         name: "wait tab-open",
         tag: "wait",
@@ -318,7 +321,7 @@ pub static TABLE: &[Spec] = &[
     },
     Spec { name: "wait tab-closed", tag: "wait", group: GROUP_SYNC, summary: "Blocks until no tab matches the selector. Exit 7 if the time runs out.", args: &[Arg { key: "tab", flag: None, kind: Kind::Tab, required: true, help: "Which tab: `#3`, or part of its name." }, TIMEOUT], fixed: &[("condition", "tab_closed")], data: "`{ closed }`.", examples: &["recto wait tab-closed \"#2\" --timeout 10s"], ..BASE },
     Spec { name: "wait page-drawn", tag: "wait", group: GROUP_SYNC, summary: "Blocks until a page has been drawn (by `render`, or by `text`'s check), or failed to be. Exit 7 if the time runs out.", args: &[PAGE, TAB, TIMEOUT], fixed: &[("condition", "page_drawn")], data: "`{ tab, page, drawn }`.", examples: &["recto wait page-drawn --page 3 --timeout 1m"], ..BASE },
-    Spec { name: "wait indexing-done", tag: "wait", group: GROUP_SYNC, summary: "The search index isn't built yet, so this says so at once rather than waiting.", args: &[TAB, TIMEOUT], fixed: &[("condition", "indexing_done")], data: "Always refuses with `not_built`.", examples: &["recto wait indexing-done"], ..BASE },
+    Spec { name: "wait indexing-done", tag: "wait", group: GROUP_SYNC, summary: "The search index isn't built yet, so this says so at once rather than waiting.", args: &[TAB, TIMEOUT], fixed: &[("condition", "indexing_done")], data: "Always refuses with `not_built`.", examples: &["recto wait indexing-done"], not_built: true, ..BASE },
     Spec {
         name: "watch",
         tag: "watch",
@@ -349,9 +352,9 @@ pub static TABLE: &[Spec] = &[
         tag: "permission_request",
         group: GROUP_ACCESS,
         access: Access::At(Level::Off),
-        summary: "Asks the user for more access. It grants nothing: tell the user what it prints. With `--timeout`, it blocks until they've answered.",
-        args: &[Arg { key: "level", flag: None, kind: Kind::Level, required: true, help: "`read_only`, `control` or `full`." }, Arg { key: "timeout_ms", flag: Some("--timeout"), kind: Kind::Duration, required: false, help: "How long to wait for the user: `30s`, `5m`. Answers at once if left out." }],
-        data: "`{ level, granted, asked, tell_the_user, command }`.",
+        summary: "Asks the user for more access. It grants nothing and answers at once: tell the user what it prints, and carry on with what you can. Use `--timeout` only when someone's at the keyboard to answer, since it blocks until they do.",
+        args: &[Arg { key: "level", flag: None, kind: Kind::Level, required: true, help: "`read_only`, `control` or `full`." }, Arg { key: "timeout_ms", flag: Some("--timeout"), kind: Kind::Duration, required: false, help: "Only when someone's at the keyboard to answer: how long to block waiting for them, such as `30s` or `5m`. Answers at once if left out, which is nearly always what you want." }],
+        data: "`{ level, granted, asked, tell_the_user, command, what_to_do }`.",
         examples: &["recto permission request read_only", "recto permission request control --timeout 5m"],
         ..BASE
     },
@@ -563,7 +566,18 @@ pub fn parse_cli(args: &[String]) -> Result<Invocation, AgentError> {
             other => kept.push(other),
         }
     }
+    if let ["--version" | "-V"] = kept.as_slice() {
+        return Ok(here_row("version", json_flag, Vec::new()));
+    }
     let Some(spec) = find_spec(&kept) else {
+        if help_flag {
+            // `recto --help` is the list, and `recto page --help` the group's.
+            match kept.as_slice() {
+                [] => return Ok(here_row("help", json_flag, Vec::new())),
+                [group] if family_rows(group).next().is_some() => return Ok(here_row("help", json_flag, vec![(*group).to_string()])),
+                _ => {}
+            }
+        }
         if kept.is_empty() {
             return Err(usage_error("Which command? `recto help` lists them.", "Try `recto status`, or `recto help`.").with_candidates(Vec::new()));
         }
@@ -574,6 +588,12 @@ pub fn parse_cli(args: &[String]) -> Result<Invocation, AgentError> {
     Ok(Invocation { spec, fields, json: json_flag, help: help_flag, rest })
 }
 
+/// A line that means one of the rows that runs here, however it was typed.
+fn here_row(tag: &str, json: bool, rest: Vec<String>) -> Invocation {
+    let spec = by_tag(tag).unwrap_or(&TABLE[0]);
+    Invocation { spec, fields: Map::new(), json, help: false, rest }
+}
+
 impl AgentError {
     #[must_use]
     fn with_candidates(mut self, candidates: Vec<String>) -> Self {
@@ -582,10 +602,35 @@ impl AgentError {
     }
 }
 
-/// The row a line of words names, for `recto help page move`. Hidden rows aren't found.
+/// The row a line of words names, for `recto help page move`, or `recto help "page move"` as its own list prints it. Hidden rows aren't found.
 pub fn find_row(words: &[String]) -> Option<&'static Spec> {
-    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let words: Vec<&str> = words.iter().flat_map(|word| word.split_whitespace()).collect();
     find_spec(&words)
+}
+
+/// The rows named by a first word and something more, such as `page move` for `page`.
+fn family_rows(first: &str) -> impl Iterator<Item = &'static Spec> {
+    TABLE.iter().filter(move |spec| !spec.hidden && spec.name.split_once(' ').is_some_and(|(group, _)| group == first))
+}
+
+/// `recto help page`: the commands of a group.
+pub fn family_help(words: &[String]) -> Option<String> {
+    let words: Vec<&str> = words.iter().flat_map(|word| word.split_whitespace()).collect();
+    let [group] = words.as_slice() else { return None };
+    let rows: Vec<&Spec> = family_rows(group).collect();
+    if rows.is_empty() {
+        return None;
+    }
+    let mut out = format!("`recto {group}` needs one more word:\n\n");
+    for spec in rows {
+        out.push_str(&format!("  {:<28} {}\n", usage_name(spec), first_sentence(spec.summary)));
+    }
+    out.push_str(&format!("\n`recto help {group} <word>` explains one.\n"));
+    Some(out)
+}
+
+fn usage_name(spec: &Spec) -> String {
+    format!("recto {}", spec.name)
 }
 
 /// The longest row whose name starts the line.
@@ -605,6 +650,12 @@ fn unknown_command(words: &[&str]) -> AgentError {
     let typed: String = words.iter().take(2).copied().collect::<Vec<_>>().join(" ");
     let typed = recto_core::clean_line(&typed);
     let first = words.first().copied().unwrap_or("");
+    if let [group] = words
+        && family_rows(group).next().is_some()
+    {
+        let names: Vec<String> = family_rows(group).map(|spec| spec.name.to_string()).collect();
+        return usage_error(format!("`{typed}` needs one more word."), format!("Use `recto {}`. `recto help {typed}` lists them.", names.join("`, `recto "))).with_candidates(names);
+    }
     let candidates: Vec<String> = TABLE
         .iter()
         .filter(|spec| !spec.hidden)
@@ -649,20 +700,35 @@ fn read_args(spec: &'static Spec, words: &[&str], literal_from: usize, help: boo
     while let Some(&word) = words.get(index) {
         index += 1;
         if word.starts_with("--") && word.len() > 2 && index <= literal_from {
-            let Some(arg) = spec.args.iter().find(|arg| arg.flag == Some(word)) else {
-                return Err(wrong(format!("`recto {}` has no `{}`.", spec.name, recto_core::clean_line(word))));
+            // `--page=3` and `--page 3` are the same thing.
+            let (flag, inline) = word.split_once('=').map_or((word, None), |(flag, value)| (flag, Some(value)));
+            let Some(arg) = spec.args.iter().find(|arg| arg.flag == Some(flag)) else {
+                return Err(wrong(format!("`recto {}` has no `{}`.", spec.name, recto_core::clean_line(flag))));
             };
             if arg.kind == Kind::Switch {
+                if inline.is_some() {
+                    return Err(wrong(format!("`{flag}` is there or it isn't, and doesn't take a value.")));
+                }
                 fields.insert(arg.key.into(), json!(true));
                 continue;
             }
-            let Some(&value) = words.get(index) else {
-                return Err(wrong(format!("`{word}` needs a value.")));
+            let value = match inline {
+                Some(value) => value,
+                None => {
+                    let Some(&value) = words.get(index) else {
+                        return Err(wrong(format!("`{flag}` needs a value.")));
+                    };
+                    index += 1;
+                    value
+                }
             };
-            index += 1;
             fields.insert(arg.key.into(), read_value(arg, value).map_err(wrong)?);
         } else {
             let Some(arg) = places.next() else {
+                if let Some(flag) = page_flag_for(spec, word) {
+                    let shown = recto_core::clean_line(word);
+                    return Err(usage_error(format!("`recto {}` takes that as `{flag} {shown}`.", spec.name), format!("`recto help {}` shows how to use it.", spec.name)));
+                }
                 return Err(wrong(format!("`recto {}` doesn't take `{}` here.", spec.name, recto_core::clean_line(word))));
             };
             if arg.kind == Kind::Rest {
@@ -680,6 +746,14 @@ fn read_args(spec: &'static Spec, words: &[&str], literal_from: usize, help: boo
         return Err(wrong(format!("`recto {}` needs a command to run.", spec.name)));
     }
     Ok((fields, rest))
+}
+
+/// The flag a stray page number was probably meant for: `recto text 1` for `--page 1`. Measurements count pages rather than name them, so they're left out.
+fn page_flag_for(spec: &Spec, word: &str) -> Option<&'static str> {
+    if spec.group == GROUP_MEASURE || crate::parse_pages(word, true).is_err() {
+        return None;
+    }
+    spec.args.iter().filter(|arg| matches!(arg.kind, Kind::Page | Kind::Pages | Kind::PagesOpen)).find_map(|arg| arg.flag)
 }
 
 fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
@@ -778,7 +852,7 @@ pub fn usage_line(spec: &Spec) -> String {
 
 /// `recto help`: every command, by group.
 pub fn help_text() -> String {
-    let mut out = String::from("recto: control RectoPDF from the command line.\n\nStart with `recto status`. `recto help <command>` explains one. Every command takes `--json`.\n");
+    let mut out = String::from("recto: control RectoPDF from the command line.\n\nStart with `recto status`. `recto help <command>` explains one. Every command takes `--json`. Flags take `--flag value` or `--flag=value`. `recto --version` gives the version.\n");
     let mut group = "";
     for spec in TABLE.iter().filter(|spec| !spec.hidden) {
         if spec.group != group {
@@ -798,7 +872,8 @@ fn first_sentence(text: &str) -> &str {
 
 /// `recto help <command>`.
 pub fn help_for(spec: &Spec) -> String {
-    let mut out = format!("{}\n\n{}\n\nNeeds: {}\n", usage_line(spec), spec.summary, spec.access.label());
+    let needs = if spec.not_built { format!("Needs: nothing yet. It isn't built, so it says so and does nothing, even at {}.", spec.access.label()) } else { format!("Needs: {}", spec.access.label()) };
+    let mut out = format!("{}\n\n{}\n\n{needs}\n", usage_line(spec), spec.summary);
     if !spec.args.is_empty() {
         out.push('\n');
         for arg in spec.args {
@@ -815,6 +890,10 @@ pub fn help_for(spec: &Spec) -> String {
             out.push_str(&format!("  {example}\n"));
         }
     }
+    let related: Vec<String> = family_rows(spec.name).map(usage_name).collect();
+    if !related.is_empty() {
+        out.push_str(&format!("\nSee also: `{}`.\n", related.join("`, `")));
+    }
     out
 }
 
@@ -828,6 +907,7 @@ pub fn table_json() -> Value {
                 "name": spec.name,
                 "usage": usage_line(spec),
                 "needs": spec.access.label(),
+                "built": !spec.not_built,
                 "level": match spec.access { Access::At(level) => Some(level.name()), _ => None },
                 "summary": spec.summary,
                 "data": spec.data,
@@ -955,6 +1035,89 @@ mod tests {
         }
         let line = parse_cli(&["search".to_string(), "--".to_string(), "--force".to_string()]).unwrap();
         assert_eq!(line.fields["query"], "--force");
+    }
+
+    /// Failure: a tool's first move, `recto --help`, says "Which command?", and the help a person asks for by group, or copies from the help's own list, isn't there. Every spelling of asking must work.
+    #[test]
+    fn every_way_of_asking_for_help_works() {
+        let words = |line: &str| -> Vec<String> { line.split(' ').map(str::to_string).collect() };
+        let list = parse_cli(&words("--help")).unwrap();
+        assert_eq!((list.spec.tag, list.help, list.rest.len()), ("help", false, 0));
+        assert_eq!(parse_cli(&words("-h")).unwrap().spec.tag, "help");
+        for group in ["page", "wait", "permission", "skill"] {
+            let line = parse_cli(&words(&format!("{group} --help"))).unwrap();
+            assert_eq!((line.spec.tag, line.rest.as_slice()), ("help", [group.to_string()].as_slice()), "{group}");
+            let help = family_help(&line.rest).unwrap();
+            assert!(help.contains(&format!("recto {group} ")), "{help}");
+        }
+        for row in TABLE.iter().filter(|row| !row.hidden) {
+            assert_eq!(find_row(&[row.name.to_string()]).unwrap().name, row.name, "a quoted name, as the list prints it");
+            let as_words: Vec<String> = row.name.split(' ').map(str::to_string).collect();
+            assert_eq!(find_row(&as_words).unwrap().name, row.name);
+            let mut asked = as_words.clone();
+            asked.push("--help".to_string());
+            let line = parse_cli(&asked).unwrap();
+            assert!(line.help && line.spec.name == row.name, "{}", row.name);
+        }
+        assert!(family_help(&words("nope")).is_none());
+        assert!(family_help(&words("page move")).is_none(), "that's a command");
+        assert!(help_for(find_row(&words("budget")).unwrap()).contains("recto budget tabs"), "a command with others under it points at them");
+    }
+
+    /// Failure: there's no `--version`, and only `recto version`, so the commonest check of a tool fails.
+    #[test]
+    fn the_version_flag_is_the_version_row() {
+        for flag in ["--version", "-V"] {
+            assert_eq!(parse_cli(&[flag.to_string()]).unwrap().spec.tag, "version");
+        }
+        assert!(parse_cli(&["tabs".to_string(), "--version".to_string()]).is_err(), "only on its own");
+    }
+
+    /// Failure: `--page=3` is refused where `--page 3` works, the most common way of writing a flag in other tools, so an agent loses a try on each.
+    #[test]
+    fn a_flag_can_be_written_with_an_equals_sign() {
+        let line = |text: &str| parse_cli(&text.split(' ').map(str::to_string).collect::<Vec<_>>());
+        assert_eq!(line("text --page=3").unwrap().fields["page"], 3);
+        assert_eq!(line("text --tab=#2 --page=3").unwrap().fields["tab"], "#2");
+        assert_eq!(line("render --page=1 --out=/d/a=b.png --scale=2x").unwrap().fields["out"], "/d/a=b.png", "only the first `=` splits it");
+        for wrong in ["text --page=", "text --page=x", "text --nope=1", "serve --background=yes"] {
+            assert_eq!(line(wrong).unwrap_err().exit, exit::USAGE, "{wrong}");
+        }
+        assert_eq!(parse_cli(&["search".into(), "--".into(), "--tab=x".into()]).unwrap().fields["query"], "--tab=x", "after `--`, it's only words");
+    }
+
+    /// Failure: a page number given in the wrong place is refused without saying what's wanted, so an agent has to read the help to find `--page`.
+    #[test]
+    fn a_stray_page_number_says_which_flag_it_wants() {
+        let line = |text: &str| parse_cli(&text.split(' ').map(str::to_string).collect::<Vec<_>>());
+        for (typed, wanted) in [("text 1", "--page 1"), ("render 2 --out /d/a.png", "--page 2"), ("wait page-drawn 3", "--page 3"), ("open /d/a.pdf 4", "--page 4"), ("search word 5-6", "--pages 5-6"), ("page insert /d/a.pdf 2", "--at 2"), ("page move 3 1", "--to 1")] {
+            let error = line(typed).unwrap_err();
+            assert_eq!(error.exit, exit::USAGE, "{typed}");
+            assert!(error.message.contains(wanted), "{typed}: {}", error.message);
+        }
+        assert!(!line("tabs 1").unwrap_err().message.contains("--page"), "it has none");
+        assert!(!line("text word").unwrap_err().message.contains("--page word"), "that's no page");
+        assert!(!line("budget render 5").unwrap_err().message.contains("--first"), "a measurement's number is a count");
+    }
+
+    /// Failure: a command that isn't built says `Needs: Off`, which reads as though it works, and an agent believes its edits can be saved.
+    #[test]
+    fn help_says_when_a_command_isnt_built() {
+        for name in ["save", "wait indexing-done"] {
+            let help = help_for(TABLE.iter().find(|row| row.name == name).unwrap());
+            assert!(help.contains("isn't built") && !help.contains("Needs: Off") && !help.contains("Needs: Read-only"), "{help}");
+        }
+        assert!(help_for(TABLE.iter().find(|row| row.name == "tabs").unwrap()).contains("Needs: Read-only"));
+        let rows = table_json();
+        let save = rows["commands"].as_array().unwrap().iter().find(|row| row["name"] == "save").unwrap();
+        assert_eq!(save["built"], false);
+    }
+
+    /// Failure: nothing tells an agent the plain form returns at once and to carry on, so it adds `--timeout` and blocks for minutes waiting for a person who isn't there.
+    #[test]
+    fn asking_for_access_says_when_to_wait() {
+        let help = help_for(TABLE.iter().find(|row| row.name == "permission request").unwrap());
+        assert!(help.contains("carry on") && help.contains("at the keyboard"), "{help}");
     }
 
     /// Failure: units read differently in different places, so `--timeout 30` means who knows what.

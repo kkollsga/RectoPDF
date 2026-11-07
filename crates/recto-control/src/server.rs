@@ -1094,9 +1094,10 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
         Job::Command { conn, command } => {
             let draws = command.draws();
             let tag = command.tag();
-            let details = command.log_details();
             // Read again: it may have been lowered while this waited its turn.
             let level = levels::current(paths);
+            // Before it runs, because `close` leaves nothing to ask afterwards. Only for a command that's allowed: a refusal hasn't acted on anything, and shouldn't take the session's lock to say so.
+            let acted = if allowed(level, command.access()) { catch_unwind(AssertUnwindSafe(|| host.acted_tab(&command))).unwrap_or(None) } else { None };
             let mut events = Vec::new();
             let result = catch_unwind(AssertUnwindSafe(|| {
                 if !allowed(level, command.access()) {
@@ -1110,6 +1111,7 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
             }))
             .unwrap_or_else(|_| Err(internal()));
             let outcome = result.as_ref().map_or_else(|error| error.code, |_| "ok");
+            let details = recto_agent::with_acted_tab(command.log_details(), acted, &result, &command);
             let stop = matches!(command, Command::Stop {}) && result.is_ok();
             let mut line = reply(tag, &result).to_string();
             line.push('\n');

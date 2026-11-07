@@ -78,6 +78,7 @@ pub fn request_answer(wanted: Level, have: Level) -> Value {
         "asked": true,
         "tell_the_user": format!("An agent is asking for {} access to RectoPDF: {} To allow it, run this in your own terminal.", wanted.label(), allows(wanted)),
         "command": format!("recto permission set {}", wanted.name()),
+        "what_to_do": "Nothing has changed yet. Tell the user the command above, and carry on with whatever doesn't need this access. Don't wait here for an answer: `recto status` shows the access once they've run it.",
     })
 }
 
@@ -124,6 +125,9 @@ mod tests {
         let answer = request_answer(Level::Full, Level::Off);
         assert_eq!(answer["granted"], false);
         assert_eq!(answer["command"], "recto permission set full");
+        // Failure: an agent sits blocked for minutes waiting for a person who isn't there, because nothing told it to tell them and carry on.
+        let what_to_do = answer["what_to_do"].as_str().unwrap();
+        assert!(what_to_do.contains("Tell the user") && what_to_do.contains("carry on"), "{what_to_do}");
         assert_eq!(request_answer(Level::ReadOnly, Level::Control)["granted"], true);
     }
 }

@@ -65,6 +65,8 @@ pub(crate) fn facts<A: SessionAccess>(access: &A, tab: &str) -> Result<Value, Ag
         "file_pages": facts.page_count,
         "file_bytes": facts.byte_len,
         "encrypted": known.then_some(facts.encrypted),
+        // Only a file anyone may read opens here, since a password is never taken. Worth saying: "encrypted" alone reads as though its contents are protected from whoever has the file.
+        "encryption_note": (known && facts.encrypted).then_some("It's encrypted, and opened with no password, because the file allows anyone to read it. What it restricts beyond that, such as copying or printing, isn't reported here."),
         "pdf_version": (!facts.version.is_empty()).then_some(&*facts.version),
         "structure": if facts.renderer_only { "renderer_only" } else { "readable" },
         "has_contents": known.then(|| !facts.toc.is_empty()),
@@ -92,7 +94,10 @@ pub(crate) fn contents<A: SessionAccess>(access: &A, tab: &str, from: Option<u32
     let toc = facts.toc;
     let limit = crate::positive_limit(limit, DEFAULT_CONTENTS, MAX_CONTENTS)?;
     let from = from.unwrap_or(0) as usize;
-    let visible: Vec<_> = toc.entries().iter().filter(|entry| depth.is_none_or(|depth| entry.depth <= depth)).collect();
+    let shape = OutlineShape::of(toc.entries().iter().map(|entry| (entry.depth, entry.page)));
+    // Decided from the most it could show rather than a page's worth, so asking for the next piece with `--from` keeps to the same entries.
+    let shown_depth = depth.unwrap_or_else(|| shape.depth_that_fits(limit.max(DEFAULT_CONTENTS as usize)));
+    let visible: Vec<_> = toc.entries().iter().filter(|entry| entry.depth <= shown_depth).collect();
     let entries: Vec<Value> = visible
         .iter()
         .skip(from)
@@ -108,7 +113,85 @@ pub(crate) fn contents<A: SessionAccess>(access: &A, tab: &str, from: Option<u32
         })
         .collect();
     let next_from = (from + entries.len() < visible.len()).then_some(from + entries.len());
-    Ok(json!({ "tab": file.id, "available": true, "total": visible.len(), "entries": entries, "next_from": next_from, "truncated": toc.truncated }))
+    let rule = shape.rule(visible.len(), shown_depth, depth.is_some());
+    Ok(json!({
+        "tab": file.id,
+        "available": true,
+        "total": visible.len(),
+        "entries": entries,
+        "next_from": next_from,
+        "truncated": toc.truncated,
+        "all_entries": toc.entries().len(),
+        "depth_shown": shown_depth,
+        "deepest": shape.deepest,
+        "sections_at": shape.sections_at,
+        "depth_rule": rule,
+    }))
+}
+
+/// What an outline looks like from above, in one pass and with no allocation. A real one is at most a few levels deep, and a hostile one's depth is a `u8`.
+struct OutlineShape {
+    /// Entries at each depth.
+    counts: [u32; 256],
+    deepest: u8,
+    /// The first depth whose entries are on more than one page: the document's real sections. An outline can open with a title, or two, on the first page, with everything under them.
+    sections_at: u8,
+}
+
+impl OutlineShape {
+    fn of(entries: impl Iterator<Item = (u8, u32)>) -> Self {
+        let mut counts = [0u32; 256];
+        let mut first_page = [recto_core::NONE; 256];
+        let mut spread = [false; 256];
+        let mut deepest = 0u8;
+        for (depth, page) in entries {
+            let at = usize::from(depth);
+            counts[at] = counts[at].saturating_add(1);
+            deepest = deepest.max(depth);
+            if page != recto_core::NONE {
+                if first_page[at] == recto_core::NONE {
+                    first_page[at] = page;
+                } else if first_page[at] != page {
+                    spread[at] = true;
+                }
+            }
+        }
+        let sections_at = spread.iter().position(|spread| *spread).map_or(0, |at| at as u8);
+        Self { counts, deepest, sections_at }
+    }
+
+    /// The deepest level that fits in `room` entries with everything above it, but never above the sections, whatever they number.
+    fn depth_that_fits(&self, room: usize) -> u8 {
+        let mut so_far = 0usize;
+        let mut best = self.sections_at;
+        for depth in 0..=self.deepest {
+            so_far += self.counts[usize::from(depth)] as usize;
+            if so_far <= room && depth >= self.sections_at {
+                best = depth;
+            }
+        }
+        best
+    }
+
+    /// Says which levels these are, and how to get the others. Numbers and commands only, so nothing from the file.
+    fn rule(&self, shown: usize, depth: u8, asked: bool) -> String {
+        let all: usize = self.counts.iter().map(|count| *count as usize).sum();
+        let mut rule = if self.deepest == 0 {
+            format!("{all} entries, all at one level.")
+        } else if shown >= all {
+            format!("All {all} entries, down to depth {}.", self.deepest)
+        } else if asked {
+            format!("Down to depth {depth}, as asked: {shown} of {all} entries. Depth goes to {}.", self.deepest)
+        } else {
+            format!("Down to depth {depth} of {}, which is what fits: {shown} of {all} entries. `recto contents --depth {}` shows them all.", self.deepest, self.deepest)
+        };
+        if depth < self.sections_at {
+            rule.push_str(&format!(" That's only the document's title: its sections start at depth {0}, so `recto contents --depth {0}` shows them.", self.sections_at));
+        } else if self.sections_at > 0 {
+            rule.push_str(&format!(" Sections start at depth {}.", self.sections_at));
+        }
+        rule
+    }
 }
 
 pub(crate) fn signatures<A: SessionAccess>(access: &A, tab: &str) -> Result<Value, AgentError> {
@@ -188,4 +271,34 @@ fn signature_json(entry: &SignatureEntry, positions: Option<&[u32]>) -> Value {
             "stated_time": entry.stated_time,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: an agent follows the skill's `--depth 0` on an outline with one title at the root, and gets the title and nothing else, as on RFC 9110. And a large outline's default stops halfway through a deep level, with the later sections out of sight.
+    #[test]
+    fn the_contents_find_the_real_sections_and_say_so() {
+        let rfc: Vec<(u8, u32)> = [(0, 0), (0, 0)].into_iter().chain((1..40).map(|at| (1, at))).chain((1..150).map(|at| (2, at))).chain((1..250).map(|at| (3, at))).collect();
+        let shape = OutlineShape::of(rfc.iter().copied());
+        assert_eq!((shape.sections_at, shape.deepest), (1, 3));
+        assert_eq!(shape.depth_that_fits(200), 2, "the sections and what fits under them");
+        assert_eq!(shape.depth_that_fits(1), 1, "the sections, even if they don't all fit");
+        let just_the_title = shape.rule(2, 0, true);
+        assert!(just_the_title.contains("recto contents --depth 1"), "{just_the_title}");
+        let default = shape.rule(190, 2, false);
+        assert!(default.contains("depth 2") && default.contains("--depth 3"), "{default}");
+
+        let flat = OutlineShape::of((0..300).map(|at| (0, at)));
+        assert_eq!((flat.sections_at, flat.depth_that_fits(200)), (0, 0), "there's nothing else to show");
+        assert!(flat.rule(300, 0, false).contains("one level"));
+
+        let one_root = OutlineShape::of([(0, 0), (1, 0), (1, 4), (2, 5)].into_iter());
+        assert_eq!((one_root.sections_at, one_root.depth_that_fits(200)), (1, 2));
+
+        let nothing_placed = OutlineShape::of([(0, recto_core::NONE), (1, recto_core::NONE)].into_iter());
+        assert_eq!(nothing_placed.sections_at, 0);
+        assert_eq!(OutlineShape::of(std::iter::empty()).depth_that_fits(200), 0);
+    }
 }
