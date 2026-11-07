@@ -30,8 +30,10 @@ pub trait EngineEvents: Send + Sync {
     fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>);
     /// A copy is ready for the host to take.
     fn copy_ready(&self) {}
-    /// The worker has a tab's own file open, and this is how long it says it is.
-    fn file_length(&self, _tab: u32, _pages: u32) {}
+    /// A file's been seen to be another than the one opened, so the session should look at it.
+    fn file_replaced(&self, _tab: u32) {}
+    /// The worker has a tab's own file open, and this is how long it says it is, and which version.
+    fn file_length(&self, _tab: u32, _pages: u32, _version: u64) {}
 }
 
 /// How the engine runs.
@@ -563,13 +565,18 @@ fn run(shared: &Shared) {
                 if file_changed {
                     open.looks.clear();
                     open.length_told = false;
+                    shared.events.file_replaced(job.tab);
+                }
+                // Which version a worker has, before what it drew is kept, so that's what it's kept as.
+                if let Some(version) = open.doc.known_version() {
+                    lock(&shared.reader).note_version(&job.file, version);
                 }
                 if !open.length_told
-                    && let Some(pages) = open.doc.known_page_count()
+                    && let (Some(pages), Some(version)) = (open.doc.known_page_count(), open.doc.known_version())
                 {
                     open.length_told = true;
                     if lock(&shared.reader).is_own_file(job.tab, &job.file) {
-                        shared.events.file_length(job.tab, pages);
+                        shared.events.file_length(job.tab, pages, version);
                     }
                 }
                 outcome

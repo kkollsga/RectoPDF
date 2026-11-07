@@ -788,6 +788,7 @@ name = "recto-render-service"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "lopdf",
  "recto-platform",
  "recto-proto",
  "recto-render",

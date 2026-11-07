@@ -98,7 +98,7 @@ fn fake_worker() {
     loop {
         let Ok(frame) = reader.read_blocking(&channel) else { isolate::exit_now(0) };
         let reply = match frame.kind {
-            Kind::Open => proto::encode_opened(1),
+            Kind::Open => proto::encode_opened(1, 1),
             Kind::SizeRequest => {
                 let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
                 PageSize { job_id, width: 100.0, height: 100.0 }.encode()

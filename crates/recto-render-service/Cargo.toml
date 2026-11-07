@@ -25,6 +25,7 @@ recto-proto.workspace = true
 recto-render.workspace = true
 
 [dev-dependencies]
+lopdf.workspace = true
 recto-testpdf.workspace = true
 
 # A stand-in worker in `tests/handles.rs` sends what `Channel::send` wouldn't.

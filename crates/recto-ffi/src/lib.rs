@@ -585,8 +585,10 @@ enum CoreCall {
     MemoryPressure(bool),
     /// A tab woken from its sleep file has another file there now.
     WokenFileIsOther(TabId, FileStatus),
-    /// The worker says how long a tab's own file is.
-    FileLength(TabId, u32),
+    /// The worker says how long a tab's own file is, and which version.
+    FileLength(TabId, u32, u64),
+    /// A worker's found a tab's file replaced, so it's looked at.
+    LookAgain(TabId),
     Page(u32, Option<&'static str>, TabId),
     /// A file read off the session thread, for a tab being woken or a file being opened.
     Read(Box<FileRead>),
@@ -720,8 +722,12 @@ impl EngineEvents for EngineHooks {
         self.core.push(CoreCall::Page(page, failure, TabId(tab)));
     }
 
-    fn file_length(&self, tab: u32, pages: u32) {
-        self.core.push(CoreCall::FileLength(TabId(tab), pages));
+    fn file_length(&self, tab: u32, pages: u32, version: u64) {
+        self.core.push(CoreCall::FileLength(TabId(tab), pages, version));
+    }
+
+    fn file_replaced(&self, tab: u32) {
+        self.core.push(CoreCall::LookAgain(TabId(tab)));
     }
 
     fn copy_ready(&self) {
@@ -1935,9 +1941,14 @@ fn session_thread(inner: &Arc<Inner>) {
                     reads.start_restored(inner, id, path, stamp);
                 }
             }
-            CoreCall::FileLength(id, pages) => {
+            CoreCall::LookAgain(id) => {
+                if let Some(inner) = inner.saver.inner() {
+                    sleeper::check_woken_file(&inner, id);
+                }
+            }
+            CoreCall::FileLength(id, pages, version) => {
                 // What a sleep file said of it is wrong, so it's read after all.
-                let wrong = host.session.with_session(|session| session.file_length_is(id, pages));
+                let wrong = host.session.with_session(|session| session.file_length_is(id, pages, version));
                 let reread = host.session.with_session(|session| session.active().filter(|active| wrong && *active == id).and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id)))));
                 if let Some((id, path, stamp)) = reread {
                     reads.wanted_tab = Some(id);
@@ -2203,6 +2214,11 @@ fn rows_changed(before: &[ContentsEntry], after: &[ContentsEntry]) -> (u32, u32,
 
 /// Brings everything into line with the session, on the session thread. The place in a tab can move two ways, by the reader or by an agent, and each is passed to the other side.
 fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
+    // A tab about to be shown that wasn't: its file's looked at first, so nothing of a version that's been replaced goes up, held or not.
+    let showing = inner.host.session.with_session(|session| session.active()).filter(|id| synced.tab != Some(*id) && lock(&inner.holding_tab).is_none());
+    if let Some(id) = showing {
+        sleeper::look_before_showing(inner, id);
+    }
     let moved = inner.engine.take_moved_page();
     // What the page view holds of tabs it's about to let go of goes in the session first, as a cold tab holds nothing there.
     inner.take_places();

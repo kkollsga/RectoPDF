@@ -110,9 +110,9 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
             let password = (!frame.payload.is_empty()).then_some(frame.payload.as_slice());
             Some(match PdfiumBackend::open(pdfium, file, password) {
                 Ok(opened) => {
-                    let pages = opened.page_count();
+                    let (pages, version) = (opened.page_count(), opened.version());
                     *backend = Some(opened);
-                    proto::encode_opened(pages)
+                    proto::encode_opened(pages, version)
                 }
                 Err(code) => proto::encode_failed(0, code),
             })

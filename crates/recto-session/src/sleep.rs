@@ -51,6 +51,8 @@ pub struct SleepFile {
     pub pages: u32,
     pub list_seq: u64,
     pub renderer_only: bool,
+    /// Which version of the file its pictures are of, as the worker said: a rewrite that keeps size, time and number isn't this.
+    pub version: Option<u64>,
     pub toc: Toc,
     /// The usual page's size, in points, and the known sizes of pages that aren't it.
     pub usual: Option<(f32, f32)>,
@@ -79,6 +81,8 @@ struct Meta {
     pages: u32,
     list_seq: u64,
     renderer_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<u64>,
     truncated: bool,
     toc: Vec<(String, u32, u32, u8)>,
     usual: Option<(f32, f32)>,
@@ -185,7 +189,7 @@ pub fn encode_sleep(sleep: &SleepFile) -> Vec<u8> {
         }
     }
     let sizes = sleep.sizes.iter().take(MAX_SIZES).copied().collect();
-    let meta = Meta { file: sleep.file.into(), file_pages: sleep.file_pages, pages: sleep.pages, list_seq: sleep.list_seq, renderer_only: sleep.renderer_only, truncated: sleep.toc.truncated, toc, usual: sleep.usual, sizes, pictures: lines };
+    let meta = Meta { file: sleep.file.into(), file_pages: sleep.file_pages, pages: sleep.pages, list_seq: sleep.list_seq, renderer_only: sleep.renderer_only, version: sleep.version, truncated: sleep.toc.truncated, toc, usual: sleep.usual, sizes, pictures: lines };
     let mut body = serde_json::to_vec(&meta).unwrap_or_default();
     body.push(b'\n');
     body.extend_from_slice(&packed);
@@ -243,7 +247,7 @@ pub fn decode_sleep(bytes: &[u8], newest: u32) -> Result<SleepFile, RecordError>
     if !packed.is_empty() {
         return Err(bad("something after the pictures"));
     }
-    Ok(SleepFile { file: meta.file.into(), file_pages: meta.file_pages, pages: meta.pages, list_seq: meta.list_seq, renderer_only: meta.renderer_only, toc, usual: meta.usual, sizes: meta.sizes, pictures })
+    Ok(SleepFile { file: meta.file.into(), file_pages: meta.file_pages, pages: meta.pages, list_seq: meta.list_seq, renderer_only: meta.renderer_only, version: meta.version, toc, usual: meta.usual, sizes: meta.sizes, pictures })
 }
 
 #[cfg(test)]
@@ -259,6 +263,7 @@ mod tests {
             pages: 4,
             list_seq: 7,
             renderer_only: false,
+            version: Some(3),
             toc,
             usual: Some((612.0, 792.0)),
             sizes: vec![(3, 300.0, 400.0)],

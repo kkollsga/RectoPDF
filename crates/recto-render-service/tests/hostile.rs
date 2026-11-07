@@ -77,7 +77,7 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
         "huge_tile" => TileReply { width: u32::MAX, height: u32::MAX, stride: u32::MAX, ..good }.encode(),
         "garbage" => vec![0xEE; 64],
         "oversized_header" => Header { kind: Kind::Tile, len: 1 << 20 }.encode().to_vec(),
-        "bad_kind" => proto::encode_opened(1),
+        "bad_kind" => proto::encode_opened(1, 1),
         "silent" | "ignore_cancel" => loop {
             std::thread::sleep(Duration::from_secs(60));
         },
@@ -138,7 +138,7 @@ fn fake_worker() {
     let Ok(mode) = std::env::var("RECTO_FAKE") else { return };
     let channel = Channel::inherited().unwrap();
     if mode == "wrong_hello" {
-        let _ = send_all(&channel, &proto::encode_opened(1), &[]);
+        let _ = send_all(&channel, &proto::encode_opened(1, 1), &[]);
         std::thread::sleep(Duration::from_secs(60));
     }
     if mode == "hang_before_hello" {
@@ -177,9 +177,9 @@ fn fake_worker() {
                 let reply = match mode.as_str() {
                     "open_lies" => vec![0xFF; 16],
                     "open_failed_for_a_job" => proto::encode_failed(7, FailCode::NotPdf),
-                    "open_too_many_pages" => proto::encode_opened(u32::MAX),
+                    "open_too_many_pages" => proto::encode_opened(u32::MAX, 1),
                     "open_not_pdf" => proto::encode_failed(0, FailCode::NotPdf),
-                    _ => proto::encode_opened(3),
+                    _ => proto::encode_opened(3, 1),
                 };
                 let _ = send_all(&channel, &reply, &[]);
             }
@@ -610,7 +610,7 @@ fn a_worker_cant_make_the_host_think_everything_is_stale() {
 fn handles_on_a_dripped_frame_are_capped() {
     let (a, b) = Channel::pair().unwrap();
     let memory = SharedMemory::create(4096).unwrap();
-    let frame = proto::encode_opened(5);
+    let frame = proto::encode_opened(5, 1);
     for byte in &frame {
         a.send(std::slice::from_ref(byte), &[memory.handle()]).unwrap();
     }
@@ -635,9 +635,9 @@ fn the_frame_helpers_round_trip_handles() {
     let (a, b) = Channel::pair().unwrap();
     let memory = SharedMemory::create(4096).unwrap();
     let handles: Vec<&Handle> = vec![memory.handle()];
-    send_all(&a, &proto::encode_opened(5), &handles).unwrap();
+    send_all(&a, &proto::encode_opened(5, 1), &handles).unwrap();
     let frame = FrameReader::default().read_blocking(&b).unwrap();
     assert_eq!(frame.kind, Kind::Opened);
     assert_eq!(frame.handles.len(), 1);
-    assert_eq!(proto::decode_opened(&frame.payload), Ok(5));
+    assert_eq!(proto::decode_opened(&frame.payload), Ok((5, 1)));
 }

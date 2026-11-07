@@ -167,7 +167,8 @@ impl Inner {
         self.saver.write_journals_now(self);
         let mut gone = 0;
         for &id in &tabs {
-            self.write_sleep_for(id, why == Why::Asked);
+            // Being asked counts against the hour too: only a quit and a hand-off don't wait (review).
+            self.write_sleep_for(id, false);
             let list = self.host.session.with_session(|session| session.list_to_sleep(id));
             // Compacted, and read back. If that doesn't say it's all there, the list stays in memory, and it's looked at again next time it's left alone.
             let settled = list.is_none_or(|(name, header, base)| self.saver.store.settle_list(&name, &header, &base));
@@ -214,7 +215,7 @@ impl Inner {
         if !pictures_allowed || !may {
             sleep.pictures.clear();
         } else if sleep.pictures.is_empty()
-            && let Some(there) = there.filter(|there| there.list_seq == sleep.list_seq && there.pages == sleep.pages)
+            && let Some(there) = there.filter(|there| there.list_seq == sleep.list_seq && there.pages == sleep.pages && there.version.is_some() && there.version == sleep.version)
         {
             sleep.pictures = there.pictures;
         }
@@ -269,6 +270,10 @@ impl Inner {
             self.saver.store.read_sleep(stamp, &path)
         });
         let Some(sleep) = sleep else { return };
+        // Read for a file that's since been found to be another: nothing in it's about this one.
+        if self.host.session.with_session(|session| session.own_stamp(id)).is_none_or(|now| !(now.same_contents(sleep.file) && now.inode == sleep.file.inode)) {
+            return;
+        }
         let (pages, mark) = self.host.session.with_session(|session| (session.pages_in(id), session.list_mark(id)));
         if sleep.pages != pages || sleep.list_seq != mark {
             return;
@@ -280,7 +285,7 @@ impl Inner {
                 pictures.push(SleepShot { page: picture.page, scale: picture.scale, paper: if picture.dark { PaperKind::Dark } else { PaperKind::White }, surface });
             }
         }
-        self.engine.give_sleep(id.0, SleepView { usual: sleep.usual.map(page_box), sizes: sleep.sizes.iter().map(|(page, width, height)| (*page, page_box((*width, *height)))).collect(), pictures });
+        self.engine.give_sleep(id.0, SleepView { version: sleep.version, usual: sleep.usual.map(page_box), sizes: sleep.sizes.iter().map(|(page, width, height)| (*page, page_box((*width, *height)))).collect(), pictures });
     }
 
     /// The documents off screen against their budget. At most once a second, and only with something off screen, which most of the time there's little of.
@@ -323,6 +328,7 @@ impl Inner {
 }
 
 fn with_material(mut sleep: SleepFile, material: SleepMaterial) -> SleepFile {
+    sleep.version = material.version;
     sleep.usual = material.usual.map(|size| (size.width, size.height));
     sleep.sizes = material.sizes.into_iter().map(|(page, size)| (page, size.width, size.height)).collect();
     sleep.pictures = material.pictures.into_iter().map(|picture| SleepPicture { page: picture.page, scale: picture.scale, width: picture.width, height: picture.height, dark: picture.paper == PaperKind::Dark, bgra: picture.bgra }).collect();
@@ -348,6 +354,34 @@ fn surface_of(picture: &SleepPicture) -> Option<PixelSurface> {
 pub(crate) fn version_of(stamp: FileStamp) -> FileStamp {
     FileStamp { device: 0, ..stamp }
 }
+
+/// **Looks at a tab's file before it's shown, for as long as a frame can wait for it.** Another file there means what's held of it is of something else, so the tab's read again, and nothing drawn of the old one is shown: the page view's told its version's changed. Past the time, which is a disk that's gone away, it's shown as it was, and the look goes on on its own thread. A stat, which is microseconds.
+pub(crate) fn look_before_showing(inner: &Inner, id: TabId) {
+    let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else { return };
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    let core = std::sync::Arc::clone(&inner.core);
+    let looking = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
+        let status = look_at_file(&path, stamp);
+        let other = !matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) && !matches!(status, FileStatus::NotLooked);
+        // Too late for the frame: it's said the usual way.
+        if send.try_send((other, status.clone())).is_err() && other {
+            core.push(CoreCall::WokenFileIsOther(id, status));
+        }
+    });
+    if looking.is_err() {
+        return;
+    }
+    if let Ok((true, status)) = receive.recv_timeout(LOOK_PATIENCE) {
+        inner.host.session.with_session(|session| {
+            session.apply_file_status(id, status);
+            session.forget_read(id);
+        });
+        inner.core.push(CoreCall::WokenFileIsOther(id, FileStatus::NotLooked));
+    }
+}
+
+/// How long a tab being shown waits for a look at its file.
+const LOOK_PATIENCE: Duration = Duration::from_millis(30);
 
 /// One thread looks at the one file a tab was woken from its sleep file on, and ends. If it's something else now, the session's told, and it's read after all.
 pub(crate) fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
