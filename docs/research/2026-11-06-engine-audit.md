@@ -119,7 +119,7 @@ The default engine is `Eager` (`doc.rs:704-706`). RectoPDF must call `open_with_
 | Interruptible? | **No.** No cancel or progress API in `src`. A per-page loop gives page-sized checkpoints. Killing a helper process is the only way to stop `render` or `distill` | `rg` for cancel/progress |
 | OCR optional? | **Yes.** The `tesseract` feature is off by default; it builds vendored C/C++ through CMake. Vendored sources 35 MiB, models 9.3 MiB. `ServerOcrEngine` (plain TCP client) is compiled into the default build but runs only if called | `distillpdf/Cargo.toml:22`, `ocr/engine.rs:60-68` |
 | Password? | **No public parameter.** `open_with_engine` passes `None` and eager retries only the empty password | `doc.rs:985`, `:673` |
-| Threads | Global rayon pool for `extract_text`, `render` and others. It cannot be shut down, so its threads stay idle for the process lifetime, which conflicts with `rust_app_development.md` §3.2. `par_iter` honours a caller's `ThreadPool::install` | `doc.rs:1086`, `html.rs:1329` |
+| Threads | Global rayon pool for `extract_text`, `render` and others. It cannot be shut down, so its threads stay idle for the process lifetime, which conflicts with `docs/agent-instructions/rust_app_development.md` §3.2. `par_iter` honours a caller's `ThreadPool::install` | `doc.rs:1086`, `html.rs:1329` |
 
 ### 3.3 Dependencies and binary size
 
@@ -503,5 +503,5 @@ Primary sources are local code at the commits above; citations are `file:line`.
 - Fork: `src/indexed_reader/*`, `src/source.rs`, `src/source_cache.rs`, `src/scalar_budget.rs`, `src/incremental_document.rs`, `src/writer.rs`, `src/reader.rs`, `src/document.rs`, `src/object.rs`, `src/content.rs`, `src/parser_aux.rs`, `docs/indexed-reader-contract.md`.
 - distillPDF: `distillpdf/src/{doc,access,html,text,vector,img,raster,walker}.rs`, `distillpdf/src/model/{mod,build}.rs`, `distillpdf/Cargo.toml`, `AGENTS.md`, `ROADMAP.md`, `benchmarking/REPORT.md`.
 - Test PDFs: `distillPDF/benchmarking/bench100`, `benchmarking/secondopinion/corpus`, `benchmarking/corpus_tests/corpus`, `tests/fixtures_pdf`.
-- Process: `rust_app_development.md` §1, §3.
+- Process: `docs/agent-instructions/rust_app_development.md` §1, §3.
 - ISO 32000-1 is cited only as quoted by the fork's own comments; I did not check the specification itself.

@@ -1,6 +1,6 @@
 # RectoPDF: rules for every agent
 
-Read this first. `rust_app_development.md` is the owner's full process, `SPEC.md` the behaviour, `docs/ENGINEERING.md` the crates.
+Read this first. `docs/agent-instructions/rust_app_development.md` is the owner's full process, `SPEC.md` the behaviour, `docs/ENGINEERING.md` the crates.
 
 Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that finishes them.
 
@@ -20,12 +20,13 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - Memory tests run in their own binary, on release builds where the number matters. Measure the whole process (`phys_footprint`).
 
 ## This machine
-- 16 GB Mac. **Wrap every heavy cargo build, test or bench in `tools/sysguard/heavy.sh`**, one at a time across all agents. `check.sh` does this itself.
+- 16 GB Mac. **Wrap every heavy cargo build, test or bench in `tools/sysguard/heavy.sh`**, the queue shared by all agents. `check.sh` does this itself. Use `HEAVY_SOLO=1` for timing and memory measurements, which then hold every slot. `heavy.sh --status` shows the queue, and `--report` the waits.
 - Worktrees and temp folders are removed as soon as they're merged or finished. Never sweep a shared folder. No `timeout` binary exists here.
 
 ## Git
 - Never `git switch --orphan`. Never `git add -A` without checking `git status`. Check a commit's size before any push.
-- **Pushing, creating repos, tagging and publishing need the owner's go-ahead each time.**
+- **Pushing `main` of `kkollsga/RectoPDF`:** owner, 2026-11-07: "Push automatically". The coordinator pushes `main` after each merge that passes its check. Workers don't push.
+- **Everything else needs the owner's go-ahead each time:** force-pushing, other branches, the lopdf fork, creating repos, tagging and publishing.
 - Workers commit on their own branch with the trailer they're given, and don't merge. The coordinator merges with `--no-ff`.
 
 ## Writing for the owner
