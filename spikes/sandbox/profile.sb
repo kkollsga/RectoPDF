@@ -1,0 +1,6 @@
+(version 1)
+(deny default)
+; Fonts: the only files a worker opens by name.
+(allow file-read-data file-read-metadata (subpath "/System/Library/Fonts") (subpath "/Library/Fonts"))
+; Walking down to them.
+(allow file-read-metadata (literal "/") (literal "/System") (literal "/System/Library") (literal "/Library"))

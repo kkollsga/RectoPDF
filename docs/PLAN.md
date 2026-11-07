@@ -97,7 +97,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [x] Warm paper, a third paper colour, by a compositor tint with no re-render; `recto view --paper`
 - [x] Budget tests: cold start, one document, scrolling, idle CPU, closed window (`recto qa budget`, off screen; numbers in `docs/ENGINEERING.md`)
 - [ ] Spike on the MacBook: 120 Hz and on-screen memory
-- [ ] Sandbox spike: PDFium in an XPC service (its library links AppKit)
+- [x] Sandbox spike: PDFium sandboxed in a nested helper, not XPC (`docs/research/2026-11-07-sandbox-spike.md`)
+- [ ] Build it: the worker's wall check and Mach drop, finding the helper in the bundle, the signed layout
 
 **Done when:** you can read in it, an agent can screenshot every state without touching your screen, and the budgets are measured.
 
@@ -198,4 +199,3 @@ Real digital signatures to the official standards, signature trust checks, Windo
 | What Save does the first time: keep one backup of the original? | Phase 4 | Yes |
 | Anthropic's answer before public release; API-key route | Phase 6 | Wait; add it |
 | Licence: permissive or closed | Phase 7 | Permissive or closed, undecided which |
-| GitHub repo for RectoPDF; pushing the lopdf branch | When you want CI or a second machine | Local for now |

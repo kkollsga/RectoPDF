@@ -1,6 +1,6 @@
 # RectoPDF: platform, architecture and budgets
 
-Research track report, 2026-11-06. Covers R5, R6, R9, R10, R13, R14 of `rust_app_development.md`, plus the crate graph, the
+Research track report, 2026-11-06. Covers R5, R6, R9, R10, R13, R14 of `docs/agent-instructions/rust_app_development.md`, plus the crate graph, the
 threads and ownership diagram and the `size_of` list. Measured on the dev machine: Mac mini M4, 16 GB, macOS 27.0.1
 (26A434, "Golden Gate"), Xcode 27.2, Swift 6.4.2, SDK 27.2.
 
@@ -793,6 +793,6 @@ All retrieved 2026-11-06. Dates are the page's own where it shows one.
 42. Homebrew 5.0.0 notes (2025-11-12): brew.sh/2025/11/12/homebrew-5.0.0/; Acceptable Casks and Cask Cookbook: docs.brew.sh
 
 **Owner's material**
-43. `rust_app_development.md`; Seedwell `SPEC.md` §2–3, `docs/ENGINEERING.md`, `docs/ENGINE.md`, `docs/CROSS-PLATFORM.md`, `docs/RELEASING.md`, `app/Package.swift`, `app/Seedwell.entitlements`, `app/Sources/SeedwellApp/Support/QuietRun.swift`, `QAShots.swift`, `HangWatchdog.swift` (read-only)
+43. `docs/agent-instructions/rust_app_development.md`; Seedwell `SPEC.md` §2–3, `docs/ENGINEERING.md`, `docs/ENGINE.md`, `docs/CROSS-PLATFORM.md`, `docs/RELEASING.md`, `app/Package.swift`, `app/Seedwell.entitlements`, `app/Sources/SeedwellApp/Support/QuietRun.swift`, `QAShots.swift`, `HangWatchdog.swift` (read-only)
 
 **Side effects of this research on the machine.** Two small empty-ish sandbox containers that macOS created and that I did not try to delete (removing one can raise a system prompt): `~/Library/Containers/io.github.kkollsga.RectoSpike` (104 KB) and `~/Library/Containers/no.rectospike.render` (36 KB). Preview's recents may list two generated PDFs from the hidden launches. Probes were deleted with the scratch files except sources and raw output.
