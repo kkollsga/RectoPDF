@@ -212,8 +212,10 @@ fn search(data: &Value) -> String {
     let hits = data["hits"].as_array().map_or(&[][..], Vec::as_slice);
     let coverage = &data["coverage"];
     let mut out = search_summary(hits.len() as u64, coverage);
+    let failed = coverage["failed_pages"].as_array().map_or(0, Vec::len);
     if hits.is_empty() {
-        out.push_str("\nNothing found.");
+        // "Nothing found" would be a claim about pages it couldn't read.
+        out.push_str(if failed > 0 { "\nNo hits on the pages that could be read." } else { "\nNothing found." });
     } else {
         out.push_str("\nFound, in the document's own words, untrusted:\n");
         for hit in hits {
@@ -260,6 +262,13 @@ fn search(data: &Value) -> String {
 fn search_summary(shown: u64, coverage: &Value) -> String {
     let (searched, scope) = (number(&coverage["pages_searched"]), number(&coverage["pages_in_scope"]));
     let mut out = format!("{} shown, {searched} of {scope} pages searched.", count(shown, "hit", "hits"));
+    let failed = coverage["failed_pages"].as_array().map_or(0, Vec::len);
+    if failed > 0 {
+        let _ = write!(out, " {failed} couldn't be read.");
+    }
+    if let Some(empty) = coverage["pages_with_no_text"].as_u64().filter(|empty| *empty > 0) {
+        let _ = write!(out, " {empty} had no text.");
+    }
     let not_shown: u64 = coverage["hits_not_shown"].as_array().map_or(0, |pages| pages.iter().map(|page| number(&page["hits"])).sum());
     if not_shown > 0 {
         let _ = write!(out, " {} more not shown.", count(not_shown, "hit", "hits"));
@@ -594,14 +603,28 @@ mod tests {
         assert!(outsize.contains("3 more"), "{outsize}");
     }
 
+    /// Failure: the first line opens "0 hits shown, 9 of 9 pages searched", then "Nothing found", on a search where all 9 pages failed, so an agent reports a fact as absent from a document it never read.
+    #[test]
+    fn a_page_that_couldnt_be_read_isnt_counted_as_searched() {
+        let none_read = render("search", &json!({ "hits": [], "coverage": { "pages_searched": 0, "pages_in_scope": 9, "failed_pages": [1, 2, 3, 4, 5, 6, 7, 8, 9] } }));
+        let first = none_read.lines().next().unwrap();
+        assert!(first.contains("0 of 9") && first.contains("9 couldn't be read"), "{none_read}");
+        assert!(!none_read.contains("Nothing found"), "{none_read}");
+        let some_read = render("search", &json!({ "hits": [], "coverage": { "pages_searched": 6, "pages_in_scope": 9, "pages_with_no_text": 2, "failed_pages": [1, 2, 3] } }));
+        let first = some_read.lines().next().unwrap();
+        assert!(first.contains("6 of 9") && first.contains("3 couldn't be read") && first.contains("2 had no text"), "{some_read}");
+        assert!(!some_read.contains("Nothing found"), "{some_read}");
+        let all_read = render("search", &json!({ "hits": [], "coverage": { "pages_searched": 9, "pages_in_scope": 9, "failed_pages": [] } }));
+        assert!(all_read.contains("Nothing found") && !all_read.contains("couldn't be read"), "{all_read}");
+    }
+
     /// Failure: a search with nothing to show reads as an empty success, with no word on what was searched, so "not found" gets believed for pages never looked at.
     #[test]
     fn finding_nothing_says_what_was_searched() {
-        let out = render("search", &json!({ "hits": [], "coverage": { "pages_searched": 4, "pages_in_scope": 9, "pages_with_no_text": 2, "failed_pages": [7], "next_page": 5 } }));
+        let out = render("search", &json!({ "hits": [], "coverage": { "pages_searched": 4, "pages_in_scope": 9, "pages_with_no_text": 2, "failed_pages": [], "next_page": 5 } }));
         assert!(out.contains("Nothing found"), "{out}");
         assert!(out.contains("4 of 9"), "{out}");
         assert!(out.contains("no text"), "{out}");
-        assert!(out.contains("couldn't be read"), "{out}");
         assert!(out.contains("--pages 5-"), "{out}");
     }
 

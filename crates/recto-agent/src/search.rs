@@ -105,7 +105,6 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             break;
         }
         if changed.contains(&file) {
-            searched += 1;
             failed.push(position + 1);
             continue;
         }
@@ -118,7 +117,6 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
                 Ok(Some(renderer)) => current = Some((file, renderer)),
                 Ok(None) | Err(RenderFailure::NotFound) if source.added || source.expected.is_some() => {
                     changed.push(file);
-                    searched += 1;
                     failed.push(position + 1);
                     continue;
                 }
@@ -132,7 +130,6 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             // A file that won't be read at all is a failure of the whole search. One bad page isn't: it's listed, so "not found" doesn't cover it.
             Err(failure @ (RenderFailure::NeedsPassword | RenderFailure::NotFound | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::OpenFailed { .. } | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::DocumentStopped)) => return Err(failure.into()),
             Err(_) => {
-                searched += 1;
                 failed.push(position + 1);
                 continue;
             }

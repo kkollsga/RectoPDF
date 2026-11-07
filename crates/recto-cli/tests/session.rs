@@ -204,6 +204,8 @@ fn a_file_that_changes_under_its_page_numbers_is_refused_and_named() {
     assert_eq!(facts["data"]["file_changed_since_edits"], true, "{facts}");
     let (found, _) = state.json(&["search", "page"]);
     assert_eq!(found["data"]["coverage"]["failed_pages"], json!([1, 2, 3, 4]), "{found}");
+    // Failure: a page never read counts as searched, so "4 of 4" reads as all looked at.
+    assert_eq!(found["data"]["coverage"]["pages_searched"], 0, "{found}");
     drop(extra);
 }
 
