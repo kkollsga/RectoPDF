@@ -58,6 +58,22 @@ import QuartzCore
             menu.update()
             plainShot(of: MenuDrawing(menu: menu), id: id, path: value)
             return
+        case "shot_menus":
+            let menus = (NSApp.mainMenu?.items ?? []).compactMap(\.submenu)
+            guard !menus.isEmpty else { return fail(id, "There's no menu.") }
+            let drawings = menus.map { menu -> MenuDrawing in
+                menu.update()
+                return MenuDrawing(menu: menu)
+            }
+            let row = FlippedView(frame: NSRect(x: 0, y: 0, width: drawings.reduce(0) { $0 + $1.frame.width + 8 }, height: drawings.map(\.frame.height).max() ?? 0))
+            var x: CGFloat = 0
+            for drawing in drawings {
+                drawing.frame.origin = NSPoint(x: x, y: 0)
+                row.addSubview(drawing)
+                x += drawing.frame.width + 8
+            }
+            plainShot(of: row, id: id, path: value)
+            return
         case "copied":
             let text = delegate.pasteboard.string(forType: .string)
             answer(id, ["chars": text?.count ?? 0, "clipboard": delegate.pasteboard.name.rawValue, "untrusted": ["text": text as Any? ?? NSNull()]] as [String: Any])
@@ -553,9 +569,11 @@ private final class MenuDrawing: NSView {
                     continue
                 }
                 let colour: NSColor = item.isEnabled ? .labelColor : .tertiaryLabelColor
-                NSAttributedString(string: item.title, attributes: [.font: font, .foregroundColor: colour]).draw(at: NSPoint(x: 14, y: y + 2))
+                if item.state == .on { NSAttributedString(string: "✓", attributes: [.font: font, .foregroundColor: colour]).draw(at: NSPoint(x: 6, y: y + 2)) }
+                NSAttributedString(string: item.title, attributes: [.font: font, .foregroundColor: colour]).draw(at: NSPoint(x: 22, y: y + 2))
                 if !item.keyEquivalent.isEmpty {
-                    let key = NSAttributedString(string: "⌘" + item.keyEquivalent.uppercased(), attributes: [.font: font, .foregroundColor: item.isEnabled ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor])
+                    let control = item.keyEquivalentModifierMask.contains(.control) ? "⌃" : ""
+                    let key = NSAttributedString(string: control + "⌘" + item.keyEquivalent.uppercased(), attributes: [.font: font, .foregroundColor: item.isEnabled ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor])
                     key.draw(at: NSPoint(x: bounds.width - key.size().width - 14, y: y + 2))
                 }
                 y += Self.rowHeight

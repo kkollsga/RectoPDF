@@ -185,7 +185,7 @@ impl QaBridge {
             Command::QaRead { verb, out, timeout_ms } => match verb.as_str() {
                 "state" => self.state(),
                 "settled" => self.settled(timeout_ms.map_or(DEFAULT_SETTLE_WAIT, Duration::from_millis)),
-                "shot" | "shot_settings" | "shot_menu" => self.shot(verb, out.as_deref().ok_or_else(|| bad("A shot needs `--out`."))?),
+                "shot" | "shot_settings" | "shot_menu" | "shot_menus" => self.shot(verb, out.as_deref().ok_or_else(|| bad("A shot needs `--out`."))?),
                 "copied" => self.ask("copied", ""),
                 _ => Err(bad("That isn't a QA command.")),
             },

@@ -804,6 +804,9 @@ fn settings_and_the_menu_say_how_things_stand() {
     let menu = |run: &Run<'_>| run.ok(&["qa", "state"])["app"]["menu_bar"][0]["items"].clone();
     let item = |items: &Value, id: &str| items.as_array().unwrap().iter().find(|item| item["id"] == id).unwrap().clone();
 
+    run.ok(&["qa", "menu", "file.settings"]);
+    assert_eq!(run.ok(&["qa", "state"])["app"]["settings"]["open"], true, "File > Settings… opens it, by the owner's word");
+    run.ok(&["qa", "settings", "close"]);
     run.ok(&["qa", "menu", "app.settings"]);
     assert_eq!(run.ok(&["qa", "state"])["app"]["settings"]["open"], true, "the menu item opens it");
     for look in ["light", "dark"] {

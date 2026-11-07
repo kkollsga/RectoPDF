@@ -154,7 +154,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
   - [x] The zoom level in the top left, clicked to type a level or fit again; no zoom in the `⋯` panel; `recto view --zoom 150%`
   - [x] The page number always in the lower right
   - [x] Right-click: single page, side by side, and side by side with the first page alone, per tab and restored
-  - [ ] File > Settings…
+  - [x] File > Settings…
   - [ ] Rotate in the `⋯` panel turns every page as one unsaved edit, outside edit mode
   - [ ] The agent icon's margins: the same to the right and above, and less above than before
   - [x] Margin above the first page and below the last

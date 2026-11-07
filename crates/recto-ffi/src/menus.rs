@@ -103,7 +103,8 @@ fn line() -> MenuEntry {
 pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: &str) -> Vec<MenuModel> {
     vec![
         MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), entry("app.update", update_title, ""), line(), entry("app.settings", "Settings…", ","), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
-        MenuModel { title: "File".into(), entries: vec![entry("file.open", "Open…", "o"), entry("file.close_window", "Close Window", "w")] },
+        // Owner, 2026-11-07: "The full app settings should be accessible from file -> settings". The app menu keeps its own, as on any Mac, and both say ⌘,.
+        MenuModel { title: "File".into(), entries: vec![entry("file.open", "Open…", "o"), line(), entry("file.settings", "Settings…", ","), line(), entry("file.close_window", "Close Window", "w")] },
         MenuModel { title: "Edit".into(), entries: edit_entries().into_iter().chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
         MenuModel {
             title: "View".into(),
@@ -185,7 +186,7 @@ pub(crate) fn panel(open: bool, shown: Paper) -> PanelModel {
 pub(crate) fn action(id: &str) -> Option<Action> {
     Some(match id {
         "app.about" => Action::Host(HostAction::ShowAbout),
-        "app.settings" => Action::Host(HostAction::ShowSettings),
+        "app.settings" | "file.settings" => Action::Host(HostAction::ShowSettings),
         "app.update" => Action::Update,
         // The system fills this one.
         "app.services" => Action::Host(HostAction::None),
@@ -312,7 +313,7 @@ mod tests {
         assert!(view.entries.iter().any(|item| item.id == "layout.two_up" && item.checked), "and in the View menu, as on a Mac");
     }
 
-    /// Failure: the owner's *Check for Updates…* isn't where it was asked for, doesn't turn into the offer, or Settings has no ⌘, as on any Mac app.
+    /// Failure: the owner's *Check for Updates…* isn't where it was asked for, doesn't turn into the offer, or Settings has no ⌘, as on any Mac app, or isn't under File as the owner asked.
     #[test]
     fn the_app_menu_has_the_update_item_and_settings() {
         let items = menu_bar(ViewSettings::default(), None, "Update to 0.2.0…").into_iter().find(|menu| menu.title == "RectoPDF").unwrap().entries;
@@ -321,6 +322,10 @@ mod tests {
         assert_eq!((item("app.settings").title.as_str(), item("app.settings").key.as_str()), ("Settings…", ","));
         assert_eq!(action("app.update"), Some(Action::Update));
         assert_eq!(action("app.settings"), Some(Action::Host(HostAction::ShowSettings)));
+        let file = menu_bar(ViewSettings::default(), None, "").into_iter().find(|menu| menu.title == "File").unwrap().entries;
+        let settings = file.iter().find(|item| item.id == "file.settings").expect("Settings… in File too: owner, 2026-11-07");
+        assert_eq!((settings.title.as_str(), settings.key.as_str()), ("Settings…", ","));
+        assert_eq!(action("file.settings"), Some(Action::Host(HostAction::ShowSettings)));
     }
 
     /// Failure: the zoom level reads oddly, as `124.99999%` or `0%`, or the field to type in starts with a sign in it to delete.
