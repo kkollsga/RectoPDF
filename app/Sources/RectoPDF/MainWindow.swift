@@ -623,6 +623,8 @@ final class BookMark: NSView {
         pages.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: window.isKeyWindow || delegate.isQuiet)
         fadeNoticeIfItSaysTo()
         agentIcon.isHidden = reader.agentIconHidden
+        // Unsaved edits: the red button's dot, as on any Mac app. Rust says.
+        window.isDocumentEdited = reader.edited
         if reader.home { endZoomEditing() }
         updateZoomLevel()
         layout()

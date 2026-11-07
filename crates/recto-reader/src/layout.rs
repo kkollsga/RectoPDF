@@ -4,6 +4,7 @@
 //! Only pages of another size are stored. A document of one page size costs nothing per page, however long, and one of mixed sizes costs [`Override`] per page visited of another size, and at most [`MAX_OVERRIDES`].
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// Space between pages, in document points.
 pub const PAGE_GAP: f64 = 10.0;
@@ -27,6 +28,10 @@ const MAX_KNOWN: usize = 65_536;
 pub struct PageBox {
     pub width: f32,
     pub height: f32,
+}
+
+fn swap(size: PageBox) -> PageBox {
+    PageBox { width: size.height, height: size.width }
 }
 
 /// A page's place, in document points.
@@ -74,6 +79,10 @@ pub struct PageLayout {
     fit: f64,
     frame_width: f64,
     spread: Spread,
+    /// Quarter turns clockwise added to each page by an edit, or none. A page drawn turned an odd number of times is as wide as it was tall.
+    turns: Option<Arc<[u8]>>,
+    /// Whether most pages are turned an odd number of times: `usual` is the size of those, as shown, and the others are overrides.
+    base_odd: bool,
 }
 
 impl PageLayout {
@@ -82,7 +91,7 @@ impl PageLayout {
     }
 
     pub fn with_spread(count: u32, spread: Spread) -> Self {
-        Self { count, usual: DEFAULT_PAGE, usual_known: false, overrides: Vec::new(), known: HashSet::new(), fit: 1.0, frame_width: 0.0, spread }
+        Self { count, usual: DEFAULT_PAGE, usual_known: false, overrides: Vec::new(), known: HashSet::new(), fit: 1.0, frame_width: 0.0, spread, turns: None, base_odd: false }
     }
 
     pub fn count(&self) -> u32 {
@@ -117,24 +126,78 @@ impl PageLayout {
         self.known.contains(&page)
     }
 
-    /// Takes every page to be this size to begin with, as it was found to be the last time, so the first frame has nothing to correct. A real size that differs wins when it comes.
+    /// Takes every page to be this size to begin with, as it was found to be the last time, so the first frame has nothing to correct. A real size that differs wins when it comes. Its size as the file has it, unturned.
     pub fn seed_usual(&mut self, size: PageBox) {
         if !self.usual_known && size.width.is_finite() && size.height.is_finite() && size.width > 0.0 && size.height > 0.0 {
-            self.usual = size;
+            self.usual = if self.base_odd { swap(size) } else { size };
             self.usual_known = true;
-            self.reckon();
+            self.retune(None);
             self.refit();
         }
     }
 
-    /// The pages that aren't the usual size, and their sizes.
+    /// The pages that aren't the usual size, and their sizes as the file has them, unturned.
     pub fn other_sizes(&self) -> Vec<(u32, PageBox)> {
-        self.overrides.iter().map(|known| (known.page, known.size)).collect()
+        self.overrides.iter().filter(|known| self.known.contains(&known.page)).map(|known| (known.page, self.raw_size(known.page))).collect()
     }
 
-    /// The size every page is taken to be, if it came from a real page.
+    /// The size every page is taken to be as the file has it, unturned, if it came from a real page.
     pub fn usual_size(&self) -> Option<PageBox> {
-        self.usual_known.then_some(self.usual)
+        self.usual_known.then_some(if self.base_odd { swap(self.usual) } else { self.usual })
+    }
+
+    /// A page's quarter turns, 0 to 3.
+    pub fn turns_of(&self, page: u32) -> u8 {
+        self.turns.as_deref().and_then(|turns| turns.get(page as usize)).map_or(0, |turns| turns % 4)
+    }
+
+    fn odd(&self, page: u32) -> bool {
+        self.turns_of(page) % 2 == 1
+    }
+
+    /// A page's size as the file has it, unturned: what's drawn, before it's turned on the screen.
+    pub fn raw_size(&self, page: u32) -> PageBox {
+        let shown = self.size(page);
+        if self.odd(page) { swap(shown) } else { shown }
+    }
+
+    /// Turns pages, as an edit has: the pages' sizes as shown follow, and what's drawn of them doesn't change. Returns whether anything moved.
+    pub fn set_turns(&mut self, turns: Option<Arc<[u8]>>) -> bool {
+        let turns = turns.filter(|turns| turns.iter().any(|turn| turn % 4 != 0));
+        if turns.as_deref() == self.turns.as_deref() {
+            return false;
+        }
+        let known: Vec<(u32, PageBox)> = self.overrides.iter().filter(|o| self.known.contains(&o.page)).map(|o| (o.page, self.raw_size(o.page))).collect();
+        let usual_raw = if self.base_odd { swap(self.usual) } else { self.usual };
+        self.turns = turns;
+        let odd = self.turns.as_deref().map_or(0, |turns| turns.iter().filter(|turn| *turn % 2 == 1).count());
+        self.base_odd = odd * 2 > self.count as usize;
+        self.usual = if self.base_odd { swap(usual_raw) } else { usual_raw };
+        self.retune(Some(known));
+        self.refit();
+        true
+    }
+
+    /// Builds the overrides again: each known page of another size, and each page turned the other way from most, from their sizes as the file has them.
+    fn retune(&mut self, known: Option<Vec<(u32, PageBox)>>) {
+        let known = known.unwrap_or_else(|| self.overrides.iter().filter(|o| self.known.contains(&o.page)).map(|o| (o.page, self.raw_size(o.page))).collect());
+        let usual_raw = if self.base_odd { swap(self.usual) } else { self.usual };
+        let mut sizes: std::collections::BTreeMap<u32, PageBox> = known.into_iter().collect();
+        if let Some(turns) = self.turns.as_deref() {
+            for (page, turn) in turns.iter().enumerate().take(self.count as usize) {
+                if (turn % 2 == 1) != self.base_odd {
+                    sizes.entry(page as u32).or_insert(usual_raw);
+                }
+            }
+        }
+        self.overrides = sizes
+            .into_iter()
+            .map(|(page, raw)| (page, if self.odd(page) { swap(raw) } else { raw }))
+            .filter(|(_, shown)| *shown != self.usual)
+            .take(MAX_OVERRIDES)
+            .map(|(page, size)| Override { page, size, row_extra: 0.0, before: 0.0 })
+            .collect();
+        self.reckon();
     }
 
     /// Sets the window's reading area. Returns whether anything moved.
@@ -146,7 +209,7 @@ impl PageLayout {
         self.refit()
     }
 
-    /// Notes a page's real size. Returns whether anything moved.
+    /// Notes a page's real size, as the file has it, unturned. Returns whether anything moved.
     pub fn set_page_size(&mut self, page: u32, size: PageBox) -> bool {
         if page >= self.count || !size.width.is_finite() || !size.height.is_finite() || size.width <= 0.0 || size.height <= 0.0 {
             return false;
@@ -156,12 +219,15 @@ impl PageLayout {
         }
         self.known.insert(page);
         if !self.usual_known {
-            self.usual = size;
+            self.usual = if self.base_odd { swap(size) } else { size };
             self.usual_known = true;
-            self.reckon();
+            self.retune(None);
             self.refit();
-            return true;
+            if self.raw_size(page) == size {
+                return true;
+            }
         }
+        let size = if self.odd(page) { swap(size) } else { size };
         let at = self.overrides.partition_point(|o| o.page < page);
         let existing = self.overrides.get(at).is_some_and(|o| o.page == page);
         let current = if existing { self.overrides[at].size } else { self.usual };
@@ -399,6 +465,35 @@ impl PageLayout {
         rect.y + within * rect.height
     }
 
+    /// A place in the document on a page as the page is before it's turned, in its PDF points from its top left. Past the page's edges too, for a drag off its side.
+    pub fn to_page(&self, page: u32, x: f64, y: f64) -> (f64, f64) {
+        let rect = self.rect(page);
+        let fit = self.fit.max(f64::MIN_POSITIVE);
+        let (across, down) = ((x - rect.x) / fit, (y - rect.y) / fit);
+        let raw = self.raw_size(page);
+        let (width, height) = (f64::from(raw.width), f64::from(raw.height));
+        match self.turns_of(page) {
+            1 => (down, height - across),
+            2 => (width - across, height - down),
+            3 => (width - down, across),
+            _ => (across, down),
+        }
+    }
+
+    /// The other way: a place on a page, before it's turned, to the document.
+    pub fn from_page(&self, page: u32, u: f64, v: f64) -> (f64, f64) {
+        let rect = self.rect(page);
+        let raw = self.raw_size(page);
+        let (width, height) = (f64::from(raw.width), f64::from(raw.height));
+        let (across, down) = match self.turns_of(page) {
+            1 => (height - v, u),
+            2 => (width - u, height - v),
+            3 => (v, width - u),
+            _ => (u, v),
+        };
+        (rect.x + across * self.fit, rect.y + down * self.fit)
+    }
+
     /// Whether two pages are side by side in one row.
     pub fn same_row(&self, one: u32, other: u32) -> bool {
         self.row_of(one) == self.row_of(other)
@@ -538,6 +633,63 @@ mod tests {
             assert!(layout.pages_between(y, y + 1.0).contains(&41), "{spread:?}");
         }
         assert!(!layout.set_spread(Spread::Single), "the same layout moves nothing");
+    }
+
+    /// Failure: pages turned by an edit keep the size they had, so a page turned a quarter is drawn squashed into its old shape, or the sizes said for a sleep file or a place are the turned ones and come back turned twice; or turning every page costs an entry per page. Held against working it out by hand, for every page turned, and for some.
+    #[test]
+    fn turned_pages_are_as_wide_as_they_were_tall() {
+        let mut layout = PageLayout::new(6);
+        layout.set_frame(1400.0);
+        layout.set_page_size(0, letter());
+        layout.set_page_size(4, PageBox { width: 612.0, height: 1008.0 });
+        let before = layout.rect(2);
+        assert!(layout.set_turns(Some(Arc::from(vec![1u8; 6]))), "every page a quarter");
+        assert_eq!(layout.size(2), PageBox { width: 792.0, height: 612.0 });
+        assert_eq!(layout.raw_size(2), letter(), "what's drawn is the page as it is");
+        assert_eq!(layout.size(4), PageBox { width: 1008.0, height: 612.0 });
+        assert_eq!(layout.usual_size(), Some(letter()), "a place keeps the size as the file has it");
+        assert_eq!(layout.other_sizes(), vec![(4, PageBox { width: 612.0, height: 1008.0 })]);
+        assert_eq!(layout.overrides.len(), 1, "turning every page costs nothing per page");
+        assert!(layout.rect(2).width > before.width * 0.99 && layout.rect(2).height < before.height, "landscape now: {:?}", layout.rect(2));
+        // Some pages: those turned the other way from most are overrides, and finding a page still agrees with placing it.
+        assert!(layout.set_turns(Some(Arc::from(vec![0u8, 1, 0, 2, 0, 3]))));
+        assert_eq!(layout.size(1), PageBox { width: 792.0, height: 612.0 });
+        assert_eq!(layout.size(3), letter(), "a half turn keeps its shape");
+        let mut top = END_MARGIN;
+        for page in 0..6 {
+            assert!((layout.rect(page).y - top).abs() < 1e-6, "page {page}");
+            assert_eq!(layout.page_at(top + 1.0), page);
+            top += layout.rect(page).height + PAGE_GAP;
+        }
+        // A real size arriving for a turned page lands turned.
+        layout.set_page_size(5, PageBox { width: 500.0, height: 700.0 });
+        assert_eq!(layout.size(5), PageBox { width: 700.0, height: 500.0 });
+        assert!(layout.set_turns(None));
+        assert_eq!(layout.size(1), letter());
+        assert_eq!(layout.size(5), PageBox { width: 500.0, height: 700.0 });
+        assert!(!layout.set_turns(Some(Arc::from(vec![0u8; 6]))), "no turns is no change");
+    }
+
+    /// Failure: a click on a turned page lands on the wrong words, or a tile of it is drawn for the wrong part of the screen: the way from the document to a page and back doesn't agree, or a corner of the page isn't where the turned page's corner shows.
+    #[test]
+    fn a_turned_page_is_found_where_it_shows() {
+        let mut layout = PageLayout::with_spread(4, Spread::TwoUp);
+        layout.set_frame(1400.0);
+        layout.set_page_size(0, letter());
+        layout.set_turns(Some(Arc::from(vec![0u8, 1, 2, 3])));
+        for page in 0..4 {
+            let rect = layout.rect(page);
+            for (u, v) in [(0.0, 0.0), (612.0, 0.0), (0.0, 792.0), (300.0, 100.0)] {
+                let (x, y) = layout.from_page(page, u, v);
+                assert!(x >= rect.x - 1e-6 && x <= rect.x + rect.width + 1e-6 && y >= rect.y - 1e-6 && y <= rect.y + rect.height + 1e-6, "page {page} ({u}, {v}) lands off it");
+                let (back_u, back_v) = layout.to_page(page, x, y);
+                assert!((back_u - u).abs() < 1e-6 && (back_v - v).abs() < 1e-6, "page {page}");
+            }
+        }
+        // A quarter turn clockwise puts the page's top left at the shown page's top right.
+        let rect = layout.rect(1);
+        let (x, y) = layout.from_page(1, 0.0, 0.0);
+        assert!((x - (rect.x + rect.width)).abs() < 1e-6 && (y - rect.y).abs() < 1e-6);
     }
 
     /// Failure: the first page starts at the window's top edge or the last ends at its bottom, with no margin, or going to page 1 hides the margin above it. Owner, 2026-11-08: "add some margin above the first page, and below the last page".

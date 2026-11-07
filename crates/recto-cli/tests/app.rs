@@ -403,6 +403,45 @@ fn side_by_side_lays_out_selects_and_keeps_the_place() {
     assert_eq!(code, exit::USAGE, "{reply}");
 }
 
+/// Failure: the panel's Rotate turns one page, or takes a step a page so one undo doesn't take it back, or isn't drawn turned, or doesn't show as unsaved in the red button's dot, or Edit > Undo doesn't take it back; or what was drawn is dropped for a turn, which changes nothing of a page's pixels, so turning back draws it all again. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment)".
+#[test]
+fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let before = run.report();
+    assert_eq!(before["app"]["document_edited"], false);
+    run.ok(&["qa", "panel", "toggle"]);
+    let open = run.report();
+    assert!(open["app"]["panel"]["items"].as_array().unwrap().iter().any(|item| item["id"] == "rotate.right"), "{open}");
+    run.ok(&["qa", "panel", "rotate.right"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
+    run.settled();
+    let turned = run.report();
+    let drawn = turned["reader"]["counts"]["drawn"].as_u64().unwrap();
+    assert!(turned["app"]["pages"]["page_turns"].as_array().unwrap().iter().all(|turn| turn == 1), "every page shows turned: {}", turned["app"]["pages"]);
+    assert!(turned["app"]["pages"]["page_frames_landscape"].as_u64().unwrap() >= 1, "and wider than tall: {}", turned["app"]["pages"]);
+    let edits = run.ok(&["edits"]);
+    assert_eq!(edits["can_undo"], true, "{edits}");
+    run.ok(&["qa", "menu", "edit.undo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == false);
+    run.settled();
+    let back = run.report();
+    assert!(back["app"]["pages"]["page_turns"].as_array().unwrap().iter().all(|turn| turn == 0), "one undo takes every page back: {}", back["app"]["pages"]);
+    assert_eq!(run.ok(&["edits"])["can_undo"], false, "it was one step");
+    // A landscape page fits at another scale, so a turn draws at that scale; what was drawn before isn't dropped, so turning back draws nothing new.
+    assert!(back["reader"]["counts"]["drawn"].as_u64().unwrap() <= drawn + 1, "turning back drew again: {drawn} then {}", back["reader"]["counts"]["drawn"]);
+    run.ok(&["qa", "menu", "edit.redo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
+    // An agent's way, the same method.
+    run.ok(&["qa", "menu", "edit.undo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == false);
+    run.ok(&["page", "rotate", "all", "--by", "180"]);
+    let half = wait_for(&run, |state| state["app"]["pages"]["page_turns"].as_array().is_some_and(|turns| !turns.is_empty() && turns.iter().all(|turn| turn == 2)));
+    assert_eq!(half["app"]["document_edited"], true);
+}
+
 /// Failure: the zoom level in the top left isn't there, says a level the page isn't at, crowds the sidebar's button or leaves the window's row, or clicking it doesn't let the reader type a level or fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". 100% is the page's real size.
 #[test]
 fn the_zoom_level_shows_and_takes_a_typed_level() {
@@ -660,7 +699,7 @@ fn the_panel_opens_and_does_what_it_says() {
     run.settled();
     let open = run.report();
     let ids: Vec<&str> = open["app"]["panel"]["items"].as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["paper.white", "paper.warm", "paper.dark"], "this and nothing else: zoom is the top left's, by the owner's word");
+    assert_eq!(ids, ["rotate.left", "rotate.right", "paper.white", "paper.warm", "paper.dark"], "this and nothing else: tools first, and zoom is the top left's, by the owner's word");
     assert!(open["app"]["contents"]["list_height"].as_f64().unwrap() < list_at_rest, "it docks in room from the list: {open}");
     let drawn = open["reader"]["counts"]["drawn"].clone();
     run.ok(&["qa", "panel", "paper.warm"]);

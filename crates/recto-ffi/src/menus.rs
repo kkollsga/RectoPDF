@@ -47,6 +47,10 @@ pub(crate) enum Action {
     Zoom(Zoom),
     /// Lays the tab showing out another way.
     SetSpread(Spread),
+    /// The panel's Rotate, by quarter turns: every page outside edit mode, the page being read in it.
+    Rotate(i32),
+    Undo,
+    Redo,
     /// Shows the sidebar, or hides it: its button beside the window's controls, and the View menu.
     ToggleSidebar,
     ToggleAgentIcon,
@@ -63,6 +67,11 @@ fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
 /// The items that go by a standard selector. In the menu bar and the context menu alike.
 fn edit_entries() -> Vec<MenuEntry> {
     vec![MenuEntry { system_action: "copy:".into(), ..entry("edit.copy", "Copy", "c") }, MenuEntry { system_action: "selectAll:".into(), ..entry("edit.select_all", "Select All", "a") }]
+}
+
+/// Undo and Redo, by the standard selectors, so a text field with the focus keeps its own. `Z` is ⇧⌘Z.
+fn undo_entries() -> Vec<MenuEntry> {
+    vec![MenuEntry { system_action: "undo:".into(), ..entry("edit.undo", "Undo", "z") }, MenuEntry { system_action: "redo:".into(), ..entry("edit.redo", "Redo", "Z") }]
 }
 
 /// The layouts, the one showing ticked. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
@@ -105,7 +114,7 @@ pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: 
         MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), entry("app.update", update_title, ""), line(), entry("app.settings", "Settings…", ","), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
         // Owner, 2026-11-07: "The full app settings should be accessible from file -> settings". The app menu keeps its own, as on any Mac, and both say ⌘,.
         MenuModel { title: "File".into(), entries: vec![entry("file.open", "Open…", "o"), line(), entry("file.settings", "Settings…", ","), line(), entry("file.close_window", "Close Window", "w")] },
-        MenuModel { title: "Edit".into(), entries: edit_entries().into_iter().chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
+        MenuModel { title: "Edit".into(), entries: undo_entries().into_iter().chain([line()]).chain(edit_entries()).chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
         MenuModel {
             title: "View".into(),
             entries: vec![
@@ -169,11 +178,12 @@ pub struct PanelModel {
     pub sections: Vec<PanelSection>,
 }
 
-/// The panel, with the paper showing now picked out.
-pub(crate) fn panel(open: bool, shown: Paper) -> PanelModel {
+/// The panel, with the paper showing now picked out. Owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc." So Rotate is here: every page together outside edit mode, and the page being read in it.
+pub(crate) fn panel(open: bool, shown: Paper, edit_mode: bool) -> PanelModel {
     let item = |id: &str, title: &str, selected: bool| PanelItem { id: id.into(), title: title.into(), selected };
     let sections = if open {
         vec![
+            PanelSection { title: if edit_mode { "Rotate this page" } else { "Rotate all pages" }.into(), items: vec![item("rotate.left", "Rotate left", false), item("rotate.right", "Rotate right", false)] },
             PanelSection { title: "Paper".into(), items: Paper::ALL.iter().map(|paper| item(&format!("paper.{}", paper.name()), paper.label(), *paper == shown)).collect() },
         ]
     } else {
@@ -203,6 +213,10 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "view.fit" => Action::Zoom(Zoom::Fit),
         "view.sidebar" => Action::ToggleSidebar,
         "layout.single" => Action::SetSpread(Spread::Single),
+        "rotate.left" => Action::Rotate(-1),
+        "rotate.right" => Action::Rotate(1),
+        "edit.undo" => Action::Undo,
+        "edit.redo" => Action::Redo,
         "layout.two_up" => Action::SetSpread(Spread::TwoUp),
         "layout.two_up_cover" => Action::SetSpread(Spread::TwoUpCover),
         "view.agent_icon" => Action::ToggleAgentIcon,
@@ -250,7 +264,7 @@ mod tests {
                 }
             }
         }
-        for section in panel(true, Paper::White).sections {
+        for section in panel(true, Paper::White, false).sections {
             for item in section.items {
                 assert!(action(&item.id).is_some(), "{}", item.id);
             }
@@ -280,8 +294,8 @@ mod tests {
         let checked = |view, id: &str| menu_bar(view, None, "Check for Updates…").into_iter().flat_map(|menu| menu.entries).find(|item| item.id == id).unwrap().checked;
         assert!(checked(ViewSettings::default(), "view.agent_icon"));
         assert!(!checked(ViewSettings { agent_icon_hidden: true, ..ViewSettings::default() }, "view.agent_icon"));
-        assert!(panel(false, Paper::White).sections.is_empty(), "only the button at rest");
-        let open = panel(true, Paper::Warm);
+        assert!(panel(false, Paper::White, false).sections.is_empty(), "only the button at rest");
+        let open = panel(true, Paper::Warm, false);
         let selected: Vec<String> = open.sections.iter().flat_map(|section| &section.items).filter(|item| item.selected).map(|item| item.id.clone()).collect();
         assert_eq!(selected, vec!["paper.warm".to_string()]);
     }

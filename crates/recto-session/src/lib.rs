@@ -1976,6 +1976,13 @@ impl<L: DocLoader> Session<L> {
         self.step_back_or_on(id, by, PageEdits::try_undo)
     }
 
+    /// The panel's Rotate, by the owner. Outside edit mode it turns every page together, as one step that one undo takes back; in edit mode, the page being read. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment). Usefull when there is a scan issue or similar, for a quick fix."
+    pub fn rotate_from_panel(&mut self, id: TabId, quarter_turns: i32) -> Result<(), SessionError> {
+        let page = self.tab(id).ok_or(SessionError::NoSuchTab)?.page;
+        let one_page = self.edit_mode;
+        self.edit_pages_as(id, Author::Owner, |edits| if one_page { edits.rotate(page, 1, quarter_turns) } else { edits.rotate(0, edits.len(), quarter_turns) })
+    }
+
     /// [`Self::redo_edit`] for whoever's asking.
     pub fn redo_edit_as(&mut self, id: TabId, by: Author) -> Result<bool, SessionError> {
         self.step_back_or_on(id, by, PageEdits::try_redo)
@@ -3228,6 +3235,24 @@ mod tests {
         s.tap(a).unwrap();
         s.tap(a).unwrap();
         (a, b)
+    }
+
+    /// Failure: the panel's Rotate outside edit mode turns one page, or takes a step a page, so one undo doesn't take it back; or in edit mode it turns every page. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment)".
+    #[test]
+    fn the_panels_rotate_turns_every_page_as_one_step() {
+        let mut s = session(5);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.rotate_from_panel(a, 1).unwrap();
+        assert!(s.page_edits(a).unwrap().slots().iter().all(|slot| slot.quarter_turns == 1), "every page");
+        assert!(s.is_edited(a), "it's an unsaved edit, for Save to commit");
+        assert!(s.undo_edit_as(a, Author::Owner).unwrap());
+        assert!(s.page_edits(a).unwrap().slots().iter().all(|slot| slot.quarter_turns == 0), "one undo takes it all back");
+        assert!(!s.undo_and_redo(a).0, "it was one step");
+        s.set_edit_mode(true);
+        s.go_to(a, 3).unwrap();
+        s.rotate_from_panel(a, -1).unwrap();
+        let turns: Vec<u8> = s.page_edits(a).unwrap().slots().iter().map(|slot| slot.quarter_turns).collect();
+        assert_eq!(turns, [0, 0, 0, 3, 0], "edit mode turns the page being read");
     }
 
     /// Failure: a record from a build with focus view, written with it on, comes back with the sidebar showing, or the next record still says focus, so it can't be turned off. Owner, 2026-11-08: focus view became the sidebar's button.

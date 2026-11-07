@@ -379,11 +379,11 @@ pub static TABLE: &[Spec] = &[
         tag: "page_rotate",
         group: GROUP_EDIT,
         access: Access::At(Level::Control),
-        summary: "Turns pages clockwise.",
-        args: &[Arg { key: "pages", flag: None, kind: Kind::Pages, required: true, help: "Which: `4` or `4-6`." }, Arg { key: "degrees", flag: Some("--by"), kind: Kind::Degrees, required: true, help: "`90`, `180`, `270`, or `-90` for the other way." }, TAB],
+        summary: "Turns pages clockwise. `all` turns every page as one step, as the sidebar panel's Rotate does outside edit mode.",
+        args: &[Arg { key: "pages", flag: None, kind: Kind::Pages, required: true, help: "Which: `4`, `4-6`, or `all`." }, Arg { key: "degrees", flag: Some("--by"), kind: Kind::Degrees, required: true, help: "`90`, `180`, `270`, or `-90` for the other way." }, TAB],
         data: EDIT_STATE,
         emits: &["edits_changed"],
-        examples: &["recto page rotate 2 --by 90", "recto page rotate 1-4 --by -90 --json"],
+        examples: &["recto page rotate 2 --by 90", "recto page rotate 1-4 --by -90 --json", "recto page rotate all --by 90"],
         ..BASE
     },
     Spec { name: "page delete", tag: "page_delete", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Removes pages from the edited document. A document keeps at least one page. Below Full, an edit that would clear undone steps of the user's is refused.", args: &[Arg { key: "pages", flag: None, kind: Kind::Pages, required: true, help: "Which: `4` or `4-6`." }, TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto page delete 5", "recto page delete 2-3 --tab report"], ..BASE },
@@ -1180,6 +1180,7 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
             Some(0) | None => Err(format!("`{}` isn't a page. Pages count from 1.", recto_core::clean_line(value))),
             Some(page) => Ok(json!(page)),
         },
+        Kind::Pages if value == "all" => Ok(json!(value)),
         Kind::Pages => crate::parse_pages(value, false).map(|_| json!(value)).map_err(|_| format!("`{}` isn't pages. Write 4 or 4-6.", recto_core::clean_line(value))),
         Kind::PagesOpen => crate::parse_pages(value, true).map(|_| json!(value)).map_err(|_| format!("`{}` isn't pages. Write 4, 4-6 or 4-.", recto_core::clean_line(value))),
         Kind::Count(max) => match whole_number(value) {

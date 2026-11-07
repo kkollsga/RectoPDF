@@ -1096,8 +1096,12 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             edit(access, level, tab, events, did, |e| e.move_pages(start, len, destination))
         }
         Command::PageRotate { tab, pages, degrees } => {
-            let (start, len) = parse_pages(pages, false)?;
             let turns = quarter_turns(*degrees)?;
+            // `all` turns every page as one step, as the panel's Rotate does outside edit mode.
+            if pages == "all" {
+                return edit(access, level, tab, events, format!("Rotated every page by {degrees} degrees."), |e| e.rotate(0, e.len(), turns));
+            }
+            let (start, len) = parse_pages(pages, false)?;
             edit(access, level, tab, events, format!("Rotated {} by {degrees} degrees.", which_pages(pages, "", "")), |e| e.rotate(start, len, turns))
         }
         Command::PageDelete { tab, pages } => {
@@ -1443,6 +1447,11 @@ fn with_place_note<L: DocLoader>(session: &mut Session<L>, id: TabId, mut data: 
         data["place_note"] = json!(format!("The page this tab was on was removed, so it's now on page {}.", tab.page + 1));
     }
     data
+}
+
+/// What watchers are told when a tab's edits change, wherever they were changed from: an agent, the panel or the Edit menu.
+pub fn edits_changed<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
+    edits_event(session, id)
 }
 
 fn edits_event<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
@@ -2059,6 +2068,9 @@ mod tests {
         assert_eq!(tabs["tabs"][0]["edited"], true);
         run(&mut s, Level::Control, &Command::PageRotate { tab: "active".into(), pages: "2-3".into(), degrees: -90 }).unwrap();
         assert_eq!(s.page_edits(id).unwrap().slots()[1].quarter_turns, 3);
+        run(&mut s, Level::Control, &Command::PageRotate { tab: "active".into(), pages: "all".into(), degrees: 90 }).unwrap();
+        assert!(s.page_edits(id).unwrap().slots().iter().all(|slot| slot.quarter_turns % 2 == 1 || slot.quarter_turns == 0), "every page a quarter more, as one step");
+        assert_eq!(s.page_edits(id).unwrap().slots()[0].quarter_turns, 1);
         run(&mut s, Level::Control, &Command::PageDelete { tab: "active".into(), pages: "1".into() }).unwrap();
         assert_eq!(s.pages_in(id), 9);
         run(&mut s, Level::Control, &Command::PageInsert { tab: "active".into(), path: "/d/b.pdf".into(), at: 10 }).unwrap();

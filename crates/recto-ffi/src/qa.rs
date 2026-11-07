@@ -450,7 +450,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "sidebar_width" => value.parse::<f64>().is_ok_and(f64::is_finite),
         // What shows a window is left out: a quiet run shows none.
         "menu" => !matches!(value, "file.open" | "app.about" | "app.quit") && crate::menus::action(value).is_some(),
-        "panel" => value == "toggle" || value.starts_with("paper.") || value.starts_with("view."),
+        "panel" => value == "toggle" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
         "button" => one_of(&["sidebar", "zoom", "zoom_reset"]),
         "context_menu" => crate::menus::context_menu(None).iter().any(|item| !item.id.is_empty() && item.id == value),
         // What a person can type in a short field, and no more. Whether it's a level is the field's to find out, as it is for a person.
