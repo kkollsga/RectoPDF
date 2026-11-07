@@ -80,3 +80,38 @@ fn reports_plain_reasons_for_bad_files() {
     assert_eq!(inspect(&not_pdf.0).unwrap_err(), OpenError::NotPdf);
     assert!(!OpenError::NotPdf.message().contains("os error"));
 }
+
+/// Failure: a wide name tree under a long outline makes `open` resolve every child for every entry, billions of reads, while the session waits. It must stop at its budget, and say the contents aren't whole.
+#[test]
+fn a_hostile_name_tree_under_a_long_outline_ends_soon() {
+    // 20,000 entries, each naming a destination that isn't in a tree with one node of 200,000 references to itself and to a leaf.
+    let refs = "7 0 R ".repeat(200_000);
+    let mut extra = vec!["<< /Type /Outlines /First 9 0 R >>".to_string(), format!("<< /Kids [{refs}] >>"), "<< /Dests 7 0 R >>".to_string()];
+    let entries = 20_000;
+    for i in 0..entries {
+        let next = if i + 1 < entries { format!("/Next {} 0 R", 10 + i) } else { String::new() };
+        extra.push(format!("<< /Title (Entry) /Dest (nowhere) {next} >>"));
+    }
+    let file = TempPdf::new("name-bomb.pdf", &three_page_pdf("/Outlines 6 0 R /Names 8 0 R", &extra, ""));
+    let started = std::time::Instant::now();
+    let toc = inspect(&file.0).unwrap().toc;
+    assert!(started.elapsed() < std::time::Duration::from_secs(30), "took {:?}", started.elapsed());
+    assert!(toc.truncated, "it must say the contents aren't whole");
+}
+
+/// Failure: an ordinary named destination stops being found, because the budget is spent too eagerly, or a tree with a good branch after a bad one loses it.
+#[test]
+fn an_ordinary_name_tree_is_still_followed_past_a_dead_branch() {
+    let extra = vec![
+        "<< /Type /Outlines /First 7 0 R >>".to_string(),
+        "<< /Title (Named) /Dest (chapter) >>".to_string(),
+        "<< /Dests 9 0 R >>".to_string(),
+        "<< /Kids [10 0 R 99 0 R 11 0 R] >>".to_string(),
+        "<< /Limits [(a) (b)] /Names [(a) [3 0 R /Fit]] >>".to_string(),
+        "<< /Limits [(c) (d)] /Names [(chapter) [5 0 R /Fit]] >>".to_string(),
+    ];
+    let file = TempPdf::new("named-branch.pdf", &three_page_pdf("/Outlines 6 0 R /Names 8 0 R", &extra, ""));
+    let toc = inspect(&file.0).unwrap().toc;
+    assert_eq!(toc.entries()[0].page, 2);
+    assert!(!toc.truncated);
+}

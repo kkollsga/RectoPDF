@@ -177,6 +177,9 @@ fn contents(data: &Value) -> String {
     if let Some(next) = data["next_from"].as_u64() {
         let _ = write!(out, "...{} entries in all. `--from {next}` shows the next ones.", number(&data["total"]));
     }
+    if data["truncated"] == true {
+        out.push_str("\nThe file's contents stopped being read at a limit, so there may be more.");
+    }
     out.trim_end().to_string()
 }
 

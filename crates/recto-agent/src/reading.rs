@@ -86,7 +86,7 @@ pub(crate) fn contents<A: SessionAccess>(access: &A, tab: &str, from: Option<u32
         })
         .collect();
     let next_from = (from + entries.len() < visible.len()).then_some(from + entries.len());
-    Ok(json!({ "tab": file.id, "available": true, "total": visible.len(), "entries": entries, "next_from": next_from }))
+    Ok(json!({ "tab": file.id, "available": true, "total": visible.len(), "entries": entries, "next_from": next_from, "truncated": toc.truncated }))
 }
 
 pub(crate) fn signatures<A: SessionAccess>(access: &A, tab: &str) -> Result<Value, AgentError> {

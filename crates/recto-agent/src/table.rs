@@ -189,7 +189,7 @@ pub static TABLE: &[Spec] = &[
             Arg { key: "limit", flag: Some("--limit"), kind: Kind::Count(2000), required: false, help: "Entries in this answer. 200 if left out." },
             Arg { key: "depth", flag: Some("--depth"), kind: Kind::Count(32), required: false, help: "Deepest nesting to include. 0 is the top level." },
         ],
-        data: "`{ tab, available, total, entries: [ { depth, page, untrusted: { title } } ], next_from }`. `available: false` means it couldn't be read, not that there's none.",
+        data: "`{ tab, available, total, entries: [ { depth, page, untrusted: { title } } ], next_from, truncated }`. `available: false` means it couldn't be read, not that there's none. `truncated: true` means the file's contents stopped being read at a limit.",
         examples: &["recto contents", "recto contents --depth 0 --limit 50", "recto contents --from 200 --json"],
         ..BASE
     },
