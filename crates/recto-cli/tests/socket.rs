@@ -458,16 +458,15 @@ fn asking_in_a_loop_cant_fill_the_messages_file_or_end_the_session() {
 
     // A stderr nobody's reading: the first ask writes to a closed pipe, and the session must still be there.
     let state = State::new();
-    let mut child = state.command().args(["serve", "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    let stdout = child.stdout.take().unwrap();
+    let child = state.command().args(["serve", "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut serving = Serving { child };
+    let stdout = serving.child.stdout.take().unwrap();
     let mut line = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line).unwrap();
-    drop(child.stderr.take());
+    drop(serving.child.stderr.take());
     let mut raw = Raw::connect(&state);
     assert_eq!(raw.call(&json!({ "cmd": "permission_request", "level": "control" }))["ok"], true);
     assert_eq!(raw.call(&json!({ "cmd": "status" }))["ok"], true, "the session must survive it");
-    child.kill().unwrap();
-    child.wait().unwrap();
 }
 
 /// Failure: a `wait` loop with a 64 KiB tab name holds memory per wait, or one that hung up leaves its looks queued. Long selectors are refused up front.

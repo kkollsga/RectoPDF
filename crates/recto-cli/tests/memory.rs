@@ -139,7 +139,7 @@ fn after_drawing_nothing_is_left_running() {
 #[test]
 fn out_of_descriptors_the_session_doesnt_spin() {
     let state = State::at(Level::ReadOnly);
-    let mut child = std::process::Command::new("/bin/sh")
+    let child = std::process::Command::new("/bin/sh")
         .args(["-c", &format!("ulimit -n 32; exec '{}' serve --json", common::bin())])
         .env(recto_control::state::STATE_ENV, &state.root)
         .stdin(std::process::Stdio::null())
@@ -147,10 +147,12 @@ fn out_of_descriptors_the_session_doesnt_spin() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
+    // Ended with the test, even if it fails: the `exec` makes this the session itself.
+    let mut serving = common::Serving { child };
     let mut line = String::new();
-    std::io::BufRead::read_line(&mut std::io::BufReader::new(child.stdout.take().unwrap()), &mut line).unwrap();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(serving.child.stdout.take().unwrap()), &mut line).unwrap();
     assert!(line.contains("\"ok\":true"), "{line}");
-    let pid = child.id();
+    let pid = serving.pid();
     // More than it has descriptors for.
     let mut held: Vec<std::os::unix::net::UnixStream> = (0..60).map(|_| std::os::unix::net::UnixStream::connect(state.socket()).unwrap()).collect();
     std::thread::sleep(Duration::from_millis(100));
@@ -171,6 +173,5 @@ fn out_of_descriptors_the_session_doesnt_spin() {
         }
         assert!(started.elapsed() < Duration::from_secs(10), "with descriptors free again, it must take connections again");
     }
-    child.kill().unwrap();
-    child.wait().unwrap();
+    serving.kill();
 }

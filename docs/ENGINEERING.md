@@ -186,14 +186,14 @@ An agent mustn't be able to erase its own record, so there are two files, 1 MiB 
 
 | | Before any session: one-shot in-process | First socket build | Now | Budget |
 |---|---:|---:|---:|---:|
-| One answer, whole process start to exit, 200 runs, p50 / p95 / max | 4.09 / 4.62 / 4.90 ms (`echo '{"cmd":"tabs"}' \| recto session`) | 4.66 / 6.34 / 7.83 ms | 5.83 / 6.57 / 7.83 ms (`recto status --json`) | ≤ 30 ms |
-| The same, with 1,000 tabs open | | 5.44 / 6.17 / 6.55 ms | 5.65 / 6.84 / 9.28 ms | |
-| Footprint, idle | | 1.74 MiB | 1.64 MiB | |
-| Footprint, 1,000 tabs of the 330 MiB PDF (`recto budget tabs --file F --count 1000`) | 2.70 MiB, from 1.28 MiB | 3.05 MiB, from 1.75 MiB | 3.13 MiB, from 1.74 MiB | ≤ 4 KiB a tab |
+| One answer, whole process start to exit, 200 runs, p50 / p95 / max | 4.09 / 4.62 / 4.90 ms (`echo '{"cmd":"tabs"}' \| recto session`) | 4.66 / 6.34 / 7.83 ms | 3.35 / 5.98 / 7.35 ms (`recto status --json`) | ≤ 30 ms |
+| The same, with 1,000 tabs open | | 5.44 / 6.17 / 6.55 ms | 4.94 / 6.28 / 7.19 ms | |
+| Footprint, idle | | 1.66 MiB | 1.67 MiB | |
+| Footprint, 1,000 tabs of the 330 MiB PDF (`recto budget tabs --file F --count 1000`) | 2.58 MiB, from 1.22 MiB | 2.91 MiB, from 1.67 MiB | 3.05 MiB, from 1.69 MiB | ≤ 4 KiB a tab |
 | Thread count, idle or with 1,000 tabs | | 1 | 1 | |
 | Over 30 s idle, by `top`: CPU, idle wake-ups, context switches | | 0.0%, 0, 0 | 0.0%, 0, 0 | |
-| One open of that PDF, over one connection | 5.10 ms | 1.57 ms | 1.61 ms | |
-| One open through the real client, process start included | | 7.22 ms | 7.28 ms | |
+| One open of that PDF, over one connection | 5.10 ms | 1.57 ms | 1.50 ms | |
+| One open through the real client, process start included | | 7.22 ms | 6.60 ms | |
 
 The two per-open numbers for that PDF aren't comparing like with like: the earliest run came first, on a colder file cache. `recto-cli`'s `tests/memory.rs` holds the idle and per-tab properties, in its own binary. **What this isn't:** a soak, or tabs that have been read from. Drawing is what `recto budget render` measures, in the renderer section.
 
