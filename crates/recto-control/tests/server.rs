@@ -472,3 +472,28 @@ fn a_look_rechecks_the_level() {
     let answer = read_line(&mut waiter).unwrap();
     assert_eq!(answer["error"]["code"], "permission_denied", "{answer}");
 }
+
+/// Failure: help says killing a watch is how to end it early, and the session goes on holding its slot, so a few killed watches shut out the next. Ending the process must free it at once.
+#[test]
+fn a_killed_watch_frees_its_place() {
+    use std::io::Write;
+    let running = Running::start(Limits { max_subscribers: 1, ..Limits::default() });
+    let watch = json!({ "cmd": "watch", "timeout_ms": 60_000 }).to_string() + "\n";
+    let mut first = running.connect();
+    first.write_all(watch.as_bytes()).unwrap();
+    assert_eq!(read_line(&mut first).unwrap()["data"]["watching"], true);
+    let mut second = running.connect();
+    second.write_all(watch.as_bytes()).unwrap();
+    assert_eq!(read_line(&mut second).unwrap()["ok"], false, "the one place is taken");
+    drop(first);
+    // The server hears it when `poll` wakes, which is at once, but it's a separate thread.
+    let started = std::time::Instant::now();
+    loop {
+        let mut third = running.connect();
+        third.write_all(watch.as_bytes()).unwrap();
+        if read_line(&mut third).unwrap()["ok"] == true {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(5), "the place wasn't freed");
+    }
+}

@@ -485,6 +485,18 @@ impl<H: Host> Loop<H> {
                 self.look(index);
             }
             Command::Watch { events, timeout_ms, count } => self.watch(index, level, events, timeout_ms, count),
+            Command::WatchStop {} => {
+                let watching: Vec<(usize, u64)> = self.conns.iter().enumerate().filter_map(|(at, conn)| match conn.state {
+                    State::Watching { delivered, .. } => Some((at, delivered)),
+                    _ => None,
+                }).collect();
+                for (at, delivered) in &watching {
+                    self.end_watch(*at, "ended by `recto watch stop`", *delivered);
+                }
+                let stopped = watching.len();
+                self.log.record(tag, level, "ok", &json!({ "stopped": stopped }));
+                self.answer(index, tag, &Ok(json!({ "stopped": stopped })));
+            }
             Command::Log { last } => {
                 self.log.flush();
                 let data = log::recent(&self.paths, last);
@@ -551,11 +563,9 @@ impl<H: Host> Loop<H> {
             "label": level.label(),
             "uptime_ms": u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
             "socket": self.paths.socket,
+            // How many, at every level, so an agent at Off can tell whether asking for more is worthwhile. A count holds nothing from a document. Names need Read-only.
+            "tabs": self.host.tab_count(),
         });
-        // Not even how many at Off: at Off an agent learns nothing about what the user has open.
-        if level >= Level::ReadOnly {
-            data["tabs"] = json!(self.host.tab_count());
-        }
         if !self.log.healthy() {
             data["warning"] = json!("The activity log can't be written.");
         }

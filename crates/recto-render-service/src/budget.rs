@@ -33,11 +33,58 @@ impl Default for OutputCaps {
 /// worker's second answer needn't match the first.
 pub fn page_device_size(doc: &mut DocRenderer, page: u32, scale: f32, caps: &OutputCaps) -> Result<(u32, u32), RenderFailure> {
     let (width_points, height_points) = doc.page_size(page)?;
-    let (width, height) = device_size(width_points, height_points, scale).map_err(|_| RenderFailure::TooLargeAtThisScale)?;
-    if u64::from(width) * u64::from(height) > caps.max_pixels || width > recto_proto::MAX_TILE_EDGE {
-        return Err(RenderFailure::TooLargeAtThisScale);
+    fitted_size(width_points, height_points, scale, caps).ok_or(RenderFailure::TooLargeAtThisScale)
+}
+
+/// The rule [`page_device_size`] goes by, on a size already known.
+fn fitted_size(width_points: f32, height_points: f32, scale: f32, caps: &OutputCaps) -> Option<(u32, u32)> {
+    let (width, height) = device_size(width_points, height_points, scale).ok()?;
+    (u64::from(width) * u64::from(height) <= caps.max_pixels && width <= recto_proto::MAX_TILE_EDGE).then_some((width, height))
+}
+
+/// The largest scale a page of this size can be drawn whole at, within the caps, to two decimal places (three below 1), or `None` if no scale there is would do. It says nothing about memory: a page with heavy images can still be refused for that.
+pub fn largest_scale_that_fits(width_points: f32, height_points: f32, caps: &OutputCaps) -> Option<f32> {
+    let (width, height) = (f64::from(width_points), f64::from(height_points));
+    if !(width > 0.0 && height > 0.0) {
+        return None;
     }
-    Ok((width, height))
+    let by_pixels = (caps.max_pixels as f64 / (width * height)).sqrt();
+    let by_edges = (f64::from(recto_proto::MAX_PAGE_EDGE_PX) / width.max(height)).min(f64::from(recto_proto::MAX_TILE_EDGE) / width);
+    let most = by_pixels.min(by_edges).min(f64::from(recto_proto::MAX_SCALE));
+    let step = if most >= 1.0 { 0.01 } else { 0.001 };
+    let mut scale = (most / step).floor() * step;
+    // Sides round to whole pixels, so the sum above can land a step over. A few steps down is always enough, and a hostile size can't make this long.
+    for _ in 0..8 {
+        if (scale as f32) < recto_proto::MIN_SCALE {
+            return None;
+        }
+        if fitted_size(width_points, height_points, scale as f32, caps).is_some() {
+            return Some(scale as f32);
+        }
+        scale -= step;
+    }
+    None
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    /// Failure: a refusal names a scale that's itself refused, or one far below what would fit, so an agent still tries scales by hand. Checked on the real size of the USGS map, where 8 is refused and 4 fits, and on sizes where each cap is the one that matters.
+    #[test]
+    fn the_largest_scale_is_the_edge_of_what_fits() {
+        let caps = OutputCaps::default();
+        for (width, height) in [(1224.0, 1584.0), (612.0, 792.0), (14400.0, 14400.0), (3.0, 40_000.0), (40_000.0, 3.0), (0.5, 0.5), (5000.0, 200.0), (1.0, 1.0)] {
+            let most = largest_scale_that_fits(width, height, &caps).unwrap_or_else(|| panic!("{width} x {height}"));
+            assert!(fitted_size(width, height, most, &caps).is_some(), "{most} is refused on {width} x {height}");
+            let step = if most >= 1.0 { 0.02 } else { 0.002 };
+            let over = most + step;
+            assert!(over > recto_proto::MAX_SCALE || fitted_size(width, height, over, &caps).is_none(), "{over} also fits {width} x {height}, past {most}");
+        }
+        assert!(largest_scale_that_fits(f32::MAX, f32::MAX, &caps).is_none(), "nothing fits");
+        assert!(largest_scale_that_fits(0.0, 10.0, &caps).is_none());
+        assert!(largest_scale_that_fits(f32::NAN, 10.0, &caps).is_none());
+    }
 }
 
 /// What [`draw_whole_page`] hands over as it goes.
@@ -322,6 +369,8 @@ pub struct ViewportOptions {
     /// Tiles beyond the visible area to draw, on each side.
     pub margin_tiles: u32,
     pub strategy: DrawStrategy,
+    /// The whole run stops here, and what it didn't get to counts as failed. [`BUDGET_MAX_TIME`] for a real measurement.
+    pub max_time: Duration,
 }
 
 /// One step of the simulation: what it needed and what it cost.
@@ -370,7 +419,8 @@ pub fn measure_viewport(doc: &mut DocRenderer, options: ViewportOptions) -> Resu
             if needed.is_empty() {
                 continue;
             }
-            if started_run.elapsed() >= BUDGET_MAX_TIME {
+            let deadline = started_run + options.max_time;
+            if Instant::now() >= deadline {
                 step.failed += needed.len() as u32;
                 continue;
             }
@@ -383,9 +433,9 @@ pub fn measure_viewport(doc: &mut DocRenderer, options: ViewportOptions) -> Resu
             };
             let mut sharp = Vec::new();
             if use_regions {
-                draw_regions(doc, page, scale, &needed, (width, height), &mut surface, &mut hand_out, &mut step, &mut sharp);
+                draw_regions(doc, page, scale, &needed, (width, height), deadline, &mut surface, &mut hand_out, &mut step, &mut sharp);
             } else {
-                draw_per_tile(doc, page, scale, &needed, (width, height), &mut surface, &mut step, &mut sharp);
+                draw_per_tile(doc, page, scale, &needed, (width, height), deadline, &mut surface, &mut step, &mut sharp);
             }
             // Only what really arrived, sharp. Anything else has to be asked for again on the next step, as it will in the app, and should cost that here too.
             cached.extend(sharp.into_iter().map(|(column, row)| (page, column, row)));
@@ -450,7 +500,7 @@ fn count_step(step: &mut ViewportStep, kind: TileKind) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_per_tile(doc: &mut DocRenderer, page: u32, scale: f32, needed: &[(u32, u32)], size: (u32, u32), surface: &mut Option<SharedMemory>, step: &mut ViewportStep, sharp: &mut Vec<(u32, u32)>) {
+fn draw_per_tile(doc: &mut DocRenderer, page: u32, scale: f32, needed: &[(u32, u32)], size: (u32, u32), deadline: Instant, surface: &mut Option<SharedMemory>, step: &mut ViewportStep, sharp: &mut Vec<(u32, u32)>) {
     let stride = TILE_EDGE * BYTES_PER_PIXEL;
     let bytes = (stride * TILE_EDGE) as usize;
     if surface.as_ref().is_none_or(|memory| memory.len() < bytes) {
@@ -461,6 +511,11 @@ fn draw_per_tile(doc: &mut DocRenderer, page: u32, scale: f32, needed: &[(u32, u
         return;
     };
     for &place in needed {
+        // Each tile can take its worker's whole deadline, so a page of them could run far past the cap if it were only looked at between pages.
+        if Instant::now() >= deadline {
+            step.failed += 1;
+            continue;
+        }
         step.passes += 1;
         match doc.render_tile(&TileRequest { page, rect: tile_rect(place, size), scale, stride, generation: 0 }, memory) {
             Ok(TileResult::Done(tile)) => {
@@ -509,12 +564,17 @@ fn draw_regions(
     scale: f32,
     needed: &[(u32, u32)],
     size: (u32, u32),
+    deadline: Instant,
     surface: &mut Option<SharedMemory>,
     hand_out: &mut [u8],
     step: &mut ViewportStep,
     sharp: &mut Vec<(u32, u32)>,
 ) {
     for rect in plan_regions(needed, size) {
+        if Instant::now() >= deadline {
+            step.failed += 1;
+            continue;
+        }
         let stride = rect.width * BYTES_PER_PIXEL;
         let bytes = stride as usize * rect.height as usize;
         if surface.as_ref().is_none_or(|memory| memory.len() < bytes) {

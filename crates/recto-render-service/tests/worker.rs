@@ -24,6 +24,21 @@ fn draws(doc: &mut DocRenderer, page: u32) -> TileKind {
     }
 }
 
+/// Failure: a damaged file stays "not a PDF" for as long as the tab lives, after the user has replaced it with a good one, because the failure was remembered for good and the old file was still the one held open. Real worker, real PDFium, and replaced the way a save does it: a new file renamed over the old.
+#[test]
+fn a_damaged_file_replaced_with_a_good_one_opens_with_nobody_asking() {
+    let file = TempPdf::new("damaged.pdf", b"this was never a PDF");
+    let mut doc = renderer(&file.0, Policy::default());
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotPdf);
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotPdf);
+    assert_eq!(doc.stats().spawns, 1, "the same file gets the same answer without asking again");
+    let new = file.0.with_file_name("new.pdf");
+    std::fs::write(&new, pages(&[Page::new(busy_page()), Page::new(text_lines(&["Second page"]))])).unwrap();
+    std::fs::rename(&new, &file.0).unwrap();
+    assert_eq!(doc.page_count().unwrap(), 2);
+    assert!(matches!(draws(&mut doc, 1), TileKind::Grey | TileKind::Colour));
+}
+
 /// Failure: pixels don't reach the host's surface through the shared memory, the whole point of the worker.
 #[test]
 fn a_tile_drawn_in_the_worker_arrives_in_the_hosts_surface() {

@@ -691,6 +691,45 @@ fn watch_streams_events_and_ends_when_told() {
     assert_eq!(code, exit::TIMED_OUT, "{lines:?}");
 }
 
+/// Failure: an agent's `pkill` was refused and its background watch stayed for 10 minutes, with nothing else to end it. `recto watch stop` ends every watch on this session, each with its usual last line, at the level `watch` needs and no lower, and it's in the log.
+#[test]
+fn watch_stop_ends_every_watch_on_this_session() {
+    let state = State::at(Level::ReadOnly);
+    let _serving = state.serve();
+    let (none, code) = state.json(&["watch", "stop"]);
+    assert_eq!((code, &none["data"]["stopped"]), (0, &json!(0)), "nothing running is no failure: {none}");
+    let (mut first, mut second) = (Raw::connect(&state), Raw::connect(&state));
+    for watcher in [&mut first, &mut second] {
+        watcher.send(&json!({ "cmd": "watch", "timeout_ms": 600_000 }).to_string());
+        assert_eq!(watcher.read().unwrap()["data"]["watching"], true);
+    }
+    let process = watch_process(&state, &["watch", "--timeout", "10m", "--json"]);
+    // A real client's first line says it's listening, and it's what `stopped` has to count.
+    let mut poke = Raw::connect(&state);
+    for _ in 0..2000 {
+        assert_eq!(poke.call(&json!({ "cmd": "budget" }))["ok"], true);
+        if state.log_text().lines().filter(|line| line.contains("\"watch\"") && line.contains("started")).count() >= 3 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (stopped, code) = state.json(&["watch", "stop"]);
+    assert_eq!((code, &stopped["data"]["stopped"]), (0, &json!(3)), "{stopped}");
+    for watcher in [&mut first, &mut second] {
+        let last = watcher.read().unwrap();
+        assert_eq!((&last["data"]["done"], &last["data"]["reason"]), (&json!(true), &json!("ended by `recto watch stop`")), "{last}");
+    }
+    let (lines, code) = lines_of(process);
+    assert_eq!((code, &lines.last().unwrap()["data"]["done"]), (0, &json!(true)), "{lines:?}");
+    assert_eq!(first.call(&json!({ "cmd": "tabs" }))["ok"], true, "the connection goes on, as after any watch");
+    let (none_left, _) = state.json(&["watch", "stop"]);
+    assert_eq!(none_left["data"]["stopped"], 0, "{none_left}");
+    assert!(state.log_text().lines().any(|line| line.contains("watch_stop") && line.contains("\"stopped\":3")), "{}", state.log_text());
+    state.set_level(Level::Off);
+    let (refused, code) = state.json(&["watch", "stop"]);
+    assert_eq!((refused["error"]["code"].as_str(), code), (Some("permission_denied"), exit::PERMISSION), "the level `watch` needs: {refused}");
+}
+
 /// Failure: a watcher keeps getting events after the user took its access away. A lowered level must end it, and the end must say why.
 #[test]
 fn lowering_the_level_ends_watches_and_waits() {

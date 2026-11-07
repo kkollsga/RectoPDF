@@ -6,6 +6,7 @@
 
 pub mod edit;
 
+pub use edit::Author;
 use edit::{EditError, PageEdits};
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
@@ -126,6 +127,8 @@ pub struct SidebarModel<'a> {
     pub place: String,
     /// Whether the active PDF has unsaved changes, which shows its dot and the Save buttons.
     pub edited: bool,
+    /// The owner's edits on the active PDF have been undone, by anyone, and can still be redone. The page matches the file, so `edited` is false, but closing would lose them, so the app has this to show.
+    pub undone_owner_steps: bool,
 }
 
 /// All open tabs and which one is active.
@@ -298,20 +301,33 @@ impl<L: DocLoader> Session<L> {
         self.edits.get(&id).is_some_and(PageEdits::is_edited)
     }
 
+    /// Whether the owner's edits on this tab have been undone and can still be redone. Closing would lose them.
+    pub fn has_undone_owner_steps(&self, id: TabId) -> bool {
+        self.edits.get(&id).is_some_and(PageEdits::owner_steps_undone)
+    }
+
     /// A tab's page edits, if it has any.
     pub fn page_edits(&self, id: TabId) -> Option<&PageEdits> {
         self.edits.get(&id)
     }
 
-    /// Applies a page edit: rearranging, rotating or deleting. The list is made the first time a tab is edited, and goes again if that edit was refused. The reader's place follows its page.
+    /// Applies the owner's page edit: rearranging, rotating or deleting. This is what the app's own edits call, with nothing to say whose they are. Everything from the agent interface goes through [`Self::edit_pages_as`] with [`Author::Agent`].
     pub fn edit_pages(&mut self, id: TabId, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
+        self.edit_pages_as(id, Author::Owner, change)
+    }
+
+    /// Applies a page edit, noting who made it. The list is made the first time a tab is edited, and goes again if that edit was refused. The reader's place follows its page.
+    pub fn edit_pages_as(&mut self, id: TabId, by: Author, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
         let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
         if tab.renderer_only {
             return Err(SessionError::RendererOnly);
         }
         let page_count = tab.page_count;
         let place = self.place_of(id);
-        let result = change(self.edits.entry(id).or_insert_with(|| PageEdits::new(page_count)));
+        let edits = self.edits.entry(id).or_insert_with(|| PageEdits::new(page_count));
+        edits.act_as(by);
+        let result = change(edits);
+        edits.act_as(Author::Owner);
         if result.is_ok() {
             self.after_change(id, place);
         } else {
@@ -346,9 +362,9 @@ impl<L: DocLoader> Session<L> {
         }
     }
 
-    /// An edit list with nothing in it costs 8 bytes a page for nothing, and would hold the tab to the file's length as it was.
+    /// An edit list with nothing in it costs 8 bytes a page for nothing, and would hold the tab to the file's length as it was. One that's back at the file with steps to go back through stays until those are gone.
     fn drop_list_if_idle(&mut self, id: TabId) {
-        if self.edits.get(&id).is_some_and(|edits| !edits.is_edited() && !edits.can_redo()) {
+        if self.edits.get(&id).is_some_and(|edits| !edits.is_edited() && !edits.has_history()) {
             self.edits.remove(&id);
         }
     }
@@ -362,18 +378,18 @@ impl<L: DocLoader> Session<L> {
     pub fn insert_pdf(&mut self, id: TabId, at: u32, path: &Path) -> Result<(), SessionError> {
         let stamp = file_stamp(path).ok();
         let facts = self.loader.load(path).map_err(SessionError::Open)?;
-        self.insert_pdf_with_facts(id, at, path, &facts, stamp)
+        self.insert_pdf_with_facts(id, Author::Owner, at, path, &facts, stamp)
     }
 
     /// Adds another PDF's pages from facts already read, for a caller that reads the file without holding the session. A file only the renderer can read can't be added: Save couldn't write it.
-    pub fn insert_pdf_with_facts(&mut self, id: TabId, at: u32, path: &Path, facts: &DocFacts, stamp: Option<FileStamp>) -> Result<(), SessionError> {
+    pub fn insert_pdf_with_facts(&mut self, id: TabId, by: Author, at: u32, path: &Path, facts: &DocFacts, stamp: Option<FileStamp>) -> Result<(), SessionError> {
         if facts.renderer_only {
             return Err(SessionError::RendererOnly);
         }
         if facts.page_count == 0 {
             return Err(SessionError::Open(OpenError::NotPdf));
         }
-        self.edit_pages(id, |edits| edits.insert_pdf_stamped(at, path, facts.page_count, stamp))
+        self.edit_pages_as(id, by, |edits| edits.insert_pdf_stamped(at, path, facts.page_count, stamp))
     }
 
     /// Where a page of a tab comes from now, counting unsaved edits. Zero-based.
@@ -449,9 +465,9 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// Closes a tab and releases what it held. The next tab along, or the previous one, becomes active.
-    /// Refuses while there are unsaved changes, so nothing is lost by accident.
+    /// Refuses while there are unsaved changes, or undone edits of the owner's, so nothing is lost by accident. [`Self::discard_edits`] is how to say it's meant, as the app does when told "Don't Save".
     pub fn close(&mut self, id: TabId) -> Result<(), SessionError> {
-        if self.is_edited(id) {
+        if self.is_edited(id) || self.has_undone_owner_steps(id) {
             return Err(SessionError::UnsavedChanges);
         }
         self.edits.remove(&id);
@@ -490,7 +506,8 @@ impl<L: DocLoader> Session<L> {
             }
         }
         let edited = self.active.is_some_and(|id| self.is_edited(id));
-        SidebarModel { rows, rail_filled, toc_open, place, edited }
+        let undone_owner_steps = self.active.is_some_and(|id| self.has_undone_owner_steps(id));
+        SidebarModel { rows, rail_filled, toc_open, place, edited, undone_owner_steps }
     }
 
     fn activate(&mut self, id: TabId) {
@@ -732,6 +749,24 @@ mod tests {
         assert_eq!(s.draw_note(id, 0), Some(note), "a refused edit changes nothing");
     }
 
+    /// Failure: a tab back at its file through four quarter turns still reads as edited, and the sidebar's dot and the refusal to close stay with it. Its steps can still be undone, because the list isn't dropped while it has any. And a `page move` to where it already is must leave no list behind at all.
+    #[test]
+    fn a_tab_back_at_its_file_isnt_edited() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages(id, |e| e.move_pages(2, 1, 2)).unwrap();
+        assert!(s.page_edits(id).is_none() && !s.sidebar().edited, "nothing happened");
+        for _ in 0..4 {
+            s.edit_pages(id, |e| e.rotate(0, 1, 1)).unwrap();
+        }
+        assert!(!s.is_edited(id) && !s.sidebar().edited);
+        assert!(s.page_edits(id).unwrap().can_undo(), "it can still step back through them");
+        assert!(s.undo_edit(id));
+        assert!(s.is_edited(id));
+        assert!(s.redo_edit(id));
+        assert!(s.close(id).is_ok(), "it matches the file, and nothing's been undone");
+    }
+
     /// Failure: a refused edit leaves an 8-byte-a-page list behind forever, over the budget for an idle tab, and the tab's length stops following its file.
     #[test]
     fn a_refused_first_edit_leaves_no_list() {
@@ -829,7 +864,7 @@ mod tests {
         let mut other = session(3);
         let target = other.open(Path::new("/d/fine.pdf")).unwrap();
         let facts = RendererOnlyLoader.load(Path::new("/d/damaged.pdf")).unwrap();
-        assert_eq!(other.insert_pdf_with_facts(target, 0, Path::new("/d/damaged.pdf"), &facts, None), Err(SessionError::RendererOnly));
+        assert_eq!(other.insert_pdf_with_facts(target, Author::Owner, 0, Path::new("/d/damaged.pdf"), &facts, None), Err(SessionError::RendererOnly));
         assert!(!other.is_edited(target));
     }
 
@@ -953,6 +988,22 @@ mod tests {
         assert!(s.sidebar().edited);
         assert!(s.undo_edit(id));
         assert!(!s.sidebar().edited);
+        // Failure: an agent's `undo` takes the owner's edit off the page, so the dot goes and this close goes through with no prompt, and the edit is gone for good.
+        assert!(s.sidebar().undone_owner_steps, "the app must be able to show it");
+        assert_eq!(s.close(id), Err(SessionError::UnsavedChanges), "the owner's edit can still be redone, so closing would lose it");
+        s.discard_edits(id);
+        assert!(!s.sidebar().undone_owner_steps);
+        assert!(s.close(id).is_ok());
+    }
+
+    /// Failure: undone steps of an agent's own hold up the app's close, or read as the owner's. They're an agent's to lose.
+    #[test]
+    fn an_agents_undone_steps_dont_stop_a_close() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages_as(id, Author::Agent, |e| e.rotate(0, 1, 1)).unwrap();
+        assert!(s.undo_edit(id));
+        assert!(!s.has_undone_owner_steps(id) && !s.sidebar().undone_owner_steps);
         assert!(s.close(id).is_ok());
     }
 

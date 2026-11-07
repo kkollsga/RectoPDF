@@ -41,7 +41,11 @@ fn fake_worker() {
             Kind::Open => {
                 let mut handles = frame.handles;
                 cancel_word = Some(SharedMemory::map(handles.pop().unwrap(), control::LEN).unwrap());
-                proto::encode_opened(3)
+                match mode.as_str() {
+                    "open_unreadable" => proto::encode_failed(0, FailCode::Unreadable),
+                    "open_not_pdf" => proto::encode_failed(0, FailCode::NotPdf),
+                    _ => proto::encode_opened(3),
+                }
             }
             Kind::SizeRequest => {
                 let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
@@ -68,7 +72,13 @@ fn fake_worker() {
                     }
                     leak_for_ever();
                 }
+                if mode == "slow" {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
                 let fits = match mode.as_str() {
+                    "slow" => true,
+                    // A higher zoom is too much even for the larger limit, a lower one needs it, and a much lower one fits anywhere.
+                    "heavy_below_3x" => job.scale <= 1.0 || (in_heavy && job.scale < 3.0),
                     "every_page_fits_heavy" => in_heavy,
                     "every_page_fits_nothing" => false,
                     _ if job.page != 0 => true,
@@ -604,11 +614,89 @@ fn a_cancel_between_steps_ends_the_sequence() {
     assert!(!slot.is_taken());
 }
 
+/// Failure: a file the worker refuses as unreadable isn't remembered, because that word is also for not getting as far as asking, so each page of a search starts a process to hear the same answer. Or it's remembered for the renderer's life, though it covers a failed read of the file's size and errors with no reason given, and may pass. It holds for a moment, and no more.
+#[test]
+fn a_temporary_open_failure_holds_only_for_a_moment() {
+    let (mut held, _file) = doc_with("open_unreadable", Policy { open_retry_pause: Duration::from_secs(60), ..policy() }, &HeavySlot::new());
+    for _ in 0..5 {
+        assert_eq!(held.page_characters(0, false, false).unwrap_err(), RenderFailure::Unavailable);
+    }
+    assert_eq!(held.stats().spawns, 1, "one process was enough to learn that");
+    assert!(!held.has_worker());
+    let (mut passes, _file) = doc_with("open_unreadable", Policy { open_retry_pause: Duration::from_millis(50), ..policy() }, &HeavySlot::new());
+    assert_eq!(passes.page_count().unwrap_err(), RenderFailure::Unavailable);
+    std::thread::sleep(Duration::from_millis(60));
+    assert_eq!(passes.page_count().unwrap_err(), RenderFailure::Unavailable);
+    assert_eq!(passes.stats().spawns, 2, "the moment has passed, with nobody having to say so");
+    held.forget_failures();
+    assert_eq!(held.page_count().unwrap_err(), RenderFailure::Unavailable);
+    assert_eq!(held.stats().spawns, 2, "and asking again is what forgetting is for");
+}
+
+/// Failure: what's learned about a file's bytes sticks for the renderer's life, so a damaged file the user replaces stays "not a PDF" until the tab closes, and no production code calls `forget_failures`. It holds for that file, and a different one gets a fresh try.
+#[test]
+fn a_failure_about_the_bytes_holds_for_that_file_and_no_other() {
+    let (mut doc, file) = doc("open_not_pdf");
+    for _ in 0..5 {
+        assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotPdf);
+    }
+    assert_eq!(doc.stats().spawns, 1, "the same file gets the same answer, for as long as it takes");
+    std::fs::write(&file.0, b"%PDF-1.7\nand now it's a different file").unwrap();
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotPdf, "the stand-in says the same of everything");
+    assert_eq!(doc.stats().spawns, 2, "but it was asked again");
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotPdf);
+    assert_eq!(doc.stats().spawns, 2, "and the new file's answer holds in turn");
+    std::fs::remove_file(&file.0).unwrap();
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotFound, "a file that's gone says so");
+    std::fs::write(&file.0, b"%PDF-1.7\nback").unwrap();
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotPdf);
+}
+
+/// Failure: a kill at a lower zoom overwrites what a higher zoom learned, and the other way round, so a reader going between two zooms runs the same kills again each time, for as long as its heavy retries last. Each scale keeps what it learned.
+#[test]
+fn what_one_zoom_learns_doesnt_take_away_what_another_learned() {
+    let (mut doc, _file) = doc("heavy_below_3x");
+    let at = |scale: f32| TileRequest { scale, ..request(0) };
+    assert!(done(doc.render_tile(&at(4.0), &surface())).low_res.is_some(), "too much even for the larger limit at 4x");
+    assert_eq!(doc.page_draw_state_at(0, 4.0), PageDrawState::LowResOnly);
+    assert_eq!(doc.page_draw_state_at(0, 2.0), PageDrawState::Sharp, "a much lower zoom gets its own try");
+    assert_eq!(done(doc.render_tile(&at(2.0), &surface())).low_res, None, "and fits the larger limit at 2x");
+    assert_eq!(doc.page_draw_state_at(0, 2.0), PageDrawState::NeedsHeavy);
+    assert_eq!(doc.page_draw_state_at(0, 4.0), PageDrawState::LowResOnly, "what 2x learned mustn't take away what 4x did");
+    assert_eq!(doc.page_draw_state(0), PageDrawState::LowResOnly, "the worst that's known");
+    let kills = doc.stats().memory_kills;
+    for _ in 0..3 {
+        assert!(done(doc.render_tile(&at(4.0), &surface())).low_res.is_some());
+        assert_eq!(done(doc.render_tile(&at(2.0), &surface())).low_res, None);
+    }
+    assert_eq!(doc.stats().memory_kills, kills, "going between the two runs no kill it has run already");
+    doc.forget_failures();
+    assert_eq!(doc.page_draw_state(0), PageDrawState::Sharp);
+}
+
+/// Failure: the viewport budget's cap on time is only looked at between pages, so a page of many slow tiles or regions runs on past it, at each one's own deadline. Here each pass takes at least 100 ms and one page alone needs more than 4 of them, so with a cap of 250 ms no more than 4 can start if it's looked at before each pass, and every one of them would if it isn't. Past the cap, what's left counts as failed rather than vanishing from the numbers.
+#[test]
+fn the_viewport_budget_stops_at_its_cap_within_a_page() {
+    let cap = Duration::from_millis(250);
+    // At 2x, one page is 3 x 4 tiles. At 12x it's too large for fewer than about 10 regions of 32 MiB.
+    for (strategy, scale, window) in [(DrawStrategy::PerTile, 2.0, 2048), (DrawStrategy::Region, 12.0, 10_000)] {
+        let options = |max_time| ViewportOptions { first_page: 0, scale, width: window, height: window, margin_tiles: 0, strategy, max_time };
+        let (mut no_time, _file) = doc("slow");
+        let steps = measure_viewport(&mut no_time, options(Duration::ZERO)).unwrap();
+        assert!(steps.iter().all(|step| step.passes == 0 && step.tiles == 0 && step.failed > 0), "{strategy:?}, no time at all: {steps:?}");
+        let (mut capped, _file) = doc("slow");
+        let steps = measure_viewport(&mut capped, options(cap)).unwrap();
+        let (passes, failed): (u32, u32) = (steps.iter().map(|step| step.passes).sum(), steps.iter().map(|step| step.failed).sum());
+        assert!(passes <= 4, "{strategy:?}: {passes} passes of at least 100 ms each started inside 250 ms: {steps:?}");
+        assert!(failed > 0, "{strategy:?}: what wasn't drawn must say so: {steps:?}");
+    }
+}
+
 /// Failure: the viewport budget counts low-resolution tiles as cached, so the next step looks cheaper than the app would find it, and the numbers we rely on flatter the page.
 #[test]
 fn the_viewport_budget_doesnt_count_low_res_tiles_as_done() {
     let (mut doc, _file) = doc("fits_low_res");
-    let options = ViewportOptions { first_page: 0, scale: 2.0, width: 1024, height: 1024, margin_tiles: 0, strategy: DrawStrategy::PerTile };
+    let options = ViewportOptions { first_page: 0, scale: 2.0, width: 1024, height: 1024, margin_tiles: 0, strategy: DrawStrategy::PerTile, max_time: recto_render_service::BUDGET_MAX_TIME };
     let steps = measure_viewport(&mut doc, options).unwrap();
     assert_eq!(steps[0].low_res, steps[0].tiles, "every tile of this page comes back low-res: {steps:?}");
     assert!(steps[1].tiles >= steps[0].tiles, "they aren't done, so the scroll asks for them again: {steps:?}");

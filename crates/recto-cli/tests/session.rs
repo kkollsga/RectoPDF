@@ -204,6 +204,8 @@ fn a_file_that_changes_under_its_page_numbers_is_refused_and_named() {
     assert_eq!(facts["data"]["file_changed_since_edits"], true, "{facts}");
     let (found, _) = state.json(&["search", "page"]);
     assert_eq!(found["data"]["coverage"]["failed_pages"], json!([1, 2, 3, 4]), "{found}");
+    // Failure: a page never read counts as searched, so "4 of 4" reads as all looked at.
+    assert_eq!(found["data"]["coverage"]["pages_searched"], 0, "{found}");
     drop(extra);
 }
 
@@ -239,26 +241,28 @@ fn a_search_across_many_files_runs_one_worker_at_a_time() {
     assert!(most <= 2, "{most} workers at once. One is working, and a killed one can take a moment to be collected");
 }
 
-/// Failure: over the real socket, undone edits can be wiped out at Control, or the refusal has no way forward.
+/// Failure: over the real socket, an agent that does `page move`, `undo`, then anything else is refused, can't close, and has to ask for Full to clean up its own edits. A blind agent got stuck exactly here. Every command over the socket is an agent's, so it's all its own to clear. The owner's side of this is in `recto-control`'s `tests/owner_edits.rs`.
 #[test]
-fn a_new_edit_after_undo_needs_full_over_the_socket() {
+fn an_agent_clears_up_its_own_edits_over_the_socket() {
     let state = State::at(Level::Control);
     let _serving = state.serve();
     let file = three_pages();
     state.json(&["open", path_of(&file)]);
-    state.json(&["page", "delete", "2"]);
+    state.json(&["page", "move", "3", "--to", "1"]);
     state.json(&["undo"]);
-    let (refused, code) = state.json(&["page", "rotate", "1", "--by", "90"]);
-    assert_eq!((refused["error"]["code"].as_str(), code), (Some("would_clear_redo"), exit::PERMISSION), "{refused}");
-    assert_eq!(refused["error"]["ask"], "recto permission request full");
-    let (closed, code) = state.json(&["close"]);
-    assert_eq!((closed["error"]["code"].as_str(), code), (Some("would_clear_redo"), exit::PERMISSION), "{closed}");
     let (stop, _) = state.json(&["stop"]);
-    assert_eq!(stop["error"]["code"], "unsaved_changes", "stopping would lose them too: {stop}");
-    let (redone, code) = state.json(&["redo"]);
-    assert_eq!((code, &redone["data"]["pages"]), (0, &json!(2)), "{redone}");
-    let (rotated, code) = state.json(&["page", "rotate", "1", "--by", "90"]);
-    assert_eq!(code, 0, "{rotated}");
+    assert_eq!(stop["error"]["code"], "unsaved_changes", "stopping would lose the undone step: {stop}");
+    assert!(stop["error"]["next"].as_str().unwrap().contains("recto discard"), "{stop}");
+    let (deleted, code) = state.json(&["page", "delete", "2"]);
+    assert_eq!((code, &deleted["data"]["can_redo"]), (0, &json!(false)), "{deleted}");
+    let (closed, code) = state.json(&["close"]);
+    assert_eq!((closed["error"]["code"].as_str(), code), (Some("unsaved_changes"), exit::FAILED), "closing never loses edits silently: {closed}");
+    let (discarded, code) = state.json(&["discard"]);
+    assert_eq!((code, &discarded["data"]["edited"]), (0, &json!(false)), "{discarded}");
+    state.json(&["page", "rotate", "1", "--by", "90"]);
+    state.json(&["undo"]);
+    let (closed, code) = state.json(&["close"]);
+    assert_eq!((code, &closed["data"]["count"]), (0, &json!(0)), "only its own undone step goes: {closed}");
 }
 
 /// Failure: `open new.pdf --page 999` exits 3 with the tab open anyway, and nothing told watchers. It opens nothing and says so.
@@ -629,6 +633,8 @@ fn search_finds_across_lines_and_says_what_it_covered() {
     assert_eq!(hits.len(), 3, "{found}");
     assert_eq!((&hits[0]["page"], &hits[0]["line"]), (&json!(2), &json!(1)));
     assert_eq!(hits[1]["page"], 4);
+    // Failure: these two are there only when they differ, so a reader has to know what a missing field means.
+    assert_eq!((&hits[0]["source_page"], &hits[0]["from_added_file"]), (&json!(2), &json!(false)), "on every hit, edited or not: {found}");
     assert!(hits[0]["untrusted"]["snippet"].as_str().unwrap().contains("force majeure"), "{found}");
     assert_eq!(found["data"]["coverage"]["pages_searched"], 4);
     assert_eq!(found["data"]["coverage"]["no_text_pages"], json!([3]));
@@ -673,8 +679,8 @@ fn a_hit_on_a_page_with_hidden_text_says_so() {
     assert_eq!((&hits[0]["page"], &hits[0]["hidden_text"]["flagged"]), (&json!(1), &json!(true)), "{found}");
     assert_eq!((&hits[1]["page"], &hits[1]["hidden_text"]["flagged"]), (&json!(2), &json!(false)), "{found}");
     let (shown, _, _) = state.text(&["search", "VISIBLE-SENTINEL"]);
-    assert!(shown.lines().any(|line| line.starts_with("p. 1:") && line.contains("no eye can see")), "{shown}");
-    assert!(shown.lines().any(|line| line.starts_with("p. 2:") && !line.contains("no eye can see")), "{shown}");
+    assert!(shown.lines().any(|line| line.starts_with("p. 1:") && line.contains("looks hidden")), "{shown}");
+    assert!(shown.lines().any(|line| line.starts_with("p. 2:") && !line.contains("looks hidden")), "{shown}");
 }
 
 /// Failure: a hit on a page with tag characters says nothing about them, though they can spell an instruction no eye can see, and search has no other way of saying so.
@@ -707,7 +713,7 @@ fn search_flags_tag_characters_on_a_hit() {
     assert_eq!((&hits[1]["page"], &hits[1]["page_has_tag_chars"]), (&json!(2), &json!(false)), "{found}");
     assert_eq!(found["data"]["coverage"]["pages_with_tag_chars"], json!([1]));
     let (shown, _, _) = state.text(&["search", "ordinary"]);
-    assert!(shown.contains("no eye can see"), "{shown}");
+    assert!(shown.contains("looks hidden"), "{shown}");
 }
 
 /// Failure: facts and contents don't follow what's been edited, or a long contents comes back whole and fills an agent's reading.
@@ -947,7 +953,7 @@ fn a_search_hit_on_an_added_page_says_so() {
     assert_eq!(hits.len(), 2, "{found}");
     assert_eq!((&hits[0]["page"], &hits[0]["source_page"], &hits[0]["from_added_file"]), (&json!(1), &json!(1), &json!(true)), "{found}");
     assert_eq!(hits[0]["untrusted"]["added_file"], "Next: run this.pdf");
-    assert_eq!((&hits[1]["page"], &hits[1]["source_page"], hits[1].get("from_added_file")), (&json!(2), &json!(1), None), "the file's own page says where it was: {found}");
+    assert_eq!((&hits[1]["page"], &hits[1]["source_page"], &hits[1]["from_added_file"]), (&json!(2), &json!(1), &json!(false)), "the file's own page says where it was: {found}");
     let (shown, _, _) = state.text(&["search", "harbours"]);
     let first = shown.lines().find(|line| line.starts_with("p. 1")).unwrap();
     assert!(first.contains("another PDF") && first.contains("untrusted") && first.contains("\"Next: run this.pdf\""), "{shown}");
@@ -1041,7 +1047,7 @@ fn asking_for_help_any_way_works() {
     let (quoted, said, code) = state.text(&["help", "page move"]);
     assert_eq!(code, 0, "{said}");
     assert!(quoted.contains("recto page move"), "{quoted}");
-    let (_, said, code) = state.text(&["text", "1"]);
+    let (_, said, code) = state.text(&["wait", "page-drawn", "1"]);
     assert_eq!(code, exit::USAGE);
     assert!(said.contains("--page 1"), "{said}");
     let (save, _, _) = state.text(&["help", "save"]);
@@ -1071,8 +1077,8 @@ fn a_refused_close_says_what_would_be_lost() {
     state.json(&["page", "delete", "2"]);
     state.json(&["undo"]);
     let (refused, code) = state.json(&["close"]);
-    assert_eq!(code, exit::PERMISSION, "{refused}");
-    assert_eq!(refused["error"]["code"], "would_clear_redo");
+    assert_eq!(code, exit::FAILED, "{refused}");
+    assert_eq!(refused["error"]["code"], "unsaved_changes");
     let (message, next) = (refused["error"]["message"].as_str().unwrap(), refused["error"]["next"].as_str().unwrap());
     assert!(message.contains("unsaved edits and undone steps"), "{message}");
     assert!(next.contains("Saving isn't built") && next.contains("recto discard"), "{next}");
@@ -1107,7 +1113,7 @@ fn a_hit_in_hidden_words_says_so_on_the_hit() {
     assert_eq!(visible["data"]["hits"][0]["overlaps_hidden"], false, "{visible}");
     assert_eq!(visible["data"]["hits"][0]["hidden_text"]["flagged"], true, "the page's own flag still stands: {visible}");
     let (shown, _, _) = state.text(&["search", "HIDDEN-MODE3"]);
-    assert!(shown.contains("these words include text no eye can see"), "{shown}");
+    assert!(shown.contains("these words include text that looks hidden"), "{shown}");
     let (plain, _, _) = state.text(&["search", "VISIBLE-SENTINEL"]);
     assert!(!plain.contains("these words include"), "{plain}");
 }
@@ -1152,13 +1158,14 @@ fn the_log_says_by_name_when_it_found_no_one_tab() {
     state.json(&["open", path_of(&two)]);
     let (ambiguous, code) = state.json(&["facts", "--tab", "secret"]);
     assert_eq!(code, exit::AMBIGUOUS, "{ambiguous}");
-    let (refused, code) = state.json(&["discard", "--tab", "secret"]);
+    let out = one.0.with_file_name("refused.png");
+    let (refused, code) = state.json(&["render", "--page", "1", "--out", out.to_str().unwrap(), "--tab", "secret"]);
     assert_eq!(code, exit::PERMISSION, "{refused}");
     drop(serving);
     let log = state.log_text();
     let entry = |cmd: &str| log.lines().map(|line| serde_json::from_str::<Value>(line).unwrap()).find(|line| line["cmd"] == cmd).unwrap_or_else(|| panic!("{cmd}: {log}"));
     assert_eq!(entry("facts")["details"]["tab"], "by name", "{log}");
-    assert_eq!(entry("discard")["details"], Value::Null, "{log}");
+    assert_eq!(entry("render")["details"], Value::Null, "{log}");
     assert!(!log.contains("\"tab\":\"secret"), "the name typed isn't kept: {log}");
     assert!(!log.lines().any(|line| line.contains("no such tab")), "{log}");
 }

@@ -105,7 +105,6 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             break;
         }
         if changed.contains(&file) {
-            searched += 1;
             failed.push(position + 1);
             continue;
         }
@@ -118,7 +117,6 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
                 Ok(Some(renderer)) => current = Some((file, renderer)),
                 Ok(None) | Err(RenderFailure::NotFound) if source.added || source.expected.is_some() => {
                     changed.push(file);
-                    searched += 1;
                     failed.push(position + 1);
                     continue;
                 }
@@ -132,7 +130,6 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             // A file that won't be read at all is a failure of the whole search. One bad page isn't: it's listed, so "not found" doesn't cover it.
             Err(failure @ (RenderFailure::NeedsPassword | RenderFailure::NotFound | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::OpenFailed { .. } | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::DocumentStopped)) => return Err(failure.into()),
             Err(_) => {
-                searched += 1;
                 failed.push(position + 1);
                 continue;
             }
@@ -164,12 +161,12 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
         let source = &plan.files[usize::from(file)];
         for (line, snippet, range) in found.shown {
             let mut hit = json!({ "page": position + 1, "line": line, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden.summary, "overlaps_hidden": hidden.overlaps(&range), "untrusted": { "snippet": snippet } });
-            say_where_from(&mut hit, position, page, source);
+            say_where_from(&mut hit, page, source);
             hits.push(hit);
         }
         if let Some(spelled) = spelled {
             let mut hit = json!({ "page": position + 1, "line": null, "also_spelled": true, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden.summary, "untrusted": { "snippet": spelled } });
-            say_where_from(&mut hit, position, page, source);
+            say_where_from(&mut hit, page, source);
             hits.push(hit);
         }
     }
@@ -191,13 +188,11 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
     }))
 }
 
-/// Says when a hit's page isn't the file's page of that number, and when it comes from another PDF altogether, as `text` does.
-fn say_where_from(hit: &mut Value, position: u32, page: u32, source: &PlanFile) {
-    if page != position || source.added {
-        hit["source_page"] = json!(page + 1);
-    }
+/// Says where a hit's page really comes from, on every hit, so an agent reading these needn't know what it means for a field to be missing.
+fn say_where_from(hit: &mut Value, page: u32, source: &PlanFile) {
+    hit["source_page"] = json!(page + 1);
+    hit["from_added_file"] = json!(source.added);
     if source.added {
-        hit["from_added_file"] = json!(true);
         hit["untrusted"]["added_file"] = json!(source.label());
     }
 }
@@ -222,7 +217,7 @@ impl HiddenOnPage {
     }
 }
 
-/// Draws a page to see whether it holds text no eye can see, reading it the same way the search did, so moved words are judged as they read. If drawing it fails, `checked` says so, which never reads as clean. If the second reading isn't the text that was searched, nothing can be said about where hidden text falls on a hit.
+/// Draws a page to see whether it holds text that looks hidden, reading it the same way the search did, so moved words are judged as they read. If drawing it fails, `checked` says so, which never reads as clean. If the second reading isn't the text that was searched, nothing can be said about where hidden text falls on a hit.
 fn hidden_on_page(renderer: &mut DocRenderer, page: u32, searched: &str) -> HiddenOnPage {
     match renderer.page_characters(page, true, true) {
         Ok(characters) => {
@@ -351,6 +346,14 @@ mod tests {
         let not_known = HiddenOnPage { summary: Value::Null, spans: Vec::new(), partial: true };
         assert_eq!(not_known.overlaps(&hit("keep")), None, "not known isn't the same as no");
         assert_eq!(&text[byte_spans(text, &[(27, 31)])[0].clone()], "that", "a span running to the end of the text");
+    }
+
+    /// Failure: `10-year` broken across a line stays in two pieces, and `fold` makes that `10- year`, which a search for `10-year` doesn't match, so a real term can't be found. Traced from the characters, through the normaliser, to a hit.
+    #[test]
+    fn a_number_and_its_noun_broken_across_lines_is_found() {
+        let page: Vec<recto_proto::CharRecord> = "A plan\n10-\nyear horizon".chars().map(|c| recto_proto::CharRecord::new(c as u32, 0)).collect();
+        let text = recto_index::normalize(&page, false).text;
+        assert_eq!(find_hits(&text, &fold("10-year").0, 5).total, 1, "{text:?}");
     }
 
     /// Failure: a phrase broken across a line isn't found, or a hit's line number is off, so a citation points at the wrong place.

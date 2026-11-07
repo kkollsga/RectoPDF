@@ -12,7 +12,7 @@ mod search;
 pub mod skill;
 pub mod table;
 
-use recto_session::{DocLoader, DrawNote, PageSource, RowKind, Session, SessionError, TabId};
+use recto_session::{Author, DocLoader, DrawNote, PageSource, RowKind, Session, SessionError, TabId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::cell::RefCell;
@@ -156,7 +156,8 @@ pub enum Command {
         #[serde(default = "active_tab")]
         tab: String,
         page: u32,
-        #[serde(default = "render::default_scale")]
+        /// A number, or `"max"` for the largest that fits, which reads as [`render::LARGEST_THAT_FITS`].
+        #[serde(default = "render::default_scale", deserialize_with = "render::scale_or_max")]
         scale: f32,
         out: PathBuf,
     },
@@ -282,7 +283,7 @@ pub enum Command {
         #[serde(default = "active_tab")]
         tab: String,
     },
-    /// Throws away a tab's unsaved edits. They can't be got back, so it asks for more than editing does.
+    /// Throws away a tab's edits. They can't be got back, so below Full it refuses if any are the user's.
     Discard {
         #[serde(default = "active_tab")]
         tab: String,
@@ -324,6 +325,8 @@ pub enum Command {
         #[serde(default)]
         count: Option<u32>,
     },
+    /// Ends every watch running on this session.
+    WatchStop {},
     /// What agents have done, newest last.
     Log {
         #[serde(default)]
@@ -369,6 +372,7 @@ impl Command {
             Self::LevelChanged {} => "level_changed",
             Self::Wait { .. } => "wait",
             Self::Watch { .. } => "watch",
+            Self::WatchStop {} => "watch_stop",
             Self::Log { .. } => "log",
             Self::Stop {} => "stop",
         }
@@ -405,7 +409,7 @@ impl Command {
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
             Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
-            Self::Wait { .. } | Self::Watch { .. } | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
+            Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
         }
     }
 }
@@ -480,12 +484,12 @@ fn next_step(code: &str, exit: i32) -> &'static str {
         "not_pdf" => "This file can't be opened. Try another file.",
         "password_needed" | "needs_password" => "Ask the user to open it in the app and allow it. Passwords are never taken here.",
         "ambiguous" => "Use one of the candidates, written as `#id`.",
-        "unsaved_changes" => "With Full access `recto discard` throws them away. Saving isn't built yet.",
+        "unsaved_changes" => "`recto discard` throws them away, then `recto close` or `recto stop` can go on. It needs Full access only if some are the user's. Saving isn't built yet.",
         "last_page" => "Keep at least one page, or delete fewer.",
         "too_many_pages" | "too_many_sources" => "Add less to this document.",
         "too_many_tabs" => "`recto close` closes a tab.",
         "renderer_only" => "This file can still be read and drawn. To change it, it first needs repairing in another tool.",
-        "source_changed" => "Tell the user this file changed. `recto edits` shows what's unsaved. With Full access `recto discard` throws the edits away, and opening the file again starts from what's there now.",
+        "source_changed" => "Tell the user this file changed. `recto edits` shows what's unsaved. `recto discard` throws the edits away, which needs Full access if some are the user's, and opening the file again starts from what's there now.",
         "nothing_to_undo" | "nothing_to_redo" => "`recto edits` shows where this tab is.",
         "not_built" => "Tell the user this isn't in this version yet.",
         "too_large_at_this_scale" => "Try a smaller `--scale`. 2 is twice the page's size, and 1 is its own.",
@@ -676,6 +680,10 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             let id = select(s, tab)?;
             refuse_close_that_loses_something(s, id, level)?;
             let before = s.active();
+            // At Full, what's lost is the holder's call, and `refuse_close_that_loses_something` has let it through. The session itself won't lose the owner's undone steps unasked.
+            if level >= Level::Full && s.has_undone_owner_steps(id) {
+                s.discard_edits(id);
+            }
             s.close(id)?;
             events.push(Event::new("tab_closed", json!({ "tab": id.0 })));
             if s.active() != before
@@ -743,16 +751,17 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         Command::PageMove { tab, pages, to } => {
             let (start, len) = parse_pages(pages, false)?;
             let destination = one_based(*to)?;
-            edit(access, level, tab, events, |e| e.move_pages(start, len, destination))
+            let did = if start == destination { format!("{} already at {to}, so nothing changed.", which_pages(pages, "is", "are")) } else { format!("Moved {} to {to}.", which_pages(pages, "", "")) };
+            edit(access, level, tab, events, did, |e| e.move_pages(start, len, destination))
         }
         Command::PageRotate { tab, pages, degrees } => {
             let (start, len) = parse_pages(pages, false)?;
             let turns = quarter_turns(*degrees)?;
-            edit(access, level, tab, events, |e| e.rotate(start, len, turns))
+            edit(access, level, tab, events, format!("Rotated {} by {degrees} degrees.", which_pages(pages, "", "")), |e| e.rotate(start, len, turns))
         }
         Command::PageDelete { tab, pages } => {
             let (start, len) = parse_pages(pages, false)?;
-            edit(access, level, tab, events, |e| e.delete(start, len))
+            edit(access, level, tab, events, format!("Deleted {}.", which_pages(pages, "", "")), |e| e.delete(start, len))
         }
         Command::PageInsert { tab, path, at } => {
             require_absolute(path)?;
@@ -763,10 +772,11 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             let facts = loader.load(path)?;
             access.with(|s| {
                 let id = select(s, tab)?;
-                keep_undone_steps(s, id, level, "A new edit")?;
-                s.insert_pdf_with_facts(id, position, path, &facts, stamp)?;
+                keep_owners_undone_steps(s, id, level)?;
+                s.insert_pdf_with_facts(id, Author::Agent, position, path, &facts, stamp)?;
                 events.push(edits_event(s, id));
-                let data = edit_state_json(s, id);
+                let mut data = edit_state_json(s, id);
+                data["did"] = json!(format!("Added {} at page {at}.", if facts.page_count == 1 { "1 page".to_string() } else { format!("{} pages", facts.page_count) }));
                 Ok(with_place_note(s, id, data))
             })
         }
@@ -776,7 +786,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
                 return Err(AgentError::new("nothing_to_undo", "There's nothing to undo on this tab.", exit::FAILED));
             }
             events.push(edits_event(s, id));
-            let data = edit_state_json(s, id);
+            let mut data = edit_state_json(s, id);
+            data["did"] = json!("Undid the last edit.");
             Ok(with_place_note(s, id, data))
         }),
         Command::Redo { tab } => access.with(|s| {
@@ -785,14 +796,18 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
                 return Err(AgentError::new("nothing_to_redo", "There's nothing to redo on this tab.", exit::FAILED));
             }
             events.push(edits_event(s, id));
-            let data = edit_state_json(s, id);
+            let mut data = edit_state_json(s, id);
+            data["did"] = json!("Redid the last undone edit.");
             Ok(with_place_note(s, id, data))
         }),
         Command::Discard { tab } => access.with(|s| {
             let id = select(s, tab)?;
+            refuse_discard_of_owners_edits(s, id, level)?;
+            let had_any = s.page_edits(id).is_some();
             s.discard_edits(id);
             events.push(edits_event(s, id));
-            let data = edit_state_json(s, id);
+            let mut data = edit_state_json(s, id);
+            data["did"] = json!(if had_any { "Threw away this tab's edits." } else { "There were no edits to throw away." });
             Ok(with_place_note(s, id, data))
         }),
         Command::Save { .. } => Err(AgentError::new(
@@ -801,7 +816,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             exit::FAILED,
         )),
         Command::Sign {} => Err(refusal("sign", level, Access::Nobody)),
-        Command::Status {} | Command::PermissionShow {} | Command::PermissionRequest { .. } | Command::LevelChanged {} | Command::Wait { .. } | Command::Watch { .. } | Command::Log { .. } | Command::Stop {} => {
+        Command::Status {} | Command::PermissionShow {} | Command::PermissionRequest { .. } | Command::LevelChanged {} | Command::Wait { .. } | Command::Watch { .. } | Command::WatchStop {} | Command::Log { .. } | Command::Stop {} => {
             Err(AgentError::new("needs_server", "This needs the long-running session.", exit::NOT_RUNNING))
         }
     }
@@ -955,33 +970,58 @@ fn quarter_turns(degrees: i32) -> Result<i32, AgentError> {
     Ok(degrees / 90)
 }
 
-fn edit<A: SessionAccess>(access: &A, level: Level, tab: &str, events: &mut Vec<Event>, change: impl FnOnce(&mut recto_session::edit::PageEdits) -> Result<(), recto_session::edit::EditError>) -> Result<Value, AgentError> {
+/// `page 3` or `pages 4-6`, as it was asked for, which `parse_pages` has already held to digits, with a verb that agrees if one's wanted.
+fn which_pages(pages: &str, one: &str, many: &str) -> String {
+    let (noun, verb) = if pages.contains('-') { ("Pages", many) } else { ("Page", one) };
+    let noun = if verb.is_empty() { noun.to_lowercase() } else { noun.to_string() };
+    if verb.is_empty() { format!("{noun} {pages}") } else { format!("{noun} {pages} {verb}") }
+}
+
+fn edit<A: SessionAccess>(access: &A, level: Level, tab: &str, events: &mut Vec<Event>, did: String, change: impl FnOnce(&mut recto_session::edit::PageEdits) -> Result<(), recto_session::edit::EditError>) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
-        keep_undone_steps(s, id, level, "A new edit")?;
-        s.edit_pages(id, change)?;
+        keep_owners_undone_steps(s, id, level)?;
+        s.edit_pages_as(id, Author::Agent, change)?;
         events.push(edits_event(s, id));
-        let data = edit_state_json(s, id);
+        let mut data = edit_state_json(s, id);
+        data["did"] = json!(did);
         Ok(with_place_note(s, id, data))
     })
 }
 
-/// Undone steps are edits that can still be got back. A new edit clears them for good, and so does closing the tab, which would make `discard` pointless: at Control, undo everything, make one edit, undo it, and the originals are gone. So below Full, whatever would clear them is refused. Owner's coordinator, 2026-11-07: nothing is lost without Full.
-fn keep_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level: Level, what: &str) -> Result<(), AgentError> {
-    if level >= Level::Full || !session.page_edits(id).is_some_and(recto_session::edit::PageEdits::can_redo) {
+/// What asking for Full is for, where only that would do. The one command an agent can run to get there.
+const ASK_FULL: &str = "recto permission request full";
+
+/// Undone steps can still be got back, and a new edit clears them for good, which is how an agent could erase the user's edits: undo them all, make one edit. So below Full, an edit that would lose an undone step of the user's is refused. Undone steps of agents' own are theirs to lose. SPEC decision log, 2026-11-07: below Full, an agent can throw away only agents' edits, never the owner's.
+fn keep_owners_undone_steps<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
+    if level >= Level::Full || !session.page_edits(id).is_some_and(recto_session::edit::PageEdits::owner_steps_undone) {
         return Ok(());
     }
-    let mut error = AgentError::new("would_clear_redo", format!("{what} here would throw away undone steps for good, and that needs Full access."), exit::PERMISSION);
-    error.ask = Some("recto permission request full".into());
-    error.next = "Run `recto redo` until there's nothing left to redo, which keeps everything, and then go on. Or run `recto permission request full` to ask for Full access.".to_string();
+    let mut error = AgentError::new("would_clear_redo", "A new edit here would throw away the user's edits, undone but still there to redo, and that needs Full access.", exit::PERMISSION);
+    error.ask = Some(ASK_FULL.into());
+    error.next = format!("Run `recto redo` until there's nothing left to redo, which keeps everything, and then go on. Or run `{ASK_FULL}` to ask for Full access.");
     Err(error)
 }
 
-/// Stops a close that would lose edits, and says all of what it would lose and every way on that's real. Undone steps need Full to lose, like any edit that clears them. Unsaved ones can't be lost by a close at any level: `discard` is the one way, on purpose.
+/// `discard` throws away everything on the tab's list, undone or not, and whatever fell off its capped undo list too, since that's still in the page order. Below Full, none of that may be the user's.
+fn refuse_discard_of_owners_edits<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
+    if level >= Level::Full || !session.page_edits(id).is_some_and(recto_session::edit::PageEdits::holds_owner_edits) {
+        return Ok(());
+    }
+    let mut error = AgentError::new("would_discard_user_edits", "Nothing was discarded: some of this tab's edits are the user's, and throwing those away needs Full access.", exit::PERMISSION);
+    error.ask = Some(ASK_FULL.into());
+    error.next = format!("`recto undo` steps back through them, and keeps them. Run `{ASK_FULL}` to ask for Full access, or tell the user.");
+    Err(error)
+}
+
+/// Stops a close that would lose edits, and says all of what it would lose and every way on that's real. Unsaved edits stop a close at every level: `discard` first, then `close`, so closing never loses them silently. Undone steps stop it below Full only if they're the user's, as they stop an edit.
 fn refuse_close_that_loses_something<L: DocLoader>(session: &Session<L>, id: TabId, level: Level) -> Result<(), AgentError> {
     let edits = session.page_edits(id);
     let (unsaved, undone) = (session.is_edited(id), edits.is_some_and(recto_session::edit::PageEdits::can_redo));
-    if !unsaved && (!undone || level >= Level::Full) {
+    let protected = level < Level::Full;
+    let owners_undone = protected && edits.is_some_and(recto_session::edit::PageEdits::owner_steps_undone);
+    let owners_anywhere = protected && edits.is_some_and(recto_session::edit::PageEdits::holds_owner_edits);
+    if !unsaved && !owners_undone {
         return Ok(());
     }
     let what = match (unsaved, undone) {
@@ -989,26 +1029,30 @@ fn refuse_close_that_loses_something<L: DocLoader>(session: &Session<L>, id: Tab
         (true, false) => "unsaved edits",
         _ => "undone steps",
     };
+    let whose = if owners_anywhere { " Some of them are the user's." } else { "" };
     let mut ways = vec!["Leave the tab open: nothing is lost until the session ends.".to_string()];
     if undone {
         ways.push("`recto redo` puts the undone steps back, and that includes anything you undid on purpose.".to_string());
     }
     if unsaved {
-        ways.push("`recto undo` until there's nothing left to undo takes the unsaved edits off, and keeps them as undone steps.".to_string());
+        if edits.is_some_and(recto_session::edit::PageEdits::history_dropped) {
+            ways.push("`recto undo` can't take all of it off, because some of it is past the undo limit.".to_string());
+        } else {
+            ways.push("`recto undo` until there's nothing left to undo takes the unsaved edits off, and keeps them as undone steps.".to_string());
+        }
     }
     let discard = if undone { "`recto discard` throws all of it away for good, and then the tab can close" } else { "`recto discard` throws them away for good, and then the tab can close" };
-    if level >= Level::Full {
-        ways.push(format!("{discard}."));
+    if owners_anywhere {
+        ways.push(format!("{discard}, which needs Full access, because it would lose the user's edits: `{ASK_FULL}` asks for it."));
     } else {
-        ways.push(format!("{discard}, which needs Full access: `recto permission request full` asks for it."));
+        ways.push(format!("{discard}."));
     }
     ways.push("Saving isn't built yet, so they can't be kept on disk.".to_string());
-    let message = format!("This tab wasn't closed: closing it would lose its {what}.");
-    // Below Full, undone steps are what the level is there to protect. Otherwise it's the edits themselves that stop it, at any level.
-    let losing_undone = undone && level < Level::Full;
-    let mut error = if losing_undone { AgentError::new("would_clear_redo", message, exit::PERMISSION) } else { AgentError::new("unsaved_changes", message, exit::FAILED) };
-    if losing_undone {
-        error.ask = Some("recto permission request full".into());
+    let message = format!("This tab wasn't closed: closing it would lose its {what}.{whose}");
+    // The user's undone steps are what the level is there to protect. Otherwise it's the edits themselves that stop it, at any level, and `discard` is the way on.
+    let mut error = if owners_undone { AgentError::new("would_clear_redo", message, exit::PERMISSION) } else { AgentError::new("unsaved_changes", message, exit::FAILED) };
+    if owners_anywhere {
+        error.ask = Some(ASK_FULL.into());
     }
     error.next = ways.join(" ");
     Err(error)
@@ -1032,19 +1076,25 @@ fn edits_event<L: DocLoader>(session: &Session<L>, id: TabId) -> Event {
 /// The plain truth about unsaved edits, wherever a tab reports them.
 pub const UNSAVED_NOTE: &str = "These edits are in this session only. Saving isn't built yet, so the file on disk is unchanged and they're lost when the session ends.";
 
+/// What's true when an agent has undone the user's edits: the page matches the file, and they're not gone yet.
+pub const USER_EDITS_UNDONE_NOTE: &str = "The user's edits on this tab are undone, not gone: `recto redo` brings them back, and closing would lose them. Nothing has been saved.";
+
 fn edit_state_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
     let edits = session.page_edits(id);
     let edited = session.is_edited(id);
+    let user_edits_undone = session.has_undone_owner_steps(id);
     json!({
         "tab": id.0,
         "pages": session.pages_in(id),
         "file_pages": session.tab(id).map(|t| t.page_count),
         "page": session.tab(id).map(|t| t.page + 1),
         "edited": edited,
-        "saved": !edited,
+        // The user's undone edits aren't in the file, and closing would lose them, so nothing about this says "saved".
+        "saved": !edited && !user_edits_undone,
+        "user_edits_undone": user_edits_undone,
         "can_undo": edits.is_some_and(recto_session::edit::PageEdits::can_undo),
         "can_redo": edits.is_some_and(recto_session::edit::PageEdits::can_redo),
-        "note": edited.then_some(UNSAVED_NOTE),
+        "note": if edited { Some(UNSAVED_NOTE) } else { user_edits_undone.then_some(USER_EDITS_UNDONE_NOTE) },
     })
 }
 
@@ -1196,11 +1246,13 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         "sel": format!("#{}", id.0),
         "page": tab.page + 1,
         "pages": session.pages_in(id),
+        "file_pages": tab.page_count,
         "active": session.active() == Some(id),
         "edited": edited,
+        "user_edits_undone": session.has_undone_owner_steps(id),
         "structure": if tab.renderer_only { "renderer_only" } else { "readable" },
         "problem": tab.problem.map(recto_core::OpenError::message),
-        "note": edited.then_some(UNSAVED_NOTE),
+        "note": if edited { Some(UNSAVED_NOTE) } else { session.has_undone_owner_steps(id).then_some(USER_EDITS_UNDONE_NOTE) },
         "untrusted": { "name": &*tab.name },
     })
 }
@@ -1233,7 +1285,7 @@ fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
             })
         })
         .collect();
-    json!({ "rows": rows, "rail_filled": model.rail_filled, "toc_open": model.toc_open, "place": model.place, "edited": model.edited })
+    json!({ "rows": rows, "rail_filled": model.rail_filled, "toc_open": model.toc_open, "place": model.place, "edited": model.edited, "undone_owner_steps": model.undone_owner_steps })
 }
 
 #[cfg(test)]
@@ -1385,6 +1437,7 @@ mod tests {
             Command::LevelChanged {},
             Command::Wait { condition: Condition::TabOpen, tab: tab(), page: None, timeout_ms: 1 },
             Command::Watch { events: None, timeout_ms: None, count: None },
+            Command::WatchStop {},
             Command::Log { last: None },
             Command::Stop {},
         ]
@@ -1555,45 +1608,201 @@ mod tests {
         let save = run(&mut s, Level::Full, &Command::Save { tab: "#1".into() }).unwrap_err();
         assert_eq!(save.code, "not_built");
         assert!(save.message.contains("nothing was written"), "{}", save.message);
-        let close = run(&mut s, Level::Full, &Command::Close { tab: "#1".into() }).unwrap_err();
-        assert_eq!(close.code, "unsaved_changes");
-        assert!(close.next.contains("discard"), "{}", close.next);
-        assert_eq!(run(&mut s, Level::Control, &Command::Discard { tab: "#1".into() }).unwrap_err().code, "permission_denied", "throwing edits away asks for more than making them");
-        run(&mut s, Level::Full, &Command::Discard { tab: "#1".into() }).unwrap();
+        for level in [Level::Control, Level::Full] {
+            let close = run(&mut s, level, &Command::Close { tab: "#1".into() }).unwrap_err();
+            assert_eq!(close.code, "unsaved_changes", "{level:?}");
+            assert!(close.next.contains("discard"), "{}", close.next);
+        }
+        assert_eq!(s.tabs().len(), 1);
+        assert_eq!(run(&mut s, Level::ReadOnly, &Command::Discard { tab: "#1".into() }).unwrap_err().code, "permission_denied", "throwing edits away asks for what making them does");
+        run(&mut s, Level::Control, &Command::Discard { tab: "#1".into() }).unwrap();
         assert!(!s.is_edited(TabId(1)));
         assert!(run(&mut s, Level::Control, &Command::Close { tab: "#1".into() }).is_ok());
     }
 
-    /// Failure: at Control, undo to the start, make one edit, undo it, and the original edits are gone with no Full access asked for, and `close` is then allowed. `discard` asks for Full, so this was a way round it.
+    fn owners_rotation(s: &mut Session<Fake>, page: u32) {
+        s.edit_pages(TabId(1), |edits| edits.rotate(page, 1, 1)).unwrap();
+    }
+
+    /// A rotation of page 1, which tells apart "the agent's edit is still here" from "it's gone".
+    fn turned_pages(s: &Session<Fake>) -> Vec<u8> {
+        s.page_edits(TabId(1)).map_or_else(Vec::new, |edits| edits.slots().iter().map(|slot| slot.quarter_turns).collect())
+    }
+
+    fn agent_attempts() -> Vec<Command> {
+        let tab = || "#1".to_string();
+        vec![Command::PageRotate { tab: tab(), pages: "9".into(), degrees: 90 }, Command::PageDelete { tab: tab(), pages: "10".into() }, Command::PageMove { tab: tab(), pages: "9".into(), to: 10 }, Command::PageInsert { tab: tab(), path: "/d/b.pdf".into(), at: 1 }, Command::Close { tab: tab() }]
+    }
+
+    /// Failure: the attack the rule is for. The user edits; an agent at Control undoes it all, makes an edit, undoes that, and closes or discards. Each step must keep the user's edits, whatever order it's tried in, and bringing them back must get every one.
     #[test]
-    fn nothing_is_lost_without_full() {
+    fn an_agent_cant_erase_the_users_edits_at_any_step() {
         let mut s = edit_session();
         let id = TabId(1);
         let tab = || "#1".to_string();
-        let rotate = || Command::PageRotate { tab: "#1".into(), pages: "1".into(), degrees: 90 };
-        run(&mut s, Level::Control, &Command::PageDelete { tab: tab(), pages: "2".into() }).unwrap();
-        run(&mut s, Level::Control, &rotate()).unwrap();
-        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
-        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
-        assert!(!s.is_edited(id));
-        for attempt in [rotate(), Command::PageDelete { tab: tab(), pages: "1".into() }, Command::PageMove { tab: tab(), pages: "1".into(), to: 2 }, Command::PageInsert { tab: tab(), path: "/d/b.pdf".into(), at: 1 }, Command::Close { tab: tab() }] {
-            let refused = run(&mut s, Level::Control, &attempt).unwrap_err();
-            assert_eq!((refused.code, refused.exit), ("would_clear_redo", exit::PERMISSION), "{}", attempt.tag());
-            assert!(refused.next.contains("recto redo") && refused.next.contains("recto permission request full"), "{}", refused.next);
-            assert_eq!(refused.ask.as_deref(), Some("recto permission request full"));
+        owners_rotation(&mut s, 0);
+        owners_rotation(&mut s, 1);
+        let users = turned_pages(&s);
+        let check_still_there = |s: &Session<Fake>, when: &str| {
+            assert!(s.page_edits(id).is_some_and(recto_session::edit::PageEdits::holds_owner_edits), "{when}");
+            assert_eq!(s.tabs().len(), 1, "{when}");
+        };
+        // Directly: discard and close while they're still applied.
+        assert_eq!(run(&mut s, Level::Control, &Command::Discard { tab: tab() }).unwrap_err().code, "would_discard_user_edits");
+        assert_eq!(run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err().code, "unsaved_changes");
+        check_still_there(&s, "before any undo");
+        // Undone, one at a time. Undoing is allowed, since it can be redone. Nothing that clears them is, at any point.
+        for left in [1, 0] {
+            run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+            for attempt in agent_attempts() {
+                let refused = run(&mut s, Level::Control, &attempt).unwrap_err();
+                assert_eq!((refused.code, refused.exit), ("would_clear_redo", exit::PERMISSION), "{} with {left} left", attempt.tag());
+                assert!(refused.next.contains("recto redo") && refused.next.contains(ASK_FULL), "{}", refused.next);
+                assert_eq!(refused.ask.as_deref(), Some(ASK_FULL));
+                assert!(refused.message.contains("user's"), "the message must say whose they are: {}", refused.message);
+            }
+            let discard = run(&mut s, Level::Control, &Command::Discard { tab: tab() }).unwrap_err();
+            assert_eq!((discard.code, discard.exit), ("would_discard_user_edits", exit::PERMISSION));
+            assert!(discard.message.contains("user's"), "{}", discard.message);
+            check_still_there(&s, "after an undo");
         }
-        assert!(s.page_edits(id).unwrap().can_redo(), "nothing was lost");
-        // Redoing everything keeps it all, and then editing is fine.
+        assert!(!s.is_edited(id), "with both undone there's nothing unsaved, and that's when a close would have got through");
+        // And redo gets back all of it, exactly.
         run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
         run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
-        assert!(run(&mut s, Level::Control, &rotate()).is_ok());
-        // At Full, it's the holder's call.
+        assert_eq!(turned_pages(&s), users);
+        // The agent's own work on top: edit, undo, edit again, all fine, and the user's stay under it.
+        run(&mut s, Level::Control, &Command::PageRotate { tab: tab(), pages: "9".into(), degrees: 90 }).unwrap();
         run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
-        assert!(run(&mut s, Level::Full, &rotate()).is_ok());
+        run(&mut s, Level::Control, &Command::PageDelete { tab: tab(), pages: "10".into() }).expect("only the agent's own undone step goes");
         run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
-        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
-        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        // Closing with the agent's own step undone still can't happen, because the user's edits are unsaved.
+        let close = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
+        assert_eq!(close.code, "unsaved_changes");
+        assert!(close.message.contains("user's") && close.next.contains(ASK_FULL), "{} {}", close.message, close.next);
+        assert_eq!(turned_pages(&s), users, "nothing of the user's has gone");
+        // At Full, it's the holder's call, as it was.
+        run(&mut s, Level::Full, &Command::Discard { tab: tab() }).unwrap();
         assert!(run(&mut s, Level::Full, &Command::Close { tab: tab() }).is_ok());
+    }
+
+    /// Failure: an agent's `undo` hides the user's edit. It's off the page, so every answer read `saved: true` and nothing said it was there to lose, and the session's own close, the app's way out, would have gone through. At Full it's still the holder's call, and goes through this time because it's said on purpose.
+    #[test]
+    fn undoing_the_users_edit_doesnt_read_as_nothing_there() {
+        let mut s = edit_session();
+        let id = TabId(1);
+        let tab = || "#1".to_string();
+        owners_rotation(&mut s, 0);
+        let undone = run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        assert_eq!((&undone["edited"], &undone["saved"], &undone["user_edits_undone"], &undone["can_redo"]), (&json!(false), &json!(false), &json!(true), &json!(true)), "{undone}");
+        assert!(human::render("undo", &undone).contains("recto redo"), "{undone}");
+        let where_now = run(&mut s, Level::ReadOnly, &Command::Where { tab: tab() }).unwrap();
+        assert_eq!(where_now["user_edits_undone"], true, "{where_now}");
+        assert!(human::render("where", &where_now).contains("recto redo"), "{where_now}");
+        assert_eq!(run(&mut s, Level::ReadOnly, &Command::Sidebar {}).unwrap()["undone_owner_steps"], true);
+        assert_eq!(s.close(id), Err(SessionError::UnsavedChanges), "the app's route refuses too");
+        assert_eq!(run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err().code, "would_clear_redo");
+        let closed = run(&mut s, Level::Full, &Command::Close { tab: tab() }).unwrap();
+        assert_eq!(closed["count"], 0, "at Full it closes, as it did: {closed}");
+    }
+
+    /// Failure: an agent that does `page move`, `undo`, then anything else is refused and has to ask for Full to clear up after itself. A blind agent got stuck exactly here.
+    #[test]
+    fn an_agent_can_throw_away_its_own_edits() {
+        let mut s = edit_session();
+        let id = TabId(1);
+        let tab = || "#1".to_string();
+        run(&mut s, Level::Control, &Command::PageMove { tab: tab(), pages: "3".into(), to: 1 }).unwrap();
+        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::PageDelete { tab: tab(), pages: "2".into() }).expect("a new edit may clear its own undone step");
+        assert!(!s.page_edits(id).unwrap().can_redo());
+        // A close with unsaved edits stops, and says the way on, and that way works at Control.
+        let close = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
+        assert_eq!((close.code, close.exit), ("unsaved_changes", exit::FAILED));
+        assert!(close.next.contains("recto discard") && !close.next.contains("Full") && close.ask.is_none(), "{}", close.next);
+        run(&mut s, Level::Control, &Command::Discard { tab: tab() }).expect("its own edits are its own to throw away");
+        assert!(!s.is_edited(id));
+        // Undone, with nothing unsaved: it can close, and lose only that.
+        run(&mut s, Level::Control, &Command::PageRotate { tab: tab(), pages: "1".into(), degrees: 90 }).unwrap();
+        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        assert!(s.page_edits(id).unwrap().can_redo());
+        run(&mut s, Level::Control, &Command::Close { tab: tab() }).expect("nothing of the user's is at stake");
+        assert!(s.tabs().is_empty());
+    }
+
+    /// Failure: a plain answer to an edit says only how long the document is now, so an agent can't tell from it what was done, and `page move 3 --to 3` reads as a move. And `tabs` can't show how far a tab's length has come from its file's.
+    #[test]
+    fn an_edit_says_what_it_did() {
+        let mut s = edit_session();
+        let tab = || "#1".to_string();
+        let said = |s: &mut Session<Fake>, command: Command| {
+            let data = run(s, Level::Control, &command).unwrap();
+            let shown = human::render(command.tag(), &data);
+            assert!(shown.starts_with(data["did"].as_str().unwrap()), "first, before the state: {shown}");
+            data
+        };
+        assert_eq!(said(&mut s, Command::PageRotate { tab: tab(), pages: "4".into(), degrees: 270 })["did"], "Rotated page 4 by 270 degrees.");
+        assert_eq!(said(&mut s, Command::PageRotate { tab: tab(), pages: "1-2".into(), degrees: -90 })["did"], "Rotated pages 1-2 by -90 degrees.");
+        assert_eq!(said(&mut s, Command::PageMove { tab: tab(), pages: "3".into(), to: 1 })["did"], "Moved page 3 to 1.");
+        assert_eq!(said(&mut s, Command::PageMove { tab: tab(), pages: "4-5".into(), to: 7 })["did"], "Moved pages 4-5 to 7.");
+        assert_eq!(said(&mut s, Command::PageDelete { tab: tab(), pages: "5".into() })["did"], "Deleted page 5.");
+        assert_eq!(said(&mut s, Command::PageInsert { tab: tab(), path: "/d/b.pdf".into(), at: 2 })["did"], "Added 10 pages at page 2.");
+        assert_eq!(said(&mut s, Command::Undo { tab: tab() })["did"], "Undid the last edit.");
+        assert_eq!(said(&mut s, Command::Redo { tab: tab() })["did"], "Redid the last undone edit.");
+        let shown = human::render("page_delete", &run(&mut s, Level::Control, &Command::PageDelete { tab: tab(), pages: "2-3".into() }).unwrap());
+        assert!(shown.starts_with("Deleted pages 2-3. 17 pages now, 10 in the file."), "{shown}");
+        let tabs = run(&mut s, Level::ReadOnly, &Command::Tabs { from: None, limit: None }).unwrap();
+        assert_eq!((&tabs["tabs"][0]["pages"], &tabs["tabs"][0]["file_pages"]), (&json!(17), &json!(10)), "{tabs}");
+        assert_eq!(said(&mut s, Command::Discard { tab: tab() })["did"], "Threw away this tab's edits.");
+        assert_eq!(said(&mut s, Command::Discard { tab: tab() })["did"], "There were no edits to throw away.");
+        let nothing = said(&mut s, Command::PageMove { tab: tab(), pages: "3".into(), to: 3 });
+        assert_eq!((&nothing["did"], &nothing["edited"], &nothing["saved"]), (&json!("Page 3 is already at 3, so nothing changed."), &json!(false), &json!(true)));
+        assert_eq!(said(&mut s, Command::PageMove { tab: tab(), pages: "3-4".into(), to: 3 })["did"], "Pages 3-4 are already at 3, so nothing changed.");
+        assert!(run(&mut s, Level::Control, &Command::Close { tab: tab() }).is_ok(), "and so it closes");
+    }
+
+    /// Failure: an edit through the agent interface is recorded as the user's, so it's protected from the agent that made it, or recorded as nobody's. Every edit command must be an agent's, however it gets to the session.
+    #[test]
+    fn every_edit_through_the_agent_interface_is_an_agents() {
+        let mut s = edit_session();
+        let tab = || "#1".to_string();
+        for command in [
+            Command::PageRotate { tab: tab(), pages: "1".into(), degrees: 90 },
+            Command::PageMove { tab: tab(), pages: "1".into(), to: 2 },
+            Command::PageDelete { tab: tab(), pages: "1".into() },
+            Command::PageInsert { tab: tab(), path: "/d/b.pdf".into(), at: 1 },
+        ] {
+            run(&mut s, Level::Control, &command).unwrap();
+            assert!(!s.page_edits(TabId(1)).unwrap().holds_owner_edits(), "{}", command.tag());
+        }
+        run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
+        run(&mut s, Level::Control, &Command::Redo { tab: tab() }).unwrap();
+        assert!(!s.page_edits(TabId(1)).unwrap().holds_owner_edits(), "undo and redo don't change that");
+    }
+
+    /// Failure: an agent makes enough edits that the user's step falls off the capped list, and then its discard counts only what's left on the list, and throws away the user's edit, still in the page order, along with its own. And the reverse: an agent's step falling off must not stop it clearing up.
+    #[test]
+    fn a_step_past_the_undo_cap_still_counts_for_discard() {
+        let mut s = edit_session();
+        let tab = || "#1".to_string();
+        owners_rotation(&mut s, 0);
+        for _ in 0..recto_session::edit::MAX_UNDO {
+            run(&mut s, Level::Control, &Command::PageMove { tab: tab(), pages: "2".into(), to: 3 }).unwrap();
+        }
+        assert_eq!(run(&mut s, Level::Control, &Command::Discard { tab: tab() }).unwrap_err().code, "would_discard_user_edits");
+        assert_eq!(turned_pages(&s)[0], 1, "the user's edit is still there");
+        // The cap isn't an agent erasing anything: all the agent's steps can come off, and undo isn't refused.
+        while run(&mut s, Level::Control, &Command::Undo { tab: tab() }).is_ok() {}
+        assert!(s.is_edited(TabId(1)), "it still differs from the file, and says so");
+        let close = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
+        assert!(close.next.contains("past the undo limit"), "what it can't do must not be offered: {}", close.next);
+        let mut own = edit_session();
+        for _ in 0..=recto_session::edit::MAX_UNDO {
+            run(&mut own, Level::Control, &Command::PageMove { tab: tab(), pages: "2".into(), to: 3 }).unwrap();
+        }
+        assert!(own.page_edits(TabId(1)).unwrap().history_dropped());
+        run(&mut own, Level::Control, &Command::Discard { tab: tab() }).expect("all of it is its own");
+        assert!(run(&mut own, Level::Control, &Command::Close { tab: tab() }).is_ok());
     }
 
     /// Failure: the refusal mentions only undone steps, so an agent with unsaved edits runs `redo` as told and brings back a delete it had backed out of, thinking that clears the way. It must name all that's at stake and each honest way on, including that saving doesn't exist. Nothing here may loosen the rule.
@@ -1601,15 +1810,14 @@ mod tests {
     fn a_refused_close_says_all_it_would_lose_and_every_way_on() {
         let mut s = edit_session();
         let tab = || "#1".to_string();
-        let rotate = || Command::PageRotate { tab: "#1".into(), pages: "1".into(), degrees: 90 };
-        run(&mut s, Level::Control, &rotate()).unwrap();
-        run(&mut s, Level::Control, &Command::PageDelete { tab: tab(), pages: "2".into() }).unwrap();
+        owners_rotation(&mut s, 0);
+        owners_rotation(&mut s, 1);
         run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap();
 
         let both = run(&mut s, Level::Control, &Command::Close { tab: tab() }).unwrap_err();
         assert_eq!((both.code, both.exit), ("would_clear_redo", exit::PERMISSION), "below Full, this is still that refusal");
-        assert_eq!(both.ask.as_deref(), Some("recto permission request full"));
-        assert!(both.message.contains("unsaved edits and undone steps"), "{}", both.message);
+        assert_eq!(both.ask.as_deref(), Some(ASK_FULL));
+        assert!(both.message.contains("unsaved edits and undone steps") && both.message.contains("user's"), "{}", both.message);
         for must in ["recto redo", "anything you undid on purpose", "recto undo", "recto discard", "needs Full", "Saving isn't built", "Leave the tab open"] {
             assert!(both.next.contains(must), "{must}: {}", both.next);
         }
