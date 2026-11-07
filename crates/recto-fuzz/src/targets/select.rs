@@ -5,7 +5,7 @@
 use super::index::page;
 use crate::guard::{Budget, within};
 use crate::input::Take;
-use recto_index::select::{CopiedText, MAX_LINES, MAX_RECTS_PER_PAGE, MAX_SELECTABLE_CHARS, PAGE_END, PagePoint, PageText, Place, Range, Selection, Texts, Unit};
+use recto_index::select::{CopiedText, MAX_LINES, MAX_RECTS_PER_PAGE, MAX_SELECTABLE_CHARS, PAGE_END, PagePoint, PageText, Place, Range, Selection, Texts, Unit, chrome_for, neighbour_pages};
 use recto_proto::PageFrame;
 use recto_reader::selection::{Selecting, Urgency};
 use std::sync::Arc;
@@ -75,7 +75,11 @@ fn check_page(text: &PageText, take: &mut Take) {
     let whole = text.text_of(0, PAGE_END);
     assert!(whole.chars().count() <= len as usize);
     let mut copied = CopiedText::default();
-    copied.add_page(0, text, &Range::pages(0, 0), 64);
+    // Its own edge lines as its neighbour's, which a hostile file can make repeat however it likes.
+    let leave_out = chrome_for(0, text, &Range::pages(0, 0), &[text.edge_lines()]);
+    assert!(text.edge_lines().len() <= recto_index::chrome::MAX_EDGE_LINES);
+    assert!(leave_out.iter().all(|(start, end)| start <= end && *end <= len), "{leave_out:?} of {len}");
+    copied.add_page(0, text, &Range::pages(0, 0), 64, &leave_out);
     assert!(copied.text.len() <= 64, "{}", copied.text.len());
 }
 
@@ -127,7 +131,7 @@ fn check_page_view(text: &Arc<PageText>, other: &Arc<PageText>, take: &mut Take)
             assert!(range.start <= range.end, "{range:?}");
         }
         for urgency in [Urgency::Now, Urgency::WhenIdle] {
-            if let Some(wanted) = selecting.wanted(urgency, &visible, |_| heavy) {
+            if let Some(wanted) = selecting.wanted(urgency, &visible, PAGES, |_| heavy) {
                 assert!(wanted.page <= u32::from(u8::MAX).saturating_mul(2) + PAGES, "{wanted:?}");
             }
         }
@@ -135,7 +139,7 @@ fn check_page_view(text: &Arc<PageText>, other: &Arc<PageText>, take: &mut Take)
     // Left to itself, with every page it asks for given to it, a copy comes to an end.
     selecting.release();
     for _ in 0..u32::from(u8::MAX) * 4 {
-        let Some(wanted) = selecting.wanted(Urgency::Now, &visible, |_| false).or_else(|| selecting.wanted(Urgency::WhenIdle, &visible, |_| false)) else { break };
+        let Some(wanted) = selecting.wanted(Urgency::Now, &visible, PAGES, |_| false).or_else(|| selecting.wanted(Urgency::WhenIdle, &visible, PAGES, |_| false)) else { break };
         selecting.page_read(wanted.page, Arc::clone(text), true, &visible);
         selecting.advance_copy(PAGES, |_| false);
     }
@@ -159,7 +163,8 @@ fn check_pointer(texts: &One, take: &mut Take) {
                 if let (Some((start, end)), Some(text)) = (range.on_page(page), texts.page_text(page)) {
                     let _ = text.rects(start, end);
                     let mut copied = CopiedText::default();
-                    copied.add_page(page, text, &range, 256);
+                    let neighbours: Vec<&[recto_index::chrome::EdgeLine]> = neighbour_pages(page, 3).filter_map(|other| texts.page_text(other).map(PageText::edge_lines)).collect();
+                    copied.add_page(page, text, &range, 256, &chrome_for(page, text, &range, &neighbours));
                     assert!(copied.text.len() <= 256);
                 }
             }

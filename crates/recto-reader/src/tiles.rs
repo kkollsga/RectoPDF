@@ -1223,7 +1223,7 @@ impl Reader {
             return false;
         }
         let visible: Vec<u32> = self.visible_pages(doc).collect();
-        if self.selecting.wanted(Urgency::Now, &visible, |page| doc.heavy.get(&page).copied().unwrap_or(false)).is_some() {
+        if self.selecting.wanted(Urgency::Now, &visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false)).is_some() {
             return true;
         }
         visible.iter().any(|&page| {
@@ -1793,7 +1793,7 @@ impl Reader {
     fn text_plan(&mut self, tab: u32, urgency: Urgency) -> Option<JobPlan> {
         let doc = self.docs.get(&tab)?;
         let visible: Vec<u32> = self.visible_pages(doc).collect();
-        let wanted = self.selecting.wanted(urgency, &visible, |page| doc.heavy.get(&page).copied().unwrap_or(false))?;
+        let wanted = self.selecting.wanted(urgency, &visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false))?;
         let (file, source_page) = doc.map.source(wanted.page)?;
         let generation = self.fresh_generation();
         Some(JobPlan { tab, position: wanted.page, file, source_page, generation, kind: PlanKind::Text { check: wanted.check } })
@@ -2157,7 +2157,7 @@ impl Reader {
             return false;
         }
         let visible: Vec<u32> = self.visible_pages(doc).collect();
-        if !self.selecting.is_settled(&visible, |page| doc.heavy.get(&page).copied().unwrap_or(false)) {
+        if !self.selecting.is_settled(&visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false)) {
             return false;
         }
         for page in self.visible_pages(doc) {

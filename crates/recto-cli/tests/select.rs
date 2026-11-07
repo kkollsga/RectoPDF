@@ -87,6 +87,32 @@ fn a_selection_crosses_a_page_boundary() {
     assert_eq!(text(&data(&file, &["copy", "--page", "1", "--chars", "6-10"])), "page");
 }
 
+/// A report's pages, drawn: a running head, two lines of body, and the page number at the foot.
+fn report(count: u32) -> Vec<u8> {
+    let list: Vec<Page> = (1..=count)
+        .map(|page| Page::new(format!("BT /F1 9 Tf 72 750 Td (Annual report 2024) Tj ET\nBT /F1 11 Tf 14 TL 72 690 Td (Body of page {page}, first line.) Tj T* (Body of page {page}, second line.) Tj ET\nBT /F1 9 Tf 540 30 Td ({page}) Tj ET\n").into_bytes()))
+        .collect();
+    pages(&list)
+}
+
+/// Failure: a copy across pages has the page number and the running head in the middle of the body text, as the owner found (2026-11-07: "When selecting across pages the page number is copied. Both footer and header should be ignored when coppying body text."), or a copy of a whole page has them, or `recto text` changes, which still reads everything on the page.
+#[test]
+fn a_copy_of_body_text_leaves_out_running_heads_and_page_numbers() {
+    let file = TempPdf::new("report.pdf", &report(4));
+    let across = data(&file, &["copy", "--page", "2", "--to-page", "3"]);
+    assert_eq!(text(&across), "Body of page 2, first line.\nBody of page 2, second line.\nBody of page 3, first line.\nBody of page 3, second line.", "{across}");
+    assert!(across["chrome_left_out"].as_u64().unwrap() > 0 && across["note"].as_str().unwrap().contains("running heads"), "{across}");
+    let all = data(&file, &["copy", "--all"]);
+    assert!(!text(&all).contains("Annual") && !text(&all).lines().any(|line| line.trim().parse::<u32>().is_ok()), "{all}");
+    let page = data(&file, &["text", "2"]);
+    let read = page["untrusted"]["text"].as_str().unwrap();
+    assert!(read.contains("Annual report 2024") && read.lines().any(|line| line.trim() == "2"), "recto text is unchanged: {read:?}");
+    // Picking only the running head copies it.
+    let head = read.find("Annual").unwrap();
+    let only = data(&file, &["copy", "--page", "2", "--chars", &format!("{head}-{}", head + 18)]);
+    assert_eq!(text(&only), "Annual report 2024");
+}
+
 /// Failure: `--at` means something else from what `rects` said, so a word found at a point isn't the one drawn there.
 #[test]
 fn a_click_takes_the_word_or_the_line_it_lands_on() {
