@@ -823,3 +823,24 @@ fn no_total_is_given_over_a_page_that_couldnt_be_counted() {
     let (plain, _, _) = state.text(&["search", "common", "--limit", "1"]);
     assert!(plain.contains("At least 8") && !plain.contains("8 hits in all"), "{plain}");
 }
+
+/// Failure: on an edited tab whose file has changed, every page fails and nothing is read, and the answer says `index.state: ready` and "Answered from the index", a false account of what happened to a reader deciding what to trust.
+#[test]
+fn a_changed_file_isnt_said_to_have_been_answered_from_the_index() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("changed.pdf", 3);
+    state.json(&["open", path(&file)]);
+    wait_done(&state, "active");
+    let (rotated, code) = state.json(&["page", "rotate", "1", "--by", "90"]);
+    assert_eq!(code, 0, "{rotated}");
+    std::fs::write(&file.0, pages(&[Page::new(text_lines(&["Another file now"]))])).unwrap();
+    let (found, code) = state.json(&["search", "common"]);
+    assert_eq!(code, 0, "{found}");
+    assert_eq!(found["data"]["coverage"]["failed_pages"], serde_json::json!([1, 2, 3]), "{found}");
+    assert_eq!(found["data"]["route"], "scan", "{found}");
+    assert_eq!(found["data"]["index"]["state"], "unavailable", "{found}");
+    assert!(!found["data"]["index"]["note"].as_str().unwrap().contains("Answered from the index"), "{found}");
+    let (plain, _, _) = state.text(&["search", "common"]);
+    assert!(!plain.contains("Answered"), "{plain}");
+}

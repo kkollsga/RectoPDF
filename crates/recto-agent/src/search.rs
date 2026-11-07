@@ -203,6 +203,7 @@ fn worker_for<'a>(current: &'a mut Option<(u16, DocRenderer)>, file: u16, source
 fn look_at_file(indexing: Option<&dyn Indexing>, source: &PlanFile, force_scan: bool, not_ready: &mut Vec<FileIndex>) -> FileRoute {
     let Some(indexing) = indexing.filter(|_| !force_scan) else { return FileRoute::Scan };
     if !source.is_current() {
+        not_ready.push(FileIndex::Unavailable);
         return FileRoute::Scan;
     }
     match crate::index::file_index(indexing, &source.path, true) {
