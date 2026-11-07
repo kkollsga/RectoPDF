@@ -1188,7 +1188,8 @@ impl Walk {
         let (mut left, mut right, mut bottom, mut top) = (x, x, y, y);
         // SAFETY: the text page is live, the index came from its count, and the out-pointers are live for the call. On failure they stay at the origin.
         unsafe { (self.api.FPDFText_GetCharBox)(self.text_page, index as c_int, &raw mut left, &raw mut right, &raw mut bottom, &raw mut top) };
-        Area { left, bottom, right, top }.meets(self.view)
+        // Only touching the box is nothing of it inside.
+        Area { left, bottom, right, top }.overlaps(self.view)
     }
 
     fn all_chars_of(&mut self, object: FPDF_PAGEOBJECT) -> Vec<(u32, f64, f64, u32)> {
@@ -1403,12 +1404,20 @@ impl Walk {
                     plan.push((glyph, local_x as f32, local_y as f32));
                 }
                 // Something with a real box and no outline would be lost. A space has neither, but a code that reads as a space may not be one: TeX's big brackets are at 0x20 and its bars at 0x0C.
-                None if box_has_area && (!char::from_u32(code).is_some_and(char::is_whitespace) || marks_the_page(right - left, top - bottom, em)) => return None,
+                None if box_has_area && (!char::from_u32(code).is_some_and(char::is_whitespace) || marks_the_page(right - left, top - bottom, em, (run.0[0], run.0[1]), axis_aligned, self.advance_of(font, glyph, size, em))) => return None,
                 None => {}
             }
             at += used;
         }
         Some(plan)
+    }
+
+    /// How far a character moves the text along, on the page.
+    fn advance_of(&self, font: FPDF_FONT, code: u32, size: f32, em: f64) -> Option<f64> {
+        let mut width = 0.0f32;
+        // SAFETY: the font is live with its page, and the out-pointer is live for the call.
+        let known = unsafe { (self.api.FPDFFont_GetGlyphWidth)(font, code, size, &raw mut width) } != 0;
+        (known && width.is_finite() && size != 0.0).then(|| f64::from(width) * em / f64::from(size))
     }
 
     /// Whether an object draws anything, and whether any of it isn't plain white.
@@ -2216,9 +2225,18 @@ impl Walk {
 }
 
 
-/// Whether a character with no outline and a space's code draws anything anyway, going by its box. A real space's box is a line, across or, on turned text, up the page.
-fn marks_the_page(width: f64, height: f64, em: f64) -> bool {
-    width.min(height) > SPACE_THIN_EM * em
+/// Whether a character with no outline and a space's code draws anything anyway, going by its box on the page. A real space's box is a line along the text, as long as the space is wide. Across or up the page that's plain to see. At an angle the box holds that line corner to corner, so it has to fit the line's own shape and be no longer than the space.
+fn marks_the_page(width: f64, height: f64, em: f64, along: (f64, f64), axis_aligned: bool, advance: Option<f64>) -> bool {
+    let thin = SPACE_THIN_EM * em;
+    if axis_aligned {
+        return width.min(height) > thin;
+    }
+    let length = along.0.hypot(along.1);
+    if length <= 0.0 {
+        return true;
+    }
+    let (x, y) = ((along.0 / length).abs(), (along.1 / length).abs());
+    (width * y - height * x).abs() > thin || advance.is_none_or(|advance| width * x + height * y > advance + thin)
 }
 
 /// Each planned glyph with its id, or `None` if any has none. One with no id, past the limit on glyphs or on a glyph's size, can't be drawn, and leaving it out of its run would lose it with nothing said.
@@ -2473,11 +2491,20 @@ mod tests {
     #[test]
     fn only_a_real_space_marks_nothing() {
         let em = 10.0;
-        assert!(marks_the_page(5.2, 29.9, em), "a big bracket");
-        assert!(marks_the_page(0.5, 7.0, em), "a bracket's thin bar");
-        assert!(!marks_the_page(2.5, 0.01, em), "a space");
-        assert!(!marks_the_page(0.01, 2.5, em), "a space on turned text");
-        assert!(!marks_the_page(30.0, 0.0, 120.0), "a space in big type");
+        let upright = |width, height, em| marks_the_page(width, height, em, (1.0, 0.0), true, None);
+        assert!(upright(5.2, 29.9, em), "a big bracket");
+        assert!(upright(0.5, 7.0, em), "a bracket's thin bar");
+        assert!(!upright(2.5, 0.01, em), "a space");
+        assert!(!upright(0.01, 2.5, em), "a space on turned text");
+        assert!(!upright(30.0, 0.0, 120.0), "a space in big type");
+        // Text at an angle, whose box holds a space's line corner to corner.
+        let side = 2.5 * std::f64::consts::FRAC_1_SQRT_2;
+        assert!(!marks_the_page(side, side, em, (1.0, 1.0), false, Some(2.5)), "a space at 45 degrees");
+        let (long, short) = (2.5 * 0.866, 2.5 * 0.5);
+        assert!(!marks_the_page(long, short, em, (0.866, 0.5), false, Some(2.5)), "a space at 30 degrees");
+        let fat = (5.2 + 29.9) * std::f64::consts::FRAC_1_SQRT_2;
+        assert!(marks_the_page(fat, fat, em, (1.0, 1.0), false, Some(7.9)), "a big bracket at 45 degrees");
+        assert!(marks_the_page(side, side, em, (1.0, 1.0), false, None), "and with no width to go by it isn't taken for a space");
     }
 
     /// Failure: a wide-gamut photo reads as sRGB and passes through, so its colours come out wrong, or a real sRGB profile doesn't and every such photo loses its original bytes. Hostile lengths in a profile mustn't panic.

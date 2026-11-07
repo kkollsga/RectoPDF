@@ -511,6 +511,44 @@ fn annotations_arent_cut_to_the_last_objects_clip_and_a_links_look_is_kept() {
     assert_eq!(data["all_vector"], true, "{data}");
 }
 
+/// Failure: a space in diagonal text has a box as wide as it is tall, so it's taken for something that draws and the whole line, a watermark most often, goes as a picture. It's still vector, with its words.
+#[test]
+fn a_space_in_diagonal_text_is_still_a_space() {
+    let file = TempPdf::new("doc.pdf", &pages(&[Page::new("BT /F1 40 Tf 0.7071 0.7071 -0.7071 0.7071 100 100 Tm (DRAFT COPY) Tj ET\n")]));
+    let (svg, data) = svg_of(&file, &[]);
+    assert_eq!(data["all_vector"], true, "{data}");
+    assert!(svg.contains("<use") && svg.contains("DRAFT COPY"), "{data}");
+}
+
+/// A page drawing one glyph of a Type 3 font, set with `d0`, which gives no size for it, and that makes it red. `code` is the character it's at, and the same for the text.
+fn type3_d0(name: &str, code: u32, text: &str) -> Vec<u8> {
+    let (font, glyph) = (first_extra_object(1), first_extra_object(1) + 1);
+    let dict = format!("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /{name} {glyph} 0 R >> /Encoding << /Type /Encoding /Differences [{code} /{name}] >> /FirstChar {code} /LastChar {code} /Widths [1000] >>");
+    let drawn = Object::Stream { dict: String::new(), data: b"1000 0 d0 1 0 0 rg 100 100 800 800 re f".to_vec() };
+    pages_with(&[Page::new(format!("BT /T3 40 Tf 100 500 Td ({text}) Tj ET\n"))], &format!("/Font << /T3 {font} 0 R >>"), vec![Object::Dict(dict), drawn])
+}
+
+/// Failure: a Type 3 glyph set with `d0`, which gives no size of its own, is taken for nothing because it has no outline, and left out with nothing said. PDFium works out a box for it today, which is all that keeps it, so this holds that in place. Whichever code it's at, the page's mark has to reach the file.
+#[test]
+fn a_type_3_glyph_with_no_size_of_its_own_is_kept() {
+    for (what, bytes) in [("a letter", type3_d0("a", 97, "a")), ("at a space's code", type3_d0("space", 32, " "))] {
+        let file = TempPdf::new("doc.pdf", &bytes);
+        assert!(red_in_render(&file) > 0, "{what}: PDFium draws it");
+        let (svg, data) = svg_of(&file, &[]);
+        let red: usize = embedded_images(svg.as_bytes()).iter().map(red_pixels).sum();
+        assert!(red > 0 || svg.contains("#f00"), "{what}: {data}");
+    }
+}
+
+/// Failure: a character only touching a box's edge goes in with what's inside it, so something outside the box is in the file. An object can touch the box and still have nothing inside.
+#[test]
+fn a_character_only_touching_the_box_stays_out() {
+    let file = TempPdf::new("doc.pdf", &pages(&[Page::new("BT /F1 12 Tf 100 700 Td (AB) Tj ET\n")]));
+    // PDFium says this is exactly where A's box ends, and B's starts a little further on.
+    let (svg, _) = svg_of(&file, &["--rect", "108.016,70,50,40"]);
+    assert!(svg.contains(">B</text>"), "{svg}");
+}
+
 /// Failure: a layer that's off comes out in the export, so what the page doesn't show is handed over. It must be left out, and counted.
 #[test]
 fn a_layer_thats_off_is_left_out_and_counted() {
