@@ -4,7 +4,7 @@
 //!
 //! **What the UI thread pays.** A press, a drag or a pointer move looks through a page already here, or notes that it's wanted and returns. It never waits for text.
 //!
-//! **Hidden text takes a second look.** The pointer's first read of a page is quick and has no hidden-text check, since that draws the page. Once a page is in a selection and showing, or being copied, it's read again with the check, and that can move no place: only what's flagged changes. A page known to be heavy isn't drawn for this, since one more draw of a USGS map is hundreds of MiB, and a copy says it wasn't checked.
+//! **Hidden text takes a second look.** The first read of a page is quick and has no hidden-text check, since that draws the page. Once a page is in a selection and showing, or being copied, it's read again with the check when everything visible is drawn, and that can move no place: only what's flagged changes. A page known to be heavy isn't drawn for this, since one more draw of a USGS map is hundreds of MiB, and a copy says it wasn't checked.
 
 use recto_index::select::{CopiedText, MAX_COPY_BYTES, MAX_COPY_PAGES, MAX_COPY_TIME, PagePoint, PageText, Range, Rect, Selection, Texts};
 use serde_json::{Value, json};
@@ -191,6 +191,10 @@ impl Selecting {
         self.copy.is_some()
     }
 
+    fn held_bytes(&self) -> usize {
+        self.texts.iter().map(|held| held.text.bytes()).sum()
+    }
+
     fn held(&self, page: u32) -> Option<&Held> {
         self.texts.iter().find(|held| held.page == page)
     }
@@ -209,16 +213,12 @@ impl Selecting {
                         return Some(WantedText { page, check: false });
                     }
                 }
+                // What shows of a selection, with no drawing, so a scroll through a whole document selected isn't held up by a draw for each page.
                 let range = self.range.filter(|range| !range.is_empty())?;
-                let bytes: usize = self.texts.iter().map(|held| held.text.bytes()).sum();
-                for &page in visible.iter().filter(|page| range.on_page(**page).is_some()).take(MAX_SELECTED_VISIBLE) {
-                    let heavy = is_heavy(page);
-                    let missing = self.held(page).is_none();
-                    if (missing || self.page_wants_check(page, heavy)) && bytes < MOST_TEXT_BYTES {
-                        return Some(WantedText { page, check: !heavy });
-                    }
+                if self.held_bytes() >= MOST_TEXT_BYTES {
+                    return None;
                 }
-                None
+                visible.iter().filter(|page| range.on_page(**page).is_some()).take(MAX_SELECTED_VISIBLE).find(|page| self.held(**page).is_none()).map(|page| WantedText { page: *page, check: false })
             }
             Urgency::WhenIdle => {
                 if let Some(page) = self.copy.as_ref().and_then(|copy| copy.next) {
@@ -226,6 +226,12 @@ impl Selecting {
                     if self.held(page).is_none() || self.page_wants_check(page, heavy) {
                         return Some(WantedText { page, check: !heavy });
                     }
+                }
+                // What's selected and showing, checked for hidden text, once it's all drawn.
+                if let Some(range) = self.range.filter(|range| !range.is_empty())
+                    && let Some(page) = visible.iter().filter(|page| range.on_page(**page).is_some()).take(MAX_SELECTED_VISIBLE).find(|page| self.held(**page).is_some() && self.page_wants_check(**page, is_heavy(**page)))
+                {
+                    return Some(WantedText { page: *page, check: true });
                 }
                 self.hover.filter(|page| self.held(*page).is_none()).map(|page| WantedText { page, check: false })
             }
@@ -271,8 +277,7 @@ impl Selecting {
         let range = self.range;
         let copy_next = self.copy.as_ref().and_then(|copy| copy.next);
         loop {
-            let bytes: usize = self.texts.iter().map(|held| held.text.bytes()).sum();
-            if self.texts.len() <= MAX_TEXT_PAGES && bytes <= MAX_TEXT_BYTES {
+            if self.texts.len() <= MAX_TEXT_PAGES && self.held_bytes() <= MAX_TEXT_BYTES {
                 return;
             }
             let in_use = |page: u32| ends.contains(&Some(page)) || copy_next == Some(page) || (visible.contains(&page) && range.is_some_and(|range| range.on_page(page).is_some()));
@@ -411,7 +416,7 @@ impl Selecting {
             "end": self.range.map(|range| place(range.end)),
             "pages_with_highlight": self.on_layers.len(),
             "text_pages_held": self.texts.len(),
-            "text_bytes_held": self.texts.iter().map(|held| held.text.bytes()).sum::<usize>(),
+            "text_bytes_held": self.held_bytes(),
             "text_reads": self.reads,
             "copying": self.copy.is_some(),
             "copy_waiting_for_host": self.copied.is_some(),
@@ -500,9 +505,10 @@ mod tests {
         assert_eq!(selecting.wanted(Urgency::Now, &[0, 1, 2], NOT_HEAVY), None, "a click selects nothing, so no second look");
         selecting.drag(at(1, 110.0));
         assert!(selecting.has_selection());
-        assert_eq!(selecting.wanted(Urgency::Now, &[0, 1, 2], NOT_HEAVY), Some(WantedText { page: 1, check: true }), "selected and showing, so it's checked for hidden text");
+        assert_eq!(selecting.wanted(Urgency::Now, &[0, 1, 2], NOT_HEAVY), None, "it can highlight with what it has, and tiles don't wait for a draw");
+        assert_eq!(selecting.wanted(Urgency::WhenIdle, &[0, 1, 2], NOT_HEAVY), Some(WantedText { page: 1, check: true }), "selected and showing, so it's checked for hidden text");
         selecting.page_read(1, text("abcdefghij"), true, &[0, 1, 2]);
-        assert_eq!(selecting.wanted(Urgency::Now, &[0, 1, 2], NOT_HEAVY), None);
+        assert_eq!(selecting.wanted(Urgency::WhenIdle, &[0, 1, 2], NOT_HEAVY), None);
     }
 
     /// Failure: the pointer resting on a page draws it for the hidden-text check, or a heavy page is drawn again for one, at hundreds of MiB.
@@ -517,7 +523,8 @@ mod tests {
         assert!(!selecting.is_over_text(at(4, 500.0)));
         selecting.press(at(4, 72.0), 1, false);
         selecting.drag(at(4, 110.0));
-        assert_eq!(selecting.wanted(Urgency::Now, &[4], |_| true), None, "heavy: it's kept as it is");
+        assert_eq!(selecting.wanted(Urgency::WhenIdle, &[4], |_| true), None, "heavy: it's kept as it is");
+        assert_eq!(selecting.wanted(Urgency::WhenIdle, &[4], NOT_HEAVY), Some(WantedText { page: 4, check: true }), "any other page is checked");
     }
 
     /// Failure: selecting a whole long document reads every page, or holds their text.
@@ -528,12 +535,12 @@ mod tests {
         assert!(selecting.has_selection());
         let mut read = 0;
         let visible = [500, 501];
-        while let Some(wanted) = selecting.wanted(Urgency::Now, &visible, NOT_HEAVY) {
+        while let Some(wanted) = selecting.wanted(Urgency::Now, &visible, NOT_HEAVY).or_else(|| selecting.wanted(Urgency::WhenIdle, &visible, NOT_HEAVY)) {
             selecting.page_read(wanted.page, text("words"), wanted.check, &visible);
             read += 1;
             assert!(read < 8, "it keeps asking");
         }
-        assert_eq!(read, 2);
+        assert_eq!(read, 4, "each page showing, then each checked");
         assert_eq!(selecting.report()["text_pages_held"], 2);
     }
 
@@ -559,6 +566,7 @@ mod tests {
             fresh.page_read(page, text("words"), true, &visible);
         }
         assert_eq!(fresh.wanted(Urgency::Now, &visible, NOT_HEAVY), None);
+        assert_eq!(fresh.wanted(Urgency::WhenIdle, &visible, NOT_HEAVY), None);
     }
 
     /// Failure: a copy holds the UI thread until it's done, skips a page, or has no way to say the file asks not to be copied and go on when told.

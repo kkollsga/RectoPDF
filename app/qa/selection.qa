@@ -1,0 +1,47 @@
+# Selecting text in the page view, on what the app reports. No event is posted: these go through what a real press, drag and release call.
+# recto qa run app/qa/selection.qa, with RECTO_QA_PDF set to a PDF of at least 2 pages whose first line is 12 pt text near the top left of page 1, about 68 points down: `recto select 1` says where.
+open "$RECTO_QA_PDF"
+qa wait-settled --timeout 30s
+qa state
+expect reader.selection.selected false
+expect app.pages.highlight_layers 0
+# A double-click takes a word, once its page is read.
+qa mouse-down 1:80,68:2
+qa mouse-up
+qa wait-settled --timeout 30s
+qa state
+expect reader.selection.selected true
+expect reader.selection.unit word
+expect app.pages.highlight_layers 1
+# A click clears it.
+qa mouse-down 1:80,68
+qa mouse-up
+qa wait-settled --timeout 30s
+qa state
+expect reader.selection.selected false
+expect app.pages.highlight_layers 0
+# Over a page break, zoomed out so both pages show.
+qa zoom 0.5
+qa wait-settled --timeout 30s
+qa mouse-down 1:80,68
+qa mouse-drag 2:300,68
+qa mouse-up
+qa wait-settled --timeout 30s
+qa state
+expect reader.selection.selected true
+expect reader.selection.start.page 1
+expect reader.selection.end.page 2
+expect app.pages.highlight_layers 2
+qa zoom 1
+qa wait-settled --timeout 30s
+# Select all, and copy, with the menu bar's own items.
+qa menu edit.select_all
+qa wait-settled --timeout 30s
+qa state
+expect reader.selection.selected true
+qa menu edit.copy
+qa wait-settled --timeout 30s
+qa copied
+expect-at-least chars 1
+qa state
+expect hangs.over_2s 0

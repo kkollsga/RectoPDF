@@ -175,6 +175,7 @@ impl QaBridge {
                 "state" => self.state(),
                 "settled" => self.settled(timeout_ms.map_or(DEFAULT_SETTLE_WAIT, Duration::from_millis)),
                 "shot" => self.shot(out.as_deref().ok_or_else(|| bad("`qa shot` needs `--out`."))?),
+                "copied" => self.ask("copied", ""),
                 _ => Err(bad("That isn't a QA command.")),
             },
             Command::QaDrive { verb, value, timeout_ms } => self.drive(verb, value, *timeout_ms),
@@ -202,7 +203,16 @@ impl QaBridge {
         };
         match verb {
             "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" => check_drive_value(verb, value)?,
-            "entry_points" => return self.ask(verb, value),
+            "entry_points" | "services" => return self.ask(verb, value),
+            // A place is said as an agent has it, on a page, and goes in by the document's coordinates, on the way to the window's, so it goes through what a real pointer's position does.
+            "mouse_down" | "mouse_drag" | "pointer" => {
+                let place = parse_page_place(value)?;
+                let (x, y) = self.engine.document_point(place.page, place.x, place.y).ok_or_else(|| bad("That page isn't in this document."))?;
+                self.ask(verb, &format!("{x},{y},{},{}", place.clicks, u8::from(place.shift)))?;
+                self.core.flush(ANSWER_AFTER_CLICK);
+                return self.ask("state", "");
+            }
+            "mouse_up" | "notice_button" => {}
             "scroll" => {
                 number(-1e9, 1e9)?;
             }
@@ -324,6 +334,35 @@ fn stuck() -> AgentError {
     AgentError::new("ui_not_answering", "The app's UI thread didn't answer in 30 s.", exit::TIMED_OUT).then("That's a hang, and a bug. `recto qa state` may show it once it's back.")
 }
 
+/// Where a QA mouse verb goes: `PAGE:X,Y`, with `:CLICKS` and `:shift` after it for a press. The page is as `recto` counts them.
+#[derive(Debug, PartialEq)]
+struct PagePlace {
+    page: u32,
+    x: f64,
+    y: f64,
+    clicks: u32,
+    shift: bool,
+}
+
+fn parse_page_place(value: &str) -> Result<PagePlace, AgentError> {
+    let wrong = || bad(format!("`{}` isn't a place. It's `PAGE:X,Y`, with `:CLICKS` and `:shift` after it for a press, such as `3:120,88:2`.", cleaned(value)));
+    let mut parts = value.split(':');
+    let page = parts.next().and_then(|word| word.parse::<u32>().ok()).and_then(|page| page.checked_sub(1)).ok_or_else(wrong)?;
+    let (x, y) = parts.next().and_then(|word| word.split_once(',')).ok_or_else(wrong)?;
+    let (x, y) = (x.parse::<f64>().map_err(|_| wrong())?, y.parse::<f64>().map_err(|_| wrong())?);
+    if !x.is_finite() || !y.is_finite() {
+        return Err(wrong());
+    }
+    let (mut clicks, mut shift) = (1, false);
+    for part in parts {
+        match part {
+            "shift" => shift = true,
+            count => clicks = count.parse::<u32>().ok().filter(|count| (1..=4).contains(count)).ok_or_else(wrong)?,
+        }
+    }
+    Ok(PagePlace { page, x, y, clicks, shift })
+}
+
 /// What each QA verb takes. Here, so the host is only ever told what it can do, and has no rules of its own about it.
 fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
     let one_of = |words: &[&str]| words.contains(&value);
@@ -423,6 +462,16 @@ mod tests {
         assert_eq!(refuse_shot_path(&dir.join("a"), nowhere).unwrap_err().code, "usage");
         assert_eq!(refuse_shot_path(&dir.join("a.png"), |_| true).unwrap_err().code, "path_refused");
         assert!(refuse_shot_path(&dir.join("recto-no-such-shot.PNG"), nowhere).is_ok());
+    }
+
+    /// Failure: a QA click lands somewhere other than what it says, or a page counted from 0 slips through, or a NaN reaches the host.
+    #[test]
+    fn a_mouse_verb_says_a_place_or_is_refused() {
+        assert_eq!(parse_page_place("3:120.5,88").unwrap(), PagePlace { page: 2, x: 120.5, y: 88.0, clicks: 1, shift: false });
+        assert_eq!(parse_page_place("1:0,0:2:shift").unwrap(), PagePlace { page: 0, x: 0.0, y: 0.0, clicks: 2, shift: true });
+        for wrong in ["", "3", "0:1,1", "3:1", "3:x,1", "3:NaN,1", "3:1,inf", "3:1,1:0", "3:1,1:9", "3:1,1:zzz"] {
+            assert_eq!(parse_page_place(wrong).unwrap_err().code, "usage", "{wrong}");
+        }
     }
 
     /// Failure: a word the host can't do reports success: `qa appearance zzz` said it was done and went light, since the rule was the host's. They're checked here and every one is refused.

@@ -326,6 +326,105 @@ fn round(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
+/// `recto qa select-budget`: what selecting costs on one file, on the path the mouse takes, with the numbers as they are under whatever else this Mac is doing.
+pub fn select_budget(invocation: &Invocation) -> Result<Value, AgentError> {
+    let app = find_app(invocation.fields.get("app").and_then(Value::as_str).map(Path::new))?;
+    let file = PathBuf::from(invocation.fields.get("file").and_then(Value::as_str).unwrap_or_default());
+    let run = Measured::start(&app, &Launch { open: vec![file.clone()], ..Launch::default() })?;
+    run.settled()?;
+    let memory = |state: &Value, key: &str| state["memory"][key].as_u64().unwrap_or(0);
+    let before = run.state()?;
+    let pages = before["reader"]["pages"].as_u64().unwrap_or(1);
+    // A place with text on it, as `recto select` says, on a page with some.
+    let (mut page, mut place) = (1, None);
+    while page <= pages.min(32) && place.is_none() {
+        let found = run.call(json!({ "cmd": "select", "page": page }))?;
+        place = found["pages"][0]["rects"].as_array().and_then(|rects| rects.get(rects.len() / 2)).map(|rect| (rect[0].as_f64().unwrap_or(0.0) + rect[2].as_f64().unwrap_or(0.0) / 2.0, rect[1].as_f64().unwrap_or(0.0) + rect[3].as_f64().unwrap_or(0.0) / 2.0));
+        if place.is_none() {
+            page += 1;
+        }
+    }
+    let (x, y) = place.ok_or_else(|| failed("qa_failed", "No page near the start of this file has text to select."))?;
+    run.call(json!({ "cmd": "goto", "page": page }))?;
+    run.settled()?;
+
+    // The first double-click on a page with no text read: to the highlight, through one client round trip.
+    let started = Instant::now();
+    run.drive("mouse_down", &format!("{page}:{x},{y}:2"))?;
+    run.drive("mouse_up", "all")?;
+    run.settled()?;
+    let first_word_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+    // A drag over this page and the next few, in steps, with the worker reading each page it reaches.
+    let reach = pages.min(page + 6);
+    let mut round_trips = Vec::new();
+    let started = Instant::now();
+    run.drive("mouse_down", &format!("{page}:{x},{y}"))?;
+    for step in 0..240u64 {
+        let on = page + step % (reach - page + 1);
+        let drag = format!("{on}:{},{}", 40.0 + (step % 40) as f64 * 10.0, 40.0 + (step % 60) as f64 * 11.0);
+        let one = Instant::now();
+        run.drive("mouse_drag", &drag)?;
+        round_trips.push(one.elapsed().as_secs_f64() * 1000.0);
+    }
+    run.drive("mouse_up", "all")?;
+    run.settled()?;
+    let drag_total_ms = started.elapsed().as_secs_f64() * 1000.0;
+    round_trips.sort_by(f64::total_cmp);
+    let after_drag = run.state()?;
+
+    // ⌘A: all of it selected, with what's showing highlighted.
+    let started = Instant::now();
+    run.drive("menu", "edit.select_all")?;
+    run.settled()?;
+    let select_all_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let after_all = run.state()?;
+
+    // ⌘C on all of it, watching the memory until it's on the clipboard.
+    let started = Instant::now();
+    run.drive("menu", "edit.copy")?;
+    let (mut peak_own, mut peak_worker, mut most_text) = (0u64, 0u64, 0u64);
+    let deadline = Instant::now() + Duration::from_secs(150);
+    loop {
+        let state = run.state()?;
+        peak_own = peak_own.max(memory(&state, "footprint_bytes"));
+        peak_worker = peak_worker.max(memory(&state, "worker_bytes"));
+        most_text = most_text.max(state["reader"]["selection"]["text_bytes_held"].as_u64().unwrap_or(0));
+        let selection = &state["reader"]["selection"];
+        if selection["copying"] != true && selection["copy_waiting_for_host"] != true {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(failed("timed_out", "The copy didn't finish."));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let copy_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let copied = run.call(json!({ "cmd": "qa_read", "verb": "copied" }))?;
+    let notice = run.state()?["app"]["copy_notice"].clone();
+
+    // Back at rest, with the selection cleared and a moment for the allocator.
+    run.drive("mouse_down", &format!("{page}:{x},{y}"))?;
+    run.drive("mouse_up", "all")?;
+    run.settled()?;
+    std::thread::sleep(Duration::from_secs(1));
+    let after = run.state()?;
+    Ok(json!({
+        "file": file.file_name().map(|name| name.to_string_lossy().to_string()),
+        "build": if cfg!(debug_assertions) { "debug" } else { "release" },
+        "pages": pages,
+        "footprint_mib": { "before": mib(memory(&before, "footprint_bytes")), "after_drag": mib(memory(&after_drag, "footprint_bytes")), "after_select_all": mib(memory(&after_all, "footprint_bytes")), "peak_during_copy": mib(peak_own), "worker_peak_during_copy": mib(peak_worker), "after": mib(memory(&after, "footprint_bytes")) },
+        "text_held_kib": { "after_drag": after_drag["reader"]["selection"]["text_bytes_held"].as_u64().unwrap_or(0) / 1024, "most_during_copy": most_text / 1024, "after": after["reader"]["selection"]["text_bytes_held"].as_u64().unwrap_or(0) / 1024 },
+        "threads": { "before": before["memory"]["threads"], "after": after["memory"]["threads"] },
+        "handles": { "before": before["memory"]["open_handles"], "after": after["memory"]["open_handles"] },
+        "first_double_click_to_highlight_ms": round(first_word_ms),
+        "drag": { "steps": round_trips.len(), "round_trip_ms": { "p50": round(percentile(&round_trips, 0.5)), "p99": round(percentile(&round_trips, 0.99)), "worst": round(percentile(&round_trips, 1.0)) }, "total_ms": round(drag_total_ms) },
+        "ui_thread": { "pointer_steps": after["app"]["pages"]["pointer_steps"], "worst_pointer_step_us": after["app"]["pages"]["worst_pointer_step_us"], "worst_stall_ms": after["hangs"]["worst_ms"], "stalls_over_2s": after["hangs"]["over_2s"] },
+        "select_all_ms": round(select_all_ms),
+        "copy": { "ms": round(copy_ms), "chars": copied["chars"], "notice": notice },
+    }))
+}
+
 /// `recto qa budget`.
 pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     let app = find_app(invocation.fields.get("app").and_then(Value::as_str).map(Path::new))?;

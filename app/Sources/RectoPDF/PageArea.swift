@@ -2,13 +2,56 @@ import AppKit
 import IOSurface
 import QuartzCore
 
-/// The view that holds page layers. It's flipped, so y runs down the document as it does in Rust's numbers. It draws nothing itself.
+/// The view that holds page layers. It's flipped, so y runs down the document as it does in Rust's numbers. It draws nothing itself. What the pointer does here goes straight to `PageArea`, where QA goes too.
 final class PageDocumentView: NSView {
+    weak var pointer: PageArea?
+
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() {}
     override class var isCompatibleWithResponsiveScrolling: Bool { true }
+
+    /// The I-beam goes by where the pointer is, so it's told of moves in the visible part. Nothing runs with no pointer moving.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas where area.owner === self { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .cursorUpdate, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // Control-click is a right click on a Mac, and this doesn't pass it up to anything that would know.
+        if event.modifierFlags.contains(.control) {
+            if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
+            return
+        }
+        pointer?.pointerDown(atWindow: event.locationInWindow, clicks: event.clickCount, shift: event.modifierFlags.contains(.shift))
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        pointer?.pointerDragged(atWindow: event.locationInWindow)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        pointer?.pointerUp()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        pointer?.pointerMoved(atWindow: event.locationInWindow)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        pointer?.pointerMoved(atWindow: event.locationInWindow)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        pointer?.pointerLeft()
+    }
+
+    /// What a right-click offers, from Rust's list. Each goes by a standard selector, up the chain to whoever has it, and the system adds Services by itself once something answers for them.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        pointer?.contextMenu()
+    }
 }
 
 /// The page area's scrolling. ⌘ with a wheel or two fingers zooms instead, and doesn't also scroll.
@@ -30,6 +73,19 @@ final class PageScrollView: NSScrollView {
 /// Keeps a document smaller than the window in the middle.
 final class CenteringClipView: NSClipView {
     override var isFlipped: Bool { true }
+
+    // A page shorter than the window leaves room around it that's this view's. A click there is a click off the text.
+    override func mouseDown(with event: NSEvent) {
+        documentView?.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        documentView?.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        documentView?.mouseUp(with: event)
+    }
 
     override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
         var rect = super.constrainBoundsRect(proposedBounds)
@@ -60,14 +116,30 @@ final class CenteringClipView: NSClipView {
     /// Warm paper: a colour multiplied over each page by the compositor.
     private var tint: UInt32?
     private var tintLayers: [UInt32: CALayer] = [:]
+    /// What's selected, one layer on a page that has any: a page's sublayer, so it scrolls and zooms with the page, and it's no tile's business. Under the tint, so warm paper warms it too.
+    private var highlightLayers: [UInt32: CAShapeLayer] = [:]
+    private var highlightRects: [UInt32: [HighlightRect]] = [:]
+    private var highlightDark = false
+    private var highlightLighten = false
+    private var windowIsActive = true
+    private(set) var cursorIsIBeam = false
+    /// A drag that's gone past the view's edge, and where it is, for the timer that keeps it scrolling.
+    private var dragInWindow: NSPoint?
+    private var autoscrollTimer: Timer?
+    private(set) var worstPointerMicros: UInt64 = 0
+    private(set) var pointerSteps: UInt64 = 0
+
+    private let delegateAutoscrollEvery: TimeInterval
 
     init(core: AppCore, limits: ReaderLimits, isQuiet: Bool) {
         self.core = core
         self.isQuiet = isQuiet
+        delegateAutoscrollEvery = limits.autoscrollEverySeconds
         super.init()
         let clip = CenteringClipView()
         scrollView.contentView = clip
         scrollView.documentView = documentView
+        documentView.pointer = self
         // The page goes under the transparent title bar, with nothing above or over it.
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.commandScrolled = { [weak self] event in self?.commandScroll(event) }
@@ -154,6 +226,187 @@ final class CenteringClipView: NSClipView {
         for layer in tintLayers.values { layer.isHidden = hidden }
         CATransaction.commit()
         CATransaction.flush()
+    }
+
+    /// The system's selection colour, as Rust says which goes over this paper: the page's, and not the window's. With the window not key, the quieter one, as in any Mac app.
+    func setHighlightLook(darkColour: Bool, lighten: Bool, active: Bool) {
+        guard darkColour != highlightDark || lighten != highlightLighten || active != windowIsActive else { return }
+        highlightDark = darkColour
+        highlightLighten = lighten
+        windowIsActive = active
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for layer in highlightLayers.values { styleHighlight(layer) }
+        CATransaction.commit()
+    }
+
+    private func highlightColour() -> NSColor {
+        let wanted = windowIsActive ? NSColor.selectedTextBackgroundColor : NSColor.unemphasizedSelectedTextBackgroundColor
+        var colour = wanted
+        (NSAppearance(named: highlightDark ? .darkAqua : .aqua) ?? NSAppearance.currentDrawing()).performAsCurrentDrawingAppearance {
+            colour = wanted.usingColorSpace(.sRGB) ?? wanted
+        }
+        return colour
+    }
+
+    private func styleHighlight(_ layer: CAShapeLayer) {
+        layer.fillColor = highlightColour().cgColor
+        layer.compositingFilter = highlightLighten ? "lightenBlendMode" : "multiplyBlendMode"
+    }
+
+    private func applyHighlight(page: UInt32, rects: [HighlightRect]) {
+        guard let parent = pageLayers[page], !rects.isEmpty else {
+            highlightLayers.removeValue(forKey: page)?.removeFromSuperlayer()
+            highlightRects.removeValue(forKey: page)
+            return
+        }
+        let layer = highlightLayers[page] ?? {
+            let made = CAShapeLayer()
+            made.anchorPoint = .zero
+            made.zPosition = 5
+            styleHighlight(made)
+            parent.addSublayer(made)
+            highlightLayers[page] = made
+            return made
+        }()
+        layer.frame = parent.bounds
+        let path = CGMutablePath()
+        for rect in rects { path.addRect(CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)) }
+        layer.path = path
+        highlightRects[page] = rects
+    }
+
+    /// For a shot: `render(in:)` leaves compositing filters out, so a highlight would hide the page. They come off, and the same sum is done on the picture, as for the tint.
+    func highlightsForShot(in view: NSView) -> (rgb: UInt32, lighten: Bool, rects: [NSRect])? {
+        guard !highlightRects.isEmpty, let colour = highlightColour().usingColorSpace(.sRGB) else { return nil }
+        let channel = { (value: CGFloat) in UInt32((value * 255).rounded()) }
+        let rgb = channel(colour.redComponent) << 16 | channel(colour.greenComponent) << 8 | channel(colour.blueComponent)
+        let visible = scrollView.convert(scrollView.bounds, to: view)
+        var rects: [NSRect] = []
+        for (number, pieces) in highlightRects {
+            guard let page = pageLayers[number] else { continue }
+            for piece in pieces {
+                let inDocument = NSRect(x: page.position.x + piece.x * fit, y: page.position.y + piece.y * fit, width: piece.width * fit, height: piece.height * fit)
+                let clipped = documentView.convert(inDocument, to: view).intersection(visible)
+                if !clipped.isNull { rects.append(clipped) }
+            }
+        }
+        return (rgb, highlightLighten, rects)
+    }
+
+    func hideHighlightsForShot(_ hidden: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for layer in highlightLayers.values { layer.isHidden = hidden }
+        CATransaction.commit()
+        CATransaction.flush()
+    }
+
+    private func measured(_ work: () -> Void) {
+        let started = CACurrentMediaTime()
+        work()
+        pointerSteps += 1
+        worstPointerMicros = max(worstPointerMicros, UInt64((CACurrentMediaTime() - started) * 1_000_000))
+    }
+
+    /// What a press does, whoever made it: the mouse, or QA by the same window coordinates.
+    func pointerDown(atWindow place: NSPoint, clicks: Int, shift: Bool) {
+        measured {
+            let point = documentView.convert(place, from: nil)
+            dragInWindow = place
+            apply(core.selectionPress(x: point.x, y: point.y, clicks: UInt32(max(clicks, 0)), shift: shift))
+        }
+    }
+
+    func pointerDragged(atWindow place: NSPoint) {
+        measured {
+            dragInWindow = place
+            let point = documentView.convert(place, from: nil)
+            apply(core.selectionDrag(x: point.x, y: point.y))
+            keepScrollingIfPastTheEdge()
+        }
+    }
+
+    func pointerUp() {
+        measured {
+            dragInWindow = nil
+            autoscrollTimer?.invalidate()
+            autoscrollTimer = nil
+            apply(core.selectionRelease())
+        }
+    }
+
+    func pointerMoved(atWindow place: NSPoint) {
+        measured {
+            // Over the scroller or anything else above the page, it isn't the page's cursor to set.
+            let inFrame = scrollView.superview?.convert(place, from: nil) ?? place
+            let onPage = scrollView.hitTest(inFrame) === documentView || isQuiet
+            let point = documentView.convert(place, from: nil)
+            setCursor(iBeam: onPage && core.pointerIsOverText(x: point.x, y: point.y))
+        }
+    }
+
+    func pointerLeft() {
+        setCursor(iBeam: false)
+    }
+
+    private func setCursor(iBeam: Bool) {
+        cursorIsIBeam = iBeam
+        // A quiet run's pointer is nobody's, and the real one's left alone.
+        guard !isQuiet else { return }
+        (iBeam ? NSCursor.iBeam : NSCursor.arrow).set()
+    }
+
+    /// A drag past the view's edge goes on scrolling with no further events, while it's there. The timer lives only that long.
+    private func keepScrollingIfPastTheEdge() {
+        guard beyondTheEdge() != .zero else {
+            autoscrollTimer?.invalidate()
+            autoscrollTimer = nil
+            return
+        }
+        guard autoscrollTimer == nil else { return }
+        let timer = Timer(timeInterval: delegateAutoscrollEvery, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.autoscrollStep() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        autoscrollTimer = timer
+    }
+
+    private func beyondTheEdge() -> NSPoint {
+        guard let place = dragInWindow else { return .zero }
+        let point = documentView.convert(place, from: nil)
+        let view = scrollView.contentView.bounds
+        let x = point.x < view.minX ? point.x - view.minX : point.x > view.maxX ? point.x - view.maxX : 0
+        let y = point.y < view.minY ? point.y - view.minY : point.y > view.maxY ? point.y - view.maxY : 0
+        return NSPoint(x: x, y: y)
+    }
+
+    private func autoscrollStep() {
+        guard let place = dragInWindow else { return }
+        let beyond = beyondTheEdge()
+        guard beyond != .zero else { return keepScrollingIfPastTheEdge() }
+        let clip = scrollView.contentView
+        var origin = clip.bounds.origin
+        origin.x += core.autoscrollStep(beyond: beyond.x)
+        origin.y += core.autoscrollStep(beyond: beyond.y)
+        clip.setBoundsOrigin(clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+        scrollView.reflectScrolledClipView(clip)
+        pointerDragged(atWindow: place)
+    }
+
+    /// A place on the first highlighted line or the middle of the page, for QA's check of what the mouse reaches.
+    func documentPointOnText() -> NSPoint? {
+        guard let page = pageLayers.keys.min(), let layer = pageLayers[page] else { return nil }
+        return NSPoint(x: layer.position.x + layer.bounds.midX * fit, y: layer.position.y + layer.bounds.midY * fit)
+    }
+
+    func contextMenu() -> NSMenu {
+        let menu = NSMenu()
+        for entry in core.contextMenu() {
+            let item = menu.addItem(withTitle: entry.title, action: NSSelectorFromString(entry.systemAction), keyEquivalent: "")
+            item.representedObject = entry.id
+        }
+        return menu
     }
 
     private var liveEnd: Timer?
@@ -256,6 +509,8 @@ final class CenteringClipView: NSClipView {
         case .clear:
             for layer in pageLayers.values { layer.removeFromSuperlayer() }
             tintLayers.removeAll()
+            highlightLayers.removeAll()
+            highlightRects.removeAll()
             for tile in tiles.values { tile.layer.contents = nil }
             pageLayers.removeAll()
             tiles.removeAll()
@@ -290,6 +545,8 @@ final class CenteringClipView: NSClipView {
         case let .hidePage(page):
             pageLayers.removeValue(forKey: page)?.removeFromSuperlayer()
             tintLayers.removeValue(forKey: page)
+            highlightLayers.removeValue(forKey: page)
+            highlightRects.removeValue(forKey: page)
             for id in tilesOnPage.removeValue(forKey: page) ?? [] {
                 if let tile = tiles.removeValue(forKey: id) { recycle(tile.layer) }
             }
@@ -316,6 +573,8 @@ final class CenteringClipView: NSClipView {
             guard let tile = tiles.removeValue(forKey: id) else { return }
             tilesOnPage[tile.page]?.removeAll { $0 == id }
             recycle(tile.layer)
+        case let .highlight(page, rects):
+            applyHighlight(page: page, rects: rects)
         }
     }
 
@@ -371,6 +630,6 @@ final class CenteringClipView: NSClipView {
 
     /// What QA reads about the layers themselves, as opposed to what Rust thinks it asked for.
     func report() -> [String: Any] {
-        ["document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_layers": pageLayers.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "magnification": scrollView.magnification]
+        ["highlight_layers": highlightLayers.count, "highlight_rects": highlightRects.values.map(\.count).reduce(0, +), "cursor": cursorIsIBeam ? "ibeam" : "arrow", "autoscrolling": autoscrollTimer != nil, "pointer_steps": pointerSteps, "worst_pointer_step_us": worstPointerMicros, "document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_layers": pageLayers.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "magnification": scrollView.magnification]
     }
 }

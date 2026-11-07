@@ -1298,12 +1298,6 @@ impl Reader {
         self.highlight_ops();
     }
 
-    /// A stretch given in numbers: `recto select`'s, shown.
-    pub fn select_range(&mut self, range: Range) {
-        self.selecting.set_range(range);
-        self.highlight_ops();
-    }
-
     pub fn clear_selection(&mut self) {
         self.selecting.clear();
         self.highlight_ops();

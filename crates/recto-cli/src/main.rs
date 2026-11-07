@@ -188,6 +188,7 @@ fn here(invocation: &Invocation) -> i32 {
         "qa_start" => qa::start(invocation),
         "qa_run" => qa::run_script(invocation),
         "qa_budget" => qa::budget(invocation),
+        "qa_select_budget" => qa::select_budget(invocation),
         "budget_index" => budget_index(invocation),
         // A row with no handler is a bug here, and a test walks the table for it.
         _ => Err(AgentError::new("internal", "This command isn't wired up.", exit::FAILED)),
