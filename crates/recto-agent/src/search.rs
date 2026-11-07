@@ -8,7 +8,7 @@ use crate::{AgentError, SessionAccess, exit, parse_pages, select};
 use grep_matcher::Matcher;
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use recto_index::corpus::{CorpusKey, Damaged, PageKind, ReadyCorpus, StoredPage};
-use recto_index::rank::{Collection, Terms, count_terms, first_term, score, terms_of};
+use recto_index::rank::{Collection, Terms, count_terms, first_term, lower, score, terms_of};
 use recto_index::{hidden_report, read_page};
 use recto_platform::FileStamp;
 use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig};
@@ -838,7 +838,7 @@ fn fold_into(text: &str, folded: &mut String) {
             folded.push(' ');
             pending_space = false;
         }
-        folded.extend(c.to_lowercase());
+        folded.extend(lower(c));
     }
 }
 
@@ -858,7 +858,7 @@ fn fold(text: &str) -> (String, Vec<u32>) {
             sources.push(at);
             pending_space = false;
         }
-        for lower in c.to_lowercase() {
+        for lower in lower(c) {
             folded.push(lower);
             sources.resize(folded.len(), at);
         }
@@ -1107,5 +1107,19 @@ mod tests {
         assert!(!Query::Phrase("a".to_string()).too_long_for(&page));
         let mut folded = String::new();
         assert!(!query.on_page(&"a".repeat(1000), &mut folded), "and short of it, it ends");
+    }
+
+    /// Failure: Greek's two lower-case sigmas and Turkish's dotted capital keep a plain search or a pattern from finding the word as printed in another case. A pattern goes by the engine's folding, which has both sigmas and not the dotted `İ`, and that's said in `docs/ENGINEERING.md`.
+    #[test]
+    fn every_search_finds_greek_and_turkish_in_either_case() {
+        for (query, page) in [("ΟΔΟΣ", "στην ΟΔΟΣ εδώ"), ("ΟΔΟΣ", "στην οδος εδώ"), ("οδος", "στην ΟΔΟΣ εδώ"), ("İstanbul", "in İSTANBUL here"), ("istanbul", "in İstanbul here"), ("İSTANBUL", "in istanbul here")] {
+            assert_eq!(find_hits(page, &fold(query).0, 5).total, 1, "{query} on {page}");
+            let mut folded = String::new();
+            fold_into(page, &mut folded);
+            assert!(folded.contains(&fold(query).0), "{query} on {page}");
+        }
+        for (text, page) in [("ΟΔΟΣ", "στην οδος εδώ"), ("οδος", "στην ΟΔΟΣ εδώ"), ("οδοσ", "στην οδος εδώ"), ("İSTANBUL", "in İstanbul")] {
+            assert_eq!(find_regex_hits(page, &pattern(text), 5).total, 1, "{text} on {page}");
+        }
     }
 }

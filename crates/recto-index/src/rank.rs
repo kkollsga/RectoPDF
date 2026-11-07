@@ -15,6 +15,16 @@ const B: f64 = 0.75;
 /// Most words of a query. Each costs a comparison per word of every page.
 pub const MAX_TERMS: usize = 16;
 
+/// A character in the one lower case every search compares by, a page and a query alike. Beyond Unicode's rule for one character: final `ς` is `σ`, or `ΟΔΟΣ` wouldn't find `οδος`, and `İ` is `i`, or `istanbul` wouldn't find `İstanbul`.
+pub fn lower(c: char) -> impl Iterator<Item = char> {
+    let special = match c {
+        'ς' | 'Σ' => Some('σ'),
+        'İ' => Some('i'),
+        _ => None,
+    };
+    special.into_iter().chain(c.to_lowercase().filter(move |_| special.is_none()))
+}
+
 /// Whether a character is written with no spaces between words, so it's a word by itself.
 fn stands_alone(c: char) -> bool {
     matches!(c, '\u{3040}'..='\u{30FF}' | '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{20000}'..='\u{2FFFF}' | '\u{30000}'..='\u{3134F}')
@@ -68,7 +78,7 @@ pub struct Terms {
 pub fn terms_of(query: &str) -> Terms {
     let mut out = Terms::default();
     each_word(query, |start, end| {
-        let word = query[start..end].to_lowercase();
+        let word: String = query[start..end].chars().flat_map(lower).collect();
         if out.terms.contains(&word) {
             return;
         }
@@ -86,7 +96,7 @@ fn same_word(word: &str, term: &str) -> bool {
     if word.is_ascii() && term.is_ascii() {
         return word.eq_ignore_ascii_case(term);
     }
-    word.chars().flat_map(char::to_lowercase).eq(term.chars())
+    word.chars().flat_map(lower).eq(term.chars())
 }
 
 /// Which term this word is, if it's one of them.
@@ -182,13 +192,13 @@ mod tests {
         let terms = terms_of(&many);
         assert_eq!((terms.terms.len(), terms.dropped), (MAX_TERMS, 24));
         assert_eq!(terms_of("ÆRLIG").terms, ["ærlig"]);
-        assert_eq!(terms_of("İ").terms, ["i\u{307}"], "a letter whose lower case has more characters");
+        assert_eq!(terms_of("İ").terms, ["i"]);
     }
 
     /// Failure: counts miss a word in another case, or a letter whose lower case differs in length, so a query in capitals finds nothing, or counts a word inside a longer one.
     #[test]
     fn counts_go_by_whole_words_in_any_case() {
-        let terms = vec!["force".to_string(), "ærlig".to_string(), "i\u{307}".to_string()];
+        let terms = vec!["force".to_string(), "ærlig".to_string(), "i".to_string()];
         let mut counts = vec![0; 3];
         let length = count_terms("FORCE majeure, force; enforce forced ÆRLIG İ", &terms, &mut counts);
         assert_eq!((length, counts.as_slice()), (7, [2, 1, 1].as_slice()));
@@ -218,5 +228,22 @@ mod tests {
         for (pages, words, length, count, with) in [(0, 0, 0, 0, 0), (1, 0, 0, 1, 1), (u64::MAX, u64::MAX, u32::MAX, u32::MAX, u32::MAX), (1, 1, 0, u32::MAX, 1)] {
             assert!(score(Collection { pages, words }, length, &[count], &[with]).is_finite(), "{pages} {words} {length} {count} {with}");
         }
+    }
+
+    /// Failure: Greek: a query in capitals lower-cases its last `Σ` to `ς` and a page's to `σ`, so `ΟΔΟΣ` scores nothing on a page that says `ΟΔΟΣ`. And Turkish: `İstanbul` isn't found by `istanbul`, or by itself.
+    #[test]
+    fn a_query_and_a_page_fold_the_same_way() {
+        let found = |query: &str, page: &str| {
+            let terms = terms_of(query).terms;
+            let mut counts = vec![0; terms.len()];
+            count_terms(page, &terms, &mut counts);
+            counts[0]
+        };
+        for (query, page) in [("ΟΔΟΣ", "ΟΔΟΣ"), ("ΟΔΟΣ", "οδος"), ("οδος", "ΟΔΟΣ"), ("οδοσ", "Οδος"), ("İstanbul", "İSTANBUL"), ("istanbul", "İstanbul"), ("İSTANBUL", "istanbul")] {
+            assert_eq!(found(query, page), 1, "{query} on {page}");
+        }
+        assert_eq!(lower('Σ').collect::<String>(), "σ");
+        assert_eq!(lower('Æ').collect::<String>(), "æ");
+        assert_eq!(lower('x').collect::<String>(), "x");
     }
 }
