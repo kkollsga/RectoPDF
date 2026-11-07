@@ -50,6 +50,8 @@ impl PixelSurface {
         unsupported()
     }
     pub fn set_discardable(&self) {}
+    #[doc(hidden)]
+    pub fn empty_now(&self) {}
     pub fn reclaim(&self) -> Purge {
         Purge::Emptied
     }

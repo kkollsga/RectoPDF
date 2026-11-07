@@ -198,6 +198,14 @@ impl PixelSurface {
         if rc == 0 && old != PURGEABLE_EMPTY { Purge::Kept } else { Purge::Emptied }
     }
 
+    /// Empties the surface's memory now, as a compromised worker holding a reference can.
+    #[doc(hidden)]
+    pub fn empty_now(&self) {
+        let mut old = 0;
+        // SAFETY: the surface is live, and `old` is valid for writes.
+        unsafe { IOSurfaceSetPurgeable(self.raw.as_ptr(), PURGEABLE_EMPTY, &raw mut old) };
+    }
+
     /// Whether the OS has already taken its memory, without changing anything.
     pub fn was_emptied(&self) -> bool {
         let mut old = 0;
