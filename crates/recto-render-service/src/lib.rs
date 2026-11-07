@@ -10,7 +10,7 @@
 //! refuses `RLIMIT_AS`, `RLIMIT_DATA` and `RLIMIT_RSS` with `EINVAL` (measured, macOS 27).
 //! - Hard memory limit: the worker's footprint is read every 5 ms during a job and it's killed when past the limit. A page that passes it goes down a sequence: that page
 //!   alone at 1 GiB if the Mac has the memory and no other page has the one heavy slot, then a lower-resolution version reported as such, then a plain failure. Each step
-//!   is remembered, so a hostile page ends quickly. See [`DocRenderer::render_tile`].
+//!   is remembered, so a hostile page ends quickly. See [`DocRenderer::render_tile`]. An export waits for the slot instead, and comes out sharp or not at all: see [`DrawPurpose`].
 //! - Page deadline: past it, the worker is killed.
 //! - Retirement: a footprint past 64 MiB after a job ends the worker before its next job for another page, because only exit returns the
 //!   memory (spike §6).
@@ -32,7 +32,7 @@ pub use budget::{
     BUDGET_MAX_TIME, BudgetOptions, BudgetReport, DrawStrategy, OutputCaps, PageDrawn, PageEvent, PageSample, STRIP_MAX_BYTES, ViewportOptions, ViewportStep, draw_whole_page, measure_budget,
     measure_viewport, page_device_size, plan_regions,
 };
-pub use host::{CancelHandle, DocRenderer, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy, RenderFailure, RenderStats, ServiceConfig, Surface, Tile, TileRequest, TileResult};
+pub use host::{CancelHandle, DocRenderer, DrawPurpose, ExportRefusal, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy, RenderFailure, RenderStats, ServiceConfig, Surface, Tile, TileRequest, TileResult};
 pub use recto_proto::{CharRecord, TileKind, TileRect, TILE_EDGE};
 
 /// Exit codes the worker uses to say why it left. Anything else, or a signal, reads as a crash.

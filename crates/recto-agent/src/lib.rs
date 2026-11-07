@@ -21,6 +21,8 @@ pub mod exit {
     pub const NOT_FOUND: i32 = 3;
     pub const AMBIGUOUS: i32 = 4;
     pub const PERMISSION: i32 = 5;
+    /// Something ran out of time. Agent report, §5.
+    pub const TIMED_OUT: i32 = 7;
     /// The document is protected or locked, and only the user can do something about it. Agent report, §5.
     pub const PROTECTED: i32 = 8;
 }

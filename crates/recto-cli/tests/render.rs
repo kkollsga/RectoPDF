@@ -47,7 +47,6 @@ fn a_large_page_is_drawn_in_strips() {
     let (reply, code) = recto(&["render", path_of(&file), "--page", "1", "--scale", "2", "--out", out.to_str().unwrap()]);
     assert_eq!(code, 0, "{reply}");
     assert_eq!((&reply["data"]["width"], &reply["data"]["height"]), (&Value::from(6000), &Value::from(6000)));
-    assert_eq!(reply["data"]["low_res"], Value::Null);
     std::fs::remove_file(&out).unwrap();
     let (budget, _) = recto(&["budget", "render", "--file", path_of(&file), "--count", "1", "--scale", "2"]);
     assert!(budget["data"]["surface_bytes"].as_u64().unwrap() <= recto_render_service::STRIP_MAX_BYTES, "{budget}");

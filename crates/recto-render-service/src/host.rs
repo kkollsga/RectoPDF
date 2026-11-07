@@ -8,8 +8,8 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 /// The memory holding a tile's pixels: written by the worker, read by the host and later the compositor. Host-owned, because the host hands
@@ -25,6 +25,8 @@ pub struct Policy {
     pub heavy_limit_bytes: u64,
     /// That retry happens only with at least this much of the Mac's memory free, as `kern.memorystatus_level` reads it.
     pub heavy_min_free_percent: u32,
+    /// How long an export waits for the larger limit before it's refused.
+    pub export_slot_wait: Duration,
     /// Past this footprint after a job, the worker is retired before its next job for another page.
     pub retire_bytes: u64,
     /// A job running longer than this has its worker killed.
@@ -51,6 +53,8 @@ impl Default for Policy {
             // On 16 GB this is about 4.8 GiB free, several times what the retry can use. Low enough to fire on a working Mac, and high enough that a Mac
             // already short of memory isn't asked for another gigabyte. An 8 GB Mac has 2.4 GiB at this level, still over twice the need.
             heavy_min_free_percent: 30,
+            // Longer than an idle heavy worker can hold the slot, which is 35 s at most, so only real use of it can make an export time out.
+            export_slot_wait: Duration::from_secs(60),
             retire_bytes: 64 * 1024 * 1024,
             // Platform §2.6. The slowest real page at 2x took 939 ms.
             page_deadline: Duration::from_secs(5),
@@ -77,9 +81,25 @@ pub struct ServiceConfig {
     pub replace_args: Option<Vec<OsString>>,
 }
 
-/// The one place a heavy worker may run. Taken without waiting: whoever finds it taken draws a lower-resolution version for now, so nothing ever blocks on it.
+/// The one place a heavy worker may run. A viewer takes it without waiting: whoever finds it taken draws a lower-resolution version for now. An export waits for it, on its own job
+/// thread, and ahead of viewers while it does. Goes free when the heavy process has really gone, however it went.
 #[derive(Clone, Debug, Default)]
-pub struct HeavySlot(Arc<AtomicBool>);
+pub struct HeavySlot(Arc<SlotShared>);
+
+#[derive(Debug, Default)]
+struct SlotShared {
+    taken: Mutex<bool>,
+    freed: Condvar,
+    /// Outside the lock, so a cancel with nobody waiting stays one atomic read.
+    waiting: AtomicU32,
+}
+
+/// Why a wait for the slot ended without it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlotWaitEnd {
+    Cancelled,
+    TimedOut,
+}
 
 impl HeavySlot {
     /// A slot of its own, for a test that shouldn't meet other tests' heavy workers.
@@ -93,23 +113,98 @@ impl HeavySlot {
         SLOT.get_or_init(Self::new).clone()
     }
 
-    pub fn is_taken(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+    fn taken(&self) -> MutexGuard<'_, bool> {
+        self.0.taken.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    pub fn is_taken(&self) -> bool {
+        *self.taken()
+    }
+
+    /// How many exports are waiting for it.
+    pub fn waiting(&self) -> u32 {
+        self.0.waiting.load(Ordering::SeqCst)
+    }
+
+    /// For a viewer: at once or not at all, and never ahead of an export that's waiting.
     fn try_take(&self) -> Option<HeavyTicket> {
-        self.0.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok().then(|| HeavyTicket(self.0.clone()))
+        let mut taken = self.taken();
+        if *taken || self.waiting() > 0 {
+            return None;
+        }
+        *taken = true;
+        Some(HeavyTicket(self.clone()))
+    }
+
+    /// For an export: sleeps until the slot frees, the time runs out, or `is_cancelled` says so. Blocks its caller, with no polling. Its place in the wait goes with it on every way out.
+    fn wait_take(&self, limit: Duration, is_cancelled: impl Fn() -> bool) -> Result<HeavyTicket, SlotWaitEnd> {
+        struct Place<'a>(&'a AtomicU32);
+        impl Drop for Place<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        // Counted before `is_cancelled` is read. A canceller stores first and reads this after, so at least one of the two sees the other.
+        self.0.waiting.fetch_add(1, Ordering::SeqCst);
+        let _place = Place(&self.0.waiting);
+        let deadline = Instant::now() + limit;
+        let mut taken = self.taken();
+        loop {
+            if is_cancelled() {
+                return Err(SlotWaitEnd::Cancelled);
+            }
+            if !*taken {
+                *taken = true;
+                return Ok(HeavyTicket(self.clone()));
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(SlotWaitEnd::TimedOut);
+            }
+            taken = self.0.freed.wait_timeout(taken, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+        }
+    }
+
+    /// Wakes anyone waiting, so a cancel doesn't have to wait for the slot or the time to run out. Costs one atomic read if there's nobody.
+    fn wake_waiters(&self) {
+        if self.waiting() > 0 {
+            // Taking the lock means a waiter is either before its check or asleep, so this can't slip between them.
+            drop(self.taken());
+            self.0.freed.notify_all();
+        }
     }
 }
 
-/// Held by a heavy worker. Gives the slot back when the worker goes.
+/// Holds the slot. Lives as long as the heavy process: dropped by the end action when it has gone, however it went.
 #[derive(Debug)]
-struct HeavyTicket(Arc<AtomicBool>);
+struct HeavyTicket(HeavySlot);
 
 impl Drop for HeavyTicket {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        *self.0.taken() = false;
+        self.0.0.freed.notify_all();
     }
+}
+
+/// What a drawing is for. It decides what happens when a page can't have the larger limit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DrawPurpose {
+    /// A viewer's tile: never waits, and comes back at a lower resolution, saying so, if it must.
+    #[default]
+    OnScreen,
+    /// A file, a print or a snapshot: waits for the larger limit on its job thread, and either comes out sharp or is refused. Never a lower resolution. Owner, 2026-11-07.
+    Export,
+}
+
+/// Why an export was refused, with nothing written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportRefusal {
+    /// This Mac is short of the memory the page needs.
+    MemoryTight,
+    /// Another heavy page kept the larger limit until the wait ran out.
+    WaitTimedOut,
+    /// The page passed the larger limit too.
+    TooHeavy,
 }
 
 impl ServiceConfig {
@@ -196,8 +291,10 @@ pub enum RenderFailure {
     OpenFailed { reason: KillReason },
     /// Reading this page's size or text stopped its worker. Not tried again until [`DocRenderer::forget_failures`].
     PageReadFailed { page: u32, reason: KillReason },
-    /// This page can only be drawn at a lower resolution for now. Only `render_exact` says this: `render_tile` draws that version instead.
-    LowResOnly { page: u32, scale: f32, why: LowResWhy },
+    /// An export of this page was refused, and nothing should be written.
+    ExportRefused { page: u32, why: ExportRefusal },
+    /// The job's generation went stale. For an export, nothing should be written.
+    Cancelled,
     /// Drawing the whole page ran past its time cap. No worker was at fault.
     TookTooLong,
 }
@@ -284,7 +381,10 @@ impl RenderFailure {
             Self::PageReadFailed { reason: KillReason::Rejected(_), .. } => "renderer_misbehaved",
             Self::PageReadFailed { reason: KillReason::MemoryLimit, .. } => "page_too_large_to_read",
             Self::PageReadFailed { .. } => "page_unreadable",
-            Self::LowResOnly { .. } => "only_low_resolution",
+            Self::ExportRefused { why: ExportRefusal::MemoryTight, .. } => "export_memory_tight",
+            Self::ExportRefused { why: ExportRefusal::WaitTimedOut, .. } => "export_wait_timed_out",
+            Self::ExportRefused { why: ExportRefusal::TooHeavy, .. } => "export_page_too_heavy",
+            Self::Cancelled => "cancelled",
             Self::TookTooLong => "render_took_too_long",
         }
     }
@@ -323,7 +423,16 @@ impl RenderFailure {
             Self::PageReadFailed { page, reason: KillReason::Rejected(_) } => {
                 format!("The renderer sent something invalid for page {}, so it was stopped. This file may be malicious.", page + 1)
             }
-            Self::LowResOnly { page, why, .. } => format!("Page {}: {}", page + 1, why.message()),
+            Self::ExportRefused { page, why: ExportRefusal::MemoryTight } => {
+                format!("Page {} wasn't exported, and no file was written: this Mac is short of the memory it needs. Free some memory and try again.", page + 1)
+            }
+            Self::ExportRefused { page, why: ExportRefusal::WaitTimedOut } => {
+                format!("Page {} wasn't exported, and no file was written: another heavy page was still being drawn when the wait ran out. Try again when it's done.", page + 1)
+            }
+            Self::ExportRefused { page, why: ExportRefusal::TooHeavy } => {
+                format!("Page {} wasn't exported, and no file was written: it needs more memory than RectoPDF allows at this size. A smaller scale may fit.", page + 1)
+            }
+            Self::Cancelled => "This was cancelled, and nothing was written.".into(),
             Self::TookTooLong => "Drawing this page at this zoom would take too long.".into(),
         }
     }
@@ -375,8 +484,8 @@ struct Worker {
     jobs_done: u32,
     /// This worker's own hard limit.
     limit: u64,
-    /// Present on a heavy worker, and gives the slot back when it goes.
-    heavy: Option<HeavyTicket>,
+    /// A heavy worker. Its ticket is in its process's end action, so the slot goes free when the process has really gone.
+    heavy: bool,
 }
 
 /// The kind of worker a job needs.
@@ -392,6 +501,8 @@ enum WorkerClass {
 struct CancelWord {
     shared: SharedMemory,
     cutoff: AtomicU64,
+    /// Woken on a cancel, in case an export is asleep waiting for it.
+    slot: HeavySlot,
 }
 
 impl CancelWord {
@@ -400,18 +511,19 @@ impl CancelWord {
     }
 }
 
-/// Cancels jobs by generation, from any thread, with atomic stores and no system call.
+/// Cancels jobs by generation, from any thread.
 #[derive(Clone, Debug)]
 pub struct CancelHandle(Arc<CancelWord>);
 
 impl CancelHandle {
-    /// Every job with a generation below this is stale. Only ever moves up.
+    /// Every job with a generation below this is stale. Only ever moves up. Safe from a UI thread: atomics, plus a brief lock and a wake-up only if an export is waiting.
     pub fn cancel_before(&self, generation: u64) {
         // The host's own word first, so by the time a worker can see a job is stale, the host agrees.
         let cutoff = self.0.cutoff.fetch_max(generation, Ordering::SeqCst).max(generation);
         if let Some(word) = self.0.shared.atomic_u64(control::CANCEL_BEFORE_OFFSET) {
             word.store(cutoff, Ordering::SeqCst);
         }
+        self.0.slot.wake_waiters();
     }
 }
 
@@ -474,15 +586,6 @@ struct PageMemory {
 /// How much lower the lower-resolution version is, from the platform report's page texture at about a quarter of the scale (§2.5).
 const LOW_RES_DIVISOR: u32 = 4;
 
-/// What to do when a page can only be drawn at a lower resolution.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WhenLowRes {
-    /// Draw that version in this tile's place, and say so.
-    Draw,
-    /// Say so, so that a whole-page caller can start the page again at the lower scale.
-    Report,
-}
-
 /// One document's renderer. Holds the file and a control page, and a worker only while one is needed. A cold tab never has one of these.
 pub struct DocRenderer {
     config: ServiceConfig,
@@ -493,9 +596,12 @@ pub struct DocRenderer {
     worker: Option<Worker>,
     page_count: Option<u32>,
     next_job: u32,
+    slot_wait_total: Duration,
     remembered: Vec<PageMemory>,
     /// Each page's largest image in source pixels, for those asked about.
     traits: Vec<(u32, u64)>,
+    /// The slot, from an export's wait, on its way to the worker it's for.
+    waited_ticket: Option<HeavyTicket>,
     /// Why opening the file failed, if it's something trying again wouldn't change. The descriptor is fixed, so its bytes are too.
     open_failure: Option<RenderFailure>,
     /// The page the worker last worked on, while its footprint is past the retirement line. It goes before the next job for any other page.
@@ -511,17 +617,20 @@ impl DocRenderer {
             _ => RenderFailure::Unavailable,
         })?;
         let shared = SharedMemory::create(control::LEN).map_err(|_| RenderFailure::Unavailable)?;
+        let slot = config.heavy_slot.clone();
         Ok(Self {
             config,
             policy,
             file,
             password: password.map(<[u8]>::to_vec),
-            control: Arc::new(CancelWord { shared, cutoff: AtomicU64::new(0) }),
+            control: Arc::new(CancelWord { shared, cutoff: AtomicU64::new(0), slot }),
             worker: None,
             page_count: None,
             next_job: 0,
+            slot_wait_total: Duration::ZERO,
             remembered: Vec::new(),
             traits: Vec::new(),
+            waited_ticket: None,
             open_failure: None,
             retire_after_page: None,
             stats: RenderStats::default(),
@@ -619,7 +728,7 @@ impl DocRenderer {
     /// 3. A lower-resolution version, reported in [`Tile::low_res`].
     /// 4. [`RenderFailure::PageFailed`], remembered.
     pub fn render_tile(&mut self, request: &TileRequest, surface: &Surface) -> Result<TileResult, RenderFailure> {
-        self.draw(request, surface, WhenLowRes::Draw)
+        self.draw(request, surface)
     }
 
     /// The largest image on a page in source pixels. Remembered per page, up to a cap. If looking at the page stops a worker, that's noted as drawing would have noted it,
@@ -664,31 +773,26 @@ impl DocRenderer {
         if tile_edge == 0 {
             return Err(RenderFailure::BadRequest);
         }
-        self.draw_with(request, surface, WhenLowRes::Draw, tile_edge)
+        self.draw_with(request, surface, DrawPurpose::OnScreen, tile_edge)
     }
 
-    /// As [`Self::render_tile`], for whole-page drawing, which can't paste one low-resolution strip among sharp ones. Instead of drawing that version, it fails with
-    /// [`RenderFailure::LowResOnly`], and the caller starts the page again at that scale with [`Self::render_low_res_pass`].
-    pub fn render_exact(&mut self, request: &TileRequest, surface: &Surface) -> Result<TileResult, RenderFailure> {
-        self.draw(request, surface, WhenLowRes::Report)
+    /// As [`Self::render_tile`], for a stated purpose. [`DrawPurpose::Export`] is for a file, a print or a snapshot, and differs in one way: when the page needs the larger limit, it sleeps
+    /// until it can have it, up to [`Policy::export_slot_wait`], and then draws sharp, or fails with [`RenderFailure::ExportRefused`]. It never draws a lower resolution. So it can block
+    /// for a long time: call it only on a worker or job thread, never a UI thread. [`CancelHandle::cancel_before`] ends the wait at once, with [`TileResult::Cancelled`].
+    pub fn render_for(&mut self, purpose: DrawPurpose, request: &TileRequest, surface: &Surface) -> Result<TileResult, RenderFailure> {
+        self.draw_with(request, surface, purpose, 0)
     }
 
-    /// Draws part of a whole page at the lower scale [`RenderFailure::LowResOnly`] gave, under the normal limit. Failing here is the end of the sequence.
-    pub fn render_low_res_pass(&mut self, request: &TileRequest, surface: &Surface) -> Result<TileResult, RenderFailure> {
-        if let PageDrawState::Failed(reason) = self.page_draw_state(request.page) {
-            return Err(RenderFailure::PageFailed { page: request.page, reason });
-        }
-        match self.draw_once(request, surface, WorkerClass::Normal, 0) {
-            Err(JobFailure::Stopped(reason)) => Err(self.give_up_drawing(request.page, reason)),
-            other => other_result(other),
-        }
+    /// How long this document's exports have slept waiting for the larger limit. Time spent asleep isn't time spent drawing, so a cap on drawing can leave it out.
+    pub fn time_waiting_for_slot(&self) -> Duration {
+        self.slot_wait_total
     }
 
-    fn draw(&mut self, request: &TileRequest, surface: &Surface, when_low_res: WhenLowRes) -> Result<TileResult, RenderFailure> {
-        self.draw_with(request, surface, when_low_res, 0)
+    fn draw(&mut self, request: &TileRequest, surface: &Surface) -> Result<TileResult, RenderFailure> {
+        self.draw_with(request, surface, DrawPurpose::OnScreen, 0)
     }
 
-    fn draw_with(&mut self, request: &TileRequest, surface: &Surface, when_low_res: WhenLowRes, tile_edge: u32) -> Result<TileResult, RenderFailure> {
+    fn draw_with(&mut self, request: &TileRequest, surface: &Surface, purpose: DrawPurpose, tile_edge: u32) -> Result<TileResult, RenderFailure> {
         let page = request.page;
         // Checked before anything else, so a request that can't be met starts no process.
         let check = RenderJob { generation: request.generation, job_id: 0, page, scale: request.scale, rect: request.rect, stride: request.stride, tile_edge };
@@ -704,7 +808,10 @@ impl DocRenderer {
         loop {
             match self.page_draw_state(page) {
                 PageDrawState::Failed(reason) => return Err(RenderFailure::PageFailed { page, reason }),
-                PageDrawState::LowResOnly => return self.low_res(request, surface, when_low_res, LowResWhy::TooHeavy),
+                PageDrawState::LowResOnly => match purpose {
+                    DrawPurpose::OnScreen => return self.low_res(request, surface, LowResWhy::TooHeavy),
+                    DrawPurpose::Export => return Err(RenderFailure::ExportRefused { page, why: ExportRefusal::TooHeavy }),
+                },
                 PageDrawState::Sharp => match self.draw_once(request, surface, WorkerClass::Normal, tile_edge) {
                     Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.remember(page).draw = PageDrawState::NeedsHeavy,
                     Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, reason)),
@@ -715,12 +822,34 @@ impl DocRenderer {
                         self.remember(page).draw = PageDrawState::LowResOnly;
                         continue;
                     }
-                    let already_heavy = self.worker.as_ref().is_some_and(|worker| worker.heavy.is_some());
-                    if !already_heavy && !recto_platform::memory_free_percent().is_some_and(|free| free >= self.policy.heavy_min_free_percent) {
-                        return self.low_res(request, surface, when_low_res, LowResWhy::MemoryTight);
+                    let already_heavy = self.worker.as_ref().is_some_and(|worker| worker.heavy);
+                    if !already_heavy && !self.memory_to_spare() {
+                        return match purpose {
+                            DrawPurpose::OnScreen => self.low_res(request, surface, LowResWhy::MemoryTight),
+                            DrawPurpose::Export => Err(RenderFailure::ExportRefused { page, why: ExportRefusal::MemoryTight }),
+                        };
                     }
-                    match self.draw_once(request, surface, WorkerClass::Heavy, tile_edge) {
-                        Err(JobFailure::HeavyBusy) => return self.low_res(request, surface, when_low_res, LowResWhy::HeavyBusy),
+                    if purpose == DrawPurpose::Export && !already_heavy && self.waited_ticket.is_none() {
+                        match self.wait_for_slot(request.generation) {
+                            Ok(ticket) => self.waited_ticket = Some(ticket),
+                            Err(SlotWaitEnd::Cancelled) => return Ok(TileResult::Cancelled { worker_killed: false }),
+                            Err(SlotWaitEnd::TimedOut) => return Err(RenderFailure::ExportRefused { page, why: ExportRefusal::WaitTimedOut }),
+                        }
+                        // A long wait may have changed that. Dropping the ticket frees the slot for whoever's next.
+                        if !self.memory_to_spare() {
+                            self.waited_ticket = None;
+                            return Err(RenderFailure::ExportRefused { page, why: ExportRefusal::MemoryTight });
+                        }
+                    }
+                    let drawn = self.draw_once(request, surface, WorkerClass::Heavy, tile_edge);
+                    // If no worker took it, as when the file can't open, it mustn't stay here holding the slot.
+                    self.waited_ticket = None;
+                    match drawn {
+                        Err(JobFailure::HeavyBusy) => match purpose {
+                            DrawPurpose::OnScreen => return self.low_res(request, surface, LowResWhy::HeavyBusy),
+                            // Its worker left between jobs and someone else has the slot now. Back to waiting, within the same limits.
+                            DrawPurpose::Export => {}
+                        },
                         Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.remember(page).draw = PageDrawState::LowResOnly,
                         Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, reason)),
                         other => return other_result(other),
@@ -730,15 +859,25 @@ impl DocRenderer {
         }
     }
 
+    fn memory_to_spare(&self) -> bool {
+        recto_platform::memory_free_percent().is_some_and(|free| free >= self.policy.heavy_min_free_percent)
+    }
+
+    /// Sleeps for the slot. This document's own heavy worker can't be what's holding it: `retire_if_other_page` and the check above saw to that.
+    fn wait_for_slot(&mut self, generation: u64) -> Result<HeavyTicket, SlotWaitEnd> {
+        let started = Instant::now();
+        let control = self.control.clone();
+        let result = self.config.heavy_slot.wait_take(self.policy.export_slot_wait, || control.is_stale(generation));
+        self.slot_wait_total += started.elapsed();
+        result
+    }
+
     /// Step 3. Draws the part of the page this tile covers, at a quarter of the scale, into the same surface: it needs less room, never more.
-    fn low_res(&mut self, request: &TileRequest, surface: &Surface, when_low_res: WhenLowRes, why: LowResWhy) -> Result<TileResult, RenderFailure> {
+    fn low_res(&mut self, request: &TileRequest, surface: &Surface, why: LowResWhy) -> Result<TileResult, RenderFailure> {
         let page = request.page;
         let scale = request.scale / LOW_RES_DIVISOR as f32;
         if scale < proto::MIN_SCALE {
             return Err(self.give_up_drawing(page, KillReason::MemoryLimit));
-        }
-        if when_low_res == WhenLowRes::Report {
-            return Err(RenderFailure::LowResOnly { page, scale, why });
         }
         let (width, height) = self.page_size(page)?;
         let (full_width, full_height) = device_size(width, height, scale).map_err(|_| RenderFailure::TooLargeAtThisScale)?;
@@ -909,7 +1048,7 @@ impl DocRenderer {
             self.ensure_worker(class)?;
             let Some(worker) = self.worker.as_mut() else { return Err(RenderFailure::Unavailable.into()) };
             let fresh = worker.jobs_done == 0;
-            let is_heavy = worker.heavy.is_some();
+            let is_heavy = worker.heavy;
             let watch = Watch { limit: worker.limit, policy: &self.policy, control: &self.control, generation };
             let outcome = worker.exchange(frame, handles, &watch).and_then(|reply| {
                 if reply.kind == Kind::Failed {
@@ -978,7 +1117,7 @@ impl DocRenderer {
             memory.footprint_bytes
         });
         // A heavy worker holds one page alone, so it goes before any other page whatever its size.
-        self.retire_after_page = (footprint > self.policy.retire_bytes || worker.heavy.is_some()).then_some(page);
+        self.retire_after_page = (footprint > self.policy.retire_bytes || worker.heavy).then_some(page);
     }
 
     /// Takes the worker away, killed and collected, keeping its last numbers.
@@ -1014,24 +1153,27 @@ impl DocRenderer {
             return Err(failure.into());
         }
         self.reap_if_gone();
-        if self.worker.as_ref().is_some_and(|worker| class == WorkerClass::Heavy && worker.heavy.is_none()) {
+        if self.worker.as_ref().is_some_and(|worker| class == WorkerClass::Heavy && !worker.heavy) {
             self.bury_worker();
         }
         if self.worker.is_some() {
             return Ok(());
         }
-        // Taken before the process starts, and without waiting: if another page has it, the caller draws its lower-resolution version for now.
+        // Before the process starts: an export has waited for it already, and a viewer takes it now or draws its lower-resolution version for now.
         let ticket = match class {
             WorkerClass::Normal => None,
-            WorkerClass::Heavy => Some(self.config.heavy_slot.try_take().ok_or(JobFailure::HeavyBusy)?),
+            WorkerClass::Heavy => Some(self.waited_ticket.take().or_else(|| self.config.heavy_slot.try_take()).ok_or(JobFailure::HeavyBusy)?),
         };
         let limit = if ticket.is_some() { self.policy.heavy_limit_bytes } else { self.policy.memory_limit_bytes };
         let (mut worker, ready) = Worker::start(&self.config, &self.policy, limit).map_err(|error| match error.kind() {
             io::ErrorKind::NotFound => RenderFailure::LibraryMissing,
             _ => RenderFailure::Unavailable,
         })?;
-        self.stats.heavy_retries += u32::from(ticket.is_some());
-        worker.heavy = ticket;
+        if let Some(ticket) = ticket {
+            self.stats.heavy_retries += 1;
+            worker.heavy = true;
+            worker.child.on_end(Box::new(move || drop(ticket)));
+        }
         self.stats.spawns += 1;
         self.stats.ready_footprint_bytes = ready;
         self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(ready);
@@ -1187,7 +1329,7 @@ impl Worker {
         let child = ChildProcess::spawn(&config.worker_exe, &arg_refs, &env_refs, theirs, Some(rule))?;
         child.note_activity(false);
         ours.set_nonblocking(true)?;
-        let mut worker = Self { child, channel: ours, reader: FrameReader::default(), jobs_done: 0, limit, heavy: None };
+        let mut worker = Self { child, channel: ours, reader: FrameReader::default(), jobs_done: 0, limit, heavy: false };
         let started = Instant::now();
         let limit = policy.start_timeout;
         let hello = loop {

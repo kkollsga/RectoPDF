@@ -1,7 +1,7 @@
 //! `budget render`: what a worker costs, measured from outside on the real path. Also the shared way to draw a whole page in strips, so a
 //! large page never needs a whole-page buffer.
 
-use crate::host::{DocRenderer, LowResWhy, RenderFailure, TileRequest, TileResult};
+use crate::host::{DocRenderer, DrawPurpose, RenderFailure, TileRequest, TileResult};
 use recto_platform::isolate::SharedMemory;
 use recto_proto::{BYTES_PER_PIXEL, TILE_EDGE, TileKind, TileRect, device_size};
 use std::time::{Duration, Instant};
@@ -42,62 +42,48 @@ pub fn page_device_size(doc: &mut DocRenderer, page: u32, scale: f32, caps: &Out
 
 /// What [`draw_whole_page`] hands over as it goes.
 pub enum PageEvent<'a> {
-    /// A picture of this size starts here. A second one means the first is abandoned: the page couldn't be drawn at the scale asked for.
-    Begin { width: u32, height: u32, scale: f32, low_res: Option<LowResWhy> },
+    /// The picture's size, once, before any rows.
+    Begin { width: u32, height: u32 },
     /// The next rows, top to bottom.
     Rows { memory: &'a SharedMemory, rect: TileRect, stride: u32, kind: TileKind },
 }
 
-/// How a whole page came out.
+/// How a whole page came out: sharp, at the scale asked for, always.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PageDrawn {
     pub width: u32,
     pub height: u32,
-    pub scale: f32,
-    /// Set if this is a lower-resolution version, and why.
-    pub low_res: Option<LowResWhy>,
     pub render_us: u64,
 }
 
-/// Draws a whole page in strips no larger than [`STRIP_MAX_BYTES`], so it stays under the same limits as tiles. What `render` uses, and what print and snapshot will.
-/// If the page can only be drawn at a lower resolution, it starts again at that scale and says so, rather than pasting one strip among others.
+/// Draws a whole page in pieces under the same limits as tiles, for a file, a print or a snapshot. This is an export, in the sense of [`crate::DrawPurpose::Export`]: it comes out sharp or fails, and
+/// a caller writing a file writes nothing on failure. So it can sleep waiting for the larger limit: call it on a job thread, never a UI thread. `generation` cancels it through
+/// [`crate::CancelHandle`], which comes back as [`RenderFailure::Cancelled`].
 pub fn draw_whole_page(
     doc: &mut DocRenderer,
     page: u32,
     scale: f32,
+    generation: u64,
     caps: &OutputCaps,
     surface: &mut Option<SharedMemory>,
     mut sink: impl FnMut(PageEvent<'_>) -> Result<(), RenderFailure>,
 ) -> Result<PageDrawn, RenderFailure> {
-    let deadline = Instant::now() + caps.max_time;
+    let started = Instant::now();
     let (width, height) = page_device_size(doc, page, scale, caps)?;
-    sink(PageEvent::Begin { width, height, scale, low_res: None })?;
-    match strips(doc, DocRenderer::render_exact, page, scale, (width, height), deadline, surface, &mut sink) {
-        Ok(render_us) => Ok(PageDrawn { width, height, scale, low_res: None, render_us }),
-        Err(RenderFailure::LowResOnly { scale: lower, why, .. }) => {
-            // Scaled from the same answer, not a new one: a hostile worker's second answer needn't match its first.
-            let (width, height) = device_size_from(width, height, scale, lower)?;
-            sink(PageEvent::Begin { width, height, scale: lower, low_res: Some(why) })?;
-            let render_us = strips(doc, DocRenderer::render_low_res_pass, page, lower, (width, height), deadline, surface, &mut sink)?;
-            Ok(PageDrawn { width, height, scale: lower, low_res: Some(why), render_us })
-        }
-        Err(failure) => Err(failure),
-    }
-}
-
-fn device_size_from(width: u32, height: u32, scale: f32, lower: f32) -> Result<(u32, u32), RenderFailure> {
-    let shrink = |edge: u32| ((f64::from(edge) * f64::from(lower) / f64::from(scale)).round() as u32).max(1);
-    Ok((shrink(width), shrink(height)))
+    sink(PageEvent::Begin { width, height })?;
+    let render_us = strips(doc, page, scale, generation, (width, height), started, caps, surface, &mut sink)?;
+    Ok(PageDrawn { width, height, render_us })
 }
 
 #[allow(clippy::too_many_arguments)]
 fn strips(
     doc: &mut DocRenderer,
-    draw: fn(&mut DocRenderer, &TileRequest, &SharedMemory) -> Result<TileResult, RenderFailure>,
     page: u32,
     scale: f32,
+    generation: u64,
     (width, height): (u32, u32),
-    deadline: Instant,
+    started: Instant,
+    caps: &OutputCaps,
     surface: &mut Option<SharedMemory>,
     sink: &mut impl FnMut(PageEvent<'_>) -> Result<(), RenderFailure>,
 ) -> Result<u64, RenderFailure> {
@@ -110,19 +96,21 @@ fn strips(
         *surface = Some(SharedMemory::create(strip_bytes as usize).map_err(|_| RenderFailure::Unavailable)?);
     }
     let Some(memory) = surface.as_ref() else { return Err(RenderFailure::Unavailable) };
+    let waited_before = doc.time_waiting_for_slot();
     let mut render_us = 0u64;
     let mut y = 0;
     while y < height {
-        if Instant::now() >= deadline {
+        // Time asleep waiting for the larger limit isn't time drawing, and has a limit of its own.
+        if started.elapsed().saturating_sub(doc.time_waiting_for_slot().saturating_sub(waited_before)) >= caps.max_time {
             return Err(RenderFailure::TookTooLong);
         }
         let rect = TileRect { x: 0, y, width, height: strip_rows.min(height - y) };
-        match draw(doc, &TileRequest { page, rect, scale, stride, generation: 0 }, memory)? {
+        match doc.render_for(DrawPurpose::Export, &TileRequest { page, rect, scale, stride, generation }, memory)? {
             TileResult::Done(tile) => {
                 render_us += u64::from(tile.render_us);
                 sink(PageEvent::Rows { memory, rect, stride, kind: tile.kind })?;
             }
-            TileResult::Cancelled { .. } => return Err(RenderFailure::Unavailable),
+            TileResult::Cancelled { .. } => return Err(RenderFailure::Cancelled),
         }
         y += rect.height;
     }
@@ -170,7 +158,7 @@ pub struct BudgetReport {
     pub surface_bytes: u64,
     pub pages_drawn: u32,
     pub pages_failed: u32,
-    /// Pages that came out at a lower resolution, in whole or in part.
+    /// Pages whose tiles came out at a lower resolution, in whole or in part. Only with tiles: whole-page drawing is an export, which never does.
     pub pages_low_res: u32,
     pub heavy_retries: u32,
     pub spawns: u32,
@@ -207,16 +195,12 @@ pub fn measure_budget(doc: &mut DocRenderer, options: BudgetOptions) -> Result<B
         }
         let started = Instant::now();
         let low_res_before = doc.stats().low_res_tiles;
-        let mut whole_low_res = false;
         let drawn = if options.tiles {
             draw_tiles(doc, page, options.scale, &mut surface, &mut report)
         } else {
-            draw_whole(doc, page, options.scale, &mut surface, &mut report).map(|drawn| {
-                whole_low_res = drawn.low_res.is_some();
-                drawn.render_us
-            })
+            draw_whole(doc, page, options.scale, &mut surface, &mut report).map(|drawn| drawn.render_us)
         };
-        report.pages_low_res += u32::from(whole_low_res || doc.stats().low_res_tiles > low_res_before);
+        report.pages_low_res += u32::from(doc.stats().low_res_tiles > low_res_before);
         let micros = started.elapsed().as_micros() as u64;
         let footprint_after_bytes = doc.worker_footprint();
         report.last_footprint_bytes = footprint_after_bytes.unwrap_or(report.last_footprint_bytes);
@@ -253,7 +237,7 @@ fn count(report: &mut BudgetReport, kind: TileKind) {
 }
 
 fn draw_whole(doc: &mut DocRenderer, page: u32, scale: f32, surface: &mut Option<SharedMemory>, report: &mut BudgetReport) -> Result<PageDrawn, RenderFailure> {
-    draw_whole_page(doc, page, scale, &OutputCaps::default(), surface, |event| {
+    draw_whole_page(doc, page, scale, 0, &OutputCaps::default(), surface, |event| {
         if let PageEvent::Rows { kind, .. } = event {
             count(report, kind);
         }

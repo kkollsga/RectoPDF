@@ -413,6 +413,20 @@ struct ChildShared {
     epoch: Instant,
     last_active_ms: AtomicU64,
     busy: AtomicBool,
+    /// Whether the reaper is watching this child, so it will be collected whoever else lets go of it.
+    watched: AtomicBool,
+    /// What to run once it has ended and been collected.
+    on_end: Mutex<EndAction>,
+}
+
+/// Something to run once, when a child has gone.
+#[derive(Default)]
+struct EndAction(Option<Box<dyn FnOnce() + Send>>);
+
+impl std::fmt::Debug for EndAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "EndAction(pending)" } else { "EndAction(none)" })
+    }
 }
 
 impl ChildShared {
@@ -436,21 +450,40 @@ impl ChildShared {
         }
     }
 
-    /// Collects it if it has ended. Never blocks, and is safe to race with itself because of the lock.
+    /// Collects it if it has ended, then runs its end action. Never blocks, and is safe to race with itself because of the lock.
     fn try_collect(&self) -> Option<ChildExit> {
-        let mut end = self.end();
-        if end.exit.is_none() && self.wait_without_collecting(libc::WNOHANG) {
-            end.last_memory = process_memory(self.pid as u32);
-            let mut status: c_int = 0;
-            // SAFETY: `status` is live for the call. The child has ended, so this doesn't block.
-            while unsafe { libc::waitpid(self.pid, &raw mut status, libc::WNOHANG) } == -1 {
-                if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                    return end.exit;
+        let exit = {
+            let mut end = self.end();
+            if end.exit.is_none() && self.wait_without_collecting(libc::WNOHANG) {
+                end.last_memory = process_memory(self.pid as u32);
+                let mut status: c_int = 0;
+                // SAFETY: `status` is live for the call. The child has ended, so this doesn't block.
+                let collected = loop {
+                    let waited = unsafe { libc::waitpid(self.pid, &raw mut status, libc::WNOHANG) };
+                    if waited != -1 {
+                        break waited == self.pid;
+                    }
+                    if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                        break false;
+                    }
+                };
+                if collected {
+                    end.exit = Some(decode_wait_status(status));
                 }
             }
-            end.exit = Some(decode_wait_status(status));
+            end.exit
+        };
+        if exit.is_some() {
+            self.run_end_action();
         }
-        end.exit
+        exit
+    }
+
+    fn run_end_action(&self) {
+        let action = self.on_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.take();
+        if let Some(action) = action {
+            action();
+        }
     }
 
     /// Sends the kill unless it's already been collected. Never blocks: a process stuck in a read from a dead network volume doesn't die until that
@@ -526,6 +559,8 @@ impl ChildProcess {
             epoch: Instant::now(),
             last_active_ms: AtomicU64::new(0),
             busy: AtomicBool::new(false),
+            watched: AtomicBool::new(false),
+            on_end: Mutex::new(EndAction::default()),
         });
         reaper::watch(shared.clone(), rule);
         Ok(Self(shared))
@@ -569,6 +604,14 @@ impl ChildProcess {
         }
     }
 
+    /// Runs `action` once, as soon as the child has ended and been collected, on whichever thread collects it. At once if that has already happened. This is how something can
+    /// be tied to the process really being gone, however it went, with nobody needing to ask.
+    pub fn on_end(&self, action: Box<dyn FnOnce() + Send>) {
+        self.0.on_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0 = Some(action);
+        // It may have ended before the action was in place.
+        self.0.try_collect();
+    }
+
     /// Says a job started or ended, so the idle rule doesn't count it. One atomic store each.
     pub fn note_activity(&self, busy: bool) {
         self.0.last_active_ms.store(self.0.millis(), Ordering::Relaxed);
@@ -579,6 +622,11 @@ impl ChildProcess {
 impl Drop for ChildProcess {
     fn drop(&mut self) {
         self.kill_now();
+        // With no reaper thread, which is rare, nobody else would run the end action. Then it's better to wait a moment and let go than to leave it pending for ever.
+        if !self.0.watched.load(Ordering::Relaxed) {
+            self.wait_bounded(Duration::from_secs(1));
+            self.0.run_end_action();
+        }
     }
 }
 
@@ -632,6 +680,7 @@ mod reaper {
         let Some(state) = guard.as_mut() else { return };
         let queue = state.queue.as_raw_fd();
         let pid = child.pid;
+        child.watched.store(true, Ordering::Relaxed);
         state.children.push(Watched { child: child.clone(), rule });
         if change(queue, pid, libc::EVFILT_PROC, libc::EV_ADD | libc::EV_ONESHOT, libc::NOTE_EXIT, 0).is_err() {
             // Already gone, so no event will ever come. A timer of 1 ms brings the thread round to clean up.
@@ -1055,5 +1104,23 @@ mod tests {
     fn free_memory_is_readable_and_a_percentage() {
         let percent = crate::memory_free_percent().expect("the reading failed");
         assert!(percent <= 100, "{percent}");
+    }
+
+    /// Failure: something tied to a child's life outlasts it, because it only ends when someone next asks. It must run with nobody asking, whether it left or was killed.
+    #[test]
+    fn an_end_action_runs_when_the_child_goes_with_nobody_asking() {
+        let (_ours, theirs) = Channel::pair().unwrap();
+        let child = ChildProcess::spawn(Path::new("/bin/sleep"), &[OsStr::new("600")], &[], theirs, None).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        child.on_end(Box::new(move || sender.send(()).unwrap()));
+        assert!(receiver.try_recv().is_err(), "it ran while the child was alive");
+        assert!(child.kill_now());
+        receiver.recv_timeout(Duration::from_secs(30)).expect("nothing ran it");
+        let (_ours, theirs) = Channel::pair().unwrap();
+        let already = ChildProcess::spawn(Path::new("/bin/sh"), &[OsStr::new("-c"), OsStr::new("exit 0")], &[], theirs, None).unwrap();
+        assert!(already.wait_bounded(Duration::from_secs(30)).is_some());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        already.on_end(Box::new(move || sender.send(()).unwrap()));
+        receiver.recv_timeout(Duration::from_secs(30)).expect("a child already gone should run it at once");
     }
 }

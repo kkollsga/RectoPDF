@@ -128,6 +128,7 @@ impl ChildProcess {
         None
     }
     pub fn note_activity(&self, _busy: bool) {}
+    pub fn on_end(&self, _action: Box<dyn FnOnce() + Send>) {}
 }
 
 pub fn process_memory(_pid: u32) -> Option<ProcessMemory> {

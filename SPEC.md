@@ -148,3 +148,4 @@ Numbered so they can be cited. Newest last.
 16. **Normal Save and Save As.** Owner, 2026-11-06. Replaces the earlier save-to-a-copy default.
 18. **Edit mode is in, including text editing.** Owner, 2026-11-06. Reverses the earlier call to leave text editing out. Text edits work on a whole block, matching Foxit's baseline.
 17. **Commands live in the macOS menu bar;** the sidebar panel keeps only what you use while reading. Owner, 2026-11-06.
+19. **Exports wait for the heavy slot; they never come out at low resolution.** Owner, 2026-11-07. An export needing the larger limit waits, bounded and cancellable, and draws sharp, or is refused with no file written. On-screen pages stay as they were: low-res at once, never waiting.

@@ -5,7 +5,7 @@ use crate::{AgentError, exit};
 use recto_index::{hidden_report, normalize};
 use recto_proto::{BYTES_PER_PIXEL, TileKind};
 use recto_render_service::{
-    BUDGET_MAX_TIME, BudgetOptions, DocRenderer, DrawStrategy, OutputCaps, PageDrawn, PageEvent, Policy, RenderFailure, ServiceConfig, ViewportOptions, draw_whole_page, measure_budget, measure_viewport,
+    BUDGET_MAX_TIME, BudgetOptions, DocRenderer, DrawStrategy, ExportRefusal, OutputCaps, PageDrawn, PageEvent, Policy, RenderFailure, ServiceConfig, ViewportOptions, draw_whole_page, measure_budget, measure_viewport,
 };
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
@@ -28,6 +28,7 @@ impl From<RenderFailure> for AgentError {
         let exit = match failure {
             RenderFailure::NotFound | RenderFailure::BadPage => exit::NOT_FOUND,
             RenderFailure::NeedsPassword => exit::PROTECTED,
+            RenderFailure::ExportRefused { why: ExportRefusal::WaitTimedOut, .. } | RenderFailure::TookTooLong => exit::TIMED_OUT,
             _ => exit::FAILED,
         };
         Self::new(failure.code(), failure.message(), exit)
@@ -110,29 +111,25 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     drop(temp);
     Ok(json!({
         "page": page + 1,
-        "asked_scale": scale,
-        "scale": drawn.scale,
+        "scale": scale,
         "out": out,
         "width": drawn.width,
         "height": drawn.height,
         "bytes": std::fs::metadata(out).map(|meta| meta.len()).ok(),
         "kind": kind,
-        "low_res": drawn.low_res.map(|why| json!({ "why": why.code(), "message": why.message(), "may_clear": why.may_clear() })),
     }))
 }
 
-/// Writes the page to a new temp file, starting a new one if the page comes down to a lower resolution. Returns the file, ready to publish.
+/// Writes the page to a new temp file, as an export: sharp or not at all, and any failure takes the temp file with it. Returns the file, ready to publish. Can sleep waiting for the larger
+/// limit, which is fine: this runs on a command's thread, never a UI thread.
 fn write_page(doc: &mut DocRenderer, page: u32, scale: f32, out: &Path, caps: &OutputCaps) -> Result<(OwnTemp, PageDrawn, &'static str), AgentError> {
     let write_failed = || AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED);
     let mut surface = None;
     let mut kind = None;
     let mut picture: Option<(OwnTemp, png::RgbWriter, Vec<u8>)> = None;
     let mut sink_error = None;
-    let drawn = draw_whole_page(doc, page, scale, caps, &mut surface, |event| match event {
-        PageEvent::Begin { width, height, .. } => {
-            // Dropping any earlier picture deletes its temp file.
-            picture = None;
-            kind = None;
+    let drawn = draw_whole_page(doc, page, scale, 0, caps, &mut surface, |event| match event {
+        PageEvent::Begin { width, height } => {
             let started = OwnTemp::create(out).and_then(|(temp, file)| {
                 let writer = png::RgbWriter::create(file, width, height, caps.max_bytes).map_err(|_| write_failed())?;
                 Ok((temp, writer, vec![0u8; width as usize * BYTES_PER_PIXEL as usize]))
@@ -481,29 +478,28 @@ mod tests {
         }
     }
 
-    /// Failure: a page past every limit comes out of `recto render` as a smaller picture with nothing saying so, and an agent takes it for what it asked for. And since only
-    /// the picture that finished may remain, the abandoned one must leave no file behind.
-    #[test]
-    fn a_lower_resolution_picture_says_so() {
-        let file = doc();
-        let before = folder_entries(&file);
-        let out = file.0.with_file_name("low.png");
-        let config = ServiceConfig {
+    fn stand_in() -> ServiceConfig {
+        ServiceConfig {
             worker_exe: std::env::current_exe().unwrap(),
             pdfium_lib: "/nonexistent".into(),
             heavy_slot: recto_render_service::HeavySlot::new(),
             extra_env: vec![("RECTO_FAKE".into(), "1".into())],
             replace_args: Some(["--exact", "render::tests::fake_worker", "--nocapture", "--test-threads=1"].into_iter().map(Into::into).collect()),
-        };
-        let reply = render_with(config, &file.0, 1, 2.0, &out, &OutputCaps::default()).unwrap();
-        assert_eq!(reply["asked_scale"], 2.0);
-        assert_eq!(reply["scale"], 0.5);
-        assert_eq!((&reply["width"], &reply["height"]), (&json!(306), &json!(396)));
-        assert!(reply["low_res"]["message"].as_str().unwrap().contains("lower-resolution"), "{reply}");
-        let bytes = std::fs::read(&out).unwrap();
-        assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), 306, "the file must be the size the reply says");
-        std::fs::remove_file(&out).unwrap();
-        assert_eq!(folder_entries(&file), before, "the abandoned picture was left behind");
+        }
+    }
+
+    /// Failure: a page past every limit comes out of `recto render` as a smaller picture, and someone sends it on, believing it's what they asked for. Owner, 2026-11-07: an export is sharp or
+    /// isn't written. The stand-in fits only at the lower scale, so a low-res path would succeed: it must refuse, say so, and leave no file behind.
+    #[test]
+    fn an_export_never_produces_a_low_res_file() {
+        let file = doc();
+        let before = folder_entries(&file);
+        let out = file.0.with_file_name("low.png");
+        let error = render_with(stand_in(), &file.0, 1, 2.0, &out, &OutputCaps::default()).unwrap_err();
+        // Which refusal depends on how much memory this Mac has free. None of them is a picture.
+        assert!(matches!(error.code, "export_page_too_heavy" | "export_memory_tight"), "{}", error.code);
+        assert!(error.message.contains("no file was written"), "{}", error.message);
+        assert_eq!(folder_entries(&file), before, "something was left behind");
     }
 
     /// Failure: a page with a red blank strip and a white one reports `grey`, telling an agent there's no colour on a page that has some.
