@@ -345,3 +345,122 @@ fn watchers_hear_events_and_a_finished_wait_cant_answer_the_next() {
     watcher.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"x\",\"timeout_ms\":10}\n").unwrap();
     assert_eq!(read_line(&mut watcher).unwrap()["error"]["code"], "timed_out");
 }
+
+/// Failure: a queued `page rotate` answers ok and is then lost, because `stop` only looked for unsaved edits once. Whatever's waiting when `stop` arrives is refused, and `stop` looks after what's running has finished: that edit stops it.
+#[test]
+fn stop_checks_after_whats_running_has_finished() {
+    let limits = Limits { stop_grace: Duration::from_secs(5), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut slow = running.connect();
+    // A stuck command, which on being let go leaves a tab unsaved.
+    slow.write_all(b"{\"cmd\":\"tabs\"}\n").unwrap();
+    let mut stopper = running.connect();
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    stopper.write_all(b"{\"cmd\":\"stop\"}\n").unwrap();
+    // Let the stop arrive, then anything else that isn't quick is told it's stopping.
+    std::thread::sleep(Duration::from_millis(100));
+    let refused = running.call(&json!({ "cmd": "goto", "page": 2 }));
+    assert_eq!(refused["error"]["code"], "busy", "{refused}");
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true, "`status` still answers");
+    // The running command changes something as it ends.
+    running.host.unsaved.lock().unwrap().push((TabId(1), "report".to_string()));
+    running.host.release();
+    assert_eq!(read_line(&mut slow).unwrap()["data"]["released"], true);
+    let answer = read_line(&mut stopper).unwrap();
+    assert_eq!(answer["error"]["code"], "unsaved_changes", "it must look after that command ended: {answer}");
+    let working = running.call(&json!({ "cmd": "goto", "page": 3 }));
+    assert_eq!(working["ok"], true, "a refused stop lets everything carry on: {working}");
+}
+
+/// Failure: `stop` with something stuck hangs for ever, or kills it anyway. It says it couldn't, and the session carries on.
+#[test]
+fn stop_gives_up_on_a_stuck_command_and_says_so() {
+    let limits = Limits { stop_grace: Duration::from_millis(100), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut slow = running.connect();
+    slow.write_all(b"{\"cmd\":\"tabs\"}\n").unwrap();
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    let reply = running.call(&json!({ "cmd": "stop" }));
+    assert_eq!(reply["error"]["code"], "busy", "{reply}");
+    assert_eq!(running.call(&json!({ "cmd": "budget" }))["ok"], true);
+}
+
+/// Failure: a client that sends commands and doesn't read makes the session work without end, and its answers fill the shared allowance, so every other client gets `reply_too_large` for up to 30 s. Past 1 MiB unread, its commands wait.
+#[test]
+fn a_client_that_doesnt_read_isnt_worked_for() {
+    let limits = Limits { max_unsent_before_pause: 1024 * 1024, ..Limits::default() };
+    let running = Running::start(limits);
+    let mut greedy = running.connect();
+    // Each answer is 5 MiB, so the first is already past the line.
+    let many = "{\"cmd\":\"where\"}\n".repeat(200);
+    greedy.write_all(many.as_bytes()).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    assert!(running.host.wheres.load(Ordering::SeqCst) <= 2, "{} answers made for a client that read none", running.host.wheres.load(Ordering::SeqCst));
+    // When it starts reading, it gets the next ones.
+    let mut reader = BufLine::default();
+    assert!(reader.next(&mut greedy).unwrap()["data"]["huge"].is_string());
+    assert!(reader.next(&mut greedy).unwrap()["data"]["huge"].is_string());
+    assert!(running.host.wheres.load(Ordering::SeqCst) >= 2);
+}
+
+#[derive(Default)]
+struct BufLine {
+    bytes: Vec<u8>,
+}
+
+impl BufLine {
+    fn next(&mut self, stream: &mut UnixStream) -> Option<Value> {
+        let mut chunk = vec![0u8; 256 * 1024];
+        loop {
+            if let Some(at) = self.bytes.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = self.bytes.drain(..=at).collect();
+                return Some(serde_json::from_slice(&line).unwrap());
+            }
+            let count = stream.read(&mut chunk).ok()?;
+            if count == 0 {
+                return None;
+            }
+            self.bytes.extend_from_slice(&chunk[..count]);
+        }
+    }
+}
+
+/// Failure: the shared allowance runs out, and small answers stop too, or the cap isn't one at all. Large answers are refused while `status` still answers, and nothing goes past the hard cap.
+#[test]
+fn the_cap_on_unread_answers_is_hard_and_small_ones_still_get_through() {
+    let limits = Limits { max_queued_bytes: 6 * 1024 * 1024, max_queued_hard_bytes: 7 * 1024 * 1024, ..Limits::default() };
+    let running = Running::start(limits);
+    let mut one = running.connect();
+    one.write_all(b"{\"cmd\":\"where\"}\n").unwrap();
+    let mut two = running.connect();
+    two.write_all(b"{\"cmd\":\"where\"}\n").unwrap();
+    // One of them gets the room, and the other is told there's none. Neither reads, so this holds.
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true, "a small answer goes past the soft cap");
+    let mut reader_one = BufLine::default();
+    let mut reader_two = BufLine::default();
+    let (first, second) = (reader_one.next(&mut one).unwrap(), reader_two.next(&mut two).unwrap());
+    let codes = [first["error"]["code"].as_str(), second["error"]["code"].as_str()];
+    assert!(codes.contains(&Some("reply_too_large")), "{codes:?}");
+    assert!(first["ok"] == true || second["ok"] == true, "one must get its answer");
+}
+
+/// Failure: a wait's look runs after the level dropped and hands over a tab's details, because only the asking was checked. Here the look waits behind a stuck job, and the level drops with no message to the server, so only the look itself can notice.
+#[test]
+fn a_look_rechecks_the_level() {
+    let limits = Limits { max_jobs: 1, ..Limits::default() };
+    let running = Running::start(limits);
+    running.host.looks_answer.store(true, Ordering::SeqCst);
+    let mut slow = running.connect();
+    slow.write_all(b"{\"cmd\":\"tabs\"}\n").unwrap();
+    let mut waiter = running.connect();
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    waiter.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"secret\",\"timeout_ms\":20000}\n").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    levels::store(&running.paths, Level::Off).unwrap();
+    running.host.release();
+    assert_eq!(read_line(&mut slow).unwrap()["data"]["released"], true);
+    let answer = read_line(&mut waiter).unwrap();
+    assert_eq!(answer["error"]["code"], "permission_denied", "{answer}");
+}

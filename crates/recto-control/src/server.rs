@@ -41,6 +41,10 @@ pub struct Limits {
     pub max_reply_bytes: usize,
     /// All answers waiting to be read, together.
     pub max_queued_bytes: usize,
+    /// All answers waiting to be read, including small ones. Nothing goes past this: whoever would take it past is dropped. What's between this and `max_queued_bytes` keeps `status` and the like answerable.
+    pub max_queued_hard_bytes: usize,
+    /// Unread bytes past which a client's next command waits. It keeps what it's been sent to itself rather than making the session work on.
+    pub max_unsent_before_pause: usize,
     /// Events a watcher may leave unread before it's dropped.
     pub max_watcher_backlog: usize,
     /// Whose connections to take. This user's alone, except in a test of the refusal.
@@ -61,6 +65,8 @@ impl Default for Limits {
             max_draw_jobs: 2,
             max_reply_bytes: 32 * 1024 * 1024,
             max_queued_bytes: 128 * 1024 * 1024,
+            max_queued_hard_bytes: 144 * 1024 * 1024,
+            max_unsent_before_pause: 1024 * 1024,
             max_watcher_backlog: 1024 * 1024,
             expected_uid: local::current_uid(),
             stop_grace: Duration::from_secs(5),
@@ -279,7 +285,7 @@ impl<H: Host> Loop<H> {
             for conn in &self.conns {
                 // A client that closed its end while its answer is being worked out would wake this for nothing, over and over, until the job ends.
                 let token = if conn.input_closed && !conn.has_output() { Token::NONE } else { conn.stream.token() };
-                entries.push(PollEntry::new(token, conn.wants_input(self.limits.max_line_bytes), conn.has_output()));
+                entries.push(PollEntry::new(token, conn.wants_input(self.limits.max_line_bytes, self.limits.max_unsent_before_pause), conn.has_output()));
             }
             let timeout = self.next_deadline().map(|at| at.saturating_duration_since(Instant::now()));
             local::poll(&mut entries, timeout)?;
@@ -363,7 +369,8 @@ impl<H: Host> Loop<H> {
 
     fn take_lines(&mut self) {
         for index in 0..self.conns.len() {
-            while matches!(self.conns[index].state, State::Idle) && !self.conns[index].gone && !self.conns[index].closing {
+            // A client with a lot it hasn't read waits before its next command is even looked at, so it can't make the session work for answers nobody takes.
+            while matches!(self.conns[index].state, State::Idle) && !self.conns[index].gone && !self.conns[index].closing && self.conns[index].unsent() <= self.limits.max_unsent_before_pause {
                 let Some(line) = self.conns[index].next_line() else {
                     if self.conns[index].input.len() > self.limits.max_line_bytes {
                         self.refuse_line(index);
@@ -604,8 +611,7 @@ impl<H: Host> Loop<H> {
                     client.state = State::Idle;
                     client.last_activity = now;
                     client.line_started = (!client.input.is_empty()).then_some(now);
-                    let line = if self.queued_bytes + line.len() > self.limits.max_queued_bytes { too_large(tag) } else { line };
-                    self.queue_output(index, &line);
+                    self.send_answer(index, tag, line);
                 }
                 if stop {
                     self.begin_stop();
@@ -677,7 +683,7 @@ impl<H: Host> Loop<H> {
         let mut line = reply("watch", &Ok(data.clone())).to_string();
         line.push('\n');
         let conn = &self.conns[index];
-        if conn.output.len() - conn.sent + line.len() > self.limits.max_watcher_backlog {
+        if conn.output.len() - conn.sent + line.len() > self.limits.max_watcher_backlog || self.queued_bytes + line.len() > self.limits.max_queued_hard_bytes {
             // It's stopped reading. Dropping it is better than holding what it won't read.
             self.conns[index].gone = true;
             return;
@@ -685,16 +691,30 @@ impl<H: Host> Loop<H> {
         self.queue_output(index, line.as_bytes());
     }
 
-    /// Answers a client, which ends whatever it was doing. An answer too large for what's left is replaced by an error saying so.
+    /// Answers a client, which ends whatever it was doing, and takes back anything queued for what it was doing.
     fn answer(&mut self, index: usize, tag: &str, result: &Result<Value, AgentError>) {
         let mut line = reply(tag, result).to_string().into_bytes();
         line.push(b'\n');
-        if line.len() > self.limits.max_reply_bytes || self.queued_bytes + line.len() > self.limits.max_queued_bytes {
-            line = too_large(tag);
+        let id = self.conns[index].id;
+        if matches!(self.conns[index].state, State::Waiting { .. }) {
+            self.queue.retain(|job| !matches!(job, Job::Look { conn, .. } if *conn == id));
         }
         let conn = &mut self.conns[index];
         conn.state = State::Idle;
         conn.last_activity = Instant::now();
+        self.send_answer(index, tag, line);
+    }
+
+    /// Queues an answer within the caps. One too large for what's left is replaced by an error saying so, small ones keep going past that so `status` still answers, and nothing at all goes past the hard cap.
+    fn send_answer(&mut self, index: usize, tag: &str, mut line: Vec<u8>) {
+        let over_soft = self.queued_bytes + line.len() > self.limits.max_queued_bytes;
+        if line.len() > self.limits.max_reply_bytes || (over_soft && line.len() > SMALL_ANSWER_BYTES) {
+            line = too_large(tag);
+        }
+        if self.queued_bytes + line.len() > self.limits.max_queued_hard_bytes {
+            self.conns[index].gone = true;
+            return;
+        }
         self.queue_output(index, &line);
     }
 
@@ -903,8 +923,13 @@ fn too_large(tag: &str) -> Vec<u8> {
 }
 
 impl Conn {
-    fn wants_input(&self, max_line: usize) -> bool {
-        !self.input_closed && !self.gone && !self.closing && self.input.len() <= max_line
+    fn wants_input(&self, max_line: usize, max_unsent: usize) -> bool {
+        !self.input_closed && !self.gone && !self.closing && self.input.len() <= max_line && self.unsent() <= max_unsent
+    }
+
+    /// What's been queued for this client and not yet taken.
+    fn unsent(&self) -> usize {
+        self.output.len() - self.sent
     }
 
     fn has_output(&self) -> bool {
@@ -1001,6 +1026,10 @@ impl Conn {
         if self.sent == self.output.len() {
             // Most connections last one command, but one sent a whole page shouldn't keep the room for it.
             self.output = Vec::new();
+            self.sent = 0;
+        } else if self.sent > MAX_SENT_KEPT {
+            // A slow watcher never gets all the way to empty. What it's read goes, or this grows for as long as it watches.
+            self.output.drain(..self.sent);
             self.sent = 0;
         }
         flushed
