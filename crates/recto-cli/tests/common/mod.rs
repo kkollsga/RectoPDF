@@ -5,6 +5,7 @@ use recto_agent::Level;
 use recto_control::state::STATE_ENV;
 use recto_control::{StatePaths, levels};
 use serde_json::{Value, json};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -112,6 +113,9 @@ impl Drop for Serving {
     }
 }
 
+/// How long a raw client waits for an answer that has no time of its own.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// A raw client, so a test can do what `recto` wouldn't.
 pub struct Raw {
     pub stream: std::os::unix::net::UnixStream,
@@ -121,7 +125,7 @@ pub struct Raw {
 impl Raw {
     pub fn connect(state: &State) -> Self {
         let stream = std::os::unix::net::UnixStream::connect(state.socket()).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        stream.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
         Self { stream, buffer: Vec::new() }
     }
 
@@ -129,7 +133,7 @@ impl Raw {
         std::io::Write::write_all(&mut self.stream, format!("{line}\n").as_bytes()).unwrap();
     }
 
-    /// The next line, or `None` when the server has closed the connection.
+    /// The next line, or `None` when the server has closed the connection. A client running out of patience isn't that, and says so.
     pub fn read(&mut self) -> Option<Value> {
         loop {
             if let Some(at) = self.buffer.iter().position(|byte| *byte == b'\n') {
@@ -138,15 +142,22 @@ impl Raw {
             }
             let mut chunk = [0u8; 8192];
             match std::io::Read::read(&mut self.stream, &mut chunk) {
-                Ok(0) | Err(_) => return None,
+                Ok(0) => return None,
                 Ok(count) => self.buffer.extend_from_slice(&chunk[..count]),
+                Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => panic!("no answer within {:?}: this client gave up, and the server hasn't closed the connection", self.stream.read_timeout().ok().flatten()),
+                Err(_) => return None,
             }
         }
     }
 
+    /// Gives the session as long as the command says it may take, on top of the usual, as `recto` does.
     pub fn call(&mut self, command: &Value) -> Value {
+        let allowed = Duration::from_millis(command["timeout_ms"].as_u64().unwrap_or(0));
+        self.stream.set_read_timeout(Some(READ_TIMEOUT + allowed)).unwrap();
         self.send(&command.to_string());
-        self.read().expect("the server closed the connection")
+        let answer = self.read().expect("the server closed the connection");
+        self.stream.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
+        answer
     }
 }
 

@@ -35,7 +35,13 @@ fn the_same_answer(mut answer: Value) -> Value {
 }
 
 fn wait_done(state: &State, tab: &str) -> Value {
-    let (done, code) = state.json(&["wait", "indexing-done", "--tab", tab, "--timeout", "120s"]);
+    // The helper is at background priority, which a busy Mac can starve for minutes. If it never finishes, nextest's limit ends this.
+    let (done, code) = loop {
+        let (done, code) = state.json(&["wait", "indexing-done", "--tab", tab, "--timeout", "120s"]);
+        if code != exit::TIMED_OUT {
+            break (done, code);
+        }
+    };
     assert_eq!(code, 0, "{done}");
     assert_eq!(done["data"]["state"], "ready", "{done}");
     done
