@@ -27,6 +27,8 @@ pub trait Host: Send + Sync + 'static {
     fn attach(&self, _notify: Notifier) {}
     /// The session is ending. Anything running in the background for it stops.
     fn shut_down(&self) {}
+    /// Agent access is Off now. Whatever agents started that's still working on documents stops. Must never block: this is the socket's own thread.
+    fn access_is_off(&self) {}
 }
 
 /// A session in this process.
@@ -115,6 +117,12 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
     fn shut_down(&self) {
         if let Some(indexer) = &self.indexer {
             indexer.shut_down();
+        }
+    }
+
+    fn access_is_off(&self) {
+        if let Some(indexer) = &self.indexer {
+            indexer.cancel(None);
         }
     }
 

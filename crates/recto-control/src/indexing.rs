@@ -44,6 +44,8 @@ struct Inner {
     running: Option<CorpusKey>,
     /// Dropped to stop what's running.
     stop_running: Option<Box<dyn Any + Send>>,
+    /// What's running has been told to stop, so its ending isn't a failure.
+    cancelled: bool,
     failures: VecDeque<(CorpusKey, String, Instant)>,
     /// The thread that works through `waiting` is there.
     working: bool,
@@ -149,19 +151,21 @@ impl Shared {
             let report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.runner.run(&job, &self.root, &mut |stop| {
                     let mut inner = self.lock();
-                    // Stopped while this was starting: this stops it now.
-                    if !inner.stopped {
+                    // Stopped while this was starting: not keeping it stops it now.
+                    if !inner.stopped && !inner.cancelled {
                         inner.stop_running = Some(stop);
                     }
                 })
             }))
             .unwrap_or_else(|_| json!({ "state": "failed", "code": "indexer_panicked" }));
-            let state = report["state"].as_str().unwrap_or("failed").to_string();
+            let mut state = report["state"].as_str().unwrap_or("failed").to_string();
             {
                 let mut inner = self.lock();
                 inner.running = None;
                 inner.stop_running = None;
-                if state == "failed" {
+                if std::mem::take(&mut inner.cancelled) {
+                    state = "cancelled".to_string();
+                } else if state == "failed" {
                     if inner.failures.len() >= MAX_FAILURES {
                         inner.failures.pop_front();
                     }
@@ -204,6 +208,18 @@ impl Indexing for Indexer {
     fn load(&self) -> (u32, u32) {
         let inner = self.0.lock();
         (u32::from(inner.running.is_some()), inner.waiting.len() as u32)
+    }
+
+    fn cancel(&self, key: Option<CorpusKey>) {
+        let mut inner = self.0.lock();
+        match key {
+            Some(key) => inner.waiting.retain(|job| job.key != key),
+            None => inner.waiting.clear(),
+        }
+        if inner.running.is_some() && (key.is_none() || inner.running == key) {
+            inner.cancelled = true;
+            inner.stop_running = None;
+        }
     }
 
     fn note_asked(&self) {
@@ -378,6 +394,37 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(matches!(indexer.job(key(2)), JobState::Failed(_)));
+    }
+
+    /// Failure: a cancel while a build is just starting comes before it can be stopped, so it runs on anyway. Or its ending counts as failing, and the next ask is turned away for a minute. And a cancel of one file takes another off the queue.
+    #[test]
+    fn a_cancel_stops_only_what_it_names_and_isnt_a_failure() {
+        let stand = Arc::new(Stand::default());
+        let indexer = Indexer::with_runner(Path::new("/nowhere"), Box::new(Runs(Arc::clone(&stand))));
+        indexer.ask(job(1));
+        indexer.ask(job(2));
+        indexer.ask(job(3));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while indexer.load().0 == 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        indexer.cancel(Some(key(2)));
+        assert_ne!(indexer.job(key(2)), JobState::Queued);
+        let (running, waiting) = indexer.load();
+        assert_eq!(running + waiting, 2, "the other two are still there, {running} running and {waiting} waiting");
+        indexer.cancel(None);
+        assert_eq!(indexer.load().1, 0);
+        *stand.gate.lock().unwrap() = 1000;
+        stand.moved.notify_all();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while indexer.load().0 > 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        for number in 1..=3 {
+            assert_eq!(indexer.job(key(number)), JobState::Idle, "{number}");
+        }
+        indexer.ask(job(1));
+        assert!(indexer.load().0 + indexer.load().1 >= 1 || stand.finished.load(Ordering::SeqCst) >= 2, "turned away, as if it had failed");
     }
 
     /// Failure: `stop` finds a build still queued and starts it after the session has gone, or asking afterwards starts one.

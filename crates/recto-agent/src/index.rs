@@ -28,6 +28,8 @@ pub trait Indexing: Send + Sync {
     fn load(&self) -> (u32, u32);
     /// Someone's using indexes in this session. The first time, it's the moment to clear what's past its time, since a deleted file's text may have nothing else to make that happen.
     fn note_asked(&self) {}
+    /// Stops what's on its way for this file, or for all of them: takes it out of the queue, and if it's being built, stops that. What's written stays until something clears it.
+    fn cancel(&self, _key: Option<CorpusKey>) {}
     /// Whether asking here gets anything built.
     fn starts_builds(&self) -> bool {
         true
@@ -270,11 +272,24 @@ pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
     }
 }
 
-/// `recto index clear`: this tab's files, or everything. What's being built stays.
+/// How long a clear gives a build to stop. Its helper ends as soon as its stdin closes, and this runs on a job's thread.
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Waits for a build that's been asked to stop, a moment at most. If it hasn't, what's clearing says so.
+fn wait_until_stopped(indexing: &dyn Indexing, key: Option<CorpusKey>) {
+    let started = std::time::Instant::now();
+    while started.elapsed() < STOP_WAIT && key.map_or_else(|| indexing.load().0 > 0, |key| indexing.job(key) == JobState::Building) {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// `recto index clear`: this tab's files, or everything, and whatever's on its way for them.
 pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &str, all: bool) -> Result<Value, AgentError> {
     let indexing = access.indexing().ok_or_else(no_indexing)?;
     let failed = || AgentError::new("write_failed", "The index folder couldn't be cleared.", exit::FAILED);
     if all {
+        indexing.cancel(None);
+        wait_until_stopped(indexing, None);
         let (cleared, building) = corpus::clear_all(indexing.root()).map_err(|_| failed())?;
         return Ok(json!({ "cleared": cleared, "being_built": building }));
     }
@@ -283,6 +298,9 @@ pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &str, all: bool) -> Resul
     for file in &files {
         // Every version there's a record of, even if the file's gone, or the text of the last one stays behind what's there now.
         for key in corpus::keys_of_file(indexing.root(), &file.path) {
+            // Before it's cleared, or the queue writes it all back.
+            indexing.cancel(Some(key));
+            wait_until_stopped(indexing, Some(key));
             match corpus::clear(indexing.root(), key) {
                 Ok(()) => cleared += 1,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

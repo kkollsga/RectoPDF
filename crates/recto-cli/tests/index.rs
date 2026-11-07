@@ -708,3 +708,70 @@ fn an_old_versions_text_goes_when_a_new_version_is_indexed_or_the_index_is_clear
     assert!(!text.contains("versions"), "a sidecar holds a file's name: {text}");
     std::fs::write(&file.0, b"").unwrap();
 }
+
+/// Failure: `index clear` says it cleared a file that's waiting its turn, then the queue writes its text anyway, and one being built reports `being_built` and finishes. When someone asks for text to be gone, what's on its way must stop too.
+#[test]
+fn clearing_stops_what_is_on_its_way() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let running = doc("running.pdf", 1200);
+    let waiting = TempPdf::new("waiting.pdf", &pages(&[Page::new(text_lines(&["Words only the waiting file has: queuedword"]))]));
+    let root = state.paths.corpus.clone();
+    let running_key = CorpusKey::of_file(&running.0).unwrap();
+    state.json(&["open", path(&running)]);
+    state.json(&["index"]);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while pages_done(&root, running_key) < 5 {
+        assert!(Instant::now() < deadline, "it never started");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    state.json(&["open", path(&waiting)]);
+    let (asked, _) = state.json(&["index"]);
+    assert_eq!(asked["data"]["state"], "queued", "{asked}");
+    let (cleared, code) = state.json(&["index", "clear", "--tab", "waiting"]);
+    assert_eq!(code, 0, "{cleared}");
+    let (status, _) = state.json(&["index", "status", "--tab", "waiting"]);
+    assert_eq!(status["data"]["state"], "not_started", "it's still on its way after being cleared: {status}");
+
+    let (cleared, code) = state.json(&["index", "clear", "--tab", "running"]);
+    assert_eq!(code, 0, "{cleared}");
+    assert_eq!((cleared["data"]["cleared"].as_u64(), cleared["data"]["being_built"].as_u64()), (Some(1), Some(0)), "{cleared}");
+    let (status, _) = state.json(&["index", "status", "--tab", "running"]);
+    assert_eq!((status["data"]["state"].as_str(), status["data"]["indexers_running"].as_u64()), (Some("not_started"), Some(0)), "{status}");
+    std::thread::sleep(Duration::from_millis(500));
+    let text = all_text_under(&root);
+    assert!(!text.contains("alpha document"), "the build that was cleared carried on writing");
+    assert!(!text.contains("queuedword"), "the file that was cleared got written anyway");
+}
+
+/// Failure: lowering agent access to Off leaves up to 16 waiting files and the running one writing documents' text, after the user has said no. It stops, and what's waiting goes.
+#[test]
+fn lowering_to_off_stops_indexing() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let running = doc("off-running.pdf", 1200);
+    let waiting = TempPdf::new("off-waiting.pdf", &pages(&[Page::new(text_lines(&["Words only the waiting file has: offqueuedword"]))]));
+    let root = state.paths.corpus.clone();
+    let running_key = CorpusKey::of_file(&running.0).unwrap();
+    state.json(&["open", path(&running)]);
+    state.json(&["index"]);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while pages_done(&root, running_key) < 5 {
+        assert!(Instant::now() < deadline, "it never started");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    state.json(&["open", path(&waiting)]);
+    state.json(&["index"]);
+    let (lowered, code) = state.json(&["permission", "set", "off"]);
+    assert_eq!(code, 0, "{lowered}");
+    std::thread::sleep(Duration::from_millis(500));
+    let at_first = pages_done(&root, running_key);
+    std::thread::sleep(Duration::from_millis(1000));
+    assert_eq!(pages_done(&root, running_key), at_first, "it kept writing at Off");
+    assert!(at_first < 1200, "it was meant to stop partway");
+    assert!(!all_text_under(&root).contains("offqueuedword"), "a waiting file got written at Off");
+    state.set_level(Level::Control);
+    let (status, code) = state.json(&["index", "status", "--tab", "off-waiting"]);
+    assert_eq!(code, 0, "{status}");
+    assert_eq!((status["data"]["state"].as_str(), status["data"]["indexers_running"].as_u64(), status["data"]["indexers_waiting"].as_u64()), (Some("not_started"), Some(0), Some(0)), "{status}");
+}

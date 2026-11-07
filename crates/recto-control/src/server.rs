@@ -535,6 +535,9 @@ impl<H: Host> Loop<H> {
         }
         self.publish(&[Event::new("level_changed", json!({ "level": level.name(), "was": was.name() }))]);
         self.settle_subscribers(level);
+        if level == Level::Off {
+            self.host.access_is_off();
+        }
         level
     }
 
@@ -655,6 +658,10 @@ impl<H: Host> Loop<H> {
                 }
                 self.log.record(tag, level, outcome, &details);
                 self.publish(&events);
+                // A command running when it changed may have asked for something since.
+                if self.last_level == Level::Off {
+                    self.host.access_is_off();
+                }
                 if tag == "stop" {
                     self.stop_request = None;
                 }
