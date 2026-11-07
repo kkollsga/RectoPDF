@@ -757,6 +757,8 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
     assert!(contents["steps_with_place_in_view"].as_f64().unwrap() >= steps * 0.95, "{sweep}");
     let settled = wait_for(&run, |state| state["app"]["contents"]["frames_running"] == false);
     assert_eq!(settled["app"]["contents"]["moving"], false);
+    // The sweep's last pages are still being drawn when the contents stop, for seconds on a slow machine, and that isn't rest. CI saw [132, 123, 42, 7] here.
+    run.settled();
     // With nothing to do there's nothing to wake for. Taken over a few goes: something running at rest wakes it in every one of them, and a busy shared machine only gets in the way of some. The noisiest has a bound too, so a burst or something that wakes now and then doesn't pass for rest.
     let wakeups: Vec<u64> = (0..4)
         .map(|_| {
