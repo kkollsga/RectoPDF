@@ -17,7 +17,7 @@ use recto_reader::engine::EngineEvents;
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Op, PageMap, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_render_service::Policy;
-use recto_session::{CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsView, DocLoader, FollowMove, WARM_PAPER, row_full_text, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TAB_ROW_HEIGHT, TabId, ViewSettings, sidebar_heights};
+use recto_session::{CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsRowChange, ContentsView, DocLoader, FollowMove, WARM_PAPER, row_full_text, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TAB_ROW_HEIGHT, TabId, ViewSettings, sidebar_heights};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::Write;
@@ -109,6 +109,8 @@ pub struct SidebarView {
     pub contents_changed_from: u32,
     pub contents_removed: u32,
     pub contents_inserted: u32,
+    /// By how many rows that moved what the reader is looking at, so it can stay where it is on screen.
+    pub contents_place_shift: i32,
     /// The contents row of the place being read.
     pub contents_current: Option<u32>,
     pub toc_open: bool,
@@ -487,7 +489,7 @@ impl AppCore {
             listener: Arc::clone(&listener),
             contents_follow: Mutex::new(ContentsFollow::default()),
             started: Instant::now(),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, sidebar: Arc::new(SidebarView { tabs: Vec::new(), contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, sidebar: Arc::new(SidebarView { tabs: Vec::new(), contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -631,6 +633,11 @@ impl AppCore {
     /// The contents' area changed height.
     pub fn contents_view_changed(&self) {
         lock(&self.inner.contents_follow).view_changed();
+    }
+
+    /// Rows closed or opened. Says how many points to move the scroll by with no animation, or nothing if the rows are to slide.
+    pub fn contents_row_change(&self, scroll_y: f64, from: u32, removed: u32, inserted: u32, place_shift: i32) -> Option<f64> {
+        lock(&self.inner.contents_follow).row_change(ContentsRowChange { from, removed, inserted, place_shift }, scroll_y)
     }
 
     /// Rows above changed, and the host moved its scroll by this many points to match.
@@ -787,6 +794,43 @@ fn session_thread(inner: &Arc<Inner>) {
     }
 }
 
+/// By how many rows a change moved the place, for the host to take back so it stays put on screen: the place's row if it was listed before, or else the row it came from if that's listed still, or else the nearest chapter of it that was.
+fn place_shift(before: &[ContentsEntry], after: &[ContentsEntry], (from, removed, inserted): (u32, u32, u32), place_before: Option<u32>, place_after: Option<u32>) -> i32 {
+    let (from, removed, inserted) = (from as usize, removed as usize, inserted as usize);
+    let rows = |count: usize| i32::try_from(count).unwrap_or(i32::MAX);
+    let Some(place) = place_after.map(|row| row as usize).filter(|&row| row < after.len()) else { return 0 };
+    if place < from {
+        return 0;
+    }
+    if place >= from + inserted {
+        return rows(inserted) - rows(removed);
+    }
+    let (gone, came) = (&before[from..from + removed], &after[from..from + inserted]);
+    let find = |list: &[ContentsEntry], wanted: &ContentsEntry| list.iter().position(|entry| entry == wanted);
+    if let Some(was) = find(gone, &after[place]) {
+        return rows(place - from) - rows(was);
+    }
+    match place_before.map(|row| row as usize) {
+        Some(old) if old >= from + removed => return rows(inserted) - rows(removed),
+        Some(old) if old >= from => {
+            if let Some(now) = find(came, &before[old]) {
+                return rows(now) - rows(old - from);
+            }
+        }
+        _ => {}
+    }
+    let mut depth = after[place].depth;
+    for (index, entry) in came[..place - from].iter().enumerate().rev() {
+        if entry.depth < depth {
+            depth = entry.depth;
+            if let Some(was) = find(gone, entry) {
+                return rows(index) - rows(was);
+            }
+        }
+    }
+    0
+}
+
 /// Where two lists of contents rows differ: from which row, how many went, and how many came. Their matching starts and ends are compared, and it's only asked when the lists differ, which is when a chapter closes or opens.
 fn rows_changed(before: &[ContentsEntry], after: &[ContentsEntry]) -> (u32, u32, u32) {
     if std::ptr::eq(before, after) {
@@ -866,8 +910,10 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             Arc::new(model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).map(|row| ContentsEntry { tab: row.tab.0, text: row.text.into(), page: row.page, depth: row.depth }).collect())
         };
         let rail_filled = u32::try_from(model.rail_filled).unwrap_or(u32::MAX);
-        let (contents_changed_from, contents_removed, contents_inserted) = rows_changed(&held_before, &contents);
-        (snapshot, SidebarView { tabs, contents_count: contents_row_count, contents_changed_from, contents_removed, contents_inserted, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps }, contents, rail_filled, session.view())
+        let change = rows_changed(&held_before, &contents);
+        let (contents_changed_from, contents_removed, contents_inserted) = change;
+        let contents_place_shift = if change.1 == 0 && change.2 == 0 { 0 } else { place_shift(&held_before, &contents, change, lock(&inner.published).sidebar.contents_current, current) };
+        (snapshot, SidebarView { tabs, contents_count: contents_row_count, contents_changed_from, contents_removed, contents_inserted, contents_place_shift, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps }, contents, rail_filled, session.view())
     });
     // The paper and focus first, so what's asked for next is drawn right.
     let dark = inner.dark.load(Ordering::SeqCst) || synced.dark;
@@ -951,6 +997,24 @@ mod tests {
         assert_eq!(rows_changed(&before, &before), (0, 0, 0));
         assert_eq!(rows_changed(&[], &before), (0, 0, 3));
         assert_eq!(rows_changed(&before, &[]), (0, 3, 0));
+    }
+
+    /// Failure: a chapter closes as the reader leaves it, the place drops up the list by the rows that went, and the contents make a second move straight after the first to bring it back. How far the place was carried has to come out right wherever it starts and ends.
+    #[test]
+    fn a_row_change_says_how_far_it_carried_the_place() {
+        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: u8::try_from(text.matches('.').count()).unwrap() };
+        let list = |names: &[&str]| names.iter().map(|name| row(name)).collect::<Vec<_>>();
+        let shift = |one: &[&str], place_before: u32, two: &[&str], place_after: u32| {
+            let (before, after) = (list(one), list(two));
+            place_shift(&before, &after, rows_changed(&before, &after), Some(place_before), Some(place_after))
+        };
+        let in_two = ["1", "2", "2.1", "2.2", "3", "4"];
+        let in_three = ["1", "2", "3", "3.1", "4"];
+        assert_eq!(shift(&in_two, 3, &in_three, 2), -2, "forward: 3 was listed, two rows further down");
+        assert_eq!(shift(&in_two, 3, &in_three, 3), -2, "forward, to a section that wasn't listed: its chapter was");
+        assert_eq!(shift(&in_three, 2, &in_two, 3), 2, "back: 2.2 wasn't listed, but 3, the row it came from, still is");
+        assert_eq!(shift(&in_two, 5, &["1", "2", "2.1", "2.2", "3", "4", "4.1"], 5), 0, "everything happened below");
+        assert_eq!(shift(&in_two, 5, &in_three, 4), -1, "everything happened above");
     }
 
     /// Failure: QA options work on a normal launch, so a shipped app can be started with its limits changed, or a file named at launch is taken for an option.

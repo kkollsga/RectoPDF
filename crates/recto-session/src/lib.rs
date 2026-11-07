@@ -207,6 +207,15 @@ pub struct ContentsFollow {
     moving: Option<Motion>,
 }
 
+/// Which rows of the contents closed and opened, and how far that carried the place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContentsRowChange {
+    pub from: u32,
+    pub removed: u32,
+    pub inserted: u32,
+    pub place_shift: i32,
+}
+
 /// A move under way.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Motion {
@@ -271,6 +280,16 @@ impl ContentsFollow {
 
     pub fn is_moving(self) -> bool {
         self.moving.is_some()
+    }
+
+    /// Rows closed or opened. Following, the place stays where it is on screen, so that a chapter closing above it isn't a second move straight after the first: what's above it changes, and the scroll takes it up. Otherwise it's what's at the top that stays, where the reader's looking. Says how many points to move the scroll by, with no animation, or `None` if the rows are to slide, since they're in the view and there's nothing to take up.
+    pub fn row_change(&self, change: ContentsRowChange, scroll_y: f64) -> Option<f64> {
+        let following = self.placed && !self.paused && !self.pointer_inside;
+        if following && change.place_shift != 0 {
+            return Some(f64::from(change.place_shift) * CONTENTS_ROW_HEIGHT);
+        }
+        let above = f64::from(change.from) + f64::from(change.removed);
+        (scroll_y / CONTENTS_ROW_HEIGHT >= above).then(|| (f64::from(change.inserted) - f64::from(change.removed)) * CONTENTS_ROW_HEIGHT)
     }
 
     /// Rows above something were added or removed, by this many points, and the host moved its scroll to match so nothing appears to jump. The whole of a move goes with them.
@@ -1093,6 +1112,34 @@ mod tests {
     }
 
     /// Runs a move to its end, at 60 frames a second, and returns each position.
+    /// Failure: a chapter closes just after a reposition. The place drops up the list by the rows that went, past the dead zone, and the contents move straight back, so one change of section makes two moves in opposite directions.
+    #[test]
+    fn a_chapter_closing_above_the_place_makes_no_second_move() {
+        let mut follow = ContentsFollow::default();
+        let (height, rows) = (680.0, 40);
+        let view = |scroll_y: f64, rows: u32| ContentsView { scroll_y, height, rows };
+        assert!(matches!(follow.reached(Some(0), view(0.0, rows), 0.0, false), FollowMove::SetTo(_)));
+        assert_eq!(follow.reached(Some(25), view(0.0, rows), 1.0, false), FollowMove::Move);
+        let landed = *run_frames(&mut follow, 0.0).last().unwrap();
+        // Chapter at row 14 closes its 11 sections, and the next chapter, row 26, becomes row 15.
+        let change = ContentsRowChange { from: 15, removed: 12, inserted: 1, place_shift: -11 };
+        let by = follow.row_change(change, landed).expect("the scroll takes it up, with no slide to see");
+        assert!(by < 0.0);
+        follow.shifted(by);
+        assert_eq!(follow.reached(Some(15), view(landed + by, rows - 11), 2.0, false), FollowMove::Stay, "the place is where it was on screen");
+    }
+
+    /// Failure: rows change under a reader who has scrolled the contents themselves, and what they're looking at is taken from them. Only rows above the view move the scroll then, and only by what went.
+    #[test]
+    fn a_reader_in_the_contents_keeps_what_they_are_looking_at() {
+        let mut follow = ContentsFollow::default();
+        follow.reached(Some(0), ContentsView { scroll_y: 0.0, height: 680.0, rows: 40 }, 0.0, false);
+        follow.user_scrolled(1.0);
+        let closes_in_view = ContentsRowChange { from: 15, removed: 12, inserted: 1, place_shift: -11 };
+        assert_eq!(follow.row_change(closes_in_view, 280.0), None, "in the view, they slide");
+        assert_eq!(follow.row_change(closes_in_view, 28.0 * 30.0), Some(-11.0 * 28.0), "above the view, it can't be seen");
+    }
+
     fn run_frames(follow: &mut ContentsFollow, mut position: f64) -> Vec<f64> {
         let mut path = vec![position];
         for _ in 0..2000 {

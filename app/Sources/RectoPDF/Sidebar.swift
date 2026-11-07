@@ -241,7 +241,7 @@ final class RevealLabel: FlippedView {
     let footer = TextLine()
     let addButton = NSButton(title: "", target: nil, action: nil)
     private let core: AppCore
-    private(set) var model = SidebarView(tabs: [], contentsCount: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false)
+    private(set) var model = SidebarView(tabs: [], contentsCount: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsPlaceShift: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false)
     private var layout = SidebarLayout(tabRow: 32, contentsRow: 28, contentsHeight: 0, tabsScroll: false)
     private(set) var hoveredRow: Int?
     var addPressed: (() -> Void)?
@@ -616,13 +616,18 @@ final class RevealLabel: FlippedView {
         }
     }
 
-    /// Rows opened or closed as the reader moved. Above the view, the scroll moves by what changed, in the same transaction, so nothing can be seen to move. In the view, they slide, and with Reduce Motion they don't.
+    /// Rows opened or closed as the reader moved. Rust's rule says whether the scroll takes it up, in the same transaction so that what stays still does. If not, they slide, and with Reduce Motion they don't.
     private func applyRowChange(_ new: SidebarView) {
         let from = Int(new.contentsChangedFrom)
         let (removed, inserted) = (Int(new.contentsRemoved), Int(new.contentsInserted))
-        let topRow = Int(contentsY / layout.contentsRow)
-        if topRow >= from + removed {
-            let by = Double(inserted - removed) * layout.contentsRow
+        if let by = core.contentsRowChange(scrollY: contentsY, from: new.contentsChangedFrom, removed: new.contentsRemoved, inserted: new.contentsInserted, placeShift: new.contentsPlaceShift) {
+            // Rows going in the view, with no slide to show it, fade over. A layer the size of the view for a moment, and it's gone.
+            if !shouldReduceMotion, Int(contentsY / layout.contentsRow) < from + removed, Double(from) * layout.contentsRow < contentsY + contentsHeight {
+                let fade = CATransition()
+                fade.type = .fade
+                fade.duration = 0.15
+                contentsScroll.layer?.add(fade, forKey: "rows")
+            }
             contentsTable.reloadData()
             let before = contentsY
             setContentsY(before + by)

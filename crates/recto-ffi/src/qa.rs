@@ -27,12 +27,32 @@ struct Step {
     current_visible: bool,
 }
 
+/// One move of the contents, while it's being found.
+#[derive(Clone, Copy)]
+struct Motion {
+    start: f64,
+    end: f64,
+    from: f64,
+    to: f64,
+    peak: f64,
+    largest: f64,
+}
+
 /// What the contents did during a sweep, found from where they were on each step: their moves, each one's length and peak speed, and how long they rested in between. Properties, not a curve.
 fn contents_moves(steps: &[(f64, f64)]) -> Value {
     // Steps this close together with no movement between them are one move's slow part, and not a rest: the scroll is rounded to a device pixel, so a slow end can hold still for a few.
-    const SAME_MOVE_GAP: f64 = 0.08;
+    const SAME_MOVE_GAP: f64 = 0.2;
+    // The moves themselves, up to a limit: a sweep can't have more that anyone would read one by one.
+    const MOVES_LISTED: usize = 64;
+    let finish = |motion: Motion, moves: &mut Vec<(f64, f64)>, listed: &mut Vec<Value>| {
+        moves.push((motion.end - motion.start, motion.peak));
+        if listed.len() < MOVES_LISTED {
+            listed.push(json!({ "at_s": motion.start, "ms": (motion.end - motion.start) * 1000.0, "points": motion.to - motion.from, "peak": motion.peak, "largest_step": motion.largest }));
+        }
+    };
     let (mut moves, mut rests): (Vec<(f64, f64)>, Vec<f64>) = (Vec::new(), Vec::new());
-    let mut current: Option<(f64, f64, f64)> = None;
+    let mut listed: Vec<Value> = Vec::new();
+    let mut current: Option<Motion> = None;
     let mut last_moved_at = steps.first().map_or(0.0, |step| step.0);
     let mut largest_step = 0.0f64;
     for pair in steps.windows(2) {
@@ -43,21 +63,21 @@ fn contents_moves(steps: &[(f64, f64)]) -> Value {
         }
         let speed = (to - from).abs() / (now - then).max(1e-3);
         current = match current {
-            Some((start, end, peak)) if then - end <= SAME_MOVE_GAP => Some((start, now, peak.max(speed))),
+            Some(motion) if then - motion.end <= SAME_MOVE_GAP => Some(Motion { end: now, to, peak: motion.peak.max(speed), largest: motion.largest.max((to - from).abs()), ..motion }),
             finished => {
-                if let Some((start, end, peak)) = finished {
-                    moves.push((end - start, peak));
-                    rests.push(then - end);
+                if let Some(motion) = finished {
+                    rests.push(then - motion.end);
+                    finish(motion, &mut moves, &mut listed);
                 } else {
                     rests.push(then - last_moved_at);
                 }
-                Some((then, now, speed))
+                Some(Motion { start: then, end: now, from, to, peak: speed, largest: (to - from).abs() })
             }
         };
         last_moved_at = now;
     }
-    if let Some((start, end, peak)) = current {
-        moves.push((end - start, peak));
+    if let Some(motion) = current {
+        finish(motion, &mut moves, &mut listed);
     }
     let sorted = |mut values: Vec<f64>| {
         values.sort_by(f64::total_cmp);
@@ -73,6 +93,7 @@ fn contents_moves(steps: &[(f64, f64)]) -> Value {
         "peak_points_per_s": { "median": middle(&peaks), "highest": peaks.last().copied().unwrap_or(0.0) },
         "rest_s": { "shortest": rests.first().copied().unwrap_or(0.0), "median": middle(&rests) },
         "largest_step_points": largest_step,
+        "listed": listed,
     })
 }
 
