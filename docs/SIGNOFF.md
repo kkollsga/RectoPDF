@@ -1,6 +1,6 @@
 # RectoPDF: research summary and sign-off
 
-2026-11-06. Follows §1.4 of `rust_app_development.md`. No app code exists. Detail, sources and the 58 [DECIDE] items are in
+2026-11-06. Follows §1.4 of `docs/agent-instructions/rust_app_development.md`. No app code exists. Detail, sources and the 58 [DECIDE] items are in
 `docs/research/`. Item names below are the ones those reports use. Concepts are in `docs/concepts/`.
 
 **Product:** a high-performance, low-memory PDF reader in Rust, with tabs in the sidebar, certificate signing, and an agent

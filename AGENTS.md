@@ -1,6 +1,6 @@
 # RectoPDF: rules for every agent
 
-Read this first. `rust_app_development.md` is the owner's full process, `SPEC.md` the behaviour, `docs/ENGINEERING.md` the crates.
+Read this first. `docs/agent-instructions/rust_app_development.md` is the owner's full process, `SPEC.md` the behaviour, `docs/ENGINEERING.md` the crates.
 
 Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that finishes them.
 
