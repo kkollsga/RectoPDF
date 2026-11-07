@@ -184,6 +184,9 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] Licences and notices for PDFium, Tesseract and the rest
 - [ ] Privacy statement and first-run wording
 - [ ] Final budget report against every line of `SPEC.md` §2
+- [ ] At a quiet time, by the coordinator: 1,000 tabs' worst UI stall, 81 ms against 53 before and only under load; the one 3.31 MiB rise over 1,000 tabs that `heap` didn't catch; the `HEAVY_SOLO` stall comparison of surfaces made outside the reader's lock
+- [ ] `qa budget`'s idle window starts 1 s after settling, so the tail of settling reads as up to 1.35 wake-ups a second: start it later
+- [ ] Commit `184f5a7` doesn't compile alone: it uses `JobPlan` from the next commit. The tip is fine, and a bisect has to skip it
 
 **Done when:** you approve the signed draft. Nothing is published without your go-ahead.
 
