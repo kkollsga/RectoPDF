@@ -385,6 +385,8 @@ pub enum FileNotice {
     EditsUnreadable,
     /// A record had two tabs on this one file, both with edits. A PDF is open once, so this tab's are here, and the other's are kept to one side.
     EditsNotMerged,
+    /// Some of its history had to go, as the pages it needed couldn't be kept within the limits, or aren't there now. Undo stops short of them, rather than undoing wrongly.
+    HistoryRolledOff,
 }
 
 impl FileNotice {
@@ -397,6 +399,7 @@ impl FileNotice {
             Self::NeedsPassword => "password_again",
             Self::EditsUnreadable => "edits_unreadable",
             Self::EditsNotMerged => "edits_not_merged",
+            Self::HistoryRolledOff => "history_rolled_off",
         }
     }
 
@@ -410,6 +413,7 @@ impl FileNotice {
             (Self::Missing, true) => "This file can't be found: it may have been moved or deleted, or its disk may not be connected. Your unsaved edits are still here, and this tab keeps them until you discard them.",
             (Self::Missing, false) => "This file can't be found: it may have been moved or deleted, or its disk may not be connected.",
             (Self::NeedsPassword, _) => "This PDF needs its password again. Passwords aren't kept between launches.",
+            (Self::HistoryRolledOff, _) => "Undo can't go back as far as it could: pages it would need couldn't be kept within the history's limits, or aren't there now. Nothing in this document has changed.",
             (Self::EditsNotMerged, _) => "This PDF was open in two tabs with different unsaved edits, which can't be merged. These are one tab's, and the other's have been kept in the state folder. Nothing has been written to the file.",
             (Self::EditsUnreadable, _) => "Some of this tab's unsaved edits couldn't be read back, so it shows what could be. What couldn't has been kept in the state folder, and nothing has been written to the file.",
         }
@@ -457,6 +461,18 @@ pub fn closed_journal_name(name: &str) -> Option<String> {
 /// Whether a name is a closed PDF's journal.
 pub fn is_closed_journal_name(name: &str) -> bool {
     name.strip_prefix("closed-").is_some_and(|rest| is_journal_name(&format!("journal-{rest}")))
+}
+
+/// What a copy kept for a history is called, from the identity of the file that replaces it. `taken` is for when something's at that name.
+pub fn kept_file_name(target: FileStamp, taken: u32) -> String {
+    let key = journal_file_name(Some(target), Path::new(""), None);
+    let key = key.strip_prefix("journal-").and_then(|rest| rest.strip_suffix(".log")).unwrap_or_default();
+    if taken == 0 { format!("kept-{key}.pdf") } else { format!("kept-{key}-{taken}.pdf") }
+}
+
+/// Whether a name is that of a copy kept for a history. Nothing else is removed as one, so a journal naming a file can't reach out of its folder.
+pub fn is_kept_name(name: &str) -> bool {
+    name.strip_prefix("kept-").and_then(|rest| rest.strip_suffix(".pdf")).is_some_and(|rest| is_journal_name(&format!("journal-{rest}.log")))
 }
 
 /// Whether a journal with nothing to say it's this tab's is about this tab's file. **The same file, by its path or by its number,** with the same contents. Size and time alone are what `cp -p` keeps, so another number at another path is another file, whose edits must not land here. The device isn't compared, as a volume can come back under another. With nothing to compare, the path says.
@@ -574,6 +590,9 @@ pub struct AddedRecord {
     pub page_count: u32,
     #[serde(default)]
     pub file: Option<FileRecord>,
+    /// It's a file of the history's own, in the journals' folder: an earlier version of the PDF, for what a save took out of it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kept: bool,
 }
 
 /// One step of history: how to go back. It's the shape of [`crate::edit`]'s own steps.
@@ -660,9 +679,12 @@ pub enum JournalOp {
     Undo,
     #[serde(rename = "f")]
     Redo,
-    /// A save is about to put a file of this identity in place. If that's what's found later, it happened, and everything in this journal has gone into the PDF: the journal is stale, whether or not the crash let it be removed. If not, it didn't, and this says nothing.
+    /// A save is about to put a file of this identity in place. If that's what's found later, it happened, and the journal's page order has gone into the PDF, whether or not the crash let it be confirmed, so it's carried on from there as a confirmed save would. If not, it didn't, and this says nothing.
     #[serde(rename = "v")]
     Saving(FileRecord),
+    /// A copy of the file as it is now has been kept, for undoing past that save. Goes ahead of the `Saving` it's for.
+    #[serde(rename = "k")]
+    Keeping(AddedRecord),
 }
 
 /// A journal's first line.
@@ -682,11 +704,14 @@ pub struct JournalHeader {
     /// A save was about to put a file of this identity in place, from before a compaction, which would otherwise lose that. See [`JournalOp::Saving`].
     #[serde(default)]
     pub saving: Option<FileRecord>,
+    /// And what was kept for it. See [`JournalOp::Keeping`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keeping: Option<AddedRecord>,
 }
 
 impl JournalHeader {
     pub fn new(tab: u32, path: &Path, file: Option<FileStamp>, file_pages: u32, base_seq: u64) -> Self {
-        Self { format: JOURNAL_KIND.to_string(), version: CURRENT_VERSION, tab, path: PathField::from_path(path), file: file.map(FileRecord::from), file_pages, base_seq, saving: None }
+        Self { format: JOURNAL_KIND.to_string(), version: CURRENT_VERSION, tab, path: PathField::from_path(path), file: file.map(FileRecord::from), file_pages, base_seq, saving: None, keeping: None }
     }
 }
 
@@ -1137,11 +1162,16 @@ pub fn validate_edits(edits: &EditsRecord) -> Result<(), RecordError> {
     steps_fit(&edits.undo, length, edits.file_pages, &edits.added)?;
     steps_fit(&edits.redo, length, edits.file_pages, &edits.added)?;
     for added in &edits.added {
-        if !added.path.fits() || added.page_count as usize > MAX_PAGES {
+        if !added_fits(added) {
             return Err(bad("an added file"));
         }
     }
     Ok(())
+}
+
+/// Whether an added file's a possible one: a path that fits, a length that does, and a kept one named as those are.
+pub fn added_fits(added: &AddedRecord) -> bool {
+    added.path.fits() && added.page_count as usize <= MAX_PAGES && (!added.kept || added.path.to_path().is_some_and(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(is_kept_name)))
 }
 
 /// What a look at a file found.

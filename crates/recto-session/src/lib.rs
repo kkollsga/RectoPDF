@@ -575,6 +575,10 @@ pub struct JournalAppend {
     pub ops: Vec<JournalOp>,
     /// Its tab has closed, with history and nothing unsaved. Once these are written, it waits for the PDF's next opening, and no launch reads it.
     pub closing: bool,
+    /// The whole list, at `through`, for a journal that starts again from it: in one step, in place of anything at this name. A save does this, and clearing a history. `ops` is empty then.
+    pub base: Option<record::EditsRecord>,
+    /// The journal this one takes over from, which goes once this has got there and not before.
+    pub replaces: Option<String>,
 }
 
 /// A list brought back from a journal.
@@ -585,6 +589,18 @@ pub struct RestoredEdits {
     pub seq: u64,
     /// Part of the journal couldn't be read, more than a tail torn by a crash.
     pub lost_lines: bool,
+    /// Steps had to go, as a file kept for them isn't what it was.
+    pub rolled_off: bool,
+}
+
+/// Why a history's being cleared. SPEC decision 25. A confirmed redaction or hidden-data removal, or what's been removed could be got back from it. A file changed outside the app, as its steps no longer apply. A discard, which is all of a tab's edits. And the user's asking for it, with Clear Edit History.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClearReason {
+    Redaction,
+    HiddenDataRemoval,
+    FileChanged,
+    Discard,
+    UserAsked,
 }
 
 /// What's kept of a tab's edits while it's left alone, for a look without opening it.
@@ -619,6 +635,8 @@ pub struct Session<L = DiskLoader> {
     journaling: bool,
     /// Each edited tab's journal, by name. Nothing for a tab with no edits.
     journals: HashMap<TabId, Box<str>>,
+    /// Lists whose journal has to start again from the whole list: which tab, as of which count, and the journal it takes over from. Next to none, and only until they're written.
+    fresh_journals: Vec<(TabId, u64, Option<String>)>,
     /// Journals to remove, as what's in them has been discarded or saved.
     retired_journals: Vec<Box<str>>,
     /// Journals of tabs that have closed, with what hadn't gone out yet. Nothing's lost by closing.
@@ -654,7 +672,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -802,7 +820,11 @@ impl<L: DocLoader> Session<L> {
         self.remember_warm(id, Arc::new(facts.toc));
         self.active = Some(id);
         if let Some(history) = history {
+            let rolled_off = history.restored.rolled_off;
             self.take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
+            if rolled_off && let Some(tab) = self.tab_mut(id) {
+                tab.notice = Some(Box::new(FileNotice::HistoryRolledOff));
+            }
         }
         Ok(id)
     }
@@ -954,8 +976,33 @@ impl<L: DocLoader> Session<L> {
     /// An edit list with nothing in it costs 8 bytes a page for nothing, and would hold the tab to the file's length as it was. One that's back at the file with steps to go back through stays until those are gone.
     fn drop_list_if_idle(&mut self, id: TabId) {
         if self.edits.get(&id).is_some_and(|edits| !edits.is_edited() && !edits.has_history()) {
-            self.edits.remove(&id);
-            self.retire_journal(id);
+            self.let_go_of_list(id);
+        }
+    }
+
+    /// A tab's list is done with: its journal goes, and any files kept for it.
+    fn let_go_of_list(&mut self, id: TabId) {
+        if let Some(list) = self.edits.remove(&id) {
+            let kept: Vec<Box<Path>> = list.kept_sources().map(|(_, added)| added.path.clone()).collect();
+            self.retire_kept(kept);
+        }
+        self.fresh_journals.retain(|(tab, _, replaces)| {
+            if *tab == id {
+                if let Some(old) = replaces {
+                    self.retired_journals.push(old.as_str().into());
+                }
+                return false;
+            }
+            true
+        });
+        self.retire_journal(id);
+    }
+
+    fn retire_kept(&mut self, kept: Vec<Box<Path>>) {
+        for path in kept {
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()).filter(|name| record::is_kept_name(name)) {
+                self.retired_journals.push(name.into());
+            }
         }
     }
 
@@ -978,7 +1025,7 @@ impl<L: DocLoader> Session<L> {
 
     /// What's waiting to go in journals: which to remove, and what to append to which. Copied, not taken: operations stay until [`Self::journal_outcome`] says they're in the file, so nothing's lost if the disk refuses, and nothing goes twice if one journal fails and another doesn't. A list's first time here gets its journal's name.
     pub fn journal_work(&mut self) -> JournalWork {
-        let ids: Vec<TabId> = self.edits.iter().filter(|(_, edits)| edits.journal_waiting().is_some_and(|(_, ops)| !ops.is_empty())).map(|(id, _)| *id).collect();
+        let ids: Vec<TabId> = self.edits.iter().filter(|(id, edits)| edits.journal_waiting().is_some_and(|(_, ops)| !ops.is_empty()) || self.fresh_journals.iter().any(|(tab, _, _)| tab == *id)).map(|(id, _)| *id).collect();
         let mut appends = self.departing.clone();
         for id in ids {
             if let Some(append) = self.append_for(id) {
@@ -994,13 +1041,19 @@ impl<L: DocLoader> Session<L> {
         let (through, ops) = edits.journal_waiting()?;
         let mut header = JournalHeader::new(id.0, &path, tab.stamp, tab.page_count, 0);
         header.saving = edits.saving().map(Into::into);
-        Some(JournalAppend { tab: id, name, header, through, ops: ops.to_vec(), closing: false })
+        // A journal starting again has all of it in its first line, whatever's come since.
+        if let Some((_, _, replaces)) = self.fresh_journals.iter().find(|(tab, _, _)| *tab == id) {
+            header.keeping = edits.keeping().map(edit::AddedSource::to_record);
+            return Some(JournalAppend { tab: id, name, header, through, ops: Vec::new(), closing: false, base: Some(edits.to_record()), replaces: replaces.clone() });
+        }
+        Some(JournalAppend { tab: id, name, header, through, ops: ops.to_vec(), closing: false, base: None, replaces: None })
     }
 
     /// What came of [`Self::journal_work`]: what's in the file can go from here.
     pub fn journal_outcome(&mut self, outcome: JournalOutcome) {
         for (id, through, name) in outcome.written {
             self.departing.retain(|append| !(append.tab == id && append.through == through));
+            self.fresh_journals.retain(|(tab, seq, _)| !(*tab == id && *seq <= through));
             if let Some(edits) = self.edits.get_mut(&id) {
                 edits.journal_written(through);
                 self.journals.insert(id, name.into());
@@ -1013,13 +1066,14 @@ impl<L: DocLoader> Session<L> {
     pub fn checkpoint_if_caught_up(&self, id: TabId) -> Option<(JournalHeader, record::EditsRecord)> {
         let edits = self.edits.get(&id)?;
         let (seq, waiting) = edits.journal_waiting()?;
-        if !waiting.is_empty() {
+        if !waiting.is_empty() || self.fresh_journals.iter().any(|(tab, _, _)| *tab == id) {
             return None;
         }
         let tab = self.tab(id)?;
         let mut header = JournalHeader::new(id.0, &self.path_of(id)?, tab.stamp, tab.page_count, seq);
         // A save may be about to land, and a checkpoint mustn't lose that it said so.
         header.saving = edits.saving().map(Into::into);
+        header.keeping = edits.keeping().map(edit::AddedSource::to_record);
         Some((header, edits.to_record()))
     }
 
@@ -1042,12 +1096,12 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether there's anything for [`Self::journal_work`], which is asked often and costs a look per edited tab.
     pub fn has_journal_work(&self) -> bool {
-        !self.retired_journals.is_empty() || !self.departing.is_empty() || self.edits.values().any(|edits| edits.journal_waiting().is_some_and(|(_, ops)| !ops.is_empty()))
+        !self.retired_journals.is_empty() || !self.departing.is_empty() || !self.fresh_journals.is_empty() || self.edits.values().any(|edits| edits.journal_waiting().is_some_and(|(_, ops)| !ops.is_empty()))
     }
 
     /// Whether a journal has been retired, or a tab with one has closed, which wants writing at once.
     pub fn has_retired_journals(&self) -> bool {
-        !self.retired_journals.is_empty() || !self.departing.is_empty()
+        !self.retired_journals.is_empty() || !self.departing.is_empty() || !self.fresh_journals.is_empty()
     }
 
     /// Those operations are in the file.
@@ -1092,10 +1146,29 @@ impl<L: DocLoader> Session<L> {
         self.journals.insert(id, name.into());
     }
 
-    /// **The one method a confirmed Save or Save As calls.** Owner, 2026-11-07: "edit should also keep undo, redo history of edits until save has been applied." What was written is the file now, so the list and its history are done with and the journal goes. A failed save calls nothing, and everything stays. `saved_as` moves the tab if it went to another file. The steps around it, and what a crash at each does, are in `docs/ENGINEERING.md`.
-    pub fn save_confirmed(&mut self, id: TabId, now: FileStamp, pages: u32, saved_as: Option<&Path>) {
-        self.edits.remove(&id);
-        self.retire_journal(id);
+    /// **The one method a confirmed Save or Save As calls, and it marks a saved point.** Owner, 2026-11-07: "after a save you might still have regrets and want to make changes. But you definitely don't want history to leak into the pdf file". What was written is the file now, so the document reads as saved, and the history goes on: undoing past this makes it unsaved again, and back to here reads as saved. A failed save calls nothing, and everything stays. `saved_as` moves the tab if it went to another file, and the history goes with it. `kept` is what [`Self::save_prepared`] was told, and a Save As has the old file itself for that. What a step can't get pages from rolls off: see [`PageEdits::rebase_on_saved`], and the tab says so. The steps around it, and what a crash at each does, are in `docs/ENGINEERING.md`. Says how many steps rolled off.
+    pub fn saved(&mut self, id: TabId, now: FileStamp, pages: u32, saved_as: Option<&Path>, kept: Option<edit::AddedSource>) -> usize {
+        let kept = kept.or_else(|| {
+            saved_as?;
+            let tab = self.tab(id)?;
+            Some(edit::AddedSource { path: self.path_of(id)?.into_boxed_path(), page_count: tab.page_count, stamp: tab.stamp, kept: false })
+        });
+        let rebased = self.edits.get_mut(&id).map(|list| list.rebase_on_saved(pages, kept.clone()));
+        let mut rolled_off = 0;
+        match rebased {
+            // There's no list, so no history. A file kept for it isn't needed.
+            None => self.retire_kept(kept.filter(|kept| kept.kept).map(|kept| kept.path).into_iter().collect()),
+            // Something else was written, so nothing in the history's about that file.
+            Some(None) => {
+                rolled_off = self.edits.get(&id).map_or(0, |list| list.summary().undo as usize + list.summary().redo as usize);
+                self.retire_kept(kept.filter(|kept| kept.kept).map(|kept| kept.path).into_iter().collect());
+                self.let_go_of_list(id);
+            }
+            Some(Some(rebased)) => {
+                rolled_off = rebased.rolled_off;
+                self.retire_kept(rebased.let_go);
+            }
+        }
         if let Some(path) = saved_as {
             self.relocate(id, path);
         }
@@ -1103,17 +1176,59 @@ impl<L: DocLoader> Session<L> {
             tab.stamp = Some(now);
             tab.page_count = pages;
             tab.page = tab.page.min(pages.saturating_sub(1));
-            tab.notice = None;
+            tab.notice = (rolled_off > 0).then(|| Box::new(FileNotice::HistoryRolledOff));
             tab.problem = None;
             tab.place_dirty = true;
         }
+        self.draws.retain(|draw| draw.tab != id);
+        if self.edits.get(&id).is_some_and(|list| !list.has_history()) {
+            self.let_go_of_list(id);
+        } else if self.edits.contains_key(&id) {
+            // A journal goes by its file's identity, which this has changed. The old one goes only once the new one's there, so a crash in between has one of them.
+            let replaces = self.journals.remove(&id).map(String::from);
+            self.fresh_journals.retain(|(tab, _, _)| *tab != id);
+            if self.journaling {
+                let seq = self.edits.get(&id).map_or(0, PageEdits::journal_seq);
+                self.journal_name_for(id);
+                self.fresh_journals.push((id, seq, replaces));
+            } else if let Some(old) = replaces {
+                self.retired_journals.push(old.into());
+            }
+        }
+        rolled_off
     }
 
-    /// The first step of a save, before anything's put in place: notes what the file will be if it works, so that a crash between that and [`Self::save_confirmed`] can tell. Goes in the journal.
-    pub fn save_prepared(&mut self, id: TabId, target: FileStamp) {
+    /// The first step of a save, before anything's put in place: notes what the file will be if it works, and what's been kept for undoing past it, so that a crash between that and [`Self::saved`] can tell. Goes in the journal. **A save that removes something for good, as a redaction does, keeps nothing:** a copy of the file would hold what it's removing.
+    pub fn save_prepared(&mut self, id: TabId, target: FileStamp, keeping: Option<&edit::AddedSource>) {
         if let Some(edits) = self.edits.get_mut(&id) {
-            edits.note_saving(target);
+            edits.note_saving(target, keeping);
         }
+    }
+
+    /// **Clears a tab's history, and removes its files rather than only forgetting them.** With unsaved edits, the page order stays, as only the way back goes, unless it's a discard, which is all of it. With none, there's nothing left to hold, so the list goes too. Says whether there was any.
+    pub fn clear_history(&mut self, id: TabId, reason: ClearReason) -> bool {
+        let Some(list) = self.edits.get_mut(&id) else { return false };
+        if reason != ClearReason::Discard && list.is_edited() {
+            let let_go = list.drop_history();
+            let seq = list.journal_seq();
+            let journaled = self.journaling;
+            self.retire_kept(let_go);
+            if journaled {
+                self.fresh_journals.retain(|(tab, _, _)| *tab != id);
+                // The same name as it has now, as the file's the same, replaced in one step.
+                self.fresh_journals.push((id, seq, None));
+            }
+            return true;
+        }
+        let place = self.place_of(id);
+        self.let_go_of_list(id);
+        if let Some(tab) = self.tab_mut(id)
+            && matches!(tab.notice.as_deref(), Some(FileNotice::Changed | FileNotice::EditsUnreadable | FileNotice::HistoryRolledOff))
+        {
+            tab.notice = None;
+        }
+        self.after_change(id, place);
+        true
     }
 
     fn relocate(&mut self, id: TabId, path: &Path) {
@@ -1235,6 +1350,11 @@ impl<L: DocLoader> Session<L> {
                 }
             }
             FileStatus::Changed(now) => {
+                // With nothing unsaved there's only history, and its steps don't apply to this. Unsaved edits stay, and say so.
+                if has_edits && !self.is_edited(id) {
+                    self.clear_history(id, ClearReason::FileChanged);
+                }
+                let has_edits = self.edits.contains_key(&id);
                 if let Some(tab) = self.tab_mut(id) {
                     if !has_edits {
                         tab.stamp = Some(now);
@@ -1257,7 +1377,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
-        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, retired_journals: _, departing: _, history: _, agent_at_full: _ } = self;
+        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _ } = self;
         let ViewSettings { paper, focus, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
@@ -1312,6 +1432,7 @@ impl<L: DocLoader> Session<L> {
         self.edits.clear();
         self.draws.clear();
         self.journals.clear();
+        self.fresh_journals.clear();
         self.active = None;
         self.next_id = record.next_id;
         self.find = record.find.clone();
@@ -1328,6 +1449,9 @@ impl<L: DocLoader> Session<L> {
             if let Some(name) = &entry.journal {
                 match journals.remove(name) {
                     Some(restored) => {
+                        if restored.rolled_off {
+                            notice = Some(FileNotice::HistoryRolledOff);
+                        }
                         if restored.lost_lines {
                             notice = Some(FileNotice::EditsUnreadable);
                         }
@@ -1491,18 +1615,9 @@ impl<L: DocLoader> Session<L> {
         redone
     }
 
-    /// Throws away a tab's unsaved page edits.
+    /// Throws away a tab's unsaved page edits, and its history with them.
     pub fn discard_edits(&mut self, id: TabId) {
-        let place = self.place_of(id);
-        if self.edits.remove(&id).is_some() {
-            self.retire_journal(id);
-            if let Some(tab) = self.tab_mut(id)
-                && matches!(tab.notice.as_deref(), Some(FileNotice::Changed | FileNotice::EditsUnreadable))
-            {
-                tab.notice = None;
-            }
-            self.after_change(id, place);
-        }
+        self.clear_history(id, ClearReason::Discard);
     }
 
     /// Closes a tab and releases what it held. The next tab along, or the previous one, becomes active.
@@ -1519,8 +1634,9 @@ impl<L: DocLoader> Session<L> {
             }
             self.journals.remove(&id);
         } else {
-            self.retire_journal(id);
+            self.let_go_of_list(id);
         }
+        self.fresh_journals.retain(|(tab, _, _)| *tab != id);
         self.edits.remove(&id);
         let index = self.tabs.iter().position(|t| t.id == id).ok_or(SessionError::NoSuchTab)?;
         self.tabs.remove(index);
@@ -1567,8 +1683,7 @@ impl<L: DocLoader> Session<L> {
         if let Some(left) = self.active.filter(|left| *left != id) {
             let clean = !self.edits.contains_key(&left);
             if let Some(tab) = self.tab_mut(left)
-                && clean
-                && matches!(tab.notice.as_deref(), Some(FileNotice::Moved { .. } | FileNotice::Changed))
+                && ((clean && matches!(tab.notice.as_deref(), Some(FileNotice::Moved { .. } | FileNotice::Changed))) || matches!(tab.notice.as_deref(), Some(FileNotice::HistoryRolledOff)))
             {
                 tab.notice = None;
             }
@@ -1591,6 +1706,26 @@ impl<L: DocLoader> Session<L> {
                 (self.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path)), stamp)
             }
         };
+        // The file is what the list was made on, and is another length than it says: the list can't be about it, however it got here. A journal can say anything, as a save having happened.
+        if let (Ok(facts), Some(known), Some(list)) = (&loaded, stamp, self.edits.get(&id))
+            && self.tab(id).is_some_and(|tab| tab.stamp == Some(known))
+            && list.file_pages() != facts.page_count
+        {
+            self.let_go_of_list(id);
+            if let Some(tab) = self.tab_mut(id) {
+                tab.notice = Some(Box::new(FileNotice::EditsUnreadable));
+            }
+        }
+        // Woken to another file, with only history: its steps don't apply to this, whichever way it's noticed. Unsaved edits stay.
+        if let (Some(now), Some(list)) = (stamp, self.edits.get(&id))
+            && !list.is_edited()
+            && self.tab(id).and_then(|tab| tab.stamp).is_some_and(|known| !known.same_contents(now))
+        {
+            self.clear_history(id, ClearReason::FileChanged);
+            if let Some(tab) = self.tab_mut(id) {
+                tab.notice = Some(Box::new(FileNotice::Changed));
+            }
+        }
         // An edited tab's length is its edit list's, not the file's: added pages must stay reachable.
         let pages_with_edits = self.edits.get(&id).map(PageEdits::len);
         let tab = self.tab_mut(id);
@@ -2620,8 +2755,16 @@ mod tests {
         }
         let mut outcome = JournalOutcome::default();
         for append in work.appends {
-            let file = files.entry(append.name.clone()).or_insert_with(|| record::journal_start(&append.header, None));
-            file.extend_from_slice(&record::journal_lines(&append.ops));
+            if let Some(base) = &append.base {
+                let header = JournalHeader { base_seq: append.through, ..append.header.clone() };
+                files.insert(append.name.clone(), record::journal_start(&header, Some(base)));
+                if let Some(old) = append.replaces.as_ref().filter(|old| **old != append.name) {
+                    files.remove(old);
+                }
+            } else {
+                let file = files.entry(append.name.clone()).or_insert_with(|| record::journal_start(&append.header, None));
+                file.extend_from_slice(&record::journal_lines(&append.ops));
+            }
             outcome.written.push((append.tab, append.through, append.name));
         }
         s.journal_outcome(outcome);
@@ -2634,7 +2777,7 @@ mod tests {
                 let parsed = record::parse_journal(bytes, record::CURRENT_VERSION).unwrap();
                 let (edits, applied) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
                 assert_eq!(applied, parsed.ops.len());
-                (name.clone(), RestoredEdits { edits, seq: parsed.header.base_seq + applied as u64, lost_lines: parsed.lost_lines })
+                (name.clone(), RestoredEdits { edits, seq: parsed.header.base_seq + applied as u64, rolled_off: false, lost_lines: parsed.lost_lines })
             })
             .collect()
     }
@@ -2795,34 +2938,291 @@ mod tests {
         assert!(s.redo_edit(reopened));
     }
 
-    /// Failure: a confirmed Save leaves the undo trail behind, or its file, or the tab reading as edited. Everything goes, in one call. Before it's called, nothing has: that's a failed Save.
+    fn kept(name: &str, size: u64) -> edit::AddedSource {
+        edit::AddedSource { path: PathBuf::from(format!("/state/journals/{name}")).into_boxed_path(), page_count: 5, stamp: Some(FileStamp { size, mtime_ns: 1, device: 1, inode: 7 }), kept: true }
+    }
+
+    const KEPT_A: &str = "kept-00000000000000aa.pdf";
+    const KEPT_B: &str = "kept-00000000000000bb.pdf";
+
+    /// Failure (decision 25): a Save ends the history, so there's no changing your mind after it, or the tab still reads as edited, or undoing past the save reads as saved, or coming back reads as unsaved. A failed save, which calls nothing, changes nothing.
     #[test]
-    fn a_confirmed_save_ends_the_history_and_a_failed_one_leaves_it() {
+    fn a_save_marks_a_point_that_undo_goes_past_and_comes_back_to() {
         let mut s = journaled(5);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
         s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
         s.edit_pages_as(a, Author::Agent, |e| e.rotate(0, 1, 1)).unwrap();
-        assert!(s.undo_edit(a));
         let mut files = HashMap::new();
         let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
-        s.save_prepared(a, target);
+        let keeping = kept(KEPT_A, 100);
+        assert!(s.page_edits(a).unwrap().needs_own_pages(), "the delete's way back names a page of this file");
+        s.save_prepared(a, target, Some(&keeping));
         write_journal(&mut s, &mut files);
         let parsed = record::parse_journal(files.values().next().unwrap(), record::CURRENT_VERSION).unwrap();
         assert_eq!(parsed.ops.last(), Some(&JournalOp::Saving(target.into())), "said ahead of it, in the journal");
-        // A failed save: nothing's called, and all of it is as it was, undo and redo and the file.
-        assert!(s.is_edited(a) && s.page_edits(a).unwrap().can_undo() && s.page_edits(a).unwrap().can_redo());
-        s.save_confirmed(a, target, 4, None);
-        assert!(s.page_edits(a).is_none() && !s.is_edited(a));
+        assert!(matches!(parsed.ops.iter().rev().nth(1), Some(JournalOp::Keeping(said)) if said.kept), "and what's kept for it");
+        // A failed save: nothing's called, and all of it is as it was.
+        assert!(s.is_edited(a) && s.page_edits(a).unwrap().can_undo());
+        let before: Vec<_> = (0..4).map(|at| s.page_source(a, at).unwrap().page).collect();
+        assert_eq!(s.saved(a, target, 4, None, Some(keeping)), 0, "nothing had to go");
+        assert!(!s.is_edited(a), "it reads as saved");
+        assert!(!s.sidebar().edited);
         assert_eq!(s.pages_in(a), 4);
         assert_eq!(s.own_stamp(a), Some(target));
-        assert!(s.has_retired_journals());
+        assert_eq!(s.tab(a).unwrap().page_count, 4);
+        assert_eq!(before, [1, 2, 3, 4], "those were pages of the old file");
+        assert_eq!((0..4).map(|at| s.page_source(a, at).unwrap().page).collect::<Vec<_>>(), [0, 1, 2, 3], "and the new file has them in order");
+        assert!(s.page_edits(a).unwrap().can_undo(), "the history's still there");
+        // Past it, one step at a time, and back.
+        assert!(s.undo_edit(a));
+        assert!(s.is_edited(a), "undone past the saved point, it's unsaved again");
+        assert_eq!(s.page_source(a, 0).unwrap().quarter_turns, 3, "the turn's in the file now, and undoing it is a turn back");
+        assert!(s.undo_edit(a));
+        assert_eq!(s.pages_in(a), 5);
+        let back = s.page_source(a, 0).unwrap();
+        assert_eq!((back.path.as_path(), back.page, back.added), (Path::new("/state/journals/kept-00000000000000aa.pdf"), 0, true), "the page the save took out comes from what was kept, not the new file");
+        assert_eq!((s.page_source(a, 1).unwrap().path.as_path(), s.page_source(a, 1).unwrap().page), (Path::new("/d/a.pdf"), 0), "and the rest from the file");
+        assert!(s.is_edited(a));
+        assert!(!s.undo_edit(a));
+        assert!(s.redo_edit(a));
+        assert!(s.is_edited(a));
+        assert!(s.redo_edit(a));
+        assert!(!s.is_edited(a), "back at the saved point, it reads as saved");
+        assert_eq!((0..4).map(|at| s.page_source(a, at).unwrap().page).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        assert_eq!(s.page_source(a, 0).unwrap().quarter_turns, 0);
+    }
+
+    /// Failure: after a save, the journal's still named for the old file and its page numbers, or a crash loses the history, so a PDF opened again gets the wrong steps or none. The new journal has the whole list under the new file's name, and replays to exactly what's in memory, and more edits go on from it.
+    #[test]
+    fn a_saved_history_is_a_new_journal_that_comes_back_the_same() {
+        let mut s = journaled(5);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages(a, |e| e.delete(1, 2)).unwrap();
+        let mut files = HashMap::new();
         write_journal(&mut s, &mut files);
-        assert!(files.is_empty());
-        // Save As: the tab's on the new file now.
+        let old = files.keys().next().unwrap().clone();
+        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        s.saved(a, target, 3, None, Some(kept(KEPT_A, 100)));
+        assert!(s.has_retired_journals(), "it wants writing at once, as a crash would otherwise find the old one");
+        // Not written yet: the old one's still the only one, and still there.
+        assert!(files.contains_key(&old));
+        write_journal(&mut s, &mut files);
+        assert!(!files.contains_key(&old), "it goes once the new one's there");
+        assert_eq!(files.len(), 1);
+        assert!(!s.has_retired_journals());
         s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
-        s.save_confirmed(a, target, 4, Some(Path::new("/e/copy.pdf")));
+        write_journal(&mut s, &mut files);
+        let parsed = record::parse_journal(files.values().next().unwrap(), record::CURRENT_VERSION).unwrap();
+        assert_eq!(parsed.header.file, Some(target.into()), "it's about the new file");
+        assert_eq!(parsed.header.file_pages, 3);
+        let (replayed, applied) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
+        assert_eq!(applied, parsed.ops.len());
+        assert_eq!(replayed.to_record(), s.edits_record(a).unwrap());
+        assert_eq!(replayed.is_edited(), s.is_edited(a));
+    }
+
+    /// Failure (decision 25): a step undoes wrongly because the pages it needs are gone from the file, or the app says nothing about undo stopping short. It rolls off, with everything older, as a step's way back depends on those after it, and the tab says so. What came after it stays, and nothing about the document changes.
+    #[test]
+    fn a_step_whose_pages_cant_be_kept_rolls_off_and_says_so() {
+        let mut s = journaled(6);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+        s.edit_pages(a, |e| e.delete(5, 1)).unwrap();
+        s.edit_pages(a, |e| e.rotate(1, 1, 1)).unwrap();
+        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        assert_eq!(s.saved(a, target, 5, None, None), 2, "the delete, and the older rotation with it");
+        assert!(!s.is_edited(a));
+        assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("history_rolled_off"));
+        assert!(s.tab_notice_message(a).is_some_and(|words| words.contains("Undo")));
+        assert_eq!(s.page_edits(a).unwrap().summary().undo, 1);
+        assert!(s.undo_edit(a), "the newer step still works");
+        assert!(!s.undo_edit(a), "and undo stops rather than undoing wrongly");
+        assert_eq!(s.pages_in(a), 5);
+        assert_eq!(s.page_source(a, 1).unwrap().quarter_turns, 3);
+        assert!(s.redo_edit(a));
+        assert!(!s.is_edited(a));
+        // Going to another tab has said it.
+        let b = s.open(Path::new("/d/b.pdf")).unwrap();
+        s.tap(a).unwrap();
+        assert!(s.tab(a).unwrap().notice.is_some(), "not yet");
+        s.tap(b).unwrap();
+        assert_eq!(s.tab(a).unwrap().notice, None);
+        // Only a turn and a move in the history: no pages named, so no copy's needed, and nothing rolls off.
+        let mut s = journaled(6);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages(a, |e| e.move_pages(0, 1, 2)).unwrap();
+        s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+        assert!(!s.page_edits(a).unwrap().needs_own_pages());
+        assert_eq!(s.saved(a, target, 6, None, None), 0);
+        assert_eq!(s.tab(a).unwrap().notice, None);
+        assert!(s.undo_edit(a) && s.undo_edit(a) && s.is_edited(a));
+    }
+
+    /// Failure: copies kept for a PDF go past the limit a history has, over many saves. The oldest goes, with the steps that need it, and its file's let go of.
+    #[test]
+    fn copies_kept_stay_within_the_limit() {
+        let mut s = journaled(10);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        let big = edit::MAX_HISTORY_BYTES as u64 / 2 + 1;
+        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
+        assert_eq!(s.saved(a, target, 9, None, Some(kept(KEPT_A, big))), 0);
+        s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
+        assert_eq!(s.page_edits(a).unwrap().kept_sources().count(), 1);
+        assert_eq!(s.saved(a, target, 8, None, Some(kept(KEPT_B, big))), 1, "two wouldn't fit, so the first's step goes");
+        let list = s.page_edits(a).unwrap();
+        assert_eq!(list.kept_sources().map(|(_, added)| added.path.file_name().unwrap().to_str().unwrap().to_string()).collect::<Vec<_>>(), [KEPT_B]);
+        assert_eq!(list.summary().undo, 1);
+        assert_eq!(s.journal_work().retired, [KEPT_A], "and its file goes");
+    }
+
+    /// Failure: Save As loses the history, or its way back names the new file, or the tab's not on the new file. The old file is still where it was, so that's where the pages come from, with no copy.
+    #[test]
+    fn save_as_takes_the_history_along() {
+        let mut s = journaled(5);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
+        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        assert_eq!(s.saved(a, target, 4, Some(Path::new("/e/copy.pdf")), None), 0);
         assert_eq!(s.path_of(a).unwrap(), Path::new("/e/copy.pdf"));
         assert_eq!(&*s.tab(a).unwrap().name, "copy");
+        assert!(!s.is_edited(a));
+        assert!(s.undo_edit(a));
+        assert_eq!((s.page_source(a, 0).unwrap().path.as_path(), s.page_source(a, 0).unwrap().page), (Path::new("/d/a.pdf"), 0));
+        assert_eq!((s.page_source(a, 1).unwrap().path.as_path(), s.page_source(a, 1).unwrap().page), (Path::new("/e/copy.pdf"), 0));
+        assert_eq!(s.page_edits(a).unwrap().kept_sources().count(), 0, "the old file isn't the history's to remove");
+    }
+
+    /// Failure: what was written isn't this list, as its length says, and the steps get laid on a file they're not about. All of it goes, and it says so.
+    #[test]
+    fn a_save_of_something_else_ends_the_history() {
+        let mut s = journaled(5);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        assert_eq!(s.saved(a, target, 3, None, Some(kept(KEPT_A, 100))), 1);
+        assert!(s.page_edits(a).is_none());
+        assert_eq!(s.pages_in(a), 3);
+        assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("history_rolled_off"));
+        assert_eq!(s.journal_work().retired.iter().filter(|name| *name == KEPT_A).count(), 1);
+        // A tab with no list has nothing to carry, and a file kept for it goes.
+        let b = s.open(Path::new("/d/b.pdf")).unwrap();
+        assert_eq!(s.saved(b, target, 5, None, Some(kept(KEPT_B, 100))), 0);
+        assert_eq!(s.journal_work().retired, [KEPT_B]);
+    }
+
+    /// Failure (decision 25): clearing only forgets a history, so its file stays on disk and what was removed can be got back; or unsaved work goes with it; or an agent or a changed file takes what shouldn't go. Each reason does what it's for, and the files go.
+    #[test]
+    fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
+        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        // After a confirmed redaction, at the saved point: nothing's left.
+        for reason in [ClearReason::Redaction, ClearReason::HiddenDataRemoval, ClearReason::UserAsked, ClearReason::Discard] {
+            let mut s = journaled(5);
+            let a = s.open(Path::new("/d/a.pdf")).unwrap();
+            s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
+            let mut files = HashMap::new();
+            write_journal(&mut s, &mut files);
+            s.saved(a, target, 4, None, Some(kept(KEPT_A, 100)));
+            write_journal(&mut s, &mut files);
+            assert!(s.page_edits(a).is_some_and(PageEdits::can_undo));
+            assert_eq!(files.len(), 1);
+            assert!(s.clear_history(a, reason));
+            assert!(s.page_edits(a).is_none(), "{reason:?}");
+            assert!(s.has_retired_journals());
+            let work = s.journal_work();
+            assert_eq!(work.retired.len(), 2, "the journal and the kept file: {reason:?}");
+            assert!(work.retired.iter().any(|name| name == KEPT_A));
+            assert_eq!(s.to_record().tabs[0].journal, None);
+        }
+        // Unsaved edits and Clear Edit History: the page order stays, and the way back goes. The journal starts again in one step, with nothing in it that was only history.
+        let mut s = journaled(5);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
+        s.insert_pdf(a, 0, Path::new("/d/secret.pdf")).unwrap();
+        assert!(s.undo_edit(a));
+        s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+        let mut files = HashMap::new();
+        write_journal(&mut s, &mut files);
+        assert!(files.values().next().unwrap().windows(10).any(|bytes| bytes == b"secret.pdf"), "it was in the journal");
+        assert!(s.clear_history(a, ClearReason::UserAsked));
+        assert!(s.is_edited(a), "unsaved work stays");
+        assert_eq!(s.pages_in(a), 4);
+        assert!(!s.page_edits(a).unwrap().can_undo() && !s.page_edits(a).unwrap().can_redo());
+        assert_eq!(s.page_edits(a).unwrap().added_sources().len(), 0, "the added file was only history");
+        write_journal(&mut s, &mut files);
+        assert_eq!(files.len(), 1, "the same name, replaced");
+        let bytes = files.values().next().unwrap();
+        assert!(!bytes.windows(10).any(|bytes| bytes == b"secret.pdf"), "it's gone from the file, not only from memory");
+        let parsed = record::parse_journal(bytes, record::CURRENT_VERSION).unwrap();
+        let (replayed, _) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
+        assert_eq!(replayed.to_record(), s.edits_record(a).unwrap());
+        let none = s.open(Path::new("/d/none.pdf")).unwrap();
+        assert!(!s.clear_history(none, ClearReason::UserAsked), "nothing to clear");
+        // A file changed outside: with only history, its steps don't apply, and they go, whichever way it was noticed.
+        let now = FileStamp { size: 1, mtime_ns: 2, device: 1, inode: 3 };
+        let mut s = journaled(5);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+        s.saved(a, target, 5, None, None);
+        assert!(s.page_edits(a).is_some_and(PageEdits::can_undo));
+        s.apply_file_status(a, FileStatus::Changed(now));
+        assert!(s.page_edits(a).is_none());
+        assert_eq!(s.own_stamp(a), Some(now));
+        assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
+        // With unsaved edits, they stay and say so, as decision 23 has it.
+        s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+        s.apply_file_status(a, FileStatus::Changed(target));
+        assert!(s.is_edited(a) && s.page_edits(a).unwrap().can_undo());
+        assert_eq!(s.own_stamp(a), Some(now), "they're about the file they were made on");
+    }
+
+    /// Failure (decision 25): a history stays on a file changed outside the app, when a tab's woken with nothing else having looked, and its steps get laid on the wrong pages.
+    #[test]
+    fn a_file_changed_under_a_history_clears_it_on_waking() {
+        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-changed-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.pdf");
+        std::fs::write(&file, b"as it was").unwrap();
+        let mut s = journaled(5);
+        let a = s.open(&file).unwrap();
+        s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+        assert!(s.undo_edit(a), "so there's history and nothing unsaved");
+        write_journal(&mut s, &mut HashMap::new());
+        let b = s.open(&dir.join("b.pdf")).unwrap();
+        s.tap(b).unwrap();
+        std::fs::write(&file, b"another version altogether").unwrap();
+        s.warm.clear();
+        s.tap(a).unwrap();
+        assert!(s.page_edits(a).is_none());
+        assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
+        assert_eq!(s.journal_work().retired.len(), 1, "and its file goes");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Failure: a list naming a file of a length it's not about is believed, as a forged journal can say a save happened, and pages past the end are drawn or written. A file read at its own stamp and another length than the list says shows the list isn't about it.
+    #[test]
+    fn a_list_of_another_length_than_its_file_isnt_believed() {
+        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-forged-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.pdf");
+        std::fs::write(&file, b"five pages").unwrap();
+        let mut s = journaled(5);
+        let a = s.open(&file).unwrap();
+        let other = s.open(&dir.join("other.pdf")).unwrap();
+        // As a journal could say: a list about twelve pages, on this file.
+        let mut list = PageEdits::new(12);
+        list.journal_from_now();
+        list.rotate(11, 1, 1).unwrap();
+        s.take_up_history(a, "journal-00000000000000aa.log", list, 1);
+        s.warm.clear();
+        s.tap(a).unwrap();
+        assert!(s.page_edits(a).is_none(), "it's gone");
+        assert_eq!(s.pages_in(a), 5);
+        assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("edits_unreadable"));
+        let _ = other;
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Failure (decision 26): a link to an open PDF, or a file moved and opened by its new name, makes a second tab. A copy is another file, and a PDF added as pages isn't a tab. Each case on real files, as what's the same is the file on disk.
@@ -2960,11 +3360,13 @@ mod tests {
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
         s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
         let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
-        s.save_prepared(a, target);
+        let keeping = kept(KEPT_A, 100);
+        s.save_prepared(a, target, Some(&keeping));
         let mut files = HashMap::new();
         write_journal(&mut s, &mut files);
         let (header, base) = s.checkpoint_if_caught_up(a).unwrap();
         assert_eq!(header.saving, Some(target.into()));
+        assert_eq!(header.keeping, Some(keeping.to_record()), "nor what it kept");
         let parsed = record::parse_journal(&record::journal_start(&header, Some(&base)), record::CURRENT_VERSION).unwrap();
         assert_eq!(parsed.header.saving, Some(target.into()));
     }

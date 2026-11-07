@@ -10,7 +10,7 @@ use recto_platform::local::process_counters;
 use recto_testpdf::{Object, Page, TempPdf, build, form_bomb, pages, text_lines};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -638,6 +638,86 @@ fn a_tab_gone_cold_comes_back_where_it_was() {
 }
 
 /// Waits until what's been edited has gone to its journal, which takes seconds, and says what the lists are.
+/// What a Save would write, for this test: the document's pages, as lopdf has them.
+fn written_without(source: &Path, delete: &[u32], to: &Path) {
+    let mut document = lopdf::Document::load(source).unwrap();
+    document.delete_pages(delete);
+    document.prune_objects();
+    document.save(to).unwrap();
+}
+
+/// Failure (decision 25), in the real app: after a Save, undo doesn't go past it, or it draws the wrong page, as the deleted page isn't in the file any more. Or the document reads wrongly on either side of the saved point, or any of that doesn't survive a kill. Or Clear Edit History leaves its files on disk, or an agent gets to clear the owner's history.
+#[test]
+fn undo_goes_past_a_save_in_the_real_app() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join("doc.pdf");
+    std::fs::write(&file, pages(&["Alpha page", "Bravo page", "Charlie page"].map(|text| Page::new(text_lines(&[text]))))).unwrap();
+    let text_of = |run: &Run<'_>, page: &str| run.ok(&["text", "--page", page]).to_string();
+    let edited = |run: &Run<'_>| run.ok(&["edits"])["edited"].as_bool().unwrap();
+    run.ok(&["open", file.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "delete:2"]);
+    run.settled();
+    assert!(edited(&run));
+    let written = folder.join("written.pdf");
+    written_without(&file, &[2], &written);
+    run.ok(&["qa", "save-from", written.to_str().unwrap()]);
+    run.settled();
+    assert!(!edited(&run), "it reads as saved");
+    assert_eq!(run.ok(&["edits"])["file_pages"], 2);
+    let second = text_of(&run, "2");
+    assert!(second.contains("Charlie"), "the file's second page now: {second:?} {}", run.ok(&["edits"]));
+    let journals = state.root.join("session").join("journals");
+    let kept_files = || std::fs::read_dir(&journals).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("kept-")).count();
+    assert_eq!(kept_files(), 1, "the page it took out is kept");
+    let journal_bytes = || std::fs::read_dir(&journals).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("journal-")).map(|entry| entry.metadata().unwrap().len()).sum::<u64>();
+    wait_until("the new journal goes at once", || journal_bytes() > 0);
+    let before_undo = journal_bytes();
+    // Past the saved point.
+    run.ok(&["qa", "owner-edit", "undo"]);
+    run.settled();
+    assert!(edited(&run), "unsaved again");
+    assert_eq!(run.ok(&["edits"])["pages"], 3);
+    assert!(text_of(&run, "2").contains("Bravo"), "the page that's only in what was kept");
+    assert!(text_of(&run, "3").contains("Charlie"), "and the rest from the new file");
+    // Across a kill, past the saved point, and back to it.
+    wait_until("the undo reaches the journal", || journal_bytes() > before_undo);
+    run.kill();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    assert!(edited(&run), "still past it");
+    assert!(text_of(&run, "2").contains("Bravo"));
+    run.ok(&["qa", "owner-edit", "redo"]);
+    run.settled();
+    assert!(!edited(&run), "back at the saved point, it reads as saved");
+    assert_eq!(run.ok(&["edits"])["pages"], 2);
+    assert!(text_of(&run, "2").contains("Charlie"));
+    // Clearing: at Control the owner's history is refused, and nothing goes.
+    state.set_level(Level::Control);
+    let (refused, _) = state.json(&["clear-history"]);
+    assert_eq!(refused["error"]["code"], "would_discard_user_edits", "{refused}");
+    assert_eq!(kept_files(), 1);
+    state.set_level(Level::Full);
+    let cleared = run.ok(&["clear-history"]);
+    assert_eq!(cleared["can_undo"], false, "{cleared}");
+    run.settled();
+    wait_until("its files go at once", || kept_files() == 0 && std::fs::read_dir(&journals).unwrap().flatten().all(|entry| !entry.file_name().to_string_lossy().starts_with("journal-")));
+    let (nothing, _) = state.json(&["undo"]);
+    assert_eq!(nothing["error"]["code"], "nothing_to_undo", "{nothing}");
+    assert!(run.ok(&["clear-history"])["did"].as_str().unwrap().contains("no edit history"));
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let started = std::time::Instant::now();
+    while !done() {
+        assert!(started.elapsed() < std::time::Duration::from_secs(20), "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 fn wait_for_journal(run: &Run<'_>) -> Value {
     let began = Instant::now();
     while run.ok(&["session", "show"])["record"]["appends"] == 0 {

@@ -410,6 +410,11 @@ pub enum Command {
         #[serde(default = "active_tab")]
         tab: String,
     },
+    /// Clears a tab's edit history: every step undo or redo could take, and its file. Unsaved edits stay. Below Full it refuses if any are the user's.
+    ClearHistory {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
     /// Doesn't exist yet, and says so.
     Save {
         #[serde(default = "active_tab")]
@@ -503,6 +508,7 @@ impl Command {
             Self::Undo { .. } => "undo",
             Self::Redo { .. } => "redo",
             Self::Discard { .. } => "discard",
+            Self::ClearHistory { .. } => "clear_history",
             Self::Save { .. } => "save",
             Self::Sign {} => "sign",
             Self::Status {} => "status",
@@ -555,7 +561,7 @@ impl Command {
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
             Self::PageRotate { tab, pages, degrees } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "degrees": degrees }),
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
-            Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
+            Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
             Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} => Value::Null,
@@ -567,7 +573,7 @@ impl Command {
     /// The selector this command acts on, if it has one.
     fn tab_selector(&self) -> Option<&str> {
         match self {
-            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
+            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::Save { tab } | Self::Wait { tab, .. } => Some(tab),
             _ => None,
         }
     }
@@ -1073,6 +1079,16 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             events.push(edits_event(s, id));
             let mut data = edit_state_json(s, id);
             data["did"] = json!(if had_any { "Threw away this tab's edits." } else { "There were no edits to throw away." });
+            Ok(with_place_note(s, id, data))
+        }),
+        Command::ClearHistory { tab } => access.with(|s| {
+            let id = select(s, tab)?;
+            refuse_discard_of_owners_edits(s, id, level)?;
+            let had_any = s.page_edits(id).is_some_and(|list| list.can_undo() || list.can_redo());
+            s.clear_history(id, recto_session::ClearReason::UserAsked);
+            events.push(edits_event(s, id));
+            let mut data = edit_state_json(s, id);
+            data["did"] = json!(if had_any { "Cleared this tab's edit history. Unsaved edits are still here, and can't be undone now." } else { "There was no edit history to clear." });
             Ok(with_place_note(s, id, data))
         }),
         Command::Save { .. } => Err(AgentError::new(
@@ -1781,6 +1797,7 @@ mod tests {
             Command::Undo { tab: tab() },
             Command::Redo { tab: tab() },
             Command::Discard { tab: tab() },
+            Command::ClearHistory { tab: tab() },
             Command::Save { tab: tab() },
             Command::Sign {},
             Command::Status {},
