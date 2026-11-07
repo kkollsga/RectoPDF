@@ -444,6 +444,15 @@ fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
     let reading = wait_for(&run, |state| state["app"]["contents"]["current_in_view"] == true && state["app"]["contents"]["frames_running"] == false && state["app"]["contents"]["current"].as_u64().unwrap_or(0) > 1000);
     assert_eq!(reading["app"]["contents"]["following"], true);
     assert_eq!(reading["app"]["contents"]["moving"], false, "nothing runs once it's arrived: {reading}");
+    // Failure: rows the table had ready just outside the view keep an old rail, and show it when they scroll in. Seen on a far `goto` back to the top.
+    run.ok(&["goto", "1"]);
+    run.settled();
+    let back = wait_for(&run, |state| state["app"]["contents"]["frames_running"] == false && state["app"]["contents"]["current"].as_u64().unwrap_or(9) == 0);
+    assert_eq!(back["app"]["contents"]["stale_rows"], 0, "{back}");
+    run.ok(&["goto", "1500"]);
+    run.settled();
+    let again = wait_for(&run, |state| state["app"]["contents"]["frames_running"] == false && state["app"]["contents"]["current"].as_u64().unwrap_or(0) > 1000);
+    assert_eq!(again["app"]["contents"]["stale_rows"], 0, "{again}");
     // Scrolled away, it stays where it's put, however the reader moves on.
     let away = run.ok(&["qa", "contents-scroll", "10"]);
     assert_eq!(away["contents"]["following"], false, "{away}");

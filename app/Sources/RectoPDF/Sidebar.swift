@@ -38,6 +38,9 @@ final class SidebarCell: NSView {
         applyLook()
     }
 
+    /// What it's showing, so QA can hold it to the model.
+    var shownRow: SidebarRow? { row }
+
     func applyLook() {
         guard let row else { return }
         let isTab = row.kind == .tab
@@ -371,11 +374,22 @@ final class RevealLabel: FlippedView {
             "scroll_y": contentsY,
             "reduce_motion": shouldReduceMotion,
             "row_views": shown ? contentsTable.subviews.count : 0,
+            "stale_rows": staleContentsRows(),
             "tab_rows_on_screen": table.rows(in: table.visibleRect).length,
             "tabs_scroll": layout.tabsScroll,
             "list_height": scroll.frame.height,
             "footer_on_screen": footer.frame.maxY <= view.bounds.height && !footer.isHidden,
         ]
+    }
+
+    /// Row views the table holds that show something other than the model says. There should never be any.
+    private func staleContentsRows() -> Int {
+        var stale = 0
+        contentsTable.enumerateAvailableRowViews { [self] _, row in
+            guard let shown = (contentsTable.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell)?.shownRow else { return }
+            if core.contentsRows(first: UInt32(row), count: 1).first != shown { stale += 1 }
+        }
+        return stale
     }
 
     /// Tabs and contents, as a person counts them.
@@ -502,21 +516,25 @@ final class RevealLabel: FlippedView {
     }
 
     private func reloadCells() {
-        let visible = table.rows(in: table.visibleRect)
-        for index in visible.location..<(visible.location + visible.length) {
-            guard index < model.tabs.count, let view = table.view(atColumn: 0, row: index, makeIfNecessary: false) else { continue }
+        table.enumerateAvailableRowViews { [self] _, index in
+            guard index < model.tabs.count, let view = table.view(atColumn: 0, row: index, makeIfNecessary: false) else { return }
             let cell = (view as? ActiveTabCell)?.tab ?? view as? SidebarCell
             cell?.show(row: model.tabs[index], foldedActive: !model.tocOpen, hovered: hoveredRow != nil)
         }
         reloadContentsCells()
     }
 
+    /// Every row view the table holds, including those it has ready just outside the view. Asking only for what's visible left rows ready with an old rail, which came back showing it once they'd scrolled in.
     private func reloadContentsCells() {
-        let visible = contentsTable.rows(in: contentsTable.visibleRect)
-        guard visible.length > 0 else { return }
-        let rows = core.contentsRows(first: UInt32(visible.location), count: UInt32(visible.length))
+        var (first, last) = (Int.max, -1)
+        contentsTable.enumerateAvailableRowViews { _, row in
+            first = min(first, row)
+            last = max(last, row)
+        }
+        guard last >= first else { return }
+        let rows = core.contentsRows(first: UInt32(first), count: UInt32(last - first + 1))
         for (offset, row) in rows.enumerated() {
-            (contentsTable.view(atColumn: 0, row: visible.location + offset, makeIfNecessary: false) as? SidebarCell)?.show(row: row, foldedActive: false, hovered: hoveredRow != nil)
+            (contentsTable.view(atColumn: 0, row: first + offset, makeIfNecessary: false) as? SidebarCell)?.show(row: row, foldedActive: false, hovered: hoveredRow != nil)
         }
     }
 
