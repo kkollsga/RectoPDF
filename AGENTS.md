@@ -31,6 +31,14 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - **Everything else needs the owner's go-ahead each time:** force-pushing, other branches, the lopdf fork, creating repos, tagging and publishing.
 - Workers commit on their own branch with the trailer they're given, and don't merge. The coordinator merges with `--no-ff`.
 
+## How work flows (owner, 2026-11-07: "Remember you are responsible for the progress and quality. So add a few process reviews every once in a while to catch inefficiencies")
+- **Merge first.** A branch under review is frozen: new requests go to the next branch. No new track starts while the current phase's main branch is unmerged.
+- **Two review rounds per branch at most.** Anything serious blocks the merge; the rest become tracked follow-ups in `docs/PLAN.md`.
+- **About three workers at a time.** More only lengthens the build queue.
+- **Short dev-build cycles for the owner.** The owner's use of the real app finds what screenshots can't.
+- **Process reviews,** at each phase's end and at least after every fourth merge: progress, waste and quality against the numbers (git, `heavy.sh --report`, CI, review findings), logged in `docs/PROCESS.md`, with what changes as a result. The coordinator owns progress and quality.
+- **Lessons go in the guide as we progress** (owner, 2026-11-07: "feed learnings into the rust development guide as we progress"): `docs/agent-instructions/rust_app_development.md`, in its own sections, when a merge, review or process review teaches something a future project would want. General lessons, with the number or incident behind them, not this project's details.
+
 ## Writing for the owner
 - **Show new features.** Owner, 2026-11-06: "Print screenshots as new features are added." When a feature lands, the coordinator sends real screenshots of it, after looking at them first. Label anything that is a mock-up rather than the real app.
 - Keep them informed in short updates, and say plainly what failed. Don't give them manual tasks.

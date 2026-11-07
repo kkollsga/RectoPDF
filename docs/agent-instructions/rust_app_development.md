@@ -753,6 +753,10 @@ scratchpad, and one run's `check.log` overwrote another's.
   pending result can't change what you push.
 - **Agents wait on builds more than they build.** With seven workers on one lock, jobs spent over twice as long waiting
   as running. Three or four workers suited that lock; more only lengthened the queue until it had more slots.
+- **Merge first. Work that isn't merged isn't progress.** After 17 hours on one app, 25,000 lines sat unmerged while new tracks started, because each new request joined the branch under review, so its review never ended. Freeze a branch once it's under review and send new requests to the next one. Don't start later phases' work before the current phase's main branch lands.
+- **Cap the review rounds, not the reviewing.** Rounds of 15 then 14 findings, and 13 then 13, came partly from features added during fixes. Two rounds per branch, with serious findings blocking and the rest tracked, keeps the value and ends the loop.
+- **Get a real build to the user early.** The user's first minutes in a real window found scanned pages rendering wrong and scroll bars that were wrong, none of it visible in screenshots or tests. Short dev-build cycles found more per minute than anything else.
+- **Review the process too,** at each phase's end and after every few merges, against numbers: what landed, time waiting against running, findings per round. Log what changes, and check next time whether it helped.
 - **Workers doing the same fix separately is a cost of parallel work.** Two workers fixed one server bug in two ways,
   and one fix had a CPU spin. Give each a merge-main step early, and reconcile on purpose at merge.
 - When the user asks for something mid-flight, queue it to the worker already on that area (a message to it) rather
