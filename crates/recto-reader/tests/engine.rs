@@ -4,7 +4,8 @@ use recto_platform::local::process_counters;
 use recto_reader::engine::EngineEvents;
 use recto_reader::tiles::{Op, PageMap, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
-use recto_testpdf::{Page, TempPdf, pages, slow_page, text_lines};
+use recto_reader::paper::dim_rgb;
+use recto_testpdf::{Object, Page, TempPdf, first_extra_object, pages, pages_with, slow_page, text_lines};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -86,11 +87,17 @@ fn the_engine_is_silent_at_rest() {
     pump(&engine, Duration::from_secs(20));
     assert!(engine.wait_settled(Duration::from_secs(5)));
     let pid = std::process::id();
-    let before = process_counters(pid).unwrap();
-    std::thread::sleep(Duration::from_secs(2));
-    let after = process_counters(pid).unwrap();
-    let woke = after.context_switches.saturating_sub(before.context_switches);
-    assert!(woke <= 40, "{woke} context switches in 2 s, with nothing to do");
+    // The quietest of a few goes: a thread that polls wakes it in all of them, and a busy machine only gets in the way of some.
+    let woke = (0..4)
+        .map(|_| {
+            let before = process_counters(pid).unwrap();
+            std::thread::sleep(Duration::from_secs(2));
+            let after = process_counters(pid).unwrap();
+            after.context_switches.saturating_sub(before.context_switches)
+        })
+        .min()
+        .unwrap();
+    assert!(woke <= 40, "{woke} context switches in the quietest 2 s, with nothing to do");
 }
 
 /// Failure: scrolling away from a page that's slow to draw leaves the worker drawing it, so the next page waits. `cancel_before` must end it, by return or kill, well inside the time it would have taken.
@@ -122,12 +129,27 @@ fn a_slow_page_scrolled_away_from_is_cancelled() {
     assert!(took < Duration::from_secs(4), "the last page took {took:?} to arrive, and the slow one alone takes longer");
 }
 
-/// Failure: dark paper's tiles reach the screen as white ones, because the turn was skipped for one path. The surface's first pixel must be the paper's colour, not white.
+/// What's at a surface's top left, red, green and blue, for each surface attached in these ops.
+#[allow(unsafe_code)]
+fn corners(ops: &[Op]) -> Vec<[u8; 3]> {
+    ops.iter()
+        .filter_map(|op| if let Op::Attach { surface, .. } = op { Some(*surface) } else { None })
+        .filter(|surface| *surface != 0)
+        .filter_map(|reference| {
+            // SAFETY: each reference in an `Attach` is given up to whoever applies it, and this stand-in host applies it here, once.
+            let surface = unsafe { recto_platform::surface::PixelSurface::from_host_reference(reference) }?;
+            surface.with_pixels(|pixels| [pixels[2], pixels[1], pixels[0]]).ok()
+        })
+        .collect()
+}
+
+/// Failure: dark paper's tiles reach the screen as white ones, because the turn was skipped for one path. Reads the surfaces themselves: a page's blank corner is white in what's drawn for white paper, and the paper's colour in what's drawn for dark.
 #[test]
 fn dark_paper_changes_what_is_in_the_surface() {
     let file = document(1);
     let (engine, _events) = started(&file, 1);
-    pump(&engine, Duration::from_secs(20));
+    let white = corners(&pump(&engine, Duration::from_secs(20)));
+    assert!(!white.is_empty() && white.iter().all(|corner| *corner == [0xFF, 0xFF, 0xFF]), "{white:?}");
     engine.set_paper(PaperKind::Dark);
     let ops = pump(&engine, Duration::from_secs(20));
     assert!(engine.wait_settled(Duration::from_secs(5)));

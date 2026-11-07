@@ -1,7 +1,7 @@
 //! One thread that runs what [`Reader`] asks for. It's parked with nothing to do: no timer, no wake-ups. A page blocks this thread and never the UI thread, and the one lock is never held across a render.
 
 use crate::layout::PageBox;
-use crate::paper::{PaperKind, dark_rgb, keeps_in, turn_over};
+use crate::paper::{DarkTile, PaperKind, dark_rgb, dark_tile, dim_page, dim_rgb, is_grey, turn_over};
 use crate::tiles::{DrawKind, Job, JobKind, MAX_ATTACH_PER_TURN, Op, Outcome, PageMap, Reader, ReaderReport, Viewport};
 use recto_platform::isolate;
 use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, TileKind, TileRequest, TileResult};
@@ -94,6 +94,13 @@ impl Engine {
     pub fn activate(&self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32]) {
         let mut reader = lock(&self.shared.reader);
         reader.activate(tab, pages, page, map, warm);
+        self.after(reader);
+    }
+
+    /// Which tabs are warm now, with no change of tab. Anything that's stopped being warm lets go of what it holds.
+    pub fn set_warm(&self, warm: &[u32]) {
+        let mut reader = lock(&self.shared.reader);
+        reader.set_warm(warm);
         self.after(reader);
     }
 
@@ -342,19 +349,29 @@ fn do_job(doc: &mut DocRenderer, job: &Job) -> Outcome {
                         let drawn = low_res.map_or(*rect, |(drawn, _)| drawn);
                         let drawn_scale = low_res_scale.unwrap_or(*scale);
                         let boxes = doc.image_boxes(job.source_page, job.generation);
+                        // Nobody wants this any more, and turning it over knowing nothing would keep a negative for later.
+                        if doc.is_stale(job.generation) {
+                            return Outcome::Cancelled;
+                        }
                         let page = doc.page_size(job.source_page).ok().and_then(|(width, height)| recto_proto::device_size(width, height, drawn_scale).ok());
-                        let keeps = page.map_or_else(Vec::new, |page| keeps_in(&boxes, page, drawn));
-                        let one_colour = matches!(kind, TileKind::Blank { .. });
-                        if let (TileKind::Blank { rgb }, true, DrawKind::Tile) = (kind, keeps.is_empty(), what) {
-                            // No surface will be kept for this, so its one colour is what counts.
-                            kind = TileKind::Blank { rgb: dark_rgb(rgb) };
-                        } else {
-                            let grey = matches!(kind, TileKind::Grey) || one_colour;
-                            let stride = surface.stride();
-                            let _ = surface.with_pixels(|pixels| turn_over(pixels, drawn.width, drawn.height, stride, grey, &keeps));
-                            // Part of it stays a picture, so it isn't one colour now.
-                            if one_colour {
-                                kind = TileKind::Colour;
+                        let stride = surface.stride();
+                        match (dark_tile(boxes.as_deref(), page, drawn), kind) {
+                            // No surface will be kept for these, so their one colour is what counts.
+                            (DarkTile::Dim, TileKind::Blank { rgb }) if *what == DrawKind::Tile => kind = TileKind::Blank { rgb: dim_rgb(rgb) },
+                            (DarkTile::TurnOver(keeps), TileKind::Blank { rgb }) if keeps.is_empty() && *what == DrawKind::Tile => kind = TileKind::Blank { rgb: dark_rgb(rgb) },
+                            (DarkTile::Dim, _) => {
+                                let _ = surface.with_pixels(|pixels| dim_page(pixels, drawn.width, drawn.height, stride));
+                                if matches!(kind, TileKind::Blank { .. }) {
+                                    kind = TileKind::Colour;
+                                }
+                            }
+                            (DarkTile::TurnOver(keeps), _) => {
+                                let grey = is_grey(kind);
+                                let _ = surface.with_pixels(|pixels| turn_over(pixels, drawn.width, drawn.height, stride, grey, &keeps));
+                                // Part of it stays a picture, so it isn't one colour now.
+                                if matches!(kind, TileKind::Blank { .. }) {
+                                    kind = TileKind::Colour;
+                                }
                             }
                         }
                     }

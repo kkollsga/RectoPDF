@@ -102,3 +102,45 @@ fn a_discardable_surface_leaves_the_footprint_and_comes_back() {
         }
     }
 }
+
+/// Failure: a worker goes by its own idle rule in the moment after it was last looked at, the surface can't be sent, and a plain "unavailable" is taken as the whole document having failed, so a tab stays failed for good. It's the same as finding out from its reply: another worker, and the job goes ahead.
+#[test]
+fn a_surface_that_cant_be_sent_means_a_new_worker() {
+    let file = TempPdf::new("gone.pdf", &pages(&[Page::new(text_lines(&["Words"]))]));
+    let mut doc = doc(&file);
+    let surface = PixelSurface::create(TILE_EDGE, TILE_EDGE).unwrap();
+    let request = |generation| TileRequest { page: 0, rect: tile_rect(), scale: 2.0, stride: surface.stride(), generation };
+    assert!(matches!(doc.render_tile(&request(1), &surface).unwrap(), TileResult::Done(_)));
+    let first = doc.worker_pid().expect("a worker");
+    doc.break_surface_link_for_test();
+    assert!(matches!(doc.render_tile(&request(2), &surface).unwrap(), TileResult::Done(_)), "the document is fine");
+    assert_ne!(doc.worker_pid(), Some(first), "by a new worker");
+}
+
+/// Failure: a compromised worker holds on to every surface it was sent. The host is charged, so no limit on the worker's own memory sees it, and it can pin as much as it's sent. Past the cap it's retired, on any page, a one-page file included.
+#[test]
+fn a_worker_sent_too_much_is_let_go() {
+    let file = TempPdf::new("pinned.pdf", &pages(&[Page::new(text_lines(&["Words"]))]));
+    let surface = PixelSurface::create(TILE_EDGE, TILE_EDGE).unwrap();
+    let policy = Policy { surface_bytes_cap: surface.len() as u64 * 3, ..Policy::default() };
+    let mut doc = DocRenderer::new(&file.0, None, ServiceConfig::discover().unwrap(), policy).unwrap();
+    let mut workers = std::collections::HashSet::new();
+    for generation in 1..=16 {
+        let request = TileRequest { page: 0, rect: tile_rect(), scale: 2.0, stride: surface.stride(), generation };
+        assert!(matches!(doc.render_tile(&request, &surface).unwrap(), TileResult::Done(_)));
+        workers.insert(doc.worker_pid().unwrap());
+    }
+    assert!(workers.len() >= 2, "one worker was sent all 16: {workers:?}");
+}
+
+/// Failure: "the job went stale" and "this page has no images" both answer empty, so a tile cancelled on the way is turned over knowing nothing, and a photo is kept as its negative. Stale isn't an answer about the page.
+#[test]
+fn image_boxes_say_when_they_dont_know() {
+    let file = TempPdf::new("boxes.pdf", &pages(&[Page::new(text_lines(&["No images here"]))]));
+    let mut doc = doc(&file);
+    assert_eq!(doc.image_boxes(0, 1), Some(Vec::new()), "known: there are none");
+    let mut other = self::doc(&file);
+    other.cancel_handle().cancel_before(5);
+    assert_eq!(other.image_boxes(0, 2), None, "stale, so nobody knows");
+}
+

@@ -901,13 +901,13 @@ impl DocRenderer {
         Ok(pixels)
     }
 
-    /// Where a page's images are, as parts of the page in 65535ths. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it.
-    pub fn image_boxes(&mut self, page: u32, generation: u64) -> Vec<[u16; 4]> {
+    /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it.
+    pub fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
         if let Some((_, boxes)) = self.image_places.iter().find(|(known, _)| *known == page) {
-            return boxes.clone();
+            return Some(boxes.clone());
         }
         if self.page_draw_state(page) != PageDrawState::Sharp || self.control.is_stale(generation) || self.stopped() {
-            return Vec::new();
+            return None;
         }
         let job_id = self.next_job_id();
         let frame = proto::encode_images_request(job_id, page);
