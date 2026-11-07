@@ -805,7 +805,7 @@ pub fn process_memory(pid: u32) -> Option<ProcessMemory> {
         }
         info.assume_init()
     };
-    Some(ProcessMemory { footprint_bytes: info.ri_phys_footprint, peak_footprint_bytes: info.ri_lifetime_max_phys_footprint })
+    Some(ProcessMemory { footprint_bytes: info.ri_phys_footprint, peak_footprint_bytes: info.ri_lifetime_max_phys_footprint, cpu_ns: crate::local::ticks_to_ns(info.ri_user_time.saturating_add(info.ri_system_time)) })
 }
 
 /// See [`crate::memory_free_percent`].

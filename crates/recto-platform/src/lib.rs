@@ -111,6 +111,8 @@ pub struct ProcessMemory {
     pub footprint_bytes: u64,
     /// The highest the footprint has been in this process's life.
     pub peak_footprint_bytes: u64,
+    /// How much processor time it has had.
+    pub cpu_ns: u64,
 }
 
 /// How much of this Mac's memory is free, as a percentage: `kern.memorystatus_level`, the kernel's own measure of what it could hand out. `None` where it isn't

@@ -152,6 +152,19 @@ fn fake_worker() {
         let Ok(frame) = reader.read_blocking(&channel) else { isolate::exit_now(0) };
         match frame.kind {
             Kind::Open => {
+                if mode == "sleep_on_open" {
+                    std::thread::sleep(Duration::from_secs(600));
+                }
+                if mode == "spin_on_open" {
+                    for _ in 0..8 {
+                        std::thread::spawn(|| loop {
+                            std::hint::spin_loop();
+                        });
+                    }
+                    loop {
+                        std::hint::spin_loop();
+                    }
+                }
                 let mut handles = frame.handles;
                 let shared = SharedMemory::map(handles.pop().unwrap(), control::LEN).unwrap();
                 if mode == "scribble_cancel" {
@@ -567,6 +580,20 @@ fn a_worker_that_never_says_hello_is_given_up_on() {
     let (mut doc, _file) = doc("hang_before_hello", Policy { start_timeout: Duration::from_millis(100), ..policy() });
     assert_eq!(doc.page_count().unwrap_err(), RenderFailure::Unavailable);
     assert!(!doc.has_worker());
+    assert_eq!(doc.stats().too_busy, 1, "no file has reached it, so that's the Mac being busy");
+}
+
+/// Failure: a worker with no time to open a file on a busy Mac reads the same as a file that takes too long to open, and the document's index is given up on. Asleep, as a starved worker is, it's the Mac. Using what it's given, it's the file.
+#[test]
+fn a_worker_too_busy_to_open_is_told_from_a_file_too_slow_to_open() {
+    // Long enough that what it used getting this far, which a loaded Mac makes more of, stays well under half.
+    let (mut asleep, _file) = doc("sleep_on_open", Policy { page_deadline: Duration::from_secs(1), ..policy() });
+    assert_eq!(asleep.page_count().unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
+    assert_eq!(asleep.stats().too_busy, 1);
+    // On every thread it can: between them they have over half of this in processor time, even on a Mac with a share of a core for each.
+    let (mut spins, _file) = doc("spin_on_open", Policy { page_deadline: Duration::from_millis(400), ..policy() });
+    assert_eq!(spins.page_count().unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
+    assert_eq!(spins.stats().too_busy, 0, "it had the processor, so that's the file");
 }
 
 /// Failure: a compromised worker writes to the shared cancel word and the host believes it, so every tile of the document reads as stale.
