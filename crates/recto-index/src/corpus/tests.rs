@@ -567,6 +567,20 @@ fn a_page_that_keeps_failing_stops_being_tried() {
     assert!(!last.retry_is_due());
 }
 
+/// Failure: retries add text past the cap on a document, up to three times its size, and eviction then pushes other documents out to make room for it.
+#[test]
+fn a_retry_keeps_to_the_cap_on_a_document() {
+    let temp = Temp::new();
+    let key = key_of(&temp, b"a file");
+    let root = temp.0.join("corpus");
+    let large: &'static str = Box::leak("words ".repeat(1000).into_boxed_str());
+    let limits = BuildLimits { max_doc_bytes: 2048, ..BuildLimits::default() };
+    let BuildOutcome::Ready { summary, .. } = build(&root, key, &mut FakeFeed::new(&[PLAIN, Fake::LostWorkerOnce(large)]), &DocMeta::default(), &limits).unwrap() else { panic!() };
+    assert_eq!(summary.failed_pages, 1, "past the cap it stays failed: {summary:?}");
+    let pack = fs::metadata(CorpusPaths::new(&root, key).pack).unwrap().len();
+    assert!(pack < 2048, "the pack went past the cap: {pack}");
+}
+
 /// Failure: a retry adds to the pack while a search is reading, and the search takes the longer pack for a damaged corpus and throws it away. Text no record points at is harmless, as a retry killed partway leaves it. A pack shorter than promised isn't.
 #[test]
 fn a_pack_may_be_longer_than_it_says_and_never_shorter() {

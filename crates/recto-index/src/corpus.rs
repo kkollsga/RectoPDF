@@ -711,7 +711,7 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
         return Ok(BuildOutcome::Busy);
     }
     match disk_state(root, key) {
-        DiskState::Ready(summary) if summary.retry_is_due() => return retry_failed_pages(&paths, feed, meta, summary),
+        DiskState::Ready(summary) if summary.retry_is_due() => return retry_failed_pages(&paths, feed, meta, summary, limits),
         DiskState::Ready(summary) => return Ok(BuildOutcome::AlreadyReady(summary)),
         DiskState::Refused(code) => return Ok(BuildOutcome::Refused(code)),
         DiskState::Partial { .. } | DiskState::Nothing => {}
@@ -767,7 +767,7 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
     let stats = BuildStats { pages_built: pages - resumed.pages, pages_resumed: resumed.pages, elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX) };
     // What failed only because of the moment gets one more try at once, now that the rest of the document isn't in its way.
     if summary.retry_pages > 0 {
-        return match retry_failed_pages(&paths, feed, meta, summary)? {
+        return match retry_failed_pages(&paths, feed, meta, summary, limits)? {
             BuildOutcome::AlreadyReady(summary) => Ok(BuildOutcome::Ready { summary, stats }),
             other => Ok(other),
         };
@@ -777,7 +777,7 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
 }
 
 /// Reads pages that failed for a temporary reason again, and puts in place what comes back. A search may be reading this corpus now, so what it holds stays good throughout: the new text goes on the end of the pack, and then the table goes in place in one step. A reader takes the table before the pack, so any table it has only points at text it can see. Killed partway, the worst left is text nothing points at.
-fn retry_failed_pages(paths: &CorpusPaths, feed: &mut impl PageFeed, meta: &DocMeta, summary: Summary) -> io::Result<BuildOutcome> {
+fn retry_failed_pages(paths: &CorpusPaths, feed: &mut impl PageFeed, meta: &DocMeta, summary: Summary, limits: &BuildLimits) -> io::Result<BuildOutcome> {
     let mut table = read_table(paths, summary.pages)?;
     let width = summary.width as usize;
     let mut pack = local::append_private_file(&paths.pack)?;
@@ -812,6 +812,10 @@ fn retry_failed_pages(paths: &CorpusPaths, feed: &mut impl PageFeed, meta: &DocM
         blob.extend_from_slice(text.as_bytes());
         Aux::write(&also_spelled, &spans, &mut blob);
         let record = PageRecord { aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX), check: page_check(page, &blob), ..record };
+        // Past the cap it stays failed: a search still reads it live, and what's here doesn't push other documents out.
+        if bytes + blob.len() as u64 > limits.max_doc_bytes {
+            break;
+        }
         pack.write_all(&blob)?;
         table[at..at + RECORD_LEN].copy_from_slice(&record.encode());
         offset += blob.len() as u64;
