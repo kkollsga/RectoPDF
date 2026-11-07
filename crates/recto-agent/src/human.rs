@@ -59,7 +59,8 @@ fn tab_line(tab: &Value) -> String {
 }
 
 fn edit_state(data: &Value) -> String {
-    let mut out = format!("{} now, {} in the file.", count(number(&data["pages"]), "page", "pages"), number(&data["file_pages"]));
+    let did = data["did"].as_str().map_or_else(String::new, |did| format!("{did} "));
+    let mut out = format!("{did}{} now, {} in the file.", count(number(&data["pages"]), "page", "pages"), number(&data["file_pages"]));
     if data["edited"] == true {
         let _ = write!(out, " Unsaved. {}", text(&data["note"]));
     } else if data["user_edits_undone"] == true {

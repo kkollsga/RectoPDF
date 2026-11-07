@@ -751,16 +751,17 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         Command::PageMove { tab, pages, to } => {
             let (start, len) = parse_pages(pages, false)?;
             let destination = one_based(*to)?;
-            edit(access, level, tab, events, |e| e.move_pages(start, len, destination))
+            let did = if start == destination { format!("{} already at {to}, so nothing changed.", which_pages(pages, "is", "are")) } else { format!("Moved {} to {to}.", which_pages(pages, "", "")) };
+            edit(access, level, tab, events, did, |e| e.move_pages(start, len, destination))
         }
         Command::PageRotate { tab, pages, degrees } => {
             let (start, len) = parse_pages(pages, false)?;
             let turns = quarter_turns(*degrees)?;
-            edit(access, level, tab, events, |e| e.rotate(start, len, turns))
+            edit(access, level, tab, events, format!("Rotated {} by {degrees} degrees.", which_pages(pages, "", "")), |e| e.rotate(start, len, turns))
         }
         Command::PageDelete { tab, pages } => {
             let (start, len) = parse_pages(pages, false)?;
-            edit(access, level, tab, events, |e| e.delete(start, len))
+            edit(access, level, tab, events, format!("Deleted {}.", which_pages(pages, "", "")), |e| e.delete(start, len))
         }
         Command::PageInsert { tab, path, at } => {
             require_absolute(path)?;
@@ -774,7 +775,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
                 keep_owners_undone_steps(s, id, level)?;
                 s.insert_pdf_with_facts(id, Author::Agent, position, path, &facts, stamp)?;
                 events.push(edits_event(s, id));
-                let data = edit_state_json(s, id);
+                let mut data = edit_state_json(s, id);
+                data["did"] = json!(format!("Added {} at page {at}.", if facts.page_count == 1 { "1 page".to_string() } else { format!("{} pages", facts.page_count) }));
                 Ok(with_place_note(s, id, data))
             })
         }
@@ -784,7 +786,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
                 return Err(AgentError::new("nothing_to_undo", "There's nothing to undo on this tab.", exit::FAILED));
             }
             events.push(edits_event(s, id));
-            let data = edit_state_json(s, id);
+            let mut data = edit_state_json(s, id);
+            data["did"] = json!("Undid the last edit.");
             Ok(with_place_note(s, id, data))
         }),
         Command::Redo { tab } => access.with(|s| {
@@ -793,15 +796,18 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
                 return Err(AgentError::new("nothing_to_redo", "There's nothing to redo on this tab.", exit::FAILED));
             }
             events.push(edits_event(s, id));
-            let data = edit_state_json(s, id);
+            let mut data = edit_state_json(s, id);
+            data["did"] = json!("Redid the last undone edit.");
             Ok(with_place_note(s, id, data))
         }),
         Command::Discard { tab } => access.with(|s| {
             let id = select(s, tab)?;
             refuse_discard_of_owners_edits(s, id, level)?;
+            let had_any = s.page_edits(id).is_some();
             s.discard_edits(id);
             events.push(edits_event(s, id));
-            let data = edit_state_json(s, id);
+            let mut data = edit_state_json(s, id);
+            data["did"] = json!(if had_any { "Threw away this tab's edits." } else { "There were no edits to throw away." });
             Ok(with_place_note(s, id, data))
         }),
         Command::Save { .. } => Err(AgentError::new(
@@ -964,13 +970,21 @@ fn quarter_turns(degrees: i32) -> Result<i32, AgentError> {
     Ok(degrees / 90)
 }
 
-fn edit<A: SessionAccess>(access: &A, level: Level, tab: &str, events: &mut Vec<Event>, change: impl FnOnce(&mut recto_session::edit::PageEdits) -> Result<(), recto_session::edit::EditError>) -> Result<Value, AgentError> {
+/// `page 3` or `pages 4-6`, as it was asked for, which `parse_pages` has already held to digits, with a verb that agrees if one's wanted.
+fn which_pages(pages: &str, one: &str, many: &str) -> String {
+    let (noun, verb) = if pages.contains('-') { ("Pages", many) } else { ("Page", one) };
+    let noun = if verb.is_empty() { noun.to_lowercase() } else { noun.to_string() };
+    if verb.is_empty() { format!("{noun} {pages}") } else { format!("{noun} {pages} {verb}") }
+}
+
+fn edit<A: SessionAccess>(access: &A, level: Level, tab: &str, events: &mut Vec<Event>, did: String, change: impl FnOnce(&mut recto_session::edit::PageEdits) -> Result<(), recto_session::edit::EditError>) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
         keep_owners_undone_steps(s, id, level)?;
         s.edit_pages_as(id, Author::Agent, change)?;
         events.push(edits_event(s, id));
-        let data = edit_state_json(s, id);
+        let mut data = edit_state_json(s, id);
+        data["did"] = json!(did);
         Ok(with_place_note(s, id, data))
     })
 }
@@ -1232,6 +1246,7 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         "sel": format!("#{}", id.0),
         "page": tab.page + 1,
         "pages": session.pages_in(id),
+        "file_pages": tab.page_count,
         "active": session.active() == Some(id),
         "edited": edited,
         "user_edits_undone": session.has_undone_owner_steps(id),
@@ -1713,6 +1728,37 @@ mod tests {
         assert!(s.page_edits(id).unwrap().can_redo());
         run(&mut s, Level::Control, &Command::Close { tab: tab() }).expect("nothing of the user's is at stake");
         assert!(s.tabs().is_empty());
+    }
+
+    /// Failure: a plain answer to an edit says only how long the document is now, so an agent can't tell from it what was done, and `page move 3 --to 3` reads as a move. And `tabs` can't show how far a tab's length has come from its file's.
+    #[test]
+    fn an_edit_says_what_it_did() {
+        let mut s = edit_session();
+        let tab = || "#1".to_string();
+        let said = |s: &mut Session<Fake>, command: Command| {
+            let data = run(s, Level::Control, &command).unwrap();
+            let shown = human::render(command.tag(), &data);
+            assert!(shown.starts_with(data["did"].as_str().unwrap()), "first, before the state: {shown}");
+            data
+        };
+        assert_eq!(said(&mut s, Command::PageRotate { tab: tab(), pages: "4".into(), degrees: 270 })["did"], "Rotated page 4 by 270 degrees.");
+        assert_eq!(said(&mut s, Command::PageRotate { tab: tab(), pages: "1-2".into(), degrees: -90 })["did"], "Rotated pages 1-2 by -90 degrees.");
+        assert_eq!(said(&mut s, Command::PageMove { tab: tab(), pages: "3".into(), to: 1 })["did"], "Moved page 3 to 1.");
+        assert_eq!(said(&mut s, Command::PageMove { tab: tab(), pages: "4-5".into(), to: 7 })["did"], "Moved pages 4-5 to 7.");
+        assert_eq!(said(&mut s, Command::PageDelete { tab: tab(), pages: "5".into() })["did"], "Deleted page 5.");
+        assert_eq!(said(&mut s, Command::PageInsert { tab: tab(), path: "/d/b.pdf".into(), at: 2 })["did"], "Added 10 pages at page 2.");
+        assert_eq!(said(&mut s, Command::Undo { tab: tab() })["did"], "Undid the last edit.");
+        assert_eq!(said(&mut s, Command::Redo { tab: tab() })["did"], "Redid the last undone edit.");
+        let shown = human::render("page_delete", &run(&mut s, Level::Control, &Command::PageDelete { tab: tab(), pages: "2-3".into() }).unwrap());
+        assert!(shown.starts_with("Deleted pages 2-3. 17 pages now, 10 in the file."), "{shown}");
+        let tabs = run(&mut s, Level::ReadOnly, &Command::Tabs { from: None, limit: None }).unwrap();
+        assert_eq!((&tabs["tabs"][0]["pages"], &tabs["tabs"][0]["file_pages"]), (&json!(17), &json!(10)), "{tabs}");
+        assert_eq!(said(&mut s, Command::Discard { tab: tab() })["did"], "Threw away this tab's edits.");
+        assert_eq!(said(&mut s, Command::Discard { tab: tab() })["did"], "There were no edits to throw away.");
+        let nothing = said(&mut s, Command::PageMove { tab: tab(), pages: "3".into(), to: 3 });
+        assert_eq!((&nothing["did"], &nothing["edited"], &nothing["saved"]), (&json!("Page 3 is already at 3, so nothing changed."), &json!(false), &json!(true)));
+        assert_eq!(said(&mut s, Command::PageMove { tab: tab(), pages: "3-4".into(), to: 3 })["did"], "Pages 3-4 are already at 3, so nothing changed.");
+        assert!(run(&mut s, Level::Control, &Command::Close { tab: tab() }).is_ok(), "and so it closes");
     }
 
     /// Failure: an edit through the agent interface is recorded as the user's, so it's protected from the agent that made it, or recorded as nobody's. Every edit command must be an agent's, however it gets to the session.
