@@ -197,7 +197,7 @@ fn read_toc(reader: &IndexedReader) -> Option<Toc> {
 
 fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
     let deadline = Instant::now() + limit;
-    let walk = NameWalk { visits_left: Cell::new(MAX_NAME_TREE_VISITS), deadline };
+    let walk = NameWalk { visits_left: Cell::new(MAX_NAME_TREE_VISITS), cut_short: Cell::new(false), deadline };
     let root = reader.trailer_entry_owned(b"Root").ok()??;
     let root = root.as_dict().ok()?;
     let outlines = deref(reader, root.get(b"Outlines").ok()?)?;
@@ -253,12 +253,14 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
             stack.push((child, index, depth + 1));
         }
     }
-    Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated: truncated || walk.visits_left.get() == 0 })
+    Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated: truncated || walk.visits_left.get() == 0 || walk.cut_short.get() })
 }
 
 /// What's left for following named destinations, shared across the whole outline.
 struct NameWalk {
     visits_left: Cell<usize>,
+    /// Children were left out of a walk, because there were more waiting than visits left to reach them.
+    cut_short: Cell<bool>,
     deadline: Instant,
 }
 
@@ -315,9 +317,15 @@ fn page_of_dest(reader: &IndexedReader, root: &Dictionary, dest: &Object, pages:
 }
 
 fn find_in_name_tree(reader: &IndexedReader, root: &Object, wanted: &[u8], walk: &NameWalk) -> Option<Object> {
-    // Children wait here unresolved, so a wide node costs its array and no reads until they're each reached.
+    // Children wait here unresolved, so a wide node costs its array and no reads until they're each reached. Never more wait than can still be visited, and a node is visited once, because a tree that lists itself otherwise adds its whole width on every visit: 394 KB of file held past 1 GiB within the 5 s limit.
     let mut stack = vec![root.clone()];
+    let mut seen: HashSet<ObjectId> = HashSet::new();
     while let Some(node) = stack.pop() {
+        if let Object::Reference(id) = &node
+            && !seen.insert(*id)
+        {
+            continue;
+        }
         if !walk.may_visit() {
             return None;
         }
@@ -337,7 +345,9 @@ fn find_in_name_tree(reader: &IndexedReader, root: &Object, wanted: &[u8], walk:
             }
         }
         if let Ok(kids) = dict.get(b"Kids").and_then(Object::as_array) {
-            stack.extend(kids.iter().take(walk.visits_left.get()).cloned());
+            let room = walk.visits_left.get().saturating_sub(stack.len());
+            walk.cut_short.set(walk.cut_short.get() || kids.len() > room);
+            stack.extend(kids.iter().take(room).cloned());
         }
     }
     None
@@ -423,10 +433,10 @@ mod tests {
     /// Failure: reading contents has no bound on time, so a slow file holds `open` for as long as it likes. It must stop, keep what it has, and say so.
     #[test]
     fn contents_stop_at_their_time_limit_and_say_so() {
-        let walk = NameWalk { visits_left: Cell::new(3), deadline: Instant::now() + Duration::from_secs(60) };
+        let walk = NameWalk { visits_left: Cell::new(3), cut_short: Cell::new(false), deadline: Instant::now() + Duration::from_secs(60) };
         assert!(walk.may_visit() && walk.may_visit() && walk.may_visit());
         assert!(!walk.may_visit(), "out of visits");
-        let late = NameWalk { visits_left: Cell::new(3), deadline: Instant::now() };
+        let late = NameWalk { visits_left: Cell::new(3), cut_short: Cell::new(false), deadline: Instant::now() };
         assert!(!late.may_visit(), "out of time");
     }
 
