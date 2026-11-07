@@ -4,7 +4,7 @@
 //! level, each with at most as many children as there are visits left, and a name is shared rather than copied for each child. **What couldn't be read is never reported as absent:** an unreadable catalog
 //! or form means `structure_read` is false, and an unreadable field counts in `unread`, so "none" is only ever said of a file that was really read.
 
-use crate::{OpenError, clean_text, open_reader};
+use crate::{OpenError, clean_text, open_bytes, open_reader};
 use lopdf::{Dictionary, IndexedReader, Object, ObjectId};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -75,6 +75,11 @@ pub fn signatures(path: &Path) -> Result<SignatureInventory, OpenError> {
 pub fn signatures_within(path: &Path, limit: Duration) -> Result<SignatureInventory, OpenError> {
     let reader = open_reader(path)?;
     Ok(read_inventory(&reader, Instant::now() + limit))
+}
+
+/// [`signatures`] on bytes in memory. The same walk, for a fuzzer.
+pub fn signatures_in_bytes(bytes: Arc<[u8]>) -> Result<SignatureInventory, OpenError> {
+    Ok(read_inventory(&open_bytes(bytes)?, Instant::now() + MAX_TIME))
 }
 
 /// A key of a dictionary, followed through a reference. Absent and unreadable are different answers, and that difference is the point.

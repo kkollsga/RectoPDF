@@ -226,8 +226,14 @@ fn a_search_across_many_files_runs_one_worker_at_a_time() {
         let watcher = scope.spawn(|| {
             let mut most = 0;
             while !done.load(std::sync::atomic::Ordering::SeqCst) {
-                let output = std::process::Command::new("/usr/bin/pgrep").args(["-P", &serving.pid().to_string()]).output().unwrap();
-                most = most.max(String::from_utf8_lossy(&output.stdout).lines().count());
+                // Render workers still working. One already dead and not yet collected isn't using anything, and on a loaded machine it can sit a moment. A search also asks for an index, whose helper is a child of the session too, with a worker of its own under it, and isn't what this is counting.
+                let output = std::process::Command::new("/bin/ps").args(["-A", "-o", "ppid=,stat=,comm="]).output().unwrap();
+                let parent = serving.pid().to_string();
+                let working = String::from_utf8_lossy(&output.stdout).lines().filter(|line| {
+                    let mut words = line.split_whitespace();
+                    words.next() == Some(parent.as_str()) && !words.next().is_some_and(|stat| stat.starts_with(['Z', 'E'])) && words.next().is_some_and(|name| name.ends_with("recto-render-service"))
+                }).count();
+                most = most.max(working);
             }
             most
         });
@@ -238,7 +244,7 @@ fn a_search_across_many_files_runs_one_worker_at_a_time() {
         done.store(true, std::sync::atomic::Ordering::SeqCst);
         watcher.join().unwrap()
     });
-    assert!(most <= 2, "{most} workers at once. One is working, and a killed one can take a moment to be collected");
+    assert!(most <= 2, "{most} workers at once. One is working, and one being killed can take a moment to stop");
 }
 
 /// Failure: over the real socket, an agent that does `page move`, `undo`, then anything else is refused, can't close, and has to ask for Full to clean up its own edits. A blind agent got stuck exactly here. Every command over the socket is an agent's, so it's all its own to clear. The owner's side of this is in `recto-control`'s `tests/owner_edits.rs`.
@@ -752,7 +758,7 @@ fn every_row_answers_in_plain_words_and_in_versioned_json() {
     let _serving = state.serve();
     let file = three_pages();
     state.json(&["open", path_of(&file)]);
-    let skip = ["serve", "session", "local", "budget tabs", "budget render", "budget viewport", "permission set", "stop", "wait tab-open", "wait tab-closed", "wait page-drawn", "watch", "render", "export svg", "skill install", "skill show", "help", "sidebar", "permission request", "page insert", "open"];
+    let skip = ["serve", "session", "local", "budget tabs", "budget render", "budget viewport", "permission set", "stop", "wait tab-open", "wait tab-closed", "wait page-drawn", "watch", "render", "export svg", "skill install", "skill show", "help", "sidebar", "permission request", "page insert", "open", "qa start", "qa run", "qa budget"];
     for spec in TABLE.iter().filter(|spec| !spec.hidden && !skip.contains(&spec.name)) {
         let words = skill::shell_words(spec.examples[0]);
         let args: Vec<&str> = words[1..].iter().map(String::as_str).filter(|word| *word != "--json" && *word != "report" && *word != "--tab" && *word != "contract").collect();
@@ -817,6 +823,10 @@ fn every_row_that_runs_here_is_wired_up() {
         vec!["local", path_of(&file), "tabs"],
         vec!["session"],
         vec!["budget", "tabs", "--file", path_of(&file), "--count", "1", "--in-process"],
+        // Each of these refuses before starting anything: the app named isn't there.
+        vec!["qa", "start", "--app", "/nonexistent/RectoPDF"],
+        vec!["qa", "run", "/nonexistent/script.qa"],
+        vec!["qa", "budget", "--file", path_of(&file), "--app", "/nonexistent/RectoPDF", "--runs", "1"],
         vec!["budget", "index", "--file", path_of(&file), "--runs", "1", "--queries", "words"],
     ];
     let here: Vec<&str> = TABLE.iter().filter(|spec| spec.route == Route::Here).map(|spec| spec.name).collect();

@@ -24,19 +24,19 @@ A missed budget is a bug. The whole process tree counts, on release builds, on a
 
 | Metric | Target | Status |
 |---|---|---|
-| **One more idle tab** | **≤ 4 KiB, 0 file handles, 0 threads, 0 layers, 0 tiles**, whatever the PDF's size | Tested for heap and handles; layers and tiles when they exist |
-| 1,000 tabs | ≤ 4 MiB over 2 tabs; sidebar opens < 150 ms | Partly tested |
-| Live documents | Active plus at most 2 recent; a byte budget frees the oldest first | Tested for the count; byte budget when renderers exist |
-| One document, text page | ≤ 60 MiB | Pending app |
-| Colour full-bleed page | ≤ 100 MiB | Pending app |
-| Fast scrolling, peak | ≤ 170 MiB. **Named exception:** pages with huge images can exceed this, under the memory limit sequence in §3. Accepted by the owner, 2026-11-07: about 415–450 MiB on a 330 MiB map with one-pass drawing, in exchange for a first view about four times faster | Pending app |
-| Cold start to first sharp page | ≤ 300 ms p50, ≤ 500 ms p95 | Pending app |
-| Open 2 GB, 10k pages | Page 1 sharp ≤ 250 ms warm, ≤ 600 ms cold; main never stalls > 16 ms | Pending app |
-| Idle CPU | ~0%, ≤ 1 wake-up per second | Pending app |
-| Scroll | 120 fps on ProMotion, ≥ 99% of frames on time, 0 blank frames on seen pages | Pending app |
-| Sharp after scroll stops | ≤ 100 ms on a text page | Pending app |
+| **One more idle tab** | **≤ 4 KiB, 0 file handles, 0 threads, 0 layers, 0 tiles**, whatever the PDF's size | Met off screen: 0.3 to 2.5 KiB each in the app, no handles, threads, layers or tiles |
+| 1,000 tabs | ≤ 4 MiB over 2 tabs; sidebar opens < 150 ms | Met off screen: 0.3 to 2.5 MiB, 2.9 ms |
+| Live documents | Active plus at most 2 recent; a byte budget frees the oldest first | Count tested. Tile bytes are capped, and a big worker goes 3 s into a pause. No byte budget across documents yet |
+| One document, text page | ≤ 60 MiB | Met off screen: 32 MiB |
+| Colour full-bleed page | ≤ 100 MiB | 38 MiB on an image page. **Missed at 210 MiB** on a page of shaded backgrounds, from PDFium |
+| Fast scrolling, peak | ≤ 170 MiB. **Named exception:** pages with huge images can exceed this, under the memory limit sequence in §3. Accepted by the owner, 2026-11-07: about 415–450 MiB on a 330 MiB map with one-pass drawing, in exchange for a first view about four times faster | Text 40 to 50 MiB, images 61 to 90. The map: 377 fitted, 433 at 2x, **489 at 3x**, by the tree |
+| Cold start to first sharp page | ≤ 300 ms p50, ≤ 500 ms p95 | Met off screen: 134, 154 ms |
+| Open 2 GB, 10k pages | Page 1 sharp ≤ 250 ms warm, ≤ 600 ms cold; main never stalls > 16 ms | About 190 ms warm. Cold not tested. **Worst stall 17 to 18 ms** under load |
+| Idle CPU | ~0%, ≤ 1 wake-up per second | Met off screen: 0.0%, 0.65 at most |
+| Scroll | 120 fps on ProMotion, ≥ 99% of frames on time, 0 blank frames on seen pages | UI thread 0.5 ms p99 a step, off screen. **Blank steps on seen pages past the last 128 pages** at 40 pages a second, until disk previews. Frames not tested: needs the MacBook |
+| Sharp after scroll stops | ≤ 100 ms on a text page | Met: 7 ms typical, 17 at worst |
 | Background work (OCR, indexing, compress) | Helper process, background QoS, exits when done | Indexing tested; OCR and compress pending |
-| Window closed | ≤ 20 MiB | Pending app |
+| Window closed | ≤ 20 MiB | Met: 11.5 MiB |
 
 ## 3. Architecture
 
@@ -63,7 +63,7 @@ fast because everything is rebuilt from disk.
 
 **distillPDF was parked** (owner, 2026-11-06) and is back in work for the agent's text (owner, 2026-11-07: "Spin up agents to do the distillpdf work, they need to test to ensure no regressions"). RectoPDF doesn't depend on it yet. Find and highlights stay on PDFium, because they must line up with the page on screen.
 
-**Pages reach the screen** as `CALayer`s holding IOSurface tiles, 512 px, zero copy, off-screen tiles purgeable. See the platform report, §2.
+**Pages reach the screen** as `CALayer`s holding IOSurface tiles, 512 px, zero copy, off-screen tiles purgeable. The host makes each surface and a worker draws in it, sent over a Mach port it was given at spawn. See `docs/ENGINEERING.md`, "The app".
 
 ## 4. Screen design
 
@@ -71,21 +71,22 @@ Reference: `docs/concepts/`. Rules from the owner:
 
 - **No top bar.** Maximum vertical reading space; nothing sits above or over a page.
 - **Tabs live in the sidebar.** Tapping the active PDF folds or opens its contents.
-- **A PDF's contents have a maximum height and scroll inside it** (owner, 2026-11-07: "The left sidebar toc should have a max height within scroll so it doesn't push everything of screen"). The other tabs and the sidebar's footer stay on screen however long the contents are, and the contents follow your place on their own, smoothly (owner, 2026-11-07: "The toc should auto scroll to where you are in the document (smoothly so you don't notice it in a elegant way)"). They have a dead zone and move in separate repositions (owner, 2026-11-07: "It can whoosh with smooth acceleration at both ends. It can have a \"dead-zone\" so it doesn't react to small scrolls within the window, so basically it repositions, stays still (while user is reading slowly scrolling) then repositions after the user is scrolling a bit."). If you scroll the contents yourself, they stay where you put them until you've stopped using them and your section changes. The contents use the space the other tabs leave, keeping room for up to five of them; a longer tab list scrolls by itself.
+- **A PDF's contents have a maximum height and scroll inside it** (owner, 2026-11-07: "The left sidebar toc should have a max height within scroll so it doesn't push everything of screen"). The other tabs and the sidebar's footer stay on screen however long the contents are, and the contents follow your place on their own, smoothly (owner, 2026-11-07: "The toc should auto scroll to where you are in the document (smoothly so you don't notice it in a elegant way)"). They have a dead zone and move in separate repositions (owner, 2026-11-07: "It can whoosh with smooth acceleration at both ends. It can have a \"dead-zone\" so it doesn't react to small scrolls within the window, so basically it repositions, stays still (while user is reading slowly scrolling) then repositions after the user is scrolling a bit."). If you scroll the contents yourself, they stay where you put them until you've stopped using them and your section changes. **The contents take at most about 60% of the sidebar's height,** and a shorter outline only what it needs (owner, 2026-11-07: "The max height of toc does not seem to be working", then "yes" to a true maximum of about 60%). The other tabs share what's left, and a long tab list scrolls by itself in it.
 - **Hovering over a shortened name shows it in full,** for tabs and contents entries alike (owner, 2026-11-07: "Hovering over the file name in the sidebar reveals the full name right?"). Text from a file is shown cleaned, and never as a command.
 - **A file's own contents are never altered; a bad or missing one gets a generated alternative on offer** (owner, 2026-11-07: "dont modify the bad toc, but offer a generated toc using distillpdf"). Generated contents come from distillPDF's detected headings, built only when asked for, in a killable helper with a memory limit, and always labelled as generated. The file's own entries stay one tap away.
 - **At rest the sidebar is only names and contents.** The rail fills as you read. Chevron and page numbers appear on hover.
 - **The macOS menu bar is the home of every command** (owner, 2026-11-06: "Not all options need to be in the sidebar. A lot can be in the macos top bar instead"). Menus: File, Edit, View, Go, Pages, Mark Up, Tools, Window, Help. Map: `docs/concepts/menumap-light.png`. Rust decides which items exist and which are enabled. ⌘K finds any command.
-- **The `⋯` panel holds only what you touch while reading** (owner: "let the … menu toggle open a compact menu in lower part of left sidebar with tabs"). It opens in the lower sidebar with two tabs, View (zoom, paper, layout) and Mark up, plus an **Edit PDF** button. A tool started from the menu bar that needs choices, such as Compress, opens here, in place of the tabs.
+- **The `⋯` panel holds only what you touch while reading** (owner: "let the … menu toggle open a compact menu in lower part of left sidebar with tabs", and 2026-11-07: "I cant see the settings menu", then "yes" to having it now). At rest only the `⋯` shows. For now it opens with paper colour (white, warm, dark), zoom (out, in, fit) and focus view, with no placeholders for what doesn't exist yet. Later it gets two tabs, View (zoom, paper, layout) and Mark up, plus an **Edit PDF** button. A tool started from the menu bar that needs choices, such as Compress, opens here, in place of the tabs.
 - **Editing tools show in the sidebar only in edit mode** (owner, 2026-11-06: "These are tools in the sidebar only visible when in edit mode"). The panel changes to the edit tools when you enter with ⌘E, the Pages menu or Edit PDF, and Done returns to reading. In the Pages menu, Rust enables those items only in edit mode.
 - **Saving looks and works like a native Mac app** (owner, 2026-11-06: "I want something that looks more like a native save / save as feature. Like word etc"). With unsaved changes, the red window button shows its dot and a Save icon appears beside the window controls. `⌘S` saves, `⇧⌘S` and File > Save As open the system's save sheet, and closing asks Don't Save, Cancel or Save. Tools change the open document (Compress has Apply) and never have their own save buttons.
 - **Agent icon at the top right**, in the empty margin: an AI four-point star (owner, 2026-11-07: "The agent logo in the upper right is wrong, it should be a ai 4 point star"). It opens the agent panel and stays in the same spot.
-- **Three paper colours: white, warm and dark** (owner, 2026-11-07: "We have two paper color modes: white and dark, let's add a yellowed white option that's better for the eyes"). Any of them works with a light or dark window. Paper colour only changes the screen: exports, snapshots, copied images and saved files stay true. Signing always shows the true page.
+- **Three paper colours: white, warm and dark** (owner, 2026-11-07: "We have two paper color modes: white and dark, let's add a yellowed white option that's better for the eyes"). Any of them works with a light or dark window. Paper colour only changes the screen: exports, snapshots, copied images and saved files stay true. Signing always shows the true page. Dark paper turns text and page over and leaves smaller pictures alone, a little dimmed. **A page that's mostly a picture isn't flipped:** a map or a full-page photo keeps its true colours and is dimmed so it doesn't glare (owner, 2026-11-07, answering "should pages that are mostly a picture be dimmed instead of flipped? I recommend yes": "I agree"). **Each image is judged by its own pixels:** one with a predominantly white background flips with the page and lands on the paper's tone, whatever share of the page it covers: scanned pages, embedded letters, screenshots of documents, charts and diagrams, with no bright box or hard edge (owner, 2026-11-07: "Im seeing an issue: in dark mode scanned pages appear bright white: We need to detect scanned images (with predominently white bg, and flip and match grey tone paper color", and "similar with images with white bg"). A photo or other image without a white background stays as it is on a text page, or dims when it's most of the page. One decision per image, kept, so a preview, sharp tiles and low-resolution tiles never disagree. When an image can't be judged, or a page has too many to tell apart, the whole page is judged by its pixels, and anything uncertain is left alone or dimmed and never flipped, as a flipped photo looks like a negative. A photo inside a scan flips with the rest, which is accepted.
 - **Focus view:** sidebar hidden, page number only, agent icon kept.
 - A neutral signature mark, never a green tick in v1.
 
 ## 5. Agent
 
+- **`recto stop` doesn't quit the app someone is using.** In a normal app it refuses, and says only the user quits the app. A quiet QA run stops when told. A default, by the coordinator's decision of 2026-11-07, until the owner says otherwise.
 - The app starts the user's **existing `claude` install** if there is one, and never handles credentials. If it's missing, the panel shows
   setup steps and the reader works as normal.
 - **The agent requests what it needs.** The first prompt holds facts about the PDF (size, pages, text status, outline) plus the question,

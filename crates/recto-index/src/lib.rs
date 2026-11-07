@@ -22,7 +22,7 @@
 //!
 //! 1. **Not letters on both sides** (`21-cm`, `COVID-19`): keep the hyphen.
 //! 2. **The rest of this page uses one form** (`simulation-based` or `valuable` elsewhere): follow it. Limited to the first
-//!    [`MAX_EVIDENCE_CHECKS`] markers on a page, so a hostile page can't make this quadratic.
+//!    [`MAX_EVIDENCE_CHECKS`] markers on a page and [`MAX_EVIDENCE_BYTES`] read, so a hostile page can't make this quadratic. Past [`MAX_MARKERS_READ`] on a page, no word is looked at, and a hyphen stays a hyphen.
 //! 3. **The right part starts with a capital** while the left isn't all capitals (`Monte-Carlo`): keep. A continuation of a broken word
 //!    doesn't start with a capital.
 //! 4. **The right part is one or two letters** (`state-of`, `end-to`): keep. TeX's rule keeps at least three letters after a break.
@@ -52,6 +52,10 @@ use recto_proto::{CharBox, CharRecord};
 
 /// Markers on one page that may search the rest of the page for evidence. Each search costs a pass over the page.
 pub const MAX_EVIDENCE_CHECKS: usize = 256;
+/// Bytes of the page's text those searches may read between them. Room for 256 markers on a page of 62 KB of text, and the busiest page measured has under 20,000 characters.
+pub const MAX_EVIDENCE_BYTES: usize = 32 * 1024 * 1024;
+/// Markers on one page whose words are looked at. Each looks at up to about 130 characters either side, so past this a page of nothing else takes seconds, for no reader: all 5,872 pages of bench100 have 13,924 between them.
+pub const MAX_MARKERS_READ: usize = 4096;
 /// Other spellings kept per page.
 pub const MAX_ALSO_SPELLED: usize = 64;
 /// The longest word part looked at or remembered.
@@ -141,10 +145,12 @@ pub fn normalize(chars: &[CharRecord], want_source: bool) -> Normalized {
         let ch = record.ch();
         if is_marker(record) {
             let right_start = skip_breaks(chars, i + 1);
-            let left = word_before(&out.text);
-            let right = word_after(chars, right_start);
             checks += 1;
-            let use_evidence = checks <= MAX_EVIDENCE_CHECKS;
+            // Past the cap there's no looking, and a hyphen with no word looked at stays a hyphen.
+            let looked = checks <= MAX_MARKERS_READ;
+            let left = if looked { word_before(&out.text) } else { String::new() };
+            let right = if looked { word_after(chars, right_start) } else { String::new() };
+            let use_evidence = checks <= MAX_EVIDENCE_CHECKS && evidence.scanned < MAX_EVIDENCE_BYTES;
             let keep = keep_hyphen(&left, &right, right_start < chars.len(), use_evidence.then_some(&mut evidence));
             remember_other_spelling(&mut out, &left, &right, keep);
             if keep {
@@ -154,7 +160,7 @@ pub fn normalize(chars: &[CharRecord], want_source: bool) -> Normalized {
                 out.hyphens_joined += 1;
             }
             // A marker carries its line break away only if there's a token to join it to, and a page number isn't half of one. Otherwise the line really did end here. A hyphen that was joined away has already counted as a join, and has to be one: only a hyphen that's kept can belong to a page number.
-            let page_mark = keep && ends_in_a_page_mark(&out.text, chars.get(right_start).map(|c| c.ch()));
+            let page_mark = keep && looked && ends_in_a_page_mark(&out.text, chars.get(right_start).map(|c| c.ch()));
             i = if chars.get(right_start).is_some_and(|c| c.ch().is_alphanumeric()) && !page_mark { right_start } else { i + 1 };
             continue;
         }
@@ -330,11 +336,13 @@ fn remember_other_spelling(out: &mut Normalized, left: &str, right: &str, kept: 
 struct PageEvidence<'a> {
     chars: &'a [CharRecord],
     text: Option<String>,
+    /// What the searches have read so far.
+    scanned: usize,
 }
 
 impl<'a> PageEvidence<'a> {
     fn new(chars: &'a [CharRecord]) -> Self {
-        Self { chars, text: None }
+        Self { chars, text: None, scanned: 0 }
     }
 
     /// The page with line-end markers taken out of play, so a marker can't count as evidence for itself.
@@ -359,11 +367,17 @@ impl<'a> PageEvidence<'a> {
     }
 
     fn has_hyphenated(&mut self, left: &str, right: &str) -> bool {
-        contains_word(self.text(), &format!("{left}-{right}"))
+        self.searched_for(&format!("{left}-{right}"))
     }
 
     fn has_word(&mut self, left: &str, right: &str) -> bool {
-        contains_word(self.text(), &format!("{left}{right}"))
+        self.searched_for(&format!("{left}{right}"))
+    }
+
+    fn searched_for(&mut self, word: &str) -> bool {
+        let found = contains_word(self.text(), word);
+        self.scanned += self.text().len();
+        found
     }
 }
 
@@ -563,6 +577,32 @@ pub fn hidden_report(chars: &[CharRecord], checked: bool) -> HiddenReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: every character of a page carries the hyphen flag, so each looks at the words on both sides of it and the rest of the page besides, and one hostile page of 2,000,000 characters holds a read for over 5 s on a release build, and many times that on a debug one. Found by the `index` fuzz target, as a page of a few characters repeated.
+    #[test]
+    fn a_page_of_nothing_but_markers_stays_quick() {
+        let unit: Vec<CharRecord> = ['a', 'I', '数', 'ﬁ', 'I'].iter().map(|c| CharRecord::new(*c as u32, CharRecord::HYPHEN)).collect();
+        let chars: Vec<CharRecord> = unit.iter().cycle().take(recto_proto::MAX_PAGE_CHARS as usize).copied().collect();
+        let started = std::time::Instant::now();
+        let page = normalize(&chars, false);
+        assert!(!page.text.is_empty());
+        assert!(page.hyphens_kept as usize >= chars.len() - MAX_MARKERS_READ, "past the cap, every hyphen stays: {} kept", page.hyphens_kept);
+        assert!(started.elapsed() < std::time::Duration::from_secs(30), "took {:?}", started.elapsed());
+    }
+
+    /// Failure: the budget for evidence comes in below what a real page uses, so a page's own spelling stops deciding a hyphen at some marker it always decided before.
+    #[test]
+    fn a_busy_page_gets_its_evidence_at_every_marker_it_should() {
+        // About as busy as any page there is, with the other spelling on it, and more markers than get to look.
+        let mut text = String::from("foo-bar ");
+        text.push_str(&"filler ".repeat(2_800));
+        text.push_str(&"foo\u{FFFE}\nbar ".repeat(MAX_EVIDENCE_CHECKS + 40));
+        assert!(text.chars().count() > 20_000);
+        let chars: Vec<CharRecord> = text.chars().map(|c| CharRecord::new(c as u32, 0)).collect();
+        let page = normalize(&chars, false);
+        assert_eq!(page.hyphens_kept as usize, MAX_EVIDENCE_CHECKS, "evidence decides each of the first markers, and none past them");
+        assert_eq!(page.hyphens_joined, 40, "past them, the rule for a word with no evidence");
+    }
 
     /// Plain characters from a string. `~` stands for PDFium's U+FFFE marker and `^` for a CRLF.
     fn chars(text: &str) -> Vec<CharRecord> {

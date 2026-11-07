@@ -3,7 +3,7 @@
 # room, across every agent and shell. Quick jobs go first, and it refuses to rerun what just failed on the same code.
 #
 #   tools/sysguard/heavy.sh cargo test --release -p recto-core
-#   HEAVY_SOLO=1 tools/sysguard/heavy.sh <command>        Holds every slot: for timing and memory measurements.
+#   HEAVY_SOLO=1 tools/sysguard/heavy.sh <command>        Runs with nothing else running: for timing and memory measurements.
 #   HEAVY_PRIORITY=high tools/sysguard/heavy.sh <command> Goes ahead of everything, for a short job someone waits on.
 #   HEAVY_CLASS=quick|normal tools/sysguard/heavy.sh ...  Overrides the guess at whether a job is quick.
 #   HEAVY_RETRY=1 tools/sysguard/heavy.sh <command>       Runs it even though it just failed on this same code: only to
@@ -12,9 +12,15 @@
 #   tools/sysguard/heavy.sh --report [hours]              Waits, run times, failures and refusals. Default 24 hours.
 #   tools/sysguard/heavy.sh --slots N                     Sets how many jobs may run at once, 1 to 4. Default 2.
 #   tools/sysguard/heavy.sh --last-failure                Path of the saved output of the last failure in this folder.
+#   tools/sysguard/heavy.sh --watch                       The watchdog: returns only when the queue has stopped moving, and says why.
 #
 # Order: high, then quick (a compile check, one test binary, a filtered run), then the rest, each first come first served.
 # A normal job that has waited 10 minutes goes ahead of quick ones, so it can't be starved.
+#
+# Solo: it holds nothing while it waits, and takes every slot at once when nothing is running. Normal jobs that came after
+# it wait for it, so what's running drains. Quick jobs go past it for as long as a normal job is running, so nobody's small
+# job waits on someone's long one because of a measurement. Once it has waited 10 minutes and only quick jobs are left,
+# new quick jobs wait too, so it can't be starved.
 #
 # Room: each running job raises the memory a new one needs, MIN_FREE (default 40 %, from kern.memorystatus_level) plus
 # 10 % per job already running, so a Mac short of memory falls back to fewer builds by itself. That's checked at the
@@ -26,7 +32,7 @@
 # so the total never passes the limit. Jobs here take the first slot last, so those copies aren't starved.
 set -uo pipefail
 MIN_FREE="${MIN_FREE:-40}"
-AGE_LIMIT=600
+AGE_LIMIT="${HEAVY_AGE_LIMIT:-600}"
 FAILURE_MEMORY=21600
 # Machine-specific settings (untracked, optional): HEAVY_LOCK, SYSGUARD_LOG, SYSGUARD_EXTRA.
 # A git worktree has no copy of the untracked file: it uses the main checkout's, so every worktree shares one queue.
@@ -75,6 +81,27 @@ slots_in_use() {
   for i in 1 2 3 4; do [ -d "$(slot_path "$i")" ] && count=$((count + 1)); done
   echo "$count"
 }
+# The share of a core a process and everything under it are using now.
+tree_cpu() {
+  local total=0 stack="$1" p c
+  while [ -n "$stack" ]; do
+    # shellcheck disable=SC2086
+    set -- $stack
+    p=$1
+    shift
+    stack="$*"
+    c=$(ps -o pcpu= -p "$p" 2>/dev/null | tr -d ' ' | tr ',' '.')
+    total=$(awk -v a="$total" -v b="${c:-0}" 'BEGIN { print a + b }')
+    # shellcheck disable=SC2046
+    stack=$(echo $stack $(pgrep -P "$p" 2>/dev/null))
+  done
+  echo "$total"
+}
+tickets_waiting() {
+  local count=0 ticket
+  for ticket in "$QUEUE"/*; do [ -f "$ticket" ] && count=$((count + 1)); done
+  echo "$count"
+}
 swap_used() { sysctl -n vm.swapusage | sed -E 's/.*used = ([0-9.,]+)M.*/\1/' | tr ',' '.' | cut -d. -f1; }
 folder_key() { pwd | hash_of; }
 
@@ -94,7 +121,60 @@ case "${1:-}" in
       started=$(basename "$ticket" | cut -d- -f2)
       printf '  %3d. waited %5ss  %s\n' "$position" "$(($(now) - started))" "$(cut -c1-100 "$ticket")"
     done
+    watcher=$(cat "$LOCK.watch" 2>/dev/null)
+    if [ -n "$watcher" ] && kill -0 "$watcher" 2>/dev/null; then echo "Watchdog: running, process $watcher."; else echo "Watchdog: NOT RUNNING. Start it with: tools/sysguard/heavy.sh --watch"; fi
+    if pgrep -f "sysguard/sysguard.sh" >/dev/null 2>&1; then echo "Memory guard: running."; else echo "Memory guard: NOT RUNNING. Start it with: tools/sysguard/sysguard.sh"; fi
     exit 0
+    ;;
+  --watch)
+    # What a stuck queue looks like, whatever the cause. Each ends this, so whoever runs it is woken up to act.
+    STALL="${HEAVY_STALL_SECS:-900}"
+    FREE_SLOT="${HEAVY_FREE_SLOT_SECS:-300}"
+    LONG_WAIT="${HEAVY_LONG_WAIT_SECS:-2700}"
+    EVERY="${HEAVY_WATCH_EVERY:-30}"
+    mkdir -p "$QUEUE"
+    echo "$$" > "$LOCK.watch"
+    trap 'rm -f "$LOCK.watch"' EXIT
+    last_state=""
+    last_change=$(now)
+    while true; do
+      clear_stale
+      state=$(cat "$LOCK/owner" "$LOCK.2/owner" "$LOCK.3/owner" "$LOCK.4/owner" 2>/dev/null; stat -f %m "$STATS" 2>/dev/null)
+      if [ "$state" != "$last_state" ]; then last_state=$state; last_change=$(now); fi
+      waiting=$(tickets_waiting)
+      problem=""
+      if [ "$waiting" -gt 0 ]; then
+        quiet=$(($(now) - last_change))
+        in_use=$(slots_in_use)
+        limit=$(slot_limit)
+        free=$(sysctl -n kern.memorystatus_level)
+        oldest=$(for ticket in "$QUEUE"/*; do [ -f "$ticket" ] && basename "$ticket" | cut -d- -f2; done | sort -n | head -1)
+        solo=$(ls "$QUEUE" 2>/dev/null | grep -c -- '-solo-')
+        if [ "$in_use" -lt "$limit" ] && [ "$solo" = 0 ] && [ "$free" -gt $((MIN_FREE + 10 * in_use)) ] && [ "$quiet" -gt "$FREE_SLOT" ]; then
+          problem="a slot is free and memory is fine, yet nothing has started for $quiet s while $waiting wait"
+        elif [ "$quiet" -gt "$STALL" ]; then
+          busy=0
+          for i in 1 2 3 4; do
+            path=$(slot_path "$i")
+            [ -f "$path/owner" ] || continue
+            owner=$(cut -d' ' -f1 "$path/owner")
+            used=$(tree_cpu "$owner")
+            awk -v u="$used" 'BEGIN { exit !(u >= 1) }' && busy=1
+          done
+          [ "$busy" = 0 ] && problem="no job has started or finished for $quiet s, $waiting wait, and nothing running is using the CPU"
+        fi
+        if [ -z "$problem" ] && [ -n "$oldest" ] && [ $(($(now) - oldest)) -gt "$LONG_WAIT" ]; then
+          problem="a job has waited $(($(now) - oldest)) s"
+        fi
+      fi
+      if [ -n "$problem" ]; then
+        echo "heavy: THE QUEUE NEEDS ATTENTION: $problem."
+        rm -f "$LOCK.watch"
+        bash "$0" --status
+        exit 1
+      fi
+      sleep "$EVERY"
+    done
     ;;
   --report)
     hours="${2:-24}"
@@ -179,7 +259,9 @@ job_class() {
 PRIORITY=$(job_class)
 [ "${HEAVY_PRIORITY:-}" = high ] && PRIORITY=0
 # Sorted by name, so by priority, then arrival. A process's id ends the name, which is how a dead one is noticed.
-TICKET="$QUEUE/$PRIORITY-$QUEUED_AT-$$"
+SOLO_MARK=""
+[ "${HEAVY_SOLO:-}" = 1 ] && SOLO_MARK="solo-"
+TICKET="$QUEUE/$PRIORITY-$QUEUED_AT-$SOLO_MARK$$"
 printf '%s  [%s]\n' "$CMD" "$(pwd)" > "$TICKET"
 HELD=()
 OUTPUT="$FAILS/run-$$"
@@ -202,51 +284,96 @@ take_slot() {
     path=$(slot_path "$i")
     if mkdir "$path" 2>/dev/null; then
       echo "$$ $(date +%T) $CMD" > "$path/owner"
+      echo "$PRIORITY" > "$path/class"
       HELD+=("$path")
       return 0
     fi
   done
   return 1
 }
+# Whether a job that isn't quick is running. One with no class is an older copy of this script's, which only big jobs use.
+normal_job_running() {
+  local i path
+  for i in 1 2 3 4; do
+    path=$(slot_path "$i")
+    [ -d "$path" ] || continue
+    case "$(cat "$path/class" 2>/dev/null)" in 0|1) ;; *) return 0 ;; esac
+  done
+  return 1
+}
+# One order that every waiting job agrees on, so two can never each wait for the other: high, normal jobs that have waited
+# too long, quick, the rest, each by arrival. A solo job waiting on a normal job doesn't count as having waited too long.
+queue_key() {
+  local name=$1 class time rank
+  class=${name%%-*}
+  time=$(echo "$name" | cut -d- -f2)
+  case "$class" in
+    0) rank=0 ;;
+    1) rank=2 ;;
+    *)
+      rank=3
+      if [ $((TIME_NOW - time)) -gt "$AGE_LIMIT" ]; then
+        case "$name" in
+          *-solo-*) [ "$NORMAL_RUNNING" = 1 ] || rank=1 ;;
+          *) rank=1 ;;
+        esac
+      fi
+      ;;
+  esac
+  echo "$rank-$time-$name"
+}
+# How many are ahead of this job, and whether a solo job is what it must wait for.
 ahead_of_me() {
-  local count=0 ticket name their_class their_time mine time_now
+  local count=0 behind_solo=0 ticket name mine my_key their_key their_time my_time
+  TIME_NOW=$(now)
+  NORMAL_RUNNING=0
+  normal_job_running && NORMAL_RUNNING=1
   mine=$(basename "$TICKET")
-  time_now=$(now)
+  my_key=$(queue_key "$mine")
+  my_time=$(echo "$mine" | cut -d- -f2)
   for ticket in "$QUEUE"/*; do
     [ -f "$ticket" ] || continue
     name=$(basename "$ticket")
     [ "$name" = "$mine" ] && continue
-    their_class=${name%%-*}
+    their_key=$(queue_key "$name")
     their_time=$(echo "$name" | cut -d- -f2)
-    if [[ "$name" < "$mine" ]]; then
+    if [[ "$their_key" < "$my_key" ]]; then
       count=$((count + 1))
-    elif [ "$PRIORITY" = 1 ] && [ "$their_class" = 2 ] && [ $((time_now - their_time)) -gt "$AGE_LIMIT" ]; then
-      # A normal job that has waited too long goes before quick ones.
-      count=$((count + 1))
+      case "$name" in *-solo-*) behind_solo=1 ;; esac
     fi
+    # Later normal jobs wait for it however long they've waited, or they'd go on being what it's waiting for.
+    case "$name" in *-solo-*) [ "$PRIORITY" = 2 ] && [ "$their_time" -lt "$my_time" ] && behind_solo=1 ;; esac
   done
-  echo "$count"
+  echo "$count $behind_solo"
 }
 
 said=""
+NEXT_NOTICE=900
 while true; do
   clear_stale
   limit=$(slot_limit)
   in_use=$(slots_in_use)
   free=$(sysctl -n kern.memorystatus_level)
-  ahead=$(ahead_of_me)
+  read -r ahead behind_solo <<< "$(ahead_of_me)"
   open=$((limit - in_use))
   need=$((MIN_FREE + 10 * in_use))
   why=""
   if [ "${HEAVY_SOLO:-}" = 1 ]; then
-    # At the front it keeps each slot as it frees, so it can't be starved, and those behind it wait.
+    # It holds nothing until it can hold everything: slots kept while waiting are what others wait for.
     if [ "$ahead" -gt 0 ]; then
       why="for its turn, $ahead ahead"
+    elif [ "$in_use" -gt 0 ]; then
+      why="for what's running to end"
     else
       while take_slot "$MAX_SLOTS"; do :; done
       if [ ${#HELD[@]} -ge "$MAX_SLOTS" ]; then break; fi
+      # Someone took one at that same moment.
+      rm -rf "${HELD[@]}"
+      HELD=()
       why="for every slot to run alone"
     fi
+  elif [ "$behind_solo" = 1 ]; then
+    why="behind a job that runs alone"
   elif [ "$ahead" -ge "$open" ]; then
     why="in the queue, $ahead ahead, $in_use of $limit running"
   elif [ "$free" -le "$need" ]; then
@@ -257,6 +384,11 @@ while true; do
     why="for a slot"
   fi
   [ "$why" != "$said" ] && echo "heavy: waiting $why" >&2 && said="$why"
+  # Nobody should have to guess whether a long wait is normal.
+  if [ "$(($(now) - QUEUED_AT))" -ge "$NEXT_NOTICE" ]; then
+    echo "heavy: waited $((NEXT_NOTICE / 60)) minutes so far ($why). tools/sysguard/heavy.sh --status shows the queue." >&2
+    NEXT_NOTICE=$((NEXT_NOTICE + 900))
+  fi
   sleep 2
 done
 rm -f "$TICKET"

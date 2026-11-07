@@ -4,8 +4,8 @@
 #   tools/check.sh --quick    Changed crates' tests, clippy for the workspace, a Windows compile check (while working)
 #   tools/check.sh --corpus   The index against the pages over every PDF in RECTO_BENCH100, about a quarter of an hour
 #   tools/check.sh --failed   Only the tests that failed last time in this folder (while fixing them)
-#   tools/check.sh --full     Clippy, the tests of crates changed since main, every other test, a Windows compile check
-#                             (before handing back). A pass on a clean tree is what lets `main` be pushed.
+#   tools/check.sh --full     Clippy, the tests of crates changed since main, every other test, a Windows compile check,
+#                             then the app built and driven in quiet runs (before handing back). A pass on a clean tree is what lets `main` be pushed.
 #
 # The queue (tools/sysguard/heavy.sh) refuses to run a check again on code that hasn't changed since it failed.
 set -euo pipefail
@@ -61,19 +61,27 @@ run() {
   cargo clippy --workspace --all-targets --locked -- -D warnings
   # Tests start the worker and the indexer, and `-p` alone wouldn't build them.
   cargo build --locked -p recto-render-service -p recto-indexer
+  # The app's own tests run below, against an app built from this tree. An older one lying around says nothing.
   if [ -n "$tests_first" ]; then
     # shellcheck disable=SC2086
-    cargo nextest run --locked $tests_first
+    RECTO_SKIP_APP=1 cargo nextest run --locked $tests_first
   fi
-  cargo nextest run --locked --no-tests=pass "${tests[@]}"
+  RECTO_SKIP_APP=1 cargo nextest run --locked --no-tests=pass "${tests[@]}"
   # Keeps the core buildable for Windows from the first commit. Skipped only if the target isn't installed.
   if rustup target list --installed | grep -q x86_64-pc-windows-gnu; then
     cargo check --workspace --locked --target x86_64-pc-windows-gnu
+  fi
+  # Only --full: no Xcode needed for --quick, and no minutes spent on Swift.
+  if [ "$mode" = "--full" ]; then
+    app/build.sh
+    # At most two at once: each is a real app, and this Mac is in use.
+    RECTO_REQUIRE_APP=1 cargo nextest run --locked -p recto-cli --test app -j 2
   fi
 }
 # PDFium's digest-checked library, which the render tests need. Does nothing if it's already there.
 tools/pdfium.sh >/dev/null
 export -f run
+export mode
 export tests_joined="${tests[*]}"
 export tests_first
 tools/sysguard/heavy.sh bash -c 'tests=($tests_joined); run'

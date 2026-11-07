@@ -19,6 +19,9 @@ const PAGE_DEADLINE: Duration = Duration::from_secs(10);
 /// Hidden-text checks that may stop a worker before the rest of the document's pages go unchecked. Each costs a kill and a new worker, and kills are capped per document: spending them all on checks would leave pages unread.
 const MAX_HIDDEN_CHECK_FAILURES: u32 = 16;
 
+/// A build given up on because a worker wasn't given the time it needed, which says nothing about the file. Nothing's remembered, and whoever's still waiting asks again. Each of these has taken a whole deadline, so asking again can't spin.
+const TOO_BUSY: &str = "too_busy";
+
 /// Reads pages through a worker.
 struct WorkerFeed {
     path: PathBuf,
@@ -46,6 +49,14 @@ impl WorkerFeed {
 
     fn stats(&self) -> RenderStats {
         self.renderer.as_ref().map(DocRenderer::stats).unwrap_or_default()
+    }
+
+    /// What a failure that isn't about the file means, given how many times the worker had been too busy before the step that failed. A page's own deadline stays with that page, which is read again later.
+    fn unless_too_busy(&self, before: u32, error: FeedError) -> FeedError {
+        match error {
+            FeedError::Cant(_) if self.stats().too_busy > before => FeedError::Cant(TOO_BUSY),
+            error => error,
+        }
     }
 }
 
@@ -85,11 +96,14 @@ fn read_failure(failure: RenderFailure) -> FeedError {
 
 impl PageFeed for WorkerFeed {
     fn page_count(&mut self) -> Result<u32, FeedError> {
-        self.renderer()?.page_count().map_err(whole_file)
+        let busy = self.stats().too_busy;
+        let counted = self.renderer()?.page_count();
+        counted.map_err(|failure| self.unless_too_busy(busy, whole_file(failure)))
     }
 
     fn read(&mut self, page: u32) -> Result<FedPage, FeedError> {
         let check = self.check_hidden;
+        let busy = self.stats().too_busy;
         let read = self.renderer()?.page_characters(page, true, check);
         match read {
             Ok(characters) => {
@@ -99,7 +113,7 @@ impl PageFeed for WorkerFeed {
                 }
                 Ok(FedPage { chars: characters.chars, boxes: characters.boxes, hidden_checked: characters.hidden_checked })
             }
-            Err(failure) => Err(read_failure(failure)),
+            Err(failure) => Err(self.unless_too_busy(busy, read_failure(failure))),
         }
     }
 
@@ -147,7 +161,7 @@ fn outcome_json(outcome: &BuildOutcome) -> Value {
         BuildOutcome::Refused(code) => json!({ "state": "refused", "code": code }),
         BuildOutcome::Busy => json!({ "state": "failed", "code": "building_elsewhere" }),
         BuildOutcome::FileChanged => json!({ "state": "changed" }),
-        BuildOutcome::Paused("out_of_time") => json!({ "state": "paused", "code": "out_of_time" }),
+        BuildOutcome::Paused(code @ ("out_of_time" | TOO_BUSY)) => json!({ "state": "paused", "code": code }),
         BuildOutcome::Paused(code) => json!({ "state": "failed", "code": code }),
     }
 }
@@ -227,6 +241,15 @@ fn report(built: std::io::Result<BuildOutcome>, stats: RenderStats, hidden_check
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: on a busy Mac a helper at background priority gets too little time to start a worker, and the index counts as failed: `recto wait indexing-done` says it couldn't be built, and it isn't tried for a minute. It's paused, as for running out of time, and goes on when asked. A failure that's about the install still says so.
+    #[test]
+    fn too_busy_pauses_a_build_rather_than_failing_it() {
+        assert_eq!(outcome_json(&BuildOutcome::Paused(TOO_BUSY))["state"], "paused");
+        assert_eq!(outcome_json(&BuildOutcome::Paused("out_of_time"))["state"], "paused");
+        assert_eq!(outcome_json(&BuildOutcome::Paused("render_worker_missing"))["state"], "failed");
+        assert_eq!(outcome_json(&BuildOutcome::Paused("render_unavailable"))["state"], "failed");
+    }
 
     /// Failure: a worker that couldn't be started, or a failure that's remembered for only a moment, goes down as this page having failed, and so does every page in that moment. The corpus is then marked finished with those pages failed for good.
     #[test]

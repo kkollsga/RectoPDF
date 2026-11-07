@@ -1,0 +1,30 @@
+# The reader, from the home state to a document and around it, on what the app reports.
+# recto qa run app/qa/reader.qa, with RECTO_QA_PDF set to a PDF of at least 12 pages.
+qa state
+expect app.home true
+expect app.is_active false
+open "$RECTO_QA_PDF"
+qa wait-settled --timeout 30s
+qa state
+expect app.home false
+expect reader.settled true
+expect-at-least reader.tiles.attached 1
+goto 10
+qa wait-settled --timeout 30s
+qa state
+expect-at-most reader.tiles.page_layers 3
+where
+expect page 10
+qa zoom 1.5
+qa wait-settled --timeout 30s
+qa state
+expect reader.magnification 1.5
+qa zoom 1
+qa appearance dark
+qa wait-settled --timeout 30s
+qa state
+expect app.appearance dark
+qa appearance light
+qa wait-settled --timeout 30s
+qa state
+expect reader.paper white

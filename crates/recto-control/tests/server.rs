@@ -27,6 +27,7 @@ struct Stand {
     unsaved: Mutex<Vec<(TabId, String)>>,
     wheres: AtomicUsize,
     looks_answer: std::sync::atomic::AtomicBool,
+    stop_refused: std::sync::atomic::AtomicBool,
     told_off: AtomicUsize,
 }
 
@@ -63,6 +64,10 @@ impl Host for Stand {
                 events.push(Event::new("page_changed", json!({ "page": page })));
                 Ok(json!({ "page": page }))
             }
+            Command::Close { .. } => {
+                events.push(Event::new("tab_closed", json!({})));
+                Ok(json!({ "closed": true }))
+            }
             _ => Ok(json!({ "ran": command.tag() })),
         }
     }
@@ -93,6 +98,10 @@ impl Host for Stand {
 
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
         self.unsaved.lock().unwrap().clone()
+    }
+
+    fn stop_refusal(&self) -> Option<AgentError> {
+        self.stop_refused.load(Ordering::SeqCst).then(|| AgentError::new("only_the_user_quits", "Not over the socket.", exit::FAILED))
     }
 }
 
@@ -282,6 +291,17 @@ fn a_half_closed_client_still_gets_its_answer() {
     assert_eq!(read_line(&mut stream), None, "and then it's over");
 }
 
+/// Failure: a host that won't be stopped over the socket is, or a refused `stop` leaves the server saying it's stopping. It answers why, and everything goes on.
+#[test]
+fn a_host_can_refuse_to_be_stopped() {
+    let running = Running::start(Limits::default());
+    running.host.stop_refused.store(true, Ordering::SeqCst);
+    let refused = running.call(&json!({ "cmd": "stop" }));
+    assert_eq!(refused["error"]["code"], "only_the_user_quits", "{refused}");
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    assert_eq!(running.call(&json!({ "cmd": "goto", "page": 1 }))["ok"], true, "commands aren't refused as if it were stopping");
+}
+
 /// Failure: `stop` drops unsaved edits, or a host can't end the server it's carrying. A host's stopper and `stop` must both end `run`, and both remove the socket.
 #[test]
 fn stop_keeps_unsaved_edits_and_a_host_can_end_it() {
@@ -458,6 +478,47 @@ fn a_line_held_back_behind_an_unread_answer_doesnt_spin_the_session() {
     assert!(reader.next(&mut slow).expect("and the client still gets its answer")["data"]["huge"].is_string());
 }
 
+/// Failure: a client that sent several commands and is slowly reading the first huge answer is cut off for sending "half a line", though its lines are whole and only waiting for it to catch up. It showed as this file's other test failing when the Mac was busy, as reading took past the 5 s.
+#[test]
+fn whole_lines_waiting_arent_a_stalled_line() {
+    let limits = Limits { line_deadline: Duration::from_millis(100), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut greedy = running.connect();
+    greedy.write_all("{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n".as_bytes()).unwrap();
+    // Long past the deadline, with its answer unread and two commands waiting.
+    std::thread::sleep(Duration::from_millis(400));
+    let mut reader = BufLine::default();
+    for _ in 0..3 {
+        assert!(reader.next(&mut greedy).unwrap()["data"]["huge"].is_string());
+    }
+    // And half a line is still caught.
+    greedy.write_all(b"{\"cmd\":").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let mut rest = [0u8; 16];
+    assert_eq!(greedy.read(&mut rest).unwrap(), 0, "it's gone");
+}
+
+/// Failure: an agent in `recto wait` is dropped by a deadline that's for something else, half a line, an unread answer or a connection with nothing to do, so a wait for a slow index ends early with "the session ended" on a loaded Mac. It holds for as long as it asked for, past all of them, and hears what it was waiting for.
+#[test]
+fn a_wait_outlasts_every_deadline_a_connection_has() {
+    let short = Duration::from_millis(50);
+    let limits = Limits { line_deadline: short, idle_deadline: short, write_deadline: short, overflow_idle: short, ..Limits::default() };
+    let running = Running::start(limits);
+    let mut hears = running.connect();
+    hears.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"secret\",\"timeout_ms\":20000}\n").unwrap();
+    let mut runs_out = running.connect();
+    runs_out.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"never\",\"timeout_ms\":500}\n").unwrap();
+    // It's told it ran out of time, at ten times any deadline, on its own connection.
+    let ran_out = read_line(&mut runs_out).expect("a wait was dropped before its time was up");
+    assert_eq!(ran_out["error"]["code"], "timed_out", "{ran_out}");
+    running.host.looks_answer.store(true, Ordering::SeqCst);
+    let mut closer = running.connect();
+    closer.write_all(b"{\"cmd\":\"close\"}\n").unwrap();
+    assert_eq!(read_line(&mut closer).unwrap()["ok"], true);
+    let heard = read_line(&mut hears).expect("a wait was dropped while what it waited for was still to come");
+    assert_eq!(heard["data"]["secret"], true, "{heard}");
+}
+
 /// Failure: a client with commands waiting while it catches up on a large answer is dropped, as though it had stalled halfway through a line, if it takes longer than half a line is given. Those commands are whole, and waiting is the session's doing. Found by `a_client_that_doesnt_read_isnt_worked_for` failing on a Mac under load.
 #[test]
 fn a_client_catching_up_isnt_dropped_for_the_commands_it_has_waiting() {
@@ -494,16 +555,20 @@ fn a_look_finishing_after_access_goes_off_stops_indexing_again() {
 #[derive(Default)]
 struct BufLine {
     bytes: Vec<u8>,
+    /// How much of `bytes` is known to hold no line end. Looking from the start after each read is what made a 5 MB answer take seconds in a debug build.
+    searched: usize,
 }
 
 impl BufLine {
     fn next(&mut self, stream: &mut UnixStream) -> Option<Value> {
         let mut chunk = vec![0u8; 256 * 1024];
         loop {
-            if let Some(at) = self.bytes.iter().position(|byte| *byte == b'\n') {
-                let line: Vec<u8> = self.bytes.drain(..=at).collect();
+            if let Some(at) = self.bytes[self.searched..].iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = self.bytes.drain(..=self.searched + at).collect();
+                self.searched = 0;
                 return Some(serde_json::from_slice(&line).unwrap());
             }
+            self.searched = self.bytes.len();
             let count = stream.read(&mut chunk).ok()?;
             if count == 0 {
                 return None;

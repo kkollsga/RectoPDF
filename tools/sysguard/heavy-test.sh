@@ -73,6 +73,44 @@ job n2 1 &
 wait
 check "solo waits for all, and runs before later jobs" "n1 solo n2" "$(order)"
 
+# Waits for this many lines in the log, then ends whatever's still there, so a job stuck for ever fails its check and doesn't hang this.
+settle() {
+  for _ in $(seq 1 "${2:-40}"); do [ "$(wc -l < "$X/log" | tr -d ' ')" -ge "$1" ] && break; pause 0.5; done
+  pkill -f "$X/log" 2>/dev/null
+  wait
+}
+
+# Failure: a quick job comes while solo is collecting slots. It sorts ahead of solo, which waits for its turn holding the slots that job needs, and neither ever moves: everything on the Mac waited over an hour behind this. And short of that, a measurement waiting for someone's long build holds up every small job for as long as the build lasts: 25 minutes, one time.
+bash "$HEAVY" --slots 2 >/dev/null
+bash "$HEAVY" bash -c "echo long >> '$X/log'; sleep 4; echo long-done >> '$X/log'" 2>>"$X/err" & pause 0.8
+( HEAVY_SOLO=1 job solo 1 ) & pause 0.8
+( HEAVY_CLASS=quick job quick 0 ) &
+settle 4
+check "quick jobs go past solo while it waits for a long job, and it holds nothing" "long quick long-done solo" "$(order)"
+
+# The same once solo has waited too long: it's the long job that's holding it up, and quick jobs can't make that any better.
+bash "$HEAVY" bash -c "echo long >> '$X/log'; sleep 4; echo long-done >> '$X/log'" 2>>"$X/err" & pause 0.8
+( HEAVY_AGE_LIMIT=0 HEAVY_SOLO=1 job solo 1 ) & pause 1.5
+( HEAVY_AGE_LIMIT=0 HEAVY_CLASS=quick job quick 0 ) &
+settle 4
+check "that holds however long solo has waited" "long quick long-done solo" "$(order)"
+
+# Failure: a stream of quick jobs keeps solo out for good.
+bash "$HEAVY" --slots 2 >/dev/null
+( HEAVY_AGE_LIMIT=0 HEAVY_CLASS=quick job q1 3 ) & pause 0.8
+( HEAVY_AGE_LIMIT=0 HEAVY_SOLO=1 job solo 1 ) & pause 1.5
+( HEAVY_AGE_LIMIT=0 HEAVY_CLASS=quick job q2 0 ) &
+settle 3
+check "solo that has waited too long goes before new quick jobs" "q1 solo q2" "$(order)"
+
+# Failure: a normal job that has waited too long and a quick job each count the other as ahead, and with one slot neither ever goes.
+bash "$HEAVY" --slots 1 >/dev/null
+job first 3 & pause 0.8
+( HEAVY_AGE_LIMIT=0 job old 0 ) & pause 1.2
+( HEAVY_AGE_LIMIT=0 HEAVY_CLASS=quick job young 0 ) &
+settle 3
+check "a job that waited too long and a quick one can't wait for each other" "first old young" "$(order)"
+
 # Failure: the command's exit code lost, so a failed build reads as a pass.
 bash "$HEAVY" bash -c 'exit 7' 2>/dev/null
 check "exit code comes through" "7" "$?"
@@ -133,6 +171,51 @@ kill "$p" 2>/dev/null
 wait "$p" 2>/dev/null
 check "no memory, no start" "" "$(order)"
 check "a job killed while waiting leaves no ticket" "0" "$(ls "$X/lock.queue" | wc -l | tr -d ' ')"
+
+# The watchdog. Failure: the queue stops, nobody notices, and everything waits for over an hour.
+watch() { rm -f "$X/watch.rc"; ( HEAVY_WATCH_EVERY=1 "$@" bash "$HEAVY" --watch > "$X/watch.out" 2>&1; echo $? > "$X/watch.rc" ) & W=$!; }
+ended_within() { # seconds
+  local n=0
+  while [ "$n" -lt "$(( $1 * 5 ))" ]; do [ -f "$X/watch.rc" ] && { echo "ended $(cat "$X/watch.rc")"; return; }; pause 0.2; n=$((n + 1)); done
+  pkill -P "$W" 2>/dev/null; echo "still watching"
+}
+clean_queue() { rm -rf "$X/lock" "$X/lock.2" "$X/lock.3" "$X/lock.4"; rm -f "$X"/lock.queue/*; }
+bash "$HEAVY" --slots 1 >/dev/null
+clean_queue
+sleep 60 & idle=$!
+mkdir "$X/lock"; echo "$idle 00:00:00 idle holder" > "$X/lock/owner"
+echo "a waiting job" > "$X/lock.queue/2-$(date +%s)-$$"
+watch env HEAVY_STALL_SECS=2
+check "a holder doing nothing with jobs waiting wakes the watchdog" "ended 1" "$(ended_within 15)"
+case "$(cat "$X/watch.out")" in *"NEEDS ATTENTION"*"idle holder"*) r=says ;; *) r=silent ;; esac
+check "and it says what's holding the queue" "says" "$r"
+{ kill "$idle"; wait "$idle"; } 2>/dev/null
+clean_queue
+yes > /dev/null & busy=$!
+mkdir "$X/lock"; echo "$busy 00:00:00 busy holder" > "$X/lock/owner"
+echo "a waiting job" > "$X/lock.queue/2-$(date +%s)-$$"
+pause 1
+watch env HEAVY_STALL_SECS=2
+check "a long job really working isn't called stuck" "still watching" "$(ended_within 6)"
+{ kill "$busy"; wait "$busy"; } 2>/dev/null
+clean_queue
+bash "$HEAVY" --slots 2 >/dev/null
+echo "a waiting job" > "$X/lock.queue/2-$(date +%s)-$$"
+watch env HEAVY_FREE_SLOT_SECS=2
+check "a free slot nobody takes wakes it" "ended 1" "$(ended_within 15)"
+clean_queue
+watch env HEAVY_STALL_SECS=1 HEAVY_FREE_SLOT_SECS=1
+check "an empty queue doesn't" "still watching" "$(ended_within 4)"
+yes > /dev/null & busy=$!
+mkdir "$X/lock"; echo "$busy 00:00:00 busy holder" > "$X/lock/owner"
+echo "an old job" > "$X/lock.queue/2-$(($(date +%s) - 100))-$$"
+watch env HEAVY_LONG_WAIT_SECS=50 HEAVY_FREE_SLOT_SECS=999
+check "a job waiting far too long wakes it, even with work running" "ended 1" "$(ended_within 15)"
+{ kill "$busy"; wait "$busy"; } 2>/dev/null
+clean_queue
+bash "$HEAVY" --slots 2 >/dev/null
+case "$(bash "$HEAVY" --status)" in *"Watchdog: NOT RUNNING"*) r=says ;; *) r=silent ;; esac
+check "status says when no watchdog is running" "says" "$r"
 
 if [ "$fails" -gt 0 ]; then echo "$fails failed."; exit 1; fi
 echo "All passed."

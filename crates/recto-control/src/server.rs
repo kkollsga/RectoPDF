@@ -106,6 +106,8 @@ pub struct Server {
     listener: Listener,
     wake_tx: Stream,
     wake_rx: Stream,
+    done_tx: Sender<Done>,
+    done_rx: Receiver<Done>,
     /// Held until this ends, however it ends: the kernel lets go of it even after a kill. That's what makes a leftover socket safe to remove.
     _lock: File,
 }
@@ -131,7 +133,8 @@ impl Server {
         let (wake_tx, wake_rx) = Stream::pair().map_err(|_| failed("The session couldn't be started."))?;
         wake_tx.set_nonblocking(true).map_err(|_| failed("The session couldn't be started."))?;
         wake_rx.set_nonblocking(true).map_err(|_| failed("The session couldn't be started."))?;
-        Ok(Self { paths: paths.clone(), listener, wake_tx, wake_rx, _lock: lock })
+        let (done_tx, done_rx) = channel();
+        Ok(Self { paths: paths.clone(), listener, wake_tx, wake_rx, done_tx, done_rx, _lock: lock })
     }
 
     /// Asks a running server to end, from another thread. For a host that started it on its own thread.
@@ -139,9 +142,14 @@ impl Server {
         Ok(Stopper(self.wake_tx.try_clone()?))
     }
 
+    /// Tells watchers and waiters what the host's own user did, from another thread. Commands' events go by themselves: this is for a tap in the app's sidebar, which no command caused.
+    pub fn announcer(&self) -> std::io::Result<Announcer> {
+        Ok(Announcer { done: self.done_tx.clone(), wake: self.wake_tx.try_clone()? })
+    }
+
     /// Runs until `stop` or a [`Stopper`]. Blocks in `poll` the whole time.
     pub fn run<H: Host>(self, host: Arc<H>, limits: Limits) -> std::io::Result<()> {
-        let (done_tx, done_rx) = channel();
+        let (done_tx, done_rx) = (self.done_tx.clone(), self.done_rx);
         let last_level = levels::current(&self.paths);
         let wake = Arc::new(self.wake_tx.try_clone()?);
         // Something happening outside any command, such as an index being finished, reaches the loop the way a finished job does. It uses the same wake and costs no descriptor of its own.
@@ -188,6 +196,22 @@ pub struct Stopper(Stream);
 impl Stopper {
     pub fn stop(&self) {
         let _ = (&self.0).write(&[STOP_BYTE]);
+    }
+}
+
+/// Tells a running server's watchers what happened outside any command. See [`Server::announcer`].
+#[derive(Debug)]
+pub struct Announcer {
+    done: Sender<Done>,
+    wake: Stream,
+}
+
+impl Announcer {
+    /// Never blocks: the channel has no limit and only holds what's published between two turns of the loop, and a full wake pipe already means the loop will look.
+    pub fn announce(&self, events: Vec<Event>) {
+        if self.done.send(Done::Published(events)).is_ok() {
+            let _ = (&self.wake).write(&[WAKE_BYTE]);
+        }
     }
 }
 
@@ -250,6 +274,7 @@ impl Job {
     }
 }
 
+#[derive(Debug)]
 enum Done {
     Answered { conn: u64, line: Vec<u8>, tag: &'static str, level: Level, outcome: &'static str, details: Value, events: Vec<Event>, draws: bool, stop: bool },
     Looked { conn: u64, generation: u64, state: ConditionState },
@@ -1070,18 +1095,15 @@ impl Conn {
 
     /// The next whole line, if there is one and it isn't blank.
     fn next_line(&mut self) -> Option<Vec<u8>> {
-        loop {
-            let at = self.input.iter().position(|byte| *byte == b'\n')?;
-            let line: Vec<u8> = self.input.drain(..=at).collect();
+        let before = self.input.len();
+        let line = take_line(&mut self.input);
+        if self.input.len() != before {
             self.line_started = (!self.input.is_empty()).then(Instant::now);
-            if self.input.is_empty() && self.input.capacity() > 4096 {
-                self.input = Vec::new();
-            }
-            let trimmed = line.trim_ascii();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_vec());
-            }
         }
+        if self.input.is_empty() && self.input.capacity() > 4096 {
+            self.input = Vec::new();
+        }
+        line
     }
 
     /// Sends what it can without blocking. Returns how many bytes left the queue. A pipe that fails means the client has gone.
@@ -1119,6 +1141,24 @@ impl Conn {
     }
 }
 
+/// Takes the next line that isn't blank from what's arrived, with anything before it. It all goes in one step, because this runs on the one thread that watches every socket: taking blank lines off one at a time moved what was left each time, 48 ms of that thread for one read's 80 KiB of line ends.
+fn take_line(input: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let mut from = 0;
+    let mut found = None;
+    while let Some(offset) = input[from..].iter().position(|byte| *byte == b'\n') {
+        let line = input[from..from + offset].trim_ascii();
+        if !line.is_empty() {
+            found = Some(line.to_vec());
+        }
+        from += offset + 1;
+        if found.is_some() {
+            break;
+        }
+    }
+    input.drain(..from);
+    found
+}
+
 /// Runs one job, on its own thread. A panic comes back as an error for that one client.
 fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) -> Done {
     match job {
@@ -1146,6 +1186,9 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
                     return Err(refusal(table::display_name(tag), level, command.access()));
                 }
                 if matches!(command, Command::Stop {}) {
+                    if let Some(refusal) = host.stop_refusal() {
+                        return Err(refusal);
+                    }
                     let unsaved = host.unsaved_tabs();
                     return if unsaved.is_empty() { Ok(json!({ "stopping": true })) } else { Err(unsaved_refusal(&unsaved)) };
                 }
@@ -1179,6 +1222,19 @@ fn internal() -> AgentError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: blank lines come off one at a time, moving all that's left after each, so a client sending nothing but line ends holds the one thread that answers everyone, and it costs the square of what's sent. 8 MiB of them would take many minutes that way, and the real input cap only makes that smaller, not different.
+    #[test]
+    fn blank_lines_go_in_one_pass() {
+        let mut input = vec![b'\n'; 8 * 1024 * 1024];
+        input.extend_from_slice(b" {\"cmd\":\"status\"} \r\n\n half a li");
+        let started = Instant::now();
+        assert_eq!(take_line(&mut input).as_deref(), Some(&b"{\"cmd\":\"status\"}"[..]));
+        assert_eq!(input, b"\n half a li");
+        assert_eq!(take_line(&mut input), None, "half a line isn't one yet");
+        assert_eq!(input, b" half a li", "and what's blank before it has gone");
+        assert!(started.elapsed() < Duration::from_secs(30), "took {:?}", started.elapsed());
+    }
 
     /// Failure: a watcher that keeps up slowly never gets to empty, so what it's already read stays in its buffer for as long as it watches, up to 24 hours.
     #[test]

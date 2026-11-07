@@ -9,6 +9,7 @@ pub mod index;
 mod loader;
 mod reading;
 mod render;
+pub use render::{output_exists, publish_picture};
 mod search;
 pub mod skill;
 pub mod table;
@@ -152,6 +153,32 @@ pub enum Command {
         tab: String,
     },
     Budget {},
+    /// How the app shows pages.
+    View {
+        #[serde(default)]
+        paper: Option<String>,
+        #[serde(default)]
+        focus: Option<String>,
+        #[serde(default)]
+        agent_icon: Option<String>,
+        #[serde(default)]
+        zoom: Option<String>,
+    },
+    /// Asks the running app what it shows. Only an app started in QA mode answers.
+    QaRead {
+        verb: String,
+        #[serde(default)]
+        out: Option<PathBuf>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// Has the running app do what the UI does. Only an app started in QA mode answers.
+    QaDrive {
+        verb: String,
+        value: String,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     /// Draws a page to a PNG file.
     Render {
         #[serde(default = "active_tab")]
@@ -399,6 +426,9 @@ impl Command {
             Self::Goto { .. } => "goto",
             Self::Close { .. } => "close",
             Self::Budget {} => "budget",
+            Self::View { .. } => "view",
+            Self::QaRead { .. } => "qa_read",
+            Self::QaDrive { .. } => "qa_drive",
             Self::Render { .. } => "render",
             Self::ExportSvg { .. } => "export_svg",
             Self::Text { .. } => "text",
@@ -439,6 +469,9 @@ impl Command {
         match self {
             // Measuring with the decided limits only reads numbers. Choosing other limits decides what a hostile file may use, so it isn't reading.
             Self::BudgetRender { limit_mib: Some(_), .. } | Self::BudgetRender { retire_mib: Some(_), .. } => Access::At(Level::Full),
+            // Asking how things are shown changes nothing. Changing it is moving around.
+            Self::View { paper: None, focus: None, agent_icon: None, zoom: None } => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
+            Self::View { .. } => Access::At(Level::Control),
             // A command with no row can't run: the table is the list.
             _ => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
         }
@@ -465,7 +498,8 @@ impl Command {
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
             Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
-            Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
+            Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
+            Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
         }
     }
 }
@@ -722,6 +756,21 @@ pub fn run_indexed<L: DocLoader + Clone>(session: &mut Session<L>, level: Level,
 }
 
 /// Runs one command, noting what happened in `events`. Commands that only a long-running session can answer say so.
+/// What's chosen, in a word: `auto` goes with the window.
+pub fn paper_name(view: recto_session::ViewSettings) -> &'static str {
+    view.paper.map_or("auto", recto_session::Paper::name)
+}
+
+/// QA commands reach an app started in QA mode, and nothing else. Other sessions, a shipped app's included, say this.
+/// `recto stop` against the owner's own app. Only they quit it: the default, by the coordinator's decision of 2026-11-07, until the owner says otherwise.
+pub fn only_the_user_quits() -> AgentError {
+    AgentError::new("only_the_user_quits", "This session is the app someone is using, and only they can quit it.", exit::FAILED).then("Ask them to, if it needs to stop. Everything else works with it running.")
+}
+
+pub fn qa_needs_app() -> AgentError {
+    AgentError::new("qa_needs_app", "QA commands only work on an app started with `recto qa start`.", exit::FAILED).then("Set RECTO_STATE_DIR to a temp folder and run `recto qa start`.")
+}
+
 pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let needed = command.access();
     if !allowed(level, needed) {
@@ -731,7 +780,10 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         Command::Open { path, page } => open(access, path, *page, events),
         Command::Tabs { from, limit } => access.with(|s| tabs_json(s, *from, *limit)),
         Command::Sidebar {} => Ok(access.with(|s| sidebar_json(s))),
-        Command::Tap { tab } => access.with(|s| {
+        Command::Tap { tab } => {
+            let id = access.with(|s| select(s, tab))?;
+            read_ahead(access, |s| s.wake_for_tap(id));
+            access.with(|s| {
             let id = select(s, tab)?;
             let was_active = s.active();
             s.tap(id)?;
@@ -739,14 +791,23 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
                 events.push(Event::new("tab_activated", json!({ "tab": id.0 })));
             }
             Ok(sidebar_json(s))
-        }),
+            })
+        }
         Command::Goto { tab, page } => access.with(|s| {
             let id = select(s, tab)?;
             go_to(s, id, *page)?;
             events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page })));
             Ok(where_json(s, id))
         }),
-        Command::Close { tab } => access.with(|s| {
+        Command::Close { tab } => {
+            // What would refuse it comes first: no reading a file for a close that won't happen.
+            let id = access.with(|s| {
+                let id = select(s, tab)?;
+                refuse_close_that_loses_something(s, id, level)?;
+                Ok::<_, AgentError>(id)
+            })?;
+            read_ahead(access, |s| s.wake_for_close(id));
+            access.with(|s| {
             let id = select(s, tab)?;
             refuse_close_that_loses_something(s, id, level)?;
             let before = s.active();
@@ -763,7 +824,36 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             }
             // Not the whole list: closing a thousand tabs shouldn't build a thousand lists.
             Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.active().map(|active| where_json(s, active)) }))
+            })
+        }
+        Command::View { zoom: Some(_), .. } => Err(AgentError::new("zoom_needs_app", "Zoom is about what's on a screen, and this session has none.", exit::FAILED).then("It works when `recto` is talking to the app.")),
+        Command::View { paper, focus, agent_icon, zoom: None } => access.with(|s| {
+            let was = s.view();
+            let mut view = was;
+            match paper.as_deref() {
+                Some("auto") => view.paper = None,
+                Some(name) => view.paper = Some(recto_session::Paper::from_name(name).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a paper. It's one of {}, or `auto`.", recto_core::clean_line(name), recto_session::Paper::ALL.map(recto_session::Paper::name).join(", ")), exit::USAGE))?),
+                None => {}
+            }
+            match focus.as_deref() {
+                Some("on") => view.focus = true,
+                Some("off") => view.focus = false,
+                Some(other) => return Err(AgentError::new("usage", format!("`{}` isn't for focus. It's `on` or `off`.", recto_core::clean_line(other)), exit::USAGE)),
+                None => {}
+            }
+            match agent_icon.as_deref() {
+                Some("on") => view.agent_icon_hidden = false,
+                Some("off") => view.agent_icon_hidden = true,
+                Some(other) => return Err(AgentError::new("usage", format!("`{}` isn't for the agent icon. It's `on` or `off`.", recto_core::clean_line(other)), exit::USAGE)),
+                None => {}
+            }
+            s.set_view(view);
+            if view != was {
+                events.push(Event::new("view_changed", json!({ "paper": paper_name(view), "focus": view.focus })));
+            }
+            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "focus": view.focus, "agent_icon": !view.agent_icon_hidden }))
         }),
+        Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::Budget {} => Ok(json!({
             "tabs": access.with(|s| s.tabs().len()),
             "footprint_bytes": recto_platform::footprint_bytes(),
@@ -971,10 +1061,21 @@ fn require_absolute(path: &Path) -> Result<(), AgentError> {
     if path.is_absolute() { Ok(()) } else { Err(AgentError::new("bad_path", "That path isn't whole. A session has no folder of its own to start from.", exit::FAILED)) }
 }
 
+/// Reads a cold tab's file, if what's about to happen would wake one, with the session free. A file on a dead volume holds up this command and no other.
+fn read_ahead<A: SessionAccess>(access: &A, plan: impl FnOnce(&Session<A::Loader>) -> Option<(TabId, PathBuf)>) {
+    let Some((id, path)) = access.with(|s| plan(s)) else { return };
+    let loader = access.with(|s| s.loader().clone());
+    let stamp = recto_platform::file_stamp(&path).ok();
+    let loaded = loader.load(&path);
+    access.with(|s| s.give_woken(id, loaded, stamp));
+}
+
 fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     require_absolute(path)?;
     let wrong_page = |pages: u32| AgentError::new("no_such_page", format!("Nothing was opened: it has {pages} pages, and page {} isn't one of them.", page.unwrap_or(0)), exit::NOT_FOUND).then("Open it with a page it has, or with no `--page`.");
     let fits = |pages: u32| page.is_none_or(|page| page >= 1 && page <= pages);
+    // A file already open, in a tab gone cold, is read with the session free too.
+    read_ahead(access, |s| s.tab_for_path(path).and_then(|id| s.wake_for_tap(id)));
     // Already open: check the page before anything moves.
     let existing = access.with(|s| {
         let id = s.tab_for_path(path)?;
@@ -1392,6 +1493,60 @@ mod tests {
         }
     }
 
+    /// Failure: waking a cold tab reads its file with the session's lock held, so a file on a dead volume hangs `status`, `tabs` and the UI thread's every pull with it. The file is read with the lock free, for a tap, for a close that wakes what's next, and for an open of a file whose tab is cold, and it isn't read twice.
+    #[test]
+    fn waking_a_cold_tab_reads_its_file_with_the_session_free() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        #[derive(Clone, Default)]
+        struct Gated {
+            armed: Arc<AtomicBool>,
+            inside: Arc<AtomicBool>,
+            release: Arc<AtomicBool>,
+            reads: Arc<AtomicU32>,
+        }
+        impl DocLoader for Gated {
+            fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+                if self.armed.load(Ordering::SeqCst) {
+                    self.reads.fetch_add(1, Ordering::SeqCst);
+                    self.inside.store(true, Ordering::SeqCst);
+                    while !self.release.load(Ordering::SeqCst) {
+                        std::thread::yield_now();
+                    }
+                }
+                Ok(DocFacts { page_count: 10, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+            }
+        }
+        let gate = Gated::default();
+        let session = Arc::new(Mutex::new(Session::new(gate.clone())));
+        for name in ["a", "b", "c", "d", "e", "f"] {
+            session.lock().unwrap().open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap();
+        }
+        let wake = |command: Command| {
+            gate.reads.store(0, Ordering::SeqCst);
+            gate.inside.store(false, Ordering::SeqCst);
+            gate.release.store(false, Ordering::SeqCst);
+            gate.armed.store(true, Ordering::SeqCst);
+            let shared = Arc::clone(&session);
+            let running = std::thread::spawn(move || execute(&*shared, Level::Control, &command, &mut Vec::new()).map(|_| ()));
+            while !gate.inside.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            assert!(session.try_lock().is_ok(), "the session's lock is held across the read");
+            gate.release.store(true, Ordering::SeqCst);
+            running.join().unwrap().unwrap();
+            gate.armed.store(false, Ordering::SeqCst);
+            assert_eq!(gate.reads.load(Ordering::SeqCst), 1, "read once");
+        };
+        wake(Command::Tap { tab: "#1".into() });
+        assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(1));
+        wake(Command::Close { tab: "#1".into() });
+        assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(2));
+        // Opening a file whose tab has gone cold.
+        wake(Command::Open { path: PathBuf::from("/d/c.pdf"), page: None });
+        assert_eq!(session.lock().unwrap().active().map(|id| id.0), Some(3));
+    }
+
     fn with_tabs(names: &[&str]) -> Session<Fake> {
         let mut session = Session::new(Fake);
         for name in names {
@@ -1532,8 +1687,30 @@ mod tests {
             Command::Watch { events: None, timeout_ms: None, count: None },
             Command::WatchStop {},
             Command::Log { last: None },
+            Command::View { paper: None, focus: None, agent_icon: None, zoom: None },
+            Command::QaRead { verb: "state".into(), out: None, timeout_ms: None },
+            Command::QaDrive { verb: "zoom".into(), value: "1".into(), timeout_ms: None },
             Command::Stop {},
         ]
+    }
+
+    /// Failure: changing how pages are shown works at Read-only, or asking needs more than asking should, because the row can state only one level.
+    #[test]
+    fn view_asks_at_read_only_and_changes_at_control() {
+        assert_eq!(Command::View { paper: None, focus: None, agent_icon: None, zoom: None }.access(), Access::At(Level::ReadOnly));
+        assert_eq!(Command::View { paper: Some("white".into()), focus: None, agent_icon: None, zoom: None }.access(), Access::At(Level::Control));
+        assert_eq!(Command::View { paper: None, focus: Some("on".into()), agent_icon: None, zoom: None }.access(), Access::At(Level::Control));
+    }
+
+    /// Failure: a session with no app takes a QA command and does nothing, or says something that reads as though it worked. It's refused plainly, and not as a matter of level, since no level would help.
+    #[test]
+    fn qa_commands_need_an_app() {
+        let mut s = with_tabs(&["a"]);
+        for command in [Command::QaRead { verb: "state".into(), out: None, timeout_ms: None }, Command::QaDrive { verb: "zoom".into(), value: "1".into(), timeout_ms: None }] {
+            let error = run(&mut s, Level::Full, &command).unwrap_err();
+            assert_eq!(error.code, "qa_needs_app");
+            assert_ne!(error.exit, exit::PERMISSION);
+        }
     }
 
     /// Failure: a command is added with no row in the table, so it has no level, no docs and no CLI. `Command::tag` is exhaustive, so a new variant can't compile without a name, and this holds the name to a row.

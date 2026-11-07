@@ -15,6 +15,8 @@ const MAX_REPLY_BYTES: usize = 64 * 1024 * 1024;
 pub struct Client {
     stream: Stream,
     buffer: Vec<u8>,
+    /// How much of `buffer` is known to hold no line end.
+    searched: usize,
 }
 
 pub fn not_running() -> AgentError {
@@ -39,12 +41,13 @@ impl Client {
         if stream.peer_uid().map_or(true, |uid| uid != local::current_uid()) {
             return Err(refused());
         }
-        Ok(Self { stream, buffer: Vec::new() })
+        Ok(Self { stream, buffer: Vec::new(), searched: 0 })
     }
 
     /// Sends one command, as the line the socket reads.
     pub fn send(&mut self, line: &str, wait: Duration) -> Result<(), AgentError> {
-        self.stream.set_write_timeout(Some(wait)).map_err(|_| ended())?;
+        // Never decides anything, for the reason in `read`: a session that's gone shows at the write, which says so.
+        let _ = self.stream.set_write_timeout(Some(wait));
         let mut framed = String::with_capacity(line.len() + 1);
         framed.push_str(line);
         framed.push('\n');
@@ -53,9 +56,10 @@ impl Client {
 
     /// Reads one line of answer, and checks it speaks this version.
     pub fn read(&mut self, wait: Duration) -> Result<Value, AgentError> {
-        self.stream.set_read_timeout(Some(wait.max(Duration::from_millis(1)))).map_err(|_| ended())?;
+        // macOS refuses this once the other end has closed, and an answer can be waiting by then: `stop` answers and closes. So the read below decides, and a closed socket can't leave it waiting.
+        let _ = self.stream.set_read_timeout(Some(wait.max(Duration::from_millis(1))));
         loop {
-            if let Some(at) = self.buffer.iter().position(|byte| *byte == b'\n') {
+            if let Some(at) = line_end(&self.buffer, &mut self.searched) {
                 let value: Value = serde_json::from_slice(&self.buffer[..at]).map_err(|_| bad_answer())?;
                 self.buffer.drain(..=at);
                 if value["v"] != VERSION {
@@ -84,6 +88,13 @@ impl Client {
     }
 }
 
+/// Where the next line ends, looking only at what hasn't been looked at. A large answer comes a few kilobytes at a time, and looking from the start after each would make its cost grow with its square. The caller takes the line out of `buffer` when one's found.
+fn line_end(buffer: &[u8], searched: &mut usize) -> Option<usize> {
+    let found = buffer[*searched..].iter().position(|byte| *byte == b'\n').map(|at| at + *searched);
+    *searched = if found.is_some() { 0 } else { buffer.len() };
+    found
+}
+
 fn ended() -> AgentError {
     AgentError::new("session_ended", "The session ended before it answered.", exit::NOT_RUNNING).then("Start it again with `recto serve --background`. Its tabs and unsaved edits are gone, and `recto status` will say what's there.")
 }
@@ -94,4 +105,43 @@ fn no_answer(wait: Duration) -> AgentError {
 
 fn bad_answer() -> AgentError {
     AgentError::new("bad_answer", "The session's answer couldn't be read.", exit::FAILED)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: the session answers and closes, as `stop` does, before the client gets to read. macOS then refuses to set the socket's timeout, and the client says the session ended before it answered, with the answer sitting there unread.
+    #[test]
+    fn an_answer_is_read_even_after_the_session_has_closed() {
+        let (ours, theirs) = Stream::pair().unwrap();
+        let answer = format!("{}\n", serde_json::json!({ "v": VERSION, "ok": true }));
+        (&theirs).write_all(answer.as_bytes()).unwrap();
+        drop(theirs);
+        let mut client = Client { stream: ours, buffer: Vec::new(), searched: 0 };
+        let read = client.read(Duration::from_secs(5)).unwrap();
+        assert_eq!(read["ok"], true);
+        assert_eq!(client.read(Duration::from_secs(5)).unwrap_err().code, "session_ended", "and after it, the truth");
+        assert_eq!(client.send("{}", Duration::from_secs(5)).unwrap_err().code, "session_ended", "a closed socket doesn't take a command");
+    }
+
+    /// Failure: every read of a large answer looks through all of it again for the line's end, so its cost grows with its square: a 5 MB answer took seconds, and on a slower machine that's enough to look like a client that's stopped. And looking only at what's new mustn't miss a line, or find one twice.
+    #[test]
+    fn finding_a_lines_end_looks_at_each_byte_once() {
+        let (mut buffer, mut searched) = (Vec::new(), 0);
+        for _ in 0..100 {
+            buffer.extend_from_slice(&[b'x'; 8192]);
+            assert_eq!(line_end(&buffer, &mut searched), None);
+            assert_eq!(searched, buffer.len(), "the next look would start over");
+        }
+        let end = buffer.len();
+        buffer.extend_from_slice(b"\nnext\nlast");
+        assert_eq!(line_end(&buffer, &mut searched), Some(end));
+        buffer.drain(..=end);
+        assert_eq!(line_end(&buffer, &mut searched), Some(4), "a line already here, after the one taken");
+        buffer.drain(..=4);
+        assert_eq!(line_end(&buffer, &mut searched), None);
+        buffer.push(b'\n');
+        assert_eq!(line_end(&buffer, &mut searched), Some(4), "the rest of a line that came in two reads");
+    }
 }

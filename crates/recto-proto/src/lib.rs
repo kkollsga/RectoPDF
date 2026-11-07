@@ -82,6 +82,8 @@ pub enum Kind {
     /// Asks for a page's contents, or the next piece of them. See [`contents`].
     ContentsRequest = 32,
     Contents = 33,
+    ImagesRequest = 14,
+    Images = 15,
 }
 
 impl Kind {
@@ -102,6 +104,8 @@ impl Kind {
             13 => Self::Traits,
             32 => Self::ContentsRequest,
             33 => Self::Contents,
+            14 => Self::ImagesRequest,
+            15 => Self::Images,
             _ => return Err(ProtoError("unknown frame kind")),
         })
     }
@@ -124,6 +128,8 @@ impl Kind {
             Self::Traits => PAGE_TRAITS_LEN as u32,
             Self::ContentsRequest => contents::CONTENTS_JOB_LEN as u32,
             Self::Contents => contents::MAX_CONTENTS_FRAME,
+            Self::ImagesRequest => SIZE_REQUEST_LEN as u32,
+            Self::Images => (8 + MAX_IMAGE_BOXES * IMAGE_BOX_LEN) as u32,
         }
     }
 }
@@ -290,6 +296,12 @@ impl RenderJob {
             return Err(ProtoError("scale out of range"));
         }
         check_dimensions(self.rect.width, self.rect.height, self.stride)?;
+        // Past this, it's on no page at any scale, and adding to its position can overflow.
+        for (start, length) in [(self.rect.x, self.rect.width), (self.rect.y, self.rect.height)] {
+            if u64::from(start) + u64::from(length) > u64::from(MAX_PAGE_EDGE_PX) {
+                return Err(ProtoError("tile off the edge of any page"));
+            }
+        }
         if self.tile_edge != 0 {
             check_region(self.rect, self.tile_edge)?;
             if self.bytes_needed() > MAX_REGION_BYTES {
@@ -591,6 +603,56 @@ impl PageTraits {
         let traits = Self { job_id: r.u32()?, largest_image_pixels: r.u64()? };
         r.end()?;
         Ok(traits)
+    }
+}
+
+pub fn encode_images_request(job_id: u32, page: u32) -> Vec<u8> {
+    let mut p = [0; SIZE_REQUEST_LEN];
+    p[..4].copy_from_slice(&job_id.to_le_bytes());
+    p[4..].copy_from_slice(&page.to_le_bytes());
+    frame(Kind::ImagesRequest, &p)
+}
+
+/// The most image rectangles a page reports. Past this they're given as one, around them all: many small images in a row are a picture cut in strips.
+pub const MAX_IMAGE_BOXES: usize = 64;
+const IMAGE_BOX_LEN: usize = 8;
+
+/// Where a page's images are, as parts of the page from its top left, in 65535ths, as `[left, top, right, bottom]`, so they hold at any scale and any rotation. Only chooses how pixels are coloured, so a lie gets a worker a picture it could draw anyway.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageImages {
+    pub job_id: u32,
+    pub boxes: Vec<[u16; 4]>,
+}
+
+impl PageImages {
+    pub fn encode(&self) -> Vec<u8> {
+        let count = self.boxes.len().min(MAX_IMAGE_BOXES);
+        let mut p = Vec::with_capacity(8 + count * IMAGE_BOX_LEN);
+        p.extend_from_slice(&self.job_id.to_le_bytes());
+        p.extend_from_slice(&(count as u32).to_le_bytes());
+        for side in self.boxes.iter().take(count).flatten() {
+            p.extend_from_slice(&side.to_le_bytes());
+        }
+        frame(Kind::Images, &p)
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<Self, ProtoError> {
+        let mut r = Reader(payload);
+        let job_id = r.u32()?;
+        let count = r.u32()? as usize;
+        if count > MAX_IMAGE_BOXES {
+            return Err(ProtoError("more image boxes than a page reports"));
+        }
+        let mut boxes = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut sides = [0u16; 4];
+            for side in &mut sides {
+                *side = u16::from(r.u8()?) | (u16::from(r.u8()?) << 8);
+            }
+            boxes.push(sides);
+        }
+        r.end()?;
+        Ok(Self { job_id, boxes })
     }
 }
 

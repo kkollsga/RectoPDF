@@ -7,7 +7,7 @@ document.documentElement.dataset.theme = theme;
 const svg = (w, h, inner, extra = "") => `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round" ${extra}>${inner}</svg>`;
 const I = {
   search: svg(16, 16, '<circle cx="7" cy="7" r="4.6"/><path d="m10.6 10.6 3.4 3.4"/>'),
-  ask: svg(16, 16, '<path d="M2.5 4.4c0-1 .8-1.9 1.9-1.9h7.2c1 0 1.9.9 1.9 1.9v5c0 1-.9 1.9-1.9 1.9H7.2L4.3 13.6v-2.3c-1 0-1.8-.8-1.8-1.9z"/><path d="m5.6 5.6 1.7 1.3-1.7 1.3M8.7 8.3h1.8"/>'),
+  ask: svg(16, 16, '<path d="M8 1.2C8.35 5.6 10.4 7.65 14.8 8 10.4 8.35 8.35 10.4 8 14.8 7.65 10.4 5.6 8.35 1.2 8 5.6 7.65 7.65 5.6 8 1.2z" fill="currentColor" stroke="none"/>'),
   sign: svg(16, 16, '<path d="M10.8 2.6 13.4 5.2 6.3 12.3 2.8 13.2 3.7 9.7z"/><path d="M9.3 4.1 11.9 6.7"/>'),
   night: svg(16, 16, '<rect x="3.2" y="1.9" width="9.6" height="12.2" rx="1.4"/><path d="M8 4.6a3.4 3.4 0 0 1 0 6.8z" fill="currentColor" stroke="none"/>'),
   more: svg(16, 16, '<circle cx="3.4" cy="8" r=".9" fill="currentColor"/><circle cx="8" cy="8" r=".9" fill="currentColor"/><circle cx="12.6" cy="8" r=".9" fill="currentColor"/>'),

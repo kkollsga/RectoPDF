@@ -409,6 +409,29 @@ mod tests {
         assert!(matches!(indexer.job(key(2)), JobState::Failed(_)));
     }
 
+    /// Failure: a build paused because the Mac was too busy counts as failing, so `wait` ends with the index "couldn't be built" and nobody can ask again for a minute. It's taken up as soon as it's asked for.
+    #[test]
+    fn a_paused_build_isnt_a_failure_and_goes_on_when_asked() {
+        struct Paused(Arc<AtomicU32>);
+        impl Runner for Paused {
+            fn run(&self, _job: &IndexJob, _root: &Path, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                json!({ "state": "paused", "code": "too_busy" })
+            }
+        }
+        let runs = Arc::new(AtomicU32::new(0));
+        let indexer = Indexer::with_runner(Path::new("/nowhere"), Box::new(Paused(Arc::clone(&runs))));
+        for expected in 1..=2 {
+            indexer.ask(job(1));
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while runs.load(Ordering::SeqCst) < expected || indexer.load() != (0, 0) {
+                assert!(Instant::now() < deadline, "it wasn't taken up");
+                std::thread::yield_now();
+            }
+            assert_eq!(indexer.job(key(1)), JobState::Idle, "a pause isn't a failure");
+        }
+    }
+
     /// Failure: a cancel while a build is just starting comes before it can be stopped, so it runs on anyway. Or its ending counts as failing, and the next ask is turned away for a minute. And a cancel of one file takes another off the queue.
     #[test]
     fn a_cancel_stops_only_what_it_names_and_isnt_a_failure() {

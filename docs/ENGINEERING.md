@@ -6,7 +6,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 
 | Crate | Status | Contract | Must not |
 |---|---|---|---|
-| `recto-platform` | **Started** | File identity, process footprint, handle count, `isolate`: child process, channel with handles, shared memory, loaded library. Later `surface`, `fswatch` | Hold policy |
+| `recto-platform` | **Started** | File identity, process footprint, handle count, `isolate`: child process, channel with handles, shared memory, loaded library. `surface`: IOSurface, and the link that carries one to a worker. Later `fswatch` | Hold policy |
 | `recto-core` | **Started** | Lazy document structure over the lopdf fork's `IndexedReader`: facts, page count, contents. Later the append writer | Know about tiles, threads or an OS |
 | `recto-proto` | **Started** | Job and tile wire types, no dependencies. The host validates everything from the renderer | |
 | `recto-render` | **Started** | `render_tile(page, rect, scale, &mut [u8], cancel)` behind `RenderBackend`, page text, and a page's contents a frame at a time. PDFium, by raw FFI | Allocate surfaces, name an OS, decide policy |
@@ -14,13 +14,15 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `recto-index` | **Started** | Line order, text normaliser and hidden-text report: pure functions on the host's side. The page-text corpus on disk: its format, its builder over any page source, its reader and eviction | Touch the UI; name a renderer |
 | `recto-indexer` | **Started** | A helper process: builds one document's corpus through a render worker, at background priority, and exits | Hold PDFium; decide what gets indexed |
 | `recto-svg` | **Started** | Streaming SVG writer over `io::Write`, with PNG and base64 written as bytes arrive. Knows nothing about PDFs | Build a document in memory |
+| `recto-reader` | **Started** | The page view with no toolkit: where pages sit, which tiles are wanted, what's kept, what the host is told, dark paper. One thread that runs the renderer | Name a UI toolkit; wait on the UI thread |
 | `recto-sign` | **Started (placeholder)** | Final seams for PAdES creation and the honest report; `PlaceholderSigner` always refuses | Depend on `recto-render`; produce anything that looks like a signature |
 | `recto-session` | **Started** | Tabs, tiers, sidebar and view models: all the rules | Name a UI toolkit |
 | `recto-agent` | **Started** | Typed, versioned commands, permission levels, the JSON envelope. `table.rs` is the one list of commands: the CLI's grammar, `recto help`, the level checks, `SKILL.md` and `REFERENCE.md` all come from it | Hold state of its own |
 | `recto-control` | **Started** | The long-running side: the server on the local socket, the level's file, the activity log, the state folder, the thin client. A `Host` trait, so the app can carry the same socket | Name a UI toolkit; hold a rule about documents |
-| `recto-ffi` | Planned | UniFFI, pinned to what the C# generator supports (0.31 in Seedwell); every call async or bounded | Hold rules |
+| `recto-ffi` | **Started** | UniFFI, pinned to what the C# generator supports (0.31); every call cheap or handed to a parked thread. Joins the app to the session and socket. Hang watchdog, the way QA commands reach the UI thread | Hold rules |
 | `recto-cli` | **Started** | `recto`: a thin client of the session on the socket, plus an in-process route for tests that uses the same dispatch, levels and log | Link AppKit |
-| `app/` | Planned | AppKit host, QA channel | Hold rules |
+| `app/` | **Started** | AppKit host, QA channel. A Swift package, built by `app/build.sh`, ad-hoc signed | Hold rules |
+| `recto-testpdf`, `recto-fuzz` | **Started** | Test-only: PDFs written for tests, and one check on bytes for each thing that takes hostile input. Nothing that ships depends on these | Be depended on by anything that ships |
 
 ## Quality bar
 
@@ -43,6 +45,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `edit::Entry` | Step of an edited tab's undo history, at most 256 and their undone ones | ≤ 32 B |
 | `Conn` | Connected client, at most 128 | ≤ 320 B plus what it's sending and being sent |
 | `recto_index::order::Line` | Line of a page in hand, at most 16,384, only while it's being read | ≤ 72 B |
+| `recto_reader::layout::Override` | Visited page whose size isn't the document's usual one, at most 65,536, hot and warm tabs only | ≤ 32 B |
 | `corpus::PageRecord` | Page in a corpus, on disk, read back one at a time | 28 B on disk |
 | `indexing::IndexJob` | File waiting for an index, at most 16 and one running. No tab holds one | A path and 32 B |
 
@@ -52,11 +55,13 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 |---|---|
 | `lopdf` (fork) | The lazy `IndexedReader`, and later the append writer. Pinned to a git revision |
 | `serde`, `serde_json` | The agent JSON envelope |
+| `uniffi` | Swift bindings for the app, and C# later from the same definitions. Held at 0.31. `default-features = false`, so its command-line generator, with `clap` and the like, is only built behind the `bindgen` feature for `uniffi-bindgen`, and not linked into the app |
 | `libc` | `proc_pid_rusage` for footprint, process, channel and shared-memory calls, and the control socket's `poll` and `getpeereid`, `recto-platform` only |
 | `flate2` | Compresses `render`'s PNG and the PNGs in an SVG. Already in the tree through lopdf, so it adds no crate. `recto-agent` and `recto-svg` only |
 | `crc32fast` | A checksum per page of a corpus, in hardware on this Mac. Already in the tree through flate2, so it adds no crate. `recto-index` only |
 | `grep-regex`, `grep-matcher` | `search --regex`: ripgrep's own engine, run here, so no program is started and nothing like `rg --pre` can run. `grep-regex` brings `regex-automata`, `regex-syntax` and `bstr`. Not `grep-searcher`: it's for reading files by line, where pages are already in memory and patterns cross lines, and it would add `encoding_rs` and `memmap2`. Both MIT or Unlicense. The way it's set up follows `crates/mcp-methods/src/grep/searcher.rs` in the owner's `mcp-methods`, MIT. `recto-agent` only |
 | `sha2` | Names a corpus for its file, from its identity and samples of its bytes. Already in the tree through lopdf, so it adds no crate. `recto-index` only |
+| `libfuzzer-sys` | `fuzz/` only, which is outside the workspace: nothing in the normal build sees it |
 | PDFium (not a crate) | Draws pages. `bblanchon/pdfium-binaries` release `chromium/8125`, PDFium 158.0.8125.0, no V8, no XFA. Loaded at run time, by the worker alone. `tools/pdfium.sh` fetches it from that release's URL to `target/pdfium/` and stops unless the tarball is SHA-256 `4939bd93…139d` and the library `a45c4464…373a`; `--attest` also runs `gh attestation verify`. It links AppKit; see the sandbox note below |
 
 **No `pdfium-render`.** The spike used it only for raw bindings, because its high-level loaders can't take a `pread` callback and `PdfDocument::handle()` is crate-private. 27 signatures in one file cost no crate; `pdfium-render` costs 24 in the tree. The worker is 0.48 MB here against the spike's 1.3 MB, which also carried JSON.
@@ -252,6 +257,146 @@ The last column is why `both` is the default: a font the reader doesn't have cha
 
 **Not tested.** Illustrator, Inkscape, Figma or any other reader of SVG but Chrome and WebKit, which matters most for `vector-effect` and `pointer-events`. A CMYK JPEG's colours against another engine. How a reader treats a JPEG's embedded profile. Vertical or right-to-left text. Encrypted files through a password. The hairline difference hasn't been measured apart from the rest. Pictures of whole pages past 100 Mpx: a page too large for the scale asked has its pictures drawn at the largest scale that fits, and says so.
 
+## The app
+
+`app/` is a Swift package with AppKit and no SwiftUI. `app/build.sh` makes `app/build/RectoPDF.app`: Rust, then the bindings, then Swift, then an ad-hoc signature, with `recto`, the worker and PDFium beside the app's executable for now (at release they move into the nested helper: `docs/research/2026-11-07-sandbox-spike.md`). `--quick` needs no Xcode. `--full` builds the app and drives it. Where a worker comes from is in one place, `Worker::start`.
+
+**One session.** The app holds a `SessionHost`, runs the same `Server` on a thread blocked in `poll`, and wraps it in a `Host` of its own, so `recto tabs` and `recto goto` act on what's on screen. What the app does itself goes through `with_session`, as the owner's. A socket another session holds doesn't stop a normal run, and a QA run refuses. Things the reader does that aren't commands reach watchers through `Server::announcer`.
+
+**Threads at rest, all parked or asleep:** main, `recto-control` in `poll`, `recto-session` on a condvar, `recto-pages` parked, `recto-watchdog` parked, the reaper while a worker lives, and AppKit's own. The UI thread calls Rust for three things: `set_viewport` on each scroll (a short lock and a few map lookups, at most 8 surfaces reclaimed), `drain_ops` when told there are some, and pulling a published snapshot of the sidebar. Anything that can take time goes on `recto-session`, because waking a cold tab reads its file with the session's lock held. So it can stall the session thread, and `recto status` and the UI thread both still answer. No display link: tiles arriving hop to the UI thread once each, which needs no tick at rest and works off screen.
+
+**How a tile reaches the screen, with no copy.** The host makes the surface, so it's charged to the host and outlives the worker. A socket pair can't carry an IOSurface, since it crosses as a Mach port, so each worker is started with a send right in an exception-port slot that nothing raises, set by `posix_spawn`. It sends back a send right to a port of its own and clears the slot. There's no name in any registry, and after that the host never receives from it. A job's surface goes to that port just ahead of its frame, the worker maps it, draws, and unmaps, and the layer's `contents` is that same surface. Measured with 64 tiles: the host's footprint rises 64 MiB, the worker's by nothing, and creating, sending, looking up, filling and hearing back is 0.13 ms a tile. A copy into a surface would have been 15 µs warm a tile, plus its first touch, so this wasn't for speed: it's so there's one copy of a tile, and so a worker's limit doesn't count tiles. **In the sandbox:** the same two programs in a helper `.app` with the App Sandbox entitlement and the spike's Mach drop run correctly: rendezvous, 64 surfaces round trip, pixels verified, host charged. The drop leaves receive rights alone. The first surface takes 64 ms and adds about 4 MiB to the worker, loading IOSurface after the drop. That's the C test only, with no PDFium in it. **What this gives up:** "pixels are copied out of shared memory" no longer holds on this path. A compromised worker can keep its right and rewrite a tile that's on screen. It could already draw a wrong picture, but it can now change it later. `recto render` and everything else that writes a file keeps the shared-memory path.
+
+**Regions** are one surface and one layer, with no cutting up. Blank tiles get no surface, only a colour, or nothing if they're the paper's colour. Grey tiles are still BGRA: `L008` would take a text page's tiles to a quarter, and it's only known correct in `render(in:)`, not on a real screen, so it waits for the MacBook spike.
+
+**What's kept**, all in `recto_reader::tiles`: what's on a layer stays. Off a layer it goes discardable the moment the host says it's applied, which takes it out of the footprint: 64 tiles go from 66.6 to 2.7 MiB. Kept: 256 MiB and 1,024 surfaces of tiles, least recently used first, and 128 previews, which outlive their tiles. **A surface serves one job.** There is no pool: a worker can read and write a surface it was sent for as long as it lives, so reuse would be a way from one file's worker to another file's pixels. It costs 51 µs more a tile, 67 against 16 p50, nearly all the first touch of its pages. Attached: at most 8 a turn, with every visible page's preview first. A cold tab has no entries and no renderer, and a closed window has neither. The page layout costs nothing per page: pages are taken to be the size of the first one known until asked about, and only pages of another size are stored, so a file claiming 8 million pages costs nothing until it's read.
+
+**A worker past the retirement line goes 3 s into a pause** (`BIG_WORKER_REST`), not the idle rule's 30. It's the only timer in the page view, and it's there only while such a worker is. The USGS map at rest goes from 433 MiB to 36 MiB, and the first move after that pays for the image again.
+
+**Pinch and scroll.** Layers are page-relative in PDF points, under one transform per page, so a pinch moves one transform and a change of fit moves no tile. Tiles stretch during a pinch, and nothing's drawn until it ends. New tiles go on top of old ones, which come off when the page's visible tiles are all there. Pages are snapped to whole device pixels. `NSScrollView` does the scrolling, so rubber-banding, momentum and the scrollers are the system's. **Not checked on a screen:** a quiet run has none.
+
+**Dark paper** is done to the tile's pixels in `recto-reader`, not by a layer filter: a filter makes the compositor take an offscreen pass every frame, and `render(in:)` leaves it out, so a shot wouldn't show it. On a page of text, lightness turns over and each pixel keeps its distance from grey, so a blue link is lighter blue.
+
+**Each image is judged by its own pixels** (owner, 2026-11-07: scans "appear bright white", and "similar with images with white bg"). `PageLook` in `paper.rs` is the whole rule, and there's one for each page, so a tile never decides for itself and a page can't come out in two halves. An image whose background is white or paper-like turns over with the page, off-white landing on `DARK_PAPER` exactly (`NEAR_WHITE_SNAP`, with gains from the image's own background), and coloured lines keep their hue. Anything else stays itself, a little dimmed, from where the renderer says it is. **A page whose images keep their colours over `MOSTLY_PICTURE` of its area isn't turned over at all:** it's dimmed by `PICTURE_PAGE_DIM`, 176 in 256. Uncertain is left alone, dimmed, on purpose: it can't produce a negative, and a bright page is the worse look only when it's a page of text, which is what the rule catches.
+
+**What counts as white.** Paper-like: lightest channel at least `PAPER_LIGHTEST_CHANNEL` and spread at most `PAPER_MOST_SPREAD`, so yellowed, grey and shaded scans count. An image that's `SCAN_LEAST_PAPER` paper with at most `SCAN_MOST_COLOUR` real colour is a scan. Pure white, by `WHITE_LIGHTEST_CHANNEL` and `WHITE_MOST_SPREAD`, over `WHITE_LEAST` of the image with at most `WHITE_MOST_COLOUR` colour is a chart or a diagram on white. With no boxes known, the whole page is judged and `WHOLE_PAGE_MOST_COLOUR` is stricter, since its margins are paper whatever it holds. Under `LEAST_PIXELS_TO_JUDGE` an image stays itself.
+
+**When it's decided.** Before the page's first tile is attached, so there's no flash and no second look. From the preview's pixels when the preview job runs, or a picture at 512 px drawn first if it doesn't. It's kept in `OpenDoc.looks`, at most `MAX_LOOKS` pages, cleared when the file changes. A low-resolution page gets the same answer as a sharp one, since it's the page that was judged, and a failed answer can't leave a negative in the cache, as a job gone stale is thrown away as cancelled.
+
+**A photo in a scan.** A small one flips with the rest, as the owner accepted, and looks like a negative. A big colour one, with over 20% of the image's pixels in real colour, keeps the page from being a scan, so the page is dimmed rather than flipped.
+
+**What a worker can do to it:** a worker emptying a surface it holds, with `IOSurfaceSetPurgeable`, across a real process boundary, leaves the host reading zeros and writing normally, with no fault (`hostile_surface.rs`), so the turn stays in the host.
+
+**What it costs,** release, under load: flipping a 512 px tile 547 µs p50, flipping and whitening 759, dimming 119, judging a page 209, each on a tile or page that's being drawn anyway. Screen only: exports, `recto render` and search don't see it.
+
+**How it came out,** `tests/look_survey.rs`, the same picture of each page a person looked at, 1,256 pages and 489 images. By eye, on sheets of what flipped and what stayed:
+
+| | Pages | Came out |
+|---|---:|---|
+| Made scans: white, yellowed, grey, noisy, shaded, stamped | 48 | 48 flip |
+| Made scans with a big colour photo | 8 | 5 dimmed, 3 flip with a negative photo |
+| Real scan-like pages: NASA `ntrs20150023275` p3 to 8, `ntrs20160011963` p2, `attention` p3 | 8 | 8 flip |
+| USGS sheets `70277338`, `70277269`, `70277797`, `70277798` | 4 | 4 dimmed, none flipped |
+| Full-page pictures: NASA `ntrs20240002628` p51, p101, `ntrs20220005969` p175 | 3 | 3 dimmed |
+
+**Its mistakes, each way.** Of 214 images that flip, about 8 have a real photo or artwork in them that goes negative: figures with small photos in `cs_CV_2607.28611` and `physics_optic`, and a pencil sketch and a silhouette in `cs_CV`. Of 275 that stay, 138 distinct, about 10 would have looked better flipped, and show as a grey box: tinted diagrams in `cs_CL` and `cs_SE`, and logos with a lot of colour in a white box, like NASA's and the World Bank's, which repeat on every page, 82 of the 275 being three small logos. **The corpus has few true scans,** one OCR'd PDF among them, so a scanner's odder output is known only from the made ones.
+
+**Warm paper** is white paper with a tint over it. Each page has one extra layer of a single colour (`WARM_PAPER`, a named constant in `recto-session`, with its reason and a WCAG AA test) and the compositor's multiply filter, so going to it or from it draws no tile and keeps nothing per tile: a test holds to no draw. Black stays black. A multiply is the same sum everywhere, so a photo or map under it takes R×0.96, G×0.93, B×0.86, the same as the paper: a white in a photo goes cream, and no colour turns over. A shot does that sum on the bitmap, since `cacheDisplay` leaves compositing filters out. **Not checked on a screen:** the multiply itself and its cost a frame. Exports and snapshots never see any paper. With none chosen, paper goes with the window, white or dark. `recto view --paper` sets it, for the app, in the state folder.
+
+**The contents area.** `sidebar_heights` in `recto-session` shares the sidebar's height. The contents never take over `CONTENTS_MAX_SHARE`, 60% of it (owner, 2026-11-07: "The max height of toc does not seem to be working"), so a long outline with one tab leaves the rest empty. Other tabs and the footer stay, and a longer tab list scrolls by itself. Contents are one `NSTableView` pulling rows from Rust with `contents_rows(first, count)`, so a 10,000-entry outline holds about 29 row views.
+
+**Scrollers, as in Pages** (owner, 2026-11-07). The system `NSScroller`, overlay, no width reserved, and a horizontal one only when the page is wider. `MainWindowController.layout()` sets it, each layout, as `qa.scrollerStyle ?? (AppleShowScrollBars == "Always" ? .legacy : .overlay)`. It has to be set again because AppKit puts classic scrollers back when the setting is Automatic and a mouse is paired, which is this Mac: `AppleShowScrollBars` is unset, and a Bluetooth mouse is paired. A bare script reads `preferredScrollerStyle` as overlay on this Mac and the app read it as legacy, so what Pages does on it can't be told from a setting alone. Dark knobs come from the window's appearance. The vertical scroller stops below the agent icon (`setScrollerTop`), and goes back to the top with the icon hidden.
+
+**Menus and the `⋯` panel** are lists in `crates/recto-ffi/src/menus.rs`: words, order, shortcuts, enabled and ticked. Swift draws them and sends back an id, and `core.perform(id)` returns the `HostAction`, if the host has to do something only it can, like showing an open dialog. `Show Agent Icon` is remembered in the state folder, as the chosen paper is. The panel is docked in the sidebar above the footer, quiet at rest, and holds paper, zoom and focus view.
+
+**One zoom path.** `Zoom::{In, Out, Fit, Actual, To}` in `recto-reader`, with `ZOOM_STEP` 1.25. ⌘+, ⌘-, ⌘0, plain + and -, the menu, the panel and `recto view --zoom` all reach it. ⌘-scroll goes through `zoom_after_scroll` about the pointer, in `PageScrollView`, which doesn't pass that wheel on, so ⌘ never scrolls.
+
+**A file on a dead volume.** A file that doesn't answer holds a thread as long as it likes, so neither the session thread nor a page job waits on one. `open` and `Reader` reads go to one-shot `recto-read` threads, at most `MAX_FILE_READS`, 4, with the flush markers held behind them. A worker's file is opened on a one-shot `recto-open` thread, at most `MAX_OPENINGS`, 4, looked at for `OPEN_LOOK` and given `OPEN_PATIENCE`, 3 s, then the page says so (`NOT_ANSWERING`). Past either cap a file doesn't open and says why. Tested with a FIFO, which blocks an open the way a dead volume does: no real dead volume was used.
+
+**Reposition and rest.** Owner, 2026-11-07: "It can whoosh with smooth acceleration at both ends. It can have a \"dead-zone\" so it doesn't react to small scrolls within the window, so basically it repositions, stays still (while user is reading slowly scrolling) then repositions after the user is scrolling a bit." `ContentsFollow` in `recto-session` is the whole rule, and the host only draws where it says. Inside the dead zone, 12% to 75% of the area's height, nothing moves. Leaving it starts one move, to put the place 30% of the way down. Its shape comes from a third-order chain, a lag into a critically damped spring, so speed starts and ends at about zero with no step when the target changes on the way. It takes 0.6 to 1.1 s by distance. While a move runs it's the move's target that counts, so sections going by fast are one long move and not a row of them. The reader's own scroll stops it, right where it is, and following comes back when the pointer's out, 3 s have passed and the section next changes. With Reduce Motion it goes straight there, and only if the place has left the view. Frames come from a display link on a screen and a timer off one, started for a move and stopped when it's over, so nothing runs at rest, and passing a section costs one comparison.
+
+**A chapter closing makes no second move.** As you leave a chapter it closes and the next opens. If its rows were above the place, the place would drop up the list by that many rows, past the dead zone, and the contents would move straight back, opposite to the move before. So Rust works out how far a change carried the place (`place_shift`, from the two lists), and the scroll takes it up in the same transaction: the place doesn't move on screen, and rows going in the view fade over in 0.15 s. Rows that change only below the place still slide. With the reader in the contents themselves it's the top of the view that stays, and rows in the view slide. **Before and after,** `rfc9110` at 6 pages a second, 10 s, by `qa sweep`: before, a move forward at each change of chapter was followed about 0.1 s later by a move back of 196 to 223 points. After, 6 moves all forward, 690 ms each, at least 0.31 s apart.
+
+**What the moves come to,** `qa sweep`, release, this Mac with other agents' builds running, at load about 8, a window off every screen, so path and timing, not frames seen. Peak speed is taken over 25 ms, since steps aren't evenly spaced.
+
+| Sweep | Moves | Each | Peak | Rests | Place in view |
+|---|---|---|---|---|---|
+| `rfc9110`, 1 page a second, 30 s | 4 | 690 ms, about 340 points | 2,028 points/s | 3.3 s to 10 s | every step |
+| `rfc9110`, 6 pages a second, 10 s | 6 | 690 ms, 310 to 340 points | 2,059 | 0.31 s to 1.1 s | every step |
+| `rfc9110`, 40 pages a second, 4 s | 1 | carries on: 3,599 ms, 5,208 points | 8,691 | | 473 of 480 steps, from 431 of 478 before a trailing move could catch up |
+| 10,000 entries, 1 page a second, 25 s | 1 | 654 ms, 364 points | 2,370 | 12 s | every step |
+| 10,000 entries, 6 pages a second, 10 s | 4 | 650 ms, 364 points | 2,148 | 1.5 s | every step |
+| 10,000 entries, 40 pages a second, 6 s | 1 | carries on: 5,660 ms | 5,280 | | every step |
+
+All forward. A 10,000-entry outline holds 28 row views, and the app 16.7 MiB. The outline's runs were at load 42, which took the UI step's p99 to 12.8 ms at 40 pages a second, from 0.65 at load 8 on `rfc9110`: it wasn't measured at a lower load on this build. The move back of 168 points in one earlier run at 1 page a second, 6 rows, didn't come again, and a test with chapters on a real outline holds that reading forward never moves back. How it feels can't be judged from any of this.
+
+**Many tabs,** before and after these fixes, on one app growing to 10,000 tabs of `rfc9110`, at load 8 to 16. Off screen.
+
+| | 1,000 before | after | 10,000 before | after |
+|---|---:|---:|---:|---:|
+| Opening them all, by `recto open` each | 121 s | 31 s | 1,301 s | 272 s |
+| A `goto`, settled | 163 ms | 67 ms | 158 ms | 24 ms |
+| Sidebar back after focus view | 42 ms | 91 ms | 72 ms | 32 ms |
+| UI step p99, 6 pages a second | 670 µs | 760 µs | 704 µs | 342 µs |
+| Steps got through, of 600 | 592 | 595 | 462 | 600 |
+| Worst stall of the UI thread | 53 ms | 210 ms | **2,960 ms** | 605 ms |
+| App | 29.4 MiB | 25.7 MiB | 35.9 MiB | 34.8 MiB |
+
+The 1,000-tab "after" ran at a higher load than the "before". Run again later at load about 10, not alone: opening them all 18 s, a `goto` 19 ms, sidebar back 25 ms, UI step p99 461 µs, 600 of 600 steps, worst stall **81 ms**, 29.2 MiB. So sidebar back and most of the stall were load, but it isn't settled that 81 is no worse than the 53 before: a quiet run of both builds is a follow-up in `docs/PLAN.md`.
+
+**The rise per tab,** 500 tabs of a file, by `heap` and `vmmap`, at load 10 to 20. The suspects were fresh surfaces, and tiles not yet discardable. Neither is growing: the app's `IOSurface` dirty memory doesn't move by a KiB from 2 tabs to 500, or after 20 s more, and the rise is small. NASA 23.8 to 24.1 MiB, the 2 GiB file 13.3 to 13.5, USGS 20.0 to 20.3, with the same largest classes in the same amounts on all three. Over 1,000 tabs, the 2 GiB file rose 0.25 and 3.31 MiB on the same build, the higher one with 2.27 of it already by 100 tabs and little after, and NASA 0.30, against about 3 before. So it isn't a cost per tab, and it was within the budget of 4 each time, but that one high run wasn't caught under `heap`, so what it was is not known.
+
+**Surfaces made outside the reader's lock,** two builds differing by only that, side by side on the 2 GiB file at load 7 to 20, two runs each: worst stall of the UI thread 36 and 22 ms with the lock held, 18 and 17 with it let go. Two runs each isn't proof, and one surface takes 12.5 µs to make and drop, so this doesn't explain the 22 and 43 ms seen earlier by itself. UI step p99 at 40 pages a second: 1,548 and 237 µs before, 766 and 679 after, which is load.
+
+**Showing a shortened name.** One tracking area on the sidebar. After a short rest over a cut-off row, a label opens in place over it, past the sidebar's edge if it must, and goes on leaving. Rows don't move. A timer exists only during that short wait. Rust gives the text (`row_full_text`): cleaned of control and direction characters and held to 400. `recto qa hover` and `qa reveal` report what it would show.
+
+**What a worker can hold.** A surface costs the host, and the worker that was sent it can keep it as long as it lives, which no limit on its own memory sees. So each worker's surface bytes are counted: past `surface_bytes_cap`, 1 GiB, it's retired before its next page, and at twice that before its next job, so a one-page file can't dodge it. That's about 80 pages of text a tile at a time, for a restart of 17 ms.
+
+**Who quits.** `recto stop` is refused by a normal app, and says only the user quits it. A quiet run stops when told.
+
+**Which version of the contents the host has.** A chapter closing is a change to the list, sent as where it differs from the one before, with a version. The diff stays with its version until the next change. The host applies version + 1, nothing for the same version, and reloads if it's further behind, so a publish twice for one change or two changes in one pull can't leave it wrong.
+
+**Many tabs.** The tabs' rows cross to the UI thread only when their version moves. The active tab's index comes with the model, so a table reload isn't quadratic. A tile drawn doesn't go through the sidebar at all.
+
+**What AppKit calls.** Every other QA verb calls the method behind an event, so a method AppKit can't reach by name passes them all. Full names and hover details never fired on a real window for that reason: the tracking owner isn't a responder, and its handlers weren't Objective-C, and a plain `@objc` would have been `mouseEnteredWith:`. `recto qa entry-points` checks each owner answers the selector AppKit sends, and goes by the selector where an event can be made and handed over, with nothing posted: hover, pointer, wheel, the pinch's notifications, focus view's corner. **Not covered:** a real pinch or click, whose events can't be made, so for rows and buttons it's that the target answers the action.
+
+**Text isn't an `NSTextField`.** On macOS 27 each `-[NSTextField layout]` makes a view, whose `-[NSKeyValueDependencyInfo initWithOwner:]` leaves records in AppKit for good. It came to about 7 KiB for each tab opened and more while reading, and took 1,000 tabs of a drawn PDF to 5.7 MiB. `TextLine` draws an attributed string instead: 0.8 KiB a tab, found with `heap` and `malloc_history`.
+
+**Colours aren't dynamic `NSColor`s:** there's one per appearance, told again when it changes.
+
+**The QA channel.** `recto qa start` runs the app with `--qa` on a state folder set with `RECTO_STATE_DIR`, and the app refuses anything else. It has the activation policy `.prohibited` from before AppKit does anything, so no Dock icon or menu bar and it never activates. Its window is never ordered in, sits off every screen, and draws as key at 2x. There's a 10-minute limit. `recto qa state` reports what the app says it's showing. `recto qa shot` draws the window's frame view with `cacheDisplay` into a 2x bitmap, which needs no permission. `recto qa wait-settled` goes through the session thread's queue first, then waits for what's visible to be on layers. Drive verbs call what the event calls, and answer after that's been through the session thread and laid out, so no script sleeps. `recto qa run` runs a script and gives PASS or FAIL, and a 2 s stall fails it. `recto qa sweep` reports each contents move, with its length and peak, and the rests between. `qa` rows are Read-only or Control, and a session that isn't a quiet app answers `qa_needs_app`. They're in `recto help`, and left out of the skill. **Not covered:** the step from a real event to the method it calls has no unit test, only the method. Run-loop blocks from Rust are in their own autorelease pool, as AppKit only drains its pool after an event.
+
+**The watchdog.** The UI thread says when it wakes and sleeps, from a run-loop observer. One thread watches only while it's awake, looking every 250 ms, and notes 1 s and counts 2 s. `recto qa stall` proves it fires.
+
+**Measured** 2026-11-07, release build, this Mac (M4, 16 GB, other agents building at the same time, load 8 to 15), quiet run: a window off every screen, so **frames reaching a display, what a visible window's backing adds, and 120 Hz aren't in any of this**. `recto qa budget --file F --heavy H`, whole tree unless it says.
+
+| Budget (`SPEC.md` §2) | Target | Measured | |
+|---|---|---|---|
+| Cold start to first sharp page, `rfc9110`, process start to settled, 21 runs | ≤ 300 / ≤ 500 ms | **231 / 300 ms** p50 / p95 at load 10 to 20 (252 / 300 at load 8), and **171 to 245** side by side with the build before these fixes at load 15 to 28, where that took **373 to 561** | Met |
+| One document, text page | ≤ 60 MiB | **32.9 MiB** | Met |
+| Colour page: NASA `ntrs20240002628` p50, images | ≤ 100 MiB | **37.7 MiB** | Met |
+| The same: NASA `ntrs20220005969` p175, shaded backgrounds | ≤ 100 MiB | **210 MiB**: the worker's 184, PDFium's transparency buffers, as already measured in `budget viewport`. It goes after 3 s at rest | **Missed** |
+| Scrolling, peak: `rfc9110` at 6 / 40 pages a second | ≤ 170 MiB | **40 / 43 MiB** | Met |
+| The same: NASA images | ≤ 170 MiB | **97 / 91 MiB**, 99 / 103 before. 40 pages a second on `rfc9110`, side by side at load 15 to 28: 134 to 160 before these fixes, 44 to 45 after | Met |
+| UI thread's work per scroll step, 120 steps a second | ≤ 2 ms p99 | **0.30 / 0.48 ms** p99 | Met, off screen |
+| Blank on a seen page, during those sweeps | 0 | `rfc9110` **0**. NASA **0** at 6 a second, **12 steps** at 40, as many as 189 under more load | **Missed at 40 a second past 128 pages.** 128 previews are kept, so a page 128 pages back has lost its own. Replayed: blanks fall only on the pages seen earlier, and only after that many. The first measure of 0 was before every page got a preview. Disk previews are what fixes it |
+| Sharp after scroll stops, on pages not drawn yet | ≤ 100 ms | **10 / 13 ms** p50 / worst, one client round trip included | Met |
+| Idle CPU, one document, 20 s, app only | ~0%, ≤ 1 wake-up/s | **0.0%, 0.4 to 1.35** over 20 s from 1 s after settling, with the end of settling in it. Counted in steps of 5 s from settling, `rfc9110` and NASA alike, three runs at load 24: 13 to 62, then 3 to 5, then 0 to 5 each, so under 1 a second from then on | Met, off screen. A worker parked in `poll` wasn't counted |
+| Window closed | ≤ 20 MiB | **11.7 to 14.4 MiB**, no worker | Met |
+| 1,000 tabs of a PDF, over 2 tabs, app's own | ≤ 4 MiB | USGS map **0.31**, NASA **0.30**, 2 GiB file **0.25 to 3.31**, varying with load: 1.19 and 0.06 in the run before. Each was drawn when opened | Met |
+| Sidebar opens, 1,000 tabs: focus off to settled | < 150 ms | **1.4 to 16.6 ms** | Met |
+| Handles at 2 tabs and 1,000 | same | 22 to 25, varying with what's warm. 3 documents held at most | Met |
+| 2 GiB, 10,000 pages, page 1 sharp, warm | ≤ 250 ms | **198 ms** p50, from process start | Met |
+| The same, cold | ≤ 600 ms | **468 ms** worst of 11, its first run after writing the file. Not a true cold start: purging the file cache needs root | Not tested as such |
+| Main never stalls over 16 ms on that file | ≤ 16 ms | **17 to 18 ms** at worst over the whole run, at load 7 to 20, down from **22**, which is one stretch of work in launch or layout, not a page. 20 ms with `rfc9110`, 43 with NASA | **Missed by 6 ms** |
+| USGS map, peak, under the named exception | 415–450 MiB accepted | Fitted **384 MiB**. Zoom 3, about 2x: **440**. Zoom 4.5, about 3x: **496**, worker 459 and app 37. Before, the worker alone at 2x and 3x peaked at 394 and 452 | **Over at 3x** by the tree, as the surfaces were in the worker's number before |
+| USGS map, first view, scroll, zoom | No target | **901 ms** from process start. Zoom to 2x 513, a quarter window 67, 1.5x more 677, at load 10 to 20 (733, 372, 89 and 644 at load 8). Before, by `budget viewport`: 534, 101, 379 | The first and last draw at higher scales than before |
+| 120 Hz, ≥ 99% of frames on time | | **Not tested**: needs the MacBook and a real screen | |
+
+**Before and after on the app's own fixes,** same runs. `TextLine` for `NSTextField`: 1,000 tabs of NASA 5.68 to 2.48 MiB over 2 tabs, and a 400-tab run's heap growth from 2.9 MiB to 0.1. Letting a big worker go: USGS map at rest 433 to 36 MiB. Previews outliving tiles: 84 blank steps on seen pages at 40 pages a second, in a debug run, to 0.
+
+**About the off-screen numbers.** A real window has a backing store and a window-server share that this doesn't, so treat the memory figures as a floor until the MacBook spike. The platform report's sRGB window alone cost 17.6 MiB in a visible state.
+
 ## The search index
 
 **The corpus.** A document's pages as text on disk, one folder per version of a file, under `~/Library/Caches/RectoPDF/corpus.noindex/<key>/v3/`, or the state folder's `corpus.noindex/` with `RECTO_STATE_DIR`, so a QA run leaves nothing anywhere else. `app/` holds what the search reads: `text.pack`, each page's exact normalised text in turn, and `pages.bin`, a fixed record per page. **The text is kept once.** `agent/` holds every page again, as `manifest.json` and `pages/0001.md` onwards, the way the agent report's §6.1 has it for Phase 6's `Read` and `Grep`. Nothing reads that yet, so a build doesn't make it: `recto index --agent` does, from the pack alone, with no PDF involved (owner, 2026-11-07: "Feels a bit inefficient?"). No page's text is in memory past that page, and the session holds no state about any of it. `crates/recto-index/src/corpus.rs` has the layout.
@@ -422,6 +567,23 @@ The two per-open numbers for that PDF aren't comparing like with like: the earli
 | During a job that draws or reads a page | 17: adds the worker's channel, shared memory, the document, a kqueue | 8: stdin, stdout, stderr to `/dev/null`, its channel, the document, shared memory, the system's font folder, one more that PDFium holds |
 | After the job | 10 | gone |
 | While an index builds | 12: adds the helper's stdin and stdout, and its worker counts as above against the helper | as during a job |
+
+## Fuzzing
+
+**One check per thing that takes hostile input,** in `crates/recto-fuzz/src/targets/`, a plain function on bytes. `tests/smoke.rs` runs each on stable with a fixed seed and a mutator that needs no crate, so every `tools/check.sh` runs them, and a failure repeats on any machine. `fuzz/`, outside the workspace, runs the same functions under libFuzzer, on nightly. `tools/fuzz.sh --seconds 300 [target ...]` builds and runs them, each under the heavy lock and releasing it between targets, keeping its corpus and any crash in `target/fuzz-work`. A longer campaign is the same with `--seconds 3600` overnight, seven hours in all, since a run picks up from its corpus. Each target's whole log is in `target/fuzz-work/<target>.log`, and the build queue won't run a command again on the same code after it fails, so a rerun after a crash takes `HEAVY_RETRY=1`. `RECTO_FUZZ_ROUNDS` and `RECTO_FUZZ_SEED` run the stable loop for longer, with no coverage feedback, if nightly isn't to hand.
+
+| Target | What it runs | What must hold |
+|---|---|---|
+| `pdf_bytes`, `pdf_tree` | `inspect`, `signatures`, the sidebar and `contents` on mutated real PDFs, and on PDFs built from the bytes with a true cross-reference table | Returns, within 30 s and 512 MiB. Caps hold, text is clean, "none" only said of what was read |
+| `proto` | Every decoder and validator, and `FrameReader` on a real channel | No allocation before the bytes arrive, decode and encode agree, a reply that differs from its job is refused |
+| `index` | `repair_line_order`, `read_page`, `normalize`, `hidden_report`, up to the wire's 2,000,000 characters, with NaN, infinities and huge boxes | Only whitespace is added or lost, offsets in bounds, within 60 s |
+| `agent` | JSON lines and command lines through `parse`, `parse_cli` and `execute`, selectors, page specs, level files | Caps hold, what the CLI builds the socket takes, a tab's name doesn't reach Off |
+| `control` | Bytes from a client to the real server on a real socket | Every answer is a line of JSON, no job panics, `status` is answered, and the next client gets in |
+| `edits` | Random steps by the owner and by agents through `execute` at Control, against a plain model | The order is the model's, undo inverts, `is_edited` means it differs, no owner's step is lost below Full, caps hold |
+
+**What a hostile page costs in the normaliser.** At the wire's 2,000,000 characters, each with the hyphen flag, a read took 5.2 s and takes 64 ms (release, without LTO, this Mac, one run on the page the `index` target found): only the first 4,096 markers on a page have their words looked at, and the search for a page's own spelling reads at most 32 MiB. Neither is near a real page: all of bench100 has 13,924 markers across 5,872 pages. Past the first cap a hyphen stays a hyphen, which on such a page is no loss.
+
+**A hang or a bomb is a failure.** `recto_fuzz::guard` counts every allocation in the process, ends it past 1 GiB, and holds each check to its time and memory. A fuzz build has debug assertions and overflow checks on, and the default sanitizer is none, for speed: everything here is safe Rust but the OS seam, and `FUZZ_SANITIZER=address tools/fuzz.sh control` covers that. **An open question:** under that sanitizer with libFuzzer's leak check on, two runs ended with the server not answering a new client, on a different input each time and not on replay. With the check off, which is what `tools/fuzz.sh` now does, two runs didn't, and no run without the sanitizer has. So the leak check is the likely cause, which isn't proved. **Not covered:** PDFium, which runs in a worker that can be killed. The search corpus's reader in `recto-index` and `recto-indexer`, which came after these targets and need one of their own. `recto log`'s reading of the log files, which only this user's processes can write. The fork's `/Prev` chain, noted above, which is slow in proportion rather than a hang.
 
 ## Machine notes
 

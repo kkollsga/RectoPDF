@@ -518,6 +518,18 @@ fn a_watcher_that_stops_reading_is_dropped_rather_than_buffered_for() {
     assert!(bytes < 1024 * 1024 + 512 * 1024, "it should have been dropped at about 1 MiB, and {bytes} bytes came");
 }
 
+/// Failure: a client that gives up waiting says the server closed the connection, which sends whoever reads it looking for a server deadline that isn't there. And a test that expects a close passes on a read that only timed out.
+#[test]
+#[should_panic(expected = "this client gave up")]
+fn a_client_giving_up_isnt_taken_for_the_server_closing() {
+    let state = State::at(Level::ReadOnly);
+    let _serving = state.serve();
+    let mut raw = Raw::connect(&state);
+    raw.stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+    raw.send(&json!({ "cmd": "wait", "condition": "tab_open", "tab": "never", "timeout_ms": 3_600_000 }).to_string());
+    raw.read();
+}
+
 /// Failure: a test or QA run points at the real home and overwrites the user's level, log or session. Refused with nothing created, whatever `$HOME` or `$TMPDIR` claims.
 #[test]
 fn the_state_override_refuses_the_real_home_and_home_cant_fool_it() {

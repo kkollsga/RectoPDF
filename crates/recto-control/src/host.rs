@@ -1,4 +1,4 @@
-//! What the server asks of whoever holds the session. `recto serve` uses [`SessionHost`], and the Mac app will use one that shares its own session.
+//! What the server asks of whoever holds the session. `recto serve` uses [`SessionHost`], and the Mac app wraps one, sharing its session.
 
 use crate::indexing::{Indexer, Notifier};
 use crate::state::StatePaths;
@@ -19,6 +19,10 @@ pub trait Host: Send + Sync + 'static {
     fn tab_count(&self) -> u32;
     /// The tabs with unsaved edits, which `stop` won't throw away.
     fn unsaved_tabs(&self) -> Vec<(TabId, String)>;
+    /// Why this host won't be stopped over the socket, whatever's in its tabs.
+    fn stop_refusal(&self) -> Option<AgentError> {
+        None
+    }
     /// The tab a command is about to act on, for the log.
     fn acted_tab(&self, _command: &Command) -> Option<TabId> {
         None
