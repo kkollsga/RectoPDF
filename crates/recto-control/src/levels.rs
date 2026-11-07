@@ -45,8 +45,8 @@ fn allows(level: Level) -> &'static str {
     match level {
         Level::Off => "Status, help, and asking for more. Nothing from a document, no page text and no drawing.",
         Level::ReadOnly => "Read and search documents that are open, and watch what happens. Changes nothing.",
-        Level::Control => "Open and close PDFs, move around, and edit pages in memory. Nothing reaches a file.",
-        Level::Full => "Write new pictures to disk, throw away edits, and choose a worker's limits. Signing is never included.",
+        Level::Control => "Open and close PDFs, move around, edit pages in memory, and throw away agents' own edits. Never the user's edits, and nothing reaches a file.",
+        Level::Full => "Write new pictures to disk, throw away the user's edits too, and choose a worker's limits. Signing is never included.",
     }
 }
 

@@ -38,6 +38,17 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     pub fn new(loader: L) -> Self {
         Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0) }
     }
+
+    /// The session itself, for whoever holds it: the app's own edits go through here, as the owner's. Nothing over the socket reaches this.
+    pub fn with_session<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
+        let (result, tabs) = {
+            let mut session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let result = step(&mut session);
+            (result, session.tabs().len())
+        };
+        self.tabs.store(u32::try_from(tabs).unwrap_or(u32::MAX), Ordering::Relaxed);
+        result
+    }
 }
 
 impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {

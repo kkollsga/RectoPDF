@@ -239,26 +239,28 @@ fn a_search_across_many_files_runs_one_worker_at_a_time() {
     assert!(most <= 2, "{most} workers at once. One is working, and a killed one can take a moment to be collected");
 }
 
-/// Failure: over the real socket, undone edits can be wiped out at Control, or the refusal has no way forward.
+/// Failure: over the real socket, an agent that does `page move`, `undo`, then anything else is refused, can't close, and has to ask for Full to clean up its own edits. A blind agent got stuck exactly here. Every command over the socket is an agent's, so it's all its own to clear. The owner's side of this is in `recto-control`'s `tests/owner_edits.rs`.
 #[test]
-fn a_new_edit_after_undo_needs_full_over_the_socket() {
+fn an_agent_clears_up_its_own_edits_over_the_socket() {
     let state = State::at(Level::Control);
     let _serving = state.serve();
     let file = three_pages();
     state.json(&["open", path_of(&file)]);
-    state.json(&["page", "delete", "2"]);
+    state.json(&["page", "move", "3", "--to", "1"]);
     state.json(&["undo"]);
-    let (refused, code) = state.json(&["page", "rotate", "1", "--by", "90"]);
-    assert_eq!((refused["error"]["code"].as_str(), code), (Some("would_clear_redo"), exit::PERMISSION), "{refused}");
-    assert_eq!(refused["error"]["ask"], "recto permission request full");
-    let (closed, code) = state.json(&["close"]);
-    assert_eq!((closed["error"]["code"].as_str(), code), (Some("would_clear_redo"), exit::PERMISSION), "{closed}");
     let (stop, _) = state.json(&["stop"]);
-    assert_eq!(stop["error"]["code"], "unsaved_changes", "stopping would lose them too: {stop}");
-    let (redone, code) = state.json(&["redo"]);
-    assert_eq!((code, &redone["data"]["pages"]), (0, &json!(2)), "{redone}");
-    let (rotated, code) = state.json(&["page", "rotate", "1", "--by", "90"]);
-    assert_eq!(code, 0, "{rotated}");
+    assert_eq!(stop["error"]["code"], "unsaved_changes", "stopping would lose the undone step: {stop}");
+    assert!(stop["error"]["next"].as_str().unwrap().contains("recto discard"), "{stop}");
+    let (deleted, code) = state.json(&["page", "delete", "2"]);
+    assert_eq!((code, &deleted["data"]["can_redo"]), (0, &json!(false)), "{deleted}");
+    let (closed, code) = state.json(&["close"]);
+    assert_eq!((closed["error"]["code"].as_str(), code), (Some("unsaved_changes"), exit::FAILED), "closing never loses edits silently: {closed}");
+    let (discarded, code) = state.json(&["discard"]);
+    assert_eq!((code, &discarded["data"]["edited"]), (0, &json!(false)), "{discarded}");
+    state.json(&["page", "rotate", "1", "--by", "90"]);
+    state.json(&["undo"]);
+    let (closed, code) = state.json(&["close"]);
+    assert_eq!((code, &closed["data"]["count"]), (0, &json!(0)), "only its own undone step goes: {closed}");
 }
 
 /// Failure: `open new.pdf --page 999` exits 3 with the tab open anyway, and nothing told watchers. It opens nothing and says so.
@@ -1071,8 +1073,8 @@ fn a_refused_close_says_what_would_be_lost() {
     state.json(&["page", "delete", "2"]);
     state.json(&["undo"]);
     let (refused, code) = state.json(&["close"]);
-    assert_eq!(code, exit::PERMISSION, "{refused}");
-    assert_eq!(refused["error"]["code"], "would_clear_redo");
+    assert_eq!(code, exit::FAILED, "{refused}");
+    assert_eq!(refused["error"]["code"], "unsaved_changes");
     let (message, next) = (refused["error"]["message"].as_str().unwrap(), refused["error"]["next"].as_str().unwrap());
     assert!(message.contains("unsaved edits and undone steps"), "{message}");
     assert!(next.contains("Saving isn't built") && next.contains("recto discard"), "{next}");
@@ -1152,13 +1154,14 @@ fn the_log_says_by_name_when_it_found_no_one_tab() {
     state.json(&["open", path_of(&two)]);
     let (ambiguous, code) = state.json(&["facts", "--tab", "secret"]);
     assert_eq!(code, exit::AMBIGUOUS, "{ambiguous}");
-    let (refused, code) = state.json(&["discard", "--tab", "secret"]);
+    let out = one.0.with_file_name("refused.png");
+    let (refused, code) = state.json(&["render", "--page", "1", "--out", out.to_str().unwrap(), "--tab", "secret"]);
     assert_eq!(code, exit::PERMISSION, "{refused}");
     drop(serving);
     let log = state.log_text();
     let entry = |cmd: &str| log.lines().map(|line| serde_json::from_str::<Value>(line).unwrap()).find(|line| line["cmd"] == cmd).unwrap_or_else(|| panic!("{cmd}: {log}"));
     assert_eq!(entry("facts")["details"]["tab"], "by name", "{log}");
-    assert_eq!(entry("discard")["details"], Value::Null, "{log}");
+    assert_eq!(entry("render")["details"], Value::Null, "{log}");
     assert!(!log.contains("\"tab\":\"secret"), "the name typed isn't kept: {log}");
     assert!(!log.lines().any(|line| line.contains("no such tab")), "{log}");
 }

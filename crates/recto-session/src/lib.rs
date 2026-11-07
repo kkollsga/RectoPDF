@@ -6,6 +6,7 @@
 
 pub mod edit;
 
+pub use edit::Author;
 use edit::{EditError, PageEdits};
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
@@ -303,15 +304,23 @@ impl<L: DocLoader> Session<L> {
         self.edits.get(&id)
     }
 
-    /// Applies a page edit: rearranging, rotating or deleting. The list is made the first time a tab is edited, and goes again if that edit was refused. The reader's place follows its page.
+    /// Applies the owner's page edit: rearranging, rotating or deleting. This is what the app's own edits call, with nothing to say whose they are. Everything from the agent interface goes through [`Self::edit_pages_as`] with [`Author::Agent`].
     pub fn edit_pages(&mut self, id: TabId, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
+        self.edit_pages_as(id, Author::Owner, change)
+    }
+
+    /// Applies a page edit, noting who made it. The list is made the first time a tab is edited, and goes again if that edit was refused. The reader's place follows its page.
+    pub fn edit_pages_as(&mut self, id: TabId, by: Author, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
         let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
         if tab.renderer_only {
             return Err(SessionError::RendererOnly);
         }
         let page_count = tab.page_count;
         let place = self.place_of(id);
-        let result = change(self.edits.entry(id).or_insert_with(|| PageEdits::new(page_count)));
+        let edits = self.edits.entry(id).or_insert_with(|| PageEdits::new(page_count));
+        edits.act_as(by);
+        let result = change(edits);
+        edits.act_as(Author::Owner);
         if result.is_ok() {
             self.after_change(id, place);
         } else {
@@ -362,18 +371,18 @@ impl<L: DocLoader> Session<L> {
     pub fn insert_pdf(&mut self, id: TabId, at: u32, path: &Path) -> Result<(), SessionError> {
         let stamp = file_stamp(path).ok();
         let facts = self.loader.load(path).map_err(SessionError::Open)?;
-        self.insert_pdf_with_facts(id, at, path, &facts, stamp)
+        self.insert_pdf_with_facts(id, Author::Owner, at, path, &facts, stamp)
     }
 
     /// Adds another PDF's pages from facts already read, for a caller that reads the file without holding the session. A file only the renderer can read can't be added: Save couldn't write it.
-    pub fn insert_pdf_with_facts(&mut self, id: TabId, at: u32, path: &Path, facts: &DocFacts, stamp: Option<FileStamp>) -> Result<(), SessionError> {
+    pub fn insert_pdf_with_facts(&mut self, id: TabId, by: Author, at: u32, path: &Path, facts: &DocFacts, stamp: Option<FileStamp>) -> Result<(), SessionError> {
         if facts.renderer_only {
             return Err(SessionError::RendererOnly);
         }
         if facts.page_count == 0 {
             return Err(SessionError::Open(OpenError::NotPdf));
         }
-        self.edit_pages(id, |edits| edits.insert_pdf_stamped(at, path, facts.page_count, stamp))
+        self.edit_pages_as(id, by, |edits| edits.insert_pdf_stamped(at, path, facts.page_count, stamp))
     }
 
     /// Where a page of a tab comes from now, counting unsaved edits. Zero-based.
@@ -829,7 +838,7 @@ mod tests {
         let mut other = session(3);
         let target = other.open(Path::new("/d/fine.pdf")).unwrap();
         let facts = RendererOnlyLoader.load(Path::new("/d/damaged.pdf")).unwrap();
-        assert_eq!(other.insert_pdf_with_facts(target, 0, Path::new("/d/damaged.pdf"), &facts, None), Err(SessionError::RendererOnly));
+        assert_eq!(other.insert_pdf_with_facts(target, Author::Owner, 0, Path::new("/d/damaged.pdf"), &facts, None), Err(SessionError::RendererOnly));
         assert!(!other.is_edited(target));
     }
 

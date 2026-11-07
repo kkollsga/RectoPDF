@@ -91,6 +91,7 @@ Reference: `docs/concepts/`. Rules from the owner:
   that comes from the PDF. Exact arguments: agent report, §1.
 - `recto` CLI on a local socket with levels Off, Read-only, Control and Full (*default:* Off). Signing needs a human gesture and is never
   reachable by an agent. Until the app's settings exist, the user sets the level with `recto permission set <level>` at a real terminal.
+- **Below Full, an agent can throw away only agents' edits, never the owner's.** Each edit step records who made it. At Control, an edit that clears undone steps, `discard`, and `close` with undone steps are allowed if every step that would be lost is an agent's, and refused with exit 5 otherwise, saying those are the user's edits. A tab with unsaved edits doesn't close at any level: `discard`, then `close`. At Full, what's lost is the holder's call.
 - [DECIDE] Whether a public release waits for Anthropic's written answer on subscription use. *Default:* yes, with an API-key route too.
 
 ## 6. Scope: everything in one build
@@ -151,3 +152,4 @@ Numbered so they can be cited. Newest last.
 17. **Commands live in the macOS menu bar;** the sidebar panel keeps only what you use while reading. Owner, 2026-11-06.
 18. **Edit mode is in, including text editing.** Owner, 2026-11-06. Reverses the earlier call to leave text editing out. Text edits work on a whole block, matching Foxit's baseline.
 19. **Exports wait for the heavy slot; they never come out at low resolution.** Owner, 2026-11-07. An export needing the larger limit waits, bounded and cancellable, and draws sharp, or is refused with no file written. On-screen pages stay as they were: low-res at once, never waiting.
+20. **2026-11-07: below Full, an agent can throw away only agents' edits, never the owner's.** Replaces "nothing is lost without Full". That rule was there to stop an agent erasing the owner's edits by undoing and editing, but it also trapped ordinary work: an agent that did `page move`, `undo`, `page delete 2` was refused, couldn't close either, and had to ask for Full to clean up its own edits. A blind agent got stuck exactly there. Recording who made each step keeps the protection where it was needed and lifts it where it wasn't.
