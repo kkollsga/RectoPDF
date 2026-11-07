@@ -411,6 +411,7 @@ impl<H: Host> Loop<H> {
             }
             Command::Watch { events, timeout_ms, count } => self.watch(index, level, events, timeout_ms, count),
             Command::Log { last } => {
+                self.log.flush();
                 let data = log::recent(&self.paths, last);
                 self.log.record(tag, level, "ok", &Value::Null);
                 self.answer(index, tag, &Ok(data));

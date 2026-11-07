@@ -588,6 +588,37 @@ fn the_log_records_every_action_and_never_document_text() {
     assert_eq!(file_meta.permissions().mode() & 0o777, 0o600);
 }
 
+/// Failure: an agent at Off erases its own record through the real socket: enough `status` calls and bad lines push out an earlier edit. Far past what would have rotated the old single log.
+#[test]
+fn a_flood_at_off_cant_erase_an_earlier_edit() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc();
+    state.json(&["open", file.0.to_str().unwrap()]);
+    state.json(&["page", "rotate", "1", "--by", "90"]);
+    state.set_level(Level::Off);
+    let mut raw = Raw::connect(&state);
+    for _ in 0..20_000 {
+        raw.send(r#"{"cmd":"status"}"#);
+        raw.send("not json");
+        raw.send(r#"{"cmd":"text","page":1}"#);
+        for _ in 0..3 {
+            assert!(raw.read().is_some());
+        }
+    }
+    let lines = state.log_text().lines().count();
+    assert!(lines < 200, "{lines} lines for 60,000 commands");
+    state.set_level(Level::ReadOnly);
+    let (log, code) = state.json(&["log", "--last", "5000"]);
+    assert_eq!(code, 0, "{log}");
+    let entries = log["data"]["entries"].as_array().unwrap();
+    assert!(entries.iter().any(|entry| entry["cmd"] == "page_rotate" && entry["outcome"] == "ok"), "the edit is gone: {log}");
+    let total = |cmd: &str| entries.iter().filter(|entry| entry["cmd"] == cmd).map(|entry| entry["count"].as_u64().unwrap_or(1)).sum::<u64>();
+    assert!(total("status") >= 20_000, "{}", total("status"));
+    assert!(total("unknown") >= 20_000, "{}", total("unknown"));
+    assert!(total("text") >= 20_000, "{}", total("text"));
+}
+
 /// Failure: with the session stopped, the same log can't be read, or it can be read at Off.
 #[test]
 fn the_log_reads_with_no_session_at_the_same_level() {

@@ -143,7 +143,7 @@ fn a_peer_of_another_user_is_turned_away() {
     let mut stream = running.connect();
     let _ = stream.write_all(b"{\"cmd\":\"status\"}\n");
     assert_eq!(read_line(&mut stream), None, "it answered a stranger");
-    let log = std::fs::read_to_string(&running.paths.log).unwrap_or_default();
+    let log = std::fs::read_to_string(&running.paths.other_log).unwrap_or_default();
     assert!(log.contains("peer_refused"), "{log}");
 }
 
@@ -158,7 +158,7 @@ fn a_panic_is_one_clients_error() {
     let mut stream = running.connect();
     stream.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"panics\",\"timeout_ms\":5000}\n").unwrap();
     assert_eq!(read_line(&mut stream).unwrap()["error"]["code"], "internal");
-    let log = std::fs::read_to_string(&running.paths.log).unwrap();
+    let log = std::fs::read_to_string(&running.paths.other_log).unwrap();
     assert!(log.contains("\"outcome\":\"internal\""), "{log}");
 }
 

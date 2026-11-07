@@ -78,9 +78,7 @@ impl State {
     }
 
     pub fn log_text(&self) -> String {
-        let mut text = std::fs::read_to_string(&self.paths.log).unwrap_or_default();
-        text.push_str(&std::fs::read_to_string(&self.paths.old_log).unwrap_or_default());
-        text
+        [&self.paths.log, &self.paths.old_log, &self.paths.other_log, &self.paths.old_other_log].iter().map(|path| std::fs::read_to_string(path).unwrap_or_default()).collect()
     }
 }
 

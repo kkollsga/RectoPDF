@@ -373,7 +373,7 @@ pub static TABLE: &[Spec] = &[
         group: GROUP_ACCESS,
         summary: "What agents have done: time, command, level and outcome, oldest first. Never document text. At a real terminal it needs no session and no level.",
         args: &[Arg { key: "last", flag: Some("--last"), kind: Kind::Positive(5000), required: false, help: "How many entries, from the newest. 50 if left out." }],
-        data: "`{ entries: [ { time, t_ms, cmd, level, outcome, details } ], kept_bytes, file }`.",
+        data: "`{ entries: [ { time, t_ms, cmd, level, outcome, details, count, since } ], kept_bytes, file }`. `count` means that many more of the same since `since`: `status`, bad lines and refusals are counted rather than written each time, so a flood of them can't push out what happened.",
         examples: &["recto log", "recto log --last 10 --json"],
         ..BASE
     },

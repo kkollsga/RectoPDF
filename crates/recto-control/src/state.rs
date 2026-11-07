@@ -22,6 +22,9 @@ pub struct StatePaths {
     pub level: PathBuf,
     pub log: PathBuf,
     pub old_log: PathBuf,
+    /// Everything that doesn't change anything, so it can't push out what does.
+    pub other_log: PathBuf,
+    pub old_other_log: PathBuf,
     /// Where a background session's own messages go.
     pub server_messages: PathBuf,
     /// Set through [`STATE_ENV`], not the user's real folder.
@@ -64,6 +67,8 @@ impl StatePaths {
             level: root.join("level"),
             log: root.join("activity.jsonl"),
             old_log: root.join("activity.1.jsonl"),
+            other_log: root.join("activity-other.jsonl"),
+            old_other_log: root.join("activity-other.1.jsonl"),
             server_messages: root.join("server-messages.txt"),
             root,
             run_dir,

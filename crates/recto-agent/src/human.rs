@@ -368,6 +368,9 @@ fn log(data: &Value) -> String {
     let mut out = String::new();
     for row in rows {
         let _ = write!(out, "{} {:<18} {:<10} {}", text(&row["time"]), text(&row["cmd"]), text(&row["level"]), text(&row["outcome"]));
+        if let Some(repeats) = row["count"].as_u64() {
+            let _ = write!(out, " x{repeats} since {}", text(&row["since"]));
+        }
         if !row["details"].is_null() {
             let _ = write!(out, " {}", row["details"]);
         }
