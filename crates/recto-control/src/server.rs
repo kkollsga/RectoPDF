@@ -10,7 +10,7 @@ use crate::levels;
 use crate::log::{self, ActivityLog};
 use crate::state::StatePaths;
 use recto_agent::table::{EVENT_GROUPS, event_group};
-use recto_agent::{AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_WAIT_MS, VERSION, allowed, condition_topics, exit, parse, refusal, reply, table};
+use recto_agent::{AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_SELECTOR_BYTES, MAX_WAIT_MS, VERSION, allowed, condition_topics, exit, parse, refusal, reply, table};
 use recto_platform::local::{self, Listener, PollEntry, SocketFile, Stream, Token};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
@@ -37,9 +37,15 @@ pub struct Limits {
     pub max_jobs: usize,
     /// Jobs drawing or reading pages at once, each of which can use hundreds of megabytes.
     pub max_draw_jobs: usize,
+    /// Clients in `wait`, `watch` or a waiting `permission request`, each of which holds its connection for as long as it likes. Well under `max_connections`, so they can't take every slot.
+    pub max_subscribers: usize,
+    /// Connections past `max_connections`, which may only do what must always get through: `status`, `stop`, `permission show` and the message after `permission set`. The oldest makes way for the next.
+    pub max_overflow: usize,
+    /// How long a connection past the cap may stay with nothing to say.
+    pub overflow_idle: Duration,
     /// Largest single answer.
     pub max_reply_bytes: usize,
-    /// All answers waiting to be read, together.
+    /// All answers waiting to be read, together, past which only small ones are taken.
     pub max_queued_bytes: usize,
     /// All answers waiting to be read, including small ones. Nothing goes past this: whoever would take it past is dropped. What's between this and `max_queued_bytes` keeps `status` and the like answerable.
     pub max_queued_hard_bytes: usize,
@@ -63,6 +69,9 @@ impl Default for Limits {
             write_deadline: Duration::from_secs(30),
             max_jobs: 8,
             max_draw_jobs: 2,
+            max_subscribers: 64,
+            max_overflow: 16,
+            overflow_idle: Duration::from_secs(5),
             max_reply_bytes: 32 * 1024 * 1024,
             max_queued_bytes: 128 * 1024 * 1024,
             max_queued_hard_bytes: 144 * 1024 * 1024,
@@ -151,6 +160,8 @@ impl Server {
             queued_bytes: 0,
             generations: 0,
             pending: None,
+            announced: None,
+            announcements_left: MAX_ANNOUNCEMENTS,
             last_level,
             stop_request: None,
             stopping: None,
@@ -210,6 +221,8 @@ struct Conn {
     /// Close when `output` has gone.
     closing: bool,
     gone: bool,
+    /// Taken past the connection cap: it may only do what must always get through.
+    overflow: bool,
 }
 
 enum Job {
@@ -253,6 +266,10 @@ struct Loop<H> {
     generations: u64,
     /// The latest level an agent has asked for. One slot: this tells the user something's wanted, and can't grow.
     pending: Option<Level>,
+    /// The highest level announced on stderr since the level last changed, so a client asking in a loop can't fill the file those messages go to.
+    announced: Option<Level>,
+    /// Announcements left, as a last line of defence for that file.
+    announcements_left: u32,
     last_level: Level,
     /// `stop` is waiting for what's running to end, before it checks for unsaved edits and either ends this or says why not.
     stop_request: Option<StopRequest>,
@@ -349,14 +366,15 @@ impl<H: Host> Loop<H> {
             self.log.record("connect", Level::Off, "peer_refused", &Value::Null);
             return;
         }
-        if self.conns.len() >= self.limits.max_connections {
-            // Best effort, because the connection is new and its buffer is empty.
-            let error = AgentError::new("busy", "The session has too many connections right now.", exit::BUSY);
-            let mut line = reply("connect", &Err(error)).to_string();
-            line.push('\n');
-            let _ = stream.set_nonblocking(true);
-            let _ = (&stream).write(line.as_bytes());
-            return;
+        // A full house mustn't hide a lowered level: whoever just connected may be the one lowering it, and may not get to say so.
+        self.observe_level();
+        let regular = self.conns.iter().filter(|conn| !conn.overflow).count();
+        let overflow = regular >= self.limits.max_connections;
+        if overflow && self.conns.iter().filter(|conn| conn.overflow && !conn.gone).count() >= self.limits.max_overflow {
+            // Someone just arrived with something to say, and the oldest of these has had its turn.
+            if let Some(oldest) = self.conns.iter_mut().find(|conn| conn.overflow && !conn.gone) {
+                oldest.gone = true;
+            }
         }
         if stream.set_nonblocking(true).is_err() {
             return;
@@ -364,7 +382,7 @@ impl<H: Host> Loop<H> {
         let now = Instant::now();
         let id = self.next_conn;
         self.next_conn += 1;
-        self.conns.push(Conn { id, stream, state: State::Idle, input: Vec::new(), line_started: None, output: Vec::new(), sent: 0, output_since: now, last_activity: now, input_closed: false, closing: false, gone: false });
+        self.conns.push(Conn { id, stream, state: State::Idle, input: Vec::new(), line_started: None, output: Vec::new(), sent: 0, output_since: now, last_activity: now, input_closed: false, closing: false, gone: false, overflow });
     }
 
     fn take_lines(&mut self) {
@@ -452,6 +470,13 @@ impl<H: Host> Loop<H> {
                 self.answer(index, tag, &Ok(data));
             }
             Command::PermissionRequest { level: wanted, timeout_ms } => self.permission_request(index, level, wanted, timeout_ms),
+            Command::Wait { tab, .. } if tab.len() > MAX_SELECTOR_BYTES => {
+                self.answer(index, tag, &Err(AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND)));
+            }
+            Command::Wait { .. } | Command::Watch { .. } if self.subscribers() >= self.limits.max_subscribers => {
+                self.log.record(tag, level, "busy", &Value::Null);
+                self.answer(index, tag, &Err(too_many_waiting()));
+            }
             Command::Wait { condition, tab, page, timeout_ms } => {
                 let deadline = Instant::now() + Duration::from_millis(timeout_ms.min(MAX_WAIT_MS));
                 self.log.record(tag, level, "started", &json!({ "condition": format!("{condition:?}") }));
@@ -482,6 +507,7 @@ impl<H: Host> Loop<H> {
         }
         let was = self.last_level;
         self.last_level = level;
+        self.announced = None;
         if level > was && self.pending.is_some_and(|pending| level >= pending) {
             self.pending = None;
         }
@@ -545,14 +571,17 @@ impl<H: Host> Loop<H> {
             return;
         }
         // Where the user would see it, if they're watching the session's window. The app will show a prompt here instead.
-        // Once per level asked for, so a client asking in a loop can't fill the file these messages go to.
-        if self.pending != Some(wanted) {
-            eprintln!("An agent asks for {} access. To allow it, run: recto permission set {}", wanted.label(), wanted.name());
+        // Only for something higher than it's said since the level last changed, so a client asking in a loop, or alternating, can't fill the file these go to. A full disk or a closed pipe is no reason to fall over.
+        if self.announced.is_none_or(|said| wanted > said) && self.announcements_left > 0 {
+            self.announced = Some(wanted);
+            self.announcements_left -= 1;
+            let _ = writeln!(std::io::stderr(), "An agent asks for {} access. To allow it, run: recto permission set {}", wanted.label(), wanted.name());
         }
-        self.pending = Some(wanted);
+        self.pending = Some(self.pending.map_or(wanted, |pending| pending.max(wanted)));
         self.log.record(tag, level, "asked", &json!({ "level": wanted.name() }));
         match timeout_ms {
             None => self.answer(index, tag, &Ok(data)),
+            Some(_) if self.subscribers() >= self.limits.max_subscribers => self.answer(index, tag, &Err(too_many_waiting())),
             Some(timeout_ms) => {
                 let deadline = Instant::now() + Duration::from_millis(timeout_ms.min(MAX_WAIT_MS));
                 let generation = self.next_generation();
@@ -573,6 +602,10 @@ impl<H: Host> Loop<H> {
         let shown = events.clone().map_or_else(|| json!(EVENT_GROUPS), |groups| json!(groups));
         self.conns[index].state = State::Watching { groups: events, deadline, remaining: count, delivered: 0 };
         self.send_event_line(index, &json!({ "watching": true, "events": shown }));
+        // Asked for none: there's nothing to wait for, and one would be more than it asked for.
+        if count == Some(0) {
+            self.end_watch(index, "count reached", 0);
+        }
     }
 
     fn next_generation(&mut self) -> u64 {
@@ -788,13 +821,15 @@ impl<H: Host> Loop<H> {
             let stalled_output = conn.has_output() && now.saturating_duration_since(conn.output_since) >= self.limits.write_deadline;
             // Only while it's its turn to speak: a client may send its next command while the last one runs.
             let stalled_line = matches!(conn.state, State::Idle) && conn.line_started.is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline);
-            let idle = matches!(conn.state, State::Idle) && conn.input.is_empty() && !conn.has_output() && now.saturating_duration_since(conn.last_activity) >= self.limits.idle_deadline;
+            let idle_limit = if conn.overflow { self.limits.overflow_idle } else { self.limits.idle_deadline };
+            let idle = matches!(conn.state, State::Idle) && conn.input.is_empty() && !conn.has_output() && now.saturating_duration_since(conn.last_activity) >= idle_limit;
             if stalled_output || stalled_line || idle {
                 self.conns[index].gone = true;
                 continue;
             }
             match &self.conns[index].state {
-                State::Waiting { deadline, tag, what, .. } if now >= *deadline => {
+                // Not while a look is on its way: what's already true must come back true, even with no time at all to wait.
+                State::Waiting { deadline, tag, what, looking: false, .. } if now >= *deadline => {
                     let tag = *tag;
                     let error = match what {
                         WaitFor::Level(wanted) => {
@@ -823,6 +858,9 @@ impl<H: Host> Loop<H> {
     fn reap(&mut self) {
         for conn in self.conns.iter().filter(|conn| conn.finished()) {
             self.queued_bytes -= conn.output.len() - conn.sent;
+            let id = conn.id;
+            // A look for someone who's gone is work for nobody.
+            self.queue.retain(|job| !matches!(job, Job::Look { conn, .. } if *conn == id));
         }
         self.conns.retain(|conn| !conn.finished());
     }
@@ -904,9 +942,11 @@ impl<H: Host> Loop<H> {
                         consider(started + self.limits.line_deadline);
                     }
                     if conn.input.is_empty() && !conn.has_output() {
-                        consider(conn.last_activity + self.limits.idle_deadline);
+                        consider(conn.last_activity + if conn.overflow { self.limits.overflow_idle } else { self.limits.idle_deadline });
                     }
                 }
+                // With a look on its way the deadline can't act yet, and counting it would spin until the look ends.
+                State::Waiting { looking: true, .. } => {}
                 State::Waiting { deadline, .. } | State::Watching { deadline, .. } => consider(*deadline),
                 State::Busy => {}
             }
@@ -949,11 +989,12 @@ impl Conn {
                     self.note_peer_gone();
                     return;
                 }
+                Ok(_) if matches!(self.state, State::Waiting { .. } | State::Watching { .. }) => {
+                    // A subscribed client has nothing more to say, and one that writes without pause would otherwise hold this whole thread. It goes.
+                    self.gone = true;
+                    return;
+                }
                 Ok(count) => {
-                    // A subscribed client has nothing more to say. What it sends is read, so a closed socket still shows, and dropped.
-                    if matches!(self.state, State::Waiting { .. } | State::Watching { .. }) {
-                        continue;
-                    }
                     if self.input.is_empty() {
                         self.line_started = Some(Instant::now());
                     }
@@ -1040,7 +1081,14 @@ impl Conn {
 fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) -> Done {
     match job {
         Job::Look { conn, generation, condition, tab, page } => {
-            let state = catch_unwind(AssertUnwindSafe(|| host.check(condition, &tab, page))).unwrap_or_else(|_| ConditionState::Failed(internal()));
+            // Read again: the answer can hold a tab's details, and the level may have dropped since this was asked for.
+            let level = levels::current(paths);
+            let needed = table::by_tag("wait").map_or(table::Access::Nobody, |spec| spec.access);
+            let state = if allowed(level, needed) {
+                catch_unwind(AssertUnwindSafe(|| host.check(condition, &tab, page))).unwrap_or_else(|_| ConditionState::Failed(internal()))
+            } else {
+                ConditionState::Failed(refusal("wait", level, needed))
+            };
             Done::Looked { conn, generation, state }
         }
         Job::Command { conn, command } => {

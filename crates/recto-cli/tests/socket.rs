@@ -329,25 +329,158 @@ fn an_endless_line_is_cut_off() {
     assert_eq!(code, 0, "{status}");
 }
 
-/// Failure: a flood of connections takes the session down, or the slots of closed ones are never freed. Past the cap the next is told it's busy, exit 10, and closing frees room.
+/// Failure: a flood of connections holds every slot, and then `status` and the user's own `permission set` get "busy" forever. Past the cap, those still get through, and nothing else does.
 #[test]
-fn past_the_connection_cap_the_next_is_told_its_busy() {
-    let state = State::at(Level::Off);
+fn past_the_connection_cap_what_matters_still_gets_through() {
+    let state = State::at(Level::Control);
     let _serving = state.serve();
     let mut held: Vec<Raw> = (0..128).map(|_| Raw::connect(&state)).collect();
-    // Each is really taken before the next test.
+    // Each is really taken before the next step.
     assert_eq!(held.last_mut().unwrap().call(&json!({ "cmd": "status" }))["ok"], true);
-    let mut over = Raw::connect(&state);
-    let reply = over.read().unwrap();
-    assert_eq!((reply["error"]["code"].as_str(), reply["error"]["exit"].as_i64()), (Some("busy"), Some(i64::from(exit::BUSY))), "{reply}");
-    assert!(over.read().is_none());
-    let (reply, code) = state.json(&["status"]);
+    // A plain command past the cap is told it's busy, and let go.
+    let (reply, code) = state.json(&["tabs"]);
     assert_eq!((reply["error"]["code"].as_str(), code), (Some("busy"), exit::BUSY), "{reply}");
-    held.truncate(100);
-    // Closing shows at once, so room comes back without a deadline passing. Asking on a held connection lets the session catch up first.
-    assert_eq!(held[0].call(&json!({ "cmd": "status" }))["ok"], true);
+    // What must always get through does.
     let (status, code) = state.json(&["status"]);
     assert_eq!(code, 0, "{status}");
+    let (shown, code) = state.json(&["permission", "show"]);
+    assert_eq!(code, 0, "{shown}");
+    // Lowering the level, with every slot taken, is seen at once and acted on.
+    let mut held_waiter = held.pop().unwrap();
+    held_waiter.send(&json!({ "cmd": "watch" }).to_string());
+    assert_eq!(held_waiter.read().unwrap()["data"]["watching"], true);
+    let mut full = Raw::connect(&state);
+    assert_eq!(full.call(&json!({ "cmd": "status" }))["ok"], true, "the slot it left went to overflow's use");
+    let (lowered, code) = state.json(&["permission", "set", "off"]);
+    assert_eq!(code, 0, "{lowered}");
+    let mut line = held_waiter.read().unwrap();
+    if line["data"]["event"] == "level_changed" {
+        line = held_waiter.read().unwrap();
+    }
+    assert_eq!(line["error"]["code"], "permission_denied", "{line}");
+    // Closing frees room straight away.
+    held.truncate(100);
+    assert_eq!(held[0].call(&json!({ "cmd": "status" }))["ok"], true);
+    state.set_level(Level::ReadOnly);
+    let (tabs, code) = state.json(&["tabs"]);
+    assert_eq!(code, 0, "{tabs}");
+}
+
+/// Failure: 128 clients each asking with a 24-hour wait take every slot for a day. Waiting clients are capped well below the slots, so everyone else can still work.
+#[test]
+fn waiting_clients_cant_take_every_slot() {
+    let state = State::new();
+    let _serving = state.serve();
+    let mut waiting: Vec<Raw> = (0..64).map(|_| Raw::connect(&state)).collect();
+    for client in &mut waiting {
+        client.send(&json!({ "cmd": "permission_request", "level": "full", "timeout_ms": 86_400_000 }).to_string());
+    }
+    // Asked after they've all been taken: one round trip on each makes sure.
+    let mut last = Raw::connect(&state);
+    assert_eq!(last.call(&json!({ "cmd": "status" }))["ok"], true);
+    let mut refused = last.call(&json!({ "cmd": "permission_request", "level": "full", "timeout_ms": 86_400_000 }));
+    // The loop's order can let a few more through as they're read, but never past the cap.
+    for _ in 0..8 {
+        if refused["error"]["code"] == "busy" {
+            break;
+        }
+        refused = Raw::connect(&state).call(&json!({ "cmd": "permission_request", "level": "full", "timeout_ms": 86_400_000 }));
+    }
+    assert_eq!((refused["error"]["code"].as_str(), refused["error"]["exit"].as_i64()), (Some("busy"), Some(i64::from(exit::BUSY))), "{refused}");
+    let (status, code) = state.json(&["status"]);
+    assert_eq!(code, 0, "{status}");
+    state.set_level(Level::ReadOnly);
+    let mut watcher = Raw::connect(&state);
+    assert_eq!(watcher.call(&json!({ "cmd": "watch", "count": 1 }))["error"]["code"], "busy");
+    assert_eq!(watcher.call(&json!({ "cmd": "wait", "condition": "tab_open", "tab": "x", "timeout_ms": 10_000 }))["error"]["code"], "busy");
+    let (tabs, code) = state.json(&["tabs"]);
+    assert_eq!(code, 0, "plain work still goes on: {tabs}");
+}
+
+/// Failure: a subscribed client writing without pause holds the only thread that does anything. It's dropped the moment it says anything, and everyone else carries on.
+#[test]
+fn a_subscriber_that_writes_is_dropped() {
+    let state = State::at(Level::ReadOnly);
+    let _serving = state.serve();
+    let mut watcher = Raw::connect(&state);
+    watcher.send(&json!({ "cmd": "watch", "timeout_ms": 3_600_000 }).to_string());
+    assert_eq!(watcher.read().unwrap()["data"]["watching"], true);
+    let _ = watcher.stream.write_all(b"anything at all\n");
+    // Reading gives up after a while, so this has to end long before that to mean the session closed it.
+    let started = Instant::now();
+    assert!(watcher.read().is_none(), "it must be dropped");
+    assert!(started.elapsed() < Duration::from_secs(15), "it wasn't closed: the read just timed out");
+    let (status, code) = state.json(&["status"]);
+    assert_eq!(code, 0, "{status}");
+}
+
+/// Failure: with `--timeout 0s`, a wait for something already true times out, because the deadline is looked at before the look runs. Exit 0 for what's true now, and exit 7 for what isn't, either way with no time at all.
+#[test]
+fn a_wait_with_no_time_still_looks_first() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc();
+    state.json(&["open", file.0.to_str().unwrap()]);
+    for _ in 0..50 {
+        let (reply, code) = state.json(&["wait", "tab-open", "doc", "--timeout", "0s"]);
+        assert_eq!(code, 0, "what's already true: {reply}");
+    }
+    let (reply, code) = state.json(&["wait", "tab-open", "nothing", "--timeout", "0s"]);
+    assert_eq!((reply["error"]["code"].as_str(), code), (Some("timed_out"), exit::TIMED_OUT), "{reply}");
+}
+
+/// Failure: asking for none of something is answered with one. `watch --count 0` delivers nothing and says so.
+#[test]
+fn a_watch_for_no_events_ends_at_once() {
+    let state = State::at(Level::ReadOnly);
+    let _serving = state.serve();
+    let (lines, code) = lines_of(watch_process(&state, &["watch", "--count", "0", "--timeout", "30s", "--json"]));
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!((&lines.last().unwrap()["data"]["delivered"], &lines.last().unwrap()["data"]["reason"]), (&json!(0), &json!("count reached")), "{lines:?}");
+}
+
+/// Failure: an agent at Off alternating asks writes a line each time, to a file with no cap. The user hears once per level, higher only, and a full or closed stderr can't take the session down with its edits.
+#[test]
+fn asking_in_a_loop_cant_fill_the_messages_file_or_end_the_session() {
+    let state = State::new();
+    let (ready, code) = state.json(&["serve", "--background"]);
+    assert_eq!(code, 0, "{ready}");
+    let mut raw = Raw::connect(&state);
+    for round in 0..2000 {
+        let level = ["read_only", "control", "full"][round % 3];
+        assert_eq!(raw.call(&json!({ "cmd": "permission_request", "level": level }))["ok"], true);
+    }
+    let messages = std::fs::read_to_string(&state.paths.server_messages).unwrap();
+    assert_eq!(messages.lines().count(), 3, "{messages}");
+    state.set_level(Level::Control);
+    let (stopped, code) = state.json(&["stop"]);
+    assert_eq!(code, 0, "{stopped}");
+
+    // A stderr nobody's reading: the first ask writes to a closed pipe, and the session must still be there.
+    let state = State::new();
+    let mut child = state.command().args(["serve", "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line).unwrap();
+    drop(child.stderr.take());
+    let mut raw = Raw::connect(&state);
+    assert_eq!(raw.call(&json!({ "cmd": "permission_request", "level": "control" }))["ok"], true);
+    assert_eq!(raw.call(&json!({ "cmd": "status" }))["ok"], true, "the session must survive it");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+/// Failure: a `wait` loop with a 64 KiB tab name holds memory per wait, or one that hung up leaves its looks queued. Long selectors are refused up front.
+#[test]
+fn a_long_selector_is_refused_up_front() {
+    let state = State::at(Level::ReadOnly);
+    let _serving = state.serve();
+    let mut raw = Raw::connect(&state);
+    let long = "x".repeat(32 * 1024);
+    let reply = raw.call(&json!({ "cmd": "wait", "condition": "tab_open", "tab": long, "timeout_ms": 0 }));
+    assert_eq!(reply["error"]["code"], "no_such_tab", "{reply}");
+    let reply = raw.call(&json!({ "cmd": "where", "tab": long }));
+    assert_eq!(reply["error"]["code"], "no_such_tab", "{reply}");
 }
 
 /// Failure: a client that stops reading a watch makes the session hold its output for ever, and its memory grows.
@@ -365,22 +498,25 @@ fn a_watcher_that_stops_reading_is_dropped_rather_than_buffered_for() {
     for sent in 0..40_000u32 {
         let reply = raw.call(&json!({ "cmd": "goto", "page": 1 + sent % 2 }));
         assert_eq!(reply["ok"], true, "{reply}");
-        sent += 1;
     }
-    let budget = raw.call(&json!({ "cmd": "status" }));
-    assert_eq!(budget["ok"], true);
-    // Reading now gets what fit, and then the connection ends instead of carrying on. A dropped watcher can't end up holding more than its allowance.
+    // Reading now gets what fit, and then the connection ends instead of carrying on: its allowance plus what the socket itself holds, and not the rest.
     let mut bytes = 0usize;
     let mut chunk = [0u8; 65536];
     // macOS refuses this on a socket whose peer has gone, which is what's expected here.
     let _ = watcher.stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let mut ended = false;
     loop {
         match watcher.stream.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => {
+                ended = true;
+                break;
+            }
+            Err(_) => break,
             Ok(count) => bytes += count,
         }
     }
-    assert!(bytes < 4 * 1024 * 1024, "it should have been dropped long before {bytes} bytes");
+    assert!(ended, "the session must have dropped it, after {bytes} bytes");
+    assert!(bytes < 1024 * 1024 + 512 * 1024, "it should have been dropped at about 1 MiB, and {bytes} bytes came");
 }
 
 /// Failure: a test or QA run points at the real home and overwrites the user's level, log or session. Refused with nothing created, whatever `$HOME` or `$TMPDIR` claims.

@@ -851,7 +851,7 @@ pub fn exit_codes() -> Value {
         { "code": exit::NOT_RUNNING, "means": "No session is running. `recto serve --background` starts one." },
         { "code": exit::TIMED_OUT, "means": "The time ran out." },
         { "code": exit::PROTECTED, "means": "The document needs a password, which only the user can give, in the app." },
-        { "code": exit::BUSY, "means": "The session is too busy for this right now. Try again." },
+        { "code": exit::BUSY, "means": "The session has too many connections or waiting clients for this right now, or it's stopping. Try again. `status` always gets through." },
     ])
 }
 

@@ -24,6 +24,8 @@ struct Stand {
     running_draws: AtomicUsize,
     most_draws: AtomicUsize,
     unsaved: Mutex<Vec<(TabId, String)>>,
+    wheres: AtomicUsize,
+    looks_answer: std::sync::atomic::AtomicBool,
 }
 
 impl Stand {
@@ -51,7 +53,10 @@ impl Host for Stand {
                 self.running_draws.fetch_sub(1, Ordering::SeqCst);
                 Ok(json!({ "read": true }))
             }
-            Command::Where { .. } => Ok(json!({ "huge": "x".repeat(5_000_000) })),
+            Command::Where { .. } => {
+                self.wheres.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({ "huge": "x".repeat(5_000_000) }))
+            }
             Command::Goto { page, .. } => {
                 events.push(Event::new("page_changed", json!({ "page": page })));
                 Ok(json!({ "page": page }))
@@ -63,6 +68,9 @@ impl Host for Stand {
     fn check(&self, _condition: Condition, tab: &str, _page: Option<u32>) -> ConditionState {
         if tab == "panics" {
             panic!("a bug in a look");
+        }
+        if self.looks_answer.load(Ordering::SeqCst) && tab == "secret" {
+            return ConditionState::Met(json!({ "secret": true }));
         }
         ConditionState::Waiting
     }

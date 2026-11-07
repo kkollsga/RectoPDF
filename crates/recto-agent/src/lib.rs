@@ -528,6 +528,9 @@ pub fn reply(cmd: &str, result: &Result<Value, AgentError>) -> Value {
     out
 }
 
+/// Longest tab selector looked at. A name is capped well under this, so a longer one matches nothing, and can't make a wait hold 64 KiB.
+pub const MAX_SELECTOR_BYTES: usize = 1024;
+
 /// Longest line a client may send: a command and a path or two. No command needs more, so a longer one is refused before anything reads it.
 pub const MAX_COMMAND_BYTES: usize = 64 * 1024;
 
@@ -1030,6 +1033,9 @@ fn tab_path<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<PathBuf, Ag
 /// Finds a tab by `#id`, by `active`, or by a piece of its name. Selectors never guess: an ambiguous name lists the candidates.
 pub(crate) fn select<L: DocLoader>(session: &Session<L>, selector: &str) -> Result<TabId, AgentError> {
     let not_found = || AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND);
+    if selector.len() > MAX_SELECTOR_BYTES {
+        return Err(not_found());
+    }
     if selector == "active" {
         return session.active().ok_or_else(|| AgentError::new("no_such_tab", "No PDF is open.", exit::NOT_FOUND).then("Open one with `recto open <file.pdf>`."));
     }
