@@ -157,7 +157,16 @@ pub static TABLE: &[Spec] = &[
     },
     Spec { name: "help", tag: "help", group: GROUP_START, access: Access::At(Level::Off), route: Route::Here, summary: "This list, or everything about one command.", args: &[Arg { key: "command", flag: None, kind: Kind::Rest, required: false, help: "The command to explain, such as `page move`." }], data: "With `--json`: the command table itself.", examples: &["recto help", "recto help page move", "recto help --json"], ..BASE },
     Spec { name: "version", tag: "version", group: GROUP_START, access: Access::At(Level::Off), route: Route::Here, summary: "This program's version, and the API version it speaks.", data: "`{ version, api }`.", examples: &["recto version --json"], ..BASE },
-    Spec { name: "tabs", tag: "tabs", group: GROUP_READ, summary: "Every open tab, with its page, length and unsaved edits.", data: "`{ tabs: [ ...same as where ], count, truncated }`.", examples: &["recto tabs", "recto tabs --json"], ..BASE },
+    Spec {
+        name: "tabs",
+        tag: "tabs",
+        group: GROUP_READ,
+        summary: "The open tabs, with each one's page, length and unsaved edits.",
+        args: &[Arg { key: "from", flag: Some("--from"), kind: Kind::Count(100_000), required: false, help: "Tabs to skip: `next_from` from the last answer." }, Arg { key: "limit", flag: Some("--limit"), kind: Kind::Count(1000), required: false, help: "Tabs in this answer. 200 if left out." }],
+        data: "`{ tabs: [ ...same as where ], count, next_from }`.",
+        examples: &["recto tabs", "recto tabs --from 200 --json"],
+        ..BASE
+    },
     Spec { name: "where", tag: "where", group: GROUP_READ, summary: "Where one tab is: its page, its length, and whether it has unsaved edits.", args: &[TAB], data: AGENT_EXITS_PAGE, examples: &["recto where", "recto where --tab \"#2\""], ..BASE },
     Spec {
         name: "facts",
@@ -249,7 +258,7 @@ pub static TABLE: &[Spec] = &[
     },
     Spec { name: "goto", tag: "goto", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Goes to a page. A page that isn't there is refused.", args: &[Arg { key: "page", flag: None, kind: Kind::Page, required: true, help: "The page, counted from 1." }, TAB], data: AGENT_EXITS_PAGE, emits: &["page_changed"], examples: &["recto goto 12", "recto goto 12 --tab report"], ..BASE },
     Spec { name: "tap", tag: "tap", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Taps a tab in the sidebar: switches to it, or folds its contents if it's already active.", args: &[Arg { key: "tab", flag: None, kind: Kind::Tab, required: true, help: "Which tab: `#3`, or part of its name." }], data: "The sidebar, as `sidebar` gives it.", emits: &["tab_activated"], examples: &["recto tap \"#2\"", "recto tap report"], ..BASE },
-    Spec { name: "close", tag: "close", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Closes a tab. Refused while it has unsaved edits.", args: &[TAB], data: "`tabs`' answer.", emits: &["tab_closed", "tab_activated"], examples: &["recto close", "recto close --tab \"#2\""], ..BASE },
+    Spec { name: "close", tag: "close", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Closes a tab. Refused while it has unsaved edits.", args: &[TAB], data: "`{ closed, count, active }`, with `active` as `where` gives it.", emits: &["tab_closed", "tab_activated"], examples: &["recto close", "recto close --tab \"#2\""], ..BASE },
     Spec {
         name: "page move",
         tag: "page_move",

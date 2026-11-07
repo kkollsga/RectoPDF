@@ -128,8 +128,14 @@ pub enum Command {
         #[serde(default)]
         page: Option<u32>,
     },
+    Tabs {
+        /// Tabs to skip, from `next_from` in the last answer.
+        #[serde(default)]
+        from: Option<u32>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
     // Empty braces, not unit variants: serde ignores extra fields on a unit variant, even with `deny_unknown_fields`.
-    Tabs {},
     Sidebar {},
     Tap {
         #[serde(default = "active_tab")]
@@ -332,7 +338,7 @@ impl Command {
     pub fn tag(&self) -> &'static str {
         match self {
             Self::Open { .. } => "open",
-            Self::Tabs {} => "tabs",
+            Self::Tabs { .. } => "tabs",
             Self::Sidebar {} => "sidebar",
             Self::Tap { .. } => "tap",
             Self::Goto { .. } => "goto",
@@ -397,7 +403,7 @@ impl Command {
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
             Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
-            Self::Wait { .. } | Self::Watch { .. } | Self::Log { .. } | Self::Tabs {} | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
+            Self::Wait { .. } | Self::Watch { .. } | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
         }
     }
 }
@@ -607,7 +613,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     }
     match command {
         Command::Open { path, page } => open(access, path, *page, events),
-        Command::Tabs {} => Ok(access.with(|s| tabs_json(s))),
+        Command::Tabs { from, limit } => Ok(access.with(|s| tabs_json(s, *from, *limit))),
         Command::Sidebar {} => Ok(access.with(|s| sidebar_json(s))),
         Command::Tap { tab } => access.with(|s| {
             let id = select(s, tab)?;
@@ -634,7 +640,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             {
                 events.push(Event::new("tab_activated", json!({ "tab": active.0 })));
             }
-            Ok(tabs_json(s))
+            // Not the whole list: closing a thousand tabs shouldn't build a thousand lists.
+            Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.active().map(|active| where_json(s, active)) }))
         }),
         Command::Budget {} => Ok(json!({
             "tabs": access.with(|s| s.tabs().len()),
@@ -1019,12 +1026,16 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
     })
 }
 
-/// Most tabs one `tabs` answer lists, because a thousand of them is more than an agent can use.
-const MAX_TABS_LISTED: usize = 500;
+/// Tabs in one `tabs` answer if not told otherwise, because a thousand of them is more than an agent can read. The rest are a `--from` away.
+const DEFAULT_TABS_LISTED: u32 = 200;
+const MAX_TABS_LISTED: u32 = 1000;
 
-fn tabs_json<L: DocLoader>(session: &Session<L>) -> Value {
-    let tabs: Vec<Value> = session.tabs().iter().take(MAX_TABS_LISTED).map(|t| where_json(session, t.id)).collect();
-    json!({ "tabs": tabs, "count": session.tabs().len(), "truncated": session.tabs().len() > MAX_TABS_LISTED })
+fn tabs_json<L: DocLoader>(session: &Session<L>, from: Option<u32>, limit: Option<u32>) -> Value {
+    let from = from.unwrap_or(0) as usize;
+    let limit = limit.unwrap_or(DEFAULT_TABS_LISTED).clamp(1, MAX_TABS_LISTED) as usize;
+    let tabs: Vec<Value> = session.tabs().iter().skip(from).take(limit).map(|t| where_json(session, t.id)).collect();
+    let end = from + tabs.len();
+    json!({ "tabs": tabs, "count": session.tabs().len(), "next_from": (end < session.tabs().len()).then_some(end) })
 }
 
 fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
@@ -1079,7 +1090,7 @@ mod tests {
         let read_only = run(&mut session, Level::ReadOnly, &Command::Close { tab: "#1".into() }).unwrap_err();
         assert_eq!(read_only.code, "permission_denied");
         assert_eq!(session.tabs().len(), 1);
-        assert!(run(&mut session, Level::ReadOnly, &Command::Tabs {}).is_ok());
+        assert!(run(&mut session, Level::ReadOnly, &Command::Tabs { from: None, limit: None }).is_ok());
     }
 
     /// Failure: an agent the user turned off reads a page's text, the one thing Off exists to stop. Asserted on the level itself and on the
@@ -1156,14 +1167,14 @@ mod tests {
     fn unknown_commands_and_fields_are_refused() {
         assert_eq!(parse(r#"{"cmd":"format_disk"}"#).unwrap_err().code, "bad_command");
         assert_eq!(parse(r#"{"cmd":"tabs","extra":1}"#).unwrap_err().code, "bad_command");
-        assert!(matches!(parse(r#"{"cmd":"tabs"}"#), Ok(Command::Tabs {})));
+        assert!(matches!(parse(r#"{"cmd":"tabs"}"#), Ok(Command::Tabs { .. })));
     }
 
     fn every_command() -> Vec<Command> {
         let tab = || "#1".to_string();
         vec![
             Command::Open { path: "/d/a.pdf".into(), page: None },
-            Command::Tabs {},
+            Command::Tabs { from: None, limit: None },
             Command::Sidebar {},
             Command::Tap { tab: tab() },
             Command::Goto { tab: tab(), page: 1 },
@@ -1315,7 +1326,7 @@ mod tests {
         assert!(moved["note"].as_str().unwrap().contains("Saving isn't built"), "it must say so plainly: {moved}");
         let id = TabId(1);
         assert_eq!(s.page_edits(id).unwrap().slots()[0].page, 2);
-        let tabs = run(&mut s, Level::ReadOnly, &Command::Tabs {}).unwrap();
+        let tabs = run(&mut s, Level::ReadOnly, &Command::Tabs { from: None, limit: None }).unwrap();
         assert_eq!(tabs["tabs"][0]["edited"], true);
         run(&mut s, Level::Control, &Command::PageRotate { tab: "active".into(), pages: "2-3".into(), degrees: -90 }).unwrap();
         assert_eq!(s.page_edits(id).unwrap().slots()[1].quarter_turns, 3);

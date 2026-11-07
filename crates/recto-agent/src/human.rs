@@ -78,8 +78,10 @@ pub fn render(tag: &str, data: &Value) -> String {
         "signatures" => signatures(data),
         "sidebar" | "tap" => sidebar(data),
         "close" => {
-            let mut out = String::from("Closed.\n");
-            out.push_str(&tabs(data));
+            let mut out = format!("Closed #{}. {} open.", number(&data["closed"]), count(number(&data["count"]), "tab", "tabs"));
+            if data["active"].is_object() {
+                let _ = write!(out, "\nActive: {}", tab_line(&data["active"]));
+            }
             out
         }
         "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" => edit_state(data),
@@ -124,8 +126,8 @@ fn tabs(data: &Value) -> String {
         return "No PDFs are open. `recto open <file.pdf>` opens one.".to_string();
     }
     let mut out = rows.iter().map(tab_line).collect::<Vec<_>>().join("\n");
-    if data["truncated"] == true {
-        let _ = write!(out, "\n...and more: {} tabs in all.", number(&data["count"]));
+    if let Some(next) = data["next_from"].as_u64() {
+        let _ = write!(out, "\n...{} in all. `--from {next}` shows the next ones.", count(number(&data["count"]), "tab", "tabs"));
     }
     out
 }

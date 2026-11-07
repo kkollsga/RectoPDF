@@ -36,7 +36,7 @@ impl Host for Stand {
     fn run(&self, _level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
         match command {
             Command::Facts { .. } => panic!("a bug in a command"),
-            Command::Tabs {} => {
+            Command::Tabs { .. } => {
                 let mut released = self.release.lock().unwrap();
                 while !*released {
                     released = self.released.wait(released).unwrap();
