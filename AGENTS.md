@@ -14,6 +14,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 
 ## Testing
 - Shortest test that can catch the failure while working: `tools/check.sh --quick`, and `tools/check.sh --failed` for only what just failed. Before handing back: `tools/check.sh --full`.
+- **Each suite runs once per hand-back** (owner, 2026-11-07: "I think the main issue is repeating tests leading to queues and bottlenecks"). `--full`, a fork's whole CI set, a corpus gate, a memory run and a long fuzz run go once, last, on the commit being handed back, and once again only if code changed after them. While working, use `--quick`, a named test or `--fast`. Fix all of a review's findings, then run once. Whole-suite repeats on the way to a working fix are the waste this rule is here for.
 - **Don't use the queue to find out code is broken.** Fix before rerunning: the queue refuses a command that failed on unchanged code and shows the saved failure. `HEAVY_RETRY=1` is only for investigating a failure that comes and goes, which still gets a fix.
 - **A test names the failure it catches** in its doc comment. Don't pin exact pixels, wording or timings from one machine; assert the property.
 - **No manual tests and no synthetic input:** no posted mouse or key events, AppleScript or accessibility input. QA commands call the same methods the UI calls. Quiet runs never take the screen, focus or keyboard, and use temp state only.

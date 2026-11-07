@@ -758,7 +758,7 @@ fn every_row_answers_in_plain_words_and_in_versioned_json() {
     let _serving = state.serve();
     let file = three_pages();
     state.json(&["open", path_of(&file)]);
-    let skip = ["serve", "session", "local", "budget tabs", "budget render", "budget viewport", "permission set", "stop", "wait tab-open", "wait tab-closed", "wait page-drawn", "watch", "render", "export svg", "skill install", "skill show", "help", "sidebar", "permission request", "page insert", "open", "qa start", "qa run", "qa budget"];
+    let skip = ["serve", "session", "local", "budget tabs", "budget render", "budget viewport", "permission set", "stop", "wait tab-open", "wait tab-closed", "wait page-drawn", "watch", "render", "export svg", "skill install", "skill show", "help", "sidebar", "permission request", "page insert", "open", "qa start", "qa run", "qa budget", "wait indexing-done"];
     for spec in TABLE.iter().filter(|spec| !spec.hidden && !skip.contains(&spec.name)) {
         let words = skill::shell_words(spec.examples[0]);
         let args: Vec<&str> = words[1..].iter().map(String::as_str).filter(|word| *word != "--json" && *word != "report" && *word != "--tab" && *word != "contract").collect();
@@ -777,6 +777,12 @@ fn every_row_answers_in_plain_words_and_in_versioned_json() {
             assert!(!shown.trim_start().starts_with('{'), "{} prints JSON at a person: {shown}", spec.name);
         }
     }
+    // Its example waits for an index nobody started, which took 60 of this test's 61 s: a person's and a machine's answer to the same wait, kept short.
+    let (waited, _) = state.json(&["wait", "indexing-done", "--timeout", "1s"]);
+    assert_eq!(waited["v"], recto_agent::VERSION);
+    assert!(waited["ok"].is_boolean(), "{waited}");
+    let (_, plain, _) = state.text(&["wait", "indexing-done", "--timeout", "1s"]);
+    assert!(!plain.trim_start().starts_with('{'), "it prints JSON at a person: {plain}");
     let (usage, code) = state.json(&["no-such-command"]);
     assert_eq!((usage["error"]["code"].as_str(), code), (Some("usage"), exit::USAGE));
     assert_eq!(usage["v"], recto_agent::VERSION);
