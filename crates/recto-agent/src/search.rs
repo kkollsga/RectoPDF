@@ -398,7 +398,7 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             "pages_with_tag_chars": found.tag_pages,
             "changed_files": found.changed.iter().map(|file| json!({ "untrusted": { "file": plan.files[usize::from(*file)].label() } })).collect::<Vec<_>>(),
             "next_page": found.next_page,
-            "hits_total": (!found.total_cut_short).then_some(found.total),
+            "hits_total": (!found.total_cut_short && found.uncounted == 0 && found.failed.is_empty()).then_some(found.total),
             "hits_at_least": found.total,
             "uncounted_pages": found.uncounted,
         },

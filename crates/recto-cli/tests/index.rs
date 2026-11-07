@@ -41,6 +41,21 @@ fn wait_done(state: &State, tab: &str) -> Value {
     done
 }
 
+/// What `the_same_answer` leaves out. Reading page by page can't always know the total, and when it does, the index must say the same. And a total is never given over a page that couldn't be counted.
+fn totals_agree(indexed: &Value, scanned: &Value, args: &[&str]) {
+    let (index, scan) = (&indexed["data"]["coverage"], &scanned["data"]["coverage"]);
+    if scan["hits_total"].is_u64() {
+        assert_eq!(index["hits_total"], scan["hits_total"], "{args:?}: {indexed}");
+    } else {
+        assert!(index["hits_at_least"].as_u64() >= scan["hits_at_least"].as_u64(), "{args:?}: {indexed} {scanned}");
+    }
+    for answer in [index, scan] {
+        if answer["failed_pages"].as_array().is_some_and(|failed| !failed.is_empty()) || answer["uncounted_pages"].as_u64().is_some_and(|uncounted| uncounted > 0) {
+            assert_eq!(answer["hits_total"], Value::Null, "{args:?}: {answer}");
+        }
+    }
+}
+
 /// Holds a search answered from the index to the same search read page by page, field by field, and says which route each took.
 fn index_matches_scan(state: &State, args: &[&str]) -> Value {
     let (indexed, code) = state.json(args);
@@ -51,6 +66,7 @@ fn index_matches_scan(state: &State, args: &[&str]) -> Value {
     let (scanned, code) = state.json(&with_scan);
     assert_eq!(code, 0, "{args:?}: {scanned}");
     assert_eq!(scanned["data"]["route"], "scan", "{scanned}");
+    totals_agree(&indexed, &scanned, args);
     let answer = indexed.clone();
     assert_eq!(the_same_answer(indexed), the_same_answer(scanned), "{args:?}");
     answer
@@ -604,6 +620,7 @@ fn index_or_mixed_matches_scan(state: &State, args: &[&str]) {
     with_scan.push("--scan");
     let (scanned, code) = state.json(&with_scan);
     assert_eq!(code, 0, "{args:?}: {scanned}");
+    totals_agree(&indexed, &scanned, args);
     assert_eq!(the_same_answer(indexed), the_same_answer(scanned), "{args:?}");
 }
 
@@ -778,4 +795,31 @@ fn lowering_to_off_stops_indexing() {
     let (status, code) = state.json(&["index", "status", "--tab", "off-waiting"]);
     assert_eq!(code, 0, "{status}");
     assert_eq!((status["data"]["state"].as_str(), status["data"]["indexers_running"].as_u64(), status["data"]["indexers_waiting"].as_u64()), (Some("not_started"), Some(0), Some(0)), "{status}");
+}
+
+/// Failure: a page couldn't be read, and the answer still says `hits_total` and "N hits in all", a claim about a page nobody read. `the_same_answer` left these fields out, so nothing saw it. It says how many it counted, and not that that's all, both for a failure in scope and for one reached only to count.
+#[test]
+fn no_total_is_given_over_a_page_that_couldnt_be_counted() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let bomb = TempPdf::new("no-total.pdf", &form_bomb());
+    state.json(&["open", path(&bomb)]);
+    wait_done(&state, "active");
+    let (found, code) = state.json(&["search", "ordinary"]);
+    assert_eq!(code, 0, "{found}");
+    assert_eq!(found["data"]["coverage"]["failed_pages"], serde_json::json!([1]), "{found}");
+    assert_eq!((found["data"]["coverage"]["hits_total"].clone(), found["data"]["coverage"]["hits_at_least"].as_u64()), (Value::Null, Some(1)), "{found}");
+    let (plain, _, _) = state.text(&["search", "ordinary"]);
+    assert!(!plain.contains("in all"), "{plain}");
+
+    // Past the limit, a corpus's failed page is only counted, and it can't be.
+    let file = doc("uncounted.pdf", 5);
+    corpus_with_a_failed_page(&state, &file, 4);
+    state.json(&["open", path(&file)]);
+    let (limited, code) = state.json(&["search", "common", "--limit", "1"]);
+    assert_eq!(code, 0, "{limited}");
+    let coverage = &limited["data"]["coverage"];
+    assert_eq!((coverage["hits_total"].clone(), coverage["uncounted_pages"].as_u64(), coverage["hits_at_least"].as_u64()), (Value::Null, Some(1), Some(8)), "{limited}");
+    let (plain, _, _) = state.text(&["search", "common", "--limit", "1"]);
+    assert!(plain.contains("At least 8") && !plain.contains("8 hits in all"), "{plain}");
 }
