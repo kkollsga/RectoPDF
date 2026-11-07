@@ -6,20 +6,21 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 
 | Crate | Status | Contract | Must not |
 |---|---|---|---|
-| `recto-platform` | **Started** | File identity, process footprint, handle count, `isolate`: child process, channel with handles, shared memory, loaded library. Later `surface`, `fswatch` | Hold policy |
+| `recto-platform` | **Started** | File identity, process footprint, handle count, `isolate`: child process, channel with handles, shared memory, loaded library. `surface`: IOSurface, and the link that carries one to a worker. Later `fswatch` | Hold policy |
 | `recto-core` | **Started** | Lazy document structure over the lopdf fork's `IndexedReader`: facts, page count, contents. Later the append writer | Know about tiles, threads or an OS |
 | `recto-proto` | **Started** | Job and tile wire types, no dependencies. The host validates everything from the renderer | |
 | `recto-render` | **Started** | `render_tile(page, rect, scale, &mut [u8], cancel)` behind `RenderBackend`, page text. PDFium, by raw FFI | Allocate surfaces, name an OS, decide policy |
 | `recto-render-service` | **Started** | Library: the host's side, `DocRenderer`, limits, validation. Binary: the worker. Plain child process for now; sandbox is a separate spike | Link PDFium into the host |
 | `recto-index` | **Started** | Line order, text normaliser and hidden-text report: pure functions on the host's side. Later the page-text corpus | Touch the UI |
 | `recto-svg` | Planned | Streaming SVG writer | Build a document in memory |
+| `recto-reader` | **Started** | The page view with no toolkit: where pages sit, which tiles are wanted, what's kept, what the host is told, dark paper. One thread that runs the renderer | Name a UI toolkit; wait on the UI thread |
 | `recto-sign` | **Started (placeholder)** | Final seams for PAdES creation and the honest report; `PlaceholderSigner` always refuses | Depend on `recto-render`; produce anything that looks like a signature |
 | `recto-session` | **Started** | Tabs, tiers, sidebar and view models: all the rules | Name a UI toolkit |
 | `recto-agent` | **Started** | Typed, versioned commands, permission levels, the JSON envelope. `table.rs` is the one list of commands: the CLI's grammar, `recto help`, the level checks, `SKILL.md` and `REFERENCE.md` all come from it | Hold state of its own |
 | `recto-control` | **Started** | The long-running side: the server on the local socket, the level's file, the activity log, the state folder, the thin client. A `Host` trait, so the app can carry the same socket | Name a UI toolkit; hold a rule about documents |
-| `recto-ffi` | Planned | UniFFI, pinned to what the C# generator supports (0.31 in Seedwell); every call async or bounded | Hold rules |
+| `recto-ffi` | **Started** | UniFFI, pinned to what the C# generator supports (0.31); every call cheap or handed to a parked thread. Joins the app to the session and socket. Hang watchdog, the way QA commands reach the UI thread | Hold rules |
 | `recto-cli` | **Started** | `recto`: a thin client of the session on the socket, plus an in-process route for tests that uses the same dispatch, levels and log | Link AppKit |
-| `app/` | Planned | AppKit host, QA channel | Hold rules |
+| `app/` | **Started** | AppKit host, QA channel. A Swift package, built by `app/build.sh`, ad-hoc signed | Hold rules |
 
 ## Quality bar
 
@@ -42,6 +43,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `edit::Entry` | Step of an edited tab's undo history, at most 256 and their undone ones | ≤ 32 B |
 | `Conn` | Connected client, at most 128 | ≤ 320 B plus what it's sending and being sent |
 | `recto_index::order::Line` | Line of a page in hand, at most 16,384, only while it's being read | ≤ 72 B |
+| `recto_reader::layout::Override` | Visited page whose size isn't the document's usual one, at most 65,536, hot and warm tabs only | ≤ 32 B |
 
 ## Dependencies
 
@@ -49,6 +51,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 |---|---|
 | `lopdf` (fork) | The lazy `IndexedReader`, and later the append writer. Pinned to a git revision |
 | `serde`, `serde_json` | The agent JSON envelope |
+| `uniffi` | Swift bindings for the app, and C# later from the same definitions. Held at 0.31. `default-features = false`, so its command-line generator, with `clap` and the like, is only built behind the `bindgen` feature for `uniffi-bindgen`, and not linked into the app |
 | `libc` | `proc_pid_rusage` for footprint, process, channel and shared-memory calls, and the control socket's `poll` and `getpeereid`, `recto-platform` only |
 | `flate2` | Compresses `render`'s PNG. Already in the tree through lopdf, so it adds no crate. `recto-agent` only |
 | PDFium (not a crate) | Draws pages. `bblanchon/pdfium-binaries` release `chromium/8125`, PDFium 158.0.8125.0, no V8, no XFA. Loaded at run time, by the worker alone. `tools/pdfium.sh` fetches it from that release's URL to `target/pdfium/` and stops unless the tarball is SHA-256 `4939bd93…139d` and the library `a45c4464…373a`; `--attest` also runs `gh attestation verify`. It links AppKit; see the sandbox note below |
@@ -176,6 +179,63 @@ What made them look wrong is that **most of it is harmless, and the check can't 
 **A missing renderer** names itself: the error says `recto-render-service` or `libpdfium.dylib`, and `next` says how to get it.
 
 **Fetching PDFium.** Run `tools/pdfium.sh`, which `tools/check.sh` also runs. The worker finds the library beside itself or in `../pdfium/`. The worker binary is `recto-render-service`, found beside `recto`. `RECTO_PDFIUM_LIB` and `RECTO_RENDER_SERVICE` override, in debug builds only: nothing shipped loads code from a path in its environment. The digest is checked when the script fetches, not at each load; code signing covers that in the app. `cargo build -p recto-cli` alone doesn't build it: use `--workspace`.
+
+## The app
+
+`app/` is a Swift package with AppKit and no SwiftUI. `app/build.sh` makes `app/build/RectoPDF.app`: Rust, then the bindings, then Swift, then an ad-hoc signature, with `recto`, the worker and PDFium beside the app's executable for now (at release they move into the nested helper: `docs/research/2026-11-07-sandbox-spike.md`). `--quick` needs no Xcode. `--full` builds the app and drives it. Where a worker comes from is in one place, `Worker::start`.
+
+**One session.** The app holds a `SessionHost`, runs the same `Server` on a thread blocked in `poll`, and wraps it in a `Host` of its own, so `recto tabs` and `recto goto` act on what's on screen. What the app does itself goes through `with_session`, as the owner's. A socket another session holds doesn't stop a normal run, and a QA run refuses. Things the reader does that aren't commands reach watchers through `Server::announcer`.
+
+**Threads at rest, all parked or asleep:** main, `recto-control` in `poll`, `recto-session` on a condvar, `recto-pages` parked, `recto-watchdog` parked, the reaper while a worker lives, and AppKit's own. The UI thread calls Rust for three things: `set_viewport` on each scroll (a short lock and a few map lookups, at most 8 surfaces reclaimed), `drain_ops` when told there are some, and pulling a published snapshot of the sidebar. Anything that can take time goes on `recto-session`, because waking a cold tab reads its file with the session's lock held. So it can stall the session thread, and `recto status` and the UI thread both still answer. No display link: tiles arriving hop to the UI thread once each, which needs no tick at rest and works off screen.
+
+**How a tile reaches the screen, with no copy.** The host makes the surface, so it's charged to the host and outlives the worker. A socket pair can't carry an IOSurface, since it crosses as a Mach port, so each worker is started with a send right in an exception-port slot that nothing raises, set by `posix_spawn`. It sends back a send right to a port of its own and clears the slot. There's no name in any registry, and after that the host never receives from it. A job's surface goes to that port just ahead of its frame, the worker maps it, draws, and unmaps, and the layer's `contents` is that same surface. Measured with 64 tiles: the host's footprint rises 64 MiB, the worker's by nothing, and creating, sending, looking up, filling and hearing back is 0.13 ms a tile. A copy into a surface would have been 15 µs warm a tile, plus its first touch, so this wasn't for speed: it's so there's one copy of a tile, and so a worker's limit doesn't count tiles. **In the sandbox:** the same two programs in a helper `.app` with the App Sandbox entitlement and the spike's Mach drop run correctly: rendezvous, 64 surfaces round trip, pixels verified, host charged. The drop leaves receive rights alone. The first surface takes 64 ms and adds about 4 MiB to the worker, loading IOSurface after the drop. That's the C test only, with no PDFium in it. **What this gives up:** "pixels are copied out of shared memory" no longer holds on this path. A compromised worker can keep its right and rewrite a tile that's on screen. It could already draw a wrong picture, but it can now change it later. `recto render` and everything else that writes a file keeps the shared-memory path.
+
+**Regions** are one surface and one layer, with no cutting up. Blank tiles get no surface, only a colour, or nothing if they're the paper's colour. Grey tiles are still BGRA: `L008` would take a text page's tiles to a quarter, and it's only known correct in `render(in:)`, not on a real screen, so it waits for the MacBook spike.
+
+**What's kept**, all in `recto_reader::tiles`: what's on a layer stays. Off a layer it goes discardable the moment the host says it's applied, which takes it out of the footprint: 64 tiles go from 66.6 to 2.7 MiB. Kept: 256 MiB and 1,024 surfaces of tiles, least recently used first, 128 previews, which outlive their tiles, and 64 free surfaces. Attached: at most 8 a turn, with every visible page's preview first. A cold tab has no entries and no renderer, and a closed window has neither. The page layout costs nothing per page: pages are taken to be the size of the first one known until asked about, and only pages of another size are stored, so a file claiming 8 million pages costs nothing until it's read.
+
+**A worker past the retirement line goes 3 s into a pause** (`BIG_WORKER_REST`), not the idle rule's 30. It's the only timer in the page view, and it's there only while such a worker is. The USGS map at rest goes from 433 MiB to 36 MiB, and the first move after that pays for the image again.
+
+**Pinch and scroll.** Layers are page-relative in PDF points, under one transform per page, so a pinch moves one transform and a change of fit moves no tile. Tiles stretch during a pinch, and nothing's drawn until it ends. New tiles go on top of old ones, which come off when the page's visible tiles are all there. Pages are snapped to whole device pixels. `NSScrollView` does the scrolling, so rubber-banding, momentum and the scrollers are the system's. **Not checked on a screen:** a quiet run has none.
+
+**Dark paper** is done to the tile's pixels in `recto-reader`, not by a layer filter: a filter makes the compositor take an offscreen pass every frame, and `render(in:)` leaves it out, so a shot wouldn't show it. Lightness turns over and each pixel keeps its distance from grey, so a blue link is lighter blue. Images under 40% of the page stay themselves, dimmed, from where the renderer says they are. A scan turns over like any page. **Its limits:** a full-page photograph comes out a negative, and vector charts turn over with the text, where the concept keeps their colours. The turn costs about 1 ms a colour tile, and text tiles use a table. On a low-resolution page the renderer isn't asked, since asking might cost as much as drawing.
+
+**Text isn't an `NSTextField`.** On macOS 27 each `-[NSTextField layout]` makes a view, whose `-[NSKeyValueDependencyInfo initWithOwner:]` leaves records in AppKit for good. It came to about 7 KiB for each tab opened and more while reading, and took 1,000 tabs of a drawn PDF to 5.7 MiB. `TextLine` draws an attributed string instead: 0.8 KiB a tab, found with `heap` and `malloc_history`.
+
+**Colours aren't dynamic `NSColor`s:** there's one per appearance, told again when it changes.
+
+**The QA channel.** `recto qa start` runs the app with `--qa` on a state folder set with `RECTO_STATE_DIR`, and the app refuses anything else. It has the activation policy `.prohibited` from before AppKit does anything, so no Dock icon or menu bar and it never activates. Its window is never ordered in, sits off every screen, and draws as key at 2x. There's a 10-minute limit. `recto qa state` reports what the app says it's showing. `recto qa shot` draws the window's frame view with `cacheDisplay` into a 2x bitmap, which needs no permission. `recto qa wait-settled` goes through the session thread's queue first, then waits for what's visible to be on layers. Drive verbs call what the event calls, and answer after that's been through the session thread and laid out, so no script sleeps. `recto qa run` runs a script and gives PASS or FAIL, and a 2 s stall fails it. `qa` rows are Read-only or Control, and a session that isn't a quiet app answers `qa_needs_app`. They're in `recto help`, and left out of the skill. **Not covered:** the step from a real event to the method it calls has no unit test, only the method. Run-loop blocks from Rust are in their own autorelease pool, as AppKit only drains its pool after an event.
+
+**The watchdog.** The UI thread says when it wakes and sleeps, from a run-loop observer. One thread watches only while it's awake, looking every 250 ms, and notes 1 s and counts 2 s. `recto qa stall` proves it fires.
+
+**Measured** 2026-11-07, release build, this Mac (M4, 16 GB), quiet run: a window off every screen, so **frames reaching a display, what a visible window's backing adds, and 120 Hz aren't in any of this**. `recto qa budget --file F --heavy H`, whole tree unless it says.
+
+| Budget (`SPEC.md` §2) | Target | Measured | |
+|---|---|---|---|
+| Cold start to first sharp page, `rfc9110`, process start to settled, 21 runs | ≤ 300 / ≤ 500 ms | **136 / 152 ms** p50 / p95. 83 ms of it is the window | Met |
+| One document, text page | ≤ 60 MiB | **32.3 MiB**: app 24.3, worker 8 | Met |
+| Colour page: NASA `ntrs20240002628` p50, images | ≤ 100 MiB | **37.7 MiB** | Met |
+| The same: NASA `ntrs20220005969` p175, shaded backgrounds | ≤ 100 MiB | **210 MiB**: the worker's 184, PDFium's transparency buffers, as already measured in `budget viewport`. It goes after 3 s at rest | **Missed** |
+| Scrolling, peak: `rfc9110` at 6 / 40 pages a second | ≤ 170 MiB | **40 / 50 MiB** | Met |
+| The same: NASA images | ≤ 170 MiB | **61 / 90 MiB** | Met |
+| UI thread's work per scroll step, 120 steps a second | ≤ 2 ms p99 | **0.21 / 0.24 ms** p99, worst 0.29 | Met, off screen |
+| Blank on a seen page, during those sweeps | 0 | **0** at 40 a second. 1 step at 6 a second before a page's sliver got its own preview, fixed after this run and asserted in a test | Met |
+| Sharp after scroll stops, on pages not drawn yet | ≤ 100 ms | **7 / 17 ms** p50 / worst, one client round trip included | Met |
+| Idle CPU, one document, 20 s, app only | ~0%, ≤ 1 wake-up/s | **0.0%, 0.35 to 0.5** | Met, off screen. A worker parked in `poll` wasn't counted |
+| Window closed | ≤ 20 MiB | **11.5 MiB**, no worker | Met |
+| 1,000 tabs of a PDF, over 2 tabs, app's own | ≤ 4 MiB | USGS map **0.67**, NASA **2.48**, 2 GiB file **0.28**. Each was drawn when opened | Met |
+| Sidebar opens, 1,000 tabs: focus off to settled | < 150 ms | **2.9 ms** | Met |
+| Handles at 2 tabs and 1,000 | same | 22 to 25, varying with what's warm. 3 documents held at most | Met |
+| 2 GiB, 10,000 pages, page 1 sharp, warm | ≤ 250 ms | **170 ms** p50, from process start | Met |
+| The same, cold | ≤ 600 ms | **354 ms** worst of 11, its first run after writing the file. Not a true cold start: purging the file cache needs root | Not tested as such |
+| Main never stalls over 16 ms on that file | ≤ 16 ms | **18 ms** at worst over the whole run, which is one stretch of work in launch or layout, not a page. 26 ms with `rfc9110`, 21 with NASA | **Missed by 2 ms** |
+| USGS map, peak, under the named exception | 415–450 MiB accepted | Fitted **377 MiB**. Zoom 3, about 2x: **433**. Zoom 4.5, about 3x: **489**, worker 453 and app 36. Before, the worker alone at 2x and 3x peaked at 394 and 452 | **Over at 3x** by the tree, as the surfaces were in the worker's number before |
+| USGS map, first view, scroll, zoom | No target | **628 ms** from process start. Zoom to 2x 512, a quarter window 72, 1.5x more 630. Before, by `budget viewport`: 534, 101, 379 | The first and last draw at higher scales than before |
+| 120 Hz, ≥ 99% of frames on time | | **Not tested**: needs the MacBook and a real screen | |
+
+**Before and after on the app's own fixes,** same runs. `TextLine` for `NSTextField`: 1,000 tabs of NASA 5.68 to 2.48 MiB over 2 tabs, and a 400-tab run's heap growth from 2.9 MiB to 0.1. Letting a big worker go: USGS map at rest 433 to 36 MiB. Previews outliving tiles: 84 blank steps on seen pages at 40 pages a second, in a debug run, to 0.
+
+**About the off-screen numbers.** A real window has a backing store and a window-server share that this doesn't, so treat the memory figures as a floor until the MacBook spike. The platform report's sRGB window alone cost 17.6 MiB in a visible state.
 
 ## The agent interface
 

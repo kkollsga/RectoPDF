@@ -82,16 +82,16 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 
 ## Phase 2: First real app
 
-- [ ] `recto-ffi` and the AppKit host, joined to the same session and socket as the CLI
-- [ ] **QA channel built with the first screen:** quiet runs, temp state, in-app `shot`, state reports, script runner
-- [ ] Hang watchdog: a 2 s stall fails the run
-- [ ] Window, sidebar, tap rule, contents with the rail
-- [ ] Page tiles on IOSurface, scrolling, pinch, blur to sharp
+- [x] `recto-ffi` and the AppKit host, joined to the same session and socket as the CLI
+- [x] **QA channel built with the first screen:** quiet runs, temp state, in-app `shot`, state reports, script runner
+- [x] Hang watchdog: a 2 s stall fails the run
+- [x] Window, sidebar, tap rule, contents with the rail
+- [x] Page tiles on IOSurface, scrolling, pinch, blur to sharp. Scrolling and pinch are driven by the methods they call: no real gesture has run yet
 - [ ] Low-resolution page previews kept on disk, so a page seen before shows at once on reopening
 - [ ] Draw the next pages ahead while idle, within the memory limits
 - [ ] Compare hayro, and MuPDF as a measuring stick only, on heavy pages, **only if** the viewport numbers still miss their targets
-- [ ] Dark mode with dark or white paper; focus view; agent icon as a placeholder
-- [ ] Budget tests: cold start, one document, scrolling, idle CPU, closed window
+- [x] Dark mode with dark or white paper; focus view; agent icon as a placeholder
+- [x] Budget tests: cold start, one document, scrolling, idle CPU, closed window (`recto qa budget`, off screen; numbers in `docs/ENGINEERING.md`)
 - [ ] Spike on the MacBook: 120 Hz and on-screen memory
 - [ ] Sandbox spike: PDFium in an XPC service (its library links AppKit)
 

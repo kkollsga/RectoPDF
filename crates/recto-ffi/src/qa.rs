@@ -101,7 +101,7 @@ impl QaBridge {
 
     fn drive(&self, verb: &str, value: &str, timeout_ms: Option<u64>) -> Result<Value, AgentError> {
         let number = |low: f64, high: f64| -> Result<f64, AgentError> {
-            value.parse::<f64>().ok().filter(|number| number.is_finite() && *number >= low && *number <= high).ok_or_else(|| bad(format!("`{}` isn't a number from {low} to {high}.", recto_core_clean(value))))
+            value.parse::<f64>().ok().filter(|number| number.is_finite() && *number >= low && *number <= high).ok_or_else(|| bad(format!("`{}` isn't a number from {low} to {high}.", cleaned(value))))
         };
         match verb {
             "appearance" | "window" | "hover" | "click_row" | "resize" => {}
@@ -223,6 +223,6 @@ fn bad(words: impl Into<String>) -> AgentError {
     AgentError::new("usage", words.into(), exit::USAGE)
 }
 
-fn recto_core_clean(text: &str) -> String {
+fn cleaned(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).take(64).collect()
 }

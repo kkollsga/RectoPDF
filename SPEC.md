@@ -24,19 +24,19 @@ A missed budget is a bug. The whole process tree counts, on release builds, on a
 
 | Metric | Target | Status |
 |---|---|---|
-| **One more idle tab** | **≤ 4 KiB, 0 file handles, 0 threads, 0 layers, 0 tiles**, whatever the PDF's size | Tested for heap and handles; layers and tiles when they exist |
-| 1,000 tabs | ≤ 4 MiB over 2 tabs; sidebar opens < 150 ms | Partly tested |
-| Live documents | Active plus at most 2 recent; a byte budget frees the oldest first | Tested for the count; byte budget when renderers exist |
-| One document, text page | ≤ 60 MiB | Pending app |
-| Colour full-bleed page | ≤ 100 MiB | Pending app |
-| Fast scrolling, peak | ≤ 170 MiB. **Named exception:** pages with huge images can exceed this, under the memory limit sequence in §3. Accepted by the owner, 2026-11-07: about 415–450 MiB on a 330 MiB map with one-pass drawing, in exchange for a first view about four times faster | Pending app |
-| Cold start to first sharp page | ≤ 300 ms p50, ≤ 500 ms p95 | Pending app |
-| Open 2 GB, 10k pages | Page 1 sharp ≤ 250 ms warm, ≤ 600 ms cold; main never stalls > 16 ms | Pending app |
-| Idle CPU | ~0%, ≤ 1 wake-up per second | Pending app |
-| Scroll | 120 fps on ProMotion, ≥ 99% of frames on time, 0 blank frames on seen pages | Pending app |
-| Sharp after scroll stops | ≤ 100 ms on a text page | Pending app |
+| **One more idle tab** | **≤ 4 KiB, 0 file handles, 0 threads, 0 layers, 0 tiles**, whatever the PDF's size | Met off screen: 0.3 to 2.5 KiB each in the app, no handles, threads, layers or tiles |
+| 1,000 tabs | ≤ 4 MiB over 2 tabs; sidebar opens < 150 ms | Met off screen: 0.3 to 2.5 MiB, 2.9 ms |
+| Live documents | Active plus at most 2 recent; a byte budget frees the oldest first | Count tested. Tile bytes are capped, and a big worker goes 3 s into a pause. No byte budget across documents yet |
+| One document, text page | ≤ 60 MiB | Met off screen: 32 MiB |
+| Colour full-bleed page | ≤ 100 MiB | 38 MiB on an image page. **Missed at 210 MiB** on a page of shaded backgrounds, from PDFium |
+| Fast scrolling, peak | ≤ 170 MiB. **Named exception:** pages with huge images can exceed this, under the memory limit sequence in §3. Accepted by the owner, 2026-11-07: about 415–450 MiB on a 330 MiB map with one-pass drawing, in exchange for a first view about four times faster | Text 40 to 50 MiB, images 61 to 90. The map: 377 fitted, 433 at 2x, **489 at 3x**, by the tree |
+| Cold start to first sharp page | ≤ 300 ms p50, ≤ 500 ms p95 | Met off screen: 136, 152 ms |
+| Open 2 GB, 10k pages | Page 1 sharp ≤ 250 ms warm, ≤ 600 ms cold; main never stalls > 16 ms | 170 ms warm. Cold not tested. **Worst stall 18 ms** |
+| Idle CPU | ~0%, ≤ 1 wake-up per second | Met off screen: 0.0%, 0.5 at most |
+| Scroll | 120 fps on ProMotion, ≥ 99% of frames on time, 0 blank frames on seen pages | UI thread 0.24 ms p99 a step, 0 blank steps, off screen. Frames not tested: needs the MacBook |
+| Sharp after scroll stops | ≤ 100 ms on a text page | Met: 7 ms typical, 17 at worst |
 | Background work (OCR, indexing, compress) | Helper process, background QoS, exits when done | Pending |
-| Window closed | ≤ 20 MiB | Pending app |
+| Window closed | ≤ 20 MiB | Met: 11.5 MiB |
 
 ## 3. Architecture
 
@@ -63,7 +63,7 @@ fast because everything is rebuilt from disk.
 
 **distillPDF is parked** (owner, 2026-11-06). Its Tesseract and invisible-text approach is reused for OCR without depending on it.
 
-**Pages reach the screen** as `CALayer`s holding IOSurface tiles, 512 px, zero copy, off-screen tiles purgeable. See the platform report, §2.
+**Pages reach the screen** as `CALayer`s holding IOSurface tiles, 512 px, zero copy, off-screen tiles purgeable. The host makes each surface and a worker draws in it, sent over a Mach port it was given at spawn. See `docs/ENGINEERING.md`, "The app".
 
 ## 4. Screen design
 
@@ -77,7 +77,7 @@ Reference: `docs/concepts/`. Rules from the owner:
 - **Editing tools show in the sidebar only in edit mode** (owner, 2026-11-06: "These are tools in the sidebar only visible when in edit mode"). The panel changes to the edit tools when you enter with ⌘E, the Pages menu or Edit PDF, and Done returns to reading. In the Pages menu, Rust enables those items only in edit mode.
 - **Saving looks and works like a native Mac app** (owner, 2026-11-06: "I want something that looks more like a native save / save as feature. Like word etc"). With unsaved changes, the red window button shows its dot and a Save icon appears beside the window controls. `⌘S` saves, `⇧⌘S` and File > Save As open the system's save sheet, and closing asks Don't Save, Cancel or Save. Tools change the open document (Compress has Apply) and never have their own save buttons.
 - **Agent icon at the top right**, in the empty margin. It opens the agent panel and stays in the same spot.
-- **Dark mode offers dark or white paper.** Signing always shows the true page.
+- **Dark mode offers dark or white paper.** Dark paper turns text and page over and leaves pictures alone, dimmed. An image that's most of a page, such as a scan, turns over with it. Signing always shows the true page.
 - **Focus view:** sidebar hidden, page number only, agent icon kept.
 - A neutral signature mark, never a green tick in v1.
 

@@ -6,7 +6,7 @@
 //!
 //! **What's in memory.** Only tiles on layers count. Anything off-screen is marked discardable the moment the host says it's off the layer: it leaves the footprint at once, and is usually still there on the way back.
 
-use crate::layout::{PAGE_GAP, PageBox, PageLayout};
+use crate::layout::{PageBox, PageLayout};
 use crate::paper::PaperKind;
 use recto_platform::surface::{PixelSurface, Purge};
 use recto_proto::{BYTES_PER_PIXEL, MAX_REGION_BYTES, MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
@@ -662,7 +662,6 @@ impl Reader {
                     }
                 }
             } else {
-                wanted.extend(preview_id.filter(|_| false));
                 let done: Vec<u64> = self.attached.get(&page).into_iter().flatten().copied().filter(|id| !wanted.contains(id)).collect();
                 for id in done {
                     self.detach(id, page);
@@ -701,9 +700,7 @@ impl Reader {
     }
 
     fn set_note(&mut self, note: Option<String>) {
-        if self.note != note {
-            self.note = note;
-        }
+        self.note = note;
     }
 
     fn attach(&mut self, id: u64, below: bool) -> bool {
@@ -998,13 +995,13 @@ impl Reader {
             }
             let (file, source_page) = doc.map.source(page)?;
             // Asked once, and it loads the page, which drawing would do anyway.
-            if missing.len() > 1 && !doc.heavy.contains_key(&page) {
+            if !doc.heavy.contains_key(&page) {
                 let generation = self.fresh_generation();
                 return Some(Job { tab, position: page, file, source_page, generation, kind: JobKind::Traits });
             }
             let heavy = doc.heavy.get(&page).copied().unwrap_or(false);
-            // A heavy page's cost is per pass, so a preview would cost it as much again.
-            let preview_wanted = !heavy && missing.len() > 1 && !self.cover.contains_key(&self.preview_key(doc, page));
+            // A heavy page's cost is per pass, so a preview would cost it as much again. Any other page gets one however little of it shows: a page first seen as a sliver at the bottom of the window, with no preview, goes blank when that sliver's tile scrolls off.
+            let preview_wanted = !heavy && !self.cover.contains_key(&self.preview_key(doc, page));
             if preview_wanted && let Some((preview_scale, rect)) = self.preview_rect(doc, page, scale) {
                 let surface = self.take_surface(rect.width, rect.height)?;
                 let paper = self.paper;
@@ -1152,7 +1149,7 @@ impl Reader {
             if let Some(old) = self.cover.insert(key, id)
                 && old != id
             {
-                self.retire_replaced(old, id, tab);
+                self.retire_replaced(old, tab);
             }
         }
         self.entries.insert(id, entry);
@@ -1162,7 +1159,7 @@ impl Reader {
     }
 
     /// Something drawn over an older copy of the same place. The older one comes off when no key points at it.
-    fn retire_replaced(&mut self, old: u64, _new: u64, tab: u32) {
+    fn retire_replaced(&mut self, old: u64, tab: u32) {
         let Some(entry) = self.entries.get(&old) else { return };
         let page = entry.page;
         let still_used = Self::keys_of(entry).iter().any(|key| self.cover.get(key) == Some(&old));
@@ -1264,11 +1261,6 @@ impl Reader {
 
     pub fn counts(&self) -> &ReaderCounts {
         &self.counts
-    }
-
-    /// The zoom limits and spacing the host needs.
-    pub fn limits() -> (f64, f64, f64) {
-        (MIN_ZOOM, MAX_ZOOM, PAGE_GAP)
     }
 }
 

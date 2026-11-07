@@ -375,7 +375,7 @@ fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
             other if other.starts_with("-psn_") || other.starts_with("-NS") || other.starts_with("-Apple") => {
                 let _ = words.next();
             }
-            other if other.starts_with('-') => return Err(format!("`{}` isn't an option of this app.", recto_session_clean(other))),
+            other if other.starts_with('-') => return Err(format!("`{}` isn't an option of this app.", cleaned(other))),
             other => parsed.open.push(PathBuf::from(other)),
         }
     }
@@ -385,7 +385,7 @@ fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
     Ok(parsed)
 }
 
-fn recto_session_clean(text: &str) -> String {
+fn cleaned(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).take(64).collect()
 }
 
