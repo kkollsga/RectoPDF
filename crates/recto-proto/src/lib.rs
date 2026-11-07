@@ -224,21 +224,24 @@ pub fn encode_open(password: &[u8]) -> Result<Vec<u8>, ProtoError> {
     Ok(frame(Kind::Open, password))
 }
 
-/// The answer to [`Kind::Open`].
-pub const OPENED_LEN: usize = 4;
+/// The answer to [`Kind::Open`]: how many pages, and which version of the file that is, as a number that differs if the file does.
+pub const OPENED_LEN: usize = 12;
 
-pub fn encode_opened(page_count: u32) -> Vec<u8> {
-    frame(Kind::Opened, &page_count.to_le_bytes())
+pub fn encode_opened(page_count: u32, version: u64) -> Vec<u8> {
+    let mut payload = page_count.to_le_bytes().to_vec();
+    payload.extend_from_slice(&version.to_le_bytes());
+    frame(Kind::Opened, &payload)
 }
 
-pub fn decode_opened(payload: &[u8]) -> Result<u32, ProtoError> {
+pub fn decode_opened(payload: &[u8]) -> Result<(u32, u64), ProtoError> {
     let mut r = Reader(payload);
     let pages = r.u32()?;
+    let version = r.u64()?;
     r.end()?;
     if pages > MAX_PAGE_COUNT {
         return Err(ProtoError("more pages than a document can have"));
     }
-    Ok(pages)
+    Ok((pages, version))
 }
 
 /// The only pixel format for now: blue, green, red, one unused byte. The host treats the tile as opaque.

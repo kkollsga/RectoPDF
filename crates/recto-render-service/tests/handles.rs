@@ -77,7 +77,7 @@ fn fake_worker() {
     loop {
         let Ok(frame) = reader.read_blocking(&channel) else { isolate::exit_now(0) };
         match frame.kind {
-            Kind::Open => send_all(&channel, &proto::encode_opened(1), &[]).unwrap(),
+            Kind::Open => send_all(&channel, &proto::encode_opened(1, 1), &[]).unwrap(),
             Kind::Render => {
                 let job = RenderJob::decode(&frame.payload).unwrap();
                 let reply = TileReply {

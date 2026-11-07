@@ -488,6 +488,17 @@ pub fn is_kept_name(name: &str) -> bool {
     name.strip_prefix("kept-").and_then(|rest| rest.strip_suffix(".pdf")).is_some_and(|rest| is_journal_name(&format!("journal-{rest}.log")))
 }
 
+/// What a tab's sleep file is called: its file's identity, as a journal goes by.
+pub fn sleep_file_name(stamp: FileStamp, path: &Path) -> String {
+    let name = journal_file_name(Some(stamp), path, None);
+    format!("sleep-{}.bin", name.strip_prefix("journal-").and_then(|rest| rest.strip_suffix(".log")).unwrap_or_default())
+}
+
+/// Whether a name is that of a sleep file.
+pub fn is_sleep_name(name: &str) -> bool {
+    name.strip_prefix("sleep-").and_then(|rest| rest.strip_suffix(".bin")).is_some_and(|rest| is_journal_name(&format!("journal-{rest}.log")))
+}
+
 /// Whether a journal with nothing to say it's this tab's is about this tab's file. **The same file, by its path or by its number,** with the same contents. Size and time alone are what `cp -p` keeps, so another number at another path is another file, whose edits must not land here. The device isn't compared, as a volume can come back under another. With nothing to compare, the path says.
 pub fn journal_is_for(header: &JournalHeader, file: Option<FileStamp>, path: &Path) -> bool {
     let at_its_path = header.path.to_path().is_some_and(|about| about == path);
@@ -606,6 +617,9 @@ pub struct AddedRecord {
     /// It's a file of the history's own, in the journals' folder: an earlier version of the PDF, for what a save took out of it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kept: bool,
+    /// It's a protected file.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protected: bool,
 }
 
 /// One step of history: how to go back. It's the shape of [`crate::edit`]'s own steps.

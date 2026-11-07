@@ -311,6 +311,7 @@ impl QaBridge {
                 "footprint_bytes": own,
                 "compressed_bytes": mine.compressed,
                 "heap_bytes": mine.heap,
+                "workers": self.engine.worker_pids().len(),
                 "worker_bytes": worker_bytes,
                 "worker_peak_bytes": worker_peak,
                 "tree_bytes": own + worker_bytes,

@@ -80,6 +80,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "and edit should also keep undo, redo history of edits until save has been applied."
 - "We don't want to add the undo redo history to the file itself, but we can have a rolling save redo history on the system, so it kind of in the temp files per PDF."
 - "1000 steps and 64mb is good." On Save: "after a save you might still have regrets and want to make changes. But you definitely don't want history to leak into the pdf file".
+- "II agree with this signature approach": a change that needs a rewrite of a signed PDF (delete a page, redact, compress) turns Save off, and Save As makes a new copy with every signature fully removed, field, value and drawn box, saying "The new copy won't be signed. The original keeps its signature." Additions are appended and keep the signature valid. The signed original is never touched.
 - "All in one release." Asked which: everything ships together, not the reader first.
 - "it's clear to me that the test program is slowing us down considerably. I need your help for us to speed up safely".
 - "Two tabs of the same pdf? This shouldn't be possible. A pdf can only be opened once".

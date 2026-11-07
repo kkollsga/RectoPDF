@@ -305,9 +305,12 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
         let (was, now) = (before["app"]["pages"][field].as_f64().unwrap(), after["app"]["pages"][field].as_f64().unwrap());
         assert!((was - now).abs() < 0.25, "{field}: {was} then {now}");
     }
+    // The first frame was the right one: the place, with something on it, which since deep sleep can be the tab's sleep file's picture before a page is drawn. That's the gap the user sees. It isn't what counts as having come up: that's a page of the app's own drawn through the real renderer, which `a_new_app_that_cant_draw_goes_back` holds to with a renderer that can't.
     let shown = &after["record"]["first_shown"];
-    assert_eq!(shown["settled"], true, "the first frame was the right one: {shown}");
+    assert_eq!(shown["home"], false, "{shown}");
+    assert!(shown["tile_layers"].as_u64().unwrap() > 0, "something's on it: {shown}");
     assert_eq!(shown["page"], before["reader"]["page"]);
+    assert!((shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 0.25, "{shown}");
     assert_eq!(after["session"]["app"]["focus"]["view"], "find");
     run.ok(&["qa", "owner-edit", "redo"]);
 
@@ -394,8 +397,10 @@ fn a_new_app_that_cant_draw_goes_back() {
     let status = bed.wait_status(&run, "went_back");
     assert_eq!(status["failed_versions"], json!([NEW]));
     assert_same_but(&before, &run.report(), &[], ACROSS_AN_UPDATE);
+    // A first frame was up, from the tab's sleep file's picture if it had one, and that wasn't enough: it was the drawing that said no.
     let log = bed.log();
     assert!(log.contains("can't draw a page") && log.contains("couldnt_draw"), "{log}");
+    assert!(!log.contains("0.1.99 started"), "never taken as having come up: {log}");
     run.quit();
 }
 

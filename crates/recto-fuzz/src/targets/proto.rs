@@ -38,9 +38,9 @@ fn every_decoder(payload: &[u8]) {
     if let Ok(pid) = decode_hello(payload) {
         assert_eq!(decode_hello(&encode_hello(pid)[HEADER_LEN..]), Ok(pid));
     }
-    if let Ok(pages) = decode_opened(payload) {
+    if let Ok((pages, _)) = decode_opened(payload) {
         assert!(pages <= MAX_PAGE_COUNT);
-        assert_eq!(decode_opened(&encode_opened(pages)[HEADER_LEN..]), Ok(pages));
+        assert_eq!(decode_opened(&encode_opened(pages, 1)[HEADER_LEN..]), Ok((pages, 1)));
     }
     if let Ok(job) = RenderJob::decode(payload) {
         assert!(job.check().is_ok());

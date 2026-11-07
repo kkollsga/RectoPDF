@@ -78,7 +78,7 @@ pub fn proto_seeds() -> Vec<Vec<u8>> {
     let text = TextReply { job_id: 3, page: 4, hidden_checked: true, chars: vec![CharRecord::new('a' as u32, CharRecord::NO_INK), CharRecord::new('b' as u32, 0)], boxes: vec![[1.0, 2.0, 3.0, 4.0], [4.0, 2.0, 5.0, 4.0]], ..TextReply::default() };
     let frames: Vec<Vec<u8>> = vec![
         encode_hello(7),
-        encode_opened(12),
+        encode_opened(12, 1),
         job.encode(),
         tile.encode(),
         region.encode(),

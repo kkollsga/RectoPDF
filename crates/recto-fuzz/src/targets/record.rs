@@ -78,6 +78,19 @@ fn use_a_journal(bytes: &[u8]) {
     }
 }
 
+/// A sleep file: refused, or one that's within every cap, and reads back as it was once it's been written again.
+fn use_a_sleep_file(bytes: &[u8]) {
+    let Ok(sleep) = recto_session::sleep::decode_sleep(bytes, CURRENT_VERSION) else { return };
+    assert!(sleep.pictures.len() <= recto_session::sleep::MAX_SLEEP_PICTURES);
+    for picture in &sleep.pictures {
+        assert!(picture.bgra.len() <= recto_session::sleep::MAX_PICTURE_BYTES);
+        assert_eq!(picture.bgra.len(), picture.width as usize * picture.height as usize * 4);
+        assert!(picture.page < sleep.pages);
+    }
+    let again = recto_session::sleep::decode_sleep(&recto_session::sleep::encode_sleep(&sleep), CURRENT_VERSION).expect("what was read can be written");
+    assert_eq!(again.pictures.len(), sleep.pictures.len());
+}
+
 fn use_a_log(bytes: &[u8]) {
     let mut main = recto_session::record::SessionRecord { app: record::AppRecord::default(), view: record::ViewRecord::default(), find: record::FindRecord::default(), edit_mode: false, active: None, next_id: 3, tabs: vec![record::TabEntry { id: 1, path: record::PathField::Text("/fuzz/p12.pdf".into()), file: None, page: 0, page_count: 12, place: None, view_rotation: 0, toc_open: true, renderer_only: false, selection: None, notice: None, journal: None, edits: None }] };
     record::apply_places_log(&mut main, 1, bytes);
@@ -141,6 +154,8 @@ pub fn check(data: &[u8]) {
         use_a_record(&record::seal(MAIN_KIND, 1, data));
         use_a_journal(data);
         use_a_log(data);
+        use_a_sleep_file(data);
+        use_a_sleep_file(&record::seal(recto_session::sleep::SLEEP_KIND, 0, data));
         // Each line of what's given, with its own checksum put right, under a good header.
         let header = record::JournalHeader::new(1, std::path::Path::new("/fuzz/p12.pdf"), None, 12, 0);
         let mut journal = record::journal_start(&header, None);

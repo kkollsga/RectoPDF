@@ -792,6 +792,7 @@ name = "recto-render-service"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "lopdf",
  "recto-platform",
  "recto-proto",
  "recto-render",
@@ -803,6 +804,7 @@ name = "recto-session"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "flate2",
  "recto-core",
  "recto-platform",
  "serde",
