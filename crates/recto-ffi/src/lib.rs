@@ -17,7 +17,7 @@ use recto_reader::engine::EngineEvents;
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Op, PageMap, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_render_service::Policy;
-use recto_session::{CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsView, DocLoader, FollowMove, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TAB_ROW_HEIGHT, TabId, ViewSettings, sidebar_heights};
+use recto_session::{CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsView, DocLoader, FollowMove, WARM_PAPER, row_full_text, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TAB_ROW_HEIGHT, TabId, ViewSettings, sidebar_heights};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::Write;
@@ -28,6 +28,9 @@ use std::time::{Duration, Instant};
 use watchdog::Watchdog;
 
 uniffi::setup_scaffolding!();
+
+/// Where the chosen paper is remembered, in the state folder.
+const PAPER_FILE: &str = "paper";
 
 /// The most contents rows one call hands over. More than any screen shows.
 const MAX_CONTENTS_FETCH: u32 = 256;
@@ -129,8 +132,8 @@ pub struct SidebarLayout {
 pub enum ContentsMove {
     Stay,
     SetTo { y: f64 },
-    /// Run frames, calling `contents_step` on each, starting from `from` if there is one.
-    Drift { from: Option<f64> },
+    /// Run frames, calling `contents_step` on each.
+    Move,
 }
 
 /// What the page area shows.
@@ -142,8 +145,19 @@ pub struct ReaderView {
     pub note: Option<String>,
     pub focus: bool,
     pub place: String,
+    /// The paper's name, which QA and the menu use.
+    pub paper: String,
     /// The paper's colour, `0xRRGGBB`.
     pub paper_rgb: u32,
+    /// A colour to multiply over each page in the compositor, for warm paper. No tile changes for it.
+    pub page_tint: Option<u32>,
+}
+
+/// What hovering over a row reveals.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct RowReveal {
+    pub text: String,
+    pub is_file_name: bool,
 }
 
 /// All the wording the host draws that doesn't come from a document.
@@ -162,7 +176,6 @@ pub struct AppStrings {
     pub menu_zoom_in: String,
     pub menu_zoom_out: String,
     pub menu_actual_size: String,
-    pub menu_white_paper: String,
     pub menu_file: String,
     pub menu_view: String,
 }
@@ -266,7 +279,6 @@ enum CoreCall {
     Tap(TabId),
     GoTo(TabId, u32),
     Open(PathBuf),
-    SetPaper(Paper),
     SetFocus(bool),
     Dark(bool),
     Page(u32, Option<&'static str>, TabId),
@@ -359,6 +371,7 @@ struct Synced {
     pages: u32,
     map: PageMap,
     paper: Option<PaperKind>,
+    chosen_paper: Option<Option<Paper>>,
     focus: Option<bool>,
     dark: bool,
 }
@@ -474,7 +487,7 @@ impl AppCore {
             listener: Arc::clone(&listener),
             contents_follow: Mutex::new(ContentsFollow::default()),
             started: Instant::now(),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, sidebar: Arc::new(SidebarView { tabs: Vec::new(), contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper_rgb: PaperKind::White.rgb() } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, sidebar: Arc::new(SidebarView { tabs: Vec::new(), contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -483,6 +496,13 @@ impl AppCore {
             paths: Some(paths),
             open_failure: Mutex::new(None),
         });
+        // The paper chosen last time. What the file says is only taken if it's one of the words.
+        if let Some(paths) = &inner.paths
+            && let Ok(Some(bytes)) = recto_platform::local::read_private_file(&paths.root.join(PAPER_FILE), 16)
+            && let Some(paper) = std::str::from_utf8(&bytes).ok().and_then(Paper::from_name)
+        {
+            inner.host.session.with_session(|session| session.set_view(ViewSettings { paper: Some(paper), ..session.view() }));
+        }
         let session_side = Arc::clone(&inner);
         std::thread::Builder::new().name("recto-session".into()).stack_size(8 * 1024 * 1024).spawn(move || session_thread(&session_side)).map_err(|_| refused("The app couldn't start its session thread.".into()))?;
         if let Some(server) = server {
@@ -543,7 +563,6 @@ impl AppCore {
             menu_zoom_in: "Zoom In".into(),
             menu_zoom_out: "Zoom Out".into(),
             menu_actual_size: "Fit Width".into(),
-            menu_white_paper: "White Paper in Dark Mode".into(),
             menu_file: "File".into(),
             menu_view: "View".into(),
         }
@@ -600,11 +619,11 @@ impl AppCore {
         match lock(&self.inner.contents_follow).reached(row, ContentsView { scroll_y, height, rows }, now, reduce_motion) {
             FollowMove::Stay => ContentsMove::Stay,
             FollowMove::SetTo(y) => ContentsMove::SetTo { y },
-            FollowMove::Drift { from } => ContentsMove::Drift { from },
+            FollowMove::Move => ContentsMove::Move,
         }
     }
 
-    /// One frame of a drift: where the scroll goes next, or nothing when it's over and the frames should stop. An atomic-sized lock and some arithmetic.
+    /// One frame of a move: where the scroll goes next, or nothing when it's over and the frames should stop. An atomic-sized lock and some arithmetic.
     pub fn contents_step(&self, position: f64, dt: f64) -> Option<f64> {
         lock(&self.inner.contents_follow).step(position, dt)
     }
@@ -666,13 +685,10 @@ impl AppCore {
         self.inner.core.push(CoreCall::Dark(dark));
     }
 
-    pub fn toggle_white_paper(&self) {
-        let paper = self.inner.host.session.with_session(|session| session.view().paper);
-        self.inner.core.push(CoreCall::SetPaper(if paper == Paper::White { Paper::Dark } else { Paper::White }));
-    }
-
-    pub fn is_white_paper(&self) -> bool {
-        lock(&self.inner.published).reader.paper_rgb == PaperKind::White.rgb()
+    /// What hovering over a row reveals: its full text, clean and bounded, and what it is.
+    pub fn row_reveal(&self, row: SidebarRow) -> RowReveal {
+        let full = row_full_text(&row.text, row.kind == RowKind::Tab);
+        RowReveal { text: full.text, is_file_name: full.is_file_name }
     }
 
     pub fn toggle_focus(&self) {
@@ -742,21 +758,13 @@ fn session_thread(inner: &Arc<Inner>) {
                 }
             }
             CoreCall::Open(path) => open_file(inner, &path, &mut events),
-            CoreCall::SetPaper(paper) => {
-                let view = host.session.with_session(|session| {
-                    let view = ViewSettings { paper, ..session.view() };
-                    session.set_view(view);
-                    view
-                });
-                events.push(Event::new("view_changed", json!({ "paper": view.paper.name(), "focus": view.focus })));
-            }
             CoreCall::SetFocus(focus) => {
                 let view = host.session.with_session(|session| {
                     let view = ViewSettings { focus, ..session.view() };
                     session.set_view(view);
                     view
                 });
-                events.push(Event::new("view_changed", json!({ "paper": view.paper.name(), "focus": view.focus })));
+                events.push(Event::new("view_changed", json!({ "paper": recto_agent::paper_name(view), "focus": view.focus })));
             }
             CoreCall::Dark(dark) => synced.dark = dark,
             CoreCall::Flush(marker) => {
@@ -863,7 +871,22 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     });
     // The paper and focus first, so what's asked for next is drawn right.
     let dark = inner.dark.load(Ordering::SeqCst) || synced.dark;
-    let paper = if dark && view.paper == Paper::Dark { PaperKind::Dark } else { PaperKind::White };
+    let shown = Paper::resolved(view.paper, dark);
+    // Warm paper is white paper with a tint over it in the compositor, so going to it or from it draws nothing and holds nothing more.
+    let (paper, page_tint) = match shown {
+        Paper::White => (PaperKind::White, None),
+        Paper::Warm => (PaperKind::White, Some(WARM_PAPER)),
+        Paper::Dark => (PaperKind::Dark, None),
+    };
+    // Remembered per app, as the state folder is. A write that fails only means it's forgotten next time.
+    if synced.chosen_paper != Some(view.paper) {
+        if synced.chosen_paper.is_some()
+            && let Some(paths) = &inner.paths
+        {
+            let _ = recto_platform::local::write_private_file(&paths.root.join(PAPER_FILE), recto_agent::paper_name(view).as_bytes());
+        }
+        synced.chosen_paper = Some(view.paper);
+    }
     if synced.paper != Some(paper) {
         synced.paper = Some(paper);
         inner.engine.set_paper(paper);
@@ -897,7 +920,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }
     }
     let note = lock(&inner.open_failure).clone().or(problem).or_else(|| inner.engine.note());
-    let reader = ReaderView { home: synced.tab.is_none(), note, focus: view.focus, place: sidebar.place.clone(), paper_rgb: paper.rgb() };
+    let reader = ReaderView { home: synced.tab.is_none(), note, focus: view.focus, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint };
     let mut published = lock(&inner.published);
     let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {

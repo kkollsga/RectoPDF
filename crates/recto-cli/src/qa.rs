@@ -379,6 +379,7 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     }
     run.call(json!({ "cmd": "goto", "page": (state["reader"]["pages"].as_u64().unwrap_or(2) / 3).max(1) }))?;
     run.settled()?;
+    std::thread::sleep(Duration::from_millis(1500));
     let sweep = run.call(json!({ "cmd": "qa_drive", "verb": "sweep", "value": "6", "timeout_ms": 5000 }))?;
     report["scroll"] = json!({
         "pages_per_second": 6,

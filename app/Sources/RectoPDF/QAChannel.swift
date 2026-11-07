@@ -62,6 +62,8 @@ import QuartzCore
             controller?.sidebar.setContentsPointer(value == "in")
         case "reduce_motion":
             controller?.sidebar.reduceMotion = value == "on"
+        case "reveal":
+            controller?.sidebar.revealRow(value == "none" ? nil : Int(value))
         case "resize":
             let parts = value.split(separator: "x").compactMap { Double($0) }
             guard parts.count == 2, parts[0] >= 400, parts[1] >= 300, parts[0] <= 8000, parts[1] <= 8000 else { return fail(id, "`\(value)` isn't a size. It's WIDTHxHEIGHT.") }
@@ -101,6 +103,8 @@ import QuartzCore
             "home": !controller.home.isHidden,
             "sidebar_visible": !sidebar.view.isHidden,
             "sidebar_rows": sidebar.rowCount,
+            "reveal": sidebar.revealReport(),
+            "paper": reader.paper,
             "contents": sidebar.contentsReport(),
             "hover": sidebar.hoveredRow.map { $0 as Any } ?? NSNull(),
             "place": reader.place,
@@ -120,6 +124,28 @@ import QuartzCore
         }
     }
 
+    /// Warm paper in a shot: the sum the compositor does, on the picture. `render(in:)` leaves compositing filters out.
+    nonisolated private static func multiply(_ rep: NSBitmapImageRep, by rgb: UInt32, in rects: [NSRect], viewHeight: CGFloat, flipped: Bool) {
+        guard let data = rep.bitmapData else { return }
+        let (red, green, blue) = (Int((rgb >> 16) & 0xFF), Int((rgb >> 8) & 0xFF), Int(rgb & 0xFF))
+        let (stride, width, height) = (rep.bytesPerRow, rep.pixelsWide, rep.pixelsHigh)
+        for rect in rects {
+            let top = flipped ? rect.minY : viewHeight - rect.maxY
+            let (x0, x1) = (max(Int(rect.minX * 2), 0), min(Int(rect.maxX * 2), width))
+            let (y0, y1) = (max(Int(top * 2), 0), min(Int((top + rect.height) * 2), height))
+            guard x0 < x1, y0 < y1 else { continue }
+            for y in y0..<y1 {
+                let row = data + y * stride
+                for x in x0..<x1 {
+                    let pixel = row + x * 4
+                    pixel[0] = UInt8(Int(pixel[0]) * red / 255)
+                    pixel[1] = UInt8(Int(pixel[1]) * green / 255)
+                    pixel[2] = UInt8(Int(pixel[2]) * blue / 255)
+                }
+            }
+        }
+    }
+
     private func shot(id: UInt64, path: String) {
         guard let controller = delegate.windowController else { return fail(id, "The window is closed, so there's nothing to draw.") }
         controller.window.layoutIfNeeded()
@@ -129,12 +155,17 @@ import QuartzCore
         let bounds = view.bounds
         guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(bounds.width * 2), pixelsHigh: Int(bounds.height * 2), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return fail(id, "The picture couldn't be made.") }
         rep.size = bounds.size
+        let tint = controller.pages.tintRectsForShot(in: view)
+        controller.pages.hideTintForShot(true)
         CATransaction.flush()
         view.cacheDisplay(in: bounds, to: rep)
+        controller.pages.hideTintForShot(false)
+        let flipped = view.isFlipped
         let core = delegate.core
         // The encoding and the write are slow, so they stay off this thread.
         nonisolated(unsafe) let encoded = rep
         DispatchQueue.global(qos: .userInitiated).async {
+            if let tint { QAChannel.multiply(encoded, by: tint.rgb, in: tint.rects, viewHeight: bounds.height, flipped: flipped) }
             guard let data = encoded.representation(using: .png, properties: [:]) else {
                 core.qaAnswer(id: id, ok: false, json: "The picture couldn't be encoded.")
                 return

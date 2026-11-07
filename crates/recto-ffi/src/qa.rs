@@ -22,8 +22,58 @@ const SWEEP_STEP: Duration = Duration::from_micros(8333);
 #[derive(Clone, Copy)]
 struct Step {
     micros: u32,
+    at: Instant,
     contents_y: f64,
     current_visible: bool,
+}
+
+/// What the contents did during a sweep, found from where they were on each step: their moves, each one's length and peak speed, and how long they rested in between. Properties, not a curve.
+fn contents_moves(steps: &[(f64, f64)]) -> Value {
+    // Steps this close together with no movement between them are one move's slow part, and not a rest: the scroll is rounded to a device pixel, so a slow end can hold still for a few.
+    const SAME_MOVE_GAP: f64 = 0.08;
+    let (mut moves, mut rests): (Vec<(f64, f64)>, Vec<f64>) = (Vec::new(), Vec::new());
+    let mut current: Option<(f64, f64, f64)> = None;
+    let mut last_moved_at = steps.first().map_or(0.0, |step| step.0);
+    let mut largest_step = 0.0f64;
+    for pair in steps.windows(2) {
+        let ((then, from), (now, to)) = (pair[0], pair[1]);
+        largest_step = largest_step.max((to - from).abs());
+        if to == from {
+            continue;
+        }
+        let speed = (to - from).abs() / (now - then).max(1e-3);
+        current = match current {
+            Some((start, end, peak)) if then - end <= SAME_MOVE_GAP => Some((start, now, peak.max(speed))),
+            finished => {
+                if let Some((start, end, peak)) = finished {
+                    moves.push((end - start, peak));
+                    rests.push(then - end);
+                } else {
+                    rests.push(then - last_moved_at);
+                }
+                Some((then, now, speed))
+            }
+        };
+        last_moved_at = now;
+    }
+    if let Some((start, end, peak)) = current {
+        moves.push((end - start, peak));
+    }
+    let sorted = |mut values: Vec<f64>| {
+        values.sort_by(f64::total_cmp);
+        values
+    };
+    let lengths = sorted(moves.iter().map(|one| one.0).collect());
+    let peaks = sorted(moves.iter().map(|one| one.1).collect());
+    let rests = sorted(rests);
+    let middle = |values: &[f64]| values.get(values.len() / 2).copied().unwrap_or(0.0);
+    json!({
+        "moves": moves.len(),
+        "move_ms": { "median": middle(&lengths) * 1000.0, "longest": lengths.last().copied().unwrap_or(0.0) * 1000.0 },
+        "peak_points_per_s": { "median": middle(&peaks), "highest": peaks.last().copied().unwrap_or(0.0) },
+        "rest_s": { "shortest": rests.first().copied().unwrap_or(0.0), "median": middle(&rests) },
+        "largest_step_points": largest_step,
+    })
 }
 
 pub(crate) struct QaBridge {
@@ -56,7 +106,7 @@ impl QaBridge {
         let mut steps = lock(&self.steps);
         // A minute at 120 Hz at most, and each is 4 bytes.
         if steps.len() < 16_384 {
-            steps.push(Step { micros: u32::try_from(micros).unwrap_or(u32::MAX), contents_y, current_visible });
+            steps.push(Step { micros: u32::try_from(micros).unwrap_or(u32::MAX), at: Instant::now(), contents_y, current_visible });
         }
     }
 
@@ -112,7 +162,7 @@ impl QaBridge {
             value.parse::<f64>().ok().filter(|number| number.is_finite() && *number >= low && *number <= high).ok_or_else(|| bad(format!("`{}` isn't a number from {low} to {high}.", cleaned(value))))
         };
         match verb {
-            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" => {}
+            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" => {}
             "scroll" => {
                 number(-1e9, 1e9)?;
             }
@@ -204,19 +254,16 @@ impl QaBridge {
         let recorded = lock(&self.steps).clone();
         let mut steps: Vec<u32> = recorded.iter().map(|step| step.micros).collect();
         steps.sort_unstable();
-        // What the contents did, frame by frame, while the page scrolled. Properties, not a curve: the largest step, and whether the place stayed in view.
-        let largest_contents_step = recorded.windows(2).map(|pair| (pair[1].contents_y - pair[0].contents_y).abs()).fold(0.0, f64::max);
-        let moved_steps = recorded.windows(2).filter(|pair| pair[1].contents_y != pair[0].contents_y).count();
-        let current_visible_steps = recorded.iter().filter(|step| step.current_visible).count();
+        // What the contents did, step by step, while the page scrolled.
+        let began = recorded.first().map_or_else(Instant::now, |step| step.at);
+        let positions: Vec<(f64, f64)> = recorded.iter().map(|step| (step.at.duration_since(began).as_secs_f64(), step.contents_y)).collect();
+        let mut contents = contents_moves(&positions);
+        contents["steps_with_place_in_view"] = json!(recorded.iter().filter(|step| step.current_visible).count());
         let at = |share: f64| -> u32 { steps.get(((steps.len() as f64 - 1.0) * share).round() as usize).copied().unwrap_or(0) };
         let after = self.engine.report().0;
         Ok(json!({
             "steps": steps.len(),
-            "contents": {
-                "largest_step_points": largest_contents_step,
-                "steps_that_moved": moved_steps,
-                "steps_with_place_in_view": current_visible_steps,
-            },
+            "contents": contents,
             "sent": sent,
             "skipped_because_the_last_was_still_running": skipped,
             "step_us": { "p50": at(0.5), "p99": at(0.99), "worst": steps.last().copied().unwrap_or(0) },
@@ -243,4 +290,44 @@ fn bad(words: impl Into<String>) -> AgentError {
 
 fn cleaned(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).take(64).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: the recording calls one move many, or a rest a move, so the numbers reported say something other than what happened. A made-up path: rest, a move, rest, a move that holds still for a moment at a rounded pixel, rest.
+    #[test]
+    fn moves_are_found_from_where_the_contents_were() {
+        let mut path = Vec::new();
+        let mut time = 0.0;
+        let mut add = |y: f64, seconds: f64| {
+            let mut left = seconds;
+            while left > 0.0 {
+                path.push((time, y));
+                time += 0.01;
+                left -= 0.01;
+            }
+        };
+        add(0.0, 2.0);
+        for step in 1..=20 {
+            add(f64::from(step) * 10.0, 0.01);
+        }
+        add(200.0, 3.0);
+        for step in 1..=10 {
+            add(200.0 + f64::from(step) * 5.0, 0.01);
+        }
+        add(250.0, 0.03);
+        for step in 1..=10 {
+            add(250.0 + f64::from(step) * 5.0, 0.01);
+        }
+        add(300.0, 1.0);
+        let found = contents_moves(&path);
+        assert_eq!(found["moves"], 2, "{found}");
+        assert!(found["rest_s"]["shortest"].as_f64().unwrap() > 1.5, "{found}");
+        assert!(found["move_ms"]["longest"].as_f64().unwrap() >= 200.0, "{found}");
+        assert!(found["largest_step_points"].as_f64().unwrap() <= 10.0 + 0.001, "{found}");
+        assert!(found["peak_points_per_s"]["highest"].as_f64().unwrap() >= 900.0, "{found}");
+        assert_eq!(contents_moves(&[(0.0, 5.0), (1.0, 5.0)])["moves"], 0, "still");
+    }
 }

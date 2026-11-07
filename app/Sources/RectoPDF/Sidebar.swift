@@ -60,6 +60,18 @@ final class SidebarCell: NSView {
         railDot.backgroundColor = Theme.accent.cg
     }
 
+    /// Its name doesn't fit where it's drawn.
+    var isCutOff: Bool {
+        name.size().width > name.frame.width + 0.5
+    }
+
+    /// The name's place, in the view given.
+    func namePlace(in view: NSView) -> NSRect {
+        name.convert(name.bounds, to: view)
+    }
+
+    var nameFont: NSFont { row?.kind == .tab && row?.current == true ? .systemFont(ofSize: 14, weight: .semibold) : row?.current == true ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: row?.kind == .tab ? 14 : 13.5) }
+
     override func layout() {
         super.layout()
         guard let row else { return }
@@ -187,6 +199,35 @@ final class ActiveTabCell: FlippedView {
     }
 }
 
+/// A shortened name in full, over its own row, as Finder and Mail do: past the sidebar's edge if it needs to, gone as the pointer leaves. It takes no clicks, and moves nothing.
+final class RevealLabel: FlippedView {
+    let label = TextLine()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        layer?.borderWidth = 0.5
+        addSubview(label)
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func show(_ text: String, font: NSFont, over place: NSRect, room: CGFloat) {
+        layer?.backgroundColor = Theme.pill.cg
+        layer?.borderColor = Theme.hairline.cg
+        label.set(text, font: font, color: Theme.textStrong.ns, wraps: true)
+        let padding: CGFloat = 4
+        let width = room - place.minX - padding * 2
+        let size = label.size(width: max(width, 40))
+        label.frame = NSRect(x: padding, y: 2, width: size.width + 1, height: size.height)
+        frame = NSRect(x: place.minX - padding, y: place.minY - 2, width: size.width + 1 + padding * 2, height: size.height + 4)
+        isHidden = false
+    }
+}
+
 /// The tabs, with the active tab's contents under it in a scrolling area of their own, whose height Rust decides. Both are tables with reused rows, and contents rows are fetched for what's on screen, so a thousand tabs or a 10,000-entry outline cost what fills the sidebar.
 @MainActor final class SidebarPane: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let view = FlippedView()
@@ -206,6 +247,14 @@ final class ActiveTabCell: FlippedView {
     /// As the system says, or what QA set.
     var reduceMotion: Bool?
     private var pointerInContents = false
+    /// Where a shortened name goes. One label for the whole list, and no tracking area per row: the row comes from where the pointer is.
+    weak var revealHost: NSView?
+    private let reveal = RevealLabel()
+    private var revealTimer: Timer?
+    private var revealedRow: Int?
+    private var lastPointerRow: Int?
+    /// How long the pointer rests on a shortened name before it opens.
+    private static let revealDelay: TimeInterval = 0.5
     /// How far rows opening and closing have moved the scroll, so what QA records is what the eye sees.
     private var rowShift = 0.0
 
@@ -288,7 +337,7 @@ final class ActiveTabCell: FlippedView {
         contentsScroll.reflectScrolledClipView(clip)
     }
 
-    /// One frame of a drift. Rust says where to be, and when to stop. Nothing runs once it has.
+    /// One frame of a move. Rust says where to be, and when to stop. Nothing runs once it has.
     private func frame(_ dt: Double) -> Bool {
         guard let next = core.contentsStep(position: contentsY, dt: dt) else { return false }
         setContentsY(next)
@@ -368,13 +417,81 @@ final class ActiveTabCell: FlippedView {
 
     private func updateTracking() {
         if let tracking { view.removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect], owner: self, userInfo: nil)
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp, .inVisibleRect], owner: self, userInfo: nil)
         view.addTrackingArea(area)
         tracking = area
     }
 
     func mouseEntered(with event: NSEvent) { setHover(0) }
-    func mouseExited(with event: NSEvent) { setHover(nil) }
+
+    func mouseExited(with event: NSEvent) {
+        setHover(nil)
+        pointerAt(nil)
+    }
+
+    func mouseMoved(with event: NSEvent) {
+        pointerAt(sidebarRow(atWindowPoint: event.locationInWindow))
+    }
+
+    /// The row under a point, counted down the sidebar as a person sees them. Worked out on demand, from the two tables, for any number of rows.
+    private func sidebarRow(atWindowPoint point: NSPoint) -> Int? {
+        if contentsScroll.superview != nil, contentsScroll.bounds.contains(contentsScroll.convert(point, from: nil)), let active = activeIndex {
+            let row = contentsTable.row(at: contentsTable.convert(point, from: nil))
+            return row >= 0 ? active + 1 + row : nil
+        }
+        let row = table.row(at: table.convert(point, from: nil))
+        guard row >= 0 else { return nil }
+        if let active = activeIndex, row > active, model.tocOpen { return row + Int(model.contentsCount) }
+        return row
+    }
+
+    /// The pointer has reached a row, or left. After a short rest, a shortened name opens. A one-off timer, only while the pointer is on a row.
+    private func pointerAt(_ row: Int?) {
+        guard row != lastPointerRow else { return }
+        lastPointerRow = row
+        revealTimer?.invalidate()
+        revealTimer = nil
+        revealRow(nil)
+        guard let row else { return }
+        let timer = Timer(timeInterval: Self.revealDelay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.revealRow(row) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        revealTimer = timer
+    }
+
+    /// What's drawn for a row, and its data, if it's on screen.
+    private func cellAndRow(_ row: Int) -> (SidebarCell, SidebarRow)? {
+        if model.tocOpen, let active = activeIndex, row > active, row - active - 1 < Int(model.contentsCount) {
+            let inContents = row - active - 1
+            guard let cell = contentsTable.view(atColumn: 0, row: inContents, makeIfNecessary: false) as? SidebarCell, let data = core.contentsRows(first: UInt32(inContents), count: 1).first else { return nil }
+            return (cell, data)
+        }
+        let tab = model.tocOpen && activeIndex.map({ row > $0 }) == true ? row - Int(model.contentsCount) : row
+        guard tab >= 0, tab < model.tabs.count, let view = table.view(atColumn: 0, row: tab, makeIfNecessary: false) else { return nil }
+        guard let cell = (view as? ActiveTabCell)?.tab ?? view as? SidebarCell else { return nil }
+        return (cell, model.tabs[tab])
+    }
+
+    /// What the pointer resting on a row does, and what `recto qa reveal` calls. Only a row that's cut off shows anything, and the words are Rust's.
+    func revealRow(_ row: Int?) {
+        revealedRow = row
+        guard let row, let host = revealHost, let (cell, data) = cellAndRow(row), cell.isCutOff, !view.isHidden else {
+            reveal.isHidden = true
+            return
+        }
+        if reveal.superview !== host { host.addSubview(reveal) }
+        // Above everything else in the window.
+        reveal.removeFromSuperview()
+        host.addSubview(reveal)
+        reveal.show(core.rowReveal(row: data).text, font: cell.nameFont, over: cell.namePlace(in: host), room: host.bounds.width - 12)
+    }
+
+    func revealReport() -> [String: Any] {
+        guard let row = revealedRow, let (cell, data) = cellAndRow(row) else { return ["row": revealedRow.map { $0 as Any } ?? NSNull(), "shown": false] }
+        let full = core.rowReveal(row: data)
+        return ["row": row, "cut_off": cell.isCutOff, "shown": !reveal.isHidden, "is_file_name": full.isFileName, "untrusted": ["text": full.text], "frame_right": reveal.frame.maxX, "sidebar_width": view.bounds.width]
+    }
 
     /// What the pointer entering or leaving the sidebar does, and what `recto qa hover` calls.
     func setHover(_ row: Int?) {
@@ -441,6 +558,8 @@ final class ActiveTabCell: FlippedView {
         let old = model
         let oldActive = activeIndex
         model = new
+        // A row under the label may have changed. It opens again only on the next rest.
+        if new.tabs != old.tabs || new.contentsCount != old.contentsCount { reveal.isHidden = true }
         placeFooter()
         let next = core.sidebarLayout(room: scroll.frame.height)
         let sameTab = new.tabs.first { $0.current }?.tab == old.tabs.first { $0.current }?.tab
@@ -474,8 +593,7 @@ final class ActiveTabCell: FlippedView {
         case let .setTo(y):
             frames?.stop()
             setContentsY(y)
-        case let .drift(from):
-            if let from { setContentsY(from) }
+        case .move:
             frames?.start()
         }
     }

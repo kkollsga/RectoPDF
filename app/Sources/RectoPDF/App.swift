@@ -157,7 +157,6 @@ final class Bridge: AppListener, @unchecked Sendable {
         let focus = viewMenu.addItem(withTitle: strings.menuFocus, action: #selector(toggleFocus(_:)), keyEquivalent: "f")
         focus.keyEquivalentModifierMask = [.command, .control]
         focus.target = self
-        viewMenu.addItem(withTitle: strings.menuWhitePaper, action: #selector(toggleWhitePaper(_:)), keyEquivalent: "").target = self
         viewItem.submenu = viewMenu
         bar.addItem(viewItem)
         NSApp.mainMenu = bar
@@ -179,5 +178,4 @@ final class Bridge: AppListener, @unchecked Sendable {
     @objc func zoomOut(_ sender: Any?) { windowController?.pages.zoom(by: 1 / limits.zoomStep) }
     @objc func fitWidth(_ sender: Any?) { windowController?.pages.setZoom(1) }
     @objc func toggleFocus(_ sender: Any?) { core.toggleFocus() }
-    @objc func toggleWhitePaper(_ sender: Any?) { core.toggleWhitePaper() }
 }

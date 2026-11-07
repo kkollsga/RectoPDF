@@ -288,7 +288,7 @@ fn dark_mode_paper_and_focus_change_what_is_drawn() {
     run.ok(&["qa", "appearance", "light"]);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    assert_eq!(run.report()["reader"]["paper"], "white");
+    assert_eq!(run.report()["app"]["paper"], "white");
     let drawn = run.report()["reader"]["counts"]["drawn"].as_u64().unwrap();
     assert_eq!(run.ok(&["qa", "appearance", "dark"])["appearance"], "dark");
     let dark = wait_for(&run, |state| state["reader"]["paper"] == "dark");
@@ -297,6 +297,8 @@ fn dark_mode_paper_and_focus_change_what_is_drawn() {
     assert!(run.report()["reader"]["counts"]["drawn"].as_u64().unwrap() > drawn, "dark paper is drawn anew");
     assert_eq!(run.ok(&["view", "--paper", "white"])["paper"], "white");
     wait_for(&run, |state| state["reader"]["paper"] == "white");
+    run.ok(&["view", "--paper", "auto"]);
+    run.settled();
     run.ok(&["view", "--focus", "on"]);
     let focused = wait_for(&run, |state| state["app"]["focus"] == true);
     assert_eq!(focused["app"]["sidebar_visible"], false, "{focused}");
@@ -467,15 +469,17 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
     let long = outlined_with(600);
     run.ok(&["open", long.0.to_str().unwrap()]);
     run.settled();
-    // Past the first screenful, or the place stays in the calm band at the top and nothing need move.
+    // Past the first screenful, or the place stays in the dead zone at the top and nothing need move. And the move that goes there ends first.
     run.ok(&["goto", "100"]);
     run.settled();
+    wait_for(&run, |state| state["app"]["contents"]["frames_running"] == false);
     let sweep = run.ok(&["qa", "sweep", "6", "--for", "4s"]);
     let contents = &sweep["contents"];
     let steps = sweep["steps"].as_u64().unwrap() as f64;
-    assert!(contents["steps_that_moved"].as_u64().unwrap() > 0, "they did follow: {sweep}");
-    // At the top speed, a sixtieth of a second is 7 points. A step can double up if a frame ran late.
-    assert!(contents["largest_step_points"].as_f64().unwrap() < 40.0, "{sweep}");
+    assert!(contents["moves"].as_u64().unwrap() >= 1, "they did follow: {sweep}");
+    // Reposition, then rest: 6 sections a second past a dead zone of about 12 rows is a move every 2 s or so. Well below one a section.
+    assert!(contents["moves"].as_u64().unwrap() <= 6, "{sweep}");
+    assert!(contents["rest_s"]["median"].as_f64().unwrap() >= 0.4, "{sweep}");
     assert!(contents["steps_with_place_in_view"].as_f64().unwrap() >= steps * 0.95, "{sweep}");
     let settled = wait_for(&run, |state| state["app"]["contents"]["frames_running"] == false);
     assert_eq!(settled["app"]["contents"]["moving"], false);
@@ -510,4 +514,87 @@ fn outlined_with(count: usize) -> TempPdf {
         objects.push(Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()));
     }
     TempPdf::new("long-outline.pdf", &build(&objects))
+}
+
+/// Failure: warm paper redraws every tile, so it's slow and costs memory, or it changes what's saved and exported, or it doesn't work in a dark window, or it isn't remembered. Going to it draws nothing, `recto render` gives the same bytes, every paper works in every window, and a new run on this state has it back.
+#[test]
+fn warm_paper_only_changes_what_is_on_screen() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(2);
+    run.ok(&["qa", "appearance", "light"]);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let (before, after) = (run.state.root.join("before.png"), run.state.root.join("after.png"));
+    run.ok(&["render", "--page", "1", "--out", before.to_str().unwrap()]);
+    let drawn = run.report()["reader"]["counts"]["drawn"].as_u64().unwrap();
+    assert_eq!(run.ok(&["view", "--paper", "warm"])["paper"], "warm");
+    run.settled();
+    let warm = wait_for(&run, |state| state["app"]["paper"] == "warm");
+    assert_eq!(warm["reader"]["counts"]["drawn"].as_u64().unwrap(), drawn, "no tile redrawn: {warm}");
+    assert_eq!(warm["app"]["pages"]["tint_layers"], warm["app"]["pages"]["page_layers"], "{warm}");
+    run.ok(&["render", "--page", "1", "--out", after.to_str().unwrap()]);
+    assert_eq!(std::fs::read(&before).unwrap(), std::fs::read(&after).unwrap(), "an export is the true page");
+    // Dark paper too, as `render` says it always has been.
+    run.ok(&["view", "--paper", "dark"]);
+    run.settled();
+    let after_dark = run.state.root.join("after-dark.png");
+    run.ok(&["render", "--page", "1", "--out", after_dark.to_str().unwrap()]);
+    assert_eq!(std::fs::read(&before).unwrap(), std::fs::read(&after_dark).unwrap());
+    // All six.
+    for look in ["light", "dark"] {
+        run.ok(&["qa", "appearance", look]);
+        for paper in ["white", "warm", "dark"] {
+            run.ok(&["view", "--paper", paper]);
+            run.settled();
+            let shown = wait_for(&run, |state| state["app"]["paper"] == paper);
+            assert_eq!(shown["reader"]["paper"], if paper == "dark" { "dark" } else { "white" }, "{look} {paper}");
+            assert_eq!(shown["app"]["pages"]["tint_layers"].as_u64().unwrap() > 0, paper == "warm", "{look} {paper}");
+        }
+    }
+    run.ok(&["view", "--paper", "warm"]);
+    run.settled();
+    assert_eq!(run.state.json(&["view", "--paper", "sepia"]).1, exit::USAGE);
+    let root = run.state.root.clone();
+    let app = app_path().unwrap();
+    run.ok(&["stop"]);
+    for _ in 0..200 {
+        if !still_running(run.pid) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let output = Command::new(bin()).env(recto_control::state::STATE_ENV, &root).args(["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "1m", "--json"]).stdin(std::process::Stdio::null()).output().unwrap();
+    let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    let (view, _) = run.state.json(&["view"]);
+    assert_eq!(view["data"]["paper"], "warm", "remembered");
+    let _ = run.state.json(&["stop"]);
+}
+
+/// Failure: a shortened name has no way to be read in full, or the reveal moves rows or lingers. By the method the pointer resting there calls. It opens past the sidebar's edge if it must, with the whole of the text, and goes when asked. A row that isn't cut off shows nothing.
+#[test]
+fn a_shortened_name_can_be_read_in_full() {
+    let Some(run) = Run::start() else { return };
+    let long_name = "a-really-long-file-name-that-will-not-fit-in-the-sidebar-at-all-and-goes-on-and-on-and-on";
+    let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-reveal-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{long_name}.pdf"));
+    std::fs::write(&path, pages(&[Page::new(text_lines(&["A page"]))])).unwrap();
+    let short = long_document(1);
+    run.ok(&["open", path.to_str().unwrap()]);
+    run.ok(&["open", short.0.to_str().unwrap()]);
+    run.settled();
+    let before = run.report();
+    let shown = run.ok(&["qa", "reveal", "0"]);
+    let reveal = &shown["reveal"];
+    assert_eq!(reveal["cut_off"], true, "{reveal}");
+    assert_eq!(reveal["shown"], true, "{reveal}");
+    assert_eq!(reveal["is_file_name"], true);
+    assert_eq!(reveal["untrusted"]["text"], long_name);
+    assert!(reveal["frame_right"].as_f64().unwrap() > reveal["sidebar_width"].as_f64().unwrap(), "past the sidebar's edge: {reveal}");
+    assert_eq!(shown["sidebar_rows"], before["app"]["sidebar_rows"], "nothing moved");
+    let plain = run.ok(&["qa", "reveal", "1"]);
+    assert_eq!((plain["reveal"]["cut_off"].clone(), plain["reveal"]["shown"].clone()), (json!(false), json!(false)), "{plain}");
+    assert_eq!(run.ok(&["qa", "reveal", "none"])["reveal"]["shown"], false);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

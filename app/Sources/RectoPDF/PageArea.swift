@@ -41,6 +41,9 @@ final class CenteringClipView: NSClipView {
     private var viewportDirty = false
     private var closed = false
     private var fit: Double = 1
+    /// Warm paper: a colour multiplied over each page by the compositor.
+    private var tint: UInt32?
+    private var tintLayers: [UInt32: CALayer] = [:]
 
     init(core: AppCore, limits: ReaderLimits, isQuiet: Bool) {
         self.core = core
@@ -82,6 +85,53 @@ final class CenteringClipView: NSClipView {
     func setLive(_ live: Bool) {
         self.live = live
         sendViewport()
+    }
+
+    /// The tint Rust says goes over each page, if any. One layer a page on screen, and no tile or render changes: white becomes the colour, and black stays black.
+    func setTint(_ rgb: UInt32?) {
+        guard rgb != tint else { return }
+        tint = rgb
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (page, layer) in pageLayers { applyTint(to: layer, page: page) }
+        CATransaction.commit()
+    }
+
+    private func applyTint(to page: CALayer, page number: UInt32) {
+        guard let tint else {
+            tintLayers.removeValue(forKey: number)?.removeFromSuperlayer()
+            return
+        }
+        let layer = tintLayers[number] ?? {
+            let made = CALayer()
+            made.compositingFilter = "multiplyBlendMode"
+            made.anchorPoint = .zero
+            made.zPosition = 10
+            page.addSublayer(made)
+            tintLayers[number] = made
+            return made
+        }()
+        layer.frame = page.bounds
+        layer.backgroundColor = Theme.rgb(tint).cgColor
+    }
+
+    /// For a shot. `render(in:)` leaves compositing filters out, so the tint is left off and the same multiply is done to the picture after: same colour, same sum, in a different place.
+    func tintRectsForShot(in view: NSView) -> (rgb: UInt32, rects: [NSRect])? {
+        guard let tint else { return nil }
+        let rects = pageLayers.values.map { page -> NSRect in
+            let size = CGSize(width: page.bounds.width * fit, height: page.bounds.height * fit)
+            let rect = NSRect(origin: page.position, size: size)
+            return documentView.convert(rect, to: view)
+        }
+        return (tint, rects)
+    }
+
+    func hideTintForShot(_ hidden: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for layer in tintLayers.values { layer.isHidden = hidden }
+        CATransaction.commit()
+        CATransaction.flush()
     }
 
     func windowReady() {
@@ -149,6 +199,7 @@ final class CenteringClipView: NSClipView {
         switch op {
         case .clear:
             for layer in pageLayers.values { layer.removeFromSuperlayer() }
+            tintLayers.removeAll()
             for tile in tiles.values { tile.layer.contents = nil }
             pageLayers.removeAll()
             tiles.removeAll()
@@ -175,8 +226,10 @@ final class CenteringClipView: NSClipView {
             layer.position = CGPoint(x: x, y: y)
             layer.setAffineTransform(CGAffineTransform(scaleX: fit, y: fit))
             layer.backgroundColor = Theme.rgb(paperRgb).cgColor
+            applyTint(to: layer, page: page)
         case let .hidePage(page):
             pageLayers.removeValue(forKey: page)?.removeFromSuperlayer()
+            tintLayers.removeValue(forKey: page)
             for id in tilesOnPage.removeValue(forKey: page) ?? [] {
                 if let tile = tiles.removeValue(forKey: id) { recycle(tile.layer) }
             }
@@ -258,6 +311,6 @@ final class CenteringClipView: NSClipView {
 
     /// What QA reads about the layers themselves, as opposed to what Rust thinks it asked for.
     func report() -> [String: Any] {
-        ["page_layers": pageLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "magnification": scrollView.magnification]
+        ["page_layers": pageLayers.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "magnification": scrollView.magnification]
     }
 }

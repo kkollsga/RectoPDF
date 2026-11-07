@@ -94,7 +94,7 @@ pub fn render(tag: &str, data: &Value) -> String {
         "text" => page_text(data),
         "signatures" => signatures(data),
         "sidebar" | "tap" => sidebar(data),
-        "view" => format!("Paper in dark mode: {}. Focus view: {}.", text(&data["paper"]), if data["focus"] == true { "on" } else { "off" }),
+        "view" => format!("Paper: {}. Focus view: {}.", text(&data["paper"]), if data["focus"] == true { "on" } else { "off" }),
         "close" => {
             let mut out = format!("Closed #{}. {} open.", number(&data["closed"]), count(number(&data["count"]), "tab", "tabs"));
             if data["active"].is_object() {

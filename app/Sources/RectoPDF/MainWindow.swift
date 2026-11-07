@@ -176,6 +176,7 @@ final class BookMark: NSView {
         placeLabel.isHidden = true
         buildHome()
         sidebar.addPressed = { [weak delegate] in delegate?.openDocument(nil) }
+        sidebar.revealHost = root
         root.appearanceChanged = { [weak self] in self?.appearanceChanged() }
         root.fileDropped = { [weak delegate] urls in
             for url in urls { delegate?.core.openFile(path: url.path) }
@@ -293,6 +294,7 @@ final class BookMark: NSView {
         sidebar.update(delegate.core.sidebar())
         home.isHidden = !reader.home
         pages.scrollView.isHidden = reader.home
+        pages.setTint(reader.pageTint)
         layout()
     }
 

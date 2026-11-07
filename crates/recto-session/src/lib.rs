@@ -159,20 +159,16 @@ pub fn sidebar_heights(room: f64, tabs: u32, contents_rows: u32) -> SidebarHeigh
 
 /// How long after the reader stops using the contents, with the pointer out of them, before they may follow again.
 pub const FOLLOW_RESUME_AFTER: f64 = 3.0;
-/// The calm band, as parts of the contents' height: while the place being read stays in here, nothing moves.
-const FOLLOW_BAND: (f64, f64) = (0.25, 0.75);
-/// How quickly a drift closes in, per second. At this rate it reads as drifting: about a second to arrive.
-const FOLLOW_RATE: f64 = 5.0;
-/// The fastest the contents move on their own, in points a second: about 15 rows.
-const FOLLOW_MAX_SPEED: f64 = 420.0;
-/// The fastest they move keeping up with a reader going fast through sections, which is the reader's own speed: about 85 rows.
-const FOLLOW_CHASE_SPEED: f64 = 2400.0;
-/// How many heights behind a chase may fall before it lands instead. Further than a plain long way, so a fast reader doesn't see it land at each one.
-const FOLLOW_CHASE_LONG_WAY: f64 = 6.0;
-/// Further than this many of its own heights is a long way, and it isn't travelled.
-const FOLLOW_LONG_WAY: f64 = 2.0;
-/// How far the last of a long jump travels, in points, so it lands rather than appears.
-const FOLLOW_LANDING: f64 = 70.0;
+/// Where the place being read comes to rest, as a part of the contents' height from the top. Above the middle, as reading goes downwards: there's more ahead to see than behind, and a longer rest before it needs to move.
+const FOLLOW_ANCHOR: f64 = 0.3;
+/// The dead zone, as parts of the contents' height from the top. Inside it the list doesn't move by one pixel, so reading slowly gets long rests. Its lower edge is what sets how long and how far: from the anchor to here is 45% of the height, about 12 rows in a 776 point list, and each move covers that much rather than nudging at every section. Its upper edge lets the reader step back a few rows with nothing moving.
+const FOLLOW_DEAD_ZONE: (f64, f64) = (0.12, 0.75);
+/// How long a move takes to settle, in seconds, shortest and longest: it grows with the distance and stays bounded, so a far jump is a fast whoosh that still starts and ends softly. Owner, 2026-11-07: "It can whoosh with smooth acceleration at both ends."
+const FOLLOW_SECONDS: (f64, f64) = (0.6, 1.1);
+/// The integration step, so a move's shape doesn't depend on the frame rate. At most a few of these a frame.
+const FOLLOW_STEP: f64 = 1.0 / 240.0;
+/// Close enough to be there, in points, and slow enough to stop, in points a second.
+const FOLLOW_ARRIVED: (f64, f64) = (0.25, 3.0);
 
 /// The contents' scrolling area, as it is when it's asked about.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -188,19 +184,19 @@ pub enum FollowMove {
     Stay,
     /// Go there at once: a tab's first showing, or Reduce Motion.
     SetTo(f64),
-    /// Run frames and call [`ContentsFollow::step`]. If `from` is given, go there first: the last short stretch of a long jump.
-    Drift { from: Option<f64> },
+    /// Run frames and call [`ContentsFollow::step`].
+    Move,
 }
 
-/// **How the contents follow the place being read** (owner, 2026-11-07: "The toc should auto scroll to where you are in the document (smoothly so you don't notice it in a elegant way)"). A plain state machine with its times passed in, so the host only runs frames.
+/// **How the contents follow the place being read.** Owner, 2026-11-07: "It can whoosh with smooth acceleration at both ends. It can have a "dead-zone" so it doesn't react to small scrolls within the window, so basically it repositions, stays still (while user is reading slowly scrolling) then repositions after the user is scrolling a bit." A plain state machine with its times passed in, so the host only runs frames.
 ///
-/// - While the place stays in the calm middle band, nothing moves. So most page turns move nothing.
-/// - Past it, the contents drift to bring it to the middle, as a critically damped spring. A new target changes where it's heading and keeps its position and speed, so nothing steps or restarts.
-/// - A long way isn't travelled: it starts a short distance off and lands, so no whoosh through hundreds of rows.
-/// - A reader who scrolls the contents is left alone, and so is a pointer resting in them. Following resumes on the next change of section once the pointer's out and [`FOLLOW_RESUME_AFTER`] has passed.
-/// - With Reduce Motion, nothing animates: it goes straight there, and only when the place has left the view.
+/// - **Reposition, then rest.** The place sits at [`FOLLOW_ANCHOR`]. While it stays in [`FOLLOW_DEAD_ZONE`], nothing moves. Leaving it starts one move, back to the anchor.
+/// - **Every move starts and ends softly,** with its length bounded by [`FOLLOW_SECONDS`]. It's a chain: a lag on the target, followed by a critically damped spring. That's what makes acceleration build from nothing at the start, and fade at the end.
+/// - **A new target during a move only changes where the chain is heading,** so nothing steps, in position, speed or acceleration. Fast reading through many sections carries on as one long move until it settles. It only changes once the place has left the dead zone around where the move is going.
+/// - **A reader who scrolls the contents is left alone,** and so is a pointer resting in them. Following resumes on the next change of section once the pointer's out and [`FOLLOW_RESUME_AFTER`] has passed.
+/// - **With Reduce Motion nothing animates:** it goes straight there, and only when the place has left the view.
 ///
-/// Costs a few comparisons a section, and nothing per row. The host's frames run only during a drift.
+/// Costs a few comparisons a section, and nothing per row. The host's frames run only during a move.
 #[derive(Clone, Copy, Debug)]
 pub struct ContentsFollow {
     paused: bool,
@@ -208,23 +204,36 @@ pub struct ContentsFollow {
     last_user_scroll: f64,
     current: Option<u32>,
     placed: bool,
-    drift: Option<Drift>,
+    moving: Option<Motion>,
 }
 
+/// A move under way.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Drift {
+struct Motion {
     target: f64,
-    velocity: f64,
-    /// A new target came while it was moving, so the reader's going faster than one drift: it may keep up.
-    chasing: bool,
-    /// Where it really is. A scroll view rounds to whole device pixels, and a slow drift reading that back would never get anywhere. Taken from the host on the first frame.
+    /// The lagged target the spring chases, which is what makes it start softly.
+    aim: f64,
+    /// Where it really is, in the chain. A scroll view rounds to whole device pixels, and a slow end reading that back would never arrive. Taken from the host on the first frame.
     at: Option<f64>,
+    velocity: f64,
+    /// Rate of the chain, per second, from the distance.
+    rate: f64,
 }
 
 impl Default for ContentsFollow {
     fn default() -> Self {
-        Self { paused: false, pointer_inside: false, last_user_scroll: f64::NEG_INFINITY, current: None, placed: false, drift: None }
+        Self { paused: false, pointer_inside: false, last_user_scroll: f64::NEG_INFINITY, current: None, placed: false, moving: None }
     }
+}
+
+/// The chain's rate for a distance: the further, the longer it takes, up to the most, so far jumps are quick and short ones aren't abrupt.
+fn follow_rate(distance: f64, height: f64) -> f64 {
+    let heights = distance.abs() / height.max(1.0);
+    let share = (heights / 4.0).clamp(0.0, 1.0).sqrt();
+    let seconds = FOLLOW_SECONDS.0 + (FOLLOW_SECONDS.1 - FOLLOW_SECONDS.0) * share;
+    // A chain like this takes this many of its natural periods to close from this far to the last quarter of a point, so a long way is no longer than the time above.
+    let periods = 6.0 + (distance.abs().max(1.0) / FOLLOW_ARRIVED.0).ln();
+    periods / seconds
 }
 
 impl ContentsFollow {
@@ -232,14 +241,14 @@ impl ContentsFollow {
     pub fn user_scrolled(&mut self, now: f64) {
         self.paused = true;
         self.last_user_scroll = now;
-        self.drift = None;
+        self.moving = None;
     }
 
-    /// The pointer came into the contents or left. Nothing's pulled from under it: a drift under way stops.
+    /// The pointer came into the contents or left. Nothing's pulled from under it: a move under way stops.
     pub fn pointer(&mut self, inside: bool) {
         self.pointer_inside = inside;
         if inside {
-            self.drift = None;
+            self.moving = None;
         }
     }
 
@@ -249,11 +258,11 @@ impl ContentsFollow {
         *self = Self { pointer_inside, ..Self::default() };
     }
 
-    /// The contents' area changed height, as the window did. The place is looked at again next, and goes straight to where it should be, since nothing about a resize wants drifting.
+    /// The contents' area changed height, as the window did. The place is looked at again next, and goes straight to where it should be, since nothing about a resize wants moving.
     pub fn view_changed(&mut self) {
         self.current = None;
         self.placed = false;
-        self.drift = None;
+        self.moving = None;
     }
 
     pub fn is_following(self) -> bool {
@@ -261,14 +270,15 @@ impl ContentsFollow {
     }
 
     pub fn is_moving(self) -> bool {
-        self.drift.is_some()
+        self.moving.is_some()
     }
 
-    /// Rows above something were added or removed, by this many points, and the host moved its scroll to match so nothing appears to jump. A target below that moves with them.
+    /// Rows above something were added or removed, by this many points, and the host moved its scroll to match so nothing appears to jump. The whole of a move goes with them.
     pub fn shifted(&mut self, by: f64) {
-        if let Some(drift) = &mut self.drift {
-            drift.target += by;
-            drift.at = drift.at.map(|at| at + by);
+        if let Some(motion) = &mut self.moving {
+            motion.target += by;
+            motion.aim += by;
+            motion.at = motion.at.map(|at| at + by);
         }
     }
 
@@ -287,7 +297,7 @@ impl ContentsFollow {
         }
         let place = (f64::from(row) + 0.5) * CONTENTS_ROW_HEIGHT;
         let furthest = (f64::from(view.rows) * CONTENTS_ROW_HEIGHT - view.height).max(0.0);
-        let target = (place - view.height / 2.0).clamp(0.0, furthest);
+        let target = (place - view.height * FOLLOW_ANCHOR).clamp(0.0, furthest);
         if !self.placed {
             self.placed = true;
             return FollowMove::SetTo(target);
@@ -296,76 +306,133 @@ impl ContentsFollow {
             return FollowMove::Stay;
         }
         if reduce_motion {
-            self.drift = None;
+            self.moving = None;
             let in_view = place >= view.scroll_y && place <= view.scroll_y + view.height;
             return if in_view { FollowMove::Stay } else { FollowMove::SetTo(target) };
         }
-        // Where it's going already, if it's moving, or else where it is.
-        let settled_at = self.drift.map_or(view.scroll_y, |drift| drift.target);
-        let band = (settled_at + view.height * FOLLOW_BAND.0)..=(settled_at + view.height * FOLLOW_BAND.1);
-        if band.contains(&place) || (target - settled_at).abs() < 1.0 {
-            return if self.drift.is_some() { FollowMove::Drift { from: None } } else { FollowMove::Stay };
+        // A move under way counts from where it's going. Past that, it just carries on towards the new place, so sections going by fast are one long move rather than a row of them, and sections going by slowly are a move and then a rest.
+        if let Some(motion) = &mut self.moving {
+            let zone = (motion.target + view.height * FOLLOW_DEAD_ZONE.0)..=(motion.target + view.height * FOLLOW_DEAD_ZONE.1);
+            if zone.contains(&place) {
+                return FollowMove::Move;
+            }
+            motion.target = target;
+            motion.rate = motion.rate.min(follow_rate(target - motion.at.unwrap_or(view.scroll_y), view.height));
+            return FollowMove::Move;
         }
-        let distance = target - view.scroll_y;
-        let chasing = self.drift.is_some();
-        let long_way = if chasing { FOLLOW_CHASE_LONG_WAY } else { FOLLOW_LONG_WAY };
-        if distance.abs() > view.height.max(1.0) * long_way {
-            self.drift = Some(Drift { target, velocity: 0.0, chasing: false, at: None });
-            return FollowMove::Drift { from: Some((target - FOLLOW_LANDING.copysign(distance)).clamp(0.0, furthest)) };
+        let zone = (view.scroll_y + view.height * FOLLOW_DEAD_ZONE.0)..=(view.scroll_y + view.height * FOLLOW_DEAD_ZONE.1);
+        if zone.contains(&place) || (target - view.scroll_y).abs() < 1.0 {
+            return FollowMove::Stay;
         }
-        let (velocity, at) = self.drift.map_or((0.0, None), |drift| (drift.velocity, drift.at));
-        self.drift = Some(Drift { target, velocity, chasing, at });
-        FollowMove::Drift { from: None }
+        self.moving = Some(Motion { target, aim: view.scroll_y, at: Some(view.scroll_y), velocity: 0.0, rate: follow_rate(target - view.scroll_y, view.height) });
+        FollowMove::Move
     }
 
-    /// One frame of a drift. Returns where the scroll should be, or `None` when it's over and the frames should stop. A long pause between frames is taken as a short one, so a stalled frame doesn't look like a jump.
+    /// One frame of a move. Returns where the scroll should be, or `None` when it's over and the frames should stop. A long pause between frames is taken as a short one, so a stalled frame doesn't look like a jump.
     pub fn step(&mut self, position: f64, dt: f64) -> Option<f64> {
-        let drift = self.drift.as_mut()?;
-        let dt = dt.clamp(0.0, 0.05);
-        let position = *drift.at.get_or_insert(position);
-        let offset = position - drift.target;
-        let spring = drift.velocity + FOLLOW_RATE * offset;
-        let decay = (-FOLLOW_RATE * dt).exp();
-        let next_offset = (offset + spring * dt) * decay;
-        let mut velocity = (spring - FOLLOW_RATE * (offset + spring * dt)) * decay;
-        let mut next = drift.target + next_offset;
-        let top = if drift.chasing { FOLLOW_CHASE_SPEED } else { FOLLOW_MAX_SPEED };
-        if velocity.abs() > top {
-            velocity = top.copysign(velocity);
-            next = position + velocity * dt;
+        let motion = self.moving.as_mut()?;
+        let mut left = dt.clamp(0.0, 0.05);
+        let mut at = *motion.at.get_or_insert(position);
+        // Whole steps of one size, and the rest carried in `left` by the last one, so the shape is the same at 60 or 120 frames a second.
+        while left > 0.0 {
+            let step = left.min(FOLLOW_STEP);
+            left -= step;
+            motion.aim += (motion.target - motion.aim) * (motion.rate * step).min(1.0);
+            let acceleration = motion.rate * motion.rate * (motion.aim - at) - 2.0 * motion.rate * motion.velocity;
+            motion.velocity += acceleration * step;
+            at += motion.velocity * step;
         }
-        if next_offset.abs() < 0.25 && velocity.abs() < 4.0 {
-            let target = drift.target;
-            self.drift = None;
+        motion.at = Some(at);
+        if (at - motion.target).abs() < FOLLOW_ARRIVED.0 && motion.velocity.abs() < FOLLOW_ARRIVED.1 {
+            let target = motion.target;
+            self.moving = None;
             return Some(target);
         }
-        drift.velocity = velocity;
-        drift.at = Some(next);
-        Some(next)
+        Some(at)
     }
 }
 
-/// The paper in dark mode. Light mode is always white. Owner, 2026-11-06: dark mode offers dark or white paper.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The paper a page is shown on, which has nothing to do with the window's own light or dark. Owner, 2026-11-07: "We have two paper color modes: white and dark, let's add a yellowed white option that's better for the eyes".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Paper {
-    #[default]
-    Dark,
     White,
+    Warm,
+    Dark,
 }
+
+/// Warm paper's colour, `0xRRGGBB`. Soft cream, as aged book paper is: warm at a glance without reading as yellow. Taken towards the eye from the first idea of `#F5EEDC`, as a multiply over a page leaves black black, and it holds well over WCAG AA for body text: see the test.
+pub const WARM_PAPER: u32 = 0xF5_EE_DC;
 
 impl Paper {
+    /// Every paper, in the order they're offered.
+    pub const ALL: [Self; 3] = [Self::White, Self::Warm, Self::Dark];
+
     pub fn name(self) -> &'static str {
         match self {
-            Self::Dark => "dark",
             Self::White => "white",
+            Self::Warm => "warm",
+            Self::Dark => "dark",
         }
     }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|paper| paper.name() == name)
+    }
+
+    /// What it's called on a menu, when that exists.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::White => "White",
+            Self::Warm => "Warm",
+            Self::Dark => "Dark",
+        }
+    }
+
+    /// With nothing chosen, the paper goes with the window.
+    pub fn resolved(chosen: Option<Self>, window_is_dark: bool) -> Self {
+        chosen.unwrap_or(if window_is_dark { Self::Dark } else { Self::White })
+    }
+}
+
+/// WCAG's contrast ratio between two colours, `0xRRGGBB`: from 1 to 21. AA for body text is 4.5.
+pub fn contrast_ratio(one: u32, two: u32) -> f64 {
+    fn luminance(rgb: u32) -> f64 {
+        let channel = |shift: u32| {
+            let value = f64::from((rgb >> shift) & 0xFF) / 255.0;
+            if value <= 0.039_28 { value / 12.92 } else { ((value + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+    }
+    let (one, two) = (luminance(one), luminance(two));
+    (one.max(two) + 0.05) / (one.min(two) + 0.05)
+}
+
+/// What hovering over a row shows: its full text, cleaned and bounded however long or strange it is. A title comes from the file, so it may be 100,000 characters of newlines, and this is the one place the host gets it from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowFullText {
+    pub text: String,
+    /// It's the file's name, as opposed to a title from inside it.
+    pub is_file_name: bool,
+}
+
+/// The most of a row's full text that's shown, in characters. Longer is no longer reading a name.
+pub const MAX_ROW_FULL_TEXT: usize = 400;
+
+pub fn row_full_text(text: &str, is_file_name: bool) -> RowFullText {
+    let clean = recto_core::clean_line(text);
+    let mut chars = clean.char_indices().skip(MAX_ROW_FULL_TEXT);
+    let text = match chars.next() {
+        Some((at, _)) => format!("{}…", clean[..at].trim_end()),
+        None => clean,
+    };
+    RowFullText { text, is_file_name }
 }
 
 /// How pages are shown, which is the same for every tab.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ViewSettings {
-    pub paper: Paper,
+    /// `None` goes with the window: white with a light one, dark with a dark one.
+    pub paper: Option<Paper>,
     /// Sidebar hidden, page number only, agent icon kept.
     pub focus: bool,
 }
@@ -943,6 +1010,49 @@ mod tests {
         }
     }
 
+    /// Failure: warm paper is too dim to read on, by WCAG AA, or it's lost its warmth and reads as white, or gone yellow or orange. Holds the value: text at the page's usual dark greys stays above AA, and each channel falls a little more than the last without a big drop in blue.
+    #[test]
+    fn warm_paper_keeps_body_text_readable_and_reads_as_warm() {
+        for ink in [0x00_00_00, 0x22_22_22, 0x44_44_44, 0x59_59_59] {
+            assert!(contrast_ratio(ink, WARM_PAPER) >= 4.5, "{ink:06x} on {WARM_PAPER:06x}: {}", contrast_ratio(ink, WARM_PAPER));
+        }
+        let (red, green, blue) = ((WARM_PAPER >> 16) & 0xFF, (WARM_PAPER >> 8) & 0xFF, WARM_PAPER & 0xFF);
+        assert!(red >= green && green >= blue, "warm means red over green over blue");
+        assert!(red - blue >= 12, "or it's white");
+        assert!(red - blue <= 40, "or it's yellow");
+        assert!(red >= 0xEE, "or it's dim");
+    }
+
+    /// Failure: the paper follows the window once it's been chosen, or doesn't when it hasn't. Every combination works: with nothing chosen it goes with the window, and a choice holds in either window.
+    #[test]
+    fn all_six_papers_and_windows_work() {
+        assert_eq!(Paper::resolved(None, false), Paper::White);
+        assert_eq!(Paper::resolved(None, true), Paper::Dark);
+        for paper in Paper::ALL {
+            assert_eq!(Paper::resolved(Some(paper), false), paper);
+            assert_eq!(Paper::resolved(Some(paper), true), paper);
+            assert_eq!(Paper::from_name(paper.name()), Some(paper));
+            assert!(!paper.label().is_empty());
+        }
+        assert_eq!(Paper::from_name("sepia"), None);
+    }
+
+    /// Failure: a shortened name has no way to be read in full, or a hostile title takes over the hover: 100,000 characters, newlines and invisible characters. It comes back on one clean line, bounded, and says what it is.
+    #[test]
+    fn a_rows_full_text_is_clean_and_bounded() {
+        let plain = row_full_text("QUIC: A UDP-Based Multiplexed and Secure Transport", false);
+        assert_eq!(plain.text, "QUIC: A UDP-Based Multiplexed and Secure Transport");
+        assert!(!plain.is_file_name);
+        assert!(row_full_text("report", true).is_file_name);
+        let hostile = format!("{}{}", "line\n".repeat(20_000), "\u{202E}\u{E0041}end");
+        let shown = row_full_text(&hostile, false);
+        assert!(shown.text.chars().count() <= MAX_ROW_FULL_TEXT + 1, "{}", shown.text.chars().count());
+        assert!(shown.text.ends_with('…'));
+        assert!(!shown.text.chars().any(char::is_control), "one line");
+        assert!(!shown.text.contains('\u{202E}'));
+        assert_eq!(row_full_text("\n\n", false).text, "");
+    }
+
     /// Failure: a long outline pushes the other tabs or the footer off screen, the reason the owner asked for this. Holds at every window height down to the smallest, for every mix of tabs and rows: the tabs kept never lose their room, and nothing goes past the room there is unless the tab list itself is too long, when that scrolls.
     #[test]
     fn a_long_outline_never_pushes_the_other_tabs_away() {
@@ -971,11 +1081,18 @@ mod tests {
         assert_eq!(sidebar_heights(f64::NAN, 2, 1000).contents, 0.0);
     }
 
+    const HEIGHT: f64 = 560.0;
+    const ROWS: u32 = 1000;
+
     fn contents_view(scroll_y: f64) -> ContentsView {
-        ContentsView { scroll_y, height: 560.0, rows: 1000 }
+        ContentsView { scroll_y, height: HEIGHT, rows: ROWS }
     }
 
-    /// Runs a drift to its end, as frames at 60 a second would, and returns each position.
+    fn anchor_y(row: u32) -> f64 {
+        (f64::from(row) + 0.5) * CONTENTS_ROW_HEIGHT - HEIGHT * FOLLOW_ANCHOR
+    }
+
+    /// Runs a move to its end, at 60 frames a second, and returns each position.
     fn run_frames(follow: &mut ContentsFollow, mut position: f64) -> Vec<f64> {
         let mut path = vec![position];
         for _ in 0..2000 {
@@ -983,119 +1100,142 @@ mod tests {
             position = next;
             path.push(position);
         }
-        panic!("a drift never ended, so frames would run forever: {path:?}");
+        panic!("a move never ended, so frames would run for ever: {path:?}");
     }
 
-    fn placed_at(row: u32) -> ContentsFollow {
+    fn placed_at(row: u32) -> (ContentsFollow, f64) {
         let mut follow = ContentsFollow::default();
-        assert!(matches!(follow.reached(Some(row), contents_view(0.0), 100.0, false), FollowMove::SetTo(_)));
-        follow
+        let FollowMove::SetTo(y) = follow.reached(Some(row), contents_view(0.0), 100.0, false) else { panic!("the first showing goes straight there") };
+        (follow, y)
     }
 
-    /// Failure: the contents move at every page turn, which is what the owner asked not to notice. While the place stays in the calm middle band, nothing moves at all.
+    /// Failure: the list moves at every page turn, which is what the owner asked not to see. Across a slow scripted scroll, with the place inside the dead zone, it doesn't move by one pixel: asked at every section, the answer is always to stay.
     #[test]
-    fn inside_the_calm_band_nothing_moves() {
-        let mut follow = placed_at(100);
-        let y = (100.5 * CONTENTS_ROW_HEIGHT) - 280.0;
-        for row in [101, 102, 103, 99, 98, 97, 100] {
+    fn inside_the_dead_zone_nothing_moves_at_all() {
+        let (mut follow, y) = placed_at(100);
+        assert!((y - anchor_y(100)).abs() < 0.001);
+        // Forward to the zone's edge. 45% of 560 points is 9 rows.
+        for row in 101..=108 {
+            assert_eq!(follow.reached(Some(row), contents_view(y), 100.0, false), FollowMove::Stay, "row {row}");
+            assert!(!follow.is_moving());
+        }
+        // And back, by a little.
+        for row in (97..108).rev() {
             assert_eq!(follow.reached(Some(row), contents_view(y), 100.0, false), FollowMove::Stay, "row {row}");
         }
-        assert_eq!(follow.reached(Some(100), contents_view(y), 100.0, false), FollowMove::Stay, "and not again for the same row");
     }
 
-    /// Failure: a section out of the band gets pinned to an edge or isn't moved to. The drift brings it to the middle, ends, and stays within what can be scrolled.
+    /// Failure: reading on nudges the list at every section, or it never comes back. Leaving the dead zone starts one move, back to the anchor, and then it rests again for a useful stretch.
     #[test]
-    fn past_the_band_it_drifts_to_the_middle_and_stops() {
-        let mut follow = placed_at(100);
-        let y = (100.5 * CONTENTS_ROW_HEIGHT) - 280.0;
-        assert_eq!(follow.reached(Some(112), contents_view(y), 100.0, false), FollowMove::Drift { from: None });
-        let path = run_frames(&mut follow, y);
-        let last = *path.last().unwrap();
-        assert!((last - (112.5 * CONTENTS_ROW_HEIGHT - 280.0)).abs() < 1.0, "{last}");
-        assert!(!follow.is_moving(), "nothing's left running");
-        assert_eq!(follow.reached(Some(990), contents_view(last), 100.0, false), FollowMove::Drift { from: Some(1000.0 * CONTENTS_ROW_HEIGHT - 560.0 - 70.0) }, "near the end it stops where the list stops");
-    }
-
-    /// Failure: motion that reads as a jump. Each frame's step is held to the top speed's share of a frame, and there's no step backwards past the target.
-    #[test]
-    fn a_drift_is_gentle_all_the_way() {
-        let mut follow = placed_at(100);
-        let y = (100.5 * CONTENTS_ROW_HEIGHT) - 280.0;
-        follow.reached(Some(125), contents_view(y), 100.0, false);
-        let path = run_frames(&mut follow, y);
-        assert!(path.len() > 30, "over in {} frames isn't a drift", path.len());
-        for pair in path.windows(2) {
-            let step = pair[1] - pair[0];
-            assert!(step.abs() <= FOLLOW_MAX_SPEED / 60.0 + 0.5, "{step}");
-            assert!(step >= -0.5, "it went backwards: {step}");
+    fn leaving_the_dead_zone_makes_one_move_and_then_rests() {
+        let (mut follow, mut y) = placed_at(100);
+        let mut moves = Vec::new();
+        for row in 101..200 {
+            if follow.reached(Some(row), contents_view(y), 100.0, false) == FollowMove::Move {
+                moves.push(row);
+                let path = run_frames(&mut follow, y);
+                y = *path.last().unwrap();
+                assert!((y - anchor_y(row)).abs() < 0.001, "row {row}: at {y}");
+            }
+        }
+        assert!(moves.len() >= 5, "{moves:?}");
+        for pair in moves.windows(2) {
+            assert!(pair[1] - pair[0] >= 8, "a rest of only {} rows: {moves:?}", pair[1] - pair[0]);
         }
     }
 
-    /// Failure: reading quickly through sections restarts the curve at each one, so it stutters. A new target mid-drift keeps the speed it had: the step either side of the change must be about the same.
+    /// Failure: a move starts or stops with a jolt. Over every move, near and far, speed builds from about nothing and fades to about nothing, and never changes much from one frame to the next, as a share of its peak.
     #[test]
-    fn a_new_target_carries_on_without_a_jump() {
-        let mut follow = placed_at(100);
-        let mut y = (100.5 * CONTENTS_ROW_HEIGHT) - 280.0;
-        follow.reached(Some(115), contents_view(y), 100.0, false);
-        let mut last_step = 0.0;
-        for _ in 0..15 {
+    fn a_move_starts_and_ends_softly() {
+        for row in [112, 150, 600] {
+            let (mut follow, y) = placed_at(100);
+            assert_eq!(follow.reached(Some(row), contents_view(y), 100.0, false), FollowMove::Move, "row {row}");
+            let path = run_frames(&mut follow, y);
+            let speeds: Vec<f64> = path.windows(2).map(|pair| (pair[1] - pair[0]) * 60.0).collect();
+            let peak = speeds.iter().fold(0.0f64, |peak, speed| peak.max(speed.abs()));
+            let (first, last) = (speeds[0].abs(), speeds[speeds.len() - 2].abs());
+            assert!(first < peak * 0.15, "row {row}: starts at {first} of {peak}");
+            assert!(last < peak * 0.15, "row {row}: ends at {last} of {peak}");
+            // No step: how much the speed changes doesn't itself change suddenly from one frame to the next.
+            let changes: Vec<f64> = speeds.windows(2).map(|pair| pair[1] - pair[0]).collect();
+            for pair in changes.windows(2).take(changes.len().saturating_sub(2)) {
+                assert!((pair[1] - pair[0]).abs() < peak * 0.2, "row {row}: {} then {}, of {peak}", pair[0], pair[1]);
+            }
+            assert!(speeds.iter().all(|speed| *speed >= -peak * 0.01), "row {row}: it went backwards");
+            let seconds = path.len() as f64 / 60.0;
+            assert!(seconds >= FOLLOW_SECONDS.0 * 0.7 && seconds <= FOLLOW_SECONDS.1 * 1.25, "row {row}: {seconds} s");
+        }
+    }
+
+    /// Failure: reading quickly restarts the move at each section, so it stutters to a stop and starts again. A new target mid-move leaves the speed where it was, and many in a row are one long move with no stop in it.
+    #[test]
+    fn a_new_target_mid_move_has_no_step_in_speed() {
+        let (mut follow, mut y) = placed_at(100);
+        assert_eq!(follow.reached(Some(115), contents_view(y), 100.0, false), FollowMove::Move);
+        let mut speed = 0.0;
+        for _ in 0..12 {
             let next = follow.step(y, 1.0 / 60.0).unwrap();
-            last_step = next - y;
+            speed = (next - y) * 60.0;
             y = next;
         }
-        assert!(last_step > 1.0, "it's moving by now: {last_step}");
-        assert_eq!(follow.reached(Some(130), contents_view(y), 100.0, false), FollowMove::Drift { from: None }, "no landing and no restart");
+        assert!(speed > 50.0, "it's moving by now: {speed}");
+        assert_eq!(follow.reached(Some(140), contents_view(y), 100.0, false), FollowMove::Move);
         let next = follow.step(y, 1.0 / 60.0).unwrap();
-        let step = next - y;
-        assert!((step - last_step).abs() < 3.0, "{last_step} then {step}");
-    }
+        let after = (next - y) * 60.0;
+        assert!((after - speed).abs() < speed * 0.25 + 30.0, "{speed} then {after}");
 
-    /// Failure: reading very fast leaves the contents behind, or they land again and again in big jumps, as the first version did: at 40 sections a second, a step of 1,536 points and the place in view on one step in five. They keep up, at the reader's own speed, without landing.
-    #[test]
-    fn keeping_up_with_a_fast_reader_never_lands() {
-        let view_at = |y: f64| ContentsView { scroll_y: y, height: 776.0, rows: 10_000 };
-        let mut follow = ContentsFollow::default();
-        follow.reached(Some(1000), view_at(0.0), 100.0, false);
-        let mut y = 1000.5 * CONTENTS_ROW_HEIGHT - 388.0;
-        let mut in_view = 0;
-        let frames = 60 * 5;
-        for frame in 0..frames {
-            // 40 sections a second, at 60 frames.
-            let row = 1000 + frame * 2 / 3;
-            let moved = follow.reached(Some(row), view_at(y), 100.0, false);
-            assert!(!matches!(moved, FollowMove::Drift { from: Some(_) } | FollowMove::SetTo(_)), "frame {frame}: {moved:?}");
-            if let Some(next) = follow.step(y, 1.0 / 60.0) {
-                assert!((next - y).abs() <= FOLLOW_CHASE_SPEED / 60.0 + 0.5, "frame {frame}: {} a frame", next - y);
-                y = next;
+        // 40 sections a second for two seconds is one move, not forty.
+        let (mut follow, mut y) = placed_at(100);
+        let mut stopped_on = 0;
+        let mut row = 100.0;
+        for _ in 0..120 {
+            row += 40.0 / 60.0;
+            follow.reached(Some(row as u32), contents_view(y), 100.0, false);
+            match follow.step(y, 1.0 / 60.0) {
+                Some(next) => y = next,
+                None => stopped_on += u32::from(row > 110.0),
             }
-            let place = (f64::from(row) + 0.5) * CONTENTS_ROW_HEIGHT;
-            in_view += u32::from(place >= y && place <= y + 776.0);
         }
-        assert!(in_view >= frames * 95 / 100, "the place showed on {in_view} frames of {frames}");
+        assert_eq!(stopped_on, 0, "the move kept going");
+        let place = (row + 0.5) * CONTENTS_ROW_HEIGHT;
+        assert!(place >= y && place <= y + HEIGHT, "and the place is showing: {place} in {y}");
     }
 
-    /// Failure: `recto goto` or a far entry sets off a long fast whoosh through hundreds of rows. It starts a short way from the target, and travels only that.
+    /// Failure: a far jump ends somewhere near, or stops short. It's allowed to whoosh, and it lands exactly on the anchor, in the bounded time.
     #[test]
-    fn a_long_jump_lands_rather_than_whooshes() {
-        let mut follow = placed_at(10);
-        let FollowMove::Drift { from: Some(from) } = follow.reached(Some(800), contents_view(0.0), 100.0, false) else { panic!("it should land") };
-        let target = 800.5 * CONTENTS_ROW_HEIGHT - 280.0;
-        assert!((target - from).abs() <= FOLLOW_LANDING + 0.5, "{from}");
-        let path = run_frames(&mut follow, from);
-        let travelled = path.last().unwrap() - path[0];
-        assert!(travelled.abs() <= FOLLOW_LANDING + 1.0, "{travelled}");
-        assert!(path.len() > 20, "it eases, in {} frames", path.len());
+    fn a_far_jump_lands_exactly_on_the_anchor() {
+        let (mut follow, y) = placed_at(10);
+        assert_eq!(follow.reached(Some(800), contents_view(y), 100.0, false), FollowMove::Move);
+        let path = run_frames(&mut follow, y);
+        assert_eq!(*path.last().unwrap(), anchor_y(800));
+        assert!(path.len() as f64 / 60.0 <= FOLLOW_SECONDS.1 * 1.25, "{} frames", path.len());
     }
 
-    /// Failure: a slow drift never arrives, because a scroll view rounds each position to a whole device pixel, and the small step from there rounds back to the same place. Frames ran for ever, seen in the first build. Given only rounded positions, it must still end, in place.
+    /// Failure: at the ends of the list, where the anchor can't be reached, a move runs past what can be scrolled, or keeps trying and never ends, or the first sections move at all.
     #[test]
-    fn rounding_by_the_host_doesnt_stop_a_drift() {
-        let mut follow = placed_at(100);
-        let mut y = (100.5 * CONTENTS_ROW_HEIGHT) - 280.0;
-        follow.reached(Some(112), contents_view(y), 100.0, false);
+    fn the_first_and_last_sections_stop_at_the_end_of_the_list() {
+        let (mut follow, y) = placed_at(0);
+        assert_eq!(y, 0.0, "the top of the list");
+        for row in 1..=8 {
+            assert_eq!(follow.reached(Some(row), contents_view(0.0), 100.0, false), FollowMove::Stay, "row {row}");
+        }
+        let furthest = f64::from(ROWS) * CONTENTS_ROW_HEIGHT - HEIGHT;
+        let (mut follow, y) = placed_at(900);
+        assert_eq!(follow.reached(Some(999), contents_view(y), 100.0, false), FollowMove::Move);
+        let path = run_frames(&mut follow, y);
+        assert_eq!(*path.last().unwrap(), furthest);
+        assert!(path.iter().all(|at| *at <= furthest + 0.5), "it ran past the end");
+        assert_eq!(follow.reached(Some(998), contents_view(furthest), 100.0, false), FollowMove::Stay, "and it's done");
+    }
+
+    /// Failure: a slow end never arrives, because a scroll view rounds each position to a whole device pixel, and the small step from there rounds back to the same place. Frames ran for ever, seen in the first build. Given only rounded positions, it must still end, in place.
+    #[test]
+    fn rounding_by_the_host_doesnt_stop_a_move() {
+        let (mut follow, mut y) = placed_at(100);
+        assert_eq!(follow.reached(Some(112), contents_view(y), 100.0, false), FollowMove::Move);
         for _ in 0..2000 {
             let Some(next) = follow.step(y, 1.0 / 60.0) else {
-                assert!((y - (112.5 * CONTENTS_ROW_HEIGHT - 280.0)).abs() <= 0.5, "{y}");
+                assert!((y - anchor_y(112)).abs() <= 0.5, "{y}");
                 return;
             };
             y = (next * 2.0).round() / 2.0;
@@ -1103,11 +1243,10 @@ mod tests {
         panic!("it never arrived: {y}");
     }
 
-    /// Failure: reading pulls the list out from under someone looking through it. A scroll stops any drift where it is, and nothing moves afterwards, until they've stopped using it.
+    /// Failure: reading pulls the list out from under someone looking through it. A scroll stops any move where it is, and nothing moves afterwards, until they've stopped using it.
     #[test]
     fn a_reader_scrolling_the_contents_pauses_following() {
-        let mut follow = placed_at(100);
-        let y = (100.5 * CONTENTS_ROW_HEIGHT) - 280.0;
+        let (mut follow, y) = placed_at(100);
         follow.reached(Some(115), contents_view(y), 100.0, false);
         assert!(follow.is_moving());
         follow.user_scrolled(101.0);
@@ -1119,8 +1258,7 @@ mod tests {
     /// Failure: following never comes back, or comes back while the pointer is still on the list. It takes the pointer out, the time passed, and a new section, all three.
     #[test]
     fn following_resumes_only_when_they_have_stopped_and_the_section_changes() {
-        let mut follow = placed_at(100);
-        let y = (100.5 * CONTENTS_ROW_HEIGHT) - 280.0;
+        let (mut follow, y) = placed_at(100);
         follow.pointer(true);
         follow.user_scrolled(100.0);
         let later = 100.0 + FOLLOW_RESUME_AFTER + 5.0;
@@ -1128,40 +1266,38 @@ mod tests {
         follow.pointer(false);
         assert!(!follow.is_following(), "not until the section changes");
         assert_eq!(follow.reached(Some(120), contents_view(y), later, false), FollowMove::Stay, "the same section, so nothing's changed");
-        let mut soon = placed_at(100);
+        let (mut soon, y) = placed_at(100);
         soon.user_scrolled(100.0);
         assert_eq!(soon.reached(Some(120), contents_view(y), 100.0 + FOLLOW_RESUME_AFTER - 0.5, false), FollowMove::Stay, "too soon");
-        assert!(matches!(follow.reached(Some(125), contents_view(y), later, false), FollowMove::Drift { .. }));
+        assert_eq!(follow.reached(Some(125), contents_view(y), later, false), FollowMove::Move);
         assert!(follow.is_following());
     }
 
     /// Failure: a pointer resting on the list has it move from under it, though they haven't scrolled.
     #[test]
     fn nothing_moves_under_a_resting_pointer() {
-        let mut follow = placed_at(100);
-        let y = (100.5 * CONTENTS_ROW_HEIGHT) - 280.0;
+        let (mut follow, y) = placed_at(100);
         follow.reached(Some(115), contents_view(y), 100.0, false);
         follow.pointer(true);
         assert!(!follow.is_moving(), "what was moving stops");
         assert_eq!(follow.reached(Some(130), contents_view(y), 100.0, false), FollowMove::Stay);
         follow.pointer(false);
-        assert!(matches!(follow.reached(Some(135), contents_view(y), 100.0, false), FollowMove::Drift { .. }), "and picks up on the next section");
+        assert_eq!(follow.reached(Some(135), contents_view(y), 100.0, false), FollowMove::Move, "and picks up on the next section");
     }
 
-    /// Failure: Reduce Motion gets a drift anyway, or the place is lost. No frames at all, nothing moves while the place shows, and it goes straight there when it doesn't.
+    /// Failure: Reduce Motion gets an animation anyway, or the place is lost. No frames at all, nothing moves while the place shows, and it goes straight there when it doesn't.
     #[test]
     fn reduce_motion_never_animates() {
-        let mut follow = placed_at(100);
-        let y = (100.5 * CONTENTS_ROW_HEIGHT) - 280.0;
-        assert_eq!(follow.reached(Some(108), contents_view(y), 100.0, true), FollowMove::Stay, "past the band, but still showing");
+        let (mut follow, y) = placed_at(100);
+        assert_eq!(follow.reached(Some(112), contents_view(y), 100.0, true), FollowMove::Stay, "past the dead zone, but still showing");
         assert!(matches!(follow.reached(Some(400), contents_view(y), 100.0, true), FollowMove::SetTo(_)));
         assert!(!follow.is_moving());
     }
 
-    /// Failure: another tab's contents drift in from wherever the last tab's were. They start in place.
+    /// Failure: another tab's contents swoop in from wherever the last tab's were. They start in place.
     #[test]
     fn new_contents_start_in_place() {
-        let mut follow = placed_at(100);
+        let (mut follow, _) = placed_at(100);
         follow.new_contents();
         assert!(matches!(follow.reached(Some(500), contents_view(0.0), 100.0, false), FollowMove::SetTo(_)));
     }
@@ -1169,21 +1305,19 @@ mod tests {
     /// Failure: a shorter window leaves the place below the bottom of the contents, with nothing to bring it back until the section changes. Seen in the first short-window shot.
     #[test]
     fn a_change_of_height_brings_the_place_back() {
-        let mut follow = placed_at(100);
-        let y = (100.5 * CONTENTS_ROW_HEIGHT) - 280.0;
+        let (mut follow, y) = placed_at(100);
         follow.view_changed();
         assert!(matches!(follow.reached(Some(100), ContentsView { scroll_y: y, height: 120.0, rows: 1000 }, 100.0, false), FollowMove::SetTo(_)));
     }
 
-    /// Failure: rows opening above the place throw a drift off, by the number of rows the host just moved past.
+    /// Failure: rows opening above the place throw a move off, by the number of rows the host just moved past.
     #[test]
-    fn rows_changing_above_carry_the_target_with_them() {
-        let mut follow = placed_at(100);
-        let y = (100.5 * CONTENTS_ROW_HEIGHT) - 280.0;
+    fn rows_changing_above_carry_the_move_with_them() {
+        let (mut follow, y) = placed_at(100);
         follow.reached(Some(115), contents_view(y), 100.0, false);
         follow.shifted(-112.0);
         let path = run_frames(&mut follow, y - 112.0);
-        assert!((path.last().unwrap() - (115.5 * CONTENTS_ROW_HEIGHT - 280.0 - 112.0)).abs() < 1.0, "{path:?}");
+        assert!((path.last().unwrap() - (anchor_y(115) - 112.0)).abs() < 1.0, "{path:?}");
     }
 
     /// Failure: a field added carelessly raises the cost of every idle tab.

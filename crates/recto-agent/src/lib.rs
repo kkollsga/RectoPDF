@@ -680,6 +680,11 @@ pub fn run<L: DocLoader + Clone>(session: &mut Session<L>, level: Level, command
 }
 
 /// Runs one command, noting what happened in `events`. Commands that only a long-running session can answer say so.
+/// What's chosen, in a word: `auto` goes with the window.
+pub fn paper_name(view: recto_session::ViewSettings) -> &'static str {
+    view.paper.map_or("auto", recto_session::Paper::name)
+}
+
 /// QA commands reach an app started in QA mode, and nothing else. Other sessions, a shipped app's included, say this.
 pub fn qa_needs_app() -> AgentError {
     AgentError::new("qa_needs_app", "QA commands only work on an app started with `recto qa start`.", exit::FAILED).then("Set RECTO_STATE_DIR to a temp folder and run `recto qa start`.")
@@ -731,9 +736,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             let was = s.view();
             let mut view = was;
             match paper.as_deref() {
-                Some("dark") => view.paper = recto_session::Paper::Dark,
-                Some("white") => view.paper = recto_session::Paper::White,
-                Some(other) => return Err(AgentError::new("usage", format!("`{}` isn't a paper. It's `dark` or `white`.", recto_core::clean_line(other)), exit::USAGE)),
+                Some("auto") => view.paper = None,
+                Some(name) => view.paper = Some(recto_session::Paper::from_name(name).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a paper. It's one of {}, or `auto`.", recto_core::clean_line(name), recto_session::Paper::ALL.map(recto_session::Paper::name).join(", ")), exit::USAGE))?),
                 None => {}
             }
             match focus.as_deref() {
@@ -744,9 +748,9 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             }
             s.set_view(view);
             if view != was {
-                events.push(Event::new("view_changed", json!({ "paper": view.paper.name(), "focus": view.focus })));
+                events.push(Event::new("view_changed", json!({ "paper": paper_name(view), "focus": view.focus })));
             }
-            Ok(json!({ "paper": view.paper.name(), "focus": view.focus }))
+            Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "focus": view.focus }))
         }),
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::Budget {} => Ok(json!({

@@ -71,7 +71,7 @@ done
 r stop
 sleep 1
 
-# The same with one tab.
+# The same with one tab, a shortened name revealed, and warm paper on a text page.
 export RECTO_STATE_DIR="$root/o"
 r qa start --time-limit 5m
 r open "$reader"
@@ -82,6 +82,18 @@ for look in light dark; do
     settle
     sleep 1.5
     shot "sidebar-long-contents-one-tab-$look"
+    r goto 1
+    settle
+    sleep 1.5
+    # Row 2 is the second contents row, a long title.
+    r qa reveal 2
+    shot "reveal-long-name-$look"
+    r qa reveal none
+    r view --paper warm
+    settle
+    shot "warm-paper-text-$look"
+    r view --paper auto
+    settle
 done
 r stop
 sleep 1
@@ -93,6 +105,11 @@ for look in light dark; do
     r qa appearance "$look"
     settle
     shot "heavy-$look"
+    r view --paper warm
+    settle
+    shot "warm-paper-map-$look"
+    r view --paper auto
+    settle
 done
 r stop
 sleep 1
