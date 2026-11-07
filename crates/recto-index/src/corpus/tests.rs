@@ -772,6 +772,15 @@ fn a_damaged_corpus_is_not_believed() {
     let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
     assert_eq!(corpus.page(0, &mut Vec::new()).unwrap_err(), Damaged, "one page's record standing in for another's");
     restore();
+    // What a record says of its page, a bit at a time: hidden text reading as clean, or another shape of page altogether.
+    for (byte, change) in [(21, FLAG_HIDDEN_FLAGGED), (21, FLAG_HIDDEN_CHECKED), (20, 3), (8, 1), (12, 1), (16, 1), (22, 1)] {
+        let mut flipped = table.clone();
+        flipped[byte] ^= change;
+        fs::write(&paths.table, flipped).unwrap();
+        let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
+        assert_eq!(corpus.page(0, &mut Vec::new()).map(|page| page.text.to_string()), Err(Damaged), "byte {byte} of a record changed by {change}");
+    }
+    restore();
     // One file's folder under another file's name.
     let other_key = key_of(&temp, b"a different file");
     fs::create_dir_all(root.join(other_key.hex())).unwrap();

@@ -1,7 +1,7 @@
 //! The page-text corpus: a document's pages as text on disk, one folder per version of a file, built once in the background and read by `search` and later by the agent's own `Read` and `Grep`.
 //!
 //! ```text
-//! <root>/<key>/v2/
+//! <root>/<key>/v3/
 //!   app/                  What a search reads, and never an agent's
 //!     pages.bin           A fixed record per page, in order, each written after that page's text. Its length is the progress
 //!     text.pack           Each page's exact normalised text, and what it needs beside that
@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 /// The folder's format. A new one starts new folders, and the old ones age out.
-pub const FORMAT: &str = "v2";
+pub const FORMAT: &str = "v3";
 /// What made the text. **Change this when [`read_page`]'s output changes:** it's part of the key, so old text can't answer for new rules. `a_change_to_the_text_changes_the_version` is there to remind you.
 pub const NORMALISER: &str = "recto-normalize/1";
 /// Most pages of a document it will index, the same as a document may have once edited.
@@ -303,10 +303,14 @@ struct PageRecord {
     check: u32,
 }
 
-/// A page's checksum. Its number goes in, so one page's text can't pass for another's.
-fn page_check(page: u32, blob: &[u8]) -> u32 {
+/// A page's checksum. Its number goes in, so one page's text can't pass for another's, and everything its record says of it, so a bit turned over in `flags` can't make a page with hidden text read as clean, nor `kind` or the lengths another page's shape.
+fn page_check(page: u32, record: &PageRecord, blob: &[u8]) -> u32 {
     let mut hash = crc32fast::Hasher::new();
     hash.update(&page.to_le_bytes());
+    let mut fields = record.encode();
+    fields[24..28].fill(0);
+    fields[..8].fill(0);
+    hash.update(&fields);
     hash.update(blob);
     hash.finalize()
 }
@@ -576,7 +580,7 @@ impl ReadyCorpus {
         }
         buffer.resize(len, 0);
         recto_platform::read_exact_at(&self.pack, buffer, record.offset).map_err(|_| Damaged)?;
-        if page_check(page, buffer) != record.check {
+        if page_check(page, &record, buffer) != record.check {
             return Err(Damaged);
         }
         let (text, aux) = buffer.split_at(record.text_len as usize);
@@ -748,7 +752,8 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
         blob.clear();
         blob.extend_from_slice(text.as_bytes());
         Aux::write(&also_spelled, &spans, &mut blob);
-        let record = PageRecord { aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX), check: page_check(page, &blob), ..record };
+        let record = PageRecord { aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX), ..record };
+        let record = PageRecord { check: page_check(page, &record, &blob), ..record };
         bytes += blob.len() as u64 + RECORD_LEN as u64;
         if bytes > limits.max_doc_bytes {
             return refuse(&paths, "too_large");
@@ -811,7 +816,8 @@ fn retry_failed_pages(paths: &CorpusPaths, feed: &mut impl PageFeed, meta: &DocM
         blob.clear();
         blob.extend_from_slice(text.as_bytes());
         Aux::write(&also_spelled, &spans, &mut blob);
-        let record = PageRecord { aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX), check: page_check(page, &blob), ..record };
+        let record = PageRecord { aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX), ..record };
+        let record = PageRecord { check: page_check(page, &record, &blob), ..record };
         // Past the cap it stays failed: a search still reads it live, and what's here doesn't push other documents out.
         if bytes + blob.len() as u64 > limits.max_doc_bytes {
             break;
@@ -1097,7 +1103,7 @@ fn page_holds_up(pack: Option<&File>, page: u32, record: &PageRecord, pack_len: 
         return false;
     }
     buffer.resize(record.blob_len(), 0);
-    pack.is_some_and(|pack| recto_platform::read_exact_at(pack, buffer, record.offset).is_ok()) && page_check(page, buffer) == record.check
+    pack.is_some_and(|pack| recto_platform::read_exact_at(pack, buffer, record.offset).is_ok()) && page_check(page, record, buffer) == record.check
 }
 
 /// One page's file: a first line that can't come from the page, then the page's lines, one for one, so line `n` of the page is line `n + 1` here.
