@@ -146,6 +146,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Fork: streaming rewrite to a new file, copying only what's still used and without loading the whole PDF, for deleting pages, replaced text, redaction, compress and hidden-data removal. SPEC section 6 needs it, and the only rewrite in lopdf today loads everything into memory
 - [ ] Agreement gate between lopdf and PDFium
 - [ ] Native Save, Save As, close prompt, atomic writes, one backup
+- [ ] Undoing a delete past a Save keeps only the removed pages, within 64 MiB per PDF, in place of a whole-file clone (owner, 2026-11-07)
 - [ ] Edit mode: page grid, drag, drop PDFs, rotate, delete, extract, split, merge
 - [ ] Annotations: highlight, underline, strikeout, note, draw
 - [ ] Form filling, with appearance generation
@@ -235,6 +236,7 @@ Real digital signatures to the official standards, signature trust checks, Windo
 - **State:** dormant after 5 minutes; history kept 30 days within 1 GiB, out of backups; redaction and hidden-data removal clear it.
 - **Agents:** below Full an agent throws away only agents' edits; the skill keeps auto-approving read-only commands; a same-user process faking a terminal is accepted until Settings exists.
 - **Exports:** peaks of 465–494 MiB at 3× and 4× are accepted.
+- **Undoing a delete past a Save** keeps only the removed pages, within the 64 MiB per PDF, so it works whatever the size of the PDF. Built with Save, on the streaming rewrite. Until then a PDF over 64 MiB can undo turns and moves past a Save, not a delete. Clones aren't allowed past 64 MiB. (Owner: "I agree with you".)
 - **Tab names:** the file name, with the full name and title on hover.
 - **Before a public release:** a name search for the trademark, no registration yet; wait for Anthropic's written answer and add an API-key route.
 
