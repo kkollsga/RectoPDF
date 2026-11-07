@@ -231,12 +231,15 @@ pub fn verify_app(app: &Path, trust: Trust, version: &str, bundle_id: &str) -> R
     cdhash_of(path)
 }
 
-/// The installer's last look, once the old app has gone and with nothing swapped yet: that what's waiting is still the very thing that was verified, however long ago that was. Sound, and its signature's hash the one that was checked: the hash covers the program, its Info.plist with the version and bundle id, and the seal over every other file. A real build also has to be this team's. A tool that won't answer counts as no, as there's no more waiting to be done at this point.
+/// The installer's last look, the very last thing before the swap: that what's waiting is still the very thing that was verified, however long ago that was. Sound all the way in, as the outer seal only names a nested program's signature and doesn't read its pages. Its signature's hash the one that was checked, which covers the program, its Info.plist and the seal over every other file. Its own version the plan's, as an older genuine build has a genuine hash too. A real build also has to be this team's. A tool that won't answer counts as no, as there's no more waiting to be done at this point.
 #[must_use]
-pub fn still_what_was_verified(app: &Path, cdhash: &str, team: Option<&str>) -> bool {
+pub fn still_what_was_verified(app: &Path, cdhash: &str, version: &str, team: Option<&str>) -> bool {
     let Some(path) = app.to_str() else { return false };
+    if !plist_value(app, "CFBundleShortVersionString").is_ok_and(|said| said.as_deref() == Some(version)) {
+        return false;
+    }
     let requirement = team.map(|team| format!("={}", developer_id_requirement(team)));
-    let mut args = vec!["--verify", "--strict"];
+    let mut args = vec!["--verify", "--deep", "--strict"];
     if let Some(requirement) = &requirement {
         args.extend(["-R", requirement.as_str()]);
     }
@@ -357,7 +360,7 @@ pub(crate) mod tests {
         // Nobody else can get at what's waiting, or at what's about to be the app.
         use std::os::unix::fs::MetadataExt as _;
         assert_eq!(std::fs::metadata(beside_app(&bed.app).unwrap()).unwrap().mode() & 0o777, 0o700);
-        assert!(still_what_was_verified(&staged.app, &staged.cdhash, None), "what was checked is what's there");
+        assert!(still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None), "what was checked is what's there");
         assert_eq!(app_version(&bed.app).as_deref(), Some("0.1.0"), "the running app isn't touched");
         assert!(!bed.files.zip("0.2.0").exists(), "the zip goes once it's unpacked");
         let asked = bed.server.requests.lock().unwrap().len();
@@ -487,30 +490,30 @@ pub(crate) mod tests {
         let bed = Bed::new("pin");
         let latest = bed.release("0.2.0", "0.2.0");
         let staged = bed.stage(&latest, &bed.source).unwrap();
-        assert!(still_what_was_verified(&staged.app, &staged.cdhash, None));
-        assert!(!still_what_was_verified(&staged.app, &staged.cdhash, Some(TEAM_ID)), "an ad-hoc build isn't this team's");
-        assert!(!still_what_was_verified(&staged.app, &"0".repeat(40), None), "another hash");
+        assert!(still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None));
+        assert!(!still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", Some(TEAM_ID)), "an ad-hoc build isn't this team's");
+        assert!(!still_what_was_verified(&staged.app, &"0".repeat(40), "0.2.0", None), "another hash");
         let executable = staged.app.join("Contents/MacOS/RectoPDF");
         let original = std::fs::read(&executable).unwrap();
         std::fs::write(&executable, b"changed").unwrap();
-        assert!(!still_what_was_verified(&staged.app, &staged.cdhash, None), "a changed executable");
+        assert!(!still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None), "a changed executable");
         std::fs::write(&executable, &original).unwrap();
-        assert!(still_what_was_verified(&staged.app, &staged.cdhash, None), "put back, it's the same bytes");
+        assert!(still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None), "put back, it's the same bytes");
         let plist = staged.app.join("Contents/Info.plist");
         let text = std::fs::read_to_string(&plist).unwrap();
         std::fs::write(&plist, text.replace("0.2.0", "9.9.9")).unwrap();
-        assert!(!still_what_was_verified(&staged.app, &staged.cdhash, None), "another version in the same bundle");
+        assert!(!still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None), "another version in the same bundle");
         std::fs::write(&plist, &text).unwrap();
         std::fs::write(staged.app.join("Contents/extra"), "x").unwrap();
-        assert!(!still_what_was_verified(&staged.app, &staged.cdhash, None), "something added");
+        assert!(!still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None), "something added");
         let swapped_in = bed.dir.join("other-build");
         std::fs::create_dir_all(&swapped_in).unwrap();
         let other = fake_app(&swapped_in, "0.2.0");
         std::fs::write(other.join("Contents/Resources-extra"), "not what was verified").unwrap();
         assert!(Command::new(CODESIGN).args(["--force", "--deep", "--sign", "-"]).arg(&other).status().unwrap().success());
-        assert!(!still_what_was_verified(&other, &staged.cdhash, None), "a build that's good in itself and isn't the one");
+        assert!(!still_what_was_verified(&other, &staged.cdhash, "0.2.0", None), "a build that's good in itself and isn't the one");
         assert!(Command::new(CODESIGN).args(["--remove-signature"]).arg(&other).status().unwrap().success());
-        assert!(!still_what_was_verified(&other, &staged.cdhash, None), "no signature");
+        assert!(!still_what_was_verified(&other, &staged.cdhash, "0.2.0", None), "no signature");
     }
 
     /// Failure: a real zip isn't checked by the reader that unpacks it, so a zip the system's own tools would treat differently gets through. Through the whole of staging, with a checksum to match: a link, a name that leaves, and something not listed. **And the modes are ours:** a re-zipped real build at 0777 would have left the installed app writable by anyone.

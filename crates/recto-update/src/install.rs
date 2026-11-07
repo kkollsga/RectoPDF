@@ -30,6 +30,8 @@ const STOP_PATIENCE: Duration = Duration::from_secs(5);
 
 /// A test's way to kill the installer right after a step, to prove what's left is fine. Only in a build that isn't a release.
 pub const DIE_AT_ENV: &str = "RECTO_UPDATER_DIE_AT";
+/// A test's way to hold the installer right after a step, as a racer would need it held, until a file says go on. Only in a build that isn't a release.
+pub const PAUSE_AT_ENV: &str = "RECTO_UPDATER_PAUSE_AT";
 
 fn die_if_told(step: &str) {
     if !RELEASE_BUILD && std::env::var(DIE_AT_ENV).is_ok_and(|at| at == step) {
@@ -61,6 +63,13 @@ impl Run<'_> {
     fn step(&self, name: &str) {
         self.say(&format!("installer: {name}"));
         die_if_told(name);
+        if !RELEASE_BUILD && std::env::var(PAUSE_AT_ENV).is_ok_and(|at| at == name) {
+            let _ = std::fs::write(self.files.work.join("paused"), name);
+            let began = Instant::now();
+            while !self.files.work.join("go-on").exists() && began.elapsed() < Duration::from_secs(30) {
+                std::thread::sleep(LOOK_STEP);
+            }
+        }
     }
 
     fn finish_with(&self, kind: OutcomeKind, why: &str) {
@@ -312,18 +321,6 @@ pub fn run(plan: &Plan) -> Ended {
         let _ = run.open_app();
         return Ended::NotInstalled;
     }
-    // The release's own team, always, in a real build, whatever the plan says. A plan's only a file.
-    let team = if RELEASE_BUILD || plan.team_required { Some(TEAM_ID) } else { None };
-    if !crate::stage::still_what_was_verified(&plan.new_app(), &plan.cdhash, team) {
-        run.say("installer: what's waiting isn't what was verified, so nothing was replaced");
-        run.finish_with(OutcomeKind::NotInstalled, "changed_since_checked");
-        let _ = std::fs::remove_dir_all(plan.beside.join("new"));
-        let _ = std::fs::remove_file(plan.beside.join("staged.json"));
-        let _ = run.open_app();
-        return Ended::NotInstalled;
-    }
-    run.step("still_verified");
-    let verified = crate::wall_ms();
     let _ = std::fs::remove_file(files.launch_ok());
     let _ = std::fs::remove_file(files.launch_failed());
     if !copy_record(&files.session(), &files.before(), &mut |step| die_if_told(step)) {
@@ -331,6 +328,19 @@ pub fn run(plan: &Plan) -> Ended {
         run.say("installer: the record couldn't be copied aside, so going back would bring back what's there");
     }
     run.step("record_copied");
+    // The last look, and the last thing before the swap, so there's nothing slow between it and the swap for anyone to use. The release's own team, always, in a real build, whatever the plan says: a plan's only a file.
+    let team = if RELEASE_BUILD || plan.team_required { Some(TEAM_ID) } else { None };
+    if !crate::stage::still_what_was_verified(&plan.new_app(), &plan.cdhash, &plan.to, team) {
+        run.say("installer: what's waiting isn't what was verified, so nothing was replaced");
+        run.finish_with(OutcomeKind::NotInstalled, "changed_since_checked");
+        let _ = std::fs::remove_dir_all(files.before());
+        let _ = std::fs::remove_dir_all(plan.beside.join("new"));
+        let _ = std::fs::remove_file(plan.beside.join("staged.json"));
+        let _ = run.open_app();
+        return Ended::NotInstalled;
+    }
+    let verified = crate::wall_ms();
+    run.step("still_verified");
     if local::swap_paths(&plan.new_app(), &plan.app).is_err() {
         run.say("installer: the swap failed, so nothing was replaced");
         run.finish_with(OutcomeKind::NotInstalled, "swap_failed");
@@ -351,7 +361,7 @@ pub fn run(plan: &Plan) -> Ended {
     if let Err(why) = run.new_app_started() {
         return run.go_back(why);
     }
-    run.say(&format!("installer: {} started. Old app gone {} ms after the quit, last look at it {} ms, swapped {} ms after that, up {} ms after that", plan.to, old_gone.saturating_sub(plan.quit_at_ms), verified.saturating_sub(old_gone), swapped.saturating_sub(verified), crate::wall_ms().saturating_sub(swapped)));
+    run.say(&format!("installer: {} started. Old app gone {} ms after the quit, the record's copy and the last look {} ms, swapped {} ms after that, up {} ms after that", plan.to, old_gone.saturating_sub(plan.quit_at_ms), verified.saturating_sub(old_gone), swapped.saturating_sub(verified), crate::wall_ms().saturating_sub(swapped)));
     run.step("started");
     if !new_app_holds_the_old_one(plan) {
         let _ = std::fs::remove_dir_all(plan.beside.join("new"));

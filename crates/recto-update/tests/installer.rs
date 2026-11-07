@@ -214,7 +214,7 @@ fn a_new_app_that_wont_start_goes_back_with_the_state_intact() {
 /// Failure: an installer killed at some step leaves half an app, no app, or a damaged record, or the next launch can't make sense of what it left. **Every step of the way through, and of the way back:** after each, there's a whole app at the app's path, the record is whole, and a launch settles it.
 #[test]
 fn killed_at_any_step_it_leaves_a_whole_app_and_the_whole_state() {
-    for (step, expected, kept) in [("old_app_gone", "0.1.0", None), ("still_verified", "0.1.0", None), ("copying_record", "0.1.0", None), ("record_copied", "0.1.0", None), ("swapped", "0.2.0", None), ("old_app_kept", "0.2.0", Some("0.1.0")), ("opened", "0.2.0", Some("0.1.0"))] {
+    for (step, expected, kept) in [("old_app_gone", "0.1.0", None), ("copying_record", "0.1.0", None), ("record_copied", "0.1.0", None), ("still_verified", "0.1.0", None), ("swapped", "0.2.0", None), ("old_app_kept", "0.2.0", Some("0.1.0")), ("opened", "0.2.0", Some("0.1.0"))] {
         let mut bed = Bed::new(&format!("kill-{step}"), "ok");
         let ended = bed.run(Some(step));
         assert!(!ended.success(), "{step}: it was to die there");
@@ -390,6 +390,52 @@ fn what_it_swaps_in_is_what_was_verified() {
     // A plan with no hash isn't one anything can be held to, so it's refused the same way.
     let mut bed = Bed::new("pin-none", "ok");
     bed.plan.cdhash = String::new();
+    assert!(!bed.run(None).success());
+    assert_eq!(bed.installed(), "0.1.0");
+    assert_eq!(Outcome::read(&bed.files.outcome()).unwrap().why, "changed_since_checked");
+}
+
+/// Failure: **the last look isn't the last thing:** with the record copied after it, a same-user racer had 316 ms with 3,000 journal files to put something else in `new/`, which a review did, and an unsigned bundle was swapped in, run and kept. Held right after the record's copied, a racer swaps in an unsigned 9.9.9, and it's refused.
+#[test]
+fn the_last_look_is_the_last_thing_before_the_swap() {
+    let mut bed = Bed::new("racer", "ok");
+    let mut gone = Command::new("/usr/bin/true").spawn().unwrap();
+    gone.wait().unwrap();
+    bed.plan.pid = gone.id();
+    bed.plan.write(&bed.files.plan()).unwrap();
+    let mut installer = Command::new(HELPER).arg("install").arg(bed.files.plan()).env(recto_update::install::PAUSE_AT_ENV, "record_copied").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    wait_until("the installer to reach the copy of the record", Duration::from_secs(20), || bed.files.work.join("paused").exists());
+    std::fs::remove_dir_all(new_app_in(&bed.plan.beside)).unwrap();
+    let app = bundle(new_app_in(&bed.plan.beside).parent().unwrap(), "9.9.9");
+    assert!(Command::new("/usr/bin/codesign").arg("--remove-signature").arg(app.join("Contents/MacOS/RectoPDF")).status().unwrap().success());
+    std::fs::write(bed.files.work.join("go-on"), "").unwrap();
+    assert!(!installer.wait().unwrap().success());
+    assert_eq!(bed.installed(), "0.1.0", "{}", std::fs::read_to_string(&bed.files.log).unwrap());
+    assert!(!bed.ran("9.9.9"));
+    assert_eq!(Outcome::read(&bed.files.outcome()).unwrap().why, "changed_since_checked");
+}
+
+/// Failure: a byte changed inside a nested program passes the last look, as the review found of `recto-updater`, so an app goes in whose installer can't run and that can never update again. The outer seal only names the nested program's signature, and its pages are checked only by going all the way in: a byte a third of the way into it got past `--verify --strict`, and `--deep` refuses it.
+#[test]
+fn a_changed_nested_program_is_refused_at_the_swap() {
+    let mut bed = Bed::new("nested", "ok");
+    let nested = new_app_in(&bed.plan.beside).join("Contents/MacOS/recto-updater");
+    let mut bytes = std::fs::read(&nested).unwrap();
+    let middle = bytes.len() / 3;
+    bytes[middle] ^= 0xFF;
+    std::fs::write(&nested, bytes).unwrap();
+    assert!(!bed.run(None).success());
+    assert_eq!(bed.installed(), "0.1.0");
+    assert_eq!(Outcome::read(&bed.files.outcome()).unwrap().why, "changed_since_checked");
+}
+
+/// Failure: a plan naming an older genuine build's hash installs a downgrade, as the hash says nothing of whether the build is the version the plan's for. The version the bundle itself says has to be the one the plan's going to.
+#[test]
+fn an_older_genuine_build_isnt_installed_as_a_newer_one() {
+    let mut bed = Bed::new("older", "ok");
+    std::fs::remove_dir_all(new_app_in(&bed.plan.beside)).unwrap();
+    let older = bundle(new_app_in(&bed.plan.beside).parent().unwrap(), "0.1.5");
+    bed.plan.cdhash = cdhash_of(&older);
     assert!(!bed.run(None).success());
     assert_eq!(bed.installed(), "0.1.0");
     assert_eq!(Outcome::read(&bed.files.outcome()).unwrap().why, "changed_since_checked");
