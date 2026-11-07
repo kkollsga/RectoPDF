@@ -160,6 +160,23 @@ impl Inner {
         }
     }
 
+    /// Tabs pushed out of the warm ones, with their pictures, just before the page view lets go of them. A quick copy.
+    pub(crate) fn pictures_of_those_leaving(&self) -> Vec<(TabId, std::path::PathBuf, SleepFile, SleepMaterial)> {
+        let left = self.host.session.with_session(|session| session.take_left_warm());
+        left.into_iter().filter_map(|(id, path, sleep)| Some((id, path, sleep, self.engine.sleep_material(id.0)?))).collect()
+    }
+
+    /// And their sleep files, once the tab that's asked for is on its way to the screen.
+    pub(crate) fn write_those_leaving(&self, left: Vec<(TabId, std::path::PathBuf, SleepFile, SleepMaterial)>) {
+        for (_, path, sleep, material) in left {
+            let bytes = self.saver.store.write_sleep(&path, &with_material(sleep, material));
+            if bytes > 0 {
+                self.sleeper.counts.sleep_files.fetch_add(1, Ordering::Relaxed);
+                self.sleeper.counts.sleep_bytes.fetch_add(bytes, Ordering::Relaxed);
+            }
+        }
+    }
+
     /// Tabs just woken from their sleep files: nothing's asked of the PDF on the way, as it may be on a disk that's gone away. Each is looked at on a thread of its own, and if it's turned out to be something else, it's read after all.
     pub(crate) fn check_woken_files(&self) {
         let woken = self.host.session.with_session(|session| session.take_woken_from_file());

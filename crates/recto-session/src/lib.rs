@@ -642,6 +642,7 @@ pub struct Session<L = DiskLoader> {
     sleep_files: bool,
     just_read: Option<(TabId, sleep::SleepFile)>,
     woken_from_file: Vec<TabId>,
+    left_warm: Vec<(TabId, Arc<Toc>)>,
     /// The latest pages drawn or tried, newest last, at most [`MAX_DRAWS_KEPT`]. Lets a waiter find out about a page finished a moment before it asked.
     draws: VecDeque<DrawNote>,
     /// Cold tabs' files, read ahead of waking them with this session free. Each is taken by the next [`Self::activate`] of that tab, and goes if the tab stops being cold. At most [`MAX_READ_AHEAD`].
@@ -693,7 +694,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -1188,14 +1189,18 @@ impl<L: DocLoader> Session<L> {
 
     /// What a tab's sleep file would say of it, apart from what the page view knows, if it can have one: its file's been read this session, so its contents are here, and it isn't protected, as this would be those in the clear.
     pub fn sleep_facts(&self, id: TabId) -> Option<(PathBuf, sleep::SleepFile)> {
+        let (_, toc) = self.warm.iter().find(|(tab, _)| *tab == id)?;
+        self.sleep_facts_with(id, toc)
+    }
+
+    fn sleep_facts_with(&self, id: TabId, toc: &Toc) -> Option<(PathBuf, sleep::SleepFile)> {
         let tab = self.tab(id)?;
         let stamp = tab.stamp?;
         if tab.encrypted || matches!(tab.notice.as_deref(), Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword)) {
             return None;
         }
-        let (_, toc) = self.warm.iter().find(|(tab, _)| *tab == id)?;
         let (pages, list_seq) = self.edits.get(&id).map_or((tab.page_count, 0), |list| (list.len(), list.journal_seq()));
-        let sleep = sleep::SleepFile { file: stamp, file_pages: tab.page_count, pages, list_seq, renderer_only: tab.renderer_only, toc: (**toc).clone(), usual: None, sizes: Vec::new(), pictures: Vec::new() };
+        let sleep = sleep::SleepFile { file: stamp, file_pages: tab.page_count, pages, list_seq, renderer_only: tab.renderer_only, toc: toc.clone(), usual: None, sizes: Vec::new(), pictures: Vec::new() };
         Some((self.path_of(id)?, sleep))
     }
 
@@ -1633,7 +1638,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
-        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _ } = self;
+        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _ } = self;
         let ViewSettings { paper, focus, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
@@ -2050,7 +2055,23 @@ impl<L: DocLoader> Session<L> {
 
     fn remember_warm(&mut self, id: TabId, toc: Arc<Toc>) {
         self.warm.push_front((id, toc));
-        self.warm.truncate(MAX_WARM);
+        while self.warm.len() > MAX_WARM {
+            // The least recent's gone cold, so what its sleep file needs is kept long enough to write that.
+            if let Some(left) = self.warm.pop_back()
+                && self.sleep_files
+            {
+                self.left_warm.push(left);
+            }
+        }
+    }
+
+    /// Tabs just pushed out of the warm ones, and what their sleep files would say. There's a sleep file for any tab that's gone cold, by whatever way.
+    pub fn take_left_warm(&mut self) -> Vec<(TabId, PathBuf, sleep::SleepFile)> {
+        let left = std::mem::take(&mut self.left_warm);
+        left.into_iter().filter_map(|(id, toc)| {
+            let (path, sleep) = self.sleep_facts_with(id, &toc)?;
+            Some((id, path, sleep))
+        }).collect()
     }
 
     fn tab_mut(&mut self, id: TabId) -> Option<&mut TabRecord> {
@@ -3483,7 +3504,7 @@ mod tests {
         s.tap(a).unwrap();
         assert!(s.page_edits(a).is_none());
         assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
-        assert_eq!(s.journal_work().retired.len(), 1, "and its file goes");
+        assert_eq!(s.journal_work().retired.iter().filter(|name| record::is_journal_name(name)).count(), 1, "and its file goes");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -3654,6 +3675,40 @@ mod tests {
                 assert!(list.keeping().is_none());
             }
         }
+    }
+
+    /// Failure: a protected PDF's contents go in a sleep file, in the clear, or a tab pushed out of the warm ones goes cold with no sleep file, so it wakes the slow way.
+    #[test]
+    fn a_tab_gone_cold_has_what_a_sleep_file_needs_unless_its_protected() {
+        struct Protected;
+        impl DocLoader for Protected {
+            fn load(&self, path: &Path) -> Result<DocFacts, OpenError> {
+                Ok(DocFacts { page_count: 3, byte_len: 1, encrypted: path.ends_with("locked.pdf"), version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+            }
+        }
+        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-sleep-facts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, b"a file").unwrap();
+            path
+        };
+        let mut s = Session::new(Protected);
+        s.set_sleep_files(true);
+        let open = s.open(&file("open.pdf")).unwrap();
+        let locked = s.open(&file("locked.pdf")).unwrap();
+        assert!(s.sleep_facts(open).is_some());
+        assert!(s.sleep_facts(locked).is_none(), "its contents don't go on disk");
+        assert!(s.sleep_to_read(locked).is_none());
+        for at in 0..MAX_WARM {
+            s.open(&file(&format!("{at}.pdf"))).unwrap();
+        }
+        let left = s.take_left_warm();
+        assert_eq!(left.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(), [open], "the unprotected one that left: {left:?}");
+        assert_eq!(left[0].2.file_pages, 3);
+        assert!(s.take_left_warm().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Failure: a list naming a file of a length it's not about is believed, as a forged journal can say a save happened, and pages past the end are drawn or written. A file read at its own stamp and another length than the list says shows the list isn't about it.

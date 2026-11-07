@@ -877,7 +877,10 @@ impl RecordStore {
         if read_ours(&file, MAX_SLEEP_FILE_BYTES).ok().flatten().is_some_and(|there| there == bytes) {
             return 0;
         }
-        if bytes.len() > MAX_SLEEP_FILE_BYTES || replace(&file, &bytes, false).is_err() {
+        // With no flush: losing one to a crash costs only the quick way, and a torn one's caught by its checksum, so it isn't worth the drive's time or wear.
+        let temp = file.with_extension(format!("tmp{}", std::process::id()));
+        if bytes.len() > MAX_SLEEP_FILE_BYTES || local::write_private_file_unsynced(&temp, &bytes).is_err() || std::fs::rename(&temp, &file).is_err() {
+            let _ = std::fs::remove_file(&temp);
             return 0;
         }
         self.progress().wrote_bytes += bytes.len() as u64;
@@ -1760,7 +1763,7 @@ mod tests {
         assert!(store.write_sleep(&file, &sleep) > 0);
         assert_eq!(store.read_sleep(stamp, &file), Some(sleep.clone()));
         let on_disk = root.join("session").join(JOURNALS).join(record::sleep_file_name(stamp, &file));
-        assert!(local::is_excluded_from_backups(&on_disk.parent().unwrap()));
+        assert!(local::is_excluded_from_backups(on_disk.parent().unwrap()));
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&on_disk).unwrap().permissions().mode() & 0o077, 0);
         // Another version of the file has another name.

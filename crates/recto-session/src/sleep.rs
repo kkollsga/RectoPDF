@@ -10,7 +10,8 @@ use recto_platform::FileStamp;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-const SLEEP_KIND: &str = "recto-sleep";
+/// What a sleep file says it is.
+pub const SLEEP_KIND: &str = "recto-sleep";
 
 /// Pictures in one file: enough for the pages one window shows at an ordinary zoom. A view of more than this comes up with those and sharpens.
 pub const MAX_SLEEP_PICTURES: usize = 6;

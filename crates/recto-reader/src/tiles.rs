@@ -246,6 +246,11 @@ pub struct RawPicture {
     pub bgra: Vec<u8>,
 }
 
+/// Less of the view than this isn't a page that has to be showing something for a frame to be right.
+const MIN_SHARE_OF_VIEW: f64 = 0.05;
+/// How long a wake's followed, for how long it took.
+const WAKE_FOLLOWED_FOR: Duration = Duration::from_secs(5);
+
 /// Pictures that go in a sleep file: as many as [`recto_session::sleep::MAX_SLEEP_PICTURES`] says, which this crate doesn't know of.
 const MAX_SLEEP_SHOTS: usize = 6;
 
@@ -362,7 +367,7 @@ fn shrink_into(source: &[u8], stride: usize, used_width: u32, used_height: u32, 
             for row in 0..step {
                 let start = (y * step + row) * stride + x * step * 4;
                 let Some(pixels) = source.get(start..start + step * 4) else { continue };
-                for pixel in pixels.chunks_exact(4) {
+                for pixel in pixels.as_chunks::<4>().0 {
                     for (total, byte) in sum.iter_mut().zip(pixel) {
                         *total += u32::from(*byte);
                     }
@@ -571,7 +576,23 @@ impl Reader {
             return false;
         }
         let Some(doc) = self.doc() else { return false };
-        doc.problem.is_none() && self.visible_pages(doc).all(|page| self.attached.get(&page).is_some_and(|ids| !ids.is_empty()))
+        doc.problem.is_none() && self.pages_all_covered(doc)
+    }
+
+    /// Whether every page that's really in view has something on it. A sliver of the page before, a few points at the top of the view, isn't what a frame's blank for: it has no picture if it wasn't drawn when the tab was left, and it comes a moment later with the rest.
+    fn pages_all_covered(&self, doc: &DocView) -> bool {
+        let (top, bottom) = (self.viewport.y, self.viewport.y + self.viewport.height);
+        self.visible_pages(doc).all(|page| {
+            let rect = doc.layout.rect(page);
+            let showing = rect.y.max(top)..(rect.y + rect.height).min(bottom);
+            showing.end - showing.start < self.viewport.height * MIN_SHARE_OF_VIEW || self.attached.get(&page).is_some_and(|ids| !ids.is_empty())
+        })
+    }
+
+    fn finish_wake(&mut self) {
+        if let Some((_, report)) = self.waking.take() {
+            self.last_wake = Some(report);
+        }
     }
 
     /// Goes through how a wake's going, each time the host has applied something.
@@ -581,9 +602,14 @@ impl Reader {
             self.waking = None;
             return;
         }
+        // Past this, it's not the wake that's being looked at any more.
+        if began.elapsed() > WAKE_FOLLOWED_FOR {
+            self.finish_wake();
+            return;
+        }
         let Some(doc) = self.doc() else { return };
         if self.jump.is_none() && self.viewport.height > 0.0 {
-            let covered = self.visible_pages(doc).all(|page| self.attached.get(&page).is_some_and(|ids| !ids.is_empty()));
+            let covered = self.pages_all_covered(doc);
             if covered && report.first_frame_us.is_none() {
                 report.first_frame_us = Some(u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX));
             } else if !covered && report.first_frame_us.is_none() && self.window_up {
@@ -647,8 +673,8 @@ impl Reader {
             return None;
         }
         let mut bgra = vec![0u8; bytes as usize];
-        for pixel in bgra.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&[(paper_rgb & 0xFF) as u8, ((paper_rgb >> 8) & 0xFF) as u8, ((paper_rgb >> 16) & 0xFF) as u8, 0xFF]);
+        for pixel in bgra.as_chunks_mut::<4>().0 {
+            *pixel = [(paper_rgb & 0xFF) as u8, ((paper_rgb >> 8) & 0xFF) as u8, ((paper_rgb >> 16) & 0xFF) as u8, 0xFF];
         }
         let mut any = false;
         for id in ids {
@@ -970,6 +996,8 @@ impl Reader {
 
     /// Asks the host to go to a page, as an agent's `goto` or a contents row does.
     pub fn jump_to(&mut self, page: u32) {
+        // A wake's over once someone's gone somewhere else: what's bare from here is pages being reached, not the wake.
+        self.finish_wake();
         let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else { return };
         let page = page.min(doc.layout.count().saturating_sub(1));
         doc.anchor = (page, 0.0);
@@ -2822,8 +2850,8 @@ mod tests {
         assert!(reader.sleep_material(99).is_none());
         // Pixels from a tile, shrunk by two: a block of 2 by 2 comes to one, and their average, and it lands at the tile's place.
         let mut tile = vec![0u8; 4 * 4 * 4];
-        for pixel in tile.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&[100, 100, 100, 255]);
+        for pixel in tile.as_chunks_mut::<4>().0 {
+            *pixel = [100, 100, 100, 255];
         }
         tile[0..4].copy_from_slice(&[200, 200, 200, 255]);
         let mut picture = vec![9u8; 4 * 4 * 4];

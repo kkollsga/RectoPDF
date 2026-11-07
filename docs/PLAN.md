@@ -118,9 +118,11 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [x] Saved point in the history, so undo works past a Save, and Clear Edit History (SPEC decision 25). `Session::saved`, `save_prepared`, `clear_history`, `recto clear-history`, Edit > Clear Edit History. Tested directly, with `qa save-from`, as Save isn't built
 - [ ] On Save's gate: call `save_prepared`, then `saved`, on the real path, with a redaction keeping nothing; keep `never_in_pdf.rs` on that path rather than its stand-in writer; have the reader take up the new file; and keep only the pages a save removes rather than a copy of the whole file, so a PDF over 64 MiB can undo past a save too. Today it's a whole-file clone or nothing
 - [ ] On Save's gate: check every page against the real file when writing, as `validate_edits` checks against what a journal says of itself, which can be forged; and check the save marker again once it's on disk
-- [ ] Deep sleep for idle tabs, with sleep files and a byte budget across documents (SPEC decision 25). Next after that
+- [x] Deep sleep for idle tabs, with sleep files and a byte budget across documents (SPEC decision 25). `recto session sleep`, `qa dormant-after`, `qa live-budget`, `qa memory-pressure`, and `long_session.rs`
 - [ ] Find's field, edit mode and view rotation draw what the state record already carries
-- [ ] Deep sleep, with session restore as one piece of work (SPEC decision 25): dormant tabs go to disk, sleep files wake a tab within one frame, a byte budget across documents, a response to memory pressure, previews written once when a tab goes dormant
+- [x] Deep sleep, with session restore as one piece of work (SPEC decision 25): dormant tabs go to disk, sleep files wake a tab within one frame, a byte budget across documents, a response to memory pressure, previews written once when a tab goes dormant
+- [ ] Sleep, from its own review: a page that's a sliver at the top of the view has no picture if it wasn't drawn when the tab was left, and shows bare for a moment
+- [ ] Sleep: a tab's journal is read back whole when it wakes, so a list near its 64 MiB would be a long read with the session held. Nothing here's got near that, so it's not measured
 - [ ] Recent files, replaced-file handling, password prompt
 - [ ] Settings window (⌘,), starting with *Update automatically*
 - [ ] On the updater's gate: wait for the old process to end before starting the new one, as a launch waits only 600 ms for the record's lock, and call `hand_off_cancelled` if it gives up after a good `hand_off`

@@ -2287,6 +2287,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             }
             if holding {
             } else if synced.tab != Some(id) || synced.pages != pages || synced.map != map {
+                let left = inner.pictures_of_those_leaving();
                 // Whichever way it's been asked for, the first frame's what its sleep file has, if it's got one and nothing's held of this tab.
                 if !inner.engine.holds(id.0) {
                     inner.engine.note_wake(id.0, Instant::now());
@@ -2298,6 +2299,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
                 if let Some(selection) = selection {
                     inner.engine.restore_selection((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
                 }
+                inner.write_those_leaving(left);
                 synced.tab = Some(id);
                 synced.pages = pages;
                 synced.map = map;
