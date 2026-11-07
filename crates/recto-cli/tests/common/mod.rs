@@ -23,28 +23,25 @@ pub struct State {
     pub paths: StatePaths,
 }
 
-/// A state folder nothing else has. Short, so a socket fits in it even when the temp folder's path is long. It's made here, private, and a name that's taken is passed over: a run that was killed leaves its folder behind, a process id comes round again, and a folder left at another mode reads as "isn't private" to whichever test lands on it.
-pub fn claim_folder() -> PathBuf {
-    use std::os::unix::fs::DirBuilderExt;
+/// A name for a state folder that nothing has. Short, so a socket fits in it even when the temp folder's path is long. A name that's taken is passed over: a run that was killed leaves its folder behind, a process id comes round again, and a folder left at another mode reads as "isn't private" to whichever test lands on it. It isn't made here, since not making state is what some tests are about, and only this process uses names with its id in them.
+pub fn free_folder() -> PathBuf {
     let temp = std::env::temp_dir().canonicalize().unwrap();
     loop {
         let root = temp.join(format!("rc{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        match std::fs::DirBuilder::new().mode(0o700).create(&root) {
-            Ok(()) => return root,
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-            Err(error) => panic!("couldn't make {}: {error}", root.display()),
+        if std::fs::symlink_metadata(&root).is_err() {
+            return root;
         }
     }
 }
 
-/// The name [`claim_folder`] tries next, for the test of what it does when that's taken.
+/// The name [`free_folder`] tries next, for the test of what it does when that's taken.
 pub fn next_folder_name() -> PathBuf {
     std::env::temp_dir().canonicalize().unwrap().join(format!("rc{}-{}", std::process::id(), NEXT.load(Ordering::Relaxed)))
 }
 
 impl State {
     pub fn new() -> Self {
-        let root = claim_folder();
+        let root = free_folder();
         let paths = StatePaths::overridden(&root).unwrap();
         assert!(paths.overridden);
         Self { root, paths }
