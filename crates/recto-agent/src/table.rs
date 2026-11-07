@@ -774,13 +774,21 @@ fn how_it_goes(spec: &Spec) -> String {
     format!("It goes `{}`. `recto help {}` shows how to use it.", usage_line(spec), spec.name)
 }
 
-/// A value as it would be typed: what the shell would take as a comment, or split, in quotes. Only short plain ones are echoed, since this comes back in a message.
-fn typed_value(value: &str) -> Option<String> {
-    let shown = recto_core::clean_line(value);
-    if shown.is_empty() || shown.chars().count() > 64 {
+/// Longest word advice will quote back.
+const MAX_QUOTED_WORD: usize = 256;
+
+/// A word as it has to be typed for a shell to pass it on exactly, or `None` if advice shouldn't print it at all: too long, or holding a line break or anything else `clean_line` would take out, which could make a line of advice into two commands. What's typed can come from a file's name, and whoever reads this may run it. Anything outside a short safe set goes in quotes, with double quotes where nothing inside them means anything to a shell, as the help writes `"#1"`, and single quotes otherwise, where nothing means anything at all.
+pub(crate) fn shell_quote(word: &str) -> Option<String> {
+    if word.is_empty() || word.chars().count() > MAX_QUOTED_WORD || recto_core::clean_line(word) != word {
         return None;
     }
-    Some(if shown.starts_with('#') || shown.contains(char::is_whitespace) { format!("\"{shown}\"") } else { shown })
+    if word.chars().all(|c| c.is_alphanumeric() || "_./:=@%+,-".contains(c)) {
+        return Some(word.to_string());
+    }
+    if !word.contains(['$', '`', '"', '\\', '!']) {
+        return Some(format!("\"{word}\""));
+    }
+    Some(format!("'{}'", word.replace('\'', "'\\''")))
 }
 
 /// How near a flag someone typed is to one that exists, by its spelling, what's after the `--` being what counts. `--page` isn't near `--tab`, though only 3 letters apart: that's all of them.
@@ -807,7 +815,7 @@ fn unknown_flag(spec: &'static Spec, flag: &str, value: Option<&str>) -> AgentEr
     let mut candidates = Vec::new();
     match nearest_arg(spec, flag) {
         Some(arg) => {
-            let fits = value.filter(|value| read_value(arg, value).is_ok()).and_then(typed_value);
+            let fits = value.filter(|value| read_value(arg, value).is_ok()).and_then(shell_quote);
             match (arg.flag, fits) {
                 (Some(real), Some(value)) => {
                     message.push_str(&format!(" Perhaps `{real} {value}`."));
@@ -845,11 +853,11 @@ fn stray_word(spec: &'static Spec, word: &str, fields: &Map<String, Value>) -> A
         if let Some((flag, value)) = flag_for_stray_word(spec, word) {
             message = format!("`recto {}` takes that as `{flag} {value}`.", spec.name);
             candidates.push(format!("{flag} {value}"));
-        } else if let Some(before) = text_taken.and_then(typed_value) {
-            let words = format!("{} {shown}", before.trim_matches('"'));
-            message = format!("`recto {}` takes one piece of text. Several words go in quotes: `recto {} \"{words}\"`.", spec.name, spec.name);
+        } else if let Some(words) = text_taken.and_then(|before| shell_quote(&format!("{before} {word}"))) {
+            message = format!("`recto {}` takes one piece of text. Several words go in quotes: `recto {} {words}`.", spec.name, spec.name);
         } else if word.to_ascii_lowercase().ends_with(".pdf") && spec.args.iter().any(|arg| arg.kind == Kind::Tab) {
-            message = format!("`recto {}` works on a tab, not a file. `recto open {shown}` opens it, and `--tab` picks it.", spec.name);
+            let open = shell_quote(word).map_or_else(|| "`recto open`".to_string(), |quoted| format!("`recto open {quoted}`"));
+            message = format!("`recto {}` works on a tab, not a file. {open} opens it, and `--tab` picks it.", spec.name);
         }
     }
     usage_error(message, how_it_goes(spec)).with_candidates(candidates)
@@ -875,10 +883,10 @@ fn flag_for_stray_word(spec: &Spec, word: &str) -> Option<(&'static str, String)
     let has_pages = flagged().any(|arg| matches!(arg.kind, Kind::Page | Kind::Pages | Kind::PagesOpen));
     // A bare number is a tab's only where a page can't be what's meant. A word is a tab's if it could be part of a name, and not a file or a flag.
     let value = match whole_number(word) {
-        Some(number) if number > 0 && !has_pages => format!("\"#{number}\""),
+        Some(number) if number > 0 && !has_pages => shell_quote(&format!("#{number}"))?,
         Some(_) => return None,
         None if word.ends_with('-') || word.starts_with('-') || word.contains('/') || word.to_ascii_lowercase().ends_with(".pdf") => return None,
-        None if word.chars().any(char::is_alphabetic) || word.strip_prefix('#').and_then(whole_number).is_some() => typed_value(word)?,
+        None if word.chars().any(char::is_alphabetic) || word.strip_prefix('#').and_then(whole_number).is_some() => shell_quote(word)?,
         None => return None,
     };
     Some((tab_flag, value))
@@ -1294,6 +1302,36 @@ mod tests {
                 parse_cli(&fixed).unwrap_or_else(|refused| panic!("{typed:?} was told {advice}, and that's refused: {}", refused.message));
             }
         }
+    }
+
+    /// Runs what a shell would make of a line of advice, and returns the words it would pass on. `$(...)` and the like print a mark if they run, and the words are compared with what was typed, so a shell that did anything but pass them on fails this.
+    fn as_a_shell_reads_it(line: &str) -> Vec<String> {
+        let output = std::process::Command::new("/bin/sh").args(["-c", &format!("set -- {line}; for word; do printf '%s\\0' \"$word\"; done")]).output().unwrap();
+        assert!(output.status.success(), "{line}: {output:?}");
+        String::from_utf8(output.stdout).unwrap().split_terminator('\0').map(str::to_string).collect()
+    }
+
+    /// Failure: `--tabs 'R&D'` advises `--tab R&D`, which a shell runs as a background job, and a tab's name can come from a file: one named `$(...)` is a command an agent was told to run. Whatever comes back must reach `recto` as the same word, or not be offered at all.
+    #[test]
+    fn advice_quotes_what_a_shell_would_act_on() {
+        for hostile in ["R&D", "a;echo pwned", "$(echo pwned)", "`echo pwned`", "a\"b", "a'b", "it's $(echo pwned)", "a|b", "a>b", "a b", "#1", "*", "~", "!x", "back\\slash", "(x)", "ca\u{308}fe"] {
+            let error = parse_cli(&["facts".to_string(), "--tabs".to_string(), hostile.to_string()]).unwrap_err();
+            let advice = error.candidates.first().unwrap_or_else(|| panic!("{hostile} got no advice: {}", error.message));
+            assert_eq!(as_a_shell_reads_it(advice), ["--tab", hostile], "{hostile}: {advice}");
+            assert!(error.message.contains(advice.as_str()), "{}", error.message);
+            assert_eq!(shell_words(advice), ["--tab", hostile], "{hostile}: the tests' own reading of a line agrees");
+        }
+        for not_printable in ["a\nb", "a\u{202E}b", &"x".repeat(MAX_QUOTED_WORD + 1)] {
+            let error = parse_cli(&["facts".to_string(), "--tabs".to_string(), not_printable.to_string()]).unwrap_err();
+            assert_eq!(error.candidates, ["--tab"], "{not_printable:?} would have changed on the way, or broken the line, so only the flag is offered");
+            assert!(!error.message.contains('\n'), "{}", error.message);
+        }
+        let stray = parse_cli(&["facts".to_string(), "$(echo pwned)".to_string()]).unwrap_err();
+        assert_eq!(as_a_shell_reads_it(&stray.candidates[0]), ["--tab", "$(echo pwned)"]);
+        let file = parse_cli(&["facts".to_string(), "$(echo pwned).pdf".to_string()]).unwrap_err();
+        assert!(file.message.contains("recto open '$(echo pwned).pdf'"), "{}", file.message);
+        let quoted = parse_cli(&["search".to_string(), "a".to_string(), "$(echo pwned)".to_string()]).unwrap_err();
+        assert!(quoted.message.contains("recto search 'a $(echo pwned)'"), "{}", quoted.message);
     }
 
     /// Failure: `recto doc` lists what happens to be spelled alike in table order, or nothing, rather than what's nearest, and a flag after the word (`recto doc --page 1`) loses even that.

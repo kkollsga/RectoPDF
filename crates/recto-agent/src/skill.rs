@@ -236,13 +236,18 @@ pub fn shell_words(line: &str) -> Vec<String> {
     let mut chars = line.chars();
     while let Some(c) = chars.next() {
         match c {
+            '\'' if !quoted => {
+                started = true;
+                current.extend(chars.by_ref().take_while(|inside| *inside != '\''));
+            }
             '"' => {
                 quoted = !quoted;
                 started = true;
             }
-            '\\' if quoted => {
+            '\\' => {
                 if let Some(next) = chars.next() {
                     current.push(next);
+                    started = true;
                 }
             }
             c if c.is_whitespace() && !quoted => {
@@ -341,5 +346,6 @@ mod tests {
     fn examples_split_as_a_shell_splits_them() {
         assert_eq!(shell_words(r##"recto search "force majeure" --tab "#2""##), ["recto", "search", "force majeure", "--tab", "#2"]);
         assert_eq!(shell_words(r#"a "b\"c" """#), ["a", "b\"c", ""]);
+        assert_eq!(shell_words(r#"a 'b "c' 'it'\''s'"#), ["a", "b \"c", "it's"]);
     }
 }
