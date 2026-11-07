@@ -254,7 +254,10 @@ pub struct Reader {
     ops: VecDeque<Op>,
     /// The host has been given ops it hasn't said it's applied.
     unapplied: bool,
+    /// Gone off a layer, in ops the host hasn't been given yet.
     to_discard: Vec<u64>,
+    /// Gone off a layer, in ops the host has been given. It's these that "applied" is about.
+    handed_to_host: Vec<u64>,
     clock: u64,
     running: Option<Running>,
     next_generation: u64,
@@ -292,6 +295,7 @@ impl Reader {
             ops: VecDeque::new(),
             unapplied: false,
             to_discard: Vec::new(),
+            handed_to_host: Vec::new(),
             clock: 0,
             running: None,
             next_generation: 1,
@@ -831,6 +835,7 @@ impl Reader {
         if !self.ops.is_empty() {
             self.unapplied = true;
         }
+        self.handed_to_host.append(&mut self.to_discard);
         self.ops.drain(..).collect()
     }
 
@@ -842,7 +847,7 @@ impl Reader {
     /// The host has applied what it was given. What's now off every layer can be marked discardable, and it leaves the footprint.
     pub fn applied(&mut self) {
         self.unapplied = false;
-        for id in std::mem::take(&mut self.to_discard) {
+        for id in std::mem::take(&mut self.handed_to_host) {
             if let Some(entry) = self.entries.get_mut(&id)
                 && !entry.attached
                 && !entry.discardable
@@ -1699,6 +1704,23 @@ mod tests {
             assert!(!first.is_empty() && !second.is_empty());
             assert!(first.is_disjoint(&second), "served both: {:?}", first.intersection(&second).collect::<Vec<_>>());
         }
+    }
+
+    /// Failure: a tile comes off in Rust just after the UI thread took its ops, and "applied" for those ops marks it discardable while its layer is still showing it, so the OS can empty a surface on screen. Only what the host was told about counts.
+    #[test]
+    fn a_surface_goes_discardable_only_after_the_host_was_told() {
+        let mut reader = reader_on(3);
+        settle(&mut reader);
+        let (&page, ids) = reader.attached.iter().next().unwrap();
+        let id = ids[0];
+        reader.take_ops();
+        // The engine's thread, between the host's taking its ops and saying it has applied them.
+        reader.detach(id, page);
+        reader.applied();
+        assert!(!reader.entries[&id].discardable, "the layer still has it");
+        reader.take_ops();
+        reader.applied();
+        assert!(reader.entries[&id].discardable, "now the host has been told");
     }
 
     /// Failure: the host's size change moves the reader away from what they were reading.
