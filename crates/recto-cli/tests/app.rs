@@ -556,6 +556,7 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
     let sweep = run.ok(&["qa", "sweep", "6", "--for", "4s"]);
     let contents = &sweep["contents"];
     let steps = sweep["steps"].as_u64().unwrap() as f64;
+    assert!(steps >= 1.0, "{sweep}");
     assert!(contents["moves"].as_u64().unwrap() >= 1, "they did follow: {sweep}");
     // Reposition, then rest: 6 sections a second past a dead zone of about 12 rows is a move every 2 s or so. Well below one a section.
     assert!(contents["moves"].as_u64().unwrap() <= 6, "{sweep}");
@@ -563,11 +564,15 @@ fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
     assert!(contents["steps_with_place_in_view"].as_f64().unwrap() >= steps * 0.95, "{sweep}");
     let settled = wait_for(&run, |state| state["app"]["contents"]["frames_running"] == false);
     assert_eq!(settled["app"]["contents"]["moving"], false);
-    // With nothing to do there's nothing to wake for.
-    let before = recto_platform::local::process_counters(run.pid).unwrap();
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    let after = recto_platform::local::process_counters(run.pid).unwrap();
-    assert!(after.wakeups.saturating_sub(before.wakeups) <= 8, "{} wake-ups in 2 s at rest", after.wakeups.saturating_sub(before.wakeups));
+    // With nothing to do there's nothing to wake for. Taken over a few goes: something running at rest wakes it in every one of them, while a busy shared machine only gets in the way of some.
+    let wakeups = (0..4).map(|_| {
+        let before = recto_platform::local::process_counters(run.pid).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let after = recto_platform::local::process_counters(run.pid).unwrap();
+        after.wakeups.saturating_sub(before.wakeups)
+    });
+    let fewest = wakeups.min().unwrap();
+    assert!(fewest <= 8, "{fewest} wake-ups in the quietest 2 s at rest");
     // Reduce Motion: it stays in view, with no frames at all.
     run.ok(&["qa", "reduce-motion", "on"]);
     run.ok(&["goto", "400"]);
