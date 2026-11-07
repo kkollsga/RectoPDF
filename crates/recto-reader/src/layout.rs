@@ -9,8 +9,6 @@ use std::collections::HashSet;
 pub const PAGE_GAP: f64 = 10.0;
 /// How wide a page is drawn when there's room, in document points. Concepts: `docs/concepts/reader-light.png`.
 pub const READING_WIDTH: f64 = 760.0;
-/// The same in focus view. Concepts: `docs/concepts/focus-light.png`.
-pub const FOCUS_WIDTH: f64 = 900.0;
 /// The least room either side of a fitted page, so the agent icon's margin stays empty.
 pub const MIN_SIDE_MARGIN: f64 = 56.0;
 /// How far a fit may enlarge a tiny page, so a hostile page of a few points doesn't ask for a huge scale.
@@ -60,12 +58,11 @@ pub struct PageLayout {
     /// Document points per PDF point.
     fit: f64,
     frame_width: f64,
-    focus: bool,
 }
 
 impl PageLayout {
     pub fn new(count: u32) -> Self {
-        Self { count, usual: DEFAULT_PAGE, usual_known: false, overrides: Vec::new(), known: HashSet::new(), fit: 1.0, frame_width: 0.0, focus: false }
+        Self { count, usual: DEFAULT_PAGE, usual_known: false, overrides: Vec::new(), known: HashSet::new(), fit: 1.0, frame_width: 0.0 }
     }
 
     pub fn count(&self) -> u32 {
@@ -104,13 +101,12 @@ impl PageLayout {
         self.usual_known.then_some(self.usual)
     }
 
-    /// Sets the window's reading area and focus. Returns whether anything moved.
-    pub fn set_frame(&mut self, frame_width: f64, focus: bool) -> bool {
-        if frame_width == self.frame_width && focus == self.focus {
+    /// Sets the window's reading area. Returns whether anything moved.
+    pub fn set_frame(&mut self, frame_width: f64) -> bool {
+        if frame_width == self.frame_width {
             return false;
         }
         self.frame_width = frame_width;
-        self.focus = focus;
         self.refit()
     }
 
@@ -166,7 +162,7 @@ impl PageLayout {
 
     /// The fit follows the first page known, so pages keep their relative sizes, as they do on paper.
     fn refit(&mut self) -> bool {
-        let measure = if self.focus { FOCUS_WIDTH } else { READING_WIDTH };
+        let measure = READING_WIDTH;
         let room = (self.frame_width - 2.0 * MIN_SIDE_MARGIN).max(1.0);
         let fit = (measure.min(room) / f64::from(self.usual.width)).clamp(1.0 / 64.0, MAX_FIT);
         let moved = fit != self.fit;
@@ -267,7 +263,7 @@ mod tests {
     #[test]
     fn a_huge_page_count_costs_nothing_until_visited() {
         let mut layout = PageLayout::new(8_388_607);
-        layout.set_frame(1168.0, false);
+        layout.set_frame(1168.0);
         layout.set_page_size(0, letter());
         assert!(layout.overrides.is_empty());
         assert_eq!(layout.page_at(layout.top(8_000_000)), 8_000_000);
@@ -284,7 +280,7 @@ mod tests {
     #[test]
     fn finding_a_page_agrees_with_placing_it() {
         let mut layout = PageLayout::new(200);
-        layout.set_frame(1168.0, false);
+        layout.set_frame(1168.0);
         layout.set_page_size(0, letter());
         for (page, height) in [(3, 400.0), (50, 1200.0), (51, 100.0), (199, 2000.0)] {
             layout.set_page_size(page, PageBox { width: 612.0, height });
@@ -305,7 +301,7 @@ mod tests {
     fn the_fit_stays_in_bounds_whatever_a_page_says() {
         for width in [0.01, 1.0, 612.0, 14_400.0, 1_000_000.0] {
             let mut layout = PageLayout::new(2);
-            layout.set_frame(1168.0, false);
+            layout.set_frame(1168.0);
             layout.set_page_size(0, PageBox { width, height: 100.0 });
             assert!(layout.fit() >= 1.0 / 64.0 && layout.fit() <= MAX_FIT, "{width}: {}", layout.fit());
         }
@@ -315,18 +311,18 @@ mod tests {
         assert!(!layout.set_page_size(9, letter()), "no such page");
     }
 
-    /// Failure: a page is drawn into the margin the agent icon needs, or stops at a width the concept doesn't, or focus view doesn't get wider.
+    /// Failure: a page is drawn into the margin the agent icon needs, or stops at a width the concept doesn't, or grows past the reading width with more room, as hiding the sidebar gives.
     #[test]
-    fn a_page_keeps_the_margins_and_focus_is_wider() {
+    fn a_page_keeps_the_margins_and_the_reading_width() {
         let mut layout = PageLayout::new(1);
         layout.set_page_size(0, letter());
-        layout.set_frame(1168.0, false);
+        layout.set_frame(1168.0);
         let normal = layout.rect(0);
         assert!((normal.width - READING_WIDTH).abs() < 1e-6);
         assert!(normal.x >= MIN_SIDE_MARGIN);
-        layout.set_frame(1440.0, true);
-        assert!((layout.rect(0).width - FOCUS_WIDTH).abs() < 1e-6);
-        layout.set_frame(600.0, false);
+        layout.set_frame(1440.0);
+        assert!((layout.rect(0).width - READING_WIDTH).abs() < 1e-6);
+        layout.set_frame(600.0);
         let narrow = layout.rect(0);
         assert!(narrow.x >= MIN_SIDE_MARGIN - 1e-6 && narrow.width <= 600.0 - 2.0 * MIN_SIDE_MARGIN + 1e-6);
     }
@@ -335,7 +331,7 @@ mod tests {
     #[test]
     fn an_anchor_survives_a_change_above_it() {
         let mut layout = PageLayout::new(100);
-        layout.set_frame(1168.0, false);
+        layout.set_frame(1168.0);
         layout.set_page_size(0, letter());
         let rect = layout.rect(40);
         let anchor = layout.anchor_at(rect.y + rect.height * 0.25);

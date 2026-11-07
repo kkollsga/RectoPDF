@@ -298,7 +298,8 @@ pub struct ReaderView {
     pub home: bool,
     /// Something the reader needs to be told, such as a page at a lower resolution, in words.
     pub note: Option<String>,
-    pub focus: bool,
+    /// The sidebar's hidden, by its button or the View menu.
+    pub sidebar_hidden: bool,
     pub place: String,
     /// The paper's name, which QA and the menu use.
     pub paper: String,
@@ -358,6 +359,8 @@ pub struct AppStrings {
     pub open_panel_title: String,
     pub add_tooltip: String,
     pub agent_tooltip: String,
+    /// The sidebar's button, beside the window's controls.
+    pub sidebar_button_tooltip: String,
     /// What goes beside a tab's name when something's wrong with its file. Its notice is what hovering over it says.
     pub notice_mark: String,
 }
@@ -551,9 +554,9 @@ impl AppHost {
             };
         }
         // Zoom is about what's on the screen, so it's the page view's. The rest of the command is the session's.
-        if let Command::View { paper, focus, agent_icon, zoom: Some(word) } = command {
+        if let Command::View { paper, sidebar, agent_icon, zoom: Some(word) } = command {
             let zoom = menus::zoom_from_word(word).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a zoom. It's `in`, `out`, `fit`, `actual` or a number.", recto_core::clean_line(word)), recto_agent::exit::USAGE))?;
-            let rest = Command::View { paper: paper.clone(), focus: focus.clone(), agent_icon: agent_icon.clone(), zoom: None };
+            let rest = Command::View { paper: paper.clone(), sidebar: sidebar.clone(), agent_icon: agent_icon.clone(), zoom: None };
             let mut answer = self.session.run(level, &rest, events)?;
             let value = self.engine.zoom(zoom).ok_or_else(|| AgentError::new("no_active_tab", "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
             answer["zoom"] = json!(value);
@@ -590,7 +593,8 @@ enum CoreCall {
     Tap(TabId),
     GoTo(TabId, u32),
     Open(PathBuf),
-    SetFocus(bool),
+    /// The sidebar hidden, or not.
+    SetSidebarHidden(bool),
     SetPaper(Paper),
     ToggleAgentIcon,
     ClearEditHistory,
@@ -659,7 +663,7 @@ impl CoreQueue {
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetFocus(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
+        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
             return;
         }
         let mut calls = lock(&self.calls);
@@ -759,7 +763,6 @@ struct Synced {
     map: PageMap,
     warm: Vec<u32>,
     paper: Option<PaperKind>,
-    focus: Option<bool>,
 }
 
 /// The state the UI thread pulls, swapped whole. A short lock, never held across anything slow.
@@ -1121,12 +1124,6 @@ fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
     Ok(parsed)
 }
 
-/// Whether the window's buttons show. Focus view has nothing but the page, until the pointer goes where they'd be.
-#[uniffi::export]
-pub fn window_buttons_show(focus: bool, pointer_near: bool) -> bool {
-    !focus || pointer_near
-}
-
 /// Whether this launch is a quiet run, which is decided before AppKit does anything. The same parser as the rest of the launch, so the two can't disagree. A launch that won't parse ends straight away, and shows nothing on the way.
 #[uniffi::export]
 pub fn launch_is_quiet(args: Vec<String>) -> bool {
@@ -1199,7 +1196,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, sidebar_hidden: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1254,6 +1251,7 @@ impl AppCore {
             open_panel_title: "Open a PDF".into(),
             add_tooltip: "Open another PDF".into(),
             agent_tooltip: "The agent isn't built yet".into(),
+            sidebar_button_tooltip: "Show or hide the sidebar (⌃⌘S)".into(),
             notice_mark: "\u{26A0}\u{FE0E}".into(),
         }
     }
@@ -1396,14 +1394,14 @@ impl AppCore {
     /// The menu bar as it stands. The host rebuilds it only when this differs.
     pub fn menu_bar(&self) -> Vec<MenuModel> {
         let reader = lock(&self.inner.published).reader.clone();
-        menus::menu_bar(ViewSettings { focus: reader.focus, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() }, &self.inner.updates.menu_item().title)
+        menus::menu_bar(ViewSettings { sidebar_hidden: reader.sidebar_hidden, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() }, &self.inner.updates.menu_item().title)
     }
 
     /// The sidebar's panel as it stands.
     pub fn panel(&self) -> PanelModel {
         let reader = lock(&self.inner.published).reader.clone();
         let shown = Paper::from_name(&reader.paper).unwrap_or(Paper::White);
-        menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown, reader.focus)
+        menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown)
     }
 
     /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
@@ -1421,10 +1419,7 @@ impl AppCore {
             menus::Action::Zoom(zoom) => {
                 self.inner.engine.zoom(zoom);
             }
-            menus::Action::ToggleFocus => {
-                let focus = !lock(&self.inner.published).reader.focus;
-                self.inner.core.push(CoreCall::SetFocus(focus));
-            }
+            menus::Action::ToggleSidebar => self.toggle_sidebar(),
             menus::Action::ToggleAgentIcon => self.inner.core.push(CoreCall::ToggleAgentIcon),
             menus::Action::SetPaper(paper) => self.inner.core.push(CoreCall::SetPaper(paper)),
             menus::Action::TogglePanel => {
@@ -1515,9 +1510,10 @@ impl AppCore {
         recto_reader::tiles::zoom_after_scroll(current, points)
     }
 
-    pub fn toggle_focus(&self) {
-        let focus = !lock(&self.inner.published).reader.focus;
-        self.inner.core.push(CoreCall::SetFocus(focus));
+    /// The sidebar's button, beside the window's controls: shows the sidebar if it's hidden, and hides it if not.
+    pub fn toggle_sidebar(&self) {
+        let hidden = !lock(&self.inner.published).reader.sidebar_hidden;
+        self.inner.core.push(CoreCall::SetSidebarHidden(hidden));
     }
 
     pub fn window_closed(&self) {
@@ -2083,14 +2079,7 @@ fn session_thread(inner: &Arc<Inner>) {
                 }
             }),
             CoreCall::ToggleAgentIcon => set_view(inner, &mut events, |view| view.agent_icon_hidden = !view.agent_icon_hidden),
-            CoreCall::SetFocus(focus) => {
-                let view = host.session.with_session(|session| {
-                    let view = ViewSettings { focus, ..session.view() };
-                    session.set_view(view);
-                    view
-                });
-                events.push(Event::new("view_changed", json!({ "paper": recto_agent::paper_name(view), "focus": view.focus })));
-            }
+            CoreCall::SetSidebarHidden(hidden) => set_view(inner, &mut events, |view| view.sidebar_hidden = hidden),
             CoreCall::Flush(marker) => {
                 reconcile(inner, &mut synced, &mut events);
                 // What was asked before this includes any file being read for it.
@@ -2273,7 +2262,7 @@ fn set_view(inner: &Inner, events: &mut Vec<Event>, change: impl FnOnce(&mut Vie
         session.set_view(view);
         view
     });
-    events.push(Event::new("view_changed", json!({ "paper": recto_agent::paper_name(view), "focus": view.focus })));
+    events.push(recto_agent::view_changed(view));
 }
 
 /// What a tap on a tab does, once whatever it needs from disk is here.
@@ -2416,7 +2405,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         let view = SidebarView { tabs_version, tab_count, active_index, contents_count: contents_row_count, contents_version, contents_changed_from: change.0, contents_removed: change.1, contents_inserted: change.2, contents_place_shift, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps };
         (snapshot, view, tabs, contents, rail_filled, session.view())
     });
-    // The paper and focus first, so what's asked for next is drawn right.
+    // The paper first, so what's asked for next is drawn right.
     let dark = inner.dark.load(Ordering::SeqCst);
     let shown = Paper::resolved(view.paper, dark);
     // Warm paper is white paper with a tint over it in the compositor, so going to it or from it draws nothing and holds nothing more.
@@ -2428,10 +2417,6 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     if synced.paper != Some(paper) {
         synced.paper = Some(paper);
         inner.engine.set_paper(paper);
-    }
-    if synced.focus != Some(view.focus) {
-        synced.focus = Some(view.focus);
-        inner.engine.set_focus(view.focus);
     }
     let mut problem = None;
     match snapshot {
@@ -2493,7 +2478,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let sidebar_width = lock(&inner.app).sidebar_width;
     let highlight = paper.highlight();
     let selection_notice = inner.engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
-    let reader = ReaderView { home: synced.tab.is_none() && !holding, note, focus: view.focus, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice };
+    let reader = ReaderView { home: synced.tab.is_none() && !holding, note, sidebar_hidden: view.sidebar_hidden, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice };
     let mut published = lock(&inner.published);
     let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {
@@ -2568,7 +2553,7 @@ mod tests {
         assert_eq!(lock(&queue.calls).len(), MAX_QUEUED_CALLS, "it stops at the cap");
         queue.push(CoreCall::Tap(TabId(2)));
         queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
-        queue.push(CoreCall::SetFocus(true));
+        queue.push(CoreCall::SetSidebarHidden(true));
         queue.push(CoreCall::Reconcile);
         queue.push(CoreCall::Reconcile);
         queue.push(CoreCall::Flush(Arc::new(Flushed::default())));
@@ -2590,7 +2575,7 @@ mod tests {
         queue.push(CoreCall::Tap(TabId(1)));
         queue.push(CoreCall::GoTo(TabId(1), 2));
         queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
-        queue.push(CoreCall::SetFocus(true));
+        queue.push(CoreCall::SetSidebarHidden(true));
         queue.push(CoreCall::SetPaper(Paper::Dark));
         queue.push(CoreCall::ToggleAgentIcon);
         assert_eq!(lock(&queue.calls).len(), 0);
@@ -2628,15 +2613,6 @@ mod tests {
     fn stop_is_refused_by_a_normal_app() {
         let host = AppHost { engine: Engine::new(EngineConfig::default(), Arc::new(TestEngineEvents)), session: SessionHost::new(DrawableLoader), core: Arc::new(CoreQueue::default()), qa: None, saver: Arc::new(Saver::new(RecordStore::open(&StatePaths::overridden(&std::env::temp_dir().join(format!("rf-{}", std::process::id()))).unwrap(), Flavor::App), Arc::new(CoreQueue::default()))), running: AtomicU32::new(0), handing_off: AtomicBool::new(false), notice: Mutex::new(None) };
         assert_eq!(host.stop_refusal().expect("refused").code, "only_the_user_quits");
-    }
-
-    /// Failure: focus view's buttons show with no pointer there, or don't come back when it is, or go missing from an ordinary window.
-    #[test]
-    fn the_window_buttons_rule() {
-        assert!(window_buttons_show(false, false));
-        assert!(window_buttons_show(false, true));
-        assert!(!window_buttons_show(true, false));
-        assert!(window_buttons_show(true, true));
     }
 
     /// Failure: the host and the core decide a quiet run differently: a word after `-NS...` is that option's value here, while the host's own search found `--qa` in it. It would launch off every screen with nothing watching for a QA run, or the other way round, and take the screen.

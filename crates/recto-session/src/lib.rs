@@ -526,8 +526,8 @@ pub fn row_full_text(text: &str, is_file_name: bool) -> RowFullText {
 pub struct ViewSettings {
     /// `None` goes with the window: white with a light one, dark with a dark one.
     pub paper: Option<Paper>,
-    /// Sidebar hidden, page number only, agent icon kept.
-    pub focus: bool,
+    /// The sidebar's hidden. Owner, 2026-11-08: "simply have a sidebar icon to the right of the traffic light buttons that toggles sidebar on and of. No need mor a separate mode".
+    pub sidebar_hidden: bool,
     /// Owner, 2026-11-07: "Add an option in the macos top bar to turn off agent bar (hides the icon)".
     pub agent_icon_hidden: bool,
 }
@@ -1729,7 +1729,7 @@ impl<L: DocLoader> Session<L> {
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
         let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _ } = self;
-        let ViewSettings { paper, focus, agent_icon_hidden } = *view;
+        let ViewSettings { paper, sidebar_hidden, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
             .map(|tab| {
@@ -1751,7 +1751,7 @@ impl<L: DocLoader> Session<L> {
                 }
             })
             .collect();
-        SessionRecord { app: record::AppRecord::default(), view: ViewRecord { paper: paper.map(Paper::to_record), focus, agent_icon_hidden }, find: find.clone(), edit_mode: *edit_mode, active: active.map(|id| id.0), next_id: *next_id, tabs }
+        SessionRecord { app: record::AppRecord::default(), view: ViewRecord { paper: paper.map(Paper::to_record), focus: false, sidebar_hidden, agent_icon_hidden }, find: find.clone(), edit_mode: *edit_mode, active: active.map(|id| id.0), next_id: *next_id, tabs }
     }
 
     /// A tab's edits whole, as QA reads them and for a journal's checkpoint.
@@ -1790,8 +1790,9 @@ impl<L: DocLoader> Session<L> {
         self.next_id = record.next_id;
         self.find = record.find.clone();
         self.edit_mode = record.edit_mode;
-        let ViewRecord { paper, focus, agent_icon_hidden } = record.view;
-        self.view = ViewSettings { paper: paper.map(Paper::from_record), focus, agent_icon_hidden };
+        let sidebar_hidden = record.view.sidebar_comes_back_hidden();
+        let ViewRecord { paper, focus: _, sidebar_hidden: _, agent_icon_hidden } = record.view;
+        self.view = ViewSettings { paper: paper.map(Paper::from_record), sidebar_hidden, agent_icon_hidden };
         self.tabs.reserve_exact(record.tabs.len());
         for entry in &record.tabs {
             let Some(path) = entry.path.to_path() else { continue };
@@ -3208,6 +3209,23 @@ mod tests {
         (a, b)
     }
 
+    /// Failure: a record from a build with focus view, written with it on, comes back with the sidebar showing, or the next record still says focus, so it can't be turned off. Owner, 2026-11-08: focus view became the sidebar's button.
+    #[test]
+    fn an_older_records_focus_view_comes_back_as_a_hidden_sidebar() {
+        let old: record::ViewRecord = serde_json::from_str(r#"{"paper":null,"focus":true,"agent_icon_hidden":false}"#).unwrap();
+        let mut saved = journaled(1).to_record();
+        saved.view = old;
+        let mut back = journaled(1);
+        back.restore(&saved, HashMap::new()).unwrap();
+        assert!(back.view().sidebar_hidden);
+        let written = serde_json::to_string(&back.to_record().view).unwrap();
+        assert!(!written.contains("focus") && written.contains("\"sidebar_hidden\":true"), "{written}");
+        back.set_view(ViewSettings { sidebar_hidden: false, ..back.view() });
+        let mut again = journaled(1);
+        again.restore(&back.to_record(), HashMap::new()).unwrap();
+        assert!(!again.view().sidebar_hidden, "shown again stays shown");
+    }
+
     /// Failure: anything about the session is different after going through its record and journals: a tab, its order, the active one, a place, a fold, unsaved edits, the steps undone, or who made them. Compares the whole of both.
     #[test]
     fn a_session_comes_back_whole_from_its_record_and_journals() {
@@ -3218,7 +3236,7 @@ mod tests {
         s.set_edit_mode(true);
         s.set_view_rotation(a, 1);
         s.set_selection(a, Some(Selection { from_page: 1, from_char: 2, to_page: 2, to_char: 9 }));
-        s.set_view(ViewSettings { paper: Some(Paper::Warm), focus: true, agent_icon_hidden: true });
+        s.set_view(ViewSettings { paper: Some(Paper::Warm), sidebar_hidden: true, agent_icon_hidden: true });
         let mut files = HashMap::new();
         write_journal(&mut s, &mut files);
         let bytes = record::encode_record(&s.to_record(), 7);

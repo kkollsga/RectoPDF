@@ -44,7 +44,8 @@ pub(crate) enum Action {
     Copy { anyway: bool },
     SelectAll,
     Zoom(Zoom),
-    ToggleFocus,
+    /// Shows the sidebar, or hides it: its button beside the window's controls, and the View menu.
+    ToggleSidebar,
     ToggleAgentIcon,
     SetPaper(Paper),
     TogglePanel,
@@ -98,7 +99,8 @@ pub(crate) fn menu_bar(view: ViewSettings, update_title: &str) -> Vec<MenuModel>
                 entry("view.actual_size", "Actual Size", "0"),
                 entry("view.fit", "Fit", "9"),
                 line(),
-                MenuEntry { with_control: true, checked: view.focus, ..entry("view.focus", "Focus View", "f") },
+                // ⌃⌘S, as on any Mac app with a sidebar. The title says what choosing it does.
+                MenuEntry { with_control: true, ..entry("view.sidebar", if view.sidebar_hidden { "Show Sidebar" } else { "Hide Sidebar" }, "s") },
                 MenuEntry { checked: !view.agent_icon_hidden, ..entry("view.agent_icon", "Show Agent Icon", "") },
             ],
         },
@@ -127,13 +129,12 @@ pub struct PanelModel {
 }
 
 /// The panel, with the paper showing now picked out.
-pub(crate) fn panel(open: bool, shown: Paper, focus: bool) -> PanelModel {
+pub(crate) fn panel(open: bool, shown: Paper) -> PanelModel {
     let item = |id: &str, title: &str, selected: bool| PanelItem { id: id.into(), title: title.into(), selected };
     let sections = if open {
         vec![
             PanelSection { title: "Paper".into(), items: Paper::ALL.iter().map(|paper| item(&format!("paper.{}", paper.name()), paper.label(), *paper == shown)).collect() },
             PanelSection { title: "Zoom".into(), items: vec![item("view.zoom_out", "Zoom out", false), item("view.zoom_in", "Zoom in", false), item("view.fit", "Fit", false)] },
-            PanelSection { title: String::new(), items: vec![item("view.focus", "Focus view", focus)] },
         ]
     } else {
         Vec::new()
@@ -160,7 +161,7 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "view.zoom_out" => Action::Zoom(Zoom::Out),
         "view.actual_size" => Action::Zoom(Zoom::Actual),
         "view.fit" => Action::Zoom(Zoom::Fit),
-        "view.focus" => Action::ToggleFocus,
+        "view.sidebar" => Action::ToggleSidebar,
         "view.agent_icon" => Action::ToggleAgentIcon,
         "panel.toggle" => Action::TogglePanel,
         "paper.white" => Action::SetPaper(Paper::White),
@@ -197,7 +198,7 @@ mod tests {
     /// Failure: something in the menu bar or the panel does nothing when chosen, as an item with an id nobody handles would, or a list shows what doesn't exist.
     #[test]
     fn everything_listed_does_something() {
-        for view in [ViewSettings::default(), ViewSettings { focus: true, agent_icon_hidden: true, ..ViewSettings::default() }] {
+        for view in [ViewSettings::default(), ViewSettings { sidebar_hidden: true, agent_icon_hidden: true, ..ViewSettings::default() }] {
             for menu in menu_bar(view, "Check for Updates…") {
                 assert!(!menu.title.is_empty());
                 for item in menu.entries {
@@ -205,7 +206,7 @@ mod tests {
                 }
             }
         }
-        for section in panel(true, Paper::White, false).sections {
+        for section in panel(true, Paper::White).sections {
             for item in section.items {
                 assert!(action(&item.id).is_some(), "{}", item.id);
             }
@@ -235,10 +236,22 @@ mod tests {
         let checked = |view, id: &str| menu_bar(view, "Check for Updates…").into_iter().flat_map(|menu| menu.entries).find(|item| item.id == id).unwrap().checked;
         assert!(checked(ViewSettings::default(), "view.agent_icon"));
         assert!(!checked(ViewSettings { agent_icon_hidden: true, ..ViewSettings::default() }, "view.agent_icon"));
-        assert!(panel(false, Paper::White, false).sections.is_empty(), "only the button at rest");
-        let open = panel(true, Paper::Warm, false);
+        assert!(panel(false, Paper::White).sections.is_empty(), "only the button at rest");
+        let open = panel(true, Paper::Warm);
         let selected: Vec<String> = open.sections.iter().flat_map(|section| &section.items).filter(|item| item.selected).map(|item| item.id.clone()).collect();
         assert_eq!(selected, vec!["paper.warm".to_string()]);
+    }
+
+    /// Failure: the sidebar's menu item doesn't say what choosing it does, or hasn't the Mac's usual ⌃⌘S, or focus view is still there. Owner, 2026-11-08: "No need mor a separate mode".
+    #[test]
+    fn the_view_menu_shows_and_hides_the_sidebar() {
+        let item = |view| menu_bar(view, "Check for Updates…").into_iter().flat_map(|menu| menu.entries).find(|item| item.id == "view.sidebar").unwrap();
+        let shown = item(ViewSettings::default());
+        assert_eq!((shown.title.as_str(), shown.key.as_str(), shown.with_control), ("Hide Sidebar", "s", true));
+        assert_eq!(item(ViewSettings { sidebar_hidden: true, ..ViewSettings::default() }).title, "Show Sidebar");
+        assert_eq!(action("view.sidebar"), Some(Action::ToggleSidebar));
+        assert_eq!(action("view.focus"), None);
+        assert!(menu_bar(ViewSettings::default(), "").iter().flat_map(|menu| &menu.entries).all(|item| !item.title.contains("Focus")));
     }
 
     /// Failure: the owner's *Check for Updates…* isn't where it was asked for, doesn't turn into the offer, or Settings has no ⌘, as on any Mac app.

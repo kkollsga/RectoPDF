@@ -248,10 +248,21 @@ pub struct ViewRecord {
     /// `white`, `warm` or `dark`. None goes with the window.
     #[serde(default)]
     pub paper: Option<PaperName>,
-    #[serde(default)]
+    /// What an older build wrote for focus view, which hid the sidebar. Read so a record with it on comes back with the sidebar hidden, and never written: owner, 2026-11-08, there's no focus mode now.
+    #[serde(default, skip_serializing)]
     pub focus: bool,
+    /// The sidebar's hidden, by its button beside the window's controls or the View menu.
+    #[serde(default)]
+    pub sidebar_hidden: bool,
     #[serde(default)]
     pub agent_icon_hidden: bool,
+}
+
+impl ViewRecord {
+    /// Whether the sidebar comes back hidden: by its own field, or by an older build's focus view.
+    pub fn sidebar_comes_back_hidden(&self) -> bool {
+        self.sidebar_hidden || self.focus
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

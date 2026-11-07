@@ -463,7 +463,6 @@ pub struct Reader {
     hot: Option<u32>,
     viewport: Viewport,
     paper: PaperKind,
-    focus: bool,
     window_open: bool,
     entries: HashMap<u64, Entry>,
     cover: HashMap<TileKey, u64>,
@@ -524,7 +523,6 @@ impl Reader {
             hot: None,
             viewport: Viewport { magnification: 1.0, backing: 2.0, ..Viewport::default() },
             paper: PaperKind::White,
-            focus: false,
             window_open: true,
             entries: HashMap::new(),
             cover: HashMap::new(),
@@ -1131,7 +1129,7 @@ impl Reader {
     /// The document's size, then the place in it. Called when the fit or a page's size has changed.
     fn lay_out(&mut self) {
         let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else { return };
-        doc.layout.set_frame(self.viewport.frame_width, self.focus);
+        doc.layout.set_frame(self.viewport.frame_width);
         self.ops.push_back(Op::Document { width: doc.layout.document_width(), height: doc.layout.document_height() });
         let y = Self::place_y(doc);
         let seq = self.next_seq;
@@ -1154,7 +1152,7 @@ impl Reader {
         }
         let mut moved_layout = false;
         if let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) {
-            if doc.layout.set_frame(viewport.frame_width, self.focus) && was.frame_width != viewport.frame_width {
+            if doc.layout.set_frame(viewport.frame_width) && was.frame_width != viewport.frame_width {
                 moved_layout = true;
             }
             // A jump under way says the host hasn't caught up with what it's been told, and that includes the zoom.
@@ -1635,15 +1633,6 @@ impl Reader {
             return;
         }
         self.paper = paper;
-        self.refresh(MAX_ATTACH_PER_TURN);
-    }
-
-    pub fn set_focus(&mut self, focus: bool) {
-        if self.focus == focus {
-            return;
-        }
-        self.focus = focus;
-        self.lay_out();
         self.refresh(MAX_ATTACH_PER_TURN);
     }
 
@@ -3097,7 +3086,7 @@ mod tests {
         let frame_view = view(0.0);
         let mut layout = PageLayout::new(100);
         layout.seed_usual(letter());
-        layout.set_frame(frame_view.frame_width, false);
+        layout.set_frame(frame_view.frame_width);
         let height = layout.document_height();
         let y = layout.top(40) + 123.456_789;
         let saved = SavedPlace { page: 40, anchor: layout.anchor_at(y), x: 33.5, y, document_height: height, magnification: 1.75, page_size: Some(letter()) };

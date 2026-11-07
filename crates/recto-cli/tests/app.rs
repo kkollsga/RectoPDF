@@ -293,9 +293,9 @@ fn a_shot_is_a_real_picture_of_the_window_at_2x() {
     assert_ne!(with_page["bytes"], before["bytes"], "a page changes the picture");
 }
 
-/// Failure: the appearance, paper or focus don't reach what's drawn, or a change draws nothing new. Read back from the app and from the tiles it attached.
+/// Failure: the appearance, paper or the sidebar don't reach what's drawn, or a change draws nothing new. Read back from the app and from the tiles it attached. The sidebar goes by its own button, and hiding it leaves the page, its number, the agent icon and the button to bring it back.
 #[test]
-fn dark_mode_paper_and_focus_change_what_is_drawn() {
+fn dark_mode_paper_and_the_sidebar_change_what_is_drawn() {
     let Some(run) = Run::start() else { return };
     let file = long_document(3);
     run.ok(&["qa", "appearance", "light"]);
@@ -312,16 +312,23 @@ fn dark_mode_paper_and_focus_change_what_is_drawn() {
     wait_for(&run, |state| state["reader"]["paper"] == "white");
     run.ok(&["view", "--paper", "auto"]);
     run.settled();
-    run.ok(&["view", "--focus", "on"]);
-    let focused = wait_for(&run, |state| state["app"]["focus"] == true);
-    assert_eq!(focused["app"]["sidebar_visible"], false, "{focused}");
-    assert_eq!(focused["app"]["agent_icon"], true, "kept");
-    assert!(focused["app"]["place_label"].as_str().is_some_and(|place| place.contains("of 3")), "the page number stays: {focused}");
-    run.settled();
-    let wider = run.report()["reader"]["fit"].as_f64().unwrap();
-    run.ok(&["view", "--focus", "off"]);
-    let back = wait_for(&run, |state| state["app"]["sidebar_visible"] == true);
-    assert!(back["reader"]["fit"].as_f64().unwrap() < wider, "focus view's page is wider: {back}");
+    let shown = run.report();
+    assert_eq!(shown["app"]["sidebar_button"]["visible"], true, "{shown}");
+    assert_eq!(shown["app"]["sidebar_button"]["clear_of_window_buttons"], true, "{shown}");
+    run.ok(&["qa", "button", "sidebar"]);
+    let hidden = wait_for(&run, |state| state["app"]["sidebar_hidden"] == true);
+    assert_eq!(hidden["app"]["sidebar_visible"], false, "{hidden}");
+    assert_eq!(hidden["app"]["agent_icon"], true, "kept");
+    assert_eq!(hidden["app"]["sidebar_button"]["visible"], true, "the way back stays: {hidden}");
+    assert_eq!(hidden["app"]["window_buttons_shown"], true, "nothing else goes with it: {hidden}");
+    assert!(hidden["app"]["place_label"].as_str().is_some_and(|place| place.contains("of 3")), "the page number stays: {hidden}");
+    assert_eq!(run.ok(&["view"])["sidebar"], false, "the same setting `recto view` has");
+    run.ok(&["qa", "menu", "view.sidebar"]);
+    wait_for(&run, |state| state["app"]["sidebar_visible"] == true);
+    run.ok(&["view", "--sidebar", "off"]);
+    wait_for(&run, |state| state["app"]["sidebar_visible"] == false);
+    run.ok(&["view", "--sidebar", "on"]);
+    wait_for(&run, |state| state["app"]["sidebar_visible"] == true);
 }
 
 /// Failure: closing the window keeps tiles and a worker, so it's over budget, or the app quits, or the tabs are lost. The red button's path, and back. The agent's socket stays.
@@ -427,14 +434,9 @@ fn what_appkit_calls_reaches_the_app() {
     let checked = found.as_object().unwrap();
     let failed: Vec<&String> = checked.iter().filter(|(_, ok)| **ok != true).map(|(name, _)| name).collect();
     assert!(failed.is_empty(), "these don't reach the app: {failed:?}\n{found}");
-    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "corner_covers_the_buttons", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "copy_is_grey_with_nothing_selected", "select_all_can_be_chosen", "select_all_key_reaches_the_app", "select_all_selects", "copy_is_enabled_with_something_selected", "copy_key_reaches_the_app", "services_arent_offered_what_they_didnt_ask_for", "services_arent_offered_nothing", "services_write_nothing_with_nothing_selected", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
+    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "sidebar_button", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "copy_is_grey_with_nothing_selected", "select_all_can_be_chosen", "select_all_key_reaches_the_app", "select_all_selects", "copy_is_enabled_with_something_selected", "copy_key_reaches_the_app", "services_arent_offered_what_they_didnt_ask_for", "services_arent_offered_nothing", "services_write_nothing_with_nothing_selected", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
         assert!(checked.contains_key(name), "{name} wasn't checked: {found}");
     }
-    run.ok(&["view", "--focus", "on"]);
-    run.settled();
-    let focused = run.ok(&["qa", "entry-points"]);
-    assert_eq!(focused["buttons_come_back"], true, "focus view's buttons have to come back: {focused}");
-    assert_eq!(focused["buttons_go_again"], true, "{focused}");
 }
 
 /// Failure: with a mouse connected, or "always show" set, a Mac's scrollers take their width from the view, and a page fitted to the view's whole width is wider than what's left, so a scroll bar sits under it for good and the vertical reading space goes down by it. Seen in a shot, when one was plugged in. A fitted page fits, by either style.
@@ -547,7 +549,7 @@ fn the_panel_opens_and_does_what_it_says() {
     run.settled();
     let open = run.report();
     let ids: Vec<&str> = open["app"]["panel"]["items"].as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["paper.white", "paper.warm", "paper.dark", "view.zoom_out", "view.zoom_in", "view.fit", "view.focus"], "this and nothing else");
+    assert_eq!(ids, ["paper.white", "paper.warm", "paper.dark", "view.zoom_out", "view.zoom_in", "view.fit"], "this and nothing else");
     assert!(open["app"]["contents"]["list_height"].as_f64().unwrap() < list_at_rest, "it docks in room from the list: {open}");
     let drawn = open["reader"]["counts"]["drawn"].clone();
     run.ok(&["qa", "panel", "paper.warm"]);

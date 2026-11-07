@@ -132,6 +132,12 @@ import QuartzCore
             item.menu?.update()
             guard item.isEnabled else { return fail(id, "That's greyed out in the menu right now.") }
             NSApp.sendAction(action, to: item.target, from: item)
+        case "button":
+            guard let controller else { return fail(id, "The window is closed.") }
+            switch value {
+            case "sidebar": controller.sidebarButton.performClick(nil)
+            default: return fail(id, "That isn't one of the window's buttons.")
+            }
         case "panel":
             guard let sidebar = controller?.sidebar else { return fail(id, "The window is closed.") }
             guard let button = value == "toggle" ? sidebar.moreButton : sidebar.panel?.buttons[value] else { return fail(id, "That isn't in the panel, or it isn't open.") }
@@ -184,7 +190,9 @@ import QuartzCore
             "is_active": NSApp.isActive,
             "activation": policyName(),
             "appearance": Theme.isDark(controller.root) ? "dark" : "light",
-            "focus": reader.focus,
+            "sidebar_hidden": reader.sidebarHidden,
+            "sidebar_button": ["visible": !controller.sidebarButton.isHidden && controller.sidebarButton.superview != nil, "frame": [controller.sidebarButton.frame.minX, controller.sidebarButton.frame.minY, controller.sidebarButton.frame.width, controller.sidebarButton.frame.height], "clear_of_window_buttons": controller.windowButtonFrames(in: controller.root).allSatisfy { !$0.intersects(controller.sidebarButton.frame) }] as [String: Any],
+            "window_buttons_shown": controller.windowButtonsShown,
             "home": !controller.home.isHidden,
             "sidebar_visible": !sidebar.view.isHidden,
             "sidebar_width": sidebar.view.frame.width,
@@ -222,10 +230,10 @@ import QuartzCore
         let moved = #selector(NSResponder.mouseMoved(with:))
         let wheel = #selector(NSResponder.scrollWheel(with:))
         // These two aren't responders, so nothing but their own code answers these, and tracking areas call them by name. Going by a selector nothing answers would throw, and this would never answer.
-        let owners: [(String, NSObject, Selector)] = [("sidebar_hover_in", sidebar, entered), ("sidebar_hover_out", sidebar, exited), ("sidebar_pointer_moved", sidebar, moved), ("corner_hover_in", controller, entered), ("corner_hover_out", controller, exited)]
+        let owners: [(String, NSObject, Selector)] = [("sidebar_hover_in", sidebar, entered), ("sidebar_hover_out", sidebar, exited), ("sidebar_pointer_moved", sidebar, moved)]
         for (name, owner, selector) in owners { found[name] = owner.responds(to: selector) }
         guard owners.allSatisfy({ $0.1.responds(to: $0.2) }) else { return found }
-        let actions: [(String, NSControl)] = [("tab_row_click", sidebar.table), ("contents_row_click", sidebar.contentsTable), ("add_button", sidebar.addButton), ("home_button", controller.homeButtonForQA)]
+        let actions: [(String, NSControl)] = [("tab_row_click", sidebar.table), ("contents_row_click", sidebar.contentsTable), ("add_button", sidebar.addButton), ("home_button", controller.homeButtonForQA), ("sidebar_button", controller.sidebarButton)]
         for (name, control) in actions {
             found[name] = control.action.flatMap { action in (control.target as? NSObject)?.responds(to: action) } ?? false
         }
@@ -233,8 +241,6 @@ import QuartzCore
         found["sidebar_area_is_on_the_sidebar"] = sidebar.view.trackingAreas.contains { $0.owner === sidebar && $0.options.contains(.mouseMoved) && $0.options.contains(.inVisibleRect) }
         sidebar.contentsScroll.updateTrackingAreas()
         found["contents_area_is_on_the_contents"] = sidebar.contentsScroll.trackingAreas.contains { $0.owner === sidebar.contentsScroll && $0.options.contains(.inVisibleRect) }
-        let corner = controller.root.trackingAreas.first { $0.owner === controller }?.rect
-        found["corner_covers_the_buttons"] = corner.map { rect in controller.windowButtonFrames(in: controller.root).allSatisfy { rect.contains($0) } } ?? false
 
         let window = controller.window
         func crossing(_ type: NSEvent.EventType) -> NSEvent? {
@@ -390,13 +396,6 @@ import QuartzCore
         found["pinch_starts"] = pages.isLive
         NotificationCenter.default.post(name: NSScrollView.didEndLiveMagnifyNotification, object: pages.scrollView)
         found["pinch_ends"] = !pages.isLive
-        // Focus view: the window's buttons, hidden, come back with the pointer near them.
-        if delegate.core.reader().focus {
-            controller.perform(entered, with: crossing(.mouseEntered))
-            found["buttons_come_back"] = controller.windowButtonsShown
-            controller.perform(exited, with: crossing(.mouseExited))
-            found["buttons_go_again"] = !controller.windowButtonsShown
-        }
         return found
     }
 

@@ -577,11 +577,11 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     run.drive("click_row", "0")?;
     run.settled()?;
     let switch_ms = started.elapsed().as_secs_f64() * 1000.0;
-    // The sidebar with 1,000 tabs, shown again after focus view, whose rows are all rebuilt.
-    run.call(json!({ "cmd": "view", "focus": "on" }))?;
+    // The sidebar with 1,000 tabs, shown again after being hidden, whose rows are all rebuilt.
+    run.call(json!({ "cmd": "view", "sidebar": "off" }))?;
     run.settled()?;
     let started = Instant::now();
-    run.call(json!({ "cmd": "view", "focus": "off" }))?;
+    run.call(json!({ "cmd": "view", "sidebar": "on" }))?;
     run.settled()?;
     let sidebar_state = run.state()?;
     let sidebar_ms = started.elapsed().as_secs_f64() * 1000.0;

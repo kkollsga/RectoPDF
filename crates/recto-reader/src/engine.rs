@@ -220,12 +220,6 @@ impl Engine {
         self.after(reader);
     }
 
-    pub fn set_focus(&self, focus: bool) {
-        let mut reader = lock(&self.shared.reader);
-        reader.set_focus(focus);
-        self.after(reader);
-    }
-
     /// From the UI thread, on every scroll. A short lock and a few map lookups. What comes back is for the host to apply now.
     pub fn set_viewport(&self, viewport: Viewport) -> Vec<Op> {
         // What this returns is what was waiting, so nothing's waiting to be told about.

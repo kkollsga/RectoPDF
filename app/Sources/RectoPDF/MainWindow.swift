@@ -80,7 +80,7 @@ final class AgentIcon: NSView {
     }
 }
 
-/// A small label in the margin: the page number in focus view, or what the reader needs to be told.
+/// A small label in the margin: the page number, or what the reader needs to be told.
 class MarginLabel: NSView {
     let label = TextLine()
 
@@ -177,6 +177,8 @@ final class BookMark: NSView {
     let sidebarEdge = NSView()
     let sidebarGrip = SidebarGrip()
     let agentIcon = AgentIcon()
+    /// Beside the window's controls: shows and hides the sidebar. Owner, 2026-11-08: "simply have a sidebar icon to the right of the traffic light buttons that toggles sidebar on and of".
+    let sidebarButton = NSButton(title: "", target: nil, action: nil)
     let noteLabel = MarginLabel()
     let placeLabel = MarginLabel()
     let copyNotice = CopyNotice()
@@ -239,6 +241,13 @@ final class BookMark: NSView {
         root.addSubview(noteLabel)
         root.addSubview(placeLabel)
         root.addSubview(copyNotice)
+        root.addSubview(sidebarButton)
+        sidebarButton.isBordered = false
+        sidebarButton.imagePosition = .imageOnly
+        sidebarButton.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: delegate.strings.sidebarButtonTooltip)?.withSymbolConfiguration(.init(pointSize: 14, weight: .regular))
+        sidebarButton.toolTip = delegate.strings.sidebarButtonTooltip
+        sidebarButton.target = self
+        sidebarButton.action = #selector(sidebarButtonPressed)
         copyNotice.isHidden = true
         copyNotice.button.target = self
         copyNotice.button.action = #selector(copyAnyway)
@@ -266,9 +275,6 @@ final class BookMark: NSView {
         }
         // AppKit changes the scrollers' style itself when the system's does, with a mouse plugged in or the setting changed. What's fitted to the room they leave follows.
         NotificationCenter.default.addObserver(self, selector: #selector(scrollerStyleChanged), name: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil)
-        // In focus view the window's buttons come back with the pointer near them. One area in a fixed corner, and it costs nothing when nothing's there.
-        let corner = NSTrackingArea(rect: NSRect(x: 0, y: 0, width: 100, height: 44), options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self, userInfo: nil)
-        root.addTrackingArea(corner)
         layout()
         appearanceChanged()
         if delegate.isQuiet { QAChannel.drawActive(window) }
@@ -385,14 +391,12 @@ final class BookMark: NSView {
         sidebar.updateContentsScroller()
         let size = window.frame.size
         root.frame = NSRect(origin: .zero, size: size)
-        let focus = reader.focus
+        let hidden = reader.sidebarHidden
         let sidebarWidth = CGFloat(reader.sidebarWidth)
-        let side = focus ? 0 : sidebarWidth
-        // In focus view nothing shows but the page, its number and the agent icon. The window's buttons come back with the pointer near them.
-        setWindowButtons(shown: windowButtonsShow(focus: focus, pointerNear: pointerNearButtons))
-        sidebar.view.isHidden = focus
-        sidebarEdge.isHidden = focus
-        sidebarGrip.isHidden = focus
+        let side = hidden ? 0 : sidebarWidth
+        sidebar.view.isHidden = hidden
+        sidebarEdge.isHidden = hidden
+        sidebarGrip.isHidden = hidden
         sidebar.view.frame = NSRect(x: 0, y: 0, width: sidebarWidth, height: size.height)
         sidebarEdge.frame = NSRect(x: sidebarWidth - 1, y: 0, width: 1, height: size.height)
         sidebarGrip.frame = NSRect(x: sidebarWidth - 3, y: 0, width: 7, height: size.height)
@@ -406,13 +410,14 @@ final class BookMark: NSView {
         layoutMargin(area: area)
         layoutHome()
         positionWindowButtons()
+        layoutTopLeft()
         pages.layoutChanged()
     }
 
     private func layoutMargin(area: NSRect) {
         let marginWidth = max(pages.marginWidth(), 140)
         var bottom = NSPoint(x: area.maxX - 16, y: area.maxY - 16)
-        if reader.focus && !reader.home {
+        if reader.sidebarHidden && !reader.home {
             placeLabel.isHidden = false
             placeLabel.place(text: reader.place, maxWidth: 160, bottomRight: bottom)
             bottom.y = placeLabel.frame.minY - 8
@@ -469,17 +474,10 @@ final class BookMark: NSView {
         homeButton.frame = NSRect(x: middle - width / 2, y: y, width: width, height: 30)
     }
 
-    private var pointerNearButtons = false
-
     @objc private func scrollerStyleChanged() {
         sidebar.updateContentsScroller()
         layout()
     }
-
-    // AppKit calls these by name on a tracking area's owner. This isn't a responder, so they say so, by that name.
-    @objc(mouseEntered:) func mouseEntered(with event: NSEvent) { pointerNearButtons(true) }
-
-    @objc(mouseExited:) func mouseExited(with event: NSEvent) { pointerNearButtons(false) }
 
     /// Where the window's buttons are, in a view, for QA.
     func windowButtonFrames(in view: NSView) -> [NSRect] {
@@ -491,16 +489,22 @@ final class BookMark: NSView {
     /// Whether the window's buttons are showing, for QA.
     var windowButtonsShown: Bool { window.standardWindowButton(.closeButton)?.isHidden == false }
 
-    private func setWindowButtons(shown: Bool) {
-        for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            window.standardWindowButton(type)?.isHidden = !shown
-        }
+    /// The window's own buttons' row: where they end, and the middle of the row, in the root's coordinates, which run down.
+    private func windowButtonsRow() -> (right: CGFloat, middle: CGFloat) {
+        let frames = windowButtonFrames(in: root)
+        guard let last = frames.max(by: { $0.maxX < $1.maxX }) else { return (72, 19) }
+        return (last.maxX, last.midY)
     }
 
-    /// What the pointer reaching the window's top left corner does.
-    func pointerNearButtons(_ near: Bool) {
-        pointerNearButtons = near
-        setWindowButtons(shown: windowButtonsShow(focus: reader.focus, pointerNear: near))
+    /// Right of the window's buttons, in the same row: the sidebar's button. Shown whether the sidebar is or not, as it's the way back.
+    private func layoutTopLeft() {
+        let row = windowButtonsRow()
+        let size: CGFloat = 24
+        sidebarButton.frame = NSRect(x: (row.right + 10).rounded(), y: (row.middle - size / 2).rounded(), width: size, height: size)
+    }
+
+    @objc private func sidebarButtonPressed() {
+        delegate.perform("view.sidebar")
     }
 
     /// Into the sidebar's top corner, where the concept has them, without a toolbar's strip across the page.
@@ -536,6 +540,7 @@ final class BookMark: NSView {
         homeButton.layer?.backgroundColor = Theme.buttonFill.cg
         sidebar.appearanceChanged()
         for view in [agentIcon, homeBook] { view.needsDisplay = true }
+        sidebarButton.contentTintColor = Theme.textQuiet.ns
         for label in [noteLabel, placeLabel, copyNotice as MarginLabel] {
             label.layer?.backgroundColor = Theme.pill.cg
             if !label.label.text.isEmpty { label.label.set(label.label.text, font: .systemFont(ofSize: 11.5), color: Theme.textBody.ns, wraps: true) }
