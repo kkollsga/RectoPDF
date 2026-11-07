@@ -291,6 +291,30 @@ pub fn create_private_file(path: &Path) -> io::Result<File> {
     OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)
 }
 
+/// The attribute `tmutil addexclusion` sets, which goes with the item wherever it's moved. Its value is the binary property list for the string `com.apple.backupd`.
+const BACKUP_EXCLUDE_NAME: &std::ffi::CStr = c"com.apple.metadata:com_apple_backup_excludeItem";
+const BACKUP_EXCLUDE_VALUE: &[u8] = b"bplist00_\x10\x11com.apple.backupd\x08\0\0\0\0\0\0\x01\x01\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x1c";
+
+fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
+    std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| io::ErrorKind::InvalidInput.into())
+}
+
+/// Keeps a folder out of Time Machine.
+pub fn exclude_from_backups(path: &Path) -> io::Result<()> {
+    let path = c_path(path)?;
+    // SAFETY: both strings are NUL-terminated and live for the call, and the value is its given length. XATTR_NOFOLLOW so a link isn't what gets marked.
+    let rc = unsafe { libc::setxattr(path.as_ptr(), BACKUP_EXCLUDE_NAME.as_ptr(), BACKUP_EXCLUDE_VALUE.as_ptr().cast(), BACKUP_EXCLUDE_VALUE.len(), 0, libc::XATTR_NOFOLLOW) };
+    if rc == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Whether [`exclude_from_backups`] has marked this.
+pub fn is_excluded_from_backups(path: &Path) -> bool {
+    let Ok(path) = c_path(path) else { return false };
+    // SAFETY: a null buffer asks only for the value's length, and the strings live for the call.
+    let rc = unsafe { libc::getxattr(path.as_ptr(), BACKUP_EXCLUDE_NAME.as_ptr(), std::ptr::null_mut(), 0, 0, libc::XATTR_NOFOLLOW) };
+    rc > 0
+}
+
 /// Opens a file for appending, made with mode 0600 if new. A link isn't followed.
 pub fn append_private_file(path: &Path) -> io::Result<File> {
     OpenOptions::new().append(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)

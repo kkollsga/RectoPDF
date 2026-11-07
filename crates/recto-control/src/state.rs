@@ -27,7 +27,7 @@ pub struct StatePaths {
     pub old_other_log: PathBuf,
     /// Where a background session's own messages go.
     pub server_messages: PathBuf,
-    /// Where search corpora go. With the override, inside its folder, so a QA run leaves nothing of a document anywhere else. Otherwise in the user's caches, since it can all be built again (agent report, §6.1).
+    /// Where search corpora go. With the override, inside its folder, so a QA run leaves nothing of a document anywhere else. Otherwise in the user's caches, since it can all be built again (agent report, §6.1). `.noindex` is how a folder says Spotlight should leave it alone: its page files are plain text.
     pub corpus: PathBuf,
     /// Set through [`STATE_ENV`], not the user's real folder.
     pub overridden: bool,
@@ -73,7 +73,7 @@ impl StatePaths {
             other_log: root.join("activity-other.jsonl"),
             old_other_log: root.join("activity-other.1.jsonl"),
             server_messages: root.join("server-messages.txt"),
-            corpus: if overridden { root.join("corpus") } else { local::real_home().map_or_else(|| root.join("corpus"), |home| default_corpus_in(&home)) },
+            corpus: if overridden { root.join("corpus.noindex") } else { local::real_home().map_or_else(|| root.join("corpus.noindex"), |home| default_corpus_in(&home)) },
             root,
             run_dir,
             socket,
@@ -105,7 +105,7 @@ fn default_root() -> Result<PathBuf, AgentError> {
 }
 
 fn default_corpus_in(home: &Path) -> PathBuf {
-    home.join("Library").join("Caches").join("RectoPDF").join("corpus")
+    home.join("Library").join("Caches").join("RectoPDF").join("corpus.noindex")
 }
 
 fn default_root_in(home: &Path) -> PathBuf {
@@ -165,6 +165,16 @@ fn fingerprint(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: Spotlight indexes the corpus's plain text, so a closed or deleted document's words turn up in a search of the whole Mac. A folder named `.noindex` is what it leaves alone.
+    #[test]
+    fn the_corpus_folder_says_not_to_index_it() {
+        let home = Path::new("/Users/someone");
+        assert_eq!(default_corpus_in(home), Path::new("/Users/someone/Library/Caches/RectoPDF/corpus.noindex"));
+        let temp = local::system_temp_dir().unwrap().join("recto-state-name");
+        assert!(StatePaths::overridden(&temp).unwrap().corpus.ends_with("corpus.noindex"));
+        assert!(StatePaths::overridden(&temp).unwrap().corpus.starts_with(temp.canonicalize().unwrap_or(temp.clone())) || cfg!(not(target_os = "macos")));
+    }
 
     /// Failure: a test or QA run points the state folder at the user's real home, or somewhere inside it, and writes over their real level or log.
     #[test]

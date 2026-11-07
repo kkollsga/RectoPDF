@@ -134,6 +134,14 @@ pub fn create_private_file(_path: &Path) -> io::Result<File> {
     unsupported()
 }
 
+pub fn exclude_from_backups(_path: &Path) -> io::Result<()> {
+    unsupported()
+}
+
+pub fn is_excluded_from_backups(_path: &Path) -> bool {
+    false
+}
+
 pub fn append_private_file(_path: &Path) -> io::Result<File> {
     unsupported()
 }

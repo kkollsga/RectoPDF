@@ -709,6 +709,16 @@ fn notes_about_versions_say_nothing_and_dont_pile_up() {
     assert_eq!(keys_of_file(&root, &file), Vec::new());
 }
 
+/// Failure: a corpus's plain text ends up in the user's Time Machine backups, for good, after it's been cleared here. The folder is marked, in the way `tmutil isexcluded` reads.
+#[test]
+fn the_corpus_folder_stays_out_of_backups() {
+    let temp = Temp::new();
+    let root = temp.0.join("corpus.noindex");
+    build(&root, CorpusKey([1; 32]), &mut FakeFeed::new(&[PLAIN]), &DocMeta::default(), &BuildLimits::default()).unwrap();
+    assert!(local::is_excluded_from_backups(&root));
+    assert!(!local::is_excluded_from_backups(&temp.0), "this only marks what it's given");
+}
+
 /// Failure: two sessions on one folder both build a document, and one's pack interleaves with the other's.
 #[test]
 fn only_one_builds_at_a_time() {

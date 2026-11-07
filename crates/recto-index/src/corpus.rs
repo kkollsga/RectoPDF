@@ -176,6 +176,8 @@ impl CorpusPaths {
 
     fn prepare(&self, root: &Path) -> io::Result<()> {
         local::ensure_private_dir(root)?;
+        // Plain text of the user's documents has no place in their backups, and it can all be built again. Not being able to say so isn't a reason to stop.
+        let _ = local::exclude_from_backups(root);
         let Some(by_key) = self.dir.parent() else { return Err(io::ErrorKind::InvalidInput.into()) };
         for dir in [by_key, &self.dir, &self.agent, &self.pages, &self.app] {
             local::ensure_private_dir(dir)?;
