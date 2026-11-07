@@ -18,6 +18,14 @@ const MAX_SWEEP: Duration = Duration::from_secs(60);
 /// A step at 120 Hz, the rate the budget talks about.
 const SWEEP_STEP: Duration = Duration::from_micros(8333);
 
+/// One scroll step of a sweep, as the UI thread saw it.
+#[derive(Clone, Copy)]
+struct Step {
+    micros: u32,
+    contents_y: f64,
+    current_visible: bool,
+}
+
 pub(crate) struct QaBridge {
     listener: Arc<dyn AppListener>,
     engine: Engine,
@@ -26,7 +34,7 @@ pub(crate) struct QaBridge {
     next_id: AtomicU64,
     answers: Mutex<HashMap<u64, Option<Result<String, String>>>>,
     answered: Condvar,
-    steps: Mutex<Vec<u32>>,
+    steps: Mutex<Vec<Step>>,
     step_waiting: AtomicBool,
 }
 
@@ -43,12 +51,12 @@ impl QaBridge {
         }
     }
 
-    pub(crate) fn note_step(&self, micros: u64) {
+    pub(crate) fn note_step(&self, micros: u64, contents_y: f64, current_visible: bool) {
         self.step_waiting.store(false, Ordering::SeqCst);
         let mut steps = lock(&self.steps);
         // A minute at 120 Hz at most, and each is 4 bytes.
         if steps.len() < 16_384 {
-            steps.push(u32::try_from(micros).unwrap_or(u32::MAX));
+            steps.push(Step { micros: u32::try_from(micros).unwrap_or(u32::MAX), contents_y, current_visible });
         }
     }
 
@@ -104,7 +112,7 @@ impl QaBridge {
             value.parse::<f64>().ok().filter(|number| number.is_finite() && *number >= low && *number <= high).ok_or_else(|| bad(format!("`{}` isn't a number from {low} to {high}.", cleaned(value))))
         };
         match verb {
-            "appearance" | "window" | "hover" | "click_row" | "resize" => {}
+            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" => {}
             "scroll" => {
                 number(-1e9, 1e9)?;
             }
@@ -193,12 +201,22 @@ impl QaBridge {
         // A final viewport that isn't moving, so whatever's still wanted gets drawn.
         let settled = self.engine.wait_settled(Duration::from_secs(20));
         let sharp_after_ms = stopped.elapsed().as_secs_f64() * 1000.0;
-        let mut steps = lock(&self.steps).clone();
+        let recorded = lock(&self.steps).clone();
+        let mut steps: Vec<u32> = recorded.iter().map(|step| step.micros).collect();
         steps.sort_unstable();
+        // What the contents did, frame by frame, while the page scrolled. Properties, not a curve: the largest step, and whether the place stayed in view.
+        let largest_contents_step = recorded.windows(2).map(|pair| (pair[1].contents_y - pair[0].contents_y).abs()).fold(0.0, f64::max);
+        let moved_steps = recorded.windows(2).filter(|pair| pair[1].contents_y != pair[0].contents_y).count();
+        let current_visible_steps = recorded.iter().filter(|step| step.current_visible).count();
         let at = |share: f64| -> u32 { steps.get(((steps.len() as f64 - 1.0) * share).round() as usize).copied().unwrap_or(0) };
         let after = self.engine.report().0;
         Ok(json!({
             "steps": steps.len(),
+            "contents": {
+                "largest_step_points": largest_contents_step,
+                "steps_that_moved": moved_steps,
+                "steps_with_place_in_view": current_visible_steps,
+            },
             "sent": sent,
             "skipped_because_the_last_was_still_running": skipped,
             "step_us": { "p50": at(0.5), "p99": at(0.99), "worst": steps.last().copied().unwrap_or(0) },

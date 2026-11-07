@@ -33,7 +33,9 @@ import QuartzCore
             // Time spent here is the UI thread's share of a frame: the scroll, Rust's call, and applying what it said.
             let started = CACurrentMediaTime()
             controller?.pages.scroll(by: Double(value) ?? 0)
-            delegate.core.qaNoteStep(micros: UInt64((CACurrentMediaTime() - started) * 1_000_000))
+            let took = CACurrentMediaTime() - started
+            let contents = controller?.sidebar.contentsSample() ?? (y: 0, currentVisible: true)
+            delegate.core.qaNoteStep(micros: UInt64(took * 1_000_000), contentsY: contents.y, currentVisible: contents.currentVisible)
             return
         case "state":
             answer(id, state())
@@ -53,6 +55,13 @@ import QuartzCore
         case "click_row":
             guard let row = Int(value) else { return fail(id, "`\(value)` isn't a row.") }
             controller?.sidebar.clickRow(row)
+        case "contents_scroll":
+            guard let row = Int(value), row >= 0 else { return fail(id, "`\(value)` isn't a row.") }
+            controller?.sidebar.userScrollContents(toRow: row)
+        case "contents_pointer":
+            controller?.sidebar.setContentsPointer(value == "in")
+        case "reduce_motion":
+            controller?.sidebar.reduceMotion = value == "on"
         case "resize":
             let parts = value.split(separator: "x").compactMap { Double($0) }
             guard parts.count == 2, parts[0] >= 400, parts[1] >= 300, parts[0] <= 8000, parts[1] <= 8000 else { return fail(id, "`\(value)` isn't a size. It's WIDTHxHEIGHT.") }
@@ -91,7 +100,8 @@ import QuartzCore
             "focus": reader.focus,
             "home": !controller.home.isHidden,
             "sidebar_visible": !sidebar.view.isHidden,
-            "sidebar_rows": sidebar.model.rows.count,
+            "sidebar_rows": sidebar.rowCount,
+            "contents": sidebar.contentsReport(),
             "hover": sidebar.hoveredRow.map { $0 as Any } ?? NSNull(),
             "place": reader.place,
             "note": controller.noteLabel.isHidden ? NSNull() as Any : controller.noteLabel.label.text,

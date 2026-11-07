@@ -407,3 +407,103 @@ fn reading_doesnt_grow_the_app() {
     let grew = footprint().saturating_sub(before);
     assert!(grew < 1024 * 1024, "the app grew by {grew} bytes over 400 page crossings");
 }
+
+/// Failure: a long outline pushes the other tabs and the footer off the sidebar, the reason the owner asked for this, at a normal height or a short one. Or the rows of a long outline are all built. Or reading drags the contents back from where someone has scrolled them, or they lose the place while reading on.
+#[test]
+fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
+    let Some(run) = Run::start() else { return };
+    let long = outlined_with(2000);
+    let others: Vec<TempPdf> = (0..4).map(|_| long_document(1)).collect();
+    run.ok(&["open", long.0.to_str().unwrap()]);
+    for other in &others {
+        run.ok(&["open", other.0.to_str().unwrap()]);
+    }
+    run.ok(&["tap", "#1"]);
+    run.settled();
+    let state = run.report();
+    let contents = &state["app"]["contents"];
+    assert_eq!(contents["count"], 2000, "{contents}");
+    assert!(contents["height"].as_f64().unwrap() > 0.0, "{contents}");
+    assert_eq!(contents["tabs_scroll"], false, "five tabs fit: {contents}");
+    assert!(contents["height"].as_f64().unwrap() + 5.0 * 32.0 <= contents["list_height"].as_f64().unwrap() + 0.5, "{contents}");
+    assert_eq!(contents["tab_rows_on_screen"], 5, "all the tabs show: {contents}");
+    assert_eq!(contents["footer_on_screen"], true);
+    assert!(contents["row_views"].as_u64().unwrap() < 80, "views for what's on screen, not 2,000: {contents}");
+    // A short window.
+    let short = run.ok(&["qa", "resize", "900x420"]);
+    assert_eq!(short["contents"]["tab_rows_on_screen"], 5, "{short}");
+    assert!(short["contents"]["height"].as_f64().unwrap() + 5.0 * 32.0 <= short["contents"]["list_height"].as_f64().unwrap() + 0.5, "{short}");
+    run.ok(&["qa", "resize", "1440x900"]);
+    run.settled();
+    // The place stays in view as the reader reads on, and a far `goto` lands rather than whooshes.
+    run.ok(&["goto", "1500"]);
+    run.settled();
+    let reading = wait_for(&run, |state| state["app"]["contents"]["current_in_view"] == true && state["app"]["contents"]["moving"] == false && state["app"]["contents"]["current"].as_u64().unwrap_or(0) > 1000);
+    assert_eq!(reading["app"]["contents"]["following"], true);
+    assert_eq!(reading["app"]["contents"]["frames_running"], false, "nothing runs once it's arrived: {reading}");
+    // Scrolled away, it stays where it's put, however the reader moves on.
+    let away = run.ok(&["qa", "contents-scroll", "10"]);
+    assert_eq!(away["contents"]["following"], false, "{away}");
+    let scrolled_to = away["contents"]["scroll_y"].as_f64().unwrap();
+    run.ok(&["goto", "1700"]);
+    run.settled();
+    let still = wait_for(&run, |state| state["app"]["contents"]["current"].as_u64().unwrap_or(0) > 1600);
+    assert_eq!(still["app"]["contents"]["scroll_y"].as_f64().unwrap(), scrolled_to, "{still}");
+    assert_eq!(still["app"]["contents"]["current_in_view"], false, "{still}");
+    assert_eq!(still["app"]["contents"]["frames_running"], false);
+    // With the pointer out and a few seconds gone, the next change of section picks it up. Time is the scenario here.
+    run.ok(&["qa", "contents-pointer", "out"]);
+    std::thread::sleep(std::time::Duration::from_millis(3100));
+    run.ok(&["goto", "1800"]);
+    run.settled();
+    wait_for(&run, |state| state["app"]["contents"]["following"] == true && state["app"]["contents"]["current_in_view"] == true && state["app"]["contents"]["frames_running"] == false);
+}
+
+/// Failure: following makes page scrolling slower, the contents stutter, the place drops out of view while reading, or something's left running once they've arrived. Records the contents on every step of a real sweep, and holds the properties: a small largest step, the place in view, and no frames or wake-ups at rest.
+#[test]
+fn the_contents_follow_quietly_and_nothing_runs_at_rest() {
+    let Some(run) = Run::start() else { return };
+    let long = outlined_with(600);
+    run.ok(&["open", long.0.to_str().unwrap()]);
+    run.settled();
+    let sweep = run.ok(&["qa", "sweep", "4", "--for", "3s"]);
+    let contents = &sweep["contents"];
+    let steps = sweep["steps"].as_u64().unwrap() as f64;
+    assert!(contents["steps_that_moved"].as_u64().unwrap() > 0, "they did follow: {sweep}");
+    // At the top speed, a sixtieth of a second is 7 points. A step can double up if a frame ran late.
+    assert!(contents["largest_step_points"].as_f64().unwrap() < 40.0, "{sweep}");
+    assert!(contents["steps_with_place_in_view"].as_f64().unwrap() >= steps * 0.95, "{sweep}");
+    let settled = wait_for(&run, |state| state["app"]["contents"]["frames_running"] == false);
+    assert_eq!(settled["app"]["contents"]["moving"], false);
+    // With nothing to do there's nothing to wake for.
+    let before = recto_platform::local::process_counters(run.pid).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let after = recto_platform::local::process_counters(run.pid).unwrap();
+    assert!(after.wakeups.saturating_sub(before.wakeups) <= 8, "{} wake-ups in 2 s at rest", after.wakeups.saturating_sub(before.wakeups));
+    // Reduce Motion: it stays in view, with no frames at all.
+    run.ok(&["qa", "reduce-motion", "on"]);
+    run.ok(&["goto", "400"]);
+    run.settled();
+    let quiet = wait_for(&run, |state| state["app"]["contents"]["current"].as_u64().unwrap_or(0) > 300);
+    assert_eq!(quiet["app"]["contents"]["frames_running"], false, "{quiet}");
+    assert_eq!(quiet["app"]["contents"]["current_in_view"], true, "{quiet}");
+}
+
+/// A PDF of as many pages, each with an outline entry.
+fn outlined_with(count: usize) -> TempPdf {
+    let first_page = 4 + count;
+    let mut objects = vec![
+        Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R >>".into()),
+        Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {count} >>", (0..count).map(|index| format!("{} 0 R", first_page + index)).collect::<Vec<_>>().join(" "))),
+        Object::Dict(format!("<< /Type /Outlines /First 4 0 R /Last {} 0 R /Count {count} >>", 4 + count - 1)),
+    ];
+    for index in 0..count {
+        let prev = if index > 0 { format!("/Prev {} 0 R", 4 + index - 1) } else { String::new() };
+        let next = if index + 1 < count { format!("/Next {} 0 R", 4 + index + 1) } else { String::new() };
+        objects.push(Object::Dict(format!("<< /Title (Section {index}) /Parent 3 0 R {prev} {next} /Dest [{} 0 R /Fit] >>", first_page + index)));
+    }
+    for _ in 0..count {
+        objects.push(Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()));
+    }
+    TempPdf::new("long-outline.pdf", &build(&objects))
+}

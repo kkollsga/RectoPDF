@@ -4,6 +4,7 @@
 #   app/qa/shots.sh OUT_DIR READER.pdf HEAVY.pdf [more PDFs for tabs...]
 #
 # OUT_DIR gets home, reader, sidebar-open, sidebar-folded, sidebar-hover, focus, heavy and low-res, each -light and -dark, and dark-white-paper.
+# Given more PDFs, the first of them onward are other tabs for sidebar-long-contents.
 set -euo pipefail
 out="$1"; reader="$2"; heavy="$3"; shift 3
 recto="$(cd "$(dirname "$0")/../.." && pwd)/target/debug/recto"
@@ -52,6 +53,38 @@ r view --paper white
 settle
 shot dark-white-paper
 r view --paper dark
+# A long outline with other tabs, and at a short window. The contents scroll by themselves, and the tabs and footer stay.
+r tap "#1"
+settle
+for look in light dark; do
+    r qa appearance "$look"
+    settle
+    r goto 90
+    settle
+    # Long enough for a drift to end. Time is the scenario.
+    sleep 1.5
+    shot "sidebar-long-contents-$look"
+    r qa resize 1100x460
+    settle
+    shot "sidebar-long-contents-short-window-$look"
+    r qa resize 1440x900
+    settle
+done
+r stop
+sleep 1
+
+# The same with one tab.
+export RECTO_STATE_DIR="$root/o"
+r qa start --time-limit 5m
+r open "$reader"
+settle
+for look in light dark; do
+    r qa appearance "$look"
+    r goto 90
+    settle
+    sleep 1.5
+    shot "sidebar-long-contents-one-tab-$look"
+done
 r stop
 sleep 1
 

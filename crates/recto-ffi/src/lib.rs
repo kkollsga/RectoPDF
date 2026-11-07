@@ -17,7 +17,7 @@ use recto_reader::engine::EngineEvents;
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Op, PageMap, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_render_service::Policy;
-use recto_session::{DocLoader, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TabId, ViewSettings};
+use recto_session::{CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsView, DocLoader, FollowMove, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TAB_ROW_HEIGHT, TabId, ViewSettings, sidebar_heights};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::Write;
@@ -28,6 +28,9 @@ use std::time::{Duration, Instant};
 use watchdog::Watchdog;
 
 uniffi::setup_scaffolding!();
+
+/// The most contents rows one call hands over. More than any screen shows.
+const MAX_CONTENTS_FETCH: u32 = 256;
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -84,15 +87,49 @@ pub struct SidebarRow {
     pub rail_last: bool,
 }
 
-/// Everything the sidebar draws.
+/// A contents row as it's kept, with no more in it than it needs. Rows are fetched by the host for what's on screen, so a long outline crosses only as far as it's shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ContentsEntry {
+    tab: u32,
+    text: Box<str>,
+    page: Option<u32>,
+    depth: u8,
+}
+
+/// Everything the sidebar draws, but for the contents' rows, which are pulled with `contents_rows` as they come on screen.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct SidebarView {
-    pub rows: Vec<SidebarRow>,
+    /// One row per tab. The active tab's contents go under it, as many as `contents_count`.
+    pub tabs: Vec<SidebarRow>,
+    pub contents_count: u32,
+    /// Rows from here on were opened or closed by the last change, moving what's below by `contents_moved` rows. The host keeps what's on screen where it is by moving its scroll the same.
+    pub contents_changed_from: u32,
+    pub contents_moved: i32,
+    /// The contents row of the place being read.
+    pub contents_current: Option<u32>,
     pub toc_open: bool,
     /// "32 of 96". Empty with nothing open.
     pub place: String,
     pub edited: bool,
     pub undone_owner_steps: bool,
+}
+
+/// Rust's height rule, in points.
+#[derive(Clone, Copy, Debug, PartialEq, uniffi::Record)]
+pub struct SidebarLayout {
+    pub tab_row: f64,
+    pub contents_row: f64,
+    pub contents_height: f64,
+    pub tabs_scroll: bool,
+}
+
+/// What to do with the contents' scroll, from Rust's rule about following.
+#[derive(Clone, Copy, Debug, PartialEq, uniffi::Enum)]
+pub enum ContentsMove {
+    Stay,
+    SetTo { y: f64 },
+    /// Run frames, calling `contents_step` on each, starting from `from` if there is one.
+    Drift { from: Option<f64> },
 }
 
 /// What the page area shows.
@@ -328,6 +365,8 @@ struct Synced {
 /// The state the UI thread pulls, swapped whole. A short lock, never held across anything slow.
 struct Published {
     sidebar: Arc<SidebarView>,
+    contents: Arc<Vec<ContentsEntry>>,
+    rail_filled: u32,
     reader: ReaderView,
 }
 
@@ -337,6 +376,8 @@ struct Inner {
     core: Arc<CoreQueue>,
     listener: Arc<dyn AppListener>,
     published: Mutex<Published>,
+    contents_follow: Mutex<ContentsFollow>,
+    started: Instant,
     watchdog: Watchdog,
     stopper: Mutex<Option<Stopper>>,
     announcer: Mutex<Option<Announcer>>,
@@ -430,7 +471,9 @@ impl AppCore {
             engine,
             core: Arc::clone(&core),
             listener: Arc::clone(&listener),
-            published: Mutex::new(Published { sidebar: Arc::new(SidebarView { rows: Vec::new(), toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper_rgb: PaperKind::White.rgb() } }),
+            contents_follow: Mutex::new(ContentsFollow::default()),
+            started: Instant::now(),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, sidebar: Arc::new(SidebarView { tabs: Vec::new(), contents_count: 0, contents_changed_from: 0, contents_moved: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, focus: false, place: String::new(), paper_rgb: PaperKind::White.rgb() } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -514,6 +557,70 @@ impl AppCore {
         (*lock(&self.inner.published).sidebar).clone()
     }
 
+    /// Some of the contents' rows, for what's on screen. A short lock and a copy of at most [`MAX_CONTENTS_FETCH`].
+    pub fn contents_rows(&self, first: u32, count: u32) -> Vec<SidebarRow> {
+        let published = lock(&self.inner.published);
+        let (contents, rail_filled, current) = (Arc::clone(&published.contents), published.rail_filled, published.sidebar.contents_current);
+        drop(published);
+        let total = u32::try_from(contents.len()).unwrap_or(u32::MAX);
+        let end = first.saturating_add(count.min(MAX_CONTENTS_FETCH)).min(total);
+        (first..end)
+            .filter_map(|index| {
+                let entry = contents.get(index as usize)?;
+                Some(SidebarRow { kind: RowKind::Contents, tab: entry.tab, text: entry.text.to_string(), page: entry.page, depth: entry.depth, current: current == Some(index), rail_filled: index < rail_filled, rail_first: index == 0, rail_last: index + 1 == total })
+            })
+            .collect()
+    }
+
+    /// The sidebar's height rule, for this much room between its header and footer.
+    pub fn sidebar_layout(&self, room: f64) -> SidebarLayout {
+        let published = lock(&self.inner.published);
+        let tabs = u32::try_from(published.sidebar.tabs.len()).unwrap_or(u32::MAX);
+        let rows = if published.sidebar.toc_open { published.sidebar.contents_count } else { 0 };
+        drop(published);
+        let heights = sidebar_heights(room, tabs, rows);
+        SidebarLayout { tab_row: TAB_ROW_HEIGHT, contents_row: CONTENTS_ROW_HEIGHT, contents_height: heights.contents, tabs_scroll: heights.tabs_scroll }
+    }
+
+    /// The reader scrolled the contents themselves.
+    pub fn contents_user_scrolled(&self) {
+        lock(&self.inner.contents_follow).user_scrolled(self.inner.started.elapsed().as_secs_f64());
+    }
+
+    /// The pointer came into the contents or left them.
+    pub fn contents_pointer(&self, inside: bool) {
+        lock(&self.inner.contents_follow).pointer(inside);
+    }
+
+    /// The place being read is now on this row. What to do about it.
+    pub fn contents_reached(&self, row: Option<u32>, scroll_y: f64, height: f64, reduce_motion: bool) -> ContentsMove {
+        let rows = lock(&self.inner.published).sidebar.contents_count;
+        let now = self.inner.started.elapsed().as_secs_f64();
+        match lock(&self.inner.contents_follow).reached(row, ContentsView { scroll_y, height, rows }, now, reduce_motion) {
+            FollowMove::Stay => ContentsMove::Stay,
+            FollowMove::SetTo(y) => ContentsMove::SetTo { y },
+            FollowMove::Drift { from } => ContentsMove::Drift { from },
+        }
+    }
+
+    /// One frame of a drift: where the scroll goes next, or nothing when it's over and the frames should stop. An atomic-sized lock and some arithmetic.
+    pub fn contents_step(&self, position: f64, dt: f64) -> Option<f64> {
+        lock(&self.inner.contents_follow).step(position, dt)
+    }
+
+    /// Rows above changed, and the host moved its scroll by this many points to match.
+    pub fn contents_shifted(&self, by: f64) {
+        lock(&self.inner.contents_follow).shifted(by);
+    }
+
+    pub fn contents_is_following(&self) -> bool {
+        lock(&self.inner.contents_follow).is_following()
+    }
+
+    pub fn contents_is_moving(&self) -> bool {
+        lock(&self.inner.contents_follow).is_moving()
+    }
+
     pub fn reader(&self) -> ReaderView {
         lock(&self.inner.published).reader.clone()
     }
@@ -592,10 +699,10 @@ impl AppCore {
         }
     }
 
-    /// How long a scroll step of `qa sweep` took on the UI thread.
-    pub fn qa_note_step(&self, micros: u64) {
+    /// How long a scroll step of `qa sweep` took on the UI thread, and where the contents were on it: their scroll, less any change of rows above, and whether the place being read was showing.
+    pub fn qa_note_step(&self, micros: u64, contents_y: f64, current_visible: bool) {
         if let Some(qa) = &self.inner.qa {
-            qa.note_step(micros);
+            qa.note_step(micros, contents_y, current_visible);
         }
     }
 
@@ -666,6 +773,17 @@ fn session_thread(inner: &Arc<Inner>) {
     }
 }
 
+/// Where two lists of contents rows differ and how much what's below moved: the rows opened or closed as the reader enters a chapter. Each list's matching start and end are compared, which is the whole of what changes, and it's only looked at when the lists differ.
+fn rows_moved(before: &[ContentsEntry], after: &[ContentsEntry]) -> (u32, i32) {
+    if std::ptr::eq(before, after) || before.is_empty() || after.is_empty() {
+        return (0, 0);
+    }
+    let same_start = before.iter().zip(after).take_while(|(one, two)| one == two).count();
+    // Past the matching start, whole rows were added or removed if everything after matches at the end.
+    let moved = i32::try_from(after.len()).unwrap_or(i32::MAX) - i32::try_from(before.len()).unwrap_or(i32::MAX);
+    (u32::try_from(same_start).unwrap_or(u32::MAX), moved)
+}
+
 fn open_file(inner: &Inner, path: &Path, events: &mut Vec<Event>) {
     let host = &inner.host;
     *lock(&inner.open_failure) = None;
@@ -685,7 +803,7 @@ fn open_file(inner: &Inner, path: &Path, events: &mut Vec<Event>) {
 fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let moved = inner.engine.take_moved_page();
     let synced_tab = synced.tab;
-    let (snapshot, sidebar, view) = inner.host.session.with_session(|session| {
+    let (snapshot, sidebar, contents, rail_filled, view) = inner.host.session.with_session(|session| {
         let active = session.active();
         if let (Some(id), Some(page)) = (active, moved)
             && synced_tab == Some(id)
@@ -709,31 +827,33 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             Some((id, session.pages_in(id), tab.page, map, warm, tab.problem.map(|problem| problem.message().to_string())))
         });
         let model = session.sidebar();
-        let contents = model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).count();
-        let mut seen = 0;
-        let rows: Vec<SidebarRow> = model
-            .rows
-            .iter()
-            .map(|row| {
-                let is_contents = row.kind == SessionRowKind::Contents;
-                let index = seen;
-                if is_contents {
-                    seen += 1;
+        let mut index = 0u32;
+        let mut current = None;
+        let mut tabs = Vec::new();
+        let mut contents_row_count = 0u32;
+        for row in &model.rows {
+            if row.kind == SessionRowKind::Contents {
+                if row.current {
+                    current = Some(index);
                 }
-                SidebarRow {
-                    kind: if is_contents { RowKind::Contents } else { RowKind::Tab },
-                    tab: row.tab.0,
-                    text: row.text.to_string(),
-                    page: row.page,
-                    depth: row.depth,
-                    current: row.current,
-                    rail_filled: is_contents && index < model.rail_filled,
-                    rail_first: is_contents && index == 0,
-                    rail_last: is_contents && index + 1 == contents,
-                }
-            })
-            .collect();
-        (snapshot, SidebarView { rows, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps }, session.view())
+                index += 1;
+                contents_row_count += 1;
+            } else {
+                tabs.push(SidebarRow { kind: RowKind::Tab, tab: row.tab.0, text: row.text.to_string(), page: row.page, depth: row.depth, current: row.current, rail_filled: false, rail_first: false, rail_last: false });
+            }
+        }
+        // Copied only when they've changed: for a long outline, a page crossed mustn't mean thousands of strings.
+        let held = Arc::clone(&lock(&inner.published).contents);
+        let same = held.len() == contents_row_count as usize && model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).zip(held.iter()).all(|(row, entry)| row.tab.0 == entry.tab && row.page == entry.page && row.depth == entry.depth && row.text == &*entry.text);
+        let held_before = Arc::clone(&held);
+        let contents = if same {
+            held
+        } else {
+            Arc::new(model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).map(|row| ContentsEntry { tab: row.tab.0, text: row.text.into(), page: row.page, depth: row.depth }).collect())
+        };
+        let rail_filled = u32::try_from(model.rail_filled).unwrap_or(u32::MAX);
+        let (contents_changed_from, contents_moved) = rows_moved(&held_before, &contents);
+        (snapshot, SidebarView { tabs, contents_count: contents_row_count, contents_changed_from, contents_moved, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps }, contents, rail_filled, session.view())
     });
     // The paper and focus first, so what's asked for next is drawn right.
     let dark = inner.dark.load(Ordering::SeqCst) || synced.dark;
@@ -755,6 +875,9 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }
         Some((id, pages, page, map, warm, tab_problem)) => {
             problem = tab_problem;
+            if synced.tab != Some(id) {
+                lock(&inner.contents_follow).new_contents();
+            }
             if synced.tab != Some(id) || synced.pages != pages || synced.map != map {
                 inner.engine.activate(id.0, pages, page, map.clone(), &warm);
                 synced.tab = Some(id);
@@ -770,10 +893,12 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let note = lock(&inner.open_failure).clone().or(problem).or_else(|| inner.engine.note());
     let reader = ReaderView { home: synced.tab.is_none(), note, focus: view.focus, place: sidebar.place.clone(), paper_rgb: paper.rgb() };
     let mut published = lock(&inner.published);
-    let changed = *published.sidebar != sidebar || published.reader != reader;
+    let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {
         published.sidebar = Arc::new(sidebar);
         published.reader = reader;
+        published.contents = contents;
+        published.rail_filled = rail_filled;
     }
     drop(published);
     if changed {
@@ -784,6 +909,18 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: rows opening as the reader enters a chapter shift everything below, so the list seems to jump under a smooth drift. It must say from where and by how much, and a change of nothing says nothing.
+    #[test]
+    fn opening_and_closing_rows_says_what_moved() {
+        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: 0 };
+        let before = vec![row("1"), row("2"), row("3")];
+        let after = vec![row("1"), row("2"), row("2.1"), row("2.2"), row("3")];
+        assert_eq!(rows_moved(&before, &after), (2, 2));
+        assert_eq!(rows_moved(&after, &before), (2, -2));
+        assert_eq!(rows_moved(&before, &before), (0, 0));
+        assert_eq!(rows_moved(&[], &after), (0, 0));
+    }
 
     /// Failure: QA options work on a normal launch, so a shipped app can be started with its limits changed, or a file named at launch is taken for an option.
     #[test]

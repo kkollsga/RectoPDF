@@ -37,25 +37,24 @@ class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// The agent's place, in the empty margin at the top right. A placeholder until the panel exists: it does nothing, and says so.
+/// The agent's place, in the empty margin at the top right: an AI four-point star, by the owner's word on 2026-11-07. A placeholder until the panel exists: it does nothing, and says so.
 final class AgentIcon: NSView {
     override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
-        let bubble = NSBezierPath(roundedRect: bounds.insetBy(dx: 2.5, dy: 3.5).offsetBy(dx: 0, dy: -0.5), xRadius: 3.5, yRadius: 3.5)
-        bubble.lineWidth = 1.4
-        Theme.textQuiet.ns.setStroke()
-        bubble.stroke()
-        let prompt = NSBezierPath()
-        prompt.lineWidth = 1.4
-        prompt.lineCapStyle = .round
-        prompt.lineJoinStyle = .round
-        prompt.move(to: NSPoint(x: 7, y: 7.5))
-        prompt.line(to: NSPoint(x: 9.5, y: 10))
-        prompt.line(to: NSPoint(x: 7, y: 12.5))
-        prompt.move(to: NSPoint(x: 11, y: 12.5))
-        prompt.line(to: NSPoint(x: 14, y: 12.5))
-        prompt.stroke()
+        let middle = NSPoint(x: bounds.midX, y: bounds.midY)
+        let reach = min(bounds.width, bounds.height) / 2 - 1
+        // How close to the middle each point's sides draw in: the less, the longer and finer the points.
+        let waist = reach * 0.14
+        let star = NSBezierPath()
+        star.move(to: NSPoint(x: middle.x, y: middle.y - reach))
+        for (x, y, cornerX, cornerY) in [(reach, 0.0, waist, -waist), (0.0, reach, waist, waist), (-reach, 0.0, -waist, waist), (0.0, -reach, -waist, -waist)] as [(CGFloat, CGFloat, CGFloat, CGFloat)] {
+            let control = NSPoint(x: middle.x + cornerX, y: middle.y + cornerY)
+            star.curve(to: NSPoint(x: middle.x + x, y: middle.y + y), controlPoint1: control, controlPoint2: control)
+        }
+        star.close()
+        Theme.textQuiet.ns.setFill()
+        star.fill()
     }
 }
 
@@ -156,7 +155,7 @@ final class BookMark: NSView {
         if delegate.isQuiet { window.setFrameOrigin(NSPoint(x: -40_000, y: -40_000)) }
         window.animationBehavior = .none
         pages = PageArea(core: delegate.core, limits: limits, isQuiet: delegate.isQuiet)
-        sidebar = SidebarPane(core: delegate.core, strings: delegate.strings)
+        sidebar = SidebarPane(core: delegate.core, strings: delegate.strings, isQuiet: delegate.isQuiet)
         reader = delegate.core.reader()
         super.init()
         window.delegate = self
