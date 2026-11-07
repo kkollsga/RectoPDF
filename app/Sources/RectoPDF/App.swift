@@ -78,6 +78,10 @@ final class Bridge: AppListener, @unchecked Sendable {
     private let bridge: Bridge
     private(set) var windowController: MainWindowController?
     private(set) var qa: QAChannel?
+    private(set) var settings: SettingsWindowController?
+    /// The one timer the updater's asked for, and which time it's armed for.
+    private var updateTimer: DispatchSourceTimer?
+    private var updateTimerAt: UInt64?
     private var mainObserver: CFRunLoopObserver?
     private var inputMonitor: Any?
     private var handingOff = false
@@ -117,13 +121,14 @@ final class Bridge: AppListener, @unchecked Sendable {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // AppKit adds Dictation and Emoji to any menu called Edit. A reader has nothing to type into, so they'd do nothing, and they cost about 0.35 MiB, measured side by side.
-        UserDefaults.standard.register(defaults: ["NSDisabledDictationMenuItem": true, "NSDisabledCharacterPaletteMenuItem": true])
         watchMainThread()
         watchMemoryPressure()
         installMenu()
         NSApp.registerServicesMenuSendTypes([.string], returnTypes: [])
         watchActivityAndInput()
+        let info = Bundle.main.infoDictionary
+        let system = ProcessInfo.processInfo.operatingSystemVersion
+        core.setUpdateFacts(version: info?["CFBundleShortVersionString"] as? String ?? "", bundlePath: Bundle.main.bundlePath, systemVersion: "\(system.majorVersion).\(system.minorVersion).\(system.patchVersion)")
         // The window comes when the state's been read, as its frame and what's on it come from there. It doesn't wait long.
         core.beginRestore()
         let core = self.core
@@ -138,8 +143,54 @@ final class Bridge: AppListener, @unchecked Sendable {
         case "light": NSApp.appearance = NSAppearance(named: .aqua)
         default: break
         }
-        openWindow()
+        if core.windowShouldOpen() {
+            openWindow()
+        } else {
+            core.windowClosed()
+            core.noWindowToShow()
+        }
+        // It's part of what comes back.
+        if core.settingsWindowWasOpen() { showSettings(takingKey: false) }
         core.ready()
+    }
+
+    /// Opens Settings, or brings it forward. Nothing's made for it until it's asked for. Coming back at a launch it doesn't take the keyboard, which is the main window's as it was.
+    func showSettings(takingKey: Bool = true) {
+        if settings == nil { settings = SettingsWindowController(delegate: self, place: core.settingsWindowPlace(screens: NSScreen.screens.map(MainWindowController.info))) }
+        guard !isQuiet else { return }
+        if takingKey {
+            settings?.window.makeKeyAndOrderFront(nil)
+        } else if core.opensInBackground() {
+            settings?.window.orderBack(nil)
+        } else {
+            settings?.window.orderFront(nil)
+        }
+    }
+
+    func settingsClosed() {
+        settings = nil
+    }
+
+    /// One timer for the time the updater names, armed again only when that changes. Nothing repeats, and it's by the wall clock, so a Mac that's been asleep looks as soon as it wakes.
+    private func armUpdateTimer() {
+        let wanted = core.updateTimer()
+        guard wanted?.atMs != updateTimerAt else { return }
+        updateTimer?.cancel()
+        updateTimer = nil
+        updateTimerAt = wanted?.atMs
+        guard let wanted else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(wallDeadline: .now() + wanted.inSeconds, leeway: .seconds(5))
+        timer.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.updateTimerAt = nil
+                self.core.updateTimerFired()
+                self.armUpdateTimer()
+            }
+        }
+        timer.resume()
+        updateTimer = timer
     }
 
     /// The app coming forward and going back, which is part of what's kept, and each input, which is how long it's been since the user touched the app. One number stored per event, and no timer.
@@ -148,14 +199,20 @@ final class Bridge: AppListener, @unchecked Sendable {
         center.addObserver(self, selector: #selector(activityChanged), name: NSApplication.didBecomeActiveNotification, object: nil)
         center.addObserver(self, selector: #selector(activityChanged), name: NSApplication.didResignActiveNotification, object: nil)
         let core = self.core
-        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .scrollWheel, .magnify]) { event in
-            core.noteUserInput()
+        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: Self.actions.union(Self.nearby)) { event in
+            if Self.actions.contains(NSEvent.EventTypeMask(type: event.type)) { core.noteUserInput() } else { core.noteUserNearby() }
             return event
         }
     }
 
+    /// What someone does. Each says any notice has been read.
+    nonisolated static let actions: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .scrollWheel, .magnify]
+    /// What shows someone's there. Owner, 2026-11-07: "hasn't touched", so a silent update errs towards never interrupting. Comes in only while there's someone moving something, so nothing at rest.
+    nonisolated static let nearby: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .leftMouseUp, .rightMouseUp, .otherMouseUp, .keyUp, .flagsChanged, .rotate, .swipe, .smartMagnify, .gesture, .beginGesture, .endGesture, .pressure, .tabletPoint]
+
     @objc private func activityChanged() {
         guard !isQuiet else { return }
+        if NSApp.isActive { windowController?.cameToTheFront() }
         core.frontmostChanged(app: NSApp.isActive, windowKey: windowController?.window.isKeyWindow ?? false)
     }
 
@@ -215,7 +272,9 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     func modelChanged() {
         windowController?.refreshModel()
+        settings?.refresh()
         installMenu()
+        armUpdateTimer()
         windowController?.showIfReady()
     }
 
@@ -329,6 +388,7 @@ final class Bridge: AppListener, @unchecked Sendable {
         case .none: break
         case .showOpenPanel: openDocument(nil)
         case .showAbout: NSApp.orderFrontStandardAboutPanel(nil)
+        case .showSettings: showSettings()
         case .quit: NSApp.terminate(nil)
         case .closeWindow: windowController?.window.performClose(nil)
         }

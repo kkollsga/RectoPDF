@@ -84,6 +84,19 @@ pub fn run_in_background() {
     isolate::run_in_background();
 }
 
+/// This process's own memory, three ways. The footprint is what Activity Monitor shows. `compressed` is the part of it in the compressor, which moves with the whole Mac's memory pressure: a page of a system library's data the app never touched again isn't charged while it's resident and shared, and is once the system compresses it, so the footprint can rise by megabytes with nothing done. `heap` is what's allocated and not freed, in every malloc zone, which is where a leak of this app's or AppKit's shows, and which pressure doesn't move.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OwnMemory {
+    pub footprint: u64,
+    pub compressed: u64,
+    pub heap: u64,
+}
+
+/// See [`OwnMemory`]. `None` where it isn't implemented.
+pub fn own_memory() -> Option<OwnMemory> {
+    isolate::own_memory()
+}
+
 /// This process's physical footprint in bytes, the number Activity Monitor shows. `None` where it isn't implemented.
 pub fn footprint_bytes() -> Option<u64> {
     isolate::process_memory(std::process::id()).map(|memory| memory.footprint_bytes)
