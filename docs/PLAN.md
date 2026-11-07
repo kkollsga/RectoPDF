@@ -112,6 +112,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
 - [ ] ⌘K
 - [ ] Session restore: the whole app state on every launch, unsaved edits included (SPEC decision 23)
+- [ ] Deep sleep, with session restore as one piece of work (SPEC decision 25): dormant tabs go to disk, sleep files wake a tab within one frame, a byte budget across documents, a response to memory pressure, previews written once when a tab goes dormant
 - [ ] Recent files, replaced-file handling, password prompt
 - [ ] Settings window (⌘,), starting with *Update automatically*
 - [ ] Update check: *Check for Updates…* in the RectoPDF menu, *Update to X.Y.Z…* when one is found, once a day (SPEC decision 24)

@@ -74,3 +74,4 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "Actually it should recover state so perfectly that it can update while the user is using it. But for auto update let's update in a window the user hasn't touched the app for 30 minutes".
 - "I was thinking we need to reduce SSD wear as much as we can, while of course keeping a good memory budget." Edits come in bursts: "usually when people are editing they will edit a lot of things, so we need to make sure we keep the budget".
 - "We want a good balance between SSD-aware performance and memory use for warm PDFs that's actively being edited. It's fine to keep in memory for a while, and then as it goes dormant we store to disk."
+- "When it's on deep sleep, we want its state to be stored on disk, not on memory. But it needs to be stored in a way that's quick to recover without any delay."
