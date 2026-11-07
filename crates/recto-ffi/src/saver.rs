@@ -249,7 +249,7 @@ impl Saver {
         }
         // The tab on screen's sleep file, for the next launch's first frame. Nothing depends on it, so it's no part of what's read back or forced to the drive. If nothing's changed, nothing's written.
         if let Some(id) = inner.host.session.with_session(|session| session.active()) {
-            inner.write_sleep_for(id);
+            inner.write_sleep_for(id, true);
         }
         let _gate = lock(&self.gate);
         self.first_edit.store(0, Ordering::SeqCst);

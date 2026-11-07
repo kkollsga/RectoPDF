@@ -691,6 +691,7 @@ fn a_tab_left_alone_goes_dormant_and_wakes_from_its_file() {
     assert_eq!(wake["from_sleep"], true, "{woken}");
     assert_eq!(wake["blank_frames"], 0, "{wake}");
     assert!(wake["first_frame_us"].as_u64().is_some(), "{wake}");
+    assert_eq!(run.ok(&["session", "show"])["tabs"][0]["can_undo"], true);
     assert!(wake["sharp_us"].as_u64().unwrap() >= wake["first_frame_us"].as_u64().unwrap(), "{wake}");
     assert!((place(&run) - at_page_6).abs() < 1.0, "at its place: {} and {at_page_6}", place(&run));
     assert_eq!(run.ok(&["edits"])["edited"], true);
@@ -744,6 +745,198 @@ fn a_dormant_tabs_edits_survive_a_kill_and_a_hand_off() {
     assert_eq!(run.ok(&["edits"])["pages"], 8);
 }
 
+/// A page of one colour, for telling which file a picture's of. The red, green and blue of each are as far apart as can be.
+fn page_of(colour: &str) -> Page {
+    Page::new(format!("{colour} rg 0 0 612 792 re f").into_bytes())
+}
+
+const RED: &str = "1 0 0";
+const BLUE: &str = "0 0 1";
+const GREEN: &str = "0 1 0";
+
+/// Which of red, green and blue each sleep file's pictures mostly are, read as anything else would, by the file's name.
+fn colours_in_sleep_files(state: &State) -> Vec<(String, Vec<&'static str>)> {
+    sleep_files(state)
+        .iter()
+        .map(|file| {
+            let sleep = recto_session::sleep::decode_sleep(&std::fs::read(file).unwrap(), recto_session::record::CURRENT_VERSION).unwrap();
+            let colours = sleep.pictures.iter().map(|picture| {
+                let (blue, green, red) = picture.bgra.as_chunks::<4>().0.iter().fold((0u64, 0u64, 0u64), |sum, pixel| (sum.0 + u64::from(pixel[0]), sum.1 + u64::from(pixel[1]), sum.2 + u64::from(pixel[2])));
+                // Black on white paper, as another tab's is, is none of them.
+                if red > green.max(blue) { "red" } else if green > red.max(blue) { "green" } else if blue > red.max(green) { "blue" } else { "paper" }
+            });
+            (file.file_name().unwrap().to_string_lossy().to_string(), colours.collect())
+        })
+        .collect()
+}
+
+/// Failure (review, blocks the merge): a sleep file keeps the old file's picture under the new file's name, for good: a red PDF replaced by a blue one, or saved over, has red in the next sleep file and every wake after it, restarts included. With a redaction, that picture would be what was removed. Everything drawn of a file goes with that version of it, on this route and on a save.
+#[test]
+fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    run.ok(&["qa", "appearance", "light"]);
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (file, other) = (folder.join("colour.pdf"), text_document(&folder, "other.pdf", 2));
+    std::fs::write(&file, pages(&[page_of(RED)])).unwrap();
+    run.ok(&["open", file.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["open", other.to_str().unwrap()]);
+    run.settled();
+    let tab = tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with("colour.pdf")).unwrap()["id"].as_u64().unwrap();
+    let on_tab = format!("#{tab}");
+    let other_tab = format!("#{}", tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with("other.pdf")).unwrap()["id"].as_u64().unwrap());
+    run.ok(&["session", "sleep", "--tab", &on_tab]);
+    assert_eq!(colours_in_sleep_files(&state).iter().flat_map(|(_, colours)| colours.clone()).collect::<Vec<_>>(), ["red"], "the old one, red, as it should be");
+    // Another app puts blue there, and it's woken from what it had.
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&file, pages(&[page_of(BLUE), page_of(BLUE)])).unwrap();
+    run.ok(&["tap", &on_tab]);
+    wait_until("it finds the new one", || run.ok(&["where"])["pages"] == 2);
+    run.settled();
+    assert_eq!(tabs_of(&run.report()).iter().find(|one| one["id"] == tab).unwrap()["notice"], "changed");
+    run.ok(&["tap", &other_tab]);
+    run.settled();
+    run.ok(&["session", "sleep", "--tab", &on_tab]);
+    let colours = colours_in_sleep_files(&state);
+    assert!(!colours.iter().any(|(_, colours)| colours.contains(&"red")), "nothing red, under any name: {colours:?}");
+    assert!(colours.iter().any(|(_, colours)| colours.contains(&"blue")), "and it's the new one that's there: {colours:?}");
+    // A save, with no sleep file in between to hide behind: the picture's still in memory at the moment it's saved.
+    run.ok(&["tap", &on_tab]);
+    run.settled();
+    let written = folder.join("written.pdf");
+    std::fs::write(&written, pages(&[page_of(GREEN), page_of(GREEN)])).unwrap();
+    run.ok(&["qa", "save-from", written.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["tap", &other_tab]);
+    run.settled();
+    run.ok(&["session", "sleep", "--tab", &on_tab]);
+    wait_until("the old version's goes", || !colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"blue")));
+    assert!(colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"green")), "{:?}", colours_in_sleep_files(&state));
+    // And across a restart, what comes up isn't any of the old ones, and its next file isn't either.
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    run.ok(&["qa", "appearance", "light"]);
+    run.settled();
+    run.ok(&["tap", &on_tab]);
+    run.settled();
+    assert_eq!(run.ok(&["where"])["pages"], 2);
+    run.ok(&["tap", &other_tab]);
+    run.settled();
+    run.ok(&["session", "sleep", "--tab", &on_tab]);
+    let colours = colours_in_sleep_files(&state);
+    assert!(!colours.iter().any(|(_, colours)| colours.contains(&"red") || colours.contains(&"blue")), "{colours:?}");
+}
+
+/// Failure (review, blocks the merge): a protected PDF's pages go in a sleep file in the clear, when it's been added to a plain document: only the tab's own file was looked at. A document with a page from one has no pictures, and that's known after a restart.
+#[test]
+fn a_protected_pdfs_pages_never_reach_a_sleep_file() {
+    use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    run.ok(&["qa", "appearance", "light"]);
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let plain = folder.join("plain.pdf");
+    std::fs::write(&plain, pages(&[page_of(GREEN), page_of(GREEN)])).unwrap();
+    let other = text_document(&folder, "other.pdf", 2);
+    let mut document = lopdf::Document::load_mem(&pages(&[page_of(RED)])).unwrap();
+    document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));
+    let encryption = EncryptionState::try_from(EncryptionVersion::V2 { document: &document, owner_password: "owner", user_password: "", key_length: 128, permissions: Permissions::all() }).unwrap();
+    document.encrypt(&encryption).unwrap();
+    let locked = folder.join("locked.pdf");
+    document.save(&locked).unwrap();
+    run.ok(&["open", plain.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["page", "insert", locked.to_str().unwrap(), "--at", "1"]);
+    run.settled();
+    assert_eq!(run.ok(&["edits"])["pages"], 3);
+    let on_plain = format!("#{}", tabs_of(&run.report())[0]["id"]);
+    run.ok(&["open", other.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["session", "sleep", "--tab", &on_plain]);
+    let colours = colours_in_sleep_files(&state);
+    assert!(colours.iter().all(|(_, colours)| colours.is_empty()), "no pictures at all: {colours:?}");
+    // And on a page of its own too, as a tab on the file itself.
+    run.ok(&["open", locked.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["open", other.to_str().unwrap()]);
+    run.settled();
+    let on_locked = format!("#{}", tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with("locked.pdf")).unwrap()["id"]);
+    run.ok(&["session", "sleep", "--tab", &on_locked]);
+    run.hand_off();
+    assert!(colours_in_sleep_files(&state).iter().all(|(_, colours)| !colours.contains(&"red")), "{:?}", colours_in_sleep_files(&state));
+}
+
+/// Failure (review): a forged sleep file says a 3-page PDF has 100 pages, and that goes on being believed through drawing and another sleep, and a rotation lands on a page that isn't there. The worker's word goes over it as soon as it has the file open: the sleep file goes, and the file's read.
+#[test]
+fn a_forged_length_lasts_only_till_the_worker_has_the_file() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (short, other) = (text_document(&folder, "short.pdf", 3), text_document(&folder, "other.pdf", 2));
+    run.ok(&["open", short.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["open", other.to_str().unwrap()]);
+    run.settled();
+    let on_short = format!("#{}", tabs_of(&run.report())[0]["id"]);
+    run.ok(&["session", "sleep", "--tab", &on_short]);
+    let file = sleep_files(&state).pop().unwrap();
+    let mut sleep = recto_session::sleep::decode_sleep(&std::fs::read(&file).unwrap(), recto_session::record::CURRENT_VERSION).unwrap();
+    sleep.file_pages = 100;
+    sleep.pages = 100;
+    std::fs::write(&file, recto_session::sleep::encode_sleep(&sleep)).unwrap();
+    run.ok(&["tap", &on_short]);
+    wait_until("it's found out", || run.ok(&["where"])["pages"] == 3);
+    run.settled();
+    wait_until("the forged file goes", || sleep_files(&state).is_empty());
+    let (refused, code) = state.json(&["page", "rotate", "50", "--degrees", "90"]);
+    assert_ne!(code, 0, "no page 50: {refused}");
+    run.ok(&["tap", "#2"]);
+    run.settled();
+    run.ok(&["session", "sleep", "--tab", &on_short]);
+    let again = recto_session::sleep::decode_sleep(&std::fs::read(sleep_files(&state).pop().unwrap()).unwrap(), recto_session::record::CURRENT_VERSION).unwrap();
+    assert_eq!(again.file_pages, 3, "what's written next is true");
+}
+
+/// Failure (review L4): a file kept for undoing past a save is gone while its list is asleep. The steps needing it roll off on waking, with the journal still saying them, so `session save` and a hand-off are refused until a restart. And `session show` says there's nothing to undo on a list that's asleep.
+#[test]
+fn a_kept_file_gone_while_asleep_doesnt_stop_a_save() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (file, other) = (text_document(&folder, "doc.pdf", 3), text_document(&folder, "other.pdf", 2));
+    run.ok(&["open", file.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "delete:2"]);
+    run.settled();
+    let written = folder.join("written.pdf");
+    written_without(&file, &[2], &written);
+    run.ok(&["qa", "save-from", written.to_str().unwrap()]);
+    run.settled();
+    let on_doc = format!("#{}", tabs_of(&run.report())[0]["id"]);
+    run.ok(&["open", other.to_str().unwrap()]);
+    run.settled();
+    let slept = run.ok(&["session", "sleep", "--tab", &on_doc]);
+    assert_eq!(slept["list_asleep"], true, "{slept}");
+    let shown = run.ok(&["session", "show"]);
+    assert_eq!(shown["tabs"][0]["can_undo"], true, "asleep, and there's still a step: {shown}");
+    let journals = state.root.join("session").join("journals");
+    let kept = std::fs::read_dir(&journals).unwrap().flatten().find(|entry| entry.file_name().to_string_lossy().starts_with("kept-")).unwrap().path();
+    std::fs::remove_file(kept).unwrap();
+    run.ok(&["tap", &on_doc]);
+    run.settled();
+    assert_eq!(tabs_of(&run.report())[0]["notice"], "history_rolled_off");
+    assert_eq!(run.ok(&["edits"])["can_undo"], false);
+    let saved = run.ok(&["session", "save"]);
+    assert_eq!(saved["saved"], true, "{saved}");
+    let handed = run.hand_off();
+    assert!(handed.get("error").is_none(), "{handed}");
+}
+
 /// Failure: a sleep file's believed when it's been tampered with, or about a file that's since changed, so a tab wakes to a stranger's contents and pictures; or a bad one stops it opening. It's thrown away, and the tab reads its PDF, as if there'd been none.
 #[test]
 fn a_sleep_file_thats_wrong_only_costs_the_quick_way() {
@@ -781,7 +974,7 @@ fn a_sleep_file_thats_wrong_only_costs_the_quick_way() {
     run.ok(&["tap", &format!("#{first}")]);
     wait_until("it finds the new one", || run.ok(&["where"])["pages"] == 9);
     run.settled();
-    assert_eq!(tabs_of(&run.report()).iter().find(|tab| tab["id"] == first).unwrap()["notice"]["code"], Value::Null, "nothing to say: no edits, and it's on screen now: {}", run.report()["session"]["tabs"]);
+    assert_eq!(tabs_of(&run.report()).iter().find(|tab| tab["id"] == first).unwrap()["notice"], "changed", "it says so, with no edits too (decision 23): {}", run.report()["session"]["tabs"]);
     let mut gone = false;
     for _ in 0..200 {
         gone = sleep_files(&state).is_empty();

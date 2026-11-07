@@ -10,6 +10,7 @@ use crate::layout::{PageBox, PageLayout};
 use crate::selection::{Notice, Selecting, Urgency};
 use recto_index::select::{PagePoint, Range};
 use crate::paper::PaperKind;
+use recto_platform::FileStamp;
 use recto_platform::surface::{PixelSurface, Purge};
 use recto_proto::{BYTES_PER_PIXEL, MAX_REGION_BYTES, MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
 use recto_render_service::{CancelHandle, LowResWhy, TileKind, plan_regions};
@@ -114,6 +115,8 @@ pub struct PageMap {
     pub files: Vec<PathBuf>,
     /// For each position, which file and which page there. `None` means position and page are the same, in the first file.
     pub slots: Option<Vec<(u16, u32)>>,
+    /// Which version of the tab's own file this is. Another means every picture and tile of it is of something else, as a change of the page order does.
+    pub own: Option<FileStamp>,
 }
 
 impl PageMap {
@@ -194,6 +197,8 @@ struct DocView {
     exact_y: Option<(f64, f64)>,
     /// Jobs of a generation below this were about the pages as they were before the last edit, and what they found is thrown away.
     floor: u64,
+    /// It came up from a sleep file, so a page shows on what its size is taken to be before it's been asked.
+    size_on_trust: bool,
 }
 
 /// Exactly where a tab's view is. For the session to keep, as a cold tab holds nothing here, and to bring back.
@@ -482,8 +487,12 @@ pub struct Reader {
     gave_up: bool,
     /// What's come from a tab's sleep file, for when it's made the hot tab.
     sleep_view: Option<(u32, SleepView)>,
+    /// Files whose renderers have the wrong version open, to be let go of and opened again.
+    reopen_files: Vec<PathBuf>,
     /// The window's on the screen, so what the host applies is a frame someone can see.
     window_up: bool,
+    /// For QA: nothing's drawn, so a first frame stays to be looked at.
+    hold_drawing: bool,
     /// When the wake under way was asked for, and how it's gone.
     waking: Option<(Instant, WakeReport)>,
     last_wake: Option<WakeReport>,
@@ -531,7 +540,9 @@ impl Reader {
             selecting: Selecting::default(),
             gave_up: false,
             sleep_view: None,
+            reopen_files: Vec::new(),
             window_up: false,
+            hold_drawing: false,
             waking: None,
             last_wake: None,
         }
@@ -558,6 +569,21 @@ impl Reader {
     /// Whether this tab's anything here: a view of it's held, so a sleep file has nothing to add.
     pub fn holds(&self, tab: u32) -> bool {
         self.docs.contains_key(&tab)
+    }
+
+    /// Files whose renderers have to start again.
+    pub fn take_reopen_files(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.reopen_files)
+    }
+
+    /// For QA: nothing's drawn till it's let go, so a first frame stays to be looked at.
+    pub fn hold_drawing(&mut self, on: bool) {
+        self.hold_drawing = on;
+    }
+
+    /// Whether this file is the tab's own, as its length is what a sleep file spoke for.
+    pub fn is_own_file(&self, tab: u32, file: &std::path::Path) -> bool {
+        self.docs.get(&tab).is_some_and(|doc| doc.map.files.first().is_some_and(|own| own == file))
     }
 
     /// The window's gone up. From here, a bare page is one that's seen.
@@ -626,8 +652,13 @@ impl Reader {
     }
 
     /// **What a tab's sleep file gets from what's here.** Sizes, and a picture for each page at its place: its preview, if the system has left it, or else put together from whatever of its tiles are here, so a heavy page, which has no preview, has one too. A short lock: a picture's a few milliseconds at the worst.
-    pub fn sleep_material(&mut self, tab: u32) -> Option<SleepMaterial> {
+    ///
+    /// `own` is what the session says the tab's file is now. If that's not what this is a view of, what's here is of another file, and nothing goes in its sleep file.
+    pub fn sleep_material(&mut self, tab: u32, own: Option<FileStamp>) -> Option<SleepMaterial> {
         let doc = self.docs.get(&tab)?;
+        if doc.map.own != own {
+            return None;
+        }
         let usual = doc.layout.usual_size();
         let sizes = doc.layout.other_sizes();
         let pages: Vec<u32> = if self.hot == Some(tab) {
@@ -812,7 +843,7 @@ impl Reader {
             let left_at = saved.map(|saved| (saved.page, (saved.anchor.0.min(pages.saturating_sub(1)), within(saved.anchor.1))));
             let scroll_x = saved.map_or(0.0, |saved| if saved.x.is_finite() { saved.x.max(0.0) } else { 0.0 });
             let exact_y = saved.filter(|saved| saved.y.is_finite() && saved.y >= 0.0 && saved.document_height.is_finite()).map(|saved| (saved.y, saved.document_height));
-            DocView { tab, layout, map: map.clone(), magnification, anchor: (page, 0.0), tile_scale: 0.0, issues: HashMap::new(), heavy: HashMap::new(), problem: None, seen: HashSet::new(), left_at, scroll_x, exact_y, floor }
+            DocView { tab, layout, map: map.clone(), magnification, anchor: (page, 0.0), tile_scale: 0.0, issues: HashMap::new(), heavy: HashMap::new(), problem: None, seen: HashSet::new(), left_at, scroll_x, exact_y, floor, size_on_trust: false }
         });
         // Back on the page it was left on, and it's back at the same place in that page. A tall page's reader isn't sent to its top.
         let same_pages = doc.map == map && doc.layout.count() == pages;
@@ -823,6 +854,10 @@ impl Reader {
         }
         doc.anchor = back_at.unwrap_or((page.min(pages.saturating_sub(1)), 0.0));
         if doc.map != map || doc.layout.count() != pages {
+            // Another version of its file: a worker that's running has the old one open, and goes on drawing that.
+            if doc.map.own != map.own {
+                self.reopen_files.extend(map.files.first().cloned());
+            }
             doc.map = map;
             doc.layout = PageLayout::new(pages);
             doc.issues.clear();
@@ -860,6 +895,7 @@ impl Reader {
         let Some(doc) = self.docs.get_mut(&tab) else { return };
         if let Some(usual) = view.usual {
             doc.layout.seed_usual(usual);
+            doc.size_on_trust = true;
         }
         for (page, size) in view.sizes {
             doc.layout.set_page_size(page, size);
@@ -1234,16 +1270,18 @@ impl Reader {
         let Some(doc) = self.docs.get(&tab) else { return };
         let scale = doc.tile_scale;
         let visible: Vec<u32> = self.visible_pages(doc).filter(|page| doc.layout.is_known(*page)).collect();
+        // A tab that's come from a sleep file knows what size its pages are likely to be, so with or without a picture its place is there on the paper from the first frame, and real sizes follow.
+        let on_paper: Vec<u32> = if doc.size_on_trust { self.visible_pages(doc).collect() } else { visible.clone() };
 
-        let stale: Vec<u32> = self.shown.keys().copied().filter(|page| !visible.contains(page)).collect();
+        let stale: Vec<u32> = self.shown.keys().copied().filter(|page| !on_paper.contains(page)).collect();
         for page in stale {
             self.hide_page(page);
         }
         let Some(doc) = self.docs.get(&tab) else { return };
         let paper_rgb = self.paper.rgb();
         let device = self.viewport.magnification * self.viewport.backing;
-        let mut placements = Vec::with_capacity(visible.len());
-        for &page in &visible {
+        let mut placements = Vec::with_capacity(on_paper.len());
+        for &page in &on_paper {
             let rect = doc.layout.rect(page);
             let size = doc.layout.size(page);
             // On whole device pixels, so a tile's pixels land on the screen's.
@@ -1585,7 +1623,7 @@ impl Reader {
 
     /// The next thing to do, most wanted first, or `None`, when the engine parks. Only what's visible is drawn: drawing ahead comes in a later phase.
     pub fn next_plan(&mut self) -> Option<JobPlan> {
-        if !self.window_open {
+        if !self.window_open || self.hold_drawing {
             return None;
         }
         let tab = self.hot?;
@@ -2127,7 +2165,7 @@ mod tests {
     use crate::layout::PageBox;
 
     fn map() -> PageMap {
-        PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: None }
+        PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: None, own: None }
     }
 
     impl Reader {
@@ -2369,11 +2407,11 @@ mod tests {
         let mut reader = reader_on(10);
         settle(&mut reader);
         assert!(!reader.entries.is_empty());
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None }, &[], None);
+        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None }, &[], None);
         assert!(reader.entries.values().all(|entry| entry.tab != 1), "tab 1 isn't warm");
         assert!(!reader.docs.contains_key(&1));
         assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")]);
-        reader.activate(3, 10, 0, PageMap { files: vec![PathBuf::from("/d/c.pdf")], slots: None }, &[2], None);
+        reader.activate(3, 10, 0, PageMap { files: vec![PathBuf::from("/d/c.pdf")], slots: None, own: None }, &[2], None);
         assert_eq!(reader.wanted_files().len(), 2, "a warm tab's file is kept");
     }
 
@@ -2510,7 +2548,7 @@ mod tests {
     fn a_change_to_the_page_order_clears_what_was_drawn() {
         let mut reader = reader_on(5);
         settle(&mut reader);
-        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 0)]) };
+        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 0)]), own: None };
         reader.activate(1, 2, 0, edited.clone(), &[], None);
         assert!(reader.entries.is_empty());
         assert_eq!(reader.doc().unwrap().layout.count(), 2);
@@ -2549,7 +2587,7 @@ mod tests {
     /// Failure: a page is deleted while a job on it is running, and when the job ends its old picture goes in the place of the page now there, reading as settled. The same for a size or a heavy answer about what used to be there.
     #[test]
     fn what_a_job_found_before_an_edit_is_thrown_away() {
-        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 2)]) };
+        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 2)]), own: None };
         // A job of each kind, caught running.
         let mut reader = reader_on(3);
         let size = reader.next_job().expect("a size");
@@ -2613,7 +2651,7 @@ mod tests {
             }
             seen
         }
-        let other = |name: &str| PageMap { files: vec![PathBuf::from(name)], slots: None };
+        let other = |name: &str| PageMap { files: vec![PathBuf::from(name)], slots: None, own: None };
         for answer in [TileKind::Colour, TileKind::Blank { rgb: 0xFF_FF_FF }] {
             let mut held = Vec::new();
             let mut reader = reader_on(3);
@@ -2731,7 +2769,7 @@ mod tests {
         reader.set_viewport(view(inside));
         let page = reader.take_moved_page().expect("the reader moved");
         settle(&mut reader);
-        let other = PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None };
+        let other = PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None };
         reader.activate(2, 10, 0, other.clone(), &[1], None);
         reader.take_ops();
         reader.activate(1, 100, page, map(), &[2], None);
@@ -2751,7 +2789,7 @@ mod tests {
     fn a_warm_tab_that_goes_holds_nothing_at_once() {
         let mut reader = reader_on(10);
         settle(&mut reader);
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None }, &[1], None);
+        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None }, &[1], None);
         assert!(reader.entries.values().any(|entry| entry.tab == 1), "still warm");
         assert_eq!(reader.wanted_files().len(), 2);
         reader.set_warm(&[]);
@@ -2841,13 +2879,14 @@ mod tests {
     fn a_picture_for_sleep_comes_from_a_preview_or_the_tiles() {
         let mut reader = reader_on(5);
         settle(&mut reader);
-        let material = reader.sleep_material(1).expect("a tab it holds");
+        let material = reader.sleep_material(1, None).expect("a tab it holds");
+        assert!(reader.sleep_material(1, Some(FileStamp { size: 1, mtime_ns: 1, device: 0, inode: 1 })).is_none(), "what's here is of another version of the file than that");
         assert_eq!(material.usual, Some(letter()));
         assert!(!material.pictures.is_empty());
         let picture = &material.pictures[0];
         assert_eq!(picture.page, 0);
         assert_eq!(picture.bgra.len(), picture.width as usize * picture.height as usize * 4);
-        assert!(reader.sleep_material(99).is_none());
+        assert!(reader.sleep_material(99, None).is_none());
         // Pixels from a tile, shrunk by two: a block of 2 by 2 comes to one, and their average, and it lands at the tile's place.
         let mut tile = vec![0u8; 4 * 4 * 4];
         for pixel in tile.as_chunks_mut::<4>().0 {
@@ -2864,6 +2903,27 @@ mod tests {
         // Off the edge of the picture: nothing panics.
         shrink_into(&tile, 16, 4, 4, 2, (3, 3), &mut picture, 4, 4);
         shrink_into(&tile[..8], 16, 4, 4, 2, (0, 0), &mut picture, 4, 4);
+    }
+
+    /// Failure (review): a tab's file turns out to be another, by a change outside or a save, and its previews stay, so its next sleep file has the old file's pictures under the new file's name, for good, and with a redaction that picture's what was removed. Another version of the file is a change of what's on the pages, and everything of it goes, on screen and off.
+    #[test]
+    fn another_version_of_the_file_takes_every_picture_of_the_old_one() {
+        let version = |size: u64| Some(FileStamp { size, mtime_ns: 1, device: 0, inode: 7 });
+        let on = |own: Option<FileStamp>| PageMap { own, ..map() };
+        let mut reader = Reader::new();
+        reader.set_viewport(view(0.0));
+        reader.activate(1, 5, 0, on(version(1)), &[], None);
+        settle(&mut reader);
+        assert!(reader.entries.values().any(|entry| entry.preview), "there's a preview");
+        let material = reader.sleep_material(1, version(1)).unwrap();
+        assert!(!material.pictures.is_empty());
+        // Told it's another file: nothing of the old one's left, and the old one's not offered to the sleep file under the new name.
+        assert!(reader.sleep_material(1, version(2)).is_none());
+        reader.activate(1, 5, 0, on(version(2)), &[], None);
+        assert!(reader.entries.is_empty(), "every picture and tile of it goes");
+        assert!(reader.sleep_material(1, version(2)).unwrap().pictures.is_empty());
+        assert!(reader.take_ops().contains(&Op::Clear), "and off the screen");
+        assert_eq!(reader.take_reopen_files(), [PathBuf::from("/d/a.pdf")], "and a worker that has the old one open goes, or it goes on drawing that");
     }
 
     /// Failure: memory pressure takes what's on screen, leaving a blank page, or leaves what could go. And at its worst, the previews go too.

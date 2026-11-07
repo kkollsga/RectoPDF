@@ -51,6 +51,8 @@ fn a_long_session_stays_flat() {
     assert_eq!(ids.len(), TABS);
     // Going dormant in the time this has, not five minutes.
     ok(&state, &["qa", "dormant-after", "2"]);
+    // And with no limit on how often pictures are written, as what's being looked at here is what a wake and a dormancy cost, and whether they build up.
+    ok(&state, &["qa", "sleep-write-gap", "0"]);
     let mut footprints = Vec::new();
     let (mut peak_workers, mut peak_worker_bytes) = (0u64, 0u64);
     let mut edits = 0u64;

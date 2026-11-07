@@ -56,6 +56,8 @@ pub enum Tier {
 // size: asserted <= 256 by `tab_record_stays_small`. Held per tab, including cold ones.
 #[derive(Debug)]
 pub struct TabRecord {
+    /// What's known of its file came from a sleep file, and the PDF hasn't said so yet.
+    from_sleep: bool,
     /// Its file's protected. Its contents and pages are never written anywhere, so it has no sleep file.
     encrypted: bool,
     /// When it was last active, edited or worked on, in seconds of the session. What going dormant goes by, with no timer of its own.
@@ -614,6 +616,16 @@ pub enum ClearReason {
     UserAsked,
 }
 
+/// What a tab's sleep file would say, from here.
+#[derive(Clone, Debug)]
+pub struct SleepFacts {
+    pub id: TabId,
+    pub path: PathBuf,
+    pub sleep: sleep::SleepFile,
+    /// No page of the document's from a protected file.
+    pub pictures_allowed: bool,
+}
+
 /// What's kept of a tab's edits while it's left alone, for a look without opening it.
 pub fn edits_summary_of(edits: &PageEdits) -> EditsSummary {
     edits.summary()
@@ -632,6 +644,8 @@ pub struct Session<L = DiskLoader> {
     dir_ids: HashMap<Box<Path>, u32>,
     /// Only for tabs with page edits. A tab with none costs nothing here.
     edits: HashMap<TabId, PageEdits>,
+    /// Lists that couldn't be read back, to try again, and whose tab says so meanwhile.
+    wake_failed: Vec<TabId>,
     /// Lists that have gone to disk, SPEC decision 25: all there is of them in memory is what a look at the tab needs, a cold tab's cost. Woken by [`Self::wake_list`] from their journal.
     asleep: HashMap<TabId, EditsSummary>,
     /// What tabs' `touched` count from.
@@ -694,7 +708,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -823,6 +837,7 @@ impl<L: DocLoader> Session<L> {
         self.next_id += 1;
         let name = tab_name(path);
         self.tabs.push(TabRecord {
+            from_sleep: false,
             encrypted: false,
             touched: 0,
             id,
@@ -953,7 +968,9 @@ impl<L: DocLoader> Session<L> {
 
     /// Applies a page edit, noting who made it. The list is made the first time a tab is edited, and goes again if that edit was refused. The reader's place follows its page.
     pub fn edit_pages_as(&mut self, id: TabId, by: Author, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
-        self.wake_list(id);
+        if !self.wake_list(id) {
+            return Err(SessionError::EditsUnreadable);
+        }
         self.touch(id);
         let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
         if tab.renderer_only {
@@ -1125,6 +1142,11 @@ impl<L: DocLoader> Session<L> {
         all
     }
 
+    /// Whether a tab may go dormant, whatever's asking: not the one on screen, one being worked on, or one being saved.
+    pub fn can_go_dormant(&self, id: TabId) -> bool {
+        self.active != Some(id) && !self.held.contains(&id) && self.edits.get(&id).is_none_or(|list| list.saving().is_none())
+    }
+
     /// What a dormant tab's journal has to say for its list to go to disk: the whole list, to compact to and compare with. `None` if there's no list, if it's not all in the file, or if nobody keeps journals here.
     pub fn list_to_sleep(&self, id: TabId) -> Option<(String, JournalHeader, record::EditsRecord)> {
         if !self.journaling || self.history.is_none() {
@@ -1136,7 +1158,7 @@ impl<L: DocLoader> Session<L> {
 
     /// **A tab goes dormant, SPEC decision 25: it costs a cold tab's memory from here on.** Its contents go, and its list goes if [`Self::list_to_sleep`] says it can, as all of it's on disk. Said once for each, and read back only if it's touched again. Says whether the list went, or there wasn't one.
     pub fn go_dormant(&mut self, id: TabId) -> bool {
-        if self.active == Some(id) {
+        if !self.can_go_dormant(id) {
             return false;
         }
         self.warm.retain(|(tab, _)| *tab != id);
@@ -1154,28 +1176,56 @@ impl<L: DocLoader> Session<L> {
         true
     }
 
-    /// **Brings a tab's list back from its journal, if it's on disk.** Everything about the tab comes here first, so nothing can act on a list it can't see. A bounded read of a private file. If it can't be read, the tab says so, as it would at a launch, and has no list.
-    pub fn wake_list(&mut self, id: TabId) {
-        let Some(summary) = self.asleep.remove(&id) else { return };
+    /// **Brings a tab's list back from its journal, if it's on disk.** Everything about the tab comes here first, so nothing can act on a list it can't see. **If it can't be read just now, it stays asleep, its name kept, to be tried again by whatever's next,** and says false. Nothing goes on that hasn't got a list to go on: a new edit laid on a journal it never read would land on the wrong pages. The tab says so till then. Only a discard or a confirmed save gives up on it.
+    pub fn wake_list(&mut self, id: TabId) -> bool {
+        let Some(&summary) = self.asleep.get(&id) else { return true };
         let restored = self.journals.get(&id).and_then(|name| self.history.as_ref()?.read_list(name));
         match restored {
             Some(restored) if restored.edits.summary() == summary || restored.rolled_off => {
+                self.asleep.remove(&id);
                 let mut edits = restored.edits;
                 edits.set_journal_seq(restored.seq);
                 self.edits.insert(id, edits);
-                if restored.rolled_off
-                    && let Some(tab) = self.tab_mut(id)
-                {
-                    tab.notice = Some(Box::new(FileNotice::HistoryRolledOff));
+                let said_unreadable = self.wake_failed.contains(&id);
+                self.wake_failed.retain(|failed| *failed != id);
+                if let Some(tab) = self.tab_mut(id) {
+                    if said_unreadable && matches!(tab.notice.as_deref(), Some(FileNotice::EditsUnreadable)) {
+                        tab.notice = None;
+                    }
+                    if restored.rolled_off {
+                        tab.notice = Some(Box::new(FileNotice::HistoryRolledOff));
+                    }
                 }
+                // Steps have gone that the journal has, so it has to start again from the list, or it wouldn't read back as this.
+                if restored.rolled_off {
+                    self.fresh_journals.retain(|(tab, _, _)| *tab != id);
+                    self.fresh_journals.push((id, restored.seq, None));
+                }
+                true
             }
             _ => {
-                self.journals.remove(&id);
+                if !self.wake_failed.contains(&id) {
+                    self.wake_failed.push(id);
+                }
                 if let Some(tab) = self.tab_mut(id) {
                     tab.notice = Some(Box::new(FileNotice::EditsUnreadable));
                 }
+                false
             }
         }
+    }
+
+    /// A list that couldn't be read is given up on, as what's being done says it's done with: its journal goes.
+    fn give_up_on_asleep(&mut self, id: TabId) {
+        if self.asleep.remove(&id).is_some() {
+            self.wake_failed.retain(|failed| *failed != id);
+            self.retire_journal(id);
+        }
+    }
+
+    /// Whether there's a step to undo and one to redo, wherever its list is. With nothing read.
+    pub fn undo_and_redo(&self, id: TabId) -> (bool, bool) {
+        self.edits.get(&id).map(|list| (list.can_undo(), list.can_redo())).or_else(|| self.asleep.get(&id).map(|summary| (summary.undo > 0, summary.redo > 0))).unwrap_or((false, false))
     }
 
     /// A tab's list whole, wherever it is, for QA and a look: one on disk is read for this and stays there.
@@ -1192,20 +1242,28 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// What a tab's sleep file would say of it, apart from what the page view knows, if it can have one: its file's been read this session, so its contents are here, and it isn't protected, as this would be those in the clear.
-    pub fn sleep_facts(&self, id: TabId) -> Option<(PathBuf, sleep::SleepFile)> {
+    pub fn sleep_facts(&self, id: TabId) -> Option<SleepFacts> {
         let (_, toc) = self.warm.iter().find(|(tab, _)| *tab == id)?;
         self.sleep_facts_with(id, toc)
     }
 
-    fn sleep_facts_with(&self, id: TabId, toc: &Toc) -> Option<(PathBuf, sleep::SleepFile)> {
+    fn sleep_facts_with(&self, id: TabId, toc: &Toc) -> Option<SleepFacts> {
         let tab = self.tab(id)?;
         let stamp = tab.stamp?;
-        if tab.encrypted || matches!(tab.notice.as_deref(), Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword)) {
+        // What's come from a sleep file and hasn't been checked against the PDF isn't written again as if it had. Nor anything of a file that's not what it was.
+        if tab.encrypted || tab.from_sleep || self.asleep.contains_key(&id) || matches!(tab.notice.as_deref(), Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword)) {
             return None;
         }
-        let (pages, list_seq) = self.edits.get(&id).map_or((tab.page_count, 0), |list| (list.len(), list.journal_seq()));
+        let list = self.edits.get(&id);
+        let (pages, list_seq) = list.map_or((tab.page_count, 0), |list| (list.len(), list.order_mark()));
         let sleep = sleep::SleepFile { file: stamp, file_pages: tab.page_count, pages, list_seq, renderer_only: tab.renderer_only, toc: toc.clone(), usual: None, sizes: Vec::new(), pictures: Vec::new() };
-        Some((self.path_of(id)?, sleep))
+        // A page from a protected file on any page means pictures of none, and it's the same for each of them.
+        Some(SleepFacts { id, path: self.path_of(id)?, sleep, pictures_allowed: !list.is_some_and(PageEdits::has_protected_pages) })
+    }
+
+    /// What a tab's pictures are about, as the session has it, for telling if a sleep file's are.
+    pub fn list_mark(&self, id: TabId) -> u64 {
+        self.edits.get(&id).map_or(0, PageEdits::order_mark)
     }
 
     /// The same for a tab that's just been woken some other way, for a picture for its first frame.
@@ -1257,13 +1315,33 @@ impl<L: DocLoader> Session<L> {
         self.just_read.take().and_then(|(tab, sleep)| (tab == id).then_some(sleep))
     }
 
-    fn wake_from_sleep(&mut self, id: TabId, sleep: &sleep::SleepFile) {
+    pub(crate) fn wake_from_sleep(&mut self, id: TabId, sleep: &sleep::SleepFile) {
         let facts = DocFacts { page_count: sleep.file_pages, byte_len: sleep.file.size, encrypted: false, version: "".into(), title: None, toc: sleep.toc.clone(), renderer_only: sleep.renderer_only };
         self.give_woken(id, Ok(facts), Some(sleep.file));
+        if let Some(tab) = self.tab_mut(id) {
+            tab.from_sleep = true;
+        }
+    }
+
+    /// **The worker has the file open, and says how long it is.** A sleep file's word goes only until now. If it's said something else, it's gone, and the file's read: says so, for that to be done. A list's own length is compared with what that read finds, on its way in. A file read in the usual way isn't looked at, as the two readers of a damaged PDF can differ, and neither is wrong.
+    pub fn file_length_is(&mut self, id: TabId, pages: u32) -> bool {
+        let Some(tab) = self.tab_mut(id) else { return false };
+        if !std::mem::take(&mut tab.from_sleep) {
+            return false;
+        }
+        if tab.page_count == pages {
+            return false;
+        }
+        self.retire_sleep_file(id);
+        self.forget_read(id);
+        true
     }
 
     /// What was read of a tab goes, so it's read again: its file's turned out to be something else.
     pub fn forget_read(&mut self, id: TabId) {
+        if let Some(tab) = self.tab_mut(id) {
+            tab.from_sleep = false;
+        }
         self.warm.retain(|(tab, _)| *tab != id);
         self.woken.retain(|(tab, _, _)| *tab != id);
     }
@@ -1403,11 +1481,13 @@ impl<L: DocLoader> Session<L> {
 
     /// **The one method a confirmed Save or Save As calls, and it marks a saved point.** Owner, 2026-11-07: "after a save you might still have regrets and want to make changes. But you definitely don't want history to leak into the pdf file". What was written is the file now, so the document reads as saved, and the history goes on: undoing past this makes it unsaved again, and back to here reads as saved. A failed save calls nothing, and everything stays. `saved_as` moves the tab if it went to another file, and the history goes with it. `kept` is what [`Self::save_prepared`] was told, and a Save As has the old file itself for that. What a step can't get pages from rolls off: see [`PageEdits::rebase_on_saved`], and the tab says so. The steps around it, and what a crash at each does, are in `docs/ENGINEERING.md`. Says how many steps rolled off.
     pub fn saved(&mut self, id: TabId, now: FileStamp, pages: u32, saved_as: Option<&Path>, kept: Option<edit::AddedSource>) -> usize {
-        self.wake_list(id);
+        if !self.wake_list(id) {
+            self.give_up_on_asleep(id);
+        }
         let kept = kept.or_else(|| {
             saved_as?;
             let tab = self.tab(id)?;
-            Some(edit::AddedSource { path: self.path_of(id)?.into_boxed_path(), page_count: tab.page_count, stamp: tab.stamp, kept: false })
+            Some(edit::AddedSource { path: self.path_of(id)?.into_boxed_path(), page_count: tab.page_count, stamp: tab.stamp, kept: false, protected: tab.encrypted })
         });
         self.retire_sleep_file(id);
         let rebased = self.edits.get_mut(&id).map(|list| list.rebase_on_saved(pages, kept.clone()));
@@ -1465,7 +1545,13 @@ impl<L: DocLoader> Session<L> {
 
     /// **Clears a tab's history, and removes its files rather than only forgetting them.** With unsaved edits, the page order stays, as only the way back goes, unless it's a discard, which is all of it. With none, there's nothing left to hold, so the list goes too. Says whether there was any.
     pub fn clear_history(&mut self, id: TabId, reason: ClearReason) -> bool {
-        self.wake_list(id);
+        if !self.wake_list(id) {
+            self.give_up_on_asleep(id);
+            if let Some(tab) = self.tab_mut(id) {
+                tab.notice = None;
+            }
+            return true;
+        }
         // What's gone mustn't stay in a picture of it.
         if matches!(reason, ClearReason::Redaction | ClearReason::HiddenDataRemoval) {
             self.retire_sleep_file(id);
@@ -1593,7 +1679,8 @@ impl<L: DocLoader> Session<L> {
             FileStatus::Same(now) => {
                 if let Some(tab) = self.tab_mut(id) {
                     tab.stamp = Some(now);
-                    if matches!(tab.notice.as_deref(), Some(FileNotice::Changed | FileNotice::Missing)) {
+                    // Back to what edits are about. With none, the stamp's moved on to what the file is now, so being the same says nothing: it goes on saying it changed until it's been read, and left.
+                    if matches!(tab.notice.as_deref(), Some(FileNotice::Missing)) || (has_edits && matches!(tab.notice.as_deref(), Some(FileNotice::Changed))) {
                         tab.notice = None;
                     }
                 }
@@ -1642,12 +1729,12 @@ impl<L: DocLoader> Session<L> {
 
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
-        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _ } = self;
+        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _ } = self;
         let ViewSettings { paper, focus, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
             .map(|tab| {
-                let TabRecord { encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, selection, notice, place_dirty: _ } = tab;
+                let TabRecord { from_sleep: _, encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, selection, notice, place_dirty: _ } = tab;
                 TabEntry {
                     id: id.0,
                     path: PathField::from_path(&self.path_of(*id).unwrap_or_default()),
@@ -1696,6 +1783,7 @@ impl<L: DocLoader> Session<L> {
         self.woken.clear();
         self.edits.clear();
         self.asleep.clear();
+        self.wake_failed.clear();
         self.draws.clear();
         self.journals.clear();
         self.fresh_journals.clear();
@@ -1735,6 +1823,7 @@ impl<L: DocLoader> Session<L> {
             }
             let pages = self.edits.get(&id).map_or(entry.page_count, PageEdits::len);
             self.tabs.push(TabRecord {
+                from_sleep: false,
                 encrypted: false,
                 touched: 0,
                 id,
@@ -1797,7 +1886,7 @@ impl<L: DocLoader> Session<L> {
         if facts.page_count == 0 {
             return Err(SessionError::Open(OpenError::NotPdf));
         }
-        self.edit_pages_as(id, by, |edits| edits.insert_pdf_stamped(at, path, facts.page_count, stamp))
+        self.edit_pages_as(id, by, |edits| edits.insert_pdf_noting(at, path, facts.page_count, stamp, facts.encrypted))
     }
 
     /// Where a page of a tab comes from now, counting unsaved edits. Zero-based.
@@ -1849,7 +1938,9 @@ impl<L: DocLoader> Session<L> {
 
     /// Reverses the last page edit. Returns false with nothing to undo.
     pub fn undo_edit(&mut self, id: TabId) -> bool {
-        self.wake_list(id);
+        if !self.wake_list(id) {
+            return false;
+        }
         self.touch(id);
         let place = self.place_of(id);
         let undone = self.edits.get_mut(&id).is_some_and(PageEdits::undo);
@@ -1870,7 +1961,9 @@ impl<L: DocLoader> Session<L> {
     }
 
     fn step_back_or_on(&mut self, id: TabId, by: Author, step: fn(&mut PageEdits) -> Result<bool, EditError>) -> Result<bool, SessionError> {
-        self.wake_list(id);
+        if !self.wake_list(id) {
+            return Err(SessionError::EditsUnreadable);
+        }
         self.touch(id);
         let place = self.place_of(id);
         let may_push_owner = by == Author::Agent && self.agent_at_full;
@@ -1889,7 +1982,9 @@ impl<L: DocLoader> Session<L> {
 
     /// Repeats the last undone page edit. Returns false with nothing to redo.
     pub fn redo_edit(&mut self, id: TabId) -> bool {
-        self.wake_list(id);
+        if !self.wake_list(id) {
+            return false;
+        }
         self.touch(id);
         let place = self.place_of(id);
         let redone = self.edits.get_mut(&id).is_some_and(PageEdits::redo);
@@ -1911,7 +2006,12 @@ impl<L: DocLoader> Session<L> {
             return Err(SessionError::UnsavedChanges);
         }
         // History with nothing unsaved stays in its journal, for the PDF's next opening, as long as what's in the file is up to date: what hasn't gone out goes with it. Without any, or with no journal being kept, there's nothing to keep.
-        self.wake_list(id);
+        // A list that won't read: nothing unsaved is at stake, or this wouldn't have got here. Its journal's left for a launch to look at.
+        if !self.wake_list(id) {
+            self.asleep.remove(&id);
+            self.wake_failed.retain(|failed| *failed != id);
+            self.journals.remove(&id);
+        }
         let keeps_history = self.journaling && self.edits.get(&id).is_some_and(PageEdits::has_history);
         if keeps_history {
             if let Some(append) = self.append_for(id) {
@@ -2070,12 +2170,9 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// Tabs just pushed out of the warm ones, and what their sleep files would say. There's a sleep file for any tab that's gone cold, by whatever way.
-    pub fn take_left_warm(&mut self) -> Vec<(TabId, PathBuf, sleep::SleepFile)> {
+    pub fn take_left_warm(&mut self) -> Vec<SleepFacts> {
         let left = std::mem::take(&mut self.left_warm);
-        left.into_iter().filter_map(|(id, toc)| {
-            let (path, sleep) = self.sleep_facts_with(id, &toc)?;
-            Some((id, path, sleep))
-        }).collect()
+        left.into_iter().filter_map(|(id, toc)| self.sleep_facts_with(id, &toc)).collect()
     }
 
     fn tab_mut(&mut self, id: TabId) -> Option<&mut TabRecord> {
@@ -2144,6 +2241,8 @@ pub enum SessionError {
     Edit(EditError),
     /// Only the renderer can read this file, so its pages can't be changed.
     RendererOnly,
+    /// Its edits can't be read back just now, so nothing's laid on them.
+    EditsUnreadable,
 }
 
 impl SessionError {
@@ -2155,6 +2254,7 @@ impl SessionError {
             Self::UnsavedChanges => "unsaved_changes",
             Self::Edit(error) => error.code(),
             Self::RendererOnly => "renderer_only",
+            Self::EditsUnreadable => "edits_unreadable",
         }
     }
 
@@ -2163,6 +2263,7 @@ impl SessionError {
             Self::Open(error) => error.message(),
             Self::NoSuchTab => "That tab isn't open.",
             Self::TooManyTabs => "Too many PDFs are open. Close some and try again.",
+            Self::EditsUnreadable => "This tab's edits can't be read back just now, so nothing more was done to them. They're kept, and it tries again each time. Discarding them is what gives up on them.",
             Self::UnsavedChanges => "This PDF has unsaved changes.",
             Self::Edit(error) => error.message(),
             Self::RendererOnly => "RectoPDF can draw this file but can't read its structure, so its pages can't be changed.",
@@ -3250,7 +3351,7 @@ mod tests {
     }
 
     fn kept(name: &str, size: u64) -> edit::AddedSource {
-        edit::AddedSource { path: PathBuf::from(format!("/state/journals/{name}")).into_boxed_path(), page_count: 5, stamp: Some(FileStamp { size, mtime_ns: 1, device: 1, inode: 7 }), kept: true }
+        edit::AddedSource { path: PathBuf::from(format!("/state/journals/{name}")).into_boxed_path(), page_count: 5, stamp: Some(FileStamp { size, mtime_ns: 1, device: 1, inode: 7 }), kept: true, protected: false }
     }
 
     const KEPT_A: &str = "kept-00000000000000aa.pdf";
@@ -3556,6 +3657,7 @@ mod tests {
         assert!(s.is_edited(a));
         assert!(s.holds_owner_edits());
         assert_eq!(s.to_record().tabs[0].edits.unwrap().pages, 4);
+        assert_eq!(s.undo_and_redo(a), (true, true), "and what can be undone, with nothing read");
         assert!(s.to_record().tabs[0].journal.is_some());
         assert_eq!(s.close(a), Err(SessionError::UnsavedChanges), "and a close is refused as it would be: it wakes it to see");
         assert_eq!(s.list_record_anywhere(a), Some(as_it_was.clone()));
@@ -3570,7 +3672,7 @@ mod tests {
             ("discard", |s, a| s.discard_edits(a)),
             ("clear", |s, a| assert!(s.clear_history(a, ClearReason::UserAsked))),
             ("save", |s, a| assert_eq!(s.saved(a, FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 }, 4, None, None), 1)),
-            ("wake", |s, a| s.wake_list(a)),
+            ("wake", |s, a| assert!(s.wake_list(a))),
         ];
         for (route, go) in routes {
             let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
@@ -3612,11 +3714,30 @@ mod tests {
         write_journal(&mut s, &mut plain);
         *files.lock().unwrap() = plain;
         assert!(s.go_dormant(a));
-        // The journal goes.
-        files.lock().unwrap().clear();
-        s.wake_list(a);
-        assert!(!s.list_is_asleep(a) && s.page_edits(a).is_none());
+        // The journal can't be read just now. **It stays asleep, by its name, and nothing's laid on what can't be seen,** which would land on the wrong pages (review L3). The tab says so, and every look at it tries again.
+        let (name, bytes) = files.lock().unwrap().drain().next().unwrap();
+        assert!(!s.wake_list(a));
+        assert!(s.list_is_asleep(a));
         assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("edits_unreadable"));
+        assert!(s.is_edited(a), "what's known of it stands");
+        assert_eq!(s.edit_pages(a, |e| e.rotate(0, 1, 1)), Err(SessionError::EditsUnreadable), "a new edit isn't taken");
+        assert!(!s.undo_edit(a));
+        assert_eq!(s.undo_edit_as(a, Author::Owner), Err(SessionError::EditsUnreadable));
+        assert_eq!(s.close(a), Err(SessionError::UnsavedChanges));
+        assert!(s.to_record().tabs[0].journal.as_deref() == Some(name.as_str()), "and its name's kept, so nothing else takes it");
+        // It's back.
+        files.lock().unwrap().insert(name.clone(), bytes);
+        assert!(s.wake_list(a));
+        assert!(s.page_edits(a).is_some());
+        assert_eq!(s.tab(a).unwrap().notice, None, "and it's stopped saying so");
+        // Gone for good, and given up on by saying so.
+        assert!(s.go_dormant(a));
+        files.lock().unwrap().clear();
+        assert!(!s.wake_list(a));
+        s.discard_edits(a);
+        assert!(!s.list_is_asleep(a) && !s.is_edited(a));
+        assert_eq!(s.tab(a).unwrap().notice, None);
+        assert!(s.journal_work().retired.contains(&name));
         // A session that keeps no journal keeps its lists.
         let mut s = session(5);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
@@ -3624,6 +3745,106 @@ mod tests {
         s.open(Path::new("/d/b.pdf")).unwrap();
         assert!(!s.go_dormant(a));
         assert!(s.page_edits(a).is_some());
+    }
+
+    /// Failure (review): a sleep file's pictures match a list they're not about, as a count of edits starts again after a discard. What's compared is what's on the pages, so one order is one mark, however it was reached, and back at the file it's the mark of no list at all.
+    #[test]
+    fn a_list_is_known_by_whats_on_its_pages() {
+        let mut one = PageEdits::new(5);
+        assert_eq!(one.order_mark(), 0);
+        one.rotate(0, 1, 1).unwrap();
+        let rotated = one.order_mark();
+        assert_ne!(rotated, 0);
+        let mut other = PageEdits::new(5);
+        other.delete(0, 1).unwrap();
+        assert_ne!(other.order_mark(), rotated, "the same number of edits, and another document");
+        assert!(one.undo());
+        assert_eq!(one.order_mark(), 0, "back at the file");
+        assert!(one.redo());
+        assert_eq!(one.order_mark(), rotated, "the same as it was");
+        // A move and a move back, by other steps.
+        one.move_pages(1, 1, 2).unwrap();
+        one.move_pages(2, 1, 1).unwrap();
+        assert_eq!(one.order_mark(), rotated);
+    }
+
+    /// Failure (review): `session sleep` puts a tab to sleep from under whatever's working on it, as only the deadline looks at holds.
+    #[test]
+    fn nothing_sends_a_tab_to_sleep_from_under_a_hold() {
+        let files = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let (mut s, a, b) = with_a_list(&files);
+        s.hold(a);
+        assert!(!s.can_go_dormant(a));
+        assert!(!s.go_dormant(a));
+        assert!(s.page_edits(a).is_some() && !s.list_is_asleep(a));
+        assert!(s.warm.iter().any(|(id, _)| *id == a), "its contents stay too");
+        s.let_go(a);
+        assert!(!s.go_dormant(b), "nor the one on screen");
+        s.save_prepared(a, FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 }, None);
+        assert!(!s.go_dormant(a), "nor one being saved");
+    }
+
+    /// Failure (review): a sleep file's word on a file's length goes on being believed once the worker has said otherwise, so a phantom page takes a rotation, or it's written into the next sleep file as if it had been checked. And a file read the usual way is left alone, as two readers of a damaged file can differ.
+    #[test]
+    fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
+        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-file-length-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.pdf");
+        std::fs::write(&path, b"three pages").unwrap();
+        let stamp = file_stamp(&path).unwrap();
+        let mut s = session(3);
+        let a = s.open(&path).unwrap();
+        assert!(!s.file_length_is(a, 2), "read the usual way, that's nothing to go on");
+        s.open(Path::new("/d/b.pdf")).unwrap();
+        s.warm.retain(|(id, _)| *id != a);
+        // Forged: a hundred pages.
+        let forged = |file_pages: u32| sleep::SleepFile { file: stamp, file_pages, pages: file_pages, list_seq: 0, renderer_only: false, toc: Toc::default(), usual: None, sizes: Vec::new(), pictures: Vec::new() };
+        s.wake_from_sleep(a, &forged(100));
+        s.tap(a).unwrap();
+        assert_eq!(s.pages_in(a), 100, "believed for now");
+        assert!(s.sleep_facts(a).is_none(), "and not written on, unchecked");
+        assert!(s.file_length_is(a, 3), "it says to read the file");
+        assert!(!s.warm.iter().any(|(id, _)| *id == a));
+        assert!(s.journal_work().retired.iter().any(|name| *name == record::sleep_file_name(stamp, &path)), "and the file's gone");
+        s.give_woken(a, Ok(DocFacts { page_count: 3, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false }), Some(stamp));
+        s.wake_active();
+        assert_eq!(s.pages_in(a), 3);
+        assert_eq!(s.edit_pages(a, |e| e.rotate(50, 1, 1)), Err(SessionError::Edit(EditError::OutOfRange)), "no phantom page takes a rotation");
+        // Right about it: nothing to do, and from here it's been checked.
+        s.discard_edits(a);
+        s.open(Path::new("/d/c.pdf")).unwrap();
+        s.warm.retain(|(id, _)| *id != a);
+        s.wake_from_sleep(a, &forged(3));
+        s.tap(a).unwrap();
+        assert!(!s.file_length_is(a, 3));
+        assert!(s.sleep_facts(a).is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Failure (review, against decision 23): a changed file with no edits stops saying so as soon as it's been read, as the stamp's moved on and being the same says nothing. With edits, it's about what they were made on, so being back at that is news.
+    #[test]
+    fn a_changed_file_goes_on_saying_so_when_its_read() {
+        let now = FileStamp { size: 2, mtime_ns: 2, device: 1, inode: 3 };
+        let mut s = session(5);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.apply_file_status(a, FileStatus::Changed(now));
+        assert_eq!(s.tab_notice(a).map(FileNotice::code), Some("file_changed"));
+        s.apply_file_status(a, FileStatus::Same(now));
+        assert_eq!(s.tab_notice(a).map(FileNotice::code), Some("file_changed"), "it's the new one, and that's what it's saying");
+        // Left, it's been said.
+        s.open(Path::new("/d/b.pdf")).unwrap();
+        s.tap(a).unwrap();
+        s.tap(s.tabs()[1].id).unwrap();
+        assert_eq!(s.tab_notice(a), None);
+        // With edits, being the same again is the news.
+        s.tap(a).unwrap();
+        s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+        let was = s.own_stamp(a);
+        s.apply_file_status(a, FileStatus::Changed(FileStamp { size: 9, ..now }));
+        assert_eq!(s.tab_notice(a).map(FileNotice::code), Some("file_changed"));
+        s.apply_file_status(a, FileStatus::Same(was.unwrap_or(now)));
+        assert_eq!(s.tab_notice(a), None);
     }
 
     /// Failure: going dormant takes a timer per tab, or a thousand cold tabs make it look along them, or the tab on screen or one being saved goes, or a tab being used goes anyway. There's one deadline, the soonest of the few tabs that hold anything.
@@ -3709,9 +3930,23 @@ mod tests {
             s.open(&file(&format!("{at}.pdf"))).unwrap();
         }
         let left = s.take_left_warm();
-        assert_eq!(left.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(), [open], "the unprotected one that left: {left:?}");
-        assert_eq!(left[0].2.file_pages, 3);
+        assert_eq!(left.iter().map(|facts| facts.id).collect::<Vec<_>>(), [open], "the unprotected one that left: {left:?}");
+        assert_eq!(left[0].sleep.file_pages, 3);
         assert!(s.take_left_warm().is_empty());
+        // A protected file's pages in a plain document: its facts are fine, and no picture is.
+        let plain = s.open(&file("plain.pdf")).unwrap();
+        assert!(s.sleep_facts(plain).unwrap().pictures_allowed);
+        let locked_file = file("locked.pdf");
+        let facts = s.loader().load(&locked_file).unwrap();
+        s.insert_pdf_with_facts(plain, Author::Owner, 0, &locked_file, &facts, file_stamp(&locked_file).ok()).unwrap();
+        assert!(!s.sleep_facts(plain).unwrap().pictures_allowed, "a page from a protected file means no pictures");
+        assert!(s.page_edits(plain).unwrap().added_sources()[0].protected);
+        // Carried through its journal, so it's known after a restart.
+        let record = s.edits_record(plain).unwrap();
+        assert!(record.added[0].protected);
+        assert!(PageEdits::from_record(&record).unwrap().has_protected_pages());
+        assert!(s.undo_edit(plain));
+        assert!(s.sleep_facts(plain).unwrap().pictures_allowed, "with those pages gone from the document, it's fine again");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

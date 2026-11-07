@@ -604,6 +604,9 @@ pub struct AddedRecord {
     /// It's a file of the history's own, in the journals' folder: an earlier version of the PDF, for what a save took out of it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kept: bool,
+    /// It's a protected file.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protected: bool,
 }
 
 /// One step of history: how to go back. It's the shape of [`crate::edit`]'s own steps.

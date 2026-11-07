@@ -852,7 +852,7 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
         .map(|tab| {
             let notice = session.tab_notice(tab.id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(tab.id) }));
             let place = session.place_to_show(tab.id);
-            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.map(|place| place.within), "edited": session.is_edited(tab.id), "can_undo": session.page_edits(tab.id).is_some_and(recto_session::edit::PageEdits::can_undo), "can_redo": session.page_edits(tab.id).is_some_and(recto_session::edit::PageEdits::can_redo), "notice": notice })
+            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.map(|place| place.within), "edited": session.is_edited(tab.id), "can_undo": session.undo_and_redo(tab.id).0, "can_redo": session.undo_and_redo(tab.id).1, "notice": notice })
         })
         .collect();
     let find = session.find();
@@ -1407,7 +1407,6 @@ pub const UNSAVED_NOTE: &str = "These edits are in this session only. Saving isn
 pub const USER_EDITS_UNDONE_NOTE: &str = "The user's edits on this tab are undone, not gone: `recto redo` brings them back, and closing would lose them. Nothing has been saved.";
 
 fn edit_state_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
-    let edits = session.page_edits(id);
     let edited = session.is_edited(id);
     let user_edits_undone = session.has_undone_owner_steps(id);
     json!({
@@ -1419,8 +1418,8 @@ fn edit_state_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         // The user's undone edits aren't in the file, and closing would lose them, so nothing about this says "saved".
         "saved": !edited && !user_edits_undone,
         "user_edits_undone": user_edits_undone,
-        "can_undo": edits.is_some_and(recto_session::edit::PageEdits::can_undo),
-        "can_redo": edits.is_some_and(recto_session::edit::PageEdits::can_redo),
+        "can_undo": session.undo_and_redo(id).0,
+        "can_redo": session.undo_and_redo(id).1,
         "note": if edited { Some(UNSAVED_NOTE) } else { user_edits_undone.then_some(USER_EDITS_UNDONE_NOTE) },
     })
 }

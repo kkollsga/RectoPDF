@@ -9,10 +9,12 @@ use recto_reader::{SleepMaterial, SleepShot, SleepView};
 use recto_platform::surface::PixelSurface;
 use recto_reader::layout::PageBox;
 use recto_reader::paper::PaperKind;
-use recto_session::TabId;
+use recto_platform::FileStamp;
+use recto_session::{SleepFacts, TabId};
 use recto_session::record::{FileStatus, look_at_file};
 use recto_session::sleep::{SleepFile, SleepPicture};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -21,6 +23,10 @@ use std::time::{Duration, Instant};
 pub(crate) const DORMANT_AFTER_SECONDS: u32 = 5 * 60;
 /// What the documents off screen may hold in all, their workers' memory and their histories', before the oldest goes dormant. SPEC section 2: "a byte budget frees the oldest first". What's on screen is another row.
 pub(crate) const LIVE_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+/// The least time between sleep files for a tab that's only moving about (the owner's rule on SSD wear). A quit and a hand-off don't wait, and neither does being asked. A tab left sooner has its older file, whose facts are still good, and whose pictures show only on the pages they're of.
+const SLEEP_WRITE_EVERY_SECONDS: u32 = 60;
+/// What sleep files may come to in an hour, all told, for the same reason: this is about 8 MiB on a heavy day's eight hours, inside SPEC section 2's "About 10 MiB of state". A file that's text is about 8 KiB, and one of a photograph about 100.
+const SLEEP_BYTES_PER_HOUR: u64 = 1024 * 1024;
 /// How often the budget's looked at, at the most, as each look is a call to the kernel per worker.
 const BUDGET_LOOK_EVERY: Duration = Duration::from_secs(1);
 /// How soon a pass that couldn't go ahead, as something's being read, tries again.
@@ -43,6 +49,7 @@ struct Counts {
     asked: AtomicU64,
     sleep_bytes: AtomicU64,
     sleep_files: AtomicU64,
+    writes_put_off: AtomicU64,
     woken_from_file: AtomicU64,
     pressure_events: AtomicU64,
 }
@@ -54,12 +61,19 @@ pub(crate) struct Sleeper {
     /// When the soonest is due, in milliseconds of `clock` plus one, and zero for nothing.
     due: AtomicU64,
     last_budget_look: Mutex<Option<(Instant, Option<TabId>)>>,
+    write_gap_seconds: AtomicU32,
+    /// When each tab's sleep file was last written, for those that have been. Next to no bytes per tab.
+    last_written: Mutex<HashMap<TabId, Instant>>,
+    /// The hour this began, and what's been written in it.
+    this_hour: Mutex<(Instant, u64)>,
+    /// One sleep file being written at a time, so a flush has what's on its way.
+    writing: Mutex<()>,
     counts: Counts,
 }
 
 impl Sleeper {
     pub(crate) fn new() -> Self {
-        Self { clock: Instant::now(), after_seconds: AtomicU32::new(DORMANT_AFTER_SECONDS), budget_bytes: AtomicU64::new(LIVE_BUDGET_BYTES), due: AtomicU64::new(0), last_budget_look: Mutex::new(None), counts: Counts::default() }
+        Self { clock: Instant::now(), after_seconds: AtomicU32::new(DORMANT_AFTER_SECONDS), budget_bytes: AtomicU64::new(LIVE_BUDGET_BYTES), due: AtomicU64::new(0), last_budget_look: Mutex::new(None), write_gap_seconds: AtomicU32::new(SLEEP_WRITE_EVERY_SECONDS), last_written: Mutex::new(HashMap::new()), this_hour: Mutex::new((Instant::now(), 0)), writing: Mutex::new(()), counts: Counts::default() }
     }
 
     fn millis(&self) -> u64 {
@@ -78,6 +92,32 @@ impl Sleeper {
         self.after_seconds.store(seconds, Ordering::SeqCst);
     }
 
+    /// How long a tab that's only moving about waits for its next sleep file. None at all takes the hourly limit with it.
+    pub(crate) fn set_write_gap(&self, seconds: u32) {
+        self.write_gap_seconds.store(seconds, Ordering::SeqCst);
+    }
+
+    /// Whether a tab that's only moving about may have a new picture written now. Asked before anything's packed, as that's work too.
+    fn may_write_pictures(&self, id: TabId) -> bool {
+        let gap = self.write_gap_seconds.load(Ordering::SeqCst);
+        if gap == 0 {
+            return true;
+        }
+        let soon = lock(&self.last_written).get(&id).is_some_and(|last| last.elapsed() < Duration::from_secs(u64::from(gap)));
+        let mut hour = lock(&self.this_hour);
+        if hour.0.elapsed() >= Duration::from_secs(3600) {
+            *hour = (Instant::now(), 0);
+        }
+        !soon && hour.1 < SLEEP_BYTES_PER_HOUR
+    }
+
+    fn note_written(&self, id: TabId, bytes: u64) {
+        lock(&self.last_written).insert(id, Instant::now());
+        lock(&self.this_hour).1 += bytes;
+        self.counts.sleep_files.fetch_add(1, Ordering::Relaxed);
+        self.counts.sleep_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
     pub(crate) fn set_budget(&self, bytes: u64) {
         self.budget_bytes.store(bytes, Ordering::SeqCst);
     }
@@ -91,6 +131,7 @@ impl Sleeper {
             "due_in_ms": self.wait_for_due().map(|wait| u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)),
             "gone_dormant": { "left_alone": count(&counts.left_alone), "budget": count(&counts.budget), "pressure": count(&counts.pressure), "asked": count(&counts.asked) },
             "sleep_files_written": count(&counts.sleep_files),
+            "writes_put_off": count(&counts.writes_put_off),
             "sleep_bytes_written": count(&counts.sleep_bytes),
             "woken_from_file": count(&counts.woken_from_file),
             "pressure_events": count(&counts.pressure_events),
@@ -117,15 +158,16 @@ impl Inner {
         Some(self.host.session.with_session(|session| session.due_dormant(session.seconds_now(), after)))
     }
 
-    /// **Those tabs go dormant,** on the session thread. Whatever hasn't gone to its journal goes first, or a list couldn't.
+    /// **Those tabs go dormant,** on the session thread, those that may: whatever's asking, not the one on screen or one being worked on or saved. Whatever hasn't gone to its journal goes first, or a list couldn't.
     pub(crate) fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize {
+        let tabs: Vec<TabId> = self.host.session.with_session(|session| tabs.iter().copied().filter(|id| session.can_go_dormant(*id)).collect());
         if tabs.is_empty() || self.core.frozen.load(Ordering::SeqCst) {
             return 0;
         }
         self.saver.write_journals_now(self);
         let mut gone = 0;
-        for &id in tabs {
-            self.write_sleep_for(id);
+        for &id in &tabs {
+            self.write_sleep_for(id, why == Why::Asked);
             let list = self.host.session.with_session(|session| session.list_to_sleep(id));
             // Compacted, and read back. If that doesn't say it's all there, the list stays in memory, and it's looked at again next time it's left alone.
             let settled = list.is_none_or(|(name, header, base)| self.saver.store.settle_list(&name, &header, &base));
@@ -150,39 +192,59 @@ impl Inner {
         gone
     }
 
-    /// Writes a tab's sleep file from what's known of it now, if that's anything new.
-    pub(crate) fn write_sleep_for(&self, id: TabId) {
-        let Some((path, sleep)) = self.host.session.with_session(|session| session.sleep_facts(id)) else { return };
-        let Some(material) = self.engine.sleep_material(id.0) else { return };
-        self.write_with_material(&path, sleep, material);
+    /// Writes a tab's sleep file from what's known of it now, if that's anything new. `now` is a quit, a hand-off or being asked, which don't wait for the limits.
+    pub(crate) fn write_sleep_for(&self, id: TabId, now: bool) {
+        let Some(facts) = self.host.session.with_session(|session| session.sleep_facts(id)) else { return };
+        let own = Some(version_of(facts.sleep.file));
+        let Some(material) = self.engine.sleep_material(id.0, own) else { return };
+        self.write_with_material(facts, material, now);
     }
 
-    /// A sleep file from what's known and what's on hand. With no pictures to hand, as with a closed window or what the system's taken, what's there already stands, if it's about the same list.
-    fn write_with_material(&self, path: &std::path::Path, sleep: SleepFile, material: SleepMaterial) {
+    /// A sleep file from what's known and what's on hand. With no pictures to hand, as with a closed window or what the system's taken, what's there already stands, if it's about the same list. Past the limits, a tab that's only moving about keeps what it has, and one with nothing yet has its facts, which is small and says what the PDF would.
+    fn write_with_material(&self, facts: SleepFacts, material: SleepMaterial, now: bool) {
+        let SleepFacts { id, path, sleep, pictures_allowed } = facts;
+        let _one_at_a_time = lock(&self.sleeper.writing);
+        let there = self.saver.store.read_sleep(sleep.file, &path);
+        let may = now || self.sleeper.may_write_pictures(id);
+        if !may && there.is_some() {
+            self.sleeper.counts.writes_put_off.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         let mut sleep = with_material(sleep, material);
-        if sleep.pictures.is_empty()
-            && let Some(there) = self.saver.store.read_sleep(sleep.file, path).filter(|there| there.list_seq == sleep.list_seq && there.pages == sleep.pages)
+        if !pictures_allowed || !may {
+            sleep.pictures.clear();
+        } else if sleep.pictures.is_empty()
+            && let Some(there) = there.filter(|there| there.list_seq == sleep.list_seq && there.pages == sleep.pages)
         {
             sleep.pictures = there.pictures;
         }
-        let bytes = self.saver.store.write_sleep(path, &sleep);
+        let bytes = self.saver.store.write_sleep(&path, &sleep);
         if bytes > 0 {
-            self.sleeper.counts.sleep_files.fetch_add(1, Ordering::Relaxed);
-            self.sleeper.counts.sleep_bytes.fetch_add(bytes, Ordering::Relaxed);
+            self.sleeper.note_written(id, bytes);
         }
     }
 
-    /// Tabs pushed out of the warm ones, with their pictures, just before the page view lets go of them. A quick copy.
-    pub(crate) fn pictures_of_those_leaving(&self) -> Vec<(TabId, std::path::PathBuf, SleepFile, SleepMaterial)> {
+    /// Tabs pushed out of the warm ones, with their pictures, just before the page view lets go of them. A quick copy, of those whose time's come.
+    pub(crate) fn pictures_of_those_leaving(&self) -> Vec<(SleepFacts, SleepMaterial)> {
         let left = self.host.session.with_session(|session| session.take_left_warm());
-        left.into_iter().filter_map(|(id, path, sleep)| Some((id, path, sleep, self.engine.sleep_material(id.0)?))).collect()
+        left.into_iter().filter_map(|facts| {
+            let own = Some(version_of(facts.sleep.file));
+            let material = self.engine.sleep_material(facts.id.0, own)?;
+            Some((facts, material))
+        }).collect()
     }
 
-    /// And their sleep files, once the tab that's asked for is on its way to the screen.
-    pub(crate) fn write_those_leaving(&self, left: Vec<(TabId, std::path::PathBuf, SleepFile, SleepMaterial)>) {
-        for (_, path, sleep, material) in left {
-            self.write_with_material(&path, sleep, material);
+    /// And their sleep files, on a one-shot thread: packing a photograph takes long enough to hold up whatever's asked for next. A flush waits for it.
+    pub(crate) fn write_those_leaving(&self, left: Vec<(SleepFacts, SleepMaterial)>) {
+        if left.is_empty() {
+            return;
         }
+        let Some(inner) = self.saver.inner() else { return };
+        let _ = std::thread::Builder::new().name("recto-sleep".into()).stack_size(512 * 1024).spawn(move || {
+            for (facts, material) in left {
+                inner.write_with_material(facts, material, false);
+            }
+        });
     }
 
     /// Tabs just woken from their sleep files: nothing's asked of the PDF on the way, as it may be on a disk that's gone away. Each is looked at on a thread of its own, and if it's turned out to be something else, it's read after all.
@@ -207,8 +269,8 @@ impl Inner {
             self.saver.store.read_sleep(stamp, &path)
         });
         let Some(sleep) = sleep else { return };
-        let (pages, seq) = self.host.session.with_session(|session| (session.pages_in(id), session.page_edits(id).map_or(0, recto_session::edit::PageEdits::journal_seq)));
-        if sleep.pages != pages || sleep.list_seq != seq {
+        let (pages, mark) = self.host.session.with_session(|session| (session.pages_in(id), session.list_mark(id)));
+        if sleep.pages != pages || sleep.list_seq != mark {
             return;
         }
         let page_box = |(width, height): (f32, f32)| PageBox { width, height };
@@ -280,6 +342,11 @@ fn surface_of(picture: &SleepPicture) -> Option<PixelSurface> {
         })
         .ok()?;
     Some(surface)
+}
+
+/// A file's stamp as it says which version of the file this is: not the disk it's on, whose number can change while the file doesn't.
+pub(crate) fn version_of(stamp: FileStamp) -> FileStamp {
+    FileStamp { device: 0, ..stamp }
 }
 
 /// One thread looks at the one file a tab was woken from its sleep file on, and ends. If it's something else now, the session's told, and it's read after all.

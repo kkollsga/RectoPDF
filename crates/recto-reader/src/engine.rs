@@ -30,6 +30,8 @@ pub trait EngineEvents: Send + Sync {
     fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>);
     /// A copy is ready for the host to take.
     fn copy_ready(&self) {}
+    /// The worker has a tab's own file open, and this is how long it says it is.
+    fn file_length(&self, _tab: u32, _pages: u32) {}
 }
 
 /// How the engine runs.
@@ -145,8 +147,14 @@ impl Engine {
     }
 
     /// What a tab's sleep file gets from here.
-    pub fn sleep_material(&self, tab: u32) -> Option<crate::tiles::SleepMaterial> {
-        lock(&self.shared.reader).sleep_material(tab)
+    pub fn sleep_material(&self, tab: u32, own: Option<recto_platform::FileStamp>) -> Option<crate::tiles::SleepMaterial> {
+        lock(&self.shared.reader).sleep_material(tab, own)
+    }
+
+    /// For QA: nothing's drawn till this is let go, so a first frame stays to be looked at.
+    pub fn hold_drawing(&self, on: bool) {
+        lock(&self.shared.reader).hold_drawing(on);
+        self.wake();
     }
 
     /// Whether a window can go up with what's on the layers.
@@ -502,6 +510,11 @@ fn run(shared: &Shared) {
             if !Arc::ptr_eq(&files, &wanted) {
                 wanted = files;
             }
+            // Dropping one kills its worker and closes its file, and the next job opens what's there now.
+            for file in reader.take_reopen_files() {
+                renderers.remove(&file);
+                openings.remove(&file);
+            }
             reader.next_plan()
         };
         // Its surface is made with the lock let go, which the UI thread needs on every scroll.
@@ -549,6 +562,15 @@ fn run(shared: &Shared) {
                 file_changed = open.doc.take_file_changed();
                 if file_changed {
                     open.looks.clear();
+                    open.length_told = false;
+                }
+                if !open.length_told
+                    && let Some(pages) = open.doc.known_page_count()
+                {
+                    open.length_told = true;
+                    if lock(&shared.reader).is_own_file(job.tab, &job.file) {
+                        shared.events.file_length(job.tab, pages);
+                    }
                 }
                 outcome
             }
@@ -594,6 +616,8 @@ fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
 
 /// A file's renderer, and what's been decided about its pages on dark paper. Each page gets one decision, however many tiles it comes to, at whatever scale.
 struct OpenDoc {
+    /// Whoever's asked has been told how long this file is.
+    length_told: bool,
     doc: DocRenderer,
     looks: HashMap<u32, Arc<PageLook>>,
 }
@@ -696,7 +720,7 @@ fn renderer_for<'a>(shared: &Shared, renderers: &'a mut HashMap<PathBuf, OpenDoc
         openings.remove(path);
         let file = opened.map_err(Unopened::Failed)?;
         let doc = DocRenderer::with_file(file, path, None, config, policy.clone()).map_err(Unopened::Failed)?;
-        renderers.insert(path.to_path_buf(), OpenDoc { doc, looks: HashMap::new() });
+        renderers.insert(path.to_path_buf(), OpenDoc { length_told: false, doc, looks: HashMap::new() });
     }
     renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))
 }

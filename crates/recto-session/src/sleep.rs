@@ -17,6 +17,8 @@ pub const SLEEP_KIND: &str = "recto-sleep";
 pub const MAX_SLEEP_PICTURES: usize = 6;
 /// The most one picture can be, unpacked. As a preview is.
 pub const MAX_PICTURE_BYTES: usize = 4 * 1024 * 1024;
+/// The most a picture takes up on disk (owner, 2026-11-07: "reduce SSD wear as much as we can"). It's there for a moment, so a page that doesn't pack to this goes at a lower resolution, and fewer colours, till it does: see [`pack_picture`]. A page of text never comes near it.
+pub const MAX_PACKED_PICTURE: usize = 100 * 1024;
 /// The most a file can be read as.
 pub const MAX_SLEEP_FILE_BYTES: usize = 32 * 1024 * 1024;
 /// Page sizes kept, past which the rest are asked for as they come.
@@ -45,7 +47,7 @@ pub struct SleepFile {
     pub file: FileStamp,
     /// How long the file is, as opposed to the document with its edits.
     pub file_pages: u32,
-    /// How long the document was, and how many edits there had been, so a list that's moved on since says this isn't about it.
+    /// How long the document was, and what was on its pages, so a list that's different now says this isn't about it. See `PageEdits::order_mark`.
     pub pages: u32,
     pub list_seq: u64,
     pub renderer_only: bool,
@@ -65,6 +67,9 @@ struct PictureLine {
     dark: bool,
     /// Bytes it takes up after the first line, once packed.
     packed: u32,
+    /// Each row's held as the difference from the pixel to its left, which is what lets a photograph pack.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    delta: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,24 +99,90 @@ fn picture_bytes(width: u32, height: u32, scale: f32) -> Option<usize> {
     (bytes <= MAX_PICTURE_BYTES as u64).then_some(bytes as usize)
 }
 
+fn deflated(bytes: &[u8], level: flate2::Compression) -> Option<Vec<u8>> {
+    let mut deflate = flate2::write::DeflateEncoder::new(Vec::with_capacity(bytes.len() / 8), level);
+    deflate.write_all(bytes).ok()?;
+    deflate.finish().ok()
+}
+
+/// A picture smaller by a whole step, each pixel the average of what it covers, with only the top bits of each colour kept.
+fn shrunk(picture: &SleepPicture, step: u32, keep_bits: u32) -> (u32, u32, Vec<u8>) {
+    let (width, height) = ((picture.width / step).max(1), (picture.height / step).max(1));
+    let (step, row) = (step as usize, picture.width as usize * PIXEL);
+    let mask = 0xFFu8 << (8 - keep_bits);
+    let mut out = Vec::with_capacity(width as usize * height as usize * PIXEL);
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let mut sum = [0u32; PIXEL];
+            let mut count = 0u32;
+            for line in y * step..((y + 1) * step).min(picture.height as usize) {
+                let start = line * row + x * step * PIXEL;
+                let end = (start + step * PIXEL).min((line + 1) * row);
+                for pixel in picture.bgra[start..end].as_chunks::<PIXEL>().0 {
+                    for (total, byte) in sum.iter_mut().zip(pixel) {
+                        *total += u32::from(*byte);
+                    }
+                    count += 1;
+                }
+            }
+            for (channel, total) in sum.iter().enumerate() {
+                let value = (total / count.max(1)) as u8;
+                // Alpha stays as it is, and it's all one value anyway.
+                out.push(if channel == PIXEL - 1 { value } else { value & mask });
+            }
+        }
+    }
+    (width, height, out)
+}
+
+/// Each pixel as its difference from the one to its left, in place.
+fn to_deltas(bgra: &mut [u8], width: u32) {
+    for row in bgra.chunks_mut(width as usize * PIXEL) {
+        for at in (PIXEL..row.len()).rev() {
+            row[at] = row[at].wrapping_sub(row[at - PIXEL]);
+        }
+    }
+}
+
+fn from_deltas(bgra: &mut [u8], width: u32) {
+    for row in bgra.chunks_mut(width as usize * PIXEL) {
+        for at in PIXEL..row.len() {
+            row[at] = row[at].wrapping_add(row[at - PIXEL]);
+        }
+    }
+}
+
+/// **Holds a picture to [`MAX_PACKED_PICTURE`].** As it is, if that fits, which is any page that's mostly paper. Otherwise at half the resolution or less, with fewer colours and each row as differences: what lets a photograph fit, at the cost of looking soft for the moment it's there. `None` if its numbers don't add up, or nothing fits.
+fn pack_picture(picture: &SleepPicture) -> Option<(PictureLine, Vec<u8>)> {
+    if picture_bytes(picture.width, picture.height, picture.scale) != Some(picture.bgra.len()) {
+        return None;
+    }
+    let line = |width, height, scale, packed: &[u8], delta| PictureLine { page: picture.page, scale, width, height, dark: picture.dark, packed: u32::try_from(packed.len()).unwrap_or(u32::MAX), delta };
+    let whole = deflated(&picture.bgra, flate2::Compression::fast())?;
+    if whole.len() <= MAX_PACKED_PICTURE {
+        return Some((line(picture.width, picture.height, picture.scale, &whole, false), whole));
+    }
+    for (step, keep_bits) in [(2u32, 5u32), (3, 5), (4, 4), (6, 4), (8, 4)] {
+        let (width, height, mut bgra) = shrunk(picture, step, keep_bits);
+        to_deltas(&mut bgra, width);
+        let packed = deflated(&bgra, flate2::Compression::new(6))?;
+        if packed.len() <= MAX_PACKED_PICTURE {
+            return Some((line(width, height, picture.scale / step as f32, &packed, true), packed));
+        }
+    }
+    None
+}
+
 /// A file's bytes. Pictures past the caps, or of the wrong size, are left out rather than failing the file.
 pub fn encode_sleep(sleep: &SleepFile) -> Vec<u8> {
     let toc = sleep.toc.entries().iter().map(|entry| (sleep.toc.title(entry).to_string(), entry.page, entry.parent, entry.depth)).collect();
     let mut lines = Vec::new();
     let mut packed = Vec::new();
     for picture in sleep.pictures.iter().take(MAX_SLEEP_PICTURES) {
-        if picture_bytes(picture.width, picture.height, picture.scale) != Some(picture.bgra.len()) {
-            continue;
+        if let Some((line, bytes)) = pack_picture(picture) {
+            lines.push(line);
+            packed.extend_from_slice(&bytes);
         }
-        // The fastest there is: this is written once, and text's mostly paper.
-        let mut deflate = flate2::write::DeflateEncoder::new(Vec::with_capacity(picture.bgra.len() / 8), flate2::Compression::fast());
-        if deflate.write_all(&picture.bgra).is_err() {
-            continue;
-        }
-        let Ok(bytes) = deflate.finish() else { continue };
-        let Ok(length) = u32::try_from(bytes.len()) else { continue };
-        lines.push(PictureLine { page: picture.page, scale: picture.scale, width: picture.width, height: picture.height, dark: picture.dark, packed: length });
-        packed.extend_from_slice(&bytes);
     }
     let sizes = sleep.sizes.iter().take(MAX_SIZES).copied().collect();
     let meta = Meta { file: sleep.file.into(), file_pages: sleep.file_pages, pages: sleep.pages, list_seq: sleep.list_seq, renderer_only: sleep.renderer_only, truncated: sleep.toc.truncated, toc, usual: sleep.usual, sizes, pictures: lines };
@@ -163,6 +234,9 @@ pub fn decode_sleep(bytes: &[u8], newest: u32) -> Result<SleepFile, RecordError>
         inflate.read_exact(&mut bgra).map_err(|_| bad("a picture that doesn't unpack"))?;
         if inflate.read(&mut [0u8; 1]).map_err(|_| bad("a picture that doesn't unpack"))? != 0 {
             return Err(bad("a picture that's too long"));
+        }
+        if line.delta {
+            from_deltas(&mut bgra, line.width);
         }
         pictures.push(SleepPicture { page: line.page, scale: line.scale, width: line.width, height: line.height, dark: line.dark, bgra });
     }
@@ -267,6 +341,49 @@ mod tests {
             assert!(decode_sleep(&flipped, CURRENT_VERSION).is_err(), "byte {at}");
         }
         assert!(matches!(decode_sleep(&crate::record::seal_as(SLEEP_KIND, CURRENT_VERSION + 1, 0, &body_of(&good)), CURRENT_VERSION), Err(RecordError::Newer(_))), "a newer app's is left to it");
+    }
+
+    /// Failure (the owner's rule on SSD wear): a page of a photograph writes half a megabyte each time it's left, as it doesn't pack, so a morning's reading is tens of megabytes. Every picture comes in under its cap, whatever's on it, and still shows the page: right shape, right colours on average. A page of paper isn't touched.
+    #[test]
+    fn a_picture_is_held_to_its_cap_and_still_shows_the_page() {
+        // Noise over a gradient, as a photograph is to deflate: nothing repeats.
+        let (width, height) = (612u32, 792u32);
+        let mut state = 0x1234_5678u32;
+        let mut noisy = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8 & 0x1F
+        };
+        let mut bgra = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                bgra.extend_from_slice(&[(x / 4) as u8 / 2 + noisy(), (y / 4) as u8 / 2 + noisy(), 180 + noisy() / 2, 255]);
+            }
+        }
+        let mut sleep = sample();
+        sleep.pictures = vec![SleepPicture { page: 0, scale: 0.5, width, height, dark: false, bgra: bgra.clone() }];
+        let encoded = encode_sleep(&sleep);
+        let back = decode_sleep(&encoded, CURRENT_VERSION).unwrap();
+        let picture = &back.pictures[0];
+        assert!(encoded.len() < MAX_PACKED_PICTURE + 2048, "{} bytes", encoded.len());
+        assert!(picture.width < width, "it's had to shrink");
+        assert_eq!(picture.bgra.len(), picture.width as usize * picture.height as usize * 4);
+        // The same page in points, to within a pixel of the smaller one.
+        let shown = |pixels: u32, scale: f32| f64::from(pixels) / f64::from(scale);
+        assert!((shown(picture.width, picture.scale) - shown(width, 0.5)).abs() <= 2.0 * f64::from(1.0 / picture.scale));
+        assert!((shown(picture.height, picture.scale) - shown(height, 0.5)).abs() <= 2.0 * f64::from(1.0 / picture.scale));
+        // The colours on average, channel by channel, and the gradient's still there.
+        let average = |pixels: &[u8], channel: usize| pixels.as_chunks::<4>().0.iter().map(|pixel| u64::from(pixel[channel])).sum::<u64>() as f64 / (pixels.len() / 4) as f64;
+        for channel in 0..3 {
+            assert!((average(&bgra, channel) - average(&picture.bgra, channel)).abs() < 20.0, "channel {channel}");
+        }
+        assert!(picture.bgra.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255));
+        let at = |x: u32, y: u32| picture.bgra[((y * picture.width + x) * 4) as usize];
+        assert!(i32::from(at(picture.width - 1, 0)) - i32::from(at(0, 0)) > 20, "left to right");
+        // A page of plain paper's kept as it is.
+        let mut sleep = sample();
+        sleep.pictures = vec![SleepPicture { page: 0, scale: 0.5, width, height, dark: false, bgra: vec![255; (width * height * 4) as usize] }];
+        let back = decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap();
+        assert_eq!(back.pictures[0].width, width);
     }
 
     /// Failure: a title in a forged file carries what a title from a PDF can't, as it isn't cleaned, and reaches the sidebar and agents.

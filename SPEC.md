@@ -39,7 +39,7 @@ A missed budget is a bug. The whole process tree counts, on release builds, on a
 | Window closed | ≤ 20 MiB | Met: 11.5 MiB |
 | Waking a sleeping tab | Correct place on screen within one frame (≤ 16 ms), from its sleep file; sharp ≤ 100 ms on a text page; no blank frame | See `docs/ENGINEERING.md` for what's measured. Off screen, from asking to the host having applied it: not on a real display. A page under 5% of the view isn't counted |
 | Live documents across a whole session | A byte budget across documents and a response to memory pressure; memory flat over a 24-hour session | Built and tested over 30 tabs going round, not over 24 hours: `long_session.rs` |
-| Disk writes (owner, 2026-11-07: "reduce SSD wear as much as we can") | Idle or nothing changed: 0 bytes. Reading: at most one small write a minute. Editing: appended steps only, written after 2 s of quiet or every 5 s at most, nothing rewritten. About 10 MiB of state on a heavy day | Target, not measured. Estimated from 5,000 edits at about 200 bytes and a minute-by-minute place over 8 hours |
+| Disk writes (owner, 2026-11-07: "reduce SSD wear as much as we can") | Idle or nothing changed: 0 bytes. Reading: at most one small write a minute. Editing: appended steps only, written after 2 s of quiet or every 5 s at most, nothing rewritten. About 10 MiB of state on a heavy day | Idle and scrolling measured at 0 bytes. Sleep files: at most one per tab a minute and 1 MiB an hour, so about 8 MiB over 8 hours, and 100 KiB a picture. Moving among 5 tabs of photographs, 36 visits with the page moved, wrote 1.06 MB over 9 minutes and 0.18 MB as fast as it would go, against 20.7 MB before those limits. The heavy day's total is still an estimate, not measured |
 
 ## 3. Architecture
 

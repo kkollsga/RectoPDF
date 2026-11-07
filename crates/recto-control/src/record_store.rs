@@ -851,7 +851,7 @@ impl RecordStore {
             return None;
         }
         let stamp = file_stamp(&kept).ok()?;
-        Some(AddedSource { path: kept.into_boxed_path(), page_count: pages, stamp: Some(stamp), kept: true })
+        Some(AddedSource { path: kept.into_boxed_path(), page_count: pages, stamp: Some(stamp), kept: true, protected: false })
     }
 
     /// **What going dormant does to a list on disk:** the journal's checkpoint moves up, if that's worth it, and it's read back and compared, as what's in memory is about to go. Says whether it's all there.

@@ -585,6 +585,8 @@ enum CoreCall {
     MemoryPressure(bool),
     /// A tab woken from its sleep file has another file there now.
     WokenFileIsOther(TabId, FileStatus),
+    /// The worker says how long a tab's own file is.
+    FileLength(TabId, u32),
     Page(u32, Option<&'static str>, TabId),
     /// A file read off the session thread, for a tab being woken or a file being opened.
     Read(Box<FileRead>),
@@ -716,6 +718,10 @@ impl EngineEvents for EngineHooks {
 
     fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>) {
         self.core.push(CoreCall::Page(page, failure, TabId(tab)));
+    }
+
+    fn file_length(&self, tab: u32, pages: u32) {
+        self.core.push(CoreCall::FileLength(TabId(tab), pages));
     }
 
     fn copy_ready(&self) {
@@ -959,6 +965,17 @@ impl Inner {
                     Ok(())
                 }
                 Err(_) => Err(usage("It's a number of MiB.".to_string())),
+            },
+            "hold_drawing" => {
+                self.engine.hold_drawing(value == "on");
+                Ok(())
+            }
+            "sleep_write_gap" => match value.parse::<u32>() {
+                Ok(seconds) => {
+                    self.sleeper.set_write_gap(seconds);
+                    Ok(())
+                }
+                Err(_) => Err(usage("It's a number of seconds.".to_string())),
             },
             "memory_pressure" => match value {
                 "warning" | "critical" => {
@@ -1516,7 +1533,8 @@ impl AppCore {
         if !self.inner.restored.load(Ordering::SeqCst) || lock(&self.inner.holding_tab).is_some() {
             return false;
         }
-        let active = self.inner.host.session.with_session(|session| session.active());
+        // It's asked on the UI thread, which doesn't wait for whatever has the session: this comes round again.
+        let Some(active) = self.inner.host.session.try_with_session(|session| session.active()) else { return false };
         active.is_none() || self.inner.engine.is_on_place() || self.inner.engine.is_showable()
     }
 
@@ -1917,6 +1935,15 @@ fn session_thread(inner: &Arc<Inner>) {
                     reads.start_restored(inner, id, path, stamp);
                 }
             }
+            CoreCall::FileLength(id, pages) => {
+                // What a sleep file said of it is wrong, so it's read after all.
+                let wrong = host.session.with_session(|session| session.file_length_is(id, pages));
+                let reread = host.session.with_session(|session| session.active().filter(|active| wrong && *active == id).and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id)))));
+                if let Some((id, path, stamp)) = reread {
+                    reads.wanted_tab = Some(id);
+                    reads.start_restored(inner, id, path, stamp);
+                }
+            }
             CoreCall::ClearEditHistory => inner.host.session.with_session(|session| {
                 if let Some(id) = session.active() {
                     session.clear_history(id, recto_session::ClearReason::UserAsked);
@@ -2192,18 +2219,21 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         let snapshot = active.and_then(|id| {
             let tab = session.tab(id)?;
             let own = session.path_of(id)?;
+            let same_file = session.own_stamp(id).map(sleeper::version_of);
             let map = match session.page_edits(id) {
-                None => PageMap { files: vec![own], slots: None },
+                None => PageMap { files: vec![own], slots: None, own: same_file },
                 Some(edits) => {
                     let mut files = vec![own];
                     files.extend(edits.added_sources().iter().map(|added| added.path.to_path_buf()));
-                    PageMap { files, slots: Some(edits.slots().iter().map(|slot| (slot.source, slot.page)).collect()) }
+                    PageMap { files, slots: Some(edits.slots().iter().map(|slot| (slot.source, slot.page)).collect()), own: same_file }
                 }
             };
             let warm: Vec<u32> = session.warm_tabs().filter(|other| *other != id).map(|other| other.0).collect();
             let problem = session.tab_notice_message(id).map(str::to_string).or_else(|| tab.problem.map(|problem| problem.message().to_string()));
             let saved = session.place_to_show(id).map(|place| SavedPlace { page: place.page, anchor: (place.anchor_page, place.within), x: place.x, y: place.y, document_height: place.document_height, magnification: place.zoom, page_size: (place.page_width > 0.0 && place.page_height > 0.0).then_some(recto_reader::layout::PageBox { width: place.page_width, height: place.page_height }) });
-            Some((id, session.pages_in(id), tab.page, map, warm, problem, saved))
+            // Edits that can't be read just now can't say what's on the pages, so it's the file that's shown.
+            let pages = if session.list_is_asleep(id) { tab.page_count } else { session.pages_in(id) };
+            Some((id, pages, tab.page, map, warm, problem, saved))
         });
         let model = session.sidebar();
         let mut current = None;
