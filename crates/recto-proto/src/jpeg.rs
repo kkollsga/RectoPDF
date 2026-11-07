@@ -341,6 +341,147 @@ impl JpegScan {
     }
 }
 
+/// The most a profile added to a JPEG may be. Larger than any RGB profile in use, and a page with more goes as PNG.
+pub const MAX_ADDED_PROFILE: usize = 1024 * 1024;
+/// How much of a profile one segment holds, by the convention for splitting them.
+const PROFILE_PART: usize = 65_519;
+
+/// What to correct around a JPEG's picture so that a reader takes it as the page does.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HeaderFix<'a> {
+    /// Set EXIF to say upright, which is what the page draws.
+    pub upright: bool,
+    /// Take out its own colour profile.
+    pub drop_profile: bool,
+    /// Add this one.
+    pub add_profile: Option<&'a [u8]>,
+}
+
+/// One segment of the header: its marker, and where it starts and ends, length included. `None` at the scan, or where it doesn't hold together.
+fn next_segment(jpeg: &[u8], mut at: usize) -> Option<(u8, usize, usize)> {
+    if *jpeg.get(at)? != 0xFF {
+        return None;
+    }
+    while *jpeg.get(at + 1)? == 0xFF {
+        at += 1;
+    }
+    let code = jpeg[at + 1];
+    if code == 0xDA {
+        return None;
+    }
+    let length = usize::from(*jpeg.get(at + 2)?) << 8 | usize::from(*jpeg.get(at + 3)?);
+    if length < 2 {
+        return None;
+    }
+    let end = at.checked_add(2)?.checked_add(length)?;
+    (end <= jpeg.len()).then_some((code, at, end))
+}
+
+/// Where the first scan's marker is, from which on a JPEG is its compressed picture and what follows.
+pub fn scan_start(jpeg: &[u8]) -> Option<usize> {
+    if jpeg.get(..2) != Some(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut at = 2;
+    loop {
+        match next_segment(jpeg, at) {
+            Some((_, _, end)) => at = end,
+            None => {
+                let mut marker = at;
+                while *jpeg.get(marker + 1)? == 0xFF {
+                    marker += 1;
+                }
+                return (*jpeg.get(marker)? == 0xFF && jpeg[marker + 1] == 0xDA).then_some(marker);
+            }
+        }
+    }
+}
+
+/// How many colours its frame says it has.
+pub fn frame_components(jpeg: &[u8]) -> Option<u8> {
+    let mut at = 2;
+    while let Some((code, start, end)) = next_segment(jpeg, at) {
+        if matches!(code, 0xC0..=0xC2) {
+            return jpeg.get(start + 9).copied();
+        }
+        at = end;
+    }
+    None
+}
+
+/// The same JPEG with its header corrected and everything from the first scan on, byte for byte, as it was. `None` if that can't be done, or what comes out doesn't read as what was asked: it's then not a JPEG to pass on.
+pub fn fix_header(jpeg: &[u8], fix: &HeaderFix<'_>) -> Option<Vec<u8>> {
+    let scan = scan_start(jpeg)?;
+    let added = fix.add_profile.unwrap_or(&[]);
+    if added.len() > MAX_ADDED_PROFILE {
+        return None;
+    }
+    let parts = added.chunks(PROFILE_PART).len();
+    let parts_u8 = u8::try_from(parts).ok()?;
+    let mut out = Vec::with_capacity(jpeg.len() + added.len() + parts * 18);
+    out.extend_from_slice(&jpeg[..2]);
+    let mut at = 2;
+    let mut profile_written = added.is_empty();
+    let write_profile = |out: &mut Vec<u8>| {
+        for (index, part) in added.chunks(PROFILE_PART).enumerate() {
+            out.extend_from_slice(&[0xFF, 0xE2]);
+            out.extend_from_slice(&((part.len() + 2 + 14) as u16).to_be_bytes());
+            out.extend_from_slice(b"ICC_PROFILE\0");
+            out.extend_from_slice(&[index as u8 + 1, parts_u8]);
+            out.extend_from_slice(part);
+        }
+    };
+    while at < scan {
+        let (code, start, end) = next_segment(jpeg, at)?;
+        // JFIF must stay first.
+        if !profile_written && code != 0xE0 {
+            write_profile(&mut out);
+            profile_written = true;
+        }
+        let segment = &jpeg[start..end];
+        let is_profile = code == 0xE2 && segment.get(4..).is_some_and(|body| body.starts_with(b"ICC_PROFILE\0"));
+        if !(is_profile && fix.drop_profile) {
+            let from = out.len();
+            out.extend_from_slice(segment);
+            if fix.upright && code == 0xE1 && segment.get(4..10) == Some(b"Exif\0\0") {
+                set_upright(&mut out[from + 10..]);
+            }
+        }
+        at = end;
+    }
+    if !profile_written {
+        write_profile(&mut out);
+    }
+    out.extend_from_slice(&jpeg[scan..]);
+    // Read back by the same parser: sound, and saying what was asked.
+    let mut check = JpegScan::new(false);
+    check.feed(&out, &mut Vec::new()).ok()?;
+    check.finish().ok()?;
+    let facts = check.facts();
+    let as_asked = (!fix.upright || !facts.is_turned()) && (!fix.drop_profile || fix.add_profile.is_some() || facts.color_profiles == 0) && (fix.add_profile.is_none() || facts.color_profiles == 1);
+    as_asked.then_some(out)
+}
+
+/// Sets the orientation tags in an EXIF block's first directory to upright. Anything that doesn't hold together is left alone, and the read back finds it.
+fn set_upright(tiff: &mut [u8]) {
+    let little = match tiff.get(..2) {
+        Some(b"II") => true,
+        Some(b"MM") => false,
+        _ => return,
+    };
+    let word = |tiff: &[u8], at: usize| tiff.get(at..at.checked_add(2)?).map(|bytes| if little { u16::from_le_bytes([bytes[0], bytes[1]]) } else { u16::from_be_bytes([bytes[0], bytes[1]]) });
+    let Some(first) = tiff.get(4..8).map(|bytes| if little { u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) } else { u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) } as usize) else { return };
+    let Some(count) = word(tiff, first) else { return };
+    for entry in 0..usize::from(count) {
+        let at = first + 2 + entry * 12;
+        if word(tiff, at) == Some(0x0112)
+            && let Some(value) = tiff.get_mut(at + 8..at + 10)
+        {
+            value.copy_from_slice(&if little { 1u16.to_le_bytes() } else { 1u16.to_be_bytes() });
+        }
+    }
+}
+
 /// How much of an Adobe marker there is to it: its name, version, two sets of flags and the colour transform.
 const ADOBE_LEN: usize = 12;
 
@@ -624,6 +765,84 @@ mod tests {
         let (jpeg, out) = scan(&bytes, true).unwrap();
         assert_eq!(out, plain());
         assert!(jpeg.changed());
+    }
+
+    /// An EXIF block saying how to turn the picture.
+    fn orientation_block(value: u8) -> Vec<u8> {
+        let mut out = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0".to_vec();
+        out.extend_from_slice(&[value, 0, 0, 0, 0, 0, 0, 0]);
+        out
+    }
+
+    /// Failure: correcting what's around a picture touches the picture, which is the whole claim. From the first scan on, every byte stays, and no JPEG comes out of this that the parser wouldn't pass.
+    #[test]
+    fn a_fix_leaves_the_compressed_picture_as_it_was() {
+        let turned = with((0xE1, &orientation_block(6)), b"after");
+        let fixed = fix_header(&turned, &HeaderFix { upright: true, ..HeaderFix::default() }).unwrap();
+        assert_eq!(fixed[scan_start(&fixed).unwrap()..], turned[scan_start(&turned).unwrap()..], "what follows the header");
+        let mut read = JpegScan::new(false);
+        read.feed(&fixed, &mut Vec::new()).unwrap();
+        assert_eq!(read.facts().orientation, 1, "it says upright");
+        assert_eq!(fixed.len(), turned.len(), "by changing the value and nothing else");
+
+        let foreign = with((0xE2, &profile_segment(1, 1, b"Adobe RGB (1998)")), b"");
+        let gone = fix_header(&foreign, &HeaderFix { drop_profile: true, ..HeaderFix::default() }).unwrap();
+        assert_eq!(gone, plain(), "taken out, and nothing else");
+
+        let profile = profile_segment(1, 1, b"Adobe RGB (1998)")[14..].to_vec();
+        let jfif = with((0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"), b"");
+        let added = fix_header(&jfif, &HeaderFix { add_profile: Some(&profile), ..HeaderFix::default() }).unwrap();
+        assert!(added[2..].starts_with(&[0xFF, 0xE0]), "JFIF stays first");
+        assert_eq!(added[scan_start(&added).unwrap()..], jfif[scan_start(&jfif).unwrap()..]);
+        let mut read = JpegScan::new(false);
+        read.feed(&added, &mut Vec::new()).unwrap();
+        assert_eq!(read.facts().color_profiles, 1);
+        let replaced = fix_header(&foreign, &HeaderFix { drop_profile: true, add_profile: Some(&profile), ..HeaderFix::default() }).unwrap();
+        let mut read = JpegScan::new(false);
+        read.feed(&replaced, &mut Vec::new()).unwrap();
+        assert_eq!(read.facts().color_profiles, 1, "one, not two");
+    }
+
+    /// Failure: a large profile makes a segment too long, or runs past what the parts can count, so a JPEG comes out broken. It's split by the convention and read back whole, and one past the cap isn't added at all.
+    #[test]
+    fn a_large_profile_is_split_and_past_the_cap_refused() {
+        let mut profile = profile_segment(1, 1, b"Adobe RGB (1998)")[14..].to_vec();
+        profile.resize(200_000, 7);
+        let fixed = fix_header(&plain(), &HeaderFix { add_profile: Some(&profile), ..HeaderFix::default() }).unwrap();
+        let mut read = JpegScan::new(true);
+        let mut kept = Vec::new();
+        read.feed(&fixed, &mut kept).unwrap();
+        read.finish().unwrap();
+        assert_eq!(kept, fixed, "every part holds together, so stripping keeps them all");
+        assert_eq!(read.facts().color_profiles, 1);
+        assert!(fixed.len() < plain().len() + profile.len() + 100, "it doesn't grow past what was asked");
+        profile.resize(MAX_ADDED_PROFILE + 1, 7);
+        assert!(fix_header(&plain(), &HeaderFix { add_profile: Some(&profile), ..HeaderFix::default() }).is_none());
+    }
+
+    /// Failure: what isn't a JPEG gets through the rewrite, or it panics on it. Every cut and change of a real structure ends in a sound JPEG or nothing.
+    #[test]
+    fn a_fix_of_a_broken_jpeg_is_nothing_or_sound() {
+        let good = with((0xE1, &orientation_block(6)), b"");
+        let fix = HeaderFix { upright: true, drop_profile: true, add_profile: None };
+        for cut in 0..good.len() {
+            assert!(fix_header(&good[..cut], &fix).is_none(), "cut at {cut}");
+        }
+        let mut seed = 5u64;
+        for _ in 0..20_000 {
+            let mut bad = good.clone();
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            let at = (seed >> 33) as usize % bad.len();
+            bad[at] = (seed >> 20) as u8;
+            if let Some(fixed) = fix_header(&bad, &fix) {
+                let mut read = JpegScan::new(false);
+                read.feed(&fixed, &mut Vec::new()).unwrap();
+                read.finish().unwrap();
+                assert!(!read.facts().is_turned());
+            }
+            let _ = frame_components(&bad);
+            let _ = scan_start(&bad);
+        }
     }
 
     /// Failure: GPS or a thumbnail goes unnoticed, in either byte order, so nobody's told a photo says where it was taken. Lengths that lie mustn't panic.

@@ -10,7 +10,7 @@
 //! PDFium gives for the real character, and text whose outlines don't match, or that has none, as in a Type 3 font, goes as a picture. The real characters stay over it, selectable.
 
 use super::*;
-use recto_proto::jpeg::{JpegScan, profile_says_srgb};
+use recto_proto::jpeg::{HeaderFix, JpegScan, MAX_ADDED_PROFILE, fix_header, frame_components, profile_says_srgb};
 use recto_proto::contents::{CONTENTS_CHUNK, ContentsJob, ImageCoding, MAX_CLIP_CHAIN, MAX_CLIPS, MAX_GLYPHS, MAX_GROUP_NESTING, MAX_IMAGE_ROW_BYTES, MAX_PATH_SEGMENTS, MAX_RUN_ITEMS, NoteCode, SEG_CURVE, SEG_LINE, SEG_MOVE, TextMode, Why, begin_contents, finish_contents, hints, put};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -45,8 +45,8 @@ const MAX_MASKED_BYTES: u64 = 256 * 1024 * 1024;
 const MASK_PROBE_EDGE: u32 = 64;
 /// The largest colour profile read. sRGB's is a few kilobytes.
 const MAX_PROFILE_BYTES: usize = 16 * 1024 * 1024;
-/// How far a clip is blown up to cover an image laid flat. A point a quarter of a point inside the clip then covers 5,000 pixels from the image's middle, and a page's clip stays within what a float can hold.
-const CLIP_BLOW_UP: f64 = 2.0e4;
+/// How far a clip's points may reach once it's blown up to cover an image laid flat. PDFium's path filler clamps at 50,000, which bends any shape that goes past it, so a clip that would have to go further stays a picture.
+const MAX_CLIP_REACH: f64 = 40_000.0;
 /// How far a glyph's outline may be from the box PDFium gives for the character, as a share of the font's size. Boxes are in whole thousandths and outlines aren't hinted, but a wrong glyph is usually much further off than this.
 const BOX_TOLERANCE_EM: f64 = 0.12;
 /// How close two characters' origins are, as a share of the font's size, to be parts of one ligature.
@@ -187,6 +187,22 @@ enum PatchKind {
 }
 
 /// Bytes on their way to the host a frame at a time.
+/// What a JPEG has to say about its colours for a browser to read it as the page does.
+enum PageColour {
+    /// As it is: sRGB, or what a browser takes as that.
+    Plain,
+    /// This profile, which isn't sRGB.
+    Profile(Vec<u8>),
+}
+
+/// The JPEG to send once its mask has gone.
+struct MaskedJpeg {
+    data: Vec<u8>,
+    width: u32,
+    height: u32,
+    wire: Mat,
+}
+
 enum Pending {
     /// A bitmap PDFium gave, freed when it's sent.
     Bitmap { bitmap: FPDF_BITMAP, format: c_int, stride: usize, crop: (u32, u32, u32, u32), channels: u8, y: u32 },
@@ -280,8 +296,9 @@ pub(super) struct Walk {
     flatten: bool,
     probes: u32,
     layers: HashMap<LayerKey, bool>,
+    after_mask: Option<MaskedJpeg>,
     invisible_counted: HashSet<usize>,
-    notes: [u32; 9],
+    notes: [u32; 11],
     buffer: Vec<(u32, f32, f32)>,
 }
 
@@ -401,8 +418,9 @@ impl PdfiumBackend {
             flatten: false,
             probes: 0,
             layers: HashMap::new(),
+            after_mask: None,
             invisible_counted: HashSet::new(),
-            notes: [0; 9],
+            notes: [0; 11],
             buffer: Vec::new(),
         };
         // SAFETY: the page is live.
@@ -508,6 +526,11 @@ impl Walk {
             if self.pending.is_some() {
                 continue;
             }
+            if let Some(MaskedJpeg { data, width, height, wire }) = self.after_mask.take() {
+                put::image_begin(out, ImageCoding::Jpeg, Why::JpegOverMask, 255, width, height, data.len() as u64, &wire);
+                self.pending = Some(Pending::Bytes { data, at: 0 });
+                continue;
+            }
             if let Some(object) = self.overlay_next.take() {
                 self.text_overlay_only(object, out)?;
                 continue;
@@ -540,7 +563,7 @@ impl Walk {
     }
 
     fn write_notes(&mut self, out: &mut Vec<u8>) {
-        for (code, index) in [NoteCode::NotFinite, NoteCode::HiddenLayer, NoteCode::InvisibleText, NoteCode::Unknown, NoteCode::LayersUnchecked, NoteCode::ObjectsSkipped, NoteCode::JpegTurned, NoteCode::JpegUnsound].into_iter().map(|code| (code, code as usize)) {
+        for (code, index) in [NoteCode::NotFinite, NoteCode::HiddenLayer, NoteCode::InvisibleText, NoteCode::Unknown, NoteCode::LayersUnchecked, NoteCode::ObjectsSkipped, NoteCode::JpegTurned, NoteCode::JpegUnsound, NoteCode::JpegProfileRemoved, NoteCode::JpegProfileAdded].into_iter().map(|code| (code, code as usize)) {
             if self.notes[index] > 0 {
                 put::note(out, code, self.notes[index]);
             }
@@ -1563,7 +1586,11 @@ impl Walk {
         let masked = stencil || self.has_mask(object, &own, width, height);
         // A whole page keeps a whole image, even past the page's edge, as a bleed goes. Only a box asks for less.
         let inside = !self.partial || area.inside(self.view);
-        if !masked && inside && self.jpeg_passes(object, &metadata) {
+        let mask_comes_apart = !masked || (!stencil && self.job.hints & hints::MASK_NOT_SEPARABLE == 0 && u64::from(width) * u64::from(height) * 4 <= MAX_MASKED_BYTES);
+        if mask_comes_apart
+            && inside
+            && let Some(meaning) = self.jpeg_meaning(object, &metadata)
+        {
             // SAFETY: as above. The first call asks for the length, and the second has that much room.
             let data = unsafe {
                 let len = (self.api.FPDFImageObj_GetImageDataRaw)(object, std::ptr::null_mut(), 0) as usize;
@@ -1572,16 +1599,45 @@ impl Walk {
                 data.truncate(got.min(len));
                 data
             };
-            // The original bytes, all of them (owner, 2026-11-07), if they're sound as a JPEG and mean what the page means by them. One that says to turn itself doesn't: a page takes no notice and a browser does. Otherwise PNG.
+            // The original bytes, all of them (owner, 2026-11-07), if they're sound as a JPEG and mean what the page means by them. If they don't only because of what's around the picture, that's corrected and the picture stays byte for byte (owner, 2026-11-07: "Cant we fix the decoding instead?"). Otherwise PNG.
             let mut scan = JpegScan::new(false);
-            let sound = scan.feed(&data, &mut Vec::new()).and_then(|()| scan.finish()).is_ok();
-            if sound && !scan.facts().is_turned() {
-                let Some(wire) = to_f32(&matrix) else { return Ok(()) };
-                put::image_begin(out, ImageCoding::Jpeg, Why::Image, alpha, width, height, data.len() as u64, &wire);
-                self.pending = Some(Pending::Bytes { data, at: 0 });
-                return Ok(());
+            if scan.feed(&data, &mut Vec::new()).and_then(|()| scan.finish()).is_ok() {
+                let facts = scan.facts();
+                let has_own = facts.color_profiles > 0 || facts.foreign_profile;
+                let fix = match &meaning {
+                    PageColour::Plain => HeaderFix { upright: facts.is_turned(), drop_profile: facts.foreign_profile, add_profile: None },
+                    PageColour::Profile(profile) => HeaderFix { upright: facts.is_turned(), drop_profile: has_own, add_profile: Some(profile) },
+                };
+                let fits = !matches!(meaning, PageColour::Profile(_)) || frame_components(&data) == Some(3);
+                let is_changing = fix.upright || fix.drop_profile || fix.add_profile.is_some();
+                let fixed = if !fits {
+                    None
+                } else if is_changing {
+                    fix_header(&data, &fix)
+                } else {
+                    Some(data)
+                };
+                if let (Some(data), Some(wire)) = (fixed, to_f32(&matrix)) {
+                    // What goes out of here does, so what's said of it is true.
+                    if masked {
+                        if let Some(mask) = self.alpha_of(object, &own, width, height) {
+                            self.say_fix(&fix, has_own, is_changing);
+                            put::image_begin(out, ImageCoding::Pixels { channels: 1 }, Why::JpegMask, 255, width, height, mask.len() as u64, &wire);
+                            self.pending = Some(Pending::Bytes { data: mask, at: 0 });
+                            // A mask is drawn with the image's opacity in it, which must count once.
+                            self.after_mask = Some(MaskedJpeg { data, width, height, wire });
+                            return Ok(());
+                        }
+                    } else {
+                        self.say_fix(&fix, has_own, is_changing);
+                        put::image_begin(out, ImageCoding::Jpeg, if is_changing { Why::JpegHeaderFixed } else { Why::Image }, alpha, width, height, data.len() as u64, &wire);
+                        self.pending = Some(Pending::Bytes { data, at: 0 });
+                        return Ok(());
+                    }
+                }
+            } else {
+                self.note(NoteCode::JpegUnsound);
             }
-            self.note(if sound { NoteCode::JpegTurned } else { NoteCode::JpegUnsound });
         }
         let bitmap = if masked {
             if u64::from(width) * u64::from(height) * 4 > MAX_MASKED_BYTES {
@@ -1631,6 +1687,46 @@ impl Walk {
         Ok(())
     }
 
+    /// Says what was corrected around a JPEG.
+    fn say_fix(&mut self, fix: &HeaderFix<'_>, had_own: bool, changing: bool) {
+        if !changing {
+            return;
+        }
+        if fix.upright {
+            self.note(NoteCode::JpegTurned);
+        }
+        if fix.drop_profile && had_own {
+            self.note(NoteCode::JpegProfileRemoved);
+        }
+        if fix.add_profile.is_some() {
+            self.note(NoteCode::JpegProfileAdded);
+        }
+    }
+
+    /// An image's mask at the image's own size, as how much of each pixel shows. `None` if it can't be had, and the image is drawn as before. PDFium has no call that gives a mask as stored, so a mask finer than its image is resampled to it.
+    fn alpha_of(&mut self, object: FPDF_PAGEOBJECT, own: &M, width: u32, height: u32) -> Option<Vec<u8>> {
+        let bitmap = self.rendered_image(object, own, width, height);
+        if bitmap.is_null() {
+            return None;
+        }
+        // SAFETY: the bitmap was just checked to be live, its buffer holds its stride times its height, and it's freed here.
+        unsafe {
+            let (w, h, stride, format) = ((self.api.FPDFBitmap_GetWidth)(bitmap), (self.api.FPDFBitmap_GetHeight)(bitmap), (self.api.FPDFBitmap_GetStride)(bitmap), (self.api.FPDFBitmap_GetFormat)(bitmap));
+            let buffer = (self.api.FPDFBitmap_GetBuffer)(bitmap).cast::<u8>();
+            let mut alpha = None;
+            if format == FORMAT_BGRA && !buffer.is_null() && i64::from(w) == i64::from(width) && i64::from(h) == i64::from(height) && stride >= w * 4 {
+                let pixels = std::slice::from_raw_parts(buffer, stride as usize * h as usize);
+                let mut mask = Vec::with_capacity(w as usize * h as usize);
+                for row in pixels.chunks_exact(stride as usize) {
+                    mask.extend(row[..w as usize * 4].as_chunks::<4>().0.iter().map(|pixel| pixel[3]));
+                }
+                alpha = Some(mask);
+            }
+            (self.api.FPDFBitmap_Destroy)(bitmap);
+            alpha
+        }
+    }
+
     /// Whether an image has a mask, by drawing it small and looking for anything not opaque. An image with no mask comes back opaque at any size.
     fn has_mask(&mut self, object: FPDF_PAGEOBJECT, own: &M, width: u32, height: u32) -> bool {
         let bitmap = self.rendered_image(object, own, width.min(MASK_PROBE_EDGE), height.min(MASK_PROBE_EDGE));
@@ -1674,9 +1770,14 @@ impl Walk {
             unsafe { (self.api.FPDFClipPath_CountPaths)(clip) }.max(0)
         };
         let moved = if paths > 0 {
-            let Some((x, y)) = self.point_inside_clip(clip, paths) else { return std::ptr::null_mut() };
-            let (mid_x, mid_y) = (f64::from(width) / 2.0, f64::from(height) / 2.0);
-            Some(([CLIP_BLOW_UP, 0.0, 0.0, CLIP_BLOW_UP, mid_x - CLIP_BLOW_UP * x, mid_y - CLIP_BLOW_UP * y], [1.0 / CLIP_BLOW_UP, 0.0, 0.0, 1.0 / CLIP_BLOW_UP, x - mid_x / CLIP_BLOW_UP, y - mid_y / CLIP_BLOW_UP]))
+            let Some((x, y, margin, reach)) = self.point_inside_clip(clip, paths) else { return std::ptr::null_mut() };
+            // PDFium takes the clip through where the file placed the image, whatever matrix it has now, so that's what it has to cover. Pixels then stand this far apart.
+            let (mid_x, mid_y) = apply(own, 0.5, 0.5);
+            let corner = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].iter().map(|&(u, v)| { let (px, py) = apply(own, u, v); (px - mid_x).hypot(py - mid_y) }).fold(0.0, f64::max);
+            let side = own[0].hypot(own[1]).min(own[2].hypot(own[3]));
+            let pixels = f64::from(width.max(height)) / side;
+            let Some(scale) = clip_blow_up(margin, reach, corner, pixels) else { return std::ptr::null_mut() };
+            Some(([scale, 0.0, 0.0, scale, mid_x - scale * x, mid_y - scale * y], [1.0 / scale, 0.0, 0.0, 1.0 / scale, x - mid_x / scale, y - mid_y / scale]))
         } else {
             None
         };
@@ -1696,7 +1797,7 @@ impl Walk {
     }
 
     /// A point inside every path of a clip, from a look over the first path's box. Going by each path's corners, which for a curve is close enough to find a point well inside it, and the middle of the look's cells is what's tried.
-    fn point_inside_clip(&self, clip: FPDF_CLIPPATH, paths: c_int) -> Option<(f64, f64)> {
+    fn point_inside_clip(&self, clip: FPDF_CLIPPATH, paths: c_int) -> Option<(f64, f64, f64, f64)> {
         let mut outlines: Vec<Vec<(f64, f64)>> = Vec::new();
         for path in 0..paths.min(MAX_CLIP_CHAIN as c_int) {
             // SAFETY: the clip is live with its page, and `path` is below the count.
@@ -1736,38 +1837,48 @@ impl Walk {
                 }
             }
         }
-        best
+        let (x, y) = best?;
+        let reach = outlines.iter().flatten().map(|point| (point.0 - x).hypot(point.1 - y)).fold(0.0, f64::max);
+        Some((x, y, best_margin, reach))
     }
 
-    /// Whether an image's stored bytes mean what the page means by them. "Lossless" is the same picture, so anything else goes as PNG, in the colours PDFium gives: other colour spaces, one with a profile that isn't sRGB, since a reader would take its bytes for sRGB, and what the file's structure says is decoded differently.
-    fn jpeg_passes(&self, object: FPDF_PAGEOBJECT, metadata: &FPDF_IMAGEOBJ_METADATA) -> bool {
+    /// What an image's stored bytes have to mean for them to go as a JPEG, or `None` if they can't: "lossless" is the same picture, so anything else goes as PNG, in the colours PDFium gives. That's colour spaces a browser wouldn't read the same, a profile that isn't a whole RGB one, and what the file's structure says is decoded differently.
+    fn jpeg_meaning(&self, object: FPDF_PAGEOBJECT, metadata: &FPDF_IMAGEOBJ_METADATA) -> Option<PageColour> {
         if self.job.hints & hints::JPEG_READ_DIFFERENTLY != 0 {
-            return false;
-        }
-        let usual = match metadata.colorspace {
-            FPDF_COLORSPACE_DEVICEGRAY | FPDF_COLORSPACE_DEVICERGB => true,
-            FPDF_COLORSPACE_ICCBASED => self.profile_says_srgb(object),
-            _ => false,
-        };
-        if !usual {
-            return false;
+            return None;
         }
         let mut name = [0u8; 16];
         // SAFETY: the object is live with its page, and `name` holds as many as is passed.
         let (count, len) = unsafe { ((self.api.FPDFImageObj_GetImageFilterCount)(object), (self.api.FPDFImageObj_GetImageFilter)(object, 0, name.as_mut_ptr().cast(), name.len() as c_ulong)) };
-        count == 1 && len as usize <= name.len() && name.starts_with(b"DCTDecode\0")
+        if count != 1 || len as usize > name.len() || !name.starts_with(b"DCTDecode\0") {
+            return None;
+        }
+        match metadata.colorspace {
+            FPDF_COLORSPACE_DEVICEGRAY | FPDF_COLORSPACE_DEVICERGB => Some(PageColour::Plain),
+            FPDF_COLORSPACE_ICCBASED => {
+                let profile = self.icc_profile(object)?;
+                if profile_says_srgb(&profile) {
+                    Some(PageColour::Plain)
+                } else if profile.len() <= MAX_ADDED_PROFILE && profile.get(36..40) == Some(b"acsp") && profile.get(16..20) == Some(b"RGB ") {
+                    Some(PageColour::Profile(profile))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
-    fn profile_says_srgb(&self, object: FPDF_PAGEOBJECT) -> bool {
+    fn icc_profile(&self, object: FPDF_PAGEOBJECT) -> Option<Vec<u8>> {
         let mut len = 0usize;
         // SAFETY: the object and page are live, and the second call's buffer holds what the first said, up to a limit no real profile comes near.
         unsafe {
             if (self.api.FPDFImageObj_GetIccProfileDataDecoded)(object, self.page_handle, std::ptr::null_mut(), 0, &raw mut len) == 0 || len > MAX_PROFILE_BYTES {
-                return false;
+                return None;
             }
             let mut profile = vec![0u8; len];
             let mut got = 0usize;
-            (self.api.FPDFImageObj_GetIccProfileDataDecoded)(object, self.page_handle, profile.as_mut_ptr(), len, &raw mut got) != 0 && got == len && profile_says_srgb(&profile)
+            ((self.api.FPDFImageObj_GetIccProfileDataDecoded)(object, self.page_handle, profile.as_mut_ptr(), len, &raw mut got) != 0 && got == len).then_some(profile)
         }
     }
 
@@ -2120,6 +2231,15 @@ fn with_ids(plan: &[(u32, f32, f32)], mut id_of: impl FnMut(u32) -> u32) -> Opti
         .collect()
 }
 
+/// How far to blow up a clip for it to cover an image, around a point `margin` inside it, with its furthest point `reach` away and the image's corners `corner` from its middle, all on the page. `pixels` is how many of the bitmap's pixels each of those units makes. Three times what straight edges need, since a curve's points only roughly say where it runs. `None` if that would go past what PDFium fills without bending.
+fn clip_blow_up(margin: f64, reach: f64, corner: f64, pixels: f64) -> Option<f64> {
+    if margin <= 0.0 || !pixels.is_finite() {
+        return None;
+    }
+    let scale = (corner * 3.0 / margin).max(1.0);
+    (scale.is_finite() && reach * scale * pixels <= MAX_CLIP_REACH).then_some(scale)
+}
+
 /// The area of some points on the page.
 fn points_area(points: &[(u8, f32, f32)], matrix: &M) -> Area {
     let mut area = Area { left: f64::INFINITY, bottom: f64::INFINITY, right: f64::NEG_INFINITY, top: f64::NEG_INFINITY };
@@ -2334,6 +2454,19 @@ mod tests {
         let plan = [(65, 1.0, 2.0), (66, 3.0, 4.0)];
         assert_eq!(with_ids(&plan, |code| code + 100), Some(vec![(165, 1.0, 2.0), (166, 3.0, 4.0)]));
         assert_eq!(with_ids(&plan, |code| if code == 66 { 0 } else { 7 }), None);
+    }
+
+    /// Failure: a clip is blown up so far that PDFium's filler bends it, so it cuts into the image it was meant to clear, and a mask has the clip's shape in it. It goes only as far as it must, and one that would have to go too far isn't tried.
+    #[test]
+    fn a_clip_is_blown_up_only_as_far_as_it_must_be() {
+        let scale = clip_blow_up(70.0, 300.0, 144.0, 1.0).unwrap();
+        assert!(70.0 * scale >= 144.0, "it covers the image from its margin");
+        assert!(300.0 * scale < MAX_CLIP_REACH, "and stays where it isn't bent");
+        assert_eq!(clip_blow_up(500.0, 600.0, 10.0, 1.0), Some(1.0), "a clip already past the image stays as it is");
+        assert!(clip_blow_up(0.001, 800.0, 5000.0, 1.0).is_none(), "a sliver over a large image can't");
+        assert!(clip_blow_up(70.0, 300.0, 144.0, 1000.0).is_none(), "nor one that a fine image's pixels would take too far");
+        assert!(clip_blow_up(0.0, 800.0, 10.0, 1.0).is_none());
+        assert!(clip_blow_up(70.0, 300.0, 144.0, f64::INFINITY).is_none(), "an image with no size");
     }
 
     /// Failure: anything with a space's code and no outline is taken for a space, so TeX's big brackets vanish from every equation; or the reverse, every real space becomes a picture of nothing. The sizes are ones from real pages.

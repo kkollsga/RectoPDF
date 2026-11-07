@@ -45,6 +45,9 @@ fn why_words(why: Why) -> (&'static str, &'static str) {
         Why::OutsideBox => ("outside_box", "something crossing the box's edge, drawn as a picture cut to the box, so nothing outside it is in the file"),
         Why::ClipRule => ("clip_rule", "something clipped by a shape that its fill rule would change, which can't be read, drawn as a picture that obeys it"),
         Why::ImageWithMask => ("image_with_mask", "an image at its own size, through the renderer's drawing to apply its mask"),
+        Why::JpegHeaderFixed => ("jpeg_header_fixed", "a JPEG with what's around its picture corrected, and the picture byte for byte"),
+        Why::JpegMask => ("jpeg_mask", "a JPEG's mask, at the JPEG's size"),
+        Why::JpegOverMask => ("jpeg_with_mask", "a JPEG with its picture byte for byte, through its mask"),
     }
 }
 
@@ -56,7 +59,9 @@ fn note_words(code: NoteCode) -> (&'static str, &'static str) {
         NoteCode::Unknown => ("unknown_object", "objects the renderer says nothing about, left out"),
         NoteCode::LayersUnchecked => ("layers_unchecked", "objects whose layer wasn't looked up, past a limit: they're in the picture of the whole page, which obeys it, and any text in them isn't kept"),
         NoteCode::ObjectsSkipped => ("objects_past_limit", "objects past the limit on one page, in the picture of the whole page"),
-        NoteCode::JpegTurned => ("jpeg_turned", "JPEGs whose EXIF says to turn them, which the page takes no notice of and a browser does, so they went as PNG"),
+        NoteCode::JpegTurned => ("jpeg_turned", "JPEGs whose EXIF says to turn them, which the page takes no notice of and a browser does, so it now says upright, with the picture's bytes as they were"),
+        NoteCode::JpegProfileRemoved => ("jpeg_profile_removed", "JPEGs whose own colour profile the page doesn't go by, taken out so a browser reads them as the page does, with the picture's bytes as they were"),
+        NoteCode::JpegProfileAdded => ("jpeg_profile_added", "JPEGs given the colour profile the page says they're in, so a browser reads them as the page does, with the picture's bytes as they were"),
         NoteCode::JpegUnsound => ("jpeg_unsound", "JPEGs that aren't sound as JPEGs, so they went as PNG, as the renderer reads them"),
     }
 }
@@ -92,6 +97,15 @@ struct Tally {
     images_png: u64,
     images_jpeg: u64,
     images_masked: u64,
+    /// JPEGs with what's around the picture corrected.
+    images_jpeg_fixed: u64,
+    /// JPEGs with their picture as it was, through a mask of their own.
+    images_jpeg_masked: u64,
+    /// Bytes in the file by kind of image, as the images' base64 stands there, from where the one in hand began.
+    image_bytes: BTreeMap<&'static str, u64>,
+    image_start: (u64, &'static str),
+    /// Whether the JPEG being stripped is counted as original bytes.
+    stripping_original: bool,
     /// JPEGs with what isn't the picture taken out, so they aren't original bytes.
     images_jpeg_stripped: u64,
     /// What's taking that out of the JPEG in hand, with what it's written so far.
@@ -188,14 +202,23 @@ fn write_record<'file>(svg: &mut Option<SvgWriter<Capped<'file>>>, file: &'file 
             };
             if strip && matches!(coding, ImageCoding::Jpeg) {
                 tally.stripping = Some(JpegScan::new(true));
+                tally.stripping_original = *why == Why::Image;
             }
             match (why, coding) {
                 (Why::Image, ImageCoding::Jpeg) => tally.images_jpeg += 1,
                 (Why::Image, _) => tally.images_png += 1,
                 (Why::ImageWithMask, _) => tally.images_masked += 1,
+                (Why::JpegHeaderFixed, _) => tally.images_jpeg_fixed += 1,
+                (Why::JpegOverMask, _) => tally.images_jpeg_masked += 1,
+                (Why::JpegMask, _) => {}
                 _ => *tally.rasterised.entry(*why as u8).or_default() += 1,
             }
-            writer.image_begin(data, &mat(matrix), *opacity, !matches!(why, Why::Image | Why::ImageWithMask))?;
+            tally.image_start = (writer_position(writer), image_kind(*why, coding));
+            match why {
+                Why::JpegMask => writer.mask_begin(data)?,
+                Why::JpegOverMask => writer.image_begin_masked(data, &mat(matrix), *opacity)?,
+                _ => writer.image_begin(data, &mat(matrix), *opacity, !matches!(why, Why::Image | Why::ImageWithMask | Why::JpegHeaderFixed))?,
+            }
         }
         Record::ImageBytes(bytes) => match tally.stripping.as_mut() {
             Some(stripping) => {
@@ -206,15 +229,33 @@ fn write_record<'file>(svg: &mut Option<SvgWriter<Capped<'file>>>, file: &'file 
             None => writer.image_bytes(bytes)?,
         },
         Record::ImageEnd => {
-            if tally.stripping.take().is_some_and(|stripping| stripping.changed()) {
-                tally.images_jpeg -= 1;
+            if tally.stripping.take().is_some_and(|stripping| stripping.changed()) && tally.stripping_original {
+                tally.images_jpeg = tally.images_jpeg.saturating_sub(1);
                 tally.images_jpeg_stripped += 1;
             }
             writer.image_end()?;
+            let (start, kind) = tally.image_start;
+            *tally.image_bytes.entry(kind).or_default() += writer_position(writer).saturating_sub(start);
         }
         Record::Note { code, count } => tally.notes.entry(*code as u8).or_insert((*code, 0)).1 += u64::from(*count),
     }
     Ok(())
+}
+
+/// How far into the file the writer has got.
+fn writer_position(writer: &SvgWriter<Capped<'_>>) -> u64 {
+    writer.out().map_or(0, |out| out.written) + writer.buffered() as u64
+}
+
+/// What an image is, for the count of bytes by kind.
+fn image_kind(why: Why, coding: &ImageCoding) -> &'static str {
+    match (why, coding) {
+        (Why::Image, ImageCoding::Jpeg) => "original_jpeg",
+        (Why::JpegHeaderFixed, _) => "fixed_jpeg",
+        (Why::JpegOverMask | Why::JpegMask, _) => "jpeg_with_mask",
+        (Why::Image, _) => "png_image",
+        (other, _) => why_words(other).0,
+    }
 }
 
 fn text_mode(word: Option<&str>) -> Result<TextMode, AgentError> {
@@ -228,7 +269,7 @@ fn text_mode(word: Option<&str>) -> Result<TextMode, AgentError> {
 
 fn hints_for(path: &Path, page: u32) -> u8 {
     let Some(effects) = recto_core::page_effects(path, page) else { return hints::ALL };
-    (u8::from(effects.soft_mask) * hints::SOFT_MASK) | (u8::from(effects.blend) * hints::BLEND) | (u8::from(effects.shading_pattern) * hints::SHADING_PATTERN) | (u8::from(effects.optional_content) * hints::OPTIONAL_CONTENT) | (u8::from(effects.layer_names_unsafe) * hints::LAYER_NAMES_UNSAFE) | (u8::from(effects.jpeg_read_differently) * hints::JPEG_READ_DIFFERENTLY)
+    (u8::from(effects.soft_mask) * hints::SOFT_MASK) | (u8::from(effects.blend) * hints::BLEND) | (u8::from(effects.shading_pattern) * hints::SHADING_PATTERN) | (u8::from(effects.optional_content) * hints::OPTIONAL_CONTENT) | (u8::from(effects.layer_names_unsafe) * hints::LAYER_NAMES_UNSAFE) | (u8::from(effects.mask_not_separable) * hints::MASK_NOT_SEPARABLE) | (u8::from(effects.jpeg_read_differently) * hints::JPEG_READ_DIFFERENTLY)
 }
 
 const WRITE_FAILED: &str = "The SVG couldn't be saved there.";
@@ -347,7 +388,8 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
         "raster_scale_lowered": raster_scale < args.scale,
         "bytes": bytes,
         "all_vector": rasterised.is_empty(),
-        "objects": { "paths": tally.paths, "clips": tally.clips, "glyphs": tally.glyphs, "glyph_runs": tally.glyph_runs, "text_runs": tally.text_runs, "text_chars": tally.text_chars, "images_png": tally.images_png, "images_original_jpeg": tally.images_jpeg, "images_drawn_with_mask": tally.images_masked, "images_jpeg_metadata_removed": tally.images_jpeg_stripped, "chars_dropped": tally.chars_dropped },
+        "image_bytes": tally.image_bytes,
+        "objects": { "paths": tally.paths, "clips": tally.clips, "glyphs": tally.glyphs, "glyph_runs": tally.glyph_runs, "text_runs": tally.text_runs, "text_chars": tally.text_chars, "images_png": tally.images_png, "images_original_jpeg": tally.images_jpeg, "images_jpeg_header_fixed": tally.images_jpeg_fixed, "images_jpeg_with_mask": tally.images_jpeg_masked, "images_drawn_with_mask": tally.images_masked, "images_jpeg_metadata_removed": tally.images_jpeg_stripped, "chars_dropped": tally.chars_dropped },
         "strip_metadata": args.strip_metadata,
         "hidden_text": hidden_text,
         "rasterised": rasterised,
@@ -373,7 +415,7 @@ fn jpeg_notes(facts: &JpegFacts, stripped: bool) -> Vec<Value> {
     items.into_iter().filter(|(_, count, _)| *count > 0).map(|(note, count, says)| json!({ "note": note, "count": count, "says": says })).collect()
 }
 
-const WHYS: [Why; 16] = [Why::Image, Why::Shading, Why::TilingPattern, Why::ShadingPattern, Why::BlendOrMask, Why::GroupEffects, Why::TextOutline, Why::TextClip, Why::TooComplex, Why::Annotations, Why::Flattened, Why::MaskedImage, Why::ImageUnreadable, Why::OutsideBox, Why::ClipRule, Why::ImageWithMask];
+const WHYS: [Why; 19] = [Why::JpegHeaderFixed, Why::JpegMask, Why::JpegOverMask, Why::Image, Why::Shading, Why::TilingPattern, Why::ShadingPattern, Why::BlendOrMask, Why::GroupEffects, Why::TextOutline, Why::TextClip, Why::TooComplex, Why::Annotations, Why::Flattened, Why::MaskedImage, Why::ImageUnreadable, Why::OutsideBox, Why::ClipRule, Why::ImageWithMask];
 
 fn bad_rect() -> AgentError {
     AgentError::new("bad_rect", "A box is x,y,width,height in points from the page's top left, each a number, with a width and a height above 0.", exit::FAILED)

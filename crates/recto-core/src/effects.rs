@@ -32,6 +32,8 @@ pub struct PageEffects {
     pub shading_pattern: bool,
     /// The document has optional content, or something on this page names a layer in its own dictionary. What that hides is PDFium's to say and can't be worked out from here, since a layer's state can go by its usage, or a membership's by a rule, so this only says to look.
     pub optional_content: bool,
+    /// An image here has a mask its colours were blended for ahead of time, or colours and mask in one stream.
+    pub mask_not_separable: bool,
     /// A name can't stand for a layer on this page: see [`Walk::look_at_properties`].
     pub layer_names_unsafe: bool,
     /// A JPEG here has a `/Decode` or `/ColorTransform` that changes what its bytes mean, or it's written in place, where those can't be seen.
@@ -272,6 +274,10 @@ impl Walk<'_> {
 
     /// A stored JPEG can be passed on as it is only if the page means by it what a reader of the bytes would.
     fn look_at_image(&mut self, dict: &Dictionary) -> Option<()> {
+        if let Ok(mask) = dict.get(b"SMask") {
+            self.effects.mask_not_separable |= stream_or_dict(self.reader, mask).is_none_or(|mask| mask.has(b"Matte"));
+        }
+        self.effects.mask_not_separable |= dict.get(b"SMaskInData").is_ok_and(|value| value.as_i64().ok() != Some(0));
         let names_dct = |value: &Object| matches!(value, Object::Name(name) if name == b"DCTDecode" || name == b"DCT");
         let is_jpeg = match dict.get(b"Filter").ok().and_then(|filter| deref(self.reader, filter)) {
             Some(Object::Array(filters)) => {
@@ -469,7 +475,7 @@ mod tests {
         let group = first_extra_object(1);
         let found = layered(&format!("{group} 0 R"), "", vec![Object::Dict("<< /Type /OCG /Name (L) >>".into())]);
         assert!(found.optional_content, "with nothing off and no rule");
-        assert_eq!(page_effects(&TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["Words"]))])).0, 0).unwrap().optional_content, false, "and none costs nothing");
+        assert!(!page_effects(&TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["Words"]))])).0, 0).unwrap().optional_content, "and none costs nothing");
         for subtype in ["/Subtype /Form /BBox [0 0 1 1]", "/Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray"] {
             let object = first_extra_object(1);
             let inside = Object::Stream { dict: format!("/Type /XObject {subtype} /OC << /Type /OCMD >>"), data: vec![0] };
@@ -516,6 +522,19 @@ mod tests {
         assert!(!with("/DecodeParms << /ColorTransform 1 >>"));
         assert!(with("/Decode [0 1]"), "too short for its colours: a range that isn't there isn't one that does nothing");
         assert!(with(&format!("/Decode [{}]", "0 1 ".repeat(40))), "far too long");
+    }
+
+    /// Failure: an image whose colours were blended ahead of time for its mask is put through that mask as it stands, so its edges come out the wrong colour. It's noticed, and a plain mask isn't held against it.
+    #[test]
+    fn a_mask_blended_ahead_of_time_is_noticed() {
+        let (image, mask) = (first_extra_object(1), first_extra_object(1) + 1);
+        let with = |extra: &str| {
+            let picture = Object::Stream { dict: format!("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /SMask {mask} 0 R"), data: vec![0xFF, 0xD8] };
+            let its_mask = Object::Stream { dict: format!("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 {extra}"), data: vec![128] };
+            effects(&format!("/XObject << /I {image} 0 R >>"), vec![picture, its_mask]).mask_not_separable
+        };
+        assert!(!with(""));
+        assert!(with("/Matte [1 1 1]"));
     }
 
     /// Failure: a filter named by reference inside its list isn't seen as JPEG's, so its `/Decode` is never looked at, and an inverted picture goes out with its bytes as they are.

@@ -195,8 +195,7 @@ fn an_image_with_a_soft_mask_keeps_it() {
     let (svg, data) = svg_of(&file, &[]);
     assert_eq!(data["objects"]["images_original_jpeg"], 0, "{data}");
     let images = embedded_images(svg.as_bytes());
-    let [Embedded::Png { channels: 4, pixels, .. }] = &images[..] else { panic!("{images:?}") };
-    let alphas: Vec<u8> = pixels.chunks(4).map(|pixel| pixel[3]).collect();
+    let [Embedded::Png { channels: 1, pixels: alphas, .. }, Embedded::Jpeg(_)] = &images[..] else { panic!("{images:?}") };
     assert!(alphas.contains(&255) && alphas.iter().any(|alpha| *alpha < 128), "the mask's holes and solid parts: {alphas:?}");
 }
 
@@ -986,18 +985,144 @@ fn what_isnt_a_sound_jpeg_goes_as_png() {
     assert_eq!(note(&data, "jpeg_unsound"), 1, "{data}");
 }
 
-/// Failure: a JPEG whose EXIF says to turn it passes through, and a browser turns it where the page doesn't: Chrome was seen doing just that in an SVG. So it goes as PNG, and says why.
-#[test]
-fn a_jpeg_that_says_to_turn_itself_goes_as_png() {
-    let turned = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
-    let file = doc_with_jpeg(jpeg_with(&[(0xE1, turned)], b""));
-    let (svg, data) = svg_of(&file, &[]);
-    assert_eq!(data["objects"]["images_original_jpeg"], 0, "{data}");
-    assert!(matches!(&embedded_images(svg.as_bytes())[..], [Embedded::Png { .. }]), "{data}");
-    assert_eq!(note(&data, "jpeg_turned"), 1, "{data}");
+/// The picture itself, from the first scan on, which a fix mustn't touch.
+fn scan_of(jpeg: &[u8]) -> &[u8] {
+    &jpeg[recto_proto::jpeg::scan_start(jpeg).expect("a scan")..]
 }
 
-/// Failure: \`--strip-metadata\` leaves GPS or a thumbnail behind, says nothing of what it took, still counts the JPEG as original bytes, leaves the title, or changes the picture. Owner, 2026-11-07: "Just add it in the cli for now (agent option)". The compressed picture stays byte for byte, and a real decoder draws the same pixels from what's left.
+fn only_jpeg(svg: &str) -> Vec<u8> {
+    let images = embedded_images(svg.as_bytes());
+    let [Embedded::Jpeg(bytes)] = &images[..] else { panic!("one JPEG: {images:?}") };
+    bytes.clone()
+}
+
+/// Failure: a JPEG whose EXIF says to turn it is drawn upright by the page and turned by a browser, or loses its original compressed picture to a PNG to stop that. The tag is corrected in a copy of the header and every byte of the picture stays, and it's counted as what it is, not as original bytes.
+#[test]
+fn a_jpeg_that_says_to_turn_itself_is_set_upright_with_its_picture_as_it_was() {
+    let turned = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+    let original = jpeg_with(&[(0xE1, turned)], b"");
+    let file = doc_with_jpeg(original.clone());
+    let (svg, data) = svg_of(&file, &[]);
+    assert_eq!((data["objects"]["images_original_jpeg"].as_u64(), data["objects"]["images_jpeg_header_fixed"].as_u64()), (Some(0), Some(1)), "{data}");
+    assert_eq!(note(&data, "jpeg_turned"), 1, "{data}");
+    let out = only_jpeg(&svg);
+    assert_eq!(scan_of(&out), scan_of(&original), "the compressed picture");
+    let mut read = recto_proto::jpeg::JpegScan::new(false);
+    read.feed(&out, &mut Vec::new()).unwrap();
+    assert!(!read.facts().is_turned(), "it says upright");
+    // Stripping keeps its meaning: the EXIF goes altogether, and it's still a fixed JPEG and not an original one.
+    let (svg, data) = svg_of(&file, &["--strip-metadata"]);
+    assert_eq!(data["objects"]["images_jpeg_header_fixed"], 1, "{data}");
+    let stripped = only_jpeg(&svg);
+    assert_eq!(scan_of(&stripped), scan_of(&original));
+    assert!(!stripped.windows(4).any(|bytes| bytes == b"Exif"));
+}
+
+/// A real, small sRGB profile, as built by Little CMS, so that PDFium takes it as one.
+const SRGB_PROFILE_HEX: &str = "0000024c6c636d73044000006d6e74725247422058595a2007ea000b00070010000c0005616373704150504c0000000000000000000000000000000000000000000000000000f6d6000100000000d32d6c636d7300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b64657363000001080000003663707274000001400000004c777470740000018c0000001463686164000001a00000002c7258595a000001cc000000146258595a000001e0000000146758595a000001f4000000147254524300000208000000206754524300000208000000206254524300000208000000206368726d00000228000000246d6c756300000000000000010000000c656e55530000001a0000001c00730052004700420020006200750069006c0074002d0069006e00006d6c756300000000000000010000000c656e5553000000300000001c004e006f00200063006f0070007900720069006700680074002c002000750073006500200066007200650065006c007958595a20000000000000f6d6000100000000d32d736633320000000000010c42000005defffff325000007930000fd90fffffba1fffffda2000003dc0000c06e58595a200000000000006fa0000038f50000039058595a20000000000000249f00000f840000b6c358595a2000000000000062970000b787000018d9706172610000000000030000000266660000f2a700000d59000013d000000a5b6368726d00000000000300000000a3d70000547b00004ccd0000999a0000266600000f5c";
+
+fn srgb_profile() -> Vec<u8> {
+    (0..SRGB_PROFILE_HEX.len()).step_by(2).map(|at| u8::from_str_radix(&SRGB_PROFILE_HEX[at..at + 2], 16).unwrap()).collect()
+}
+
+/// The same profile saying it's something else, which is all that tells them apart here.
+fn other_profile() -> Vec<u8> {
+    let mut profile = srgb_profile();
+    let name = "sRGB".encode_utf16().flat_map(u16::to_be_bytes).collect::<Vec<u8>>();
+    let at = profile.windows(name.len()).position(|bytes| bytes == name).expect("its name");
+    profile[at..at + name.len()].copy_from_slice(&"Wide".encode_utf16().flat_map(u16::to_be_bytes).collect::<Vec<u8>>());
+    profile
+}
+
+/// Failure: a browser colour-manages a JPEG by a profile of its own that the page takes no notice of, so it looks different from the page. It's taken out, with the picture as it was. And an sRGB one is left alone, or every such JPEG would stop being original bytes.
+#[test]
+fn a_jpegs_own_profile_goes_if_the_page_doesnt_go_by_it() {
+    let segment = |profile: Vec<u8>| [b"ICC_PROFILE\0\x01\x01".as_slice(), &profile].concat();
+    let wide = jpeg_with(&[(0xE2, &segment(other_profile()))], b"");
+    let (svg, data) = svg_of(&doc_with_jpeg(wide.clone()), &[]);
+    assert_eq!(data["objects"]["images_jpeg_header_fixed"], 1, "{data}");
+    assert_eq!(note(&data, "jpeg_profile_removed"), 1, "{data}");
+    let out = only_jpeg(&svg);
+    assert_eq!(scan_of(&out), scan_of(&wide));
+    assert!(!out.windows(11).any(|bytes| bytes == b"ICC_PROFILE"), "gone");
+    let srgb = jpeg_with(&[(0xE2, &segment(srgb_profile()))], b"");
+    let (svg, data) = svg_of(&doc_with_jpeg(srgb.clone()), &[]);
+    assert_eq!(data["objects"]["images_original_jpeg"], 1, "{data}");
+    assert_eq!(only_jpeg(&svg), srgb, "byte for byte");
+}
+
+/// Failure: `only_an_srgb_profile_lets_a_jpeg_through` is passed by turning every JPEG into a PNG, so a page's sRGB JPEGs all lose their bytes. A profile saying sRGB passes them, and one that says something else travels with them, since that's what the page says they are. What's not an RGB profile at all goes as PNG.
+#[test]
+fn what_the_page_says_a_jpegs_colours_are_goes_with_it() {
+    let (_, data) = svg_of(&TempPdf::new("doc.pdf", &icc_doc(srgb_profile(), 3)), &[]);
+    assert_eq!(data["objects"]["images_original_jpeg"], 1, "{data}");
+    let wide = other_profile();
+    let (svg, data) = svg_of(&TempPdf::new("doc.pdf", &icc_doc(wide.clone(), 3)), &[]);
+    assert_eq!((data["objects"]["images_original_jpeg"].as_u64(), data["objects"]["images_jpeg_header_fixed"].as_u64()), (Some(0), Some(1)), "{data}");
+    assert_eq!(note(&data, "jpeg_profile_added"), 1, "{data}");
+    let out = only_jpeg(&svg);
+    assert_eq!(scan_of(&out), scan_of(&jpeg_bytes()), "the compressed picture");
+    assert!(out.windows(wide.len()).any(|bytes| bytes == wide), "the page's profile, whole");
+}
+
+/// A page with one JPEG through a soft mask. `extra` goes in the mask's dictionary.
+fn masked_jpeg_doc(extra: &str) -> Vec<u8> {
+    let (image, mask) = (first_extra_object(1), first_extra_object(1) + 1);
+    let resources = format!("/XObject << /Im {image} 0 R >>");
+    let dict = format!("/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /SMask {mask} 0 R");
+    let mask_dict = format!("/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 8 {extra}");
+    let stripes: Vec<u8> = (0..16).map(|at| if at % 8 < 4 { 255 } else { 0 }).collect();
+    pages_with(&[Page::new("q 40 0 0 40 100 500 cm /Im Do Q\n")], &resources, vec![Object::Stream { dict, data: jpeg_bytes() }, Object::Stream { dict: mask_dict, data: stripes }])
+}
+
+/// Failure: a JPEG with a soft mask goes through PDFium's drawing and comes out a PNG many times its size, with the original picture gone. It stays the JPEG, byte for byte, with the mask beside it as lossless grey through SVG's own mask, and it's counted apart. The mask's values come through, so stripes stay stripes.
+#[test]
+fn a_masked_jpeg_keeps_its_bytes_with_the_mask_beside_it() {
+    let (svg, data) = svg_of(&TempPdf::new("doc.pdf", &masked_jpeg_doc("")), &[]);
+    assert_eq!(data["objects"]["images_jpeg_with_mask"], 1, "{data}");
+    assert_eq!((data["objects"]["images_drawn_with_mask"].as_u64(), data["objects"]["images_png"].as_u64()), (Some(0), Some(0)), "{data}");
+    let images = embedded_images(svg.as_bytes());
+    let [Embedded::Png { width: 4, height: 4, channels: 1, pixels }, Embedded::Jpeg(bytes)] = &images[..] else { panic!("{images:?}") };
+    assert_eq!(bytes, &jpeg_bytes(), "byte for byte");
+    assert!(pixels[..4].iter().any(|value| *value > 200) && pixels[..8].iter().any(|value| *value < 50), "the stripes: {pixels:?}");
+    assert!(svg.contains("<mask id=\"m1\"") && svg.contains("mask=\"url(#m1)\""), "and the JPEG goes through it");
+}
+
+/// Failure: a clip that isn't a box gets into an image's mask, because it was blown up past where PDFium fills it true: most of the mask comes out empty, in the shape of the clip, and the image is cut twice. The mask has to be only the image's own, here half solid.
+#[test]
+fn a_clip_stays_out_of_a_masked_images_mask() {
+    let (image, mask) = (first_extra_object(1), first_extra_object(1) + 1);
+    let resources = format!("/XObject << /Im {image} 0 R >>");
+    let dict = format!("/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /SMask {mask} 0 R");
+    let mask_dict = "/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 8";
+    let solid_then_empty: Vec<u8> = (0..16).map(|at| if at % 4 < 2 { 255 } else { 0 }).collect();
+    let content = "q 100 100 m 500 100 l 300 500 l h W n 200 0 0 200 200 150 cm /Im Do Q\n";
+    let bytes = pages_with(&[Page::new(content)], &resources, vec![Object::Stream { dict, data: jpeg_bytes() }, Object::Stream { dict: mask_dict.into(), data: solid_then_empty.clone() }]);
+    let (svg, data) = svg_of(&TempPdf::new("doc.pdf", &bytes), &[]);
+    let images = embedded_images(svg.as_bytes());
+    let [Embedded::Png { channels: 1, pixels, .. }, Embedded::Jpeg(_)] = &images[..] else { panic!("{images:?} {data}") };
+    for (at, (got, want)) in pixels.iter().zip(&solid_then_empty).enumerate() {
+        assert!((i32::from(*got) - i32::from(*want)).abs() < 40, "pixel {at}: {got}, wanted {want}: {pixels:?}");
+    }
+    assert!(svg.contains("clip-path"), "the clip's in the file, once, as itself");
+}
+
+/// Failure: an image blended ahead of time for its mask goes through that mask as it stands, so its edges come out the wrong colour. That can't be right by these means, so it's drawn by PDFium as before.
+#[test]
+fn a_mask_blended_ahead_of_time_stays_drawn_by_the_renderer() {
+    let (_, data) = svg_of(&TempPdf::new("doc.pdf", &masked_jpeg_doc("/Matte [1 1 1]")), &[]);
+    assert_eq!((data["objects"]["images_jpeg_with_mask"].as_u64(), data["objects"]["images_drawn_with_mask"].as_u64()), (Some(0), Some(1)), "{data}");
+}
+
+/// Failure: a box hands over a whole JPEG when only part's wanted, through its mask or not. It's cut, as a picture, so nothing outside the box is in the file.
+#[test]
+fn a_masked_jpeg_crossing_a_box_is_cut() {
+    let (svg, data) = svg_of(&TempPdf::new("doc.pdf", &masked_jpeg_doc("")), &["--rect", "100,252,20,40"]);
+    assert_eq!(data["objects"]["images_jpeg_with_mask"], 0, "{data}");
+    assert!(!svg.contains("<mask"), "{data}");
+}
+
+/// Failure: `--strip-metadata` leaves GPS or a thumbnail behind, says nothing of what it took, still counts the JPEG as original bytes, leaves the title, or changes the picture. Owner, 2026-11-07: "Just add it in the cli for now (agent option)". The compressed picture stays byte for byte, and a real decoder draws the same pixels from what's left.
 #[test]
 fn stripping_takes_the_metadata_and_leaves_the_picture() {
     let carried = jpeg_with(&[(0xE1, &exif_with_gps_and_thumbnail()), (0xE1, b"http://ns.adobe.com/xap/1.0/\0<xmp/>"), (0xFE, b"a comment"), (0xE5, b"something else"), (0xEE, b"Adobe\0\0\0\0\0\0\x01")], b"BYTES AFTER THE END");

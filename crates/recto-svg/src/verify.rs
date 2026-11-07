@@ -1,10 +1,10 @@
 //! A strict little reader of what this crate writes, for tests here and in the crates that use it: one well-formed document, with nothing in it that can run or reach outside. A failed check is a panic, because it's only for tests and QA. It isn't an XML parser, and it doesn't need to be: anything it doesn't know is a failure.
 
 /// The tags and attributes this crate may write. Anything else in the output is a way out that was missed.
-const TAGS: &[&str] = &["svg", "g", "path", "defs", "clipPath", "use", "text", "image", "title", "linearGradient", "radialGradient", "stop"];
+const TAGS: &[&str] = &["svg", "g", "path", "defs", "clipPath", "use", "text", "image", "title", "linearGradient", "radialGradient", "stop", "mask"];
 const ATTRIBUTES: &[&str] = &[
     "xmlns", "xmlns:xlink", "version", "width", "height", "viewBox", "transform", "d", "fill", "fill-opacity", "fill-rule", "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset",
-    "stroke-miterlimit", "opacity", "pointer-events", "vector-effect", "clip-path", "id", "xlink:href", "x", "y", "font-size", "font-family", "font-weight", "font-style", "xml:space", "preserveAspectRatio", "gradientUnits", "x1", "y1", "x2", "y2", "cx", "cy", "r", "offset", "stop-color", "stop-opacity",
+    "stroke-miterlimit", "opacity", "pointer-events", "vector-effect", "clip-path", "id", "xlink:href", "x", "y", "font-size", "font-family", "font-weight", "font-style", "xml:space", "preserveAspectRatio", "mask", "maskUnits", "maskContentUnits", "gradientUnits", "x1", "y1", "x2", "y2", "cx", "cy", "r", "offset", "stop-color", "stop-opacity",
 ];
 
 /// Reads a whole document, and panics on anything that isn't well formed or isn't on the lists above.
@@ -48,6 +48,13 @@ pub fn check_document(bytes: &[u8]) {
                 let value = &value_start[..close];
                 assert!(!value.contains('<'), "a raw < in an attribute");
                 check_entities(value);
+                if key == "mask" {
+                    let id = value.strip_prefix("url(#m").and_then(|rest| rest.strip_suffix(')')).expect("a mask that's a reference to one here");
+                    assert!(!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()), "{value}");
+                }
+                if key == "maskUnits" || key == "maskContentUnits" {
+                    assert_eq!(value, "userSpaceOnUse", "{key}");
+                }
                 if key == "xlink:href" {
                     assert!(value.starts_with('#') || value.starts_with("data:image/png;base64,") || value.starts_with("data:image/jpeg;base64,"), "an href that leads out: {value}");
                 }

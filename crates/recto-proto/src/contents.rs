@@ -56,8 +56,10 @@ pub mod hints {
     pub const LAYER_NAMES_UNSAFE: u8 = 16;
     /// Some JPEG on the page has a `/Decode` or `/ColorTransform` that changes what its bytes mean, so its bytes alone wouldn't be the same picture. PDFium's calls don't show those.
     pub const JPEG_READ_DIFFERENTLY: u8 = 32;
+    /// An image here has a mask its colours were blended for ahead of time, so its stored colours aren't the ones to mask.
+    pub const MASK_NOT_SEPARABLE: u8 = 64;
     /// Every hint. For a file the structure reader couldn't read, which says nothing about what it uses.
-    pub const ALL: u8 = SOFT_MASK | BLEND | SHADING_PATTERN | OPTIONAL_CONTENT | LAYER_NAMES_UNSAFE | JPEG_READ_DIFFERENTLY;
+    pub const ALL: u8 = SOFT_MASK | BLEND | SHADING_PATTERN | OPTIONAL_CONTENT | LAYER_NAMES_UNSAFE | JPEG_READ_DIFFERENTLY | MASK_NOT_SEPARABLE;
 }
 
 /// Ask for a page's contents, or the next piece of them.
@@ -307,6 +309,12 @@ pub enum Why {
     ClipRule = 14,
     /// An image as itself, at its own size, but through PDFium's drawing, to apply its mask.
     ImageWithMask = 15,
+    /// A JPEG with what's around its picture corrected, and the picture byte for byte.
+    JpegHeaderFixed = 16,
+    /// The mask of the JPEG straight after it, as lossless grey.
+    JpegMask = 17,
+    /// A JPEG with its picture byte for byte, through the mask just before it.
+    JpegOverMask = 18,
 }
 
 impl Why {
@@ -328,6 +336,9 @@ impl Why {
             13 => Self::OutsideBox,
             14 => Self::ClipRule,
             15 => Self::ImageWithMask,
+            16 => Self::JpegHeaderFixed,
+            17 => Self::JpegMask,
+            18 => Self::JpegOverMask,
             _ => return Err(ProtoError("unknown image reason")),
         })
     }
@@ -349,10 +360,14 @@ pub enum NoteCode {
     LayersUnchecked = 5,
     /// Objects past the limit, on a page drawn whole instead.
     ObjectsSkipped = 6,
-    /// JPEGs whose EXIF says to turn them, which a page takes no notice of and a reader does, so they went as PNG.
+    /// JPEGs whose EXIF says to turn them, which a page takes no notice of and a reader does, so it now says upright.
     JpegTurned = 7,
     /// JPEGs that aren't sound as JPEGs, so they went as PNG.
     JpegUnsound = 8,
+    /// JPEGs whose own colour profile the page doesn't go by, taken out.
+    JpegProfileRemoved = 9,
+    /// JPEGs given the colour profile the page says they're in.
+    JpegProfileAdded = 10,
 }
 
 impl NoteCode {
@@ -366,6 +381,8 @@ impl NoteCode {
             6 => Self::ObjectsSkipped,
             7 => Self::JpegTurned,
             8 => Self::JpegUnsound,
+            9 => Self::JpegProfileRemoved,
+            10 => Self::JpegProfileAdded,
             _ => return Err(ProtoError("unknown note")),
         })
     }
@@ -726,6 +743,8 @@ pub struct StreamCheck {
     clip_depths: Vec<u8>,
     glyphs: u32,
     image_bytes_said: u64,
+    /// A mask has just gone, and its JPEG must be next.
+    mask_waiting: bool,
     jpeg_facts: JpegFacts,
 }
 
@@ -814,10 +833,21 @@ impl StreamCheck {
                 Ok(())
             }
             Record::ImageBegin { coding, why, width, height, total, .. } => {
+                // A mask is only for the JPEG straight after it, and that JPEG has to have one.
+                let wanted_a_mask = std::mem::take(&mut self.mask_waiting);
+                if wanted_a_mask != (*why == Why::JpegOverMask) {
+                    return Err(ProtoError("a mask and its JPEG apart"));
+                }
+                if *why == Why::JpegMask {
+                    if !matches!(coding, ImageCoding::Pixels { channels: 1 }) {
+                        return Err(ProtoError("a mask that isn't one channel"));
+                    }
+                    self.mask_waiting = true;
+                }
                 let (left, jpeg) = match coding {
                     ImageCoding::Jpeg => {
                         // Only an image is a JPEG, and what's counted of it goes by that.
-                        if *why != Why::Image {
+                        if !matches!(why, Why::Image | Why::JpegHeaderFixed | Why::JpegOverMask) {
                             return Err(ProtoError("a JPEG that isn't an image"));
                         }
                         (*total, Some(JpegScan::new(false)))
@@ -849,6 +879,9 @@ impl StreamCheck {
     pub fn finish(&self) -> Result<(), ProtoError> {
         if self.image.is_some() {
             return Err(ProtoError("an image left open"));
+        }
+        if self.mask_waiting {
+            return Err(ProtoError("a mask with no JPEG"));
         }
         if !self.page_seen {
             return Err(ProtoError("no page at all"));

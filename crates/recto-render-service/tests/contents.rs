@@ -59,6 +59,17 @@ fn frame_for(mode: &str, job: &ContentsJob, in_heavy: bool) -> Vec<u8> {
             put::image_bytes_end(&mut out, at);
             put::image_end(&mut out);
         }
+        // Past the count of what's an image, and the answer's arithmetic with it.
+        ("jpeg_thats_not_an_image", 1) => put::image_begin(&mut out, ImageCoding::Jpeg, Why::Shading, 255, 1, 1, 8, &IDENTITY),
+        ("jpeg_with_no_mask", 1) => put::image_begin(&mut out, ImageCoding::Jpeg, Why::JpegOverMask, 255, 1, 1, 8, &IDENTITY),
+        ("mask_of_colour", 1) => put::image_begin(&mut out, ImageCoding::Pixels { channels: 3 }, Why::JpegMask, 255, 1, 1, 3, &IDENTITY),
+        ("mask_with_no_jpeg", 1) => {
+            put::image_begin(&mut out, ImageCoding::Pixels { channels: 1 }, Why::JpegMask, 255, 1, 1, 1, &IDENTITY);
+            let at = put::image_bytes_begin(&mut out);
+            out.push(9);
+            put::image_bytes_end(&mut out, at);
+            put::image_end(&mut out);
+        }
         ("image_left_open", 1) => put::image_begin(&mut out, ImageCoding::Pixels { channels: 1 }, Why::Image, 255, 2, 2, 4, &IDENTITY),
         ("group_left_open", 1) => put::group_begin(&mut out, 7),
         ("garbage", 1) => out.extend_from_slice(b"\xFFnot a record"),
@@ -170,7 +181,7 @@ fn a_page_past_every_limit_is_refused() {
 /// Failure: a compromised worker's records reach the writer, among them an image whose rows would fill the host's memory before any cap on the file sees a byte, or one whose size overflows the sum that checks it. Each of these breaks a rule, kills the worker, and ends in a failure, so nothing is published.
 #[test]
 fn a_stream_that_breaks_the_rules_is_stopped() {
-    for mode in ["not_really_a_jpeg", "row_too_long", "size_overflows", "page_twice", "clip_too_deep", "image_short", "image_left_open", "group_left_open", "garbage", "not_finite", "wrong_seq"] {
+    for mode in ["jpeg_thats_not_an_image", "jpeg_with_no_mask", "mask_of_colour", "mask_with_no_jpeg", "not_really_a_jpeg", "row_too_long", "size_overflows", "page_twice", "clip_too_deep", "image_short", "image_left_open", "group_left_open", "garbage", "not_finite", "wrong_seq"] {
         let (result, _) = run(mode);
         assert!(matches!(result, Err(RenderFailure::PageFailed { reason: KillReason::Rejected(_), .. })), "{mode}: {result:?}");
     }

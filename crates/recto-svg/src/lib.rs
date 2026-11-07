@@ -224,6 +224,9 @@ pub struct SvgWriter<W: Write> {
     clip_open: bool,
     depth: usize,
     stats: WriteStats,
+    /// Masks written, of which the last is what the next masked image goes through.
+    masks: u32,
+    in_mask: bool,
 }
 
 fn err_state() -> io::Error {
@@ -233,7 +236,7 @@ fn err_state() -> io::Error {
 impl<W: Write> SvgWriter<W> {
     /// Starts a document `width` by `height` units, with a title from a file if it has one, escaped. `root` takes the coordinates every later call uses to the document's, top left, y down.
     pub fn begin(out: W, width: f64, height: f64, root: &Matrix, title: Option<&str>) -> io::Result<Self> {
-        let mut writer = Self { sink: Some(Sink { out, buffer: Vec::with_capacity(BUFFER) }), image: OpenImage::None, defs_open: false, clip_open: false, depth: 0, stats: WriteStats::default() };
+        let mut writer = Self { sink: Some(Sink { out, buffer: Vec::with_capacity(BUFFER) }), image: OpenImage::None, defs_open: false, clip_open: false, depth: 0, stats: WriteStats::default(), masks: 0, in_mask: false };
         writer.push(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" version=\"1.1\" width=\"")?;
         writer.number(width, COORD_DIGITS)?;
         writer.push(b"\" height=\"")?;
@@ -668,6 +671,44 @@ impl<W: Write> SvgWriter<W> {
 
     /// Starts an image over the unit square of `matrix`, PDF's way round: its top row runs along y = 1. Bytes follow through [`Self::image_bytes`], with nothing else until [`Self::image_end`]. `passive` lets the pointer through it, for a picture standing in for part of a page, so selectable text under it can still be selected.
     pub fn image_begin(&mut self, data: ImageData, matrix: &Matrix, opacity: u8, passive: bool) -> io::Result<()> {
+        self.image_begin_with(data, matrix, opacity, passive, false)
+    }
+
+    /// Starts an image that goes through the mask just written.
+    pub fn image_begin_masked(&mut self, data: ImageData, matrix: &Matrix, opacity: u8) -> io::Result<()> {
+        if self.masks == 0 {
+            return Err(err_state());
+        }
+        self.image_begin_with(data, matrix, opacity, false, true)
+    }
+
+    /// Starts a mask, to go with the next image and made up of this one, grey for how much shows. It's in the image's own coordinates, so the two share a grid, whatever size each is.
+    pub fn mask_begin(&mut self, data: ImageData) -> io::Result<()> {
+        self.close_defs()?;
+        self.masks += 1;
+        self.in_mask = true;
+        self.push(b"<mask id=\"m")?;
+        self.push(self.masks.to_string().as_bytes())?;
+        self.push(b"\" maskUnits=\"userSpaceOnUse\" maskContentUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"1\" height=\"1\"><image width=\"1\" height=\"1\" preserveAspectRatio=\"none\" xlink:href=\"data:image/png;base64,")?;
+        let sink = self.sink.take().ok_or_else(err_state)?;
+        self.image = match data {
+            ImageData::Pixels { width, height, channels } => OpenImage::Png(PngWriter::new(Base64::new(sink), width, height, channels)?),
+            ImageData::Jpeg => OpenImage::Jpeg(Base64::new(sink)),
+        };
+        Ok(())
+    }
+
+    /// Where it's writing to, which has what's been passed on so far.
+    pub fn out(&self) -> Option<&W> {
+        self.sink.as_ref().map(|sink| &sink.out)
+    }
+
+    /// What's held back from it for now.
+    pub fn buffered(&self) -> usize {
+        self.sink.as_ref().map_or(0, |sink| sink.buffer.len())
+    }
+
+    fn image_begin_with(&mut self, data: ImageData, matrix: &Matrix, opacity: u8, passive: bool, masked: bool) -> io::Result<()> {
         self.close_defs()?;
         self.push(b"<image width=\"1\" height=\"1\" preserveAspectRatio=\"none\" transform=\"")?;
         // SVG's image runs top down from y = 0, and PDF's from y = 1 at the top.
@@ -677,6 +718,11 @@ impl<W: Write> SvgWriter<W> {
         self.opacity(b" opacity=\"", opacity)?;
         if passive {
             self.push(b" pointer-events=\"none\"")?;
+        }
+        if masked {
+            self.push(b" mask=\"url(#m")?;
+            self.push(self.masks.to_string().as_bytes())?;
+            self.push(b")\"")?;
         }
         self.push(b" xlink:href=\"data:image/")?;
         self.push(match data {
@@ -709,6 +755,9 @@ impl<W: Write> SvgWriter<W> {
             OpenImage::Jpeg(jpeg) => jpeg.finish()?,
         };
         self.sink = Some(sink);
+        if std::mem::take(&mut self.in_mask) {
+            return self.push(b"\"/></mask>\n");
+        }
         self.push(b"\"/>\n")
     }
 
