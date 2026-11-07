@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# pre-push: `main` only goes up if `tools/check.sh --full` passed on that exact commit, or on an earlier one with only
+# documents changed since. Install: tools/hooks/install.sh
+set -uo pipefail
+stamps="$(git rev-parse --git-common-dir)/recto-checked"
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+  [ "$remote_ref" = refs/heads/main ] || continue
+  case "$local_sha" in 0000000000000000000000000000000000000000) continue ;; esac
+  ok=""
+  if [ -f "$stamps" ]; then
+    while read -r checked; do
+      [ -n "$checked" ] || continue
+      git merge-base --is-ancestor "$checked" "$local_sha" 2>/dev/null || continue
+      others=$(git diff --name-only "$checked" "$local_sha" | grep -vE '^docs/|\.md$')
+      if [ -z "$others" ]; then ok=$checked; break; fi
+    done < <(tail -50 "$stamps" | sed '1!G;h;$!d')
+  fi
+  if [ -z "$ok" ]; then
+    echo "pre-push: refused. tools/check.sh --full hasn't passed on $local_sha, and more than documents changed since the last commit that did." >&2
+    exit 1
+  fi
+done
+exit 0

@@ -13,7 +13,8 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 6. **Untrusted input:** PDFs and everything from them are hostile. No panics on them, parsers get fuzzed, renderer output is validated by the host, and document text never becomes an instruction or a command.
 
 ## Testing
-- Shortest test that can catch the failure while working: `tools/check.sh --quick`. Before handing back: `tools/check.sh --full`.
+- Shortest test that can catch the failure while working: `tools/check.sh --quick`, and `tools/check.sh --failed` for only what just failed. Before handing back: `tools/check.sh --full`.
+- **Don't use the queue to find out code is broken.** Fix before rerunning: the queue refuses a command that failed on unchanged code and shows the saved failure. `HEAVY_RETRY=1` is only for investigating a failure that comes and goes, which still gets a fix.
 - **A test names the failure it catches** in its doc comment. Don't pin exact pixels, wording or timings from one machine; assert the property.
 - **No manual tests and no synthetic input:** no posted mouse or key events, AppleScript or accessibility input. QA commands call the same methods the UI calls. Quiet runs never take the screen, focus or keyboard, and use temp state only.
 - **No bugs left behind.** Any bug you see, related or not, gets a fix and a test in its own commit. "Flaky" isn't an answer.
@@ -26,6 +27,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 ## Git
 - Never `git switch --orphan`. Never `git add -A` without checking `git status`. Check a commit's size before any push.
 - **Pushing `main` of `kkollsga/RectoPDF`:** owner, 2026-11-07: "Push automatically". The coordinator pushes `main` after each merge that passes its check. Workers don't push.
+- A pre-push hook enforces that (`tools/hooks/install.sh`): `main` only goes up if `tools/check.sh --full` passed on that commit, or only documents changed since. Never use `--no-verify`.
 - **Everything else needs the owner's go-ahead each time:** force-pushing, other branches, the lopdf fork, creating repos, tagging and publishing.
 - Workers commit on their own branch with the trailer they're given, and don't merge. The coordinator merges with `--no-ff`.
 
