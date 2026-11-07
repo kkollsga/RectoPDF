@@ -6,6 +6,7 @@ use recto_platform::isolate::{self, Channel, ChildExit, ChildProcess, Handle, Id
 use recto_platform::surface::{LinkInvite, PixelSurface, SurfaceSender};
 use recto_platform::{FileStamp, file_stamp};
 use recto_proto::{self as proto, CharBox, CharRecord, FailCode, Kind, PageSize, ProtoError, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus, device_size};
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
@@ -604,6 +605,9 @@ impl CancelHandle {
     }
 }
 
+/// Pages whose images are remembered, at 64 boxes of 8 bytes each at most. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten.
+const MAX_IMAGE_PLACES: usize = 4096;
+
 /// One tile to draw.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TileRequest {
@@ -705,7 +709,8 @@ pub struct DocRenderer {
     /// Each page's largest image in source pixels, for those asked about.
     traits: Vec<(u32, u64)>,
     /// Where each page's images are, for those asked about.
-    image_places: Vec<(u32, Vec<[u16; 4]>)>,
+    image_places: HashMap<u32, Option<Vec<[u16; 4]>>>,
+    file_changed: bool,
     /// The slot, from an export's wait, on its way to the worker it's for.
     waited_ticket: Option<HeavyTicket>,
     /// Why opening the file failed, for as long as that can be taken as the answer. See [`Self::known_open_failure`].
@@ -749,7 +754,8 @@ impl DocRenderer {
             heavy_retries_counted_from: 0,
             remembered: Vec::new(),
             traits: Vec::new(),
-            image_places: Vec::new(),
+            image_places: HashMap::new(),
+            file_changed: false,
             waited_ticket: None,
             open_failure: None,
             retire_after_page: None,
@@ -773,6 +779,11 @@ impl DocRenderer {
     /// Whether this generation has been cancelled, so an answer given for it may only mean that.
     pub fn is_stale(&self, generation: u64) -> bool {
         self.control.is_stale(generation)
+    }
+
+    /// Whether the file has turned out to be a new one since this was last asked, so what was decided about its pages no longer holds.
+    pub fn take_file_changed(&mut self) -> bool {
+        std::mem::take(&mut self.file_changed)
     }
 
     /// Leaves the running worker's surface link broken, as a worker having gone in the moment since it was last looked at leaves it. That moment can't be hit from outside.
@@ -930,27 +941,41 @@ impl DocRenderer {
 
     /// Where a page's images are, as parts of the page in 65535ths, or `None` if it isn't known: this job went stale, the page isn't one that can be asked about, or the asking failed. Those aren't "there are no images", and a caller mustn't treat them so. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it.
     pub fn image_boxes(&mut self, page: u32, generation: u64) -> Option<Vec<[u16; 4]>> {
-        if let Some((_, boxes)) = self.image_places.iter().find(|(known, _)| *known == page) {
-            return Some(boxes.clone());
+        if let Some(known) = self.image_places.get(&page) {
+            return known.clone();
         }
-        if self.page_draw_state(page) != PageDrawState::Sharp || self.control.is_stale(generation) || self.stopped() {
+        // Stale says nothing about the page, so nothing's remembered.
+        if self.control.is_stale(generation) {
             return None;
         }
-        let job_id = self.next_job_id();
-        let frame = proto::encode_images_request(job_id, page);
-        let reply = self.run_job(job_id, page, false, WorkerClass::Normal, Some(generation), &[], &frame, |reply| match reply.kind {
-            Kind::Images => {
-                let images = proto::PageImages::decode(&reply.payload)?;
-                if images.job_id == job_id { Ok(images.boxes) } else { Err(ProtoError("image boxes answer a different job")) }
+        // Only a page that can't be drawn as it is goes unasked. One that needed the larger limit is an ordinary page of a certain size, a page of text with a large figure say.
+        let state = self.page_draw_state(page);
+        let boxes = if matches!(state, PageDrawState::LowResOnly | PageDrawState::Failed(_)) || self.stopped() {
+            None
+        } else {
+            // The worker that's there, which has just drawn it. With none, one that can hold the page.
+            let class = if self.worker.is_none() && state == PageDrawState::NeedsHeavy { WorkerClass::Heavy } else { WorkerClass::Normal };
+            let job_id = self.next_job_id();
+            let frame = proto::encode_images_request(job_id, page);
+            let reply = self.run_job(job_id, page, false, class, Some(generation), &[], &frame, |reply| match reply.kind {
+                Kind::Images => {
+                    let images = proto::PageImages::decode(&reply.payload)?;
+                    if images.job_id == job_id { Ok(images.boxes) } else { Err(ProtoError("image boxes answer a different job")) }
+                }
+                _ => Err(ProtoError("the wrong kind of reply to an images request")),
+            });
+            if self.control.is_stale(generation) {
+                return None;
             }
-            _ => Err(ProtoError("the wrong kind of reply to an images request")),
-        });
-        let boxes = reply.ok()?;
-        if self.image_places.len() >= MAX_FAILED_PAGES {
-            self.image_places.remove(0);
+            reply.ok()
+        };
+        // One decision a page: its tiles are drawn at different times, and none of them may disagree. What's cached past this cap is long off the screen.
+        if self.image_places.len() >= MAX_IMAGE_PLACES {
+            self.image_places.clear();
+            self.file_changed = true;
         }
-        self.image_places.push((page, boxes.clone()));
-        Some(boxes)
+        self.image_places.insert(page, boxes.clone());
+        boxes
     }
 
     /// Draws a region of the page in one pass, cut into tiles of `tile_edge` for the caller to hand out. Cheaper than one pass per tile whenever several tiles are needed: see

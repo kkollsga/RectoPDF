@@ -109,6 +109,14 @@ impl Engine {
         self.after(reader);
     }
 
+    /// Zooms, wherever it's asked from. Says what to.
+    pub fn zoom(&self, zoom: Zoom) -> Option<f64> {
+        let mut reader = lock(&self.shared.reader);
+        let value = reader.zoom(zoom);
+        self.after(reader);
+        value
+    }
+
     /// Which tabs are warm now, with no change of tab. Anything that's stopped being warm lets go of what it holds.
     pub fn set_warm(&self, warm: &[u32]) {
         let mut reader = lock(&self.shared.reader);
@@ -245,7 +253,7 @@ fn signal_ops(shared: &Shared) {
 }
 
 fn run(shared: &Shared) {
-    let mut renderers: HashMap<PathBuf, DocRenderer> = HashMap::new();
+    let mut renderers: HashMap<PathBuf, OpenDoc> = HashMap::new();
     let mut wanted = lock(&shared.reader).wanted_files();
     let service = shared.config.service.clone().map_or_else(ServiceConfig::discover, Ok);
     let policy = shared.config.policy.clone().unwrap_or_default();
@@ -269,7 +277,7 @@ fn run(shared: &Shared) {
         let Some(job) = job else {
             shared.settled.notify_all();
             // With nothing to do, this thread is asleep and costs nothing. The one exception: a worker holding a heavy page's memory, which only goes when it does. It gets long enough to bridge a pause in scrolling, and then it's let go, so a heavy page at rest doesn't hold hundreds of megabytes for the 30 s of the idle rule.
-            let big = renderers.values_mut().any(|doc| doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes));
+            let big = renderers.values_mut().any(|open| open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes));
             if !big {
                 std::thread::park();
                 resting_since = None;
@@ -278,9 +286,9 @@ fn run(shared: &Shared) {
             let since = *resting_since.get_or_insert_with(Instant::now);
             let left = BIG_WORKER_REST.saturating_sub(since.elapsed());
             if left.is_zero() {
-                for doc in renderers.values_mut() {
-                    if doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes) {
-                        doc.kill_worker();
+                for open in renderers.values_mut() {
+                    if open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes) {
+                        open.doc.kill_worker();
                     }
                 }
                 resting_since = None;
@@ -323,8 +331,8 @@ fn run(shared: &Shared) {
     }
 }
 
-fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, DocRenderer>) {
-    let pids: Vec<u32> = renderers.values_mut().filter_map(DocRenderer::worker_pid).collect();
+fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
+    let pids: Vec<u32> = renderers.values_mut().filter_map(|open| open.doc.worker_pid()).collect();
     *lock(&shared.worker_pids) = pids;
 }
 
@@ -465,32 +473,15 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                     if *paper == PaperKind::Dark {
                         let drawn = low_res.map_or(*rect, |(drawn, _)| drawn);
                         let drawn_scale = low_res_scale.unwrap_or(*scale);
-                        let boxes = doc.image_boxes(job.source_page, job.generation);
-                        // Nobody wants this any more, and turning it over knowing nothing would keep a negative for later.
-                        if doc.is_stale(job.generation) {
-                            return Outcome::Cancelled;
-                        }
+                        // A preview is a picture of the whole page, as drawn for white paper, which is what's wanted to judge it: no extra draw.
+                        let whole = (*what == DrawKind::Preview && low_res.is_none()).then_some(*rect);
+                        let Some(look) = page_look(open, job.source_page, job.generation, whole.map(|rect| (surface, rect))) else { return Outcome::Cancelled };
+                        let doc = &mut open.doc;
                         let page = doc.page_size(job.source_page).ok().and_then(|(width, height)| recto_proto::device_size(width, height, drawn_scale).ok());
-                        let stride = surface.stride();
-                        match (dark_tile(boxes.as_deref(), page, drawn), kind) {
-                            // No surface will be kept for these, so their one colour is what counts.
-                            (DarkTile::Dim, TileKind::Blank { rgb }) if *what == DrawKind::Tile => kind = TileKind::Blank { rgb: dim_rgb(rgb) },
-                            (DarkTile::TurnOver(keeps), TileKind::Blank { rgb }) if keeps.is_empty() && *what == DrawKind::Tile => kind = TileKind::Blank { rgb: dark_rgb(rgb) },
-                            (DarkTile::Dim, _) => {
-                                let _ = surface.with_pixels(|pixels| dim_page(pixels, drawn.width, drawn.height, stride));
-                                if matches!(kind, TileKind::Blank { .. }) {
-                                    kind = TileKind::Colour;
-                                }
-                            }
-                            (DarkTile::TurnOver(keeps), _) => {
-                                let grey = is_grey(kind);
-                                let _ = surface.with_pixels(|pixels| turn_over(pixels, drawn.width, drawn.height, stride, grey, &keeps));
-                                // Part of it stays a picture, so it isn't one colour now.
-                                if matches!(kind, TileKind::Blank { .. }) {
-                                    kind = TileKind::Colour;
-                                }
-                            }
-                        }
+                        // What keeps no surface comes down to its one colour. With the lower-resolution version, the surface is kept whatever's in it.
+                        let colour_only = *what == DrawKind::Tile && low_res.is_none();
+                        let dark = look.in_tile(page, drawn);
+                        let _ = surface.with_pixels(|pixels| kind = onto_dark_paper(pixels, drawn, surface.stride(), kind, dark, colour_only));
                     }
                     Outcome::Drawn { kind, low_res }
                 }
@@ -503,7 +494,47 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
     }
 }
 
+/// Puts one tile on dark paper, as the rule says, and says what it is now. With `colour_only` a tile of one colour needs nothing done to its pixels, as it won't keep them.
+fn onto_dark_paper(pixels: &mut [u8], drawn: recto_proto::TileRect, stride: u32, kind: TileKind, dark: DarkTile, colour_only: bool) -> TileKind {
+    match (dark, kind) {
+        (DarkTile::Dim, TileKind::Blank { rgb }) if colour_only => TileKind::Blank { rgb: dim_rgb(rgb) },
+        (DarkTile::TurnOver(keeps, whiten), TileKind::Blank { rgb }) if keeps.is_empty() && whiten.is_empty() && colour_only => TileKind::Blank { rgb: dark_rgb(rgb) },
+        (DarkTile::Dim, _) => {
+            dim_page(pixels, drawn.width, drawn.height, stride);
+            if matches!(kind, TileKind::Blank { .. }) { TileKind::Colour } else { kind }
+        }
+        (DarkTile::TurnOver(keeps, whiten), _) => {
+            turn_over(pixels, drawn.width, drawn.height, stride, is_grey(kind), &keeps, &whiten);
+            // Part of it stays a picture, so it isn't one colour now.
+            if matches!(kind, TileKind::Blank { .. }) { TileKind::Colour } else { kind }
+        }
+    }
+}
+
 /// Failures about the file or the renderer rather than one page.
 fn whole_file(failure: RenderFailure) -> bool {
     !matches!(failure, RenderFailure::BadPage | RenderFailure::BadRequest | RenderFailure::TooLargeAtThisScale | RenderFailure::PageFailed { .. } | RenderFailure::PageReadFailed { .. } | RenderFailure::NotDrawableNow { .. } | RenderFailure::ExportRefused { .. })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: a blank tile of a lower-resolution page keeps its surface, but only its colour number is dimmed, so a tile at full white sits beside dimmed ones. Its pixels are what's shown, so they're what's changed.
+    #[test]
+    fn a_blank_tile_that_keeps_its_surface_has_its_pixels_changed() {
+        let rect = TileRect { x: 0, y: 0, width: 2, height: 1 };
+        let white = || [0xFFu8; 8];
+        let mut pixels = white();
+        let kind = onto_dark_paper(&mut pixels, rect, 8, TileKind::Blank { rgb: 0xFF_FF_FF }, DarkTile::Dim, false);
+        assert_eq!(u32::from(pixels[0]), dim_rgb(0xFF_FF_FF) & 0xFF, "dimmed");
+        assert!(matches!(kind, TileKind::Colour), "{kind:?}");
+        let mut pixels = white();
+        let kind = onto_dark_paper(&mut pixels, rect, 8, TileKind::Blank { rgb: 0xFF_FF_FF }, DarkTile::TurnOver(Vec::new(), Vec::new()), false);
+        assert_eq!(u32::from(pixels[0]), dark_rgb(0xFF_FF_FF) & 0xFF, "turned over");
+        assert!(matches!(kind, TileKind::Colour), "{kind:?}");
+        let mut pixels = white();
+        let kind = onto_dark_paper(&mut pixels, rect, 8, TileKind::Blank { rgb: 0xFF_FF_FF }, DarkTile::Dim, true);
+        assert!(matches!(kind, TileKind::Blank { rgb } if rgb == dim_rgb(0xFF_FF_FF)), "{kind:?}");
+    }
 }

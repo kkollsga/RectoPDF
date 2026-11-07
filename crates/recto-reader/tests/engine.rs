@@ -87,17 +87,17 @@ fn the_engine_is_silent_at_rest() {
     pump(&engine, Duration::from_secs(20));
     assert!(engine.wait_settled(Duration::from_secs(5)));
     let pid = std::process::id();
-    // The quietest of a few goes: a thread that polls wakes it in all of them, and a busy machine only gets in the way of some.
-    let woke = (0..4)
+    // A few goes: a thread that polls wakes it in all of them, and a busy machine only gets in the way of some. The noisiest has a bound too, so a burst or something that wakes now and then doesn't pass for rest.
+    let woke: Vec<u64> = (0..4)
         .map(|_| {
             let before = process_counters(pid).unwrap();
             std::thread::sleep(Duration::from_secs(2));
             let after = process_counters(pid).unwrap();
             after.context_switches.saturating_sub(before.context_switches)
         })
-        .min()
-        .unwrap();
-    assert!(woke <= 40, "{woke} context switches in the quietest 2 s, with nothing to do");
+        .collect();
+    assert!(woke.iter().min().unwrap() <= &40, "context switches in each 2 s, with nothing to do: {woke:?}");
+    assert!(woke.iter().max().unwrap() <= &400, "context switches in each 2 s, with nothing to do: {woke:?}");
 }
 
 /// Failure: scrolling away from a page that's slow to draw leaves the worker drawing it, so the next page waits. `cancel_before` must end it, by return or kill, well inside the time it would have taken.

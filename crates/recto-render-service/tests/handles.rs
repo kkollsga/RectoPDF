@@ -85,6 +85,16 @@ fn fake_worker() {
                     _ => send_all(&channel, &reply.encode(), &[]).unwrap(),
                 }
             }
+            // Refused once, and answered after that, to see which of them holds.
+            Kind::ImagesRequest => {
+                static ASKED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let job_id = u32::from_le_bytes(frame.payload[..4].try_into().unwrap());
+                if ASKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    send_all(&channel, &proto::encode_failed(job_id, proto::FailCode::BadPage), &[]).unwrap();
+                } else {
+                    send_all(&channel, &proto::PageImages { job_id, boxes: vec![[0, 0, 100, 100]] }.encode(), &[]).unwrap();
+                }
+            }
             _ => isolate::exit_now(1),
         }
     }
@@ -111,6 +121,17 @@ fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
         assert!(started.elapsed() < Duration::from_secs(30), "gave up waiting for {what}");
         std::thread::sleep(Duration::from_millis(2));
     }
+}
+
+/// Failure: a page's images are asked about once for each tile while they're not known, and an answer that failed then one that didn't leave some of its tiles dimmed and some turned over. A page gets one decision, a failed answer included.
+#[test]
+fn a_page_gets_one_decision_about_its_images() {
+    let _turn = turn();
+    let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
+    let mut doc = DocRenderer::new(&file.0, None, config("images"), Policy::default()).unwrap();
+    assert_eq!(doc.image_boxes(0, 1), None, "it couldn't say");
+    assert_eq!(doc.image_boxes(0, 2), None, "and it's not asked again, though now it could");
+    assert_eq!(doc.image_boxes(1, 3), Some(vec![[0, 0, 100, 100]]), "another page is another question");
 }
 
 /// Failure: a worker sends handles to the host and the host keeps them, until it runs out of descriptors. The host never expects one, so it's a violation.

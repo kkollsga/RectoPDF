@@ -137,10 +137,8 @@ fn a_worker_sent_too_much_is_let_go() {
 #[test]
 fn image_boxes_say_when_they_dont_know() {
     let file = TempPdf::new("boxes.pdf", &pages(&[Page::new(text_lines(&["No images here"]))]));
-    let mut doc = doc(&file);
-    assert_eq!(doc.image_boxes(0, 1), Some(Vec::new()), "known: there are none");
-    let mut other = self::doc(&file);
-    other.cancel_handle().cancel_before(5);
-    assert_eq!(other.image_boxes(0, 2), None, "stale, so nobody knows");
+    let mut stale = doc(&file);
+    stale.cancel_handle().cancel_before(5);
+    assert_eq!(stale.image_boxes(0, 2), None, "stale, so nobody knows");
+    assert_eq!(stale.image_boxes(0, 9), Some(Vec::new()), "and that wasn't an answer: asked again, it's known");
 }
-

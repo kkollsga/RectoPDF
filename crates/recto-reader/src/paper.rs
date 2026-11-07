@@ -5,7 +5,9 @@
 //!
 //! **The rule,** from `docs/concepts/reader-dark.png`: lightness turns over, so white paper goes dark and black text goes light, and each pixel keeps its colour's distance from grey, so blue text is lighter blue with no halo round its letters. Images on a page of text aren't turned over: the renderer says where they are, and they stay as they were, a little dimmed.
 //!
-//! **A page that's mostly a picture isn't turned over at all.** Owner, 2026-11-07, answering "should pages that are mostly a picture be dimmed instead of flipped? I recommend yes": "I agree". A map, a full-page photograph or a scan keeps its true colours, dimmed by [`PICTURE_PAGE_DIM`] so it doesn't glare. [`MOSTLY_PICTURE`] says what counts. **When where the images are isn't known, it's the same,** as an image turned over is a negative, and a page dimmed is only brighter than it might have been: a low-resolution page, whose renderer isn't asked, comes out the same way as a sharp one. **Its cost:** a scanned page of text stays light, and dimmed, which the owner accepted. A chart drawn as vectors on a page of text turns over with the text, where the concept kept its colours, since pixels can't say what they belong to.
+//! **Each image is judged by its own pixels** (owner, 2026-11-07: "We need to detect scanned images (with predominently white bg, and flip and match grey tone paper color", and "similar with images with white bg"). One with a mostly white background, a scanned page, an embedded letter, a chart, turns over with the page, its background brought to true white first so it lands on the paper's tone, with no bright box or hard edge. One without stays as it is on a page of text.
+//!
+//! **A page that's mostly a picture of that second kind isn't turned over at all** (owner, 2026-11-07, answering "should pages that are mostly a picture be dimmed instead of flipped? I recommend yes": "I agree"). A map or a full-page photograph keeps its true colours, dimmed by [`PICTURE_PAGE_DIM`] so it doesn't glare. **When a page's images can't be told apart, it's judged whole, and what's uncertain is dimmed,** as an image turned over is a negative, and a page dimmed is only brighter than it might have been. There's one [`PageLook`] a page, so its tiles, preview and lower-resolution version can't disagree. **Its limits:** a photo inside a scan turns over with it, which is accepted. A chart drawn as vectors on a page of text turns over with the text, since pixels can't say what they belong to.
 
 /// Which paper a tile was drawn for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -65,8 +67,162 @@ fn dim_pixel(pixel: &mut [u8; 4]) {
     }
 }
 
-/// How much of a page, added up over its images, makes it mostly a picture: more than half, which is what the words say. Measured over `bench100`: USGS map sheets 0.59 to 1.0, with their legends and titles in vectors around the map, scans and full-page backgrounds 1.0, and figures on arXiv pages of text 0.16 to 0.26. A USGS sheet at 0.40 turns over and keeps its map.
+/// How much of a page, added up over the images that stay pictures, makes it mostly a picture: more than half, which is what the words say. Measured over `bench100`: USGS map sheets 0.59 to 1.0, with their legends and titles in vectors around the map, and figures on arXiv pages of text 0.16 to 0.26. A USGS sheet at 0.40 turns over and keeps its map.
 pub const MOSTLY_PICTURE: f64 = 0.5;
+/// A pixel this light in every channel, with little colour to it, may be paper. Low enough for a scan's yellowed or grey paper, and for paper seen through a small picture's blurred text.
+const PAPER_LIGHTEST_CHANNEL: u8 = 170;
+/// How far a pixel's channels can be apart and it still be paper. Aged paper's yellow is about this, and a photo's sky and clouds mostly aren't.
+const PAPER_MOST_SPREAD: u8 = 48;
+/// A pixel's channels this far apart is colour, whatever else it is.
+const COLOUR_LEAST_SPREAD: u8 = 56;
+/// A pixel this light in every channel and this neutral is plain white, as a chart's or a clean document's background is. Tan or pale-green land on a map isn't.
+const WHITE_LIGHTEST_CHANNEL: u8 = 232;
+const WHITE_MOST_SPREAD: u8 = 14;
+/// **What's white-backed, measured over 557 images in `bench100`, the fixtures and made scans: see `tests/look_survey.rs`.** The first kind: this much plain white, and no more colour than this. Charts, diagrams, screenshots of documents and clean scans are at 0.45 and up. The USGS map sheet is 0.21 white though 0.72 is light, and a heatmap with a white margin has 0.28 colour.
+const WHITE_LEAST: f64 = 0.45;
+const WHITE_MOST_COLOUR: f64 = 0.20;
+/// The second kind, a scan on paper that's gone yellow or grey: no plain white at all, so nearly all of it must be paper, with next to no colour. A red stamp and a blue signature are about 0.02. Maps on tan are 0.04 and up, or under this much paper.
+const SCAN_LEAST_PAPER: f64 = 0.75;
+const SCAN_MOST_COLOUR: f64 = 0.03;
+/// Judging a whole page, with its images not known, white margins count for the page: a map sheet is as white as a chart. So nearly none of it can be colour.
+const WHOLE_PAGE_MOST_COLOUR: f64 = 0.05;
+/// An image this small in a picture of the page has too few pixels to say. It's left alone.
+const LEAST_PIXELS_TO_JUDGE: usize = 64;
+/// Brought up to white, a pixel this close to it is white: a scan's noise doesn't speckle the paper.
+const NEAR_WHITE_SNAP: u32 = 12;
+
+/// What's found looking at an image's pixels in a small picture of its page.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageSample {
+    /// The part of it that's paper.
+    pub paper: f64,
+    /// The part of it that's colour.
+    pub colour: f64,
+    /// The part of it that's plain white, or as near as makes no difference.
+    pub white: f64,
+    /// The colour its paper is, as `[red, green, blue]`.
+    pub background: [u8; 3],
+    pub pixels: usize,
+}
+
+/// Looks at a rectangle of BGRA pixels.
+pub fn sample_pixels(pixels: &[u8], stride: usize, left: usize, top: usize, right: usize, bottom: usize) -> ImageSample {
+    let (mut paper, mut colour, mut white, mut count) = (0usize, 0usize, 0usize, 0usize);
+    let mut sums = [0u64; 3];
+    if stride > 0 {
+        for row in pixels.chunks(stride).skip(top).take(bottom.saturating_sub(top)) {
+            let Some(row) = row.get(left.saturating_mul(4)..right.saturating_mul(4).min(row.len())) else { continue };
+            for pixel in row.as_chunks::<4>().0 {
+                let (b, g, r) = (pixel[0], pixel[1], pixel[2]);
+                let (low, high) = (r.min(g).min(b), r.max(g).max(b));
+                count += 1;
+                if low >= WHITE_LIGHTEST_CHANNEL && high - low <= WHITE_MOST_SPREAD {
+                    white += 1;
+                }
+                if low >= PAPER_LIGHTEST_CHANNEL && high - low <= PAPER_MOST_SPREAD {
+                    paper += 1;
+                    sums[0] += u64::from(r);
+                    sums[1] += u64::from(g);
+                    sums[2] += u64::from(b);
+                } else if high - low >= COLOUR_LEAST_SPREAD {
+                    colour += 1;
+                }
+            }
+        }
+    }
+    let share = |part: usize| if count == 0 { 0.0 } else { part as f64 / count as f64 };
+    let average = |sum: u64| if paper == 0 { 255 } else { u8::try_from(sum / paper as u64).unwrap_or(255) };
+    ImageSample { paper: share(paper), colour: share(colour), white: share(white), background: [average(sums[0]), average(sums[1]), average(sums[2])], pixels: count }
+}
+
+impl ImageSample {
+    /// Whether it's an image with a white background, that turns over with the page. Uncertain is no.
+    pub fn has_white_background(self) -> bool {
+        self.pixels >= LEAST_PIXELS_TO_JUDGE && ((self.white >= WHITE_LEAST && self.colour <= WHITE_MOST_COLOUR) || (self.paper >= SCAN_LEAST_PAPER && self.colour <= SCAN_MOST_COLOUR))
+    }
+
+    /// The same, for a whole page with nothing known of its images. Stricter, and uncertain is still no.
+    fn whole_page_is_white_backed(self) -> bool {
+        self.has_white_background() && self.colour <= WHOLE_PAGE_MOST_COLOUR
+    }
+
+    /// What brings its paper to true white, in 256ths of each channel.
+    fn gains(self) -> [u16; 3] {
+        self.background.map(|channel| u16::try_from(255 * 256 / u32::from(channel.max(1))).unwrap_or(256))
+    }
+}
+
+/// An image that turns over, and what brings its paper to white first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Whitened {
+    pub sides: [u16; 4],
+    pub gains: [u16; 3],
+}
+
+/// The one decision about a page on dark paper.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PageLook {
+    /// True colours, dimmed, all of it.
+    pub dim: bool,
+    /// Images left as they are, on a page that turns over.
+    pub keep: Vec<[u16; 4]>,
+    /// Images that turn over with it.
+    pub whiten: Vec<Whitened>,
+}
+
+const WHOLE_PAGE: [u16; 4] = [0, 0, u16::MAX, u16::MAX];
+
+/// The parts of a page these cover. Added up, so images that overlap count twice, and a page can't come to more than all of it.
+fn share_of_page(boxes: impl Iterator<Item = [u16; 4]>) -> f64 {
+    boxes.map(|sides| f64::from(sides[2].saturating_sub(sides[0])) * f64::from(sides[3].saturating_sub(sides[1])) / (65_535.0 * 65_535.0)).sum::<f64>().min(1.0)
+}
+
+impl PageLook {
+    /// Nothing known about the page, and no way to find out: dimmed.
+    pub fn unknown() -> Self {
+        Self { dim: true, ..Self::default() }
+    }
+
+    /// A page with no images.
+    pub fn text() -> Self {
+        Self::default()
+    }
+
+    /// Decides from a small picture of the whole page, `width` by `height` of BGRA pixels as drawn for white paper. `boxes` is where its images are, if that's known, and with none known the page is judged whole.
+    pub fn decide(boxes: Option<&[[u16; 4]]>, pixels: &[u8], stride: usize, width: u32, height: u32) -> Self {
+        let sample = |sides: [u16; 4]| {
+            let place = |part: u16, whole: u32| (u64::from(part) * u64::from(whole) / 65_535) as usize;
+            sample_pixels(pixels, stride, place(sides[0], width), place(sides[1], height), place(sides[2], width).min(width as usize), place(sides[3], height).min(height as usize))
+        };
+        let Some(boxes) = boxes else {
+            let whole = sample(WHOLE_PAGE);
+            return if whole.whole_page_is_white_backed() { Self { dim: false, keep: Vec::new(), whiten: vec![Whitened { sides: WHOLE_PAGE, gains: whole.gains() }] } } else { Self::unknown() };
+        };
+        let (mut keep, mut whiten) = (Vec::new(), Vec::new());
+        for &sides in boxes {
+            let found = sample(sides);
+            if found.has_white_background() {
+                whiten.push(Whitened { sides, gains: found.gains() });
+            } else {
+                keep.push(sides);
+            }
+        }
+        if share_of_page(keep.iter().copied()) >= MOSTLY_PICTURE {
+            return Self { dim: true, ..Self::default() };
+        }
+        Self { dim: false, keep, whiten }
+    }
+
+    /// What it comes to in a rectangle of the page, whose size in device pixels at the rectangle's scale is `page`.
+    pub fn in_tile(&self, page: Option<(u32, u32)>, rect: recto_proto::TileRect) -> DarkTile {
+        let Some(page) = page else { return DarkTile::Dim };
+        if self.dim {
+            return DarkTile::Dim;
+        }
+        let whiten = self.whiten.iter().filter_map(|image| Some((keep_in(image.sides, page, rect)?, image.gains))).collect();
+        DarkTile::TurnOver(self.keep.iter().filter_map(|sides| keep_in(*sides, page, rect)).collect(), whiten)
+    }
+}
 
 /// A rectangle of a tile, in its pixels, to leave as a picture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,40 +236,36 @@ pub struct Keep {
 /// What dark paper does to a tile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DarkTile {
-    /// Turned over, but for these pictures.
-    TurnOver(Vec<Keep>),
+    /// Turned over, but for pictures that stay, with the parts that are white-backed images brought to white first.
+    TurnOver(Vec<Keep>, Vec<(Keep, [u16; 3])>),
     /// True colours, dimmed, as the page is a picture or it isn't known.
     Dim,
 }
 
-/// The part of a page its images cover. Added up, so images that overlap count twice, and a page can't come to more than all of it. A page's images past the report's cap come as one box around them all, which only ever errs towards not turning over.
-fn image_share(boxes: &[[u16; 4]]) -> f64 {
-    boxes.iter().map(|sides| f64::from(sides[2].saturating_sub(sides[0])) * f64::from(sides[3].saturating_sub(sides[1])) / (65_535.0 * 65_535.0)).sum::<f64>().min(1.0)
-}
-
-/// The rule for a tile of a page. `boxes` is where the images are, if that's known, and `page` the page's size in device pixels at the rectangle's scale.
-pub fn dark_tile(boxes: Option<&[[u16; 4]]>, page: Option<(u32, u32)>, rect: recto_proto::TileRect) -> DarkTile {
-    match (boxes, page) {
-        (Some(boxes), Some(page)) if image_share(boxes) < MOSTLY_PICTURE => DarkTile::TurnOver(keeps_in(boxes, page, rect)),
-        _ => DarkTile::Dim,
-    }
-}
-
-/// Where a page's images fall in a rectangle of it, from the parts of the page the renderer gave. `page` is the page's size in device pixels at the rectangle's scale. Rounds outward, so an image's edge isn't turned over.
-fn keeps_in(boxes: &[[u16; 4]], page: (u32, u32), rect: recto_proto::TileRect) -> Vec<Keep> {
+/// Where a part of a page falls in a rectangle of it. Rounds outward, so an image's edge isn't turned over.
+fn keep_in(sides: [u16; 4], page: (u32, u32), rect: recto_proto::TileRect) -> Option<Keep> {
     let place = |part: u16, whole: u32, up: bool| -> u32 {
         let exact = u64::from(part) * u64::from(whole);
         (if up { exact.div_ceil(65_535) } else { exact / 65_535 }) as u32
     };
-    boxes
-        .iter()
-        .filter_map(|sides| {
-            let (left, top) = (place(sides[0], page.0, false), place(sides[1], page.1, false));
-            let (right, bottom) = (place(sides[2], page.0, true), place(sides[3], page.1, true));
-            let keep = Keep { left: left.max(rect.x) - rect.x, top: top.max(rect.y) - rect.y, right: right.min(rect.x + rect.width).saturating_sub(rect.x), bottom: bottom.min(rect.y + rect.height).saturating_sub(rect.y) };
-            (keep.right > keep.left && keep.bottom > keep.top).then_some(keep)
-        })
-        .collect()
+    let (left, top) = (place(sides[0], page.0, false), place(sides[1], page.1, false));
+    let (right, bottom) = (place(sides[2], page.0, true), place(sides[3], page.1, true));
+    let keep = Keep { left: left.max(rect.x) - rect.x, top: top.max(rect.y) - rect.y, right: right.min(rect.x + rect.width).saturating_sub(rect.x), bottom: bottom.min(rect.y + rect.height).saturating_sub(rect.y) };
+    (keep.right > keep.left && keep.bottom > keep.top).then_some(keep)
+}
+
+/// Brings a pixel of a white-backed image up to white, so paper that's cream, grey or noisy all lands on the same tone, and what's dark stays dark.
+#[inline]
+fn whiten_pixel(pixel: &mut [u8; 4], gains: [u16; 3]) {
+    let up = |value: u8, gain: u16| ((u32::from(value) * u32::from(gain)) >> 8).min(255);
+    let (b, g, r) = (up(pixel[0], gains[2]), up(pixel[1], gains[1]), up(pixel[2], gains[0]));
+    if b.min(g).min(r) >= 255 - NEAR_WHITE_SNAP {
+        pixel[..3].fill(255);
+    } else {
+        pixel[0] = b as u8;
+        pixel[1] = g as u8;
+        pixel[2] = r as u8;
+    }
 }
 
 /// One colour, dimmed as a picture page is.
@@ -150,12 +302,12 @@ pub fn is_grey(kind: TileKind) -> bool {
 
 /// Turns a tile's pixels over, in place, leaving `keeps` as pictures. Bytes come from a worker that may be hostile, and this only does arithmetic on them. `grey` says red, green and blue are equal, as the renderer found, which is the common text tile: the answer depends on one byte, so
 /// a table does it. A compromised worker can say so falsely, and all that gets is a wrong picture, which it can draw anyway.
-pub fn turn_over(pixels: &mut [u8], width: u32, height: u32, stride: u32, grey: bool, keeps: &[Keep]) {
+pub fn turn_over(pixels: &mut [u8], width: u32, height: u32, stride: u32, grey: bool, keeps: &[Keep], whiten: &[(Keep, [u16; 3])]) {
     let (row_bytes, stride) = (width as usize * 4, stride as usize);
     if stride < row_bytes || stride == 0 {
         return;
     }
-    if grey && keeps.is_empty() {
+    if grey && keeps.is_empty() && whiten.is_empty() {
         let mut table = [[0u8; 3]; 256];
         for (value, entry) in table.iter_mut().enumerate() {
             let mut pixel = [value as u8, value as u8, value as u8, 0xFF];
@@ -177,12 +329,16 @@ pub fn turn_over(pixels: &mut [u8], width: u32, height: u32, stride: u32, grey: 
     for (y, row) in pixels.chunks_mut(stride).take(height as usize).enumerate() {
         let Some(row) = row.get_mut(..row_bytes) else { continue };
         let here: Vec<Keep> = keeps.iter().filter(|keep| (keep.top as usize..keep.bottom as usize).contains(&y)).copied().collect();
+        let to_whiten: Vec<(Keep, [u16; 3])> = whiten.iter().filter(|(place, _)| (place.top as usize..place.bottom as usize).contains(&y)).copied().collect();
         for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             if here.iter().any(|keep| (keep.left as usize..keep.right as usize).contains(&x)) {
                 dim_pixel(pixel);
-            } else {
-                turn_pixel(pixel);
+                continue;
             }
+            if let Some((_, gains)) = to_whiten.iter().find(|(place, _)| (place.left as usize..place.right as usize).contains(&x)) {
+                whiten_pixel(pixel, *gains);
+            }
+            turn_pixel(pixel);
         }
     }
 }
@@ -222,7 +378,7 @@ mod tests {
     #[test]
     fn what_is_kept_stays_a_picture() {
         let mut pixels = vec![0xFFu8; 4 * 4 * 2];
-        turn_over(&mut pixels, 4, 2, 16, true, &[Keep { left: 1, top: 0, right: 3, bottom: 1 }]);
+        turn_over(&mut pixels, 4, 2, 16, true, &[Keep { left: 1, top: 0, right: 3, bottom: 1 }], &[]);
         let at = |x: usize, y: usize| pixels[(y * 16) + x * 4];
         assert!(at(1, 0) > 200 && at(2, 0) > 200, "inside: {}", at(1, 0));
         assert_eq!(u32::from(at(0, 0)), DARK_PAPER & 0xFF, "beside it");
@@ -233,35 +389,85 @@ mod tests {
     #[test]
     fn a_box_lands_where_it_should_in_a_tile() {
         let rect = recto_proto::TileRect { x: 512, y: 0, width: 512, height: 512 };
-        let half = keeps_in(&[[0, 0, 32_768, 32_768]], (2048, 2048), rect);
-        assert_eq!(half, vec![Keep { left: 0, top: 0, right: 512, bottom: 512 }], "to the middle of the page, past this tile");
-        assert!(keeps_in(&[[60_000, 60_000, 65_535, 65_535]], (2048, 2048), rect).is_empty(), "elsewhere on the page");
-        assert!(keeps_in(&[[65_535, 65_535, 0, 0]], (2048, 2048), rect).is_empty(), "inside out");
-        let edge_to_edge = keeps_in(&[[0, 0, 40_000, 40_000]], (u32::MAX, u32::MAX), rect);
-        assert!(edge_to_edge.iter().all(|keep| keep.right <= 512 && keep.bottom <= 512));
+        let half = keep_in([0, 0, 32_768, 32_768], (2048, 2048), rect);
+        assert_eq!(half, Some(Keep { left: 0, top: 0, right: 512, bottom: 512 }), "to the middle of the page, past this tile");
+        assert_eq!(keep_in([60_000, 60_000, 65_535, 65_535], (2048, 2048), rect), None, "elsewhere on the page");
+        assert_eq!(keep_in([65_535, 65_535, 0, 0], (2048, 2048), rect), None, "inside out");
+        let edge_to_edge = keep_in([0, 0, 40_000, 40_000], (u32::MAX, u32::MAX), rect).unwrap();
+        assert!(edge_to_edge.right <= 512 && edge_to_edge.bottom <= 512);
     }
 
-    /// Failure: a map, a full-page photo or a scan goes negative on dark paper, as the USGS map's band went mint and its black lines white. Owner, 2026-11-07: pages that are mostly a picture are dimmed, not flipped. A page of text with a figure still turns over, its figure left alone.
+    /// A small picture of a page, BGRA, from what's at each place.
+    fn picture(width: u32, height: u32, at: impl Fn(u32, u32) -> [u8; 3]) -> Vec<u8> {
+        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                let [r, g, b] = at(x, y);
+                pixels.extend_from_slice(&[b, g, r, 0xFF]);
+            }
+        }
+        pixels
+    }
+
+    fn scan(paper: [u8; 3]) -> Vec<u8> {
+        picture(100, 100, |_, y| if y % 5 == 0 { [40, 40, 40] } else { paper })
+    }
+
+    /// Failure: a scanned page or embedded letter shows as a bright block with a hard edge against dark paper, as the owner saw. Off-white, yellowed or with a stamp on it, it turns over. Failure the other way: a map or a photo goes negative, as the USGS map's band went mint. It's dimmed, keeping its colours. Owner, 2026-11-07, for both.
     #[test]
-    fn a_page_that_is_mostly_a_picture_is_dimmed_not_flipped() {
-        let rect = recto_proto::TileRect { x: 0, y: 0, width: 512, height: 512 };
-        let page = Some((2048, 2048));
-        assert_eq!(dark_tile(Some(&[[0, 0, 65_535, 65_535]]), page, rect), DarkTile::Dim, "a scan or a full-page photo");
-        let side = ((MOSTLY_PICTURE + 0.01).sqrt() * 65_535.0) as u16;
-        assert_eq!(dark_tile(Some(&[[0, 0, side, side]]), page, rect), DarkTile::Dim, "just past the line");
-        let pieces: Vec<[u16; 4]> = (0..10u16).map(|index| [0, index * 6553, 65_535, index * 6553 + 5000]).collect();
-        assert_eq!(dark_tile(Some(&pieces), page, rect), DarkTile::Dim, "a picture in strips adds up");
-        assert_eq!(dark_tile(Some(&[]), page, rect), DarkTile::TurnOver(Vec::new()), "a page of text");
-        let DarkTile::TurnOver(figure) = dark_tile(Some(&[[0, 0, 20_000, 20_000]]), page, rect) else { panic!("a page of text with a figure turns over") };
-        assert_eq!(figure.len(), 1, "and the figure's left alone");
+    fn a_page_of_white_background_turns_over_and_a_picture_page_is_dimmed() {
+        let whole = Some(&[[0u16, 0, 65_535, 65_535]][..]);
+        for paper in [[255, 255, 255], [240, 232, 206], [226, 226, 226]] {
+            let look = PageLook::decide(whole, &scan(paper), 400, 100, 100);
+            assert!(!look.dim && look.keep.is_empty() && look.whiten.len() == 1, "{paper:?}: {look:?}");
+        }
+        let stamped = picture(100, 100, |x, y| if x > 85 && y > 85 { [200, 30, 30] } else if y % 5 == 0 { [40, 40, 40] } else { [250, 250, 250] });
+        assert!(!PageLook::decide(whole, &stamped, 400, 100, 100).dim, "a red stamp in the corner is still a scan");
+        let photo = picture(100, 100, |x, y| [(x * 2) as u8 + 40, (y * 2) as u8 + 20, 90]);
+        assert!(PageLook::decide(whole, &photo, 400, 100, 100).dim, "a photo");
+        let map_with_margins = picture(100, 100, |x, y| if !(15..=85).contains(&x) || !(10..=90).contains(&y) { [255, 255, 255] } else { [90 + (x as u8), 140, 70] });
+        assert!(PageLook::decide(None, &map_with_margins, 400, 100, 100).dim, "white margins don't make a map a scan");
+        let many = picture(100, 100, |x, y| if (x / 10 + y / 10) % 2 == 0 { [200, 40, 40] } else { [255, 255, 255] });
+        assert!(PageLook::decide(whole, &many, 400, 100, 100).dim, "a coloured image half of it white");
     }
 
-    /// Failure: where the images are isn't known, for a low-resolution page that isn't asked or an answer that failed, and "unknown" reads as "none", so a photo comes out as a negative and stays cached as one. It's dimmed, the same as a sharp picture page.
+    /// Failure: a small picture on a page of text goes negative, or a white-backed one stays a bright box. Each is judged by itself, and it makes the page dim only if what stays adds up to most of the page.
+    #[test]
+    fn each_image_is_judged_by_itself() {
+        let page = picture(100, 100, |x, y| if x < 40 && y < 40 { [80, 160, 60] } else { [255, 255, 255] });
+        let boxes = [[0u16, 0, 26_214, 26_214], [39_321, 39_321, 65_535, 65_535]];
+        let look = PageLook::decide(Some(&boxes), &page, 400, 100, 100);
+        assert!(!look.dim, "{look:?}");
+        assert_eq!(look.keep, vec![boxes[0]], "the coloured one stays");
+        assert_eq!(look.whiten.iter().map(|image| image.sides).collect::<Vec<_>>(), vec![boxes[1]], "the white one turns over");
+        assert_eq!(PageLook::decide(Some(&[]), &page, 400, 100, 100), PageLook::text());
+        let tiny = PageLook::decide(Some(&[[0, 0, 300, 300]]), &page, 400, 100, 100);
+        assert_eq!(tiny.keep.len(), 1, "too small to say, so it's left alone: {tiny:?}");
+    }
+
+    /// Failure: a scan's off-white paper lands on a muddy tone beside a true text page, or its noise speckles, and a tile crossing the image's edge shows a seam. Whitened first, its paper is the paper's colour exactly, with the same result as white paper turned over, and its ink stays light.
+    #[test]
+    fn a_scans_paper_lands_on_the_papers_tone() {
+        let look = PageLook::decide(Some(&[[0, 0, 65_535, 65_535]]), &scan([236, 226, 196]), 400, 100, 100);
+        let rect = recto_proto::TileRect { x: 0, y: 0, width: 3, height: 1 };
+        let DarkTile::TurnOver(keeps, whiten) = look.in_tile(Some((100, 100)), rect) else { panic!("{look:?}") };
+        // Its paper, a little noisier than the average, and its ink, as blue-green-red.
+        let mut pixels = [196, 226, 236, 0xFF, 190, 222, 233, 0xFF, 40, 40, 40, 0xFF];
+        turn_over(&mut pixels, 3, 1, 12, false, &keeps, &whiten);
+        let rgb = |pixel: &[u8]| (u32::from(pixel[2]) << 16) | (u32::from(pixel[1]) << 8) | u32::from(pixel[0]);
+        assert_eq!(rgb(&pixels[0..3]), DARK_PAPER, "its paper");
+        assert_eq!(rgb(&pixels[4..7]), DARK_PAPER, "and the noise in it");
+        assert!(luma(rgb(&pixels[8..11])) > luma(DARK_PAPER) * 3, "its ink reads light");
+    }
+
+    /// Failure: where the images are isn't known, for a page whose renderer can't be asked or an answer that failed, and "unknown" reads as "none", so a photo comes out as a negative and stays cached as one. With no picture to judge it's dimmed, and with one it's judged whole, the same as a sharp page.
     #[test]
     fn what_isnt_known_is_never_turned_over() {
         let rect = recto_proto::TileRect { x: 0, y: 0, width: 2, height: 1 };
-        assert_eq!(dark_tile(None, Some((2048, 2048)), rect), DarkTile::Dim, "the low-resolution path");
-        assert_eq!(dark_tile(Some(&[]), None, rect), DarkTile::Dim, "the page's size wasn't known");
+        assert_eq!(PageLook::unknown().in_tile(Some((2048, 2048)), rect), DarkTile::Dim);
+        assert_eq!(PageLook::text().in_tile(None, rect), DarkTile::Dim, "the page's size wasn't known");
+        let whole = PageLook::decide(None, &scan([250, 250, 250]), 400, 100, 100);
+        assert!(!whole.dim, "the low-resolution path, judged whole: {whole:?}");
     }
 
     /// Failure: a picture page's colours change, or it's left as bright as it was, or black text on it goes unreadable. Each channel falls by the same share, and black stays black.
@@ -288,7 +494,7 @@ mod tests {
         assert!(!is_grey(TileKind::Blank { rgb: 0xFF_00_00 }));
         assert!(!is_grey(TileKind::Colour));
         let mut pixel = [0x00, 0x00, 0xFF, 0xFF];
-        turn_over(&mut pixel, 1, 1, 4, is_grey(TileKind::Blank { rgb: 0xFF_00_00 }), &[]);
+        turn_over(&mut pixel, 1, 1, 4, is_grey(TileKind::Blank { rgb: 0xFF_00_00 }), &[], &[]);
         let turned = (u32::from(pixel[2]) << 16) | (u32::from(pixel[1]) << 8) | u32::from(pixel[0]);
         assert_eq!(turned, dark_rgb(0xFF_00_00));
         assert!(pixel[2] > pixel[0] && pixel[2] > pixel[1], "still red: {pixel:?}");
@@ -299,8 +505,8 @@ mod tests {
     fn grey_tiles_and_colour_tiles_agree() {
         let mut one: Vec<u8> = (0..=255u8).flat_map(|v| [v, v, v, 0xFF]).collect();
         let mut two = one.clone();
-        turn_over(&mut one, 256, 1, 1024, true, &[]);
-        turn_over(&mut two, 256, 1, 1024, false, &[]);
+        turn_over(&mut one, 256, 1, 1024, true, &[], &[]);
+        turn_over(&mut two, 256, 1, 1024, false, &[], &[]);
         assert_eq!(one, two);
     }
 
@@ -308,10 +514,10 @@ mod tests {
     #[test]
     fn a_bad_stride_changes_nothing_or_stays_in_bounds() {
         let mut pixels = vec![9u8; 64];
-        turn_over(&mut pixels, 100, 100, 4, false, &[]);
+        turn_over(&mut pixels, 100, 100, 4, false, &[], &[]);
         assert_eq!(pixels, vec![9u8; 64], "a stride narrower than the row");
-        turn_over(&mut pixels, 8, 100, 0, true, &[]);
-        turn_over(&mut pixels, 4, 100, 16, true, &[]);
+        turn_over(&mut pixels, 8, 100, 0, true, &[], &[]);
+        turn_over(&mut pixels, 4, 100, 16, true, &[], &[]);
     }
 
     /// Measures, and isn't a check: `cargo test --release -p recto-reader -- --ignored dark_paper_costs --nocapture`. What a 512 px colour tile costs each way.
@@ -331,7 +537,12 @@ mod tests {
             samples.sort_unstable();
             println!("{name}: p50 {} us, p95 {} us", samples[100], samples[190]);
         };
-        time("turn over", &|pixels| turn_over(pixels, 512, 512, 2048, false, &[]));
+        time("turn over", &|pixels| turn_over(pixels, 512, 512, 2048, false, &[], &[]));
+        time("whiten and turn over", &|pixels| turn_over(pixels, 512, 512, 2048, false, &[], &[(Keep { left: 0, top: 0, right: 512, bottom: 512 }, [270, 280, 300])]));
+        let page = tile(31);
+        time("judge a page picture", &|_| {
+            let _ = PageLook::decide(Some(&[[0, 0, 65_535, 65_535]]), &page, 2048, 512, 512);
+        });
         time("dim page", &|pixels| dim_page(pixels, 512, 512, 2048));
     }
 }
