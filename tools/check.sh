@@ -219,17 +219,17 @@ run() {
   if [ -n "$tests_first" ]; then
     stage changed-tests
     # shellcheck disable=SC2086
-    RECTO_SKIP_APP=1 cargo nextest run --locked $tests_first
+    RECTO_SKIP_APP=1 cargo nextest run --locked --no-fail-fast $tests_first
   fi
   stage other-tests
-  RECTO_SKIP_APP=1 cargo nextest run --locked --no-tests=pass "${tests[@]}"
+  RECTO_SKIP_APP=1 cargo nextest run --locked --no-fail-fast --no-tests=pass "${tests[@]}"
   # Only --full: no Xcode needed for --quick, and no minutes spent on Swift.
   if [ "$mode" = "--full" ]; then
     stage app-build
     app/build.sh
     # At most two at once: each is a real app, and this Mac is in use.
     stage app-tests
-    RECTO_REQUIRE_APP=1 cargo nextest run --locked -p recto-cli --test app -j 2
+    RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app -j 2
   fi
   stage done
 }
