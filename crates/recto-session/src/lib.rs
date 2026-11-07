@@ -131,9 +131,35 @@ pub struct SidebarModel<'a> {
     pub undone_owner_steps: bool,
 }
 
+/// The paper in dark mode. Light mode is always white. Owner, 2026-11-06: dark mode offers dark or white paper.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Paper {
+    #[default]
+    Dark,
+    White,
+}
+
+impl Paper {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::White => "white",
+        }
+    }
+}
+
+/// How pages are shown, which is the same for every tab.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ViewSettings {
+    pub paper: Paper,
+    /// Sidebar hidden, page number only, agent icon kept.
+    pub focus: bool,
+}
+
 /// All open tabs and which one is active.
 pub struct Session<L = DiskLoader> {
     loader: L,
+    view: ViewSettings,
     tabs: Vec<TabRecord>,
     active: Option<TabId>,
     next_id: u32,
@@ -171,7 +197,15 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), draws: VecDeque::new(), place_lost: false }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), draws: VecDeque::new(), place_lost: false }
+    }
+
+    pub fn view(&self) -> ViewSettings {
+        self.view
+    }
+
+    pub fn set_view(&mut self, view: ViewSettings) {
+        self.view = view;
     }
 
     /// How documents are read. Cheap to reach, so a caller can read a file without holding the session.
@@ -195,6 +229,11 @@ impl<L: DocLoader> Session<L> {
     pub fn path_of(&self, id: TabId) -> Option<PathBuf> {
         let tab = self.tab(id)?;
         Some(self.dirs.get(tab.dir as usize)?.join(&*tab.file_name))
+    }
+
+    /// The tabs that keep their contents: the active one and the most recent others, at most [`MAX_WARM`].
+    pub fn warm_tabs(&self) -> impl Iterator<Item = TabId> + '_ {
+        self.warm.iter().map(|(tab, _)| *tab)
     }
 
     pub fn tier(&self, id: TabId) -> Tier {

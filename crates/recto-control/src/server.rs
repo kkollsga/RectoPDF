@@ -106,6 +106,8 @@ pub struct Server {
     listener: Listener,
     wake_tx: Stream,
     wake_rx: Stream,
+    done_tx: Sender<Done>,
+    done_rx: Receiver<Done>,
     /// Held until this ends, however it ends: the kernel lets go of it even after a kill. That's what makes a leftover socket safe to remove.
     _lock: File,
 }
@@ -131,7 +133,8 @@ impl Server {
         let (wake_tx, wake_rx) = Stream::pair().map_err(|_| failed("The session couldn't be started."))?;
         wake_tx.set_nonblocking(true).map_err(|_| failed("The session couldn't be started."))?;
         wake_rx.set_nonblocking(true).map_err(|_| failed("The session couldn't be started."))?;
-        Ok(Self { paths: paths.clone(), listener, wake_tx, wake_rx, _lock: lock })
+        let (done_tx, done_rx) = channel();
+        Ok(Self { paths: paths.clone(), listener, wake_tx, wake_rx, done_tx, done_rx, _lock: lock })
     }
 
     /// Asks a running server to end, from another thread. For a host that started it on its own thread.
@@ -139,9 +142,14 @@ impl Server {
         Ok(Stopper(self.wake_tx.try_clone()?))
     }
 
+    /// Tells watchers and waiters what the host's own user did, from another thread. Commands' events go by themselves: this is for a tap in the app's sidebar, which no command caused.
+    pub fn announcer(&self) -> std::io::Result<Announcer> {
+        Ok(Announcer { done: self.done_tx.clone(), wake: self.wake_tx.try_clone()? })
+    }
+
     /// Runs until `stop` or a [`Stopper`]. Blocks in `poll` the whole time.
     pub fn run<H: Host>(self, host: Arc<H>, limits: Limits) -> std::io::Result<()> {
-        let (done_tx, done_rx) = channel();
+        let (done_tx, done_rx) = (self.done_tx.clone(), self.done_rx);
         let last_level = levels::current(&self.paths);
         let mut state = Loop {
             log: ActivityLog::new(&self.paths),
@@ -180,6 +188,22 @@ pub struct Stopper(Stream);
 impl Stopper {
     pub fn stop(&self) {
         let _ = (&self.0).write(&[STOP_BYTE]);
+    }
+}
+
+/// Tells a running server's watchers what happened outside any command. See [`Server::announcer`].
+#[derive(Debug)]
+pub struct Announcer {
+    done: Sender<Done>,
+    wake: Stream,
+}
+
+impl Announcer {
+    /// Never blocks: the channel has no limit and only holds what's published between two turns of the loop, and a full wake pipe already means the loop will look.
+    pub fn announce(&self, events: Vec<Event>) {
+        if self.done.send(Done::Announced(events)).is_ok() {
+            let _ = (&self.wake).write(&[WAKE_BYTE]);
+        }
     }
 }
 
@@ -242,7 +266,9 @@ impl Job {
     }
 }
 
+#[derive(Debug)]
 enum Done {
+    Announced(Vec<Event>),
     Answered { conn: u64, line: Vec<u8>, tag: &'static str, level: Level, outcome: &'static str, details: Value, events: Vec<Event>, draws: bool, stop: bool },
     Looked { conn: u64, generation: u64, state: ConditionState },
 }
@@ -638,6 +664,7 @@ impl<H: Host> Loop<H> {
 
     fn finish(&mut self, done: Done) {
         match done {
+            Done::Announced(events) => self.publish(&events),
             Done::Answered { conn, line, tag, level, outcome, details, events, draws, stop } => {
                 self.running -= 1;
                 if draws {

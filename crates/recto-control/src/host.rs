@@ -1,4 +1,4 @@
-//! What the server asks of whoever holds the session. `recto serve` uses [`SessionHost`], and the Mac app will use one that shares its own session.
+//! What the server asks of whoever holds the session. `recto serve` uses [`SessionHost`], and the Mac app wraps one, sharing its session.
 
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, acted_tab, check_condition, exit, with_tab_candidates};
 use recto_session::{DocLoader, Session, TabId};

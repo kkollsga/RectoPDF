@@ -95,7 +95,8 @@ pub fn reference_md() -> String {
 }
 
 fn documented() -> impl Iterator<Item = &'static Spec> {
-    TABLE.iter().filter(|spec| !spec.hidden)
+    // QA is for whoever builds the app. The skill is for the user's agents, whose session won't answer it.
+    TABLE.iter().filter(|spec| !spec.hidden && spec.group != crate::table::GROUP_QA)
 }
 
 fn write_exit_codes(out: &mut String) {

@@ -151,6 +151,28 @@ pub enum Command {
         tab: String,
     },
     Budget {},
+    /// How the app shows pages.
+    View {
+        #[serde(default)]
+        paper: Option<String>,
+        #[serde(default)]
+        focus: Option<String>,
+    },
+    /// Asks the running app what it shows. Only an app started in QA mode answers.
+    QaRead {
+        verb: String,
+        #[serde(default)]
+        out: Option<PathBuf>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// Has the running app do what the UI does. Only an app started in QA mode answers.
+    QaDrive {
+        verb: String,
+        value: String,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     /// Draws a page to a PNG file.
     Render {
         #[serde(default = "active_tab")]
@@ -347,6 +369,9 @@ impl Command {
             Self::Goto { .. } => "goto",
             Self::Close { .. } => "close",
             Self::Budget {} => "budget",
+            Self::View { .. } => "view",
+            Self::QaRead { .. } => "qa_read",
+            Self::QaDrive { .. } => "qa_drive",
             Self::Render { .. } => "render",
             Self::Text { .. } => "text",
             Self::BudgetRender { .. } => "budget_render",
@@ -383,6 +408,8 @@ impl Command {
         match self {
             // Measuring with the decided limits only reads numbers. Choosing other limits decides what a hostile file may use, so it isn't reading.
             Self::BudgetRender { limit_mib: Some(_), .. } | Self::BudgetRender { retire_mib: Some(_), .. } => Access::At(Level::Full),
+            // Asking how things are shown changes nothing. Changing it is moving around.
+            Self::View { paper: Some(_), .. } | Self::View { focus: Some(_), .. } => Access::At(Level::Control),
             // A command with no row can't run: the table is the list.
             _ => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
         }
@@ -409,7 +436,8 @@ impl Command {
             Self::PageDelete { tab, pages } => json!({ "tab": tab_of(tab), "pages": clean_range(pages) }),
             Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
-            Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
+            Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
+            Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
         }
     }
 }
@@ -652,6 +680,11 @@ pub fn run<L: DocLoader + Clone>(session: &mut Session<L>, level: Level, command
 }
 
 /// Runs one command, noting what happened in `events`. Commands that only a long-running session can answer say so.
+/// QA commands reach an app started in QA mode, and nothing else. Other sessions, a shipped app's included, say this.
+pub fn qa_needs_app() -> AgentError {
+    AgentError::new("qa_needs_app", "QA commands only work on an app started with `recto qa start`.", exit::FAILED).then("Set RECTO_STATE_DIR to a temp folder and run `recto qa start`.")
+}
+
 pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let needed = command.access();
     if !allowed(level, needed) {
@@ -694,6 +727,28 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             // Not the whole list: closing a thousand tabs shouldn't build a thousand lists.
             Ok(json!({ "closed": id.0, "count": s.tabs().len(), "active": s.active().map(|active| where_json(s, active)) }))
         }),
+        Command::View { paper, focus } => access.with(|s| {
+            let was = s.view();
+            let mut view = was;
+            match paper.as_deref() {
+                Some("dark") => view.paper = recto_session::Paper::Dark,
+                Some("white") => view.paper = recto_session::Paper::White,
+                Some(other) => return Err(AgentError::new("usage", format!("`{}` isn't a paper. It's `dark` or `white`.", recto_core::clean_line(other)), exit::USAGE)),
+                None => {}
+            }
+            match focus.as_deref() {
+                Some("on") => view.focus = true,
+                Some("off") => view.focus = false,
+                Some(other) => return Err(AgentError::new("usage", format!("`{}` isn't for focus. It's `on` or `off`.", recto_core::clean_line(other)), exit::USAGE)),
+                None => {}
+            }
+            s.set_view(view);
+            if view != was {
+                events.push(Event::new("view_changed", json!({ "paper": view.paper.name(), "focus": view.focus })));
+            }
+            Ok(json!({ "paper": view.paper.name(), "focus": view.focus }))
+        }),
+        Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::Budget {} => Ok(json!({
             "tabs": access.with(|s| s.tabs().len()),
             "footprint_bytes": recto_platform::footprint_bytes(),
@@ -1439,8 +1494,30 @@ mod tests {
             Command::Watch { events: None, timeout_ms: None, count: None },
             Command::WatchStop {},
             Command::Log { last: None },
+            Command::View { paper: None, focus: None },
+            Command::QaRead { verb: "state".into(), out: None, timeout_ms: None },
+            Command::QaDrive { verb: "zoom".into(), value: "1".into(), timeout_ms: None },
             Command::Stop {},
         ]
+    }
+
+    /// Failure: changing how pages are shown works at Read-only, or asking needs more than asking should, because the row can state only one level.
+    #[test]
+    fn view_asks_at_read_only_and_changes_at_control() {
+        assert_eq!(Command::View { paper: None, focus: None }.access(), Access::At(Level::ReadOnly));
+        assert_eq!(Command::View { paper: Some("white".into()), focus: None }.access(), Access::At(Level::Control));
+        assert_eq!(Command::View { paper: None, focus: Some("on".into()) }.access(), Access::At(Level::Control));
+    }
+
+    /// Failure: a session with no app takes a QA command and does nothing, or says something that reads as though it worked. It's refused plainly, and not as a matter of level, since no level would help.
+    #[test]
+    fn qa_commands_need_an_app() {
+        let mut s = with_tabs(&["a"]);
+        for command in [Command::QaRead { verb: "state".into(), out: None, timeout_ms: None }, Command::QaDrive { verb: "zoom".into(), value: "1".into(), timeout_ms: None }] {
+            let error = run(&mut s, Level::Full, &command).unwrap_err();
+            assert_eq!(error.code, "qa_needs_app");
+            assert_ne!(error.exit, exit::PERMISSION);
+        }
     }
 
     /// Failure: a command is added with no row in the table, so it has no level, no docs and no CLI. `Command::tag` is exhaustive, so a new variant can't compile without a name, and this holds the name to a row.
