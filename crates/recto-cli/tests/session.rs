@@ -677,8 +677,8 @@ fn a_hit_on_a_page_with_hidden_text_says_so() {
     assert_eq!((&hits[0]["page"], &hits[0]["hidden_text"]["flagged"]), (&json!(1), &json!(true)), "{found}");
     assert_eq!((&hits[1]["page"], &hits[1]["hidden_text"]["flagged"]), (&json!(2), &json!(false)), "{found}");
     let (shown, _, _) = state.text(&["search", "VISIBLE-SENTINEL"]);
-    assert!(shown.lines().any(|line| line.starts_with("p. 1:") && line.contains("no eye can see")), "{shown}");
-    assert!(shown.lines().any(|line| line.starts_with("p. 2:") && !line.contains("no eye can see")), "{shown}");
+    assert!(shown.lines().any(|line| line.starts_with("p. 1:") && line.contains("looks hidden")), "{shown}");
+    assert!(shown.lines().any(|line| line.starts_with("p. 2:") && !line.contains("looks hidden")), "{shown}");
 }
 
 /// Failure: a hit on a page with tag characters says nothing about them, though they can spell an instruction no eye can see, and search has no other way of saying so.
@@ -711,7 +711,7 @@ fn search_flags_tag_characters_on_a_hit() {
     assert_eq!((&hits[1]["page"], &hits[1]["page_has_tag_chars"]), (&json!(2), &json!(false)), "{found}");
     assert_eq!(found["data"]["coverage"]["pages_with_tag_chars"], json!([1]));
     let (shown, _, _) = state.text(&["search", "ordinary"]);
-    assert!(shown.contains("no eye can see"), "{shown}");
+    assert!(shown.contains("looks hidden"), "{shown}");
 }
 
 /// Failure: facts and contents don't follow what's been edited, or a long contents comes back whole and fills an agent's reading.
@@ -1111,7 +1111,7 @@ fn a_hit_in_hidden_words_says_so_on_the_hit() {
     assert_eq!(visible["data"]["hits"][0]["overlaps_hidden"], false, "{visible}");
     assert_eq!(visible["data"]["hits"][0]["hidden_text"]["flagged"], true, "the page's own flag still stands: {visible}");
     let (shown, _, _) = state.text(&["search", "HIDDEN-MODE3"]);
-    assert!(shown.contains("these words include text no eye can see"), "{shown}");
+    assert!(shown.contains("these words include text that looks hidden"), "{shown}");
     let (plain, _, _) = state.text(&["search", "VISIBLE-SENTINEL"]);
     assert!(!plain.contains("these words include"), "{plain}");
 }

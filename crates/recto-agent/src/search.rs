@@ -220,7 +220,7 @@ impl HiddenOnPage {
     }
 }
 
-/// Draws a page to see whether it holds text no eye can see, reading it the same way the search did, so moved words are judged as they read. If drawing it fails, `checked` says so, which never reads as clean. If the second reading isn't the text that was searched, nothing can be said about where hidden text falls on a hit.
+/// Draws a page to see whether it holds text that looks hidden, reading it the same way the search did, so moved words are judged as they read. If drawing it fails, `checked` says so, which never reads as clean. If the second reading isn't the text that was searched, nothing can be said about where hidden text falls on a hit.
 fn hidden_on_page(renderer: &mut DocRenderer, page: u32, searched: &str) -> HiddenOnPage {
     match renderer.page_characters(page, true, true) {
         Ok(characters) => {
