@@ -76,3 +76,4 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "We want a good balance between SSD-aware performance and memory use for warm PDFs that's actively being edited. It's fine to keep in memory for a while, and then as it goes dormant we store to disk."
 - "When it's on deep sleep, we want its state to be stored on disk, not on memory. But it needs to be stored in a way that's quick to recover without any delay."
 - "and edit should also keep undo, redo history of edits until save has been applied."
+- "We don't want to add the undo redo history to the file itself, but we can have a rolling save redo history on the system, so it kind of in the temp files per PDF."

@@ -139,7 +139,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Edit text: block editing, line breaking, font reuse, embedded fallback
 - [ ] Signature image, and the honest signature report
 - [ ] Failure tests from the research: no lost edits on any exit path, never damage a signed file
-- [ ] Close the gap in edit ownership: an agent at Control can delete a page the owner rotated, then edit past the undo cap so the delete can't be undone. Closes with undo kept until Save (SPEC decision 25), when no step falls off a cap any more
+- [ ] Close the gap in edit ownership: an agent at Control can delete a page the owner rotated, then edit past the undo cap so the delete can't be undone. Closes when an agent's steps can no longer push out the owner's (SPEC decision 25)
 - [ ] A file lopdf refuses for hitting a limit must not fall back to PDFium in `crates/recto-agent/src/loader.rs`: a hostile file with 100,000 `/Prev` sections takes PDFium 3.4 s to load, though the fork's cap refuses it in about 3 ms
 - [ ] Save uses only the fork's `append_atomically` with `prepare_replacement`. Its `AppendWriter` can't be given a `File`, but `Writer::write_object`, the eager `Document` and `IncrementalDocument` saves and `copy_revision_to` still take any `Write`, so add a check that nothing in RectoPDF calls them, and never `File::create` the original before `copy_revision_to`
 - [ ] Opening a file with lopdf never runs on the UI thread: a 2 MiB hostile file relisting a million numbers takes 3.7 s of CPU and 96 MiB, bounded but over the 2 s stall rule
