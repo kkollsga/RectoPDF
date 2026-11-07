@@ -26,8 +26,6 @@ const MAX_KEPT_SURFACES: usize = 1024;
 const MAX_KEPT_PREVIEWS: usize = 128;
 /// Entries of any kind, since a blank tile has no surface but is still remembered.
 const MAX_ENTRIES: usize = 4096;
-/// Free surfaces kept for reuse, all discardable. Platform report §2.6.
-const MAX_POOL: usize = 64;
 /// A preview is at most this: past it a page is too large for a preview to be cheap.
 const MAX_PREVIEW_BYTES: u64 = 4 * 1024 * 1024;
 /// How much smaller a preview is than the fitted page. Platform report §2.5.
@@ -257,7 +255,6 @@ pub struct Reader {
     /// The host has been given ops it hasn't said it's applied.
     unapplied: bool,
     to_discard: Vec<u64>,
-    pool: Vec<PixelSurface>,
     clock: u64,
     running: Option<Running>,
     next_generation: u64,
@@ -295,7 +292,6 @@ impl Reader {
             ops: VecDeque::new(),
             unapplied: false,
             to_discard: Vec::new(),
-            pool: Vec::new(),
             clock: 0,
             running: None,
             next_generation: 1,
@@ -411,14 +407,13 @@ impl Reader {
         self.docs.clear();
         self.hot = None;
         self.wanted_files = Arc::new(Vec::new());
-        self.pool.clear();
         self.set_note(None);
     }
 
     fn drop_tab_entries(&mut self, tab: u32) {
         let ids: Vec<u64> = self.entries.values().filter(|entry| entry.tab == tab).map(|entry| entry.id).collect();
         for id in ids {
-            self.forget_entry(id, true);
+            self.forget_entry(id);
         }
     }
 
@@ -722,7 +717,7 @@ impl Reader {
             entry.discardable = false;
             if !kept {
                 self.counts.discards_lost += 1;
-                self.forget_entry(id, false);
+                self.forget_entry(id);
                 return false;
             }
         }
@@ -778,8 +773,8 @@ impl Reader {
         }
     }
 
-    /// Forgets an entry. A surface nobody's looking at goes back to the pool if it's a tile's.
-    fn forget_entry(&mut self, id: u64, keep_surface: bool) {
+    /// Forgets an entry, and its surface with it.
+    fn forget_entry(&mut self, id: u64) {
         let Some(entry) = self.entries.remove(&id) else { return };
         for key in Self::keys_of(&entry) {
             if self.cover.get(&key) == Some(&id) {
@@ -794,12 +789,6 @@ impl Reader {
                 self.ops.push_back(Op::Detach { id });
             }
         }
-        if keep_surface
-            && !entry.attached
-            && let Some(surface) = entry.surface
-        {
-            self.give_back(surface);
-        }
     }
 
     fn keys_of(entry: &Entry) -> Vec<TileKey> {
@@ -813,21 +802,8 @@ impl Reader {
         keys
     }
 
-    fn give_back(&mut self, surface: PixelSurface) {
-        if surface.width() == TILE_EDGE && surface.height() == TILE_EDGE && self.pool.len() < MAX_POOL {
-            surface.set_discardable();
-            self.pool.push(surface);
-        }
-    }
-
-    fn take_surface(&mut self, width: u32, height: u32) -> Option<PixelSurface> {
-        if width == TILE_EDGE && height == TILE_EDGE
-            && let Some(surface) = self.pool.pop()
-        {
-            // Its pixels don't matter, so it doesn't matter if they were taken.
-            surface.reclaim();
-            return Some(surface);
-        }
+    /// A new surface for each job, never one that's been used. A worker can read and write a surface it was sent for as long as it lives, whatever it's told, so a surface used twice is a way from one file's worker to another file's pixels. It costs 51 µs more a tile than reusing one, nearly all of it the first touch of its pages: 67 against 16, p50.
+    fn take_surface(width: u32, height: u32) -> Option<PixelSurface> {
         PixelSurface::create(width, height).ok()
     }
 
@@ -900,7 +876,7 @@ impl Reader {
             let too_many_tiles = tile_bytes > MAX_KEPT_BYTES || tile_surfaces > MAX_KEPT_SURFACES || self.entries.len() > MAX_ENTRIES;
             let victim = if previews > MAX_KEPT_PREVIEWS { oldest_preview } else if too_many_tiles { oldest_tile.or(oldest_preview) } else { None };
             let Some((_, id)) = victim else { return };
-            self.forget_entry(id, true);
+            self.forget_entry(id);
         }
     }
 
@@ -928,9 +904,8 @@ impl Reader {
         self.clear_screen();
         let ids: Vec<u64> = self.entries.keys().copied().collect();
         for id in ids {
-            self.forget_entry(id, false);
+            self.forget_entry(id);
         }
-        self.pool.clear();
         if let Some(running) = &self.running
             && let Some(cancel) = &running.cancel
         {
@@ -1014,7 +989,7 @@ impl Reader {
             // A heavy page's cost is per pass, so a preview would cost it as much again. Any other page gets one however little of it shows: a page first seen as a sliver at the bottom of the window, with no preview, goes blank when that sliver's tile scrolls off.
             let preview_wanted = !heavy && !self.cover.contains_key(&self.preview_key(doc, page));
             if preview_wanted && let Some((preview_scale, rect)) = self.preview_rect(doc, page, scale) {
-                let surface = self.take_surface(rect.width, rect.height)?;
+                let surface = Self::take_surface(rect.width, rect.height)?;
                 let paper = self.paper;
                 let generation = self.fresh_generation();
                 return Some(Job { tab, position: page, file, source_page, generation, kind: JobKind::Draw { scale: preview_scale, rect, surface, what: DrawKind::Preview, paper } });
@@ -1027,7 +1002,7 @@ impl Reader {
                 sorted.sort_unstable();
                 let mut rect = plan_regions(&sorted, (width, height)).into_iter().next()?;
                 let surface = loop {
-                    let surface = self.take_surface(rect.width, rect.height)?;
+                    let surface = Self::take_surface(rect.width, rect.height)?;
                     // A surface's rows can be padded, which can take it over the cap. A row of tiles less is always under.
                     if u64::from(surface.stride()) * u64::from(rect.height) <= MAX_REGION_BYTES || rect.height <= TILE_EDGE {
                         break surface;
@@ -1041,7 +1016,7 @@ impl Reader {
             let (column, row) = missing[0];
             let (x, y) = (u32::from(column) * TILE_EDGE, u32::from(row) * TILE_EDGE);
             let rect = TileRect { x, y, width: TILE_EDGE.min(width - x), height: TILE_EDGE.min(height - y) };
-            let surface = self.take_surface(TILE_EDGE, TILE_EDGE)?;
+            let surface = Self::take_surface(TILE_EDGE, TILE_EDGE)?;
             let paper = self.paper;
             let generation = self.fresh_generation();
             return Some(Job { tab, position: page, file, source_page, generation, kind: JobKind::Draw { scale, rect, surface, what: DrawKind::Tile, paper } });
@@ -1089,9 +1064,6 @@ impl Reader {
         // Asked about the pages as they were. An edit has changed what's at this position since.
         if self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) {
             self.counts.cancelled += 1;
-            if let JobKind::Draw { surface, .. } = kind {
-                self.give_back(surface);
-            }
             self.refresh(MAX_ATTACH_PER_TURN);
             return;
         }
@@ -1113,35 +1085,23 @@ impl Reader {
             }
             (JobKind::Draw { scale, rect, surface, what, paper }, Outcome::Drawn { kind, low_res }) => {
                 self.counts.drawn += 1;
-                if !self.docs.contains_key(&tab) || !self.window_open {
-                    self.give_back(surface);
-                } else {
+                if self.docs.contains_key(&tab) && self.window_open {
                     self.keep_drawn(tab, position, scale, rect, surface, what, paper, kind, low_res);
                 }
             }
-            (JobKind::Draw { surface, .. }, Outcome::Cancelled) => {
+            (JobKind::Draw { .. }, Outcome::Cancelled) => {
                 self.counts.cancelled += 1;
-                self.give_back(surface);
             }
-            (kind, Outcome::PageFailed { message, may_pass }) => {
-                if let JobKind::Draw { surface, .. } = kind {
-                    self.give_back(surface);
-                }
+            (_, Outcome::PageFailed { message, may_pass }) => {
                 self.note_issue(tab, position, message, may_pass);
             }
-            (kind, Outcome::DocumentFailed(message)) => {
-                if let JobKind::Draw { surface, .. } = kind {
-                    self.give_back(surface);
-                }
+            (_, Outcome::DocumentFailed(message)) => {
                 if let Some(doc) = self.docs.get_mut(&tab) {
                     doc.problem = Some(message);
                 }
             }
-            (kind, _) => {
+            _ => {
                 self.counts.cancelled += 1;
-                if let JobKind::Draw { surface, .. } = kind {
-                    self.give_back(surface);
-                }
             }
         }
         self.refresh(MAX_ATTACH_PER_TURN);
@@ -1156,10 +1116,7 @@ impl Reader {
         let crop = (f64::from(drawn_rect.width) / f64::from(surface.width().max(1)), f64::from(drawn_rect.height) / f64::from(surface.height().max(1)));
         // A tile of one colour needs no surface, unless it's a whole region's or the only sign of a page.
         let (rgb, surface) = match (kind, what) {
-            (TileKind::Blank { rgb }, DrawKind::Tile) if low_res.is_none() => {
-                self.give_back(surface);
-                (Some(rgb), None)
-            }
+            (TileKind::Blank { rgb }, DrawKind::Tile) if low_res.is_none() => (Some(rgb), None),
             _ => (None, Some(surface)),
         };
         let note = low_res.map(|(_, why)| LowResNote { message: why.message(), may_clear: why.may_clear(), at: Instant::now() });
@@ -1190,7 +1147,7 @@ impl Reader {
             if let Some(entry) = self.entries.get(&old)
                 && !entry.attached
             {
-                self.forget_entry(old, false);
+                self.forget_entry(old);
             }
         }
     }
@@ -1262,7 +1219,6 @@ impl Reader {
                 "previews_attached": previews_attached,
                 "kept": self.entries.len() - attached.min(self.entries.len()),
                 "kept_bytes": self.entries.values().filter(|entry| !entry.attached).filter_map(|entry| entry.surface.as_ref()).map(PixelSurface::len).sum::<usize>(),
-                "pool": self.pool.len(),
                 "page_layers": self.shown.len(),
             },
             "counts": {
@@ -1511,7 +1467,7 @@ mod tests {
         let mut reader = reader_on(10);
         settle(&mut reader);
         reader.window_closed();
-        assert!(reader.entries.is_empty() && reader.pool.is_empty());
+        assert!(reader.entries.is_empty());
         assert!(reader.next_job().is_none(), "nothing draws for a closed window");
         assert!(reader.wanted_files().is_empty(), "the renderer goes too");
         reader.window_opened();
@@ -1710,6 +1666,39 @@ mod tests {
         reader.finish(draw, Outcome::Drawn { kind: TileKind::Colour, low_res: None });
         assert!(reader.entries.is_empty(), "the old page's picture stays out");
         assert!(reader.cover.is_empty());
+    }
+
+    /// Failure: a surface that held one file's page is handed to another file's worker, so a hostile file reads a page of the one before it. Both ways round: the next file's worker gets surfaces a cold tab's tiles had, and a hostile file that kept a reference, answered "blank" and got its surface taken back then sees the next file's pixels and can repaint them. No surface may ever serve two files.
+    #[test]
+    fn no_surface_serves_two_files() {
+        fn run(reader: &mut Reader, answer: TileKind) -> HashSet<u32> {
+            let mut seen = HashSet::new();
+            for _ in 0..1000 {
+                reader.take_ops();
+                reader.applied();
+                let Some(job) = reader.next_job() else { break };
+                let outcome = match &job.kind {
+                    JobKind::Size => Outcome::Size(letter()),
+                    JobKind::Traits => Outcome::Heavy(false),
+                    JobKind::Draw { surface, .. } => {
+                        seen.insert(surface.id());
+                        Outcome::Drawn { kind: answer, low_res: None }
+                    }
+                };
+                reader.finish(job, outcome);
+            }
+            seen
+        }
+        let other = |name: &str| PageMap { files: vec![PathBuf::from(name)], slots: None };
+        for answer in [TileKind::Colour, TileKind::Blank { rgb: 0xFF_FF_FF }] {
+            let mut reader = reader_on(3);
+            let first = run(&mut reader, answer);
+            reader.activate(2, 3, 0, other("/d/b.pdf"), &[]);
+            reader.set_viewport(view(0.0));
+            let second = run(&mut reader, TileKind::Colour);
+            assert!(!first.is_empty() && !second.is_empty());
+            assert!(first.is_disjoint(&second), "served both: {:?}", first.intersection(&second).collect::<Vec<_>>());
+        }
     }
 
     /// Failure: the host's size change moves the reader away from what they were reading.

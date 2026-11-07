@@ -44,6 +44,7 @@ unsafe extern "C" {
     fn IOSurfaceCreate(properties: CfRef) -> IoSurfaceRef;
     fn IOSurfaceGetAllocSize(surface: IoSurfaceRef) -> usize;
     fn IOSurfaceGetBytesPerRow(surface: IoSurfaceRef) -> usize;
+    fn IOSurfaceGetID(buffer: *mut c_void) -> u32;
     fn IOSurfaceGetWidth(surface: IoSurfaceRef) -> usize;
     fn IOSurfaceGetHeight(surface: IoSurfaceRef) -> usize;
     fn IOSurfaceGetBaseAddress(surface: IoSurfaceRef) -> *mut c_void;
@@ -120,6 +121,20 @@ impl PixelSurface {
             }
         }
         Ok(surface)
+    }
+
+    /// The surface's global name, which is the same in every process that holds it. Two of these equal means one piece of memory, which is what tests of who sees what need.
+    pub fn id(&self) -> u32 {
+        // SAFETY: the surface is live.
+        unsafe { IOSurfaceGetID(self.raw.as_ptr()) }
+    }
+
+    /// Takes back a reference from [`Self::retained_for_host`], for a stand-in host that wants to look at the pixels. `None` for zero, which means no surface.
+    ///
+    /// # Safety
+    /// `reference` must be a value [`Self::retained_for_host`] returned, and each may be taken back once.
+    pub unsafe fn from_host_reference(reference: u64) -> Option<Self> {
+        NonNull::new(reference as usize as *mut c_void).map(|raw| Self { raw })
     }
 
     pub fn width(&self) -> u32 {

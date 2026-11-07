@@ -20,6 +20,14 @@ impl PixelSurface {
     pub fn create(_width: u32, _height: u32) -> io::Result<Self> {
         unsupported()
     }
+    pub fn id(&self) -> u32 {
+        0
+    }
+    /// # Safety
+    /// There's nothing to take back here: this never returns one.
+    pub unsafe fn from_host_reference(_reference: u64) -> Option<Self> {
+        None
+    }
     pub fn width(&self) -> u32 {
         0
     }
