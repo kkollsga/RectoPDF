@@ -705,6 +705,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "recto-fuzz"
+version = "0.1.0"
+dependencies = [
+ "recto-agent",
+ "recto-control",
+ "recto-core",
+ "recto-index",
+ "recto-platform",
+ "recto-proto",
+ "recto-render-service",
+ "recto-session",
+ "recto-testpdf",
+ "serde_json",
+]
+
+[[package]]
 name = "recto-index"
 version = "0.1.0"
 dependencies = [

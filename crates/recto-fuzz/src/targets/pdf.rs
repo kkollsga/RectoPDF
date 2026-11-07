@@ -1,0 +1,163 @@
+//! `recto_core::inspect` and the signature inventory, on hostile bytes. These run in the session's own process, so a panic loses unsaved edits and a stack overflow can't even be caught.
+//!
+//! What must hold, whatever the file: it returns, in bounded time and memory. What it returns is within its caps and clean to show. What couldn't be read is never reported as absent.
+
+use crate::guard::{Budget, within};
+use crate::input::Take;
+use crate::targets::DocOnly;
+use recto_agent::{Level, parse, run};
+use recto_core::{DocFacts, MAX_SIGNATURES, MAX_TITLE_BYTES, MAX_TOC_DEPTH, MAX_TOC_ENTRIES, NONE, SignatureInventory, SignatureState, clean_line, clean_text, inspect_bytes, is_invisible_format, signatures_in_bytes};
+use recto_session::Session;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Far past anything real, and well under the 1 GiB that's a failure by definition. Two walks of 5 s each, with room for a loaded machine and a slow build around them.
+const BUDGET: Budget = Budget { time: Duration::from_secs(30), memory: 512 * 1024 * 1024 };
+
+/// Mutated real files. Catches: a panic, a hang or a bomb in opening, the page tree, the outline, name trees, or the field tree, on anything a damaged or hostile file can hold.
+pub fn check_bytes(data: &[u8]) {
+    read(data);
+}
+
+/// Files built from the fuzz bytes, always with a true cross-reference table, so structure is what's hostile rather than the framing. Catches: loops, depth, width and dangling references in the walks, which random bytes in a real file rarely make.
+pub fn check_tree(data: &[u8]) {
+    read(&build_tree(data));
+}
+
+fn read(bytes: &[u8]) {
+    let shared: Arc<[u8]> = bytes.into();
+    within("reading a PDF's structure", BUDGET, || {
+        if let Ok(facts) = inspect_bytes(Arc::clone(&shared)) {
+            assert_facts_hold(&facts, bytes.len() as u64);
+            through_the_session(facts);
+        }
+        if let Ok(inventory) = signatures_in_bytes(shared) {
+            assert_inventory_holds(&inventory, bytes.len() as u64);
+        }
+    });
+}
+
+fn assert_shown_text_is_clean(what: &str, text: &str) {
+    assert!(text.len() <= MAX_TITLE_BYTES, "{what} is {} bytes", text.len());
+    assert!(!text.chars().any(|c| is_invisible_format(c) || c.is_control()), "{what} still holds something a reader can't see: {text:?}");
+    assert_eq!(clean_line(text), text, "{what} isn't what cleaning it gives");
+}
+
+fn assert_facts_hold(facts: &DocFacts, file_bytes: u64) {
+    assert_eq!(facts.byte_len, file_bytes);
+    if let Some(title) = &facts.title {
+        assert_shown_text_is_clean("the title", title);
+    }
+    let toc = &facts.toc;
+    assert!(toc.entries().len() <= MAX_TOC_ENTRIES);
+    for (index, entry) in toc.entries().iter().enumerate() {
+        assert!(entry.depth <= MAX_TOC_DEPTH, "depth {}", entry.depth);
+        assert!(entry.page == NONE || entry.page < facts.page_count, "page {} of {}", entry.page, facts.page_count);
+        assert!(entry.parent == NONE || (entry.parent as usize) < index, "entry {index} has parent {}", entry.parent);
+        assert_shown_text_is_clean("a contents title", toc.title(entry));
+    }
+    for page in [0, facts.page_count / 2, u32::MAX] {
+        if let Some(found) = toc.section_at(page) {
+            assert!(found < toc.entries().len());
+        }
+    }
+}
+
+fn assert_inventory_holds(inventory: &SignatureInventory, file_bytes: u64) {
+    assert!(inventory.entries.len() <= MAX_SIGNATURES, "{} signatures", inventory.entries.len());
+    // "None" is only ever said of a file that was really read.
+    assert!(inventory.structure_read || inventory.entries.is_empty());
+    for entry in &inventory.entries {
+        for text in [Some(&entry.field), entry.filter.as_ref(), entry.sub_filter.as_ref(), entry.stated_name.as_ref(), entry.stated_reason.as_ref(), entry.stated_location.as_ref(), entry.stated_time.as_ref()].into_iter().flatten() {
+            assert_shown_text_is_clean("a signature's text", text);
+        }
+        assert!(entry.bytes_after_range.is_none_or(|after| after <= file_bytes));
+        if entry.state != SignatureState::Signed {
+            assert!(entry.byte_range.is_none() && entry.stated_name.is_none(), "only a signed field has anything stated");
+        }
+    }
+}
+
+/// What a session does with those facts: the sidebar and the agent's view of the contents. A hostile outline reaches these too.
+fn through_the_session(facts: DocFacts) {
+    let path = Path::new("/fuzz/doc.pdf");
+    let mut session = Session::new(DocOnly(Arc::new(facts.clone())));
+    let Ok(id) = session.open_with_facts(path, facts, None) else { return };
+    let _ = session.sidebar();
+    let _ = session.tap(id);
+    for line in [r#"{"cmd":"contents"}"#, r#"{"cmd":"contents","depth":0,"limit":3}"#, r#"{"cmd":"contents","from":4294967295,"depth":255}"#, r#"{"cmd":"facts"}"#, r#"{"cmd":"where"}"#, r#"{"cmd":"sidebar"}"#] {
+        let command = parse(line).expect("a command written here");
+        let _ = run(&mut session, Level::Control, &command);
+    }
+}
+
+/// Hostile numbers a structure field gets.
+const NUMBERS: &[&str] = &["0", "1", "2", "-1", "65535", "2147483647", "4294967296", "99999999999999999999", "0.5"];
+
+/// Builds a PDF out of the bytes: objects that are pieces of what the walks read, joined by references the bytes choose, some to themselves, some to nothing. Object 1 is the catalog, and it names object 2 to 6 as its pages, outline, names, form and permissions.
+pub fn build_tree(data: &[u8]) -> Vec<u8> {
+    let mut take = Take(data);
+    let count = 7 + usize::from(take.u8() % 64);
+    // A reference to some object, or now and then to one that isn't there.
+    fn reference(take: &mut Take<'_>, count: usize) -> String {
+        match take.u8() {
+            0..=239 => format!("{} 0 R", 1 + usize::from(take.u8()) % count),
+            240..=247 => format!("{} 0 R", take.pick(NUMBERS)),
+            248..=251 => "null".to_string(),
+            _ => take.pick(NUMBERS).to_string(),
+        }
+    }
+    fn references(take: &mut Take<'_>, count: usize) -> String {
+        let many = take.u8() % 6;
+        (0..many).map(|_| reference(take, count)).collect::<Vec<_>>().join(" ")
+    }
+    fn text(take: &mut Take<'_>) -> String {
+        const TEXTS: &[&str] = &["(a)", "(chapter)", "()", "<FEFF0041202E0042>", "(\\200\\237)", "<FEFFD800>", "(line\\nbreak)", "<EFBBBF41>", "/NotAString", "12"];
+        take.pick(TEXTS).to_string()
+    }
+    let mut objects = Vec::with_capacity(count);
+    objects.push(recto_testpdf::Object::Dict(format!("<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R /Names 4 0 R /Dests {} /AcroForm 5 0 R /Perms 6 0 R >>", reference(&mut take, count))));
+    while objects.len() < count {
+        let which = if objects.len() < 6 { objects.len() as u8 - 1 } else { take.u8() % 11 };
+        let object = match which {
+            0 | 6 => recto_testpdf::Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {} /Parent {} >>", references(&mut take, count), take.pick(NUMBERS), reference(&mut take, count))),
+            1 | 7 => {
+                let dest = match take.u8() % 6 {
+                    0 => format!("/Dest [{} /Fit]", reference(&mut take, count)),
+                    1 => format!("/Dest {}", text(&mut take)),
+                    2 => "/Dest /chapter".to_string(),
+                    3 => format!("/A << /S /GoTo /D {} >>", reference(&mut take, count)),
+                    4 => format!("/Dest {}", reference(&mut take, count)),
+                    _ => String::new(),
+                };
+                recto_testpdf::Object::Dict(format!("<< /Title {} /First {} /Next {} {dest} >>", text(&mut take), reference(&mut take, count), reference(&mut take, count)))
+            }
+            2 | 8 => recto_testpdf::Object::Dict(format!("<< /Dests {} /Kids [{}] /Names [{} {}] /Limits [{} {}] >>", reference(&mut take, count), references(&mut take, count), text(&mut take), reference(&mut take, count), text(&mut take), text(&mut take))),
+            3 => recto_testpdf::Object::Dict(format!("<< /Fields [{}] >>", references(&mut take, count))),
+            4 => recto_testpdf::Object::Dict(format!("<< /DocMDP {} >>", reference(&mut take, count))),
+            5 => recto_testpdf::Object::Dict(format!("<< /Type /Page /Parent {} /MediaBox [0 0 {} {}] >>", reference(&mut take, count), take.pick(NUMBERS), take.pick(NUMBERS))),
+            9 => recto_testpdf::Object::Dict(format!(
+                "<< /FT {} /T {} /V {} /P {} /Kids {} >>",
+                take.pick(&["/Sig", "/Sig", "/Tx", "3 0 R"]),
+                text(&mut take),
+                reference(&mut take, count),
+                reference(&mut take, count),
+                if take.u8() % 2 == 0 { format!("[{}]", references(&mut take, count)) } else { reference(&mut take, count) }
+            )),
+            _ => match take.u8() % 3 {
+                0 => recto_testpdf::Object::Dict(format!("<< /Filter /Adobe.PPKLite /SubFilter /ETSI.CAdES.detached /Name {} /M {} /ByteRange [{} {} {} {}] >>", text(&mut take), text(&mut take), take.pick(NUMBERS), take.pick(NUMBERS), take.pick(NUMBERS), take.pick(NUMBERS))),
+                1 => recto_testpdf::Object::Stream { dict: format!("/Type /ObjStm /N {} /First {}", take.pick(NUMBERS), take.pick(NUMBERS)), data: take.pick(&[b"1 0 << >>".as_slice(), b"9 0 2 3 << /Kids [1 0 R] >>", b""]).to_vec() },
+                _ => recto_testpdf::Object::Dict(format!("[{}]", references(&mut take, count))),
+            },
+        };
+        objects.push(object);
+    }
+    recto_testpdf::build(&objects)
+}
+
+/// Text cleaning alone. Catches: a cut inside a character, or a text string that keeps what a reader can't see.
+pub fn check_text(data: &[u8]) {
+    assert_shown_text_is_clean("cleaned text", &clean_text(data));
+    assert_shown_text_is_clean("a cleaned line", &clean_line(&String::from_utf8_lossy(data)));
+}

@@ -23,8 +23,12 @@ pub struct Stored {
 }
 
 fn read(paths: &StatePaths) -> Option<Stored> {
-    let bytes = local::read_private_file(&paths.level, MAX_LEVEL_FILE).ok()??;
-    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    parse_stored(&local::read_private_file(&paths.level, MAX_LEVEL_FILE).ok()??)
+}
+
+/// What the file's bytes say, or nothing if they don't say a level plainly. Pure, so it can be fuzzed: `None` is what makes this fail closed.
+pub fn parse_stored(bytes: &[u8]) -> Option<Stored> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
     let level = Level::parse(value["level"].as_str()?)?;
     Some(Stored { level, set_at_ms: value["set_at_ms"].as_u64().unwrap_or(0) })
 }

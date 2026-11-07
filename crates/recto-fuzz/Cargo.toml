@@ -1,0 +1,22 @@
+[package]
+name = "recto-fuzz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Test-only, as recto-testpdf is: nothing that ships depends on this crate. No crates of its own, and libFuzzer stays in `fuzz/`, outside the workspace.
+[dependencies]
+recto-agent.workspace = true
+recto-control.workspace = true
+recto-core.workspace = true
+recto-index.workspace = true
+recto-platform.workspace = true
+recto-proto.workspace = true
+recto-render-service.workspace = true
+recto-session.workspace = true
+recto-testpdf.workspace = true
+serde_json.workspace = true

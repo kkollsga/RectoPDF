@@ -1,0 +1,225 @@
+//! What each target starts from. Generated here, or read from the benchmark folders by path where they exist: no third-party PDF goes in this repository. Everything still works without those folders, with less to start from.
+
+use crate::targets;
+use recto_agent::table::TABLE;
+use std::path::{Path, PathBuf};
+
+/// Where the owner's real PDFs are on this Mac.
+pub const PDF_FOLDERS: &[&str] = &["/Volumes/EksternalHome/Koding/Rust/distillPDF/tests/fixtures_pdf", "/Volumes/EksternalHome/Koding/Rust/distillPDF/benchmarking/bench100"];
+/// Largest real file used as a seed. Larger ones spend the time in streams nothing here reads.
+pub const MAX_SEED_BYTES: u64 = 256 * 1024;
+
+fn pdfs_under(folder: &Path, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(folder) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            pdfs_under(&path, found);
+        } else if path.extension().is_some_and(|extension| extension == "pdf") && entry.metadata().is_ok_and(|meta| meta.len() <= MAX_SEED_BYTES) {
+            found.push(path);
+        }
+    }
+}
+
+/// Real PDFs, smallest first, up to a count. Empty if the folders aren't there, as on CI.
+pub fn real_pdfs(most: usize) -> Vec<Vec<u8>> {
+    let mut paths = Vec::new();
+    for folder in PDF_FOLDERS {
+        pdfs_under(Path::new(folder), &mut paths);
+    }
+    paths.sort_by_key(|path| std::fs::metadata(path).map_or(u64::MAX, |meta| meta.len()));
+    paths.truncate(most);
+    paths.iter().filter_map(|path| std::fs::read(path).ok()).collect()
+}
+
+/// PDFs made here, with each structure the walks look at, whole, so mutation starts from what works.
+pub fn made_pdfs() -> Vec<Vec<u8>> {
+    use recto_testpdf::{Object, Page, build, pages, pages_with, text_lines};
+    let plain = pages(&[Page::new(text_lines(&["One line", "Another"])), Page::new(text_lines(&["Second page"]))]);
+    let outlined = build(&[
+        Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R /Names 8 0 R /Dests 11 0 R >>".into()),
+        Object::Dict("<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()),
+        Object::Dict("<< /Type /Outlines /First 6 0 R >>".into()),
+        Object::Dict("<< /Title (Named) /Dest (chapter) /Next 7 0 R /First 12 0 R >>".into()),
+        Object::Dict("<< /Title <FEFF00C6> /A << /S /GoTo /D [4 0 R /Fit] >> >>".into()),
+        Object::Dict("<< /Dests 9 0 R >>".into()),
+        Object::Dict("<< /Kids [10 0 R] >>".into()),
+        Object::Dict("<< /Limits [(a) (z)] /Names [(chapter) [3 0 R /Fit]] >>".into()),
+        Object::Dict("<< /legacy [4 0 R /Fit] >>".into()),
+        Object::Dict("<< /Title (Child) /Dest /legacy >>".into()),
+    ]);
+    let signed = build(&[
+        Object::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R /Perms << /DocMDP 6 0 R >> >>".into()),
+        Object::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()),
+        Object::Dict("<< /Fields [5 0 R 7 0 R] >>".into()),
+        Object::Dict("<< /FT /Sig /T (Sig1) /V 6 0 R /P 3 0 R >>".into()),
+        Object::Dict("<< /Filter /Adobe.PPKLite /SubFilter /ETSI.CAdES.detached /Name (Someone) /M (D:20260101) /ByteRange [0 10 20 30] >>".into()),
+        Object::Dict("<< /T (Parent) /FT /Sig /Kids [8 0 R] >>".into()),
+        Object::Dict("<< /T (Child) /P 3 0 R >>".into()),
+    ]);
+    let extras = pages_with(&[Page::new(recto_testpdf::busy_page())], "", vec![Object::Stream { dict: "/Type /ObjStm /N 1 /First 4".into(), data: b"9 0 << /A 1 >>".to_vec() }]);
+    vec![plain, outlined, signed, extras]
+}
+
+/// Bytes for the structure-building target. Any bytes make a PDF, and these make varied ones.
+pub fn tree_seeds() -> Vec<Vec<u8>> {
+    (0..16u8).map(|i| (0..512u32).map(|at| (u32::from(i) * 37 + at * 11) as u8).collect()).collect()
+}
+
+/// One real shape of each kind of bytes a worker sends.
+pub fn proto_seeds() -> Vec<Vec<u8>> {
+    use recto_proto::*;
+    let job = RenderJob { generation: 1, job_id: 2, page: 0, scale: 2.0, rect: TileRect { x: 512, y: 0, width: 1024, height: 512 }, stride: 4096, tile_edge: 512 };
+    let tile = TileReply { generation: 1, job_id: 2, width: 512, height: 512, stride: 2048, status: TileStatus::Done(TileKind::Blank { rgb: 0xFF_FFFF }), render_us: 9 };
+    let region = RegionReply { tile, kinds: vec![TileKind::Grey, TileKind::Colour, TileKind::Blank { rgb: 1 }] };
+    let text = TextReply { job_id: 3, page: 4, hidden_checked: true, chars: vec![CharRecord::new('a' as u32, CharRecord::NO_INK), CharRecord::new('b' as u32, 0)], boxes: vec![[1.0, 2.0, 3.0, 4.0], [4.0, 2.0, 5.0, 4.0]] };
+    let frames: Vec<Vec<u8>> = vec![
+        encode_hello(7),
+        encode_opened(12),
+        job.encode(),
+        tile.encode(),
+        region.encode(),
+        PageSize { job_id: 1, width: 612.0, height: 792.0 }.encode(),
+        PageTraits { job_id: 1, largest_image_pixels: 1 << 30 }.encode(),
+        TextJob { job_id: 1, page: 2, boxes: true, hidden_check: true }.encode(),
+        text.encode().expect("a small page"),
+        encode_failed(9, FailCode::TooLarge),
+    ];
+    let mut seeds = Vec::new();
+    for frame in &frames {
+        // Whole, down the channel, and each route's view of its payload.
+        seeds.push([&[0u8][..], frame].concat());
+        seeds.push([&[1u8, 0, 1, 0, 1, 0, 0, 2][..], &frame[HEADER_LEN..]].concat());
+        seeds.push([&[2u8][..], &frame[HEADER_LEN..]].concat());
+    }
+    seeds.push([&[0u8][..], &frames.concat()].concat());
+    seeds.push(vec![3; 32]);
+    seeds
+}
+
+/// Pages that read like text, and ones that don't.
+pub fn index_seeds() -> Vec<Vec<u8>> {
+    let mut seeds = Vec::new();
+    let body = |salt: u32| (0..360u32).map(move |at| (at.wrapping_mul(at).wrapping_mul(salt * 2 + 1).wrapping_add(at) >> 2) as u8);
+    for mode in [0u8, 2, 0xC0, 0xD0, 0xE0, 0xF0, 1, 0xD1] {
+        for salt in 0..4 {
+            seeds.push(std::iter::once(mode).chain(body(salt)).collect());
+        }
+    }
+    // One of each at the wire's cap: each takes a second or more, and more of them would be all a run does.
+    seeds.push(std::iter::once(0xFE).chain(body(1)).collect());
+    seeds.push(std::iter::once(0xFF).chain(body(1)).collect());
+    seeds
+}
+
+/// Steps of every kind, on documents of several lengths.
+pub fn sequence_seeds() -> Vec<Vec<u8>> {
+    let mut seeds = Vec::new();
+    for file_pages_choice in [0u8, 2, 4, 8] {
+        let mut seed = vec![file_pages_choice];
+        for op in 0..64u32 {
+            seed.extend_from_slice(&[(op % 3) as u8, (op * 5) as u8, (op % 4) as u8, 1, 0, 0, (op * 3) as u8, 0, 10]);
+        }
+        seeds.push(seed);
+    }
+    seeds
+}
+
+/// JSON lines for each command, and hostile forms of them.
+pub fn json_lines() -> Vec<String> {
+    let mut lines: Vec<String> = TABLE.iter().map(|spec| format!(r#"{{"cmd":"{}"}}"#, spec.tag)).collect();
+    lines.extend(
+        [
+            r#"{"cmd":"open","path":"/fuzz/p12.pdf","page":3}"#,
+            r#"{"cmd":"open","path":"/fuzz/p12.pdf","page":4294967295}"#,
+            r#"{"cmd":"tabs","from":4294967295,"limit":0}"#,
+            r##"{"cmd":"tap","tab":"#1"}"##,
+            r##"{"cmd":"goto","tab":"#99999999999999999999","page":1}"##,
+            r#"{"cmd":"goto","tab":"active","page":0}"#,
+            r#"{"cmd":"page_move","pages":"1-2","to":3}"#,
+            r#"{"cmd":"page_move","pages":"4294967295-1","to":4294967295}"#,
+            r#"{"cmd":"page_rotate","pages":"1","degrees":-2147483648}"#,
+            r#"{"cmd":"page_rotate","pages":"1-","degrees":90}"#,
+            r#"{"cmd":"page_delete","pages":"1-4294967295"}"#,
+            r#"{"cmd":"page_insert","path":"/fuzz/p200000.pdf","at":1}"#,
+            r#"{"cmd":"contents","depth":255,"from":0,"limit":4294967295}"#,
+            r#"{"cmd":"search","query":"","pages":"1-","limit":0}"#,
+            r#"{"cmd":"wait","condition":"tab_open","tab":"canary-in-a-line","timeout_ms":18446744073709551615}"#,
+            r#"{"cmd":"watch","events":["page_drawn","x"],"timeout_ms":0,"count":0}"#,
+            r#"{"cmd":"permission_request","level":"full","timeout_ms":1}"#,
+            r#"{"cmd":"log","last":4294967295}"#,
+            r#"{"cmd":"unknown","extra":[[[[[[{"a":1e999}]]]]]]}"#,
+        ]
+        .map(str::to_string),
+    );
+    lines
+}
+
+pub fn agent_seeds() -> Vec<Vec<u8>> {
+    let mut seeds = Vec::new();
+    for line in json_lines() {
+        seeds.push([&[0u8, 2][..], line.as_bytes()].concat());
+    }
+    for spec in TABLE {
+        for example in spec.examples {
+            let words: Vec<&str> = example.split(' ').skip(1).collect();
+            seeds.push([&[1u8, 0][..], words.join("\0").as_bytes()].concat());
+            // Mistyped flags, which is where the advice has to mend a line.
+            seeds.push([&[1u8, 0][..], words.join("\0").replace("--", "--x").as_bytes()].concat());
+        }
+    }
+    for grammar in ["1h", "90s", "5ms", "18446744073709551615h", "1-2", "4-", "page move", "#1", "active", "é"] {
+        seeds.push([&[2u8, 0][..], grammar.as_bytes()].concat());
+    }
+    for file in [r#"{"level":"control","set_at_ms":1}"#, r#"{"level":"full"}"#, r#"{"level":["full"]}"#, r#"{"level":"read_only","set_at_ms":-1}"#, "[", ""] {
+        seeds.push([&[3u8, 0][..], file.as_bytes()].concat());
+    }
+    seeds
+}
+
+pub fn control_seeds() -> Vec<Vec<u8>> {
+    let mut seeds: Vec<Vec<u8>> = json_lines().iter().map(|line| [&[0u8][..], line.as_bytes(), b"\n"].concat()).collect();
+    seeds.push([&[0u8][..], json_lines().join("\n").as_bytes(), b"\n"].concat());
+    seeds.push([&[0u8][..], &[b'\n'; 4096][..]].concat());
+    seeds.push([&[0u8][..], &vec![b'x'; 70 * 1024][..], b"\n"].concat());
+    seeds.push([&[3u8][..], b"{\"cmd\":\"tabs\"}\r\n \t\n{\"cmd\":\"sidebar\"}"].concat());
+    seeds
+}
+
+/// A target's starting points.
+pub fn for_target(name: &str) -> Vec<Vec<u8>> {
+    match name {
+        "pdf_bytes" => {
+            let mut seeds = made_pdfs();
+            seeds.extend(real_pdfs(usize::MAX));
+            seeds
+        }
+        "pdf_tree" => tree_seeds(),
+        "proto" => proto_seeds(),
+        "index" => index_seeds(),
+        "agent" => agent_seeds(),
+        "control" => control_seeds(),
+        "edits" => sequence_seeds(),
+        _ => Vec::new(),
+    }
+}
+
+/// Every target's name.
+pub const TARGET_NAMES: &[&str] = &["pdf_bytes", "pdf_tree", "proto", "index", "agent", "control", "edits"];
+
+/// The check a target runs, by name.
+pub fn check_for(name: &str) -> Option<fn(&[u8])> {
+    Some(match name {
+        "pdf_bytes" => targets::pdf::check_bytes,
+        "pdf_tree" => targets::pdf::check_tree,
+        "proto" => targets::proto::check,
+        "index" => targets::index::check,
+        "agent" => targets::agent::check,
+        "control" => targets::control::check,
+        "edits" => targets::edits::check,
+        _ => return None,
+    })
+}

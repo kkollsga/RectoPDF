@@ -1095,18 +1095,15 @@ impl Conn {
 
     /// The next whole line, if there is one and it isn't blank.
     fn next_line(&mut self) -> Option<Vec<u8>> {
-        loop {
-            let at = self.input.iter().position(|byte| *byte == b'\n')?;
-            let line: Vec<u8> = self.input.drain(..=at).collect();
+        let before = self.input.len();
+        let line = take_line(&mut self.input);
+        if self.input.len() != before {
             self.line_started = (!self.input.is_empty()).then(Instant::now);
-            if self.input.is_empty() && self.input.capacity() > 4096 {
-                self.input = Vec::new();
-            }
-            let trimmed = line.trim_ascii();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_vec());
-            }
         }
+        if self.input.is_empty() && self.input.capacity() > 4096 {
+            self.input = Vec::new();
+        }
+        line
     }
 
     /// Sends what it can without blocking. Returns how many bytes left the queue. A pipe that fails means the client has gone.
@@ -1142,6 +1139,24 @@ impl Conn {
         }
         flushed
     }
+}
+
+/// Takes the next line that isn't blank from what's arrived, with anything before it. It all goes in one step, because this runs on the one thread that watches every socket: taking blank lines off one at a time moved what was left each time, 48 ms of that thread for one read's 80 KiB of line ends.
+fn take_line(input: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let mut from = 0;
+    let mut found = None;
+    while let Some(offset) = input[from..].iter().position(|byte| *byte == b'\n') {
+        let line = input[from..from + offset].trim_ascii();
+        if !line.is_empty() {
+            found = Some(line.to_vec());
+        }
+        from += offset + 1;
+        if found.is_some() {
+            break;
+        }
+    }
+    input.drain(..from);
+    found
 }
 
 /// Runs one job, on its own thread. A panic comes back as an error for that one client.
@@ -1207,6 +1222,19 @@ fn internal() -> AgentError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: blank lines come off one at a time, moving all that's left after each, so a client sending nothing but line ends holds the one thread that answers everyone, and it costs the square of what's sent. 8 MiB of them would take many minutes that way, and the real input cap only makes that smaller, not different.
+    #[test]
+    fn blank_lines_go_in_one_pass() {
+        let mut input = vec![b'\n'; 8 * 1024 * 1024];
+        input.extend_from_slice(b" {\"cmd\":\"status\"} \r\n\n half a li");
+        let started = Instant::now();
+        assert_eq!(take_line(&mut input).as_deref(), Some(&b"{\"cmd\":\"status\"}"[..]));
+        assert_eq!(input, b"\n half a li");
+        assert_eq!(take_line(&mut input), None, "half a line isn't one yet");
+        assert_eq!(input, b" half a li", "and what's blank before it has gone");
+        assert!(started.elapsed() < Duration::from_secs(30), "took {:?}", started.elapsed());
+    }
 
     /// Failure: a watcher that keeps up slowly never gets to empty, so what it's already read stays in its buffer for as long as it watches, up to 24 hours.
     #[test]

@@ -3,16 +3,17 @@
 //! [`inspect`] opens a PDF, reads its facts and closes it again, so a tab holds no handle afterwards. Everything read
 //! here comes from an untrusted file: walks are bounded, cycles are refused, and text is cleaned before anyone sees it.
 
-use lopdf::{Dictionary, FileSource, IndexedReader, Object, ObjectId};
+use lopdf::{BytesSource, Dictionary, FileSource, IndexedReader, Object, ObjectId};
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::cell::Cell;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod signatures;
 
-pub use signatures::{MAX_FIELD_VISITS, MAX_SIGNATURES, SignatureEntry, SignatureInventory, SignatureState, signatures, signatures_within};
+pub use signatures::{MAX_FIELD_VISITS, MAX_SIGNATURES, SignatureEntry, SignatureInventory, SignatureState, signatures, signatures_in_bytes, signatures_within};
 
 /// Most contents entries kept for one document. A hostile file can't make the contents grow past this.
 pub const MAX_TOC_ENTRIES: usize = 100_000;
@@ -127,25 +128,43 @@ fn open_reader(path: &Path) -> Result<IndexedReader, OpenError> {
         return Err(OpenError::NotPdf);
     }
     let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
-    let reader = IndexedReader::open(source).map_err(|_| OpenError::NotPdf)?;
+    checked_reader(IndexedReader::open(source))
+}
+
+/// What every way of opening shares: a file that needs a password is refused here, whichever bytes it came from.
+fn checked_reader(opened: Result<IndexedReader, lopdf::IndexedReaderError>) -> Result<IndexedReader, OpenError> {
+    let reader = opened.map_err(|_| OpenError::NotPdf)?;
     if reader.is_encrypted() && !reader.is_authenticated() {
         return Err(OpenError::PasswordNeeded);
     }
     Ok(reader)
 }
 
+/// Opens bytes already in memory, the same way a file is opened.
+fn open_bytes(bytes: Arc<[u8]>) -> Result<IndexedReader, OpenError> {
+    checked_reader(IndexedReader::open(BytesSource::new(bytes)))
+}
+
 /// Opens a PDF lazily, reads its facts and closes it. No file handle stays open after this returns.
 pub fn inspect(path: &Path) -> Result<DocFacts, OpenError> {
-    let reader = open_reader(path)?;
+    read_facts(&open_reader(path)?)
+}
+
+/// [`inspect`] on bytes in memory. The same walk, so a fuzzer tests the real one, thousands of times a second and without writing a file for each.
+pub fn inspect_bytes(bytes: Arc<[u8]>) -> Result<DocFacts, OpenError> {
+    read_facts(&open_bytes(bytes)?)
+}
+
+fn read_facts(reader: &IndexedReader) -> Result<DocFacts, OpenError> {
     let page_count = reader.page_count().map_err(|_| OpenError::NotPdf)?;
     Ok(DocFacts {
         page_count: u32::try_from(page_count).map_err(|_| OpenError::NotPdf)?,
         byte_len: reader.source_len(),
         encrypted: reader.is_encrypted(),
         version: reader.version().into(),
-        title: read_title(&reader),
+        title: read_title(reader),
         // A damaged outline shouldn't stop a readable PDF from opening.
-        toc: read_toc(&reader).unwrap_or_default(),
+        toc: read_toc(reader).unwrap_or_default(),
         renderer_only: false,
     })
 }
@@ -178,7 +197,7 @@ fn read_toc(reader: &IndexedReader) -> Option<Toc> {
 
 fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
     let deadline = Instant::now() + limit;
-    let walk = NameWalk { visits_left: Cell::new(MAX_NAME_TREE_VISITS), deadline };
+    let walk = NameWalk { visits_left: Cell::new(MAX_NAME_TREE_VISITS), cut_short: Cell::new(false), deadline };
     let root = reader.trailer_entry_owned(b"Root").ok()??;
     let root = root.as_dict().ok()?;
     let outlines = deref(reader, root.get(b"Outlines").ok()?)?;
@@ -234,12 +253,14 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
             stack.push((child, index, depth + 1));
         }
     }
-    Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated: truncated || walk.visits_left.get() == 0 })
+    Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated: truncated || walk.visits_left.get() == 0 || walk.cut_short.get() })
 }
 
 /// What's left for following named destinations, shared across the whole outline.
 struct NameWalk {
     visits_left: Cell<usize>,
+    /// Children were left out of a walk, because there were more waiting than visits left to reach them.
+    cut_short: Cell<bool>,
     deadline: Instant,
 }
 
@@ -296,9 +317,15 @@ fn page_of_dest(reader: &IndexedReader, root: &Dictionary, dest: &Object, pages:
 }
 
 fn find_in_name_tree(reader: &IndexedReader, root: &Object, wanted: &[u8], walk: &NameWalk) -> Option<Object> {
-    // Children wait here unresolved, so a wide node costs its array and no reads until they're each reached.
+    // Children wait here unresolved, so a wide node costs its array and no reads until they're each reached. Never more wait than can still be visited, and a node is visited once, because a tree that lists itself otherwise adds its whole width on every visit: 394 KB of file held past 1 GiB within the 5 s limit.
     let mut stack = vec![root.clone()];
+    let mut seen: HashSet<ObjectId> = HashSet::new();
     while let Some(node) = stack.pop() {
+        if let Object::Reference(id) = &node
+            && !seen.insert(*id)
+        {
+            continue;
+        }
         if !walk.may_visit() {
             return None;
         }
@@ -318,7 +345,9 @@ fn find_in_name_tree(reader: &IndexedReader, root: &Object, wanted: &[u8], walk:
             }
         }
         if let Ok(kids) = dict.get(b"Kids").and_then(Object::as_array) {
-            stack.extend(kids.iter().take(walk.visits_left.get()).cloned());
+            let room = walk.visits_left.get().saturating_sub(stack.len());
+            walk.cut_short.set(walk.cut_short.get() || kids.len() > room);
+            stack.extend(kids.iter().take(room).cloned());
         }
     }
     None
@@ -404,10 +433,10 @@ mod tests {
     /// Failure: reading contents has no bound on time, so a slow file holds `open` for as long as it likes. It must stop, keep what it has, and say so.
     #[test]
     fn contents_stop_at_their_time_limit_and_say_so() {
-        let walk = NameWalk { visits_left: Cell::new(3), deadline: Instant::now() + Duration::from_secs(60) };
+        let walk = NameWalk { visits_left: Cell::new(3), cut_short: Cell::new(false), deadline: Instant::now() + Duration::from_secs(60) };
         assert!(walk.may_visit() && walk.may_visit() && walk.may_visit());
         assert!(!walk.may_visit(), "out of visits");
-        let late = NameWalk { visits_left: Cell::new(3), deadline: Instant::now() };
+        let late = NameWalk { visits_left: Cell::new(3), cut_short: Cell::new(false), deadline: Instant::now() };
         assert!(!late.may_visit(), "out of time");
     }
 
