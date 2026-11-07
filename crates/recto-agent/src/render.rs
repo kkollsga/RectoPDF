@@ -5,7 +5,7 @@ use crate::{AgentError, exit};
 use recto_index::{hidden_report, read_page};
 use recto_proto::{BYTES_PER_PIXEL, TileKind};
 use recto_render_service::{
-    BUDGET_MAX_TIME, BudgetOptions, DocRenderer, DrawStrategy, ExportRefusal, OutputCaps, PageDrawn, PageEvent, Policy, RenderFailure, ServiceConfig, ViewportOptions, draw_whole_page, measure_budget, measure_viewport,
+    BUDGET_MAX_TIME, BudgetOptions, DocRenderer, DrawStrategy, ExportRefusal, OutputCaps, PageDrawn, PageEvent, Policy, RenderFailure, ServiceConfig, ViewportOptions, draw_whole_page, largest_scale_that_fits, measure_budget, measure_viewport,
 };
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
@@ -131,7 +131,10 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     let policy = Policy::default();
     let limit = policy.heavy_limit_bytes;
     let mut doc = DocRenderer::new(path, None, config, policy)?;
-    let (temp, drawn, kind) = write_page(&mut doc, page, scale, out, caps, limit).map_err(|error| with_time_taken(error, started))?;
+    let (temp, drawn, kind) = write_page(&mut doc, page, scale, out, caps, limit).map_err(|error| {
+        let error = if error.code == "too_large_at_this_scale" { naming_the_largest_scale(error, &mut doc, page, scale, caps) } else { error };
+        with_time_taken(error, started)
+    })?;
     publish(&temp.path, out, |from, to| std::fs::hard_link(from, to))?;
     drop(temp);
     Ok(json!({
@@ -144,6 +147,24 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
         "bytes": std::fs::metadata(out).map(|meta| meta.len()).ok(),
         "kind": kind,
     }))
+}
+
+/// Says the largest scale that fits this page, from its size and the caps, so an agent doesn't try 8, 4, 2 and 1 by hand. It's about size alone, and a heavy page can still be refused for memory, in words of its own.
+fn naming_the_largest_scale(mut error: AgentError, doc: &mut DocRenderer, page: u32, scale: f32, caps: &OutputCaps) -> AgentError {
+    let Ok((width, height)) = doc.page_size(page) else { return error };
+    error.message = format!("Page {} is {width} x {height} points, too large to draw at {scale}x: a picture is at most {} Mpx.", page + 1, caps.max_pixels / 1_000_000);
+    match largest_scale_that_fits(width, height, caps) {
+        Some(most) => {
+            error.message.push_str(&format!(" The largest scale that fits is {most}."));
+            error.next = format!("Use `--scale {most}` or less. A page with heavy images can still be refused for memory, and that refusal says so.");
+            error.candidates = vec![format!("--scale {most}")];
+        }
+        None => {
+            error.message.push_str(" No scale fits.");
+            error.next = "Tell the user this page can't be drawn.".to_string();
+        }
+    }
+    error
 }
 
 /// Writes the page to a new temp file, as an export: sharp or not at all, and any failure takes the temp file with it. Returns the file, ready to publish. Can sleep waiting for the larger
@@ -531,6 +552,27 @@ mod tests {
         assert_eq!(render(&file.0, 1, 64.0, &out).unwrap_err().code, "too_large_at_this_scale", "wider than a strip can be");
         assert!(started.elapsed() < Duration::from_secs(30), "it should refuse from the size alone");
         assert!(!out.exists());
+    }
+
+    /// Failure: "too large at this zoom" leaves an agent trying 8, 4, 2, 1 by hand. It names the largest scale that fits, and that scale really draws, on a page the size of the USGS map that an agent did this on, under a cap that makes it quick to check.
+    #[test]
+    fn too_large_names_the_largest_scale_that_draws() {
+        let file = TempPdf::new("map.pdf", &pages(&[Page { content: text_lines(&["A map"]), page_extra: String::new(), media: (2232.0, 2016.0) }]));
+        let out = file.0.with_file_name("map.png");
+        let caps = OutputCaps { max_pixels: 400_000, ..OutputCaps::default() };
+        let refused = render_with_caps(&file.0, 1, 8.0, &out, &caps).unwrap_err();
+        assert_eq!(refused.code, "too_large_at_this_scale");
+        assert!(refused.message.contains("2232 x 2016"), "it says why: {}", refused.message);
+        let named: f32 = refused.candidates[0].strip_prefix("--scale ").unwrap().parse().unwrap();
+        assert!(refused.message.contains(&named.to_string()) && refused.next.contains(&format!("--scale {named}")), "{} {}", refused.message, refused.next);
+        let drawn = render_with_caps(&file.0, 1, named, &out, &caps).unwrap();
+        assert!(drawn["width"].as_u64().unwrap() * drawn["height"].as_u64().unwrap() <= caps.max_pixels, "{drawn}");
+        std::fs::remove_file(&out).unwrap();
+        let next_up = render_with_caps(&file.0, 1, named + 0.02, &out, &caps).unwrap_err();
+        assert_eq!(next_up.code, "too_large_at_this_scale", "it's the edge, not somewhere well under it");
+        assert!(!out.exists());
+        // At the real caps: the map's own size, from the failure an agent met. 8 is refused and what it names is at least the 4 that worked.
+        assert!(largest_scale_that_fits(2232.0, 2016.0, &OutputCaps::default()).is_some_and(|most| (4.0..8.0).contains(&most)));
     }
 
     /// Failure: a refusal tells an agent to try a smaller scale on a page where that can't work, so it tries each one in turn: `form_bomb` fails the same at 0.25. The suggestion needs a picture that's a real share of the limit, and a scale with somewhere to go.
