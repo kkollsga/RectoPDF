@@ -1145,7 +1145,7 @@ impl Walk {
         let (mut left, mut right, mut bottom, mut top) = (x, x, y, y);
         // SAFETY: the text page is live, the index came from its count, and the out-pointers are live for the call. On failure they stay at the origin.
         unsafe { (self.api.FPDFText_GetCharBox)(self.text_page, index as c_int, &raw mut left, &raw mut right, &raw mut bottom, &raw mut top) };
-        Area { left, bottom, right, top }.meets(self.view)
+        char_box_in_view(Area { left, bottom, right, top }, (x, y), self.view)
     }
 
     fn all_chars_of(&mut self, object: FPDF_PAGEOBJECT) -> Vec<(u32, f64, f64, u32)> {
@@ -2092,6 +2092,11 @@ impl Walk {
 }
 
 
+/// Whether a character belongs in a box. Its box can be plainly wrong, as a big bracket's in a TeX font is, and if that alone decided, the character would go and the rest of its text would pass as complete, with a gap in it. So one starting inside stays, and it's then for the glyph check to deal with.
+fn char_box_in_view(char_box: Area, origin: (f64, f64), view: Area) -> bool {
+    char_box.meets(view) || (origin.0 >= view.left && origin.0 <= view.right && origin.1 >= view.bottom && origin.1 <= view.top)
+}
+
 /// Whether an ICC profile's description says sRGB. It's only what it says, and a file lying about it only changes its own colours.
 fn icc_says_srgb(profile: &[u8]) -> bool {
     let word = |at: usize| profile.get(at..at + 4).map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize);
@@ -2315,6 +2320,17 @@ mod tests {
         assert!(!shape(&hole), "a second shape");
         let star = [(SEG_MOVE, 0.0, 0.0), (SEG_LINE, 10.0, 10.0), (SEG_LINE, 10.0, 0.0), (SEG_LINE, 0.0, 10.0), (SEG_LINE, 0.0, 0.0)];
         assert!(!shape(&star), "a shape crossing itself");
+    }
+
+    /// Failure: a character whose box PDFium has wrong is cut from a box it's plainly in, and the rest of its text then passes as whole. An equation's big brackets went missing this way, with nothing said.
+    #[test]
+    fn a_character_with_a_wrong_box_stays_if_it_starts_inside() {
+        let view = Area { left: 100.0, bottom: 100.0, right: 200.0, top: 200.0 };
+        let far = Area { left: 500.0, bottom: 500.0, right: 510.0, top: 510.0 };
+        assert!(char_box_in_view(far, (150.0, 150.0), view), "starting inside, whatever its box says");
+        assert!(!char_box_in_view(far, (500.0, 500.0), view), "and one wholly outside goes");
+        assert!(char_box_in_view(Area { left: 195.0, bottom: 150.0, right: 205.0, top: 160.0 }, (195.0, 150.0), view), "crossing the edge stays");
+        assert!(char_box_in_view(Area { left: 90.0, bottom: 150.0, right: 105.0, top: 160.0 }, (90.0, 150.0), view), "starting outside and reaching in stays");
     }
 
     /// Failure: a wide-gamut photo reads as sRGB and passes through, so its colours come out wrong, or a real sRGB profile doesn't and every such photo loses its original bytes. Hostile lengths in a profile mustn't panic.
