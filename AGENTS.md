@@ -70,3 +70,4 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "I think option 4 is the best one, dont modify the bad toc, but offer a generated toc using distillpdf".
 - "To save horizontal space the scrollbar can stop below the agent icon. Add an option in the macos top bar to turn off agent bar (hides the icon), enable + - and command - scroll for zooming".
 - "And select text should work natively".
+- "For rectopdf we need a update feature similar to what we added to seedwell. Can you have a look and implement a similar handsoff system? For us we can add a check for updates button in the top bar, that turns into a update to… button if new version has been released. App settings should have a auto update toggle, and we check for updates once per day. It's crucial that app state is perfectly recovered before and after update".

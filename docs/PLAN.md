@@ -111,7 +111,10 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Find in the sidebar, with the hit list
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
 - [ ] ⌘K
-- [ ] Session restore, recent files, replaced-file handling, password prompt
+- [ ] Session restore: the whole app state on every launch, unsaved edits included (SPEC decision 23)
+- [ ] Recent files, replaced-file handling, password prompt
+- [ ] Settings window (⌘,), starting with *Update automatically*
+- [ ] Update check: *Check for Updates…* in the RectoPDF menu, *Update to X.Y.Z…* when one is found, once a day (SPEC decision 24)
 - [ ] Links, back and forward, page labels
 - [ ] Click to copy an image losslessly
 - [ ] Snapshot tool with text, PNG, JPG and the hand-rolled streaming `recto-svg`
@@ -183,7 +186,8 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] Fuzz `recto_index::corpus`'s reader with damaged files on disk, as for every parser
 - [ ] Test line order on a real right-to-left PDF (none among the 454 in distillPDF)
 - [ ] 24-hour soak, flat memory
-- [ ] Developer ID signing and notarization, installer, update check
+- [ ] Developer ID signing and notarization, release workflow, installer that checks checksum, team and Gatekeeper, and goes back to the previous app if the new one fails
+- [ ] A real signed update end to end, state compared before and after (needs the signing secrets on this repo)
 - [ ] Licences and notices for PDFium, Tesseract and the rest
 - [ ] Privacy statement and first-run wording
 - [ ] Final budget report against every line of `SPEC.md` §2
