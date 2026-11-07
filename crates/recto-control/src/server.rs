@@ -1136,6 +1136,26 @@ fn internal() -> AgentError {
 mod tests {
     use super::*;
 
+    /// Failure: a watcher that keeps up slowly never gets to empty, so what it's already read stays in its buffer for as long as it watches, up to 24 hours.
+    #[test]
+    fn a_slow_readers_buffer_doesnt_keep_what_its_read() {
+        let (ours, theirs) = Stream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        theirs.set_nonblocking(true).unwrap();
+        let now = Instant::now();
+        let mut conn = Conn { id: 1, stream: ours, state: State::Idle, input: Vec::new(), line_started: None, output: vec![b'x'; 2 * 1024 * 1024], sent: 0, output_since: now, last_activity: now, input_closed: false, closing: false, gone: false, overflow: false };
+        let mut chunk = vec![0u8; 64 * 1024];
+        let mut moved = 0;
+        // It reads a bit, and never catches up, so the buffer never gets to empty.
+        while conn.has_output() && moved < 512 {
+            let flushed = conn.flush();
+            moved += usize::from(flushed > 0);
+            assert!(conn.sent <= MAX_SENT_KEPT, "{} bytes already read are still held", conn.sent);
+            let _ = (&theirs).read(&mut chunk);
+        }
+        assert!(!conn.has_output() || conn.output.len() < 2 * 1024 * 1024, "nothing moved");
+    }
+
     /// Failure: a field added carelessly raises the cost of every client that's waiting.
     #[test]
     fn a_connection_stays_small() {
