@@ -61,7 +61,7 @@ fast because everything is rebuilt from disk.
   writes files. *Rejected:* upstream lopdf, which has no indexed reader; PDFium's writer, which would be a second writer.
 - **Agreement gate:** when the two parsers disagree about a file, it stays readable but saving and signing turn off.
 
-**distillPDF is parked** (owner, 2026-11-06). Its Tesseract and invisible-text approach is reused for OCR without depending on it.
+**distillPDF was parked** (owner, 2026-11-06) and is back in work for the agent's text (owner, 2026-11-07: "Spin up agents to do the distillpdf work, they need to test to ensure no regressions"). RectoPDF doesn't depend on it yet. Find and highlights stay on PDFium, because they must line up with the page on screen.
 
 **Pages reach the screen** as `CALayer`s holding IOSurface tiles, 512 px, zero copy, off-screen tiles purgeable. See the platform report, §2.
 
