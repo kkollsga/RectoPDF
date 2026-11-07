@@ -184,6 +184,8 @@ impl Shared {
                     inner.failures.push_back((job.key, report["code"].as_str().unwrap_or("unknown").to_string(), Instant::now()));
                 }
             }
+            // However it ended. A helper that stopped before it got as far as a build, cancelled or finding its file changed, made nothing room for.
+            let _ = corpus::evict(&self.root, &self.limits, Some(job.key));
             self.tell(Event::new("indexing_finished", json!({ "corpus": job.key.short(), "state": state, "code": report["code"], "pages": report["pages"] })));
         }
     }
@@ -501,6 +503,39 @@ mod tests {
         by_size.note_asked();
         wait_until_gone(old);
         assert!(root.join(recent.hex()).exists(), "the most recently used goes last");
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// Failure: a run that ends without a build, being cancelled or finding its file changed, doesn't look at the limits, so the total stays over them, though the rule is "however it ended".
+    #[test]
+    fn a_run_that_ends_any_way_makes_room() {
+        struct Changed;
+        impl Runner for Changed {
+            fn run(&self, _job: &IndexJob, _root: &Path, _started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
+                json!({ "state": "changed" })
+            }
+        }
+        let temp = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-any-way-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        recto_platform::local::ensure_private_dir(&temp).unwrap();
+        let root = temp.join("corpus.noindex");
+        corpus::build(&root, key(1), &mut OnePage, &corpus::DocMeta::default(), &BuildLimits::default()).unwrap();
+        let indexer = Indexer::with_limits(&root, Box::new(Changed), BuildLimits::default());
+        // Past the first sweep, with room to spare, so it's the run's own look that matters.
+        indexer.ask(job(2));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while indexer.0.lock().working && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(root.join(key(1).hex()).exists());
+        let tight = Indexer::with_limits(&root, Box::new(Changed), BuildLimits { max_total_bytes: 1, ..BuildLimits::default() });
+        tight.0.lock().sweep_due = false;
+        tight.ask(job(2));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while root.join(key(1).hex()).exists() {
+            assert!(Instant::now() < deadline, "a run that ended with no build left the total over its limit");
+            std::thread::yield_now();
+        }
         let _ = std::fs::remove_dir_all(&temp);
     }
 
