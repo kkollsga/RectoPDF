@@ -867,13 +867,17 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// The same, for closing this tab: what becomes active next.
-    pub fn wake_for_close(&self, id: TabId) -> Option<(TabId, PathBuf)> {
+    pub fn wake_for_close(&mut self, id: TabId) -> Option<(TabId, PathBuf)> {
         if self.active != Some(id) {
             return None;
         }
         let index = self.tabs.iter().position(|tab| tab.id == id)?;
         let next = self.tabs.get(index + 1).or_else(|| index.checked_sub(1).and_then(|before| self.tabs.get(before)))?;
-        self.file_to_wake(next.id)
+        let file = self.file_to_wake(next.id)?;
+        if self.wake_from_sleep_file(file.0) {
+            return None;
+        }
+        Some(file)
     }
 
     fn file_to_wake(&self, id: TabId) -> Option<(TabId, PathBuf)> {

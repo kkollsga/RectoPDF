@@ -129,11 +129,13 @@ impl Inner {
             let list = self.host.session.with_session(|session| session.list_to_sleep(id));
             // Compacted, and read back. If that doesn't say it's all there, the list stays in memory, and it's looked at again next time it's left alone.
             let settled = list.is_none_or(|(name, header, base)| self.saver.store.settle_list(&name, &header, &base));
+            // If it's not gone, it's looked at again next time it's been left alone, and not till then.
             let went = self.host.session.with_session(|session| {
-                if settled { session.go_dormant(id) } else {
+                let went = settled && session.go_dormant(id);
+                if !went {
                     session.touch(id);
-                    false
                 }
+                went
             });
             gone += usize::from(went);
         }
@@ -152,8 +154,18 @@ impl Inner {
     pub(crate) fn write_sleep_for(&self, id: TabId) {
         let Some((path, sleep)) = self.host.session.with_session(|session| session.sleep_facts(id)) else { return };
         let Some(material) = self.engine.sleep_material(id.0) else { return };
-        let sleep = with_material(sleep, material);
-        let bytes = self.saver.store.write_sleep(&path, &sleep);
+        self.write_with_material(&path, sleep, material);
+    }
+
+    /// A sleep file from what's known and what's on hand. With no pictures to hand, as with a closed window or what the system's taken, what's there already stands, if it's about the same list.
+    fn write_with_material(&self, path: &std::path::Path, sleep: SleepFile, material: SleepMaterial) {
+        let mut sleep = with_material(sleep, material);
+        if sleep.pictures.is_empty()
+            && let Some(there) = self.saver.store.read_sleep(sleep.file, path).filter(|there| there.list_seq == sleep.list_seq && there.pages == sleep.pages)
+        {
+            sleep.pictures = there.pictures;
+        }
+        let bytes = self.saver.store.write_sleep(path, &sleep);
         if bytes > 0 {
             self.sleeper.counts.sleep_files.fetch_add(1, Ordering::Relaxed);
             self.sleeper.counts.sleep_bytes.fetch_add(bytes, Ordering::Relaxed);
@@ -169,11 +181,7 @@ impl Inner {
     /// And their sleep files, once the tab that's asked for is on its way to the screen.
     pub(crate) fn write_those_leaving(&self, left: Vec<(TabId, std::path::PathBuf, SleepFile, SleepMaterial)>) {
         for (_, path, sleep, material) in left {
-            let bytes = self.saver.store.write_sleep(&path, &with_material(sleep, material));
-            if bytes > 0 {
-                self.sleeper.counts.sleep_files.fetch_add(1, Ordering::Relaxed);
-                self.sleeper.counts.sleep_bytes.fetch_add(bytes, Ordering::Relaxed);
-            }
+            self.write_with_material(&path, sleep, material);
         }
     }
 

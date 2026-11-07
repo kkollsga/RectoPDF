@@ -314,7 +314,10 @@ impl Measured {
         let settled = began.elapsed();
         let state = self.state()?;
         let ms = |duration: Duration| round(duration.as_secs_f64() * 1000.0);
+        // From being told to the new window going up with the place on it, however sharp: what someone sees of an update. The old one's gone, and then the new one's own time to its first showing, as it says.
+        let first_frame = ms(ended) + state["record"]["first_shown"]["ms_from_start"].as_f64().unwrap_or(0.0);
         Ok(json!({
+            "gap_to_first_frame_ms": round(first_frame),
             "flush_and_read_back_ms": round(flushed["total_us"].as_f64().unwrap_or(0.0) / 1000.0),
             "told_ms": ms(told),
             "old_app_gone_ms": ms(ended),
@@ -613,14 +616,17 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     run.drive("owner_edit", "rotate:1")?;
     run.settled()?;
     let mut gaps = Vec::new();
+    let mut first_frames = Vec::new();
     let mut last_gap = Value::Null;
     for _ in 0..runs.min(11) {
         let gap = run.hand_off_and_relaunch(&app)?;
         gaps.push(gap["gap_to_page_drawn_ms"].as_f64().unwrap_or(0.0));
+        first_frames.push(gap["gap_to_first_frame_ms"].as_f64().unwrap_or(0.0));
         last_gap = gap;
     }
     gaps.sort_by(f64::total_cmp);
-    report["hand_off_gap"] = json!({ "runs": gaps.len(), "p50_ms": round(percentile(&gaps, 0.5)), "worst_ms": round(percentile(&gaps, 1.0)), "last": last_gap, "note": "From telling the old app, through its flush and quit, the new app's start and restore, to the page settled. A process launch here, from a folder on this Mac, so it doesn't include LaunchServices or Gatekeeper." });
+    first_frames.sort_by(f64::total_cmp);
+    report["hand_off_gap"] = json!({ "runs": gaps.len(), "p50_ms": round(percentile(&gaps, 0.5)), "worst_ms": round(percentile(&gaps, 1.0)), "first_frame_p50_ms": round(percentile(&first_frames, 0.5)), "first_frame_worst_ms": round(percentile(&first_frames, 1.0)), "last": last_gap, "note": "From telling the old app, through its flush and quit, the new app's start and restore, to the page settled. A process launch here, from a folder on this Mac, so it doesn't include LaunchServices or Gatekeeper." });
     // Bytes: nothing at rest, a line for a burst of edits, as the process's own counter says.
     let written = |pid: u32| recto_platform::local::process_counters(pid).map_or(0, |counters| counters.disk_bytes_written);
     let _ = Command::new("/bin/sync").status();

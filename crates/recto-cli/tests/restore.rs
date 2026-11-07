@@ -188,6 +188,7 @@ fn general(path: &str) -> String {
 
 /// What's allowed to differ across a restart, and why. It's short on purpose: anything else that differs is a bug, or goes here with its reason.
 const EXCEPTIONS: &[(&str, &str)] = &[
+    ("reader.last_wake", "How long a wake took, and that this one was from a sleep file: about this launch."),
     ("memory.", "A new process's memory, threads and handles are its own: budgets, not state."),
     ("hangs.", "Its own stalls, counted from its own start."),
     ("record.", "How many writes it's made and what its first frame was: it's the record of the restore itself."),
@@ -554,7 +555,7 @@ fn the_first_frame_is_the_right_one() {
     run.settled();
     let shown = run.report()["record"]["first_shown"].clone();
     assert_eq!(shown["home"], false, "{shown}");
-    assert_eq!(shown["settled"], true, "the page was drawn before it showed: {shown}");
+    // Something on the page, from its sleep file if nothing else: a window doesn't wait for sharp tiles, which on a heavy page is most of a second.
     assert!(shown["tile_layers"].as_u64().unwrap() > 0, "{shown}");
     assert_eq!(shown["page"], before["reader"]["page"]);
     assert!((shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 0.25, "{shown} {}", before["reader"]);
@@ -698,6 +699,49 @@ fn a_tab_left_alone_goes_dormant_and_wakes_from_its_file() {
     run.ok(&["undo"]);
     assert_eq!(run.ok(&["edits"])["edited"], false, "and its history works");
     run.ok(&["redo"]);
+}
+
+/// Failure (every crash point of going dormant): a list that's gone to disk is lost or changed by a kill, or a hand-off's read-back fails on it, or says it's fine when its journal isn't there. It's the journal that holds it, so each comes back exactly, and a hand-off with one asleep goes through and comes back the same.
+#[test]
+fn a_dormant_tabs_edits_survive_a_kill_and_a_hand_off() {
+    let state = State::at(Level::Full);
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (asleep, showing) = (text_document(&folder, "asleep.pdf", 8), text_document(&folder, "showing.pdf", 3));
+    run.ok(&["open", asleep.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "delete:2"]);
+    run.ok(&["qa", "owner-edit", "rotate:1"]);
+    run.ok(&["qa", "owner-edit", "undo"]);
+    run.settled();
+    run.ok(&["open", showing.to_str().unwrap()]);
+    run.settled();
+    let tab = tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with("asleep.pdf")).unwrap()["id"].as_u64().unwrap();
+    let lists = run.report()["session"]["edits_full"].clone();
+    let slept = run.ok(&["session", "sleep", "--tab", &format!("#{tab}")]);
+    assert_eq!((&slept["dormant"], &slept["list_asleep"]), (&json!(true), &json!(true)), "{slept}");
+    assert_eq!(run.report()["session"]["edits_full"], lists, "read from its journal, it's what was in memory");
+    // A kill, with it asleep.
+    run.kill();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    assert_eq!(run.report()["session"]["edits_full"], lists, "after a kill");
+    // A hand-off, with it asleep, as a launch has left it.
+    let summary = tabs_of(&run.report()).iter().find(|tab_now| tab_now["id"] == tab).unwrap()["edits"].clone();
+    let handed = run.hand_off();
+    assert!(handed.get("error").is_none(), "{handed}");
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    assert_eq!(run.report()["session"]["edits_full"], lists, "after a hand-off");
+    assert_eq!(tabs_of(&run.report()).iter().find(|tab_now| tab_now["id"] == tab).unwrap()["edits"], summary);
+    // Woken, it does what it did.
+    run.ok(&["tap", &format!("#{tab}")]);
+    run.settled();
+    assert_eq!(run.ok(&["edits"])["pages"], 7);
+    assert_eq!(run.ok(&["edits"])["can_redo"], true);
+    run.ok(&["undo"]);
+    assert_eq!(run.ok(&["edits"])["pages"], 8);
 }
 
 /// Failure: a sleep file's believed when it's been tampered with, or about a file that's since changed, so a tab wakes to a stranger's contents and pictures; or a bad one stops it opening. It's thrown away, and the tab reads its PDF, as if there'd been none.

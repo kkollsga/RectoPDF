@@ -122,6 +122,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Find's field, edit mode and view rotation draw what the state record already carries
 - [x] Deep sleep, with session restore as one piece of work (SPEC decision 25): dormant tabs go to disk, sleep files wake a tab within one frame, a byte budget across documents, a response to memory pressure, previews written once when a tab goes dormant
 - [ ] Sleep, from its own review: a page that's a sliver at the top of the view has no picture if it wasn't drawn when the tab was left, and shows bare for a moment
+- [ ] Sleep: a tab woken on another paper than it was left on has no picture for it, so its pages show paper alone until they're drawn
 - [ ] Sleep: a tab's journal is read back whole when it wakes, so a list near its 64 MiB would be a long read with the session held. Nothing here's got near that, so it's not measured
 - [ ] Recent files, replaced-file handling, password prompt
 - [ ] Settings window (⌘,), starting with *Update automatically*
