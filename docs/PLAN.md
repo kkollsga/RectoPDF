@@ -1,6 +1,6 @@
 # RectoPDF: plan to first release
 
-Last updated 2026-11-06. Behaviour is in `SPEC.md`, and the reasons behind it are in `docs/research/`.
+Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it are in `docs/research/`.
 
 ## Where we are
 
@@ -44,8 +44,8 @@ The goal: an agent can do everything headless, as you'd expect from the finished
 - [x] One command API: versioned JSON, fixed exit codes, selectors that never guess
 - [x] Tabs, tiers, sidebar model, tap rule: 1,000 tabs of a 330 MiB PDF add 1.4 MiB
 - [x] Page-edit list with undo
-- [ ] Page-edit commands: move, rotate, delete, insert, undo, redo
-- [ ] Signature report command (placeholder: present, not checked)
+- [x] Page-edit commands: move, rotate, delete, insert, undo, redo
+- [x] Signature report command (placeholder: present, not checked)
 
 **Renderer**
 - [x] PDFium in a killable worker: memory limit with the 512 MiB, 1 GiB, lower-resolution sequence, per-page deadline, retirement at 64 MiB
@@ -55,12 +55,12 @@ The goal: an agent can do everything headless, as you'd expect from the finished
 - [x] Heavy image pages drawn in one pass per region, not one per tile: USGS map first view 2.1 s to 0.53 s
 
 **The real agent interface**
-- [ ] `recto` as a client of a long-running session on a local socket (owner-only, no network)
-- [ ] Permission levels enforced for real: Off, Read-only, Control, Full, with the one command that asks for more
-- [ ] `recto wait` and `recto watch`, so agents never poll
-- [ ] Activity log of every agent action
-- [ ] Generated `SKILL.md` and `REFERENCE.md`, and `recto skill install`
-- [ ] Human-readable output by default, and `--json` on every command
+- [x] `recto` as a client of a long-running session on a local socket (owner-only, no network)
+- [x] Permission levels enforced for real: Off, Read-only, Control, Full, with the one command that asks for more
+- [x] `recto wait` and `recto watch`, so agents never poll
+- [x] Activity log of every agent action
+- [x] Generated `SKILL.md` and `REFERENCE.md`, and `recto skill install`
+- [x] Human-readable output by default, and `--json` on every command
 - [ ] **Blind agent test, round 1:** fresh agents with a one-line hint do real tasks and rate the CLI
 
 **Done when:** fresh agents complete the tasks with no help beyond the skill, rate it 8 or more, and memory budgets hold with 200 tabs of your largest PDFs.

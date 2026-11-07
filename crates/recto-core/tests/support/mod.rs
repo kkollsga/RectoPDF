@@ -46,5 +46,9 @@ impl TempPdf {
 impl Drop for TempPdf {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+        // The folder is shared within a test binary's process, so this only removes it once it's empty.
+        if let Some(dir) = self.0.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
     }
 }

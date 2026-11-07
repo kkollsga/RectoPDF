@@ -90,7 +90,7 @@ Reference: `docs/concepts/`. Rules from the owner:
 - Tools limited to `Read` and `Grep` over a per-document folder, in a fully locked-down run. Never `Bash(rg ...)`: `rg --pre` executes text
   that comes from the PDF. Exact arguments: agent report, §1.
 - `recto` CLI on a local socket with levels Off, Read-only, Control and Full (*default:* Off). Signing needs a human gesture and is never
-  reachable by an agent.
+  reachable by an agent. Until the app's settings exist, the user sets the level with `recto permission set <level>` at a real terminal.
 - [DECIDE] Whether a public release waits for Anthropic's written answer on subscription use. *Default:* yes, with an API-key route too.
 
 ## 6. Scope: everything in one build

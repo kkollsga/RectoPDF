@@ -34,7 +34,7 @@ struct Fake;
 
 impl DocLoader for Fake {
     fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
-        Ok(DocFacts { page_count: 1000, byte_len: 1 << 30, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default() })
+        Ok(DocFacts { page_count: 1000, byte_len: 1 << 30, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
     }
 }
 

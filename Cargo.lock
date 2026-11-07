@@ -390,6 +390,7 @@ dependencies = [
  "recto-proto",
  "recto-render-service",
  "recto-session",
+ "recto-sign",
  "recto-testpdf",
  "serde",
  "serde_json",
@@ -400,9 +401,22 @@ name = "recto-cli"
 version = "0.1.0"
 dependencies = [
  "recto-agent",
+ "recto-control",
  "recto-core",
  "recto-platform",
  "recto-render-service",
+ "recto-session",
+ "recto-testpdf",
+ "serde_json",
+]
+
+[[package]]
+name = "recto-control"
+version = "0.1.0"
+dependencies = [
+ "recto-agent",
+ "recto-core",
+ "recto-platform",
  "recto-session",
  "recto-testpdf",
  "serde_json",

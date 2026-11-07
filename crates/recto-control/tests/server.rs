@@ -1,0 +1,474 @@
+//! The server with a stand-in host and short limits, on a real socket: what a real session is too well-behaved, or too slow, to show.
+
+use recto_agent::{AgentError, Command, Condition, ConditionState, Event, Level, exit};
+use recto_control::StatePaths;
+use recto_control::client::Client;
+use recto_control::host::Host;
+use recto_control::levels;
+use recto_control::server::{BindError, Limits, Server};
+use recto_session::TabId;
+use serde_json::{Value, json};
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+static NEXT: AtomicU32 = AtomicU32::new(0);
+
+/// A host that does whatever a test's command asks. `facts` panics, `tabs` blocks until released, `text` is slow, `where` answers with something huge.
+#[derive(Default)]
+struct Stand {
+    release: Mutex<bool>,
+    released: Condvar,
+    running_draws: AtomicUsize,
+    most_draws: AtomicUsize,
+    unsaved: Mutex<Vec<(TabId, String)>>,
+    wheres: AtomicUsize,
+    looks_answer: std::sync::atomic::AtomicBool,
+}
+
+impl Stand {
+    fn release(&self) {
+        *self.release.lock().unwrap() = true;
+        self.released.notify_all();
+    }
+}
+
+impl Host for Stand {
+    fn run(&self, _level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
+        match command {
+            Command::Facts { .. } => panic!("a bug in a command"),
+            Command::Tabs { .. } => {
+                let mut released = self.release.lock().unwrap();
+                while !*released {
+                    released = self.released.wait(released).unwrap();
+                }
+                Ok(json!({ "released": true }))
+            }
+            Command::Text { .. } => {
+                let now = self.running_draws.fetch_add(1, Ordering::SeqCst) + 1;
+                self.most_draws.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(100));
+                self.running_draws.fetch_sub(1, Ordering::SeqCst);
+                Ok(json!({ "read": true }))
+            }
+            Command::Where { .. } => {
+                self.wheres.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({ "huge": "x".repeat(5_000_000) }))
+            }
+            Command::Goto { page, .. } => {
+                events.push(Event::new("page_changed", json!({ "page": page })));
+                Ok(json!({ "page": page }))
+            }
+            _ => Ok(json!({ "ran": command.tag() })),
+        }
+    }
+
+    fn check(&self, _condition: Condition, tab: &str, _page: Option<u32>) -> ConditionState {
+        if tab == "panics" {
+            panic!("a bug in a look");
+        }
+        if self.looks_answer.load(Ordering::SeqCst) && tab == "secret" {
+            return ConditionState::Met(json!({ "secret": true }));
+        }
+        ConditionState::Waiting
+    }
+
+    fn tab_count(&self) -> u32 {
+        7
+    }
+
+    fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
+        self.unsaved.lock().unwrap().clone()
+    }
+}
+
+struct Running {
+    paths: StatePaths,
+    host: Arc<Stand>,
+    thread: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    stopper: recto_control::server::Stopper,
+}
+
+impl Running {
+    fn start(limits: Limits) -> Self {
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!("rs{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let paths = StatePaths::overridden(&root).unwrap();
+        paths.prepare().unwrap();
+        levels::store(&paths, Level::Full).unwrap();
+        let server = Server::bind(&paths).unwrap();
+        let stopper = server.stopper().unwrap();
+        let host = Arc::new(Stand::default());
+        let hosted = Arc::clone(&host);
+        let thread = std::thread::spawn(move || server.run(hosted, limits));
+        Self { paths, host, thread: Some(thread), stopper }
+    }
+
+    fn connect(&self) -> UnixStream {
+        let stream = UnixStream::connect(&self.paths.socket).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        stream
+    }
+
+    fn client(&self) -> Client {
+        Client::connect(&self.paths).unwrap()
+    }
+
+    fn call(&self, line: &Value) -> Value {
+        self.client().call(&line.to_string(), Duration::from_secs(20)).unwrap()
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.host.release();
+        self.stopper.stop();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        let _ = std::fs::remove_dir_all(&self.paths.root);
+    }
+}
+
+fn read_line(stream: &mut UnixStream) -> Option<Value> {
+    let mut bytes = Vec::new();
+    let mut byte = [0u8];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) | Err(_) => return None,
+            Ok(_) if byte[0] == b'\n' => return Some(serde_json::from_slice(&bytes).unwrap()),
+            Ok(_) => bytes.push(byte[0]),
+        }
+    }
+}
+
+/// Failure: a client of another user gets in, because the socket's mode was the only check. Set up as "expects someone else": every connection must be dropped before it can say anything.
+#[test]
+fn a_peer_of_another_user_is_turned_away() {
+    let limits = Limits { expected_uid: recto_platform::local::current_uid() + 1, ..Limits::default() };
+    let running = Running::start(limits);
+    let mut stream = running.connect();
+    let _ = stream.write_all(b"{\"cmd\":\"status\"}\n");
+    assert_eq!(read_line(&mut stream), None, "it answered a stranger");
+    let log = std::fs::read_to_string(&running.paths.other_log).unwrap_or_default();
+    assert!(log.contains("peer_refused"), "{log}");
+}
+
+/// Failure: a bug in one command takes the session down or leaves its client waiting. It must be one client's error, and the session carries on.
+#[test]
+fn a_panic_is_one_clients_error() {
+    let running = Running::start(Limits::default());
+    let reply = running.call(&json!({ "cmd": "facts" }));
+    assert_eq!(reply["error"]["code"], "internal", "{reply}");
+    assert!(reply["error"]["message"].as_str().unwrap().contains("still running"));
+    assert_eq!(running.call(&json!({ "cmd": "budget" }))["ok"], true, "it must still answer");
+    let mut stream = running.connect();
+    stream.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"panics\",\"timeout_ms\":5000}\n").unwrap();
+    assert_eq!(read_line(&mut stream).unwrap()["error"]["code"], "internal");
+    let log = std::fs::read_to_string(&running.paths.other_log).unwrap();
+    assert!(log.contains("\"outcome\":\"internal\""), "{log}");
+}
+
+/// Failure: one slow command stalls everyone. `status` must answer while another client's command is stuck, and the stuck one still gets its answer when it's done.
+#[test]
+fn a_stuck_command_doesnt_stop_status() {
+    let running = Running::start(Limits::default());
+    let mut stuck = running.connect();
+    stuck.write_all(b"{\"cmd\":\"tabs\"}\n").unwrap();
+    let started = Instant::now();
+    for _ in 0..5 {
+        let status = running.call(&json!({ "cmd": "status" }));
+        assert_eq!(status["data"]["tabs"], 7, "{status}");
+    }
+    assert!(started.elapsed() < Duration::from_secs(10));
+    running.host.release();
+    assert_eq!(read_line(&mut stuck).unwrap()["data"]["released"], true);
+}
+
+/// Failure: page drawing runs without limit, each worth hundreds of megabytes, or one client's drawing starves another's plain command. At most the cap draw at once, and the rest still run.
+#[test]
+fn drawing_is_capped_and_other_work_goes_around_it() {
+    let limits = Limits { max_draw_jobs: 2, ..Limits::default() };
+    let running = Running::start(limits);
+    let mut streams: Vec<UnixStream> = (0..6).map(|_| running.connect()).collect();
+    for stream in &mut streams {
+        stream.write_all(b"{\"cmd\":\"text\",\"page\":1}\n").unwrap();
+    }
+    assert_eq!(running.call(&json!({ "cmd": "budget" }))["ok"], true, "plain work must go past queued drawing");
+    for stream in &mut streams {
+        assert_eq!(read_line(stream).unwrap()["data"]["read"], true);
+    }
+    assert!(running.host.most_draws.load(Ordering::SeqCst) <= 2, "{} drew at once", running.host.most_draws.load(Ordering::SeqCst));
+}
+
+/// Failure: half a line holds a slot for ever, or a silent connection never goes. Each has its own deadline, and neither needs anything to happen.
+#[test]
+fn half_a_line_and_silence_each_run_out() {
+    let limits = Limits { line_deadline: Duration::from_millis(100), idle_deadline: Duration::from_millis(200), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut half = running.connect();
+    half.write_all(b"{\"cmd\":").unwrap();
+    let mut silent = running.connect();
+    let started = Instant::now();
+    assert_eq!(read_line(&mut half), None, "half a line was kept");
+    assert_eq!(read_line(&mut silent), None, "a silent connection was kept");
+    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+}
+
+/// Failure: a command's huge answer is sent regardless, or a client that doesn't read costs the server without limit. An answer past the cap is replaced by one that says so.
+#[test]
+fn an_answer_past_the_cap_says_so() {
+    let limits = Limits { max_reply_bytes: 1024 * 1024, ..Limits::default() };
+    let running = Running::start(limits);
+    let reply = running.call(&json!({ "cmd": "where" }));
+    assert_eq!(reply["error"]["code"], "reply_too_large", "{}", reply.to_string().len());
+    assert!(reply["error"]["next"].as_str().unwrap().contains("less"));
+}
+
+/// Failure: a client that asks for a huge answer and stops reading holds that memory for ever. It's dropped at the write deadline, and the room comes back.
+#[test]
+fn a_client_that_stops_reading_is_dropped() {
+    let limits = Limits { write_deadline: Duration::from_millis(100), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut lazy = running.connect();
+    lazy.write_all(b"{\"cmd\":\"where\"}\n").unwrap();
+    // Give the deadline time to pass while it reads nothing.
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    let mut total = 0;
+    let mut chunk = [0u8; 65536];
+    while let Ok(count) = lazy.read(&mut chunk) {
+        if count == 0 {
+            break;
+        }
+        total += count;
+    }
+    assert!(total < 5_000_000, "it should have been cut off before the end: {total}");
+}
+
+/// Failure: a client's next command, sent while the last one runs, is lost or times out. One after another on one connection must work, in order, and blank lines don't count.
+#[test]
+fn commands_on_one_connection_run_in_order() {
+    let limits = Limits { line_deadline: Duration::from_millis(50), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut stream = running.connect();
+    stream.write_all(b"{\"cmd\":\"text\",\"page\":1}\n\n\r\n{\"cmd\":\"goto\",\"page\":2}\r\n{\"cmd\":\"goto\",\"page\":3}\n").unwrap();
+    assert_eq!(read_line(&mut stream).unwrap()["data"]["read"], true, "the slow one goes first");
+    assert_eq!(read_line(&mut stream).unwrap()["data"]["page"], 2);
+    assert_eq!(read_line(&mut stream).unwrap()["data"]["page"], 3);
+}
+
+/// Failure: a client that closes its sending side after a command, as `nc` does, loses its answer because it looks like a dead client.
+#[test]
+fn a_half_closed_client_still_gets_its_answer() {
+    let running = Running::start(Limits::default());
+    let mut stream = running.connect();
+    stream.write_all(b"{\"cmd\":\"text\",\"page\":1}\n").unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    assert_eq!(read_line(&mut stream).unwrap()["data"]["read"], true);
+    assert_eq!(read_line(&mut stream), None, "and then it's over");
+}
+
+/// Failure: `stop` drops unsaved edits, or a host can't end the server it's carrying. A host's stopper and `stop` must both end `run`, and both remove the socket.
+#[test]
+fn stop_keeps_unsaved_edits_and_a_host_can_end_it() {
+    let running = Running::start(Limits::default());
+    running.host.unsaved.lock().unwrap().push((TabId(1), "report".to_string()));
+    let refused = running.call(&json!({ "cmd": "stop" }));
+    assert_eq!(refused["error"]["code"], "unsaved_changes", "{refused}");
+    assert_eq!(refused["error"]["candidates"][0], "#1");
+    assert_eq!(refused["error"]["untrusted"]["candidates"][0]["name"], "report", "a file's name goes only under `untrusted`");
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    running.host.unsaved.lock().unwrap().clear();
+    let mut watcher = running.connect();
+    watcher.write_all(b"{\"cmd\":\"watch\"}\n").unwrap();
+    assert_eq!(read_line(&mut watcher).unwrap()["data"]["watching"], true);
+    assert_eq!(running.call(&json!({ "cmd": "stop" }))["data"]["stopping"], true);
+    let ended = read_line(&mut watcher).unwrap();
+    assert_eq!((&ended["data"]["done"], &ended["data"]["reason"]), (&json!(true), &json!("session stopping")), "{ended}");
+
+    let hosted = Running::start(Limits::default());
+    hosted.stopper.stop();
+    let started = Instant::now();
+    while hosted.paths.socket.exists() {
+        assert!(started.elapsed() < Duration::from_secs(10), "it didn't stop");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Failure: two servers bind one state folder, or the lock isn't let go when a server ends, so it can't start again.
+#[test]
+fn the_lock_is_one_server_and_comes_back_when_it_ends() {
+    let running = Running::start(Limits::default());
+    assert!(matches!(Server::bind(&running.paths), Err(BindError::AlreadyRunning)));
+    let paths = running.paths.clone();
+    let root_paths = paths.clone();
+    // Stop it without removing the folder.
+    running.stopper.stop();
+    let started = Instant::now();
+    while root_paths.socket.exists() {
+        assert!(started.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut running = running;
+    if let Some(thread) = running.thread.take() {
+        thread.join().unwrap().unwrap();
+    }
+    let again = Server::bind(&paths);
+    assert!(again.is_ok(), "the lock wasn't let go");
+}
+
+/// Failure: a client talks to something that isn't this user's, or a client's answer comes back on a dead server as a hang.
+#[test]
+fn the_client_checks_the_folder_and_reports_a_dead_server() {
+    let running = Running::start(Limits::default());
+    let mut client = running.client();
+    client.send("{\"cmd\":\"status\"}", Duration::from_secs(5)).unwrap();
+    assert_eq!(client.read(Duration::from_secs(5)).unwrap()["ok"], true);
+    client.send("{\"cmd\":\"tabs\"}", Duration::from_secs(5)).unwrap();
+    let error = client.read(Duration::from_millis(50)).unwrap_err();
+    assert_eq!((error.code, error.exit), ("no_answer", exit::TIMED_OUT), "the stuck command means no answer in time");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&running.paths.run_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let refused = Client::connect(&running.paths).unwrap_err();
+    assert_eq!((refused.code, refused.exit), ("socket_refused", exit::PERMISSION), "a folder others can reach isn't to be trusted");
+    std::fs::set_permissions(&running.paths.run_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// Failure: an event goes to a waiter who has no interest, or a wait is told about a page by a wait before it on the same connection. Only one look runs per wait, and it's the newest wait's.
+#[test]
+fn watchers_hear_events_and_a_finished_wait_cant_answer_the_next() {
+    let running = Running::start(Limits::default());
+    let mut watcher = running.connect();
+    watcher.write_all(b"{\"cmd\":\"watch\",\"events\":[\"pages\"],\"count\":2,\"timeout_ms\":20000}\n").unwrap();
+    assert_eq!(read_line(&mut watcher).unwrap()["data"]["watching"], true);
+    running.call(&json!({ "cmd": "goto", "page": 2 }));
+    running.call(&json!({ "cmd": "goto", "page": 3 }));
+    assert_eq!(read_line(&mut watcher).unwrap()["data"]["page"], 2);
+    assert_eq!(read_line(&mut watcher).unwrap()["data"]["page"], 3);
+    let done = read_line(&mut watcher).unwrap();
+    assert_eq!(done["data"]["reason"], "count reached", "{done}");
+    // The connection's free again, and a wait that runs out says so.
+    watcher.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"x\",\"timeout_ms\":10}\n").unwrap();
+    assert_eq!(read_line(&mut watcher).unwrap()["error"]["code"], "timed_out");
+}
+
+/// Failure: a queued `page rotate` answers ok and is then lost, because `stop` only looked for unsaved edits once. Whatever's waiting when `stop` arrives is refused, and `stop` looks after what's running has finished: that edit stops it.
+#[test]
+fn stop_checks_after_whats_running_has_finished() {
+    let limits = Limits { stop_grace: Duration::from_secs(5), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut slow = running.connect();
+    // A stuck command, which on being let go leaves a tab unsaved.
+    slow.write_all(b"{\"cmd\":\"tabs\"}\n").unwrap();
+    let mut stopper = running.connect();
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    stopper.write_all(b"{\"cmd\":\"stop\"}\n").unwrap();
+    // Let the stop arrive, then anything else that isn't quick is told it's stopping.
+    std::thread::sleep(Duration::from_millis(100));
+    let refused = running.call(&json!({ "cmd": "goto", "page": 2 }));
+    assert_eq!(refused["error"]["code"], "busy", "{refused}");
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true, "`status` still answers");
+    // The running command changes something as it ends.
+    running.host.unsaved.lock().unwrap().push((TabId(1), "report".to_string()));
+    running.host.release();
+    assert_eq!(read_line(&mut slow).unwrap()["data"]["released"], true);
+    let answer = read_line(&mut stopper).unwrap();
+    assert_eq!(answer["error"]["code"], "unsaved_changes", "it must look after that command ended: {answer}");
+    let working = running.call(&json!({ "cmd": "goto", "page": 3 }));
+    assert_eq!(working["ok"], true, "a refused stop lets everything carry on: {working}");
+}
+
+/// Failure: `stop` with something stuck hangs for ever, or kills it anyway. It says it couldn't, and the session carries on.
+#[test]
+fn stop_gives_up_on_a_stuck_command_and_says_so() {
+    let limits = Limits { stop_grace: Duration::from_millis(100), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut slow = running.connect();
+    slow.write_all(b"{\"cmd\":\"tabs\"}\n").unwrap();
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    let reply = running.call(&json!({ "cmd": "stop" }));
+    assert_eq!(reply["error"]["code"], "busy", "{reply}");
+    assert_eq!(running.call(&json!({ "cmd": "budget" }))["ok"], true);
+}
+
+/// Failure: a client that sends commands and doesn't read makes the session work without end, and its answers fill the shared allowance, so every other client gets `reply_too_large` for up to 30 s. Past 1 MiB unread, its commands wait.
+#[test]
+fn a_client_that_doesnt_read_isnt_worked_for() {
+    let limits = Limits { max_unsent_before_pause: 1024 * 1024, ..Limits::default() };
+    let running = Running::start(limits);
+    let mut greedy = running.connect();
+    // Each answer is 5 MiB, so the first is already past the line.
+    let many = "{\"cmd\":\"where\"}\n".repeat(200);
+    greedy.write_all(many.as_bytes()).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    assert!(running.host.wheres.load(Ordering::SeqCst) <= 2, "{} answers made for a client that read none", running.host.wheres.load(Ordering::SeqCst));
+    // When it starts reading, it gets the next ones.
+    let mut reader = BufLine::default();
+    assert!(reader.next(&mut greedy).unwrap()["data"]["huge"].is_string());
+    assert!(reader.next(&mut greedy).unwrap()["data"]["huge"].is_string());
+    assert!(running.host.wheres.load(Ordering::SeqCst) >= 2);
+}
+
+#[derive(Default)]
+struct BufLine {
+    bytes: Vec<u8>,
+}
+
+impl BufLine {
+    fn next(&mut self, stream: &mut UnixStream) -> Option<Value> {
+        let mut chunk = vec![0u8; 256 * 1024];
+        loop {
+            if let Some(at) = self.bytes.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = self.bytes.drain(..=at).collect();
+                return Some(serde_json::from_slice(&line).unwrap());
+            }
+            let count = stream.read(&mut chunk).ok()?;
+            if count == 0 {
+                return None;
+            }
+            self.bytes.extend_from_slice(&chunk[..count]);
+        }
+    }
+}
+
+/// Failure: the shared allowance runs out, and small answers stop too, or the cap isn't one at all. Large answers are refused while `status` still answers, and nothing goes past the hard cap.
+#[test]
+fn the_cap_on_unread_answers_is_hard_and_small_ones_still_get_through() {
+    let limits = Limits { max_queued_bytes: 6 * 1024 * 1024, max_queued_hard_bytes: 7 * 1024 * 1024, ..Limits::default() };
+    let running = Running::start(limits);
+    let mut one = running.connect();
+    one.write_all(b"{\"cmd\":\"where\"}\n").unwrap();
+    let mut two = running.connect();
+    two.write_all(b"{\"cmd\":\"where\"}\n").unwrap();
+    // One of them gets the room, and the other is told there's none. Neither reads, so this holds.
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true, "a small answer goes past the soft cap");
+    let mut reader_one = BufLine::default();
+    let mut reader_two = BufLine::default();
+    let (first, second) = (reader_one.next(&mut one).unwrap(), reader_two.next(&mut two).unwrap());
+    let codes = [first["error"]["code"].as_str(), second["error"]["code"].as_str()];
+    assert!(codes.contains(&Some("reply_too_large")), "{codes:?}");
+    assert!(first["ok"] == true || second["ok"] == true, "one must get its answer");
+}
+
+/// Failure: a wait's look runs after the level dropped and hands over a tab's details, because only the asking was checked. Here the look waits behind a stuck job, and the level drops with no message to the server, so only the look itself can notice.
+#[test]
+fn a_look_rechecks_the_level() {
+    let limits = Limits { max_jobs: 1, ..Limits::default() };
+    let running = Running::start(limits);
+    running.host.looks_answer.store(true, Ordering::SeqCst);
+    let mut slow = running.connect();
+    slow.write_all(b"{\"cmd\":\"tabs\"}\n").unwrap();
+    let mut waiter = running.connect();
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    waiter.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"secret\",\"timeout_ms\":20000}\n").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    levels::store(&running.paths, Level::Off).unwrap();
+    running.host.release();
+    assert_eq!(read_line(&mut slow).unwrap()["data"]["released"], true);
+    let answer = read_line(&mut waiter).unwrap();
+    assert_eq!(answer["error"]["code"], "permission_denied", "{answer}");
+}

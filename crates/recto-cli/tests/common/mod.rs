@@ -1,0 +1,202 @@
+//! Runs the real `recto` on temp state, the way an agent does. Every server these start ends with its [`Session`], and nothing here can reach the real state folder, because the override refuses it.
+#![allow(dead_code)]
+
+use recto_agent::Level;
+use recto_control::state::STATE_ENV;
+use recto_control::{StatePaths, levels};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
+
+static NEXT: AtomicU32 = AtomicU32::new(0);
+
+pub fn bin() -> &'static str {
+    env!("CARGO_BIN_EXE_recto")
+}
+
+/// A state folder of its own, removed on drop.
+pub struct State {
+    pub root: PathBuf,
+    pub paths: StatePaths,
+}
+
+impl State {
+    pub fn new() -> Self {
+        // Short, so a socket fits in the folder even when the temp folder's path is long.
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!("rc{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let paths = StatePaths::overridden(&root).unwrap();
+        assert!(paths.overridden);
+        Self { root, paths }
+    }
+
+    pub fn at(level: Level) -> Self {
+        let state = Self::new();
+        state.set_level(level);
+        state
+    }
+
+    /// Stands in for the user. This writes the level's file, as `recto permission set` does after its terminal check, which has its own test.
+    pub fn set_level(&self, level: Level) {
+        levels::store(&self.paths, level).unwrap();
+    }
+
+    pub fn command(&self) -> Command {
+        let mut command = Command::new(bin());
+        command.env(STATE_ENV, &self.root).stdin(Stdio::null());
+        command
+    }
+
+    /// Runs `recto` and reads its one JSON answer.
+    pub fn json(&self, args: &[&str]) -> (Value, i32) {
+        let output = self.command().args(args).arg("--json").stderr(Stdio::inherit()).output().unwrap();
+        let text = String::from_utf8(output.stdout).unwrap();
+        let value = serde_json::from_str(text.trim()).unwrap_or_else(|_| panic!("not JSON from {args:?}: {text:?}"));
+        (value, output.status.code().unwrap())
+    }
+
+    /// Runs `recto` and returns what a person would see.
+    pub fn text(&self, args: &[&str]) -> (String, String, i32) {
+        let output = self.command().args(args).output().unwrap();
+        (String::from_utf8(output.stdout).unwrap(), String::from_utf8(output.stderr).unwrap(), output.status.code().unwrap())
+    }
+
+    /// Starts a session and waits for its ready line.
+    pub fn serve(&self) -> Serving {
+        let mut child = self.command().args(["serve", "--json"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line).unwrap();
+        let ready: Value = serde_json::from_str(&line).unwrap_or_else(|_| panic!("no ready line: {line:?}"));
+        assert_eq!(ready["ok"], true, "{ready}");
+        Serving { child }
+    }
+
+    pub fn socket(&self) -> &Path {
+        &self.paths.socket
+    }
+
+    pub fn log_text(&self) -> String {
+        [&self.paths.log, &self.paths.old_log, &self.paths.other_log, &self.paths.old_other_log].iter().map(|path| std::fs::read_to_string(path).unwrap_or_default()).collect()
+    }
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.paths.socket);
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// A running session. Killed if it's still there at the end of the test.
+pub struct Serving {
+    pub child: Child,
+}
+
+impl Serving {
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Ends it as a crash would.
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// A raw client, so a test can do what `recto` wouldn't.
+pub struct Raw {
+    pub stream: std::os::unix::net::UnixStream,
+    buffer: Vec<u8>,
+}
+
+impl Raw {
+    pub fn connect(state: &State) -> Self {
+        let stream = std::os::unix::net::UnixStream::connect(state.socket()).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        Self { stream, buffer: Vec::new() }
+    }
+
+    pub fn send(&mut self, line: &str) {
+        std::io::Write::write_all(&mut self.stream, format!("{line}\n").as_bytes()).unwrap();
+    }
+
+    /// The next line, or `None` when the server has closed the connection.
+    pub fn read(&mut self) -> Option<Value> {
+        loop {
+            if let Some(at) = self.buffer.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = self.buffer.drain(..=at).collect();
+                return Some(serde_json::from_slice(&line).unwrap());
+            }
+            let mut chunk = [0u8; 8192];
+            match std::io::Read::read(&mut self.stream, &mut chunk) {
+                Ok(0) | Err(_) => return None,
+                Ok(count) => self.buffer.extend_from_slice(&chunk[..count]),
+            }
+        }
+    }
+
+    pub fn call(&mut self, command: &Value) -> Value {
+        self.send(&command.to_string());
+        self.read().expect("the server closed the connection")
+    }
+}
+
+/// How to answer the word a command asks for at a terminal.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Word {
+    Right,
+    Wrong,
+}
+
+/// Runs `recto` the way a person does: `script` gives it a real pseudo-terminal with a controlling terminal, and the word is read from the prompt and typed back through it. Returns the exit code and everything shown.
+pub fn in_a_terminal(state: &State, args: &[&str], home: Option<&Path>, word: Word) -> (i32, String) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let mut script = Command::new("/usr/bin/script");
+    script.args(["-q", "/dev/null", bin()]).args(args).env(STATE_ENV, &state.root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    if let Some(home) = home {
+        script.env("HOME", home);
+    }
+    let mut child = script.spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut seen = String::new();
+    // The prompt ends with no line end, at "press return: ", so this reads what's there a byte at a time.
+    let mut byte = [0u8];
+    while !seen.contains("press return: ") {
+        if stdout.read(&mut byte).unwrap_or(0) == 0 {
+            break;
+        }
+        seen.push(char::from(byte[0]));
+    }
+    let shown = seen.rsplit("type ").next().unwrap_or("").split(' ').next().unwrap_or("").to_string();
+    let answer = if word == Word::Wrong { "wrongword".to_string() } else { shown };
+    let _ = writeln!(stdin, "{answer}");
+    let mut rest = String::new();
+    for line in stdout.by_ref().lines() {
+        let Ok(line) = line else { break };
+        rest.push_str(&line);
+        rest.push('\n');
+    }
+    drop(stdin);
+    let status = child.wait().unwrap();
+    (status.code().unwrap_or(-1), seen + &rest)
+}
+
+/// The JSON answer at the end of what a terminal showed.
+pub fn last_json(shown: &str) -> Value {
+    let line = shown.lines().rev().find(|line| line.trim_start().starts_with('{')).unwrap_or_else(|| panic!("no JSON in {shown:?}"));
+    serde_json::from_str(line.trim()).unwrap_or_else(|_| panic!("not JSON: {line:?}"))
+}
+
+pub fn open_cmd(path: &Path) -> Value {
+    json!({ "cmd": "open", "path": path })
+}

@@ -76,3 +76,8 @@ pub fn memory_free_percent() -> Option<u32> {
 #[cfg_attr(target_os = "macos", path = "isolate_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "isolate_stub.rs")]
 pub mod isolate;
+
+/// The control socket's OS calls: one blocking wait over many local sockets, the peer's user, and files and folders private to this user.
+#[cfg_attr(target_os = "macos", path = "local_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "local_stub.rs")]
+pub mod local;

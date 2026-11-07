@@ -4,6 +4,7 @@
 //! cost about 8 bytes a page, whatever the size of the PDFs. A tab with no edits has no list at all. Undo stores the
 //! inverse of each step rather than copies of the list. The original files stay as they are until Save.
 
+use recto_platform::FileStamp;
 use std::path::{Path, PathBuf};
 
 /// Most pages one edited document may have.
@@ -12,6 +13,8 @@ pub const MAX_PAGES: usize = 200_000;
 pub const MAX_SOURCES: usize = 1024;
 /// Undo steps kept. The oldest go first.
 pub const MAX_UNDO: usize = 256;
+/// Bytes of pages held for undo and redo, per tab. A step is usually a few bytes, but one that removes 200,000 pages holds 1.6 MB of them, and 256 of those would be 400 MiB. The oldest go first, and the last step always stays.
+pub const MAX_HISTORY_BYTES: usize = 16 * 1024 * 1024;
 
 /// One page of the edited document: which PDF it comes from, which page there, and its added rotation.
 // size: asserted <= 8 by `page_slot_stays_small`. Held per page, edited tabs only.
@@ -31,6 +34,8 @@ pub enum EditError {
     LastPage,
     TooManyPages,
     TooManySources,
+    /// A PDF already in this document has changed since it was added, so its pages can't be mixed with what's there.
+    SourceChanged,
 }
 
 impl EditError {
@@ -40,6 +45,7 @@ impl EditError {
             Self::LastPage => "last_page",
             Self::TooManyPages => "too_many_pages",
             Self::TooManySources => "too_many_sources",
+            Self::SourceChanged => "source_changed",
         }
     }
 
@@ -49,6 +55,7 @@ impl EditError {
             Self::LastPage => "A PDF has to keep at least one page.",
             Self::TooManyPages => "That would make this document too long.",
             Self::TooManySources => "Too many PDFs have been added to this document.",
+            Self::SourceChanged => "That PDF has changed since it was added, so it can't be added again.",
         }
     }
 }
@@ -62,19 +69,42 @@ enum Step {
     Restore { start: u32, slots: Box<[PageSlot]> },
 }
 
+impl Step {
+    /// What it holds beyond its own size.
+    fn held_bytes(&self) -> usize {
+        match self {
+            Self::Restore { slots, .. } => size_of_val::<[PageSlot]>(slots),
+            _ => 0,
+        }
+    }
+}
+
+/// A PDF dropped into a document: where it is, how long it was, and which version of it its page numbers are about.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddedSource {
+    pub path: Box<Path>,
+    pub page_count: u32,
+    /// `None` if the file couldn't be looked at then.
+    pub stamp: Option<FileStamp>,
+}
+
 /// The edited page order of one document.
 #[derive(Clone, Debug)]
 pub struct PageEdits {
     slots: Vec<PageSlot>,
-    added: Vec<(Box<Path>, u32)>,
+    added: Vec<AddedSource>,
     undo: Vec<Step>,
     redo: Vec<Step>,
+    /// A step fell off the capped undo list, so this document can't get back to the original by undoing.
+    history_dropped: bool,
+    /// What `undo` and `redo` hold, against [`MAX_HISTORY_BYTES`].
+    history_bytes: usize,
 }
 
 impl PageEdits {
     pub fn new(page_count: u32) -> Self {
         let slots = (0..page_count).map(|page| PageSlot { source: 0, page, quarter_turns: 0 }).collect();
-        Self { slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new() }
+        Self { slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new(), history_dropped: false, history_bytes: 0 }
     }
 
     pub fn slots(&self) -> &[PageSlot] {
@@ -90,14 +120,24 @@ impl PageEdits {
         self.slots.is_empty()
     }
 
-    /// The PDFs dropped into this document, with their page counts. Slot source `n` is entry `n - 1`.
-    pub fn added_sources(&self) -> &[(Box<Path>, u32)] {
+    /// The PDFs dropped into this document. Slot source `n` is entry `n - 1`.
+    pub fn added_sources(&self) -> &[AddedSource] {
         &self.added
     }
 
     /// Whether anything is waiting to be saved. Undoing everything brings this back to false.
     pub fn is_edited(&self) -> bool {
+        !self.undo.is_empty() || self.history_dropped
+    }
+
+    /// Whether there's a step to undo.
+    pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
+    }
+
+    /// Whether there's an undone step to redo.
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
     }
 
     /// Where a page of the tab's own PDF now sits, if it's still there.
@@ -133,13 +173,18 @@ impl PageEdits {
 
     /// Adds every page of another PDF at a position, as dropping it into the page view does.
     pub fn insert_pdf(&mut self, at: u32, path: &Path, page_count: u32) -> Result<(), EditError> {
+        self.insert_pdf_stamped(at, path, page_count, None)
+    }
+
+    /// [`Self::insert_pdf`], noting which version of the file this is.
+    pub fn insert_pdf_stamped(&mut self, at: u32, path: &Path, page_count: u32, stamp: Option<FileStamp>) -> Result<(), EditError> {
         if at > self.len() {
             return Err(EditError::OutOfRange);
         }
         if self.slots.len() + page_count as usize > MAX_PAGES {
             return Err(EditError::TooManyPages);
         }
-        let source = self.source_for(path, page_count)?;
+        let source = self.source_for(path, page_count, stamp)?;
         let slots: Box<[PageSlot]> = (0..page_count).map(|page| PageSlot { source, page, quarter_turns: 0 }).collect();
         self.commit(Step::Restore { start: at, slots })
     }
@@ -147,27 +192,59 @@ impl PageEdits {
     /// Reverses the last step. Returns false with nothing left to undo.
     pub fn undo(&mut self) -> bool {
         let Some(step) = self.undo.pop() else { return false };
+        self.history_bytes -= step.held_bytes();
         let inverse = self.apply(step);
+        self.history_bytes += inverse.held_bytes();
         self.redo.push(inverse);
+        self.trim_history();
         true
     }
 
     /// Repeats the last undone step. Returns false with nothing left to redo.
     pub fn redo(&mut self) -> bool {
         let Some(step) = self.redo.pop() else { return false };
+        self.history_bytes -= step.held_bytes();
         let inverse = self.apply(step);
+        self.history_bytes += inverse.held_bytes();
         self.undo.push(inverse);
+        self.trim_history();
         true
     }
 
     fn commit(&mut self, step: Step) -> Result<(), EditError> {
         let inverse = self.apply(step);
+        self.history_bytes += inverse.held_bytes();
         self.undo.push(inverse);
-        if self.undo.len() > MAX_UNDO {
-            self.undo.remove(0);
+        for dropped in self.redo.drain(..) {
+            self.history_bytes -= dropped.held_bytes();
         }
-        self.redo.clear();
+        self.trim_history();
         Ok(())
+    }
+
+    /// Holds the history to its caps, oldest undo first. Anything dropped means the original can't be reached by undoing, and `is_edited` keeps saying so.
+    fn trim_history(&mut self) {
+        while self.undo.len() > MAX_UNDO || (self.history_bytes > MAX_HISTORY_BYTES && self.undo.len() > 1) {
+            let dropped = self.undo.remove(0);
+            self.history_bytes -= dropped.held_bytes();
+            self.history_dropped = true;
+        }
+        while self.history_bytes > MAX_HISTORY_BYTES && self.redo.len() > 1 {
+            let dropped = self.redo.remove(0);
+            self.history_bytes -= dropped.held_bytes();
+        }
+    }
+
+    /// What `undo` and `redo` hold now, in bytes.
+    pub fn history_bytes(&self) -> usize {
+        self.history_bytes
+    }
+
+    /// The position of a page, from `source`, nearest to `near`. Nearest, because the same page can appear twice once a PDF has been added twice.
+    pub fn nearest_position(&self, source: u16, page: u32, near: u32) -> Option<u32> {
+        let near = near as usize;
+        let found = self.slots.iter().enumerate().filter(|(_, slot)| slot.source == source && slot.page == page).map(|(position, _)| position).min_by_key(|position| position.abs_diff(near))?;
+        u32::try_from(found).ok()
     }
 
     /// Applies a step that has already been checked, and returns its inverse.
@@ -209,14 +286,18 @@ impl PageEdits {
         Ok(())
     }
 
-    fn source_for(&mut self, path: &Path, page_count: u32) -> Result<u16, EditError> {
-        if let Some(found) = self.added.iter().position(|(p, _)| &**p == path) {
+    fn source_for(&mut self, path: &Path, page_count: u32, stamp: Option<FileStamp>) -> Result<u16, EditError> {
+        if let Some(found) = self.added.iter().position(|added| &*added.path == path) {
+            // Slots already point at the old version's pages, so the new version can't share them.
+            if self.added[found].stamp != stamp {
+                return Err(EditError::SourceChanged);
+            }
             return u16::try_from(found + 1).map_err(|_| EditError::TooManySources);
         }
         if self.added.len() >= MAX_SOURCES {
             return Err(EditError::TooManySources);
         }
-        self.added.push((PathBuf::from(path).into_boxed_path(), page_count));
+        self.added.push(AddedSource { path: PathBuf::from(path).into_boxed_path(), page_count, stamp });
         u16::try_from(self.added.len()).map_err(|_| EditError::TooManySources)
     }
 }
@@ -322,6 +403,47 @@ mod tests {
         assert_eq!(edits.insert_pdf(0, Path::new("/d/a.pdf"), MAX_PAGES as u32), Err(EditError::TooManyPages));
         assert_eq!(order(&edits), [0, 1]);
         assert!(!edits.is_edited());
+    }
+
+    /// Failure: past the undo cap, undoing everything reads as "no edits" while the document still differs, so the tab closes and silently loses them.
+    #[test]
+    fn a_document_past_the_undo_cap_stays_edited_after_undoing_everything() {
+        let mut edits = PageEdits::new(2);
+        for _ in 0..MAX_UNDO + 1 {
+            edits.move_pages(0, 1, 1).unwrap();
+        }
+        while edits.undo() {}
+        assert_ne!(order(&edits), [0, 1], "the oldest step can't be undone any more");
+        assert!(edits.is_edited(), "it still differs from the file");
+    }
+
+    /// Failure: undo is capped by steps but not bytes, so 256 steps that each remove 200,000 pages hold about 400 MiB per tab. Past the cap the oldest go, and the document says it can't get back.
+    #[test]
+    fn undo_history_is_capped_in_bytes_and_says_so() {
+        let pages = MAX_PAGES as u32;
+        let mut heavy = PageEdits::new(pages);
+        for round in 0..64 {
+            heavy.delete(0, pages - 1).unwrap();
+            heavy.insert_pdf(0, Path::new("/d/full.pdf"), pages - 1).unwrap();
+            assert!(heavy.history_bytes() <= MAX_HISTORY_BYTES + MAX_PAGES * 8, "round {round}: {}", heavy.history_bytes());
+        }
+        assert!(heavy.is_edited());
+        while heavy.undo() {}
+        assert!(heavy.is_edited(), "steps fell off, so undoing everything doesn't reach the original");
+        assert!(heavy.history_bytes() <= MAX_HISTORY_BYTES + MAX_PAGES * 8, "{}", heavy.history_bytes());
+        assert_eq!(heavy.undo.len(), 0);
+    }
+
+    /// Failure: the place can't be followed to the right copy of a page added twice.
+    #[test]
+    fn the_nearest_copy_of_a_page_is_found() {
+        let mut edits = PageEdits::new(1);
+        edits.insert_pdf(1, Path::new("/d/a.pdf"), 1).unwrap();
+        edits.insert_pdf(2, Path::new("/d/b.pdf"), 1).unwrap();
+        edits.insert_pdf(3, Path::new("/d/a.pdf"), 1).unwrap();
+        assert_eq!(edits.nearest_position(1, 0, 0), Some(1));
+        assert_eq!(edits.nearest_position(1, 0, 3), Some(3));
+        assert_eq!(edits.nearest_position(9, 0, 0), None);
     }
 
     /// Failure: undo history grows without limit on a long editing session.

@@ -8,6 +8,7 @@ pub mod edit;
 
 use edit::{EditError, PageEdits};
 use recto_core::{DocFacts, NONE, OpenError, Toc};
+use recto_platform::{FileStamp, file_stamp};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -62,6 +63,34 @@ pub struct TabRecord {
     pub toc_open: bool,
     /// Why this tab's file can't be read at the moment, if so.
     pub problem: Option<OpenError>,
+    /// Only the renderer could read this file. See [`DocFacts::renderer_only`].
+    pub renderer_only: bool,
+    /// Which version of the file this tab's facts and any edits are about. `None` if it couldn't be looked at.
+    stamp: Option<FileStamp>,
+}
+
+/// Where a page of a tab comes from now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageSource {
+    pub path: PathBuf,
+    /// Zero-based page in that file.
+    pub page: u32,
+    /// Unsaved quarter turns on it.
+    pub quarter_turns: u8,
+    /// It came from another PDF added to this one, rather than the tab's own file.
+    pub added: bool,
+    /// What the file was when its page numbers were recorded, if this page's number depends on that: an added file, or the tab's own file once it's been edited.
+    pub expected: Option<Option<FileStamp>>,
+}
+
+impl PageSource {
+    /// Whether the file is still the one the page number is about. A file that's gone isn't. One that couldn't be looked at when it was recorded makes no claim.
+    pub fn is_current(&self) -> bool {
+        match self.expected {
+            None | Some(None) => true,
+            Some(Some(stamp)) => file_stamp(&self.path).ok() == Some(stamp),
+        }
+    }
 }
 
 /// A row in the sidebar. Borrows its text from the session, so building the model allocates little.
@@ -111,6 +140,24 @@ pub struct Session<L = DiskLoader> {
     dir_ids: HashMap<Box<Path>, u32>,
     /// Only for tabs with page edits. A tab with none costs nothing here.
     edits: HashMap<TabId, PageEdits>,
+    /// The latest pages drawn or tried, newest last, at most [`MAX_DRAWS_KEPT`]. Lets a waiter find out about a page finished a moment before it asked.
+    draws: VecDeque<DrawNote>,
+    /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`Session::take_place_lost`].
+    place_lost: bool,
+}
+
+/// Page results remembered across every tab, so nothing here grows with idle tabs.
+pub const MAX_DRAWS_KEPT: usize = 256;
+
+/// That a page was drawn, or couldn't be.
+// size: asserted <= 32 by `draw_note_stays_small`. Held per recent draw, at most MAX_DRAWS_KEPT.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawNote {
+    pub tab: TabId,
+    /// Zero-based page.
+    pub page: u32,
+    /// The failure's stable code, or `None` if it was drawn.
+    pub failure: Option<&'static str>,
 }
 
 impl Default for Session<DiskLoader> {
@@ -121,7 +168,12 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new() }
+        Self { loader, tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), draws: VecDeque::new(), place_lost: false }
+    }
+
+    /// How documents are read. Cheap to reach, so a caller can read a file without holding the session.
+    pub fn loader(&self) -> &L {
+        &self.loader
     }
 
     pub fn tabs(&self) -> &[TabRecord] {
@@ -154,18 +206,39 @@ impl<L: DocLoader> Session<L> {
 
     /// Opens a PDF as a new active tab. Opening a file that already has a tab goes to that tab instead.
     pub fn open(&mut self, path: &Path) -> Result<TabId, SessionError> {
-        let dir_path = path.parent().unwrap_or(Path::new(""));
-        let file_name = path.file_name().ok_or(SessionError::Open(OpenError::NotFound))?;
-        if let Some(&dir) = self.dir_ids.get(dir_path)
-            && let Some(id) = self.tabs.iter().find(|t| t.dir == dir && &*t.file_name == file_name).map(|t| t.id)
-        {
-            self.activate(id);
+        if let Some(id) = self.go_to_open_file(path) {
             return Ok(id);
         }
+        // Looked at first, so a change during the read shows as a change.
+        let stamp = file_stamp(path).ok();
+        let facts = self.loader.load(path).map_err(SessionError::Open)?;
+        self.open_with_facts(path, facts, stamp)
+    }
+
+    /// Activates the tab already showing this file, if there is one. The first half of [`Self::open`], for a caller that reads the file without holding the session.
+    pub fn go_to_open_file(&mut self, path: &Path) -> Option<TabId> {
+        let id = self.tab_for_path(path)?;
+        self.activate(id);
+        Some(id)
+    }
+
+    /// The tab already showing this file, if there is one.
+    pub fn tab_for_path(&self, path: &Path) -> Option<TabId> {
+        let dir = *self.dir_ids.get(path.parent().unwrap_or(Path::new("")))?;
+        let file_name = path.file_name()?;
+        self.tabs.iter().find(|t| t.dir == dir && &*t.file_name == file_name).map(|t| t.id)
+    }
+
+    /// The second half of [`Self::open`]: makes the tab from facts already read. Someone may have opened the same file meanwhile, and then that's the tab.
+    pub fn open_with_facts(&mut self, path: &Path, facts: DocFacts, stamp: Option<FileStamp>) -> Result<TabId, SessionError> {
+        if let Some(id) = self.go_to_open_file(path) {
+            return Ok(id);
+        }
+        let dir_path = path.parent().unwrap_or(Path::new(""));
+        let file_name = path.file_name().ok_or(SessionError::Open(OpenError::NotFound))?;
         if self.tabs.len() >= MAX_TABS {
             return Err(SessionError::TooManyTabs);
         }
-        let facts = self.loader.load(path).map_err(SessionError::Open)?;
         let dir = self.intern_dir(dir_path);
         let id = TabId(self.next_id);
         self.next_id += 1;
@@ -184,6 +257,8 @@ impl<L: DocLoader> Session<L> {
             page_count: facts.page_count,
             toc_open: true,
             problem: None,
+            renderer_only: facts.renderer_only,
+            stamp,
         });
         self.remember_warm(id, Arc::new(facts.toc));
         self.active = Some(id);
@@ -228,44 +303,148 @@ impl<L: DocLoader> Session<L> {
         self.edits.get(&id)
     }
 
-    /// Applies a page edit: rearranging, rotating or deleting. The list is made the first time a tab is edited.
+    /// Applies a page edit: rearranging, rotating or deleting. The list is made the first time a tab is edited, and goes again if that edit was refused. The reader's place follows its page.
     pub fn edit_pages(&mut self, id: TabId, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
-        let page_count = self.tab(id).ok_or(SessionError::NoSuchTab)?.page_count;
-        change(self.edits.entry(id).or_insert_with(|| PageEdits::new(page_count))).map_err(SessionError::Edit)?;
-        self.keep_page_in_range(id);
-        Ok(())
+        let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
+        if tab.renderer_only {
+            return Err(SessionError::RendererOnly);
+        }
+        let page_count = tab.page_count;
+        let place = self.place_of(id);
+        let result = change(self.edits.entry(id).or_insert_with(|| PageEdits::new(page_count)));
+        if result.is_ok() {
+            self.after_change(id, place);
+        } else {
+            self.drop_list_if_idle(id);
+        }
+        result.map_err(SessionError::Edit)
+    }
+
+    /// What the reader is looking at: which file, which page there, and where it is now.
+    fn place_of(&self, id: TabId) -> Option<(u16, u32, u32)> {
+        let position = self.tab(id)?.page;
+        match self.edits.get(&id) {
+            Some(edits) => edits.slots().get(position as usize).map(|slot| (slot.source, slot.page, position)),
+            None => Some((0, position, position)),
+        }
+    }
+
+    /// Everything a change to the page order means: a drawn page's number no longer names that page, and the reader stays on what they were reading.
+    fn after_change(&mut self, id: TabId, place: Option<(u16, u32, u32)>) {
+        self.draws.retain(|draw| draw.tab != id);
+        self.drop_list_if_idle(id);
+        let pages = self.pages_in(id);
+        let found = place.and_then(|(source, page, near)| match self.edits.get(&id) {
+            Some(edits) => edits.nearest_position(source, page, near),
+            None => (source == 0 && page < pages).then_some(page),
+        });
+        let near = place.map_or(0, |(_, _, near)| near);
+        self.place_lost = place.is_some() && found.is_none();
+        let last = pages.saturating_sub(1);
+        if let Some(tab) = self.tab_mut(id) {
+            tab.page = found.unwrap_or(near).min(last);
+        }
+    }
+
+    /// An edit list with nothing in it costs 8 bytes a page for nothing, and would hold the tab to the file's length as it was.
+    fn drop_list_if_idle(&mut self, id: TabId) {
+        if self.edits.get(&id).is_some_and(|edits| !edits.is_edited() && !edits.can_redo()) {
+            self.edits.remove(&id);
+        }
+    }
+
+    /// Whether the last edit removed the page the reader was on, so its place moved to the nearest one. Asking clears it.
+    pub fn take_place_lost(&mut self) -> bool {
+        std::mem::take(&mut self.place_lost)
     }
 
     /// Adds every page of another PDF at a position, as dropping it into the page view does. Only its facts are read.
     pub fn insert_pdf(&mut self, id: TabId, at: u32, path: &Path) -> Result<(), SessionError> {
+        let stamp = file_stamp(path).ok();
         let facts = self.loader.load(path).map_err(SessionError::Open)?;
-        self.edit_pages(id, |edits| edits.insert_pdf(at, path, facts.page_count))
+        self.insert_pdf_with_facts(id, at, path, &facts, stamp)
+    }
+
+    /// Adds another PDF's pages from facts already read, for a caller that reads the file without holding the session. A file only the renderer can read can't be added: Save couldn't write it.
+    pub fn insert_pdf_with_facts(&mut self, id: TabId, at: u32, path: &Path, facts: &DocFacts, stamp: Option<FileStamp>) -> Result<(), SessionError> {
+        if facts.renderer_only {
+            return Err(SessionError::RendererOnly);
+        }
+        if facts.page_count == 0 {
+            return Err(SessionError::Open(OpenError::NotPdf));
+        }
+        self.edit_pages(id, |edits| edits.insert_pdf_stamped(at, path, facts.page_count, stamp))
+    }
+
+    /// Where a page of a tab comes from now, counting unsaved edits. Zero-based.
+    pub fn page_source(&self, id: TabId, position: u32) -> Option<PageSource> {
+        let tab = self.tab(id)?;
+        let Some(edits) = self.edits.get(&id) else {
+            return (position < tab.page_count).then(|| Some(PageSource { path: self.path_of(id)?, page: position, quarter_turns: 0, added: false, expected: None })).flatten();
+        };
+        let slot = *edits.slots().get(position as usize)?;
+        match slot.source {
+            0 => Some(PageSource { path: self.path_of(id)?, page: slot.page, quarter_turns: slot.quarter_turns, added: false, expected: Some(tab.stamp) }),
+            source => {
+                let added = edits.added_sources().get(usize::from(source) - 1)?;
+                Some(PageSource { path: added.path.to_path_buf(), page: slot.page, quarter_turns: slot.quarter_turns, added: true, expected: Some(added.stamp) })
+            }
+        }
+    }
+
+    /// Whether a tab with edits still has the file those edits are about. A tab with none has no page numbers to get wrong: reading from the file as it is now is what's wanted.
+    pub fn own_file_is_current(&self, id: TabId) -> bool {
+        let Some(tab) = self.tab(id) else { return true };
+        if !self.edits.contains_key(&id) {
+            return true;
+        }
+        tab.stamp.is_none() || self.path_of(id).and_then(|path| file_stamp(&path).ok()) == tab.stamp
+    }
+
+    /// What a tab's own file was when its page numbers were recorded, for a caller listing pages by file.
+    pub fn own_stamp(&self, id: TabId) -> Option<FileStamp> {
+        self.tab(id).and_then(|tab| tab.stamp)
+    }
+
+    /// Notes that a page finished drawing, or couldn't be.
+    pub fn note_drawn(&mut self, note: DrawNote) {
+        self.draws.retain(|d| (d.tab, d.page) != (note.tab, note.page));
+        self.draws.push_back(note);
+        while self.draws.len() > MAX_DRAWS_KEPT {
+            self.draws.pop_front();
+        }
+    }
+
+    /// What's known about a page's latest draw, if it's still remembered.
+    pub fn draw_note(&self, tab: TabId, page: u32) -> Option<DrawNote> {
+        self.draws.iter().rev().find(|d| (d.tab, d.page) == (tab, page)).copied()
     }
 
     /// Reverses the last page edit. Returns false with nothing to undo.
     pub fn undo_edit(&mut self, id: TabId) -> bool {
+        let place = self.place_of(id);
         let undone = self.edits.get_mut(&id).is_some_and(PageEdits::undo);
-        self.keep_page_in_range(id);
+        if undone {
+            self.after_change(id, place);
+        }
         undone
     }
 
     /// Repeats the last undone page edit. Returns false with nothing to redo.
     pub fn redo_edit(&mut self, id: TabId) -> bool {
+        let place = self.place_of(id);
         let redone = self.edits.get_mut(&id).is_some_and(PageEdits::redo);
-        self.keep_page_in_range(id);
+        if redone {
+            self.after_change(id, place);
+        }
         redone
     }
 
     /// Throws away a tab's unsaved page edits.
     pub fn discard_edits(&mut self, id: TabId) {
-        self.edits.remove(&id);
-        self.keep_page_in_range(id);
-    }
-
-    fn keep_page_in_range(&mut self, id: TabId) {
-        let pages = self.pages_in(id);
-        if let Some(tab) = self.tab_mut(id) {
-            tab.page = tab.page.min(pages.saturating_sub(1));
+        let place = self.place_of(id);
+        if self.edits.remove(&id).is_some() {
+            self.after_change(id, place);
         }
     }
 
@@ -278,6 +457,7 @@ impl<L: DocLoader> Session<L> {
         self.edits.remove(&id);
         let index = self.tabs.iter().position(|t| t.id == id).ok_or(SessionError::NoSuchTab)?;
         self.tabs.remove(index);
+        self.draws.retain(|d| d.tab != id);
         self.warm.retain(|(tab, _)| *tab != id);
         if self.active == Some(id) {
             self.active = None;
@@ -322,14 +502,22 @@ impl<L: DocLoader> Session<L> {
             return;
         }
         // Woken from cold: rebuild from disk. If that fails, the tab stays and says why.
+        let stamp = self.path_of(id).and_then(|path| file_stamp(&path).ok());
         let loaded = self.path_of(id).ok_or(OpenError::NotFound).and_then(|path| self.loader.load(&path));
+        // An edited tab's length is its edit list's, not the file's: added pages must stay reachable.
+        let pages_with_edits = self.edits.get(&id).map(PageEdits::len);
         let tab = self.tab_mut(id);
         match loaded {
             Ok(facts) => {
                 if let Some(tab) = tab {
                     tab.page_count = facts.page_count;
-                    tab.page = tab.page.min(facts.page_count.saturating_sub(1));
+                    tab.page = tab.page.min(pages_with_edits.unwrap_or(facts.page_count).saturating_sub(1));
                     tab.problem = None;
+                    tab.renderer_only = facts.renderer_only;
+                    // With edits, the numbers in them are about the version they were made on, and that must stay known.
+                    if pages_with_edits.is_none() {
+                        tab.stamp = stamp;
+                    }
                 }
                 self.remember_warm(id, Arc::new(facts.toc));
             }
@@ -409,6 +597,8 @@ pub enum SessionError {
     TooManyTabs,
     UnsavedChanges,
     Edit(EditError),
+    /// Only the renderer can read this file, so its pages can't be changed.
+    RendererOnly,
 }
 
 impl SessionError {
@@ -419,6 +609,7 @@ impl SessionError {
             Self::TooManyTabs => "too_many_tabs",
             Self::UnsavedChanges => "unsaved_changes",
             Self::Edit(error) => error.code(),
+            Self::RendererOnly => "renderer_only",
         }
     }
 
@@ -429,6 +620,7 @@ impl SessionError {
             Self::TooManyTabs => "Too many PDFs are open. Close some and try again.",
             Self::UnsavedChanges => "This PDF has unsaved changes.",
             Self::Edit(error) => error.message(),
+            Self::RendererOnly => "RectoPDF can draw this file but can't read its structure, so its pages can't be changed.",
         }
     }
 }
@@ -449,7 +641,7 @@ mod tests {
             if path.to_string_lossy().contains("missing") {
                 return Err(OpenError::NotFound);
             }
-            Ok(DocFacts { page_count: self.pages, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default() })
+            Ok(DocFacts { page_count: self.pages, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
         }
     }
 
@@ -477,7 +669,7 @@ mod tests {
 
     impl DocLoader for NameLoader {
         fn load(&self, _path: &Path) -> Result<recto_core::DocFacts, recto_core::OpenError> {
-            Ok(recto_core::DocFacts { page_count: 1, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: recto_core::Toc::default() })
+            Ok(recto_core::DocFacts { page_count: 1, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: recto_core::Toc::default(), renderer_only: false })
         }
     }
 
@@ -485,6 +677,176 @@ mod tests {
     #[test]
     fn tab_record_stays_small() {
         assert!(std::mem::size_of::<TabRecord>() <= 256);
+    }
+
+    /// Failure: a field added carelessly raises the cost of every remembered draw.
+    #[test]
+    fn draw_note_stays_small() {
+        assert!(std::mem::size_of::<DrawNote>() <= 32);
+    }
+
+    /// Failure: after a move, the place stays at the same number and shows a different page, which no reader would do. It stays on the page, and if that page goes, it lands on the nearest and says so once.
+    #[test]
+    fn the_place_follows_the_page_being_read() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.go_to(id, 3).unwrap();
+        s.edit_pages(id, |e| e.move_pages(3, 1, 0)).unwrap();
+        assert_eq!(s.tab(id).unwrap().page, 0, "page 4 moved to the front, and the reader with it");
+        assert!(!s.take_place_lost());
+        s.edit_pages(id, |e| e.move_pages(1, 1, 3)).unwrap();
+        assert_eq!(s.tab(id).unwrap().page, 0, "another page moved, so nothing changes");
+        s.edit_pages(id, |e| e.delete(0, 1)).unwrap();
+        assert!(s.take_place_lost(), "the page being read was deleted");
+        assert!(!s.take_place_lost(), "it's only said once");
+        assert_eq!(s.tab(id).unwrap().page, 0, "the nearest there is");
+        s.go_to(id, 3).unwrap();
+        s.edit_pages(id, |e| e.delete(3, 1)).unwrap();
+        assert!(s.take_place_lost());
+        assert_eq!(s.tab(id).unwrap().page, 2, "the last page, since that was the end");
+        let before = s.tab(id).unwrap().page;
+        assert!(s.undo_edit(id));
+        assert_eq!(s.tab(id).unwrap().page, before, "undo keeps the page in view while one comes back behind it");
+    }
+
+    /// Failure: wait says a page is drawn when a different page now has that number, because notes are by position and outlive edits.
+    #[test]
+    fn draw_notes_go_when_the_pages_move() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        let note = DrawNote { tab: id, page: 0, failure: None };
+        s.note_drawn(note);
+        s.edit_pages(id, |e| e.move_pages(0, 1, 2)).unwrap();
+        assert_eq!(s.draw_note(id, 0), None, "after an edit");
+        s.note_drawn(note);
+        assert!(s.undo_edit(id));
+        assert_eq!(s.draw_note(id, 0), None, "after an undo");
+        s.note_drawn(note);
+        assert!(s.redo_edit(id));
+        assert_eq!(s.draw_note(id, 0), None, "after a redo");
+        s.note_drawn(note);
+        s.discard_edits(id);
+        assert_eq!(s.draw_note(id, 0), None, "after a discard");
+        s.note_drawn(note);
+        assert_eq!(s.edit_pages(id, |e| e.rotate(99, 1, 1)), Err(SessionError::Edit(EditError::OutOfRange)));
+        assert_eq!(s.draw_note(id, 0), Some(note), "a refused edit changes nothing");
+    }
+
+    /// Failure: a refused edit leaves an 8-byte-a-page list behind forever, over the budget for an idle tab, and the tab's length stops following its file.
+    #[test]
+    fn a_refused_first_edit_leaves_no_list() {
+        let mut s = session(5);
+        let id = s.open(Path::new("/d/a.pdf")).unwrap();
+        assert_eq!(s.edit_pages(id, |e| e.rotate(999, 1, 1)), Err(SessionError::Edit(EditError::OutOfRange)));
+        assert!(s.page_edits(id).is_none(), "a tab with no edits must cost nothing here");
+        s.edit_pages(id, |e| e.rotate(0, 1, 1)).unwrap();
+        assert_eq!(s.edit_pages(id, |e| e.rotate(999, 1, 1)), Err(SessionError::Edit(EditError::OutOfRange)));
+        assert!(s.page_edits(id).is_some(), "a real edit stays");
+        assert!(s.undo_edit(id));
+        assert!(s.page_edits(id).is_some(), "it can be redone");
+        assert!(s.redo_edit(id));
+        s.discard_edits(id);
+        assert!(s.page_edits(id).is_none());
+    }
+
+    /// Failure: a file replaced behind an edited tab, or behind an added PDF, is read at the old page numbers as if nothing happened. A tab with no edits has nothing to get wrong, and reads the file as it is.
+    #[test]
+    fn a_page_knows_whether_its_file_is_the_one_it_was_numbered_from() {
+        let dir = std::env::temp_dir().join(format!("recto-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (own, added) = (dir.join("own.pdf"), dir.join("added.pdf"));
+        std::fs::write(&own, b"one").unwrap();
+        std::fs::write(&added, b"two").unwrap();
+        let mut s = session(3);
+        let id = s.open(&own).unwrap();
+        assert_eq!(s.page_source(id, 0).unwrap().expected, None, "no edits, so no claim");
+        s.insert_pdf(id, 0, &added).unwrap();
+        assert!(s.page_source(id, 0).unwrap().added);
+        assert!(s.page_source(id, 0).unwrap().is_current());
+        assert!(s.page_source(id, 3).unwrap().is_current());
+        assert!(s.own_file_is_current(id));
+        std::fs::write(&added, b"two, longer").unwrap();
+        assert!(!s.page_source(id, 0).unwrap().is_current(), "the added file changed");
+        assert!(s.page_source(id, 3).unwrap().is_current(), "the tab's own file hasn't");
+        assert_eq!(s.insert_pdf(id, 0, &added), Err(SessionError::Edit(EditError::SourceChanged)), "two versions can't share page numbers");
+        std::fs::remove_file(&added).unwrap();
+        assert!(!s.page_source(id, 0).unwrap().is_current(), "the added file's gone");
+        std::fs::write(&own, b"one, longer").unwrap();
+        assert!(!s.page_source(id, 3).unwrap().is_current());
+        assert!(!s.own_file_is_current(id));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Failure: a tab with added pages wakes from cold and lands back inside the file's own length, so the reader jumps away from the page they were on.
+    #[test]
+    fn waking_an_edited_tab_keeps_its_place_in_the_edited_length() {
+        let mut s = session(5);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        s.insert_pdf(a, 5, Path::new("/d/added.pdf")).unwrap();
+        s.go_to(a, 8).unwrap();
+        for i in 0..MAX_WARM + 1 {
+            s.open(Path::new(&format!("/d/other{i}.pdf"))).unwrap();
+        }
+        assert_eq!(s.tier(a), Tier::Cold);
+        s.tap(a).unwrap();
+        assert_eq!(s.tab(a).unwrap().page, 8);
+    }
+
+    /// Failure: after a move or a delete, reading "page 2" reads the file's second page rather than the one now in that place.
+    #[test]
+    fn a_pages_source_follows_edits() {
+        let mut s = session(3);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        let three = s.page_source(a, 2).unwrap();
+        assert_eq!((three.path.as_path(), three.page, three.quarter_turns, three.added), (Path::new("/d/a.pdf"), 2, 0, false));
+        assert_eq!(s.page_source(a, 3), None);
+        s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
+        s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
+        let first = s.page_source(a, 0).unwrap();
+        assert_eq!((first.path.as_path(), first.page, first.quarter_turns, first.added), (Path::new("/d/a.pdf"), 1, 1, false));
+        s.insert_pdf(a, 0, Path::new("/d/b.pdf")).unwrap();
+        let second = s.page_source(a, 1).unwrap();
+        assert_eq!((second.path.as_path(), second.page, second.added), (Path::new("/d/b.pdf"), 1, true));
+    }
+
+    struct RendererOnlyLoader;
+
+    impl DocLoader for RendererOnlyLoader {
+        fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
+            Ok(DocFacts { page_count: 4, byte_len: 1, encrypted: false, version: "".into(), title: None, toc: Toc::default(), renderer_only: true })
+        }
+    }
+
+    /// Failure: a file only the renderer can read gets edited or added to another, though nothing could ever save the result. One writer: it must be readable and drawable, never editable.
+    #[test]
+    fn a_renderer_only_file_can_be_opened_but_not_edited_or_added() {
+        let mut s = Session::new(RendererOnlyLoader);
+        let id = s.open(Path::new("/d/damaged.pdf")).unwrap();
+        assert_eq!(s.pages_in(id), 4);
+        assert!(s.tab(id).unwrap().renderer_only);
+        assert_eq!(s.edit_pages(id, |e| e.rotate(0, 1, 1)), Err(SessionError::RendererOnly));
+        assert!(!s.is_edited(id));
+        let mut other = session(3);
+        let target = other.open(Path::new("/d/fine.pdf")).unwrap();
+        let facts = RendererOnlyLoader.load(Path::new("/d/damaged.pdf")).unwrap();
+        assert_eq!(other.insert_pdf_with_facts(target, 0, Path::new("/d/damaged.pdf"), &facts, None), Err(SessionError::RendererOnly));
+        assert!(!other.is_edited(target));
+    }
+
+    /// Failure: the draw notes grow with a long session, or an old result survives its tab, so a waiter is told a closed tab's page is drawn.
+    #[test]
+    fn draw_notes_are_capped_and_go_with_their_tab() {
+        let mut s = session(5);
+        let a = s.open(Path::new("/d/a.pdf")).unwrap();
+        for page in 0..(MAX_DRAWS_KEPT as u32 * 2) {
+            s.note_drawn(DrawNote { tab: a, page, failure: None });
+        }
+        assert_eq!(s.draws.len(), MAX_DRAWS_KEPT);
+        assert!(s.draw_note(a, 0).is_none());
+        let last = MAX_DRAWS_KEPT as u32 * 2 - 1;
+        assert!(s.draw_note(a, last).is_some());
+        s.close(a).unwrap();
+        assert!(s.draw_note(a, last).is_none());
     }
 
     /// Failure: a field added carelessly raises the cost of every visible row.
@@ -606,7 +968,7 @@ mod tests {
         assert_eq!(s.pages_in(id), 7);
         assert_eq!(s.sidebar().place, "2 of 7");
         s.discard_edits(id);
-        assert_eq!(s.sidebar().place, "2 of 5");
+        assert_eq!(s.sidebar().place, "5 of 5", "the reader stays on the page they were reading");
     }
 
     /// Failure: every open tab pays for page edits, so idle tabs cost more once one PDF is edited.

@@ -502,11 +502,23 @@ impl RenderBackend for PdfiumBackend {
         let want_boxes = options.boxes || options.hidden_check;
         let mut chars = Vec::with_capacity(count as usize);
         let mut boxes: Vec<CharBox> = Vec::with_capacity(if want_boxes { count as usize } else { 0 });
-        for index in 0..count {
+        let mut index = 0;
+        while index < count {
             // SAFETY: `text` is live and `index` is below its character count.
-            let (code, hyphen, generated) = unsafe {
+            let (mut code, hyphen, generated) = unsafe {
                 ((api.FPDFText_GetUnicode)(text, index), (api.FPDFText_IsHyphen)(text, index), (api.FPDFText_IsGenerated)(text, index))
             };
+            // A character past the 16-bit range comes from a font's ToUnicode as two halves, each its own "character" here. Put back together, or an emoji is lost and a tag character, the plainest
+            // hidden instruction there is, is never seen as one.
+            let mut taken = 1;
+            if (0xD800..0xDC00).contains(&code) && index + 1 < count {
+                // SAFETY: as above, and `index + 1` was just checked.
+                let low = unsafe { (api.FPDFText_GetUnicode)(text, index + 1) };
+                if (0xDC00..0xE000).contains(&low) {
+                    code = 0x1_0000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                    taken = 2;
+                }
+            }
             let mut flags = 0;
             if hyphen == 1 {
                 flags |= CharRecord::HYPHEN;
@@ -522,6 +534,7 @@ impl RenderBackend for PdfiumBackend {
                 let edge = |value: f64| if value.is_finite() { value as f32 } else { 0.0 };
                 boxes.push([edge(left), edge(bottom), edge(right), edge(top)]);
             }
+            index += taken;
         }
         // A page with no characters has nothing to hide from a text reader, and needs no drawing to say so.
         // If the page can't be drawn for the check, the text still goes back, saying it wasn't checked: nothing is marked until the drawing has worked.

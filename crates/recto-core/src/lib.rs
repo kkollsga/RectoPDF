@@ -6,7 +6,13 @@
 use lopdf::{Dictionary, FileSource, IndexedReader, Object, ObjectId};
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
+use std::cell::Cell;
 use std::path::Path;
+use std::time::{Duration, Instant};
+
+mod signatures;
+
+pub use signatures::{MAX_FIELD_VISITS, MAX_SIGNATURES, SignatureEntry, SignatureInventory, SignatureState, signatures, signatures_within};
 
 /// Most contents entries kept for one document. A hostile file can't make the contents grow past this.
 pub const MAX_TOC_ENTRIES: usize = 100_000;
@@ -14,8 +20,10 @@ pub const MAX_TOC_ENTRIES: usize = 100_000;
 pub const MAX_TOC_DEPTH: u8 = 32;
 /// Longest title kept, in bytes.
 pub const MAX_TITLE_BYTES: usize = 512;
-/// Most name tree nodes visited for one lookup.
-const MAX_NAME_TREE_VISITS: usize = 4096;
+/// Most name tree nodes visited for one document's whole contents, across all its lookups. A hostile tree multiplied by a long outline mustn't be able to hold `open` for hours.
+const MAX_NAME_TREE_VISITS: usize = 65_536;
+/// How long reading one document's contents may take. It runs in the session's own process, so it has to end by itself. What's been read by then is kept, and `Toc::truncated` says so.
+const MAX_CONTENTS_TIME: Duration = Duration::from_secs(5);
 
 /// Marks a contents entry with no page or no parent.
 pub const NONE: u32 = u32::MAX;
@@ -69,6 +77,8 @@ pub struct TocEntry {
 pub struct Toc {
     titles: Box<str>,
     entries: Box<[TocEntry]>,
+    /// Reading stopped at a limit, so there may be more than these.
+    pub truncated: bool,
 }
 
 impl Toc {
@@ -101,20 +111,32 @@ pub struct DocFacts {
     /// The PDF's own title, cleaned. It comes from the file, so treat it as untrusted.
     pub title: Option<Box<str>>,
     pub toc: Toc,
+    /// The structure reader refused this file, and only the renderer could read it. The page count is the renderer's, and there's no title, contents or signature report to give.
+    /// Such a tab can be read and drawn, but its pages can't be edited: only the structure reader's writer may change a PDF.
+    pub renderer_only: bool,
 }
 
-/// Opens a PDF lazily, reads its facts and closes it. No file handle stays open after this returns.
-pub fn inspect(path: &Path) -> Result<DocFacts, OpenError> {
-    std::fs::metadata(path).map_err(|e| match e.kind() {
+/// Opens a file for the lazy reader. Only a plain file: opening a pipe would wait for a writer for ever, and a device could be anything.
+fn open_reader(path: &Path) -> Result<IndexedReader, OpenError> {
+    let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
         ErrorKind::NotFound => OpenError::NotFound,
         ErrorKind::PermissionDenied => OpenError::NotAllowed,
         _ => OpenError::NotPdf,
     })?;
+    if !meta.is_file() {
+        return Err(OpenError::NotPdf);
+    }
     let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
     let reader = IndexedReader::open(source).map_err(|_| OpenError::NotPdf)?;
     if reader.is_encrypted() && !reader.is_authenticated() {
         return Err(OpenError::PasswordNeeded);
     }
+    Ok(reader)
+}
+
+/// Opens a PDF lazily, reads its facts and closes it. No file handle stays open after this returns.
+pub fn inspect(path: &Path) -> Result<DocFacts, OpenError> {
+    let reader = open_reader(path)?;
     let page_count = reader.page_count().map_err(|_| OpenError::NotPdf)?;
     Ok(DocFacts {
         page_count: u32::try_from(page_count).map_err(|_| OpenError::NotPdf)?,
@@ -124,6 +146,7 @@ pub fn inspect(path: &Path) -> Result<DocFacts, OpenError> {
         title: read_title(&reader),
         // A damaged outline shouldn't stop a readable PDF from opening.
         toc: read_toc(&reader).unwrap_or_default(),
+        renderer_only: false,
     })
 }
 
@@ -150,6 +173,12 @@ fn dict_of(reader: &IndexedReader, id: ObjectId) -> Option<Dictionary> {
 }
 
 fn read_toc(reader: &IndexedReader) -> Option<Toc> {
+    read_toc_within(reader, MAX_CONTENTS_TIME)
+}
+
+fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
+    let deadline = Instant::now() + limit;
+    let walk = NameWalk { visits_left: Cell::new(MAX_NAME_TREE_VISITS), deadline };
     let root = reader.trailer_entry_owned(b"Root").ok()??;
     let root = root.as_dict().ok()?;
     let outlines = deref(reader, root.get(b"Outlines").ok()?)?;
@@ -169,8 +198,10 @@ fn read_toc(reader: &IndexedReader) -> Option<Toc> {
     // An explicit stack, so a deep file can't overflow the thread's. Popping the first child before the next sibling
     // keeps entries in document order.
     let mut stack = vec![(first, NONE, 0u8)];
+    let mut truncated = false;
     while let Some((id, parent, depth)) = stack.pop() {
-        if entries.len() >= MAX_TOC_ENTRIES {
+        if entries.len() >= MAX_TOC_ENTRIES || Instant::now() >= deadline {
+            truncated = true;
             break;
         }
         // A file can loop its outline back on itself.
@@ -190,7 +221,7 @@ fn read_toc(reader: &IndexedReader) -> Option<Toc> {
         entries.push(TocEntry {
             title_start,
             title_len,
-            page: target_page(reader, root, &node, &pages).unwrap_or(NONE),
+            page: target_page(reader, root, &node, &pages, &walk).unwrap_or(NONE),
             parent,
             depth,
         });
@@ -203,10 +234,27 @@ fn read_toc(reader: &IndexedReader) -> Option<Toc> {
             stack.push((child, index, depth + 1));
         }
     }
-    Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice() })
+    Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated: truncated || walk.visits_left.get() == 0 })
 }
 
-fn target_page(reader: &IndexedReader, root: &Dictionary, node: &Dictionary, pages: &HashMap<ObjectId, u32>) -> Option<u32> {
+/// What's left for following named destinations, shared across the whole outline.
+struct NameWalk {
+    visits_left: Cell<usize>,
+    deadline: Instant,
+}
+
+impl NameWalk {
+    fn may_visit(&self) -> bool {
+        let left = self.visits_left.get();
+        if left == 0 || Instant::now() >= self.deadline {
+            return false;
+        }
+        self.visits_left.set(left - 1);
+        true
+    }
+}
+
+fn target_page(reader: &IndexedReader, root: &Dictionary, node: &Dictionary, pages: &HashMap<ObjectId, u32>, walk: &NameWalk) -> Option<u32> {
     let dest = match node.get(b"Dest") {
         Ok(dest) => deref(reader, dest)?,
         Err(_) => {
@@ -218,10 +266,10 @@ fn target_page(reader: &IndexedReader, root: &Dictionary, node: &Dictionary, pag
             deref(reader, action.get(b"D").ok()?)?
         }
     };
-    page_of_dest(reader, root, &dest, pages, 0)
+    page_of_dest(reader, root, &dest, pages, walk, 0)
 }
 
-fn page_of_dest(reader: &IndexedReader, root: &Dictionary, dest: &Object, pages: &HashMap<ObjectId, u32>, hops: u8) -> Option<u32> {
+fn page_of_dest(reader: &IndexedReader, root: &Dictionary, dest: &Object, pages: &HashMap<ObjectId, u32>, walk: &NameWalk, hops: u8) -> Option<u32> {
     // A named destination can name another, and a file can make that a loop.
     if hops > 4 {
         return None;
@@ -231,30 +279,30 @@ fn page_of_dest(reader: &IndexedReader, root: &Dictionary, dest: &Object, pages:
         Object::Name(name) => {
             let dests = deref(reader, root.get(b"Dests").ok()?)?;
             let found = deref(reader, dests.as_dict().ok()?.get(name).ok()?)?;
-            page_of_dest(reader, root, &found, pages, hops + 1)
+            page_of_dest(reader, root, &found, pages, walk, hops + 1)
         }
         Object::String(name, _) => {
             let names = deref(reader, root.get(b"Names").ok()?)?;
             let tree = deref(reader, names.as_dict().ok()?.get(b"Dests").ok()?)?;
-            let found = find_in_name_tree(reader, &tree, name)?;
-            page_of_dest(reader, root, &found, pages, hops + 1)
+            let found = find_in_name_tree(reader, &tree, name, walk)?;
+            page_of_dest(reader, root, &found, pages, walk, hops + 1)
         }
         Object::Dictionary(dict) => {
             let inner = deref(reader, dict.get(b"D").ok()?)?;
-            page_of_dest(reader, root, &inner, pages, hops + 1)
+            page_of_dest(reader, root, &inner, pages, walk, hops + 1)
         }
         _ => None,
     }
 }
 
-fn find_in_name_tree(reader: &IndexedReader, root: &Object, wanted: &[u8]) -> Option<Object> {
+fn find_in_name_tree(reader: &IndexedReader, root: &Object, wanted: &[u8], walk: &NameWalk) -> Option<Object> {
+    // Children wait here unresolved, so a wide node costs its array and no reads until they're each reached.
     let mut stack = vec![root.clone()];
-    let mut visits = 0;
     while let Some(node) = stack.pop() {
-        visits += 1;
-        if visits > MAX_NAME_TREE_VISITS {
+        if !walk.may_visit() {
             return None;
         }
+        let Some(node) = deref(reader, &node) else { continue };
         let Ok(dict) = node.as_dict() else { continue };
         if let Ok(limits) = dict.get(b"Limits").and_then(Object::as_array)
             && let (Some(Ok(low)), Some(Ok(high))) = (limits.first().map(Object::as_str), limits.get(1).map(Object::as_str))
@@ -270,7 +318,7 @@ fn find_in_name_tree(reader: &IndexedReader, root: &Object, wanted: &[u8]) -> Op
             }
         }
         if let Ok(kids) = dict.get(b"Kids").and_then(Object::as_array) {
-            stack.extend(kids.iter().filter_map(|kid| deref(reader, kid)));
+            stack.extend(kids.iter().take(walk.visits_left.get()).cloned());
         }
     }
     None
@@ -351,6 +399,16 @@ mod tests {
     #[test]
     fn toc_entry_stays_small() {
         assert!(std::mem::size_of::<TocEntry>() <= 32);
+    }
+
+    /// Failure: reading contents has no bound on time, so a slow file holds `open` for as long as it likes. It must stop, keep what it has, and say so.
+    #[test]
+    fn contents_stop_at_their_time_limit_and_say_so() {
+        let walk = NameWalk { visits_left: Cell::new(3), deadline: Instant::now() + Duration::from_secs(60) };
+        assert!(walk.may_visit() && walk.may_visit() && walk.may_visit());
+        assert!(!walk.may_visit(), "out of visits");
+        let late = NameWalk { visits_left: Cell::new(3), deadline: Instant::now() };
+        assert!(!late.may_visit(), "out of time");
     }
 
     /// Failure: a title with bidi overrides or newlines reaches the sidebar or an agent's prompt intact.
