@@ -5,7 +5,7 @@
 use super::index::page;
 use crate::guard::{Budget, within};
 use crate::input::Take;
-use recto_index::select::{CopiedText, MAX_LINES, MAX_RECTS_PER_PAGE, MAX_SELECTABLE_CHARS, PAGE_END, PagePoint, PageText, Range, Selection, Texts, Unit};
+use recto_index::select::{CopiedText, MAX_RECTS_PER_PAGE, MAX_SELECTABLE_CHARS, PAGE_END, PagePoint, PageText, Range, Selection, Texts, Unit};
 use recto_proto::PageFrame;
 use std::time::Duration;
 
@@ -72,7 +72,6 @@ fn check_page(text: &PageText, take: &mut Take) {
     let mut copied = CopiedText::default();
     copied.add_page(0, text, &Range::pages(0, 0), 64);
     assert!(copied.text.len() <= 64, "{}", copied.text.len());
-    assert!(MAX_LINES >= 1);
 }
 
 fn check_pointer(texts: &One, take: &mut Take) {

@@ -381,7 +381,8 @@ mod tests {
     fn a_highlight_shows_and_leaves_text_readable_on_every_paper() {
         let rgb = |value: u32| [f64::from((value >> 16) & 0xFF) / 255.0, f64::from((value >> 8) & 0xFF) / 255.0, f64::from(value & 0xFF) / 255.0];
         let warm_tint = [0.96, 0.93, 0.86];
-        let cases: [(&str, PaperKind, u32, [u32; 2], Option<[f64; 3]>); 3] = [("white", PaperKind::White, 0xFF_FF_FF, [0xB3_D7_FF, 0xD9_D9_D9], None), ("warm", PaperKind::White, 0xFF_FF_FF, [0xB3_D7_FF, 0xD9_D9_D9], Some(warm_tint)), ("dark", PaperKind::Dark, DARK_PAPER, [0x3F_63_8B, 0x46_46_46], None)];
+        type Case = (&'static str, PaperKind, u32, [u32; 2], Option<[f64; 3]>);
+        let cases: [Case; 3] = [("white", PaperKind::White, 0xFF_FF_FF, [0xB3_D7_FF, 0xD9_D9_D9], None), ("warm", PaperKind::White, 0xFF_FF_FF, [0xB3_D7_FF, 0xD9_D9_D9], Some(warm_tint)), ("dark", PaperKind::Dark, DARK_PAPER, [0x3F_63_8B, 0x46_46_46], None)];
         for (name, kind, paper, colours, tint) in cases {
             let look = kind.highlight();
             assert_eq!(look.dark_colour, kind == PaperKind::Dark);

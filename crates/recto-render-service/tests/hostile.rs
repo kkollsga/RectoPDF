@@ -110,7 +110,7 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
 }
 
 fn answer_text(mode: &str, job: &TextJob) -> Vec<u8> {
-    let good = TextReply { job_id: job.job_id, page: job.page, hidden_checked: job.hidden_check, chars: vec![CharRecord::new('a' as u32, 0)], boxes: Vec::new() };
+    let good = TextReply { job_id: job.job_id, page: job.page, hidden_checked: job.hidden_check, chars: vec![CharRecord::new('a' as u32, 0)], boxes: Vec::new(), ..TextReply::default() };
     match mode {
         "text_wrong_page" => TextReply { page: job.page + 1, ..good }.encode().unwrap(),
         "text_nan_box" => TextReply { boxes: vec![[f32::NAN; 4]], ..good }.encode().unwrap(),
