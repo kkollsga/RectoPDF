@@ -656,19 +656,44 @@ fn unknown_command(words: &[&str]) -> AgentError {
         let names: Vec<String> = family_rows(group).map(|spec| spec.name.to_string()).collect();
         return usage_error(format!("`{typed}` needs one more word."), format!("Use `recto {}`. `recto help {typed}` lists them.", names.join("`, `recto "))).with_candidates(names);
     }
-    let candidates: Vec<String> = TABLE
-        .iter()
-        .filter(|spec| !spec.hidden)
-        .map(|spec| (spec.name, distance(spec.name, &typed).min(if spec.name.starts_with(first) { 0 } else { usize::MAX })))
-        .filter(|(_, distance)| *distance <= 3)
-        .map(|(name, _)| name.to_string())
-        .take(6)
-        .collect();
+    let candidates = nearest_commands(first, &typed);
     let next = match candidates.as_slice() {
         [] => "`recto help` lists every command.".to_string(),
         some => format!("Perhaps `recto {}`. `recto help` lists every command.", some.join("`, `recto ")),
     };
     usage_error(format!("`{typed}` isn't a command."), next).with_candidates(candidates)
+}
+
+/// The rows a mistyped command most likely meant, nearest first. By how close the name is, then whether its summary's first sentence uses the word: `recto doc` is near nothing by spelling, and `facts` is about "a document". All from the table, so there's no list of synonyms to keep up.
+fn nearest_commands(first: &str, typed: &str) -> Vec<String> {
+    const MOST: usize = 4;
+    let first_lower = first.to_lowercase();
+    let mut close: Vec<(usize, &str)> = TABLE
+        .iter()
+        .filter(|spec| !spec.hidden)
+        .filter_map(|spec| {
+            let same_family = spec.name.split(' ').next() == Some(first);
+            let spelled = distance(spec.name, typed).min(distance(spec.name, first)).min(distance(spec.name.split(' ').next().unwrap_or(spec.name), first));
+            // A short word is close to every other short word. Only as close as half its letters counts.
+            let near = spelled <= 3 && spelled * 2 <= first.chars().count().max(spec.name.chars().count());
+            (same_family || near).then_some((if same_family { 0 } else { spelled }, spec.name))
+        })
+        .collect();
+    close.sort_by_key(|(spelled, _)| *spelled);
+    close.truncate(MOST);
+    let mut names: Vec<String> = close.into_iter().map(|(_, name)| name.to_string()).collect();
+    if first_lower.chars().count() >= 3 {
+        for spec in TABLE.iter().filter(|spec| !spec.hidden) {
+            if names.len() >= MOST {
+                break;
+            }
+            let mentions = first_sentence(spec.summary).split(|c: char| !c.is_alphanumeric()).any(|word| word.to_lowercase().starts_with(&first_lower));
+            if mentions && !names.iter().any(|name| name == spec.name) {
+                names.push(spec.name.to_string());
+            }
+        }
+    }
+    names
 }
 
 /// Edit distance, for suggesting a command. Short strings only.
@@ -703,7 +728,7 @@ fn read_args(spec: &'static Spec, words: &[&str], literal_from: usize, help: boo
             // `--page=3` and `--page 3` are the same thing.
             let (flag, inline) = word.split_once('=').map_or((word, None), |(flag, value)| (flag, Some(value)));
             let Some(arg) = spec.args.iter().find(|arg| arg.flag == Some(flag)) else {
-                return Err(wrong(format!("`recto {}` has no `{}`.", spec.name, recto_core::clean_line(flag))));
+                return Err(unknown_flag(spec, flag, inline.or_else(|| words.get(index).copied().filter(|next| !next.starts_with("--")))));
             };
             if arg.kind == Kind::Switch {
                 if inline.is_some() {
@@ -725,11 +750,7 @@ fn read_args(spec: &'static Spec, words: &[&str], literal_from: usize, help: boo
             fields.insert(arg.key.into(), read_value(arg, value).map_err(wrong)?);
         } else {
             let Some(arg) = places.next() else {
-                if let Some(flag) = page_flag_for(spec, word) {
-                    let shown = recto_core::clean_line(word);
-                    return Err(usage_error(format!("`recto {}` takes that as `{flag} {shown}`.", spec.name), format!("`recto help {}` shows how to use it.", spec.name)));
-                }
-                return Err(wrong(format!("`recto {}` doesn't take `{}` here.", spec.name, recto_core::clean_line(word))));
+                return Err(stray_word(spec, word, &fields));
             };
             if arg.kind == Kind::Rest {
                 rest = words[index - 1..].iter().map(|word| (*word).to_string()).collect();
@@ -748,18 +769,119 @@ fn read_args(spec: &'static Spec, words: &[&str], literal_from: usize, help: boo
     Ok((fields, rest))
 }
 
-/// The flag a stray page number was probably meant for: `recto text 1` for `--page 1`. Measurements count pages rather than name them, so they're left out.
-fn page_flag_for(spec: &Spec, word: &str) -> Option<&'static str> {
-    if spec.group == GROUP_MEASURE {
+/// What's said after any wrong word on a line: how the command goes, from its row.
+fn how_it_goes(spec: &Spec) -> String {
+    format!("It goes `{}`. `recto help {}` shows how to use it.", usage_line(spec), spec.name)
+}
+
+/// A value as it would be typed: what the shell would take as a comment, or split, in quotes. Only short plain ones are echoed, since this comes back in a message.
+fn typed_value(value: &str) -> Option<String> {
+    let shown = recto_core::clean_line(value);
+    if shown.is_empty() || shown.chars().count() > 64 {
         return None;
     }
-    // Advice it would then refuse is worse than none: `--page` takes one page, and `--pages` can take a range.
-    spec.args.iter().filter(|arg| arg.flag.is_some()).find_map(|arg| match arg.kind {
+    Some(if shown.starts_with('#') || shown.contains(char::is_whitespace) { format!("\"{shown}\"") } else { shown })
+}
+
+/// How near a flag someone typed is to one that exists, by its spelling, what's after the `--` being what counts. `--page` isn't near `--tab`, though only 3 letters apart: that's all of them.
+fn flag_distance(typed: &str, real: &str) -> Option<usize> {
+    let (typed, real) = (typed.trim_start_matches('-'), real.trim_start_matches('-'));
+    if typed.len() >= 3 && real.len() >= 3 && (typed.starts_with(real) || real.starts_with(typed)) {
+        return Some(1);
+    }
+    let apart = distance(typed, real);
+    (apart <= 2 && apart < typed.chars().count().min(real.chars().count())).then_some(apart)
+}
+
+/// The argument a flag that doesn't exist most likely meant: one named that, whatever its flag is, or else one spelled nearly that.
+fn nearest_arg(spec: &Spec, flag: &str) -> Option<&'static Arg> {
+    let named = flag.trim_start_matches('-').replace('-', "_");
+    let by_name = spec.args.iter().find(|arg| arg.key == named || arg.key.trim_end_matches("_ms") == named);
+    by_name.or_else(|| spec.args.iter().filter_map(|arg| Some((flag_distance(flag, arg.flag?)?, arg))).min_by_key(|(apart, _)| *apart).map(|(_, arg)| arg))
+}
+
+/// Refuses a flag the row doesn't have, with the closest form that would work: a flag spelled nearly that (`--pages 19` for `--page 19`), or the place a value goes that has no flag (`recto goto 5` for `--page 5`). Advice it would then refuse is worse than none, so a value is only put in if its argument takes it.
+fn unknown_flag(spec: &'static Spec, flag: &str, value: Option<&str>) -> AgentError {
+    let typed_flag = recto_core::clean_line(flag);
+    let mut message = format!("`recto {}` has no `{typed_flag}`.", spec.name);
+    let mut candidates = Vec::new();
+    match nearest_arg(spec, flag) {
+        Some(arg) => {
+            let fits = value.filter(|value| read_value(arg, value).is_ok()).and_then(typed_value);
+            match (arg.flag, fits) {
+                (Some(real), Some(value)) => {
+                    message.push_str(&format!(" Perhaps `{real} {value}`."));
+                    candidates.push(format!("{real} {value}"));
+                }
+                (Some(real), None) => {
+                    message.push_str(&format!(" The nearest is `{real}`: {}", arg.help));
+                    candidates.push(real.to_string());
+                }
+                (None, Some(value)) => {
+                    let form = format!("recto {} {value}", spec.name);
+                    message.push_str(&format!(" That goes in its place, with no flag: `{form}`."));
+                    candidates.push(form);
+                }
+                (None, None) => message.push_str(&format!(" `<{}>` goes in its place, with no flag: {}", arg.key, arg.help)),
+            }
+        }
+        None => {
+            let flags: Vec<&str> = spec.args.iter().filter_map(|arg| arg.flag).collect();
+            if !flags.is_empty() {
+                message.push_str(&format!(" It has `{}`.", flags.join("`, `")));
+            }
+        }
+    }
+    usage_error(message, how_it_goes(spec)).with_candidates(candidates)
+}
+
+/// Refuses a word with no place to go, and says the form that would take it, if there's a good guess: a page number for its flag, a tab for `--tab`, more words for quotes around the words. Measurements count pages rather than name them, so they're left out.
+fn stray_word(spec: &'static Spec, word: &str, fields: &Map<String, Value>) -> AgentError {
+    let shown = recto_core::clean_line(word);
+    let mut message = format!("`recto {}` doesn't take `{shown}` here.", spec.name);
+    let mut candidates = Vec::new();
+    if spec.group != GROUP_MEASURE {
+        let text_taken = spec.args.iter().find(|arg| arg.kind == Kind::Text && arg.flag.is_none()).and_then(|arg| fields.get(arg.key)).and_then(Value::as_str);
+        if let Some((flag, value)) = flag_for_stray_word(spec, word) {
+            message = format!("`recto {}` takes that as `{flag} {value}`.", spec.name);
+            candidates.push(format!("{flag} {value}"));
+        } else if let Some(before) = text_taken.and_then(typed_value) {
+            let words = format!("{} {shown}", before.trim_matches('"'));
+            message = format!("`recto {}` takes one piece of text. Several words go in quotes: `recto {} \"{words}\"`.", spec.name, spec.name);
+        } else if word.to_ascii_lowercase().ends_with(".pdf") && spec.args.iter().any(|arg| arg.kind == Kind::Tab) {
+            message = format!("`recto {}` works on a tab, not a file. `recto open {shown}` opens it, and `--tab` picks it.", spec.name);
+        }
+    }
+    usage_error(message, how_it_goes(spec)).with_candidates(candidates)
+}
+
+/// The flag a stray word was probably meant for, and how to write its value: `recto text 1` for `--page 1`, and `recto close "#1"` for `--tab "#1"`. Advice it would then refuse is worse than none: `--page` takes one page, and `--pages` can take a range.
+fn flag_for_stray_word(spec: &Spec, word: &str) -> Option<(&'static str, String)> {
+    let flagged = || spec.args.iter().filter(|arg| arg.flag.is_some());
+    let for_a_page = flagged().find_map(|arg| match arg.kind {
         Kind::Page if whole_number(word).is_some_and(|page| page > 0) => arg.flag,
         Kind::Pages if crate::parse_pages(word, false).is_ok() => arg.flag,
         Kind::PagesOpen if crate::parse_pages(word, true).is_ok() => arg.flag,
         _ => None,
-    })
+    });
+    if let Some(flag) = for_a_page {
+        return Some((flag, recto_core::clean_line(word)));
+    }
+    // Another word after a piece of text is more of that text, and quotes are the answer.
+    if spec.args.iter().any(|arg| arg.kind == Kind::Text && arg.flag.is_none()) {
+        return None;
+    }
+    let tab_flag = flagged().find(|arg| arg.kind == Kind::Tab)?.flag?;
+    let has_pages = flagged().any(|arg| matches!(arg.kind, Kind::Page | Kind::Pages | Kind::PagesOpen));
+    // A bare number is a tab's only where a page can't be what's meant. A word is a tab's if it could be part of a name, and not a file or a flag.
+    let value = match whole_number(word) {
+        Some(number) if number > 0 && !has_pages => format!("\"#{number}\""),
+        Some(_) => return None,
+        None if word.ends_with(|c: char| c == '-') || word.starts_with('-') || word.contains('/') || word.to_ascii_lowercase().ends_with(".pdf") => return None,
+        None if word.chars().any(char::is_alphabetic) || word.strip_prefix('#').and_then(whole_number).is_some() => typed_value(word)?,
+        None => return None,
+    };
+    Some((tab_flag, value))
 }
 
 fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
@@ -975,6 +1097,24 @@ mod tests {
         }
     }
 
+    /// A value each kind of argument takes.
+    fn sample_of(kind: Kind) -> &'static str {
+        match kind {
+            Kind::Tab => "#1",
+            Kind::Page | Kind::Count(_) | Kind::Positive(_) => "1",
+            Kind::Pages | Kind::PagesOpen => "1-2",
+            Kind::Path => "/d/out.png",
+            Kind::Scale => "2x",
+            Kind::Duration => "5s",
+            Kind::Degrees => "90",
+            Kind::Level => "read_only",
+            Kind::Text => "words",
+            Kind::Choice(words) | Kind::List(words) => words[0],
+            Kind::Size => "10x10",
+            Kind::Switch | Kind::Rest => "",
+        }
+    }
+
     /// Failure: a row's flags and its command's fields drift apart, so a flag on the docs is refused by the socket as an unknown field. Fills every argument of every row and parses the result.
     #[test]
     fn every_argument_of_every_row_reaches_the_command() {
@@ -985,20 +1125,7 @@ mod tests {
                 if let Some(flag) = arg.flag {
                     line.push(flag.to_string());
                 }
-                let sample = match arg.kind {
-                    Kind::Tab => "#1",
-                    Kind::Page | Kind::Count(_) | Kind::Positive(_) => "1",
-                    Kind::Pages | Kind::PagesOpen => "1-2",
-                    Kind::Path => "/d/out.png",
-                    Kind::Scale => "2x",
-                    Kind::Duration => "5s",
-                    Kind::Degrees => "90",
-                    Kind::Level => "read_only",
-                    Kind::Text => "words",
-                    Kind::Choice(words) | Kind::List(words) => words[0],
-                    Kind::Size => "10x10",
-                    Kind::Switch | Kind::Rest => "",
-                };
+                let sample = sample_of(arg.kind);
                 if !sample.is_empty() {
                     line.push(sample.to_string());
                 }
@@ -1110,6 +1237,76 @@ mod tests {
         assert!(!line("tabs 1").unwrap_err().message.contains("--page"), "it has none");
         assert!(!line("text word").unwrap_err().message.contains("--page word"), "that's no page");
         assert!(!line("budget render 5").unwrap_err().message.contains("--first"), "a measurement's number is a count");
+    }
+
+    /// Failure: an agent types `text --pages 19` or `close #1` and is told only that it's wrong, so it loses a turn reading the help. Any unknown flag or stray word, on any row, gets the closest valid form, and that form must itself parse. Driven by the table, so a new command has this from the start.
+    #[test]
+    fn a_near_miss_gets_the_closest_form_that_works() {
+        let line = |words: &[&str]| parse_cli(&words.iter().map(|word| (*word).to_string()).collect::<Vec<_>>());
+        for (typed, wanted) in [
+            (&["text", "--pages", "19"][..], "--page 19"),
+            (&["search", "word", "--page", "3"][..], "--pages 3"),
+            (&["text", "--page", "1", "--tabs", "#2"][..], "--tab \"#2\""),
+            (&["contents", "--dept", "1"][..], "--depth 1"),
+            (&["render", "--page", "1", "--output", "/d/a.png"][..], "--out /d/a.png"),
+            (&["wait", "tab-open", "a", "--time", "5s"][..], "--timeout 5s"),
+            (&["page", "rotate", "1", "--degrees", "90"][..], "--by 90"),
+            (&["close", "#1"][..], "--tab \"#1\""),
+            (&["where", "2"][..], "--tab \"#2\""),
+            (&["facts", "report"][..], "--tab report"),
+            (&["goto", "--page", "5"][..], "recto goto 5"),
+            (&["search", "--query", "word"][..], "recto search word"),
+        ] {
+            let error = line(typed).unwrap_err();
+            assert_eq!((error.code, error.exit), ("usage", exit::USAGE), "{typed:?}");
+            assert!(error.message.contains(wanted), "{typed:?} should say {wanted}: {}", error.message);
+            assert!(error.next.contains("recto help"), "{typed:?}: {}", error.next);
+        }
+        // Advice that would be refused is worse than none.
+        let range = line(&["text", "--pages", "1-3"]).unwrap_err();
+        assert!(range.message.contains("`--page`") && !range.message.contains("--page 1-3"), "{}", range.message);
+        let far = line(&["tabs", "--nope", "1"]).unwrap_err();
+        assert!(far.message.contains("`--from`, `--limit`") && far.candidates.is_empty(), "with nothing close, it says what there is: {}", far.message);
+        assert!(!line(&["close", "--page", "3"]).unwrap_err().message.contains("--tab 3"), "`--page` isn't near `--tab`");
+        assert!(line(&["search", "two", "words"]).unwrap_err().message.contains("\"two words\""), "more words want quotes");
+        assert!(line(&["text", "report.pdf", "--page", "1"]).unwrap_err().message.contains("recto open report.pdf"));
+        for level_attempt in [&["tabs", "--level", "full"][..], &["tabs", "--force"][..], &["tabs", "--yes"][..]] {
+            assert!(line(level_attempt).unwrap_err().candidates.is_empty(), "{level_attempt:?}: there's nothing to offer");
+        }
+        // Whatever it offers, on any row, must itself be taken. Each flag of each row, mistyped, on a line that's otherwise right: putting the advice in its place must parse.
+        for spec in TABLE.iter().filter(|spec| !spec.hidden) {
+            for arg in spec.args.iter().filter(|arg| arg.flag.is_some() && arg.kind != Kind::Switch) {
+                let flag = arg.flag.unwrap();
+                let mut rest: Vec<String> = spec.name.split(' ').map(str::to_string).collect();
+                for other in spec.args.iter().filter(|other| other.required && other.key != arg.key && other.kind != Kind::Rest) {
+                    rest.extend(other.flag.map(str::to_string));
+                    rest.push(sample_of(other.kind).to_string());
+                }
+                let typed: Vec<String> = rest.iter().cloned().chain([format!("{flag}x"), sample_of(arg.kind).to_string()]).collect();
+                if spec.args.iter().any(|other| other.required && other.kind == Kind::Rest) {
+                    continue;
+                }
+                let error = parse_cli(&typed).unwrap_err();
+                assert!(error.next.contains(&usage_line(spec)), "{}: {}", spec.name, error.next);
+                let advice = error.candidates.first().unwrap_or_else(|| panic!("{typed:?} got no advice: {}", error.message));
+                assert!(advice.starts_with(flag), "{typed:?}: {advice}");
+                let fixed: Vec<String> = rest.iter().cloned().chain(shell_words(advice)).collect();
+                parse_cli(&fixed).unwrap_or_else(|refused| panic!("{typed:?} was told {advice}, and that's refused: {}", refused.message));
+            }
+        }
+    }
+
+    /// Failure: `recto doc` lists what happens to be spelled alike in table order, or nothing, rather than what's nearest, and a flag after the word (`recto doc --page 1`) loses even that.
+    #[test]
+    fn a_mistyped_command_lists_the_nearest_first() {
+        let line = |words: &[&str]| parse_cli(&words.iter().map(|word| (*word).to_string()).collect::<Vec<_>>());
+        let doc = line(&["doc"]).unwrap_err();
+        assert!(doc.candidates.iter().any(|name| name == "facts"), "`facts` is about a document: {:?}", doc.candidates);
+        assert!(doc.candidates.len() <= 4 && !doc.candidates.is_empty(), "{:?}", doc.candidates);
+        assert_eq!(line(&["doc", "--page", "1"]).unwrap_err().candidates, doc.candidates, "what follows the word doesn't change what it's near");
+        assert_eq!(line(&["statuss"]).unwrap_err().candidates[0], "status", "the nearest comes first");
+        assert_eq!(line(&["serach", "word"]).unwrap_err().candidates[0], "search");
+        assert!(line(&["zzzzzzzz"]).unwrap_err().candidates.is_empty(), "nothing near isn't made up");
     }
 
     /// Failure: a command that isn't built says `Needs: Off`, which reads as though it works, and an agent believes its edits can be saved.
