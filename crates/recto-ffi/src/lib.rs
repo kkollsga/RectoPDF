@@ -578,6 +578,7 @@ enum CoreCall {
     SetFocus(bool),
     SetPaper(Paper),
     ToggleAgentIcon,
+    ClearEditHistory,
     Page(u32, Option<&'static str>, TabId),
     /// A file read off the session thread, for a tab being woken or a file being opened.
     Read(Box<FileRead>),
@@ -633,7 +634,7 @@ impl CoreQueue {
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetFocus(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
+        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetFocus(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
             return;
         }
         let mut calls = lock(&self.calls);
@@ -942,6 +943,7 @@ impl Inner {
                 _ => Err(usage("It's a number of quarter turns, from 0 to 3.".to_string())),
             },
             "owner_edit" => self.owner_edit(value),
+            "save_from" => self.qa_save_from(value),
             "note_input" => {
                 self.note_input();
                 Ok(())
@@ -954,6 +956,25 @@ impl Inner {
         };
         self.core.push(CoreCall::Reconcile);
         Some(result)
+    }
+
+    /// **What a Save does around its writing, with the writing done by the test,** as Save isn't built: keeps what's needed, notes what's coming and flushes that, puts the file in place, and confirms. Every step's the real one.
+    fn qa_save_from(&self, written: &str) -> Result<(), AgentError> {
+        let failed = |what: &str| AgentError::new("save_failed", format!("{what} failed."), recto_agent::exit::FAILED);
+        let written = PathBuf::from(written);
+        let target = recto_platform::file_stamp(&written).map_err(|_| failed("Looking at the written file"))?;
+        let (id, path, file_pages, pages, needs) = self.host.session.with_session(|session| {
+            let id = session.active()?;
+            let list = session.page_edits(id);
+            Some((id, session.path_of(id)?, session.tab(id)?.page_count, session.pages_in(id), list.is_some_and(recto_session::edit::PageEdits::needs_own_pages)))
+        }).ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
+        let kept = needs.then(|| self.saver.store.keep_pages_of(&path, target, file_pages)).flatten();
+        self.host.session.with_session(|session| session.save_prepared(id, target, kept.as_ref()));
+        self.saver.flush(false, Duration::from_secs(5)).map_err(|_| failed("Writing what's about to happen"))?;
+        std::fs::rename(&written, &path).map_err(|_| failed("Putting the file in place"))?;
+        let now = recto_platform::file_stamp(&path).map_err(|_| failed("Looking at the saved file"))?;
+        self.host.session.with_session(|session| session.saved(id, now, pages, None, kept));
+        Ok(())
     }
 
     /// An edit as the owner's, as the app's own tools will make it: they aren't built yet.
@@ -1324,6 +1345,7 @@ impl AppCore {
             menus::Action::Host(host) => return host,
             menus::Action::Copy { anyway } => self.inner.engine.copy_selection(anyway),
             menus::Action::SelectAll => self.inner.engine.select_all(),
+            menus::Action::ClearEditHistory => self.inner.core.push(CoreCall::ClearEditHistory),
             menus::Action::Zoom(zoom) => {
                 self.inner.engine.zoom(zoom);
             }
@@ -1904,6 +1926,11 @@ fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::Read(read) => reads.finished(inner, *read, &mut events),
             CoreCall::SetPaper(paper) => set_view(inner, &mut events, |view| view.paper = Some(paper)),
+            CoreCall::ClearEditHistory => inner.host.session.with_session(|session| {
+                if let Some(id) = session.active() {
+                    session.clear_history(id, recto_session::ClearReason::UserAsked);
+                }
+            }),
             CoreCall::ToggleAgentIcon => set_view(inner, &mut events, |view| view.agent_icon_hidden = !view.agent_icon_hidden),
             CoreCall::SetFocus(focus) => {
                 let view = host.session.with_session(|session| {

@@ -115,7 +115,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
 - [ ] ⌘K
 - [x] Session restore: the whole app state on every launch, unsaved edits included (SPEC decision 23). A whole-state comparison across quit, hand-off and kill, journals for edits, `recto session`, `AppCore::hand_off` for the updater
-- [ ] Saved point in the history, so undo works past a Save, and Clear Edit History (SPEC decision 25). Next on `build/restore`'s follow-on
+- [x] Saved point in the history, so undo works past a Save, and Clear Edit History (SPEC decision 25). `Session::saved`, `save_prepared`, `clear_history`, `recto clear-history`, Edit > Clear Edit History. Tested directly, with `qa save-from`, as Save isn't built
+- [ ] On Save's gate: call `save_prepared`, then `saved`, on the real path, with a redaction keeping nothing; keep `never_in_pdf.rs` on that path rather than its stand-in writer; have the reader take up the new file; and keep only the pages a save removes rather than a copy of the whole file, so a PDF over 64 MiB can undo past a save too. Today it's a whole-file clone or nothing
 - [ ] On Save's gate: check every page against the real file when writing, as `validate_edits` checks against what a journal says of itself, which can be forged; and check the save marker again once it's on disk
 - [ ] Deep sleep for idle tabs, with sleep files and a byte budget across documents (SPEC decision 25). Next after that
 - [ ] Find's field, edit mode and view rotation draw what the state record already carries
@@ -148,8 +149,11 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 ## Phase 4: Saving and editing
 
 - [x] Fork: append writer, reopen after append, revision chain (`work/append-writer` at `0e89b89` on the fork; RectoPDF still to repin)
+- [ ] Fork: streaming rewrite to a new file, copying only what's still used and without loading the whole PDF, for deleting pages, replaced text, redaction, compress and hidden-data removal. SPEC section 6 needs it, and the only rewrite in lopdf today loads everything into memory
 - [ ] Agreement gate between lopdf and PDFium
 - [ ] Native Save, Save As, close prompt, atomic writes, one backup
+- [ ] Undoing a delete past a Save keeps only the removed pages, within 64 MiB per PDF, in place of a whole-file clone (owner, 2026-11-07)
+- [ ] Save's gate, from the saved point's review: no edits while a save writes, since an edit after the `Saving` line came back reading as saved with its rotation not in the file; a crash in a redaction's save must leave no history or kept file, proved reachable today, so mark it in the `Saving` line or clear before the rename; Save As with the record behind; the kept copy isn't fsynced, so a power cut could leave wrong contents with the right stamp; check Spotlight doesn't index kept PDFs, possibly with a `.noindex` folder; a redaction's save keeps nothing, enforced rather than documented; an added PDF rewritten after a save, as drawing goes by path with no stamp check; which levels see a kept file's path in `recto edits`
 - [ ] Edit mode: page grid, drag, drop PDFs, rotate, delete, extract, split, merge
 - [ ] Annotations: highlight, underline, strikeout, note, draw
 - [ ] Form filling, with appearance generation
@@ -203,6 +207,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] Corpus run across all benchmark PDFs, with a dated report
 - [ ] Fuzz `recto_index::corpus`'s reader with damaged files on disk, as for every parser
 - [ ] Session restore's same-inode rule is tested by a move and a rewrite on one volume, not on the real case the review found: two disk images giving the same device and inode. Run that with two scratch images
+- [ ] On the first version bump's gate: `copy_folder` copies kept files into `session.vN` with no pruning, and a clear doesn't reach them, which would keep redacted text
 - [ ] Test line order on a real right-to-left PDF (none among the 454 in distillPDF)
 - [ ] 24-hour soak, flat memory
 - [x] Installer that checks checksum, team and Gatekeeper, and goes back to the previous app if the new one fails. `app/release-zip.sh` and the release workflow are written and read; the workflow hasn't run, and `docs/RELEASING.md` says what the owner has to add
@@ -240,6 +245,8 @@ Real digital signatures to the official standards, signature trust checks, Windo
 - **State:** dormant after 5 minutes; history kept 30 days within 1 GiB, out of backups; redaction and hidden-data removal clear it.
 - **Agents:** below Full an agent throws away only agents' edits; the skill keeps auto-approving read-only commands; a same-user process faking a terminal is accepted until Settings exists.
 - **Exports:** peaks of 465–494 MiB at 3× and 4× are accepted.
+- **A heavy tab sleeps when you leave it.** Off-screen workers stay within the 256 MiB budget, so a map whose worker alone is over it goes dormant on leaving, and coming back costs its redraw of about 750 ms over an instant preview. Memory comes first. (Owner: "I agree".)
+- **Undoing a delete past a Save** keeps only the removed pages, within the 64 MiB per PDF, so it works whatever the size of the PDF. Built with Save, on the streaming rewrite. Until then a PDF over 64 MiB can undo turns and moves past a Save, not a delete. Clones aren't allowed past 64 MiB. (Owner: "I agree with you".)
 - **Tab names:** the file name, with the full name and title on hover.
 - **Before a public release:** a name search for the trademark, no registration yet; wait for Anthropic's written answer and add an API-key route.
 

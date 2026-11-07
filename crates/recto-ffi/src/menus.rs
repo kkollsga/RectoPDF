@@ -38,6 +38,8 @@ pub enum HostAction {
 /// What an item does.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Action {
+    /// Clears the showing tab's edit history, SPEC decision 25. Its unsaved edits stay.
+    ClearEditHistory,
     Host(HostAction),
     Copy { anyway: bool },
     SelectAll,
@@ -72,7 +74,7 @@ pub(crate) fn context_menu() -> Vec<MenuEntry> {
 pub(crate) fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool {
     match id {
         "edit.copy" | "edit.copy_anyway" => has_selection,
-        "edit.select_all" => has_document,
+        "edit.select_all" | "edit.clear_history" => has_document,
         _ => true,
     }
 }
@@ -86,7 +88,7 @@ pub(crate) fn menu_bar(view: ViewSettings, update_title: &str) -> Vec<MenuModel>
     vec![
         MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), entry("app.update", update_title, ""), line(), entry("app.settings", "Settings…", ","), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
         MenuModel { title: "File".into(), entries: vec![entry("file.open", "Open…", "o"), entry("file.close_window", "Close Window", "w")] },
-        MenuModel { title: "Edit".into(), entries: edit_entries() },
+        MenuModel { title: "Edit".into(), entries: edit_entries().into_iter().chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
         MenuModel {
             title: "View".into(),
             entries: vec![
@@ -150,6 +152,7 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "edit.copy" => Action::Copy { anyway: false },
         "edit.copy_anyway" => Action::Copy { anyway: true },
         "edit.select_all" => Action::SelectAll,
+        "edit.clear_history" => Action::ClearEditHistory,
         "app.quit" => Action::Host(HostAction::Quit),
         "file.open" => Action::Host(HostAction::ShowOpenPanel),
         "file.close_window" => Action::Host(HostAction::CloseWindow),

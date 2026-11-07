@@ -187,6 +187,10 @@ pub fn open_private_for_writing(_path: &Path, _append: bool) -> io::Result<File>
     unsupported()
 }
 
+pub fn make_private_file(_path: &Path) -> io::Result<()> {
+    unsupported()
+}
+
 pub fn hand_folder_to_drive(_folder: &Path) -> io::Result<()> {
     Ok(())
 }

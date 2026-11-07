@@ -320,6 +320,11 @@ pub fn hand_to_drive(file: &File) -> io::Result<()> {
     if unsafe { libc::fsync(file.as_raw_fd()) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
+/// Makes a file readable and writable by this user alone.
+pub fn make_private_file(path: &Path) -> io::Result<()> {
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+}
+
 /// Hands a folder's new names to the drive, as [`hand_to_drive`] does for a file's bytes.
 pub fn hand_folder_to_drive(folder: &Path) -> io::Result<()> {
     hand_to_drive(&File::open(folder)?)

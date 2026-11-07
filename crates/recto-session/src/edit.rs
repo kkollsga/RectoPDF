@@ -108,6 +108,10 @@ impl Step {
     }
 
     /// What its inverse would hold beyond its own size.
+    fn uses_source(&self, source: u16) -> bool {
+        matches!(self, Self::Restore { slots, .. } if slots.iter().any(|slot| slot.source == source))
+    }
+
     fn inverse_held_bytes(&self) -> usize {
         match self {
             Self::Remove { len, .. } => *len as usize * size_of::<PageSlot>(),
@@ -156,6 +160,17 @@ pub struct AddedSource {
     pub page_count: u32,
     /// `None` if the file couldn't be looked at then.
     pub stamp: Option<FileStamp>,
+    /// A file of the history's own, an earlier version of this PDF, which goes when nothing needs it.
+    pub kept: bool,
+}
+
+/// What came of a save, for a list that goes on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Rebased {
+    /// Steps that had to go, as the pages they need couldn't be kept.
+    pub rolled_off: usize,
+    /// Files kept for this history that nothing needs now.
+    pub let_go: Vec<Box<Path>>,
 }
 
 /// The edited page order of one document.
@@ -183,6 +198,8 @@ pub struct PageEdits {
     may_push_owner: bool,
     /// A save said it was about to put this in place, and hasn't been confirmed. Goes in a journal's header when it's compacted.
     saving: Option<FileStamp>,
+    /// And what it kept to undo past it.
+    keeping: Option<AddedSource>,
 }
 
 /// What a journal hasn't got yet.
@@ -195,19 +212,19 @@ struct Outbox {
 }
 
 impl AddedSource {
-    fn to_record(&self) -> AddedRecord {
-        AddedRecord { path: PathField::from_path(&self.path), page_count: self.page_count, file: self.stamp.map(FileRecord::from) }
+    pub fn to_record(&self) -> AddedRecord {
+        AddedRecord { path: PathField::from_path(&self.path), page_count: self.page_count, file: self.stamp.map(FileRecord::from), kept: self.kept }
     }
 
-    fn from_record(record: &AddedRecord) -> Option<Self> {
-        Some(Self { path: record.path.to_path()?.into_boxed_path(), page_count: record.page_count, stamp: record.file.map(FileStamp::from) })
+    pub fn from_record(record: &AddedRecord) -> Option<Self> {
+        Some(Self { path: record.path.to_path()?.into_boxed_path(), page_count: record.page_count, stamp: record.file.map(FileStamp::from), kept: record.kept })
     }
 }
 
 impl PageEdits {
     pub fn new(page_count: u32) -> Self {
         let slots = (0..page_count).map(|page| PageSlot { source: 0, page, quarter_turns: 0 }).collect();
-        Self { file_pages: page_count as usize, slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new(), history_dropped: false, owner_step_dropped: false, differs: false, acting: Author::Owner, history_bytes: 0, journal: None, may_push_owner: false, saving: None }
+        Self { file_pages: page_count as usize, slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new(), history_dropped: false, owner_step_dropped: false, differs: false, acting: Author::Owner, history_bytes: 0, journal: None, may_push_owner: false, saving: None, keeping: None }
     }
 
     /// Keeps this list's operations for a journal, from now on.
@@ -275,7 +292,7 @@ impl PageEdits {
         };
         let undo = entries(&record.undo, &mut history_bytes);
         let redo = entries(&record.redo, &mut history_bytes);
-        let mut edits = Self { file_pages: record.file_pages as usize, slots: slots_of(&record.pages), added, undo, redo, history_dropped: record.history_dropped, owner_step_dropped: record.owner_step_dropped, differs: false, acting: Author::Owner, history_bytes, journal: None, may_push_owner: false, saving: None };
+        let mut edits = Self { file_pages: record.file_pages as usize, slots: slots_of(&record.pages), added, undo, redo, history_dropped: record.history_dropped, owner_step_dropped: record.owner_step_dropped, differs: false, acting: Author::Owner, history_bytes, journal: None, may_push_owner: false, saving: None, keeping: None };
         edits.differs = edits.differs_from_the_file();
         Ok(edits)
     }
@@ -283,6 +300,11 @@ impl PageEdits {
     /// What a save said it was about to put in place, if one has.
     pub fn saving(&self) -> Option<FileStamp> {
         self.saving
+    }
+
+    /// What a save said it had kept, if it did.
+    pub fn keeping(&self) -> Option<&AddedSource> {
+        self.keeping.as_ref()
     }
 
     /// **Brings a list back from its journal,** through the same checked calls that made it, so a hostile journal can do no more than an agent could, and with the same caps, so it ends up just as the live list is. Stops at the first operation that doesn't apply, and says how many did. Who made each step decides what's refused only when it was first asked, so nothing's refused here for that.
@@ -359,7 +381,7 @@ impl PageEdits {
                 if self.added.len() >= MAX_SOURCES {
                     return Err(EditError::TooManySources);
                 }
-                if !added.path.fits() || added.page_count as usize > MAX_PAGES {
+                if !crate::record::added_fits(added) {
                     return Err(EditError::OutOfRange);
                 }
                 self.added.push(AddedSource::from_record(added).ok_or(EditError::OutOfRange)?);
@@ -369,6 +391,13 @@ impl PageEdits {
             JournalOp::Redo => self.redo().then_some(()).ok_or(EditError::OutOfRange),
             JournalOp::Saving(target) => {
                 self.saving = Some((*target).into());
+                Ok(())
+            }
+            JournalOp::Keeping(kept) => {
+                if !kept.kept || !crate::record::added_fits(kept) {
+                    return Err(EditError::OutOfRange);
+                }
+                self.keeping = Some(AddedSource::from_record(kept).ok_or(EditError::OutOfRange)?);
                 Ok(())
             }
         }
@@ -392,6 +421,11 @@ impl PageEdits {
         &self.slots
     }
 
+    /// How long the file this list is about was.
+    pub fn file_pages(&self) -> u32 {
+        u32::try_from(self.file_pages).unwrap_or(u32::MAX)
+    }
+
     pub fn len(&self) -> u32 {
         // The list is capped at MAX_PAGES, far below u32::MAX.
         u32::try_from(self.slots.len()).unwrap_or(u32::MAX)
@@ -412,7 +446,7 @@ impl PageEdits {
     }
 
     /// Whether there's anything to go back through, or anything lost to the cap on it. A list with none of this and no difference from the file has nothing left to keep it.
-    pub(crate) fn has_history(&self) -> bool {
+    pub fn has_history(&self) -> bool {
         !self.undo.is_empty() || !self.redo.is_empty() || (self.history_dropped && self.differs)
     }
 
@@ -446,10 +480,172 @@ impl PageEdits {
         self.history_dropped && self.differs
     }
 
-    /// Notes, ahead of it, what a save is about to put in place. See [`JournalOp::Saving`].
-    pub(crate) fn note_saving(&mut self, target: FileStamp) {
+    /// Notes, ahead of it, what a save is about to put in place, and what was kept for undoing past it. See [`JournalOp::Saving`].
+    pub(crate) fn note_saving(&mut self, target: FileStamp, keeping: Option<&AddedSource>) {
         self.saving = Some(target);
+        if let Some(kept) = keeping {
+            self.keeping = Some(kept.clone());
+            self.note(|| JournalOp::Keeping(kept.to_record()));
+        }
         self.note(|| JournalOp::Saving(target.into()));
+    }
+
+    /// Whether a step in the history needs pages of the file as it is, which a save may take out of it. Only those need a copy kept: a turn or a move goes by position, and needs none.
+    pub fn needs_own_pages(&self) -> bool {
+        self.undo.iter().chain(&self.redo).any(|entry| entry.step.uses_source(0))
+    }
+
+    /// **What a confirmed save does to a list: it marks the saved point.** Everything that's been done is in the new file, in this order, so page `n` of the document is page `n` of the file. The list starts again from there, with every page in its own place, which is what "reads as saved" is: [`Self::is_edited`] is whether the document differs from the file, so undoing away from this point makes it unsaved, and coming back reads as saved, by any steps.
+    ///
+    /// **Steps stay meaningful, as they're about positions.** A turn, a move or a removal is, and the document's positions are what they were. The only steps that name pages are those that put pages back, and those are of pages that the document doesn't have now, so not in the new file, unless they're from an added PDF, which is still its own file. So they go over to `kept`, a copy of the file as it was, in the history's own folder. Where that isn't there, or doesn't fit, they roll off, with all older ones, as a step's way back depends on those after it: undo stops short and says so, rather than undoing wrongly.
+    ///
+    /// `pages` not being this list's length means what was written isn't this list, so none of it is about that file. `None` says so.
+    pub fn rebase_on_saved(&mut self, pages: u32, kept: Option<AddedSource>) -> Option<Rebased> {
+        if pages as usize != self.slots.len() {
+            return None;
+        }
+        let mut out = Rebased::default();
+        let own_pages_at = match kept {
+            Some(kept) if self.needs_own_pages() && self.added.len() < MAX_SOURCES => {
+                self.added.push(kept);
+                Some(u16::try_from(self.added.len()).unwrap_or(u16::MAX))
+            }
+            Some(kept) => {
+                if kept.kept {
+                    out.let_go.push(kept.path);
+                }
+                None
+            }
+            None => None,
+        };
+        // Copies kept are held to the limit a PDF's history has, oldest out.
+        let mut kept_bytes: u64 = self.added.iter().filter(|added| added.kept).map(|added| added.stamp.map_or(0, |stamp| stamp.size)).sum();
+        for at in 0..self.added.len() {
+            if kept_bytes <= MAX_HISTORY_BYTES as u64 {
+                break;
+            }
+            if self.added[at].kept {
+                kept_bytes -= self.added[at].stamp.map_or(0, |stamp| stamp.size);
+                out.rolled_off += self.roll_off_source(u16::try_from(at + 1).unwrap_or(u16::MAX));
+            }
+        }
+        match own_pages_at {
+            Some(source) => {
+                for entry in self.undo.iter_mut().chain(&mut self.redo) {
+                    if let Step::Restore { slots, .. } = &mut entry.step {
+                        for slot in slots.iter_mut().filter(|slot| slot.source == 0) {
+                            slot.source = source;
+                        }
+                    }
+                }
+            }
+            None => out.rolled_off += self.roll_off_source(0),
+        }
+        self.file_pages = pages as usize;
+        self.slots = (0..pages).map(|page| PageSlot { source: 0, page, quarter_turns: 0 }).collect();
+        out.let_go.extend(self.drop_unused_sources());
+        // What fell off before this is in the file, so nothing's lost with it.
+        self.history_dropped = false;
+        self.owner_step_dropped = false;
+        self.differs = false;
+        self.saving = None;
+        self.keeping = None;
+        self.history_starts_again();
+        Some(out)
+    }
+
+    /// Takes the history away and keeps the page order, for Clear Edit History with unsaved edits. Says which kept files nothing needs now.
+    pub(crate) fn drop_history(&mut self) -> Vec<Box<Path>> {
+        self.owner_step_dropped |= self.undo.iter().any(|entry| entry.by == Author::Owner);
+        self.history_dropped = true;
+        self.undo.clear();
+        self.redo.clear();
+        self.history_bytes = 0;
+        self.saving = None;
+        self.keeping = None;
+        self.history_starts_again();
+        self.drop_unused_sources()
+    }
+
+    /// What's waiting for the journal is in the whole list now, which is what goes next. The count steps on, to tell this from any writing under way.
+    fn history_starts_again(&mut self) {
+        if let Some(outbox) = &mut self.journal {
+            outbox.seq += 1;
+            outbox.ops.clear();
+        }
+    }
+
+    /// Takes off the steps that need this source, and all older ones, from both ends. Says how many.
+    fn roll_off_source(&mut self, source: u16) -> usize {
+        let mut gone = 0;
+        for list in [&mut self.undo, &mut self.redo] {
+            if let Some(last) = list.iter().rposition(|entry| entry.step.uses_source(source)) {
+                for entry in list.drain(..=last) {
+                    self.history_bytes -= entry.step.held_bytes();
+                    gone += 1;
+                }
+            }
+        }
+        gone
+    }
+
+    /// Kept files this list names, for checking they're still what they were.
+    pub fn kept_sources(&self) -> impl Iterator<Item = (u16, &AddedSource)> {
+        self.added.iter().enumerate().filter(|(_, added)| added.kept).map(|(at, added)| (u16::try_from(at + 1).unwrap_or(u16::MAX), added))
+    }
+
+    /// A kept file isn't what it was, so the steps that need it can't be undone. Says how many went.
+    pub fn roll_off_kept(&mut self, source: u16) -> usize {
+        self.roll_off_source(source)
+    }
+
+    /// Forgets added files nothing uses now, in the document or its history, and says which of them were kept files, for those to go. Only when the journal's about to get the whole list, as its later lines go by these numbers.
+    fn drop_unused_sources(&mut self) -> Vec<Box<Path>> {
+        let mut used = vec![false; self.added.len()];
+        let mut note = |slot: &PageSlot| {
+            if slot.source != 0
+                && let Some(entry) = used.get_mut(usize::from(slot.source) - 1)
+            {
+                *entry = true;
+            }
+        };
+        self.slots.iter().for_each(&mut note);
+        for entry in self.undo.iter().chain(&self.redo) {
+            if let Step::Restore { slots, .. } = &entry.step {
+                slots.iter().for_each(&mut note);
+            }
+        }
+        if used.iter().all(|used| *used) {
+            return Vec::new();
+        }
+        let mut new_number = Vec::with_capacity(used.len());
+        let mut next = 0u16;
+        for used in &used {
+            next += u16::from(*used);
+            new_number.push(next);
+        }
+        let renumber = |slot: &mut PageSlot| {
+            if slot.source != 0
+                && let Some(number) = new_number.get(usize::from(slot.source) - 1)
+            {
+                slot.source = *number;
+            }
+        };
+        self.slots.iter_mut().for_each(renumber);
+        for entry in self.undo.iter_mut().chain(&mut self.redo) {
+            if let Step::Restore { slots, .. } = &mut entry.step {
+                slots.iter_mut().for_each(renumber);
+            }
+        }
+        let mut let_go = Vec::new();
+        for (added, used) in std::mem::take(&mut self.added).into_iter().zip(used) {
+            if used {
+                self.added.push(added);
+            } else if added.kept {
+                let_go.push(added.path);
+            }
+        }
+        let_go
     }
 
     /// Sets whose steps the next edits are. For the session alone.
@@ -691,7 +887,7 @@ impl PageEdits {
         if self.added.len() >= MAX_SOURCES {
             return Err(EditError::TooManySources);
         }
-        let added = AddedSource { path: PathBuf::from(path).into_boxed_path(), page_count, stamp };
+        let added = AddedSource { path: PathBuf::from(path).into_boxed_path(), page_count, stamp, kept: false };
         self.note(|| JournalOp::AddSource(added.to_record()));
         self.added.push(added);
         u16::try_from(self.added.len()).map_err(|_| EditError::TooManySources)

@@ -59,12 +59,18 @@ fn use_a_journal(bytes: &[u8]) {
         assert!(edits.redo());
     }
     assert_eq!(edits.slots(), start.as_slice(), "redo undoes undo");
+    // A save of whatever this is, and clearing it: each has to leave a list that reads back.
+    let mut saved = edits.clone();
+    let pages = saved.len();
+    if saved.rebase_on_saved(pages, None).is_some() {
+        PageEdits::from_record(&saved.to_record()).expect("a list after a save reads back");
+    }
     let mut session = Session::new(NamedLoader);
     if let Ok(id) = session.open(std::path::Path::new("/fuzz/p12.pdf")) {
         let mut main = session.to_record();
         main.tabs[0].journal = Some(record::journal_file_name(None, std::path::Path::new("/fuzz/p12.pdf"), None));
         let name = main.tabs[0].journal.clone().unwrap();
-        let list = RestoredEdits { edits, seq: applied as u64, lost_lines: parsed.lost_lines };
+        let list = RestoredEdits { edits, seq: applied as u64, lost_lines: parsed.lost_lines, rolled_off: false };
         session.restore(&main, HashMap::from([(name, list)])).expect("what a session wrote it can restore");
         let _ = session.page_source(id, 0);
         let _ = session.sidebar();
