@@ -242,6 +242,20 @@ pub fn check_private_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The name of the kind of file system a file is on, such as `apfs`.
+pub fn file_system_name(file: &File) -> io::Result<String> {
+    let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: the descriptor is open for as long as `file`, and the buffer is the size `fstatfs` writes.
+    let info = unsafe {
+        if libc::fstatfs(std::os::fd::AsRawFd::as_raw_fd(file), info.as_mut_ptr()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        info.assume_init()
+    };
+    let name: Vec<u8> = info.f_fstypename.iter().take_while(|byte| **byte != 0).map(|byte| *byte as u8).collect();
+    Ok(String::from_utf8_lossy(&name).into_owned())
+}
+
 /// Opens a file for reading, only if it's a plain file of this user's that nobody else can write. A link isn't followed, and a pipe left in its place doesn't wait for a writer.
 pub fn open_private_file(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)?;

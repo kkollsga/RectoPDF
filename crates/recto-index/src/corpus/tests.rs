@@ -149,16 +149,51 @@ fn a_replaced_file_has_another_key_even_with_its_size_and_time_put_back() {
     assert_ne!(in_place, CorpusKey::of_file(&path).unwrap());
 }
 
-/// Failure: a large file changed only in its first or last bytes keeps its key on a volume whose times don't move. The sampled bytes are in the key, whatever the times say, as the two halves of the hash are the same otherwise.
+/// Failure: a file changed only in its first or last bytes keeps its key on a volume whose times don't move, because those bytes aren't really what's hashed, or it's only a matter of the sizes. Each part of what's hashed must move the key, and the samples must be the file's ends, with no byte counted twice.
 #[test]
-fn a_key_reads_both_ends_of_a_file() {
+fn every_part_of_a_key_moves_it() {
+    let identity = recto_platform::FileIdentity { device: 1, inode: 2, size: 3, mtime_ns: 4, ctime_ns: 5 };
+    let key = |identity: &recto_platform::FileIdentity, head: &[u8], tail: &[u8]| CorpusKey::from_parts(identity, head, tail);
+    let plain = key(&identity, b"head", b"tail");
+    assert_eq!(plain, key(&identity, b"head", b"tail"));
+    assert_ne!(plain, key(&identity, b"HEAD", b"tail"), "the first bytes");
+    assert_ne!(plain, key(&identity, b"head", b"TAIL"), "the last bytes");
+    assert_ne!(plain, key(&identity, b"headt", b"ail"), "where one ends and the other starts");
+    for other in [
+        recto_platform::FileIdentity { device: 9, ..identity },
+        recto_platform::FileIdentity { inode: 9, ..identity },
+        recto_platform::FileIdentity { size: 9, ..identity },
+        recto_platform::FileIdentity { mtime_ns: 9, ..identity },
+        recto_platform::FileIdentity { ctime_ns: 9, ..identity },
+    ] {
+        assert_ne!(plain, key(&other, b"head", b"tail"), "{other:?}");
+    }
+    assert_eq!(sample_ranges(0), (0..0, 0..0));
+    assert_eq!(sample_ranges(10), (0..10, 10..10), "a small file is read once");
+    assert_eq!(sample_ranges(100_000), (0..65_536, 65_536..100_000), "with no byte twice");
+    assert_eq!(sample_ranges(400_000), (0..65_536, 334_464..400_000));
+
     let temp = Temp::new();
-    let path = temp.file("doc.pdf", &vec![b'x'; 400_000]);
-    assert!(CorpusKey::of_file(&path).is_ok());
     assert!(CorpusKey::of_file(&temp.file("empty.pdf", b"")).is_ok(), "an empty file has no ends to read");
-    assert!(CorpusKey::of_file(&temp.file("tiny.pdf", b"x")).is_ok());
     assert!(CorpusKey::of_file(&temp.0).is_err(), "a folder isn't a file");
     assert!(CorpusKey::of_file(&temp.0.join("nothing.pdf")).is_err());
+    // On real files, with their times and inode the same, so only the sampled bytes can tell these apart.
+    let (first, second) = (temp.file("a.pdf", &vec![b'x'; 400_000]), temp.file("b.pdf", &vec![b'x'; 400_000]));
+    let (first, second) = (CorpusKey::of_file(&first).unwrap(), CorpusKey::of_file(&second).unwrap());
+    assert_ne!(first, second, "two files with the same bytes are two files");
+}
+
+/// Failure: a file on a volume with coarse times gets an index, and a rewrite in place within one tick, at the same size with the same ends, keeps its key, so it answers from old text. Only what's known to keep fine times may be indexed, and a file here says so of its own volume.
+#[test]
+fn only_a_volume_with_fine_times_is_indexed() {
+    for name in ["exfat", "msdos", "hfs", "smbfs", "nfs", "afpfs", "webdav", ""] {
+        assert!(!times_tell_versions_apart(name), "{name}");
+    }
+    assert!(times_tell_versions_apart("apfs"));
+    let temp = Temp::new();
+    let file = temp.file("doc.pdf", b"a doc");
+    assert_eq!(can_be_indexed(&file), times_tell_versions_apart(&local::file_system_name(&File::open(&file).unwrap()).unwrap()));
+    assert!(!can_be_indexed(&temp.0.join("nothing.pdf")), "what can't be looked at isn't");
 }
 
 /// Failure: a key from outside a folder's name walks out of the corpus root, or a stray folder is taken for one to delete.

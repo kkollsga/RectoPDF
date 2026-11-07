@@ -118,6 +118,10 @@ pub fn check_private_dir(_path: &Path) -> io::Result<()> {
     unsupported()
 }
 
+pub fn file_system_name(_file: &File) -> io::Result<String> {
+    unsupported()
+}
+
 pub fn open_private_file(_path: &Path) -> io::Result<File> {
     unsupported()
 }

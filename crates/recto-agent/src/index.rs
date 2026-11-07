@@ -118,6 +118,7 @@ fn refused_words(code: &str) -> &'static str {
         "too_large" => "its text is more than an index may hold",
         "not_pdf" => "it couldn't be read as a PDF",
         "security" => "it uses a kind of security that can't be read",
+        "coarse_file_times" => "it's on a volume whose file times can't show it's been replaced, so an index could answer from old text",
         _ => "it can't be read",
     }
 }
@@ -126,6 +127,9 @@ fn refused_words(code: &str) -> &'static str {
 pub(crate) fn file_index(indexing: &dyn Indexing, path: &Path, want: bool) -> (Option<CorpusKey>, FileIndex) {
     indexing.note_asked();
     let Ok(key) = CorpusKey::of_file(path) else { return (None, FileIndex::Unavailable) };
+    if !corpus::can_be_indexed(path) {
+        return (Some(key), FileIndex::Refused("coarse_file_times".to_string()));
+    }
     let disk = corpus::disk_state(indexing.root(), key);
     let pages_done = match &disk {
         DiskState::Ready(summary) => {

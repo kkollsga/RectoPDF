@@ -15,7 +15,7 @@
 //! <root>/by-file/<hash>   Which corpus a file last had: see below
 //! ```
 //!
-//! **The key is the file's identity:** a hash of its inode, size, modification time, change time and first and last 64 KiB. A replaced file has a new key, so its old text can't answer for it, even if its
+//! **The key is the file's identity:** a hash of its device, inode, size, modification time, change time and first and last 64 KiB. A replaced file has a new key, so its old text can't answer for it, even if its
 //! size and modification time were put back. The file's name and path aren't in it, and aren't anywhere in the folder. It's not a hash of the whole file, because every search asks for it, and hashing a 2 GB
 //! file takes seconds. So a copy of a file gets a corpus of its own. A file that's only been moved or had `touch` run on it gets rebuilt, which costs time and is never wrong.
 //!
@@ -94,22 +94,28 @@ impl CorpusKey {
         }
         let file = File::open(path)?;
         let identity = recto_platform::file_identity(&file)?;
+        let (head, tail) = sample_ranges(identity.size);
+        let mut samples = vec![0; (head.end - head.start + tail.end - tail.start) as usize];
+        let (first, last) = samples.split_at_mut((head.end - head.start) as usize);
+        recto_platform::read_exact_at(&file, first, head.start)?;
+        recto_platform::read_exact_at(&file, last, tail.start)?;
+        Ok(Self::from_parts(&identity, first, last))
+    }
+
+    /// The key, given what goes in it.
+    fn from_parts(identity: &recto_platform::FileIdentity, head: &[u8], tail: &[u8]) -> Self {
         let mut hash = Sha256::new();
         hash.update(FORMAT.as_bytes());
         hash.update([0]);
         hash.update(NORMALISER.as_bytes());
         hash.update([0]);
-        for part in [identity.inode, identity.size, identity.mtime_ns as u64, identity.ctime_ns as u64] {
+        for part in [identity.device, identity.inode, identity.size, identity.mtime_ns as u64, identity.ctime_ns as u64] {
             hash.update(part.to_le_bytes());
         }
-        let head = identity.size.min(SAMPLE_BYTES);
-        let tail = identity.size.saturating_sub(head).min(SAMPLE_BYTES);
-        let mut sample = vec![0; head as usize];
-        recto_platform::read_exact_at(&file, &mut sample[..head as usize], 0)?;
-        hash.update(&sample[..head as usize]);
-        recto_platform::read_exact_at(&file, &mut sample[..tail as usize], identity.size - tail)?;
-        hash.update(&sample[..tail as usize]);
-        Ok(Self(hash.finalize().into()))
+        hash.update(head);
+        hash.update([0]);
+        hash.update(tail);
+        Self(hash.finalize().into())
     }
 
     pub fn from_hex(text: &str) -> Option<Self> {
@@ -135,6 +141,22 @@ impl CorpusKey {
     pub fn short(&self) -> String {
         self.hex()[..8].to_string()
     }
+}
+
+/// Which bytes of a file go in its key: its first and last 64 KiB, with no byte twice.
+fn sample_ranges(size: u64) -> (std::ops::Range<u64>, std::ops::Range<u64>) {
+    let head = size.min(SAMPLE_BYTES);
+    (0..head, size - size.saturating_sub(head).min(SAMPLE_BYTES)..size)
+}
+
+/// Whether a file system's times can tell two versions of a file apart. APFS keeps nanoseconds, and a change time nothing can set. On exFAT there's no change time, and its modification time is 10 ms apart at best, 2 s on old ones. HFS+ has whole seconds. A network volume says whatever its server says. On those, a file rewritten in place, to the same size and with the same ends, can keep its key, and old text would answer for it. So those aren't indexed: their searches read pages, as they always have, which is slower and never wrong.
+pub fn times_tell_versions_apart(file_system: &str) -> bool {
+    file_system == "apfs"
+}
+
+/// Whether this file's on a file system where a key can be trusted.
+pub fn can_be_indexed(path: &Path) -> bool {
+    File::open(path).and_then(|file| local::file_system_name(&file)).is_ok_and(|name| times_tell_versions_apart(&name))
 }
 
 /// Where everything for one key lives.
@@ -863,7 +885,7 @@ fn file_aliases(path: &Path) -> Vec<String> {
         }
     }
     if let Some(identity) = File::open(path).ok().and_then(|file| recto_platform::file_identity(&file).ok()) {
-        aliases.push(hash_of("inode", &identity.inode.to_le_bytes()));
+        aliases.push(hash_of("inode", &[identity.device.to_le_bytes(), identity.inode.to_le_bytes()].concat()));
     }
     aliases
 }
