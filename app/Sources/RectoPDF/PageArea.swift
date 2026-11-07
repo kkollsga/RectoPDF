@@ -118,10 +118,13 @@ final class CenteringClipView: NSClipView {
     /// For a shot. `render(in:)` leaves compositing filters out, so the tint is left off and the same multiply is done to the picture after: same colour, same sum, in a different place.
     func tintRectsForShot(in view: NSView) -> (rgb: UInt32, rects: [NSRect])? {
         guard let tint else { return nil }
-        let rects = pageLayers.values.map { page -> NSRect in
+        // Only where the pages can show: a zoomed page's rectangle runs under the sidebar, which the compositor's own tint can't reach.
+        let visible = scrollView.convert(scrollView.bounds, to: view)
+        let rects = pageLayers.values.compactMap { page -> NSRect? in
             let size = CGSize(width: page.bounds.width * fit, height: page.bounds.height * fit)
             let rect = NSRect(origin: page.position, size: size)
-            return documentView.convert(rect, to: view)
+            let clipped = documentView.convert(rect, to: view).intersection(visible)
+            return clipped.isNull ? nil : clipped
         }
         return (tint, rects)
     }
@@ -314,6 +317,6 @@ final class CenteringClipView: NSClipView {
 
     /// What QA reads about the layers themselves, as opposed to what Rust thinks it asked for.
     func report() -> [String: Any] {
-        ["page_layers": pageLayers.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "magnification": scrollView.magnification]
+        ["shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_layers": pageLayers.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "magnification": scrollView.magnification]
     }
 }
