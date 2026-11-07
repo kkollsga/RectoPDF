@@ -303,7 +303,7 @@ impl<L: DocLoader> Session<L> {
         self.edits.get(&id)
     }
 
-    /// Applies a page edit: rearranging, rotating or deleting. The list is made the first time a tab is edited.
+    /// Applies a page edit: rearranging, rotating or deleting. The list is made the first time a tab is edited, and goes again if that edit was refused. The reader's place follows its page.
     pub fn edit_pages(&mut self, id: TabId, change: impl FnOnce(&mut PageEdits) -> Result<(), EditError>) -> Result<(), SessionError> {
         let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
         if tab.renderer_only {
@@ -829,7 +829,7 @@ mod tests {
         let mut other = session(3);
         let target = other.open(Path::new("/d/fine.pdf")).unwrap();
         let facts = RendererOnlyLoader.load(Path::new("/d/damaged.pdf")).unwrap();
-        assert_eq!(other.insert_pdf_with_facts(target, 0, Path::new("/d/damaged.pdf"), &facts), Err(SessionError::RendererOnly));
+        assert_eq!(other.insert_pdf_with_facts(target, 0, Path::new("/d/damaged.pdf"), &facts, None), Err(SessionError::RendererOnly));
         assert!(!other.is_edited(target));
     }
 

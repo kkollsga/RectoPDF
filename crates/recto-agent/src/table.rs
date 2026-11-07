@@ -44,8 +44,12 @@ pub enum Kind {
     Page,
     /// `4` or `4-6`.
     Pages,
+    /// `4`, `4-6`, or `4-` to the end.
+    PagesOpen,
     /// A whole number no larger than this.
     Count(u32),
+    /// A whole number from 1 up to this.
+    Positive(u32),
     /// A file. Made whole here, because the session has no folder of its own.
     Path,
     /// `2` or `2x`.
@@ -162,7 +166,7 @@ pub static TABLE: &[Spec] = &[
         tag: "tabs",
         group: GROUP_READ,
         summary: "The open tabs, with each one's page, length and unsaved edits.",
-        args: &[Arg { key: "from", flag: Some("--from"), kind: Kind::Count(100_000), required: false, help: "Tabs to skip: `next_from` from the last answer." }, Arg { key: "limit", flag: Some("--limit"), kind: Kind::Count(1000), required: false, help: "Tabs in this answer. 200 if left out." }],
+        args: &[Arg { key: "from", flag: Some("--from"), kind: Kind::Count(100_000), required: false, help: "Tabs to skip: `next_from` from the last answer." }, Arg { key: "limit", flag: Some("--limit"), kind: Kind::Positive(1000), required: false, help: "Tabs in this answer. 200 if left out." }],
         data: "`{ tabs: [ ...same as where ], count, next_from }`.",
         examples: &["recto tabs", "recto tabs --from 200 --json"],
         ..BASE
@@ -186,7 +190,7 @@ pub static TABLE: &[Spec] = &[
         args: &[
             TAB,
             Arg { key: "from", flag: Some("--from"), kind: Kind::Count(100_000), required: false, help: "Entries to skip: `next_from` from the last answer." },
-            Arg { key: "limit", flag: Some("--limit"), kind: Kind::Count(2000), required: false, help: "Entries in this answer. 200 if left out." },
+            Arg { key: "limit", flag: Some("--limit"), kind: Kind::Positive(2000), required: false, help: "Entries in this answer. 200 if left out." },
             Arg { key: "depth", flag: Some("--depth"), kind: Kind::Count(32), required: false, help: "Deepest nesting to include. 0 is the top level." },
         ],
         data: "`{ tab, available, total, entries: [ { depth, page, untrusted: { title } } ], next_from, truncated }`. `available: false` means it couldn't be read, not that there's none. `truncated: true` means the file's contents stopped being read at a limit.",
@@ -201,8 +205,8 @@ pub static TABLE: &[Spec] = &[
         args: &[
             Arg { key: "query", flag: None, kind: Kind::Text, required: true, help: "The words to find." },
             TAB,
-            Arg { key: "pages", flag: Some("--pages"), kind: Kind::Pages, required: false, help: "Only these pages: `4`, `4-6`, or `4-` to the end." },
-            Arg { key: "limit", flag: Some("--limit"), kind: Kind::Count(200), required: false, help: "Most hits in this answer. 20 if left out." },
+            Arg { key: "pages", flag: Some("--pages"), kind: Kind::PagesOpen, required: false, help: "Only these pages: `4`, `4-6`, or `4-` to the end." },
+            Arg { key: "limit", flag: Some("--limit"), kind: Kind::Positive(200), required: false, help: "Most hits in this answer. 20 if left out." },
         ],
         data: "`{ tab, hits: [ { page, line, also_spelled, page_has_tag_chars, hidden_text: { checked, flagged }, untrusted: { snippet } } ], hidden_text_checked, coverage: { pages_searched, pages_in_scope, pages_with_no_text, no_text_pages, failed_pages, hits_not_shown: [ { page, hits } ], pages_with_tag_chars, changed_files: [ { untrusted: { file } } ], next_page } }`. A page in `failed_pages` couldn't be read, or its file changed since its number was recorded (`changed_files`). Only pages with hits are checked for hidden text, as `hidden_text_checked` says. `also_spelled: true` means the hit is another spelling of a word broken across lines, with no line of its own. `next_page` is where to go on from with `--pages`.",
         examples: &["recto search \"force majeure\"", "recto search termination --pages 10-40 --limit 5 --json"],
@@ -249,10 +253,10 @@ pub static TABLE: &[Spec] = &[
         tag: "open",
         group: GROUP_MOVE,
         access: Access::At(Level::Control),
-        summary: "Opens a PDF as the active tab, or goes to its tab if it's already open.",
+        summary: "Opens a PDF as the active tab, or goes to its tab if it's already open. A `--page` it doesn't have opens nothing.",
         args: &[Arg { key: "path", flag: None, kind: Kind::Path, required: true, help: "The PDF." }, Arg { key: "page", flag: Some("--page"), kind: Kind::Page, required: false, help: "The page to land on, counted from 1." }],
         data: AGENT_EXITS_PAGE,
-        emits: &["tab_opened", "tab_activated"],
+        emits: &["tab_opened", "tab_activated", "page_changed"],
         examples: &["recto open report.pdf", "recto open /Users/me/report.pdf --page 12 --json"],
         ..BASE
     },
@@ -368,7 +372,7 @@ pub static TABLE: &[Spec] = &[
         tag: "log",
         group: GROUP_ACCESS,
         summary: "What agents have done: time, command, level and outcome, oldest first. Never document text. At a real terminal it needs no session and no level.",
-        args: &[Arg { key: "last", flag: Some("--last"), kind: Kind::Count(5000), required: false, help: "How many entries, from the newest. 50 if left out." }],
+        args: &[Arg { key: "last", flag: Some("--last"), kind: Kind::Positive(5000), required: false, help: "How many entries, from the newest. 50 if left out." }],
         data: "`{ entries: [ { time, t_ms, cmd, level, outcome, details } ], kept_bytes, file }`.",
         examples: &["recto log", "recto log --last 10 --json"],
         ..BASE
@@ -685,10 +689,15 @@ fn read_value(arg: &Arg, value: &str) -> Result<Value, String> {
             Some(0) | None => Err(format!("`{}` isn't a page. Pages count from 1.", recto_core::clean_line(value))),
             Some(page) => Ok(json!(page)),
         },
-        Kind::Pages => crate::parse_pages(value).map(|_| json!(value)).map_err(|_| format!("`{}` isn't pages. Write 4 or 4-6.", recto_core::clean_line(value))),
+        Kind::Pages => crate::parse_pages(value, false).map(|_| json!(value)).map_err(|_| format!("`{}` isn't pages. Write 4 or 4-6.", recto_core::clean_line(value))),
+        Kind::PagesOpen => crate::parse_pages(value, true).map(|_| json!(value)).map_err(|_| format!("`{}` isn't pages. Write 4, 4-6 or 4-.", recto_core::clean_line(value))),
         Kind::Count(max) => match whole_number(value) {
             Some(number) if number <= max => Ok(json!(number)),
             _ => Err(format!("`{}` should be a whole number up to {max}.", recto_core::clean_line(value))),
+        },
+        Kind::Positive(max) => match whole_number(value) {
+            Some(number) if (1..=max).contains(&number) => Ok(json!(number)),
+            _ => Err(format!("`{}` should be a whole number from 1 to {max}.", recto_core::clean_line(value))),
         },
         Kind::Path => {
             let path = std::path::absolute(PathBuf::from(value)).map_err(|_| "That path couldn't be read.".to_string())?;
@@ -892,8 +901,8 @@ mod tests {
                 }
                 let sample = match arg.kind {
                     Kind::Tab => "#1",
-                    Kind::Page | Kind::Count(_) => "1",
-                    Kind::Pages => "1-2",
+                    Kind::Page | Kind::Count(_) | Kind::Positive(_) => "1",
+                    Kind::Pages | Kind::PagesOpen => "1-2",
                     Kind::Path => "/d/out.png",
                     Kind::Scale => "2x",
                     Kind::Duration => "5s",
@@ -916,7 +925,7 @@ mod tests {
     /// Failure: a typo is taken as something else, a flag is ignored, or one bad value turns into a default. Refused with the help to fix it, as usage, exit 2.
     #[test]
     fn a_wrong_line_is_refused_and_never_guessed_at() {
-        for line in ["tabz", "page", "page turn 1", "tabs --nope", "tabs extra", "text", "text --page", "text --page 0", "text --page x", "text --page 1.5", "text --page +1", "goto", "page rotate 1", "page rotate 1 --by 45", "wait tab-open", "wait", "watch --events nope", "render --page 1", "permission request root", "open", "--level full", "search"] {
+        for line in ["tabz", "page", "page turn 1", "tabs --nope", "tabs extra", "text", "text --page", "text --page 0", "text --page x", "text --page 1.5", "text --page +1", "goto", "page rotate 1", "page rotate 1 --by 45", "page rotate 4- --by 90", "page delete 4-x-", "search x --limit 0", "contents --limit 0", "tabs --limit 0", "log --last 0", "wait tab-open", "wait", "watch --events nope", "render --page 1", "permission request root", "open", "--level full", "search"] {
             let args: Vec<String> = line.split(' ').map(str::to_string).collect();
             let error = parse_cli(&args).expect_err(line);
             assert_eq!((error.code, error.exit), ("usage", exit::USAGE), "{line}");

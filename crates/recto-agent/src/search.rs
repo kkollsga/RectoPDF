@@ -54,11 +54,12 @@ pub(crate) fn search<A: SessionAccess>(access: &A, tab: &str, query: &str, pages
         return Err(AgentError::new("bad_query", "That search has nothing to look for.", exit::FAILED).then("Search for a word or a phrase."));
     }
     let plan = plan(access, tab, pages)?;
-    run(&plan, &needle, limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize, MAX_TIME, Instant::now)
+    let limit = crate::positive_limit(limit, DEFAULT_LIMIT, MAX_LIMIT)?;
+    run(&plan, &needle, limit, MAX_TIME, Instant::now)
 }
 
 fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<Plan, AgentError> {
-    let range = pages.map(parse_pages).transpose()?;
+    let range = pages.map(|pages| parse_pages(pages, true)).transpose()?;
     access.with(|s| {
         let id = select(s, tab)?;
         let total = s.pages_in(id);
@@ -84,7 +85,8 @@ fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<
 
 fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn() -> Instant) -> Result<Value, AgentError> {
     let started = now();
-    let mut renderers: Vec<Option<DocRenderer>> = plan.files.iter().map(|_| None).collect();
+    // One worker at a time, whichever file it's for. A document with a thousand added files must not mean a thousand processes.
+    let mut current: Option<(u16, DocRenderer)> = None;
     let mut hits = Vec::new();
     let mut searched = 0u32;
     let mut empty = Vec::new();
@@ -92,6 +94,9 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
     let mut failed = Vec::new();
     let mut next_page = None;
     let mut not_shown = Vec::new();
+    let mut tag_pages = Vec::new();
+    // A file that isn't what its page numbers were recorded from: its pages can't be trusted, and the rest of the document still can.
+    let mut changed: Vec<u16> = Vec::new();
     for &(position, file, page) in &plan.pages {
         // Stopping only between pages, so asking again from `next_page` always moves on, however many hits a page has.
         if hits.len() >= limit || now().duration_since(started) >= max_time {
@@ -119,7 +124,8 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
                 Ok(None) => continue,
                 Err(failure) => return Err(failure.into()),
             }
-        };
+        }
+        let Some((_, renderer)) = current.as_mut() else { continue };
         let characters = match renderer.page_characters(page, false, false) {
             Ok(characters) => characters,
             // A file that won't be read at all is a failure of the whole search. One bad page isn't: it's listed, so "not found" doesn't cover it.
@@ -139,25 +145,32 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             continue;
         }
         let normalized = normalize(&characters.chars, false);
-        let found = find_hits(&normalized.text, needle);
+        let has_tag_chars = normalized.tag_chars_removed > 0;
         let room = limit - hits.len();
-        if found.len() > room {
-            not_shown.push(json!({ "page": position + 1, "hits": found.len() - room }));
+        let found = find_hits(&normalized.text, needle, room);
+        if found.total > found.shown.len() {
+            not_shown.push(json!({ "page": position + 1, "hits": found.total - found.shown.len() }));
         }
-        for (line, snippet) in found.into_iter().take(room) {
-            hits.push(json!({ "page": position + 1, "line": line, "untrusted": { "snippet": snippet } }));
+        if has_tag_chars && found.total > 0 && tag_pages.len() < MAX_LISTED_EMPTY {
+            tag_pages.push(position + 1);
         }
-        if !hits.iter().any(|hit| hit["page"] == position + 1)
-            && let Some(spelled) = normalized.also_spelled.iter().find(|spelled| fold(spelled).0.contains(needle))
-            && hits.len() < limit
-        {
-            hits.push(json!({ "page": position + 1, "line": null, "also_spelled": true, "untrusted": { "snippet": spelled } }));
+        let spelled = if found.total > 0 { None } else { normalized.also_spelled.iter().find(|spelled| fold(spelled).0.contains(needle)).filter(|_| hits.len() < limit) };
+        if found.shown.is_empty() && spelled.is_none() {
+            continue;
+        }
+        // Only a page with something to show is drawn to look for hidden text: doing it for every page costs three to five times as much. `docs/ENGINEERING.md` has the numbers. So a hit always says, and a page never looked at has nothing to say.
+        let hidden = hidden_on_page(renderer, page);
+        for (line, snippet) in found.shown {
+            hits.push(json!({ "page": position + 1, "line": line, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden, "untrusted": { "snippet": snippet } }));
+        }
+        if let Some(spelled) = spelled {
+            hits.push(json!({ "page": position + 1, "line": null, "also_spelled": true, "page_has_tag_chars": has_tag_chars, "hidden_text": hidden, "untrusted": { "snippet": spelled } }));
         }
     }
     Ok(json!({
         "tab": plan.tab,
         "hits": hits,
-        "untrusted_snippets": true,
+        "hidden_text_checked": "pages_with_hits",
         "coverage": {
             "pages_searched": searched,
             "pages_in_scope": plan.pages.len(),
@@ -170,6 +183,17 @@ fn run(plan: &Plan, needle: &str, limit: usize, max_time: Duration, now: impl Fn
             "next_page": next_page,
         },
     }))
+}
+
+/// Draws a page to see whether it holds text no eye can see. If drawing it fails, `checked` says so, which never reads as clean.
+fn hidden_on_page(renderer: &mut DocRenderer, page: u32) -> Value {
+    match renderer.page_characters(page, false, true) {
+        Ok(characters) => {
+            let report = hidden_report(&characters.chars, characters.hidden_checked);
+            json!({ "checked": report.checked, "flagged": report.flagged })
+        }
+        Err(_) => json!({ "checked": false, "flagged": null }),
+    }
 }
 
 /// Lower-cases and joins whitespace, and notes where each byte of the result came from. Returns the folded text and that map.
@@ -196,18 +220,28 @@ fn fold(text: &str) -> (String, Vec<u32>) {
     (folded, sources)
 }
 
-/// Each place the folded needle is in the text: its one-based line, and the words around it on one line.
-fn find_hits(text: &str, needle: &str) -> Vec<(u32, String)> {
+/// What's on one page: how many hits in all, and the first few, each with its one-based line and the words around it on one line.
+struct PageHits {
+    total: usize,
+    shown: Vec<(u32, String)>,
+}
+
+/// Finds the folded needle in the text. Snippets are made only for the first `room`: a hostile page of two million characters searched for one letter would otherwise make two million strings before the limit was looked at.
+fn find_hits(text: &str, needle: &str, room: usize) -> PageHits {
     let (folded, sources) = fold(text);
-    let mut hits = Vec::new();
+    let mut hits = PageHits { total: 0, shown: Vec::with_capacity(room.min(MAX_LIMIT as usize)) };
     let (mut line, mut counted_to) = (1u32, 0usize);
     for (at, found) in folded.match_indices(needle) {
+        hits.total += 1;
+        if hits.shown.len() >= room {
+            continue;
+        }
         let start = sources.get(at).map_or(text.len(), |source| *source as usize);
         let end = sources.get(at + found.len()).map_or(text.len(), |source| *source as usize);
         let bytes_between = text.get(counted_to..start).unwrap_or("");
         line += u32::try_from(bytes_between.bytes().filter(|byte| *byte == b'\n').count()).unwrap_or(0);
         counted_to = start;
-        hits.push((line, snippet(text, start, end)));
+        hits.shown.push((line, snippet(text, start, end)));
     }
     hits
 }
@@ -224,10 +258,14 @@ fn snippet(text: &str, start: usize, end: usize) -> String {
 mod tests {
     use super::*;
 
+    fn lines_and_snippets(text: &str, needle: &str) -> Vec<(u32, String)> {
+        find_hits(text, needle, usize::MAX).shown
+    }
+
     /// Failure: a phrase broken across a line isn't found, or a hit's line number is off, so a citation points at the wrong place.
     #[test]
     fn a_phrase_across_a_line_break_is_found_on_its_line() {
-        let hits = find_hits("first line\nThe Force\nMajeure clause\nand Force Majeure again", "force majeure");
+        let hits = lines_and_snippets("first line\nThe Force\nMajeure clause\nand Force Majeure again", "force majeure");
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].0, 2);
         assert_eq!(hits[1].0, 4);
@@ -239,18 +277,42 @@ mod tests {
     fn folding_keeps_positions_through_letters_that_change_length() {
         let (folded, sources) = fold("İİİ  Æbc");
         assert_eq!(folded.len(), sources.len());
-        let hits = find_hits("İİİ Æbc\nİ̇\u{130} æbc", &fold("æbc").0);
+        let hits = lines_and_snippets("İİİ Æbc\nİ̇\u{130} æbc", &fold("æbc").0);
         assert_eq!(hits.len(), 2);
         assert!(hits[0].1.contains("Æbc"));
-        assert!(find_hits("", "x").is_empty());
+        assert!(lines_and_snippets("", "x").is_empty());
     }
 
     /// Failure: a hostile page with one long line makes a snippet of its whole length.
     #[test]
     fn a_snippet_is_bounded() {
         let long = "x ".repeat(500_000) + "needle" + &" y".repeat(500_000);
-        let hits = find_hits(&long, "needle");
+        let hits = lines_and_snippets(&long, "needle");
         assert_eq!(hits.len(), 1);
         assert!(hits[0].1.len() < 500, "{}", hits[0].1.len());
+    }
+
+    /// Failure: a page of two million characters searched for one letter builds a string for every hit before the limit is looked at, hundreds of megabytes, and the time cap only applies between pages. The count stays whole, and only `room` are built.
+    #[test]
+    fn hits_past_the_room_are_counted_and_not_built() {
+        let page = "a".repeat(2_000_000);
+        let started = Instant::now();
+        let found = find_hits(&page, "a", 3);
+        assert_eq!(found.total, 2_000_000);
+        assert_eq!(found.shown.len(), 3, "only what's asked for is built");
+        assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+        let none = find_hits(&page, "a", 0);
+        assert_eq!((none.total, none.shown.len()), (2_000_000, 0));
+    }
+
+    /// Failure: many hits on many lines lose track of their lines once some are past the limit, so a citation is wrong.
+    #[test]
+    fn every_shown_hit_has_the_right_line() {
+        let page: String = (0..50).map(|line| format!("word {line}\n")).collect();
+        let found = find_hits(&page, "word", 10);
+        assert_eq!(found.total, 50);
+        let lines: Vec<u32> = found.shown.iter().map(|hit| hit.0).collect();
+        assert_eq!(lines, (1..=10).collect::<Vec<u32>>());
+        assert!(found.shown[9].1.contains("word 9"), "{}", found.shown[9].1);
     }
 }

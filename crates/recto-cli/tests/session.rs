@@ -412,6 +412,12 @@ fn a_file_only_the_renderer_can_read_opens_and_says_what_it_doesnt_know() {
     let (facts, _) = state.json(&["facts"]);
     assert_eq!(facts["data"]["structure"], "renderer_only");
     assert!(facts["data"]["note"].as_str().unwrap().contains("can't be"), "{facts}");
+    // This fixture names /Encrypt, so `encrypted: false` would be a made-up fact, and the others would read as "none".
+    for key in ["encrypted", "has_contents", "contents_entries", "pdf_version"] {
+        assert_eq!(facts["data"][key], Value::Null, "{key}: {facts}");
+    }
+    let (shown, _, _) = state.text(&["facts"]);
+    assert!(shown.contains("couldn't be read") && !shown.contains("encrypted"), "{shown}");
     let (contents, _) = state.json(&["contents"]);
     assert_eq!(contents["data"]["available"], false, "\"none\" would be a claim it can't make");
     let (signatures, code) = state.json(&["signatures"]);
@@ -426,6 +432,24 @@ fn a_file_only_the_renderer_can_read_opens_and_says_what_it_doesnt_know() {
     state.json(&["open", path_of(&other)]);
     let (insert, code) = state.json(&["page", "insert", path_of(&file), "--at", "1"]);
     assert_eq!((insert["error"]["code"].as_str(), code), (Some("renderer_only"), exit::FAILED), "{insert}");
+}
+
+/// Failure: a tab whose file later turns into one lopdf refuses says "no contents", because only the flag from when it opened is looked at.
+#[test]
+fn a_file_damaged_after_opening_doesnt_read_as_having_no_contents() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = three_pages();
+    state.json(&["open", path_of(&file)]);
+    let (contents, _) = state.json(&["contents"]);
+    assert_eq!(contents["data"]["available"], true);
+    std::fs::write(&file.0, only_the_renderer_reads_this()).unwrap();
+    let (contents, code) = state.json(&["contents"]);
+    assert_eq!((code, &contents["data"]["available"]), (0, &json!(false)), "{contents}");
+    let (shown, _, _) = state.text(&["contents"]);
+    assert!(!shown.contains("no contents"), "{shown}");
+    let (report, _) = state.json(&["signatures"]);
+    assert_eq!(report["data"]["structure_read"], false, "{report}");
 }
 
 /// Failure: a file nothing can read gets a tab, or a hostile path hangs the session. `open` on a pipe would wait for a writer for ever.
@@ -500,6 +524,8 @@ fn search_finds_across_lines_and_says_what_it_covered() {
     assert!(hits[0]["untrusted"]["snippet"].as_str().unwrap().contains("force majeure"), "{found}");
     assert_eq!(found["data"]["coverage"]["pages_searched"], 4);
     assert_eq!(found["data"]["coverage"]["no_text_pages"], json!([3]));
+    assert_eq!(found["data"]["hidden_text_checked"], "pages_with_hits", "it must say what it looked at");
+    assert_eq!((&hits[0]["page_has_tag_chars"], &hits[0]["hidden_text"]["checked"], &hits[0]["hidden_text"]["flagged"]), (&json!(false), &json!(true), &json!(false)), "{found}");
 
     let (none, code) = state.json(&["search", "indemnity"]);
     assert_eq!(code, 0, "finding nothing isn't a failure: {none}");
@@ -524,6 +550,56 @@ fn search_finds_across_lines_and_says_what_it_covered() {
     assert_eq!((past["error"]["code"].as_str(), code), (Some("no_such_page"), exit::NOT_FOUND));
     let (empty, code) = state.json(&["search", "   "]);
     assert_eq!((empty["error"]["code"].as_str(), code), (Some("bad_query"), exit::FAILED));
+}
+
+/// Failure: a search hit on a page full of hidden text says nothing, so an agent cites it without looking further. Text and search must agree on the page, and only pages with hits cost a draw.
+#[test]
+fn a_hit_on_a_page_with_hidden_text_says_so() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let doc = TempPdf::new("hiding.pdf", &pages(&[Page::new(recto_testpdf::hidden_text_page()), Page::new(text_lines(&["VISIBLE-SENTINEL on an ordinary page"]))]));
+    state.json(&["open", path_of(&doc)]);
+    let (found, code) = state.json(&["search", "VISIBLE-SENTINEL"]);
+    assert_eq!(code, 0, "{found}");
+    let hits = found["data"]["hits"].as_array().unwrap();
+    assert_eq!((&hits[0]["page"], &hits[0]["hidden_text"]["flagged"]), (&json!(1), &json!(true)), "{found}");
+    assert_eq!((&hits[1]["page"], &hits[1]["hidden_text"]["flagged"]), (&json!(2), &json!(false)), "{found}");
+    let (shown, _, _) = state.text(&["search", "VISIBLE-SENTINEL"]);
+    assert!(shown.lines().any(|line| line.starts_with("p. 1:") && line.contains("no eye can see")), "{shown}");
+    assert!(shown.lines().any(|line| line.starts_with("p. 2:") && !line.contains("no eye can see")), "{shown}");
+}
+
+/// Failure: a hit on a page with tag characters says nothing about them, though they can spell an instruction no eye can see, and search has no other way of saying so.
+#[test]
+fn search_flags_tag_characters_on_a_hit() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    // A font whose ToUnicode turns the letter A into the tag character U+E0041, so the page's text really holds one.
+    let cmap = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /X def /CMapType 2 def 1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfrange <20> <7E> <0020> endbfrange 2 beginbfchar <41> <DB40DC41> <42> <D83DDE00> endbfchar endcmap end end".to_vec();
+    let objects = vec![
+        Object::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Object::Dict("<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".into()),
+        Object::Stream { dict: String::new(), data: b"BT /F1 12 Tf 72 720 Td (ordinary wordsAAA B) Tj ET".to_vec() },
+        Object::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>".into()),
+        Object::Stream { dict: String::new(), data: cmap },
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 8 0 R /Resources << /Font << /F1 9 0 R >> >> >>".into()),
+        Object::Stream { dict: String::new(), data: b"BT /F1 12 Tf 72 720 Td (ordinary page) Tj ET".to_vec() },
+        Object::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into()),
+    ];
+    let doc = TempPdf::new("tags.pdf", &build(&objects));
+    state.json(&["open", path_of(&doc)]);
+    let (read, _) = state.json(&["text", "--page", "1"]);
+    assert_eq!(read["data"]["tag_chars_removed"], 3, "tag characters come from a font as two halves, and must be seen as what they are: {read}");
+    assert_eq!(read["data"]["hidden_text"]["flagged"], true, "{read}");
+    assert!(read["data"]["untrusted"]["text"].as_str().unwrap().contains('\u{1F600}'), "real text past 16 bits must survive too: {read}");
+    let (found, _) = state.json(&["search", "ordinary"]);
+    let hits = found["data"]["hits"].as_array().unwrap();
+    assert_eq!((&hits[0]["page"], &hits[0]["page_has_tag_chars"]), (&json!(1), &json!(true)), "{found}");
+    assert_eq!((&hits[1]["page"], &hits[1]["page_has_tag_chars"]), (&json!(2), &json!(false)), "{found}");
+    assert_eq!(found["data"]["coverage"]["pages_with_tag_chars"], json!([1]));
+    let (shown, _, _) = state.text(&["search", "ordinary"]);
+    assert!(shown.contains("no eye can see"), "{shown}");
 }
 
 /// Failure: facts and contents don't follow what's been edited, or a long contents comes back whole and fills an agent's reading.

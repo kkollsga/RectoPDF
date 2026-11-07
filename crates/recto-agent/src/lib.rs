@@ -619,7 +619,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
     }
     match command {
         Command::Open { path, page } => open(access, path, *page, events),
-        Command::Tabs { from, limit } => Ok(access.with(|s| tabs_json(s, *from, *limit))),
+        Command::Tabs { from, limit } => access.with(|s| tabs_json(s, *from, *limit)),
         Command::Sidebar {} => Ok(access.with(|s| sidebar_json(s))),
         Command::Tap { tab } => access.with(|s| {
             let id = select(s, tab)?;
@@ -704,17 +704,17 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             render::budget(&path, &args)
         }
         Command::PageMove { tab, pages, to } => {
-            let (start, len) = parse_pages(pages)?;
+            let (start, len) = parse_pages(pages, false)?;
             let destination = one_based(*to)?;
             edit(access, tab, events, |e| e.move_pages(start, len, destination))
         }
         Command::PageRotate { tab, pages, degrees } => {
-            let (start, len) = parse_pages(pages)?;
+            let (start, len) = parse_pages(pages, false)?;
             let turns = quarter_turns(*degrees)?;
             edit(access, tab, events, |e| e.rotate(start, len, turns))
         }
         Command::PageDelete { tab, pages } => {
-            let (start, len) = parse_pages(pages)?;
+            let (start, len) = parse_pages(pages, false)?;
             edit(access, tab, events, |e| e.delete(start, len))
         }
         Command::PageInsert { tab, path, at } => {
@@ -848,8 +848,9 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
         Some(Ok(id))
     });
     let (id, is_new) = match existing {
-        Some(id) => (id, false),
+        Some(found) => (found?, false),
         None => {
+            // The file is read outside the session, so a slow or hostile one holds nobody else up.
             let loader = access.with(|s| s.loader().clone());
             let stamp = recto_platform::file_stamp(path).ok();
             let facts = loader.load(path)?;
@@ -868,6 +869,9 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
         }
         let name = s.tab(id).map(|t| t.name.to_string());
         events.push(Event::new(if is_new { "tab_opened" } else { "tab_activated" }, json!({ "tab": id.0, "untrusted": { "name": name } })));
+        if page.is_some() {
+            events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page })));
+        }
         Ok(where_json(s, id))
     })
 }
@@ -883,14 +887,23 @@ fn one_based(page: u32) -> Result<u32, AgentError> {
     page.checked_sub(1).ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))
 }
 
-/// Parses `4` or `4-6` into a zero-based start and a length.
-pub(crate) fn parse_pages(pages: &str) -> Result<(u32, u32), AgentError> {
-    let bad = || AgentError::new("bad_pages", "Pages are one number or a range, such as 4, 4-6 or 4-.", exit::FAILED).then("Write them as 4 or 4-6, counting from 1. 4- runs to the end.");
+/// How many a command should give: what was asked, up to the most it gives, or its default. Asking for none is refused: it can't be what was meant, and answering with one would be a guess.
+pub(crate) fn positive_limit(limit: Option<u32>, default: u32, max: u32) -> Result<usize, AgentError> {
+    match limit {
+        Some(0) => Err(AgentError::new("bad_limit", "A limit has to be at least 1.", exit::FAILED).then("Leave it out to get the default, or ask for 1 or more.")),
+        Some(limit) => Ok(limit.min(max) as usize),
+        None => Ok(default.min(max) as usize),
+    }
+}
+
+/// Parses `4` or `4-6` into a zero-based start and a length. `4-` means to the end only where `open_ended` says that makes sense, and only that exact form: `4-x-` isn't it.
+pub(crate) fn parse_pages(pages: &str, open_ended: bool) -> Result<(u32, u32), AgentError> {
+    let bad = || AgentError::new("bad_pages", "Pages are one number or a range, such as 4 or 4-6.", exit::FAILED).then("Write them as 4 or 4-6, counting from 1.");
     let (first, last) = pages.split_once('-').unwrap_or((pages, pages));
     let number = |text: &str| if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) { Err(bad()) } else { text.parse::<u32>().map_err(|_| bad()) };
     let first = number(first)?;
-    // `5-` means to the end. The length is then as long as can be, and whoever knows the document's length cuts it down or refuses it.
-    let last = if pages.ends_with('-') { u32::MAX } else { number(last)? };
+    // `5-` means to the end. The length is then as long as can be, and whoever knows the document's length cuts it down.
+    let last = if open_ended && last.is_empty() { u32::MAX } else { number(last)? };
     if first == 0 || last < first {
         return Err(bad());
     }
@@ -1094,12 +1107,12 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
 const DEFAULT_TABS_LISTED: u32 = 200;
 const MAX_TABS_LISTED: u32 = 1000;
 
-fn tabs_json<L: DocLoader>(session: &Session<L>, from: Option<u32>, limit: Option<u32>) -> Value {
+fn tabs_json<L: DocLoader>(session: &Session<L>, from: Option<u32>, limit: Option<u32>) -> Result<Value, AgentError> {
     let from = from.unwrap_or(0) as usize;
-    let limit = limit.unwrap_or(DEFAULT_TABS_LISTED).clamp(1, MAX_TABS_LISTED) as usize;
+    let limit = positive_limit(limit, DEFAULT_TABS_LISTED, MAX_TABS_LISTED)?;
     let tabs: Vec<Value> = session.tabs().iter().skip(from).take(limit).map(|t| where_json(session, t.id)).collect();
     let end = from + tabs.len();
-    json!({ "tabs": tabs, "count": session.tabs().len(), "next_from": (end < session.tabs().len()).then_some(end) })
+    Ok(json!({ "tabs": tabs, "count": session.tabs().len(), "next_from": (end < session.tabs().len()).then_some(end) }))
 }
 
 fn sidebar_json<L: DocLoader>(session: &Session<L>) -> Value {
@@ -1421,6 +1434,8 @@ mod tests {
         assert_eq!(run(&mut s, Level::Control, &Command::PageRotate { tab: tab(), pages: "1".into(), degrees: 720 }).unwrap_err().code, "bad_rotation", "a turn that does nothing mustn't count as an edit");
         assert_eq!(run(&mut s, Level::Control, &Command::PageMove { tab: tab(), pages: "0".into(), to: 1 }).unwrap_err().code, "bad_pages");
         assert_eq!(run(&mut s, Level::Control, &Command::PageMove { tab: tab(), pages: "9-3".into(), to: 1 }).unwrap_err().code, "bad_pages");
+        assert_eq!(run(&mut s, Level::Control, &Command::PageRotate { tab: tab(), pages: "4-".into(), degrees: 90 }).unwrap_err().code, "bad_pages", "to the end isn't for edits");
+        assert_eq!(run(&mut s, Level::Control, &Command::PageRotate { tab: tab(), pages: "4-x-".into(), degrees: 90 }).unwrap_err().code, "bad_pages");
         assert_eq!(run(&mut s, Level::Control, &Command::PageMove { tab: tab(), pages: "1".into(), to: 0 }).unwrap_err().code, "no_such_page");
         assert_eq!(run(&mut s, Level::Control, &Command::PageInsert { tab: tab(), path: "relative.pdf".into(), at: 1 }).unwrap_err().code, "bad_path");
         assert_eq!(run(&mut s, Level::Control, &Command::Undo { tab: tab() }).unwrap_err().code, "nothing_to_undo");
@@ -1444,6 +1459,20 @@ mod tests {
         run(&mut s, Level::Full, &Command::Discard { tab: "#1".into() }).unwrap();
         assert!(!s.is_edited(TabId(1)));
         assert!(run(&mut s, Level::Control, &Command::Close { tab: "#1".into() }).is_ok());
+    }
+
+    /// Failure: `4-x-` reads as `4-`, or a limit of none is quietly answered with one.
+    #[test]
+    fn pages_and_limits_mean_what_they_say() {
+        assert_eq!(parse_pages("4-", true).unwrap().0, 3);
+        assert_eq!(parse_pages("4-6", true).unwrap(), (3, 3));
+        for bad in ["4-x-", "4--", "-4", "-", "", "x", "4-x"] {
+            assert!(parse_pages(bad, true).is_err(), "{bad:?}");
+        }
+        assert!(parse_pages("4-", false).is_err());
+        assert_eq!(positive_limit(Some(0), 20, 200).unwrap_err().code, "bad_limit");
+        assert_eq!(positive_limit(Some(999), 20, 200).unwrap(), 200);
+        assert_eq!(positive_limit(None, 20, 200).unwrap(), 20);
     }
 
     /// Failure: an agent goes to a page that isn't there, the session clamps it, and it believes it's on that page.

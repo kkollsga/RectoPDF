@@ -195,7 +195,14 @@ fn search(data: &Value) -> String {
     } else {
         out.push_str("Found, in the document's own words, untrusted:\n");
         for hit in hits {
-            let _ = writeln!(out, "p. {}: {}", number(&hit["page"]), text(&hit["untrusted"]["snippet"]));
+            let warning = if hit["hidden_text"]["flagged"] == true || hit["page_has_tag_chars"] == true {
+                " [this page has text no eye can see]"
+            } else if hit["hidden_text"]["checked"] == false {
+                " [this page couldn't be checked for hidden text]"
+            } else {
+                ""
+            };
+            let _ = writeln!(out, "p. {}: {}{warning}", number(&hit["page"]), text(&hit["untrusted"]["snippet"]));
         }
     }
     let _ = write!(out, "\nSearched {} of {} pages.", number(&coverage["pages_searched"]), number(&coverage["pages_in_scope"]));
@@ -443,6 +450,10 @@ mod tests {
         assert!(page.contains("no eye can see"), "{page}");
         let hits = render("search", &json!({ "hits": [{ "page": 2, "untrusted": { "snippet": "words" } }], "coverage": { "pages_searched": 1, "pages_in_scope": 1 } }));
         assert!(hits.contains("untrusted"), "{hits}");
+        let flagged = render("search", &json!({ "hits": [{ "page": 2, "hidden_text": { "checked": true, "flagged": true }, "untrusted": { "snippet": "words" } }], "coverage": {} }));
+        assert!(flagged.contains("no eye can see"), "{flagged}");
+        let unchecked = render("search", &json!({ "hits": [{ "page": 2, "hidden_text": { "checked": false }, "untrusted": { "snippet": "words" } }], "coverage": {} }));
+        assert!(unchecked.contains("couldn't be checked"), "{unchecked}");
         let contents = render("contents", &json!({ "available": true, "entries": [{ "depth": 0, "page": 3, "untrusted": { "title": "T" } }], "total": 1 }));
         assert!(contents.contains("untrusted"), "{contents}");
     }

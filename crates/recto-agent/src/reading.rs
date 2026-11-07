@@ -57,16 +57,18 @@ pub(crate) fn facts<A: SessionAccess>(access: &A, tab: &str) -> Result<Value, Ag
     let file = tab_file(access, tab)?;
     let loader = access.with(|s| s.loader().clone());
     let facts = loader.load(&file.path)?;
+    // What the structure reader never saw is null, and null isn't "no". Encryption is the case that matters most: a file refused for an odd encryption dictionary could read as not encrypted.
+    let known = !facts.renderer_only;
     Ok(json!({
         "tab": file.id,
         "pages": file.pages,
         "file_pages": facts.page_count,
         "file_bytes": facts.byte_len,
-        "encrypted": facts.encrypted,
+        "encrypted": known.then_some(facts.encrypted),
         "pdf_version": (!facts.version.is_empty()).then_some(&*facts.version),
         "structure": if facts.renderer_only { "renderer_only" } else { "readable" },
-        "has_contents": !facts.toc.is_empty(),
-        "contents_entries": facts.toc.entries().len(),
+        "has_contents": known.then(|| !facts.toc.is_empty()),
+        "contents_entries": known.then(|| facts.toc.entries().len()),
         "edited": file.edited,
         "file_changed_since_edits": file.changed,
         "note": facts.renderer_only.then_some("Only the renderer could read this file. Its text and pages can be read, but its title, contents and signatures can't be, and it can't be edited."),
@@ -79,11 +81,16 @@ pub(crate) fn contents<A: SessionAccess>(access: &A, tab: &str, from: Option<u32
     file.require_current()?;
     let unavailable = || json!({ "tab": file.id, "available": false, "note": "Only the renderer can read this file, so its contents can't be read. That doesn't mean it has none.", "entries": [], "total": null, "next_from": null });
     if file.renderer_only {
-        return Ok(json!({ "tab": file.id, "available": false, "note": "Only the renderer could read this file, so its contents can't be read. That doesn't mean it has none.", "entries": [], "total": 0, "next_from": null }));
+        return Ok(unavailable());
     }
     let loader = access.with(|s| s.loader().clone());
-    let toc = loader.load(&file.path)?.toc;
-    let limit = limit.unwrap_or(DEFAULT_CONTENTS).clamp(1, MAX_CONTENTS) as usize;
+    // Read fresh, so it may have changed since the tab opened: a file that's now only the renderer's has no contents to give, which isn't the same as having none.
+    let facts = loader.load(&file.path)?;
+    if facts.renderer_only {
+        return Ok(unavailable());
+    }
+    let toc = facts.toc;
+    let limit = crate::positive_limit(limit, DEFAULT_CONTENTS, MAX_CONTENTS)?;
     let from = from.unwrap_or(0) as usize;
     let visible: Vec<_> = toc.entries().iter().filter(|entry| depth.is_none_or(|depth| entry.depth <= depth)).collect();
     let entries: Vec<Value> = visible
