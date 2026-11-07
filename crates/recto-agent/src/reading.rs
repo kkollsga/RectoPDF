@@ -1,7 +1,7 @@
 //! Commands that read a document's structure: facts, contents and signatures. Each reads the file outside the session, and every string from the file goes under `untrusted`.
 
 use crate::{AgentError, SessionAccess, exit, select};
-use recto_core::SignatureEntry;
+use recto_core::{OpenError, SignatureEntry, SignatureState};
 use recto_session::DocLoader;
 use recto_sign::{SignatureFacts, Status};
 use serde_json::{Value, json};
@@ -91,36 +91,68 @@ pub(crate) fn contents<A: SessionAccess>(access: &A, tab: &str, from: Option<u32
 
 pub(crate) fn signatures<A: SessionAccess>(access: &A, tab: &str) -> Result<Value, AgentError> {
     let file = tab_file(access, tab)?;
-    if file.renderer_only {
-        return Ok(json!({
+    let not_read = || {
+        json!({
             "tab": file.id,
             "structure_read": false,
             "count": null,
+            "signed": null,
             "signatures": [],
-            "note": "Only the renderer could read this file, so RectoPDF can't say whether it holds signatures. That doesn't mean it has none.",
-        }));
+            "note": "This file's structure couldn't be read, so RectoPDF can't say whether it holds signatures. That doesn't mean it has none.",
+        })
+    };
+    if file.renderer_only {
+        return Ok(not_read());
     }
-    let inventory = recto_core::signatures(&file.path)?;
-    let rows: Vec<Value> = inventory.entries.iter().map(signature_json).collect();
-    let signed = inventory.entries.iter().filter(|entry| entry.signed).count();
+    let inventory = match recto_core::signatures(&file.path) {
+        // The file was readable when it opened, and isn't now. That's the same answer: not read, rather than none.
+        Err(OpenError::NotPdf) => return Ok(not_read()),
+        other => other?,
+    };
+    if !inventory.structure_read {
+        return Ok(not_read());
+    }
+    let rows: Vec<Value> = inventory.entries.iter().map(|entry| signature_json(entry, file.positions.as_deref())).collect();
+    let signed = inventory.entries.iter().filter(|entry| entry.state == SignatureState::Signed).count();
+    let partial = inventory.truncated || inventory.unread > 0;
+    let mut note = "These are facts from the file. RectoPDF hasn't checked any signature, and says nothing about whether one holds up.".to_string();
+    if partial {
+        note.push_str(" Part of the file's form couldn't be read or wasn't reached, so there may be more than these.");
+    }
+    if file.edited {
+        note.push_str(" They come from the file on disk, not from the unsaved edits: an edit that moves a page doesn't move what a signature covers.");
+    }
     Ok(json!({
         "tab": file.id,
         "structure_read": true,
         "count": rows.len(),
         "signed": signed,
         "truncated": inventory.truncated,
+        "unread": inventory.unread,
+        "partial": partial,
+        "edited": file.edited,
         "certification_named": inventory.certified,
         "signatures": rows,
-        "note": "These are facts from the file. RectoPDF hasn't checked any signature, and says nothing about whether one holds up.",
+        "note": note,
     }))
 }
 
-fn signature_json(entry: &SignatureEntry) -> Value {
-    let summary = if entry.signed { SignatureFacts { certificate_name: None, status: Status::NotChecked }.summary() } else { "Signature field, empty" };
+fn signature_json(entry: &SignatureEntry, positions: Option<&[u32]>) -> Value {
+    let (summary, status) = match entry.state {
+        SignatureState::Signed => (SignatureFacts { certificate_name: None, status: Status::NotChecked }.summary(), "not_checked"),
+        SignatureState::Empty => ("Signature field, empty", "empty"),
+        SignatureState::Unread => ("Signature field that couldn't be read", "unread"),
+    };
+    // `page` is where it is now, like every other page number. Null if the edits removed that page.
+    let page = entry.page.and_then(|page| match positions {
+        Some(positions) => positions.get(page as usize).copied().filter(|position| *position != u32::MAX),
+        None => Some(page),
+    });
     json!({
         "summary": summary,
-        "status": if entry.signed { "not_checked" } else { "empty" },
-        "page": entry.page.map(|page| page + 1),
+        "status": status,
+        "page": page.map(|page| page + 1),
+        "file_page": entry.page.map(|page| page + 1),
         "byte_range": entry.byte_range,
         "bytes_after_range": entry.bytes_after_range,
         "untrusted": {

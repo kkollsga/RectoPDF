@@ -232,7 +232,7 @@ fn signatures(data: &Value) -> String {
     }
     let rows = data["signatures"].as_array().map_or(&[][..], Vec::as_slice);
     if rows.is_empty() {
-        return if data["truncated"] == true { "No signature fields found before the search stopped at its limit.".to_string() } else { "No signature fields found in this file.".to_string() };
+        return if data["partial"] == true { format!("No signature fields found, but {}", text(&data["note"])) } else { "No signature fields found in this file.".to_string() };
     }
     let mut out = String::new();
     for row in rows {
@@ -249,9 +249,6 @@ fn signatures(data: &Value) -> String {
             let _ = write!(out, ", stated time {time:?}");
         }
         out.push('\n');
-    }
-    if data["truncated"] == true {
-        out.push_str("There may be more: the search stopped at its limit.\n");
     }
     out.push_str(text(&data["note"]));
     out
@@ -451,8 +448,8 @@ mod tests {
     fn an_unread_file_never_reads_as_unsigned() {
         let out = render("signatures", &json!({ "structure_read": false, "note": "It can't say." }));
         assert_eq!(out, "It can't say.");
-        let out = render("signatures", &json!({ "structure_read": true, "signatures": [], "truncated": true }));
-        assert!(out.contains("before the search stopped"), "{out}");
+        let out = render("signatures", &json!({ "structure_read": true, "signatures": [], "partial": true, "note": "There may be more." }));
+        assert!(out.contains("There may be more"), "{out}");
     }
 
     /// Failure: an error prints only what went wrong, and an agent has to guess what to do.

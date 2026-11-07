@@ -160,6 +160,66 @@ fn the_signature_report_states_facts_and_never_vouches() {
     assert!(shown.contains("From the file, untrusted"), "{shown}");
 }
 
+/// Failure: a form that can't be read reports as "no signatures" through the whole stack, and a signed field whose value is damaged reads as empty.
+#[test]
+fn a_form_that_cant_be_read_never_reads_as_unsigned() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let doc = |catalog_extra: &str, extra: Vec<Object>| {
+        let mut objects = vec![
+            Object::Dict(format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>")),
+            Object::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+            Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".into()),
+            Object::Stream { dict: String::new(), data: text_lines(&["Words"]) },
+        ];
+        objects.extend(extra);
+        build(&objects)
+    };
+    let gone = TempPdf::new("form-gone.pdf", &doc("/AcroForm 99 0 R", vec![]));
+    state.json(&["open", path_of(&gone)]);
+    let (report, code) = state.json(&["signatures"]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!((&report["data"]["structure_read"], &report["data"]["count"]), (&json!(false), &Value::Null), "{report}");
+    let (shown, _, _) = state.text(&["signatures"]);
+    assert!(shown.contains("can't say") && !shown.contains("No signature fields"), "{shown}");
+
+    let damaged = TempPdf::new("value-gone.pdf", &doc("/AcroForm 5 0 R", vec![Object::Dict("<< /Fields [6 0 R 99 0 R] >>".into()), Object::Dict("<< /FT /Sig /T (Tenant) /V 98 0 R >>".into())]));
+    state.json(&["open", path_of(&damaged)]);
+    let (report, _) = state.json(&["signatures"]);
+    let data = &report["data"];
+    assert_eq!((&data["partial"], &data["unread"], &data["signed"]), (&json!(true), &json!(2), &json!(0)), "{report}");
+    assert_eq!(data["signatures"][0]["status"], "unread", "never \"empty\": {report}");
+}
+
+/// Failure: on an edited tab, a signature's page is the file's number, which now names a different page, or there's no way to tell the report isn't about the edits.
+#[test]
+fn a_signatures_page_follows_edits() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let objects = vec![
+        Object::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm 6 0 R >>".into()),
+        Object::Dict("<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R >>".into()),
+        Object::Stream { dict: String::new(), data: text_lines(&["Words"]) },
+        Object::Dict("<< /Fields [7 0 R] >>".into()),
+        Object::Dict("<< /FT /Sig /T (F) /P 4 0 R >>".into()),
+    ];
+    let file = TempPdf::new("edited-signed.pdf", &build(&objects));
+    state.json(&["open", path_of(&file)]);
+    let (report, _) = state.json(&["signatures"]);
+    assert_eq!((&report["data"]["signatures"][0]["page"], &report["data"]["edited"]), (&json!(2), &json!(false)));
+    state.json(&["page", "move", "2", "--to", "1"]);
+    let (report, _) = state.json(&["signatures"]);
+    let row = &report["data"]["signatures"][0];
+    assert_eq!((&row["page"], &row["file_page"], &report["data"]["edited"]), (&json!(1), &json!(2), &json!(true)), "{report}");
+    assert!(report["data"]["note"].as_str().unwrap().contains("unsaved edits"), "{report}");
+    state.json(&["page", "delete", "1"]);
+    let (report, _) = state.json(&["signatures"]);
+    let row = &report["data"]["signatures"][0];
+    assert_eq!((&row["page"], &row["file_page"]), (&Value::Null, &json!(2)), "the page isn't in the document as edited: {report}");
+}
+
 /// Failure: an agent reaches something that signs. Signing is refused at every level, however it's asked, with no command that asks for it.
 #[test]
 fn signing_is_refused_at_every_level() {

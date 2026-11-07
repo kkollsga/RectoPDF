@@ -239,7 +239,7 @@ pub static TABLE: &[Spec] = &[
         group: GROUP_READ,
         summary: "What the file says about signatures. Facts only: nothing is checked, and nothing here can sign.",
         args: &[TAB],
-        data: "`{ tab, structure_read, count, signed, truncated, certification_named, signatures: [ { summary, status, page, byte_range, bytes_after_range, untrusted: { field, filter, sub_filter, stated_name, stated_reason, stated_location, stated_time } } ], note }`. `status` is `not_checked` or `empty`.",
+        data: "`{ tab, structure_read, count, signed, truncated, unread, partial, edited, certification_named, signatures: [ { summary, status, page, file_page, byte_range, bytes_after_range, untrusted: { field, filter, sub_filter, stated_name, stated_reason, stated_location, stated_time } } ], note }`. `status` is `not_checked`, `empty` or `unread`. `structure_read: false` or `partial: true` means there may be more than this.",
         examples: &["recto signatures", "recto signatures --tab contract --json"],
         ..BASE
     },

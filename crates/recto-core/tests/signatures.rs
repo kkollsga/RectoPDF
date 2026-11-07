@@ -2,7 +2,8 @@
 
 mod support;
 
-use recto_core::{OpenError, inspect, signatures};
+use recto_core::{MAX_FIELD_VISITS, OpenError, SignatureState, inspect, signatures, signatures_within};
+use std::time::Duration;
 use support::{TempPdf, three_page_pdf};
 
 fn signed_pdf() -> Vec<u8> {
@@ -25,7 +26,7 @@ fn finds_signed_and_waiting_fields_with_their_stated_facts() {
     assert_eq!(found.entries.len(), 2);
     let tenant = &found.entries[0];
     assert_eq!(tenant.field, "Tenant");
-    assert!(tenant.signed);
+    assert_eq!(tenant.state, SignatureState::Signed);
     assert_eq!(tenant.page, Some(1));
     assert_eq!(tenant.stated_name.as_deref(), Some("Tor Haugen"));
     assert_eq!(tenant.sub_filter.as_deref(), Some("adbe.pkcs7.detached"));
@@ -33,7 +34,7 @@ fn finds_signed_and_waiting_fields_with_their_stated_facts() {
     assert!(tenant.bytes_after_range.is_some());
     let landlord = &found.entries[1];
     assert_eq!(landlord.field, "Landlord");
-    assert!(!landlord.signed);
+    assert_eq!(landlord.state, SignatureState::Empty);
     assert_eq!(landlord.stated_name, None);
 }
 
@@ -43,7 +44,9 @@ fn a_file_with_no_form_has_no_entries() {
     let file = TempPdf::new("plain.pdf", &three_page_pdf("", &[], ""));
     let found = signatures(&file.0).unwrap();
     assert!(found.entries.is_empty());
+    assert!(found.structure_read, "this file was read, and has no form");
     assert!(!found.certified && !found.truncated);
+    assert_eq!(found.unread, 0);
 }
 
 /// Failure: a field tree that loops back on itself hangs the walk or reports the same field for ever.
@@ -94,7 +97,7 @@ fn stated_text_is_cleaned_and_capped() {
     ];
     let file = TempPdf::new("hostile.pdf", &three_page_pdf("/AcroForm 6 0 R", &extra, ""));
     let entry = &signatures(&file.0).unwrap().entries[0];
-    assert!(entry.signed);
+    assert_eq!(entry.state, SignatureState::Signed);
     assert_eq!(entry.stated_name.as_deref(), Some("x y z"));
     assert!(entry.stated_reason.as_ref().unwrap().len() <= recto_core::MAX_TITLE_BYTES);
 }
@@ -110,4 +113,81 @@ fn files_that_cant_be_read_say_why() {
     assert_eq!(inspect(&fifo).unwrap_err(), OpenError::NotPdf, "a pipe must be refused, not waited on");
     assert_eq!(signatures(&fifo).unwrap_err(), OpenError::NotPdf);
     std::fs::remove_file(&fifo).unwrap();
+}
+
+/// An object number the file points at, whose bytes there aren't an object.
+fn with_corrupt_object(extra: &[String], catalog: &str) -> Vec<u8> {
+    let bytes = three_page_pdf(catalog, extra, "");
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    // Object 6 is damaged in place, keeping every offset in the table: its opening goes, so nothing can be read at that offset.
+    text.replace("6 0 obj\n<<", "6 0 xyz\n<<").into_bytes()
+}
+
+/// Failure: a form that can't be read reports as "no signatures" (`structure_read`, none found), which someone takes to mean the file isn't signed.
+#[test]
+fn an_unreadable_form_is_not_reported_as_no_signatures() {
+    for (name, catalog) in [("gone", "/AcroForm 99 0 R"), ("corrupt", "/AcroForm 6 0 R")] {
+        let extra = vec!["<< /Fields [] >>".to_string()];
+        let file = TempPdf::new(&format!("{name}.pdf"), &with_corrupt_object(&extra, catalog));
+        let found = signatures(&file.0).unwrap();
+        assert!(!found.structure_read, "{name}: {found:?}");
+        assert!(found.entries.is_empty());
+    }
+    let not_a_form = TempPdf::new("form-number.pdf", &three_page_pdf("/AcroForm 12", &[], ""));
+    assert!(!signatures(&not_a_form.0).unwrap().structure_read);
+    let fields_gone = TempPdf::new("fields-gone.pdf", &three_page_pdf("/AcroForm << /Fields 99 0 R >>", &[], ""));
+    assert!(!signatures(&fields_gone.0).unwrap().structure_read);
+    // An empty form, and a form with no fields at all, really are forms with nothing in them.
+    let empty = TempPdf::new("empty-form.pdf", &three_page_pdf("/AcroForm << /Fields [] >>", &[], ""));
+    assert!(signatures(&empty.0).unwrap().structure_read);
+    let no_fields = TempPdf::new("no-fields.pdf", &three_page_pdf("/AcroForm << /SigFlags 3 >>", &[], ""));
+    assert!(signatures(&no_fields.0).unwrap().structure_read);
+}
+
+/// Failure: an unreadable field is skipped without a word, and its value reads as "empty", so a signed field looks unsigned. And a field written directly into the array is dropped.
+#[test]
+fn what_couldnt_be_read_is_counted_and_never_called_empty() {
+    let extra = vec![
+        "<< /Fields [99 0 R 7 0 R 42 << /FT /Sig /T (Direct) >>] >>".to_string(),
+        "<< /FT /Sig /T (ValueGone) /V 98 0 R >>".to_string(),
+    ];
+    let file = TempPdf::new("partly.pdf", &three_page_pdf("/AcroForm 6 0 R", &extra, ""));
+    let found = signatures(&file.0).unwrap();
+    assert!(found.structure_read);
+    let rows: Vec<_> = found.entries.iter().map(|entry| (entry.field.as_str(), entry.state)).collect();
+    assert_eq!(rows, [("ValueGone", SignatureState::Unread), ("Direct", SignatureState::Empty)]);
+    assert_eq!(found.unread, 3, "the missing field, the number in the array, and the value that's gone: {found:?}");
+}
+
+/// Failure: one /Kids array of a few megabytes makes a copy of the parent's name per child, about 400 MiB from a 4 MiB array and more from several, in a process with no memory limit. Measured as whole-process growth,
+/// so it fails if per-child memory comes back. It also has to stop at the cap and say so.
+#[test]
+fn a_wide_kids_array_costs_only_itself() {
+    let long_name = "N".repeat(500);
+    // About 650,000 references in one array, near the reader's 4 MiB limit on one object, under a parent with the longest name there is.
+    let refs = "7 0 R ".repeat(650_000);
+    let extra = vec![format!("<< /Fields [8 0 R] >>"), "<< /T (leaf) >>".to_string(), format!("<< /T ({long_name}) /Kids [{refs}] >>")];
+    let file = TempPdf::new("wide-kids.pdf", &three_page_pdf("/AcroForm 6 0 R", &extra, ""));
+    let before = recto_platform::isolate::process_memory(std::process::id()).unwrap().peak_footprint_bytes;
+    let found = signatures(&file.0).unwrap();
+    let after = recto_platform::isolate::process_memory(std::process::id()).unwrap().peak_footprint_bytes;
+    let grew = after.saturating_sub(before);
+    println!("peak grew {} MiB", grew / (1024 * 1024));
+    assert!(found.truncated, "it must say it stopped");
+    assert!(found.structure_read);
+    // The array itself costs about 70 MiB to parse here. A copy of a name per child adds over 300 more.
+    assert!(grew < 250 * 1024 * 1024, "peak grew {} MiB", grew / (1024 * 1024));
+}
+
+/// Failure: a walk has no bound on time, so a file whose references are slow to chase holds a job and the session's memory for as long as it likes.
+#[test]
+fn the_walk_stops_at_its_time_limit_and_says_so() {
+    let names: Vec<String> = (0..MAX_FIELD_VISITS / 8).map(|i| format!("{} 0 R", 7 + i)).collect();
+    let mut wide = vec![format!("<< /Fields [{}] >>", names.join(" "))];
+    wide.extend((0..MAX_FIELD_VISITS / 8).map(|i| format!("<< /T (f{i}) >>")));
+    let file = TempPdf::new("timed.pdf", &three_page_pdf("/AcroForm 6 0 R", &wide, ""));
+    let stopped = signatures_within(&file.0, Duration::ZERO).unwrap();
+    assert!(stopped.truncated);
+    let finished = signatures(&file.0).unwrap();
+    assert!(!finished.truncated, "{finished:?}");
 }

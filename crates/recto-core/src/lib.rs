@@ -10,7 +10,7 @@ use std::path::Path;
 
 mod signatures;
 
-pub use signatures::{MAX_SIGNATURES, SignatureEntry, SignatureInventory, signatures};
+pub use signatures::{MAX_FIELD_VISITS, MAX_SIGNATURES, SignatureEntry, SignatureInventory, SignatureState, signatures, signatures_within};
 
 /// Most contents entries kept for one document. A hostile file can't make the contents grow past this.
 pub const MAX_TOC_ENTRIES: usize = 100_000;
