@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+recto-index.workspace = true
 recto-platform.workspace = true
 recto-proto.workspace = true
 recto-render-service.workspace = true

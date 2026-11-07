@@ -28,7 +28,24 @@ const IMAGE_DIM: u32 = 218;
 /// How bright a page that's mostly a picture stays, in 256ths. White at this gives off under half the light of white, beside a dark window, and black text on it, in a map's legend say, stays at about 9.7:1 against WCAG AA's 4.5, by a test. Chosen by looking at the USGS map's `heavy-dark` and `low-res-dark`: 192 still glared, and darker loses the hillshade.
 pub const PICTURE_PAGE_DIM: u32 = 176;
 
+/// How a highlight goes over a page: which of the system's two selection colours, and how it's laid over the pixels so text stays readable under it. On a light page it multiplies: white takes the colour and ink stays ink. On a dark page it lightens, each channel the brighter of the two: paper takes the colour and light text stays as it is. A highlight laid over with plain transparency either hides the text or barely shows, and these two come out as the system's own colour behind the text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HighlightLook {
+    /// The system's colour for a dark page, which isn't always a dark window.
+    pub dark_colour: bool,
+    /// Lighten rather than multiply.
+    pub lighten: bool,
+}
+
 impl PaperKind {
+    /// How a highlight goes over this paper. Warm paper is white paper, with its tint laid over everything, the highlight included.
+    pub fn highlight(self) -> HighlightLook {
+        match self {
+            Self::White => HighlightLook { dark_colour: false, lighten: false },
+            Self::Dark => HighlightLook { dark_colour: true, lighten: true },
+        }
+    }
+
     pub fn rgb(self) -> u32 {
         match self {
             Self::White => 0xFF_FF_FF,
@@ -346,6 +363,42 @@ pub fn turn_over(pixels: &mut [u8], width: u32, height: u32, stride: u32, grey: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the compositor does to one channel under a highlight, in 0 to 1.
+    fn blended(look: HighlightLook, under: f64, over: f64) -> f64 {
+        if look.lighten { under.max(over) } else { under * over }
+    }
+
+    fn contrast(one: [f64; 3], two: [f64; 3]) -> f64 {
+        let linear = |c: f64| if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        let luminance = |rgb: [f64; 3]| 0.2126 * linear(rgb[0]) + 0.7152 * linear(rgb[1]) + 0.0722 * linear(rgb[2]);
+        let (a, b) = (luminance(one), luminance(two));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// Failure: on some paper, text under a highlight can't be read, or the highlight doesn't show against the page. The system's own colours as macOS has them by default in each appearance, blue and graphite, on what each paper shows: white paper, warm paper, which is white under a tint, and dark.
+    #[test]
+    fn a_highlight_shows_and_leaves_text_readable_on_every_paper() {
+        let rgb = |value: u32| [f64::from((value >> 16) & 0xFF) / 255.0, f64::from((value >> 8) & 0xFF) / 255.0, f64::from(value & 0xFF) / 255.0];
+        let warm_tint = [0.96, 0.93, 0.86];
+        let cases: [(&str, PaperKind, u32, [u32; 2], Option<[f64; 3]>); 3] = [("white", PaperKind::White, 0xFF_FF_FF, [0xB3_D7_FF, 0xD9_D9_D9], None), ("warm", PaperKind::White, 0xFF_FF_FF, [0xB3_D7_FF, 0xD9_D9_D9], Some(warm_tint)), ("dark", PaperKind::Dark, DARK_PAPER, [0x3F_63_8B, 0x46_46_46], None)];
+        for (name, kind, paper, colours, tint) in cases {
+            let look = kind.highlight();
+            assert_eq!(look.dark_colour, kind == PaperKind::Dark);
+            let ink = if kind == PaperKind::Dark { [f64::from(DARK_INK[0]) / 255.0, f64::from(DARK_INK[1]) / 255.0, f64::from(DARK_INK[2]) / 255.0] } else { [0.0; 3] };
+            let paper = rgb(paper);
+            for colour in colours {
+                let over = rgb(colour);
+                let with = |under: [f64; 3]| {
+                    let mixed = [blended(look, under[0], over[0]), blended(look, under[1], over[1]), blended(look, under[2], over[2])];
+                    tint.map_or(mixed, |tint| [mixed[0] * tint[0], mixed[1] * tint[1], mixed[2] * tint[2]])
+                };
+                let shown_paper = tint.map_or(paper, |tint| [paper[0] * tint[0], paper[1] * tint[1], paper[2] * tint[2]]);
+                assert!(contrast(with(ink), with(paper)) >= 4.5, "{name}, {colour:06x}: text is {:.1}:1 under it", contrast(with(ink), with(paper)));
+                assert!(contrast(with(paper), shown_paper) >= 1.2, "{name}, {colour:06x}: it barely shows, {:.2}:1", contrast(with(paper), shown_paper));
+            }
+        }
+    }
 
     fn luma(rgb: u32) -> u32 {
         (((rgb >> 16) & 0xFF) * 77 + ((rgb >> 8) & 0xFF) * 150 + (rgb & 0xFF) * 29) >> 8

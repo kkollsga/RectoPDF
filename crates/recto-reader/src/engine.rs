@@ -2,7 +2,9 @@
 
 use crate::layout::PageBox;
 use crate::paper::{DarkTile, PageLook, PaperKind, dark_rgb, dim_page, dim_rgb, is_grey, turn_over};
+use crate::selection::Notice;
 use crate::tiles::{DrawKind, Job, JobKind, JobPlan, MAX_ATTACH_PER_TURN, Zoom, Op, Outcome, PageMap, Reader, ReaderReport, Viewport};
+use recto_index::select::PageText;
 use recto_platform::isolate;
 use recto_platform::surface::PixelSurface;
 use recto_proto::TileRect;
@@ -26,6 +28,8 @@ pub trait EngineEvents: Send + Sync {
     fn page_moved(&self);
     /// A page was drawn, or couldn't be.
     fn page_drawn(&self, tab: u32, page: u32, failure: Option<&'static str>);
+    /// A copy is ready for the host to take.
+    fn copy_ready(&self) {}
 }
 
 /// How the engine runs.
@@ -55,6 +59,7 @@ struct Shared {
     ops_signalled: AtomicBool,
     worker_pids: Mutex<Vec<u32>>,
     last_note: Mutex<Option<String>>,
+    last_notice: Mutex<Option<Notice>>,
     config: EngineConfig,
 }
 
@@ -71,7 +76,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Engine {
     pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self {
-        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), last_note: Mutex::new(None), config });
+        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), last_note: Mutex::new(None), last_notice: Mutex::new(None), config });
         Self { shared, thread: Arc::new(Mutex::new(None)) }
     }
 
@@ -90,12 +95,14 @@ impl Engine {
         }
     }
 
-    fn after(&self, reader: MutexGuard<'_, Reader>) {
+    fn after(&self, mut reader: MutexGuard<'_, Reader>) {
         let has_ops = reader.has_ops();
         let note = reader.note().map(str::to_string);
+        let selecting = selecting_news(&mut reader);
         drop(reader);
         self.shared.settled.notify_all();
         note_change(&self.shared, note);
+        tell_selecting(&self.shared, selecting);
         if has_ops {
             signal_ops(&self.shared);
         }
@@ -167,6 +174,98 @@ impl Engine {
         }
         self.wake();
         ops
+    }
+
+    /// Runs what the mouse did, from the UI thread: a short lock, and at worst a look through one page already here. What comes back is for the host to apply now.
+    fn pointer_did(&self, did: impl FnOnce(&mut Reader)) -> Vec<Op> {
+        self.shared.ops_signalled.store(false, Ordering::SeqCst);
+        let mut reader = lock(&self.shared.reader);
+        did(&mut reader);
+        let ops = reader.drain(0);
+        let more = reader.has_ops();
+        let selecting = selecting_news(&mut reader);
+        drop(reader);
+        tell_selecting(&self.shared, selecting);
+        if more {
+            signal_ops(&self.shared);
+        }
+        self.wake();
+        ops
+    }
+
+    pub fn selection_press(&self, x: f64, y: f64, clicks: u32, shift: bool) -> Vec<Op> {
+        self.pointer_did(|reader| reader.selection_press(x, y, clicks, shift))
+    }
+
+    pub fn selection_drag(&self, x: f64, y: f64) -> Vec<Op> {
+        self.pointer_did(|reader| reader.selection_drag(x, y))
+    }
+
+    pub fn selection_release(&self) -> Vec<Op> {
+        self.pointer_did(Reader::selection_release)
+    }
+
+    /// Whether the pointer's on text. If its page hasn't been read, it's wanted, and this says no for now.
+    pub fn pointer_is_over_text(&self, x: f64, y: f64) -> bool {
+        let mut reader = lock(&self.shared.reader);
+        let over = reader.pointer_is_over_text(x, y);
+        drop(reader);
+        self.wake();
+        over
+    }
+
+    pub fn select_all(&self) {
+        let mut reader = lock(&self.shared.reader);
+        reader.select_all();
+        self.after(reader);
+    }
+
+    pub fn clear_selection(&self) {
+        let mut reader = lock(&self.shared.reader);
+        reader.clear_selection();
+        self.after(reader);
+    }
+
+    pub fn has_selection(&self) -> bool {
+        lock(&self.shared.reader).has_selection()
+    }
+
+    pub fn has_document(&self) -> bool {
+        lock(&self.shared.reader).has_document()
+    }
+
+    /// Starts the selection on its way to the clipboard. It goes page by page on the engine's thread, and `EngineEvents::copy_ready` says when.
+    pub fn copy_selection(&self, anyway: bool) {
+        let mut reader = lock(&self.shared.reader);
+        reader.start_copy(anyway);
+        self.after(reader);
+    }
+
+    pub fn take_copied(&self) -> Option<recto_index::select::CopiedText> {
+        let mut reader = lock(&self.shared.reader);
+        let copied = reader.take_copied();
+        drop(reader);
+        self.shared.settled.notify_all();
+        copied
+    }
+
+    pub fn selection_text_now(&self) -> Option<String> {
+        lock(&self.shared.reader).selection_text_now()
+    }
+
+    pub fn selection_notice(&self) -> Option<Notice> {
+        lock(&self.shared.reader).selection_notice()
+    }
+
+    pub fn dismiss_selection_notice(&self) {
+        let mut reader = lock(&self.shared.reader);
+        reader.dismiss_selection_notice();
+        self.after(reader);
+    }
+
+    /// Where a point on a page is in the document.
+    pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
+        lock(&self.shared.reader).document_point(page, x, y)
     }
 
     pub fn take_moved_page(&self) -> Option<u32> {
@@ -246,6 +345,28 @@ fn note_change(shared: &Shared, note: Option<String>) {
     }
 }
 
+/// What a selection has to say to anyone, taken with the reader's lock, to say with it let go.
+struct SelectingNews {
+    notice: Option<Notice>,
+    copy_ready: bool,
+}
+
+fn selecting_news(reader: &mut Reader) -> SelectingNews {
+    SelectingNews { notice: reader.selection_notice(), copy_ready: reader.take_copy_signal() }
+}
+
+fn tell_selecting(shared: &Shared, news: SelectingNews) {
+    let mut last = lock(&shared.last_notice);
+    if *last != news.notice {
+        *last = news.notice;
+        drop(last);
+        shared.events.note_changed();
+    }
+    if news.copy_ready {
+        shared.events.copy_ready();
+    }
+}
+
 fn signal_ops(shared: &Shared) {
     if !shared.ops_signalled.swap(true, Ordering::SeqCst) {
         shared.events.ops_ready();
@@ -319,8 +440,10 @@ fn run(shared: &Shared) {
         reader.finish(job, outcome);
         let has_ops = reader.has_ops();
         let note = reader.note().map(str::to_string);
+        let selecting = selecting_news(&mut reader);
         drop(reader);
         note_change(shared, note);
+        tell_selecting(shared, selecting);
         if let Some(failure) = drawn {
             shared.events.page_drawn(tab, page, failure);
         }
@@ -340,6 +463,8 @@ fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
 struct OpenDoc {
     doc: DocRenderer,
     looks: HashMap<u32, Arc<PageLook>>,
+    /// The file changed since text was last read for selecting.
+    text_stale: bool,
 }
 
 /// Pages whose look is remembered. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten. Each is at most 64 boxes.
@@ -351,6 +476,7 @@ const LOOK_PICTURE_EDGE: f32 = 512.0;
 fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&PixelSurface, TileRect)>) -> Option<Arc<PageLook>> {
     if open.doc.take_file_changed() {
         open.looks.clear();
+        open.text_stale = true;
     }
     if let Some(known) = open.looks.get(&page) {
         return Some(Arc::clone(known));
@@ -439,14 +565,28 @@ fn renderer_for<'a>(shared: &Shared, renderers: &'a mut HashMap<PathBuf, OpenDoc
         openings.remove(path);
         let file = opened.map_err(Unopened::Failed)?;
         let doc = DocRenderer::with_file(file, path, None, config, policy.clone()).map_err(Unopened::Failed)?;
-        renderers.insert(path.to_path_buf(), OpenDoc { doc, looks: HashMap::new() });
+        renderers.insert(path.to_path_buf(), OpenDoc { doc, looks: HashMap::new(), text_stale: false });
     }
     renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))
 }
 
 fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
+    if let JobKind::Text { check } = job.kind {
+        let read = open.doc.page_characters(job.source_page, true, check);
+        // Asked after the read, which is what finds the file's changed.
+        if open.doc.take_file_changed() {
+            open.looks.clear();
+            open.text_stale = true;
+        }
+        let file_changed = std::mem::take(&mut open.text_stale);
+        return match read {
+            Ok(page) => Outcome::Text { text: Arc::new(PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)), file_changed },
+            Err(_) => Outcome::TextFailed,
+        };
+    }
     let doc = &mut open.doc;
     match &job.kind {
+        JobKind::Text { .. } => Outcome::TextFailed,
         JobKind::Size => match doc.page_size(job.source_page) {
             Ok((width, height)) => Outcome::Size(PageBox { width, height }),
             Err(failure) if whole_file(failure) => Outcome::DocumentFailed(failure.message()),

@@ -7,6 +7,8 @@
 //! **What's in memory.** Only tiles on layers count. Anything off-screen is marked discardable the moment the host says it's off the layer: it leaves the footprint at once, and is usually still there on the way back.
 
 use crate::layout::{PageBox, PageLayout};
+use crate::selection::{Notice, Selecting, Urgency};
+use recto_index::select::{PagePoint, Range};
 use crate::paper::PaperKind;
 use recto_platform::surface::{PixelSurface, Purge};
 use recto_proto::{BYTES_PER_PIXEL, MAX_REGION_BYTES, MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
@@ -99,6 +101,8 @@ pub enum Op {
     /// A tile on a page. `surface` is an extra reference that's now the host's, and zero if `rgb` says the colour. `crop_*` is how much of the surface it uses.
     Attach { id: u64, page: u32, x: f64, y: f64, width: f64, height: f64, surface: u64, rgb: Option<u32>, crop_width: f64, crop_height: f64, below: bool },
     Detach { id: u64 },
+    /// What's selected on a page, in its own coordinates, all of it. Nothing clears it. It's a layer of the page's, so it scrolls and zooms with it and no tile knows.
+    Highlight { page: u32, rects: Vec<recto_index::select::Rect> },
 }
 
 /// Which pages a tab's positions are, once it has been edited.
@@ -204,6 +208,8 @@ pub enum JobKind {
     /// Ask whether a page is heavy.
     Traits,
     Draw { scale: f32, rect: TileRect, surface: PixelSurface, what: DrawKind, paper: PaperKind },
+    /// Read a page's text for selecting. `check` also draws it, for the hidden-text check.
+    Text { check: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,6 +236,7 @@ enum PlanKind {
     Size,
     Traits,
     Draw { scale: f32, rect: TileRect, what: DrawKind, paper: PaperKind },
+    Text { check: bool },
 }
 
 impl JobPlan {
@@ -239,6 +246,7 @@ impl JobPlan {
         let kind = match kind {
             PlanKind::Size => JobKind::Size,
             PlanKind::Traits => JobKind::Traits,
+            PlanKind::Text { check } => JobKind::Text { check },
             PlanKind::Draw { scale, mut rect, what, paper } => {
                 let surface = match what {
                     DrawKind::Preview => Self::take_surface(rect.width, rect.height)?,
@@ -275,6 +283,10 @@ pub enum Outcome {
     PageFailed { message: String, may_pass: bool },
     /// The file can't be drawn, in these words.
     DocumentFailed(String),
+    /// A page's text, for selecting. `file_changed` says what was read before this is about another version of the file.
+    Text { text: Arc<recto_index::select::PageText>, file_changed: bool },
+    /// A page's text can't be read. That's the page's text, and nothing about drawing it.
+    TextFailed,
 }
 
 #[derive(Debug)]
@@ -288,6 +300,8 @@ struct Running {
     generation: u64,
     cancel: Option<CancelHandle>,
     cancel_asked: bool,
+    /// It's reading text. A selection or a copy can want a page that isn't in view, so where the view is says nothing about it.
+    text: bool,
 }
 
 /// How a page sits.
@@ -352,6 +366,7 @@ pub struct Reader {
     counts: ReaderCounts,
     wanted_files: Arc<Vec<PathBuf>>,
     note: Option<String>,
+    selecting: Selecting,
 }
 
 impl Default for Reader {
@@ -390,6 +405,7 @@ impl Reader {
             counts: ReaderCounts::default(),
             wanted_files: Arc::new(Vec::new()),
             note: None,
+            selecting: Selecting::default(),
         }
     }
 
@@ -435,6 +451,8 @@ impl Reader {
             self.hot = Some(tab);
             self.last_view_page = None;
             self.moved_page = None;
+            // A selection is in what's on screen, and a tab off screen holds none.
+            self.selecting.reset();
         }
         let floor = self.next_generation;
         let doc = self.docs.entry(tab).or_insert_with(|| DocView { tab, layout: PageLayout::new(pages), map: map.clone(), magnification: 1.0, anchor: (page, 0.0), tile_scale: 0.0, issues: HashMap::new(), heavy: HashMap::new(), problem: None, seen: HashSet::new(), left_at: None, floor });
@@ -458,6 +476,8 @@ impl Reader {
             }
             self.drop_tab_entries(tab);
             self.clear_screen();
+            // Its pages are other pages now, so what was selected on them isn't there.
+            self.selecting.reset();
         }
         let magnification = self.docs.get(&tab).map_or(1.0, |doc| doc.magnification);
         self.ops.push_back(Op::Magnify { value: magnification });
@@ -525,6 +545,7 @@ impl Reader {
         self.hot = None;
         self.wanted_files = Arc::new(Vec::new());
         self.set_note(None);
+        self.selecting.reset();
     }
 
     fn drop_tab_entries(&mut self, tab: u32) {
@@ -546,6 +567,7 @@ impl Reader {
             }
         }
         self.shown.clear();
+        self.selecting.layers_gone();
     }
 
     /// Asks the host to go to a page, as an agent's `goto` or a contents row does.
@@ -641,6 +663,9 @@ impl Reader {
     /// Whether what's running is still of use: on the tab showing, its page in view, and if it's a tile, at the zoom the view is at now and touching the view.
     pub fn running_is_wanted(&self) -> bool {
         let Some(running) = &self.running else { return true };
+        if running.text {
+            return self.hot == Some(running.tab) && self.window_open;
+        }
         self.hot == Some(running.tab)
             && self.window_open
             && self.doc().is_some_and(|doc| {
@@ -767,6 +792,7 @@ impl Reader {
                 self.ops.push_back(Op::ShowPage { page, x: placement.x, y: placement.y, width: placement.width, height: placement.height, fit: placement.fit, paper_rgb: placement.paper_rgb });
             }
         }
+        self.highlight_ops();
         // Every visible page shows something before any page gets more: a preview is one attachment and fills a page. Without this, a tall page's first eight tiles leave the next page blank for a turn.
         for &page in &visible {
             let Some(doc) = self.docs.get(&tab) else { return };
@@ -916,6 +942,7 @@ impl Reader {
     fn hide_page(&mut self, page: u32) {
         self.ops.push_back(Op::HidePage { page });
         self.shown.remove(&page);
+        self.selecting.page_hidden(page);
         for id in self.attached.remove(&page).unwrap_or_default() {
             if let Some(entry) = self.entries.get_mut(&id) {
                 entry.attached = false;
@@ -1069,6 +1096,7 @@ impl Reader {
             cancel.cancel_before(running.generation + 1);
         }
         self.wanted_files = Arc::new(Vec::new());
+        self.selecting.drop_texts();
     }
 
     /// The window is back: everything is asked for again.
@@ -1116,7 +1144,12 @@ impl Reader {
         if scale <= 0.0 {
             return None;
         }
-        let pages: Vec<u32> = visible.collect();
+        // A selection the reader is making comes before tiles: it answers their hand.
+        if let Some(plan) = self.text_plan(tab, Urgency::Now) {
+            return Some(plan);
+        }
+        let doc = self.docs.get(&tab)?;
+        let pages: Vec<u32> = self.visible_pages(doc).collect();
         for page in pages {
             let doc = self.docs.get(&tab)?;
             if let Some(issue) = doc.issues.get(&page)
@@ -1175,7 +1208,166 @@ impl Reader {
             let generation = self.fresh_generation();
             return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Draw { scale, rect, what: DrawKind::Tile, paper } });
         }
-        None
+        self.text_plan(tab, Urgency::WhenIdle)
+    }
+
+    /// Reading text for a selection, a copy or the pointer, if any is wanted at this urgency.
+    fn text_plan(&mut self, tab: u32, urgency: Urgency) -> Option<JobPlan> {
+        let doc = self.docs.get(&tab)?;
+        let visible: Vec<u32> = self.visible_pages(doc).collect();
+        let wanted = self.selecting.wanted(urgency, &visible, |page| doc.heavy.get(&page).copied().unwrap_or(false))?;
+        let (file, source_page) = doc.map.source(wanted.page)?;
+        let generation = self.fresh_generation();
+        Some(JobPlan { tab, position: wanted.page, file, source_page, generation, kind: PlanKind::Text { check: wanted.check } })
+    }
+
+    /// Tells the host what's changed about highlights. A short look at nothing, with nothing selected.
+    fn highlight_ops(&mut self) {
+        if self.selecting.nothing_to_draw() {
+            return;
+        }
+        let pages: Vec<u32> = self.shown.keys().copied().collect();
+        for page in pages {
+            if let Some(rects) = self.selecting.layer_update(page) {
+                self.ops.push_back(Op::Highlight { page, rects });
+            }
+        }
+    }
+
+    /// Where a point in the document is on a page as it's shown. It stays with the page it's nearest, past the page's edges if it must, which is what a drag off the side needs.
+    pub fn point_on_page(&self, x: f64, y: f64) -> Option<PagePoint> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let doc = self.doc()?;
+        if doc.layout.count() == 0 {
+            return None;
+        }
+        let page = doc.layout.page_at(y);
+        let rect = doc.layout.rect(page);
+        let fit = doc.layout.fit().max(f64::MIN_POSITIVE);
+        Some(PagePoint { page, x: ((x - rect.x) / fit) as f32, y: ((y - rect.y) / fit) as f32 })
+    }
+
+    /// The other way, for QA, which says where a click goes as an agent found it from `recto select`, and then does what the mouse does.
+    pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
+        let doc = self.doc()?;
+        if page >= doc.layout.count() {
+            return None;
+        }
+        let rect = doc.layout.rect(page);
+        Some((rect.x + x * doc.layout.fit(), rect.y + y * doc.layout.fit()))
+    }
+
+    /// The mouse went down at a point in the document. Cheap: at worst it looks through a page already here.
+    pub fn selection_press(&mut self, x: f64, y: f64, clicks: u32, shift: bool) {
+        match self.point_on_page(x, y) {
+            Some(point) => self.selecting.press(point, clicks, shift),
+            None => self.selecting.clear(),
+        }
+        self.highlight_ops();
+    }
+
+    pub fn selection_drag(&mut self, x: f64, y: f64) {
+        if let Some(point) = self.point_on_page(x, y) {
+            self.selecting.drag(point);
+            self.highlight_ops();
+        }
+    }
+
+    pub fn selection_release(&mut self) {
+        self.selecting.release();
+    }
+
+    /// Whether the pointer's on text, and so an I-beam. A page not read yet is wanted, for when there's nothing else to do.
+    pub fn pointer_is_over_text(&mut self, x: f64, y: f64) -> bool {
+        let Some(point) = self.point_on_page(x, y) else { return false };
+        let Some(doc) = self.doc() else { return false };
+        // Only on a page: the margin and the gap between pages are neither.
+        let size = doc.layout.size(point.page);
+        if point.x < 0.0 || point.y < 0.0 || point.x > size.width || point.y > size.height {
+            return false;
+        }
+        self.selecting.is_over_text(point)
+    }
+
+    /// The whole document, as a Mac PDF reader takes ⌘A. It reads nothing until something's showing.
+    pub fn select_all(&mut self) {
+        let Some(pages) = self.doc().map(|doc| doc.layout.count()).filter(|pages| *pages > 0) else { return };
+        self.selecting.set_range(Range::all(pages));
+        self.highlight_ops();
+    }
+
+    /// A stretch given in numbers: `recto select`'s, shown.
+    pub fn select_range(&mut self, range: Range) {
+        self.selecting.set_range(range);
+        self.highlight_ops();
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selecting.clear();
+        self.highlight_ops();
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.selecting.has_selection()
+    }
+
+    pub fn has_document(&self) -> bool {
+        self.doc().is_some_and(|doc| doc.layout.count() > 0)
+    }
+
+    fn heavy_pages(&self) -> HashMap<u32, bool> {
+        self.doc().map(|doc| doc.heavy.clone()).unwrap_or_default()
+    }
+
+    /// Starts the selection on its way to the clipboard, a page at a time, off this thread. `anyway` is the reader having said so.
+    pub fn start_copy(&mut self, anyway: bool) {
+        let Some(pages) = self.doc().map(|doc| doc.layout.count()) else { return };
+        let heavy = self.heavy_pages();
+        self.selecting.start_copy(anyway, pages, |page| heavy.get(&page).copied().unwrap_or(false));
+    }
+
+    pub fn take_copy_signal(&mut self) -> bool {
+        self.selecting.take_copy_signal()
+    }
+
+    pub fn take_copied(&mut self) -> Option<recto_index::select::CopiedText> {
+        self.selecting.take_copied()
+    }
+
+    /// The selection's text if it's all here, for what can't wait for it.
+    pub fn selection_text_now(&self) -> Option<String> {
+        self.selecting.text_now(self.doc()?.layout.count())
+    }
+
+    pub fn selection_notice(&self) -> Option<Notice> {
+        self.selecting.notice().cloned()
+    }
+
+    pub fn dismiss_selection_notice(&mut self) {
+        self.selecting.dismiss_notice();
+    }
+
+    /// Text arrived.
+    fn take_text(&mut self, tab: u32, position: u32, outcome: Result<(Arc<recto_index::select::PageText>, bool), ()>, check: bool) {
+        if self.hot != Some(tab) || !self.window_open {
+            return;
+        }
+        let visible: Vec<u32> = self.doc().map(|doc| self.visible_pages(doc).collect()).unwrap_or_default();
+        match outcome {
+            Ok((text, file_changed)) => {
+                if file_changed {
+                    // Places and pages are about the file as it was.
+                    self.selecting.reset();
+                }
+                self.selecting.page_read(position, text, check, &visible);
+            }
+            Err(()) => self.selecting.page_failed(position, &visible),
+        }
+        let pages = self.doc().map_or(0, |doc| doc.layout.count());
+        let heavy = self.heavy_pages();
+        self.selecting.advance_copy(pages, |page| heavy.get(&page).copied().unwrap_or(false));
     }
 
     fn preview_rect(&self, doc: &DocView, page: u32, scale: f32) -> Option<(f32, TileRect)> {
@@ -1201,7 +1393,8 @@ impl Reader {
             JobKind::Draw { scale, rect, what, .. } => (Some(*rect), *scale, *what == DrawKind::Preview),
             _ => (None, 0.0, false),
         };
-        self.running = Some(Running { tab: job.tab, position: job.position, rect, scale, preview, generation: job.generation, cancel, cancel_asked: false });
+        let text = matches!(job.kind, JobKind::Text { .. });
+        self.running = Some(Running { tab: job.tab, position: job.position, rect, scale, preview, generation: job.generation, cancel, cancel_asked: false, text });
     }
 
     /// What can stop the job now running, once there's something that can.
@@ -1230,6 +1423,8 @@ impl Reader {
             return;
         }
         match (kind, outcome) {
+            (JobKind::Text { check }, Outcome::Text { text, file_changed }) => self.take_text(tab, position, Ok((text, file_changed)), check),
+            (JobKind::Text { check }, _) => self.take_text(tab, position, Err(()), check),
             (JobKind::Size, Outcome::Size(size)) => {
                 let Some(doc) = self.docs.get_mut(&tab) else { return };
                 let moved = doc.layout.set_page_size(position, size);
@@ -1346,6 +1541,10 @@ impl Reader {
         if scale <= 0.0 {
             return false;
         }
+        let visible: Vec<u32> = self.visible_pages(doc).collect();
+        if !self.selecting.is_settled(&visible, |page| doc.heavy.get(&page).copied().unwrap_or(false)) {
+            return false;
+        }
         for page in self.visible_pages(doc) {
             if doc.issues.contains_key(&page) {
                 continue;
@@ -1407,6 +1606,7 @@ impl Reader {
             },
             "documents_held": self.docs.len(),
             "window_open": self.window_open,
+            "selection": self.selecting.report(),
         }))
     }
 
@@ -1448,10 +1648,11 @@ mod tests {
             let Some(job) = reader.next_job() else { break };
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(letter()),
+                JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Traits => Outcome::Heavy(false),
                 JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
             };
-            drawn.push(Job { tab: job.tab, position: job.position, file: job.file.clone(), source_page: job.source_page, generation: job.generation, kind: match &job.kind { JobKind::Size => JobKind::Size, JobKind::Traits => JobKind::Traits, JobKind::Draw { scale, rect, surface, what, paper } => JobKind::Draw { scale: *scale, rect: *rect, surface: surface.clone(), what: *what, paper: *paper } } });
+            drawn.push(Job { tab: job.tab, position: job.position, file: job.file.clone(), source_page: job.source_page, generation: job.generation, kind: match &job.kind { JobKind::Size => JobKind::Size, JobKind::Traits => JobKind::Traits, JobKind::Text { check } => JobKind::Text { check: *check }, JobKind::Draw { scale, rect, surface, what, paper } => JobKind::Draw { scale: *scale, rect: *rect, surface: surface.clone(), what: *what, paper: *paper } } });
             reader.finish(job, outcome);
             let more = reader.drain(MAX_ATTACH_PER_TURN);
             drop(more);
@@ -1615,6 +1816,7 @@ mod tests {
             let job = reader.next_job().expect("a job");
             match &job.kind {
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
+                JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
                 JobKind::Draw { what: kind, .. } if *kind == what => return job,
                 JobKind::Draw { .. } => reader.finish(job, Outcome::Drawn { kind: TileKind::Colour, low_res: None }),
@@ -1733,6 +1935,7 @@ mod tests {
             let Some(job) = reader.next_job() else { break };
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(letter()),
+                JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Traits => Outcome::Heavy(false),
                 JobKind::Draw { .. } if job.position == 0 => Outcome::PageFailed { message: "This page couldn't be drawn.".into(), may_pass: false },
                 JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
@@ -1754,6 +1957,7 @@ mod tests {
             let Some(job) = reader.next_job() else { break };
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(letter()),
+                JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Traits => Outcome::Heavy(true),
                 JobKind::Draw { .. } => {
                     low_done = true;
@@ -1779,6 +1983,7 @@ mod tests {
             let Some(job) = reader.next_job() else { break };
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(PageBox { width: 1224.0, height: 1584.0 }),
+                JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Traits => Outcome::Heavy(true),
                 JobKind::Draw { what, .. } => {
                     kinds.push(*what);
@@ -1822,6 +2027,7 @@ mod tests {
                     Outcome::PageFailed { message: "This page couldn't be read.".into(), may_pass: false }
                 }
                 JobKind::Size => Outcome::Size(letter()),
+                JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Traits => Outcome::Heavy(false),
                 JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
             };
@@ -1851,6 +2057,7 @@ mod tests {
             let job = reader.next_job().expect("a job");
             match job.kind {
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
+                JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Traits => break job,
                 JobKind::Draw { .. } => panic!("traits come before drawing"),
             }
@@ -1865,6 +2072,7 @@ mod tests {
             let job = reader.next_job().expect("a job");
             match job.kind {
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
+                JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
                 JobKind::Draw { .. } => break job,
             }
@@ -1887,6 +2095,7 @@ mod tests {
                 let Some(job) = reader.next_job() else { break };
                 let outcome = match &job.kind {
                     JobKind::Size => Outcome::Size(letter()),
+                    JobKind::Text { .. } => panic!("no text was asked for"),
                     JobKind::Traits => Outcome::Heavy(false),
                     JobKind::Draw { surface, .. } => {
                         seen.insert(surface.id());
@@ -1936,6 +2145,7 @@ mod tests {
             let job = reader.next_job().expect("a job");
             match job.kind {
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
+                JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
                 JobKind::Draw { .. } => break job,
             }

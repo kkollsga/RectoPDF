@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 struct Events {
     ops: AtomicU32,
     drawn: AtomicU32,
+    copies: AtomicU32,
 }
 
 impl EngineEvents for Events {
@@ -24,6 +25,9 @@ impl EngineEvents for Events {
     fn page_moved(&self) {}
     fn page_drawn(&self, _tab: u32, _page: u32, _failure: Option<&'static str>) {
         self.drawn.fetch_add(1, Ordering::SeqCst);
+    }
+    fn copy_ready(&self) {
+        self.copies.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -281,4 +285,138 @@ fn a_worker_holding_a_lot_is_let_go_at_rest() {
     }
     assert_eq!(engine.workers_footprint().0, 0, "it should have gone by now");
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1, "the page stays on screen");
+}
+
+/// The highlight on a page in what the host was last told, keeping what each op said. What's selected is said whole each time.
+fn highlight_on(ops: &[Op], page: u32) -> Option<Vec<recto_index::select::Rect>> {
+    ops.iter().rev().find_map(|op| match op {
+        Op::Highlight { page: on, rects } if *on == page => Some(rects.clone()),
+        _ => None,
+    })
+}
+
+/// Lays a page out and draws it, and says where its top left is in the document.
+fn settled_on_page(engine: &Engine, page: u32) -> (f64, f64, f64) {
+    let mut ops = engine.set_viewport(view(0.0));
+    engine.applied();
+    ops.extend(pump(engine, Duration::from_secs(20)));
+    let shown = ops.iter().rev().find_map(|op| match op {
+        Op::ShowPage { page: on, x, y, fit, .. } if *on == page => Some((*x, *y, *fit)),
+        _ => None,
+    });
+    shown.expect("the page should be showing")
+}
+
+/// Failure: selection blocks on the worker on the UI thread, a press on a page not read is lost, or nothing tells the host when the text arrives, so a highlight comes only on the next move. The host applies what it's told and hears nothing else, as the real one does.
+#[test]
+fn a_press_returns_at_once_and_the_highlight_comes_when_the_text_does() {
+    let file = TempPdf::new("select.pdf", &pages(&[Page::new(text_lines(&["Alpha beta gamma delta"])), Page::new(text_lines(&["Second page words"]))]));
+    let (engine, _events) = started(&file, 2);
+    let (x, y, fit) = settled_on_page(&engine, 0);
+    let at = |page_x: f64, page_y: f64| (x + page_x * fit, y + page_y * fit);
+    // The first line's baseline, from the top of a page 792 tall.
+    let (press_x, press_y) = at(74.0, 792.0 - 720.0 - 4.0);
+    let started_at = Instant::now();
+    let ops = engine.selection_press(press_x, press_y, 2, false);
+    assert!(started_at.elapsed() < Duration::from_millis(50), "a press took {:?}", started_at.elapsed());
+    assert_eq!(highlight_on(&ops, 0), None, "its page hasn't been read, so it can't be known");
+    assert_eq!(engine.selection_release(), Vec::new());
+    let later = pump(&engine, Duration::from_secs(20));
+    let rects = highlight_on(&later, 0).expect("a double-click takes a word, once its page is read");
+    assert_eq!(rects.len(), 1);
+    assert!(rects[0].width > 10.0 && rects[0].width < 60.0, "one word: {:?}", rects[0]);
+    assert!(engine.has_selection());
+    // A click elsewhere clears it, on the UI thread, with no job.
+    let ops = engine.selection_press(press_x, press_y, 1, false);
+    assert_eq!(highlight_on(&ops, 0), Some(Vec::new()), "cleared at once, from the text that's here");
+    engine.selection_release();
+    assert!(!engine.has_selection());
+}
+
+/// Failure: what's selected is drawn in document points, so it's wrong at any zoom, or a click at a zoom hits a different word. The host's points are the document's whatever the magnification, so the same point must take the same word.
+#[test]
+fn a_click_takes_the_same_word_at_any_zoom() {
+    let file = TempPdf::new("zoom.pdf", &pages(&[Page::new(text_lines(&["Alpha beta gamma delta", "Second line of words"]))]));
+    let (engine, _events) = started(&file, 1);
+    let (x, y, fit) = settled_on_page(&engine, 0);
+    let (press_x, press_y) = (x + 100.0 * fit, y + (792.0 - 720.0 - 4.0) * fit);
+    let word_at = |magnification: f64| {
+        engine.set_viewport(Viewport { magnification, width: 1168.0 / magnification, height: 900.0 / magnification, ..view(0.0) });
+        engine.applied();
+        pump(&engine, Duration::from_secs(20));
+        let mut ops = engine.selection_press(press_x, press_y, 2, false);
+        ops.extend(engine.selection_release());
+        engine.applied();
+        ops.extend(pump(&engine, Duration::from_secs(20)));
+        let report = engine.report().0;
+        (report["selection"]["start"].clone(), report["selection"]["end"].clone(), ops)
+    };
+    let (start, end, ops) = word_at(1.0);
+    assert!(start.is_object() && start != end, "{start} to {end}");
+    assert!(highlight_on(&ops, 0).is_some_and(|rects| !rects.is_empty()));
+    for magnification in [0.5, 1.5, 3.0, 8.0] {
+        let (other_start, other_end, _) = word_at(magnification);
+        assert_eq!((&other_start, &other_end), (&start, &end), "at {magnification}x");
+    }
+}
+
+/// Failure: selecting everything reads every page, or a copy of a long document holds its text page after page, or a copy blocks the thread drawing tiles. It comes out whole, with what's held staying small.
+#[test]
+fn select_all_reads_what_shows_and_a_copy_stays_bounded() {
+    const COUNT: u32 = 60;
+    let file = document(COUNT as usize);
+    let (engine, events) = started(&file, COUNT);
+    settled_on_page(&engine, 0);
+    engine.select_all();
+    assert!(engine.has_selection());
+    let ops = pump(&engine, Duration::from_secs(20));
+    assert!(highlight_on(&ops, 0).is_some_and(|rects| !rects.is_empty()), "what's showing is highlighted");
+    let report = engine.report().0;
+    let read = report["selection"]["text_reads"].as_u64().unwrap();
+    assert!(read <= 12, "read {read} pages of {COUNT} just to select them");
+    engine.copy_selection(false);
+    let mut held_most = 0;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while events.copies.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline, "the copy didn't finish");
+        held_most = held_most.max(engine.report().0["selection"]["text_pages_held"].as_u64().unwrap());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(held_most as usize <= recto_reader::selection::MAX_TEXT_PAGES, "{held_most} pages held");
+    let copied = engine.take_copied().expect("the copy is ready");
+    assert_eq!(copied.pages_read, COUNT);
+    assert_eq!(copied.text.matches("Page number").count(), COUNT as usize);
+    assert!(copied.text.find("Page number 0").unwrap() < copied.text.find("Page number 59").unwrap(), "in page order");
+    assert!(pump(&engine, Duration::from_secs(5)).iter().all(|op| !matches!(op, Op::Attach { .. })) || engine.wait_settled(Duration::from_secs(5)));
+}
+
+/// Failure: a page with no text keeps being read, holding the settled state open for ever, or says it has a selection. A page that fails has to come to rest too.
+#[test]
+fn a_page_with_no_text_comes_to_rest_with_nothing_selected() {
+    let scan = Page::new(b"0.5 g 100 100 300 300 re f".to_vec());
+    let file = TempPdf::new("scan.pdf", &pages(&[scan]));
+    let (engine, _events) = started(&file, 1);
+    let (x, y, fit) = settled_on_page(&engine, 0);
+    engine.selection_press(x + 200.0 * fit, y + 300.0 * fit, 2, false);
+    engine.selection_drag(x + 300.0 * fit, y + 400.0 * fit);
+    engine.selection_release();
+    let ops = pump(&engine, Duration::from_secs(20));
+    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    assert_eq!(highlight_on(&ops, 0).unwrap_or_default().len(), 0);
+    assert!(!engine.has_selection());
+    assert!(!engine.pointer_is_over_text(x + 200.0 * fit, y + 300.0 * fit), "no I-beam on a scan");
+}
+
+/// Failure: the I-beam shows in the margin or between lines, or never shows, because the pointer's page is never read. It's read when there's nothing better to do, and only then says yes.
+#[test]
+fn the_pointer_asks_for_its_page_and_goes_to_an_i_beam_only_over_text() {
+    let file = TempPdf::new("pointer.pdf", &pages(&[Page::new(text_lines(&["Words at the top of the page"]))]));
+    let (engine, _events) = started(&file, 1);
+    let (x, y, fit) = settled_on_page(&engine, 0);
+    let (on_x, on_y) = (x + 80.0 * fit, y + (792.0 - 720.0 - 4.0) * fit);
+    assert!(!engine.pointer_is_over_text(on_x, on_y), "not read yet");
+    pump(&engine, Duration::from_secs(20));
+    assert!(engine.pointer_is_over_text(on_x, on_y), "{}", engine.report().0);
+    assert!(!engine.pointer_is_over_text(x + 80.0 * fit, y + 600.0 * fit), "the blank part of the page");
+    assert!(!engine.pointer_is_over_text(x - 30.0, on_y), "the margin");
 }
