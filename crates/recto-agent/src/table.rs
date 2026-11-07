@@ -491,14 +491,14 @@ pub static TABLE: &[Spec] = &[
         group: GROUP_MEASURE,
         access: Access::At(Level::Control),
         route: Route::Here,
-        summary: "Builds one PDF's index in a temp folder and reports what that costs, and search times with and without it. Removes the folder after.",
+        summary: "Builds one PDF's index in the system's temp folder and reports what that costs, and search times with and without it. Removes the folder after.",
         args: &[
             Arg { key: "file", flag: Some("--file"), kind: Kind::Path, required: true, help: "The PDF. It's only read." },
             Arg { key: "queries", flag: Some("--queries"), kind: Kind::Text, required: false, help: "Searches to time, with commas between. A word nothing has, a common one and a phrase if left out." },
             Arg { key: "runs", flag: Some("--runs"), kind: Kind::Positive(1000), required: false, help: "Times each search runs. 7 if left out." },
             Arg { key: "foreground", flag: Some("--foreground"), kind: Kind::Switch, required: false, help: "Build at normal priority, to measure the work apart from the waiting." },
         ],
-        data: "`{ file_bytes, build: { state, pages, elapsed_ms, corpus_bytes, pack_bytes, helper_peak_bytes, worker_peak_bytes, worker_spawns, worker_retirements, memory_kills, deadline_kills, crashes, hidden_check_failures, failed_pages, no_text_pages, hidden_flagged_pages, hidden_unchecked_pages }, searches: [ { query, index: { p50_ms, p95_ms, hits_total }, scan: { p50_ms, p95_ms } } ], this_process_peak_bytes }`.",
+        data: "`{ file_bytes, build: { state, pages, elapsed_ms, corpus_bytes, pack_bytes, helper_peak_bytes, worker_peak_bytes, worker_spawns, worker_retirements, memory_kills, deadline_kills, crashes, hidden_check_failures, failed_pages, no_text_pages, hidden_flagged_pages, hidden_unchecked_pages }, searches: [ { query, index: { p50_ms, p95_ms, hits_total }, scan: { p50_ms, p95_ms } } ], corpus_folder, this_process_peak_bytes }`.",
         examples: &["recto budget index --file big.pdf", "recto budget index --file big.pdf --queries \"force majeure,the\" --runs 21 --foreground"],
         client_wait_s: 1800,
         ..BASE

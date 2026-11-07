@@ -465,6 +465,10 @@ fn the_budget_reports_and_cleans_up() {
     assert_eq!(searches[0]["index"]["hits_total"], 10, "{answer}");
     let left: Vec<String> = std::fs::read_dir(&state.root).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.contains("budget")).collect();
     assert!(left.is_empty(), "{left:?}");
+    // Failure: a run killed partway leaves a document's text under Application Support for good, where nothing looks: nothing clears it, and the table says it's temp. It's in the OS's own temp folder, and it's gone after.
+    let folder = PathBuf::from(data["corpus_folder"].as_str().unwrap());
+    assert!(folder.starts_with(recto_platform::local::system_temp_dir().unwrap().canonicalize().unwrap()) || folder.starts_with(recto_platform::local::system_temp_dir().unwrap()), "{}", folder.display());
+    assert!(!folder.exists(), "{}", folder.display());
     state.set_level(Level::ReadOnly);
     let (refused, code) = state.json(&["budget", "index", "--file", path(&file)]);
     assert_eq!(code, exit::PERMISSION, "{refused}");

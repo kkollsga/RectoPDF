@@ -412,7 +412,9 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
     let queries = invocation.fields.get("queries").and_then(Value::as_str).unwrap_or(DEFAULT_BUDGET_QUERIES);
     let foreground = invocation.fields.contains_key("foreground");
     let key = recto_index::corpus::CorpusKey::of_file(&file).map_err(|_| AgentError::new("not_found", "That file couldn't be read.", exit::NOT_FOUND))?;
-    let root = paths.root.join(format!("budget-corpus-{}", std::process::id()));
+    // In the OS's temp folder, which it cleans for itself, since a run killed partway leaves a document's text here and nothing else would ever look at it.
+    let temp = recto_platform::local::system_temp_dir().ok_or_else(|| AgentError::new("write_failed", "This Mac's temp folder couldn't be found.", exit::FAILED))?;
+    let root = temp.join(format!("recto-budget-{}.noindex", std::process::id()));
     let result = (|| {
         let build = recto_control::indexing::build_now(&file, key, &root, !foreground);
         if build["state"] != "ready" {
@@ -444,6 +446,7 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
             "file_bytes": std::fs::metadata(&file).map(|meta| meta.len()).ok(),
             "build": build,
             "searches": searches,
+            "corpus_folder": root,
             "this_process_peak_bytes": recto_platform::isolate::process_memory(std::process::id()).map(|memory| memory.peak_footprint_bytes),
         }))
     })();
