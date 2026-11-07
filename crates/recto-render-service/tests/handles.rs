@@ -19,6 +19,20 @@ fn turn() -> MutexGuard<'static, ()> {
     ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// How many handles there are once they've stopped changing. The test before this one's worker is reaped on a thread of its own, and its descriptors can still be closing when the next test starts. Counted then, the count goes below `before` and never comes back to it, which is what made these tests fail now and then.
+fn steady_handle_count() -> Option<usize> {
+    let mut last = recto_platform::open_handle_count();
+    let mut same = 0;
+    let started = Instant::now();
+    while same < 20 && started.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(5));
+        let now = recto_platform::open_handle_count();
+        same = if now == last { same + 1 } else { 0 };
+        last = now;
+    }
+    last
+}
+
 /// Sends `count` descriptors in one message, past anything `Channel::send` would allow, as a compromised worker could.
 fn flood(fd: i32, count: usize) {
     let file = std::fs::File::open("/dev/null").unwrap();
@@ -85,6 +99,16 @@ fn fake_worker() {
                     _ => send_all(&channel, &reply.encode(), &[]).unwrap(),
                 }
             }
+            // Refused once, and answered after that, to see which of them holds.
+            Kind::ImagesRequest => {
+                static ASKED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let job_id = u32::from_le_bytes(frame.payload[..4].try_into().unwrap());
+                if ASKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    send_all(&channel, &proto::encode_failed(job_id, proto::FailCode::BadPage), &[]).unwrap();
+                } else {
+                    send_all(&channel, &proto::PageImages { job_id, boxes: vec![[0, 0, 100, 100]] }.encode(), &[]).unwrap();
+                }
+            }
             _ => isolate::exit_now(1),
         }
     }
@@ -113,12 +137,23 @@ fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
     }
 }
 
+/// Failure: a page's images are asked about once for each tile while they're not known, and an answer that failed then one that didn't leave some of its tiles dimmed and some turned over. A page gets one decision, a failed answer included.
+#[test]
+fn a_page_gets_one_decision_about_its_images() {
+    let _turn = turn();
+    let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
+    let mut doc = DocRenderer::new(&file.0, None, config("images"), Policy::default()).unwrap();
+    assert_eq!(doc.image_boxes(0, 1), None, "it couldn't say");
+    assert_eq!(doc.image_boxes(0, 2), None, "and it's not asked again, though now it could");
+    assert_eq!(doc.image_boxes(1, 3), Some(vec![[0, 0, 100, 100]]), "another page is another question");
+}
+
 /// Failure: a worker sends handles to the host and the host keeps them, until it runs out of descriptors. The host never expects one, so it's a violation.
 #[test]
 fn a_handle_from_a_worker_is_a_violation_and_isnt_kept() {
     let _turn = turn();
     let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
-    let before = recto_platform::open_handle_count();
+    let before = steady_handle_count();
     let mut doc = DocRenderer::new(&file.0, None, config("one_handle"), Policy::default()).unwrap();
     let surface = SharedMemory::create(512 * 512 * 4).unwrap();
     let failure = doc.render_tile(&request(), &surface).unwrap_err();
@@ -134,7 +169,7 @@ fn a_flood_of_handles_kills_the_worker_and_closes_every_one() {
     let _turn = turn();
     let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
     let held = std::fs::File::open("/etc/hosts").unwrap();
-    let before = recto_platform::open_handle_count();
+    let before = steady_handle_count();
     let mut doc = DocRenderer::new(&file.0, None, config("flood"), Policy::default()).unwrap();
     let surface = SharedMemory::create(512 * 512 * 4).unwrap();
     let failure = doc.render_tile(&request(), &surface).unwrap_err();
@@ -161,7 +196,7 @@ fn a_handle_on_the_hello_is_refused() {
 fn no_workers_means_no_handle_left_behind() {
     let _turn = turn();
     let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
-    let before = recto_platform::open_handle_count();
+    let before = steady_handle_count();
     let mut doc = DocRenderer::new(&file.0, None, config("good"), Policy::default()).unwrap();
     assert_eq!(doc.page_count().unwrap(), 1);
     assert!(recto_platform::open_handle_count() > before);

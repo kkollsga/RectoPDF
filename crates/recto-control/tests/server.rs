@@ -26,6 +26,7 @@ struct Stand {
     unsaved: Mutex<Vec<(TabId, String)>>,
     wheres: AtomicUsize,
     looks_answer: std::sync::atomic::AtomicBool,
+    stop_refused: std::sync::atomic::AtomicBool,
     told_off: AtomicUsize,
 }
 
@@ -92,6 +93,10 @@ impl Host for Stand {
 
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
         self.unsaved.lock().unwrap().clone()
+    }
+
+    fn stop_refusal(&self) -> Option<AgentError> {
+        self.stop_refused.load(Ordering::SeqCst).then(|| AgentError::new("only_the_user_quits", "Not over the socket.", exit::FAILED))
     }
 }
 
@@ -281,6 +286,17 @@ fn a_half_closed_client_still_gets_its_answer() {
     assert_eq!(read_line(&mut stream), None, "and then it's over");
 }
 
+/// Failure: a host that won't be stopped over the socket is, or a refused `stop` leaves the server saying it's stopping. It answers why, and everything goes on.
+#[test]
+fn a_host_can_refuse_to_be_stopped() {
+    let running = Running::start(Limits::default());
+    running.host.stop_refused.store(true, Ordering::SeqCst);
+    let refused = running.call(&json!({ "cmd": "stop" }));
+    assert_eq!(refused["error"]["code"], "only_the_user_quits", "{refused}");
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
+    assert_eq!(running.call(&json!({ "cmd": "goto", "page": 1 }))["ok"], true, "commands aren't refused as if it were stopping");
+}
+
 /// Failure: `stop` drops unsaved edits, or a host can't end the server it's carrying. A host's stopper and `stop` must both end `run`, and both remove the socket.
 #[test]
 fn stop_keeps_unsaved_edits_and_a_host_can_end_it() {
@@ -421,6 +437,26 @@ fn a_client_that_doesnt_read_isnt_worked_for() {
     assert!(reader.next(&mut greedy).unwrap()["data"]["huge"].is_string());
     assert!(reader.next(&mut greedy).unwrap()["data"]["huge"].is_string());
     assert!(running.host.wheres.load(Ordering::SeqCst) >= 2);
+}
+
+/// Failure: a client that sent several commands and is slowly reading the first huge answer is cut off for sending "half a line", though its lines are whole and only waiting for it to catch up. It showed as this file's other test failing when the Mac was busy, as reading took past the 5 s.
+#[test]
+fn whole_lines_waiting_arent_a_stalled_line() {
+    let limits = Limits { line_deadline: Duration::from_millis(100), ..Limits::default() };
+    let running = Running::start(limits);
+    let mut greedy = running.connect();
+    greedy.write_all("{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n".as_bytes()).unwrap();
+    // Long past the deadline, with its answer unread and two commands waiting.
+    std::thread::sleep(Duration::from_millis(400));
+    let mut reader = BufLine::default();
+    for _ in 0..3 {
+        assert!(reader.next(&mut greedy).unwrap()["data"]["huge"].is_string());
+    }
+    // And half a line is still caught.
+    greedy.write_all(b"{\"cmd\":").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let mut rest = [0u8; 16];
+    assert_eq!(greedy.read(&mut rest).unwrap(), 0, "it's gone");
 }
 
 /// Failure: a client with commands waiting while it catches up on a large answer is dropped, as though it had stalled halfway through a line, if it takes longer than half a line is given. Those commands are whole, and waiting is the session's doing. Found by `a_client_that_doesnt_read_isnt_worked_for` failing on a Mac under load.

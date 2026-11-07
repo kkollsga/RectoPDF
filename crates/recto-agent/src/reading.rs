@@ -22,6 +22,8 @@ struct TabFile {
     positions: Option<Vec<u32>>,
     /// The file isn't the one those edits' page numbers came from.
     changed: bool,
+    /// What the file was when those page numbers were made, to look at it against.
+    check_against: Option<recto_platform::FileStamp>,
 }
 
 impl TabFile {
@@ -49,7 +51,12 @@ fn tab_file<A: SessionAccess>(access: &A, tab: &str) -> Result<TabFile, AgentErr
             }
             positions
         });
-        Ok(TabFile { id: id.0, path: s.path_of(id).ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?, name: record.name.to_string(), pages: s.pages_in(id), edited: s.is_edited(id), renderer_only: record.renderer_only, positions, changed: !s.own_file_is_current(id) })
+        Ok(TabFile { id: id.0, path: s.path_of(id).ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?, name: record.name.to_string(), pages: s.pages_in(id), edited: s.is_edited(id), renderer_only: record.renderer_only, positions, changed: false, check_against: s.page_edits(id).is_some().then(|| s.own_stamp(id)).flatten() })
+    })
+    // Whether the file has changed is asked with the session free: a stat on a dead volume holds up this command and no other.
+    .map(|mut file: TabFile| {
+        file.changed = file.check_against.is_some_and(|stamp| recto_platform::file_stamp(&file.path).ok() != Some(stamp));
+        file
     })
 }
 

@@ -118,7 +118,13 @@ fn publish(temp: &Path, out: &Path, link: impl Fn(&Path, &Path) -> std::io::Resu
     }
 }
 
-fn output_exists() -> AgentError {
+/// Puts a finished picture at `out`, never over anything, as `render` does.
+pub fn publish_picture(temp: &Path, out: &Path) -> Result<(), AgentError> {
+    publish(temp, out, |from, to| std::fs::hard_link(from, to))
+}
+
+/// What a request for a place that has something in it hears.
+pub fn output_exists() -> AgentError {
     AgentError::new("output_exists", "A file is already there, and it won't be replaced.", exit::FAILED)
 }
 

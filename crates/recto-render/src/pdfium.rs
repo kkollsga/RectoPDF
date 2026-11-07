@@ -125,6 +125,7 @@ pdfium_api! {
     FPDFFormObj_CountObjects: fn(FPDF_PAGEOBJECT) -> c_int;
     FPDFFormObj_GetObject: fn(FPDF_PAGEOBJECT, c_ulong) -> FPDF_PAGEOBJECT;
     FPDFImageObj_GetImagePixelSize: fn(FPDF_PAGEOBJECT, *mut c_uint, *mut c_uint) -> FPDF_BOOL;
+    FPDFPageObj_GetBounds: fn(FPDF_PAGEOBJECT, *mut std::ffi::c_float, *mut std::ffi::c_float, *mut std::ffi::c_float, *mut std::ffi::c_float) -> FPDF_BOOL;
     FPDFText_LoadPage: fn(FPDF_PAGE) -> FPDF_TEXTPAGE;
     FPDFText_ClosePage: fn(FPDF_TEXTPAGE);
     FPDFText_CountChars: fn(FPDF_TEXTPAGE) -> c_int;
@@ -480,6 +481,62 @@ impl RenderBackend for PdfiumBackend {
             }
         }
         Ok(largest)
+    }
+
+    fn image_boxes(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError> {
+        self.load_page(page)?;
+        let Some(handle) = self.open_page_handle() else { return Err(FailCode::Internal) };
+        let api = self.api;
+        let mut boxes: Vec<[u16; 4]> = Vec::new();
+        let mut looked_at = 0usize;
+        // Where a point of the page lands, as a part of the page. By PDFium's own mapping, so a rotated page and a cropped one come out right, however they got that way.
+        const PARTS: c_int = 65_535;
+        let place = |x: f32, y: f32| -> Option<(u16, u16)> {
+            let (mut device_x, mut device_y): (c_int, c_int) = (0, 0);
+            // SAFETY: the page is live for this whole function, and the two out-pointers are valid for writes.
+            let ok = unsafe { (api.FPDF_PageToDevice)(handle, 0, 0, PARTS, PARTS, 0, f64::from(x), f64::from(y), &raw mut device_x, &raw mut device_y) };
+            (ok != 0).then(|| (device_x.clamp(0, PARTS) as u16, device_y.clamp(0, PARTS) as u16))
+        };
+        // SAFETY: the page is live for this whole function, and every object comes from it or a form on it. Indexes are below the counts just read.
+        unsafe {
+            let mut waiting: Vec<(FPDF_PAGEOBJECT, u32, FPDF_PAGEOBJECT)> = Vec::new();
+            for index in 0..(api.FPDFPage_CountObjects)(handle).max(0).min(MAX_OBJECTS_LOOKED_AT as c_int) {
+                let object = (api.FPDFPage_GetObject)(handle, index);
+                waiting.push((object, 0, object));
+            }
+            while let Some((object, depth, top)) = waiting.pop() {
+                looked_at += 1;
+                if object.is_null() || looked_at > MAX_OBJECTS_LOOKED_AT {
+                    continue;
+                }
+                match (api.FPDFPageObj_GetType)(object) {
+                    // An image in a form has its bounds in the form's own space, so it's the outermost form's that say where it is on the page.
+                    FPDF_PAGEOBJ_IMAGE => {
+                        let (mut left, mut bottom, mut right, mut top_edge) = (0.0, 0.0, 0.0, 0.0);
+                        if (api.FPDFPageObj_GetBounds)(top, &raw mut left, &raw mut bottom, &raw mut right, &raw mut top_edge) != 0
+                            && let (Some(one), Some(two)) = (place(left, top_edge), place(right, bottom))
+                        {
+                            let found = [one.0.min(two.0), one.1.min(two.1), one.0.max(two.0), one.1.max(two.1)];
+                            if !boxes.contains(&found) {
+                                boxes.push(found);
+                            }
+                        }
+                    }
+                    FPDF_PAGEOBJ_FORM if depth < MAX_FORM_DEPTH => {
+                        let room = MAX_OBJECTS_LOOKED_AT.saturating_sub(waiting.len());
+                        for index in 0..((api.FPDFFormObj_CountObjects)(object).max(0) as usize).min(room) {
+                            waiting.push(((api.FPDFFormObj_GetObject)(object, index as c_ulong), depth + 1, top));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if boxes.len() > recto_proto::MAX_IMAGE_BOXES {
+            let all = boxes.iter().fold([u16::MAX, u16::MAX, 0, 0], |all, found| [all[0].min(found[0]), all[1].min(found[1]), all[2].max(found[2]), all[3].max(found[3])]);
+            boxes = vec![all];
+        }
+        Ok(boxes)
     }
 
     fn page_text(&mut self, page: u32, options: TextOptions) -> Result<PageChars, RenderError> {

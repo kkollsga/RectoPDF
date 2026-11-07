@@ -82,16 +82,20 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 
 ## Phase 2: First real app
 
-- [ ] `recto-ffi` and the AppKit host, joined to the same session and socket as the CLI
-- [ ] **QA channel built with the first screen:** quiet runs, temp state, in-app `shot`, state reports, script runner
-- [ ] Hang watchdog: a 2 s stall fails the run
-- [ ] Window, sidebar, tap rule, contents with the rail
-- [ ] Page tiles on IOSurface, scrolling, pinch, blur to sharp
+- [x] `recto-ffi` and the AppKit host, joined to the same session and socket as the CLI
+- [x] **QA channel built with the first screen:** quiet runs, temp state, in-app `shot`, state reports, script runner
+- [x] Hang watchdog: a 2 s stall fails the run
+- [x] Window, sidebar, tap rule, contents with the rail
+- [x] Page tiles on IOSurface, scrolling, pinch, blur to sharp. Scrolling and pinch are driven by the methods they call: no real gesture has run yet
 - [ ] Low-resolution page previews kept on disk, so a page seen before shows at once on reopening
 - [ ] Draw the next pages ahead while idle, within the memory limits
 - [ ] Compare hayro, and MuPDF as a measuring stick only, on heavy pages, **only if** the viewport numbers still miss their targets
-- [ ] Dark mode with dark or white paper; focus view; agent icon as a placeholder
-- [ ] Budget tests: cold start, one document, scrolling, idle CPU, closed window
+- [x] Dark mode with dark or white paper; focus view; agent icon as a placeholder
+- [x] Contents in a scrolling area with a maximum height; other tabs and footer stay; virtualised, for 10,000 entries
+- [x] Contents repositions and rests: dead zone, one eased move, no second move as a chapter closes. How it feels is for the owner to judge on a dev build
+- [x] A shortened name shows in full on hover, for tabs and contents entries
+- [x] Warm paper, a third paper colour, by a compositor tint with no re-render; `recto view --paper`
+- [x] Budget tests: cold start, one document, scrolling, idle CPU, closed window (`recto qa budget`, off screen; numbers in `docs/ENGINEERING.md`)
 - [ ] Spike on the MacBook: 120 Hz and on-screen memory
 - [x] Sandbox spike: PDFium sandboxed in a nested helper, not XPC (`docs/research/2026-11-07-sandbox-spike.md`)
 - [ ] Build it: the worker's wall check and Mach drop, finding the helper in the bundle, the signed layout
@@ -105,7 +109,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Native text selection: drag, double and triple click, select across pages, ⌘C, the system's highlight colour and I-beam cursor
 - [x] Search corpus and index, with the text normaliser: `recto index`, `recto wait indexing-done`, and `recto search` answering from it, with `route` saying how
 - [ ] Find in the sidebar, with the hit list
-- [ ] macOS menu bar, driven by a Rust model; `⋯` panel; ⌘K
+- [x] macOS menu bar, driven by a Rust model; `⋯` panel
+- [ ] ⌘K
 - [ ] Session restore, recent files, replaced-file handling, password prompt
 - [ ] Links, back and forward, page labels
 - [ ] Click to copy an image losslessly
@@ -179,6 +184,9 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] Licences and notices for PDFium, Tesseract and the rest
 - [ ] Privacy statement and first-run wording
 - [ ] Final budget report against every line of `SPEC.md` §2
+- [ ] At a quiet time, by the coordinator: 1,000 tabs' worst UI stall, 81 ms against 53 before and only under load; the one 3.31 MiB rise over 1,000 tabs that `heap` didn't catch; the `HEAVY_SOLO` stall comparison of surfaces made outside the reader's lock
+- [ ] `qa budget`'s idle window starts 1 s after settling, so the tail of settling reads as up to 1.35 wake-ups a second: start it later
+- [ ] Commit `184f5a7` doesn't compile alone: it uses `JobPlan` from the next commit. The tip is fine, and a bisect has to skip it
 
 **Done when:** you approve the signed draft. Nothing is published without your go-ahead.
 

@@ -3,6 +3,7 @@
 //! the library, the document arrives as a descriptor, and the process has no file path to it.
 
 use recto_platform::isolate::{self, Channel, Handle, SharedMemory, Wait};
+use recto_platform::surface::SurfaceReceiver;
 use recto_proto::{self as proto, FailCode, Kind, PageSize, RegionReply, RenderJob, TextJob, TextReply, TileReply, TileStatus};
 use recto_render::{Cancel, Pdfium, PdfiumBackend, RenderBackend, TextOptions, TileOutcome};
 use recto_render_service::{control, exit_code, transport};
@@ -39,11 +40,13 @@ fn main() {
     let Some(args) = parse_args() else { std::process::exit(exit_code::BAD_ARGUMENTS) };
     isolate::harden_this_process();
     let Ok(channel) = Channel::inherited() else { std::process::exit(exit_code::BAD_ARGUMENTS) };
+    // Before the hello, so the host finds it waiting. The host may have sent no invitation: then there's no link, and shared memory does.
+    let surfaces = SurfaceReceiver::from_invite();
     let Ok(pdfium) = Pdfium::load(&args.pdfium) else { std::process::exit(exit_code::NO_LIBRARY) };
     if send_all(&channel, &proto::encode_hello(std::process::id()), &[]).is_err() {
         std::process::exit(exit_code::ORPHANED);
     }
-    let code = serve(channel, &pdfium, &args);
+    let code = serve(channel, &pdfium, &args, surfaces.as_ref());
     // Skips destructors on purpose. Exit is the only thing that returns PDFium's memory, and tearing it down first only costs time.
     isolate::exit_now(code);
 }
@@ -60,7 +63,7 @@ impl Cancel for Generation<'_> {
     }
 }
 
-fn serve(channel: Channel, pdfium: &Pdfium, args: &Args) -> i32 {
+fn serve(channel: Channel, pdfium: &Pdfium, args: &Args, surfaces: Option<&SurfaceReceiver>) -> i32 {
     let channel = Arc::new(channel);
     let mut watchdog = Watchdog::new(channel.clone(), args);
     let mut reader = FrameReader::default();
@@ -79,7 +82,7 @@ fn serve(channel: Channel, pdfium: &Pdfium, args: &Args) -> i32 {
             Err(ReadError::Bad(_) | ReadError::Io(_)) => return exit_code::PROTOCOL,
         };
         watchdog.arm();
-        let reply = handle(frame, pdfium, &mut backend, &mut control_page);
+        let reply = handle(frame, pdfium, &mut backend, &mut control_page, surfaces);
         watchdog.disarm();
         match reply {
             Some(bytes) => {
@@ -93,7 +96,7 @@ fn serve(channel: Channel, pdfium: &Pdfium, args: &Args) -> i32 {
 }
 
 /// Answers one frame. `None` means the host broke the protocol, and this process has no reason to go on.
-fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumBackend>, control_page: &mut Option<SharedMemory>) -> Option<Vec<u8>> {
+fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumBackend>, control_page: &mut Option<SharedMemory>, surfaces: Option<&SurfaceReceiver>) -> Option<Vec<u8>> {
     let mut handles = frame.handles;
     match frame.kind {
         Kind::Open => {
@@ -116,7 +119,7 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
         Kind::Render => {
             let job = RenderJob::decode(&frame.payload).ok()?;
             let surface = handles.pop();
-            Some(render(&job, surface, backend, control_page.as_ref()))
+            Some(render(&job, surface, surfaces, backend, control_page.as_ref()))
         }
         Kind::SizeRequest => {
             let (job_id, page) = proto::decode_size_request(&frame.payload).ok()?;
@@ -131,6 +134,14 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
             let Some(backend) = backend else { return Some(proto::encode_failed(job_id, FailCode::NoDocument)) };
             Some(match backend.largest_image_pixels(page) {
                 Ok(largest_image_pixels) => proto::PageTraits { job_id, largest_image_pixels }.encode(),
+                Err(code) => proto::encode_failed(job_id, code),
+            })
+        }
+        Kind::ImagesRequest => {
+            let (job_id, page) = proto::decode_size_request(&frame.payload).ok()?;
+            let Some(backend) = backend else { return Some(proto::encode_failed(job_id, FailCode::NoDocument)) };
+            Some(match backend.image_boxes(page) {
+                Ok(boxes) => proto::PageImages { job_id, boxes }.encode(),
                 Err(code) => proto::encode_failed(job_id, code),
             })
         }
@@ -149,19 +160,32 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
     }
 }
 
-fn render(job: &RenderJob, surface: Option<Handle>, backend: &mut Option<PdfiumBackend>, control_page: Option<&SharedMemory>) -> Vec<u8> {
+/// How long a job's surface may lag behind its frame. The host sends it first, so this only ever runs out on a host that's broken.
+const SURFACE_WAIT: Duration = Duration::from_secs(1);
+
+fn render(job: &RenderJob, surface: Option<Handle>, surfaces: Option<&SurfaceReceiver>, backend: &mut Option<PdfiumBackend>, control_page: Option<&SharedMemory>) -> Vec<u8> {
     let started = Instant::now();
     let Some(backend) = backend else { return proto::encode_failed(job.job_id, FailCode::NoDocument) };
-    let Some(handle) = surface else { return proto::encode_failed(job.job_id, FailCode::BadSurface) };
     let Ok(needed) = usize::try_from(job.bytes_needed()) else { return proto::encode_failed(job.job_id, FailCode::BadSurface) };
-    // Mapped for this job alone: a worker holds a surface only while drawing into it. Platform report, §2.7.
-    let Ok(mut mapping) = SharedMemory::map(handle, needed) else { return proto::encode_failed(job.job_id, FailCode::BadSurface) };
     let cancel = Generation { word: control_page.and_then(|page| page.atomic_u64(control::CANCEL_BEFORE_OFFSET)), job: job.generation };
     let mut kinds = Vec::new();
-    let outcome = if job.tile_edge == 0 {
-        backend.render_tile(job.page, job.rect, job.scale, mapping.as_mut_slice(), job.stride, &cancel)
-    } else {
-        backend.render_region(job.page, job.rect, job.scale, job.tile_edge, mapping.as_mut_slice(), job.stride, &cancel, &mut kinds)
+    // Either way a worker holds a surface only while drawing into it. Platform report, §2.7.
+    let outcome = match (surface, surfaces) {
+        (Some(handle), _) => {
+            let Ok(mut mapping) = SharedMemory::map(handle, needed) else { return proto::encode_failed(job.job_id, FailCode::BadSurface) };
+            draw(job, backend, mapping.as_mut_slice(), &cancel, &mut kinds)
+        }
+        (None, Some(link)) => {
+            let Some(target) = link.next(SURFACE_WAIT) else { return proto::encode_failed(job.job_id, FailCode::BadSurface) };
+            if target.len() < needed || target.stride() < job.stride {
+                return proto::encode_failed(job.job_id, FailCode::BadSurface);
+            }
+            match target.with_pixels(|pixels| draw(job, backend, pixels, &cancel, &mut kinds)) {
+                Ok(outcome) => outcome,
+                Err(_) => return proto::encode_failed(job.job_id, FailCode::BadSurface),
+            }
+        }
+        (None, None) => return proto::encode_failed(job.job_id, FailCode::BadSurface),
     };
     let status = match outcome {
         Ok(TileOutcome::Done(kind)) => TileStatus::Done(kind),
@@ -178,6 +202,14 @@ fn render(job: &RenderJob, surface: Option<Handle>, backend: &mut Option<PdfiumB
         render_us: u32::try_from(started.elapsed().as_micros()).unwrap_or(u32::MAX),
     };
     if job.tile_edge == 0 { tile.encode() } else { RegionReply { tile, kinds }.encode() }
+}
+
+fn draw(job: &RenderJob, backend: &mut PdfiumBackend, out: &mut [u8], cancel: &Generation<'_>, kinds: &mut Vec<recto_render::TileKind>) -> Result<TileOutcome, FailCode> {
+    if job.tile_edge == 0 {
+        backend.render_tile(job.page, job.rect, job.scale, out, job.stride, cancel)
+    } else {
+        backend.render_region(job.page, job.rect, job.scale, job.tile_edge, out, job.stride, cancel, kinds)
+    }
 }
 
 /// The second line. The host enforces every limit from outside, but if the host dies during a hostile page nobody would stop it, so while

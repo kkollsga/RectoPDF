@@ -306,3 +306,18 @@ fn decoders_are_total_on_arbitrary_bytes() {
     cut_all(payload(&tile().encode()), &|b| TileReply::decode(b).is_ok());
     cut_all(payload(&PageSize { job_id: 1, width: 1.0, height: 1.0 }.encode()), &|b| PageSize::decode(b).is_ok());
 }
+
+/// Failure: a worker's claim of how many image boxes there are is believed, so a frame can claim more than its bytes, or past the cap. Or the rectangles don't survive the trip.
+#[test]
+fn image_boxes_round_trip_and_refuse_a_bad_count() {
+    let images = PageImages { job_id: 9, boxes: vec![[0, 1, 65535, 300]] };
+    let frame = images.encode();
+    assert_eq!(PageImages::decode(&frame[HEADER_LEN..]).unwrap(), images);
+    let mut lying = frame[HEADER_LEN..].to_vec();
+    lying[4] = 200;
+    assert!(PageImages::decode(&lying).is_err(), "past the cap");
+    lying[4] = 2;
+    assert!(PageImages::decode(&lying).is_err(), "more than the bytes");
+    let many = PageImages { job_id: 1, boxes: vec![[0; 4]; MAX_IMAGE_BOXES + 5] };
+    assert_eq!(PageImages::decode(&many.encode()[HEADER_LEN..]).unwrap().boxes.len(), MAX_IMAGE_BOXES, "what's sent is capped too");
+}

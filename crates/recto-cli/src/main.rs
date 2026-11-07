@@ -1,6 +1,8 @@
 //! `recto`: a thin client of the session on the control socket. It parses the line through the command table, sends one JSON command, and prints the answer. Everything decided is decided in
 //! `recto-agent` and `recto-control`. A few commands run here because they need no session: help, the skill, starting the session, and the user's own `permission set`.
 
+mod qa;
+
 use recto_agent::table::{Invocation, Route, family_help, find_row, help_for, help_text, parse_cli, table_json};
 use recto_agent::{AgentError, Command, DrawableLoader, Level, VERSION, exit, human, parse, reply, skill};
 use recto_control::client::Client;
@@ -183,6 +185,9 @@ fn here(invocation: &Invocation) -> i32 {
         "local" => return run_local(invocation),
         "session" => return session(),
         "budget_tabs" => budget_tabs(invocation),
+        "qa_start" => qa::start(invocation),
+        "qa_run" => qa::run_script(invocation),
+        "qa_budget" => qa::budget(invocation),
         "budget_index" => budget_index(invocation),
         // A row with no handler is a bug here, and a test walks the table for it.
         _ => Err(AgentError::new("internal", "This command isn't wired up.", exit::FAILED)),

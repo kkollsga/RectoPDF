@@ -1,0 +1,4 @@
+/build
+/.build
+/Sources/recto_ffiFFI/include
+/Sources/RectoPDF/Generated

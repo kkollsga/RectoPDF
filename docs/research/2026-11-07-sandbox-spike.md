@@ -203,6 +203,14 @@ The only entitlement anywhere for this: `com.apple.security.app-sandbox`, on the
 | App Translocation | | All of it |
 | Whether the container accepts a new signature after a Team ID or requirement change | Ad-hoc to ad-hoc with a new hash raised no prompt | With a team |
 
+## The tile path in the sandbox, since this was written
+
+The app now hands the worker `IOSurface`s over a Mach link, which this spike's measurements didn't have. **Run, 2026-11-07:** `crates/recto-render-service/tests/surfaces.rs` against the `dropmach` worker, which refuses to start unsandboxed: 8 of 8 pass, with the rest of the suite (103 others) passing beside them, one of them after a race in the test itself was fixed. So the tile path survives the Mach drop as reading said: the worker makes its link with `SurfaceReceiver::from_invite` before PDFium loads, keeps only a receive right after the drop, and `IOSurfaceLookupFromMachPort` works after it. A send to a worker that has gone fails and starts a new one.
+
+**A worker emptying a surface.** `IOSurfaceSetPurgeable(Empty)` from a real second process, on a surface the host then reads and writes as dark paper does (`crates/recto-platform/tests/hostile_surface.rs`): the host reads 1,048,576 zero bytes, writes normally, and doesn't fault. So the host's turn over of a tile stays in the host. A compromised worker gets a wrong picture out of it, which it could draw anyway.
+
+**`IOSurfaceRoot` is now a requirement.** The worker needs the IOSurface user client to look up a surface. So the `sandbox_init` fallback above needs an `iokit-open` allow for it in `profile.sb`, and loses that part of the advantage it has in the table: the kernel refusing `IOSurfaceRoot` was one of the things that made it the tighter wall. Not run with that allow added.
+
 ## What wasn't tested
 
 - Everything in the right column above. The plan's release blocker stays open until it's tested on the signed build.

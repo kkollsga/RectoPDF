@@ -15,7 +15,7 @@ if [ "$app" != plain ]; then
 fi
 cd "$root"
 status=0
-for name in worker hostile handles sequence memory corpus; do
+for name in worker hostile handles sequence memory corpus surfaces; do
   bin="$(ls -t "$release/deps/$name"-* | grep -v '\.d$' | head -1)"
   echo "== $name"
   "$bin" --test-threads=4 2>&1 | grep -E "^test .*FAILED|^test result|panicked at|^    [a-z_]+$" | cut -c1-200 || status=1
