@@ -157,6 +157,8 @@ struct DocView {
     /// The whole file can't be drawn, in words the reader can read.
     problem: Option<String>,
     seen: HashSet<u32>,
+    /// Jobs of a generation below this were about the pages as they were before the last edit, and what they found is thrown away.
+    floor: u64,
 }
 
 /// One thing for the engine to do. The surface, if any, is the job's until it comes back.
@@ -348,7 +350,8 @@ impl Reader {
             self.last_view_page = None;
             self.moved_page = None;
         }
-        let doc = self.docs.entry(tab).or_insert_with(|| DocView { tab, layout: PageLayout::new(pages), map: map.clone(), magnification: 1.0, anchor: (page, 0.0), tile_scale: 0.0, issues: HashMap::new(), heavy: HashMap::new(), problem: None, seen: HashSet::new() });
+        let floor = self.next_generation;
+        let doc = self.docs.entry(tab).or_insert_with(|| DocView { tab, layout: PageLayout::new(pages), map: map.clone(), magnification: 1.0, anchor: (page, 0.0), tile_scale: 0.0, issues: HashMap::new(), heavy: HashMap::new(), problem: None, seen: HashSet::new(), floor });
         doc.anchor = (page.min(pages.saturating_sub(1)), 0.0);
         if doc.map != map || doc.layout.count() != pages {
             doc.map = map;
@@ -357,6 +360,13 @@ impl Reader {
             doc.heavy.clear();
             doc.problem = None;
             doc.seen.clear();
+            doc.floor = floor;
+            if let Some(running) = &self.running
+                && running.tab == tab
+                && let Some(cancel) = &running.cancel
+            {
+                cancel.cancel_before(running.generation + 1);
+            }
             self.drop_tab_entries(tab);
             self.clear_screen();
         }
@@ -1075,7 +1085,16 @@ impl Reader {
     pub fn finish(&mut self, job: Job, outcome: Outcome) {
         self.running = None;
         self.counts.jobs += 1;
-        let Job { tab, position, kind, .. } = job;
+        let Job { tab, position, kind, generation, .. } = job;
+        // Asked about the pages as they were. An edit has changed what's at this position since.
+        if self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) {
+            self.counts.cancelled += 1;
+            if let JobKind::Draw { surface, .. } = kind {
+                self.give_back(surface);
+            }
+            self.refresh(MAX_ATTACH_PER_TURN);
+            return;
+        }
         match (kind, outcome) {
             (JobKind::Size, Outcome::Size(size)) => {
                 let Some(doc) = self.docs.get_mut(&tab) else { return };
@@ -1649,6 +1668,48 @@ mod tests {
         assert_eq!(asked, 1);
         assert!(reader.is_settled(), "{}", reader.report().0);
         assert_eq!(reader.note(), Some("This page couldn't be read."));
+    }
+
+    /// Failure: a page is deleted while a job on it is running, and when the job ends its old picture goes in the place of the page now there, reading as settled. The same for a size or a heavy answer about what used to be there.
+    #[test]
+    fn what_a_job_found_before_an_edit_is_thrown_away() {
+        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 2)]) };
+        // A job of each kind, caught running.
+        let mut reader = reader_on(3);
+        let size = reader.next_job().expect("a size");
+        assert!(matches!(size.kind, JobKind::Size));
+        reader.activate(1, 2, 0, edited.clone(), &[]);
+        reader.finish(size, Outcome::Size(PageBox { width: 100.0, height: 100.0 }));
+        assert!(!reader.doc().unwrap().layout.is_known(0), "that size was the old page's");
+
+        let mut reader = reader_on(3);
+        let traits = loop {
+            let job = reader.next_job().expect("a job");
+            match job.kind {
+                JobKind::Size => reader.finish(job, Outcome::Size(letter())),
+                JobKind::Traits => break job,
+                JobKind::Draw { .. } => panic!("traits come before drawing"),
+            }
+        };
+        let position = traits.position;
+        reader.activate(1, 2, 0, edited.clone(), &[]);
+        reader.finish(traits, Outcome::Heavy(true));
+        assert!(!reader.doc().unwrap().heavy.contains_key(&position), "that was the old page's");
+
+        let mut reader = reader_on(3);
+        let draw = loop {
+            let job = reader.next_job().expect("a job");
+            match job.kind {
+                JobKind::Size => reader.finish(job, Outcome::Size(letter())),
+                JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
+                JobKind::Draw { .. } => break job,
+            }
+        };
+        reader.note_started(&draw, None);
+        reader.activate(1, 2, 0, edited, &[]);
+        reader.finish(draw, Outcome::Drawn { kind: TileKind::Colour, low_res: None });
+        assert!(reader.entries.is_empty(), "the old page's picture stays out");
+        assert!(reader.cover.is_empty());
     }
 
     /// Failure: the host's size change moves the reader away from what they were reading.
