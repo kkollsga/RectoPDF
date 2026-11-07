@@ -40,3 +40,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "I prefer the agent requesting page info when it needs rather than us providing it."
 - "We build everything in one go, but we test as we build."
 - "Remember performance and low memory use (even when many large pdfs are loaded is crucial."
+
+## Product rules from the owner (2026-11-07)
+- "The left sidebar toc should have a max height within scroll so it doesn't push everything of screen".
+- "The agent logo in the upper right is wrong, it should be a ai 4 point star".
