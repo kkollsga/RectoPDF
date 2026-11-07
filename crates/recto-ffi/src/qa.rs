@@ -3,9 +3,11 @@
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
 use crate::{AppListener, CoreQueue, lock};
 use recto_agent::{AgentError, Command, exit};
+use recto_control::state::is_in_real_home;
 use recto_reader::Engine;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -184,6 +186,20 @@ impl QaBridge {
         }
     }
 
+    /// The host draws it into a temp file of ours, and it's published here, by the rule `render` keeps to: nothing already there is replaced. A QA run can be started from Off, and this is at Read-only.
+    fn shot(&self, out: &Path) -> Result<Value, AgentError> {
+        refuse_shot_path(out, is_in_real_home)?;
+        let temp = std::env::temp_dir().join(format!("recto-shot-{}-{}.png", std::process::id(), self.next_id.fetch_add(1, Ordering::SeqCst)));
+        let answer = self.ask("shot", &temp.to_string_lossy());
+        let published = answer.and_then(|mut answer| {
+            recto_agent::publish_picture(&temp, out)?;
+            answer["out"] = json!(out);
+            Ok(answer)
+        });
+        let _ = std::fs::remove_file(&temp);
+        published
+    }
+
     fn drive(&self, verb: &str, value: &str, timeout_ms: Option<u64>) -> Result<Value, AgentError> {
         let number = |low: f64, high: f64| -> Result<f64, AgentError> {
             value.parse::<f64>().ok().filter(|number| number.is_finite() && *number >= low && *number <= high).ok_or_else(|| bad(format!("`{}` isn't a number from {low} to {high}.", cleaned(value))))
@@ -311,6 +327,44 @@ fn stuck() -> AgentError {
     AgentError::new("ui_not_answering", "The app's UI thread didn't answer in 30 s.", exit::TIMED_OUT).then("That's a hang, and a bug. `recto qa state` may show it once it's back.")
 }
 
+/// What each QA verb takes. Here, so the host is only ever told what it can do, and has no rules of its own about it.
+fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
+    let one_of = |words: &[&str]| words.contains(&value);
+    let row = || value.parse::<u32>().is_ok();
+    let fits = match verb {
+        "appearance" => one_of(&["light", "dark"]),
+        "window" => one_of(&["open", "close"]),
+        "contents_pointer" => one_of(&["in", "out"]),
+        "reduce_motion" => one_of(&["on", "off"]),
+        "hover" | "reveal" => value == "none" || row(),
+        "click_row" | "contents_scroll" => row(),
+        "resize" => value.split_once('x').and_then(|(width, height)| Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?))).is_some_and(|(width, height)| (400.0..=8000.0).contains(&width) && (300.0..=8000.0).contains(&height)),
+        _ => false,
+    };
+    if fits {
+        return Ok(());
+    }
+    Err(bad(format!("`{}` isn't something `{}` takes.", cleaned(value), verb.replace('_', "-"))))
+}
+
+/// What a `qa shot` may write: a new `.png`, outside the real home.
+fn refuse_shot_path(out: &Path, in_real_home: impl Fn(&Path) -> bool) -> Result<(), AgentError> {
+    if !out.is_absolute() {
+        return Err(bad("That path isn't whole. A session has no folder of its own to start from."));
+    }
+    if !out.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("png")) {
+        return Err(bad("A shot is a new `.png` file."));
+    }
+    if in_real_home(out) {
+        return Err(AgentError::new("path_refused", "A shot goes outside your home folder, somewhere temporary.", exit::FAILED));
+    }
+    // `symlink_metadata`, so a link is something being there, wherever it points or if it points nowhere.
+    if std::fs::symlink_metadata(out).is_ok() {
+        return Err(recto_agent::output_exists());
+    }
+    Ok(())
+}
+
 fn bad(words: impl Into<String>) -> AgentError {
     AgentError::new("usage", words.into(), exit::USAGE)
 }
@@ -356,5 +410,27 @@ mod tests {
         assert!(found["largest_step_points"].as_f64().unwrap() <= 10.0 + 0.001, "{found}");
         assert!(found["peak_points_per_s"]["highest"].as_f64().unwrap() >= 900.0, "{found}");
         assert_eq!(contents_moves(&[(0.0, 5.0), (1.0, 5.0)])["moves"], 0, "still");
+    }
+
+    /// Failure: a shot lands in the real home, by a path or through a link to it, or takes a document's name. Holds the rule, with what counts as the home given.
+    #[test]
+    fn a_shot_goes_only_where_it_may() {
+        let nowhere = |_: &Path| false;
+        let dir = std::env::temp_dir();
+        assert_eq!(refuse_shot_path(Path::new("a.png"), nowhere).unwrap_err().code, "usage", "not whole");
+        assert_eq!(refuse_shot_path(&dir.join("a.pdf"), nowhere).unwrap_err().code, "usage", "a document's name");
+        assert_eq!(refuse_shot_path(&dir.join("a"), nowhere).unwrap_err().code, "usage");
+        assert_eq!(refuse_shot_path(&dir.join("a.png"), |_| true).unwrap_err().code, "path_refused");
+        assert!(refuse_shot_path(&dir.join("recto-no-such-shot.PNG"), nowhere).is_ok());
+    }
+
+    /// Failure: a word the host can't do reports success: `qa appearance zzz` said it was done and went light, since the rule was the host's. They're checked here and every one is refused.
+    #[test]
+    fn a_verb_only_takes_what_it_can_do() {
+        for (verb, good, wrong) in [("appearance", "dark", "zzz"), ("window", "close", "zzz"), ("contents_pointer", "in", "zzz"), ("reduce_motion", "on", "yes"), ("hover", "none", "-1"), ("reveal", "3", "x"), ("click_row", "0", "none"), ("contents_scroll", "9", "1.5"), ("resize", "800x600", "10x10")] {
+            assert!(check_drive_value(verb, good).is_ok(), "{verb} {good}");
+            assert_eq!(check_drive_value(verb, wrong).unwrap_err().code, "usage", "{verb} {wrong}");
+        }
+        assert!(check_drive_value("resize", "800").is_err());
     }
 }

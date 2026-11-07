@@ -8,6 +8,7 @@ pub mod human;
 mod loader;
 mod reading;
 mod render;
+pub use render::{output_exists, publish_picture};
 mod search;
 pub mod skill;
 pub mod table;

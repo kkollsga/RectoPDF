@@ -15,7 +15,8 @@ trap 'rm -rf "${root:?}"' EXIT
 export RECTO_STATE_DIR="$root/s"
 r() { "$recto" "$@" >/dev/null; }
 settle() { r qa wait-settled --timeout 60s; }
-shot() { r qa shot --out "$out/$1.png"; }
+# A shot is never written over anything, so what an earlier run left goes first.
+shot() { rm -f "$out/$1.png"; r qa shot --out "$out/$1.png"; }
 
 r qa start --time-limit 5m
 for look in light dark; do
