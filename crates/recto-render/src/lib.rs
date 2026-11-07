@@ -100,6 +100,9 @@ pub trait RenderBackend {
     /// The largest image on a page, in source pixels. Bounded: it looks at no more than a fixed number of objects. Loads the page, which drawing would do anyway.
     fn largest_image_pixels(&mut self, page: u32) -> Result<u64, RenderError>;
 
+    /// Where a page's images are, as parts of the page in 65535ths, `[left, top, right, bottom]`. Bounded like [`Self::largest_image_pixels`], and at most [`recto_proto::MAX_IMAGE_BOXES`], past which they're given as one.
+    fn image_boxes(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError>;
+
     /// Reads a page's characters, in the order the backend understands them.
     fn page_text(&mut self, page: u32, options: TextOptions) -> Result<PageChars, RenderError>;
 }

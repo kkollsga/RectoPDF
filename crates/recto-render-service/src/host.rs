@@ -694,6 +694,8 @@ pub struct DocRenderer {
     remembered: Vec<PageMemory>,
     /// Each page's largest image in source pixels, for those asked about.
     traits: Vec<(u32, u64)>,
+    /// Where each page's images are, for those asked about.
+    image_places: Vec<(u32, Vec<[u16; 4]>)>,
     /// The slot, from an export's wait, on its way to the worker it's for.
     waited_ticket: Option<HeavyTicket>,
     /// Why opening the file failed, for as long as that can be taken as the answer. See [`Self::known_open_failure`].
@@ -728,6 +730,7 @@ impl DocRenderer {
             heavy_retries_counted_from: 0,
             remembered: Vec::new(),
             traits: Vec::new(),
+            image_places: Vec::new(),
             waited_ticket: None,
             open_failure: None,
             retire_after_page: None,
@@ -896,6 +899,31 @@ impl DocRenderer {
         }
         self.traits.push((page, pixels));
         Ok(pixels)
+    }
+
+    /// Where a page's images are, as parts of the page in 65535ths. Asked once per page, up to a cap, only for dark paper. Whatever stops the answer gives none, since it only decides how pixels are coloured, and drawing will find the same trouble and deal with it.
+    pub fn image_boxes(&mut self, page: u32, generation: u64) -> Vec<[u16; 4]> {
+        if let Some((_, boxes)) = self.image_places.iter().find(|(known, _)| *known == page) {
+            return boxes.clone();
+        }
+        if self.page_draw_state(page) != PageDrawState::Sharp || self.control.is_stale(generation) || self.stopped() {
+            return Vec::new();
+        }
+        let job_id = self.next_job_id();
+        let frame = proto::encode_images_request(job_id, page);
+        let reply = self.run_job(job_id, page, false, WorkerClass::Normal, Some(generation), &[], &frame, |reply| match reply.kind {
+            Kind::Images => {
+                let images = proto::PageImages::decode(&reply.payload)?;
+                if images.job_id == job_id { Ok(images.boxes) } else { Err(ProtoError("image boxes answer a different job")) }
+            }
+            _ => Err(ProtoError("the wrong kind of reply to an images request")),
+        });
+        let Ok(boxes) = reply else { return Vec::new() };
+        if self.image_places.len() >= MAX_FAILED_PAGES {
+            self.image_places.remove(0);
+        }
+        self.image_places.push((page, boxes.clone()));
+        boxes
     }
 
     /// Draws a region of the page in one pass, cut into tiles of `tile_edge` for the caller to hand out. Cheaper than one pass per tile whenever several tiles are needed: see
@@ -1398,6 +1426,7 @@ impl DocRenderer {
         if file_stamp(&self.path).ok() != self.opened_stamp {
             self.forget_failures();
             self.traits.clear();
+            self.image_places.clear();
             self.page_count = None;
             return match File::open(&self.path) {
                 Ok(file) => {

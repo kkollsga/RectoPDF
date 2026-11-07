@@ -1,7 +1,7 @@
 //! One thread that runs what [`Reader`] asks for. It's parked with nothing to do: no timer, no wake-ups. A page blocks this thread and never the UI thread, and the one lock is never held across a render.
 
 use crate::layout::PageBox;
-use crate::paper::{PaperKind, dark_rgb, turn_over};
+use crate::paper::{PaperKind, dark_rgb, keeps_in, turn_over};
 use crate::tiles::{DrawKind, Job, JobKind, MAX_ATTACH_PER_TURN, Op, Outcome, PageMap, Reader, ReaderReport, Viewport};
 use recto_platform::isolate;
 use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, TileKind, TileRequest, TileResult};
@@ -310,20 +310,25 @@ fn do_job(doc: &mut DocRenderer, job: &Job) -> Outcome {
                 Ok(TileResult::Done(tile)) => {
                     let mut kind = tile.kind;
                     let low_res = tile.low_res.map(|low| (low.rect, low.why));
+                    let low_res_scale = tile.low_res.map(|low| low.scale);
                     if *paper == PaperKind::Dark {
                         let drawn = low_res.map_or(*rect, |(drawn, _)| drawn);
-                        let grey = matches!(kind, TileKind::Grey);
-                        match kind {
-                            TileKind::Blank { rgb } => kind = TileKind::Blank { rgb: dark_rgb(rgb) },
-                            _ => {
-                                let stride = surface.stride();
-                                let _ = surface.with_pixels(|pixels| turn_over(pixels, drawn.width, drawn.height, stride, grey));
-                            }
-                        }
-                        // A region's or a preview's surface stays in use, however blank it was, so it's turned over too.
-                        if let (TileKind::Blank { .. }, DrawKind::Region | DrawKind::Preview) = (kind, what) {
+                        let drawn_scale = low_res_scale.unwrap_or(*scale);
+                        let boxes = doc.image_boxes(job.source_page, job.generation);
+                        let page = doc.page_size(job.source_page).ok().and_then(|(width, height)| recto_proto::device_size(width, height, drawn_scale).ok());
+                        let keeps = page.map_or_else(Vec::new, |page| keeps_in(&boxes, page, drawn));
+                        let one_colour = matches!(kind, TileKind::Blank { .. });
+                        if let (TileKind::Blank { rgb }, true, DrawKind::Tile) = (kind, keeps.is_empty(), what) {
+                            // No surface will be kept for this, so its one colour is what counts.
+                            kind = TileKind::Blank { rgb: dark_rgb(rgb) };
+                        } else {
+                            let grey = matches!(kind, TileKind::Grey) || one_colour;
                             let stride = surface.stride();
-                            let _ = surface.with_pixels(|pixels| turn_over(pixels, drawn.width, drawn.height, stride, false));
+                            let _ = surface.with_pixels(|pixels| turn_over(pixels, drawn.width, drawn.height, stride, grey, &keeps));
+                            // Part of it stays a picture, so it isn't one colour now.
+                            if one_colour {
+                                kind = TileKind::Colour;
+                            }
                         }
                     }
                     Outcome::Drawn { kind, low_res }

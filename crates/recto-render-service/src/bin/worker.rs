@@ -137,6 +137,14 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
                 Err(code) => proto::encode_failed(job_id, code),
             })
         }
+        Kind::ImagesRequest => {
+            let (job_id, page) = proto::decode_size_request(&frame.payload).ok()?;
+            let Some(backend) = backend else { return Some(proto::encode_failed(job_id, FailCode::NoDocument)) };
+            Some(match backend.image_boxes(page) {
+                Ok(boxes) => proto::PageImages { job_id, boxes }.encode(),
+                Err(code) => proto::encode_failed(job_id, code),
+            })
+        }
         Kind::TextRequest => {
             let job = TextJob::decode(&frame.payload).ok()?;
             let Some(backend) = backend else { return Some(proto::encode_failed(job.job_id, FailCode::NoDocument)) };
