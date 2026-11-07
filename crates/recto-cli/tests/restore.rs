@@ -825,6 +825,92 @@ fn a_pdf_can_only_be_opened_once_by_any_route() {
     assert_eq!(report["session"]["tabs"][1]["path"], moved.to_str().unwrap(), "{}", report["session"]["tabs"]);
 }
 
+/// Failure (final review N1): a `cp -p` copy has the same size and time as what it's a copy of, and both are open. A first edit on the copy, and a kill before the record names its journal: the edits came back on the original, as the first tab with the same size and time. It's a different file, by its path and inode, and they come back where they were made.
+#[test]
+fn a_journal_doesnt_go_to_a_copy_of_its_pdf() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let (original, copy) = (folder.join("a.pdf"), folder.join("acopy.pdf"));
+    std::fs::write(&original, pages(&(0..6).map(|at| Page::new(text_lines(&[&format!("Page {at}")]))).collect::<Vec<_>>())).unwrap();
+    assert!(Command::new("/bin/cp").arg("-p").arg(&original).arg(&copy).status().unwrap().success());
+    run.ok(&["open", original.to_str().unwrap()]);
+    run.ok(&["open", copy.to_str().unwrap()]);
+    run.settled();
+    // Both in the record, then nothing else goes for a minute.
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let tabs = tabs_of(&run.report());
+    assert_eq!(tabs.len(), 2);
+    let on_copy = tabs.iter().find(|tab| tab["path"].as_str().unwrap().ends_with("acopy.pdf")).unwrap()["id"].as_u64().unwrap();
+    run.ok(&["tap", &format!("#{on_copy}")]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "delete:3"]);
+    wait_for_journal(&run);
+    run.kill();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let after = run.report();
+    assert_eq!(tabs_of(&after).len(), 2, "{}", after["session"]["tabs"]);
+    let lists = after["session"]["edits_full"].as_object().unwrap();
+    assert_eq!(lists.keys().collect::<Vec<_>>(), [&on_copy.to_string()], "on the copy, where they were made: {}", after["session"]["tabs"]);
+}
+
+/// Failure (final review N7): a closed PDF's history is taken up when its file couldn't even be read, so it's marked as open with nothing holding it. Opening again and editing wrote over the end of the old journal, and every save and hand-off failed with what's written not reading back. It's only taken after a good read.
+#[test]
+fn history_is_only_taken_up_after_a_good_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join("a.pdf");
+    std::fs::write(&file, pages(&(0..6).map(|at| Page::new(text_lines(&[&format!("Page {at}")]))).collect::<Vec<_>>())).unwrap();
+    run.ok(&["open", file.to_str().unwrap()]);
+    run.settled();
+    for _ in 0..4 {
+        run.ok(&["qa", "owner-edit", "rotate:1"]);
+    }
+    run.ok(&["close"]);
+    run.ok(&["session", "save"]);
+    let began = Instant::now();
+    while !std::fs::read_dir(state.root.join("session/journals")).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().starts_with("closed-")) {
+        assert!(began.elapsed() < Duration::from_secs(10), "it was never closed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    run.ok(&["qa", "open-file", file.to_str().unwrap()]);
+    run.settled();
+    assert_eq!(tabs_of(&run.report()).len(), 0, "it couldn't be read");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    run.ok(&["qa", "open-file", file.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "delete:3"]);
+    let list = run.report()["session"]["edits_full"].as_object().unwrap().values().next().cloned().expect("a list");
+    assert_eq!(list["undo"].as_array().unwrap().len(), 5, "its 4 and the new one: {list}");
+    run.ok(&["session", "save"]);
+    run.hand_off();
+}
+
+/// Failure (final review N4): a quit during a read that's stuck wrote nothing at all, as what's right for a hand-off isn't for a quit: there, the update waits, but here the app's going anyway. The reader's place came back as page 1. A quit writes what there is.
+#[test]
+fn a_quit_during_a_stuck_read_still_writes() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let (file, other) = (long_document("stuck", 20), long_document("other", 2));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "hold-reads", "on"]);
+    run.ok(&["qa", "open-file", other.0.to_str().unwrap()]);
+    run.ok(&["goto", "12"]);
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    assert_eq!(run.report()["reader"]["page"], 12);
+}
+
 /// Failure (review T12, T13): the damaged-state notice is saved and shown again on every launch, though the reader has seen it. And what a record's notice says reaches the reader and agents as text, forged or not, in a field documented as Rust's own. It's a code, it goes once they've moved on, and a code it doesn't know says nothing.
 #[test]
 fn a_notice_goes_once_it_has_been_read_and_cant_be_forged() {

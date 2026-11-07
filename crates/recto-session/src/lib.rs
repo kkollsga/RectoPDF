@@ -727,10 +727,15 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// The tab already showing this file: by its path, or as the same file on disk, which a link is and a copy isn't. A tab whose file couldn't be looked at goes by its path alone.
+    ///
+    /// **A number is only the same file if the rest says so.** A move and a rewrite in place keep one, and another volume can have the same number under the same device. So its contents have to be what the tab knows, or the tab's own path has to lead to that number now, as it does for a file changed in place. Otherwise it's another PDF, and a tab's edits don't follow it. That stat is only for a tab with this very number, of which there's next to none. A link also leads where it leads: a tab whose file has been replaced under it, with a new number, is still what its own path is.
     pub fn tab_for_file(&self, path: &Path, stamp: Option<FileStamp>) -> Option<TabId> {
         self.tab_for_path(path).or_else(|| {
             let stamp = stamp.filter(|stamp| stamp.inode != 0)?;
-            self.tabs.iter().find(|tab| tab.stamp.is_some_and(|known| known.inode == stamp.inode && known.device == stamp.device)).map(|tab| tab.id)
+            let same_number = self.tabs.iter().find(|tab| {
+                tab.stamp.is_some_and(|known| known.inode == stamp.inode && known.device == stamp.device && (known.same_contents(stamp) || self.path_of(tab.id).and_then(|own| file_stamp(&own).ok()).is_some_and(|now| now.inode == stamp.inode && now.device == stamp.device)))
+            });
+            same_number.map(|tab| tab.id).or_else(|| path.canonicalize().ok().and_then(|real| self.tab_for_path(&real)))
         })
     }
 
@@ -2859,6 +2864,44 @@ mod tests {
         s.insert_pdf_with_facts(other, Author::Owner, 0, &moved, &facts, stamp).unwrap();
         assert_eq!(s.pages_in(other), 10);
         assert_eq!(s.tabs().len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Failure (final review N2): a different PDF with the inode a tab remembers took the tab over: after a move and a rewrite in place, or on another volume under the same device number. The tab's path became the other file, with edits for 6 pages on one of 3 and no notice. The number alone isn't the file: it's a different one, and gets its own tab, and the edits stay. A file changed in place at the tab's own path is still that tab. And (final review) a file replaced under a tab, with a new inode, is reached through a link all the same.
+    #[test]
+    fn the_same_inode_isnt_enough_to_be_the_same_pdf() {
+        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-hijack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (y, z) = (dir.join("y.pdf"), dir.join("z.pdf"));
+        std::fs::write(&y, b"six pages").unwrap();
+        let mut s = session(6);
+        let tab = s.open(&y).unwrap();
+        s.edit_pages(tab, |e| e.delete(0, 1)).unwrap();
+        // Moved, and written over in place: the same inode, and not what the edits are about.
+        std::fs::rename(&y, &z).unwrap();
+        std::fs::write(&z, b"three, and longer than it was").unwrap();
+        let opened = s.open(&z).unwrap();
+        assert_ne!(opened, tab, "it's another PDF");
+        assert_eq!(s.path_of(tab).unwrap(), y, "and the tab with edits stays on what they're about");
+        assert!(s.is_edited(tab));
+        assert_eq!(s.pages_in(opened), 6, "nothing of the edits on it");
+        assert!(!s.is_edited(opened));
+        // Changed in place under its own name, by a link: that's still the tab.
+        let (own, link) = (dir.join("own.pdf"), dir.join("link.pdf"));
+        std::fs::write(&own, b"before").unwrap();
+        std::os::unix::fs::symlink(&own, &link).unwrap();
+        let mut s = session(6);
+        let tab = s.open(&own).unwrap();
+        std::fs::write(&own, b"after, and longer").unwrap();
+        assert_eq!(s.open(&link).unwrap(), tab, "the same file, changed");
+        assert_eq!(s.tabs().len(), 1);
+        // Replaced under the tab with a new inode, as a save from another app does.
+        let fresh = dir.join("fresh.pdf");
+        std::fs::write(&fresh, b"replaced").unwrap();
+        std::fs::rename(&fresh, &own).unwrap();
+        assert_eq!(s.open(&link).unwrap(), tab, "the link leads to the tab's own path");
+        assert_eq!(s.tabs().len(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

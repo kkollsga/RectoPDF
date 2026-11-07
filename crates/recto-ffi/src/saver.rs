@@ -237,7 +237,8 @@ impl Saver {
             return Err(StoreError { code: "not_ready", message: "The app hasn't finished starting.".to_string() });
         }
         let began = Instant::now();
-        if !inner.core.flush(limit) {
+        // A hand-off can wait, and an update mustn't go on something unfinished. A quit is going anyway, so it writes what there is.
+        if !inner.core.flush(limit) && force {
             return Err(StoreError { code: "still_busy", message: "Something the app was asked to do hasn't finished, so its state can't be said to be whole.".to_string() });
         }
         let _gate = lock(&self.gate);

@@ -1945,7 +1945,8 @@ impl FileReads {
             let loaded = DrawableLoader.load(&path);
             // A PDF already open by another name keeps what it has. The session says for sure when this gets there.
             let already = matches!(reading, Reading::File(_)) && inner_for_read.host.session.with_session(|session| session.tab_for_file(&path, stamp).is_some());
-            let history = if matches!(reading, Reading::File(_)) && !already { saver.store.history_of(stamp, &path) } else { None };
+            // Only after a good read: taking it up marks it as open, and a file that couldn't be read won't have a tab to hold it.
+            let history = if matches!(reading, Reading::File(_)) && !already && loaded.is_ok() { saver.store.history_of(stamp, &path) } else { None };
             if let Some(before) = before {
                 before.wait(OPEN_ORDER_WAIT);
             }

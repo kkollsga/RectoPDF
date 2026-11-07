@@ -16,7 +16,7 @@
 use crate::state::StatePaths;
 use recto_platform::{FileStamp, file_stamp, local};
 use recto_session::edit::PageEdits;
-use recto_session::record::{self, AppRecord, CURRENT_VERSION, DecodedRecord, FileNotice, FindRecord, JOURNAL_COMPACT_ABOVE, JournalHeader, JournalOp, MAX_JOURNAL_BYTES, MAX_PLACES_LOG_BYTES, MAX_RECORD_BYTES, ParsedJournal, PlaceDelta, RecordError, SessionRecord, TabEntry, ViewRecord, closed_journal_name, is_closed_journal_name, is_journal_name, journal_is_for};
+use recto_session::record::{self, AppRecord, CURRENT_VERSION, DecodedRecord, FileNotice, FindRecord, JOURNAL_COMPACT_ABOVE, JournalHeader, JournalOp, MAX_JOURNAL_BYTES, MAX_PLACES_LOG_BYTES, MAX_RECORD_BYTES, ParsedJournal, PlaceDelta, RecordError, SessionRecord, TabEntry, ViewRecord, closed_journal_name, is_closed_journal_name, is_journal_name, journal_is_for, journal_named_is_for};
 use recto_session::{HistorySource, JournalOutcome, JournalWork, RestoredEdits, TakenHistory};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -326,7 +326,8 @@ impl RecordStore {
                     let kept = self.version_folder(&main, decoded.version);
                     let _ = copy_folder(&main, &kept);
                 }
-                self.finish_load(&main, Some((decoded, slot)), None)
+                let notice = newest_passed_over(&main, slot).then_some(record::notices::OLDER_RECORD);
+                self.finish_load(&main, Some((decoded, slot)), notice)
             }
             Ok(None) => self.finish_load(&main, None, None),
             Err(SlotsError::Newer) => {
@@ -751,6 +752,13 @@ impl HistorySource for RecordStore {
     }
 }
 
+/// Whether the record read is the older of two, as the other's been written since and doesn't read. A slot older than what's good is no news, as a crash mid-write of it leaves just that.
+fn newest_passed_over(dir: &Path, slot: usize) -> bool {
+    let modified = |path: PathBuf| std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    let (ours, other) = (dir.join(SLOTS[slot]), dir.join(SLOTS[1 - slot]));
+    modified(other).zip(modified(ours)).is_some_and(|(theirs, ours)| theirs > ours)
+}
+
 /// A journal's other name, as something's at this one that isn't to be touched.
 fn free_name(folder: &Path, append: &recto_session::JournalAppend) -> Option<String> {
     let path = append.header.path.to_path().unwrap_or_default();
@@ -830,7 +838,7 @@ struct JournalRead {
 /// **Every `journal-` file in a folder gets one owner, or none.**
 ///
 /// 1. A tab that names it, if it's about that tab's file. A journal for another file never applies, whatever a record says: the tab says so, and the journal's left for its own.
-/// 2. Otherwise a tab on the same file with no journal: a first edit whose journal went out before the record next did.
+/// 2. Otherwise a tab on the very same file, by its path or number, with no journal: a first edit whose journal went out before the record next did.
 /// 3. Otherwise, with real unsaved edits, it's what a crash leaves before the record had heard of the tab, and it comes back as one.
 /// 4. Otherwise it's a closed PDF's history, and goes to `closed-`, where no launch reads it.
 ///
@@ -867,7 +875,7 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
     // First everything a tab names, so a tab on the same file can't take what another has claimed.
     let mut unclaimed = Vec::new();
     for read in reads {
-        let named = record.tabs.iter().position(|tab| tab.journal.as_deref() == Some(read.name.as_str()) && journal_is_for(&read.parsed.header, tab.file.map(Into::into), &tab.path.to_path().unwrap_or_default()));
+        let named = record.tabs.iter().position(|tab| tab.journal.as_deref() == Some(read.name.as_str()) && journal_named_is_for(&read.parsed.header, tab.file.map(Into::into), &tab.path.to_path().unwrap_or_default()));
         match named {
             Some(at) if !taken_tabs[at] => {
                 taken_tabs[at] = true;
@@ -1404,6 +1412,38 @@ mod tests {
         drop(store);
         let store = RecordStore::open(&paths, Flavor::App);
         assert_eq!(loaded_record(&store).tabs[0].page, 3, "the line after the tear");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Failure (final review): the newest slot can't be read and the older one can, and the older record comes back as though it were the latest. It's right to use it, and it says so. A slot older than what's good is no news, as a crash mid-write of it leaves just that.
+    #[test]
+    fn falling_back_to_the_older_slot_says_so() {
+        let (root, paths) = state();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let older = sample(1);
+        store.write_record(&older, &PlaceDelta::default(), false).unwrap();
+        let mut newer = sample(1);
+        newer.edit_mode = true;
+        store.write_record(&newer, &PlaceDelta::default(), false).unwrap();
+        drop(store);
+        let slots = [root.join("session").join(SLOTS[0]), root.join("session").join(SLOTS[1])];
+        let whole = std::fs::read(&slots[1]).unwrap();
+        std::fs::write(&slots[1], b"damaged").unwrap();
+        // Written after the good one, by its time.
+        File::options().write(true).open(&slots[0]).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(60)).unwrap();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let Loaded::Restored(restored) = store.load() else { panic!() };
+        assert_eq!(restored.record, older);
+        assert_eq!(restored.notice, Some(record::notices::OLDER_RECORD));
+        drop(store);
+        // The older one damaged instead: nothing's been lost by that.
+        std::fs::write(&slots[1], &whole).unwrap();
+        std::fs::write(&slots[0], b"damaged").unwrap();
+        File::options().write(true).open(&slots[0]).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(60)).unwrap();
+        let store = RecordStore::open(&paths, Flavor::App);
+        let Loaded::Restored(restored) = store.load() else { panic!() };
+        assert_eq!(restored.record, newer);
+        assert_eq!(restored.notice, None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -459,8 +459,17 @@ pub fn is_closed_journal_name(name: &str) -> bool {
     name.strip_prefix("closed-").is_some_and(|rest| is_journal_name(&format!("journal-{rest}")))
 }
 
-/// Whether a journal is about this tab's file: the same contents if both say, and the same path if they can't. What decides whether a journal may attach, so one forged or left over from another file never applies. A moved file has the same contents under another path, and that's the same file.
+/// Whether a journal with nothing to say it's this tab's is about this tab's file. **The same file, by its path or by its number,** with the same contents. Size and time alone are what `cp -p` keeps, so another number at another path is another file, whose edits must not land here. The device isn't compared, as a volume can come back under another. With nothing to compare, the path says.
 pub fn journal_is_for(header: &JournalHeader, file: Option<FileStamp>, path: &Path) -> bool {
+    let at_its_path = header.path.to_path().is_some_and(|about| about == path);
+    match (header.file.map(FileStamp::from), file) {
+        (Some(about), Some(tab)) => about.same_contents(tab) && (at_its_path || (about.inode != 0 && about.inode == tab.inode)),
+        _ => at_its_path,
+    }
+}
+
+/// Whether a journal a tab names can be that tab's: the record has said so, so this is only to refuse one about something else. A file moved after being put back from a backup has another path and another number from what the journal's first line says, and it's still the same contents. A name isn't enough by itself, as a forged one isn't about anything here.
+pub fn journal_named_is_for(header: &JournalHeader, file: Option<FileStamp>, path: &Path) -> bool {
     match (header.file.map(FileStamp::from), file) {
         (Some(about), Some(tab)) => about.same_contents(tab),
         _ => header.path.to_path().is_some_and(|about| about == path),
@@ -1196,6 +1205,7 @@ pub mod notices {
     pub const NEWER_KEPT: &str = "record_newer_kept";
     pub const OTHER_INSTANCE: &str = "other_instance";
     pub const UNREADABLE: &str = "record_unreadable";
+    pub const OLDER_RECORD: &str = "record_older";
 
     /// The words for a code. `None` for one this build doesn't know, which is all a forged one can come to.
     pub fn words(code: &str) -> Option<&'static str> {
@@ -1204,6 +1214,7 @@ pub mod notices {
             NEWER => "Your last session was saved by a newer version of RectoPDF, so it's been left as it is, ready for that version. RectoPDF started empty.",
             NEWER_KEPT => "Your last session was saved by a newer version of RectoPDF, so it's been left as it is. This is your session from before that update.",
             OTHER_INSTANCE => "Another RectoPDF is keeping your session's state, so what you do in this window won't be remembered.",
+            OLDER_RECORD => "The latest save of your session's state couldn't be read, so this is the one before it, and the last moments before you closed may be missing. Any unsaved edits are still here, as those are kept apart.",
             UNREADABLE => "Your last session's state couldn't be read just now, so it's been left as it is, and what you do in this window won't be remembered. Quit and open RectoPDF again to try again.",
             _ => return None,
         })
@@ -1471,7 +1482,7 @@ mod tests {
     /// Failure (review T13): free text in a forged record reaches the reader and agents, in a field documented as Rust's own words. Only a code is kept, and one this build doesn't know has no words at all.
     #[test]
     fn a_notice_is_a_code_and_a_forged_one_says_nothing() {
-        for code in [notices::DAMAGED, notices::NEWER, notices::NEWER_KEPT, notices::OTHER_INSTANCE, notices::UNREADABLE] {
+        for code in [notices::DAMAGED, notices::NEWER, notices::NEWER_KEPT, notices::OTHER_INSTANCE, notices::UNREADABLE, notices::OLDER_RECORD] {
             assert!(notices::words(code).is_some_and(|words| words.len() > 20), "{code}");
             assert!(code.len() <= MAX_NOTICE_BYTES);
         }
@@ -1507,9 +1518,16 @@ mod tests {
         let path = Path::new("/d/a.pdf");
         let header = JournalHeader::new(1, path, Some(was), 5, 0);
         assert!(journal_is_for(&header, Some(was), path));
-        assert!(journal_is_for(&header, Some(FileStamp { inode: 99, device: 7, ..was }), Path::new("/e/moved.pdf")), "the same contents, moved");
+        assert!(journal_is_for(&header, Some(FileStamp { device: 7, ..was }), Path::new("/e/moved.pdf")), "the same file, moved, on a volume back under another number");
+        // Final review N1: size and time alone are what `cp -p` keeps, so another inode at another path is another file.
+        assert!(!journal_is_for(&header, Some(FileStamp { inode: 99, ..was }), Path::new("/e/acopy.pdf")), "a copy, with its size and time");
+        assert!(journal_is_for(&header, Some(FileStamp { inode: 99, device: 7, ..was }), path), "at its own path, with a new inode: put back from a backup");
         assert!(!journal_is_for(&header, Some(FileStamp { size: 11, ..was }), path), "another version at the same path");
         assert!(journal_is_for(&header, None, path), "nothing to compare: the path says");
+        // Named by the record, the contents are enough, and only they: a tab can't name a journal about something else.
+        assert!(journal_named_is_for(&header, Some(FileStamp { inode: 99, device: 7, ..was }), Path::new("/e/moved.pdf")));
+        assert!(!journal_named_is_for(&header, Some(FileStamp { size: 11, ..was }), path));
+        assert!(!journal_named_is_for(&header, None, Path::new("/etc/hosts")));
         assert!(!journal_is_for(&header, None, Path::new("/etc/hosts")));
         assert!(!journal_is_for(&JournalHeader::new(1, Path::new("/etc/hosts"), None, 100, 0), Some(was), path));
     }
