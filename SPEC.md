@@ -91,7 +91,7 @@ Reference: `docs/concepts/`. Rules from the owner:
   that comes from the PDF. Exact arguments: agent report, §1.
 - `recto` CLI on a local socket with levels Off, Read-only, Control and Full (*default:* Off). Signing needs a human gesture and is never
   reachable by an agent. Until the app's settings exist, the user sets the level with `recto permission set <level>` at a real terminal.
-- **Below Full, an agent can throw away only agents' edits, never the owner's.** Each edit step records who made it. At Control, an edit that clears undone steps, `discard`, and `close` with undone steps are allowed if every step that would be lost is an agent's, and refused with exit 5 otherwise, saying those are the user's edits. A tab with unsaved edits doesn't close at any level: `discard`, then `close`. At Full, what's lost is the holder's call.
+- **Below Full, an agent can throw away only agents' edits, never the owner's.** Each edit step records who made it. At Control, an edit that clears undone steps, `discard`, and `close` with undone steps are allowed if every step that would be lost is an agent's, and refused with exit 5 otherwise, saying those are the user's edits. A tab with unsaved edits doesn't close at any level: `discard`, then `close`. At Full, what's lost is the holder's call. An agent's `undo` of the owner's edits doesn't hide them: answers say so, the sidebar model has it, and the session's own close refuses until they're redone or discarded.
 - [DECIDE] Whether a public release waits for Anthropic's written answer on subscription use. *Default:* yes, with an API-key route too.
 
 ## 6. Scope: everything in one build
