@@ -43,7 +43,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `edit::Entry` | Step of an edited tab's undo history, at most 256 and their undone ones | ≤ 32 B |
 | `Conn` | Connected client, at most 128 | ≤ 320 B plus what it's sending and being sent |
 | `recto_index::order::Line` | Line of a page in hand, at most 16,384, only while it's being read | ≤ 72 B |
-| `corpus::PageRecord` | Page in a corpus, on disk, read back one at a time | 24 B on disk |
+| `corpus::PageRecord` | Page in a corpus, on disk, read back one at a time | 28 B on disk |
 | `indexing::IndexJob` | File waiting for an index, at most 16 and one running. No tab holds one | A path and 32 B |
 
 ## Dependencies
@@ -54,6 +54,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `serde`, `serde_json` | The agent JSON envelope |
 | `libc` | `proc_pid_rusage` for footprint, process, channel and shared-memory calls, and the control socket's `poll` and `getpeereid`, `recto-platform` only |
 | `flate2` | Compresses `render`'s PNG. Already in the tree through lopdf, so it adds no crate. `recto-agent` only |
+| `crc32fast` | A checksum per page of a corpus, in hardware on this Mac. Already in the tree through flate2, so it adds no crate. `recto-index` only |
 | `sha2` | Names a corpus for its file, from its identity and samples of its bytes. Already in the tree through lopdf, so it adds no crate. `recto-index` only |
 | PDFium (not a crate) | Draws pages. `bblanchon/pdfium-binaries` release `chromium/8125`, PDFium 158.0.8125.0, no V8, no XFA. Loaded at run time, by the worker alone. `tools/pdfium.sh` fetches it from that release's URL to `target/pdfium/` and stops unless the tarball is SHA-256 `4939bd93…139d` and the library `a45c4464…373a`; `--attest` also runs `gh attestation verify`. It links AppKit; see the sandbox note below |
 

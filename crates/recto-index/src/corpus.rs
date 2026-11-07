@@ -1,7 +1,7 @@
 //! The page-text corpus: a document's pages as text on disk, one folder per version of a file, built once in the background and read by `search` and later by the agent's own `Read` and `Grep`.
 //!
 //! ```text
-//! <root>/<key>/v1/
+//! <root>/<key>/v2/
 //!   agent/                The only folder an agent will be pointed at (agent report, §6.1)
 //!     manifest.json       Written first saying `building`, and again saying `ready` when it's finished
 //!     pages/0001.md ...   One file per page, each a whole file or not there at all
@@ -24,7 +24,9 @@
 //! **Killed at any moment, this is still sound.** A page's text goes in first, then its page file, then its record, and only a record counts. Starting again checks every record against what's there,
 //! cuts off anything past the last good one, and goes on from there. Only `ready.json` makes a corpus usable, and it's written once everything under it has been synced.
 //!
-//! **Everything here came from a hostile file, or sits in a folder something may have changed.** Reading it back checks that the folders are private with no links on the way, that the files are plain files of bounded size, that lengths agree and text is UTF-8. A corpus that doesn't add up is thrown away, which only costs a rebuild.
+//! **Everything here came from a hostile file, or sits in a folder something may have changed.** Reading it back checks that the folders are private with no links on the way, that the files are plain files of bounded size, that lengths agree and text is UTF-8. The mark names its key, and each page's checksum has its number in it, so one file's or one page's text can't answer for another by a folder being copied or a record pointed elsewhere. A corpus that doesn't add up is thrown away, which only costs a rebuild.
+//!
+//! All that's against accident, and against what a hostile PDF could do, which is nothing here but supply text. Someone who can write to this folder is this same user, and could recompute a checksum. A forged corpus with its sums right is believed, as a forged PDF would be.
 //!
 //! **How it's searched** is a pass over `text.pack`, with no index in front of it. See `docs/ENGINEERING.md` for the numbers that say that's enough.
 
@@ -41,7 +43,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 /// The folder's format. A new one starts new folders, and the old ones age out.
-pub const FORMAT: &str = "v1";
+pub const FORMAT: &str = "v2";
 /// What made the text. **Change this when [`read_page`]'s output changes:** it's part of the key, so old text can't answer for new rules. `a_change_to_the_text_changes_the_version` is there to remind you.
 pub const NORMALISER: &str = "recto-normalize/1";
 /// Most pages of a document it will index, the same as a document may have once edited.
@@ -67,7 +69,7 @@ const MAX_UNTRUSTED_CHARS: usize = 200;
 
 /// One page's largest blob, so a damaged record can't ask for more: 2,000,000 characters of 4 bytes, and what goes beside them.
 const MAX_BLOB_BYTES: usize = 16 * 1024 * 1024;
-const RECORD_LEN: usize = 24;
+const RECORD_LEN: usize = 28;
 const SAMPLE_BYTES: u64 = 64 * 1024;
 /// Pages between looks at whether the file is still the same one.
 const IDENTITY_CHECK_EVERY: u32 = 64;
@@ -254,7 +256,7 @@ const FLAG_HIDDEN_FLAGGED: u8 = 2;
 const FLAG_TAG_CHARS: u8 = 4;
 const FLAG_SPANS_DROPPED: u8 = 8;
 
-/// What's known about one page. 24 bytes on disk, and in memory only while its page is in hand.
+/// What's known about one page. 28 bytes on disk, and in memory only while its page is in hand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PageRecord {
     offset: u64,
@@ -264,6 +266,16 @@ struct PageRecord {
     kind: PageKind,
     flags: u8,
     reason: u8,
+    /// A checksum of this page's number and its text and what's beside it. It catches a record pointed at another page's text, or a byte gone wrong that's still good UTF-8. It's no defence against someone meaning to: see the module's notes.
+    check: u32,
+}
+
+/// A page's checksum. Its number goes in, so one page's text can't pass for another's.
+fn page_check(page: u32, blob: &[u8]) -> u32 {
+    let mut hash = crc32fast::Hasher::new();
+    hash.update(&page.to_le_bytes());
+    hash.update(blob);
+    hash.finalize()
 }
 
 impl PageRecord {
@@ -276,6 +288,7 @@ impl PageRecord {
         out[20] = self.kind as u8;
         out[21] = self.flags;
         out[22] = self.reason;
+        out[24..28].copy_from_slice(&self.check.to_le_bytes());
         out
     }
 
@@ -287,7 +300,7 @@ impl PageRecord {
             3 => PageKind::Failed,
             _ => return None,
         };
-        Some(Self { offset: u64::from_le_bytes(bytes.get(..8)?.try_into().ok()?), text_len: word(8)?, aux_len: word(12)?, chars: word(16)?, kind, flags: *bytes.get(21)?, reason: *bytes.get(22)? })
+        Some(Self { offset: u64::from_le_bytes(bytes.get(..8)?.try_into().ok()?), text_len: word(8)?, aux_len: word(12)?, chars: word(16)?, kind, flags: *bytes.get(21)?, reason: *bytes.get(22)?, check: word(24)? })
     }
 
     fn end(&self) -> u64 {
@@ -345,8 +358,8 @@ pub struct Summary {
 }
 
 impl Summary {
-    fn to_json(&self) -> Value {
-        json!({ "format": FORMAT, "normaliser": NORMALISER, "pages": self.pages, "width": self.width, "table_bytes": self.table_bytes, "pack_bytes": self.pack_bytes, "corpus_bytes": self.corpus_bytes, "no_text_pages": self.no_text_pages, "failed_pages": self.failed_pages, "hidden_flagged_pages": self.hidden_flagged_pages, "hidden_unchecked_pages": self.hidden_unchecked_pages, "tag_char_pages": self.tag_char_pages, "retry_pages": self.retry_pages, "retries": self.retries, "retried_at": self.retried_at })
+    fn to_json(&self, key: CorpusKey) -> Value {
+        json!({ "key": key.hex(), "format": FORMAT, "normaliser": NORMALISER, "pages": self.pages, "width": self.width, "table_bytes": self.table_bytes, "pack_bytes": self.pack_bytes, "corpus_bytes": self.corpus_bytes, "no_text_pages": self.no_text_pages, "failed_pages": self.failed_pages, "hidden_flagged_pages": self.hidden_flagged_pages, "hidden_unchecked_pages": self.hidden_unchecked_pages, "tag_char_pages": self.tag_char_pages, "retry_pages": self.retry_pages, "retries": self.retries, "retried_at": self.retried_at })
     }
 
     /// Whether some pages failed only because of when they were read, and it's time to try them again. A page that keeps failing stops being tried: then it's the page.
@@ -354,8 +367,9 @@ impl Summary {
         self.retry_pages > 0 && self.retries < MAX_RETRIES && now_seconds().saturating_sub(self.retried_at) >= RETRY_PAUSE.as_secs()
     }
 
-    fn from_json(value: &Value) -> Option<Self> {
-        if value["format"] != FORMAT || value["normaliser"] != NORMALISER {
+    /// What a `ready.json` says, if it's the mark of this format and this key. Which file a corpus is of is only ever said by the folder's name otherwise, so a folder renamed or copied would answer for another file.
+    fn from_json(value: &Value, key: CorpusKey) -> Option<Self> {
+        if value["format"] != FORMAT || value["normaliser"] != NORMALISER || value["key"] != key.hex().as_str() {
             return None;
         }
         let number = |key: &str| value[key].as_u64();
@@ -395,7 +409,7 @@ pub fn disk_state(root: &Path, key: CorpusKey) -> DiskState {
     if !paths.folders_are_private(root) {
         return DiskState::Nothing;
     }
-    if let Some(summary) = read_json(&paths.ready).as_ref().and_then(Summary::from_json) {
+    if let Some(summary) = read_json(&paths.ready).as_ref().and_then(|ready| Summary::from_json(ready, key)) {
         return DiskState::Ready(summary);
     }
     if let Some(code) = read_json(&paths.refused).and_then(|refused| refused["code"].as_str().map(str::to_string)) {
@@ -514,7 +528,7 @@ impl ReadyCorpus {
             return Err(Damaged);
         }
         let Some(ready) = read_json(&paths.ready) else { return Ok(None) };
-        let summary = Summary::from_json(&ready).ok_or(Damaged)?;
+        let summary = Summary::from_json(&ready, key).ok_or(Damaged)?;
         if summary.pages > MAX_PAGES || summary.table_bytes != u64::from(summary.pages) * RECORD_LEN as u64 {
             return Err(Damaged);
         }
@@ -546,6 +560,9 @@ impl ReadyCorpus {
         }
         buffer.resize(len, 0);
         recto_platform::read_exact_at(&self.pack, buffer, record.offset).map_err(|_| Damaged)?;
+        if page_check(page, buffer) != record.check {
+            return Err(Damaged);
+        }
         let (text, aux) = buffer.split_at(record.text_len as usize);
         Ok(StoredPage {
             kind: record.kind,
@@ -678,7 +695,7 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
         return Ok(BuildOutcome::Busy);
     }
     match disk_state(root, key) {
-        DiskState::Ready(summary) if summary.retry_is_due() => return retry_failed_pages(&paths, feed, meta, summary),
+        DiskState::Ready(summary) if summary.retry_is_due() => return retry_failed_pages(&paths, key, feed, meta, summary),
         DiskState::Ready(summary) => return Ok(BuildOutcome::AlreadyReady(summary)),
         DiskState::Refused(code) => return Ok(BuildOutcome::Refused(code)),
         DiskState::Partial { .. } | DiskState::Nothing => {}
@@ -717,7 +734,7 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
         blob.clear();
         blob.extend_from_slice(text.as_bytes());
         Aux::write(&also_spelled, &spans, &mut blob);
-        let record = PageRecord { aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX), ..record };
+        let record = PageRecord { aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX), check: page_check(page, &blob), ..record };
         file_text.clear();
         write_page_file_text(&mut file_text, page, &record, &text, &also_spelled, &spans);
         bytes += blob.len() as u64 + RECORD_LEN as u64 + disk_size(file_text.len() as u64);
@@ -735,11 +752,11 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
     // Only now is any of it believed, so it must really be there before the mark that says so.
     pack.sync_all()?;
     table.sync_all()?;
-    let summary = finish(&paths, pages, width, offset, bytes, meta, 0)?;
+    let summary = finish(&paths, key, pages, width, offset, bytes, meta, 0)?;
     let stats = BuildStats { pages_built: pages - resumed.pages, pages_resumed: resumed.pages, elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX) };
     // What failed only because of the moment gets one more try at once, now that the rest of the document isn't in its way.
     if summary.retry_pages > 0 {
-        return match retry_failed_pages(&paths, feed, meta, summary)? {
+        return match retry_failed_pages(&paths, key, feed, meta, summary)? {
             BuildOutcome::AlreadyReady(summary) => Ok(BuildOutcome::Ready { summary, stats }),
             other => Ok(other),
         };
@@ -749,7 +766,7 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
 }
 
 /// Reads pages that failed for a temporary reason again, and puts in place what comes back. A search may be reading this corpus now, so what it holds stays good throughout: the new text goes on the end of the pack, then its page file goes in place, and then the table, each in one step. A reader takes the table before the pack, so any table it has only points at text it can see. Killed partway, the worst left is text nothing points at.
-fn retry_failed_pages(paths: &CorpusPaths, feed: &mut impl PageFeed, meta: &DocMeta, summary: Summary) -> io::Result<BuildOutcome> {
+fn retry_failed_pages(paths: &CorpusPaths, key: CorpusKey, feed: &mut impl PageFeed, meta: &DocMeta, summary: Summary) -> io::Result<BuildOutcome> {
     let mut table = read_table(paths, summary.pages)?;
     let width = summary.width as usize;
     let mut pack = local::append_private_file(&paths.pack)?;
@@ -783,7 +800,7 @@ fn retry_failed_pages(paths: &CorpusPaths, feed: &mut impl PageFeed, meta: &DocM
         blob.clear();
         blob.extend_from_slice(text.as_bytes());
         Aux::write(&also_spelled, &spans, &mut blob);
-        let record = PageRecord { aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX), ..record };
+        let record = PageRecord { aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX), check: page_check(page, &blob), ..record };
         file_text.clear();
         write_page_file_text(&mut file_text, page, &record, &text, &also_spelled, &spans);
         pack.write_all(&blob)?;
@@ -794,7 +811,7 @@ fn retry_failed_pages(paths: &CorpusPaths, feed: &mut impl PageFeed, meta: &DocM
     }
     pack.sync_all()?;
     local::write_private_file(&paths.table, &table)?;
-    let summary = finish(paths, summary.pages, width, offset, bytes, meta, summary.retries + 1)?;
+    let summary = finish(paths, key, summary.pages, width, offset, bytes, meta, summary.retries + 1)?;
     Ok(BuildOutcome::AlreadyReady(summary))
 }
 
@@ -908,7 +925,7 @@ fn digest(read: Result<FedPage, FailReason>, offset: u64) -> (PageRecord, Vec<St
         Err(reason) => return (failed_record(offset, reason), Vec::new(), Vec::new(), String::new()),
     };
     if page.chars.is_empty() {
-        let record = PageRecord { offset, text_len: 0, aux_len: 0, chars: 0, kind: PageKind::NoText, flags: FLAG_HIDDEN_CHECKED, reason: 0 };
+        let record = PageRecord { offset, text_len: 0, aux_len: 0, chars: 0, kind: PageKind::NoText, flags: FLAG_HIDDEN_CHECKED, reason: 0, check: 0 };
         return (record, Vec::new(), Vec::new(), String::new());
     }
     let report = hidden_report(&page.chars, page.hidden_checked);
@@ -928,12 +945,12 @@ fn digest(read: Result<FedPage, FailReason>, offset: u64) -> (PageRecord, Vec<St
         flags |= FLAG_SPANS_DROPPED;
     }
     let text_len = u32::try_from(normalized.text.len()).unwrap_or(u32::MAX);
-    let record = PageRecord { offset, text_len, aux_len: 0, chars: u32::try_from(page.chars.len()).unwrap_or(u32::MAX), kind: PageKind::Text, flags, reason: 0 };
+    let record = PageRecord { offset, text_len, aux_len: 0, chars: u32::try_from(page.chars.len()).unwrap_or(u32::MAX), kind: PageKind::Text, flags, reason: 0, check: 0 };
     (record, normalized.also_spelled, reading.hidden_spans, normalized.text)
 }
 
 fn failed_record(offset: u64, reason: FailReason) -> PageRecord {
-    PageRecord { offset, text_len: 0, aux_len: 0, chars: 0, kind: PageKind::Failed, flags: 0, reason: reason as u8 }
+    PageRecord { offset, text_len: 0, aux_len: 0, chars: 0, kind: PageKind::Failed, flags: 0, reason: reason as u8, check: 0 }
 }
 
 /// How wide a page file's number is: at least four digits, and the same for the whole document.
@@ -983,7 +1000,7 @@ fn resume_point(paths: &CorpusPaths, pages: u32, width: usize) -> io::Result<Res
     let mut buffer = Vec::new();
     for (page, bytes) in table.as_chunks::<RECORD_LEN>().0.iter().take(pages as usize).enumerate() {
         let Some(record) = PageRecord::decode(bytes) else { break };
-        if record.offset != point.pack_end || !page_holds_up(pack.as_ref(), &record, pack_len, &mut buffer) {
+        if record.offset != point.pack_end || !page_holds_up(pack.as_ref(), page as u32, &record, pack_len, &mut buffer) {
             break;
         }
         let Ok(file) = fs::metadata(paths.page_file(page as u32, width)) else { break };
@@ -1001,15 +1018,13 @@ fn resume_point(paths: &CorpusPaths, pages: u32, width: usize) -> io::Result<Res
     Ok(point)
 }
 
-/// Whether a record's text and what's beside it are really there. The normaliser never leaves a zero in a page's text, so zeros there are a file that lost power. What's beside the text is numbers, and can hold them.
-fn page_holds_up(pack: Option<&File>, record: &PageRecord, pack_len: u64, buffer: &mut Vec<u8>) -> bool {
+/// Whether a record's text and what's beside it are really there, as they were written.
+fn page_holds_up(pack: Option<&File>, page: u32, record: &PageRecord, pack_len: u64, buffer: &mut Vec<u8>) -> bool {
     if record.blob_len() > MAX_BLOB_BYTES || record.end() > pack_len {
         return false;
     }
     buffer.resize(record.blob_len(), 0);
-    let whole = pack.is_some_and(|pack| recto_platform::read_exact_at(pack, buffer, record.offset).is_ok());
-    let (text, aux) = buffer.split_at(record.text_len as usize);
-    whole && !text.contains(&0) && std::str::from_utf8(text).is_ok() && Aux::read(aux).is_some()
+    pack.is_some_and(|pack| recto_platform::read_exact_at(pack, buffer, record.offset).is_ok()) && page_check(page, buffer) == record.check
 }
 
 /// One page's file: a first line that can't come from the page, then the page's lines, one for one, so line `n` of the page is line `n + 1` here.
@@ -1104,7 +1119,7 @@ fn write_building_manifest(paths: &CorpusPaths, pages: u32, width: usize) -> io:
 }
 
 /// Writes the manifest from the table, a line per page, then the mark that makes it all usable.
-fn finish(paths: &CorpusPaths, pages: u32, width: usize, pack_bytes: u64, bytes: u64, meta: &DocMeta, retries: u32) -> io::Result<Summary> {
+fn finish(paths: &CorpusPaths, key: CorpusKey, pages: u32, width: usize, pack_bytes: u64, bytes: u64, meta: &DocMeta, retries: u32) -> io::Result<Summary> {
     let table = read_table(paths, pages)?;
     let mut summary = Summary { pages, width: width as u32, table_bytes: table.len() as u64, pack_bytes, retries, retried_at: now_seconds(), ..Summary::default() };
     let mut index = String::with_capacity(table.len() * 3);
@@ -1158,7 +1173,7 @@ fn finish(paths: &CorpusPaths, pages: u32, width: usize, pack_bytes: u64, bytes:
     let manifest_bytes = disk_size(manifest.len() as u64);
     local::write_private_file(&paths.manifest, manifest.as_bytes())?;
     summary.corpus_bytes = bytes + manifest_bytes;
-    local::write_private_file(&paths.ready, summary.to_json().to_string().as_bytes())?;
+    local::write_private_file(&paths.ready, summary.to_json(key).to_string().as_bytes())?;
     note_used(paths);
     Ok(summary)
 }

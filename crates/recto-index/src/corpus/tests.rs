@@ -548,7 +548,8 @@ fn a_damaged_corpus_is_not_believed() {
     assert!(ReadyCorpus::open(&root, key).unwrap().is_none(), "no mark that reads, so not finished");
     restore();
     fs::write(&paths.ready, br#"{"format":"v0"}"#).unwrap();
-    assert!(ReadyCorpus::open(&root, key).is_err() || ReadyCorpus::open(&root, key).unwrap().is_none());
+    assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a mark of another format");
+    assert_eq!(disk_state(&root, key), DiskState::Partial { pages_done: 2 }, "and it isn't called finished");
     restore();
     fs::write(&paths.pack, b"short").unwrap();
     assert_eq!(ReadyCorpus::open(&root, key).unwrap_err(), Damaged, "a pack of the wrong length");
@@ -576,6 +577,28 @@ fn a_damaged_corpus_is_not_believed() {
     let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
     assert_eq!(corpus.page(0, &mut Vec::new()).unwrap_err(), Damaged, "a record asking for 4 GiB");
     restore();
+    // A byte changed to another good one, which UTF-8 can't see.
+    let mut other = pack.clone();
+    other[0] = other[0].wrapping_add(1);
+    fs::write(&paths.pack, other).unwrap();
+    let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
+    assert_eq!(corpus.page(0, &mut Vec::new()).unwrap_err(), Damaged, "a page's text changed and still good UTF-8");
+    restore();
+    // Page 2's record said to be page 1's: its text is as good as any, and it's another page's.
+    let mut swapped = table.clone();
+    swapped.copy_within(RECORD_LEN..RECORD_LEN * 2, 0);
+    fs::write(&paths.table, swapped).unwrap();
+    let corpus = ReadyCorpus::open(&root, key).unwrap().unwrap();
+    assert_eq!(corpus.page(0, &mut Vec::new()).unwrap_err(), Damaged, "one page's record standing in for another's");
+    restore();
+    // One file's folder under another file's name.
+    let other_key = key_of(&temp, b"a different file");
+    fs::create_dir_all(root.join(other_key.hex())).unwrap();
+    fs::set_permissions(root.join(other_key.hex()), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    assert!(std::process::Command::new("/bin/cp").arg("-Rp").arg(root.join(key.hex()).join(FORMAT)).arg(root.join(other_key.hex())).status().unwrap().success());
+    assert_eq!(ReadyCorpus::open(&root, other_key).unwrap_err(), Damaged, "a folder copied under another file's key answers for it");
+    assert_ne!(disk_state(&root, other_key), disk_state(&root, key));
+    assert!(ReadyCorpus::open(&root, key).unwrap().is_some());
     assert!(Aux::read(&[0xFF, 0xFF]).is_none() && Aux::read(&[1, 0, 200, 0]).is_none() && Aux::read(&[0, 0, 200, 0, 0, 0]).is_none(), "what's beside the text is checked too");
 }
 
@@ -828,10 +851,10 @@ fn the_largest_page_there_can_be_reads_back() {
 #[test]
 fn a_record_stays_small() {
     assert!(size_of::<PageRecord>() <= 32);
-    assert_eq!(RECORD_LEN, 24);
-    let record = PageRecord { offset: 9, text_len: 8, aux_len: 7, chars: 6, kind: PageKind::Failed, flags: 5, reason: 2 };
+    assert_eq!(RECORD_LEN, 28);
+    let record = PageRecord { offset: 9, text_len: 8, aux_len: 7, chars: 6, kind: PageKind::Failed, flags: 5, reason: 2, check: 77 };
     assert_eq!(PageRecord::decode(&record.encode()), Some(record));
-    assert_eq!(PageRecord::decode(&[0; 24]), None, "no such kind");
+    assert_eq!(PageRecord::decode(&[0; 28]), None, "no such kind");
     assert_eq!(PageRecord::decode(&[1; 3]), None);
     assert_eq!(page_width(9999), 4);
     assert_eq!(page_width(10_000), 5);
