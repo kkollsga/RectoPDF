@@ -303,6 +303,22 @@ fn text_with_no_outlines_is_a_picture_and_stays_selectable() {
     assert!(svg.contains(">aaa</text>"), "its characters, over the picture: {}", &svg[..svg.len().min(600)]);
 }
 
+/// Failure: a glyph at the code for a space, as TeX's big brackets are, is taken for a space and isn't drawn, with nothing said, on a whole page and in a box. Its neighbour's outline passes, so the rest of the line looks complete.
+#[test]
+fn a_glyph_coded_as_a_space_is_still_drawn() {
+    let glyph = first_extra_object(1) + 1;
+    let font = first_extra_object(1);
+    let resources = format!("/Font << /T3 {font} 0 R >>");
+    let font_dict = format!("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 3000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /space {glyph} 0 R >> /Encoding << /Type /Encoding /Differences [32 /space] >> /FirstChar 32 /LastChar 32 /Widths [1000] >>");
+    let bytes = pages_with(&[Page::new("BT /T3 10 Tf 100 500 Td ( ) Tj ET\n")], &resources, vec![Object::Dict(font_dict), Object::Stream { dict: String::new(), data: b"1000 0 0 0 800 3000 d1 100 0 500 3000 re f".to_vec() }]);
+    let file = TempPdf::new("doc.pdf", &bytes);
+    for extra in [&[][..], &["--rect", "50,200,200,200"][..]] {
+        let (svg, data) = svg_of(&file, extra);
+        assert_eq!(rasterised(&data, "text_no_outline"), 1, "{extra:?}: {data}");
+        assert!(!embedded_images(svg.as_bytes()).is_empty(), "{extra:?}: a picture of it");
+    }
+}
+
 /// Failure: words whose only gap is a kern, as every line of TeX is, come out selected as one long word, since PDFium's made-up spaces aren't drawn. They're kept in the text, and only there.
 #[test]
 fn a_gap_that_reads_as_a_space_stays_in_the_selectable_text() {
