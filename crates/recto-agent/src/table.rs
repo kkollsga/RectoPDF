@@ -110,6 +110,8 @@ pub struct Spec {
     pub hidden: bool,
     /// It isn't built yet, and only says so.
     pub not_built: bool,
+    /// A bare whole number on the line means its `--page`, because three agents in three rounds tried it. Ranges stay refused, since it takes one page.
+    pub bare_page: bool,
 }
 
 const BASE: Spec = Spec {
@@ -127,10 +129,12 @@ const BASE: Spec = Spec {
     client_wait_s: 120,
     hidden: false,
     not_built: false,
+    bare_page: false,
 };
 
 const TAB: Arg = Arg { key: "tab", flag: Some("--tab"), kind: Kind::Tab, required: false, help: "Which tab: `#3`, `active`, or part of its name. The active tab if left out." };
 const PAGE: Arg = Arg { key: "page", flag: Some("--page"), kind: Kind::Page, required: true, help: "The page, counted from 1." };
+const PAGE_OR_BARE: Arg = Arg { key: "page", flag: Some("--page"), kind: Kind::Page, required: true, help: "The page, counted from 1. A bare number means the same: `60` or `--page 60`." };
 const SCALE: Arg = Arg { key: "scale", flag: Some("--scale"), kind: Kind::Scale, required: false, help: "How large: `2` or `2x` is twice the page's size. 2x if left out." };
 const TIMEOUT: Arg = Arg { key: "timeout_ms", flag: Some("--timeout"), kind: Kind::Duration, required: false, help: "How long to wait: `500ms`, `30s`, `5m`. 30s if left out." };
 const FIRST: Arg = Arg { key: "first", flag: Some("--first"), kind: Kind::Page, required: false, help: "The page to start from. The first page if left out." };
@@ -221,10 +225,11 @@ pub static TABLE: &[Spec] = &[
         tag: "text",
         group: GROUP_READ,
         summary: "One page's text, normalised for reading and search, with a flag for text that looks hidden. Words a file draws out of order are put back on their lines.",
-        args: &[PAGE, TAB],
+        args: &[PAGE_OR_BARE, TAB],
+        bare_page: true,
         data: "`{ page, source_page, from_added_file, chars, hyphens_joined, hyphens_kept, invisible_chars_removed, tag_chars_removed, runs_moved, hidden_text: { checked, flagged, chars }, hidden_spans: [ [start, end] ], hidden_spans_dropped, untrusted: { text, also_spelled, hidden_runs, added_file } }`. `runs_moved` is how many runs drawn late were put back on their lines. `hidden_spans` says where flagged hidden text is in `text`, counted in characters, end not included. In plain output, a line holding any starts with `! `, and it's inside `[hidden: ...]`. `source_page` and `from_added_file` say where the page really comes from, once it's been edited. `hidden_text.checked: false` means it wasn't checked, not that there's none.",
         emits: &["page_drawn", "page_failed"],
-        examples: &["recto text --page 3", "recto text --page 3 --tab \"#2\" --json"],
+        examples: &["recto text --page 3", "recto text 3", "recto text --page 3 --tab \"#2\" --json"],
         ..BASE
     },
     Spec {
@@ -233,10 +238,11 @@ pub static TABLE: &[Spec] = &[
         group: GROUP_READ,
         access: Access::At(Level::Full),
         summary: "Draws a page to a new PNG file, sharp or not at all. It never replaces a file, and doesn't show an unsaved rotation.",
-        args: &[PAGE, Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "A new file ending in `.png`." }, SCALE, TAB],
+        args: &[PAGE_OR_BARE, Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "A new file ending in `.png`." }, SCALE, TAB],
+        bare_page: true,
         data: "`{ page, source_page, from_added_file, scale, out, took_ms, width, height, bytes, kind, unsaved_rotation_degrees, untrusted: { added_file } }`.",
         emits: &["page_drawn", "page_failed"],
-        examples: &["recto render --page 1 --out page1.png", "recto render --page 2 --scale 3x --out /tmp/p2.png --json"],
+        examples: &["recto render --page 1 --out page1.png", "recto render 1 --out page1.png", "recto render --page 2 --scale 3x --out /tmp/p2.png --json"],
         client_wait_s: 600,
         ..BASE
     },
@@ -750,6 +756,10 @@ fn scan<'a>(spec: &'static Spec, words: &[&'a str], literal_from: usize, help: b
             let Some(arg) = spec.args.iter().find(|arg| arg.flag == Some(flag)) else {
                 return Err(Wrong::Flag { at: index - 1, flag, inline });
             };
+            // The last one winning would be a guess at which was meant.
+            if fields.contains_key(arg.key) {
+                return Err(wrong(format!("`recto {}` has `{flag}` twice, or its value in its place as well.", spec.name)));
+            }
             if arg.kind == Kind::Switch {
                 if inline.is_some() {
                     return Err(wrong(format!("`{flag}` is there or it isn't, and doesn't take a value.")));
@@ -770,6 +780,10 @@ fn scan<'a>(spec: &'static Spec, words: &[&'a str], literal_from: usize, help: b
             fields.insert(arg.key.into(), read_value(arg, value).map_err(wrong)?);
         } else {
             let Some(arg) = places.next() else {
+                if spec.bare_page && !fields.contains_key("page") && let Some(page) = spec.args.iter().find(|arg| arg.key == "page").filter(|_| whole_number(word).is_some()) {
+                    fields.insert(page.key.into(), read_value(page, word).map_err(wrong)?);
+                    continue;
+                }
                 return Err(Wrong::Stray { at: index - 1, fields });
             };
             if arg.kind == Kind::Rest {
@@ -911,7 +925,13 @@ fn stray_word(spec: &'static Spec, word: &str, fields: &Map<String, Value>, advi
     let shown = recto_core::clean_line(word);
     let mut message = format!("`recto {}` doesn't take `{shown}` here.", spec.name);
     let mut candidates = Vec::new();
-    if spec.group != GROUP_MEASURE {
+    if spec.bare_page && crate::parse_pages(word, false).is_ok() {
+        if fields.contains_key("page") {
+            message = format!("`recto {}` has its page already, so `{shown}` can't be one too.", spec.name);
+        } else {
+            message = format!("`recto {}` does one page at a time, so `{shown}` isn't a page. Run it once for each.", spec.name);
+        }
+    } else if spec.group != GROUP_MEASURE {
         let text_taken = spec.args.iter().find(|arg| arg.kind == Kind::Text && arg.flag.is_none()).and_then(|arg| fields.get(arg.key)).and_then(Value::as_str);
         if let Some((flag, value)) = flag_for_stray_word(spec, word).and_then(|(flag, value)| Some((flag, shell_quote(&value)?))) {
             message = format!("`recto {}` takes that as `{flag} {value}`.", spec.name);
@@ -1303,7 +1323,7 @@ mod tests {
     #[test]
     fn a_stray_page_number_says_which_flag_it_wants() {
         let line = |text: &str| parse_cli(&text.split(' ').map(str::to_string).collect::<Vec<_>>());
-        for (typed, wanted) in [("text 1", "--page 1"), ("render 2 --out /d/a.png", "--page 2"), ("wait page-drawn 3", "--page 3"), ("open /d/a.pdf 4", "--page 4"), ("search word 5-6", "--pages 5-6"), ("page insert /d/a.pdf 2", "--at 2"), ("page move 3 1", "--to 1")] {
+        for (typed, wanted) in [("wait page-drawn 3", "--page 3"), ("open /d/a.pdf 4", "--page 4"), ("search word 5-6", "--pages 5-6"), ("page insert /d/a.pdf 2", "--at 2"), ("page move 3 1", "--to 1")] {
             let error = line(typed).unwrap_err();
             assert_eq!(error.exit, exit::USAGE, "{typed}");
             assert!(error.message.contains(wanted), "{typed}: {}", error.message);
@@ -1316,6 +1336,8 @@ mod tests {
         assert!(line("search word 1-").unwrap_err().message.contains("--pages 1-"), "`--pages` can take that");
         assert!(!line("tabs 1").unwrap_err().message.contains("--page"), "it has none");
         assert!(!line("text word").unwrap_err().message.contains("--page word"), "that's no page");
+        assert!(line("text 1-3").unwrap_err().message.contains("one page at a time"), "it says why");
+        assert!(line("text 1-3").unwrap_err().candidates.is_empty() && line("render 1-3 --out /d/a.png").unwrap_err().candidates.is_empty());
         assert!(!line("budget render 5").unwrap_err().message.contains("--first"), "a measurement's number is a count");
     }
 
@@ -1461,6 +1483,24 @@ mod tests {
             assert!(help.contains(must), "{must}: {help}");
         }
         assert!(help_text().contains("from now on"), "and in the list, which shows only the first sentence");
+    }
+
+    /// Failure: `recto text 60` is refused, though three agents in three rounds tried it. It means `--page 60`, wherever it is on the line, and nothing else is taken for one: a range, a page given twice, no page at all, or a number on a row that doesn't say so.
+    #[test]
+    fn a_bare_page_number_means_its_page() {
+        let line = |text: &str| parse_cli(&text.split(' ').map(str::to_string).collect::<Vec<_>>());
+        for (typed, flagged) in [("text 60", "text --page 60"), ("text 60 --tab #2", "text --page 60 --tab #2"), ("text --tab #2 60", "text --page 60 --tab #2"), ("render 60 --out /d/a.png", "render --page 60 --out /d/a.png"), ("render --out /d/a.png --scale 2 60", "render --page 60 --out /d/a.png --scale 2")] {
+            assert_eq!(line(typed).unwrap().fields, line(flagged).unwrap().fields, "{typed}");
+        }
+        assert_eq!(line("text 0").unwrap_err().exit, exit::USAGE, "pages count from 1");
+        assert!(line("text 0").unwrap_err().message.contains("count from 1"));
+        for refused in ["text 1-3", "text 60 61", "text 60 --page 61", "text --page 61 60", "render 1-3 --out /d/a.png", "text x1"] {
+            assert_eq!(line(refused).unwrap_err().exit, exit::USAGE, "{refused}");
+        }
+        assert!(line("text 60 61").unwrap_err().message.contains("page already"));
+        assert!(TABLE.iter().filter(|spec| spec.bare_page).all(|spec| spec.args.iter().any(|arg| arg.key == "page" && arg.kind == Kind::Page)), "it needs a page to fill");
+        assert_eq!(line("goto 60").unwrap().fields["page"], 60, "that row's own, and unchanged");
+        assert!(line("wait page-drawn 3").is_err(), "it's only where the row says");
     }
 
     /// Failure: a command that isn't built says `Needs: Off`, which reads as though it works, and an agent believes its edits can be saved.

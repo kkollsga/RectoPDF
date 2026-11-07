@@ -1047,7 +1047,7 @@ fn asking_for_help_any_way_works() {
     let (quoted, said, code) = state.text(&["help", "page move"]);
     assert_eq!(code, 0, "{said}");
     assert!(quoted.contains("recto page move"), "{quoted}");
-    let (_, said, code) = state.text(&["text", "1"]);
+    let (_, said, code) = state.text(&["wait", "page-drawn", "1"]);
     assert_eq!(code, exit::USAGE);
     assert!(said.contains("--page 1"), "{said}");
     let (save, _, _) = state.text(&["help", "save"]);
