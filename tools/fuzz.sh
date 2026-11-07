@@ -58,9 +58,10 @@ for target in "${targets[@]}"; do
   case "$target" in pdf_bytes|pdf_tree) extra+=("-dict=$PWD/fuzz/dict/pdf.dict") ;; esac
   # A check's own limits come first, so what hangs says which it was. These are the backstop, for what never returns at all.
   # A crash in one target doesn't stop the others. Its whole log is in <work>/<target>.log.
+  # No leak check between runs: the control target keeps a server and its threads across inputs on purpose, and under a sanitizer two runs with it on ended with the server not answering, which none has without it.
   if ! "$heavy" cargo "+$toolchain" fuzz run --sanitizer "$sanitizer" "$target" "$corpus" -- \
     -max_total_time="$seconds" -timeout=90 -rss_limit_mb=4096 -max_len="$(max_len "$target")" \
-    -artifact_prefix="$artifacts/" -print_final_stats=1 ${extra[@]+"${extra[@]}"} >"$work/$target.log" 2>&1; then
+    -artifact_prefix="$artifacts/" -print_final_stats=1 -detect_leaks=0 ${extra[@]+"${extra[@]}"} >"$work/$target.log" 2>&1; then
     failed+=("$target")
     grep -E "panicked|recto-fuzz:|ERROR|SUMMARY" -A1 "$work/$target.log" || true
   fi
