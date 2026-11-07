@@ -100,7 +100,7 @@ fn check_page_view(text: &Arc<PageText>, other: &Arc<PageText>, take: &mut Take)
         let heavy = take.u8() & 7 == 0;
         match take.u8() % 14 {
             0 => selecting.press(point, u32::from(take.u8()), take.u8() & 1 == 1),
-            1 | 2 | 3 => selecting.drag(point),
+            1..=3 => selecting.drag(point),
             4 => selecting.release(),
             5 => selecting.set_range(Range { start: Place { page, at: take.u32() }, end: Place { page: page.saturating_add(u32::from(take.u8())), at: take.u32() } }),
             6 => selecting.clear(),

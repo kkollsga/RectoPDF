@@ -1373,7 +1373,7 @@ fn a_selection_during_an_unsaved_edit_follows_what_is_on_screen() {
     run.settled();
     assert_eq!(run.report()["app"]["pages"]["highlight_layers"], 0);
     // Bravo is the first page now.
-    run.ok(&["qa", "mouse-down", &format!("{line}")]);
+    run.ok(&["qa", "mouse-down", line]);
     run.ok(&["qa", "mouse-up"]);
     run.settled();
     copy_now(&run);
