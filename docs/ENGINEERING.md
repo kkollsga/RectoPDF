@@ -258,6 +258,8 @@ An agent mustn't be able to erase its own record, so there are two files, 1 MiB 
 | One open of that PDF, over one connection | 5.10 ms | 1.57 ms | 1.50 ms | |
 | One open through the real client, process start included | | 7.22 ms | 6.60 ms | |
 
+**Re-measured after `status` began giving its count at Off,** 2026-11-07: `recto status --json`, whole process, 200 runs, two runs each of this build and the one before it, in turn, on one Mac. The count was already read from one atomic, so no difference is expected, and none shows beyond the runs' own spread: at p50 / p95 / max, idle 3.19 / 3.49 / 6.18 and 3.19 / 3.45 / 3.91 ms against 3.20 / 3.75 / 6.70 and 3.21 / 3.40 / 4.22 before, and with 1,000 tabs 3.23 / 4.95 / 7.67 and 3.34 / 6.05 / 9.32 ms against 3.21 / 5.30 / 7.76 and 3.25 / 4.51 / 7.46 before. The session's footprint with those 1,000 tabs was 2.97 and 3.02 MiB, against 2.97 and 2.89 before, after opening them over one connection.
+
 The two per-open numbers for that PDF aren't comparing like with like: the earliest run came first, on a colder file cache. `recto-cli`'s `tests/memory.rs` holds the idle and per-tab properties, in its own binary. **What this isn't:** a soak, or tabs that have been read from. Drawing is what `recto budget render` measures, in the renderer section.
 
 **Descriptors**, by `lsof` on the release build. A tab holds none: hot, warm or cold makes no difference, and the count is the same with 1 tab or 1,000.
