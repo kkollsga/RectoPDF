@@ -42,7 +42,7 @@ GPL warning: SumatraPDF and sioyek are GPL-3.0. "ADOPT" below means taking the i
 Apache-2.0 and Zlib sources can be ported as code, with attribution.
 
 Evidence grades: **[S]** source at the pin. **[T]** project issue tracker. **[D]** vendor docs. **[L]** forum or blog,
-a lead only (`rust_app_development.md` §1.1). **[A]** my analysis of source, not measured.
+a lead only (`docs/agent-instructions/rust_app_development.md` §1.1). **[A]** my analysis of source, not measured.
 
 ## 3. Comparison
 
@@ -166,7 +166,7 @@ says little about a project this young.
 
 - One release path, all platforms or none, with a daily check that opens an issue if a platform is missing.
 - The smoke test runs off-screen and leaves the clipboard alone. Agents must not open a visible window unless asked.
-  This matches `rust_app_development.md` §4.
+  This matches `docs/agent-instructions/rust_app_development.md` §4.
 - A short list of the few places where platform differences live, to check on any related change.
 - PR title states what changes for the user. Body gives problem, change, approval, and how it was checked per platform,
   ending with model and harness. No version or changelog edits in PRs.
@@ -314,7 +314,7 @@ and Folio do, which I did not do. SumatraPDF needs Windows. See D10.
 ## 8. Failure-derived design rules
 
 Each rule becomes a permanent test before the related code exists. Each test also needs a positive control: a
-deliberately bad implementation that must fail it (`rust_app_development.md` §1.2, R4). Fixtures must be generated or public; never
+deliberately bad implementation that must fail it (`docs/agent-instructions/rust_app_development.md` §1.2, R4). Fixtures must be generated or public; never
 user files.
 
 **1. A save either completes or leaves the original byte-identical.** Write to a temp file in the same directory, fsync,

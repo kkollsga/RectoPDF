@@ -1,6 +1,6 @@
 # Agent integration: RectoPDF and Claude Code (and a second CLI)
 
-Date: 2026-11-06. Track: R8 and §4 of `rust_app_development.md`. Status: research, nothing built.
+Date: 2026-11-06. Track: R8 and §4 of `docs/agent-instructions/rust_app_development.md`. Status: research, nothing built.
 
 Checked locally: Claude Code 2.1.319, Codex CLI 0.142.5, ripgrep 15.1.0, macOS (Darwin 27).
 No `claude -p`, `codex exec` or other model call was run, so no flag combination below has been run end to end.
