@@ -1,7 +1,7 @@
 //! QA commands, on their way to the UI thread. They run on a job thread of the server, so waiting here holds up nobody. A QA command calls what the UI calls: the host's answer says what happened.
 
 use crate::watchdog::{FAIL_MS, NOTE_MS, Watchdog};
-use crate::{AppListener, CoreQueue, lock};
+use crate::{AppListener, CoreQueue, Inner, lock};
 use recto_agent::{AgentError, Command, exit};
 use recto_control::state::is_in_real_home;
 use recto_reader::Engine;
@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 /// How long the UI thread may take with a QA request before the answer is that it's stuck.
@@ -17,6 +17,8 @@ const UI_ANSWER_WAIT: Duration = Duration::from_secs(30);
 /// How long a drive verb waits for its effect before saying how things stand. A click on a tab whose file isn't answering is still a click that's been made, and `qa wait-settled` is for waiting on as long as it takes.
 const ANSWER_AFTER_CLICK: Duration = Duration::from_secs(3);
 const DEFAULT_SETTLE_WAIT: Duration = Duration::from_secs(30);
+/// How long `qa handoff` gives its answer to get out, before it quits. In what a QA run measures as the gap, and in no real update.
+const HANDOFF_ANSWER_WAIT: Duration = Duration::from_millis(50);
 /// How long a sweep may be asked to run.
 const MAX_SWEEP: Duration = Duration::from_secs(60);
 /// A step at 120 Hz, the rate the budget talks about.
@@ -117,11 +119,20 @@ pub(crate) struct QaBridge {
     answered: Condvar,
     steps: Mutex<Vec<Step>>,
     step_waiting: AtomicBool,
+    inner: OnceLock<Weak<Inner>>,
 }
 
 impl QaBridge {
     pub(crate) fn new(listener: Arc<dyn AppListener>, engine: Engine, watchdog: Watchdog, core: Arc<CoreQueue>) -> Self {
-        Self { listener, engine, watchdog, core, next_id: AtomicU64::new(1), answers: Mutex::new(HashMap::new()), answered: Condvar::new(), steps: Mutex::new(Vec::new()), step_waiting: AtomicBool::new(false) }
+        Self { listener, engine, watchdog, core, next_id: AtomicU64::new(1), answers: Mutex::new(HashMap::new()), answered: Condvar::new(), steps: Mutex::new(Vec::new()), step_waiting: AtomicBool::new(false), inner: OnceLock::new() }
+    }
+
+    pub(crate) fn attach(&self, inner: Weak<Inner>) {
+        let _ = self.inner.set(inner);
+    }
+
+    fn inner(&self) -> Option<Arc<Inner>> {
+        self.inner.get().and_then(Weak::upgrade)
     }
 
     pub(crate) fn answer(&self, id: u64, ok: bool, json: String) {
@@ -201,8 +212,36 @@ impl QaBridge {
         let number = |low: f64, high: f64| -> Result<f64, AgentError> {
             value.parse::<f64>().ok().filter(|number| number.is_finite() && *number >= low && *number <= high).ok_or_else(|| bad(format!("`{}` isn't a number from {low} to {high}.", cleaned(value))))
         };
+        if let Some(inner) = self.inner()
+            && let Some(result) = inner.qa_session_verb(verb, value)
+        {
+            result?;
+            self.core.flush(ANSWER_AFTER_CLICK);
+            return self.ask("state", "");
+        }
         match verb {
-            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" => check_drive_value(verb, value)?,
+            // What ends the app answers first, as nothing can after.
+            "quit" => return self.ask(verb, value),
+            "handoff" => {
+                let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+                let report = inner.hand_off(ANSWER_AFTER_CLICK).map_err(|error| AgentError::new("hand_off_refused", error.to_string(), exit::FAILED))?;
+                // The answer gets out first. An updater has no one to answer, and doesn't wait.
+                let quitting = Arc::clone(&inner);
+                let _ = std::thread::Builder::new().name("recto-qa-quit".into()).stack_size(64 * 1024).spawn(move || {
+                    std::thread::sleep(HANDOFF_ANSWER_WAIT);
+                    quitting.hand_off_quit_now();
+                });
+                return Ok(json!({ "handed_off": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_us": report.total_us, "force_us": report.force_us }));
+            }
+            "hand_off_quit" => {
+                let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
+                return Ok(json!({ "quit": inner.hand_off_quit_now() }));
+            }
+            "open_file" => {
+                // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
+                return self.ask(verb, value);
+            }
+            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
             "entry_points" | "services" => return self.ask(verb, value),
             // A place is said as an agent has it, on a page, and goes in by the document's coordinates, on the way to the window's, so it goes through what a real pointer's position does.
             "mouse_down" | "mouse_drag" | "pointer" => {
@@ -240,12 +279,15 @@ impl QaBridge {
         Ok(json!({
             "app": app,
             "reader": self.engine.report().0,
+            "session": self.inner().map_or(Value::Null, |inner| inner.state_json()),
+            "record": self.inner().map_or(Value::Null, |inner| inner.record_report()),
             "memory": {
                 "footprint_bytes": own,
                 "worker_bytes": worker_bytes,
                 "worker_peak_bytes": worker_peak,
                 "tree_bytes": own + worker_bytes,
                 "threads": counters.map(|counters| counters.threads),
+                "disk_bytes_written": counters.map(|counters| counters.disk_bytes_written),
                 "open_handles": recto_platform::open_handle_count(),
             },
             "hangs": { "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS },
@@ -373,6 +415,10 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "contents_pointer" => one_of(&["in", "out"]),
         "reduce_motion" => one_of(&["on", "off"]),
         "scroller_style" => one_of(&["legacy", "overlay"]),
+        "full_screen" | "frontmost" => one_of(&["on", "off"]),
+        "focus" => one_of(&["page", "sidebar", "find"]),
+        "sheet" => one_of(&["open", "closed"]),
+        "sidebar_width" => value.parse::<f64>().is_ok_and(f64::is_finite),
         // What shows a window is left out: a quiet run shows none.
         "menu" => !matches!(value, "file.open" | "app.about" | "app.quit") && crate::menus::action(value).is_some(),
         "panel" => value == "toggle" || value.starts_with("paper.") || value.starts_with("view."),

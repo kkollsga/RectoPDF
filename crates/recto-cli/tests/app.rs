@@ -586,10 +586,10 @@ fn the_menu_bar_and_the_agent_icon() {
     assert_eq!(hidden["app"]["pages"]["scroller_top_inset"], 0.0, "the whole way with no star: {hidden}");
     assert_eq!(hidden["app"]["menu_bar"][3]["items"][5]["checked"], false, "{hidden}");
     assert_eq!(run.ok(&["view"])["agent_icon"], false, "the same setting `recto view` has");
-    assert!(run.state.root.join("agent-icon-hidden").exists(), "remembered");
+    assert_eq!(hidden["session"]["view"]["agent_icon_hidden"], true, "remembered, as the state record has it");
     run.ok(&["view", "--agent-icon", "on"]);
-    wait_for(&run, |state| state["app"]["agent_icon"] == true);
-    assert!(!run.state.root.join("agent-icon-hidden").exists());
+    let shown = wait_for(&run, |state| state["app"]["agent_icon"] == true);
+    assert_eq!(shown["session"]["view"]["agent_icon_hidden"], false);
     let (reply, status) = run.state.json(&["qa", "menu", "file.open"]);
     assert_eq!(status, exit::USAGE, "a quiet run shows no window: {reply}");
     assert!(run.ok(&["view", "--zoom", "in"])["zoom"].as_f64().unwrap() > 1.0);

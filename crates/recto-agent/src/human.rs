@@ -98,6 +98,21 @@ pub fn render(tag: &str, data: &Value) -> String {
         "signatures" => signatures(data),
         "sidebar" | "tap" => sidebar(data),
         "view" => format!("Paper: {}. Focus view: {}. Agent icon: {}.", text(&data["paper"]), if data["focus"] == true { "on" } else { "off" }, if data["agent_icon"] == true { "on" } else { "off" }),
+        "session_show" => session_show(data),
+        "session_save" => format!("Saved and read back: {}, {} bytes of record and {} of journals, {} written, in {} ms.", count(number(&data["tabs"]), "tab", "tabs"), number(&data["record_bytes"]), number(&data["journal_bytes"]), number(&data["wrote_bytes"]), number(&data["total_ms"])),
+        "session_restore" => match data["notice"].as_str() {
+            Some(notice) => format!("{}\n{notice}", if data["restored"] == true { format!("Restored {}.", count(number(&data["count"]), "tab", "tabs")) } else { "Nothing was restored.".to_string() }),
+            None => if data["restored"] == true { format!("Restored {}.", count(number(&data["count"]), "tab", "tabs")) } else { "There's no record to restore.".to_string() },
+        },
+        "session_check" => {
+            let mut out = if data["safe"] == true { "Safe to hand off.".to_string() } else { "Not now:".to_string() };
+            if let Some(busy) = data["busy"].as_array() {
+                for item in busy {
+                    let _ = write!(out, "\n- {}", text(&item["message"]));
+                }
+            }
+            out
+        }
         "close" => {
             let mut out = format!("Closed #{}. {} open.", number(&data["closed"]), count(number(&data["count"]), "tab", "tabs"));
             if data["active"].is_object() {
@@ -418,6 +433,23 @@ fn signatures(data: &Value) -> String {
         out.push('\n');
     }
     out.push_str(text(&data["note"]));
+    out
+}
+
+fn session_show(data: &Value) -> String {
+    let record = &data["record"];
+    let mut out = if record["kept"] == true { format!("State record: {} bytes, journals {} bytes.", number(&record["record_bytes"]), number(&record["journal_bytes"])) } else { "No state record yet.".to_string() };
+    let _ = write!(out, "\n{} open.", count(number(&data["count"]), "tab", "tabs"));
+    if let Some(notice) = record["notice"].as_str() {
+        let _ = write!(out, "\n{notice}");
+    }
+    if let Some(tabs) = data["tabs"].as_array() {
+        for tab in tabs {
+            if let Some(notice) = tab["notice"]["message"].as_str() {
+                let _ = write!(out, "\n#{}: {notice}", number(&tab["tab"]));
+            }
+        }
+    }
     out
 }
 

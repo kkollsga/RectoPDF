@@ -175,7 +175,7 @@ fn many_clients_at_once_each_get_their_own_answer() {
     let dir = file.0.parent().unwrap();
     let links: Vec<_> = (0..12).map(|i| {
         let link = dir.join(format!("link{i}.pdf"));
-        std::os::unix::fs::symlink(&file.0, &link).unwrap();
+        std::fs::copy(&file.0, &link).unwrap();
         link
     }).collect();
     std::thread::scope(|scope| {

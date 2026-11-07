@@ -39,7 +39,22 @@ final class Bridge: AppListener, @unchecked Sendable {
     }
 
     func opsReady() {
-        onMain { [weak self] in self?.delegate?.windowController?.pages.drain() }
+        onMain { [weak self] in
+            self?.delegate?.windowController?.pages.drain()
+            self?.delegate?.windowController?.showIfReady()
+        }
+    }
+
+    func restoreReady() {
+        onMain { [weak self] in self?.delegate?.restoreReady() }
+    }
+
+    func quitAnswer(answer: QuitAnswer) {
+        onMain { [weak self] in self?.delegate?.quitAnswer(answer) }
+    }
+
+    func handOffQuit() {
+        onMain { [weak self] in self?.delegate?.handOffQuit() }
     }
 
     func qaRequest(id: UInt64, verb: String, value: String) {
@@ -64,6 +79,8 @@ final class Bridge: AppListener, @unchecked Sendable {
     private(set) var windowController: MainWindowController?
     private(set) var qa: QAChannel?
     private var mainObserver: CFRunLoopObserver?
+    private var inputMonitor: Any?
+    private var handingOff = false
 
     init(arguments: [String]) {
         let bridge = Bridge()
@@ -92,8 +109,65 @@ final class Bridge: AppListener, @unchecked Sendable {
         watchMainThread()
         installMenu()
         NSApp.registerServicesMenuSendTypes([.string], returnTypes: [])
+        watchActivityAndInput()
+        // The window comes when the state's been read, as its frame and what's on it come from there. It doesn't wait long.
+        core.beginRestore()
+        let core = self.core
+        DispatchQueue.main.asyncAfter(deadline: .now() + limits.restorePatienceSeconds) { core.restorePatienceOver() }
+    }
+
+    /// The state's read and in the session, or the wait for it is over.
+    func restoreReady() {
+        guard windowController == nil else { return }
+        switch core.appearanceChoice() {
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        default: break
+        }
         openWindow()
         core.ready()
+    }
+
+    /// The app coming forward and going back, which is part of what's kept, and each input, which is how long it's been since the user touched the app. One number stored per event, and no timer.
+    private func watchActivityAndInput() {
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(activityChanged), name: NSApplication.didBecomeActiveNotification, object: nil)
+        center.addObserver(self, selector: #selector(activityChanged), name: NSApplication.didResignActiveNotification, object: nil)
+        let core = self.core
+        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .scrollWheel, .magnify]) { event in
+            core.noteUserInput()
+            return event
+        }
+    }
+
+    @objc private func activityChanged() {
+        guard !isQuiet else { return }
+        core.frontmostChanged(app: NSApp.isActive, windowKey: windowController?.window.isKeyWindow ?? false)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // A hand-off has written and read back everything, and asks nothing of anyone.
+        if handingOff { return .terminateNow }
+        core.quitRequested()
+        return .terminateLater
+    }
+
+    func quitAnswer(_ answer: QuitAnswer) {
+        if answer.go || isQuiet {
+            NSApp.reply(toApplicationShouldTerminate: true)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = answer.title
+        alert.informativeText = answer.message
+        alert.addButton(withTitle: answer.stayButton)
+        alert.addButton(withTitle: answer.quitButton)
+        NSApp.reply(toApplicationShouldTerminate: alert.runModal() == .alertSecondButtonReturn)
+    }
+
+    func handOffQuit() {
+        handingOff = true
+        NSApp.terminate(nil)
     }
 
     /// Tells the hang watchdog when the UI thread wakes and sleeps.
@@ -112,8 +186,11 @@ final class Bridge: AppListener, @unchecked Sendable {
         let controller = MainWindowController(delegate: self)
         windowController = controller
         core.windowOpened()
-        controller.show()
+        controller.windowIsUp()
         modelChanged()
+        controller.showIfReady()
+        // Past this it shows, whatever's on it: a slow page, or a file not answering, says so itself.
+        DispatchQueue.main.asyncAfter(deadline: .now() + limits.showPatienceSeconds) { [weak controller] in controller?.showNow() }
     }
 
     /// What the window's closing does, whoever closed it.
@@ -125,6 +202,7 @@ final class Bridge: AppListener, @unchecked Sendable {
     func modelChanged() {
         windowController?.refreshModel()
         installMenu()
+        windowController?.showIfReady()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -248,7 +326,10 @@ final class Bridge: AppListener, @unchecked Sendable {
         panel.allowsMultipleSelection = true
         panel.title = strings.openPanelTitle
         let core = self.core
+        // An update waits for a panel.
+        core.sheetChanged(open: true)
         panel.begin { response in
+            core.sheetChanged(open: false)
             guard response == .OK else { return }
             for url in panel.urls { core.openFile(path: url.path) }
         }

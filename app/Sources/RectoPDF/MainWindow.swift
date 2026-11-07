@@ -43,6 +43,22 @@ class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
+/// The sidebar's edge, to take hold of. Says where it's been dragged to, and Rust holds it to its limits.
+final class SidebarGrip: NSView {
+    var dragged: ((CGFloat) -> Void)?
+    override var isFlipped: Bool { true }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .resizeLeftRight)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        dragged?(event.locationInWindow.x)
+    }
+
+    override func mouseDown(with event: NSEvent) {}
+}
+
 /// The agent's place, in the empty margin at the top right: an AI four-point star, by the owner's word on 2026-11-07. A placeholder until the panel exists: it does nothing, and says so.
 final class AgentIcon: NSView {
     override var isFlipped: Bool { true }
@@ -159,6 +175,7 @@ final class BookMark: NSView {
     let pages: PageArea
     let sidebar: SidebarPane
     let sidebarEdge = NSView()
+    let sidebarGrip = SidebarGrip()
     let agentIcon = AgentIcon()
     let noteLabel = MarginLabel()
     let placeLabel = MarginLabel()
@@ -172,18 +189,25 @@ final class BookMark: NSView {
     var homeButtonForQA: NSControl { homeButton }
     private let homeBook = BookMark()
     private(set) var reader: ReaderView
+    private let placement: WindowPlacement
+    /// In a quiet run, which never really goes full screen, what it's been told.
+    private var quietFullScreen = false
+    private var shown = false
+    private var firstResponderWatch: NSKeyValueObservation?
 
     init(delegate: AppDelegate) {
         self.delegate = delegate
         let limits = delegate.limits
         let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-        let rect = NSRect(x: 0, y: 0, width: limits.windowWidth, height: limits.windowHeight)
+        placement = delegate.core.windowPlacement(screens: NSScreen.screens.map(MainWindowController.info))
+        let rect = NSRect(x: 0, y: 0, width: placement.saved ? placement.width : limits.windowWidth, height: placement.saved ? placement.height : limits.windowHeight)
         if delegate.isQuiet {
             // Off every screen, and never ordered in.
             window = QuietWindow(contentRect: rect.offsetBy(dx: -40_000, dy: -40_000), styleMask: style, backing: .buffered, defer: false)
         } else {
             window = NSWindow(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
             window.center()
+            if placement.saved { window.setFrame(NSRect(x: placement.x, y: placement.y, width: placement.width, height: placement.height), display: false) }
         }
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -206,6 +230,7 @@ final class BookMark: NSView {
         root.addSubview(home)
         root.addSubview(sidebar.view)
         root.addSubview(sidebarEdge)
+        root.addSubview(sidebarGrip)
         root.addSubview(agentIcon)
         root.addSubview(noteLabel)
         root.addSubview(placeLabel)
@@ -223,6 +248,7 @@ final class BookMark: NSView {
         sidebar.addPressed = { [weak delegate] in delegate?.openDocument(nil) }
         sidebar.performAction = { [weak delegate] id in delegate?.perform(id) }
         sidebar.revealHost = root
+        sidebarGrip.dragged = { [weak delegate] x in delegate?.core.setSidebarWidth(width: x) }
         root.appearanceChanged = { [weak self] in self?.appearanceChanged() }
         root.fileDropped = { [weak delegate] urls in
             for url in urls { delegate?.core.openFile(path: url.path) }
@@ -244,14 +270,75 @@ final class BookMark: NSView {
         if delegate.isQuiet { QAChannel.drawActive(window) }
     }
 
-    /// In a quiet run, nothing is ever ordered in.
-    func show() {
+    /// The window's made and laid out. It isn't on the screen yet: the page is drawn behind it first, so what comes up is right from its first frame.
+    func windowIsUp() {
+        quietFullScreen = delegate.isQuiet && placement.fullScreen
         pages.windowReady()
+        noteWindow()
+        firstResponderWatch = window.observe(\.firstResponder, options: []) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.firstResponderChanged() }
+        }
+    }
+
+    /// Shows the window as soon as what's on it is right: Rust says.
+    func showIfReady() {
+        guard !shown, delegate.core.readyToShow() else { return }
+        showNow()
+    }
+
+    /// Whatever's on it. In a quiet run, nothing is ever ordered in, and the rest is the same.
+    func showNow() {
+        guard !shown else { return }
+        shown = true
+        layout()
         if !delegate.isQuiet {
             window.makeKeyAndOrderFront(nil)
-            window.makeFirstResponder(root)
-            NSApp.activate()
+            // Back in front only if it was there: an app that was behind doesn't take the focus from anyone.
+            if placement.activate { NSApp.activate() }
+            if placement.fullScreen { window.toggleFullScreen(nil) }
         }
+        applyFocus(placement.focusSidebar ? "sidebar" : delegate.core.focusView())
+        delegate.core.windowShown(home: reader.home, tileLayers: UInt32(pages.report()["tile_layers"] as? Int ?? 0))
+    }
+
+    /// Gives the keyboard to what's named. There's no Find field yet, so that's only kept.
+    func applyFocus(_ view: String) {
+        switch view {
+        case "sidebar": window.makeFirstResponder(sidebar.table)
+        case "page": window.makeFirstResponder(root)
+        default: break
+        }
+        delegate.core.focusChanged(view: view)
+    }
+
+    private func firstResponderChanged() {
+        guard let responder = window.firstResponder else { return }
+        if responder === sidebar.table || responder === sidebar.contentsTable {
+            delegate.core.focusChanged(view: "sidebar")
+        } else if responder === root || responder === window {
+            delegate.core.focusChanged(view: "page")
+        }
+    }
+
+    static func info(_ screen: NSScreen) -> ScreenInfo {
+        let (frame, visible) = (screen.frame, screen.visibleFrame)
+        let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint64Value ?? 0
+        return ScreenInfo(id: number, name: screen.localizedName, x: frame.minX, y: frame.minY, width: frame.width, height: frame.height, visibleX: visible.minX, visibleY: visible.minY, visibleWidth: visible.width, visibleHeight: visible.height)
+    }
+
+    var isFullScreen: Bool { delegate.isQuiet ? quietFullScreen : window.styleMask.contains(.fullScreen) }
+
+    /// Tells Rust how the window is, for the record. Its frame in full screen isn't where leaving full screen takes it.
+    func noteWindow() {
+        let frame = window.frame
+        let realFullScreen = window.styleMask.contains(.fullScreen)
+        delegate.core.windowChanged(frame: realFullScreen ? nil : [frame.minX, frame.minY, frame.width, frame.height], screen: window.screen.map(MainWindowController.info), fullScreen: isFullScreen)
+    }
+
+    /// What going into full screen does, for QA: a quiet run's window stays where it is.
+    func setQuietFullScreen(_ on: Bool) {
+        quietFullScreen = on
+        noteWindow()
     }
 
     private func buildHome() {
@@ -277,13 +364,17 @@ final class BookMark: NSView {
         let size = window.frame.size
         root.frame = NSRect(origin: .zero, size: size)
         let focus = reader.focus
-        let side = focus ? 0 : Theme.sidebarWidth
+        let sidebarWidth = CGFloat(reader.sidebarWidth)
+        let side = focus ? 0 : sidebarWidth
         // In focus view nothing shows but the page, its number and the agent icon. The window's buttons come back with the pointer near them.
         setWindowButtons(shown: windowButtonsShow(focus: focus, pointerNear: pointerNearButtons))
         sidebar.view.isHidden = focus
         sidebarEdge.isHidden = focus
-        sidebar.view.frame = NSRect(x: 0, y: 0, width: Theme.sidebarWidth, height: size.height)
-        sidebarEdge.frame = NSRect(x: Theme.sidebarWidth - 1, y: 0, width: 1, height: size.height)
+        sidebarGrip.isHidden = focus
+        sidebar.view.frame = NSRect(x: 0, y: 0, width: sidebarWidth, height: size.height)
+        sidebarEdge.frame = NSRect(x: sidebarWidth - 1, y: 0, width: 1, height: size.height)
+        sidebarGrip.frame = NSRect(x: sidebarWidth - 3, y: 0, width: 7, height: size.height)
+        window.invalidateCursorRects(for: sidebarGrip)
         let area = NSRect(x: side, y: 0, width: size.width - side, height: size.height)
         pages.scrollView.frame = area
         home.frame = area
@@ -431,7 +522,21 @@ final class BookMark: NSView {
 
     func windowDidResize(_ notification: Notification) {
         layout()
+        noteWindow()
     }
+
+    func windowDidMove(_ notification: Notification) {
+        noteWindow()
+    }
+
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        noteWindow()
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        noteWindow()
+    }
+
 
     func windowWillStartLiveResize(_ notification: Notification) {
         pages.setLive(true)
@@ -442,10 +547,12 @@ final class BookMark: NSView {
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
+        if !delegate.isQuiet { delegate.core.frontmostChanged(app: NSApp.isActive, windowKey: true) }
         pages.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: true)
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        if !delegate.isQuiet { delegate.core.frontmostChanged(app: NSApp.isActive, windowKey: false) }
         pages.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: delegate.isQuiet)
     }
 
@@ -454,6 +561,7 @@ final class BookMark: NSView {
     }
 
     func windowWillClose(_ notification: Notification) {
+        firstResponderWatch = nil
         pages.windowClosing()
         delegate.windowDidClose()
     }

@@ -108,7 +108,7 @@ fn sequence(data: &[u8]) {
     let mut take = Take(data);
     let file_pages = take.pick(&[1u32, 1, 2, 3, 5, 8, 20, 100, 5_000]);
     let mut session = Session::new(NamedLoader);
-    let open = |session: &mut Session<NamedLoader>| session.open_with_facts(Path::new("/fuzz/doc.pdf"), facts_of(file_pages), None).expect("a stand-in document opens");
+    let open = |session: &mut Session<NamedLoader>| session.open_with_facts(Path::new("/fuzz/doc.pdf"), facts_of(file_pages), None, None).expect("a stand-in document opens");
     let id = open(&mut session);
     let mut model = Model::new(id, file_pages);
     let mut cost = 0;

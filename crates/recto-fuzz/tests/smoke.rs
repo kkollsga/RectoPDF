@@ -75,3 +75,9 @@ fn a_client_cant_break_the_server() {
 fn edit_sequences_keep_their_invariants() {
     smoke("edits", seed(), rounds(100), 2 * 1024);
 }
+
+/// Failure: a damaged or hostile state record or journal panics, bombs, breaks a cap or gets as far as a list that panics when it's undone, on what's read at every launch. Each input also goes in with its checksums made good, or almost nothing would get past them.
+#[test]
+fn hostile_state_records_do_no_harm() {
+    smoke("record", seed(), rounds(400), 8 * 1024);
+}

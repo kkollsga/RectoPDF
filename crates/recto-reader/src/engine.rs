@@ -3,7 +3,7 @@
 use crate::layout::PageBox;
 use crate::paper::{DarkTile, PageLook, PaperKind, dark_rgb, dim_page, dim_rgb, is_grey, turn_over};
 use crate::selection::Notice;
-use crate::tiles::{DrawKind, Job, JobKind, JobPlan, MAX_ATTACH_PER_TURN, Zoom, Op, Outcome, PageMap, Reader, ReaderReport, Viewport};
+use crate::tiles::{DrawKind, Job, JobKind, JobPlan, MAX_ATTACH_PER_TURN, Op, Outcome, PageMap, Reader, ReaderReport, SavedPlace, Viewport, Zoom};
 use recto_index::select::PageText;
 use recto_platform::isolate;
 use recto_platform::surface::PixelSurface;
@@ -115,10 +115,20 @@ impl Engine {
     }
 
     /// Makes a tab the visible one. Off the UI thread, as the session decides this.
-    pub fn activate(&self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32]) {
+    pub fn activate(&self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>) {
         let mut reader = lock(&self.shared.reader);
-        reader.activate(tab, pages, page, map, warm);
+        reader.activate(tab, pages, page, map, warm, saved);
         self.after(reader);
+    }
+
+    /// Exactly where each tab it holds is. A short lock.
+    pub fn places(&self) -> Vec<(u32, SavedPlace)> {
+        lock(&self.shared.reader).places()
+    }
+
+    /// Whether the place is on the layers, and nothing's on its way. A short lock, asked only until the window is showing.
+    pub fn is_on_place(&self) -> bool {
+        lock(&self.shared.reader).is_on_place()
     }
 
     /// Zooms, wherever it's asked from. Says what to.
@@ -233,6 +243,19 @@ impl Engine {
     pub fn clear_selection(&self) {
         let mut reader = lock(&self.shared.reader);
         reader.clear_selection();
+        self.after(reader);
+    }
+
+    /// Which tab is showing, and what's selected on it. A short lock, for the state record.
+    pub fn hot_selection(&self) -> Option<(u32, Option<recto_index::select::Range>)> {
+        let reader = lock(&self.shared.reader);
+        reader.hot_tab().map(|tab| (tab, reader.selection_range()))
+    }
+
+    /// Puts back what was selected, from the state record.
+    pub fn restore_selection(&self, from: (u32, u32), to: (u32, u32)) {
+        let mut reader = lock(&self.shared.reader);
+        reader.restore_selection(recto_index::select::Range { start: recto_index::select::Place { page: from.0, at: from.1 }, end: recto_index::select::Place { page: to.0, at: to.1 } });
         self.after(reader);
     }
 

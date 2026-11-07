@@ -330,7 +330,7 @@ fn opening_tabs_indexes_nothing_and_asking_leaves_nothing_behind() {
     std::fs::create_dir_all(&folder).unwrap();
     for at in 0..200 {
         let link = folder.join(format!("t{at}.pdf"));
-        std::os::unix::fs::symlink(&file.0, &link).unwrap();
+        std::fs::copy(&file.0, &link).unwrap();
         let (opened, code) = state.json(&["open", link.to_str().unwrap()]);
         assert_eq!(code, 0, "{opened}");
     }
@@ -346,10 +346,12 @@ fn opening_tabs_indexes_nothing_and_asking_leaves_nothing_behind() {
         let (searched, code) = state.json(&["search", "common", "--tab", &format!("#{tab}")]);
         assert_eq!(code, 0, "{searched}");
     }
-    let done = wait_done(&state, "#7");
-    assert_eq!(done["data"]["pages"], 3, "{done}");
+    for tab in [1, 50, 100, 150, 200] {
+        let done = wait_done(&state, &format!("#{tab}"));
+        assert_eq!(done["data"]["pages"], 3, "{done}");
+    }
     let corpora = std::fs::read_dir(&state.paths.corpus).unwrap().flatten().filter(|entry| entry.file_name().to_str().and_then(CorpusKey::from_hex).is_some()).count();
-    assert_eq!(corpora, 1, "one file, one corpus, however many tabs it's in");
+    assert_eq!(corpora, 5, "only what was asked for, one for each file");
     let (status, _) = state.json(&["index", "status", "--tab", "#200"]);
     assert_eq!(status["data"]["state"], "ready", "{status}");
     let deadline = Instant::now() + Duration::from_secs(30);

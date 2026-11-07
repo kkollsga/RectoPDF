@@ -798,8 +798,11 @@ dependencies = [
 name = "recto-session"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "recto-core",
  "recto-platform",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

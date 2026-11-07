@@ -114,10 +114,17 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Find in the sidebar, with the hit list
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
 - [ ] ⌘K
-- [ ] Session restore: the whole app state on every launch, unsaved edits included (SPEC decision 23)
+- [x] Session restore: the whole app state on every launch, unsaved edits included (SPEC decision 23). A whole-state comparison across quit, hand-off and kill, journals for edits, `recto session`, `AppCore::hand_off` for the updater
+- [ ] Saved point in the history, so undo works past a Save, and Clear Edit History (SPEC decision 25). Next on `build/restore`'s follow-on
+- [ ] On Save's gate: check every page against the real file when writing, as `validate_edits` checks against what a journal says of itself, which can be forged; and check the save marker again once it's on disk
+- [ ] Deep sleep for idle tabs, with sleep files and a byte budget across documents (SPEC decision 25). Next after that
+- [ ] Find's field, edit mode and view rotation draw what the state record already carries
 - [ ] Deep sleep, with session restore as one piece of work (SPEC decision 25): dormant tabs go to disk, sleep files wake a tab within one frame, a byte budget across documents, a response to memory pressure, previews written once when a tab goes dormant
 - [ ] Recent files, replaced-file handling, password prompt
 - [ ] Settings window (⌘,), starting with *Update automatically*
+- [ ] On the updater's gate: wait for the old process to end before starting the new one, as a launch waits only 600 ms for the record's lock, and call `hand_off_cancelled` if it gives up after a good `hand_off`
+- [ ] On the first version bump of the state record: `copy_folder` bringing work forward from going back doesn't remove the newer app's journals, so they're left beside what comes forward
+- [ ] A record that's unreadable for a lasting reason, as a wrong mode: it's left as it is and nothing's written, so offer to mend the mode
 - [ ] Update check: *Check for Updates…* in the RectoPDF menu, *Update to X.Y.Z…* when one is found, once a day (SPEC decision 24)
 - [ ] Links, back and forward, page labels
 - [ ] Click to copy an image losslessly
@@ -144,7 +151,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Edit text: block editing, line breaking, font reuse, embedded fallback
 - [ ] Signature image, and the honest signature report
 - [ ] Failure tests from the research: no lost edits on any exit path, never damage a signed file
-- [ ] Close the gap in edit ownership: an agent at Control can delete a page the owner rotated, then edit past the undo cap so the delete can't be undone. Closes when an agent's steps can no longer push out the owner's (SPEC decision 25)
+- [x] Close the gap in edit ownership: below Full an edit, undo or redo by an agent that would push the owner's steps out of the history is refused (`history_full`)
 - [ ] A file lopdf refuses for hitting a limit must not fall back to PDFium in `crates/recto-agent/src/loader.rs`: a hostile file with 100,000 `/Prev` sections takes PDFium 3.4 s to load, though the fork's cap refuses it in about 3 ms
 - [ ] Save uses only the fork's `append_atomically` with `prepare_replacement`. Its `AppendWriter` can't be given a `File`, but `Writer::write_object`, the eager `Document` and `IncrementalDocument` saves and `copy_revision_to` still take any `Write`, so add a check that nothing in RectoPDF calls them, and never `File::create` the original before `copy_revision_to`
 - [ ] Opening a file with lopdf never runs on the UI thread: a 2 MiB hostile file relisting a million numbers takes 3.7 s of CPU and 96 MiB, bounded but over the 2 s stall rule

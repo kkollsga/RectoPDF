@@ -456,6 +456,14 @@ pub enum Command {
     },
     /// Ends the session.
     Stop {},
+    /// What the state record holds and what's become of it.
+    SessionShow {},
+    /// Writes the state record now and reads it back.
+    SessionSave {},
+    /// Puts the session back as the state record has it.
+    SessionRestore {},
+    /// Whether this is a safe moment to hand off to a new version.
+    SessionCheck {},
 }
 
 impl Command {
@@ -506,6 +514,10 @@ impl Command {
             Self::WatchStop {} => "watch_stop",
             Self::Log { .. } => "log",
             Self::Stop {} => "stop",
+            Self::SessionShow {} => "session_show",
+            Self::SessionSave {} => "session_save",
+            Self::SessionRestore {} => "session_restore",
+            Self::SessionCheck {} => "session_check",
         }
     }
 
@@ -546,7 +558,7 @@ impl Command {
             Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
-            Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} => Value::Null,
+            Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} => Value::Null,
         }
     }
 }
@@ -814,6 +826,32 @@ pub fn only_the_user_quits() -> AgentError {
     AgentError::new("only_the_user_quits", "This session is the app someone is using, and only they can quit it.", exit::FAILED).then("Ask them to, if it needs to stop. Everything else works with it running.")
 }
 
+/// `session restore` would lose the owner's edits, which is theirs to say below Full: SPEC decision 20.
+pub fn restore_would_lose_owners_edits() -> AgentError {
+    AgentError::new("owner_edits_at_stake", "Restoring would replace this session, which holds the user's own unsaved edits, so it wasn't done.", exit::PERMISSION).then("Ask them to save or discard those first.")
+}
+
+/// What `session show` says, from the record and the session. No more of a document than `tabs` gives, and what the owner typed in Find only at Control, as it's not about any document. Called with the session held.
+pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept: Value) -> Value {
+    let tabs: Vec<Value> = session
+        .tabs()
+        .iter()
+        .take(MAX_TABS_LISTED as usize)
+        .map(|tab| {
+            let notice = session.tab_notice(tab.id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(tab.id) }));
+            let place = session.place_to_show(tab.id);
+            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.map(|place| place.within), "edited": session.is_edited(tab.id), "can_undo": session.page_edits(tab.id).is_some_and(recto_session::edit::PageEdits::can_undo), "can_redo": session.page_edits(tab.id).is_some_and(recto_session::edit::PageEdits::can_redo), "notice": notice })
+        })
+        .collect();
+    let find = session.find();
+    let mut find_json = json!({ "open": find.open, "has_text": !find.query.is_empty() || !find.draft.is_empty() });
+    if level >= Level::Control {
+        find_json["query"] = json!(find.query);
+        find_json["draft"] = json!(find.draft);
+    }
+    json!({ "record": kept, "count": session.tabs().len(), "active": session.active().map(|id| id.0), "tabs": tabs, "find": find_json, "edit_mode": session.edit_mode(), "paper": paper_name(session.view()), "focus": session.view().focus })
+}
+
 pub fn qa_needs_app() -> AgentError {
     AgentError::new("qa_needs_app", "QA commands only work on an app started with `recto qa start`.", exit::FAILED).then("Set RECTO_STATE_DIR to a temp folder and run `recto qa start`.")
 }
@@ -997,6 +1035,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             access.with(|s| {
                 let id = select(s, tab)?;
                 keep_owners_undone_steps(s, id, level)?;
+                s.set_agent_at_full(level >= Level::Full);
                 s.insert_pdf_with_facts(id, Author::Agent, position, path, &facts, stamp)?;
                 events.push(edits_event(s, id));
                 let mut data = edit_state_json(s, id);
@@ -1006,7 +1045,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         }
         Command::Undo { tab } => access.with(|s| {
             let id = select(s, tab)?;
-            if !s.undo_edit(id) {
+            s.set_agent_at_full(level >= Level::Full);
+            if !s.undo_edit_as(id, Author::Agent)? {
                 return Err(AgentError::new("nothing_to_undo", "There's nothing to undo on this tab.", exit::FAILED));
             }
             events.push(edits_event(s, id));
@@ -1016,7 +1056,8 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         }),
         Command::Redo { tab } => access.with(|s| {
             let id = select(s, tab)?;
-            if !s.redo_edit(id) {
+            s.set_agent_at_full(level >= Level::Full);
+            if !s.redo_edit_as(id, Author::Agent)? {
                 return Err(AgentError::new("nothing_to_redo", "There's nothing to redo on this tab.", exit::FAILED));
             }
             events.push(edits_event(s, id));
@@ -1040,7 +1081,7 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
             exit::FAILED,
         )),
         Command::Sign {} => Err(refusal("sign", level, Access::Nobody)),
-        Command::Status {} | Command::PermissionShow {} | Command::PermissionRequest { .. } | Command::LevelChanged {} | Command::Wait { .. } | Command::Watch { .. } | Command::WatchStop {} | Command::Log { .. } | Command::Stop {} => {
+        Command::Status {} | Command::PermissionShow {} | Command::PermissionRequest { .. } | Command::LevelChanged {} | Command::Wait { .. } | Command::Watch { .. } | Command::WatchStop {} | Command::Log { .. } | Command::Stop {} | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {} => {
             Err(AgentError::new("needs_server", "This needs the long-running session.", exit::NOT_RUNNING))
         }
     }
@@ -1123,16 +1164,18 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
     require_absolute(path)?;
     let wrong_page = |pages: u32| AgentError::new("no_such_page", format!("Nothing was opened: it has {pages} pages, and page {} isn't one of them.", page.unwrap_or(0)), exit::NOT_FOUND).then("Open it with a page it has, or with no `--page`.");
     let fits = |pages: u32| page.is_none_or(|page| page >= 1 && page <= pages);
+    // Looked at first, so a change during a read shows as a change, and what's the same file can be told. A slow file holds up nobody: the session isn't held.
+    let stamp = recto_platform::file_stamp(path).ok();
     // A file already open, in a tab gone cold, is read with the session free too.
-    read_ahead(access, |s| s.tab_for_path(path).and_then(|id| s.wake_for_tap(id)));
-    // Already open: check the page before anything moves.
+    read_ahead(access, |s| s.tab_for_file(path, stamp).and_then(|id| s.wake_for_tap(id)));
+    // Already open, by this name or another: SPEC decision 26. Check the page before anything moves.
     let existing = access.with(|s| {
-        let id = s.tab_for_path(path)?;
+        let id = s.tab_for_file(path, stamp)?;
         let pages = s.pages_in(id);
         if !fits(pages) {
             return Some(Err(wrong_page(pages)));
         }
-        s.go_to_open_file(path);
+        s.go_to_file(path, stamp);
         Some(Ok(id))
     });
     let (id, is_new) = match existing {
@@ -1140,14 +1183,16 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
         None => {
             // The file is read outside the session, so a slow or hostile one holds nobody else up.
             let loader = access.with(|s| s.loader().clone());
-            let stamp = recto_platform::file_stamp(path).ok();
             let facts = loader.load(path)?;
             // No tab for a page that isn't there: failing here leaves nothing to explain.
             if !fits(facts.page_count) {
                 return Err(wrong_page(facts.page_count));
             }
             let before = access.with(|s| s.tabs().len());
-            let id = access.with(|s| s.open_with_facts(path, facts, stamp))?;
+            // A closed PDF's history comes back on this route as on any, read with the session free too.
+            let source = access.with(|s| if s.tab_for_file(path, stamp).is_some() { None } else { s.history_source() });
+            let history = source.and_then(|source| source.history_of(stamp, path));
+            let id = access.with(|s| s.open_with_facts(path, facts, stamp, history))?;
             (id, access.with(|s| s.tabs().len()) > before)
         }
     };
@@ -1160,7 +1205,13 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
         if page.is_some() {
             events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page })));
         }
-        Ok(where_json(s, id))
+        let mut data = where_json(s, id);
+        // A PDF is open once, so what's asked for by any name is this tab, and an agent is told.
+        if !is_new {
+            data["already_open"] = json!(true);
+            data["open_note"] = json!("That PDF was already open, so this is its tab. A link to a file is the same file.");
+        }
+        Ok(data)
     })
 }
 
@@ -1216,6 +1267,7 @@ fn edit<A: SessionAccess>(access: &A, level: Level, tab: &str, events: &mut Vec<
     access.with(|s| {
         let id = select(s, tab)?;
         keep_owners_undone_steps(s, id, level)?;
+        s.set_agent_at_full(level >= Level::Full);
         s.edit_pages_as(id, Author::Agent, change)?;
         events.push(edits_event(s, id));
         let mut data = edit_state_json(s, id);
@@ -1492,6 +1544,7 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         "structure": if tab.renderer_only { "renderer_only" } else { "readable" },
         "problem": tab.problem.map(recto_core::OpenError::message),
         "note": if edited { Some(UNSAVED_NOTE) } else { session.has_undone_owner_steps(id).then_some(USER_EDITS_UNDONE_NOTE) },
+        "file_notice": session.tab_notice(id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(id) })),
         "untrusted": { "name": &*tab.name },
     })
 }
@@ -1742,6 +1795,10 @@ mod tests {
             Command::QaRead { verb: "state".into(), out: None, timeout_ms: None },
             Command::QaDrive { verb: "zoom".into(), value: "1".into(), timeout_ms: None },
             Command::Stop {},
+            Command::SessionShow {},
+            Command::SessionSave {},
+            Command::SessionRestore {},
+            Command::SessionCheck {},
         ]
     }
 
@@ -2107,9 +2164,15 @@ mod tests {
         let mut s = edit_session();
         let tab = || "#1".to_string();
         owners_rotation(&mut s, 0);
-        for _ in 0..recto_session::edit::MAX_UNDO {
+        for _ in 0..recto_session::edit::MAX_UNDO - 1 {
             run(&mut s, Level::Control, &Command::PageMove { tab: tab(), pages: "2".into(), to: 3 }).unwrap();
         }
+        // Below Full, the owner's step at the bottom can't be pushed out, and it says why. That's the gap in the plan: an agent editing past the cap so what was done can't be undone.
+        let refused = run(&mut s, Level::Control, &Command::PageMove { tab: tab(), pages: "2".into(), to: 3 }).unwrap_err();
+        assert_eq!(refused.code, "history_full");
+        assert!(!s.page_edits(TabId(1)).unwrap().history_dropped(), "and it's still there");
+        // At Full it's the holder's call.
+        run(&mut s, Level::Full, &Command::PageMove { tab: tab(), pages: "2".into(), to: 3 }).unwrap();
         assert_eq!(run(&mut s, Level::Control, &Command::Discard { tab: tab() }).unwrap_err().code, "would_discard_user_edits");
         assert_eq!(turned_pages(&s)[0], 1, "the user's edit is still there");
         // The cap isn't an agent erasing anything: all the agent's steps can come off, and undo isn't refused.

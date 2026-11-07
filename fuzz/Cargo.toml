@@ -67,6 +67,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "record"
+path = "fuzz_targets/record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "edits"
 path = "fuzz_targets/edits.rs"
 test = false

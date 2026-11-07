@@ -268,7 +268,7 @@ fn serve(invocation: &Invocation) -> i32 {
     };
     let ready = json!({ "running": true, "pid": std::process::id(), "socket": paths.socket, "already": false });
     finish("serve", json_wanted, &Ok(ready));
-    match server.run(Arc::new(SessionHost::default().with_indexing(&paths)), Limits::default()) {
+    match server.run(Arc::new(SessionHost::default().with_indexing(&paths).with_own_record(&paths)), Limits::default()) {
         Ok(()) => exit::OK,
         Err(_) => {
             print_err("The session stopped because its socket failed.");
@@ -395,6 +395,7 @@ fn budget_tabs(invocation: &Invocation) -> Result<Value, AgentError> {
     let dir = std::env::temp_dir().canonicalize().unwrap_or_else(|_| std::env::temp_dir()).join(format!("recto-budget-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|_| AgentError::new("write_failed", "Couldn't make a temporary folder.", exit::FAILED))?;
     let paths = paths()?;
+    let file = recto_platform::local::clone_source_in(&file, &dir).map_err(|_| AgentError::new("write_failed", "Couldn't make a file to clone.", exit::FAILED))?;
     let result = if invocation.fields.contains_key("in_process") { measure_in_process(&paths, &file, &dir, count) } else { measure_through_session(&paths, &file, &dir, count) };
     let _ = std::fs::remove_dir_all(&dir);
     result
@@ -461,20 +462,11 @@ fn budget_index(invocation: &Invocation) -> Result<Value, AgentError> {
     result
 }
 
+/// Another file of the same bytes, at no cost on this disk: a link would be the same PDF, and a PDF is open once (SPEC decision 26).
 fn make_link(file: &Path, dir: &Path, index: u64) -> Result<PathBuf, AgentError> {
     let link = dir.join(format!("tab-{index:05}.pdf"));
-    link_file(file, &link).map_err(|_| AgentError::new("write_failed", "Couldn't make a test link.", exit::FAILED))?;
+    recto_platform::local::clone_file(file, &link).map_err(|_| AgentError::new("write_failed", "Couldn't make a test copy.", exit::FAILED))?;
     Ok(link)
-}
-
-#[cfg(unix)]
-fn link_file(file: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(file, link)
-}
-
-#[cfg(not(unix))]
-fn link_file(file: &Path, link: &Path) -> std::io::Result<()> {
-    std::fs::hard_link(file, link)
 }
 
 fn measure_in_process(paths: &StatePaths, file: &Path, dir: &Path, count: u64) -> Result<Value, AgentError> {
@@ -490,6 +482,9 @@ fn measure_in_process(paths: &StatePaths, file: &Path, dir: &Path, count: u64) -
         if index + 1 == 2 || index + 1 == count {
             samples.push(json!({ "tabs": index + 1, "footprint_bytes": recto_platform::footprint_bytes() }));
         }
+    }
+    if session.tabs().len() as u64 != count {
+        return Err(AgentError::new("budget_wrong_tabs", format!("Asked for {count} tabs and got {}, so these numbers wouldn't mean what they say.", session.tabs().len()), exit::FAILED));
     }
     Ok(json!({
         "route": "in this process",
@@ -532,6 +527,11 @@ fn measure_through_session(paths: &StatePaths, file: &Path, dir: &Path, count: u
         }
     }
     let per_open = started.elapsed().as_secs_f64() * 1000.0 / count.max(1) as f64;
+    // Numbers for so many tabs from fewer than that would be worse than none: a PDF is open once.
+    let distinct: std::collections::HashSet<u64> = opened.iter().copied().collect();
+    if failure.is_none() && distinct.len() as u64 != count {
+        failure = Some(AgentError::new("budget_wrong_tabs", format!("Asked for {count} tabs and got {}, so these numbers wouldn't mean what they say.", distinct.len()), exit::FAILED));
+    }
     let after = call("{\"cmd\":\"budget\"}".to_string());
     for tab in opened.iter().rev() {
         let _ = call(json!({ "cmd": "close", "tab": format!("#{tab}") }).to_string());

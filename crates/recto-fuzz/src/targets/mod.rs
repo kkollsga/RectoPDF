@@ -6,6 +6,7 @@ pub mod edits;
 pub mod index;
 pub mod pdf;
 pub mod proto;
+pub mod record;
 pub mod select;
 
 use recto_core::{DocFacts, OpenError, Toc};

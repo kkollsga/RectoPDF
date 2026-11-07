@@ -55,7 +55,7 @@ fn run_on_a_session(level: Level, command: &Command) {
     let mut session = Session::new(NamedLoader);
     let mut last = None;
     for (name, pages) in [(format!("/fuzz/{CANARY}.pdf"), 5), ("/fuzz/other.pdf".to_string(), 200), ("/fuzz/third.pdf".to_string(), 1)] {
-        last = session.open_with_facts(Path::new(&name), facts_of(pages), None).ok();
+        last = session.open_with_facts(Path::new(&name), facts_of(pages), None, None).ok();
     }
     let result = run(&mut session, level, command);
     let answer = reply(command.tag(), &result).to_string();

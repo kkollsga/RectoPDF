@@ -229,7 +229,7 @@ run() {
     app/build.sh
     # At most two at once: each is a real app, and this Mac is in use.
     stage app-tests
-    RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app -j 2
+    RECTO_REQUIRE_APP=1 cargo nextest run --locked --no-fail-fast -p recto-cli --test app --test restore -j 2
   fi
   stage done
 }

@@ -30,6 +30,9 @@ final class SidebarCell: NSView {
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
+    /// What goes beside a name when something's wrong with its file. Rust's.
+    var noticeMark = ""
+
     func show(row: SidebarRow, foldedActive: Bool, hovered: Bool) {
         self.row = row
         self.folded = foldedActive
@@ -49,7 +52,8 @@ final class SidebarCell: NSView {
         pill.backgroundColor = Theme.rowActive.cg
         let font: NSFont = active ? .systemFont(ofSize: 14, weight: .semibold) : row.current ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: isTab ? 14 : 13.5)
         let color = active ? Theme.textStrong : row.current ? Theme.accent : row.railFilled && !isTab ? Theme.textBody : Theme.textQuiet
-        name.set(row.text, font: font, color: color.ns)
+        name.set(row.notice == nil ? row.text : "\(noticeMark) \(row.text)", font: font, color: color.ns)
+        toolTip = row.notice
         pageNumber.set(row.page.map(String.init) ?? "", font: .monospacedDigitSystemFont(ofSize: 11.5, weight: .regular), color: (row.current ? Theme.accent : Theme.textQuiet).ns, alignment: .right)
         pageNumber.isHidden = isTab || !hovered || row.page == nil
         chevron.set(folded ? "›" : "⌄", font: .systemFont(ofSize: 14, weight: .medium), color: Theme.textQuiet.ns, alignment: .center)
@@ -290,6 +294,7 @@ final class PanelView: FlippedView {
     private var panelHeight: CGFloat = 0
     var performAction: ((String) -> Void)?
     private let core: AppCore
+    private let noticeMark: String
     private(set) var model = SidebarView(tabsVersion: 0, tabCount: 0, activeIndex: nil, contentsCount: 0, contentsVersion: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsPlaceShift: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false)
     /// The tabs, pulled only when their version moves.
     private(set) var tabs: [SidebarRow] = []
@@ -316,6 +321,7 @@ final class PanelView: FlippedView {
 
     init(core: AppCore, strings: AppStrings, isQuiet: Bool) {
         self.core = core
+        noticeMark = strings.noticeMark
         revealDelay = core.limits().revealDelaySeconds
         super.init()
         frames = FrameRunner(view: contentsScroll, onScreen: !isQuiet) { [weak self] dt in
@@ -350,6 +356,8 @@ final class PanelView: FlippedView {
         contentsTable.rowHeight = 28
         updateContentsScroller()
         contentsScroll.userScrolled = { [weak self] in self?.noteUserScrolled() }
+        contentsScroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(contentsMoved), name: NSView.boundsDidChangeNotification, object: contentsScroll.contentView)
         contentsScroll.pointerMoved = { [weak self] inside in self?.setContentsPointer(inside) }
         NotificationCenter.default.addObserver(self, selector: #selector(contentsLiveScrolled), name: NSScrollView.didLiveScrollNotification, object: contentsScroll)
         view.addSubview(scroll)
@@ -373,6 +381,11 @@ final class PanelView: FlippedView {
         moreButton.action = #selector(moreClicked)
         NotificationCenter.default.addObserver(self, selector: #selector(frameChanged), name: NSView.frameDidChangeNotification, object: view)
         view.postsFrameChangedNotifications = true
+    }
+
+    /// Where they are is kept, however they got there.
+    @objc private func contentsMoved() {
+        core.contentsPosition(y: contentsY)
     }
 
     @objc private func contentsLiveScrolled() {
@@ -849,6 +862,7 @@ final class PanelView: FlippedView {
         if let cell = tableView.makeView(withIdentifier: id, owner: self) as? SidebarCell { return cell }
         let made = SidebarCell(frame: .zero)
         made.identifier = id
+        made.noticeMark = noticeMark
         return made
     }
 
