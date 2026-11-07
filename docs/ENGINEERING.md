@@ -198,7 +198,7 @@ What made them look wrong is that **most of it is harmless, and the check can't 
 
 **Pinch and scroll.** Layers are page-relative in PDF points, under one transform per page, so a pinch moves one transform and a change of fit moves no tile. Tiles stretch during a pinch, and nothing's drawn until it ends. New tiles go on top of old ones, which come off when the page's visible tiles are all there. Pages are snapped to whole device pixels. `NSScrollView` does the scrolling, so rubber-banding, momentum and the scrollers are the system's. **Not checked on a screen:** a quiet run has none.
 
-**Dark paper** is done to the tile's pixels in `recto-reader`, not by a layer filter: a filter makes the compositor take an offscreen pass every frame, and `render(in:)` leaves it out, so a shot wouldn't show it. Lightness turns over and each pixel keeps its distance from grey, so a blue link is lighter blue. Images under 40% of the page stay themselves, dimmed, from where the renderer says they are. A scan turns over like any page, and so does a page that's mostly one map: the USGS band goes mint and its black lines white. Before that threshold the map stayed itself with a hard edge at its white margins. On a low-resolution page the renderer isn't asked for its images, so that whole picture turns over too. **Its limits:** a full-page photograph comes out a negative, and vector charts turn over with the text, where the concept keeps their colours. The turn costs about 1 ms a colour tile, and text tiles use a table. The renderer isn't asked on a low-resolution page since asking might cost as much as drawing.
+**Dark paper** is done to the tile's pixels in `recto-reader`, not by a layer filter: a filter makes the compositor take an offscreen pass every frame, and `render(in:)` leaves it out, so a shot wouldn't show it. On a page of text, lightness turns over and each pixel keeps its distance from grey, so a blue link is lighter blue, and its images stay themselves, a little dimmed, from where the renderer says they are. **A page that's mostly a picture isn't turned over,** by the owner's word of 2026-11-07: it keeps its true colours, dimmed. `MOSTLY_PICTURE` is half the page, added up over its images: USGS map sheets measure 0.59 to 1.0, scans and full-page backgrounds 1.0, figures on arXiv pages of text 0.16 to 0.26. `PICTURE_PAGE_DIM` is 176 in 256, under half of white's light, with black on it at 9.7:1. Dimming costs less than turning over, 120 µs p50 against 493 for a 512 px colour tile, and draws nothing of its own, as what's asked for dark paper is drawn once either way. `dark_tile` is the whole rule. **When it isn't known where a page's images are, it's dimmed too,** so a low-resolution page, whose renderer isn't asked since asking might cost as much as drawing, comes out as a sharp one would, a failed answer can't leave a negative in the cache, and a job gone stale is thrown away as cancelled. **Its limits:** a scanned page of text stays light, which the owner accepted, and vector charts turn over with the text, where the concept keeps their colours. **What a worker can do to it:** a worker emptying a surface it holds, with `IOSurfaceSetPurgeable`, across a real process boundary, leaves the host reading zeros and writing normally, with no fault (`hostile_surface.rs`), so the turn stays in the host.
 
 **Warm paper** is white paper with a tint over it. Each page has one extra layer of a single colour (`WARM_PAPER`, a named constant in `recto-session`, with its reason and a WCAG AA test) and the compositor's multiply filter, so going to it or from it draws no tile and keeps nothing per tile: a test holds to no draw. Black stays black. A multiply is the same sum everywhere, so a photo or map under it takes R×0.96, G×0.93, B×0.86, the same as the paper: a white in a photo goes cream, and no colour turns over. A shot does that sum on the bitmap, since `cacheDisplay` leaves compositing filters out. **Not checked on a screen:** the multiply itself and its cost a frame. Exports and snapshots never see any paper. With none chosen, paper goes with the window, white or dark. `recto view --paper` sets it, for the app, in the state folder.
 
@@ -208,20 +208,44 @@ What made them look wrong is that **most of it is harmless, and the check can't 
 
 **A chapter closing makes no second move.** As you leave a chapter it closes and the next opens. If its rows were above the place, the place would drop up the list by that many rows, past the dead zone, and the contents would move straight back, opposite to the move before. So Rust works out how far a change carried the place (`place_shift`, from the two lists), and the scroll takes it up in the same transaction: the place doesn't move on screen, and rows going in the view fade over in 0.15 s. Rows that change only below the place still slide. With the reader in the contents themselves it's the top of the view that stays, and rows in the view slide. **Before and after,** `rfc9110` at 6 pages a second, 10 s, by `qa sweep`: before, a move forward at each change of chapter was followed about 0.1 s later by a move back of 196 to 223 points. After, 6 moves all forward, 690 ms each, at least 0.31 s apart.
 
-**What the moves come to,** `qa sweep`, release, this Mac with other agents' builds running, a window off every screen, so path and timing, not frames seen. Peak speed is taken over 25 ms, since steps aren't evenly spaced.
+**What the moves come to,** `qa sweep`, release, this Mac with other agents' builds running, at load about 8, a window off every screen, so path and timing, not frames seen. Peak speed is taken over 25 ms, since steps aren't evenly spaced.
 
 | Sweep | Moves | Each | Peak | Rests | Place in view |
 |---|---|---|---|---|---|
-| `rfc9110`, 1 page a second, 30 s | 5 | 690 ms, 340 points | 2,136 points/s | 3.3 s to 10 s | every step |
-| `rfc9110`, 6 pages a second, 10 s | 6 | 690 ms, 310–340 points | 2,035 | 0.31 s to 1.1 s | every step |
-| `rfc9110`, 40 pages a second, 4 s | 1 | carries on: 3,609 ms, 3,048 points | 3,482 | | 431 of 478 steps |
-| 10,000 entries, 1 page a second, 40 s | 3 | 640 ms, 364 points | 2,262 | 12 s | every step |
-| 10,000 entries, 6 pages a second, 10 s | 4 | 650 ms, 364 points | 2,587 | 1.5 s | every step |
-| 10,000 entries, 40 pages a second, 6 s | 1 | carries on: 5,656 ms, 6,342 points | 2,383 | | every step |
+| `rfc9110`, 1 page a second, 30 s | 4 | 690 ms, about 340 points | 2,028 points/s | 3.3 s to 10 s | every step |
+| `rfc9110`, 6 pages a second, 10 s | 6 | 690 ms, 310 to 340 points | 2,059 | 0.31 s to 1.1 s | every step |
+| `rfc9110`, 40 pages a second, 4 s | 1 | carries on: 3,599 ms, 5,208 points | 8,691 | | 473 of 480 steps, from 431 of 478 before a trailing move could catch up |
+| 10,000 entries, 1 page a second, 25 s | 1 | 654 ms, 364 points | 2,370 | 12 s | every step |
+| 10,000 entries, 6 pages a second, 10 s | 4 | 650 ms, 364 points | 2,148 | 1.5 s | every step |
+| 10,000 entries, 40 pages a second, 6 s | 1 | carries on: 5,660 ms | 5,280 | | every step |
 
-The `rfc9110` 1-page run also has one move back of 168 points, 5 s after the one before, not one chasing it. A 10,000-entry outline holds 29 row views and the app 13.4 MiB. The UI thread's step stays at 0.17 to 0.61 ms p99. The worst single step is 4.7 ms on a chapter closing, from reloading the rows: 15.8 ms in one run under more load. How it feels can't be judged from any of this.
+All forward. A 10,000-entry outline holds 28 row views, and the app 16.7 MiB. The outline's runs were at load 42, which took the UI step's p99 to 12.8 ms at 40 pages a second, from 0.65 at load 8 on `rfc9110`: it wasn't measured at a lower load on this build. The move back of 168 points in one earlier run at 1 page a second, 6 rows, didn't come again, and a test with chapters on a real outline holds that reading forward never moves back. How it feels can't be judged from any of this.
+
+**Many tabs,** before and after these fixes, on one app growing to 10,000 tabs of `rfc9110`, at load 8 to 16. Off screen.
+
+| | 1,000 before | after | 10,000 before | after |
+|---|---:|---:|---:|---:|
+| Opening them all, by `recto open` each | 121 s | 31 s | 1,301 s | 272 s |
+| A `goto`, settled | 163 ms | 67 ms | 158 ms | 24 ms |
+| Sidebar back after focus view | 42 ms | 91 ms | 72 ms | 32 ms |
+| UI step p99, 6 pages a second | 670 µs | 760 µs | 704 µs | 342 µs |
+| Steps got through, of 600 | 592 | 595 | 462 | 600 |
+| Worst stall of the UI thread | 53 ms | 210 ms | **2,960 ms** | 605 ms |
+| App | 29.4 MiB | 25.7 MiB | 35.9 MiB | 34.8 MiB |
+
+The 1,000-tab "after" ran at a higher load than the "before", which is likely its worse stall: not separately shown.
 
 **Showing a shortened name.** One tracking area on the sidebar. After a short rest over a cut-off row, a label opens in place over it, past the sidebar's edge if it must, and goes on leaving. Rows don't move. A timer exists only during that short wait. Rust gives the text (`row_full_text`): cleaned of control and direction characters and held to 400. `recto qa hover` and `qa reveal` report what it would show.
+
+**What a worker can hold.** A surface costs the host, and the worker that was sent it can keep it as long as it lives, which no limit on its own memory sees. So each worker's surface bytes are counted: past `surface_bytes_cap`, 1 GiB, it's retired before its next page, and at twice that before its next job, so a one-page file can't dodge it. That's about 80 pages of text a tile at a time, for a restart of 17 ms.
+
+**Who quits.** `recto stop` is refused by a normal app, and says only the user quits it. A quiet run stops when told.
+
+**Which version of the contents the host has.** A chapter closing is a change to the list, sent as where it differs from the one before, with a version. The diff stays with its version until the next change. The host applies version + 1, nothing for the same version, and reloads if it's further behind, so a publish twice for one change or two changes in one pull can't leave it wrong.
+
+**Many tabs.** The tabs' rows cross to the UI thread only when their version moves. The active tab's index comes with the model, so a table reload isn't quadratic. A tile drawn doesn't go through the sidebar at all.
+
+**What AppKit calls.** Every other QA verb calls the method behind an event, so a method AppKit can't reach by name passes them all. Full names and hover details never fired on a real window for that reason: the tracking owner isn't a responder, and its handlers weren't Objective-C, and a plain `@objc` would have been `mouseEnteredWith:`. `recto qa entry-points` checks each owner answers the selector AppKit sends, and goes by the selector where an event can be made and handed over, with nothing posted: hover, pointer, wheel, the pinch's notifications, focus view's corner. **Not covered:** a real pinch or click, whose events can't be made, so for rows and buttons it's that the target answers the action.
 
 **Text isn't an `NSTextField`.** On macOS 27 each `-[NSTextField layout]` makes a view, whose `-[NSKeyValueDependencyInfo initWithOwner:]` leaves records in AppKit for good. It came to about 7 KiB for each tab opened and more while reading, and took 1,000 tabs of a drawn PDF to 5.7 MiB. `TextLine` draws an attributed string instead: 0.8 KiB a tab, found with `heap` and `malloc_history`.
 
@@ -235,25 +259,25 @@ The `rfc9110` 1-page run also has one move back of 168 points, 5 s after the one
 
 | Budget (`SPEC.md` §2) | Target | Measured | |
 |---|---|---|---|
-| Cold start to first sharp page, `rfc9110`, process start to settled, 21 runs | ≤ 300 / ≤ 500 ms | **134 / 154 ms** p50 / p95. 82 ms of it is the window | Met |
-| One document, text page | ≤ 60 MiB | **32.5 MiB**: app 24.5, worker 8 | Met |
+| Cold start to first sharp page, `rfc9110`, process start to settled, 21 runs | ≤ 300 / ≤ 500 ms | **252 / 300 ms** p50 / p95 at load 8, and **171 to 245** side by side with the build before these fixes at load 15 to 28, where that took **373 to 561** | Met |
+| One document, text page | ≤ 60 MiB | **32.7 MiB** | Met |
 | Colour page: NASA `ntrs20240002628` p50, images | ≤ 100 MiB | **37.7 MiB** | Met |
 | The same: NASA `ntrs20220005969` p175, shaded backgrounds | ≤ 100 MiB | **210 MiB**: the worker's 184, PDFium's transparency buffers, as already measured in `budget viewport`. It goes after 3 s at rest | **Missed** |
-| Scrolling, peak: `rfc9110` at 6 / 40 pages a second | ≤ 170 MiB | **40 / 48 MiB** | Met |
-| The same: NASA images | ≤ 170 MiB | **98 / 93 MiB**, up to 117 in other runs. 61 / 90 on a quieter machine before | Met |
-| UI thread's work per scroll step, 120 steps a second | ≤ 2 ms p99 | **0.50 / 0.31 ms** p99, worst 0.75. 0.21 / 0.24 on a quieter machine before | Met, off screen |
-| Blank on a seen page, during those sweeps | 0 | `rfc9110` **0**. NASA **0** at 6 a second, **14 to 179 steps** at 40 | **Missed at 40 a second past 128 pages.** 128 previews are kept, so a page 128 pages back has lost its own. Replayed: blanks fall only on the pages seen earlier, and only after that many. The first measure of 0 was before every page got a preview. Disk previews are what fixes it |
-| Sharp after scroll stops, on pages not drawn yet | ≤ 100 ms | **18 / 21 ms** p50 / worst, one client round trip included | Met |
-| Idle CPU, one document, 20 s, app only | ~0%, ≤ 1 wake-up/s | **0.0%, 0.35 to 0.65** | Met, off screen. A worker parked in `poll` wasn't counted |
-| Window closed | ≤ 20 MiB | **11.1 MiB**, no worker | Met |
-| 1,000 tabs of a PDF, over 2 tabs, app's own | ≤ 4 MiB | USGS map **0.75**, NASA **1.19**, 2 GiB file **0.06**. Each was drawn when opened | Met |
-| Sidebar opens, 1,000 tabs: focus off to settled | < 150 ms | **2.7 to 6.2 ms** | Met |
+| Scrolling, peak: `rfc9110` at 6 / 40 pages a second | ≤ 170 MiB | **40 / 42 MiB** | Met |
+| The same: NASA images | ≤ 170 MiB | **99 / 103 MiB**. 40 pages a second on `rfc9110`, side by side at load 15 to 28: 134 to 160 before these fixes, 44 to 45 after | Met |
+| UI thread's work per scroll step, 120 steps a second | ≤ 2 ms p99 | **0.35 / 0.65 ms** p99, worst 0.91 | Met, off screen |
+| Blank on a seen page, during those sweeps | 0 | `rfc9110` **0**. NASA **0** at 6 a second, **12 steps** at 40, as many as 179 under more load | **Missed at 40 a second past 128 pages.** 128 previews are kept, so a page 128 pages back has lost its own. Replayed: blanks fall only on the pages seen earlier, and only after that many. The first measure of 0 was before every page got a preview. Disk previews are what fixes it |
+| Sharp after scroll stops, on pages not drawn yet | ≤ 100 ms | **10 / 21 ms** p50 / worst, one client round trip included | Met |
+| Idle CPU, one document, 20 s, app only | ~0%, ≤ 1 wake-up/s | **0.0%, 0.35 to 0.45** | Met, off screen. A worker parked in `poll` wasn't counted |
+| Window closed | ≤ 20 MiB | **11.7 MiB**, no worker | Met |
+| 1,000 tabs of a PDF, over 2 tabs, app's own | ≤ 4 MiB | USGS map **0.64**, NASA **3.38**, 2 GiB file **3.17**, varying with load: 1.19 and 0.06 in the run before. Each was drawn when opened | Met |
+| Sidebar opens, 1,000 tabs: focus off to settled | < 150 ms | **2.6 to 3.9 ms** | Met |
 | Handles at 2 tabs and 1,000 | same | 22 to 25, varying with what's warm. 3 documents held at most | Met |
-| 2 GiB, 10,000 pages, page 1 sharp, warm | ≤ 250 ms | **182 ms** p50, from process start | Met |
-| The same, cold | ≤ 600 ms | **352 ms** worst of 11, its first run after writing the file. Not a true cold start: purging the file cache needs root | Not tested as such |
-| Main never stalls over 16 ms on that file | ≤ 16 ms | **20 ms** at worst over the whole run, which is one stretch of work in launch or layout, not a page. 20 ms with `rfc9110`, 23 with NASA | **Missed by 4 ms** |
-| USGS map, peak, under the named exception | 415–450 MiB accepted | Fitted **377 MiB**. Zoom 3, about 2x: **434**. Zoom 4.5, about 3x: **490**, worker 454 and app 36. Before, the worker alone at 2x and 3x peaked at 394 and 452 | **Over at 3x** by the tree, as the surfaces were in the worker's number before |
-| USGS map, first view, scroll, zoom | No target | **700 ms** from process start. Zoom to 2x 575, a quarter window 98, 1.5x more 709. Before, by `budget viewport`: 534, 101, 379 | The first and last draw at higher scales than before |
+| 2 GiB, 10,000 pages, page 1 sharp, warm | ≤ 250 ms | **198 ms** p50, from process start | Met |
+| The same, cold | ≤ 600 ms | **468 ms** worst of 11, its first run after writing the file. Not a true cold start: purging the file cache needs root | Not tested as such |
+| Main never stalls over 16 ms on that file | ≤ 16 ms | **22 ms** at worst over the whole run, which is one stretch of work in launch or layout, not a page. 20 ms with `rfc9110`, 43 with NASA | **Missed by 6 ms** |
+| USGS map, peak, under the named exception | 415–450 MiB accepted | Fitted **379 MiB**. Zoom 3, about 2x: **439**. Zoom 4.5, about 3x: **494**, worker 457 and app 36. Before, the worker alone at 2x and 3x peaked at 394 and 452 | **Over at 3x** by the tree, as the surfaces were in the worker's number before |
+| USGS map, first view, scroll, zoom | No target | **733 ms** from process start. Zoom to 2x 372, a quarter window 89, 1.5x more 644. Before, by `budget viewport`: 534, 101, 379 | The first and last draw at higher scales than before |
 | 120 Hz, ≥ 99% of frames on time | | **Not tested**: needs the MacBook and a real screen | |
 
 **Before and after on the app's own fixes,** same runs. `TextLine` for `NSTextField`: 1,000 tabs of NASA 5.68 to 2.48 MiB over 2 tabs, and a 400-tab run's heap growth from 2.9 MiB to 0.1. Letting a big worker go: USGS map at rest 433 to 36 MiB. Previews outliving tiles: 84 blank steps on seen pages at 40 pages a second, in a debug run, to 0.
