@@ -9,6 +9,7 @@ pub mod pdf;
 pub mod proto;
 pub mod record;
 pub mod select;
+pub mod update;
 
 use recto_core::{DocFacts, OpenError, Toc};
 use recto_session::DocLoader;

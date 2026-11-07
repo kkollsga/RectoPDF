@@ -30,6 +30,7 @@ recto-proto.workspace = true
 recto-reader.workspace = true
 recto-render-service.workspace = true
 recto-session.workspace = true
+recto-update.workspace = true
 serde_json.workspace = true
 # Held at 0.31 while uniffi-bindgen-cs, for the Windows app later, supports nothing newer.
 uniffi = { version = "0.31", default-features = false }

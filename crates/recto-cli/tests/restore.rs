@@ -209,6 +209,7 @@ const EXCEPTIONS: &[(&str, &str)] = &[
     ("reader.selection.text_", "Page text held for a selection, which is read again when it's wanted."),
     ("reader.selection.unit", "What the last press took, words or lines. It says what a shift-click extends by, and nothing that shows."),
     ("app.copy_notice", "A line about a copy, which fades. A copy is over by then, or a hand-off waits for it."),
+    ("update.", "The updater's own report, with times in it. What's chosen in Settings is in the record, and how it's carried is tested in `update`, by name."),
 ];
 
 /// What can be compared as numbers. Scroll positions can differ by rounding only: the test below of pixels holds them much closer than any eye.
@@ -221,10 +222,15 @@ fn differs(left: &Value, right: &Value) -> bool {
 
 /// Compares everything, and fails on anything but what's named.
 fn assert_same(before: &Value, after: &Value, known: &[&str]) {
+    assert_same_but(before, after, known, &[]);
+}
+
+/// The same, with what else a caller can name and say why.
+fn assert_same_but(before: &Value, after: &Value, known: &[&str], also: &[&str]) {
     let (mut one, mut two) = (BTreeMap::new(), BTreeMap::new());
     flatten(before, "", &mut one);
     flatten(after, "", &mut two);
-    let excepted = |path: &str| EXCEPTIONS.iter().any(|(name, _)| path.starts_with(name));
+    let excepted = |path: &str| EXCEPTIONS.iter().any(|(name, _)| path.starts_with(name)) || also.iter().any(|name| path.starts_with(name));
     let mut wrong = Vec::new();
     for (path, value) in &one {
         if excepted(path) {
@@ -296,6 +302,8 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
     run.ok(&["qa", "sidebar-width", "318"]);
     run.ok(&["qa", "panel", "toggle"]);
     run.ok(&["view", "--paper", "warm", "--agent-icon", "off"]);
+    run.ok(&["settings", "--auto-update", "off"]);
+    run.ok(&["qa", "settings", "open"]);
     run.ok(&["qa", "full-screen", "on"]);
     run.ok(&["qa", "find", "open"]);
     run.ok(&["qa", "find-query", "ran this"]);
@@ -415,6 +423,17 @@ const KNOWN_PATHS: &[&str] = &[
     "app.place_label",
     "app.reveal.row",
     "app.reveal.shown",
+    "app.settings.open",
+    "app.settings.rows.len",
+    "app.settings.rows[].enabled",
+    "app.settings.rows[].hint",
+    "app.settings.rows[].id",
+    "app.settings.rows[].on",
+    "app.settings.rows[].title",
+    "app.settings.status",
+    "app.settings.title",
+    "app.settings.x",
+    "app.settings.y",
     "app.sidebar_rows",
     "app.sidebar_visible",
     "app.sidebar_width",
@@ -457,7 +476,10 @@ const KNOWN_PATHS: &[&str] = &[
     "session.app.focus.window_key",
     "session.app.notice",
     "session.app.panel_open",
+    "session.app.settings_window.x",
+    "session.app.settings_window.y",
     "session.app.sidebar_width",
+    "session.app.window_closed",
     "session.app.window.frame.height",
     "session.app.window.frame.width",
     "session.app.window.frame.x",
@@ -2020,3 +2042,7 @@ fn a_discard_stays_discarded_in_a_session_with_no_window() {
     let (place, _) = state.json(&["where"]);
     assert_eq!(place["data"]["edited"], false);
 }
+
+// The real update, whole, with this file's own comparison.
+#[path = "restore/update.rs"]
+mod update;

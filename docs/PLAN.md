@@ -127,11 +127,18 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Sleep: a tab woken on another paper than it was left on has no picture for it, so its pages show paper alone until they're drawn
 - [ ] Sleep: a tab's journal is read back whole when it wakes, so a list near its 64 MiB would be a long read with the session held. Nothing here's got near that, so it's not measured
 - [ ] Recent files, replaced-file handling, password prompt
-- [ ] Settings window (⌘,), starting with *Update automatically*
-- [ ] On the updater's gate: wait for the old process to end before starting the new one, as a launch waits only 600 ms for the record's lock, and call `hand_off_cancelled` if it gives up after a good `hand_off`
+- [x] Settings window (⌘,), starting with *Update automatically*
+- [x] On the updater's gate: wait for the old process to end before starting the new one, as a launch waits only 600 ms for the record's lock, and call `hand_off_cancelled` if it gives up after a good `hand_off`
 - [ ] On the first version bump of the state record: `copy_folder` bringing work forward from going back doesn't remove the newer app's journals, so they're left beside what comes forward
 - [ ] A record that's unreadable for a lasting reason, as a wrong mode: it's left as it is and nothing's written, so offer to mend the mode
-- [ ] Update check: *Check for Updates…* in the RectoPDF menu, *Update to X.Y.Z…* when one is found, once a day (SPEC decision 24)
+- [x] Update check: *Check for Updates…* in the RectoPDF menu, *Update to X.Y.Z…* when one is found, once a day (SPEC decision 24)
+- [x] The hands-off update itself: `recto-update` and its `recto-updater`, `recto update`, `recto settings`, automatic after 30 quiet minutes, a real end-to-end test with the whole state compared, and every kill of the installer proven whole
+- [ ] Explain the footprint of 14.47 MiB one run of the updater's measuring test read after a check, against 11.64 in a plain sequence. Likeliest: a test's copy of the app reads about 13.5 MiB with nothing armed, from its own bundle id and `LSUIElement`. Not reproduced since, and why those cost that isn't known
+- [ ] Going back after the first frame: a new version that crash-loops once it's up, or misreads the record and starts empty, stays. The record from before is kept a week for it, and nothing uses it yet
+- [ ] What a background reopen does on a real desktop: the window behind everything, no Space change, full screen when they come to it. Only a signed release on a real screen can show it
+- [ ] Whether the hidden `previous/` copy gets registered with Launch Services, and installing during dark wake or a locked screen
+- [ ] A check by hand with the window closed says its result only in Settings, as the notice has nowhere to show
+- [ ] Across an update, a minimised window or a hidden app comes back shown: `qa state` doesn't hold either yet, and the state record has neither
 - [ ] Links, back and forward, page labels
 - [ ] Click to copy an image losslessly
 - [x] Hand-rolled streaming `recto-svg`, and `recto export svg`: a page or a box to a new SVG, images lossless, what can't be vector a named picture of just that element
@@ -211,9 +218,11 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] On the first version bump's gate: `copy_folder` copies kept files into `session.vN` with no pruning, and a clear doesn't reach them, which would keep redacted text
 - [x] Deep sleep's last review: `session sleep` counts against the write limits, a same-stamp rewrite is told apart by the file's ID, page count and length, and unreadable edits say so. A file with no ID rewritten with every object in place still can't be told apart
 - [x] Red frames from an old file: a warm tab whose file was replaced kept showing the old pages, on main too; every picture and tile now carries its file's version, and a tab's file is looked at before it's shown
+- [ ] A quiet QA app outlives a test or script that stopped without saying so: three ran on, orphaned, for up to their 30-minute limit after their worktrees were gone. It should end when the client that started it is gone
 - [ ] Test line order on a real right-to-left PDF (none among the 454 in distillPDF)
 - [ ] 24-hour soak, flat memory
-- [ ] Developer ID signing and notarization, release workflow, installer that checks checksum, team and Gatekeeper, and goes back to the previous app if the new one fails
+- [x] Installer that checks checksum, team and Gatekeeper, and goes back to the previous app if the new one fails. `app/release-zip.sh` and the release workflow are written and read; the workflow hasn't run, and `docs/RELEASING.md` says what the owner has to add
+- [ ] The release workflow run for real, with Developer ID signing and notarization (needs the signing secrets on this repo)
 - [ ] A real signed update end to end, state compared before and after (needs the signing secrets on this repo)
 - [ ] Licences and notices for PDFium, Tesseract and the rest
 - [ ] Privacy statement and first-run wording

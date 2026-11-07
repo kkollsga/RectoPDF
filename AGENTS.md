@@ -85,3 +85,17 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "it's clear to me that the test program is slowing us down considerably. I need your help for us to speed up safely".
 - "Two tabs of the same pdf? This shouldn't be possible. A pdf can only be opened once".
 - "I agree, but license mit is fine" (to the coordinator's recommendations, listed in `docs/PLAN.md` under Decisions made).
+
+## Product rules from the owner, first use of the restore build (2026-11-07)
+- "We dont need detailed zoom options in the left sidebar menu. Zoom is pretty natural to people. Instead lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset."
+- "Focus mode enable disable should be in the right click menu. In the right click menu you can select side by side layout, with and without header page."
+- Replaces the focus part of that: "Actually instead of focus view, simply have a sidebar icon to the right of the traffic light buttons that toggles sidebar on and of. No need mor a separate mode". So there is no focus mode; a sidebar button beside the window controls shows and hides the sidebar.
+- Contents: "The hover delay before showing the full toc name makes in not intuitive, and the expanded name should have the color of the title." "there should be a collapse toggle button for sections with sub chapters on the left side of the headers." Page numbers on the right that don't make sense, and section indents, are bugs.
+- "When selecting across pages the page number is copied. Both footer and header should be ignored when coppying body text."
+- "The page number should always be visible in the lower right."
+- "The font in the future competitiveness is not super readible. I think its a bit to skinny. Can you check?"
+- Dark mode: images with a white background should be dark, as a chart with a white background was left light.
+- "The full app settings should be accessible from file -> settings"
+- "The sidebar menu is more for tools, like edit mode etc. When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment). Usefull when there is a scan issue or similar, for a quick fix."
+- "The margin left of the ai icon is too large. It should have the same margin to the right and above. Above should have slightly smaller margin then now (and right gets the same one)."
+- "Ctrl clicking more then one pdf should enable comparison view, right click menu can enable separate scroll (default) and synced scroll. Zoom is always synced."

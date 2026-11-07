@@ -81,6 +81,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "update"
+path = "fuzz_targets/update.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "generated"
 path = "fuzz_targets/generated.rs"
 test = false

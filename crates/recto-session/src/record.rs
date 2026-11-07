@@ -216,12 +216,25 @@ pub struct AppRecord {
     /// What the reader was told about the session as a whole and hasn't moved on from, as a code. The words are [`notices::words`]'s, so what a record says can never reach the reader as text.
     #[serde(default)]
     pub notice: Option<String>,
+    /// The Settings window, if it's open: where it is.
+    #[serde(default)]
+    pub settings_window: Option<SettingsWindow>,
+    /// The window was closed, with the app still running. It stays closed across an update, and any other launch opens one.
+    #[serde(default)]
+    pub window_closed: bool,
 }
 
 impl Default for AppRecord {
     fn default() -> Self {
-        Self { window: None, appearance: Appearance::System, sidebar_width: None, panel_open: false, contents_scroll: None, focus: FocusRecord::default(), notice: None }
+        Self { window: None, appearance: Appearance::System, sidebar_width: None, panel_open: false, contents_scroll: None, focus: FocusRecord::default(), notice: None, settings_window: None, window_closed: false }
     }
+}
+
+/// Where the Settings window is. It's small and of one size.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SettingsWindow {
+    pub x: f64,
+    pub y: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

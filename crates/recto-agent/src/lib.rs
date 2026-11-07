@@ -480,6 +480,17 @@ pub enum Command {
     SessionRestore {},
     /// Whether this is a safe moment to hand off to a new version.
     SessionCheck {},
+    /// What's running, what's on offer, and how the last update went.
+    UpdateStatus {},
+    /// Looks for a new version now, and says what it found.
+    UpdateCheck {},
+    /// Starts installing what's on offer, with the app's state carried across.
+    UpdateInstall {},
+    /// The app's settings. With a value, changes it.
+    Settings {
+        #[serde(default)]
+        auto_update: Option<String>,
+    },
 }
 
 impl Command {
@@ -536,6 +547,10 @@ impl Command {
             Self::SessionSave {} => "session_save",
             Self::SessionRestore {} => "session_restore",
             Self::SessionCheck {} => "session_check",
+            Self::UpdateStatus {} => "update_status",
+            Self::UpdateCheck {} => "update_check",
+            Self::UpdateInstall {} => "update_install",
+            Self::Settings { .. } => "settings",
         }
     }
 
@@ -547,6 +562,8 @@ impl Command {
             // Asking how things are shown changes nothing. Changing it is moving around.
             Self::View { paper: None, focus: None, agent_icon: None, zoom: None } => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
             Self::View { .. } => Access::At(Level::Control),
+            // Asking is reading. Whether this app replaces itself is as far-reaching as installing, so it's the same level.
+            Self::Settings { auto_update: Some(_) } => Access::At(Level::Full),
             // A command with no row can't run: the table is the list.
             _ => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
         }
@@ -576,7 +593,8 @@ impl Command {
             Self::Tap { tab } | Self::Close { tab } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } => json!({ "tab": tab_of(tab) }),
             Self::PermissionRequest { level, .. } => json!({ "level": level.name() }),
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
-            Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} => Value::Null,
+            Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
+            Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} | Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall {} => Value::Null,
         }
     }
 }
@@ -879,6 +897,11 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
     json!({ "record": kept, "count": session.tabs().len(), "active": session.active().map(|id| id.0), "tabs": tabs, "find": find_json, "edit_mode": session.edit_mode(), "paper": paper_name(session.view()), "focus": session.view().focus })
 }
 
+/// Updates and settings are the app's. A session with no window has nothing to replace, and nothing to set.
+pub fn update_needs_app() -> AgentError {
+    AgentError::new("needs_app", "Updates and settings belong to the app, and this session has no window.", exit::FAILED).then("Open RectoPDF, and `recto` will talk to that.")
+}
+
 pub fn qa_needs_app() -> AgentError {
     AgentError::new("qa_needs_app", "QA commands only work on an app started with `recto qa start`.", exit::FAILED).then("Set RECTO_STATE_DIR to a temp folder and run `recto qa start`.")
 }
@@ -989,6 +1012,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "focus": view.focus, "agent_icon": !view.agent_icon_hidden }))
         }),
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
+        Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. } => Err(update_needs_app()),
         Command::Budget {} => Ok(json!({
             "tabs": access.with(|s| s.tabs().len()),
             "footprint_bytes": recto_platform::footprint_bytes(),
@@ -1873,7 +1897,29 @@ mod tests {
             Command::SessionSave {},
             Command::SessionRestore {},
             Command::SessionCheck {},
+            Command::UpdateStatus {},
+            Command::UpdateCheck {},
+            Command::UpdateInstall {},
+            Command::Settings { auto_update: None },
         ]
+    }
+
+    /// Failure: an agent below Full can install an update, or turn on what would install one for it, or can't read how things stand at Read-only. The owner's bar: installing needs Full. A session with no app says it's not a matter of level.
+    #[test]
+    fn installing_needs_full_and_reading_needs_only_read() {
+        assert_eq!(Command::UpdateInstall {}.access(), Access::At(Level::Full));
+        assert_eq!(Command::Settings { auto_update: Some("on".into()) }.access(), Access::At(Level::Full));
+        assert_eq!(Command::Settings { auto_update: Some("off".into()) }.access(), Access::At(Level::Full));
+        assert_eq!(Command::Settings { auto_update: None }.access(), Access::At(Level::ReadOnly));
+        assert_eq!(Command::UpdateStatus {}.access(), Access::At(Level::ReadOnly));
+        assert_eq!(Command::UpdateCheck {}.access(), Access::At(Level::Control));
+        let mut s = with_tabs(&["a"]);
+        for command in [Command::UpdateStatus {}, Command::UpdateCheck {}, Command::UpdateInstall {}, Command::Settings { auto_update: None }] {
+            let error = run(&mut s, Level::Full, &command).unwrap_err();
+            assert_eq!(error.code, "needs_app");
+            assert_ne!(error.exit, exit::PERMISSION);
+        }
+        assert!(run(&mut s, Level::Control, &Command::UpdateInstall {}).unwrap_err().exit == exit::PERMISSION, "below the level, it's the level that's said");
     }
 
     /// Failure: changing how pages are shown works at Read-only, or asking needs more than asking should, because the row can state only one level.

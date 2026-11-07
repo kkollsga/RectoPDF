@@ -87,3 +87,17 @@ fn hostile_state_records_do_no_harm() {
 fn generated_contents_are_read_as_hostile() {
     smoke("generated", seed(), rounds(1500), 16 * 1024);
 }
+
+/// Failure: a hostile `latest.json` or zip panics, or writes past what it said. The seeded run of what `tools/fuzz.sh` runs at length.
+#[test]
+fn update_holds() {
+    smoke("update", seed(), rounds(2000), 16 * 1024);
+}
+
+/// Failure: the fuzz run only ever exercises the first few bytes of the zip reader, as its seed isn't one it takes.
+#[test]
+fn the_update_seed_is_a_zip_the_reader_takes() {
+    let seeds = recto_fuzz::seeds::for_target("update");
+    let entries = recto_update::zip::read_directory(&mut std::io::Cursor::new(&seeds[1]), "RectoPDF.app").unwrap_or_else(|error| panic!("{error:?}"));
+    assert_eq!(entries.len(), 1);
+}

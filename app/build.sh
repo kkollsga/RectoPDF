@@ -3,6 +3,7 @@
 #
 #   app/build.sh            A debug build, for QA while working.
 #   app/build.sh --release  The build every budget is measured on: fat LTO, and it takes minutes.
+#   app/build.sh --sign-only  Signs an app that's been built, with RECTO_SIGN_IDENTITY. A release builds before there's a signing key anywhere on the machine, so no dependency's build script can reach one.
 #
 # Run it through tools/sysguard/heavy.sh.
 set -euo pipefail
@@ -11,17 +12,38 @@ APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$APP_DIR/.." && pwd)"
 mode="${1:---debug}"
 case "$mode" in
+    --sign-only) ;;
     --debug) CARGO_ARGS=(); RUST_OUT="$REPO/target/debug"; SWIFT_ARGS=(-c debug) ;;
     --release) CARGO_ARGS=(--release); RUST_OUT="$REPO/target/release"; SWIFT_ARGS=(-c release) ;;
-    *) sed -n '2,7p' "$0"; exit 2 ;;
+    *) sed -n '2,8p' "$0"; exit 2 ;;
 esac
 BUILD="$APP_DIR/build"
 APP="$BUILD/RectoPDF.app"
+# One version, from one place. It's what the updater compares with, and it's in every copy's Info.plist.
+VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' "$REPO/Cargo.toml" | head -1)"
+# The identity a release is signed with. `app/release-zip.sh --signed` sets it, and without it this is ad hoc.
+SIGN_IDENTITY="${RECTO_SIGN_IDENTITY:--}"
+if [ "$SIGN_IDENTITY" = - ]; then SIGN_ARGS=(--force --sign -); else SIGN_ARGS=(--force --sign "$SIGN_IDENTITY" --options runtime --timestamp); fi
+
+sign_app() {
+    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/libpdfium.dylib"
+    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-render-service"
+    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-indexer"
+    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-updater"
+    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto"
+    codesign "${SIGN_ARGS[@]}" "$APP"
+}
+
+if [ "$mode" = --sign-only ]; then
+    sign_app
+    echo "==> signed $APP"
+    exit 0
+fi
 
 "$REPO/tools/pdfium.sh" >/dev/null
 
 echo "==> Rust ($mode)"
-(cd "$REPO" && cargo build --locked -p recto-ffi -p recto-cli -p recto-render-service -p recto-indexer ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"})
+(cd "$REPO" && cargo build --locked -p recto-ffi -p recto-cli -p recto-render-service -p recto-indexer -p recto-update ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"})
 # The headings helper is a workspace of its own, so distillPDF's lopdf features stay out of the app: built apart, into the same folder.
 (cd "$REPO" && cargo build --locked --manifest-path crates/recto-headings/Cargo.toml --target-dir "${CARGO_TARGET_DIR:-$REPO/target}" --bin recto-headings ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"})
 mkdir -p "$BUILD/rust"
@@ -50,6 +72,7 @@ cp "$RUST_OUT/recto" "$APP/Contents/MacOS/recto"
 cp "$RUST_OUT/recto-render-service" "$APP/Contents/MacOS/recto-render-service"
 cp "$RUST_OUT/recto-indexer" "$APP/Contents/MacOS/recto-indexer"
 cp "$RUST_OUT/recto-headings" "$APP/Contents/MacOS/recto-headings"
+cp "$RUST_OUT/recto-updater" "$APP/Contents/MacOS/recto-updater"
 cp "$REPO/target/pdfium/libpdfium.dylib" "$APP/Contents/MacOS/libpdfium.dylib"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -61,7 +84,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key><string>RectoPDF</string>
     <key>CFBundleExecutable</key><string>RectoPDF</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>NSHighResolutionCapable</key><true/>
@@ -84,9 +107,5 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign --force --sign - "$APP/Contents/MacOS/libpdfium.dylib"
-codesign --force --sign - "$APP/Contents/MacOS/recto-render-service"
-codesign --force --sign - "$APP/Contents/MacOS/recto-indexer"
-codesign --force --sign - "$APP/Contents/MacOS/recto"
-codesign --force --sign - "$APP"
+sign_app
 echo "==> built $APP"

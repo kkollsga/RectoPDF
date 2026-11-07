@@ -682,19 +682,26 @@ fn reading_doesnt_grow_the_app() {
     run.settled();
     let rows = run.report()["app"]["sidebar_rows"].as_u64().unwrap();
     assert!(rows >= 20, "{rows}");
-    let footprint = || run.report()["memory"]["footprint_bytes"].as_u64().unwrap();
+    // What's allocated, and the footprint less what's in the compressor. The footprint alone can't be held to a megabyte: under the whole Mac's memory pressure the system compresses pages of system libraries' data the app shares and never touched again, and the footprint charges them once they're compressed. That's what failed this test with 2.4 to 2.9 MB, on this branch, while the update tests beside it raised the pressure: by region, the heap was unchanged and the rise was those libraries' `__DATA`, `__AUTH` and CoreUI pages going to the compressor. On main it was seen falling by as much. A real leak shows in the heap, as AppKit's did, or in what's resident.
+    let measure = || {
+        let memory = run.report()["memory"].clone();
+        let footprint = memory["footprint_bytes"].as_u64().unwrap();
+        (memory["heap_bytes"].as_u64().unwrap(), footprint.saturating_sub(memory["compressed_bytes"].as_u64().unwrap()), footprint)
+    };
     // The first few crossings make what's reused from then on.
     for page in ["2", "1", "2", "1"] {
         run.ok(&["goto", page]);
         run.settled();
     }
-    let before = footprint();
+    let (heap, resident, footprint) = measure();
     for round in 0..400 {
         run.ok(&["goto", if round % 2 == 0 { "2" } else { "1" }]);
     }
     run.settled();
-    let grew = footprint().saturating_sub(before);
-    assert!(grew < 1024 * 1024, "the app grew by {grew} bytes over 400 page crossings");
+    let (heap_after, resident_after, footprint_after) = measure();
+    let said = format!("over 400 page crossings: heap {heap} to {heap_after}, footprint less compressed {resident} to {resident_after}, footprint {footprint} to {footprint_after}");
+    assert!(heap_after.saturating_sub(heap) < 1024 * 1024, "the heap grew, {said}");
+    assert!(resident_after.saturating_sub(resident) < 1024 * 1024, "the app grew, {said}");
 }
 
 /// Failure: a long outline pushes the other tabs and the footer off the sidebar, the reason the owner asked for this, at a normal height or a short one. Or the rows of a long outline are all built. Or reading drags the contents back from where someone has scrolled them, or they lose the place while reading on.

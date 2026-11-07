@@ -816,6 +816,53 @@ pub fn process_memory(pid: u32) -> Option<ProcessMemory> {
     Some(ProcessMemory { footprint_bytes: info.ri_phys_footprint, peak_footprint_bytes: info.ri_lifetime_max_phys_footprint, cpu_ns: crate::local::ticks_to_ns(info.ri_user_time.saturating_add(info.ri_system_time)) })
 }
 
+/// The start of the kernel's `task_vm_info`, as far as `phys_footprint`: its layout's been fixed since it was extended with that, and the kernel fills as much as it's asked for.
+#[repr(C)]
+#[derive(Default)]
+struct TaskVmInfo {
+    virtual_size: u64,
+    region_count: i32,
+    page_size: i32,
+    resident_size: u64,
+    resident_size_peak: u64,
+    device: u64,
+    device_peak: u64,
+    internal: u64,
+    internal_peak: u64,
+    external: u64,
+    external_peak: u64,
+    reusable: u64,
+    reusable_peak: u64,
+    purgeable_volatile_pmap: u64,
+    purgeable_volatile_resident: u64,
+    purgeable_volatile_virtual: u64,
+    compressed: u64,
+    compressed_peak: u64,
+    compressed_lifetime: u64,
+    phys_footprint: u64,
+}
+
+const TASK_VM_INFO: libc::task_flavor_t = 22;
+
+/// See [`crate::OwnMemory`].
+pub(crate) fn own_memory() -> Option<crate::OwnMemory> {
+    let mut info = TaskVmInfo::default();
+    let mut count = libc::mach_msg_type_number_t::try_from(size_of::<TaskVmInfo>() / size_of::<libc::natural_t>()).ok()?;
+    // SAFETY: the buffer is `count` naturals long and lives for the call, and the kernel writes no more than `count` of them and says how many.
+    #[allow(deprecated)]
+    let rc = unsafe { libc::task_info(libc::mach_task_self(), TASK_VM_INFO, (&raw mut info).cast(), &raw mut count) };
+    if rc != 0 || usize::try_from(count).ok()? * size_of::<libc::natural_t>() < size_of::<TaskVmInfo>() {
+        return None;
+    }
+    let mut heap = std::mem::MaybeUninit::<libc::malloc_statistics_t>::zeroed();
+    // SAFETY: a null zone asks for every zone together, and the call fills the struct it's given.
+    let heap = unsafe {
+        libc::malloc_zone_statistics(std::ptr::null_mut(), heap.as_mut_ptr());
+        heap.assume_init()
+    };
+    Some(crate::OwnMemory { footprint: info.phys_footprint, compressed: info.compressed, heap: heap.size_in_use as u64 })
+}
+
 /// See [`crate::memory_free_percent`].
 pub(crate) fn memory_free_percent() -> Option<u32> {
     let mut level: c_int = 0;
@@ -875,6 +922,20 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: the numbers a memory test leans on are read from the wrong place, so a test that's meant not to be fooled by the compressor is fooled by its own reading. The footprint has to agree with the one `proc_pid_rusage` gives, which is what layout the kernel's struct has, and what's allocated has to be seen.
+    #[test]
+    fn own_memory_reads_true() {
+        let memory = own_memory().unwrap();
+        let rusage = process_memory(std::process::id()).unwrap().footprint_bytes;
+        assert!(memory.footprint.abs_diff(rusage) < 4 * 1024 * 1024, "{memory:?} against {rusage}");
+        assert!(memory.compressed <= memory.footprint.max(memory.compressed));
+        let before = own_memory().unwrap().heap;
+        let held = std::hint::black_box(vec![7u8; 8 * 1024 * 1024]);
+        let after = own_memory().unwrap().heap;
+        assert!(after >= before + 8 * 1024 * 1024, "{before} then {after}");
+        drop(held);
+    }
 
     /// Failure: a hostile worker shrinks a surface while the host reads it, and the host dies of a bus error.
     #[test]

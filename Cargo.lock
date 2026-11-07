@@ -667,7 +667,9 @@ dependencies = [
  "recto-session",
  "recto-svg",
  "recto-testpdf",
+ "recto-update",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -708,6 +710,7 @@ dependencies = [
  "recto-render-service",
  "recto-session",
  "recto-testpdf",
+ "recto-update",
  "serde_json",
  "uniffi",
 ]
@@ -726,6 +729,7 @@ dependencies = [
  "recto-render-service",
  "recto-session",
  "recto-testpdf",
+ "recto-update",
  "serde_json",
 ]
 
@@ -822,6 +826,18 @@ dependencies = [
 [[package]]
 name = "recto-testpdf"
 version = "0.1.0"
+
+[[package]]
+name = "recto-update"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "recto-platform",
+ "serde",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "regex-automata"

@@ -280,7 +280,7 @@ impl RecordStore {
     }
 
     /// Asks for the lock again, for a moment. An app that's just gone holds it until the kernel has finished with it, and starting empty beside its own record because of that would lose the very thing an update is for. On a thread that can wait.
-    fn wait_for_lock(&self) -> bool {
+    pub fn wait_for_lock(&self) -> bool {
         let began = Instant::now();
         loop {
             if self.holds_the_record() {

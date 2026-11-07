@@ -194,6 +194,8 @@ final class BookMark: NSView {
     private var quietFullScreen = false
     private var shown = false
     private var firstResponderWatch: NSKeyValueObservation?
+    private var waitingToComeForward = false
+    private var pendingFullScreen = false
 
     init(delegate: AppDelegate) {
         self.delegate = delegate
@@ -213,6 +215,8 @@ final class BookMark: NSView {
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 640, height: 420)
+        // A pointer moving over the app counts as someone being there, for a silent update. Comes in only while it moves.
+        window.acceptsMouseMovedEvents = true
         // Pinned to sRGB: the display's own wide-gamut tables cost several megabytes. Platform report, §1.
         window.colorSpace = .sRGB
         if delegate.isQuiet { window.setFrameOrigin(NSPoint(x: -40_000, y: -40_000)) }
@@ -292,10 +296,17 @@ final class BookMark: NSView {
         shown = true
         layout()
         if !delegate.isQuiet {
-            window.makeKeyAndOrderFront(nil)
-            // Back in front only if it was there: an app that was behind doesn't take the focus from anyone.
-            if placement.activate { NSApp.activate() }
-            if placement.fullScreen { window.toggleFullScreen(nil) }
+            if placement.inBackground {
+                // An update arriving while the user's in something else. It's there to come to, behind whatever's in front, and isn't key, and full screen's another Space, so that waits until they come to it.
+                waitingToComeForward = true
+                pendingFullScreen = placement.fullScreenWhenActive
+                window.orderBack(nil)
+            } else {
+                window.makeKeyAndOrderFront(nil)
+                // Back in front only if it was there: an app that was behind doesn't take the focus from anyone.
+                if placement.activate { NSApp.activate() }
+                if placement.fullScreen { window.toggleFullScreen(nil) }
+            }
         }
         applyFocus(placement.focusSidebar ? "sidebar" : delegate.core.focusView())
         delegate.core.windowShown(home: reader.home, tileLayers: UInt32(pages.report()["tile_layers"] as? Int ?? 0))
@@ -326,7 +337,18 @@ final class BookMark: NSView {
         return ScreenInfo(id: number, name: screen.localizedName, x: frame.minX, y: frame.minY, width: frame.width, height: frame.height, visibleX: visible.minX, visibleY: visible.minY, visibleWidth: visible.width, visibleHeight: visible.height)
     }
 
-    var isFullScreen: Bool { delegate.isQuiet ? quietFullScreen : window.styleMask.contains(.fullScreen) }
+    var isFullScreen: Bool { delegate.isQuiet ? quietFullScreen : window.styleMask.contains(.fullScreen) || pendingFullScreen }
+
+    /// The user's come to an app that updated behind their back: now it can be what it was.
+    func cameToTheFront() {
+        guard waitingToComeForward else { return }
+        waitingToComeForward = false
+        window.makeKeyAndOrderFront(nil)
+        if pendingFullScreen {
+            pendingFullScreen = false
+            window.toggleFullScreen(nil)
+        }
+    }
 
     /// Tells Rust how the window is, for the record. Its frame in full screen isn't where leaving full screen takes it.
     func noteWindow() {

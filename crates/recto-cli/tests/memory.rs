@@ -294,5 +294,7 @@ fn an_index_leaves_nothing_in_the_session() {
     println!("session before {before}, after indexing 300 pages {after}");
     // Well under what any page's text would cost, and over what a few logged lines and a thread's stack do.
     assert!(after < before + 2 * 1024 * 1024, "{before} to {after}");
-    assert_eq!(raw.call(&json!({ "cmd": "budget" }))["data"]["open_handles"].as_u64().unwrap(), handles_before, "a descriptor stayed behind");
+    // No more than before, and not exactly as many: `open` can still be holding a descriptor it lets go of a moment later, which made this fail under load with fewer after, 13 against 14.
+    let handles_after = raw.call(&json!({ "cmd": "budget" }))["data"]["open_handles"].as_u64().unwrap();
+    assert!(handles_after <= handles_before, "a descriptor stayed behind: {handles_before} then {handles_after}");
 }

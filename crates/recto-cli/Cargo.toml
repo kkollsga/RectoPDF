@@ -29,3 +29,5 @@ recto-svg.workspace = true
 recto-proto.workspace = true
 recto-render-service.workspace = true
 recto-testpdf.workspace = true
+recto-update.workspace = true
+sha2.workspace = true

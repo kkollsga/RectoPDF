@@ -30,6 +30,7 @@ pub enum HostAction {
     None,
     ShowOpenPanel,
     ShowAbout,
+    ShowSettings,
     Quit,
     CloseWindow,
 }
@@ -47,6 +48,8 @@ pub(crate) enum Action {
     ToggleAgentIcon,
     SetPaper(Paper),
     TogglePanel,
+    /// *Check for Updates…*, or *Update to X.Y.Z…* once there's one.
+    Update,
 }
 
 fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
@@ -81,9 +84,9 @@ fn line() -> MenuEntry {
 }
 
 /// The whole menu bar, as it stands.
-pub(crate) fn menu_bar(view: ViewSettings) -> Vec<MenuModel> {
+pub(crate) fn menu_bar(view: ViewSettings, update_title: &str) -> Vec<MenuModel> {
     vec![
-        MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
+        MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), entry("app.update", update_title, ""), line(), entry("app.settings", "Settings…", ","), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
         MenuModel { title: "File".into(), entries: vec![entry("file.open", "Open…", "o"), entry("file.close_window", "Close Window", "w")] },
         MenuModel { title: "Edit".into(), entries: edit_entries().into_iter().chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
         MenuModel {
@@ -142,6 +145,8 @@ pub(crate) fn panel(open: bool, shown: Paper, focus: bool) -> PanelModel {
 pub(crate) fn action(id: &str) -> Option<Action> {
     Some(match id {
         "app.about" => Action::Host(HostAction::ShowAbout),
+        "app.settings" => Action::Host(HostAction::ShowSettings),
+        "app.update" => Action::Update,
         // The system fills this one.
         "app.services" => Action::Host(HostAction::None),
         "edit.copy" => Action::Copy { anyway: false },
@@ -193,7 +198,7 @@ mod tests {
     #[test]
     fn everything_listed_does_something() {
         for view in [ViewSettings::default(), ViewSettings { focus: true, agent_icon_hidden: true, ..ViewSettings::default() }] {
-            for menu in menu_bar(view) {
+            for menu in menu_bar(view, "Check for Updates…") {
                 assert!(!menu.title.is_empty());
                 for item in menu.entries {
                     assert!(item.id.is_empty() || action(&item.id).is_some(), "{}", item.id);
@@ -216,7 +221,7 @@ mod tests {
         assert!(!enabled("edit.select_all", false, false));
         assert!(enabled("edit.select_all", true, false));
         assert!(enabled("view.zoom_in", false, false));
-        let edit = menu_bar(ViewSettings::default()).into_iter().find(|menu| menu.title == "Edit").unwrap();
+        let edit = menu_bar(ViewSettings::default(), "Check for Updates…").into_iter().find(|menu| menu.title == "Edit").unwrap();
         let copy = edit.entries.iter().find(|item| item.id == "edit.copy").unwrap();
         assert_eq!((copy.key.as_str(), copy.system_action.as_str()), ("c", "copy:"));
         let all = edit.entries.iter().find(|item| item.id == "edit.select_all").unwrap();
@@ -227,13 +232,24 @@ mod tests {
     /// Failure: the toggle doesn't say which way it is, or the paper showing isn't picked out, or the panel has anything in it at rest.
     #[test]
     fn the_lists_say_how_things_stand() {
-        let checked = |view, id: &str| menu_bar(view).into_iter().flat_map(|menu| menu.entries).find(|item| item.id == id).unwrap().checked;
+        let checked = |view, id: &str| menu_bar(view, "Check for Updates…").into_iter().flat_map(|menu| menu.entries).find(|item| item.id == id).unwrap().checked;
         assert!(checked(ViewSettings::default(), "view.agent_icon"));
         assert!(!checked(ViewSettings { agent_icon_hidden: true, ..ViewSettings::default() }, "view.agent_icon"));
         assert!(panel(false, Paper::White, false).sections.is_empty(), "only the button at rest");
         let open = panel(true, Paper::Warm, false);
         let selected: Vec<String> = open.sections.iter().flat_map(|section| &section.items).filter(|item| item.selected).map(|item| item.id.clone()).collect();
         assert_eq!(selected, vec!["paper.warm".to_string()]);
+    }
+
+    /// Failure: the owner's *Check for Updates…* isn't where it was asked for, doesn't turn into the offer, or Settings has no ⌘, as on any Mac app.
+    #[test]
+    fn the_app_menu_has_the_update_item_and_settings() {
+        let items = menu_bar(ViewSettings::default(), "Update to 0.2.0…").into_iter().find(|menu| menu.title == "RectoPDF").unwrap().entries;
+        let item = |id: &str| items.iter().find(|item| item.id == id).unwrap().clone();
+        assert_eq!(item("app.update").title, "Update to 0.2.0…");
+        assert_eq!((item("app.settings").title.as_str(), item("app.settings").key.as_str()), ("Settings…", ","));
+        assert_eq!(action("app.update"), Some(Action::Update));
+        assert_eq!(action("app.settings"), Some(Action::Host(HostAction::ShowSettings)));
     }
 
     /// Failure: a key meant for typing or for something else zooms, or `+` on a keyboard that has it as shifted `=` doesn't.

@@ -351,6 +351,98 @@ pub fn clone_source_in(file: &Path, folder: &Path) -> io::Result<PathBuf> {
     Ok(master)
 }
 
+/// Swaps two paths on one volume in a single step, so at no moment is either of them missing or half there. What an update stands on: a crash on either side of it leaves one whole app at the app's path. Fails, changing nothing, if the volume can't do this.
+pub fn swap_paths(a: &Path, b: &Path) -> io::Result<()> {
+    let (a_c, b_c) = (c_path(a)?, c_path(b)?);
+    // SAFETY: both are NUL-terminated and valid for the call, and renamex_np writes nothing through them.
+    if unsafe { libc::renamex_np(a_c.as_ptr(), b_c.as_ptr(), libc::RENAME_SWAP) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Whether this process can move this path to another folder: it needs to be able to write to it, and it can't be locked. What a swap of an app needs, of the bundle and of its folder. A real answer for this user, with whatever ACLs there are.
+pub fn can_be_replaced(path: &Path) -> bool {
+    use std::os::macos::fs::MetadataExt as _;
+    let Ok(path_c) = c_path(path) else { return false };
+    // SAFETY: NUL-terminated and valid for the call, and it writes nothing.
+    if unsafe { libc::access(path_c.as_ptr(), libc::W_OK | libc::X_OK) } != 0 {
+        return false;
+    }
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.st_flags() & (libc::UF_IMMUTABLE | libc::SF_IMMUTABLE) == 0)
+}
+
+/// Makes a folder private to this user, where it's theirs and a real folder.
+pub fn make_folder_private(path: &Path) -> io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_dir() || meta.uid() != current_uid() {
+        return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+/// The processes running this very executable, by what the system says each was started from. Bounded: the system's own list, read once.
+pub fn processes_running(executable: &Path) -> Vec<u32> {
+    let Ok(wanted) = executable.canonicalize() else { return Vec::new() };
+    // Room for a few more than there are now, as there can be new ones by the second call.
+    // SAFETY: a null buffer asks only for how many.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    let Ok(count) = usize::try_from(count) else { return Vec::new() };
+    let mut pids = vec![0 as libc::c_int; count + 64];
+    let Ok(bytes) = libc::c_int::try_from(pids.len() * size_of::<libc::c_int>()) else { return Vec::new() };
+    // SAFETY: the buffer and its size in bytes describe `pids`.
+    let found = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    let Ok(found) = usize::try_from(found) else { return Vec::new() };
+    let mut matches = Vec::new();
+    let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    for pid in pids.iter().take(found.min(pids.len())).copied().filter(|pid| *pid > 0) {
+        // SAFETY: the buffer and its size describe `path`, and the call writes at most that much.
+        let length = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+        let Ok(length) = usize::try_from(length) else { continue };
+        if length > 0 && Path::new(OsStr::from_bytes(&path[..length.min(path.len())])) == wanted {
+            matches.push(pid.cast_unsigned());
+        }
+    }
+    matches
+}
+
+/// The path a process is running, if it can be said. For telling a process from another that's come round with the same number.
+pub fn process_path(pid: u32) -> Option<PathBuf> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: the buffer and its size describe `path`, and the call writes at most that much.
+    let length = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+    let length = usize::try_from(length).ok().filter(|length| *length > 0)?;
+    Some(PathBuf::from(OsStr::from_bytes(&path[..length.min(path.len())])))
+}
+
+/// Asks a process to end, or tells it to. Says whether it was there to be told.
+pub fn signal_process(pid: u32, kill: bool) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+    // SAFETY: only a number and a signal go in.
+    unsafe { libc::kill(pid, if kill { libc::SIGKILL } else { libc::SIGTERM }) == 0 }
+}
+
+/// Starts a program that outlives this process: in a session of its own, with nothing on standard input and what it says appended to `log`. It isn't waited for.
+pub fn spawn_detached(program: &Path, args: &[String], envs: &[(String, String)], log: &Path) -> io::Result<u32> {
+    use std::os::unix::process::CommandExt as _;
+    use std::process::{Command, Stdio};
+    let out = OpenOptions::new().create(true).append(true).mode(0o600).open(log)?;
+    let mut command = Command::new(program);
+    command.args(args).envs(envs.iter().map(|(key, value)| (key, value))).stdin(Stdio::null()).stdout(out.try_clone()?).stderr(out);
+    // SAFETY: setsid is async-signal-safe, and touches nothing of this process.
+    unsafe {
+        command.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let mut child = command.spawn()?;
+    let pid = child.id();
+    // Reaps it if it ends first, and does nothing more. The handle goes with this process otherwise.
+    let _ = std::thread::Builder::new().name("recto-reap".into()).stack_size(64 * 1024).spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(pid)
+}
+
 /// Syncs the folder a file is in, so what was just renamed or removed there stays that way.
 pub fn sync_folder_of(path: &Path) -> io::Result<()> {
     let Some(folder) = path.parent() else { return Ok(()) };
@@ -630,5 +722,44 @@ mod tests {
         assert!(after.threads >= 1);
         assert!(real_home().is_some());
         assert!(system_temp_dir().is_some_and(|temp| temp.is_absolute()), "{:?}", system_temp_dir());
+    }
+
+    /// Failure: a swap loses one side, or a process can't be found by what it's running, so the updater would replace an app that's still in use.
+    #[test]
+    fn a_swap_is_whole_and_a_process_is_found_by_its_program() {
+        let dir = temp("swap");
+        ensure_private_dir(&dir).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        std::fs::write(a.join("from-a"), b"x").unwrap();
+        std::fs::write(b.join("from-b"), b"y").unwrap();
+        swap_paths(&a, &b).unwrap();
+        assert!(a.join("from-b").exists() && b.join("from-a").exists());
+        assert!(swap_paths(&a, &dir.join("missing")).is_err());
+        assert!(a.join("from-b").exists(), "a failed swap changes nothing");
+        std::fs::remove_dir_all(&dir).unwrap();
+        let me = std::env::current_exe().unwrap();
+        assert!(processes_running(&me).contains(&std::process::id()));
+        assert_eq!(process_path(std::process::id()).map(|path| path.canonicalize().unwrap()), Some(me.canonicalize().unwrap()));
+        assert!(processes_running(Path::new("/no/such/program")).is_empty());
+    }
+
+    /// Failure: what's started to install an update ends with the app that started it, or takes the app's output as its own.
+    #[test]
+    fn a_detached_program_writes_its_log_on_its_own() {
+        let dir = temp("detached");
+        ensure_private_dir(&dir).unwrap();
+        let log = dir.join("log");
+        let pid = spawn_detached(Path::new("/bin/sh"), &["-c".into(), "echo hello \"$X\"; [ -t 0 ] && echo tty || echo no-tty".into()], &[("X".into(), "there".into())], &log).unwrap();
+        assert!(pid > 0);
+        for _ in 0..200 {
+            if std::fs::read_to_string(&log).is_ok_and(|text| text.contains("tty")) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "hello there\nno-tty\n");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
