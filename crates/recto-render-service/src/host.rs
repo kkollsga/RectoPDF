@@ -1277,7 +1277,10 @@ impl DocRenderer {
                 other => return other.map_err(RenderFailure::from),
             }
         }
+        let busy = self.stats.too_busy;
         match self.text_job(page, boxes, false, generation) {
+            // The Mac was too busy for the read to get its time: nothing's known about the page, so nothing's remembered, and the next ask reads it again. Before, a busy moment left a page unreadable for the session, the copy of it saying it took too long.
+            Err(JobFailure::Stopped(reason @ KillReason::Deadline)) if self.stats.too_busy > busy => Err(RenderFailure::PageReadFailed { page, reason }),
             Err(JobFailure::Stopped(reason)) => {
                 self.remember(page).text = Some(reason);
                 Err(RenderFailure::PageReadFailed { page, reason })
@@ -1433,7 +1436,11 @@ impl DocRenderer {
                     }
                 }
                 Err(Stop::Killed(reason)) => {
-                    self.bury_worker();
+                    let cpu_ns = self.bury_worker_noting_cpu();
+                    // Out of time with too little of the processor to have been the cause: the Mac was busy, as `open_in` reckons it, and it says nothing about the page.
+                    if matches!(reason, KillReason::Deadline) && cpu_ns.is_some_and(|cpu| was_starved(cpu, self.policy.page_deadline)) {
+                        self.stats.too_busy += 1;
+                    }
                     match reason {
                         KillReason::MemoryLimit => self.stats.memory_kills += 1,
                         KillReason::Deadline => self.stats.deadline_kills += 1,
@@ -1473,6 +1480,16 @@ impl DocRenderer {
             worker.child.wait_bounded(FINAL_NUMBERS_WAIT);
             self.note_peak(&worker);
         }
+    }
+
+    /// [`Self::bury_worker`], saying how much of the processor the worker had used in its life, from its final numbers.
+    fn bury_worker_noting_cpu(&mut self) -> Option<u64> {
+        self.retire_after_page = None;
+        let worker = self.worker.take()?;
+        worker.child.kill_now();
+        worker.child.wait_bounded(FINAL_NUMBERS_WAIT);
+        self.note_peak(&worker);
+        worker.child.memory().map(|memory| memory.cpu_ns)
     }
 
     fn note_peak(&mut self, worker: &Worker) {
