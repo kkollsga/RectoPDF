@@ -60,6 +60,21 @@ const fn paper_channels() -> [i32; 3] {
 
 /// **How turned-over text keeps its weight** (owner, 2026-11-07: "The font in the future competitiveness is not super readible. I think its a bit to skinny"). On white paper the renderer's text is what Preview draws: PDFium draws glyphs through Core Graphics on a Mac, and at the same scale their ink is the same to four places. Turned over in sRGB's encoding, though, a letter's anti-aliased edge gives off much less light above dark paper than it took from white, so light text came out thinner than black, and thinner than macOS draws its own light text: in three system fonts at the reader's scale, 0.70 to 0.78 of the light per letter against 0.84 to 0.88 for Core Text's own light-on-dark. Paper-ness goes through this power first, so an edge gives off more: at 1.8 the turned-over text gives off 0.98 to 1.00 of what Core Text's own does. White and black stay where they were, so paper and ink are unchanged.
 const TURNED_LIGHTNESS_POWER: f64 = 1.8;
+/// **The curve is for text and lines** (owner, 2026-11-08: coloured areas in flipped images keep the gentler curve, so charts keep richer colours). A pixel whose channels are this close is grey, as black text's edges, a scan's text and rules are, and takes all of the curve. This far apart is colour, as a chart's bars and fills are, and turns straight, as before the curve. Between, the curve fades, so a coloured letter's edge has no step. Figure 8's bars are 96 to 219 apart.
+const CURVE_GREY_SPREAD: i32 = 16;
+const CURVE_COLOUR_SPREAD: i32 = 64;
+
+/// How much of the curve a pixel takes, in 256ths, for each spread of its channels. A table, as a division a pixel doubled a colour tile's cost.
+const CURVE_WEIGHT: [i32; 256] = {
+    let mut table = [0i32; 256];
+    let mut spread = 0;
+    while spread < 256 {
+        let weight = (CURVE_COLOUR_SPREAD - spread as i32) * 256 / (CURVE_COLOUR_SPREAD - CURVE_GREY_SPREAD);
+        table[spread] = if weight < 0 { 0 } else if weight > 256 { 256 } else { weight };
+        spread += 1;
+    }
+    table
+};
 
 /// Paper-ness after [`TURNED_LIGHTNESS_POWER`], for each value of it. Made once.
 static TURNED_LIGHTNESS: std::sync::LazyLock<[u8; 256]> = std::sync::LazyLock::new(|| std::array::from_fn(|value| (255.0 * (value as f64 / 255.0).powf(TURNED_LIGHTNESS_POWER)).round().clamp(0.0, 255.0) as u8));
@@ -77,7 +92,9 @@ fn turn_pixel(pixel: &mut [u8; 4], lightness: &[u8; 256]) {
     let (b, g, r) = (i32::from(pixel[0]), i32::from(pixel[1]), i32::from(pixel[2]));
     // Rec. 601 weights, in 256ths: 255 is paper, 0 is ink. At most 255, as the weights add up to 256.
     let luma = (77 * r + 150 * g + 29 * b) >> 8;
-    let paperness = i32::from(lightness[(luma as usize) & 0xFF]);
+    // Text and lines are near grey and take the curve; colour, as a chart's fills, turns straight, with the curve fading out between.
+    let spread = r.max(g).max(b) - r.min(g).min(b);
+    let paperness = if spread >= CURVE_COLOUR_SPREAD { luma } else { luma + (((i32::from(lightness[(luma as usize) & 0xFF]) - luma) * CURVE_WEIGHT[(spread as usize) & 0xFF]) >> 8) };
     let over = |paper: i32, ink: i32, value: i32| (((paper * paperness + ink * (255 - paperness)) / 255) + value - luma).clamp(0, 255) as u8;
     pixel[0] = over(paper_b, DARK_INK[2], b);
     pixel[1] = over(paper_g, DARK_INK[1], g);
@@ -384,6 +401,12 @@ pub fn turn_over(pixels: &mut [u8], width: u32, height: u32, stride: u32, grey: 
         }
         return;
     }
+    // The last colour turned and what it came to: a page's tile is mostly runs of one colour, its paper, so most pixels are a look and a copy.
+    let mut last: ([u8; 3], [u8; 3]) = ([0xFF; 3], {
+        let mut white = [0xFF, 0xFF, 0xFF, 0xFF];
+        turn_pixel(&mut white, lightness);
+        [white[0], white[1], white[2]]
+    });
     for (y, row) in pixels.chunks_mut(stride).take(height as usize).enumerate() {
         let Some(row) = row.get_mut(..row_bytes) else { continue };
         let here: Vec<Keep> = keeps.iter().filter(|keep| (keep.top as usize..keep.bottom as usize).contains(&y)).copied().collect();
@@ -396,7 +419,13 @@ pub fn turn_over(pixels: &mut [u8], width: u32, height: u32, stride: u32, grey: 
             if let Some((_, gains)) = to_whiten.iter().find(|(place, _)| (place.left as usize..place.right as usize).contains(&x)) {
                 whiten_pixel(pixel, *gains);
             }
-            turn_pixel(pixel, lightness);
+            let colour = [pixel[0], pixel[1], pixel[2]];
+            if colour == last.0 {
+                pixel[..3].copy_from_slice(&last.1);
+            } else {
+                turn_pixel(pixel, lightness);
+                last = (colour, [pixel[0], pixel[1], pixel[2]]);
+            }
         }
     }
 }
@@ -484,6 +513,29 @@ mod tests {
             given += (light(dark_rgb(grey * 0x01_01_01)) - paper) / (ink - paper);
         }
         assert!(given / taken >= 0.7, "turned-over edges give off {:.2} of what they took from white", given / taken);
+    }
+
+    /// Failure: a chart's colours fade on dark paper, as figure 8's deep blue bars went pale lavender once lightness was curved for text (owner, 2026-11-08: the curve is for text and lines; coloured areas keep the gentler one). A colour turns over as it did before the curve, a grey takes the curve, and between them the curve fades in, so an anti-aliased edge has no step.
+    #[test]
+    fn colours_keep_the_straight_turn_and_greys_take_the_curve() {
+        let straight = |rgb: u32| {
+            let (r, g, b) = (((rgb >> 16) & 0xFF) as i32, ((rgb >> 8) & 0xFF) as i32, (rgb & 0xFF) as i32);
+            let luma = (77 * r + 150 * g + 29 * b) >> 8;
+            let [pr, pg, pb] = paper_channels();
+            let over = |paper: i32, ink: i32, value: i32| (((paper * luma + ink * (255 - luma)) / 255) + value - luma).clamp(0, 255) as u32;
+            (over(pr, DARK_INK[0], r) << 16) | (over(pg, DARK_INK[1], g) << 8) | over(pb, DARK_INK[2], b)
+        };
+        for colour in [0x15_20_F0, 0x4A_8A_C6, 0xC0_30_30, 0x20_80_30] {
+            assert_eq!(dark_rgb(colour), straight(colour), "{colour:06x} keeps its colour");
+        }
+        assert!(luma(dark_rgb(0x80_80_80)) > luma(straight(0x80_80_80)) + 20, "a grey takes the curve");
+        let mut last = dark_rgb(0x80_80_80);
+        for step in 1..=64u32 {
+            let edge = (0x80 << 16) | (0x80 << 8) | (0x80 + step * 2).min(255);
+            let now = dark_rgb(edge);
+            assert!(luma(now).abs_diff(luma(last)) <= 6, "a step at {edge:06x}: {:06x} after {:06x}", now, last);
+            last = now;
+        }
     }
 
     /// Failure: an image turns into its negative on dark paper, as the hillshade on the USGS map did. It stays itself, a little dimmed, while the page around it turns over.
@@ -678,6 +730,23 @@ mod tests {
             println!("{name}: p50 {} us, p95 {} us", samples[100], samples[190]);
         };
         time("turn over", &|pixels| turn_over(pixels, 512, 512, 2048, false, &[], &[]));
+        // A colour tile as a page has them: white, grey text, and a fifth of it a chart's flat colour. Turned from a fresh copy each time, as a tile is turned once.
+        let page_like: Vec<u8> = (0..512 * 512)
+            .flat_map(|at: usize| {
+                let (x, y) = (at % 512, at / 512);
+                if x > 300 && y > 300 { [240u8, 32, 21, 255] } else if (x / 3 + y / 7) % 5 == 0 { let v = ((x * 37 + y * 11) % 256) as u8; [v, v, v, 255] } else { [255, 255, 255, 255] }
+            })
+            .collect();
+        let mut samples: Vec<u128> = (0..200)
+            .map(|_| {
+                let mut pixels = page_like.clone();
+                let started = std::time::Instant::now();
+                turn_over(&mut pixels, 512, 512, 2048, false, &[], &[]);
+                started.elapsed().as_micros()
+            })
+            .collect();
+        samples.sort_unstable();
+        println!("turn over a page-like colour tile: p50 {} us, p95 {} us", samples[100], samples[190]);
         time("whiten and turn over", &|pixels| turn_over(pixels, 512, 512, 2048, false, &[], &[(Keep { left: 0, top: 0, right: 512, bottom: 512 }, [270, 280, 300])]));
         let page = tile(31);
         time("judge a page picture", &|_| {
