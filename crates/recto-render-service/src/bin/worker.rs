@@ -16,9 +16,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use transport::{FrameReader, ReadError, send_all};
 
-/// Compiled as a release by `app/release-zip.sh`, which can't be changed afterwards. A release worker never runs without its walls, wherever it is.
-const RELEASE: bool = option_env!("RECTO_RELEASE").is_some();
-
 struct Args {
     pdfium: PathBuf,
     idle_exit: Duration,
@@ -49,11 +46,17 @@ fn main() {
     // Before the hello, so the host finds it waiting. The host may have sent no invitation: then there's no link, and shared memory does.
     let surfaces = SurfaceReceiver::from_invite();
     let Ok(pdfium) = Pdfium::load(&args.pdfium) else { std::process::exit(exit_code::NO_LIBRARY) };
-    // After loading, which asks system services for things, and before the hello, so no document can reach a worker whose walls aren't up.
-    if bundle::walls_required(std::env::current_exe().ok().as_deref(), RELEASE) && wall::put_up().is_err() {
-        std::process::exit(exit_code::NO_WALL);
+    // After loading, which asks system services for things, and before the hello, so no document can reach a worker whose walls aren't up. The hello says whether they are.
+    let walled = bundle::walls_required(std::env::current_exe().ok().as_deref(), bundle::RELEASE);
+    if walled {
+        match wall::put_up() {
+            Ok(_) => {}
+            Err(wall::NoWall::NotSandboxed) => std::process::exit(exit_code::NO_WALL),
+            Err(wall::NoWall::NothingToDrop) => std::process::exit(exit_code::NO_RIGHTS_TO_DROP),
+            Err(wall::NoWall::LaunchdReachable) => std::process::exit(exit_code::LAUNCHD_REACHABLE),
+        }
     }
-    if send_all(&channel, &proto::encode_hello(std::process::id()), &[]).is_err() {
+    if send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled }), &[]).is_err() {
         std::process::exit(exit_code::ORPHANED);
     }
     let code = serve(channel, &pdfium, &args, surfaces.as_ref());

@@ -1,7 +1,7 @@
 //! The renderer's walls, from the inside: whether the App Sandbox is really on, and letting go of every Mach send right that reaches another process.
 //!
-//! The sandbox comes from the helper's signature (`com.apple.security.app-sandbox`), so a build signed wrong runs without it and nothing says so. [`put_up`] tests the wall itself rather
-//! than trusting a flag, and the worker refuses to read a byte of a document when it fails. The App Sandbox alone still lets a process launch any app through LaunchServices, and the app
+//! The sandbox comes from the helper's signature (`com.apple.security.app-sandbox`), so a build signed wrong runs without it and nothing says so. [`put_up`] asks the kernel whether
+//! this process is sandboxed and checks the App Sandbox has given it a container, and the worker refuses to read a byte of a document when it hasn't. The App Sandbox alone still lets a process launch any app through LaunchServices, and the app
 //! it launches runs outside the sandbox (`docs/research/2026-11-07-sandbox-spike.md`, "The hole"). No entitlement takes that away, so the second wall drops every send right that isn't
 //! the kernel's. A Mach service can only be reached through a send right, and a process can't make one, so with none left nothing can be asked for: not launchd, LaunchServices, the
 //! pasteboard or the window server. Public calls from `<mach/*.h>`. It isn't a documented security boundary: it's behind the sandbox, not instead of it.
@@ -20,7 +20,10 @@ unsafe extern "C" {
     fn task_get_special_port(task: u32, which: c_int, port: *mut u32) -> c_int;
     fn task_set_exception_ports(task: u32, mask: u32, port: u32, behavior: c_int, flavor: c_int) -> c_int;
     fn vm_deallocate(task: u32, address: usize, size: usize) -> c_int;
+    fn mach_port_kobject(task: u32, name: u32, object_type: *mut u32, address: *mut u64) -> c_int;
     fn bootstrap_look_up(bp: u32, name: *const c_char, port: *mut u32) -> c_int;
+    /// libsandbox, in libSystem. In no public header, and the documented way to ask: Chromium and WebKit ask the same question this way. 1 is sandboxed, 0 isn't, -1 couldn't tell.
+    fn sandbox_check(pid: c_int, operation: *const c_char, filter: c_int, ...) -> c_int;
 }
 
 const MACH_PORT_TYPE_SEND: u32 = 1 << 16;
@@ -31,10 +34,10 @@ const TASK_DEBUG_CONTROL_PORT: c_int = 10;
 const EXC_MASK_ALL: u32 = 0x3ffe;
 const EXCEPTION_DEFAULT: c_int = 1;
 
-/// Why the walls aren't up. The worker exits on any of them before a document reaches it.
+/// Why the walls aren't up. The worker exits on any of them before a document reaches it, each with its own code, so the host can say which.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoWall {
-    /// A folder every plain process can list was listable, or refused for a reason that isn't the sandbox's. So the App Sandbox isn't on: the helper was signed without it.
+    /// The kernel says this process isn't sandboxed, or it is but the App Sandbox gave it no container: the helper was signed without the sandbox, or this is some other sandbox.
     NotSandboxed,
     /// No right was there to drop, so this process isn't as this code understands a process to be, and the Mach wall can't be vouched for.
     NothingToDrop,
@@ -47,22 +50,63 @@ pub enum NoWall {
 pub struct MachDrop {
     /// Send rights let go of.
     pub dropped: u32,
-    /// Kept because they're the kernel's: this task, its threads, the host, a semaphore. Threads and memory calls need them, and they reach no process.
+    /// Kept: the kernel's own, such as this task, its threads and the host, which reach no process, and any the kernel wouldn't describe, as dropping a right a library still uses
+    /// could crash it later. What decides the wall is that launchd doesn't answer afterwards, which [`put_up`] checks.
     pub kept: u32,
 }
 
-/// Whether the App Sandbox is in force on this process. The test is the wall itself: `/Users` is listable by any plain process and refused inside the sandbox, with `EPERM`, which is how
-/// the sandbox refuses. Anything else, a listing, `ENOENT` or `EACCES`, counts as no sandbox, so a strange Mac fails closed. One denied read, logged by the system as a sandbox violation.
-pub fn sandbox_in_force() -> bool {
-    matches!(std::fs::read_dir("/Users"), Err(error) if error.raw_os_error() == Some(libc::EPERM))
+/// Whether the kernel has this process in any sandbox at all. True inside an agent's seatbelt too, so on its own it doesn't say the App Sandbox is on. Asks; logs nothing.
+pub fn in_a_sandbox() -> bool {
+    // SAFETY: a null operation with no filter asks only whether there's a sandbox, and passes nothing to read.
+    unsafe { sandbox_check(libc::getpid(), std::ptr::null(), 0) == 1 }
 }
 
-/// Lets go of every send right that isn't the kernel's, and clears every slot a later call could fetch one back from: the task's special ports, its registered ports and its exception
-/// ports. With the exception ports gone this process makes no crash report: the host reads the exit status, and a report would hold hostile bytes anyway. Receive rights stay, so a
-/// link made before this, such as the one surfaces come over, keeps working.
+/// Whether the App Sandbox is in force on this process: the kernel says it's sandboxed, and the App Sandbox gave it a container, which it says in `APP_SANDBOX_CONTAINER_ID`. The host
+/// starts a worker with an empty environment, so only the App Sandbox can have put that there, and an inherited seatbelt alone, which sets nothing, reads as no. Both are positive
+/// answers, so nothing here depends on where the user's home folder is, and nothing is denied or logged.
+pub fn sandbox_in_force() -> bool {
+    in_a_sandbox() && std::env::var_os("APP_SANDBOX_CONTAINER_ID").is_some_and(|id| !id.is_empty())
+}
+
+/// What the kernel says a right names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Named {
+    /// A kernel object: this task, a thread, the host, a semaphore, a driver's connection.
+    Kernel,
+    /// A port some process receives on.
+    Process,
+    /// The kernel wouldn't say.
+    Unknown,
+}
+
+/// Asks the kernel what a send right names: `mach_port_kobject`, then the older `mach_port_kernel_object`, both in `<mach/mach_port.h>`. A port no kernel object stands behind reads as
+/// type 0 (none) or all ones (unknown), and a kernel object as its small type number. If both calls fail, it's `Unknown`, and the right is kept.
+fn named(task: u32, name: u32) -> Named {
+    let (mut object_type, mut address) = (0u32, 0u64);
+    // SAFETY: both out-pointers are live, and these only read about a name this process holds. The older call writes a 32-bit address into the first half of `address`.
+    let rc = unsafe {
+        let mut rc = mach_port_kobject(task, name, &raw mut object_type, &raw mut address);
+        if rc != 0 {
+            rc = mach_port_kernel_object(task, name, &raw mut object_type, &raw mut address);
+        }
+        rc
+    };
+    match (rc, object_type) {
+        (0, 0 | u32::MAX) => Named::Process,
+        (0, _) => Named::Kernel,
+        _ => Named::Unknown,
+    }
+}
+
+/// Lets go of every send right to a process, and clears every slot a later call could fetch one back from: the task's special ports, its registered ports and its exception ports.
+/// Launchd's right goes whatever the kernel says of it. With the exception ports gone this process makes no crash report: the host reads the exit status, and a report would hold
+/// hostile bytes anyway. Receive rights stay, so a link made before this, such as the one surfaces come over, keeps working.
 pub fn drop_mach_send_rights() -> MachDrop {
-    // SAFETY: reading a variable the runtime set before `main`.
-    let task = unsafe { mach_task_self_ };
+    // SAFETY: reading variables the runtime set before `main`.
+    let (task, launchd) = unsafe { (mach_task_self_, bootstrap_port) };
+    let mut special = 0u32;
+    // SAFETY: `special` is live, and this reads only this task's own slot. It names the same port as `bootstrap_port` unless something replaced it.
+    unsafe { task_get_special_port(task, TASK_BOOTSTRAP_PORT, &raw mut special) };
     let mut names: *mut u32 = std::ptr::null_mut();
     let mut types: *mut u32 = std::ptr::null_mut();
     let (mut name_count, mut type_count) = (0u32, 0u32);
@@ -85,11 +129,8 @@ pub fn drop_mach_send_rights() -> MachDrop {
         if kind & MACH_PORT_TYPE_SEND == 0 {
             continue;
         }
-        let (mut object_type, mut address) = (0u32, 0u64);
-        // SAFETY: both out-pointers are live, and this only reads about a name this process holds.
-        let described = unsafe { mach_port_kernel_object(task, *name, &raw mut object_type, &raw mut address) };
-        // A port some process receives on reads as "unknown", `u32::MAX`. A kernel object reads as its small type number.
-        if described == 0 && object_type != 0 && object_type != u32::MAX {
+        let is_launchd = *name != 0 && (*name == launchd || *name == special);
+        if !is_launchd && named(task, *name) != Named::Process {
             outcome.kept += 1;
             continue;
         }
@@ -122,7 +163,7 @@ pub fn launchd_reachable() -> bool {
     }
 }
 
-/// Both walls, in order, checked: the sandbox is on, the rights are gone, and launchd doesn't answer. For a worker after its library has loaded and before any hostile byte arrives,
+/// Both walls, in order, checked: the App Sandbox is on, the rights are gone, and launchd doesn't answer. For a worker after its library has loaded and before any hostile byte arrives,
 /// since loading asks `cfprefsd` and `lsd.mapdb` for things and nothing after does.
 pub fn put_up() -> Result<MachDrop, NoWall> {
     if !sandbox_in_force() {
@@ -145,6 +186,7 @@ mod tests {
     /// Failure: the wall test reads a plain process as sandboxed, so a helper signed without the sandbox would draw hostile files. This test process isn't sandboxed.
     #[test]
     fn a_plain_process_is_not_read_as_sandboxed() {
+        assert!(!in_a_sandbox());
         assert!(!sandbox_in_force());
         assert!(launchd_reachable(), "a plain process reaches launchd, so the check after the drop can see a difference");
     }

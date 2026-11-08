@@ -137,7 +137,10 @@ pages = state["app"]["pages"]
 assert state["reader"]["settled"] is True, "it never settled"
 assert state["reader"]["pages"] == 1, "the PDF did not open"
 assert pages["tile_layers"] > 0, "nothing was drawn: %r" % pages
-assert state["memory"]["worker_bytes"] > 0 or state["reader"]["tiles"].get("attached", 0) > 0, "no worker drew it"
+# A tile in a layer came as an IOSurface over the Mach link: the app has no other way for one to arrive, so this is the tile path after the worker dropped its rights.
+assert state["reader"]["tiles"].get("attached", 0) > 0, "no surface tile arrived: %r" % state["reader"]["tiles"]
+# The release worker refuses to run without its walls, and its hello says it has them up.
+assert state["memory"].get("workers_walled", 0) >= 1, "no live worker said it was sandboxed: %r" % state["memory"]
 assert state["update"]["build"] == "release", "the app reads an override: %r" % state["update"]
 ' || { echo "the signed app didn't draw" >&2; exit 1; }
 if "$APP/Contents/MacOS/recto" qa update-clock 1000 >/dev/null 2>&1; then echo "a release has a test's clock" >&2; exit 1; fi

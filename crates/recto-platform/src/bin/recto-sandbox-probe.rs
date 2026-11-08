@@ -30,6 +30,7 @@ mod mac {
         fn host_get_special_port(host: u32, node: c_int, which: c_int, port: *mut u32) -> c_int;
         fn mach_host_self() -> u32;
         fn mach_thread_self() -> u32;
+        fn sandbox_check(pid: c_int, operation: *const c_char, filter: c_int, ...) -> c_int;
         fn task_get_exception_ports(task: u32, mask: u32, masks: *mut u32, count: *mut u32, handlers: *mut u32, behaviors: *mut i32, flavors: *mut i32) -> c_int;
         fn thread_get_exception_ports(thread: u32, mask: u32, masks: *mut u32, count: *mut u32, handlers: *mut u32, behaviors: *mut i32, flavors: *mut i32) -> c_int;
     }
@@ -278,6 +279,17 @@ mod mac {
         }
     }
 
+    /// What this process can tell about its own sandbox: the kernel's answer, and the variables the App Sandbox sets.
+    fn state() {
+        // SAFETY: a null operation with no filter only asks whether there's a sandbox.
+        let checked = unsafe { sandbox_check(libc::getpid(), std::ptr::null(), 0) };
+        report("state:sandbox_check", checked == 1, checked);
+        let container = std::env::var("APP_SANDBOX_CONTAINER_ID").unwrap_or_default();
+        report("state:container_id", !container.is_empty(), container);
+        report("state:home", true, std::env::var("HOME").unwrap_or_default());
+        report("state:env_count", true, std::env::vars_os().count());
+    }
+
     /// Runs the attempts the arguments name, in order.
     pub fn run(arguments: Vec<String>) {
         // A write past `RLIMIT_FSIZE` should show as a failed write here, not end the probe.
@@ -292,6 +304,7 @@ mod mac {
             };
             match flag.as_str() {
                 "--walls" => walls(),
+                "--state" => state(),
                 "--harden" => recto_platform::isolate::harden_this_process(),
                 "--regain" => regain(),
                 "--read" => {

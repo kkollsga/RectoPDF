@@ -579,7 +579,7 @@ impl<'a> Reader<'a> {
         let characters = match renderer.page_characters(page, true, false) {
             Ok(characters) => characters,
             Err(_) if read_again_live => return Ok(Got::Failed),
-            Err(failure @ (RenderFailure::NeedsPassword | RenderFailure::NotFound | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::OpenFailed { .. } | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::Unsandboxed | RenderFailure::DocumentStopped)) => return Err(failure.into()),
+            Err(failure @ (RenderFailure::NeedsPassword | RenderFailure::NotFound | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::OpenFailed { .. } | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::WallsDown(_) | RenderFailure::StartRefused | RenderFailure::DocumentStopped)) => return Err(failure.into()),
             Err(_) => return Ok(Got::Failed),
         };
         if characters.chars.is_empty() {

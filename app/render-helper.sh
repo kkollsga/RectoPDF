@@ -2,8 +2,8 @@
 # The renderer helper: PDFium's worker in a small app of its own inside RectoPDF.app, signed with the App Sandbox. One place for its layout, its signing and its check, so the
 # app build, the release and the tests can't lay it out three ways. docs/ENGINEERING.md, "Renderer", says why it's built this way.
 #
-#   app/render-helper.sh --layout <Contents> <worker> <libpdfium>   Puts the helper in <Contents>/Helpers/RectoRender.app and signs it.
-#   app/render-helper.sh --sign <Contents>                          Signs it again, after the identity changed: RECTO_SIGN_IDENTITY, or ad hoc without it.
+#   app/render-helper.sh --layout <Contents> <worker> <libpdfium>   Puts the helper in <Contents>/Helpers/RectoRender.app and signs it ad hoc, always.
+#   app/render-helper.sh --sign <Contents>                          Signs it again: with RECTO_SIGN_IDENTITY if it's set, else ad hoc.
 #   app/render-helper.sh --check <RectoPDF.app or RectoRender.app>  Fails unless the helper is sandboxed and signed as it should be, and nothing can run unsandboxed in its place.
 #   app/render-helper.sh --key <identity>                           Prints the keychain's SHA-1 for a signing identity's name, or the SHA-1 itself, for codesign.
 #
@@ -32,13 +32,25 @@ ADHOC_ID=$RELEASE_ID.adhoc
 fail() { echo "render-helper: $*" >&2; exit 1; }
 
 # key <identity>: the SHA-1 codesign should be given. codesign reads a name on its command line as Mac Roman, whatever the locale, so a name with a letter outside ASCII, such
-# as the owner's "å", is never found ("no identity found", 2026-11-08). The name is matched here, byte for byte, against what the keychain lists, and the hash goes to codesign.
+# as the owner's "å", is never found ("no identity found", 2026-11-08). The name is matched here, byte for byte, against the keychain search list, the same list codesign and
+# the release workflow search. Two valid certificates of one name are refused rather than one taken at random, and an expired or otherwise invalid one says so.
 key() {
-    local identity="$1" hash
+    local identity="$1" hashes count reason
     if [[ "$identity" =~ ^[0-9A-Fa-f]{40}$ ]]; then echo "$identity"; return; fi
-    hash="$(security find-identity -v -p codesigning | awk -v want="\"$identity\"" 'index($0, want) && $1 ~ /^[0-9]+\)$/ { print $2; exit }')"
-    [ -n "$hash" ] || fail "the identity isn't in the keychain: $identity"
-    echo "$hash"
+    # `-v` lists valid identities only: `  1) <SHA-1> "<name>"`.
+    hashes="$(security find-identity -v -p codesigning | awk -F'"' -v want="$identity" '$2 == want && $1 ~ /^ *[0-9]+\) [0-9A-F]{40} *$/ { split($1, f, " "); print f[2] }' | sort -u)"
+    count="$(printf '%s' "$hashes" | grep -c . || true)"
+    if [ "$count" -gt 1 ]; then
+        fail "$count valid certificates are called \"$identity\" ($(echo $hashes)): remove the one that shouldn't sign from the keychain, or set RECTO_SIGN_IDENTITY to the SHA-1 of the one that should"
+    fi
+    if [ "$count" -eq 1 ]; then echo "$hashes"; return; fi
+    # Without `-v`, invalid ones too, each with the reason: `(CSSMERR_TP_CERT_EXPIRED)`.
+    reason="$(security find-identity -p codesigning | awk -F'"' -v want="$identity" '$2 == want { print $3 }' | head -1)"
+    case "$reason" in
+        *EXPIRED*) fail "the certificate \"$identity\" has expired: make a new Developer ID Application certificate (docs/RELEASING.md)" ;;
+        *[A-Za-z]*) fail "the certificate \"$identity\" isn't valid for signing:$reason" ;;
+    esac
+    fail "the identity isn't in the keychain: $identity"
 }
 
 # sign <Contents>: writes the identifier this signature calls for, then signs the library and the helper.
@@ -132,7 +144,7 @@ case "${1:-}" in
         cp "$3" "$helper/Contents/MacOS/$WORKER"
         cp "$4" "$helper/Contents/Frameworks/$LIBRARY"
         chmod 755 "$helper/Contents/MacOS/$WORKER"
-        sign "$2"
+        (unset RECTO_SIGN_IDENTITY; sign "$2")
         ;;
     --sign)
         [ $# -eq 2 ] || fail "--sign <Contents>"

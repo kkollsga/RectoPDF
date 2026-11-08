@@ -2,8 +2,8 @@
 //! worker, exactly as the app's helper is (ad hoc), puts up the worker's walls with the worker's own calls, then tries what a compromised renderer would. Every attempt also runs with
 //! no sandbox, so a wall can't pass because the attempt was broken. What only a Developer ID build can prove is in `docs/research/2026-11-07-sandbox-spike.md`.
 //!
-//! Each test's files are in its own temp folder, removed with it, and nothing is made in the home folder. The helper's ad hoc identifier is the development one, so these share the
-//! one container every development build uses.
+//! Each test's files are in its own temp folder, removed with it. The first sandboxed run of the helper's ad hoc identifier makes its container,
+//! `~/Library/Containers/io.github.kkollsga.RectoPDF.Render.adhoc`, the one every development build uses; these tests share it and leave nothing else in the home folder.
 #![cfg(target_os = "macos")]
 
 use std::collections::BTreeMap;
@@ -27,8 +27,9 @@ fn pdfium() -> PathBuf {
     path
 }
 
+/// Never with the owner's identity, whatever this shell has set: a test signs ad hoc, and raises no keychain prompt.
 fn run(command: &mut Command) {
-    let output = command.output().unwrap();
+    let output = command.env_remove("RECTO_SIGN_IDENTITY").output().unwrap();
     assert!(output.status.success(), "{command:?}: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
 }
 
@@ -251,4 +252,37 @@ fn a_helper_signed_without_the_sandbox_puts_no_walls_up_and_fails_the_check() {
     let check = Command::new(helper_script()).arg("--check").arg(fixture.helper()).output().unwrap();
     assert!(!check.status.success(), "the check passed a helper with no sandbox");
     assert!(String::from_utf8_lossy(&check.stderr).contains("entitlements"), "{}", String::from_utf8_lossy(&check.stderr));
+}
+
+/// What `render-helper.sh --key` says, with a stand-in `security` on `PATH` that lists `valid` for `find-identity -v` and `all` without it.
+fn key_with_keychain(name: &str, valid: &str, all: &str) -> (bool, String) {
+    let fixture = Fixture::new(&format!("key-{}", name.len()));
+    let bin = fixture.scratch.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(fixture.scratch.join("valid.txt"), valid).unwrap();
+    std::fs::write(fixture.scratch.join("all.txt"), all).unwrap();
+    let script = format!("#!/bin/sh\nif [ \"$2\" = -v ]; then cat '{0}/valid.txt'; else cat '{0}/all.txt'; fi\n", fixture.scratch.display());
+    std::fs::write(bin.join("security"), script).unwrap();
+    std::fs::set_permissions(bin.join("security"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let output = Command::new(helper_script()).args(["--key", name]).env("PATH", path).env_remove("RECTO_SIGN_IDENTITY").output().unwrap();
+    (output.status.success(), format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
+}
+
+/// Failure: two valid certificates with one name, an old and a renewed one, and signing takes whichever the keychain lists first. Or an expired certificate reads as missing, so
+/// nobody looks at its date. Or a name with a letter outside ASCII isn't matched. The hash goes to codesign, which can't find such a name itself.
+#[test]
+fn the_signing_identity_is_one_valid_certificate_matched_by_its_exact_name() {
+    let name = "Developer ID Application: Kristian de Figueiredo Kollsgård (6GND8Z2C7Z)";
+    let (a, b) = ("1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222");
+    let one = format!("  1) {a} \"{name}\"\n     1 valid identities found\n");
+    assert_eq!(key_with_keychain(name, &one, &one), (true, format!("{a}\n")));
+    let (ok, said) = key_with_keychain(name, &format!("  1) {a} \"{name}\"\n  2) {b} \"{name}\"\n"), "");
+    assert!(!ok && said.contains("2 valid certificates") && said.contains(a) && said.contains(b), "{said}");
+    let (ok, said) = key_with_keychain(name, "     0 valid identities found\n", &format!("  1) {a} \"{name}\" (CSSMERR_TP_CERT_EXPIRED)\n"));
+    assert!(!ok && said.contains("has expired"), "{said}");
+    let (ok, said) = key_with_keychain(name, "     0 valid identities found\n", "");
+    assert!(!ok && said.contains("isn't in the keychain"), "{said}");
+    let (ok, _) = key_with_keychain("Developer ID Application: Kristian", &one, &one);
+    assert!(!ok, "part of a name matched");
 }

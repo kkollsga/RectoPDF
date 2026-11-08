@@ -12,7 +12,7 @@ use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, Ti
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::Thread;
@@ -67,6 +67,8 @@ struct Shared {
     events: Arc<dyn EngineEvents>,
     ops_signalled: AtomicBool,
     worker_pids: Mutex<Vec<u32>>,
+    /// Of those, the workers that said their walls were up.
+    walled_workers: AtomicU32,
     workers_by_file: Mutex<Vec<(PathBuf, u32)>>,
     /// The system's asked for memory back: workers with nothing to do go the next time this thread comes round.
     kill_idle_workers: AtomicBool,
@@ -103,7 +105,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Engine {
     pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self {
-        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), workers_by_file: Mutex::new(Vec::new()), kill_idle_workers: AtomicBool::new(false), last_note: Mutex::new(None), last_notice: Mutex::new(None), config, stopping: AtomicBool::new(false), pending: Mutex::new(Pending::default()) });
+        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), walled_workers: AtomicU32::new(0), workers_by_file: Mutex::new(Vec::new()), kill_idle_workers: AtomicBool::new(false), last_note: Mutex::new(None), last_notice: Mutex::new(None), config, stopping: AtomicBool::new(false), pending: Mutex::new(Pending::default()) });
         Self { shared, thread: Arc::new(Mutex::new(None)) }
     }
 
@@ -560,6 +562,11 @@ impl Engine {
         lock(&self.shared.worker_pids).clone()
     }
 
+    /// How many of the workers running now said their walls were up: the App Sandbox on and their Mach rights dropped.
+    pub fn walled_workers(&self) -> u32 {
+        self.shared.walled_workers.load(Ordering::Relaxed)
+    }
+
     /// The footprint of every worker running now, from outside.
     pub fn workers_footprint(&self) -> (u64, u64) {
         let pids = lock(&self.shared.worker_pids).clone();
@@ -649,6 +656,7 @@ fn run_guarded(shared: &Shared) {
         note_change(shared, note);
         tell_selecting(shared, selecting);
         *lock(&shared.worker_pids) = Vec::new();
+        shared.walled_workers.store(0, Ordering::Relaxed);
         shared.settled.notify_all();
         if has_ops {
             signal_ops(shared);
@@ -787,7 +795,16 @@ fn run(shared: &Shared) {
 }
 
 fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
-    let by_file: Vec<(PathBuf, u32)> = renderers.iter_mut().filter_map(|(path, open)| Some((path.clone(), open.doc.worker_pid()?))).collect();
+    let mut walled = 0;
+    let by_file: Vec<(PathBuf, u32)> = renderers
+        .iter_mut()
+        .filter_map(|(path, open)| {
+            let pid = open.doc.worker_pid()?;
+            walled += u32::from(open.doc.worker_walled() == Some(true));
+            Some((path.clone(), pid))
+        })
+        .collect();
+    shared.walled_workers.store(walled, Ordering::Relaxed);
     *lock(&shared.worker_pids) = by_file.iter().map(|(_, pid)| *pid).collect();
     *lock(&shared.workers_by_file) = by_file;
 }

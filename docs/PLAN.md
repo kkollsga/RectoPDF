@@ -264,7 +264,8 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 ## Phase 7: Release
 
-- [x] **Release blocker:** the renderer runs in the sandbox, tested on the signed build: ad hoc in the tests and the app's own checks, and with the owner's Developer ID on this Mac, hardened runtime and library validation on. What only notarization shows goes with the release workflow's first run, below
+- [x] Release blocker, first half: the renderer is built into its sandboxed helper, signed (ad hoc in the tests and the app's own checks, and with the owner's Developer ID on this Mac, hardened runtime and library validation on) and fails closed, each failure named
+- [ ] **Release blocker, second half:** the renderer's sandbox on a notarized run of the release; the sandbox and wall tests passing on `macos-15` and `macos-26` CI runners, where the home folder is under `/Users` (the `sandbox` job in `ci.yml`, first run to be watched); and the Developer ID run of the renderer suite matched to the ad hoc one. That gap is explained: the 138 against 143 was the 5 tests of `sandbox.rs`, left out by the filter of that run because they lay out ad hoc helpers of their own, and `surfaces.rs`'s 8 used the bare worker in both runs, since fixed to follow `RECTO_TEST_WORKER`
 - [ ] Fuzzing on every parser of untrusted input
 - [ ] Corpus run across all benchmark PDFs, with a dated report
 - [ ] Fuzz `recto_index::corpus`'s reader with damaged files on disk, as for every parser

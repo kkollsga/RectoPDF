@@ -13,6 +13,10 @@ pub struct MachDrop {
     pub kept: u32,
 }
 
+pub fn in_a_sandbox() -> bool {
+    false
+}
+
 pub fn sandbox_in_force() -> bool {
     false
 }

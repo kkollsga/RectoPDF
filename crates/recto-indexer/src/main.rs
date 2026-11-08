@@ -63,7 +63,7 @@ impl WorkerFeed {
 fn about_the_install(failure: RenderFailure) -> FeedError {
     match failure {
         RenderFailure::LibraryMissing => FeedError::Cant("render_library_missing"),
-        RenderFailure::Unsandboxed => FeedError::Cant("renderer_not_sandboxed"),
+        RenderFailure::WallsDown(_) | RenderFailure::StartRefused => FeedError::Cant(failure.code()),
         _ => FeedError::Cant("render_worker_missing"),
     }
 }
@@ -75,7 +75,7 @@ fn whole_file(failure: RenderFailure) -> FeedError {
         RenderFailure::NeedsPassword => FeedError::Refused("needs_password"),
         RenderFailure::NotPdf => FeedError::Refused("not_pdf"),
         RenderFailure::Security => FeedError::Refused("security"),
-        RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::Unsandboxed => about_the_install(failure),
+        RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::WallsDown(_) | RenderFailure::StartRefused => about_the_install(failure),
         RenderFailure::NotFound => FeedError::Cant("not_found"),
         RenderFailure::SourceChanged => FeedError::FileChanged,
         _ => FeedError::Cant("couldnt_open"),
@@ -90,7 +90,7 @@ fn read_failure(failure: RenderFailure) -> FeedError {
         RenderFailure::PageReadFailed { reason: KillReason::Crashed, .. } => FeedError::Page(FailReason::Crashed),
         RenderFailure::DocumentStopped => FeedError::Page(FailReason::DocumentStopped),
         RenderFailure::SourceChanged => FeedError::FileChanged,
-        RenderFailure::NeedsPassword | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::Unsandboxed | RenderFailure::NotFound | RenderFailure::OpenFailed { .. } => whole_file(failure),
+        RenderFailure::NeedsPassword | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::WallsDown(_) | RenderFailure::StartRefused | RenderFailure::NotFound | RenderFailure::OpenFailed { .. } => whole_file(failure),
         _ => FeedError::Page(FailReason::Stopped),
     }
 }

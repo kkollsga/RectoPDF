@@ -144,7 +144,7 @@ fn fake_worker() {
     if mode == "hang_before_hello" {
         std::thread::sleep(Duration::from_secs(600));
     }
-    send_all(&channel, &proto::encode_hello(std::process::id()), &[]).unwrap();
+    send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled: false }), &[]).unwrap();
     let mut reader = FrameReader::default();
     let mut retained = Vec::new();
     let mut cancel_word = None;

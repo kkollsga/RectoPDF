@@ -3,7 +3,7 @@
 #
 #   app/build.sh            A debug build, for QA while working.
 #   app/build.sh --release  The build every budget is measured on: fat LTO, and it takes minutes.
-#   app/build.sh --sign-only  Signs an app that's been built, with RECTO_SIGN_IDENTITY. A release builds before there's a signing key anywhere on the machine, so no dependency's build script can reach one.
+#   app/build.sh --sign-only  Signs an app that's been built, with RECTO_SIGN_IDENTITY. The only mode that reads it: the others sign ad hoc. A release builds before there's a signing key anywhere on the machine, so no dependency's build script can reach one.
 #
 # Run it through tools/sysguard/heavy.sh.
 set -euo pipefail
@@ -21,8 +21,11 @@ BUILD="$APP_DIR/build"
 APP="$BUILD/RectoPDF.app"
 # One version, from one place. It's what the updater compares with, and it's in every copy's Info.plist.
 VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' "$REPO/Cargo.toml" | head -1)"
-# The identity a release is signed with. `app/release-zip.sh --signed` sets it, and without it this is ad hoc.
-SIGN_IDENTITY="${RECTO_SIGN_IDENTITY:--}"
+# The identity a release is signed with, read only by --sign-only, which `app/release-zip.sh --signed` runs. Every build is ad hoc, whatever the shell has set, so a build or a
+# test never signs with the owner's identity or raises a keychain prompt.
+if [ "$mode" = --sign-only ]; then SIGN_IDENTITY="${RECTO_SIGN_IDENTITY:--}"; else SIGN_IDENTITY=-; fi
+export RECTO_SIGN_IDENTITY="$SIGN_IDENTITY"
+[ "$SIGN_IDENTITY" != - ] || unset RECTO_SIGN_IDENTITY
 # By its SHA-1, as codesign can't find a name with a letter outside ASCII in it (render-helper.sh, `key`).
 if [ "$SIGN_IDENTITY" = - ]; then SIGN_ARGS=(--force --sign -); else
     SIGN_KEY="$("$APP_DIR/render-helper.sh" --key "$SIGN_IDENTITY")"

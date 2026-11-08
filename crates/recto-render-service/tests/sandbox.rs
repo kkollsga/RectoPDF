@@ -10,7 +10,10 @@ mod common;
 use common::{kill_process, wait_until};
 use recto_platform::isolate::process_memory;
 use recto_proto::CharRecord;
-use recto_render_service::{DocRenderer, HeavySlot, KillReason, Policy, RenderFailure, ServiceConfig, Surface, TileKind, TileRect, TileRequest, TileResult};
+use recto_platform::isolate::Channel;
+use recto_platform::surface::PixelSurface;
+use recto_render_service::transport::send_all;
+use recto_render_service::{DocRenderer, HeavySlot, KillReason, Policy, RenderFailure, ServiceConfig, Surface, TILE_EDGE, TileKind, TileRect, TileRequest, TileResult, WallsDown};
 use recto_testpdf::{Object, Page, TempPdf, build, form_bomb, hidden_text_page, pages, text_lines};
 use std::ffi::{CString, c_char, c_int};
 use std::io::Read as _;
@@ -47,8 +50,9 @@ fn pdfium() -> PathBuf {
     path
 }
 
+/// Never with the owner's identity, whatever this shell has set: a test signs ad hoc, and raises no keychain prompt.
 fn helper(args: &[&std::ffi::OsStr]) {
-    let output = Command::new(Path::new(REPO).join("app/render-helper.sh")).args(args).output().unwrap();
+    let output = Command::new(Path::new(REPO).join("app/render-helper.sh")).args(args).env_remove("RECTO_SIGN_IDENTITY").output().unwrap();
     assert!(output.status.success(), "render-helper.sh {args:?}: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
 }
 
@@ -137,6 +141,8 @@ fn the_bundled_worker_runs_sandboxed_and_cant_read_by_path() {
     let mut doc = DocRenderer::new(&file.0, None, bundle.config(), Policy::default()).unwrap();
     draw(&mut doc, 0);
     let pid = doc.worker_pid().expect("a live worker");
+    assert_eq!(doc.worker_walled(), Some(true), "its hello didn't say its walls were up");
+    assert_eq!(doc.stats().walled_spawns, doc.stats().spawns);
     let me = std::process::id();
     assert_eq!(sandboxed(me), 0, "this test process isn't sandboxed, so the question is a real one");
     assert_eq!(sandboxed(pid), 1, "the bundled worker isn't sandboxed");
@@ -148,6 +154,7 @@ fn the_bundled_worker_runs_sandboxed_and_cant_read_by_path() {
     let mut plain = plain.unwrap();
     draw(&mut plain, 0);
     assert_eq!(sandboxed(plain.worker_pid().unwrap()), 0, "a bare development worker isn't sandboxed, so the sandbox comes from the helper's signing");
+    assert_eq!(plain.worker_walled(), Some(false), "a bare worker said it was walled");
 }
 
 /// Failure: a helper signed without the sandbox, the mistake a build could make, draws a hostile file anyway and nobody can tell. The worker tests its wall before any document
@@ -159,8 +166,8 @@ fn a_bundled_worker_with_no_sandbox_refuses_to_read_anything() {
     assert!(output.status.success());
     let file = TempPdf::new("refused.pdf", &pages(&[Page::new(text_lines(&["Never drawn"]))]));
     let mut doc = DocRenderer::new(&file.0, None, bundle.config(), Policy::default()).unwrap();
-    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::Unsandboxed);
-    assert!(RenderFailure::Unsandboxed.message().contains("signed wrong"));
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::WallsDown(WallsDown::NotSandboxed));
+    assert!(RenderFailure::WallsDown(WallsDown::NotSandboxed).message().contains("signed wrong"));
 }
 
 /// Failure: the sandbox changes what's drawn or read: a font it can't reach is silently substituted, which the spike's first profile did, or the hidden-text check comes out
@@ -273,4 +280,82 @@ fn a_hostile_pdf_cant_reach_a_file_or_the_network_from_the_sandbox() {
         }
         Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock, "{error}"),
     }
+}
+
+/// Failure: the tile path the app's pages take, an IOSurface sent over the Mach link, breaks once the worker has dropped its Mach rights, so pages draw in tests and stay blank on
+/// screen. One tile into a `PixelSurface` through the helper's worker, which has dropped them before its hello.
+#[test]
+fn a_surface_tile_arrives_from_the_sandboxed_worker_after_the_mach_drop() {
+    let bundle = Bundle::new("surface");
+    let file = TempPdf::new("surface.pdf", &pages(&[Page::new(text_lines(&["Words drawn into a surface from inside the sandbox"]))]));
+    let mut doc = DocRenderer::new(&file.0, None, bundle.config(), Policy::default()).unwrap();
+    let surface = PixelSurface::create(TILE_EDGE, TILE_EDGE).unwrap();
+    let request = TileRequest { page: 0, rect: TileRect { x: 0, y: 0, width: TILE_EDGE, height: TILE_EDGE }, scale: 2.0, stride: surface.stride(), generation: 1 };
+    assert!(matches!(doc.render_tile(&request, &surface).unwrap(), TileResult::Done(_)));
+    assert_eq!(doc.worker_walled(), Some(true), "the worker that drew it hadn't put its walls up");
+    let drawn: Vec<u8> = surface.with_pixels(|pixels| pixels[..(surface.stride() * TILE_EDGE) as usize].to_vec()).unwrap();
+    assert!(drawn.chunks(4).any(|pixel| pixel[0] < 200), "nothing arrived in the surface");
+}
+
+const STAND_IN: &str = "RECTO_SANDBOX_STAND_IN";
+
+/// Not a test: a stand-in worker that says hello with its walls down. Does nothing unless `RECTO_SANDBOX_STAND_IN` says this process was started as one.
+#[test]
+fn stand_in_worker() {
+    if std::env::var_os(STAND_IN).is_none() {
+        return;
+    }
+    let channel = Channel::inherited().unwrap();
+    send_all(&channel, &recto_proto::encode_hello(recto_proto::Hello { pid: std::process::id(), walled: false }), &[]).unwrap();
+    std::thread::sleep(Duration::from_secs(30));
+}
+
+/// Failure: a host takes a worker from an app's helper that says its walls aren't up, as a release would take anything, and hands it a document. This stand-in sits where a helper's
+/// worker does and says hello with the bit clear: it's killed, and the host says the app is signed wrong.
+#[test]
+fn a_worker_from_a_helper_that_says_it_isnt_walled_is_refused() {
+    let bundle = Bundle::new("stand-in");
+    let fake = bundle.scratch.join("Fake.app/Contents/MacOS/recto-render-service");
+    std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+    std::fs::copy(std::env::current_exe().unwrap(), &fake).unwrap();
+    std::fs::copy(pdfium(), fake.with_file_name("libpdfium.dylib")).unwrap();
+    let mut config = ServiceConfig::for_worker(fake).unwrap();
+    config.heavy_slot = HeavySlot::new();
+    config.extra_env = vec![(STAND_IN.into(), "1".into())];
+    config.replace_args = Some(["--exact", "stand_in_worker", "--nocapture", "--test-threads=1"].into_iter().map(Into::into).collect());
+    let file = TempPdf::new("refused.pdf", &pages(&[Page::new(text_lines(&["Never sent"]))]));
+    let mut doc = DocRenderer::new(&file.0, None, config, Policy::default()).unwrap();
+    assert_eq!(doc.page_count().unwrap_err(), RenderFailure::WallsDown(WallsDown::NotSandboxed));
+    assert!(!doc.has_worker(), "the refused worker was kept");
+}
+
+const INSIDE: &str = "RECTO_SANDBOX_INSIDE_ANOTHER";
+
+/// Failure: `recto` run inside an agent's sandbox can't start the renderer, and says the app is signed wrong, sending the user to reinstall for nothing. This test runs itself again
+/// under `sandbox-exec` with a profile that allows everything, which is sandboxed all the same, and there the helper's worker can't start: the system ends it before its first line.
+/// The positive check can't be fooled the other way either: a bare process inside that seatbelt is sandboxed and has no container, so it doesn't read as walled.
+#[test]
+fn inside_another_sandbox_the_renderer_says_so() {
+    if let Some(worker) = std::env::var_os(INSIDE) {
+        assert!(recto_platform::wall::in_a_sandbox(), "sandbox-exec didn't sandbox this run");
+        assert!(!recto_platform::wall::sandbox_in_force(), "an inherited seatbelt read as the App Sandbox");
+        let mut config = ServiceConfig::for_worker(worker.into()).unwrap();
+        config.heavy_slot = HeavySlot::new();
+        let file = TempPdf::new("inside.pdf", &pages(&[Page::new(text_lines(&["Never drawn"]))]));
+        let mut doc = DocRenderer::new(&file.0, None, config, Policy::default()).unwrap();
+        let failure = doc.page_count().unwrap_err();
+        assert_eq!(failure, RenderFailure::WallsDown(WallsDown::InsideAnotherSandbox));
+        assert!(failure.message().contains("from inside another sandbox") && !failure.message().contains("signed wrong"), "{}", failure.message());
+        return;
+    }
+    let bundle = Bundle::new("inside");
+    let output = Command::new("/usr/bin/sandbox-exec")
+        .args(["-p", "(version 1)(allow default)"])
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", "inside_another_sandbox_the_renderer_says_so", "--nocapture", "--test-threads=1"])
+        .env(INSIDE, bundle.worker())
+        .output()
+        .unwrap();
+    let said = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success() && said.contains("1 passed"), "inside the seatbelt: {said}");
 }

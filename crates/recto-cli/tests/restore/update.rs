@@ -154,7 +154,8 @@ impl Bed {
                 let contents = app.join("Contents");
                 std::fs::copy("/usr/bin/true", contents.join("Helpers/RectoRender.app/Contents/MacOS/recto-render-service")).unwrap();
                 let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/render-helper.sh");
-                assert!(Command::new(helper).arg("--sign").arg(&contents).status().unwrap().success());
+                // Ad hoc, whatever this shell has set: a test never signs with the owner's identity.
+                assert!(Command::new(helper).arg("--sign").arg(&contents).env_remove("RECTO_SIGN_IDENTITY").status().unwrap().success());
                 sign(&app);
             }
         }
