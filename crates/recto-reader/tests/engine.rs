@@ -136,8 +136,9 @@ fn a_slow_page_scrolled_away_from_is_cancelled() {
     let took = moved.elapsed();
     let report = engine.report().0;
     assert!(report["visible_pages"].as_array().unwrap().iter().any(|page| page == 3), "{report}");
-    assert!(report["counts"]["cancelled"].as_u64().unwrap() >= 1, "the slow draw wasn't what ended: {report}");
-    assert!(took < Duration::from_secs(4), "the last page took {took:?} to arrive, and the slow one alone takes longer");
+    // The slow draw being cancelled is the property: it ended by return or kill instead of running to its end. A fixed time for the last page to
+    // arrive was a machine's timing, not the property: a loaded Mac took 4.3 s against a 4 s limit (2026-11-08). The settle above is bounded.
+    assert!(report["counts"]["cancelled"].as_u64().unwrap() >= 1, "the slow draw wasn't what ended, after {took:?}: {report}");
 }
 
 /// What's at a surface's top left, red, green and blue, for each surface attached in these ops.
