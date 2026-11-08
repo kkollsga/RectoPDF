@@ -716,7 +716,8 @@ pub struct DocRenderer {
     opened_stamp: Option<FileStamp>,
     /// Which version of the file the worker found, by what PDFium read to open it.
     version: Option<u64>,
-    password: Option<Vec<u8>>,
+    /// The password the person typed, shared with the keyring rather than copied, so there's one copy in this process, overwritten when the last holder lets go.
+    password: Option<Arc<recto_platform::Password>>,
     control: Arc<CancelWord>,
     worker: Option<Worker>,
     page_count: Option<u32>,
@@ -748,7 +749,7 @@ pub struct DocRenderer {
 
 impl DocRenderer {
     /// Opens the file for reading and prepares a renderer. No process starts until something needs one.
-    pub fn new(path: &Path, password: Option<&[u8]>, config: ServiceConfig, policy: Policy) -> Result<Self, RenderFailure> {
+    pub fn new(path: &Path, password: Option<Arc<recto_platform::Password>>, config: ServiceConfig, policy: Policy) -> Result<Self, RenderFailure> {
         Self::with_file(Self::open_file(path)?, path, password, config, policy)
     }
 
@@ -761,7 +762,7 @@ impl DocRenderer {
     }
 
     /// The rest of [`Self::new`], with the file open.
-    pub fn with_file(file: File, path: &Path, password: Option<&[u8]>, config: ServiceConfig, policy: Policy) -> Result<Self, RenderFailure> {
+    pub fn with_file(file: File, path: &Path, password: Option<Arc<recto_platform::Password>>, config: ServiceConfig, policy: Policy) -> Result<Self, RenderFailure> {
         let shared = SharedMemory::create(control::LEN).map_err(|_| RenderFailure::Unavailable)?;
         let slot = config.heavy_slot.clone();
         Ok(Self {
@@ -771,7 +772,7 @@ impl DocRenderer {
             opened_stamp: file_stamp(path).ok(),
             version: None,
             file,
-            password: password.map(<[u8]>::to_vec),
+            password,
             control: Arc::new(CancelWord { shared, cutoff: AtomicU64::new(0), slot }),
             worker: None,
             page_count: None,
@@ -1652,9 +1653,11 @@ impl DocRenderer {
 
     fn open_in(&mut self, mut worker: Worker, generation: Option<u64>) -> Result<(), JobFailure> {
         let file = Handle::from_file(&self.file).map_err(|_| RenderFailure::Unavailable)?;
-        let frame = proto::encode_open(self.password.as_deref().unwrap_or_default()).map_err(|_| RenderFailure::NeedsPassword)?;
+        let frame = proto::encode_open(self.password.as_deref().map_or(&[][..], recto_platform::Password::bytes)).map_err(|_| RenderFailure::NeedsPassword)?;
         let watch = Watch { limit: worker.limit, policy: &self.policy, control: &self.control, generation };
         let reply = worker.exchange(&frame, &[&file, self.control.shared.handle()], &watch);
+        // The frame holds the password, and it's been sent: overwritten before it goes back.
+        recto_platform::secret::wipe(frame);
         let killed = |stats: &mut RenderStats, reason: KillReason| {
             match reason {
                 KillReason::MemoryLimit => stats.memory_kills += 1,

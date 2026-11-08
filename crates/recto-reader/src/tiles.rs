@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 
 /// Tiles attached in one turn of the UI thread. Platform report §2.6: it stays under budget, and the next turn takes the rest.
 pub const MAX_ATTACH_PER_TURN: usize = 8;
+/// Files remembered as needing a password the renderer has none for, until the app asks: no more than tabs that could be showing.
+const MAX_KEYLESS: usize = 8;
 /// Off-screen surfaces kept, by bytes and by count. Least recently used go first. Platform report §2.6.
 const MAX_KEPT_BYTES: usize = 256 * 1024 * 1024;
 const MAX_KEPT_SURFACES: usize = 1024;
@@ -439,8 +441,8 @@ pub enum Outcome {
     Cancelled,
     /// The page can't be drawn now or ever, in these words.
     PageFailed { message: String, may_pass: bool },
-    /// The file can't be drawn, in these words.
-    DocumentFailed(String),
+    /// The file can't be drawn, in these words. `needs_key`: because it needs a password the renderer wasn't given.
+    DocumentFailed { message: String, needs_key: bool },
     /// A page's text, for selecting. `checked` says a hidden-text check was asked for and has been tried, however it came out, and not stopped because nobody wanted it.
     Text { text: Arc<recto_index::select::PageText>, checked: bool },
     /// A page's text can't be read. That's the page's text, and nothing about drawing it.
@@ -535,6 +537,8 @@ pub struct Reader {
     sleep_view: Option<(u32, SleepView)>,
     /// Files whose renderers have the wrong version open, to be let go of and opened again.
     reopen_files: Vec<PathBuf>,
+    /// Files the renderer couldn't open for want of a password, which the app has none for: a protected file moved to another volume, or replaced, while it was open. The app asks for it again. At most [`MAX_KEYLESS`].
+    keyless: Vec<PathBuf>,
     /// Pictures that came from sleep files, which a worker's word on the version goes over.
     from_sleep: HashSet<u64>,
     /// The window's on the screen, so what the host applies is a frame someone can see.
@@ -595,6 +599,7 @@ impl Reader {
             gave_up: false,
             sleep_view: None,
             reopen_files: Vec::new(),
+            keyless: Vec::new(),
             from_sleep: HashSet::new(),
             window_up: false,
             hold_drawing: false,
@@ -741,8 +746,14 @@ impl Reader {
         std::mem::take(&mut self.reopen_files)
     }
 
+    /// Files the renderer found need a password it has none for, since this was last asked. Asking clears them.
+    pub fn take_keyless(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.keyless)
+    }
+
     /// **A password's been given for a file:** its renderer opens again with it, and what an open without it found, that it needs one, is forgotten, so its pages are asked for afresh.
     pub fn key_given(&mut self, path: &std::path::Path) {
+        self.keyless.retain(|file| file != path);
         self.reopen_files.push(path.to_path_buf());
         for doc in self.docs.values_mut() {
             if doc.map.files.iter().any(|file| file == path) {
@@ -2217,7 +2228,7 @@ impl Reader {
         self.running = None;
         self.counts.jobs += 1;
         let mut kept = None;
-        let Job { tab, position, kind, generation, .. } = job;
+        let Job { tab, position, kind, generation, file, .. } = job;
         // Asked about the pages as they were. An edit has changed what's at this position since.
         if self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) {
             self.counts.cancelled += 1;
@@ -2256,9 +2267,12 @@ impl Reader {
             (_, Outcome::PageFailed { message, may_pass }) => {
                 self.note_issue(tab, position, message, may_pass);
             }
-            (_, Outcome::DocumentFailed(message)) => {
+            (_, Outcome::DocumentFailed { message, needs_key }) => {
                 if let Some(doc) = self.docs.get_mut(&tab) {
                     doc.problem = Some(message);
+                }
+                if needs_key && !self.keyless.contains(&file) && self.keyless.len() < MAX_KEYLESS {
+                    self.keyless.push(file);
                 }
             }
             _ => {
@@ -3440,6 +3454,26 @@ mod tests {
         // Off the edge of the picture: nothing panics.
         shrink_into(&tile, 16, 4, 4, 2, (3, 3), &mut picture, 4, 4);
         shrink_into(&tile[..8], 16, 4, 4, 2, (0, 0), &mut picture, 4, 4);
+    }
+
+    /// Failure (review O5): a protected file's renderer finds it needs a password the keyring has none for, as when the file was moved to another volume or replaced while it was open, and the tab only says "needs a password", with no way to type one: the app has to hear of the file, once, to ask with the sheet. Another failure isn't that, and a password given clears it.
+    #[test]
+    fn a_file_the_renderer_has_no_password_for_is_told_to_the_app() {
+        let mut reader = reader_on(3);
+        let job = reader.next_job().expect("a job");
+        reader.finish(job, Outcome::DocumentFailed { message: "This PDF needs a password.".into(), needs_key: true });
+        assert_eq!(reader.take_keyless(), [PathBuf::from("/d/a.pdf")]);
+        assert!(reader.take_keyless().is_empty(), "told once");
+        let mut other = reader_on(3);
+        let job = other.next_job().expect("a job");
+        other.finish(job, Outcome::DocumentFailed { message: "Not a PDF.".into(), needs_key: false });
+        assert!(other.take_keyless().is_empty(), "only for want of a password");
+        let job = reader.next_job();
+        if let Some(job) = job {
+            reader.finish(job, Outcome::DocumentFailed { message: "This PDF needs a password.".into(), needs_key: true });
+        }
+        reader.key_given(Path::new("/d/a.pdf"));
+        assert!(reader.take_keyless().is_empty(), "a password given takes it off the list");
     }
 
     /// Failure (review): a tab's file turns out to be another, by a change outside or a save, and its previews stay, so its next sleep file has the old file's pictures under the new file's name, for good, and with a redaction that picture's what was removed. Another version of the file is a change of what's on the pages, and everything of it goes, on screen and off.

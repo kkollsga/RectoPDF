@@ -365,7 +365,7 @@ pub static TABLE: &[Spec] = &[
     },
     Spec { name: "goto", tag: "goto", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Goes to a page. A page that isn't there is refused.", args: &[Arg { key: "page", flag: None, kind: Kind::Page, required: true, help: "The page, counted from 1." }, TAB], data: AGENT_EXITS_PAGE, emits: &["page_changed"], examples: &["recto goto 12", "recto goto 12 --tab report"], ..BASE },
     Spec { name: "tap", tag: "tap", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Taps a tab in the sidebar: switches to it, or folds its contents if it's already active.", args: &[Arg { key: "tab", flag: None, kind: Kind::Tab, required: true, help: "Which tab: `#3`, or part of its name." }], data: "The sidebar, as `sidebar` gives it.", emits: &["tab_activated"], examples: &["recto tap \"#2\"", "recto tap report"], ..BASE },
-    Spec { name: "recent", tag: "recent", group: GROUP_MOVE, summary: "Files opened lately, newest first, as File > Open Recent lists them, with the tab each is open in. Whole paths from Control, where `recto open` can open one.", data: "`{ count, files: [ { file, open_tab, untrusted: { name, path } } ], paths_shown }`. `path` is there from Control. At most 20.", examples: &["recto recent", "recto recent --json"], ..BASE },
+    Spec { name: "recent", tag: "recent", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Files opened lately, newest first, as File > Open Recent lists them, with the tab each is open in and its whole path, which `recto open` can open. Needs Control: what someone's been reading, closed files included, is theirs, and more than Read-only's look at what's open.", data: "`{ count, files: [ { file, open_tab, untrusted: { name, path } } ], paths_shown }`. At most 20.", examples: &["recto recent", "recto recent --json"], ..BASE },
     Spec { name: "recent clear", tag: "recent_clear", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Empties the list of files opened lately, as Open Recent > Clear Menu does. Opens and closes nothing.", data: "`{ cleared }`: whether there was anything.", examples: &["recto recent clear"], ..BASE },
     Spec { name: "close", tag: "close", group: GROUP_MOVE, access: Access::At(Level::Control), summary: "Closes a tab. Refused while it has unsaved edits, so `recto discard` first, and below Full if undone steps of the user's would go. Undone steps of an agent's own go with it. The refusal says what's at stake and each way on.", args: &[TAB], data: "`{ closed, count, active }`, with `active` as `where` gives it.", emits: &["tab_closed", "tab_activated"], examples: &["recto close", "recto close --tab \"#2\""], ..BASE },
     Spec {
@@ -658,7 +658,7 @@ pub static TABLE: &[Spec] = &[
     Spec { name: "qa zoom-type", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Types a zoom level into the field the zoom level opens, and presses Return, through the field's own action. Something that isn't a level changes nothing, and the field shows what it was.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "What's typed, as `150` or `150%`." }], fixed: &[("verb", "zoom_type")], data: "`qa state`'s `app`.", examples: &["recto qa zoom-type 150"], ..BASE },
     Spec { name: "qa context-menu", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Chooses an item of the page's right-click menu, through the menu item itself: the layouts, or Copy and Select All. `qa state`'s `context_menu` lists them.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "The item's id, as `layout.two_up`." }], fixed: &[("verb", "context_menu")], data: "`qa state`'s `app`.", examples: &["recto qa context-menu layout.two_up_cover"], ..BASE },
     Spec { name: "qa key-action", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Does Undo or Redo as its key or menu item does with the window key: given to the first in the window's own chain that answers it, if that says it can be chosen. A quiet window isn't key, so `qa menu` goes past the window; this doesn't.", args: &[Arg { key: "value", flag: None, kind: Kind::Choice(&["undo", "redo"]), required: true, help: "Which." }], fixed: &[("verb", "key_action")], data: "`qa state`'s `app`.", examples: &["recto qa key-action undo"], ..BASE },
-    Spec { name: "qa password", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Types a password into the sheet a protected PDF asks with, and presses Open, through the sheet's own ending. For a quiet run's test file only: the app keeps it for the open tab and nowhere else, and no agent command gives or takes one. `qa sheet-answer second` is Cancel.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "What's typed." }], fixed: &[("verb", "password")], data: "`qa state`'s `app`, with `app.sheet` while it's open.", examples: &["recto qa password not-the-real-one"], ..BASE },
+    Spec { name: "qa password", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Types a password into the sheet a protected PDF asks with, and presses Open, through the sheet's own ending. The password is the first line of stdin, never the command line, where other processes and shell history would see it. Only for a quiet run's own test file, in its state folder or a temp folder: the sheet for any other file is refused. The app keeps it for the open tab and nowhere else, and no agent command gives or takes one. `qa sheet-answer second` is Cancel.", fixed: &[("verb", "password")], data: "`qa state`'s `app`, with `app.sheet` while it's open.", examples: &["recto qa password"], ..BASE },
     Spec { name: "qa zoom-escape", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Presses Escape in the zoom level's field, by the method AppKit calls for it: the field closes and the zoom stays as it was.", fixed: &[("verb", "zoom_escape"), ("value", "all")], data: "`qa state`'s `app`.", examples: &["recto qa zoom-escape"], ..BASE },
     Spec { name: "qa panel", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Clicks the sidebar's panel button, or one of the panel's own, through the button itself. `qa state` lists them.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "`toggle`, or an item's id, as `paper.warm`." }], fixed: &[("verb", "panel")], data: "`qa state`'s `app`.", examples: &["recto qa panel toggle", "recto qa panel paper.warm"], ..BASE },
     Spec { name: "qa mouse-down", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Presses the mouse on a page, through what a real press calls, from the window's coordinates, at whatever the zoom is. Nothing is posted.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "`PAGE:X,Y`, as `recto select` gives places, with `:CLICKS` and `:shift` after it: `3:120,88`, `3:120,88:2`, `3:120,88:1:shift`." }], fixed: &[("verb", "mouse_down")], data: "`qa state`'s `app`. `qa state` has `reader.selection`.", examples: &["recto qa mouse-down 3:120,88:2"], client_wait_s: 35, ..BASE },
@@ -769,6 +769,11 @@ impl Invocation {
 
 fn usage_error(message: impl Into<String>, next: impl Into<String>) -> AgentError {
     AgentError::new("usage", message, exit::USAGE).then(next)
+}
+
+/// The rows whose value is a secret read from stdin rather than the command line, under this field: a password typed for a test (review O6).
+pub fn stdin_secret_field(spec: &Spec) -> Option<&'static str> {
+    (spec.name == "qa password").then_some("value")
 }
 
 /// Reads a command line. Unknown commands and flags are refused, with the closest real ones, never guessed at.
@@ -1413,8 +1418,12 @@ mod tests {
             assert!(!spec.examples.is_empty(), "{} has no example", spec.name);
             assert!(!spec.summary.is_empty() && !spec.data.is_empty(), "{}", spec.name);
             for example in spec.examples {
-                let line = parse_line(example).unwrap_or_else(|error| panic!("{example}: {}", error.message));
+                let mut line = parse_line(example).unwrap_or_else(|error| panic!("{example}: {}", error.message));
                 assert_eq!(line.spec.name, spec.name, "{example}");
+                // What `recto` reads from stdin for this row, as it puts it in.
+                if let Some(field) = stdin_secret_field(spec) {
+                    line.fields.insert(field.into(), json!("from stdin"));
+                }
                 if spec.route == Route::Session {
                     let command = line.command().unwrap_or_else(|error| panic!("{example}: {}", error.message));
                     assert_eq!(command.tag(), spec.tag, "{example}");
@@ -1462,7 +1471,11 @@ mod tests {
                     line.push(sample.to_string());
                 }
             }
-            let parsed = parse_cli(&line).unwrap_or_else(|error| panic!("{line:?}: {}", error.message));
+            let mut parsed = parse_cli(&line).unwrap_or_else(|error| panic!("{line:?}: {}", error.message));
+            // What's read from stdin rather than the line, as `recto` itself puts it in.
+            if let Some(field) = stdin_secret_field(spec) {
+                parsed.fields.insert(field.into(), json!("from stdin"));
+            }
             parse(&parsed.wire()).unwrap_or_else(|_| panic!("{} sends a field its command doesn't know: {}", spec.name, parsed.wire()));
         }
     }

@@ -471,8 +471,8 @@ impl FileNotice {
         match (self, has_edits) {
             (Self::Moved { .. }, true) => "This file was moved, and the tab followed it. Your unsaved edits are still here, and nothing has been written to the file.",
             (Self::Moved { .. }, false) => "This file was moved, and the tab followed it.",
-            (Self::Changed, true) => "This file was changed by something other than RectoPDF. Your unsaved edits are still here, but they were made on the old version, so pages may not line up. Nothing has been written to the file.",
-            (Self::Changed, false) => "This file was changed by something other than RectoPDF, so this is the new version.",
+            (Self::Changed, true) => "This file changed on disk since it was last read here. Your unsaved edits are still here, but they were made on the old version, so pages may not line up. Nothing has been written to the file.",
+            (Self::Changed, false) => "This file changed on disk since it was last read here, so this is the new version.",
             (Self::Missing, true) => "This file can't be found: it may have been moved or deleted, or its disk may not be connected. Your unsaved edits are still here, and this tab keeps them until you discard them.",
             (Self::Missing, false) => "This file can't be found: it may have been moved or deleted, or its disk may not be connected.",
             (Self::NeedsPassword, _) => "This PDF needs its password again. Passwords aren't kept between launches.",
@@ -643,6 +643,9 @@ pub struct TabEntry {
     /// Contents sections the reader opened or closed against what following the place does, as `(entry, open)`. At most [`MAX_CONTENTS_FOLDS`].
     #[serde(default, deserialize_with = "capped::<_, _, MAX_CONTENTS_FOLDS>")]
     pub contents_folds: Vec<(u32, bool)>,
+    /// Its file was opened with a password the person typed, so what's here of it (its length, its place) was read with one, and none of it goes to an agent. The password itself is never anywhere in the record. Added after version 1, so an older record has none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub password: bool,
 }
 
 /// Most folds kept for one tab's contents. A reader opens and closes a handful; past this the oldest goes.
@@ -1382,7 +1385,7 @@ mod tests {
     }
 
     fn entry(id: u32) -> TabEntry {
-        TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new() }
+        TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new(), password: false }
     }
 
     fn record(tabs: Vec<TabEntry>) -> SessionRecord {

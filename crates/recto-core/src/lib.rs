@@ -175,37 +175,7 @@ fn open_bytes(bytes: Arc<[u8]>) -> Result<IndexedReader, OpenError> {
     checked_reader(IndexedReader::open(BytesSource::new(bytes)))
 }
 
-/// **A password the person typed for one PDF.** Held in memory while that PDF is open, so its pages can be drawn, and never written, logged, journaled or put in the state record: it can't be serialised, its `Debug` says nothing of it, and its bytes are overwritten when it goes. An agent never supplies or reads one.
-pub struct Password(Box<[u8]>);
-
-/// The longest password taken. PDF's own limit is 127 bytes; past this is nothing a file could want.
-pub const MAX_PASSWORD_BYTES: usize = 1024;
-
-impl Password {
-    /// What was typed, if it could be a password: not empty, not too long, and with no NUL, which no PDF password has and the renderer can't take.
-    pub fn new(text: &str) -> Option<Self> {
-        let bytes = text.as_bytes();
-        (!bytes.is_empty() && bytes.len() <= MAX_PASSWORD_BYTES && !bytes.contains(&0)).then(|| Self(bytes.into()))
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for Password {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("Password(hidden)")
-    }
-}
-
-impl Drop for Password {
-    fn drop(&mut self) {
-        // Overwritten before the memory goes back, and handed to `black_box` so the writes aren't dropped as nothing reads them after.
-        self.0.fill(0);
-        std::hint::black_box(&self.0);
-    }
-}
+pub use recto_platform::{MAX_PASSWORD_BYTES, Password};
 
 /// [`inspect`] with a password the person typed. A wrong one is [`OpenError::PasswordNeeded`], as no password is. The file's closed again when this returns, and the password isn't kept here.
 pub fn inspect_with_password(path: &Path, password: &Password) -> Result<DocFacts, OpenError> {
@@ -218,6 +188,7 @@ pub fn inspect_with_password(path: &Path, password: &Password) -> Result<DocFact
         return Err(OpenError::NotPdf);
     }
     let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
+    // lopdf takes this copy out of the options and drops it once it's derived the file's key, without overwriting it: a copy that remains, listed in ENGINEERING. The options are moved in, so there's nothing left here to clear.
     let options = lopdf::IndexedReaderOptions { password: Some(password.bytes().to_vec()), ..lopdf::IndexedReaderOptions::default() };
     read_facts(&checked_reader(IndexedReader::open_with_options(source, options))?)
 }

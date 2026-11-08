@@ -72,6 +72,18 @@ impl State {
         (value, output.status.code().unwrap())
     }
 
+    /// Runs `recto` with this on its stdin, as `qa password` takes a password, and reads its one JSON answer.
+    #[allow(dead_code)] // Not every test binary types a password.
+    pub fn json_with_stdin(&self, args: &[&str], input: &str) -> (Value, i32) {
+        use std::io::Write;
+        let mut child = self.command().args(args).arg("--json").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        let output = child.wait_with_output().unwrap();
+        let text = String::from_utf8(output.stdout).unwrap();
+        let value = serde_json::from_str(text.trim()).unwrap_or_else(|_| panic!("not JSON from {args:?}: {text:?}"));
+        (value, output.status.code().unwrap())
+    }
+
     /// Runs `recto` and returns what a person would see.
     pub fn text(&self, args: &[&str]) -> (String, String, i32) {
         let output = self.command().args(args).output().unwrap();
@@ -240,12 +252,23 @@ pub fn password_protected() -> Vec<u8> {
     String::from_utf8_lossy(&bytes).replace("/Root 1 0 R", &format!("/Root 1 0 R /Encrypt << /Filter /Standard /V 1 /R 2 /O <{key}> /U <{key}> /P -4 >> /ID [<00> <00>]")).into_bytes()
 }
 
-/// A real protected file: it opens only with the user password given, written by lopdf's eager writer, which alone encrypts.
+/// The chapter title in [`locked_with`]'s contents, which only its password can read.
+#[allow(dead_code)]
+pub const LOCKED_CHAPTER: &str = "Secret chapter";
+
+/// A real protected file: it opens only with the user password given, written by lopdf's eager writer, which alone encrypts. Each page says "Locked page N", and its contents have one chapter, [`LOCKED_CHAPTER`], so a test can tell whether anything decrypted got out.
 #[allow(clippy::disallowed_methods, dead_code)] // A test fixture built with lopdf's eager writer, which alone encrypts; never over a user's file. Not every test binary uses it.
 pub fn locked_with(password: &str, pages: usize) -> Vec<u8> {
     use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+    use lopdf::{Object, dictionary};
     let plain: Vec<recto_testpdf::Page> = (0..pages).map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Locked page {}", page + 1)]))).collect();
     let mut document = lopdf::Document::load_mem(&recto_testpdf::pages(&plain)).unwrap();
+    let first_page = *document.get_pages().values().next().unwrap();
+    let outlines = document.new_object_id();
+    let chapter = document.add_object(dictionary! { "Title" => Object::string_literal(LOCKED_CHAPTER), "Parent" => outlines, "Dest" => vec![first_page.into(), "Fit".into()] });
+    document.objects.insert(outlines, Object::Dictionary(dictionary! { "Type" => "Outlines", "First" => chapter, "Last" => chapter, "Count" => 1 }));
+    let root = document.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    document.get_object_mut(root).unwrap().as_dict_mut().unwrap().set("Outlines", outlines);
     document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));
     let encryption = EncryptionState::try_from(EncryptionVersion::V2 { document: &document, owner_password: "owner", user_password: password, key_length: 128, permissions: Permissions::all() }).unwrap();
     document.encrypt(&encryption).unwrap();

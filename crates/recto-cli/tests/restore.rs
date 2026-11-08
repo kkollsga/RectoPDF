@@ -2188,7 +2188,7 @@ fn a_discard_stays_discarded_in_a_session_with_no_window() {
 #[path = "restore/update.rs"]
 mod update;
 
-/// Failure: a note's bubble keeps the shape it had for the margin when it was laid out, so after a zoom changes the margin it stays as narrow as it was zoomed in, until something unrelated, a change of appearance, lays it out again. "This file has changed since you last had it open" wrapped to 5 lines in light and 2 in dark (2026-11-08). Its shape follows the margin there is now, and is the same in light and dark.
+/// Failure: a note's bubble keeps the shape it had for the margin when it was laid out, so after a zoom changes the margin it stays as narrow as it was zoomed in, until something unrelated, a change of appearance, lays it out again. A file notice wrapped to 5 lines in light and 2 in dark (2026-11-08). Its shape follows the margin there is now, and is the same in light and dark.
 #[test]
 fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {
     let state = State::new();
@@ -2246,7 +2246,8 @@ fn a_protected_tab_asks_again_after_a_quit() {
         panic!("it never came to pass: {}", run.report());
     };
     until(&run, &|state| state["app"]["sheet"]["kind"] == "password");
-    run.ok(&["qa", "password", "open sesame"]);
+    let (reply, code) = state.json_with_stdin(&["qa", "password"], "open sesame");
+    assert_eq!(code, 0, "{reply}");
     until(&run, &|state| state["app"]["sheet"] == json!({}) && state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 1));
     run.settled();
     run.quit();

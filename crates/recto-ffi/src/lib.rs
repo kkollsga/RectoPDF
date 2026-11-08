@@ -403,8 +403,8 @@ pub struct ReaderView {
 /// A file opened lately, for File > Open Recent and for ⌘K to offer. The worker building ⌘K calls `AppCore::recent_files` and opens one with `AppCore::open_recent`.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct RecentFile {
-    /// Its place in the list, newest first, from 0: what `open_recent` takes.
-    pub index: u32,
+    /// Which file this is, however the list moves: what its Open Recent item's id carries, as `recent.<key>`.
+    pub key: String,
     /// As a tab shows it: the file's name without `.pdf`, cleaned.
     pub name: String,
     /// The folder it's in, as a path, for telling two of the same name apart.
@@ -915,6 +915,8 @@ struct Synced {
 struct Published {
     /// Files opened lately, newest first, for Open Recent and ⌘K, so neither asks the session.
     recent: Arc<Vec<RecentFile>>,
+    /// What `recent` was built from: the session's list's version and the tabs' version.
+    recent_key: Option<(u64, u64)>,
     sidebar: Arc<SidebarView>,
     tabs: Arc<Vec<SidebarRow>>,
     contents: Arc<Vec<ContentsEntry>>,
@@ -970,10 +972,8 @@ struct Inner {
     action_notice: Mutex<Option<String>>,
     /// Passwords typed for protected files that are open, shared with every page view's workers. Memory only.
     keys: Arc<recto_reader::engine::Keyring>,
-    /// A password being asked for, on the system's sheet.
-    password_ask: Mutex<Option<passwords::Ask>>,
-    /// A protected tab the person said Cancel for: it isn't asked about again until they go to it again.
-    declined_tab: Mutex<Option<TabId>>,
+    /// Passwords being asked for, in turn, on the system's sheet, and what each file's tries have come to.
+    password_asks: Mutex<passwords::Asks>,
     /// Saves from the window: how many run, and what one that failed says.
     save_ui: saving::SaveUi,
 }
@@ -1380,7 +1380,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { recent: Arc::new(Vec::new()), contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false, password_prompt: None } }),
+            published: Mutex::new(Published { recent: Arc::new(Vec::new()), recent_key: None, contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false, password_prompt: None } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1391,8 +1391,7 @@ impl AppCore {
             open_failure: Mutex::new(None),
             action_notice: Mutex::new(None),
             keys,
-            password_ask: Mutex::new(None),
-            declined_tab: Mutex::new(None),
+            password_asks: Mutex::new(passwords::Asks::default()),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
         });
         saver.attach(Arc::downgrade(&inner));
@@ -1627,35 +1626,32 @@ impl AppCore {
     /// The menu bar as it stands. The host rebuilds it only when this differs.
     pub fn menu_bar(&self) -> Vec<MenuModel> {
         let reader = lock(&self.inner.published).reader.clone();
-        let recent: Vec<String> = lock(&self.inner.published).recent.iter().map(|file| file.name.clone()).collect();
-        menus::menu_bar_with(ViewSettings { sidebar_hidden: reader.sidebar_hidden, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() }, record::Spread::from_name(&reader.layout), &self.inner.updates.menu_item().title, &recent)
+        let recent = Arc::clone(&lock(&self.inner.published).recent);
+        let items: Vec<menus::RecentItem> = recent.iter().map(|file| menus::RecentItem { key: &file.key, name: &file.name }).collect();
+        menus::menu_bar_with(ViewSettings { sidebar_hidden: reader.sidebar_hidden, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() }, record::Spread::from_name(&reader.layout), &self.inner.updates.menu_item().title, &items)
     }
 
-    /// **The password sheet was answered:** with what was typed, or nothing for Cancel. It's tried on a thread of its own, as reading a file can wait on its disk, and never kept anywhere but the open tab's keyring.
-    pub fn password_answered(&self, password: Option<String>) {
-        let mut ask = lock(&self.inner.password_ask);
-        let Some(asked) = ask.clone() else { return };
+    /// **The password sheet was answered:** for the prompt with this id, with what was typed, or nothing for Cancel. The answer goes to that prompt's file, whatever's waiting by now, and none if it's gone. It's tried on a thread of its own, as reading a file can wait on its disk, and kept nowhere but the open tab's keyring. The `String` UniFFI made is overwritten here, so Rust holds one copy.
+    pub fn password_answered(&self, id: u64, password: Option<String>) {
+        let mut asks = lock(&self.inner.password_asks);
         let Some(typed) = password else {
-            *ask = None;
-            if let passwords::Target::Tab(id) = asked.target {
-                *lock(&self.inner.declined_tab) = Some(id);
-            }
-            drop(ask);
+            asks.cancel(id);
+            drop(asks);
             self.inner.core.push(CoreCall::Reconcile);
             return;
         };
-        let Some(password) = recto_core::Password::new(&typed) else {
+        let password = recto_core::Password::take(typed);
+        let Some(password) = password else {
             // Not something a password could be, which counts as a wrong one.
-            let wrong = asked.wrong + 1;
-            *ask = (wrong < passwords::MAX_TRIES).then(|| passwords::Ask { wrong, ..asked.clone() });
-            drop(ask);
+            if asks.wrong(id) == passwords::Wrong::Stopped {
+                *lock(&self.inner.action_notice) = Some(passwords::stopped_asking());
+            }
+            drop(asks);
             self.inner.core.push(CoreCall::Reconcile);
             return;
         };
-        if let Some(ask) = ask.as_mut() {
-            ask.trying = true;
-        }
-        drop(ask);
+        let Some(asked) = asks.start_trying(id) else { return };
+        drop(asks);
         let core = Arc::clone(&self.inner.core);
         let password = Arc::new(password);
         let spawned = std::thread::Builder::new().name("recto-unlock".into()).stack_size(512 * 1024).spawn(move || {
@@ -1664,7 +1660,7 @@ impl AppCore {
             core.push(CoreCall::Unlocked(asked, loaded, stamp, password));
         });
         if spawned.is_err() {
-            *lock(&self.inner.password_ask) = None;
+            lock(&self.inner.password_asks).failed(id);
         }
         self.inner.core.push(CoreCall::Reconcile);
     }
@@ -1674,9 +1670,9 @@ impl AppCore {
         lock(&self.inner.published).recent.as_ref().clone()
     }
 
-    /// Opens a file from that list by its place in it, as File > Open Recent does: its tab if it's open, and otherwise it's read as any open is, and says so if it's gone.
-    pub fn open_recent(&self, index: u32) {
-        let path = lock(&self.inner.published).recent.get(index as usize).map(|file| PathBuf::from(&file.path));
+    /// Opens a file from that list by its key, as File > Open Recent does: the very file that was offered, however the list has moved since, and nothing if it's left the list. Its tab if it's open, and otherwise it's read as any open is, and says so if it's gone.
+    pub fn open_recent(&self, key: String) {
+        let path = lock(&self.inner.published).recent.iter().find(|file| file.key == key).map(|file| PathBuf::from(&file.path));
         if let Some(path) = path {
             self.inner.core.push(CoreCall::Open(path));
         }
@@ -1701,7 +1697,7 @@ impl AppCore {
             menus::Action::Copy { anyway } => self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway),
             menus::Action::SelectAll => self.inner.panes.reading_engine(&self.inner.engine).select_all(),
             menus::Action::SetSynced(on) => self.inner.core.push(CoreCall::SetSynced(on)),
-            menus::Action::OpenRecent(at) => self.open_recent(u32::try_from(at).unwrap_or(u32::MAX)),
+            menus::Action::OpenRecent(key) => self.open_recent(key),
             menus::Action::ClearRecent => self.inner.core.push(CoreCall::ClearRecent),
             menus::Action::ClearEditHistory => self.inner.core.push(CoreCall::ClearEditHistory),
             menus::Action::Zoom(zoom) => {
@@ -2417,33 +2413,36 @@ fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::Unlocked(ask, loaded, stamp, password) => match loaded {
                 Ok(facts) => {
-                    *lock(&inner.password_ask) = None;
-                    inner.keys.set(&ask.path, password);
-                    for engine in inner.panes.engines(&inner.engine) {
-                        engine.key_given(&ask.path);
-                    }
-                    match ask.target {
-                        passwords::Target::File => match host.session.with_session(|session| session.open_with_facts(&ask.path, facts, stamp, None)) {
-                            Ok(id) => events.push(Event::new("tab_opened", json!({ "tab": id.0 }))),
-                            Err(error) => *lock(&inner.open_failure) = Some(error.message().to_string()),
-                        },
-                        passwords::Target::Tab(id) => host.session.with_session(|session| session.unlock(id, facts, stamp)),
+                    // Kept by which file it is, so a move keeps it and a new file in its place doesn't get it. A file with no such numbers can't have its password kept for drawing it, so it's said rather than asked again for ever.
+                    let identity = stamp.map(|stamp| (stamp.device, stamp.inode)).filter(|identity| *identity != (0, 0));
+                    match identity {
+                        None => {
+                            lock(&inner.password_asks).failed(ask.id);
+                            *lock(&inner.open_failure) = Some(passwords::CANT_KEEP.to_string());
+                        }
+                        Some(identity) => {
+                            lock(&inner.password_asks).opened(ask.id);
+                            inner.keys.set(identity, password);
+                            for engine in inner.panes.engines(&inner.engine) {
+                                engine.key_given(&ask.path);
+                            }
+                            match ask.target {
+                                passwords::Target::File => match host.session.with_session(|session| session.open_unlocked(&ask.path, facts, stamp)) {
+                                    Ok(id) => events.push(Event::new("tab_opened", json!({ "tab": id.0 }))),
+                                    Err(error) => *lock(&inner.open_failure) = Some(error.message().to_string()),
+                                },
+                                passwords::Target::Tab(id) => host.session.with_session(|session| session.unlock(id, facts, stamp)),
+                            }
+                        }
                     }
                 }
                 Err(OpenError::PasswordNeeded) => {
-                    let wrong = ask.wrong + 1;
-                    if wrong >= passwords::MAX_TRIES {
-                        *lock(&inner.password_ask) = None;
-                        if let passwords::Target::Tab(id) = ask.target {
-                            *lock(&inner.declined_tab) = Some(id);
-                        }
+                    if lock(&inner.password_asks).wrong(ask.id) == passwords::Wrong::Stopped {
                         *lock(&inner.action_notice) = Some(passwords::stopped_asking());
-                    } else {
-                        *lock(&inner.password_ask) = Some(passwords::Ask { wrong, trying: false, ..ask });
                     }
                 }
                 Err(error) => {
-                    *lock(&inner.password_ask) = None;
+                    lock(&inner.password_asks).failed(ask.id);
                     *lock(&inner.open_failure) = Some(error.message().to_string());
                 }
             },
@@ -2490,12 +2489,18 @@ fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::GoTo(id, page) => {
                 // `go_to` clamps: a contents entry can't send the reader off the end.
-                if host.session.with_session(|session| session.go_to(id, page)).is_ok() {
-                    events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page + 1 })));
+                if let Some(event) = host.session.with_session(|session| session.go_to(id, page).is_ok().then(|| recto_agent::page_changed(session, id, page + 1))) {
+                    events.push(event);
                 }
             }
             CoreCall::Open(path) => {
                 *lock(&inner.open_failure) = None;
+                // Opening a file again is what starts its password tries afresh (SPEC).
+                let (tab, own) = host.session.with_session(|session| {
+                    let tab = session.tab_for_path(&path);
+                    (tab, tab.and_then(|id| session.path_of(id)))
+                });
+                lock(&inner.password_asks).opened_again(&[Some(path.clone()), own].into_iter().flatten().collect::<Vec<_>>(), tab);
                 let cold = host.session.with_session(|session| session.tab_for_path(&path).and_then(|id| session.wake_for_tap(id)));
                 if let Some((tab, file)) = cold {
                     reads.wanted_tab = Some(tab);
@@ -2692,6 +2697,16 @@ struct FileRead {
     status: Option<FileStatus>,
     /// The history it was left with, for a file being opened.
     history: Option<recto_session::TakenHistory>,
+    /// It was read with the password the person typed for it, from the keyring.
+    unlocked: bool,
+}
+
+/// Reads a file's facts off the session thread: with the password the person typed for it, if the keyring has one for that file, so a protected tab that went cold and wakes doesn't ask again; and otherwise as any file is. Whether a password was used.
+fn read_facts(keys: &recto_reader::engine::Keyring, path: &std::path::Path) -> (Result<DocFacts, OpenError>, bool) {
+    match keys.for_path(path) {
+        Some(key) => (recto_core::inspect_with_password(path, &key), true),
+        None => (DrawableLoader.load(path), false),
+    }
 }
 
 /// Reads of files under way off the session thread. A file on a dead volume holds up the one thread reading it, and neither this one nor anyone else's tap.
@@ -2720,12 +2735,13 @@ impl FileReads {
         }
         inner.reads_running.fetch_add(1, Ordering::SeqCst);
         let core = Arc::clone(&inner.core);
+        let keys = Arc::clone(&inner.keys);
         let spawned = std::thread::Builder::new().name("recto-read".into()).stack_size(1024 * 1024).spawn(move || {
             let status = look_at_file(&path, stamp);
             let path = if let FileStatus::Moved(moved, _) = &status { moved.clone() } else { path };
             let stamp = recto_platform::file_stamp(&path).ok();
-            let loaded = DrawableLoader.load(&path);
-            core.push(CoreCall::Read(Box::new(FileRead { what, loaded, stamp, status: Some(status), history: None })));
+            let (loaded, unlocked) = read_facts(&keys, &path);
+            core.push(CoreCall::Read(Box::new(FileRead { what, loaded, stamp, status: Some(status), history: None, unlocked })));
         });
         if spawned.is_err() {
             self.running.remove(&Reading::Restored(id));
@@ -2758,7 +2774,7 @@ impl FileReads {
                 std::thread::sleep(Duration::from_millis(10));
             }
             let stamp = recto_platform::file_stamp(&path).ok();
-            let loaded = DrawableLoader.load(&path);
+            let (loaded, unlocked) = read_facts(&inner_for_read.keys, &path);
             // A PDF already open by another name keeps what it has. The session says for sure when this gets there.
             let already = matches!(reading, Reading::File(_)) && inner_for_read.host.session.with_session(|session| session.tab_for_file(&path, stamp).is_some());
             // Only after a good read: taking it up marks it as open, and a file that couldn't be read won't have a tab to hold it.
@@ -2766,7 +2782,7 @@ impl FileReads {
             if let Some(before) = before {
                 before.wait(OPEN_ORDER_WAIT);
             }
-            core.push(CoreCall::Read(Box::new(FileRead { what: reading, loaded, stamp, status: None, history })));
+            core.push(CoreCall::Read(Box::new(FileRead { what: reading, loaded, stamp, status: None, history, unlocked })));
             if let Some(done) = done {
                 done.finished();
             }
@@ -2783,6 +2799,12 @@ impl FileReads {
         self.running.remove(&read.what);
         inner.reads_running.fetch_sub(1, Ordering::SeqCst);
         let host = &inner.host;
+        // Read with a password: the tab's marked before anything read takes its place, so no agent can see it.
+        if read.unlocked
+            && let Reading::Restored(tab) | Reading::Tab(tab) | Reading::Compare(_, tab) | Reading::Pane(tab) = &read.what
+        {
+            host.session.with_session(|session| session.note_password_used(*tab));
+        }
         match read.what {
             Reading::Restored(tab) => {
                 if let Some(status) = read.status {
@@ -2819,12 +2841,14 @@ impl FileReads {
                     events.push(Event::new("tab_activated", json!({ "tab": tab.0 })));
                 }
             }
-            Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| host.session.with_session(|session| session.open_with_facts(&path, facts, read.stamp, read.history))) {
+            Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| host.session.with_session(|session| if read.unlocked { session.open_unlocked(&path, facts, read.stamp) } else { session.open_with_facts(&path, facts, read.stamp, read.history) })) {
                 Ok(id) => {
                     events.push(Event::new("tab_opened", json!({ "tab": id.0 })));
                 }
-                // A protected file asks for its password, on the system's sheet, rather than only saying it needs one.
-                Err(SessionError::Open(OpenError::PasswordNeeded)) => *lock(&inner.password_ask) = Some(passwords::Ask::new(passwords::Target::File, &path)),
+                // A protected file asks for its password, on the system's sheet, rather than only saying it needs one. After any other file asking, each with its own answer.
+                Err(SessionError::Open(OpenError::PasswordNeeded)) => {
+                    lock(&inner.password_asks).ask(passwords::Target::File, &path);
+                }
                 Err(error) => *lock(&inner.open_failure) = Some(error.message().to_string()),
             },
         }
@@ -3071,7 +3095,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
                 if let Some(pane) = synced.panes.get_mut(*pane) {
                     pane.page = page;
                 }
-                events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page + 1 })));
+                events.push(recto_agent::page_changed(session, id, page + 1));
             }
         }
         let snapshots: Vec<PaneSnapshot> = panes.iter().enumerate().filter_map(|(pane, id)| pane_snapshot(session, *id, pane == 0, &panes)).collect();
@@ -3189,25 +3213,36 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     if panes_changed && comparing {
         inner.panes.even_out_zoom(&inner.engine);
     }
-    // A protected tab showing with no password given is asked about, unless the person said Cancel and hasn't gone to it again.
-    let wants = inner.host.session.with_session(|session| session.active().filter(|id| session.needs_password(*id)).and_then(|id| Some((id, session.path_of(id)?))));
-    {
-        let mut declined = lock(&inner.declined_tab);
-        if declined.is_some() && *declined != wants.as_ref().map(|(id, _)| *id) {
-            *declined = None;
-        }
-        let mut ask = lock(&inner.password_ask);
-        if ask.is_none()
-            && let Some((id, path)) = wants
-            && *declined != Some(id)
-        {
-            *ask = Some(passwords::Ask::new(passwords::Target::Tab(id), &path));
+    // A file whose renderer found it needs a password the keyring has none for, as one moved to another volume or replaced while it was open, needs it again: its tab says so, and is asked about as any is.
+    for engine in inner.panes.engines(&inner.engine) {
+        for path in engine.take_keyless() {
+            inner.host.session.with_session(|session| {
+                if let Some(id) = session.tab_for_path(&path) {
+                    session.needs_password_again(id);
+                }
+            });
         }
     }
-    let password_prompt = lock(&inner.password_ask).as_ref().filter(|ask| !ask.trying).map(passwords::prompt_for);
+    // A protected tab showing with no password given is asked about, unless the person said Cancel and hasn't gone to it again, or its tries have run out.
+    let (wants, active_tab) = inner.host.session.with_session(|session| {
+        let active = session.active();
+        (active.filter(|id| session.needs_password(*id)).and_then(|id| Some((id, session.path_of(id)?))), active)
+    });
+    let asked = lock(&inner.password_asks).tabs_asked();
+    let closed: Vec<TabId> = if asked.is_empty() { Vec::new() } else { inner.host.session.with_session(|session| asked.into_iter().filter(|id| session.tab(*id).is_none()).collect()) };
+    let password_prompt = {
+        let mut asks = lock(&inner.password_asks);
+        asks.showing_tab(active_tab, &closed);
+        if let Some((id, path)) = wants
+            && !asks.declined(id)
+        {
+            asks.ask(passwords::Target::Tab(id), &path);
+        }
+        asks.prompt()
+    };
     // A password goes with its tab: one for a file no tab has open now is let go, and overwritten.
     if !inner.keys.is_empty() {
-        let open: Vec<PathBuf> = inner.host.session.with_session(|session| session.tabs().iter().filter_map(|tab| session.path_of(tab.id)).collect());
+        let open: Vec<(u64, u64)> = inner.host.session.with_session(|session| session.tabs().iter().filter_map(|tab| session.own_stamp(tab.id)).map(|stamp| (stamp.device, stamp.inode)).collect());
         inner.keys.keep_only(&open);
     }
     let session_notice = lock(&inner.host.notice).as_deref().and_then(record::notices::words).map(str::to_string);
@@ -3221,12 +3256,20 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let pane_views: Vec<PaneView> = if comparing { snapshots.iter().enumerate().map(|(pane, shown)| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active, layout: shown.spread.name().to_string(), note: shown.problem.clone().or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())) }).collect() } else { Vec::new() };
     let compare_synced = inner.host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
     let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: inner.save_ui.tooltip(), save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now), password_prompt };
-    let recent: Vec<RecentFile> = inner.host.session.with_session(|session| session.recent_files()).into_iter().enumerate().map(|(at, file)| RecentFile { index: u32::try_from(at).unwrap_or(u32::MAX), name: recto_core::clean_line(&file.name), folder: file.path.parent().map(|folder| folder.display().to_string()).unwrap_or_default(), path: file.path.to_string_lossy().into_owned(), open: file.open.is_some() }).collect();
+    // Open Recent is built again only when its list has moved, or the tabs have, which say which of its files are open: not at every reconcile.
+    let recent_key = (inner.host.session.with_session(|session| session.recent_version()), sidebar.tabs_version);
+    let recent = (lock(&inner.published).recent_key != Some(recent_key)).then(|| {
+        inner.host.session.with_session(|session| session.recent_files()).into_iter().map(|file| RecentFile { key: menus::recent_key(&file.path), name: recto_core::clean_line(&file.name), folder: file.path.parent().map(|folder| folder.display().to_string()).unwrap_or_default(), path: file.path.to_string_lossy().into_owned(), open: file.open.is_some() }).collect::<Vec<RecentFile>>()
+    });
     let mut published = lock(&inner.published);
-    let recent_changed = *published.recent != recent;
-    if recent_changed {
-        published.recent = Arc::new(recent);
-    }
+    published.recent_key = Some(recent_key);
+    let recent_changed = recent.is_some_and(|recent| {
+        let changed = *published.recent != recent;
+        if changed {
+            published.recent = Arc::new(recent);
+        }
+        changed
+    });
     let changed = recent_changed || *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {
         published.tabs = tabs;

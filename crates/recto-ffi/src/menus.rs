@@ -43,7 +43,7 @@ pub enum HostAction {
 }
 
 /// What an item does.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Action {
     /// Clears the showing tab's edit history, SPEC decision 25. Its unsaved edits stay.
     ClearEditHistory,
@@ -70,8 +70,8 @@ pub(crate) enum Action {
     CloseDocument,
     /// A comparison's panes scroll together, page for page, or each on its own.
     SetSynced(bool),
-    /// File > Open Recent's file at this place in the list.
-    OpenRecent(usize),
+    /// File > Open Recent's file with this key: the one the menu showed, whatever the list has become since.
+    OpenRecent(String),
     /// File > Open Recent > Clear Menu.
     ClearRecent,
 }
@@ -132,10 +132,24 @@ fn line() -> MenuEntry {
 }
 
 /// The whole menu bar, as it stands.
+/// A file in Open Recent, as the menu has it: its key, which its item's id carries (`recent.<key>`), and its name.
+pub(crate) struct RecentItem<'a> {
+    pub key: &'a str,
+    pub name: &'a str,
+}
+
+/// The key a file in Open Recent goes by: from its path, so it's the same file however the list has moved since the menu was made, and an item can't open another file than the one it showed. Sixteen hex digits, never a path, so nothing of where someone keeps their files is in a menu item's id.
+pub(crate) fn recent_key(path: &std::path::Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 /// Open Recent's submenu: each file by its name, newest first, then Clear Menu, as on any Mac. Names come from file names, cleaned. Empty, it's Clear Menu alone, greyed out.
-fn recent_entries(recent: &[String]) -> Vec<MenuEntry> {
+fn recent_entries(recent: &[RecentItem]) -> Vec<MenuEntry> {
     let in_recent = |item: MenuEntry| MenuEntry { parent: "file.open_recent".into(), ..item };
-    let mut entries: Vec<MenuEntry> = recent.iter().enumerate().map(|(at, name)| in_recent(entry(&format!("recent.{at}"), &recto_core::clean_line(name), ""))).collect();
+    let mut entries: Vec<MenuEntry> = recent.iter().map(|item| in_recent(entry(&format!("recent.{}", item.key), &recto_core::clean_line(item.name), ""))).collect();
     if !entries.is_empty() {
         entries.push(in_recent(line()));
     }
@@ -149,7 +163,7 @@ pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: 
 }
 
 /// The menu bar, with the names of files opened lately for Open Recent.
-pub(crate) fn menu_bar_with(view: ViewSettings, shown: Option<Spread>, update_title: &str, recent: &[String]) -> Vec<MenuModel> {
+pub(crate) fn menu_bar_with(view: ViewSettings, shown: Option<Spread>, update_title: &str, recent: &[RecentItem]) -> Vec<MenuModel> {
     vec![
         MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), entry("app.update", update_title, ""), line(), entry("app.settings", "Settings…", ","), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
         // Owner, 2026-11-07: "The full app settings should be accessible from file -> settings". The app menu keeps its own, as on any Mac, and both say ⌘,.
@@ -273,7 +287,13 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "paper.dark" => Action::SetPaper(Paper::Dark),
         "file.open_recent" => Action::Host(HostAction::None),
         "recent.clear" => Action::ClearRecent,
-        recent if recent.starts_with("recent.") => Action::OpenRecent(recent["recent.".len()..].parse().ok().filter(|at: &usize| *at < recto_session::MAX_RECENT)?),
+        recent if recent.starts_with("recent.") => {
+            let key = &recent["recent.".len()..];
+            if key.len() != 16 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return None;
+            }
+            Action::OpenRecent(key.to_string())
+        }
         "compare.separate" => Action::SetSynced(false),
         "compare.synced" => Action::SetSynced(true),
         _ => return None,
@@ -449,12 +469,15 @@ mod tests {
     /// Failure: File has no Open Recent, it doesn't list the files newest first under it, Clear Menu isn't there, a name with control characters reaches the menu, or an id past the list does something.
     #[test]
     fn open_recent_lists_files_and_clears() {
-        let file = menu_bar_with(ViewSettings::default(), None, "", &["report".into(), "a\u{202E}b".into()]).into_iter().find(|menu| menu.title == "File").unwrap().entries;
+        let (a, b) = (recent_key(std::path::Path::new("/d/report.pdf")), recent_key(std::path::Path::new("/e/a.pdf")));
+        assert_ne!(a, b);
+        assert_eq!(a, recent_key(std::path::Path::new("/d/report.pdf")), "the same file's key every time");
+        let file = menu_bar_with(ViewSettings::default(), None, "", &[RecentItem { key: &a, name: "report" }, RecentItem { key: &b, name: "a\u{202E}b" }]).into_iter().find(|menu| menu.title == "File").unwrap().entries;
         let under: Vec<(String, String)> = file.iter().filter(|item| item.parent == "file.open_recent" && !item.id.is_empty()).map(|item| (item.id.clone(), item.title.clone())).collect();
-        assert_eq!(under, [("recent.0".to_string(), "report".to_string()), ("recent.1".to_string(), "ab".to_string()), ("recent.clear".to_string(), "Clear Menu".to_string())]);
+        assert_eq!(under, [(format!("recent.{a}"), "report".to_string()), (format!("recent.{b}"), "ab".to_string()), ("recent.clear".to_string(), "Clear Menu".to_string())]);
         assert!(file.iter().any(|item| item.id == "file.open_recent" && item.parent.is_empty()));
-        assert_eq!((action("recent.1"), action("recent.clear")), (Some(Action::OpenRecent(1)), Some(Action::ClearRecent)));
-        assert_eq!(action("recent.999"), None);
+        assert_eq!((action(&format!("recent.{b}")), action("recent.clear")), (Some(Action::OpenRecent(b.clone())), Some(Action::ClearRecent)));
+        assert_eq!(action("recent.999"), None, "not an index any more");
         assert_eq!(action("recent.x"), None);
     }
 }

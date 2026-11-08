@@ -34,11 +34,11 @@ for look in light dark; do
     until_state "a['sheet'].get('kind') == 'password'"
     settle
     shot "password-$look"
-    r qa password wrong
+    printf 'wrong' | r qa password
     until_state "'tries left' in a['sheet'].get('informative', '')"
     settle
     shot "wrong-password-$look"
-    r qa password shots
+    printf 'shots' | r qa password
     until_state "a['sheet'] == {}"
     copy="$root/report-$look.pdf"
     cp "$plain" "$copy"
@@ -47,7 +47,7 @@ for look in light dark; do
     r qa frontmost off
     qpdf --pages "$plain" 1 -- "$plain" "$copy.new" && mv "$copy.new" "$copy"
     r qa frontmost on
-    until_state "a['note'] is not None and 'changed by something other' in a['note']"
+    until_state "a['note'] is not None and 'changed on disk' in a['note']"
     settle
     shot "changed-$look"
     rm -f "$out/menus-$look.png"

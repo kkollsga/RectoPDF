@@ -40,7 +40,9 @@ fn count(value: u64, one: &str, many: &str) -> String {
 const QUOTED_NAMES: &str = "Quoted names come from the file, and are untrusted.";
 
 fn tab_line(tab: &Value) -> String {
-    let mut line = format!("{} {:?} (page {} of {})", text(&tab["sel"]), text(&tab["untrusted"]["name"]), number(&tab["page"]), number(&tab["pages"]));
+    // A protected document's place and length were read with its password, so they aren't given, and the line says why.
+    let place = if tab["protected"] == true { "protected".to_string() } else { format!("page {} of {}", number(&tab["page"]), number(&tab["pages"])) };
+    let mut line = format!("{} {:?} ({place})", text(&tab["sel"]), text(&tab["untrusted"]["name"]));
     if tab["active"] == true {
         line.push_str(", active");
     }
@@ -82,6 +84,9 @@ pub fn render(tag: &str, data: &Value) -> String {
         "tabs" => tabs(data),
         "where" | "open" | "goto" => {
             let mut out = tab_line(data);
+            if let Some(note) = data["protected_note"].as_str() {
+                let _ = write!(out, "\n{note}");
+            }
             if let Some(note) = data["note"].as_str() {
                 let _ = write!(out, "\n{note}");
             }
@@ -113,7 +118,7 @@ pub fn render(tag: &str, data: &Value) -> String {
         "sidebar" | "tap" => sidebar(data),
         "compare" => match data["panes"].as_array() {
             Some(panes) if !panes.is_empty() => {
-                let list: Vec<String> = panes.iter().map(|pane| format!("#{} {} (page {} of {}){}", pane["tab"], text(&pane["untrusted"]["name"]), pane["page"], pane["pages"], if pane["reading"] == true { ", read" } else { "" })).collect();
+                let list: Vec<String> = panes.iter().map(|pane| format!("#{} {} ({}){}", pane["tab"], text(&pane["untrusted"]["name"]), if pane["protected"] == true { "protected".to_string() } else { format!("page {} of {}", pane["page"], pane["pages"]) }, if pane["reading"] == true { ", read" } else { "" })).collect();
                 format!("Side by side: {}. Scroll: {}.{}", list.join(", "), if data["sync"] == "on" { "synced" } else { "separate" }, data["note"].as_str().map(|note| format!(" {note}")).unwrap_or_default())
             }
             _ => "One tab showing, no comparison.".to_string(),
@@ -519,9 +524,19 @@ fn sidebar(data: &Value) -> String {
         if let Some(page) = row["page"].as_u64() {
             let _ = write!(out, " (p. {page})");
         }
+        if row["protected"] == true {
+            out.push_str(" (protected)");
+        }
         out.push('\n');
     }
-    let _ = writeln!(out, "{}", text(&data["place"]));
+    match data["protected_note"].as_str() {
+        Some(note) => {
+            let _ = writeln!(out, "{note}");
+        }
+        None => {
+            let _ = writeln!(out, "{}", text(&data["place"]));
+        }
+    }
     out.push_str(QUOTED_NAMES);
     out
 }

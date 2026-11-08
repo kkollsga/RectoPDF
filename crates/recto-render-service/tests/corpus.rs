@@ -57,6 +57,6 @@ fn a_real_encrypted_file_asks_for_its_password() {
     let path = PathBuf::from(path);
     let mut without = renderer(&path, Policy::default());
     assert_eq!(without.page_count().unwrap_err(), RenderFailure::NeedsPassword);
-    let mut with = recto_render_service::DocRenderer::new(&path, Some(password.as_bytes()), common::real_config(), Policy::default()).unwrap();
+    let mut with = recto_render_service::DocRenderer::new(&path, recto_platform::Password::take(password).map(std::sync::Arc::new), common::real_config(), Policy::default()).unwrap();
     assert!(with.page_count().unwrap() > 0);
 }

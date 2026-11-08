@@ -785,7 +785,8 @@ final class BookMark: NSView {
             let typed = response == .alertFirstButtonReturn ? self.passwordField.stringValue : nil
             self.passwordField.stringValue = ""
             self.passwordShowing = nil
-            core.passwordAnswered(password: typed)
+            // With the id of the prompt it answers, so it goes to that file whatever's waiting by now.
+            core.passwordAnswered(id: prompt.id, password: typed)
         }
     }
 
