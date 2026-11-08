@@ -152,12 +152,12 @@ impl QaBridge {
         self.inner().map_or_else(|| self.engine.clone(), |inner| inner.panes.reading_engine(&inner.engine))
     }
 
-    /// The workers of every page view, now and at their peaks.
     /// Live workers that said their walls were up.
     fn walled_workers(&self) -> u32 {
         self.engines().iter().map(|engine| engine.walled_workers()).sum()
     }
 
+    /// The workers of every page view, now and at their peaks.
     fn workers_footprint(&self) -> (u64, u64, usize) {
         self.engines().iter().fold((0, 0, 0), |(now, peak, count), engine| {
             let (one, top) = engine.workers_footprint();

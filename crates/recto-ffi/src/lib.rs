@@ -2964,7 +2964,6 @@ fn session_thread(inner: &Arc<Inner>) {
                 }
             }),
             CoreCall::CompareClick(id) => {
-                // A cold tab joining is read first with the session free, as a tap's is.
                 // The tab joining, or the pane read next if the one read leaves, is read first with the session free, as a tap's is.
                 let cold = host.session.with_session(|session| session.wake_for_compare_click(id));
                 match cold {

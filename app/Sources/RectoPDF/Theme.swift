@@ -17,7 +17,6 @@ struct ThemeColor {
 
 /// The drawing's colours and sizes, from `docs/concepts/`.
 enum Theme {
-    static let sidebarWidth: CGFloat = 272
     /// Set when the window's appearance changes, on the UI thread.
     @MainActor static var dark = false
 

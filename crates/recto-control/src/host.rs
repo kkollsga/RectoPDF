@@ -195,8 +195,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         Hosted { session: &self.session, indexer: self.indexer.as_ref(), generator: self.generator.as_ref(), finder: &self.finder, saving: self.saving.get().map(|saving| &**saving) }
     }
 
-    /// The session itself, for whoever holds it: the app's own edits go through here, as the owner's. Nothing over the socket reaches this.
-    /// The same, unless something's got it now. For a thread that mustn't wait for a read under the session's lock, as the UI thread mustn't.
+    /// The session itself, unless something's got it now. For a thread that mustn't wait for a read under the session's lock, as the UI thread mustn't.
     pub fn try_with_session<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> Option<R> {
         let mut session = match self.session.try_lock() {
             Ok(session) => session,
@@ -206,6 +205,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         Some(step(&mut session))
     }
 
+    /// The session itself, for whoever holds it: the app's own edits go through here, as the owner's. Nothing over the socket reaches this.
     pub fn with_session<R>(&self, step: impl FnOnce(&mut Session<L>) -> R) -> R {
         let (result, tabs) = {
             let mut session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
