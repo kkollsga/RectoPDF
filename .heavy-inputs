@@ -1,0 +1,3 @@
+# What git ignores and still changes a result on the same code, for the build queue's memory of failures (tools/sysguard/heavy.sh).
+# PDFium, which tools/pdfium.sh puts in target/.
+target/pdfium

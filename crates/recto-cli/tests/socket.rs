@@ -116,6 +116,13 @@ fn a_server_killed_mid_command_recovers_on_restart() {
     assert_eq!(code, 0, "{open}");
     let (text, code) = state.json(&["text", "--page", "1"]);
     assert_eq!(code, 0, "{text}");
+    // The dead server's temp file goes the first time the new one draws into that folder (PLAN: nothing ever swept it).
+    let again = file.0.with_file_name("again.png");
+    let (drawn, code) = state.json(&["render", "--page", "1", "--out", again.to_str().unwrap()]);
+    assert_eq!(code, 0, "{drawn}");
+    let left: Vec<String> = std::fs::read_dir(dir).unwrap().filter_map(Result::ok).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.ends_with(".partial")).collect();
+    assert!(left.is_empty(), "the killed server's temp file is still there: {left:?}");
+    std::fs::remove_file(&again).unwrap();
     for entry in std::fs::read_dir(file.0.parent().unwrap()).unwrap() {
         let name = entry.unwrap().file_name();
         if name.to_string_lossy().ends_with(".partial") {
