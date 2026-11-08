@@ -631,6 +631,7 @@ const KNOWN_PATHS: &[&str] = &[
     "session.tabs[].edits.owner_steps_undone",
     "session.tabs[].edits.pages",
     "session.tabs[].edits.redo",
+    "session.tabs[].edits.rewrites",
     "session.tabs[].edits.undo",
     "session.tabs[].file.device",
     "session.tabs[].file.inode",
