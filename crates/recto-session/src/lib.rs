@@ -1234,6 +1234,17 @@ impl<L: DocLoader> Session<L> {
         typed.parse::<u32>().ok().filter(|page| *page >= 1 && *page <= pages).map(|page| page - 1)
     }
 
+    /// **Where a link's page goes now,** with edits counted: `file_page` of the same file as the page at position `from`, which is what a link on that page means. Nothing if that page isn't in the document any more.
+    pub fn position_in_same_file(&self, id: TabId, from: u32, file_page: u32) -> Option<u32> {
+        match self.edits.get(&id) {
+            None => (file_page < self.pages_in(id)).then_some(file_page),
+            Some(edits) => {
+                let source = edits.slots().get(from as usize)?.source;
+                edits.slots().iter().position(|slot| slot.source == source && slot.page == file_page).and_then(|at| u32::try_from(at).ok())
+            }
+        }
+    }
+
     /// How many pages a tab has now, counting unsaved edits.
     pub fn pages_in(&self, id: TabId) -> u32 {
         self.edits.get(&id).map(PageEdits::len).or_else(|| self.asleep.get(&id).map(|summary| summary.pages)).or_else(|| self.tab(id).map(|t| t.page_count)).unwrap_or(0)
