@@ -5,7 +5,12 @@ mod common;
 use common::{Raw, State};
 use recto_agent::{Level, exit};
 use recto_testpdf::{Page, TempPdf, pages, text_lines};
+use recto_agent::find;
+use recto_agent::{Command, DrawableLoader, Event};
+use recto_control::host::{Host, SessionHost};
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 fn doc(name: &str, count: usize, word: &str) -> TempPdf {
@@ -49,7 +54,7 @@ fn find_lists_what_search_finds_in_order_and_steps_from_the_reader() {
     state.json(&["goto", "5"]);
     let (next, _) = state.json(&["find", "--next"]);
     assert_eq!(next["data"]["current"]["page"], 5, "{next}");
-    assert_eq!(next["data"]["went_to"]["page"], 4, "from 0, as a selection counts: {next}");
+    assert_eq!(next["data"]["went_to"]["page"], 5, "counted from 1, as every page in the answer is: {next}");
     let (next, _) = state.json(&["find", "--next"]);
     assert_eq!((next["data"]["current"]["page"].as_u64(), next["data"]["current"]["index"].as_u64()), (Some(5), Some(9)), "{next}");
     let (here, _) = state.json(&["where"]);
@@ -90,7 +95,7 @@ fn find_is_refused_below_control_and_says_what_it_cant_do() {
     assert_eq!(missing["data"]["status"], "Not found", "{missing}");
 }
 
-/// Failure: a new query doesn't stop the old one, so the old one's hits land in the new list, or two run at once; or a session at rest keeps a thread for Find.
+/// Failure, through the socket and `recto` itself: once a second query has been asked for, Find holds its hits and not the first's. Two connections can't make the two overlap for certain, as the first can finish before the second arrives; `a_query_started_mid_run_stops_the_first` below makes them overlap.
 #[test]
 fn a_new_query_replaces_the_one_running() {
     let state = State::at(Level::Control);
@@ -118,4 +123,79 @@ fn a_new_query_replaces_the_one_running() {
     let pages: Vec<u64> = now["data"]["hits"].as_array().unwrap().iter().map(|hit| hit["page"].as_u64().unwrap()).collect();
     assert_eq!(pages, vec![7], "only the second query's hits");
     assert!(now["data"]["hits"].as_array().unwrap().iter().all(|hit| hit["untrusted"]["matched"].as_str().unwrap().to_lowercase() == "page 7 of"), "{now}");
+}
+
+/// Failure: a page deleted, moved or added after a query leaves Find's hits on the old arrangement, so `--next` (and ⌘G) selects the wrong words. The hits are found again for the pages as they are.
+#[test]
+fn hits_follow_the_pages_after_an_edit() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = doc("edited.pdf", 12, "lantern");
+    state.json(&["open", path(&file)]);
+    state.json(&["find", "lantern"]);
+    // Pages 1 to 9 go, so what's left is "Page 10" onwards, one digit longer: every hit's place on its page moves.
+    let (deleted, code) = state.json(&["page", "delete", "1-9"]);
+    assert_eq!(code, 0, "{deleted}");
+    state.json(&["goto", "1"]);
+    let (next, code) = state.json(&["find", "--next"]);
+    assert_eq!(code, 0, "{next}");
+    assert_eq!((next["data"]["hits_total"].as_u64(), next["data"]["current"]["page"].as_u64()), (Some(6), Some(1)), "found again on the three pages left: {next}");
+    let (text, _) = state.json(&["text", "--page", "1"]);
+    let chars: Vec<char> = text["data"]["untrusted"]["text"].as_str().unwrap().chars().collect();
+    let (start, end) = (next["data"]["current"]["start"].as_u64().unwrap() as usize, next["data"]["current"]["end"].as_u64().unwrap() as usize);
+    assert_eq!(chars[start..end].iter().collect::<String>(), "lantern", "{next}");
+}
+
+/// Failure: a query asked for while another runs doesn't stop it, so two run, the first's hits land in the second's list, or each says it's finished; or the thread stays once nothing runs. The second is started from the first's own news, so they surely overlap.
+#[test]
+fn a_query_started_mid_run_stops_the_first() {
+    let state = State::new();
+    let host = Arc::new(SessionHost::new(DrawableLoader).with_indexing(&state.paths));
+    let file = doc("overlap.pdf", 400, "alpha");
+    host.run(Level::Full, &Command::Open { path: file.0.clone(), page: None }, &mut Vec::new()).unwrap();
+    let finished = Arc::new(AtomicU32::new(0));
+    let started_second = Arc::new(AtomicBool::new(false));
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let (host_for_news, finished, started_second, seen) = (Arc::clone(&host), Arc::clone(&finished), Arc::clone(&started_second), Arc::clone(&seen));
+        host.attach(Arc::new(move |events: Vec<Event>| {
+            for event in events {
+                seen.lock().unwrap().push(event.name.to_string());
+                if event.name == "find_finished" {
+                    finished.fetch_add(1, Ordering::SeqCst);
+                }
+                if event.name == "find_changed" && event.data["running"] == true && !started_second.swap(true, Ordering::SeqCst) {
+                    host_for_news.find_begin("page 7 of").unwrap();
+                }
+            }
+        }));
+    }
+    host.find_begin("alpha").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while (host.finder().is_running() || finished.load(Ordering::SeqCst) == 0 || host.finder().has_thread()) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(started_second.load(Ordering::SeqCst), "the second was started mid-run: {:?}", seen.lock().unwrap());
+    assert_eq!(finished.load(Ordering::SeqCst), 1, "one query finished, the second: {:?}", seen.lock().unwrap());
+    assert!(!host.finder().has_thread(), "no thread once nothing runs");
+    let mut pages = Vec::new();
+    let mut query = String::new();
+    find::Finding::with_results(host.finder(), &mut |results| {
+        pages = results.hits.iter().map(|hit| hit.page).collect();
+        query.clone_from(&results.query);
+    });
+    assert_eq!((query.as_str(), pages), ("page 7 of", vec![6]), "only the second's hits");
+}
+
+/// Failure: a query told to stop goes on reading pages, so a new one waits behind the old one's whole document.
+#[test]
+fn a_stopped_query_stops_at_the_next_page() {
+    let file = doc("stop.pdf", 50, "alpha");
+    let mut session = recto_session::Session::new(DrawableLoader);
+    recto_agent::run(&mut session, Level::Full, &Command::Open { path: file.0.clone(), page: None }).unwrap();
+    let id = session.active().unwrap();
+    let plan = find::plan(&session, id).unwrap();
+    let stop = AtomicBool::new(false);
+    let (end, progress) = find::run(&plan, &find::needle("alpha").unwrap(), None, &stop, &mut |_, _| stop.store(true, Ordering::SeqCst));
+    assert_eq!((end, progress.pages_done), (find::End::Stopped, 1));
 }

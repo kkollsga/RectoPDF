@@ -34,6 +34,9 @@ final class FindRowCell: NSView {
             string.append(NSAttributedString(string: row.label, attributes: body))
             string.append(NSAttributedString(string: row.matched, attributes: [.font: NSFont.systemFont(ofSize: 12.5, weight: .semibold), .foregroundColor: (row.current ? Theme.accent : Theme.textStrong).ns]))
             string.append(NSAttributedString(string: row.after, attributes: body))
+            if !row.note.isEmpty {
+                string.append(NSAttributedString(string: "  \(row.note)", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: Theme.textQuiet.ns]))
+            }
         }
         string.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: string.length))
         line.setAttributed(string)
@@ -59,8 +62,6 @@ final class FindRowCell: NSView {
     private let core: AppCore
     private(set) var model = FindView(open: false, text: "", placeholder: "", status: "", version: 0, rowCount: 0, currentRow: nil, running: false, closeTooltip: "")
     private var heights = (field: 28.0, status: 20.0, list: 0.0, row: 24.0)
-    /// The field's text as last sent, so what Rust sends back isn't typed over what's being typed.
-    private var sentText = ""
     /// ⌘F asked for the keyboard, for once Find's open and laid out.
     var wantsFocus = false
     /// The current row last brought into view, so it's brought there once and the reader's own scroll stays.
@@ -110,11 +111,12 @@ final class FindRowCell: NSView {
         heights = (layout.findField, layout.findStatus, layout.findList, layout.findRow)
         view.isHidden = !new.open
         field.placeholderString = new.placeholder
-        field.toolTip = nil
-        // What Rust says is in the field, unless it's what's being typed now.
-        if field.stringValue != new.text, field.currentEditor() == nil || new.text != sentText {
+        // What Rust says is in the field, never while it's being typed in: an echo of what was typed a moment ago would take the newest keys away.
+        if field.currentEditor() == nil, field.stringValue != new.text {
             field.stringValue = new.text
         }
+        (field.cell as? NSSearchFieldCell)?.cancelButtonCell?.setAccessibilityLabel(new.closeTooltip)
+        field.toolTip = new.closeTooltip.isEmpty ? nil : new.closeTooltip
         status.set(new.status, font: .systemFont(ofSize: 11.5), color: Theme.textQuiet.ns)
         list.rowHeight = heights.row
         // Laid out first, so bringing the current row into view goes by the list's real height.
@@ -155,6 +157,8 @@ final class FindRowCell: NSView {
     func focusField() {
         guard let window = view.window, model.open else { return }
         wantsFocus = false
+        // What Rust has, before typing starts: it isn't set while the field's being edited.
+        if field.currentEditor() == nil { field.stringValue = model.text }
         window.makeFirstResponder(field)
         field.currentEditor()?.selectAll(nil)
         core.focusChanged(view: "find")
@@ -164,12 +168,17 @@ final class FindRowCell: NSView {
 
     /// What typing does, and what `recto qa find-type` calls.
     func typed(_ text: String) {
-        sentText = text
         core.findTyped(text: text)
     }
 
     func controlTextDidChange(_ notification: Notification) {
         typed(field.stringValue)
+    }
+
+    /// Typing's over: the field shows what Rust has, which it didn't while it was being typed in. Rust's model is pulled again, as it may have moved meanwhile.
+    func controlTextDidEndEditing(_ notification: Notification) {
+        model = core.findView()
+        if field.stringValue != model.text { field.stringValue = model.text }
     }
 
     /// Return and ⇧Return step through the hits; Escape closes Find. Everything else is the field's.
@@ -225,7 +234,7 @@ final class FindRowCell: NSView {
         var rows: [[String: Any]] = []
         if model.open, visible.length > 0 {
             for row in core.findRows(first: UInt32(visible.location), count: UInt32(min(visible.length, 6))) {
-                rows.append(["kind": row.kind == .page ? "page" : "hit", "current": row.current, "untrusted": ["label": row.label, "matched": row.matched]])
+                rows.append(["kind": row.kind == .page ? "page" : "hit", "current": row.current, "note": row.note, "untrusted": ["label": row.label, "matched": row.matched]])
             }
         }
         return [

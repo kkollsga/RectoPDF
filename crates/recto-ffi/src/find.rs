@@ -26,8 +26,10 @@ const MAX_ROWS_FETCH: u32 = 256;
 pub(crate) struct Field {
     open: bool,
     text: String,
-    /// A step asked for while the hits were being found again, done when they're in.
+    /// A step asked for before a hit for it was known, done when one is, or when the query ends.
     pending_step: Option<bool>,
+    /// What was typed can't be found, in Rust's words, as when it's too long.
+    note: Option<String>,
 }
 
 /// What the host's told to do about Find, through the session thread's queue.
@@ -84,6 +86,8 @@ pub struct FindRow {
     pub matched: String,
     pub after: String,
     pub current: bool,
+    /// Its words include text that looks hidden, so it isn't gone to. What to say of it, quietly, or empty.
+    pub note: String,
 }
 
 /// The Find block's heights, for this much room in the sidebar: the whole block, and its list.
@@ -106,11 +110,15 @@ pub fn heights(room: f64, open: bool, rows: u32) -> Heights {
 /// What the host draws now. A short lock on the field and one on the hits.
 pub(crate) fn view(inner: &Inner) -> FindView {
     let field = lock(&inner.find_field);
-    let (open, text) = (field.open, field.text.clone());
+    let (open, text, note) = (field.open, field.text.clone(), field.note.clone());
     drop(field);
     let mut out = FindView { open, text, placeholder: "Find in this document".into(), status: String::new(), version: 0, row_count: 0, current_row: None, running: false, close_tooltip: "Close Find (Esc)".into() };
     inner.host.session.finder().with_results(&mut |results| {
-        out.status = if open { results.status() } else { String::new() };
+        out.status = match (&note, open) {
+            (Some(note), true) => note.clone(),
+            (None, true) => results.status(),
+            _ => String::new(),
+        };
         out.version = results.version;
         out.running = results.running();
         if open {
@@ -129,10 +137,10 @@ pub(crate) fn rows(inner: &Inner, first: u32, count: u32) -> Vec<FindRow> {
         let rows = results.rows();
         let end = (first as usize).saturating_add(count.min(MAX_ROWS_FETCH) as usize).min(rows.len());
         out = rows.get(first as usize..end).unwrap_or(&[]).iter().map(|row| match *row {
-            Row::Page(page) => FindRow { kind: FindRowKind::Page, label: find::page_label(page), matched: String::new(), after: String::new(), current: false },
+            Row::Page(page) => FindRow { kind: FindRowKind::Page, label: find::page_label(page), matched: String::new(), after: String::new(), current: false, note: String::new() },
             Row::Hit(index) => {
                 let hit = &results.hits[index];
-                FindRow { kind: FindRowKind::Hit, label: hit.before.to_string(), matched: hit.matched.to_string(), after: hit.after.to_string(), current: results.current == Some(index) }
+                FindRow { kind: FindRowKind::Hit, label: hit.before.to_string(), matched: hit.matched.to_string(), after: hit.after.to_string(), current: results.current == Some(index), note: if hit.hidden { HIDDEN_NOTE.to_string() } else { String::new() } }
             }
         }).collect();
     });
@@ -150,36 +158,64 @@ fn hit_of_row(inner: &Inner, row: u32) -> Option<usize> {
     hit
 }
 
+/// What a hit on hidden text says in the list.
+const HIDDEN_NOTE: &str = "hidden text";
+
+/// Opens Find if it isn't, showing the sidebar it's in.
+fn open_find(inner: &Inner, events: &mut Vec<Event>) {
+    let session = &inner.host.session;
+    if session.with_session(|s| s.view().sidebar_hidden) {
+        crate::set_view(inner, events, |view| view.sidebar_hidden = false);
+    }
+    session.with_session(|s| {
+        let find = s.find().clone();
+        s.set_find(true, &find.query, &find.draft);
+    });
+}
+
+/// Finds what's typed, unless it can't be: nothing to find, or too long, which the line under the field says, as `recto find` does.
+fn find_typed(inner: &Inner, text: &str) {
+    let session = &inner.host.session;
+    let mut end = text.len().min(recto_session::record::MAX_FIND_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let text = &text[..end];
+    let too_long = text.len() > find::MAX_QUERY_BYTES;
+    lock(&inner.find_field).note = too_long.then(|| find::too_long().message);
+    if !too_long && find::needle(text).is_some() && session.find_begin(text).is_ok() {
+        return;
+    }
+    session.finder().clear();
+    session.with_session(|s| s.set_find(true, "", text));
+}
+
+/// Tries a step, or keeps it for when a hit for it is known: a query still running may not have reached it.
+fn try_step(inner: &Inner, forward: bool, events: &mut Vec<Event>) {
+    let session = &inner.host.session;
+    match session.find_step(forward) {
+        Some((tab, hit)) => {
+            lock(&inner.find_field).pending_step = None;
+            reveal(inner, tab, &hit, events);
+        }
+        None => lock(&inner.find_field).pending_step = session.finder().is_running().then_some(forward),
+    }
+}
+
 /// Does what the host asked, on the session thread.
 pub(crate) fn act(inner: &Inner, call: FindCall, events: &mut Vec<Event>) {
     let session = &inner.host.session;
     match call {
         FindCall::Typed(text) => {
-            let cut: String = text.chars().take(recto_session::record::MAX_FIND_BYTES).collect();
-            if find::needle(&cut).is_some() {
-                // Refused only for what `needle` already let through, as nothing being read: the field keeps it, and nothing's found.
-                if session.find_begin(&cut).is_err() {
-                    session.with_session(|s| s.set_find(true, "", &cut));
-                }
-            } else {
-                session.finder().clear();
-                session.with_session(|s| s.set_find(true, "", &cut));
-            }
+            find_typed(inner, &text);
             events.push(Event::new("find_changed", json!({ "open": true })));
         }
         FindCall::Open => {
-            // Find is in the sidebar, so ⌘F shows it.
-            if session.with_session(|s| s.view().sidebar_hidden) {
-                crate::set_view(inner, events, |view| view.sidebar_hidden = false);
-            }
-            let (query, draft) = session.with_session(|s| {
-                let find = s.find().clone();
-                s.set_find(true, &find.query, &find.draft);
-                (find.query, find.draft)
-            });
+            open_find(inner, events);
             // What was typed last is found again, as it would be on a Mac: it's been closed, so its hits went.
-            if query.is_empty() && find::needle(&draft).is_some() {
-                let _ = session.find_begin(&draft);
+            let (query, draft) = session.with_session(|s| (s.find().query.clone(), s.find().draft.clone()));
+            if query.is_empty() && !draft.is_empty() {
+                find_typed(inner, &draft);
             }
             events.push(Event::new("find_changed", json!({ "open": true })));
         }
@@ -189,19 +225,20 @@ pub(crate) fn act(inner: &Inner, call: FindCall, events: &mut Vec<Event>) {
             events.push(Event::new("find_changed", json!({ "open": false })));
         }
         FindCall::Step(forward) => {
-            if !session.with_session(|s| s.find().open) {
-                session.with_session(|s| {
-                    let find = s.find().clone();
-                    s.set_find(true, &find.query, &find.draft);
-                });
+            // ⌘G with Find closed opens it with what was typed last, as on a Mac.
+            let (open, query, draft) = session.with_session(|s| (s.find().open, s.find().query.clone(), s.find().draft.clone()));
+            if !open || query.is_empty() {
+                open_find(inner, events);
+                if query.is_empty() && !draft.is_empty() {
+                    find_typed(inner, &draft);
+                }
             }
-            if let Some(query) = session.find_stale_query() {
-                let _ = session.find_begin(&query);
-                lock(&inner.find_field).pending_step = Some(forward);
-            } else if session.finder().is_running() && session.finder().hits_held() == 0 {
-                lock(&inner.find_field).pending_step = Some(forward);
-            } else if let Some((tab, hit)) = session.find_step(forward) {
-                reveal(inner, tab, &hit, events);
+            match session.find_stale_query() {
+                Some(query) => {
+                    let _ = session.find_begin(&query);
+                    lock(&inner.find_field).pending_step = Some(forward);
+                }
+                None => try_step(inner, forward, events),
             }
         }
         FindCall::Choose(row) => {
@@ -212,19 +249,15 @@ pub(crate) fn act(inner: &Inner, call: FindCall, events: &mut Vec<Event>) {
             }
         }
         FindCall::News => {
-            let finished = !session.finder().is_running();
-            let has_hits = session.finder().hits_held() > 0;
-            let pending = lock(&inner.find_field).pending_step;
-            if let Some(forward) = pending.filter(|_| finished || has_hits) {
-                lock(&inner.find_field).pending_step = None;
-                if let Some((tab, hit)) = session.find_step(forward) {
-                    reveal(inner, tab, &hit, events);
-                }
+            if let Some(forward) = lock(&inner.find_field).pending_step {
+                try_step(inner, forward, events);
             }
-            // The hit gone to before a restart, chosen again by its place once the hits are back. Its selection came back with the page view.
-            if finished && let Some(place) = session.with_session(|s| s.find().current) {
+            // The hit gone to before a restart, chosen again by its place once the hits are back, if they're of the same tab. Its selection came back with the page view.
+            if !session.finder().is_running()
+                && let (Some(place), tab) = session.with_session(|s| (s.find().current, s.find().current_tab))
+            {
                 session.finder().with_results(&mut |results| {
-                    if results.current.is_none() && results.end.is_some() {
+                    if results.current.is_none() && results.end.is_some() && results.tab.is_some() && results.tab == tab {
                         results.choose_place(place);
                     }
                 });
@@ -245,10 +278,10 @@ fn reveal(inner: &Inner, tab: u32, hit: &find::Hit, events: &mut Vec<Event>) {
     events.push(Event::new("page_changed", json!({ "tab": tab, "page": hit.page + 1 })));
 }
 
-/// Keeps Find with the document being read, and the field's mirror with the session. Called on the session thread after every change: a query in the field is found again when the document being read isn't the one its hits are of, as after a restart, a tap or a move into another pane.
+/// Keeps Find with the document being read, and the field's mirror with the session. Called on the session thread after every change. A query in the field is found again when its hits are about something else: another document being read (after a tap, a move into another pane or a restart), pages moved, added or taken away, the file replaced, or the page count learnt.
 pub(crate) fn keep_up(inner: &Inner) {
     let session = &inner.host.session;
-    let (record, active) = session.with_session(|s| (s.find().clone(), s.active()));
+    let (record, now) = session.with_session(|s| (s.find().clone(), s.active().map(|id| (id, find::basis(s, id)))));
     {
         let mut field = lock(&inner.find_field);
         if field.open != record.open || field.text != record.draft {
@@ -259,21 +292,19 @@ pub(crate) fn keep_up(inner: &Inner) {
     if !record.open || record.query.is_empty() {
         return;
     }
-    let mut tab = None;
-    let mut query = String::new();
-    session.finder().with_results(&mut |results| {
-        tab = results.tab;
-        query.clone_from(&results.query);
-    });
-    if let Some(active) = active
-        && (tab != Some(active.0) || query != record.query)
+    let mut had = (None, String::new());
+    session.finder().with_results(&mut |results| had = (results.basis, results.query.clone()));
+    if let Some((active, basis)) = now
+        && (had.0 != Some(basis) || had.1 != record.query)
+        && let Some(needle) = find::needle(&record.query)
+        && let Ok(plan) = session.with_session(|s| find::plan(s, active))
     {
-        // The field stays as it is: a draft typed and not run is the reader's.
-        if let Some(needle) = find::needle(&record.query)
-            && let Ok(plan) = session.with_session(|s| find::plan(s, active))
-        {
-            session.finder().start(plan, &record.query, needle);
+        // The hit gone to was a place in hits about something else, which may be another word now. After a restart there were none, and it's kept to be chosen again.
+        if had.0.is_some() {
+            session.with_session(|s| s.set_find_current(None, None));
         }
+        // The field stays as it is: a draft typed and not run is the reader's.
+        session.finder().start(plan, &record.query, needle);
     }
 }
 

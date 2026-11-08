@@ -410,6 +410,15 @@ fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
     run.settled();
     assert_eq!(run.report()["app"]["find"]["current_row"], 7);
     run.quit();
+    // The file replaced while the app was away, with more pages: what's found is the new file's, not the old count or the old places (review, round 1).
+    let longer: Vec<Page> = (0..120).map(|index| Page::new(text_lines(&[&format!("findable page {index}"), "Words, so that the page isn't blank"]))).collect();
+    std::fs::write(&file.0, pages(&longer)).unwrap();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let replaced = run.report();
+    // `page 1` on page 2, `page 10`-`19` and `page 100`-`119`.
+    assert_eq!(replaced["app"]["find"]["status"], "31 matches on 31 pages", "{}", replaced["app"]["find"]);
+    run.quit();
 }
 
 /// Every path in `qa state` that's been looked at: it comes back, as the test above shows, or it's in [`EXCEPTIONS`]. A new one fails until it's added here, which is the moment to carry it over.
@@ -466,6 +475,7 @@ const KNOWN_PATHS: &[&str] = &[
     "app.find.rows_on_screen.len",
     "app.find.rows_on_screen[].current",
     "app.find.rows_on_screen[].kind",
+    "app.find.rows_on_screen[].note",
     "app.find.rows_on_screen[].untrusted.label",
     "app.find.rows_on_screen[].untrusted.matched",
     "app.find.running",
@@ -685,6 +695,7 @@ const KNOWN_PATHS: &[&str] = &[
     "session.find.current",
     "session.find.current.len",
     "session.find.current[]",
+    "session.find.current_tab",
     "session.find.draft",
     "session.find.open",
     "session.find.query",

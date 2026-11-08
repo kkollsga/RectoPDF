@@ -1870,13 +1870,14 @@ impl<L: DocLoader> Session<L> {
             }
             text[..end].to_string()
         };
-        let current = if query == self.find.query { self.find.current } else { None };
-        self.find = FindRecord { open, query: cut(query), draft: cut(draft), current };
+        let (current, current_tab) = if query == self.find.query { (self.find.current, self.find.current_tab) } else { (None, None) };
+        self.find = FindRecord { open, query: cut(query), draft: cut(draft), current, current_tab };
     }
 
     /// The hit Find went to last, by its place, for the record.
-    pub fn set_find_current(&mut self, current: Option<(u32, u32)>) {
+    pub fn set_find_current(&mut self, current: Option<(u32, u32)>, tab: Option<u32>) {
         self.find.current = current;
+        self.find.current_tab = tab;
     }
 
     pub fn edit_mode(&self) -> bool {

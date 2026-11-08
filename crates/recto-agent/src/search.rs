@@ -597,7 +597,7 @@ impl<'a> Reader<'a> {
     }
 
     /// What's known of hidden text on this page: what the build found, or if it couldn't look, what drawing it now says.
-    fn hidden(&mut self, file: u16, page: u32, view: &PageView<'_>) -> HiddenOnPage {
+    pub(crate) fn hidden(&mut self, file: u16, page: u32, view: &PageView<'_>) -> HiddenOnPage {
         if let Some(stored) = view.stored.as_ref().filter(|stored| stored.hidden_checked) {
             return HiddenOnPage { summary: json!({ "checked": true, "flagged": stored.hidden_flagged }), spans: byte_spans(view.text, &stored.hidden_spans()), partial: stored.spans_dropped };
         }
@@ -856,7 +856,7 @@ fn say_where_from(hit: &mut Value, page: u32, source: &PlanFile) {
 }
 
 /// What drawing a page says about hidden text.
-struct HiddenOnPage {
+pub(crate) struct HiddenOnPage {
     summary: Value,
     /// Where it is in the page's text, in bytes, in order. Empty if there's none, or if they couldn't be placed.
     spans: Vec<Range<usize>>,
@@ -866,7 +866,7 @@ struct HiddenOnPage {
 
 impl HiddenOnPage {
     /// Whether a hit's words include hidden text: `null` if that can't be said, which isn't the same as no.
-    fn overlaps(&self, hit: &Range<usize>) -> Option<bool> {
+    pub(crate) fn overlaps(&self, hit: &Range<usize>) -> Option<bool> {
         let after = self.spans.partition_point(|span| span.end <= hit.start);
         if self.spans.get(after).is_some_and(|span| span.start < hit.end) {
             return Some(true);

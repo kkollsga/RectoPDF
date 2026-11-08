@@ -686,7 +686,7 @@ impl AppHost {
             && let Some(went) = answer.get("went_to").filter(|went| went.is_object())
             && let (Some(tab), Some(page), Some(start), Some(end)) = (went["tab"].as_u64(), went["page"].as_u64(), went["start"].as_u64(), went["end"].as_u64())
         {
-            let hit = recto_agent::find::Hit { page: page as u32, start: start as u32, end: end as u32, before: "".into(), matched: "".into(), after: "".into() };
+            let hit = recto_agent::find::Hit { page: (page as u32).saturating_sub(1), start: start as u32, end: end as u32, before: "".into(), matched: "".into(), after: "".into(), hidden: false };
             self.core.push(CoreCall::Find(find::FindCall::Reveal(tab as u32, hit)));
         }
         self.core.push(CoreCall::Reconcile);

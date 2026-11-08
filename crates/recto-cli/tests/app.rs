@@ -1963,3 +1963,26 @@ fn edit_mode_and_view_rotation_draw_what_the_record_carries() {
     run.settled();
     assert!(run.report()["app"]["pages"]["page_turns"].as_array().unwrap().iter().all(|turn| turn == 0));
 }
+
+/// Failure: what Rust last heard of the field is put back into it while it's being typed in, so a late echo of "ab" takes away the "c" just typed (review, round 1). Here the session's word on the field changes under the editing field, as an echo would, and the field keeps what's typed; once it's left, it shows Rust's.
+#[test]
+fn find_never_types_over_what_is_being_typed() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(300);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "focus", "find"]);
+    for typed in ["w", "wo", "wor", "word"] {
+        let state = run.ok(&["qa", "find-type", typed]);
+        assert_eq!(state["find"]["untrusted"]["field"], typed, "{}", state["find"]);
+    }
+    run.ok(&["qa", "find-draft", "an echo"]);
+    run.settled();
+    let editing = run.report();
+    assert_eq!(editing["app"]["find"]["field_has_focus"], true);
+    assert_eq!(editing["app"]["find"]["untrusted"]["field"], "word", "never typed over while it's edited: {}", editing["app"]["find"]);
+    run.ok(&["qa", "focus", "page"]);
+    let left = wait_for(&run, |state| state["app"]["find"]["untrusted"]["field"] == "an echo");
+    assert_eq!(left["app"]["find"]["field_has_focus"], false);
+}

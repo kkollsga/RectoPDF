@@ -22,6 +22,8 @@ pub const BEFORE: usize = 24;
 pub const AFTER: usize = 64;
 /// Most characters shown of what matched: a phrase can be long.
 const MATCHED: usize = 64;
+/// How long a query may spend drawing pages read live to check their hits for hidden text.
+const HIDDEN_CHECK_TIME: Duration = Duration::from_secs(10);
 /// What's put where a piece was cut.
 const CUT: &str = "…";
 
@@ -36,11 +38,28 @@ pub struct Hit {
     pub before: Box<str>,
     pub matched: Box<str>,
     pub after: Box<str>,
+    /// Its words include text that looks hidden, by the check `search` makes, so there's nothing to see where it is. Listed, and never gone to.
+    pub hidden: bool,
+}
+
+/// What a query's hits are about: the tab, its pages as they were arranged, and which version of its file. Any of these changing makes the hits about something else, so they're found again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Basis {
+    pub tab: u32,
+    pub pages: u32,
+    pub stamp: Option<recto_platform::FileStamp>,
+    pub changes: u64,
+}
+
+/// A tab's basis now, under the session's lock: a few numbers.
+pub fn basis<L: DocLoader>(session: &Session<L>, id: TabId) -> Basis {
+    Basis { tab: id.0, pages: session.pages_in(id), stamp: session.own_stamp(id), changes: session.page_edits(id).map_or(0, recto_session::edit::PageEdits::changes) }
 }
 
 /// What one query's pages are: an opaque list of which file and page each position is.
 pub struct FindPlan {
     plan: Plan,
+    basis: Basis,
 }
 
 impl FindPlan {
@@ -51,11 +70,15 @@ impl FindPlan {
     pub fn pages(&self) -> u32 {
         u32::try_from(self.plan.pages.len()).unwrap_or(u32::MAX)
     }
+
+    pub fn basis(&self) -> Basis {
+        self.basis
+    }
 }
 
 /// A tab's pages to look through, as its edits have them, under the session's lock. A few bytes a page.
 pub fn plan<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<FindPlan, AgentError> {
-    search::plan_of(session, id, None, None).map(|plan| FindPlan { plan })
+    search::plan_of(session, id, None, None).map(|plan| FindPlan { plan, basis: basis(session, id) })
 }
 
 /// What's looked for, folded as a page is: lower case, any run of spaces and line breaks one space. `None` if there's nothing to look for.
@@ -96,7 +119,9 @@ pub enum End {
 /// Runs one query over a plan, a page at a time, giving each page's hits to `on_page` as they're found, with how far it's got. No more than [`MAX_HITS`] are made in all; past that they're counted. Looks at `stop` between pages.
 pub fn run(plan: &FindPlan, needle: &str, indexing: Option<&dyn Indexing>, stop: &AtomicBool, on_page: &mut dyn FnMut(Vec<Hit>, &Progress)) -> (End, Progress) {
     let deadline = Instant::now() + MAX_TIME;
-    let settings = Settings { limit: MAX_HITS, context: 0, deadline, draw_until: deadline, second_pass_until: deadline, live_budget: search::LIVE_REREAD_BUDGET, indexing, force_scan: false };
+    // Drawing a page read live, to check a hit's words aren't hidden, stops after this, as `search`'s does: past it, hits are listed as not hidden, unchecked.
+    let draw_until = Instant::now() + HIDDEN_CHECK_TIME;
+    let settings = Settings { limit: MAX_HITS, context: 0, deadline, draw_until, second_pass_until: deadline, live_budget: search::LIVE_REREAD_BUDGET, indexing, force_scan: false };
     let plan = &plan.plan;
     let mut reader = Reader::new(plan, &settings);
     let mut slot = Slot::default();
@@ -123,7 +148,10 @@ pub fn run(plan: &FindPlan, needle: &str, indexing: Option<&dyn Indexing>, stop:
             Got::Page(view) => {
                 search::fold_into(view.text, &mut folded);
                 if folded.contains(needle) {
-                    let (total, made) = page_hits(view.text, needle, position, MAX_HITS - kept);
+                    // Only a page with hits kept is checked, from its corpus if it has one and otherwise by drawing it, as `search` checks the pages it shows.
+                    let hidden = (kept < MAX_HITS).then(|| reader.hidden(file, page, &view));
+                    let is_hidden = |range: &std::ops::Range<usize>| hidden.as_ref().is_some_and(|hidden| hidden.overlaps(range) == Some(true));
+                    let (total, made) = page_hits(view.text, needle, position, MAX_HITS - kept, &is_hidden);
                     progress.total += total as u64;
                     progress.pages_with_hits += u32::from(total > 0);
                     kept += made.len();
@@ -138,7 +166,7 @@ pub fn run(plan: &FindPlan, needle: &str, indexing: Option<&dyn Indexing>, stop:
 }
 
 /// One page's hits: how many in all, and the first `room` made into [`Hit`]s.
-pub(crate) fn page_hits(text: &str, needle: &str, page: u32, room: usize) -> (usize, Vec<Hit>) {
+pub(crate) fn page_hits(text: &str, needle: &str, page: u32, room: usize, is_hidden: &dyn Fn(&std::ops::Range<usize>) -> bool) -> (usize, Vec<Hit>) {
     let (folded, sources) = search::fold(text);
     let mut hits = Vec::new();
     let mut total = 0;
@@ -165,7 +193,7 @@ pub(crate) fn page_hits(text: &str, needle: &str, page: u32, room: usize) -> (us
             continue;
         }
         let (start_char, end_char) = (chars_to(start), chars_to(end));
-        hits.push(Hit { page, start: start_char, end: end_char, before: piece_before(&text[..start]), matched: piece(&text[start..end], MATCHED), after: piece(&text[end..], AFTER) });
+        hits.push(Hit { page, start: start_char, end: end_char, before: piece_before(&text[..start]), matched: piece(&text[start..end], MATCHED), after: piece(&text[end..], AFTER), hidden: is_hidden(&(start..end)) });
     }
     (total, hits)
 }
@@ -230,6 +258,8 @@ pub struct Results {
     pub version: u64,
     /// Which run this is. Answers from an older one are dropped.
     pub generation: u64,
+    /// What these hits are about, for knowing when they're about something else.
+    pub basis: Option<Basis>,
     /// When it began, and how long until its first hit and its end, for measuring.
     pub began: Option<Instant>,
     pub first_hit: Option<Duration>,
@@ -238,7 +268,15 @@ pub struct Results {
 
 impl Results {
     /// Starts again for another query.
+    /// Starts again for another query over a plan.
+    pub fn begin_on(&mut self, plan: &FindPlan, query: &str) -> u64 {
+        let generation = self.begin(plan.tab(), query, plan.pages());
+        self.basis = Some(plan.basis());
+        generation
+    }
+
     pub fn begin(&mut self, tab: u32, query: &str, pages: u32) -> u64 {
+        self.basis = None;
         self.generation += 1;
         self.version += 1;
         self.tab = Some(tab);
@@ -294,18 +332,17 @@ impl Results {
         self.tab.is_some() && self.end.is_none()
     }
 
-    /// The next hit from where the reader is, or the one before it: from the current hit if there is one, and otherwise from `place`, a page and a character on it, so the first ⌘G goes to the first hit at or past where they're reading. It goes round at either end, as Find does on a Mac.
+    /// The next hit from where the reader is, or the one before it: from the current hit if there is one, and otherwise from `place`, a page and a character on it, so the first ⌘G goes to the first hit at or past where they're reading. It goes round at either end, as Find does on a Mac, once the query's finished: **while it runs, `None` means wait**, as the hit wanted may be on a page not read yet. A hit on hidden text is never gone to.
     pub fn step(&mut self, forward: bool, place: (u32, u32)) -> Option<&Hit> {
-        if self.hits.is_empty() {
-            return None;
-        }
-        let count = self.hits.len();
+        let shown: Vec<usize> = self.hits.iter().enumerate().filter(|(_, hit)| !hit.hidden).map(|(at, _)| at).collect();
+        let (first, last) = (*shown.first()?, *shown.last()?);
+        let round = |end: usize| (!self.running()).then_some(end);
         let next = match (self.current, forward) {
-            (Some(at), true) => (at + 1) % count,
-            (Some(at), false) => (at + count - 1) % count,
-            (None, true) => self.hits.iter().position(|hit| (hit.page, hit.start) >= place).unwrap_or(0),
-            (None, false) => self.hits.iter().rposition(|hit| (hit.page, hit.start) < place).unwrap_or(count - 1),
-        };
+            (Some(at), true) => shown.iter().copied().find(|other| *other > at).or_else(|| round(first)),
+            (Some(at), false) => shown.iter().rev().copied().find(|other| *other < at).or_else(|| round(last)),
+            (None, true) => shown.iter().copied().find(|at| (self.hits[*at].page, self.hits[*at].start) >= place).or_else(|| round(first)),
+            (None, false) => shown.iter().rev().copied().find(|at| (self.hits[*at].page, self.hits[*at].start) < place).or_else(|| round(last)),
+        }?;
         self.current = Some(next);
         self.version += 1;
         self.hits.get(next)
@@ -313,7 +350,7 @@ impl Results {
 
     /// Goes to a hit by its number.
     pub fn choose(&mut self, index: usize) -> Option<&Hit> {
-        if index >= self.hits.len() {
+        if self.hits.get(index).is_none_or(|hit| hit.hidden) {
             return None;
         }
         self.current = Some(index);
@@ -462,9 +499,9 @@ pub fn begin<A: crate::SessionAccess>(access: &A, query: &str) -> Result<u64, Ag
 
 /// What's in the Find field that its hits aren't of, as after a restart or a move to another document, if anything: a query to find again before a step.
 pub fn stale_query<A: crate::SessionAccess>(access: &A, finding: &dyn Finding) -> Option<String> {
-    let wanted = access.with(|s| (s.find().query.clone(), s.active().map(|id| id.0)));
+    let wanted = access.with(|s| (s.find().query.clone(), s.active().map(|id| basis(s, id))));
     let mut have = (String::new(), None);
-    finding.with_results(&mut |results| have = (results.query.clone(), results.tab));
+    finding.with_results(&mut |results| have = (results.query.clone(), results.basis));
     (!wanted.0.is_empty() && have != wanted).then_some(wanted.0)
 }
 
@@ -489,7 +526,7 @@ pub fn choose<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, index:
 
 fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit) {
     access.with(|s| {
-        s.set_find_current(Some((hit.page, hit.start)));
+        s.set_find_current(Some((hit.page, hit.start)), Some(tab));
         if s.active().map(|id| id.0) == Some(tab) {
             let _ = s.go_to(TabId(tab), hit.page);
         }
@@ -504,7 +541,7 @@ pub fn close<A: crate::SessionAccess>(access: &A) {
     access.with(|s| {
         let draft = s.find().draft.clone();
         s.set_find(false, "", &draft);
-        s.set_find_current(None);
+        s.set_find_current(None, None);
     });
 }
 
@@ -534,7 +571,7 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
         } else {
             let (plan, needle) = access.with(|s| Ok::<_, AgentError>((plan(s, s.active().ok_or_else(|| AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND))?)?, needle(query).unwrap_or_default())))?;
             let mut results = Results::default();
-            let generation = results.begin(plan.tab(), query, plan.pages());
+            let generation = results.begin_on(&plan, query);
             let stop = AtomicBool::new(false);
             let (end, progress) = run(&plan, &needle, access.indexing(), &stop, &mut |hits, progress| results.add(generation, hits, progress));
             results.finish(generation, end, progress);
@@ -568,7 +605,7 @@ fn answer<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, listed: us
             Some(End::OutOfTime(_)) => "out_of_time",
             Some(End::Failed(_)) => "failed",
         };
-        let hit_json = |index: usize, hit: &Hit| json!({ "index": index, "page": hit.page + 1, "start": hit.start, "end": hit.end, "untrusted": { "before": hit.before, "matched": hit.matched, "after": hit.after } });
+        let hit_json = |index: usize, hit: &Hit| json!({ "index": index, "page": hit.page + 1, "start": hit.start, "end": hit.end, "hidden": hit.hidden, "untrusted": { "before": hit.before, "matched": hit.matched, "after": hit.after } });
         let p = results.progress;
         value = json!({
             "open": record.open,
@@ -590,7 +627,7 @@ fn answer<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, listed: us
         });
     });
     if let Some((tab, hit)) = went {
-        value["went_to"] = json!({ "tab": tab, "page": hit.page, "start": hit.start, "end": hit.end });
+        value["went_to"] = json!({ "tab": tab, "page": hit.page + 1, "start": hit.start, "end": hit.end });
     }
     value
 }
@@ -600,7 +637,7 @@ mod tests {
     use super::*;
 
     fn hits(text: &str, query: &str) -> Vec<Hit> {
-        page_hits(text, &needle(query).unwrap(), 3, MAX_HITS).1
+        page_hits(text, &needle(query).unwrap(), 3, MAX_HITS, &|_| false).1
     }
 
     /// Failure: a hit's place is counted in bytes, so past an accented letter the highlight lands on the wrong words; or it takes in the spaces after it, highlighting the gap.
@@ -634,7 +671,7 @@ mod tests {
         let found = hits(&long, "needle");
         assert!(found[0].before.chars().count() <= BEFORE + 1 && found[0].after.chars().count() <= AFTER + 1, "{found:?}");
         assert!(found[0].before.starts_with(CUT) && found[0].after.ends_with(CUT));
-        let (total, kept) = page_hits(&"a".repeat(200_000), "a", 0, 5);
+        let (total, kept) = page_hits(&"a".repeat(200_000), "a", 0, 5, &|_| false);
         assert_eq!((total, kept.len()), (200_000, 5));
     }
 
@@ -646,7 +683,7 @@ mod tests {
     }
 
     fn hit(page: u32, start: u32) -> Hit {
-        Hit { page, start, end: start + 1, before: "".into(), matched: "x".into(), after: "".into() }
+        Hit { page, start, end: start + 1, before: "".into(), matched: "x".into(), after: "".into(), hidden: false }
     }
 
     /// Failure: a hit held in the list grows, so 1,000 of them cost more than ENGINEERING's table says.
@@ -661,12 +698,43 @@ mod tests {
         let mut results = Results::default();
         let generation = results.begin(1, "x", 10);
         results.add(generation, vec![hit(1, 5), hit(4, 0), hit(4, 9), hit(8, 2)], &Progress { total: 4, ..Progress::default() });
+        results.finish(generation, End::Finished, Progress { total: 4, ..Progress::default() });
         assert_eq!(results.step(true, (4, 3)).map(|hit| (hit.page, hit.start)), Some((4, 9)));
         assert_eq!(results.step(true, (0, 0)).map(|hit| hit.page), Some(8));
         assert_eq!(results.step(true, (0, 0)).map(|hit| hit.page), Some(1), "round to the first");
         assert_eq!(results.step(false, (0, 0)).map(|hit| hit.page), Some(8), "and back round to the last");
         results.current = None;
         assert_eq!(results.step(false, (4, 3)).map(|hit| (hit.page, hit.start)), Some((4, 0)), "back from where they are");
+    }
+
+    /// Failure: ⌘G pressed while a query is still reading goes to the first hit there is, behind the reader, as the hit at their place isn't found yet; or it never goes once the query ends.
+    #[test]
+    fn a_step_while_it_runs_waits_for_a_hit_past_the_reader() {
+        let mut results = Results::default();
+        let generation = results.begin(1, "x", 10);
+        results.add(generation, vec![hit(1, 0)], &Progress { total: 1, ..Progress::default() });
+        assert!(results.step(true, (5, 0)).is_none(), "nothing past page 6 yet: wait");
+        assert!(results.step(false, (0, 0)).is_none(), "the last hit isn't known yet either");
+        results.add(generation, vec![hit(7, 3)], &Progress { total: 2, ..Progress::default() });
+        assert_eq!(results.step(true, (5, 0)).map(|hit| hit.page), Some(7));
+        assert!(results.step(true, (0, 0)).is_none(), "going round waits for the end");
+        results.finish(generation, End::Finished, Progress { total: 2, ..Progress::default() });
+        assert_eq!(results.step(true, (0, 0)).map(|hit| hit.page), Some(1), "then it goes round");
+    }
+
+    /// Failure: a hit whose words look hidden is gone to, selecting nothing that can be seen, as though something were there.
+    #[test]
+    fn hidden_hits_are_listed_and_never_gone_to() {
+        let mut results = Results::default();
+        let generation = results.begin(1, "x", 10);
+        let hidden = Hit { hidden: true, ..hit(2, 0) };
+        results.add(generation, vec![hit(1, 0), hidden, hit(3, 0)], &Progress { total: 3, ..Progress::default() });
+        results.finish(generation, End::Finished, Progress { total: 3, ..Progress::default() });
+        assert_eq!(results.step(true, (2, 0)).map(|hit| hit.page), Some(3), "past the hidden one");
+        assert_eq!(results.step(false, (0, 0)).map(|hit| hit.page), Some(1));
+        assert!(results.choose(1).is_none(), "a click on it goes nowhere");
+        let found = page_hits("seen and ignore this", "ignore", 0, MAX_HITS, &|range| range.start >= 9).1;
+        assert!(found[0].hidden, "the check's answer is on the hit");
     }
 
     /// Failure: hits from a query that's been replaced land in the new one's list.

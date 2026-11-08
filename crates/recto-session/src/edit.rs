@@ -202,6 +202,8 @@ pub struct PageEdits {
     saving: Option<FileStamp>,
     /// And what it kept to undo past it.
     keeping: Option<AddedSource>,
+    /// Goes up with every change to the pages, so what was found on them can tell it's of another arrangement.
+    changes: u64,
 }
 
 /// What a journal hasn't got yet.
@@ -226,7 +228,7 @@ impl AddedSource {
 impl PageEdits {
     pub fn new(page_count: u32) -> Self {
         let slots = (0..page_count).map(|page| PageSlot { source: 0, page, quarter_turns: 0 }).collect();
-        Self { file_pages: page_count as usize, slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new(), history_dropped: false, owner_step_dropped: false, differs: false, acting: Author::Owner, history_bytes: 0, journal: None, may_push_owner: false, saving: None, keeping: None }
+        Self { file_pages: page_count as usize, slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new(), history_dropped: false, owner_step_dropped: false, differs: false, acting: Author::Owner, history_bytes: 0, journal: None, may_push_owner: false, saving: None, keeping: None, changes: 0 }
     }
 
     /// Keeps this list's operations for a journal, from now on.
@@ -294,7 +296,7 @@ impl PageEdits {
         };
         let undo = entries(&record.undo, &mut history_bytes);
         let redo = entries(&record.redo, &mut history_bytes);
-        let mut edits = Self { file_pages: record.file_pages as usize, slots: slots_of(&record.pages), added, undo, redo, history_dropped: record.history_dropped, owner_step_dropped: record.owner_step_dropped, differs: false, acting: Author::Owner, history_bytes, journal: None, may_push_owner: false, saving: None, keeping: None };
+        let mut edits = Self { file_pages: record.file_pages as usize, slots: slots_of(&record.pages), added, undo, redo, history_dropped: record.history_dropped, owner_step_dropped: record.owner_step_dropped, differs: false, acting: Author::Owner, history_bytes, journal: None, may_push_owner: false, saving: None, keeping: None, changes: 0 };
         edits.differs = edits.differs_from_the_file();
         Ok(edits)
     }
@@ -457,6 +459,11 @@ impl PageEdits {
         u32::try_from(self.file_pages).unwrap_or(u32::MAX)
     }
 
+    /// How many changes the pages have had, in this process: anything found on them before a change may be on another page now.
+    pub fn changes(&self) -> u64 {
+        self.changes
+    }
+
     pub fn len(&self) -> u32 {
         // The list is capped at MAX_PAGES, far below u32::MAX.
         u32::try_from(self.slots.len()).unwrap_or(u32::MAX)
@@ -573,6 +580,7 @@ impl PageEdits {
             None => out.rolled_off += self.roll_off_source(0),
         }
         self.file_pages = pages as usize;
+        self.changes += 1;
         self.slots = (0..pages).map(|page| PageSlot { source: 0, page, quarter_turns: 0 }).collect();
         out.let_go.extend(self.drop_unused_sources());
         // What fell off before this is in the file, so nothing's lost with it.
@@ -881,6 +889,7 @@ impl PageEdits {
 
     /// Applies a step that has already been checked, and returns its inverse.
     fn apply(&mut self, step: Step) -> Step {
+        self.changes += 1;
         match step {
             Step::Rotate { start, len, quarter_turns } => {
                 for slot in &mut self.slots[start as usize..(start + len) as usize] {

@@ -326,6 +326,9 @@ pub struct FindRecord {
     /// The hit gone to last, as its page (from 0) and its first character there. A hit is found by its place, so a record from another version of the file can name one that isn't there, which is nothing.
     #[serde(default)]
     pub current: Option<(u32, u32)>,
+    /// The tab that hit is in, so a move into another document's pane can't take the same place there for it.
+    #[serde(default)]
+    pub current_tab: Option<u32>,
 }
 
 /// A file as last seen: the identity a restore goes by. The path alone wouldn't notice a replaced file, or find a moved one.

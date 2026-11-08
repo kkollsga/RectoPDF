@@ -140,7 +140,7 @@ impl Finding for Finder {
         // The last run stops between two pages, and a new flag is this one's.
         inner.stop.store(true, Ordering::SeqCst);
         inner.stop = Arc::new(AtomicBool::new(false));
-        let generation = inner.results.begin(plan.tab(), query, plan.pages());
+        let generation = inner.results.begin_on(&plan, query);
         if inner.stopped {
             inner.results.finish(generation, find::End::Stopped, find::Progress::default());
             return generation;
@@ -148,8 +148,8 @@ impl Finding for Finder {
         inner.job = Some(Job { generation, plan, needle });
         if !inner.working {
             let shared = Arc::clone(&self.0);
-            // Room for a worker's replies and the normaliser, and only address space until it's used.
-            let spawned = std::thread::Builder::new().name("recto-find".into()).stack_size(1024 * 1024).spawn(move || shared.work());
+            // The same parser and normaliser path the server's job threads run, on the same 8 MiB they have, which is only address space until it's touched.
+            let spawned = std::thread::Builder::new().name("recto-find".into()).stack_size(8 * 1024 * 1024).spawn(move || shared.work());
             match spawned {
                 Ok(_) => inner.working = true,
                 Err(_) => {

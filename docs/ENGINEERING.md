@@ -50,7 +50,7 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `recto_index::select::Selection` | One, on the page view, for what's on screen. No tab holds one | ≤ 64 B |
 | `recto_index::order::Line` | Line of a page in hand, at most 16,384, only while it's being read | ≤ 72 B |
 | `recto_reader::layout::Override` | Visited page whose size isn't the document's usual one, or turned the other way from most, at most 65,536, hot and warm tabs only. Turning every page adds none | ≤ 32 B |
-| `recto_reader::tiles::PageMap::turns` | Page of an edited tab, hot and warm only, and only once a page of it is turned | 1 B |
+| `recto_reader::tiles::PageMap::turns` | Page of an edited tab, hot and warm only, and only once a page of it is turned; also every page of a tab whose view is turned (the state record's view rotation) | 1 B |
 | `corpus::PageRecord` | Page in a corpus, on disk, read back one at a time | 28 B on disk |
 | `indexing::IndexJob` | File waiting for an index, at most 16 and one running. No tab holds one | A path and 32 B |
 | `find::Hit` | Hit of Find's one query, at most 1,000. No tab holds one | ≤ 64 B plus its words: at most 24 characters before, 64 matched and 64 after |
@@ -692,7 +692,7 @@ The session itself, NASA, by `recto budget`: 1.55 MiB at the start, 4.81 once it
 | NASA, `e` (58,236 hits, 1,000 kept) | 383 | 9.8 ms | 1,318 ms | 0.4 / 6.3 ms | 5.36 → 7.28 MiB, 7.36 after the index's |
 | USGS map, `the` | 1 (330 MiB) | 276 ms | 276 ms | 0.4 / 0.4 ms | 2.91 → 3.78 MiB, 3.91 after the index's |
 
-Threads: 1 at rest; 2 while the index was building after the first query, the indexer's; back to 1 once it was done, so no thread stays for Find. Not measured: a worker's peak during a query (it's `search`'s worker, under a reader's limits), the made 10,000-page PDF, and the app's own footprint with Find open (the app's QA runs show no stall over 1 s while finding).
+Threads: 1 at rest; 2 while the index was building after the first query, the indexer's; back to 1 once it was done, so no thread stays for Find. **Two workers at once on a first query:** the query reads its pages through a worker of its own while the corpus it asked for is built by the indexer's, in that helper's process, so they can't share one; the indexer's is at background priority under half a reader's limit, and Find's goes when the query does. Later queries read the corpus and start none. Hidden text: a page with hits is checked as `search` checks one, from its corpus or by drawing it, for at most 10 s a query; past that its hits are listed as not hidden, unchecked. Not measured: a worker's peak during a query (it's `search`'s worker, under a reader's limits), the made 10,000-page PDF, and the app's own footprint with Find open (the app's QA runs show no stall over 1 s while finding).
 
 ## Generated contents
 
