@@ -28,6 +28,18 @@ jobs:
       - name: Rust, as pinned in rust-toolchain.toml
         run: rustup toolchain install
       - uses: taiki-e/install-action@dd2e657c648186b8f995f901aaf7d95fbd87ee34 # nextest
+        id: nextest
+        continue-on-error: true
+      # Its download host returned 504 for every try on 2026-11-08, failing every job before anything was built. Built from source then.
+      - name: nextest from source, when the download failed
+        if: steps.nextest.outcome == 'failure'
+        run: cargo install cargo-nextest --locked
+      # PDFium alone, in a cache every job shares: on 2026-11-08 GitHub's release downloads answered 504 for over an hour, and only a job
+      # whose own cache already held it could run. The checksum in tools/pdfium.sh still decides what's used.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/pdfium
+          key: pdfium-${{ hashFiles('tools/pdfium.sh') }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -38,3 +50,58 @@ jobs:
           restore-keys: check-
       - name: Full check
         run: tools/check.sh --full
+  # The renderer's sandbox on the oldest macOS a release supports (LSMinimumSystemVersion 15.0) and on the newest runner, where the home folder is
+  # under /Users, unlike the Mac this was built on. The walls lean on how the kernel describes ports and on the App Sandbox's own variables, so a
+  # change in either between versions fails here, not on a user's Mac as a renderer that won't start.
+  sandbox:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      NEXTEST_PROFILE: ci
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust, as pinned in rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@dd2e657c648186b8f995f901aaf7d95fbd87ee34 # nextest
+        id: nextest
+        continue-on-error: true
+      # Its download host returned 504 for every try on 2026-11-08, failing every job before anything was built. Built from source then.
+      - name: nextest from source, when the download failed
+        if: steps.nextest.outcome == 'failure'
+        run: cargo install cargo-nextest --locked
+      # PDFium alone, in a cache every job shares: on 2026-11-08 GitHub's release downloads answered 504 for over an hour, and only a job
+      # whose own cache already held it could run. The checksum in tools/pdfium.sh still decides what's used.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/pdfium
+          key: pdfium-${{ hashFiles('tools/pdfium.sh') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: sandbox-${{ matrix.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: sandbox-${{ matrix.os }}-
+      - name: Where this runs
+        run: sw_vers && echo "HOME=$HOME"
+      - name: PDFium
+        run: tools/pdfium.sh
+      - name: The walls and the sandboxed worker, signed ad hoc into the real layout
+        run: |
+          cargo build --locked -p recto-render-service
+          cargo nextest run --locked --no-fail-fast -p recto-platform --test walls --lib
+          cargo nextest run --locked --no-fail-fast -p recto-render-service --test sandbox --test surfaces
+      - name: The renderer's whole suite against that sandboxed worker
+        run: |
+          contents="$RUNNER_TEMP/Host.app/Contents"
+          app/render-helper.sh --layout "$contents" target/debug/recto-render-service target/pdfium/libpdfium.dylib
+          app/render-helper.sh --check "$contents/Helpers/RectoRender.app"
+          RECTO_TEST_WORKER="$contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service" cargo nextest run --locked --no-fail-fast -p recto-render-service

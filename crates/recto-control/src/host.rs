@@ -1,5 +1,6 @@
 //! What the server asks of whoever holds the session. `recto serve` uses [`SessionHost`], and the Mac app wraps one, sharing its session.
 
+use crate::finding::Finder;
 use crate::generating::Generator;
 use crate::indexing::{Indexer, Notifier};
 use crate::record_store::{Flavor, Loaded, RecordStore, StoreError, notice_for};
@@ -45,6 +46,8 @@ pub struct SessionHost<L = DrawableLoader> {
     tabs: AtomicU32,
     indexer: Option<Indexer>,
     generator: Option<Generator>,
+    /// Find, in the background: the app's sidebar and `recto find`.
+    finder: Finder,
     /// A session with no window keeps a record of its own, written only when it's told to.
     record: Option<RecordStore>,
     /// What a save needs beyond the session: where backups go, and the app's journals. Set once.
@@ -71,6 +74,7 @@ struct Hosted<'a, L> {
     indexer: Option<&'a Indexer>,
     saving: Option<&'a (dyn SaveSupport + Send)>,
     generator: Option<&'a Generator>,
+    finder: &'a Finder,
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
@@ -87,6 +91,9 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     fn generating(&self) -> Option<&dyn recto_agent::generated::Generating> {
         self.generator.map(|generator| generator as &dyn recto_agent::generated::Generating)
     }
+    fn finding(&self) -> Option<&dyn recto_agent::find::Finding> {
+        Some(self.finder as &dyn recto_agent::find::Finding)
+    }
 }
 
 impl Default for SessionHost<DrawableLoader> {
@@ -97,14 +104,46 @@ impl Default for SessionHost<DrawableLoader> {
 
 impl<L: DocLoader + Clone> SessionHost<L> {
     pub fn new(loader: L) -> Self {
-        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0), indexer: None, generator: None, record: None, saving: std::sync::OnceLock::new() }
+        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0), indexer: None, generator: None, finder: Finder::new(None), record: None, saving: std::sync::OnceLock::new() }
     }
 
     /// With documents indexed on demand, under the state folder's corpus folder.
     #[must_use]
     pub fn with_indexing(mut self, paths: &StatePaths) -> Self {
-        self.indexer = Some(Indexer::new(&paths.corpus));
+        let indexer = Indexer::new(&paths.corpus);
+        self.finder = Finder::new(Some(indexer.clone()));
+        self.indexer = Some(indexer);
         self
+    }
+
+    /// Find, for the app's own sidebar.
+    pub fn finder(&self) -> &Finder {
+        &self.finder
+    }
+
+    /// What the Find field does, by the same steps as `recto find`: a query, which runs in the background.
+    pub fn find_begin(&self, query: &str) -> Result<u64, AgentError> {
+        recto_agent::find::begin(&self.access(), query)
+    }
+
+    /// What's in the Find field that the hits held aren't of, if anything.
+    pub fn find_stale_query(&self) -> Option<String> {
+        recto_agent::find::stale_query(&self.access(), &self.finder)
+    }
+
+    /// ⌘G and ⇧⌘G, by the same step as `recto find --next`, or Return and ⇧Return in the field, the person's jump.
+    pub fn find_step(&self, forward: bool, going: recto_agent::find::Going) -> Option<(u32, recto_agent::find::Hit)> {
+        recto_agent::find::step(&self.access(), &self.finder, forward, going)
+    }
+
+    /// A click on a hit's row.
+    pub fn find_choose(&self, index: usize) -> Option<(u32, recto_agent::find::Hit)> {
+        recto_agent::find::choose(&self.access(), &self.finder, index)
+    }
+
+    /// Escape in the field, by the same step as `recto find --close`.
+    pub fn find_close(&self) {
+        recto_agent::find::close(&self.access());
     }
 
     /// With the one backup of each original kept on its first save, in the state folder. Old backups go now, as a session starts, never on a timer.
@@ -141,7 +180,7 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     }
 
     fn access(&self) -> Hosted<'_, L> {
-        Hosted { session: &self.session, indexer: self.indexer.as_ref(), generator: self.generator.as_ref(), saving: self.saving.get().map(|saving| &**saving) }
+        Hosted { session: &self.session, indexer: self.indexer.as_ref(), generator: self.generator.as_ref(), finder: &self.finder, saving: self.saving.get().map(|saving| &**saving) }
     }
 
     /// The session itself, for whoever holds it: the app's own edits go through here, as the owner's. Nothing over the socket reaches this.
@@ -281,6 +320,7 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
     }
 
     fn attach(&self, notify: Notifier) {
+        self.finder.attach(Arc::clone(&notify));
         if let Some(generator) = &self.generator {
             generator.attach(Arc::clone(&notify));
         }
@@ -290,6 +330,7 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
     }
 
     fn shut_down(&self) {
+        self.finder.shut_down();
         if let Some(indexer) = &self.indexer {
             indexer.shut_down();
         }

@@ -854,7 +854,8 @@ fn the_menu_bar_and_the_agent_icon() {
     run.settled();
     let state = run.report();
     let titles: Vec<&str> = state["app"]["menu_bar"].as_array().unwrap().iter().map(|menu| menu["title"].as_str().unwrap()).collect();
-    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View"], "{state}");
+    // The Go menu has Back, Forward and Go to Page…, as SPEC lists the menus.
+    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go"], "{state}");
     let view = &state["app"]["menu_bar"][3]["items"];
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
     assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon", "Command Palette…"]);
@@ -1928,4 +1929,378 @@ fn the_palettes_run_keeps_to_each_commands_level() {
     assert!(run.ok(&["palette", "zoom"])["items"].as_array().is_some_and(|items| !items.is_empty()), "listing is reading");
     let (refused, code) = run.state.json(&["palette", "zoom in", "--run"]);
     assert_ne!(code, 0, "running is doing: {refused}");
+}
+
+fn named_document(name: &str, count: usize, word: &str) -> TempPdf {
+    let list: Vec<Page> = (0..count).map(|index| Page::new(text_lines(&[&format!("{name} page {index}"), &format!("Here the word {word} shows")]))).collect();
+    TempPdf::new(&format!("{name}.pdf"), &pages(&list))
+}
+
+/// Failure: Find's field, list and steps don't do what `recto find` does, or the list grows over the tabs and contents (owner, 2026-11-07: "max height within scroll so it doesn't push everything of screen"), or Find takes room or keeps its hits once it's closed.
+#[test]
+fn find_in_the_sidebar_lists_steps_and_keeps_to_its_room() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(200);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let closed = run.report();
+    assert_eq!((closed["app"]["find"]["open"].as_bool(), closed["app"]["find"]["shown"].as_bool()), (Some(false), Some(false)), "nothing at rest: {}", closed["app"]["find"]);
+    let opened = run.ok(&["qa", "menu", "find.open"]);
+    let opened = wait_for(&run, |state| state["app"]["find"]["open"] == true).get("app").cloned().unwrap_or(opened);
+    assert_eq!(opened["focus_view"], "find", "⌘F gives the field the keyboard: {}", opened["find"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.settled();
+    let found = run.report();
+    let find = &found["app"]["find"];
+    assert_eq!((find["status"].as_str(), find["rows"].as_u64()), (Some("200 matches on 200 pages"), Some(400)), "{find}");
+    let room = found["app"]["window"]["height"].as_f64().unwrap();
+    assert!(find["list_height"].as_f64().unwrap() <= room * 0.4 && find["list_height"].as_f64().unwrap() > 0.0, "{find}");
+    assert_eq!(found["app"]["contents"]["footer_on_screen"], true, "the tabs and footer stay: {}", found["app"]["contents"]);
+    let stepped = run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    let stepped = run.report().get("app").cloned().unwrap_or(stepped);
+    assert_eq!((stepped["find"]["current_row"].as_u64(), stepped["place"].as_str()), (Some(1), Some("1 of 200")), "{}", stepped["find"]);
+    assert!(stepped["pages"]["highlight_rects"].as_u64().unwrap() > 0, "the hit is selected on the page");
+    run.ok(&["qa", "find-click", "5"]);
+    run.settled();
+    let clicked = run.report();
+    assert_eq!((clicked["app"]["find"]["current_row"].as_u64(), clicked["app"]["place"].as_str()), (Some(5), Some("3 of 200")), "{}", clicked["app"]["find"]);
+    run.ok(&["qa", "menu", "find.previous"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["current_row"], 3, "⇧⌘G");
+    let agent = run.ok(&["find", "--next"]);
+    assert_eq!(agent["current"]["page"], 3, "an agent's step goes on from the reader's: {agent}");
+    run.ok(&["qa", "find-key", "escape"]);
+    run.settled();
+    let gone = run.report();
+    assert_eq!((gone["app"]["find"]["open"].as_bool(), gone["app"]["find"]["shown"].as_bool()), (Some(false), Some(false)), "{}", gone["app"]["find"]);
+    let idle = run.ok(&["find"]);
+    assert_eq!((idle["state"].as_str(), idle["hits_listed"].as_u64()), (Some("idle"), Some(0)), "its hits went: {idle}");
+    assert_eq!(gone["session"]["find"]["draft"], "words", "what was typed stays for next time");
+}
+
+/// Failure: in a comparison Find looks in a pane that isn't the one being read, or stays with the old one when the reader moves (PLAN, comparison follow-ups).
+#[test]
+fn find_goes_by_the_pane_being_read() {
+    let Some(run) = Run::start() else { return };
+    let (left, right) = (named_document("left", 6, "apple"), named_document("right", 6, "quince"));
+    run.ok(&["open", left.0.to_str().unwrap()]);
+    run.ok(&["open", right.0.to_str().unwrap()]);
+    run.ok(&["compare", "--tabs", "#1,#2"]);
+    run.settled();
+    run.ok(&["qa", "pane-focus", "1"]);
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "quince"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["status"], "6 matches on 6 pages");
+    run.ok(&["qa", "pane-focus", "0"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["status"], "Not found", "found again in the pane now read");
+    run.ok(&["qa", "find-type", "apple"]);
+    run.settled();
+    run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    let state = run.report();
+    assert_eq!(state["app"]["find"]["current_row"], 1, "{}", state["app"]["find"]);
+}
+
+/// Failure: edit mode and a view's rotation are in the state record and nothing shows them (PLAN phase 3: they "draw what the state record already carries"), or Done doesn't leave edit mode.
+#[test]
+fn edit_mode_and_view_rotation_draw_what_the_record_carries() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "view-rotation", "1"]);
+    run.settled();
+    let turned = run.report();
+    let turns = turned["app"]["pages"]["page_turns"].as_array().unwrap().clone();
+    assert!(!turns.is_empty() && turns.iter().all(|turn| turn == 1), "every page drawn a quarter turn: {turns:?}");
+    assert_eq!(run.ok(&["edits"])["edited"], false, "and the file isn't edited by it");
+    run.ok(&["qa", "edit-mode", "on"]);
+    run.settled();
+    let panel = run.report()["app"]["panel"].clone();
+    assert_eq!(panel["open"], true, "the panel is open on edit mode's tools: {panel}");
+    assert_eq!(panel["items"][0]["id"], "edit_mode.done", "{panel}");
+    run.ok(&["qa", "panel", "edit_mode.done"]);
+    run.settled();
+    let done = run.report();
+    assert_eq!((done["app"]["panel"]["open"].as_bool(), done["session"]["edit_mode"].as_bool()), (Some(false), Some(false)), "{}", done["app"]["panel"]);
+    run.ok(&["qa", "view-rotation", "0"]);
+    run.settled();
+    assert!(run.report()["app"]["pages"]["page_turns"].as_array().unwrap().iter().all(|turn| turn == 0));
+}
+
+/// Failure: what Rust last heard of the field is put back into it while it's being typed in, so a late echo of "ab" takes away the "c" just typed (review, round 1). Here the session's word on the field changes under the editing field, as an echo would, and the field keeps what's typed; once it's left, it shows Rust's.
+#[test]
+fn find_never_types_over_what_is_being_typed() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(300);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "focus", "find"]);
+    for typed in ["w", "wo", "wor", "word"] {
+        let state = run.ok(&["qa", "find-type", typed]);
+        assert_eq!(state["find"]["untrusted"]["field"], typed, "{}", state["find"]);
+    }
+    run.ok(&["qa", "find-draft", "an echo"]);
+    run.settled();
+    let editing = run.report();
+    assert_eq!(editing["app"]["find"]["field_has_focus"], true);
+    assert_eq!(editing["app"]["find"]["untrusted"]["field"], "word", "never typed over while it's edited: {}", editing["app"]["find"]);
+    run.ok(&["qa", "focus", "page"]);
+    let left = wait_for(&run, |state| state["app"]["find"]["untrusted"]["field"] == "an echo");
+    assert_eq!(left["app"]["find"]["field_has_focus"], false);
+}
+
+/// Failure: the field takes the keyboard just before the session's draft reaches it, and then shows the old text for as long as it's focused, though nothing's been typed in it (the restore test after the merge with main: field "" with the draft "typed but not run"). Until typing starts, the field shows what the session has.
+#[test]
+fn find_shows_the_sessions_draft_until_typing_starts() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "focus", "find"]);
+    run.ok(&["qa", "find-draft", "set while focused"]);
+    let shown = wait_for(&run, |state| state["app"]["find"]["untrusted"]["field"] == "set while focused");
+    assert_eq!(shown["app"]["find"]["field_has_focus"], true, "still focused: {}", shown["app"]["find"]);
+    assert_eq!(shown["session"]["find"]["query"], "", "and not found, as it was only a draft: {}", shown["session"]["find"]);
+}
+
+/// Failure: the app draws its pages with a worker outside the sandbox, or the tile path breaks once the worker has dropped its Mach rights, and nothing an agent can read says so.
+/// The built app's helper is sandboxed, so every live worker must say its walls are up, and the tiles on screen came as IOSurfaces over the link, the only way one arrives.
+#[test]
+fn the_app_draws_with_walled_workers_over_the_surface_link() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let state = run.report();
+    let workers = state["memory"]["workers"].as_u64().unwrap();
+    assert!(workers >= 1, "no worker drew the page: {}", state["memory"]);
+    assert_eq!(state["memory"]["workers_walled"].as_u64(), Some(workers), "a live worker isn't walled: {}", state["memory"]);
+    assert!(state["reader"]["tiles"]["attached"].as_u64().unwrap() > 0, "no surface tile arrived: {}", state["reader"]["tiles"]);
+}
+
+/// A place in the middle of one of `linked_document`'s links on page 1, as `qa pointer` takes it.
+fn on_link(index: usize) -> String {
+    let rect = recto_testpdf::LINKS_ON_PAGE_ONE[index].0;
+    format!("1:{},{}", (rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0)
+}
+
+/// The pointer over a link, waiting for its page's links to be read, as a person's next move would see them.
+fn hover(run: &Run, place: &str) -> Value {
+    run.ok(&["qa", "pointer", place]);
+    run.settled();
+    wait_for(run, |state| {
+        run.ok(&["qa", "pointer", place]);
+        state["app"]["pages"]["cursor"] == "link"
+    })
+}
+
+/// Failure: a link in the app doesn't show where it goes, or a click goes somewhere else or nowhere; Back and Forward, from the Go menu or a swipe, don't retrace it; a web address opens without the person being asked, or doesn't show its real target first; a script runs; or the page number in the corner and the go-to field don't know what the book calls its pages.
+#[test]
+fn links_back_forward_and_page_labels_in_the_app() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("linked.pdf", &recto_testpdf::linked_document());
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let rest = run.report();
+    assert_eq!(rest["app"]["place_label"], "i (1 of 12)", "the book's own number, and its place: {rest}");
+    let over = hover(&run, &on_link(0));
+    assert_eq!(over["app"]["links"]["hint"], "Go to page 5 (page 9)", "{over}");
+    assert_eq!(over["app"]["links"]["hint_in_lower_left"], true);
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(0))]);
+    run.ok(&["qa", "mouse-up"]);
+    let went = wait_for(&run, |state| state["app"]["place_label"] == "5 (9 of 12)");
+    let go = |state: &Value, id: &str| state["app"]["menu_bar"].as_array().unwrap().iter().flat_map(|menu| menu["items"].as_array().unwrap()).find(|item| item["id"] == id).map(|item| item["enabled"].clone()).unwrap();
+    assert_eq!((go(&went, "go.back"), go(&went, "go.forward")), (json!(true), json!(false)), "{went}");
+    run.ok(&["qa", "menu", "go.back"]);
+    let back = wait_for(&run, |state| state["app"]["place_label"] == "i (1 of 12)");
+    assert_eq!(go(&back, "go.forward"), json!(true));
+    run.ok(&["qa", "swipe", "-1"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "5 (9 of 12)");
+    run.ok(&["qa", "swipe", "1"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "i (1 of 12)");
+    // A web address: asked about first, with the whole address, and opened only on Open. A quiet run opens nothing and notes it.
+    let web = hover(&run, &on_link(2));
+    assert_eq!(web["app"]["links"]["hint"], "Web link: https://example.com/report?id=7");
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(2))]);
+    let asked = run.ok(&["qa", "mouse-up"]);
+    let asked = if asked["sheet"]["kind"] == "link_prompt" { run.report() } else { wait_for(&run, |state| state["app"]["sheet"]["kind"] == "link_prompt") };
+    assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("https://example.com/report?id=7"), "{asked}");
+    assert_eq!(asked["app"]["links"]["address_opened"], Value::Null, "nothing opens before the answer");
+    let cancelled = run.ok(&["qa", "sheet-answer", "second"]);
+    assert_eq!(cancelled["links"]["address_opened"], Value::Null, "Cancel opens nothing: {cancelled}");
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(2))]);
+    run.ok(&["qa", "mouse-up"]);
+    wait_for(&run, |state| state["app"]["sheet"]["kind"] == "link_prompt");
+    let opened = run.ok(&["qa", "sheet-answer", "first"]);
+    assert_eq!(opened["links"]["address_opened"], "https://example.com/report?id=7", "{opened}");
+    // A script: never run, and said so.
+    hover(&run, &on_link(3));
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(3))]);
+    run.ok(&["qa", "mouse-up"]);
+    let refused = wait_for(&run, |state| state["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("script")));
+    assert_eq!((&refused["app"]["sheet"], &refused["app"]["place_label"]), (&json!({}), &json!("i (1 of 12)")), "{refused}");
+    // The go-to field, by label and by number, and something that names no page.
+    let field = run.ok(&["qa", "button", "page"]);
+    assert_eq!(field["links"]["page_field"], "i", "it starts with what the book calls this page: {field}");
+    run.ok(&["qa", "page-escape"]);
+    run.ok(&["qa", "page-type", "A-2"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "A-2 (12 of 12)");
+    run.ok(&["qa", "page-type", "iii"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "iii (3 of 12)");
+    run.ok(&["qa", "page-type", "no such page"]);
+    wait_for(&run, |state| state["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("No page is called")));
+    // An agent sees the same, and goes back the same way.
+    let place = run.ok(&["where"]);
+    assert_eq!((&place["page"], &place["untrusted"]["label"], &place["can_go_back"]), (&json!(3), &json!("iii"), &json!(true)), "{place}");
+    run.ok(&["back"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "A-2 (12 of 12)");
+}
+
+fn found_in(bytes: &[u8], needle: &str) -> bool {
+    bytes.windows(needle.len()).any(|window| window == needle.as_bytes())
+}
+
+/// Three pages, the second marked to be deleted.
+fn three_marked() -> TempPdf {
+    TempPdf::new("three.pdf", &pages(&[Page::new(text_lines(&["Keep page one"])), Page::new(text_lines(&["DELETEDPAGEMARK"])), Page::new(text_lines(&["Keep page three"]))]))
+}
+
+/// A two-page document with a person's signature, or certified, or with usage rights alone.
+fn signed_two(kind: &str) -> TempPdf {
+    let (form, perms) = match kind {
+        "certified" => ("/AcroForm << /Fields [5 0 R] /SigFlags 3 >>", "/Perms << /DocMDP 6 0 R >>"),
+        "usage_rights" => ("", "/Perms << /UR3 6 0 R >>"),
+        _ => ("/AcroForm << /Fields [5 0 R] /SigFlags 3 >>", ""),
+    };
+    TempPdf::new(&format!("{kind}.pdf"), &build(&[
+        Object::Dict(format!("<< /Type /Catalog /Pages 2 0 R {form} {perms} >>")),
+        Object::Dict("<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".into()),
+        Object::Stream { dict: String::new(), data: text_lines(&["A signed contract, page one"]) },
+        Object::Dict("<< /FT /Sig /T (Tenant) /V 6 0 R >>".into()),
+        Object::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 5 10 5] /Contents <00> >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 8 0 R >>".into()),
+        Object::Stream { dict: String::new(), data: text_lines(&["DELETEDPAGEMARK"]) },
+    ]))
+}
+
+/// Failure: a delete from the window isn't saved, is appended so the page's words stay in the file, or can't be undone past the save, or undoing past it needs a copy of the whole file. Through the window's own Save: the page is gone from the file, the history keeps a copy of that page alone, out of Spotlight's reach, and undo past the save brings it back and draws it.
+#[test]
+fn a_delete_saves_by_rewriting_and_undo_goes_past_it() {
+    let Some(run) = Run::start() else { return };
+    let file = three_marked();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "delete:2"]);
+    let edited = wait_for(&run, |state| state["app"]["save_button"]["visible"] == true && state["reader"]["pages"] == 2);
+    assert_eq!(edited["app"]["save_button"]["enabled"], true, "a delete on an unsigned file saves: {}", edited["app"]["save_button"]);
+    run.ok(&["qa", "button", "save"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == false && state["app"]["save_button"]["visible"] == false);
+    let bytes = std::fs::read(&file.0).unwrap();
+    assert!(!found_in(&bytes, "DELETEDPAGEMARK") && found_in(&bytes, "Keep page three"), "the page's words are gone from the file");
+    let journals = run.state.root.join("session").join("journals");
+    let kept: Vec<PathBuf> = std::fs::read_dir(&journals).unwrap().flatten().map(|entry| entry.path()).filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("kept-"))).collect();
+    assert_eq!(kept.len(), 1, "one copy kept for the history: {kept:?}");
+    assert!(kept[0].extension().is_some_and(|extension| extension == "keptpages"), "not a .pdf, so Spotlight has no importer for it");
+    let kept_bytes = std::fs::read(&kept[0]).unwrap();
+    assert!(found_in(&kept_bytes, "DELETEDPAGEMARK") && !found_in(&kept_bytes, "Keep page one"), "it holds the deleted page alone");
+    // Undo past the save: the page comes back, from the copy, and draws.
+    run.ok(&["qa", "owner-edit", "undo"]);
+    let back = wait_for(&run, |state| state["reader"]["pages"] == 3 && state["app"]["document_edited"] == true);
+    assert_eq!(back["app"]["save_button"]["visible"], true);
+    run.ok(&["goto", "2"]);
+    run.settled();
+    let drawn = run.report();
+    assert!(drawn["reader"]["note"].is_null(), "page 2 draws from the kept copy: {}", drawn["reader"]["note"]);
+    assert_eq!(run.ok(&["text", "2"])["untrusted"]["text"].as_str().map(|text| text.contains("DELETEDPAGEMARK")), Some(true));
+}
+
+/// Failure (SPEC decision 27): a delete on a signed file can be saved over it, which would break the signature, or leaves no way to keep the change. Save is off, and its icon says why; ⌘S is greyed out; Save As's sheet says the copy won't be signed; and the copy has no signature, while the original is byte for byte as it was.
+#[test]
+fn a_signed_files_delete_turns_save_off_and_save_as_is_unsigned() {
+    let Some(run) = Run::start() else { return };
+    for kind in ["signed", "certified"] {
+        let file = signed_two(kind);
+        let original = std::fs::read(&file.0).unwrap();
+        run.ok(&["open", file.0.to_str().unwrap()]);
+        run.settled();
+        // A certification forbids a turn too; a person's signature only what has to be written anew.
+        run.ok(&["qa", "owner-edit", if kind == "certified" { "rotate:1" } else { "delete:2" }]);
+        let off = wait_for(&run, |state| state["app"]["save_button"]["visible"] == true && state["app"]["save_button"]["enabled"] == false);
+        assert!(off["app"]["save_button"]["tooltip"].as_str().unwrap().contains("Save As makes an unsigned copy"), "{kind}: {}", off["app"]["save_button"]);
+        assert_eq!(menu_item(&off, "file.save")["enabled"], false, "{kind}: ⌘S is off too");
+        let (refused, _) = run.state.json(&["qa", "button", "save"]);
+        assert_eq!(refused["ok"], false, "{kind}: a click on an icon that's off does nothing: {refused}");
+        run.ok(&["qa", "menu", "file.save_as"]);
+        let sheet = wait_for(&run, |state| state["app"]["sheet"]["kind"] == "save_panel");
+        assert_eq!(sheet["app"]["sheet"]["message"], "The new copy won't be signed. The original keeps its signature.", "{kind}");
+        run.ok(&["qa", "sheet-answer", "cancel"]);
+        wait_for(&run, |state| state["app"]["sheet"].as_object().is_none_or(|sheet| sheet.is_empty()));
+        let copy = file.0.with_file_name(format!("{kind} unsigned copy.pdf"));
+        run.ok(&["qa", "save-as", copy.to_str().unwrap()]);
+        let saved = wait_for(&run, |state| state["app"]["document_edited"] == false && !state["app"]["copy_notice"].is_null());
+        assert!(saved["app"]["copy_notice"]["text"].as_str().is_some_and(|note| note.contains("The new copy won't be signed")), "{kind}: {}", saved["app"]["copy_notice"]);
+        let written = std::fs::read(&copy).unwrap();
+        assert!(!found_in(&written, "/ByteRange") && !found_in(&written, "/Perms"), "{kind}: the copy has no signature");
+        assert_eq!(std::fs::read(&file.0).unwrap(), original, "{kind}: the original keeps its signature");
+        run.ok(&["close"]);
+        let _ = std::fs::remove_file(copy);
+    }
+}
+
+/// Failure: a delete on a file whose only signature is usage rights, as IRS forms have, is treated as a person's signature and Save turned off, or is saved with rights a reader then calls broken. Save works, rewriting the file in place with them removed, and says so quietly.
+#[test]
+fn usage_rights_alone_save_in_place_with_a_quiet_note() {
+    let Some(run) = Run::start() else { return };
+    let file = signed_two("usage_rights");
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "owner-edit", "delete:2"]);
+    let edited = wait_for(&run, |state| state["app"]["save_button"]["visible"] == true);
+    assert_eq!(edited["app"]["save_button"]["enabled"], true, "usage rights aren't a person's signature: {}", edited["app"]["save_button"]);
+    run.ok(&["qa", "button", "save"]);
+    let saved = wait_for(&run, |state| state["app"]["document_edited"] == false && !state["app"]["copy_notice"].is_null());
+    assert!(saved["app"]["copy_notice"]["text"].as_str().is_some_and(|note| note.contains("usage rights")), "{}", saved["app"]["copy_notice"]);
+    let bytes = std::fs::read(&file.0).unwrap();
+    assert!(!found_in(&bytes, "/UR3") && !found_in(&bytes, "DELETEDPAGEMARK"));
+    // A save's note is about that document: on another tab it goes, rather than read as about that one (found in the stage 2 shots).
+    let other = three_marked();
+    run.ok(&["open", other.0.to_str().unwrap()]);
+    let elsewhere = wait_for(&run, |state| state["app"]["document_name"] != saved["app"]["document_name"] || state["reader"]["pages"] == 3);
+    run.settled();
+    assert!(run.report()["app"]["copy_notice"].is_null(), "{}", elsewhere["app"]["copy_notice"]);
+}
+
+/// Failure: going to a Find hit by a click on its row or Return in the field leaves no mark for Back, so ⌘[ can't bring the reader to where they were reading, as it can after a link; or ⌘G's step, which only steps, marks the trail or takes the way forward away.
+#[test]
+fn a_find_hit_clicked_or_returned_to_is_a_jump_and_a_step_isnt() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(200);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let go = |state: &Value, id: &str| menu_item(state, id)["enabled"].clone();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.settled();
+    assert_eq!(go(&run.report(), "go.back"), json!(false), "nothing to go back to yet");
+    // Row 99 is page 50's hit: a page row, then its hit, for each page.
+    run.ok(&["qa", "find-click", "99"]);
+    let clicked = wait_for(&run, |state| state["app"]["place"] == "50 of 200");
+    assert_eq!(go(&clicked, "go.back"), json!(true), "a click on a hit is a jump: {}", clicked["app"]["find"]);
+    run.ok(&["qa", "menu", "go.back"]);
+    let back = wait_for(&run, |state| state["app"]["place"] == "1 of 200");
+    assert_eq!(go(&back, "go.forward"), json!(true));
+    run.ok(&["qa", "menu", "find.next"]);
+    let stepped = wait_for(&run, |state| state["app"]["place"] != "1 of 200");
+    assert_eq!(go(&stepped, "go.forward"), json!(true), "⌘G only steps, so the way forward stays: {}", stepped["app"]["place"]);
+    run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    let returned = run.report();
+    assert_eq!((go(&returned, "go.back"), go(&returned, "go.forward")), (json!(true), json!(false)), "Return is a jump, which takes the way forward: {}", returned["app"]["place"]);
 }

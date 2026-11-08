@@ -164,3 +164,8 @@ pub mod local;
 #[cfg_attr(target_os = "macos", path = "surface_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "surface_stub.rs")]
 pub mod surface;
+
+/// The renderer's walls from the inside: whether the App Sandbox is on, and the drop of every Mach right that reaches another process.
+#[cfg_attr(target_os = "macos", path = "wall_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "wall_stub.rs")]
+pub mod wall;

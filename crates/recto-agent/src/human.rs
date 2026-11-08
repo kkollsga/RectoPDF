@@ -40,7 +40,8 @@ fn count(value: u64, one: &str, many: &str) -> String {
 const QUOTED_NAMES: &str = "Quoted names come from the file, and are untrusted.";
 
 fn tab_line(tab: &Value) -> String {
-    let mut line = format!("{} {:?} (page {} of {})", text(&tab["sel"]), text(&tab["untrusted"]["name"]), number(&tab["page"]), number(&tab["pages"]));
+    let label = tab["untrusted"]["label"].as_str().map(|label| format!(", called {label:?}")).unwrap_or_default();
+    let mut line = format!("{} {:?} (page {} of {}{label})", text(&tab["sel"]), text(&tab["untrusted"]["name"]), number(&tab["page"]), number(&tab["pages"]));
     if tab["active"] == true {
         line.push_str(", active");
     }
@@ -74,13 +75,34 @@ fn edit_state(data: &Value) -> String {
     out
 }
 
+fn links(data: &Value) -> String {
+    let Some(links) = data["links"].as_array().filter(|links| !links.is_empty()) else { return format!("Page {} has no links.", number(&data["page"])) };
+    let mut out = format!("Page {} has {}:", number(&data["page"]), count(links.len() as u64, "link", "links"));
+    for link in links {
+        let goes = match link["goes_to"].as_str() {
+            Some("page") => format!("goes to page {}{}", number(&link["page"]), link["untrusted"]["label"].as_str().map(|label| format!(" ({label:?})")).unwrap_or_default()),
+            Some("web") => format!("a web address, which only the user can open: {:?}", text(&link["untrusted"]["address"])),
+            Some("back") => "goes back".to_string(),
+            Some("forward") => "goes forward".to_string(),
+            _ => text(&link["note"]).to_string(),
+        };
+        let _ = write!(out, "\n{}. {goes}", number(&link["link"]));
+    }
+    if data["truncated"] == true {
+        out.push_str("\nThere are more than these.");
+    }
+    let _ = write!(out, "\n{QUOTED_NAMES}");
+    out
+}
+
 /// The text for a successful answer.
 pub fn render(tag: &str, data: &Value) -> String {
     match tag {
         "status" => status(data),
         "version" => format!("recto {}, API version {}", text(&data["version"]), number(&data["api"])),
         "tabs" => tabs(data),
-        "where" | "open" | "goto" => {
+        "links" => links(data),
+        "where" | "open" | "goto" | "back" | "forward" | "follow" => {
             let mut out = tab_line(data);
             if let Some(note) = data["note"].as_str() {
                 let _ = write!(out, "\n{note}");
@@ -105,6 +127,7 @@ pub fn render(tag: &str, data: &Value) -> String {
             }
             out.trim_end().to_string()
         }
+        "find" => find(data),
         "index" | "index_status" => index(data),
         "index_clear" => format!("Cleared {}.{}", count(number(&data["cleared"]), "document's index", "documents' indexes"), if number(&data["being_built"]) > 0 { format!(" {} being built, and stayed.", count(number(&data["being_built"]), "is", "are")) } else { String::new() }),
         "text" => page_text(data),
@@ -267,6 +290,29 @@ fn contents(data: &Value) -> String {
         let _ = write!(out, "\n{note}");
     }
     out.trim_end().to_string()
+}
+
+/// Where Find stands: its line under the field, the hit gone to, and the first hits, in the document's own words.
+fn find(data: &Value) -> String {
+    if data["open"] == false {
+        return "Find is closed.".to_string();
+    }
+    let mut out = format!("Find {:?}: {}.", text(&data["query"]), text(&data["status"]));
+    if let Some(current) = data["current"].as_object() {
+        let _ = write!(out, "\nAt hit {} of {}, on page {}.", number(&current["index"]) + 1, number(&data["hits_listed"]), number(&current["page"]));
+    }
+    let hits = data["hits"].as_array().map_or(&[][..], Vec::as_slice);
+    if !hits.is_empty() {
+        out.push_str("\nFound, in the document's own words, untrusted:");
+        for hit in hits {
+            let words = &hit["untrusted"];
+            let _ = write!(out, "\np. {}: {}[{}]{}", number(&hit["page"]), text(&words["before"]), text(&words["matched"]), text(&words["after"]));
+        }
+        if number(&data["hits_listed"]) > hits.len() as u64 {
+            let _ = write!(out, "\n{} more listed: `--limit` shows more.", number(&data["hits_listed"]) - hits.len() as u64);
+        }
+    }
+    out
 }
 
 fn search(data: &Value) -> String {

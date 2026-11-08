@@ -144,6 +144,8 @@ pub struct PageMap {
     pub own: Option<FileStamp>,
     /// Quarter turns clockwise an edit has added to each position, or none. They change how a page sits on the screen and nothing that's drawn of it.
     pub turns: Option<Arc<[u8]>>,
+    /// For each file of `files`, what it was when its pages were added, for the ones that aren't the tab's own: a page isn't drawn from an added PDF that's since changed, as its page numbers are about the version it was. Shorter than `files`, or `None`, says nothing.
+    pub expected: Vec<Option<FileStamp>>,
     /// The version of the tab's own file a save moved it on from, if this is the version that save wrote: each of these pages is the page that was shown at its position, as it was shown, turned or added. What was laid out, where the reader was and what was selected go on as they were; only what's drawn is of the new file.
     pub follows: Option<FileStamp>,
 }
@@ -335,6 +337,8 @@ pub enum JobKind {
     Draw { scale: f32, rect: TileRect, surface: PixelSurface, what: DrawKind, paper: PaperKind },
     /// Read a page's text for selecting. `check` also draws it, for the hidden-text check.
     Text { check: bool },
+    /// Read a page's links, from the file's structure, with no worker.
+    Links,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -362,6 +366,7 @@ enum PlanKind {
     Traits,
     Draw { scale: f32, rect: TileRect, what: DrawKind, paper: PaperKind },
     Text { check: bool },
+    Links,
 }
 
 impl JobPlan {
@@ -372,6 +377,7 @@ impl JobPlan {
             PlanKind::Size => JobKind::Size,
             PlanKind::Traits => JobKind::Traits,
             PlanKind::Text { check } => JobKind::Text { check },
+            PlanKind::Links => JobKind::Links,
             PlanKind::Draw { scale, mut rect, what, paper } => {
                 let surface = match what {
                     DrawKind::Preview => Self::take_surface(rect.width, rect.height)?,
@@ -445,6 +451,8 @@ pub enum Outcome {
     Text { text: Arc<recto_index::select::PageText>, checked: bool },
     /// A page's text can't be read. That's the page's text, and nothing about drawing it.
     TextFailed,
+    /// A page's links, or none if they couldn't be read.
+    Links(Option<Arc<recto_core::nav::PageLinks>>),
 }
 
 #[derive(Debug)]
@@ -524,11 +532,15 @@ pub struct Reader {
     moved_page: Option<u32>,
     /// What was selected on the tab showing when a renderer saw its file replaced, until the next activation says whether that was a save of what was shown.
     selection_before_change: Option<(u32, recto_index::select::Range)>,
+    /// Find's hit, selected and on its way into view once its page's text says where on the page it is: the tab, the hit, and whether its page was jumped to for it, which then places it whatever it shows.
+    revealing: Option<(u32, recto_index::select::Range, bool)>,
     more_to_attach: bool,
     counts: ReaderCounts,
     wanted_files: Arc<Vec<PathBuf>>,
     note: Option<String>,
     selecting: Selecting,
+    /// Links on the tab showing, read as they're pointed at.
+    linking: crate::links::Linking,
     /// The thread that draws has failed too many times to go on trying, and this says so.
     gave_up: bool,
     /// What's come from a tab's sleep file, for when it's made the hot tab.
@@ -587,11 +599,13 @@ impl Reader {
             last_view_page: None,
             moved_page: None,
             selection_before_change: None,
+            revealing: None,
             more_to_attach: false,
             counts: ReaderCounts::default(),
             wanted_files: Arc::new(Vec::new()),
             note: None,
             selecting: Selecting::default(),
+            linking: crate::links::Linking::default(),
             gave_up: false,
             sleep_view: None,
             reopen_files: Vec::new(),
@@ -744,6 +758,12 @@ impl Reader {
     /// For QA: nothing's drawn till it's let go, so a first frame stays to be looked at.
     pub fn hold_drawing(&mut self, on: bool) {
         self.hold_drawing = on;
+    }
+
+    /// What a file was when its pages were added to this tab, if they were. Only this tab's: the same file can be another tab's own, which goes by its version, and saving that tab mustn't stop its own pages drawing.
+    pub fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> Option<FileStamp> {
+        let doc = self.docs.get(&tab)?;
+        doc.map.files.iter().position(|known| known == file).filter(|at| *at > 0).and_then(|at| doc.map.expected.get(at).copied().flatten())
     }
 
     /// Whether this file is the tab's own, as its length is what a sleep file spoke for.
@@ -1008,6 +1028,7 @@ impl Reader {
             self.moved_page = None;
             // A selection is in what's on screen, and a tab off screen holds none.
             self.selecting.reset();
+            self.linking.clear();
         }
         let floor = self.next_generation;
         let doc = self.docs.entry(tab).or_insert_with(|| {
@@ -1072,6 +1093,7 @@ impl Reader {
             self.clear_screen();
             // Its pages are other pages now, so what was selected on them isn't there. After a save they're the same pages, so it is, and its text is read again from the new file.
             self.selecting.reset();
+            self.linking.clear();
             if let Some(range) = carried_selection {
                 self.selecting.set_range(range);
             }
@@ -1903,6 +1925,15 @@ impl Reader {
         if scale <= 0.0 {
             return None;
         }
+        // The links under the pointer come first: they're quick, and the pointer's waiting on them for its look.
+        if let Some(page) = self.linking.next_wanted()
+            && let Some(doc) = self.docs.get(&tab)
+            && page < doc.layout.count()
+            && let Some((file, source_page)) = doc.map.source(page)
+        {
+            let generation = self.fresh_generation();
+            return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Links });
+        }
         // A selection the reader is making comes before tiles: it answers their hand.
         if let Some(plan) = self.text_plan(tab, Urgency::Now) {
             return Some(plan);
@@ -2018,6 +2049,8 @@ impl Reader {
 
     /// The mouse went down at a point in the document. Cheap: at worst it looks through a page already here.
     pub fn selection_press(&mut self, x: f64, y: f64, clicks: u32, shift: bool) {
+        let point = self.point_on_page(x, y).filter(|point| self.is_on_its_page(*point));
+        self.linking.press(if shift { None } else { point }, clicks);
         match self.point_on_page(x, y) {
             Some(point) => self.selecting.press(point, clicks, shift),
             None => self.selecting.clear(),
@@ -2027,6 +2060,7 @@ impl Reader {
     }
 
     pub fn selection_drag(&mut self, x: f64, y: f64) {
+        self.linking.drag(self.point_on_page(x, y));
         if let Some(point) = self.point_on_page(x, y) {
             self.selecting.drag(point);
             self.highlight_ops();
@@ -2035,7 +2069,52 @@ impl Reader {
     }
 
     pub fn selection_release(&mut self) {
+        self.linking.release();
         self.selecting.release();
+    }
+
+    /// Whether a point is on its page, and not in the margin or the gap between pages.
+    fn is_on_its_page(&self, point: PagePoint) -> bool {
+        let Some(doc) = self.doc() else { return false };
+        let size = doc.layout.raw_size(point.page);
+        point.x >= 0.0 && point.y >= 0.0 && point.x <= size.width && point.y <= size.height
+    }
+
+    /// **The link under the pointer,** if its page's links are here. A page not read yet says nothing for now, and is read next.
+    pub fn pointer_link(&mut self, x: f64, y: f64) -> Option<crate::links::LinkHit> {
+        let point = self.point_on_page(x, y).filter(|point| self.is_on_its_page(*point))?;
+        self.linking.at(point)
+    }
+
+    /// The link a click has just landed on, taken once.
+    pub fn take_clicked_link(&mut self) -> Option<crate::links::LinkHit> {
+        self.linking.take_clicked()
+    }
+
+    /// Where a file page of the same file as the page at `from` is now, counted as the view counts: what a link on that page means by its page. Nothing if it's not in the document.
+    pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32> {
+        let doc = self.doc()?;
+        match &doc.map.slots {
+            None => (file_page < doc.layout.count()).then_some(file_page),
+            Some(slots) => {
+                let (file, _) = *slots.get(from as usize)?;
+                slots.iter().position(|(other, page)| *other == file && *page == file_page).and_then(|at| u32::try_from(at).ok())
+            }
+        }
+    }
+
+    /// Whether a page of the view is from the tab's own file, and which page of it.
+    pub fn own_file_page(&self, position: u32) -> Option<u32> {
+        let doc = self.doc()?;
+        match &doc.map.slots {
+            None => (position < doc.layout.count()).then_some(position),
+            Some(slots) => slots.get(position as usize).filter(|(file, _)| *file == 0).map(|(_, page)| *page),
+        }
+    }
+
+    /// Pages whose links are held, for QA.
+    pub fn link_pages_held(&self) -> usize {
+        self.linking.pages_held()
     }
 
     /// Whether the pointer's on text, and so an I-beam. A page not read yet is wanted, for when there's nothing else to do.
@@ -2078,6 +2157,50 @@ impl Reader {
 
     pub fn has_selection(&self) -> bool {
         self.selecting.has_selection()
+    }
+
+    /// **Find's hit:** selects it, as Find on a Mac does, and brings it into view. Its page is gone to at once if none of it shows, and once the page's text is here, which a selection's end asks for first, the hit is put a third of the way down the view. A hit already showing, away from the view's edges, stays where it is, so stepping through hits on one screen doesn't move it. Held to the document's pages.
+    pub fn reveal_range(&mut self, range: recto_index::select::Range) {
+        let Some(tab) = self.hot else { return };
+        let pages = self.doc().map_or(0, |doc| doc.layout.count());
+        if range.start.page >= pages || range.end.page >= pages || (range.start.page, range.start.at) > (range.end.page, range.end.at) {
+            return;
+        }
+        self.selecting.set_range(range);
+        self.highlight_ops();
+        let shows = self.doc().is_some_and(|doc| self.visible_pages(doc).contains(&range.start.page));
+        self.revealing = Some((tab, range, !shows));
+        if !self.try_reveal() && !shows {
+            self.follow(range.start.page, 0.0);
+        }
+    }
+
+    /// Moves the view to Find's hit if its place on the page is known now. Says whether it's settled, gone there or not needed.
+    fn try_reveal(&mut self) -> bool {
+        let Some((tab, range, jumped)) = self.revealing else { return true };
+        if self.hot != Some(tab) {
+            self.revealing = None;
+            return true;
+        }
+        let end = if range.end.page == range.start.page { range.end.at } else { u32::MAX };
+        let Some(bounds) = self.selecting.bounds_of(range.start.page, range.start.at, end) else { return false };
+        self.revealing = None;
+        let Some(bounds) = bounds else { return true };
+        let Some(doc) = self.doc() else { return true };
+        let rect = doc.layout.rect(range.start.page);
+        let fit = doc.layout.fit();
+        let (top, bottom) = (rect.y + f64::from(bounds.y) * fit, rect.y + f64::from(bounds.y + bounds.height) * fit);
+        let (view_top, view_height) = (self.viewport.y, self.viewport.height);
+        // Away from the edges: a tenth of the view at the top, a fifth at the bottom, where the page number and a notice sit.
+        if !jumped && view_height > 0.0 && top >= view_top + view_height * 0.1 && bottom <= view_top + view_height * 0.8 {
+            return true;
+        }
+        let want_top = (top - view_height / 3.0).max(0.0);
+        let within = ((want_top - rect.y) / rect.height.max(1.0)).clamp(0.0, 1.0);
+        let page = if want_top < rect.y { doc.layout.page_at(want_top) } else { range.start.page };
+        let within = if page == range.start.page { within } else { doc.layout.anchor_at(want_top).1 };
+        self.follow(page, within);
+        true
     }
 
     pub fn has_document(&self) -> bool {
@@ -2130,6 +2253,9 @@ impl Reader {
             Some((text, checked)) => self.selecting.page_read(position, text, checked, &visible),
             None => self.selecting.page_failed(position, &visible),
         }
+        if self.revealing.is_some_and(|(_, range, _)| range.start.page == position) {
+            self.try_reveal();
+        }
         self.advance_copy();
     }
 
@@ -2142,6 +2268,7 @@ impl Reader {
     /// The file behind a tab has been seen to be another one, so places on its pages mean nothing now. It comes before the job's outcome, which may be about it.
     pub fn file_changed(&mut self, tab: u32) {
         if self.hot == Some(tab) {
+            self.linking.clear();
             // Kept aside until the session says what the new version is: a save of what was shown keeps it (see [`Self::activate`]), anything else lets it go.
             self.selection_before_change = self.selecting.range().map(|range| (tab, range));
             self.selecting.file_changed();
@@ -2206,6 +2333,14 @@ impl Reader {
         self.counts.jobs += 1;
         let mut kept = None;
         let Job { tab, position, kind, generation, .. } = job;
+        if matches!(kind, JobKind::Links) {
+            // About the tab showing, as it is, or about nothing.
+            match outcome {
+                Outcome::Links(links) if self.hot == Some(tab) && !self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) => self.linking.take(position, links),
+                _ => self.linking.cancelled(position),
+            }
+            return;
+        }
         // Asked about the pages as they were. An edit has changed what's at this position since.
         if self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) {
             self.counts.cancelled += 1;
@@ -2421,7 +2556,7 @@ mod tests {
     use crate::layout::PageBox;
 
     fn map() -> PageMap {
-        PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: None, own: None, turns: None, follows: None }
+        PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }
     }
 
     impl Reader {
@@ -2449,10 +2584,11 @@ mod tests {
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(letter()),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
                 JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
             };
-            drawn.push(Job { tab: job.tab, position: job.position, file: job.file.clone(), source_page: job.source_page, generation: job.generation, kind: match &job.kind { JobKind::Size => JobKind::Size, JobKind::Traits => JobKind::Traits, JobKind::Text { check } => JobKind::Text { check: *check }, JobKind::Draw { scale, rect, surface, what, paper } => JobKind::Draw { scale: *scale, rect: *rect, surface: surface.clone(), what: *what, paper: *paper } } });
+            drawn.push(Job { tab: job.tab, position: job.position, file: job.file.clone(), source_page: job.source_page, generation: job.generation, kind: match &job.kind { JobKind::Size => JobKind::Size, JobKind::Traits => JobKind::Traits, JobKind::Text { check } => JobKind::Text { check: *check }, JobKind::Links => JobKind::Links, JobKind::Draw { scale, rect, surface, what, paper } => JobKind::Draw { scale: *scale, rect: *rect, surface: surface.clone(), what: *what, paper: *paper } } });
             reader.finish(job, outcome);
             let more = reader.drain(MAX_ATTACH_PER_TURN);
             drop(more);
@@ -2474,6 +2610,38 @@ mod tests {
         reader.activate(1, pages, 0, map(), &[], None, Spread::Single);
         reader.set_viewport(view(0.0));
         reader
+    }
+
+    /// A page with one line of text near its foot, in PDF points from the bottom.
+    fn page_with_line_at(pdf_y: f32) -> Arc<recto_index::select::PageText> {
+        let frame = recto_proto::PageFrame { turns: 0, left: 0.0, bottom: 0.0, right: 612.0, top: 792.0 };
+        let chars: Vec<recto_proto::CharRecord> = "find me here".chars().map(|ch| recto_proto::CharRecord::new(ch as u32, 0)).collect();
+        let boxes: Vec<recto_proto::CharBox> = (0..chars.len()).map(|at| [72.0 + at as f32 * 6.0, pdf_y, 77.0 + at as f32 * 6.0, pdf_y + 10.0]).collect();
+        Arc::new(recto_index::select::PageText::build(&chars, &boxes, frame, true, false))
+    }
+
+    /// Failure: going to Find's hit leaves it off screen or at the very edge of the view, as it did at the foot of a page jumped to; or stepping between hits already on screen moves the page each time. Selects the hit too.
+    #[test]
+    fn finds_hit_is_selected_and_brought_a_third_down_the_view() {
+        let mut reader = reader_on(10);
+        settle(&mut reader);
+        let range = recto_index::select::Range { start: recto_index::select::Place { page: 6, at: 0 }, end: recto_index::select::Place { page: 6, at: 4 } };
+        reader.reveal_range(range);
+        assert_eq!(reader.selection_range(), Some(range), "selected");
+        let to_page = reader.take_ops().into_iter().rev().find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None }).expect("its page, at once");
+        reader.set_viewport(view(to_page));
+        reader.take_text(1, 6, Some((page_with_line_at(40.0), true)));
+        let placed = reader.take_ops().into_iter().rev().find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None }).expect("then the hit, once its place is known");
+        let doc = reader.doc().unwrap();
+        let top = doc.layout.rect(6).y + (792.0 - 50.0) * doc.layout.fit();
+        let height = view(0.0).height;
+        assert!(top >= placed + height * 0.25 && top <= placed + height * 0.4, "a third down: hit at {top}, view from {placed}");
+        // Another hit on what's showing, away from the edges, moves nothing.
+        reader.set_viewport(view(placed));
+        reader.take_ops();
+        let near = recto_index::select::Range { start: recto_index::select::Place { page: 6, at: 5 }, end: recto_index::select::Place { page: 6, at: 7 } };
+        reader.reveal_range(near);
+        assert!(!reader.take_ops().iter().any(|op| matches!(op, Op::ScrollTo { .. })), "it's in view already");
     }
 
     /// Failure: a tile for the wrong place, or none at all, reaches the screen, because the grid and the view don't agree. Every visible cell must be covered when it says it's settled, and every attached tile must be in view.
@@ -2617,6 +2785,7 @@ mod tests {
             match &job.kind {
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => reader.finish(job, Outcome::Links(None)),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
                 JobKind::Draw { what: kind, .. } if *kind == what => return job,
                 JobKind::Draw { .. } => reader.finish(job, Outcome::Drawn { kind: TileKind::Colour, low_res: None }),
@@ -2663,11 +2832,11 @@ mod tests {
         let mut reader = reader_on(10);
         settle(&mut reader);
         assert!(!reader.entries.is_empty());
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, follows: None }, &[], None, Spread::Single);
+        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[], None, Spread::Single);
         assert!(reader.entries.values().all(|entry| entry.tab != 1), "tab 1 isn't warm");
         assert!(!reader.docs.contains_key(&1));
         assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")]);
-        reader.activate(3, 10, 0, PageMap { files: vec![PathBuf::from("/d/c.pdf")], slots: None, own: None, turns: None, follows: None }, &[2], None, Spread::Single);
+        reader.activate(3, 10, 0, PageMap { files: vec![PathBuf::from("/d/c.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[2], None, Spread::Single);
         assert_eq!(reader.wanted_files().len(), 2, "a warm tab's file is kept");
     }
 
@@ -2903,12 +3072,25 @@ mod tests {
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(if job.position == 0 { first } else { letter() }),
                 JobKind::Text { .. } => Outcome::TextFailed,
+                JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
                 JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
             };
             reader.finish(job, outcome);
             drop(reader.drain(MAX_ATTACH_PER_TURN));
         }
+    }
+
+    /// Failure (review round 1 of stage 2): an added file's stamp is looked up by path across every tab, so B.pdf added into tab A and open as tab B's own: saving B makes tab B's own pages fail as "a PDF that has changed since it was added". Only the tab the file was added to checks it, and never for its own file.
+    #[test]
+    fn an_added_files_stamp_is_the_tabs_it_was_added_to() {
+        let stamp = Some(FileStamp { size: 1, mtime_ns: 1, device: 0, inode: 3 });
+        let mut reader = Reader::new();
+        reader.activate(1, 2, 0, PageMap { files: vec![PathBuf::from("/d/a.pdf"), PathBuf::from("/d/b.pdf")], slots: Some(vec![(0, 0), (1, 0)]), expected: vec![None, stamp], ..map() }, &[], None, Spread::Single);
+        reader.activate(2, 1, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], ..map() }, &[1], None, Spread::Single);
+        assert_eq!(reader.expected_stamp(1, Path::new("/d/b.pdf")), stamp, "tab 1 added it");
+        assert_eq!(reader.expected_stamp(2, Path::new("/d/b.pdf")), None, "it's tab 2's own file");
+        assert_eq!(reader.expected_stamp(1, Path::new("/d/a.pdf")), None, "and tab 1's own isn't checked so");
     }
 
     /// Failure (the owner's bench file, 2026-11-08): a save after turning page 1 changes the view. The saved file's page 1 is landscape, the reopened layout fits that page instead of the portrait ones, and the zoom shown drops from 128% to 97% with every page shrinking; the place within the page and the selection go too. A save writes what was shown, so the fit, zoom, place across and down, layout and selection stay exactly, whichever page the reader's on and whether a renderer saw the file replaced first.
@@ -2945,7 +3127,7 @@ mod tests {
                 reader.file_changed(1);
             }
             // Saved: the file is another version, with page 0 turned in it, and no edits left.
-            let saved = PageMap { files: own.files.clone(), slots: None, own: stamp(2), turns: None, follows: stamp(1) };
+            let saved = PageMap { files: own.files.clone(), slots: None, own: stamp(2), turns: None, expected: Vec::new(), follows: stamp(1) };
             reader.activate(1, 10, on, saved, &[], None, spread);
             follow_host(&mut reader, at);
             settle_sized(&mut reader, landscape);
@@ -3003,6 +3185,7 @@ mod tests {
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(letter()),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
                 JobKind::Draw { .. } if job.position == 0 => Outcome::PageFailed { message: "This page couldn't be drawn.".into(), may_pass: false },
                 JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
@@ -3025,6 +3208,7 @@ mod tests {
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(letter()),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(true),
                 JobKind::Draw { .. } => {
                     low_done = true;
@@ -3051,6 +3235,7 @@ mod tests {
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(PageBox { width: 1224.0, height: 1584.0 }),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(true),
                 JobKind::Draw { what, .. } => {
                     kinds.push(*what);
@@ -3071,7 +3256,7 @@ mod tests {
     fn a_change_to_the_page_order_clears_what_was_drawn() {
         let mut reader = reader_on(5);
         settle(&mut reader);
-        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 0)]), own: None, turns: None, follows: None };
+        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 0)]), own: None, turns: None, expected: Vec::new(), follows: None };
         reader.activate(1, 2, 0, edited.clone(), &[], None, Spread::Single);
         assert!(reader.entries.is_empty());
         assert_eq!(reader.doc().unwrap().layout.count(), 2);
@@ -3095,6 +3280,7 @@ mod tests {
                 }
                 JobKind::Size => Outcome::Size(letter()),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
                 JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
             };
@@ -3110,7 +3296,7 @@ mod tests {
     /// Failure: a page is deleted while a job on it is running, and when the job ends its old picture goes in the place of the page now there, reading as settled. The same for a size or a heavy answer about what used to be there.
     #[test]
     fn what_a_job_found_before_an_edit_is_thrown_away() {
-        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 2)]), own: None, turns: None, follows: None };
+        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 2)]), own: None, turns: None, expected: Vec::new(), follows: None };
         // A job of each kind, caught running.
         let mut reader = reader_on(3);
         let size = reader.next_job().expect("a size");
@@ -3125,6 +3311,7 @@ mod tests {
             match job.kind {
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => reader.finish(job, Outcome::Links(None)),
                 JobKind::Traits => break job,
                 JobKind::Draw { .. } => panic!("traits come before drawing"),
             }
@@ -3140,6 +3327,7 @@ mod tests {
             match job.kind {
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => reader.finish(job, Outcome::Links(None)),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
                 JobKind::Draw { .. } => break job,
             }
@@ -3163,6 +3351,7 @@ mod tests {
                 let outcome = match &job.kind {
                     JobKind::Size => Outcome::Size(letter()),
                     JobKind::Text { .. } => panic!("no text was asked for"),
+                    JobKind::Links => Outcome::Links(None),
                     JobKind::Traits => Outcome::Heavy(false),
                     JobKind::Draw { surface, .. } => {
                         seen.insert(surface.id());
@@ -3174,7 +3363,7 @@ mod tests {
             }
             seen
         }
-        let other = |name: &str| PageMap { files: vec![PathBuf::from(name)], slots: None, own: None, turns: None, follows: None };
+        let other = |name: &str| PageMap { files: vec![PathBuf::from(name)], slots: None, own: None, turns: None, expected: Vec::new(), follows: None };
         for answer in [TileKind::Colour, TileKind::Blank { rgb: 0xFF_FF_FF }] {
             let mut held = Vec::new();
             let mut reader = reader_on(3);
@@ -3212,6 +3401,7 @@ mod tests {
             let job = reader.next_job()?;
             match &job.kind {
                 JobKind::Text { .. } => return Some(job),
+                JobKind::Links => reader.finish(job, Outcome::Links(None)),
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
                 JobKind::Draw { .. } => reader.finish(job, Outcome::Drawn { kind: TileKind::Colour, low_res: None }),
@@ -3272,6 +3462,7 @@ mod tests {
             match job.kind {
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => reader.finish(job, Outcome::Links(None)),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
                 JobKind::Draw { .. } => break job,
             }
@@ -3292,7 +3483,7 @@ mod tests {
         reader.set_viewport(view(inside));
         let page = reader.take_moved_page().expect("the reader moved");
         settle(&mut reader);
-        let other = PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, follows: None };
+        let other = PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None };
         reader.activate(2, 10, 0, other.clone(), &[1], None, Spread::Single);
         reader.take_ops();
         reader.activate(1, 100, page, map(), &[2], None, Spread::Single);
@@ -3312,7 +3503,7 @@ mod tests {
     fn a_warm_tab_that_goes_holds_nothing_at_once() {
         let mut reader = reader_on(10);
         settle(&mut reader);
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, follows: None }, &[1], None, Spread::Single);
+        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[1], None, Spread::Single);
         assert!(reader.entries.values().any(|entry| entry.tab == 1), "still warm");
         assert_eq!(reader.wanted_files().len(), 2);
         reader.set_warm(&[]);
@@ -3682,5 +3873,28 @@ mod tests {
         let Some(Op::ScrollTo { y: new_y, .. }) = ops.iter().find(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("{ops:?}") };
         let top = reader.doc().unwrap().layout.top(40);
         assert!((*new_y - top).abs() < 1.0, "{new_y} against {top}");
+    }
+
+    /// Failure: pointing at a page never asks for its links, so the hand and the hint never come; or a link's answer about another tab lands on this one; or a click on a link isn't seen as one.
+    #[test]
+    fn a_page_pointed_at_has_its_links_read_and_a_click_found() {
+        use recto_core::nav::{Link, LinkTarget, PageLinks};
+        let mut reader = reader_on(10);
+        settle(&mut reader);
+        let (x, y) = reader.document_point(0, 50.0, 20.0).unwrap();
+        assert_eq!(reader.pointer_link(x, y), None, "not read yet");
+        let job = reader.next_job().expect("its links are asked for first");
+        assert!(matches!(job.kind, JobKind::Links) && job.position == 0, "{job:?}");
+        let links = PageLinks { links: vec![Link { rect: [10.0, 10.0, 100.0, 30.0], target: LinkTarget::Page { page: 4, within: None } }], ..PageLinks::default() };
+        reader.finish(job, Outcome::Links(Some(Arc::new(links))));
+        let hit = reader.pointer_link(x, y).expect("now it's known");
+        assert_eq!(hit.target, LinkTarget::Page { page: 4, within: None });
+        assert_eq!(reader.position_in_same_file(0, 4), Some(4));
+        reader.selection_press(x, y, 1, false);
+        reader.selection_release();
+        assert_eq!(reader.take_clicked_link().map(|hit| hit.page), Some(0));
+        // Another tab: what's known goes with the one that was showing.
+        reader.activate(2, 10, 0, map(), &[], None, Spread::Single);
+        assert_eq!(reader.link_pages_held(), 0);
     }
 }

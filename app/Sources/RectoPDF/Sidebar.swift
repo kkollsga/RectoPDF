@@ -373,6 +373,8 @@ final class TabTable: NSTableView {
     let moreButton = NSButton(title: "", target: nil, action: nil)
     /// ⌘K's palette, over the tabs and contents while it's open.
     let palette: PalettePane
+    /// Find, over the tabs while it's open.
+    let find: FindPane
     private(set) var panel: PanelView?
     private var panelModel = PanelModel(open: false, buttonTooltip: "", sections: [])
     private var panelHeight: CGFloat = 0
@@ -385,7 +387,7 @@ final class TabTable: NSTableView {
     private var shownTabsVersion: UInt64 = 0
     private var shownContentsVersion: UInt64 = 0
     private var activeIndex: Int?
-    private var layout = SidebarLayout(tabRow: 32, contentsRow: 28, contentsHeight: 0, tabsScroll: false, noteHeight: 0)
+    private var layout = SidebarLayout(tabRow: 32, contentsRow: 28, contentsHeight: 0, tabsScroll: false, noteHeight: 0, findBlock: 0, findList: 0, findRow: 24, findField: 28, findStatus: 20)
     private(set) var hoveredRow: Int?
     var addPressed: (() -> Void)?
     private var tracking: NSTrackingArea?
@@ -411,6 +413,7 @@ final class TabTable: NSTableView {
         noticeMark = strings.noticeMark
         revealDelay = core.limits().revealDelaySeconds
         palette = PalettePane(core: core)
+        find = FindPane(core: core)
         super.init()
         frames = FrameRunner(view: contentsScroll, onScreen: !isQuiet) { [weak self] dt in
             MainActor.assumeIsolated { self?.frame(dt) ?? false }
@@ -454,6 +457,7 @@ final class TabTable: NSTableView {
         NotificationCenter.default.addObserver(self, selector: #selector(contentsMoved), name: NSView.boundsDidChangeNotification, object: contentsScroll.contentView)
         contentsScroll.pointerMoved = { [weak self] inside in self?.setContentsPointer(inside) }
         NotificationCenter.default.addObserver(self, selector: #selector(contentsLiveScrolled), name: NSScrollView.didLiveScrollNotification, object: contentsScroll)
+        view.addSubview(find.view)
         view.addSubview(scroll)
         view.addSubview(footer)
         view.addSubview(addButton)
@@ -589,6 +593,8 @@ final class TabTable: NSTableView {
         if now < rowsUntil || contentsTable.subviews.contains(where: { $0 is NSTableRowView && !$0.isHidden && contentsTable.row(for: $0) < 0 }) { running.append("contents_rows") }
         if frames?.isRunning == true { running.append("contents_drift") }
         if revealTimer != nil { running.append("name_reveal") }
+        // A query still finding: its list and line aren't what they'll be.
+        if find.model.open && core.findView().running { running.append("find_searching") }
         return running
     }
 
@@ -604,9 +610,20 @@ final class TabTable: NSTableView {
         core.tapRow(row: note)
     }
 
+    /// The room between the header and the footer, which Find, the tabs and the contents share by Rust's rule.
+    private var room: CGFloat { max(view.bounds.height - 52 - 40 - panelHeight, 0) }
+
+    /// Find's block at the top of that room, and the tabs under it.
+    private func placeLists() {
+        let width = view.bounds.width
+        find.view.frame = NSRect(x: 0, y: 52, width: width, height: layout.findBlock)
+        find.placeViews()
+        scroll.frame = NSRect(x: 0, y: 52 + layout.findBlock, width: width, height: max(room - layout.findBlock, 0))
+    }
+
     @objc private func frameChanged() {
         let size = view.bounds.size
-        scroll.frame = NSRect(x: 0, y: 52, width: size.width, height: max(size.height - 52 - 40 - panelHeight, 0))
+        placeLists()
         placeFooter()
         palette.view.frame = NSRect(x: 0, y: 52, width: size.width, height: max(size.height - 52 - 40 - panelHeight, 0))
         palette.placeViews()
@@ -621,10 +638,12 @@ final class TabTable: NSTableView {
 
     /// Asks Rust how the room divides, and redraws only if that changed.
     private func relayout() {
-        let next = core.sidebarLayout(room: scroll.frame.height)
+        let next = core.sidebarLayout(room: room)
         guard next != layout else { return }
         let heightChanged = next.contentsHeight != layout.contentsHeight
         layout = next
+        find.update(core.findView(), layout: next)
+        placeLists()
         table.reloadData()
         if heightChanged {
             core.contentsViewChanged()
@@ -895,11 +914,13 @@ final class TabTable: NSTableView {
         // A row under the label may have changed. It opens again only on the next rest.
         if tabsChanged || new.contentsVersion != shownContentsVersion { reveal.isHidden = true }
         placeFooter()
-        let next = core.sidebarLayout(room: scroll.frame.height)
+        let next = core.sidebarLayout(room: room)
+        find.update(core.findView(), layout: next)
         let sameTab = activeTabID == oldActiveTab
         let sameList = tabs.count == oldTabCount && new.tocOpen == oldOpen && activeIndex == oldActive && sameTab
         let heightChanged = next != layout
         layout = next
+        placeLists()
         contentsTable.isHidden = !new.tocOpen
         if !sameTab { rowShift = 0 }
         if sameList {
@@ -990,6 +1011,7 @@ final class TabTable: NSTableView {
         view.layer?.backgroundColor = Theme.sidebar.cg
         palette.view.layer?.backgroundColor = Theme.sidebar.cg
         palette.appearanceChanged()
+        find.appearanceChanged()
         contentsThumb.refresh()
         tabsThumb.refresh()
         placeFooter()

@@ -42,7 +42,7 @@ debug = "line-tables-only"
 [dev-dependencies]
 recto-testpdf = { path = "../recto-testpdf" }
 
-# distillPDF pins lopdf `0e89b89`; RectoPDF's crates are on `598e61f`, the append writer's clone on the streaming rewrite. One lopdf here, as `tests/lockfile.rs` holds: distillPDF's is
+# distillPDF pins lopdf `0e89b89`; RectoPDF's crates are on `e5f4971`, the fork's `main`. One lopdf here, as `tests/lockfile.rs` holds: distillPDF's is
 # taken to the app's commit. The URL names `www.github.com`, which GitHub sends on to the same repository, because Cargo won't patch a source to itself.
 [patch."https://github.com/kkollsga/lopdf.git"]
-lopdf = { git = "https://www.github.com/kkollsga/lopdf.git", rev = "598e61f6869a04d27b4990c4cc9648e5bf62f0f3" }
+lopdf = { git = "https://www.github.com/kkollsga/lopdf.git", rev = "e5f497163b364fae5217f9b1288ccacd39a9870a" }

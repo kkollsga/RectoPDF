@@ -219,6 +219,8 @@ pub(crate) fn host_word(action: HostAction) -> &'static str {
         HostAction::ShowSavePanel => "show_save_panel",
         HostAction::ConfirmClose => "confirm_close",
         HostAction::FocusPalette => "focus_palette",
+        HostAction::FocusFind => "focus_find",
+        HostAction::ShowGoTo => "show_go_to",
     }
 }
 

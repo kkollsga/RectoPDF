@@ -354,7 +354,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 [[package]]
 name = "lopdf"
 version = "0.47.0"
-source = "git+https://github.com/kkollsga/lopdf.git?rev=598e61f6869a04d27b4990c4cc9648e5bf62f0f3#598e61f6869a04d27b4990c4cc9648e5bf62f0f3"
+source = "git+https://github.com/kkollsga/lopdf.git?rev=e5f497163b364fae5217f9b1288ccacd39a9870a#e5f497163b364fae5217f9b1288ccacd39a9870a"
 dependencies = [
  "aes",
  "bitflags",

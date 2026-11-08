@@ -16,6 +16,8 @@
 # The queue (tools/sysguard/heavy.sh) refuses to run a check again on code that hasn't changed since it failed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# A check never signs with the owner's identity or raises a keychain prompt: every build and test in it signs ad hoc, whatever this shell has set.
+unset RECTO_SIGN_IDENTITY
 usage() { sed -n '2,10p' "$0"; exit 2; }
 mode=""
 why=""
@@ -66,10 +68,14 @@ code_fingerprint() {
   } | shasum | cut -d' ' -f1
 }
 tree_is_clean() { [ -z "$(git status --porcelain)" ]; }
+# The commit a run tested goes to the push guard, not whatever HEAD is by the end.
 stamp_checked() {
-  local head
-  head=$(git rev-parse HEAD)
-  [ "$(tail -1 "$checked" 2>/dev/null)" = "$head" ] || echo "$head" >> "$checked"
+  local commit=${1:-$(git rev-parse HEAD)}
+  [ "$(tail -1 "$checked" 2>/dev/null)" = "$commit" ] || echo "$commit" >> "$checked"
+}
+# Only documents (the guard's filter) changed from a commit to HEAD, which descends from it.
+docs_only_since() {
+  git merge-base --is-ancestor "$1" HEAD 2>/dev/null && [ -z "$(git diff --name-only "$1" HEAD | grep -vE '^docs/|\.md$')" ]
 }
 branch=$(git symbolic-ref --short -q HEAD || echo detached)
 
@@ -256,13 +262,15 @@ case "$status" in
   130|137|143) result=stopped ;;
   *) result="fail:$(tail -1 "$check_mark")" ;;
 esac
-# Only a commit that passed, with nothing uncommitted from start to end, counts for the push guard.
+# Only a commit that passed, with nothing uncommitted from start to end, counts for the push guard. A commit of documents only made while it ran (the
+# coordinator writing up while a check runs) doesn't undo that: the code tested is still the started commit's, and that's the commit stamped.
 ledger_commit="$started_commit+dirty"
-if [ -n "$started_state" ] && [ "$started_state" = "$(code_state)" ] && tree_is_clean; then
+started_clean=$(printf '%s\n' "$started_commit" | shasum | cut -d' ' -f1)
+if [ -n "$started_state" ] && tree_is_clean && { [ "$started_state" = "$(code_state)" ] || { [ "$started_state" = "$started_clean" ] && docs_only_since "$started_commit"; }; }; then
   ledger_commit=$started_commit
   if [ "$result" = pass ]; then
     printf '%s\t%s\t%s\n' "$(code_fingerprint)" "$started_commit" "$(date '+%Y-%m-%d %H:%M')" >> "$passes"
-    stamp_checked
+    stamp_checked "$started_commit"
   fi
 fi
 printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "$branch" "$ledger_commit" "$result" "$(($(date +%s) - started))" "${why:--}" >> "$ledger"

@@ -6,6 +6,7 @@ use crate::guard::{Budget, within};
 use crate::input::Take;
 use crate::targets::DocOnly;
 use recto_agent::{Level, parse, run};
+use recto_core::nav::page_links_bytes;
 use recto_core::{DocFacts, MAX_SIGNATURES, MAX_TITLE_BYTES, MAX_TOC_DEPTH, MAX_TOC_ENTRIES, NONE, SignatureInventory, SignatureState, clean_line, clean_text, inspect_bytes, is_invisible_format, signatures_in_bytes};
 use recto_session::Session;
 use std::path::Path;
@@ -34,6 +35,36 @@ pub fn check_save(data: &[u8]) {
         let _ = recto_core::save::plan_in_memory(&plain, &hostile);
         let _ = recto_core::save::plan_in_memory(&hostile, &plain);
     });
+    // The rewrite: a delete in a hostile file, with and without pages added, and hostile pages added to a plain file. What it writes passes the fork's verify, or it refuses.
+    within("planning and writing a rewrite", BUDGET, || {
+        let _ = recto_core::save::rewrite_in_memory(&hostile, &plain, false);
+        let _ = recto_core::save::rewrite_in_memory(&hostile, &plain, true);
+        let _ = recto_core::save::rewrite_in_memory(&plain, &hostile, true);
+    });
+    // A form's pages added to a hostile file's form, and a hostile file's added to a form; the signature rules a save decides by; and the kept copy's rewrite.
+    let form = form_pdf();
+    within("merging forms, the signature rules and a kept copy", BUDGET, || {
+        let _ = recto_core::save::plan_in_memory(&hostile, &form);
+        let _ = recto_core::save::plan_in_memory(&form, &hostile);
+        let pages: Vec<u32> = data.iter().take(8).map(|byte| u32::from(*byte % 16)).collect::<std::collections::BTreeSet<u32>>().into_iter().collect();
+        let _ = recto_core::save::signatures_and_keep_in_memory(&hostile, &pages);
+    });
+}
+
+/// A small PDF with a form whose field's widgets are on its page, a field chain, a signature widget, and fonts in its form's resources.
+fn form_pdf() -> Vec<u8> {
+    use recto_testpdf::Object as Raw;
+    recto_testpdf::build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R 8 0 R] /DR << /Font << /Helv 7 0 R >> >> /SigFlags 3 >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [6 0 R 8 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: b"BT /F1 12 Tf 10 10 Td (form) Tj ET".to_vec() },
+        Raw::Dict("<< /T (topmostSubform[0]) /Kids [6 0 R] >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Widget /FT /Tx /T (f1) /V (value) /Rect [0 0 50 20] /Parent 5 0 R >>".into()),
+        Raw::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Widget /FT /Sig /T (Sig) /V 9 0 R /Rect [0 0 50 20] >>".into()),
+        Raw::Dict("<< /Type /Sig /ByteRange [0 1 2 3] /Contents <00> >>".into()),
+    ])
 }
 
 fn read(bytes: &[u8]) {
@@ -42,6 +73,9 @@ fn read(bytes: &[u8]) {
         if let Ok(facts) = inspect_bytes(Arc::clone(&shared)) {
             assert_facts_hold(&facts, bytes.len() as u64);
             through_the_session(facts);
+        }
+        if let Ok(read) = page_links_bytes(Arc::clone(&shared), &[0, 1, 2, 7, u32::MAX]) {
+            assert_links_hold(&read);
         }
         if let Ok(inventory) = signatures_in_bytes(shared) {
             assert_inventory_holds(&inventory, bytes.len() as u64);
@@ -71,6 +105,33 @@ fn assert_facts_hold(facts: &DocFacts, file_bytes: u64) {
     for page in [0, facts.page_count / 2, u32::MAX] {
         if let Some(found) = toc.section_at(page) {
             assert!(found < toc.entries().len());
+        }
+        if let Some(label) = toc.labels.label(page) {
+            assert!(label.len() <= recto_core::nav::MAX_LABEL_BYTES, "{} bytes", label.len());
+            assert!(!label.chars().any(|c| is_invisible_format(c) || c.is_control()), "{label:?}");
+            assert!(toc.labels.find(&label, facts.page_count).is_none_or(|found| found < facts.page_count.max(1)));
+        }
+    }
+    assert!(toc.labels.ranges().len() <= recto_core::nav::MAX_LABEL_RANGES);
+}
+
+/// Links: within their caps, boxes real, addresses only of the kinds that may be offered, and a page a link goes to one there is.
+fn assert_links_hold(read: &[(u32, recto_core::nav::PageLinks)]) {
+    use recto_core::nav::{LinkTarget, MAX_PAGE_LINKS, MAX_PAGES_PER_READ, MAX_URI_BYTES};
+    assert!(read.len() <= MAX_PAGES_PER_READ);
+    for (_, links) in read {
+        assert!(links.links.len() <= MAX_PAGE_LINKS);
+        for link in &links.links {
+            assert!(link.rect.iter().all(|edge| edge.is_finite()) && link.rect[2] > link.rect[0] && link.rect[3] > link.rect[1], "{:?}", link.rect);
+            match &link.target {
+                LinkTarget::Web(address) => {
+                    assert!(address.len() <= MAX_URI_BYTES && address.bytes().all(|b| b.is_ascii_graphic()), "{address:?}");
+                    let lower = address.to_ascii_lowercase();
+                    assert!(lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:"), "{address:?}");
+                }
+                LinkTarget::Page { within, .. } => assert!(within.is_none_or(|within| (0.0..=1.0).contains(&within))),
+                _ => {}
+            }
         }
     }
 }
@@ -128,9 +189,9 @@ pub fn build_tree(data: &[u8]) -> Vec<u8> {
         take.pick(TEXTS).to_string()
     }
     let mut objects = Vec::with_capacity(count);
-    objects.push(recto_testpdf::Object::Dict(format!("<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R /Names 4 0 R /Dests {} /AcroForm 5 0 R /Perms 6 0 R >>", reference(&mut take, count))));
+    objects.push(recto_testpdf::Object::Dict(format!("<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R /Names 4 0 R /Dests {} /AcroForm 5 0 R /Perms 6 0 R /PageLabels {} >>", reference(&mut take, count), reference(&mut take, count))));
     while objects.len() < count {
-        let which = if objects.len() < 6 { objects.len() as u8 - 1 } else { take.u8() % 11 };
+        let which = if objects.len() < 6 { objects.len() as u8 - 1 } else { take.u8() % 12 };
         let object = match which {
             0 | 6 => recto_testpdf::Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {} /Parent {} >>", references(&mut take, count), take.pick(NUMBERS), reference(&mut take, count))),
             1 | 7 => {
@@ -147,7 +208,20 @@ pub fn build_tree(data: &[u8]) -> Vec<u8> {
             2 | 8 => recto_testpdf::Object::Dict(format!("<< /Dests {} /Kids [{}] /Names [{} {}] /Limits [{} {}] >>", reference(&mut take, count), references(&mut take, count), text(&mut take), reference(&mut take, count), text(&mut take), text(&mut take))),
             3 => recto_testpdf::Object::Dict(format!("<< /Fields [{}] >>", references(&mut take, count))),
             4 => recto_testpdf::Object::Dict(format!("<< /DocMDP {} >>", reference(&mut take, count))),
-            5 => recto_testpdf::Object::Dict(format!("<< /Type /Page /Parent {} /MediaBox [0 0 {} {}] >>", reference(&mut take, count), take.pick(NUMBERS), take.pick(NUMBERS))),
+            5 => recto_testpdf::Object::Dict(format!("<< /Type /Page /Parent {} /MediaBox [0 0 {} {}] /CropBox [{} {} {} {}] /Rotate {} /Annots {} >>", reference(&mut take, count), take.pick(NUMBERS), take.pick(NUMBERS), take.pick(NUMBERS), take.pick(NUMBERS), take.pick(NUMBERS), take.pick(NUMBERS), take.pick(NUMBERS), if take.u8() % 2 == 0 { format!("[{}]", references(&mut take, count)) } else { reference(&mut take, count) })),
+            10 => {
+                // A link, or a node of a page-label tree: what links and labels read.
+                let action = match take.u8() % 8 {
+                    0 => format!("/Dest [{} /XYZ {} {} 0]", reference(&mut take, count), take.pick(NUMBERS), take.pick(NUMBERS)),
+                    1 => format!("/Dest {}", text(&mut take)),
+                    2 => format!("/A << /S /URI /URI {} >>", take.pick(&["(https://example.com)", "(javascript:x)", "(file:///x)", "<6874747073>", "()"])),
+                    3 => format!("/A << /S /Named /N {} >>", take.pick(&["/NextPage", "/PrevPage", "/LastPage", "/GoBack", "/Print"])),
+                    4 => format!("/A << /S /GoTo /D {} >>", reference(&mut take, count)),
+                    5 => format!("/A {}", reference(&mut take, count)),
+                    _ => format!("/Nums [{} << /S {} /P {} /St {} >>] /Kids [{}]", take.pick(NUMBERS), take.pick(&["/D", "/r", "/R", "/a", "/A", "/X"]), text(&mut take), take.pick(NUMBERS), references(&mut take, count)),
+                };
+                recto_testpdf::Object::Dict(format!("<< /Subtype /Link /Rect [{} {} {} {}] {action} >>", take.pick(NUMBERS), take.pick(NUMBERS), take.pick(NUMBERS), take.pick(NUMBERS)))
+            }
             9 => recto_testpdf::Object::Dict(format!(
                 "<< /FT {} /T {} /V {} /P {} /Kids {} >>",
                 take.pick(&["/Sig", "/Sig", "/Tx", "3 0 R"]),

@@ -1,11 +1,14 @@
-//! A worker drawing straight into a surface the host made: the path the app's pages take, on the real worker.
+//! A worker drawing straight into a surface the host made: the path the app's pages take, on the real worker, or the one `RECTO_TEST_WORKER` names.
 
+mod common;
+
+use common::real_config;
 use recto_platform::surface::PixelSurface;
-use recto_render_service::{DocRenderer, Policy, ServiceConfig, Surface, TILE_EDGE, TileRect, TileRequest, TileResult};
+use recto_render_service::{DocRenderer, Policy, Surface, TILE_EDGE, TileRect, TileRequest, TileResult};
 use recto_testpdf::{Page, TempPdf, busy_page, pages, text_lines};
 
 fn doc(file: &TempPdf) -> DocRenderer {
-    DocRenderer::new(&file.0, None, ServiceConfig::discover().unwrap(), Policy::default()).unwrap()
+    DocRenderer::new(&file.0, None, real_config(), Policy::default()).unwrap()
 }
 
 fn tile_rect() -> TileRect {
@@ -123,7 +126,7 @@ fn a_worker_sent_too_much_is_let_go() {
     let file = TempPdf::new("pinned.pdf", &pages(&[Page::new(text_lines(&["Words"]))]));
     let surface = PixelSurface::create(TILE_EDGE, TILE_EDGE).unwrap();
     let policy = Policy { surface_bytes_cap: surface.len() as u64 * 3, ..Policy::default() };
-    let mut doc = DocRenderer::new(&file.0, None, ServiceConfig::discover().unwrap(), policy).unwrap();
+    let mut doc = DocRenderer::new(&file.0, None, real_config(), policy).unwrap();
     let mut workers = std::collections::HashSet::new();
     for generation in 1..=16 {
         let request = TileRequest { page: 0, rect: tile_rect(), scale: 2.0, stride: surface.stride(), generation };

@@ -139,6 +139,19 @@ class MarginLabel: NSView {
     }
 }
 
+/// The page number in the corner, which opens the go-to field when it's clicked.
+final class ClickableLabel: MarginLabel {
+    var clicked: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        clicked?()
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+}
+
 /// What a copy has to say, in the margin with the other labels. It's a label, with a button if there's something to choose.
 final class CopyNotice: MarginLabel {
     let button = NSButton(title: "", target: nil, action: nil)
@@ -235,7 +248,16 @@ final class BookMark: NSView {
     private(set) var zoomEditing = false
     private var zoomLabel: ZoomLabel?
     let noteLabel = MarginLabel()
-    let placeLabel = MarginLabel()
+    /// The page number, always in the lower right. Clicked, it opens the go-to field, as the zoom level opens its own.
+    let placeLabel = ClickableLabel()
+    /// Where the link under the pointer goes, in Rust's words, in the lower left of its pane, as a browser shows it.
+    let linkHint = MarginLabel()
+    private var linkHintPane: PageArea?
+    /// The go-to field: a page number, or what the document calls a page, such as iv. Rust reads it.
+    let pageField = NSTextField(string: "")
+    private(set) var pageEditing = false
+    /// The sheet asking before a link's address opens, so the same one isn't shown twice.
+    private var promptShowing: LinkPrompt?
     let copyNotice = CopyNotice()
     private var noticeFade: Timer?
     private var shownNotice: SelectionNotice?
@@ -299,6 +321,8 @@ final class BookMark: NSView {
         root.addSubview(agentIcon)
         root.addSubview(noteLabel)
         root.addSubview(placeLabel)
+        root.addSubview(linkHint)
+        root.addSubview(pageField)
         root.addSubview(copyNotice)
         root.addSubview(sidebarButton)
         root.addSubview(saveButton)
@@ -327,6 +351,18 @@ final class BookMark: NSView {
         agentIcon.toolTip = delegate.strings.agentTooltip
         noteLabel.isHidden = true
         placeLabel.isHidden = true
+        linkHint.isHidden = true
+        placeLabel.clicked = { [weak self] in self?.startPageEditing() }
+        pageField.font = Self.zoomFont
+        pageField.alignment = .center
+        pageField.bezelStyle = .roundedBezel
+        pageField.controlSize = .small
+        pageField.target = self
+        pageField.action = #selector(pageTyped)
+        pageField.cell?.sendsActionOnEndEditing = false
+        pageField.delegate = self
+        pageField.isHidden = true
+        pages.linkHintChanged = { [weak self, weak pages] hint in self?.showLinkHint(hint, in: pages) }
         buildHome()
         sidebar.addPressed = { [weak delegate] in delegate?.openDocument(nil) }
         sidebar.performAction = { [weak delegate] id in delegate?.perform(id) }
@@ -395,14 +431,21 @@ final class BookMark: NSView {
         sidebar.palette.refresh()
     }
 
-    /// Gives the keyboard to what's named. There's no Find field yet, so that's only kept.
+    /// Gives the keyboard to what's named: the page, the sidebar, or Find's field if Find is open.
     func applyFocus(_ view: String) {
         switch view {
         case "sidebar": window.makeFirstResponder(sidebar.table)
         case "page": window.makeFirstResponder(root)
+        case "find" where sidebar.find.model.open: sidebar.find.focusField()
         default: break
         }
         delegate.core.focusChanged(view: view)
+    }
+
+    /// ⌘F: Find's field takes the keyboard. Rust is opening Find, and showing the sidebar if it was hidden: the field takes it as soon as it's there, now if it already is.
+    func focusFind() {
+        sidebar.find.wantsFocus = true
+        if sidebar.find.model.open { sidebar.find.focusField() }
     }
 
     private func firstResponderChanged() {
@@ -412,8 +455,14 @@ final class BookMark: NSView {
             endZoomEditing()
             return
         }
+        if pageEditing, responder === root || responder === sidebar.table || responder === sidebar.contentsTable {
+            endPageEditing()
+            return
+        }
         if responder === sidebar.table || responder === sidebar.contentsTable {
             delegate.core.focusChanged(view: "sidebar")
+        } else if let editor = responder as? NSTextView, editor.delegate === sidebar.find.field {
+            delegate.core.focusChanged(view: "find")
         } else if responder === root || responder === window {
             delegate.core.focusChanged(view: "page")
         }
@@ -560,6 +609,7 @@ final class BookMark: NSView {
             let area = PageArea(core: delegate.core, limits: delegate.limits, isQuiet: delegate.isQuiet, pane: UInt32(paneAreas.count))
             area.zoomChanged = { [weak self] in self?.updateZoomLevel() }
             area.marginChanged = { [weak self] in self?.relayoutMargin() }
+            area.linkHintChanged = { [weak self, weak area] hint in self?.showLinkHint(hint, in: area) }
             area.scrollView.backgroundColor = Theme.margin.ns
             root.addSubview(area.scrollView, positioned: .above, relativeTo: paneAreas.last?.scrollView)
             let edge = NSView()
@@ -605,12 +655,16 @@ final class BookMark: NSView {
         var bottom = NSPoint(x: area.maxX - 16, y: area.maxY - 16)
         // Owner, 2026-11-07: "The page number should always be visible in the lower right." In the margin's corner, quiet, over the page only when a page fills the width there.
         if !reader.home {
-            placeLabel.isHidden = false
+            placeLabel.isHidden = pageEditing
             placeLabel.place(text: reader.place, maxWidth: 160, bottomRight: bottom)
+            window.invalidateCursorRects(for: placeLabel)
+            let fieldWidth = max(placeLabel.frame.width, 72)
+            pageField.frame = NSRect(x: placeLabel.frame.maxX - fieldWidth, y: placeLabel.frame.midY - 11, width: fieldWidth, height: 22).integral
             bottom.y = placeLabel.frame.minY - 8
         } else {
             placeLabel.isHidden = true
         }
+        layoutLinkHint()
         if let note = reader.note {
             noteLabel.isHidden = false
             noteLabel.place(text: note, maxWidth: marginWidth - 24, bottomRight: bottom)
@@ -623,6 +677,79 @@ final class BookMark: NSView {
             copyNotice.placeWithAction(text: notice.text, action: notice.actionTitle, maxWidth: marginWidth - 24, bottomRight: bottom)
         } else {
             copyNotice.isHidden = true
+        }
+    }
+
+    /// Where the link under the pointer goes, shown in the lower left of the pane it's in, above a comparison's pane label. Gone off a link.
+    private func showLinkHint(_ hint: String?, in pane: PageArea?) {
+        linkHintPane = hint == nil ? nil : pane
+        layoutLinkHint()
+    }
+
+    private func layoutLinkHint() {
+        guard let pane = linkHintPane, let hint = pane.linkHint, !reader.home else {
+            linkHint.isHidden = true
+            return
+        }
+        let frame = pane.scrollView.frame
+        let index = paneAreas.firstIndex { $0 === pane } ?? 0
+        let above = index < paneLabels.count && !paneLabels[index].isHidden ? paneLabels[index].frame.minY - 8 : frame.maxY - 16
+        linkHint.isHidden = false
+        linkHint.place(text: hint, maxWidth: min(frame.width - 140, 520), bottomRight: NSPoint(x: frame.minX + 16, y: above))
+        // Laid out from its left: `place` puts its bottom right at the point.
+        linkHint.frame.origin.x = frame.minX + 16
+    }
+
+    /// The go-to field opens over the page number, with the page being read in it to type over.
+    func startPageEditing() {
+        guard !reader.home, window.attachedSheet == nil else { return }
+        let field = delegate.core.pageField()
+        pageEditing = true
+        pageField.stringValue = field.editingText
+        pageField.toolTip = field.tooltip
+        placeLabel.isHidden = true
+        pageField.isHidden = false
+        window.makeFirstResponder(pageField)
+        pageField.selectText(nil)
+    }
+
+    /// Return in the go-to field: Rust finds the page by its label or number, or says there's none by that.
+    @objc private func pageTyped() {
+        guard pageEditing else { return }
+        _ = delegate.core.pageTyped(text: pageField.stringValue)
+        endPageEditing()
+    }
+
+    func endPageEditing() {
+        guard pageEditing else { return }
+        pageEditing = false
+        pageField.isHidden = true
+        placeLabel.isHidden = reader.home
+        if window.firstResponder === pageField.currentEditor() || window.firstResponder === pageField { window.makeFirstResponder(root) }
+    }
+
+    /// A click on a web or email link asks first, on the system's sheet, in Rust's words with the real address in full. Only Open hands the address to the system; a quiet run notes it and opens nothing.
+    private func showLinkPromptIfAny() {
+        guard let prompt = reader.linkPrompt else {
+            promptShowing = nil
+            return
+        }
+        guard promptShowing != prompt, window.attachedSheet == nil else { return }
+        promptShowing = prompt
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = prompt.title
+        alert.informativeText = prompt.message
+        alert.addButton(withTitle: prompt.openTitle)
+        alert.addButton(withTitle: prompt.cancelTitle)
+        let core = delegate.core
+        core.sheetChanged(open: true)
+        delegate.sheetShowing = ["kind": "link_prompt", "message": prompt.title, "informative": prompt.message, "buttons": [prompt.openTitle, prompt.cancelTitle], "address": prompt.address]
+        alert.beginSheetModal(for: window) { [weak self] response in
+            core.sheetChanged(open: false)
+            self?.delegate.sheetShowing = nil
+            guard let address = core.linkPromptAnswered(id: prompt.id, open: response == .alertFirstButtonReturn) else { return }
+            self?.delegate.openAddress(address)
         }
     }
 
@@ -729,7 +856,7 @@ final class BookMark: NSView {
     /// The Save icon: there while the document showing has unsaved edits, greyed while it's being saved, with Rust's words for what it's doing.
     private func updateSaveButton() {
         saveButton.isHidden = !reader.saveButton
-        saveButton.isEnabled = !reader.saving
+        saveButton.isEnabled = reader.saveEnabled
         saveButton.toolTip = reader.saveTooltip
         saveButton.setAccessibilityLabel(reader.saveTooltip)
     }
@@ -865,6 +992,8 @@ final class BookMark: NSView {
         window.isDocumentEdited = reader.edited
         updateSaveButton()
         showSaveProblemIfAny()
+        showLinkPromptIfAny()
+        if reader.home { endPageEditing() }
         if reader.home { endZoomEditing() }
         updateZoomLevel()
         layout()
@@ -889,7 +1018,7 @@ final class BookMark: NSView {
         // A pane's label takes its colour from whether it's read, when it's laid out.
         for label in paneLabels + paneNotes { label.layer?.backgroundColor = Theme.pill.cg }
         if paneLabels.contains(where: { !$0.isHidden }) { layout() }
-        for label in [noteLabel, placeLabel, copyNotice as MarginLabel] {
+        for label in [noteLabel, placeLabel, linkHint, copyNotice as MarginLabel] {
             label.layer?.backgroundColor = Theme.pill.cg
             if !label.label.text.isEmpty { label.label.set(label.label.text, font: .systemFont(ofSize: 11.5), color: Theme.textBody.ns, wraps: true) }
         }
@@ -897,15 +1026,21 @@ final class BookMark: NSView {
 
     /// Escape in the zoom level's field leaves it as it was.
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        guard control === zoomField, selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        if control === pageField {
+            endPageEditing()
+            return true
+        }
+        guard control === zoomField else { return false }
         endZoomEditing()
         return true
     }
 
     /// Going somewhere else with the field open, by Tab or a click, leaves the level as it was, as Escape does. A quiet run's window can't hold the keyboard, so there the field stays open until QA says what's typed.
     func controlTextDidEndEditing(_ notification: Notification) {
-        guard (notification.object as? NSTextField) === zoomField, zoomEditing, window.canBecomeKey else { return }
         let movement = (notification.userInfo?["NSTextMovement"] as? Int).flatMap(NSTextMovement.init(rawValue:))
+        if (notification.object as? NSTextField) === pageField, pageEditing, window.canBecomeKey, movement != .return { endPageEditing() }
+        guard (notification.object as? NSTextField) === zoomField, zoomEditing, window.canBecomeKey else { return }
         if movement != .return { endZoomEditing() }
     }
 

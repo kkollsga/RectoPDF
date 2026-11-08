@@ -4,9 +4,11 @@
 //! This crate holds no state of its own. A caller brings a session through [`SessionAccess`], and [`execute`] takes the session only for as long as each step needs it: reading a file or drawing
 //! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
+pub mod find;
 pub mod generated;
 pub mod human;
 pub mod index;
+pub mod linking;
 mod loader;
 mod reading;
 pub mod saving;
@@ -148,10 +150,35 @@ pub enum Command {
         #[serde(default = "active_tab")]
         tab: String,
     },
+    /// A jump to a page, by its number or by what the file calls it. Back comes here again.
     Goto {
         #[serde(default = "active_tab")]
         tab: String,
+        #[serde(default)]
+        page: Option<u32>,
+        #[serde(default)]
+        label: Option<String>,
+    },
+    /// A page's links, and where each goes.
+    Links {
+        #[serde(default = "active_tab")]
+        tab: String,
         page: u32,
+    },
+    /// Follows a link within the document, as a click does. Never a web address.
+    Follow {
+        #[serde(default = "active_tab")]
+        tab: String,
+        page: u32,
+        link: u32,
+    },
+    Back {
+        #[serde(default = "active_tab")]
+        tab: String,
+    },
+    Forward {
+        #[serde(default = "active_tab")]
+        tab: String,
     },
     Close {
         #[serde(default = "active_tab")]
@@ -178,6 +205,19 @@ pub enum Command {
         query: Option<String>,
         #[serde(default)]
         run: bool,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// The app's Find, in the document being read: a query, a step to the next or previous hit, or closing. With nothing, only says.
+    Find {
+        #[serde(default)]
+        query: Option<String>,
+        #[serde(default)]
+        next: bool,
+        #[serde(default)]
+        previous: bool,
+        #[serde(default)]
+        close: bool,
         #[serde(default)]
         limit: Option<u32>,
     },
@@ -533,11 +573,16 @@ impl Command {
             Self::Sidebar {} => "sidebar",
             Self::Tap { .. } => "tap",
             Self::Goto { .. } => "goto",
+            Self::Links { .. } => "links",
+            Self::Follow { .. } => "follow",
+            Self::Back { .. } => "back",
+            Self::Forward { .. } => "forward",
             Self::Close { .. } => "close",
             Self::Budget {} => "budget",
             Self::View { .. } => "view",
             Self::Compare { .. } => "compare",
             Self::Palette { .. } => "palette",
+            Self::Find { .. } => "find",
             Self::QaRead { .. } => "qa_read",
             Self::QaDrive { .. } => "qa_drive",
             Self::Render { .. } => "render",
@@ -622,7 +667,11 @@ impl Command {
             Self::PageInsert { tab, path, at } => json!({ "tab": tab_of(tab), "at": at, "untrusted": file(path) }),
             Self::Save { tab, out: Some(out), replace } => json!({ "tab": tab_of(tab), "replace": replace, "untrusted": file(out) }),
             Self::Render { tab, page, out, .. } | Self::ExportSvg { tab, page, out, .. } => json!({ "tab": tab_of(tab), "page": page, "untrusted": file(out) }),
-            Self::Text { tab, page } | Self::Goto { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
+            Self::Text { tab, page } | Self::Links { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
+            // A label is from the file, so it isn't kept: only that one was asked for.
+            Self::Goto { tab, page, label } => json!({ "tab": tab_of(tab), "page": page, "by_label": label.is_some() }),
+            Self::Follow { tab, page, link } => json!({ "tab": tab_of(tab), "page": page, "link": link }),
+            Self::Back { tab } | Self::Forward { tab } => json!({ "tab": tab_of(tab) }),
             // Which pages, and not where on them or what's there.
             Self::Select { tab, page, to_page, all, anyway, .. } | Self::Copy { tab, page, to_page, all, anyway, .. } => json!({ "tab": tab_of(tab), "page": page, "to_page": to_page, "all": all, "anyway": anyway }),
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
@@ -636,6 +685,8 @@ impl Command {
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
             Self::Compare { sync, off, .. } => json!({ "sync": sync.as_deref().map(recto_core::clean_line), "off": off }),
             Self::Palette { query, run, .. } => json!({ "query": query.as_deref().map(recto_core::clean_line), "run": run }),
+            // Not what's looked for: that's the document's business, as a search's words are.
+            Self::Find { query, next, previous, close, .. } => json!({ "query": query.is_some(), "next": next, "previous": previous, "close": close }),
             Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} | Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall {} => Value::Null,
         }
     }
@@ -645,12 +696,12 @@ impl Command {
     /// The selector this command acts on, if it has one.
     /// Whether it reads what's on a tab's pages, which a tab's edits say.
     fn reads_pages(&self) -> bool {
-        matches!(self, Self::Text { .. } | Self::Render { .. } | Self::ExportSvg { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::Index { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. })
+        matches!(self, Self::Text { .. } | Self::Render { .. } | Self::ExportSvg { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::Index { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. } | Self::Links { .. } | Self::Follow { .. })
     }
 
     fn tab_selector(&self) -> Option<&str> {
         match self {
-            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab, .. } | Self::Wait { tab, .. } => Some(tab),
+            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Links { tab, .. } | Self::Follow { tab, .. } | Self::Back { tab } | Self::Forward { tab } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab, .. } | Self::Wait { tab, .. } => Some(tab),
             _ => None,
         }
     }
@@ -726,7 +777,11 @@ fn next_step(code: &str, exit: i32) -> &'static str {
         "not_built" => "Tell the user this isn't in this version yet.",
         "too_large_at_this_scale" => "Try a smaller `--scale`. 2 is twice the page's size, and 1 is its own.",
         "page_too_large_to_read" => "Tell the user this page can't be read. The rest of the document may be fine.",
-        "render_worker_missing" => "Tell the user RectoPDF's install is incomplete: `recto-render-service` must be in the same folder as `recto`. In a source tree, `cargo build --workspace` builds both, which `cargo build -p recto-cli` doesn't.",
+        "render_worker_missing" => "Tell the user RectoPDF's install is incomplete: `recto-render-service` must be in the app's `Contents/Helpers/RectoRender.app`, or in a source tree in the same folder as `recto`. There, `cargo build --workspace` builds both, which `cargo build -p recto-cli` doesn't.",
+        "renderer_not_sandboxed" => "Tell the user this copy of RectoPDF is signed wrong, so its renderer refuses to read any PDF. Installing a release again fixes it. In a source tree, `app/build.sh` signs the helper as it should be.",
+        "renderer_inside_another_sandbox" => "Run `recto` outside the sandbox it's in, or ask the user to: the renderer can't start inside another sandbox. Nothing needs reinstalling.",
+        "renderer_mach_drop_failed" | "renderer_launchd_reachable" => "Tell the user RectoPDF's renderer can't close itself off on this version of macOS, so it won't read PDFs here, and give them this code and their macOS version to report. Nothing needs reinstalling.",
+        "renderer_start_refused" => "Tell the user macOS refused to start RectoPDF's renderer. A security tool, or a sandbox `recto` runs in, may be blocking it.",
         "render_library_missing" => "Tell the user RectoPDF's install is incomplete. In a source tree, `tools/pdfium.sh` fetches the library.",
         "bad_command" => "`recto help` lists every command.",
         "bad_path" => "Give the whole path. `recto` does this for you.",
@@ -873,6 +928,10 @@ pub trait SessionAccess {
     fn generating(&self) -> Option<&dyn generated::Generating> {
         None
     }
+    /// How Find runs in the background here, if it does. Without it, `recto find` finds in the command itself.
+    fn finding(&self) -> Option<&dyn find::Finding> {
+        None
+    }
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {
@@ -1002,12 +1061,18 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             Ok(sidebar_json(s))
             })
         }
-        Command::Goto { tab, page } => access.with(|s| {
+        Command::Goto { tab, page: Some(page), label: None } => access.with(|s| {
             let id = select(s, tab)?;
             go_to(s, id, *page)?;
             events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page })));
             Ok(where_json(s, id))
         }),
+        Command::Goto { tab, page: None, label: Some(label) } => linking::goto_label(access, tab, label, events),
+        Command::Goto { .. } => Err(AgentError::new("usage", "`goto` takes a page number, or `goto label` what the file calls a page, and not both.", exit::USAGE).then("`recto goto 12`, or `recto goto label iv`.")),
+        Command::Links { tab, page } => linking::links(access, tab, *page),
+        Command::Follow { tab, page, link } => linking::follow(access, tab, *page, *link, events),
+        Command::Back { tab } => linking::step(access, tab, true, events),
+        Command::Forward { tab } => linking::step(access, tab, false, events),
         Command::Close { tab } => {
             // What would refuse it comes first: no reading a file for a close that won't happen.
             let id = access.with(|s| {
@@ -1071,6 +1136,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
         }),
         Command::Compare { tabs, sync, off } => compare(access, tabs.as_deref(), sync.as_deref(), *off, events),
         Command::Palette { .. } => Err(AgentError::new("palette_needs_app", "The palette lists the app's commands, and this session has no app.", exit::FAILED).then("It works when `recto` is talking to the app.")),
+        Command::Find { query, next, previous, close, limit } => find::command(access, &find::Asked { query: query.as_deref(), next: *next, previous: *previous, close: *close, limit: *limit }, events),
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. } => Err(update_needs_app()),
         Command::Budget {} => Ok(json!({
@@ -1082,7 +1148,11 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
         Command::Facts { tab } => reading::facts(access, tab),
         Command::Contents { tab, from, limit, depth, generated } => reading::contents(access, tab, *from, *limit, *depth, *generated),
         Command::Signatures { tab } => reading::signatures(access, tab),
-        Command::Search { tab, query, pages, limit, scan, regex, rank, context } => search::search(access, &search::Asked { tab, query, pages: pages.as_deref(), limit: *limit, scan: *scan, regex: *regex, rank: *rank, context: *context }),
+        Command::Search { tab, query, pages, limit, scan, regex, rank, context } => {
+            let mut answer = search::search(access, &search::Asked { tab, query, pages: pages.as_deref(), limit: *limit, scan: *scan, regex: *regex, rank: *rank, context: *context })?;
+            label_hits(access, tab, &mut answer);
+            Ok(answer)
+        }
         Command::Index { tab, agent } => index::index(access, tab, true, *agent),
         Command::IndexStatus { tab } => index::index(access, tab, false, false),
         Command::IndexClear { tab, all } => index::clear(access, tab, *all),
@@ -1432,9 +1502,11 @@ fn open<A: SessionAccess>(access: &A, path: &Path, page: Option<u32>, events: &m
 }
 
 /// Goes to a one-based page. A page that isn't there is refused here rather than clamped, so an agent can't believe it's somewhere it isn't.
+/// `recto goto`: a jump, so Back comes here again, as following a link does.
 fn go_to<L: DocLoader>(session: &mut Session<L>, id: TabId, page: u32) -> Result<(), AgentError> {
     let position = page.checked_sub(1).filter(|position| *position < session.pages_in(id)).ok_or_else(no_such_page)?;
-    session.go_to(id, position)?;
+    // An agent's mark, which gives way to the person's in the trail.
+    session.jump_as(id, position, 0.0, recto_session::Author::Agent)?;
     Ok(())
 }
 
@@ -1762,6 +1834,21 @@ pub fn condition_topics(condition: Condition) -> &'static [&'static str] {
     }
 }
 
+/// Puts each hit's page label on it, under `untrusted` as it's the file's words, where the file calls the page something other than its number, as Find shows it.
+fn label_hits<A: SessionAccess>(access: &A, tab: &str, answer: &mut Value) {
+    access.with(|s| {
+        let Ok(id) = select(s, tab) else { return };
+        if let Some(hits) = answer.get_mut("hits").and_then(Value::as_array_mut) {
+            for hit in hits {
+                let label = hit["page"].as_u64().and_then(|page| u32::try_from(page).ok()).and_then(|page| page.checked_sub(1)).and_then(|position| s.page_label_differs(id, position));
+                if let Some(label) = label {
+                    hit["untrusted"]["label"] = json!(label);
+                }
+            }
+        }
+    });
+}
+
 fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
     let Some(tab) = session.tab(id) else { return Value::Null };
     let edited = session.is_edited(id);
@@ -1769,8 +1856,11 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         "tab": id.0,
         "sel": format!("#{}", id.0),
         "page": tab.page + 1,
+        "has_label": session.page_label_differs(id, tab.page).is_some(),
         "pages": session.pages_in(id),
         "file_pages": tab.page_count,
+        "can_go_back": session.can_go_back_and_forward(id).0,
+        "can_go_forward": session.can_go_back_and_forward(id).1,
         "active": session.active() == Some(id),
         "edited": edited,
         "user_edits_undone": session.has_undone_owner_steps(id),
@@ -1778,7 +1868,7 @@ fn where_json<L: DocLoader>(session: &Session<L>, id: TabId) -> Value {
         "problem": tab.problem.map(recto_core::OpenError::message),
         "note": if edited { Some(UNSAVED_NOTE) } else { session.has_undone_owner_steps(id).then_some(USER_EDITS_UNDONE_NOTE) },
         "file_notice": session.tab_notice(id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(id) })),
-        "untrusted": { "name": &*tab.name },
+        "untrusted": { "name": &*tab.name, "label": session.page_label_differs(id, tab.page) },
     })
 }
 
@@ -1994,7 +2084,11 @@ mod tests {
             Command::Tabs { from: None, limit: None },
             Command::Sidebar {},
             Command::Tap { tab: tab() },
-            Command::Goto { tab: tab(), page: 1 },
+            Command::Goto { tab: tab(), page: Some(1), label: None },
+            Command::Links { tab: tab(), page: 1 },
+            Command::Follow { tab: tab(), page: 1, link: 1 },
+            Command::Back { tab: tab() },
+            Command::Forward { tab: tab() },
             Command::Close { tab: tab() },
             Command::Budget {},
             Command::Compare { tabs: None, sync: None, off: false },
@@ -2010,6 +2104,7 @@ mod tests {
             Command::Facts { tab: tab() },
             Command::Contents { tab: tab(), from: None, limit: None, depth: None, generated: false },
             Command::Search { tab: tab(), query: "x".into(), pages: None, limit: None, scan: false, regex: false, rank: false, context: None },
+            Command::Find { query: Some("x".into()), next: false, previous: false, close: false, limit: None },
             Command::Index { tab: tab(), agent: false },
             Command::Palette { query: Some("zoom".into()), run: false, limit: None },
             Command::IndexStatus { tab: tab() },
@@ -2582,6 +2677,17 @@ mod tests {
         let library = AgentError::from(recto_render_service::RenderFailure::LibraryMissing);
         assert!(library.message.contains("libpdfium.dylib"), "{}", library.message);
         assert!(library.next.contains("tools/pdfium.sh"), "{}", library.next);
+        use recto_render_service::{RenderFailure, WallsDown};
+        let unsandboxed = AgentError::from(RenderFailure::WallsDown(WallsDown::NotSandboxed));
+        assert!(unsandboxed.message.contains("sandbox"), "{}", unsandboxed.message);
+        assert!(unsandboxed.next.contains("signed wrong"), "{}", unsandboxed.next);
+        // Only a helper signed without its sandbox is the install's fault. The rest are about where it runs, and must never send the user to reinstall.
+        for failure in [RenderFailure::WallsDown(WallsDown::InsideAnotherSandbox), RenderFailure::WallsDown(WallsDown::NothingToDrop), RenderFailure::WallsDown(WallsDown::LaunchdReachable), RenderFailure::StartRefused] {
+            let error = AgentError::from(failure);
+            assert!(!error.message.contains("signed wrong") && !error.next.contains("signed wrong"), "{failure:?}: {} / {}", error.message, error.next);
+            assert!(!error.next.starts_with("`recto status`"), "{failure:?} has no next step of its own: {}", error.next);
+        }
+        assert!(AgentError::from(RenderFailure::WallsDown(WallsDown::InsideAnotherSandbox)).message.contains("from inside another sandbox"));
     }
 
     /// Failure: `4-x-` reads as `4-`, or a limit of none is quietly answered with one.
@@ -2602,10 +2708,10 @@ mod tests {
     #[test]
     fn going_past_the_end_is_refused() {
         let mut s = edit_session();
-        let error = run(&mut s, Level::Control, &Command::Goto { tab: "#1".into(), page: 11 }).unwrap_err();
+        let error = run(&mut s, Level::Control, &Command::Goto { tab: "#1".into(), page: Some(11), label: None }).unwrap_err();
         assert_eq!((error.code, error.exit), ("no_such_page", exit::NOT_FOUND));
-        assert_eq!(run(&mut s, Level::Control, &Command::Goto { tab: "#1".into(), page: 0 }).unwrap_err().code, "no_such_page");
-        assert_eq!(run(&mut s, Level::Control, &Command::Goto { tab: "#1".into(), page: 10 }).unwrap()["page"], 10);
+        assert_eq!(run(&mut s, Level::Control, &Command::Goto { tab: "#1".into(), page: Some(0), label: None }).unwrap_err().code, "no_such_page");
+        assert_eq!(run(&mut s, Level::Control, &Command::Goto { tab: "#1".into(), page: Some(10), label: None }).unwrap()["page"], 10);
     }
 
     /// Failure: `active` with nothing open reads as an internal error, rather than saying to open something.
@@ -2650,5 +2756,63 @@ mod tests {
         assert_eq!((&ok["v"], &ok["ok"]), (&json!(VERSION), &json!(true)));
         let failed = envelope(&Err(AgentError::new("c", "m", exit::FAILED)));
         assert_eq!((&failed["ok"], &failed["error"]["code"]), (&json!(false), &json!("c")));
+    }
+}
+
+#[cfg(test)]
+mod linking_tests {
+    use super::*;
+    use recto_session::DiskLoader;
+    use recto_testpdf::{TempPdf, linked_document};
+
+    fn opened(file: &TempPdf) -> Session<DiskLoader> {
+        let mut session = Session::new(DiskLoader);
+        session.open(&file.0).unwrap();
+        session
+    }
+
+    fn line(text: &str) -> Command {
+        let args: Vec<String> = text.split(' ').map(str::to_string).collect();
+        parse(&table::parse_cli(&args).unwrap().wire()).unwrap()
+    }
+
+    /// Failure: an agent can't see where a page's links go, or sees a script, a program or a file as something to follow; or an address reaches it outside `untrusted`.
+    #[test]
+    fn links_say_where_each_goes() {
+        let file = TempPdf::new("links.pdf", &linked_document());
+        let mut session = opened(&file);
+        let answer = run(&mut session, Level::ReadOnly, &line("links 1")).unwrap();
+        let links = answer["links"].as_array().unwrap();
+        let goes: Vec<&str> = links.iter().map(|link| link["goes_to"].as_str().unwrap()).collect();
+        assert_eq!(goes, ["page", "page", "web", "refused", "refused", "refused", "page", "nowhere"]);
+        assert_eq!(links[0]["page"], 9);
+        assert_eq!(links[0]["untrusted"]["label"], "5", "the ninth page is called 5");
+        assert_eq!(links[2]["untrusted"]["address"], "https://example.com/report?id=7");
+        assert!(links[2].get("address").is_none(), "an address only ever under untrusted");
+        assert_eq!([&links[3]["refused"], &links[4]["refused"], &links[5]["refused"]], ["script", "launch", "file"]);
+        assert!(human::render("links", &answer).contains("only the user can open"));
+    }
+
+    /// Failure: following a link doesn't leave a way back, `back` and `forward` don't retrace it, `goto label` misses what the file calls a page, or an agent can open a web address by following its link.
+    #[test]
+    fn follow_back_forward_and_labels() {
+        let file = TempPdf::new("links.pdf", &linked_document());
+        let mut session = opened(&file);
+        let went = run(&mut session, Level::Control, &line("follow --page 1 --link 1")).unwrap();
+        assert_eq!((went["page"].as_u64(), went["went"].as_str(), went["can_go_back"].as_bool()), (Some(9), Some("page"), Some(true)));
+        assert_eq!(went["untrusted"]["label"], "5");
+        let back = run(&mut session, Level::Control, &line("back")).unwrap();
+        assert_eq!((back["page"].as_u64(), back["can_go_forward"].as_bool()), (Some(1), Some(true)));
+        assert_eq!(run(&mut session, Level::Control, &line("forward")).unwrap()["page"], 9);
+        assert_eq!(run(&mut session, Level::Control, &line("forward")).unwrap_err().code, "nothing_forward");
+        let labelled = run(&mut session, Level::Control, &line("goto label A-2")).unwrap();
+        assert_eq!(labelled["page"], 12);
+        assert_eq!(run(&mut session, Level::Control, &line("goto label xx")).unwrap_err().code, "no_such_label");
+        let web = run(&mut session, Level::Full, &line("follow --page 1 --link 3")).unwrap_err();
+        assert_eq!((web.code, web.exit), ("web_link_needs_user", exit::PERMISSION), "not at any level");
+        assert_eq!(web.untrusted.as_deref().map(|value| value["address"].clone()), Some(json!("https://example.com/report?id=7")));
+        assert_eq!(run(&mut session, Level::Full, &line("follow --page 1 --link 4")).unwrap_err().code, "link_refused");
+        assert_eq!(run(&mut session, Level::ReadOnly, &line("back")).unwrap_err().code, "permission_denied", "moving about is Control");
+        assert_eq!(run(&mut session, Level::Control, &line("follow --page 1 --link 99")).unwrap_err().code, "no_such_link");
     }
 }

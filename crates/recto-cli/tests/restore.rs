@@ -270,6 +270,11 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
     run.settled();
     run.ok(&["goto", "40"]);
     run.settled();
+    // A way back and a way forward, which come back too.
+    run.ok(&["goto", "20"]);
+    run.settled();
+    run.ok(&["back"]);
+    run.settled();
     run.ok(&["qa", "zoom", "1.7"]);
     run.settled();
     run.ok(&["qa", "scroll", "137"]);
@@ -374,8 +379,68 @@ fn everything_comes_back_after_a_quit() {
     }
 }
 
+/// Failure: Find doesn't come back as it was left (decision 23): its field, the hits of what was found, the hit gone to, and that hit selected on the page, after a quit and a launch. The hits are found again, as they're never kept, and the hit is chosen again by its place.
+#[test]
+fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let file = long_document("findable", 30);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "find-type", "findable page 1"]);
+    run.settled();
+    for _ in 0..3 {
+        run.ok(&["qa", "find-key", "return"]);
+    }
+    run.settled();
+    let before = run.report();
+    let find = &before["app"]["find"];
+    // `findable page 1` on page 2, and `page 10` to `page 19` on pages 11 to 20: eleven, a page row and a hit each.
+    assert_eq!((find["rows"].as_u64(), find["status"].as_str()), (Some(22), Some("11 matches on 11 pages")), "{find}");
+    assert_eq!(find["current_row"], 5, "the third hit's row: {find}");
+    assert_eq!(before["session"]["find"]["current"], json!([11, 0]), "{}", before["session"]["find"]);
+    assert_eq!(before["app"]["place"], "12 of 30");
+    assert!(before["app"]["pages"]["highlight_rects"].as_u64().unwrap_or(0) > 0, "the hit is selected on the page: {}", before["app"]["pages"]);
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let after = run.report();
+    for field in ["open", "rows", "status", "current_row", "untrusted", "list_height", "rows_on_screen"] {
+        assert_eq!(after["app"]["find"][field], before["app"]["find"][field], "{field}: {}", after["app"]["find"]);
+    }
+    assert_eq!(after["app"]["place"], before["app"]["place"]);
+    assert_eq!(after["app"]["pages"]["highlight_rects"], before["app"]["pages"]["highlight_rects"], "the hit's still selected");
+    // And it goes on from there.
+    run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["current_row"], 7);
+    run.quit();
+    // The file replaced while the app was away, with more pages: what's found is the new file's, not the old count or the old places (review, round 1).
+    let longer: Vec<Page> = (0..120).map(|index| Page::new(text_lines(&[&format!("findable page {index}"), "Words, so that the page isn't blank"]))).collect();
+    std::fs::write(&file.0, pages(&longer)).unwrap();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let replaced = run.report();
+    // `page 1` on page 2, `page 10`-`19` and `page 100`-`119`.
+    assert_eq!(replaced["app"]["find"]["status"], "31 matches on 31 pages", "{}", replaced["app"]["find"]);
+    run.quit();
+}
+
 /// Every path in `qa state` that's been looked at: it comes back, as the test above shows, or it's in [`EXCEPTIONS`]. A new one fails until it's added here, which is the moment to carry it over.
 const KNOWN_PATHS: &[&str] = &[
+    "app.links.address_opened",
+    "app.links.hint",
+    "app.links.hint_in_lower_left",
+    "app.links.page_field",
+    "session.tabs[].back.len",
+    "session.tabs[].forward.len",
+    "session.tabs[].back[].by_agent",
+    "session.tabs[].forward[].by_agent",
+    "session.tabs[].back[].page",
+    "session.tabs[].back[].within",
+    "session.tabs[].forward[].page",
+    "session.tabs[].forward[].within",
     "app.activation",
     "app.agent_icon",
     "app.agent_icon_margins.clear_of_pages",
@@ -418,6 +483,30 @@ const KNOWN_PATHS: &[&str] = &[
     "app.contents.table_rows",
     "app.contents.tabs_scroll",
     "app.contents.visible_rows",
+    "app.find.block_height",
+    "app.find.current_row",
+    "app.find.field_has_focus",
+    "app.find.first_visible",
+    "app.find.list_height",
+    "app.find.open",
+    "app.find.rows",
+    "app.find.rows_on_screen.len",
+    "app.find.rows_on_screen[].current",
+    "app.find.rows_on_screen[].kind",
+    "app.find.rows_on_screen[].note",
+    "app.find.rows_on_screen[].untrusted.label",
+    "app.find.rows_on_screen[].untrusted.matched",
+    "app.find.running",
+    "app.find.shown",
+    "app.find.status",
+    "app.find.thumb.hit_width",
+    "app.find.thumb.right_gap",
+    "app.find.thumb.shown",
+    "app.find.thumb.thumb_length",
+    "app.find.thumb.thumb_top",
+    "app.find.thumb.thumb_width",
+    "app.find.untrusted.field",
+    "app.find.visible_rows",
     "app.focus_view",
     "app.document_edited",
     "app.home",
@@ -621,6 +710,10 @@ const KNOWN_PATHS: &[&str] = &[
     "session.edits_full.N.undo[].step.rotate.len",
     "session.edits_full.N.undo[].step.rotate.quarter_turns",
     "session.edits_full.N.undo[].step.rotate.start",
+    "session.find.current",
+    "session.find.current.len",
+    "session.find.current[]",
+    "session.find.current_tab",
     "session.find.draft",
     "session.find.open",
     "session.find.query",
@@ -632,6 +725,7 @@ const KNOWN_PATHS: &[&str] = &[
     "session.tabs[].edits.owner_steps_undone",
     "session.tabs[].edits.pages",
     "session.tabs[].edits.redo",
+    "session.tabs[].edits.rewrites",
     "session.tabs[].edits.undo",
     "session.tabs[].file.device",
     "session.tabs[].file.inode",

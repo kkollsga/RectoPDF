@@ -62,7 +62,8 @@ struct Shared {
     notify: OnceLock<Notifier>,
 }
 
-/// Whoever holds a session holds one of these. It's only a handle, and the one thread, while there's one, holds the rest.
+/// Whoever holds a session holds one of these. It's only a handle, and the one thread, while there's one, holds the rest. A clone is the same indexer.
+#[derive(Clone)]
 pub struct Indexer(Arc<Shared>);
 
 impl std::fmt::Debug for Indexer {
@@ -243,12 +244,9 @@ impl Indexing for Indexer {
     }
 }
 
-/// Finds `recto-indexer` beside this program, or one folder up for a test binary in `deps/`. It's a file of the install, like the render worker, and nothing in the environment can point elsewhere.
+/// Finds `recto-indexer` beside this program, through any link to it: [`crate::program_beside`].
 fn helper_exe() -> Option<PathBuf> {
-    let name = format!("recto-indexer{}", std::env::consts::EXE_SUFFIX);
-    let this = std::env::current_exe().ok()?;
-    let here = this.parent()?;
-    [Some(here), here.parent()].into_iter().flatten().map(|dir| dir.join(&name)).find(|path| path.is_file())
+    crate::program_beside(&std::env::current_exe().ok()?, "recto-indexer")
 }
 
 /// The real thing.
