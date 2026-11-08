@@ -216,6 +216,7 @@ const EXCEPTIONS: &[(&str, &str)] = &[
     ("app.copy_notice", "A line about a copy, which fades. A copy is over by then, or a hand-off waits for it."),
     ("snapshot.", "The snapshot tool starts off on every launch, as a tool does in Preview, the one exception it adds to decision 23. A box being drawn ends with the drag, and a snapshot on its way to the clipboard is waited for by a hand-off."),
     ("app.pages.snapshot_box", "The snapshot tool's box, there only while a drag is going on."),
+    ("app.pages.system_scroller_style", "The system's own scroll bar setting, which macOS can change between launches: CI's virtual machine read legacy, then overlay. The app's own scroller_style is compared."),
     ("printing.", "A print being prepared or handed to the system: about this run, and an update waits for it to finish."),
     ("update.", "The updater's own report, with times in it. What's chosen in Settings is in the record, and how it's carried is tested in `update`, by name."),
 ];
