@@ -6,7 +6,7 @@
 //!
 //! **A file that asks not to be copied** gets the notice text does, with "Copy anyway" (owner, 2026-11-08). Each notice has a number, and its button names it, so a stale button takes nothing: turning the tool, or starting a new box, takes the notice and what it offered away.
 
-use crate::menus::{MenuEntry, MenuModel, PanelItem, PanelSection};
+use crate::menus::{MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use crate::{AppCore, HighlightRect, Inner, ReaderOp, SelectionNotice, lock};
 use recto_agent::extract::{self, ClipItem, ClipOutcome, ClipStop};
 use recto_reader::Engine;
@@ -276,6 +276,14 @@ pub(crate) fn tools_section(snapshot_on: bool) -> PanelSection {
     PanelSection { title: "Tools".into(), items: vec![PanelItem { id: TOGGLE_ID.into(), title: SNAPSHOT_TITLE.into(), selected: snapshot_on, enabled: true }] }
 }
 
+/// The tools go first in an open panel, except in edit mode, whose Done leads the panel and the tools come after it.
+pub(crate) fn add_to_panel(panel: &mut PanelModel, snapshot_on: bool, edit_mode: bool) {
+    if panel.open {
+        let at = usize::from(edit_mode).min(panel.sections.len());
+        panel.sections.insert(at, tools_section(snapshot_on));
+    }
+}
+
 /// Whether a menu item is the tool's, for QA's `menu`, which takes only what a menu has.
 pub(crate) fn is_menu_id(id: &str) -> bool {
     id == TOGGLE_ID
@@ -498,6 +506,21 @@ mod tests {
         assert!(tools_section(true).items[0].selected && !tools_section(false).items[0].selected);
         let taken: Vec<(String, bool)> = crate::menus::menu_bar(recto_session::ViewSettings::default(), None, "").iter().flat_map(|menu| &menu.entries).map(|item| (item.key.clone(), item.with_control)).collect();
         assert!(!taken.contains(&("A".to_string(), false)), "⇧⌘A is free");
+    }
+
+    /// Failure: the snapshot tool pushes edit mode's Done off the top of the panel, where the reader leaves edit mode from, or shows in a closed panel.
+    #[test]
+    fn the_tools_go_first_except_after_edit_modes_done() {
+        let shown = recto_session::Paper::White;
+        let mut reading = crate::menus::panel(true, shown, false, true);
+        add_to_panel(&mut reading, false, false);
+        assert_eq!(reading.sections[0].items[0].id, TOGGLE_ID);
+        let mut editing = crate::menus::panel(true, shown, true, true);
+        add_to_panel(&mut editing, false, true);
+        assert_eq!((editing.sections[0].items[0].id.as_str(), editing.sections[1].items[0].id.as_str()), ("edit_mode.done", TOGGLE_ID));
+        let mut closed = crate::menus::panel(false, shown, false, true);
+        add_to_panel(&mut closed, true, false);
+        assert!(closed.sections.iter().all(|section| section.items.iter().all(|item| item.id != TOGGLE_ID)));
     }
 
     /// Failure: the clipboard hands a type's bytes to an offer that's been replaced, or twice, so they're held after the host has them; or a promised SVG is made on the way out, holding up a quit for a worker; or a text copy isn't one offer like a snapshot's.

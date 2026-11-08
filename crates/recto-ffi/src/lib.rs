@@ -1875,9 +1875,7 @@ impl AppCore {
         let reader = lock(&self.inner.published).reader.clone();
         let shown = Paper::from_name(&reader.paper).unwrap_or(Paper::White);
         let mut panel = menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown, reader.edit_mode, reader.can_rotate);
-        if panel.open {
-            panel.sections.insert(0, snapshot_tool::tools_section(self.inner.tool.is_on()));
-        }
+        snapshot_tool::add_to_panel(&mut panel, self.inner.tool.is_on(), reader.edit_mode);
         panel
     }
 
