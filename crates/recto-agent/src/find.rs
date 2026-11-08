@@ -230,6 +230,10 @@ pub struct Results {
     pub version: u64,
     /// Which run this is. Answers from an older one are dropped.
     pub generation: u64,
+    /// When it began, and how long until its first hit and its end, for measuring.
+    pub began: Option<Instant>,
+    pub first_hit: Option<Duration>,
+    pub took: Option<Duration>,
 }
 
 impl Results {
@@ -244,6 +248,9 @@ impl Results {
         self.progress = Progress { pages, ..Progress::default() };
         self.end = None;
         self.current = None;
+        self.began = Some(Instant::now());
+        self.first_hit = None;
+        self.took = None;
         self.generation
     }
 
@@ -265,6 +272,9 @@ impl Results {
             return;
         }
         let room = MAX_HITS.saturating_sub(self.hits.len());
+        if self.first_hit.is_none() && !hits.is_empty() {
+            self.first_hit = self.began.map(|began| began.elapsed());
+        }
         self.hits.extend(hits.into_iter().take(room));
         self.progress = *progress;
         self.version += 1;
@@ -276,6 +286,7 @@ impl Results {
         }
         self.end = Some(end);
         self.progress = progress;
+        self.took = self.began.map(|began| began.elapsed());
         self.version += 1;
     }
 
@@ -572,6 +583,8 @@ fn answer<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, listed: us
             "pages_in_scope": p.pages,
             "failed_pages": p.failed,
             "no_text_pages": p.no_text,
+            "first_hit_ms": results.first_hit.map(|took| took.as_secs_f64() * 1000.0),
+            "took_ms": results.took.map(|took| took.as_secs_f64() * 1000.0),
             "current": results.current.and_then(|at| results.hits.get(at).map(|hit| hit_json(at, hit))),
             "hits": results.hits.iter().take(listed).enumerate().map(|(at, hit)| hit_json(at, hit)).collect::<Vec<_>>(),
         });
