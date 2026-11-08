@@ -366,6 +366,8 @@ final class BookMark: NSView {
         buildHome()
         sidebar.addPressed = { [weak delegate] in delegate?.openDocument(nil) }
         sidebar.performAction = { [weak delegate] id in delegate?.perform(id) }
+        // What a row run from the palette leaves the host to do: the Open panel, Settings, Find's field taking the keyboard, and the rest.
+        sidebar.palette.hostAction = { [weak delegate] action in delegate?.handle(action) }
         sidebar.revealHost = root
         sidebarGrip.dragged = { [weak delegate] x in delegate?.core.setSidebarWidth(width: x) }
         root.appearanceChanged = { [weak self] in self?.appearanceChanged() }

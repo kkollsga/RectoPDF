@@ -1905,6 +1905,19 @@ fn the_palette_finds_commands_and_tabs_and_runs_them_by_keyboard() {
     assert!(tab["untrusted"]["title"].is_string() && tab.get("title").is_none(), "{tab}");
 }
 
+/// Failure: a palette row that leaves the host something to do (Settings, the Open panel, About, Save As, Find's field) does nothing when run with Return, because what's left for the host never reaches it.
+#[test]
+fn a_palette_row_does_what_the_host_is_left_to_do() {
+    let Some(run) = Run::start() else { return };
+    run.ok(&["qa", "menu", "palette.open"]);
+    wait_for(&run, |state| state["app"]["palette"]["open"] == true);
+    let typed = run.ok(&["qa", "palette-type", "settings"]);
+    assert_eq!(typed["palette"]["rows"][0]["id"], "app.settings", "{}", typed["palette"]);
+    run.ok(&["qa", "palette-key", "return"]);
+    let shown = wait_for(&run, |state| state["app"]["settings"]["open"] == true);
+    assert_eq!(shown["app"]["palette"]["open"], false);
+}
+
 /// Failure: `recto palette --run` at Control does what its direct command needs more for (review, round 1): installing an update, which needs Full; clearing history without the checks `clear-history` makes; undo, redo and rotate taken as the owner's steps; or writing the clipboard below `copy`'s level. What has an agent's command runs as that, at the agent's level; the rest needs Full.
 #[test]
 fn the_palettes_run_keeps_to_each_commands_level() {
