@@ -18,7 +18,7 @@ name = "recto-headings"
 path = "src/main.rs"
 
 [dependencies]
-# The owner's library, at its published 0.1.7 commit, with no Python and no OCR. It's on the same lopdf commit as RectoPDF (`0e89b89`), so there's one lopdf here too.
+# The owner's library, at its published 0.1.7 commit, with no Python and no OCR. It's on lopdf `0e89b89`, and RectoPDF's crates on `8c8ba88` (the streaming rewrite), so this helper builds both until distillPDF moves: Cargo can't patch one git revision of a source to another of the same URL. Nothing here passes a lopdf type between them.
 distillpdf = { git = "https://github.com/kkollsga/distillPDF", rev = "fbf5b22f641982a41374507466aafdb615fbf512", default-features = false }
 recto-core = { path = "../recto-core" }
 recto-index = { path = "../recto-index" }

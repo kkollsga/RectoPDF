@@ -299,7 +299,7 @@ dependencies = [
  "flate2",
  "image",
  "jpeg-decoder",
- "lopdf",
+ "lopdf 0.47.0 (git+https://github.com/kkollsga/lopdf.git?rev=0e89b89cbf9b9d5f90116cde555c2878135c4465)",
  "rayon",
  "serde",
  "serde_json",
@@ -560,6 +560,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "lopdf"
+version = "0.47.0"
+source = "git+https://github.com/kkollsga/lopdf.git?rev=8c8ba8838bb0815ec0ba7c04d945175088270d99#8c8ba8838bb0815ec0ba7c04d945175088270d99"
+dependencies = [
+ "aes",
+ "bitflags",
+ "brotli-decompressor",
+ "cbc",
+ "ecb",
+ "encoding_rs",
+ "flate2",
+ "getrandom",
+ "indexmap",
+ "itoa",
+ "log",
+ "md-5",
+ "nom",
+ "rand",
+ "rangemap",
+ "sha2 0.11.1",
+ "stringprep",
+ "thiserror",
+ "weezl",
+]
+
+[[package]]
 name = "md-5"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -726,7 +752,9 @@ name = "recto-core"
 version = "0.1.0"
 dependencies = [
  "flate2",
- "lopdf",
+ "lopdf 0.47.0 (git+https://github.com/kkollsga/lopdf.git?rev=8c8ba8838bb0815ec0ba7c04d945175088270d99)",
+ "recto-platform",
+ "sha2 0.11.1",
 ]
 
 [[package]]
