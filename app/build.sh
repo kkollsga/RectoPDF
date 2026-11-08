@@ -3,7 +3,7 @@
 #
 #   app/build.sh            A debug build, for QA while working.
 #   app/build.sh --release  The build every budget is measured on: fat LTO, and it takes minutes.
-#   app/build.sh --sign-only  Signs an app that's been built, with RECTO_SIGN_IDENTITY. A release builds before there's a signing key anywhere on the machine, so no dependency's build script can reach one.
+#   app/build.sh --sign-only  Signs an app that's been built, with RECTO_SIGN_IDENTITY. The only mode that reads it: the others sign ad hoc. A release builds before there's a signing key anywhere on the machine, so no dependency's build script can reach one.
 #
 # Run it through tools/sysguard/heavy.sh.
 set -euo pipefail
@@ -21,14 +21,22 @@ BUILD="$APP_DIR/build"
 APP="$BUILD/RectoPDF.app"
 # One version, from one place. It's what the updater compares with, and it's in every copy's Info.plist.
 VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' "$REPO/Cargo.toml" | head -1)"
-# The identity a release is signed with. `app/release-zip.sh --signed` sets it, and without it this is ad hoc.
-SIGN_IDENTITY="${RECTO_SIGN_IDENTITY:--}"
-if [ "$SIGN_IDENTITY" = - ]; then SIGN_ARGS=(--force --sign -); else SIGN_ARGS=(--force --sign "$SIGN_IDENTITY" --options runtime --timestamp); fi
+# The identity a release is signed with, read only by --sign-only, which `app/release-zip.sh --signed` runs. Every build is ad hoc, whatever the shell has set, so a build or a
+# test never signs with the owner's identity or raises a keychain prompt.
+if [ "$mode" = --sign-only ]; then SIGN_IDENTITY="${RECTO_SIGN_IDENTITY:--}"; else SIGN_IDENTITY=-; fi
+export RECTO_SIGN_IDENTITY="$SIGN_IDENTITY"
+[ "$SIGN_IDENTITY" != - ] || unset RECTO_SIGN_IDENTITY
+# By its SHA-1, as codesign can't find a name with a letter outside ASCII in it (render-helper.sh, `key`).
+if [ "$SIGN_IDENTITY" = - ]; then SIGN_ARGS=(--force --sign -); else
+    SIGN_KEY="$("$APP_DIR/render-helper.sh" --key "$SIGN_IDENTITY")"
+    SIGN_ARGS=(--force --sign "$SIGN_KEY" --options runtime --timestamp)
+fi
 
+# From the inside out, and never --deep, which would sign the renderer helper again without its sandbox.
 sign_app() {
-    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/libpdfium.dylib"
-    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-render-service"
+    "$APP_DIR/render-helper.sh" --sign "$APP/Contents"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-indexer"
+    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-headings"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-updater"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto"
     codesign "${SIGN_ARGS[@]}" "$APP"
@@ -36,6 +44,7 @@ sign_app() {
 
 if [ "$mode" = --sign-only ]; then
     sign_app
+    "$APP_DIR/render-helper.sh" --check "$APP"
     echo "==> signed $APP"
     exit 0
 fi
@@ -67,13 +76,10 @@ echo "==> $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/RectoPDF"
-# Worker and library beside the app, where `ServiceConfig::discover` looks. Each is what `tools/pdfium.sh` checked.
 cp "$RUST_OUT/recto" "$APP/Contents/MacOS/recto"
-cp "$RUST_OUT/recto-render-service" "$APP/Contents/MacOS/recto-render-service"
 cp "$RUST_OUT/recto-indexer" "$APP/Contents/MacOS/recto-indexer"
 cp "$RUST_OUT/recto-headings" "$APP/Contents/MacOS/recto-headings"
 cp "$RUST_OUT/recto-updater" "$APP/Contents/MacOS/recto-updater"
-cp "$REPO/target/pdfium/libpdfium.dylib" "$APP/Contents/MacOS/libpdfium.dylib"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -107,5 +113,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+# The renderer: the worker and the library `tools/pdfium.sh` checked, in their sandboxed helper, where `ServiceConfig::discover` looks first. Signed by sign_app below.
+"$APP_DIR/render-helper.sh" --layout "$APP/Contents" "$RUST_OUT/recto-render-service" "$REPO/target/pdfium/libpdfium.dylib"
 sign_app
+"$APP_DIR/render-helper.sh" --check "$APP"
 echo "==> built $APP"

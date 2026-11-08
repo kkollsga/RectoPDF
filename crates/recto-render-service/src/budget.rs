@@ -257,6 +257,8 @@ pub struct BudgetReport {
     pub pages_low_res: u32,
     pub heavy_retries: u32,
     pub spawns: u32,
+    /// Of those, the workers that said their walls were up: the App Sandbox on and their Mach rights dropped. Equal to `spawns` for the app's helper, and zero for a bare development worker.
+    pub walled_spawns: u32,
     pub retirements: u32,
     pub memory_kills: u32,
     pub deadline_kills: u32,
@@ -315,6 +317,7 @@ pub fn measure_budget(doc: &mut DocRenderer, options: BudgetOptions) -> Result<B
     let stats = doc.stats();
     report.peak_footprint_bytes = stats.peak_footprint_bytes;
     report.spawns = stats.spawns;
+    report.walled_spawns = stats.walled_spawns;
     report.retirements = stats.retirements;
     report.heavy_retries = stats.heavy_retries;
     report.memory_kills = stats.memory_kills;

@@ -38,6 +38,8 @@ pub enum HostAction {
     ShowSavePanel,
     /// Closing a document with unsaved edits asks first, with what `AppCore::close_prompt` says.
     ConfirmClose,
+    /// Go > Go to Page…: the field the page number opens, with what `AppCore::page_field` says.
+    ShowGoTo,
 }
 
 /// What an item does.
@@ -70,6 +72,8 @@ pub(crate) enum Action {
     SetSynced(bool),
     /// The snapshot tool, on or off: a drag takes a box, a click an image.
     ToggleSnapshot,
+    /// Back in the tab being read's trail, or forward: ⌘[ and ⌘].
+    Step(bool),
 }
 
 fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
@@ -115,7 +119,7 @@ pub(crate) fn context_menu(shown: Option<Spread>, comparing: Option<bool>) -> Ve
 pub(crate) fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool {
     match id {
         "edit.copy" | "edit.copy_anyway" => has_selection,
-        "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" => has_document,
+        "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" | "go.page" => has_document,
         layout if layout.starts_with("layout.") => has_document,
         _ => true,
     }
@@ -154,6 +158,8 @@ pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: 
             ])
             .collect(),
         },
+        // As in Safari and Preview: ⌘[ and ⌘] go back and forward through jumps, a link, a contents entry or a page typed in.
+        MenuModel { title: "Go".into(), entries: vec![entry("go.back", "Back", "["), entry("go.forward", "Forward", "]"), line(), entry("go.page", "Go to Page…", "")] },
     ]
 }
 
@@ -261,6 +267,9 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "paper.white" => Action::SetPaper(Paper::White),
         "paper.warm" => Action::SetPaper(Paper::Warm),
         "paper.dark" => Action::SetPaper(Paper::Dark),
+        "go.back" => Action::Step(true),
+        "go.forward" => Action::Step(false),
+        "go.page" => Action::Host(HostAction::ShowGoTo),
         "compare.separate" => Action::SetSynced(false),
         "compare.synced" => Action::SetSynced(true),
         "tools.snapshot" => Action::ToggleSnapshot,
@@ -444,5 +453,16 @@ mod tests {
         assert_eq!(zoom_from_word("x%"), None);
         assert_eq!(zoom_from_word("NaN"), None);
         assert_eq!(zoom_from_word("zzz"), None);
+    }
+
+    /// Failure: Back and Forward aren't in the Go menu with Safari's ⌘[ and ⌘], or Go to Page… does nothing or can be chosen with nothing open.
+    #[test]
+    fn the_go_menu_has_back_forward_and_go_to_page() {
+        let go = menu_bar(ViewSettings::default(), None, "").into_iter().find(|menu| menu.title == "Go").expect("a Go menu, as SPEC lists the menus");
+        let keyed = |id: &str| go.entries.iter().find(|item| item.id == id).map(|item| (item.title.clone(), item.key.clone())).unwrap();
+        assert_eq!(keyed("go.back"), ("Back".to_string(), "[".to_string()));
+        assert_eq!(keyed("go.forward"), ("Forward".to_string(), "]".to_string()));
+        assert_eq!((action("go.back"), action("go.forward"), action("go.page")), (Some(Action::Step(true)), Some(Action::Step(false)), Some(Action::Host(HostAction::ShowGoTo))));
+        assert!(!enabled("go.page", false, false) && enabled("go.page", true, false));
     }
 }

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The renderer helper's only entitlement: the App Sandbox, with nothing added to it. No files, no network: the document comes as a descriptor. Not
+     com.apple.security.inherit, which is for the child of a sandboxed parent, and this parent isn't one. Not disable-library-validation, as the same team signs
+     libpdfium.dylib. app/render-helper.sh checks a built helper has exactly this. -->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+</dict>
+</plist>

@@ -335,6 +335,8 @@ pub enum JobKind {
     Draw { scale: f32, rect: TileRect, surface: PixelSurface, what: DrawKind, paper: PaperKind },
     /// Read a page's text for selecting. `check` also draws it, for the hidden-text check.
     Text { check: bool },
+    /// Read a page's links, from the file's structure, with no worker.
+    Links,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -362,6 +364,7 @@ enum PlanKind {
     Traits,
     Draw { scale: f32, rect: TileRect, what: DrawKind, paper: PaperKind },
     Text { check: bool },
+    Links,
 }
 
 impl JobPlan {
@@ -372,6 +375,7 @@ impl JobPlan {
             PlanKind::Size => JobKind::Size,
             PlanKind::Traits => JobKind::Traits,
             PlanKind::Text { check } => JobKind::Text { check },
+            PlanKind::Links => JobKind::Links,
             PlanKind::Draw { scale, mut rect, what, paper } => {
                 let surface = match what {
                     DrawKind::Preview => Self::take_surface(rect.width, rect.height)?,
@@ -445,6 +449,8 @@ pub enum Outcome {
     Text { text: Arc<recto_index::select::PageText>, checked: bool },
     /// A page's text can't be read. That's the page's text, and nothing about drawing it.
     TextFailed,
+    /// A page's links, or none if they couldn't be read.
+    Links(Option<Arc<recto_core::nav::PageLinks>>),
 }
 
 #[derive(Debug)]
@@ -529,6 +535,8 @@ pub struct Reader {
     wanted_files: Arc<Vec<PathBuf>>,
     note: Option<String>,
     selecting: Selecting,
+    /// Links on the tab showing, read as they're pointed at.
+    linking: crate::links::Linking,
     /// The thread that draws has failed too many times to go on trying, and this says so.
     gave_up: bool,
     /// What's come from a tab's sleep file, for when it's made the hot tab.
@@ -592,6 +600,7 @@ impl Reader {
             wanted_files: Arc::new(Vec::new()),
             note: None,
             selecting: Selecting::default(),
+            linking: crate::links::Linking::default(),
             gave_up: false,
             sleep_view: None,
             reopen_files: Vec::new(),
@@ -1008,6 +1017,7 @@ impl Reader {
             self.moved_page = None;
             // A selection is in what's on screen, and a tab off screen holds none.
             self.selecting.reset();
+            self.linking.clear();
         }
         let floor = self.next_generation;
         let doc = self.docs.entry(tab).or_insert_with(|| {
@@ -1072,6 +1082,7 @@ impl Reader {
             self.clear_screen();
             // Its pages are other pages now, so what was selected on them isn't there. After a save they're the same pages, so it is, and its text is read again from the new file.
             self.selecting.reset();
+            self.linking.clear();
             if let Some(range) = carried_selection {
                 self.selecting.set_range(range);
             }
@@ -1903,6 +1914,15 @@ impl Reader {
         if scale <= 0.0 {
             return None;
         }
+        // The links under the pointer come first: they're quick, and the pointer's waiting on them for its look.
+        if let Some(page) = self.linking.next_wanted()
+            && let Some(doc) = self.docs.get(&tab)
+            && page < doc.layout.count()
+            && let Some((file, source_page)) = doc.map.source(page)
+        {
+            let generation = self.fresh_generation();
+            return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Links });
+        }
         // A selection the reader is making comes before tiles: it answers their hand.
         if let Some(plan) = self.text_plan(tab, Urgency::Now) {
             return Some(plan);
@@ -2027,6 +2047,8 @@ impl Reader {
 
     /// The mouse went down at a point in the document. Cheap: at worst it looks through a page already here.
     pub fn selection_press(&mut self, x: f64, y: f64, clicks: u32, shift: bool) {
+        let point = self.point_on_page(x, y).filter(|point| self.is_on_its_page(*point));
+        self.linking.press(if shift { None } else { point }, clicks);
         match self.point_on_page(x, y) {
             Some(point) => self.selecting.press(point, clicks, shift),
             None => self.selecting.clear(),
@@ -2036,6 +2058,7 @@ impl Reader {
     }
 
     pub fn selection_drag(&mut self, x: f64, y: f64) {
+        self.linking.drag(self.point_on_page(x, y));
         if let Some(point) = self.point_on_page(x, y) {
             self.selecting.drag(point);
             self.highlight_ops();
@@ -2044,7 +2067,52 @@ impl Reader {
     }
 
     pub fn selection_release(&mut self) {
+        self.linking.release();
         self.selecting.release();
+    }
+
+    /// Whether a point is on its page, and not in the margin or the gap between pages.
+    fn is_on_its_page(&self, point: PagePoint) -> bool {
+        let Some(doc) = self.doc() else { return false };
+        let size = doc.layout.raw_size(point.page);
+        point.x >= 0.0 && point.y >= 0.0 && point.x <= size.width && point.y <= size.height
+    }
+
+    /// **The link under the pointer,** if its page's links are here. A page not read yet says nothing for now, and is read next.
+    pub fn pointer_link(&mut self, x: f64, y: f64) -> Option<crate::links::LinkHit> {
+        let point = self.point_on_page(x, y).filter(|point| self.is_on_its_page(*point))?;
+        self.linking.at(point)
+    }
+
+    /// The link a click has just landed on, taken once.
+    pub fn take_clicked_link(&mut self) -> Option<crate::links::LinkHit> {
+        self.linking.take_clicked()
+    }
+
+    /// Where a file page of the same file as the page at `from` is now, counted as the view counts: what a link on that page means by its page. Nothing if it's not in the document.
+    pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32> {
+        let doc = self.doc()?;
+        match &doc.map.slots {
+            None => (file_page < doc.layout.count()).then_some(file_page),
+            Some(slots) => {
+                let (file, _) = *slots.get(from as usize)?;
+                slots.iter().position(|(other, page)| *other == file && *page == file_page).and_then(|at| u32::try_from(at).ok())
+            }
+        }
+    }
+
+    /// Whether a page of the view is from the tab's own file, and which page of it.
+    pub fn own_file_page(&self, position: u32) -> Option<u32> {
+        let doc = self.doc()?;
+        match &doc.map.slots {
+            None => (position < doc.layout.count()).then_some(position),
+            Some(slots) => slots.get(position as usize).filter(|(file, _)| *file == 0).map(|(_, page)| *page),
+        }
+    }
+
+    /// Pages whose links are held, for QA.
+    pub fn link_pages_held(&self) -> usize {
+        self.linking.pages_held()
     }
 
     /// Whether the pointer's on text, and so an I-beam. A page not read yet is wanted, for when there's nothing else to do.
@@ -2151,6 +2219,7 @@ impl Reader {
     /// The file behind a tab has been seen to be another one, so places on its pages mean nothing now. It comes before the job's outcome, which may be about it.
     pub fn file_changed(&mut self, tab: u32) {
         if self.hot == Some(tab) {
+            self.linking.clear();
             // Kept aside until the session says what the new version is: a save of what was shown keeps it (see [`Self::activate`]), anything else lets it go.
             self.selection_before_change = self.selecting.range().map(|range| (tab, range));
             self.selecting.file_changed();
@@ -2215,6 +2284,14 @@ impl Reader {
         self.counts.jobs += 1;
         let mut kept = None;
         let Job { tab, position, kind, generation, .. } = job;
+        if matches!(kind, JobKind::Links) {
+            // About the tab showing, as it is, or about nothing.
+            match outcome {
+                Outcome::Links(links) if self.hot == Some(tab) && !self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) => self.linking.take(position, links),
+                _ => self.linking.cancelled(position),
+            }
+            return;
+        }
         // Asked about the pages as they were. An edit has changed what's at this position since.
         if self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) {
             self.counts.cancelled += 1;
@@ -2458,10 +2535,11 @@ mod tests {
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(letter()),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
                 JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
             };
-            drawn.push(Job { tab: job.tab, position: job.position, file: job.file.clone(), source_page: job.source_page, generation: job.generation, kind: match &job.kind { JobKind::Size => JobKind::Size, JobKind::Traits => JobKind::Traits, JobKind::Text { check } => JobKind::Text { check: *check }, JobKind::Draw { scale, rect, surface, what, paper } => JobKind::Draw { scale: *scale, rect: *rect, surface: surface.clone(), what: *what, paper: *paper } } });
+            drawn.push(Job { tab: job.tab, position: job.position, file: job.file.clone(), source_page: job.source_page, generation: job.generation, kind: match &job.kind { JobKind::Size => JobKind::Size, JobKind::Traits => JobKind::Traits, JobKind::Text { check } => JobKind::Text { check: *check }, JobKind::Links => JobKind::Links, JobKind::Draw { scale, rect, surface, what, paper } => JobKind::Draw { scale: *scale, rect: *rect, surface: surface.clone(), what: *what, paper: *paper } } });
             reader.finish(job, outcome);
             let more = reader.drain(MAX_ATTACH_PER_TURN);
             drop(more);
@@ -2626,6 +2704,7 @@ mod tests {
             match &job.kind {
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => reader.finish(job, Outcome::Links(None)),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
                 JobKind::Draw { what: kind, .. } if *kind == what => return job,
                 JobKind::Draw { .. } => reader.finish(job, Outcome::Drawn { kind: TileKind::Colour, low_res: None }),
@@ -2912,6 +2991,7 @@ mod tests {
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(if job.position == 0 { first } else { letter() }),
                 JobKind::Text { .. } => Outcome::TextFailed,
+                JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
                 JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
             };
@@ -3012,6 +3092,7 @@ mod tests {
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(letter()),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
                 JobKind::Draw { .. } if job.position == 0 => Outcome::PageFailed { message: "This page couldn't be drawn.".into(), may_pass: false },
                 JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
@@ -3034,6 +3115,7 @@ mod tests {
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(letter()),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(true),
                 JobKind::Draw { .. } => {
                     low_done = true;
@@ -3060,6 +3142,7 @@ mod tests {
             let outcome = match &job.kind {
                 JobKind::Size => Outcome::Size(PageBox { width: 1224.0, height: 1584.0 }),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(true),
                 JobKind::Draw { what, .. } => {
                     kinds.push(*what);
@@ -3104,6 +3187,7 @@ mod tests {
                 }
                 JobKind::Size => Outcome::Size(letter()),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
                 JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
             };
@@ -3134,6 +3218,7 @@ mod tests {
             match job.kind {
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => reader.finish(job, Outcome::Links(None)),
                 JobKind::Traits => break job,
                 JobKind::Draw { .. } => panic!("traits come before drawing"),
             }
@@ -3149,6 +3234,7 @@ mod tests {
             match job.kind {
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => reader.finish(job, Outcome::Links(None)),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
                 JobKind::Draw { .. } => break job,
             }
@@ -3172,6 +3258,7 @@ mod tests {
                 let outcome = match &job.kind {
                     JobKind::Size => Outcome::Size(letter()),
                     JobKind::Text { .. } => panic!("no text was asked for"),
+                    JobKind::Links => Outcome::Links(None),
                     JobKind::Traits => Outcome::Heavy(false),
                     JobKind::Draw { surface, .. } => {
                         seen.insert(surface.id());
@@ -3221,6 +3308,7 @@ mod tests {
             let job = reader.next_job()?;
             match &job.kind {
                 JobKind::Text { .. } => return Some(job),
+                JobKind::Links => reader.finish(job, Outcome::Links(None)),
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
                 JobKind::Draw { .. } => reader.finish(job, Outcome::Drawn { kind: TileKind::Colour, low_res: None }),
@@ -3281,6 +3369,7 @@ mod tests {
             match job.kind {
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
                 JobKind::Text { .. } => panic!("no text was asked for"),
+                JobKind::Links => reader.finish(job, Outcome::Links(None)),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
                 JobKind::Draw { .. } => break job,
             }
@@ -3691,5 +3780,28 @@ mod tests {
         let Some(Op::ScrollTo { y: new_y, .. }) = ops.iter().find(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("{ops:?}") };
         let top = reader.doc().unwrap().layout.top(40);
         assert!((*new_y - top).abs() < 1.0, "{new_y} against {top}");
+    }
+
+    /// Failure: pointing at a page never asks for its links, so the hand and the hint never come; or a link's answer about another tab lands on this one; or a click on a link isn't seen as one.
+    #[test]
+    fn a_page_pointed_at_has_its_links_read_and_a_click_found() {
+        use recto_core::nav::{Link, LinkTarget, PageLinks};
+        let mut reader = reader_on(10);
+        settle(&mut reader);
+        let (x, y) = reader.document_point(0, 50.0, 20.0).unwrap();
+        assert_eq!(reader.pointer_link(x, y), None, "not read yet");
+        let job = reader.next_job().expect("its links are asked for first");
+        assert!(matches!(job.kind, JobKind::Links) && job.position == 0, "{job:?}");
+        let links = PageLinks { links: vec![Link { rect: [10.0, 10.0, 100.0, 30.0], target: LinkTarget::Page { page: 4, within: None } }], ..PageLinks::default() };
+        reader.finish(job, Outcome::Links(Some(Arc::new(links))));
+        let hit = reader.pointer_link(x, y).expect("now it's known");
+        assert_eq!(hit.target, LinkTarget::Page { page: 4, within: None });
+        assert_eq!(reader.position_in_same_file(0, 4), Some(4));
+        reader.selection_press(x, y, 1, false);
+        reader.selection_release();
+        assert_eq!(reader.take_clicked_link().map(|hit| hit.page), Some(0));
+        // Another tab: what's known goes with the one that was showing.
+        reader.activate(2, 10, 0, map(), &[], None, Spread::Single);
+        assert_eq!(reader.link_pages_held(), 0);
     }
 }

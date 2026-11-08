@@ -854,7 +854,8 @@ fn the_menu_bar_and_the_agent_icon() {
     run.settled();
     let state = run.report();
     let titles: Vec<&str> = state["app"]["menu_bar"].as_array().unwrap().iter().map(|menu| menu["title"].as_str().unwrap()).collect();
-    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View"], "{state}");
+    // The Go menu has Back, Forward and Go to Page…, as SPEC lists the menus.
+    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go"], "{state}");
     let view = &state["app"]["menu_bar"][3]["items"];
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
     assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon"]);
@@ -1862,6 +1863,99 @@ fn a_save_leaves_the_view_as_it_was() {
     assert_eq!(after, before, "the view after the save");
     let saved = std::fs::read(&file.0).unwrap();
     assert!(saved.starts_with(&original) && saved.len() > original.len(), "and it was saved");
+}
+
+/// Failure: the app draws its pages with a worker outside the sandbox, or the tile path breaks once the worker has dropped its Mach rights, and nothing an agent can read says so.
+/// The built app's helper is sandboxed, so every live worker must say its walls are up, and the tiles on screen came as IOSurfaces over the link, the only way one arrives.
+#[test]
+fn the_app_draws_with_walled_workers_over_the_surface_link() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let state = run.report();
+    let workers = state["memory"]["workers"].as_u64().unwrap();
+    assert!(workers >= 1, "no worker drew the page: {}", state["memory"]);
+    assert_eq!(state["memory"]["workers_walled"].as_u64(), Some(workers), "a live worker isn't walled: {}", state["memory"]);
+    assert!(state["reader"]["tiles"]["attached"].as_u64().unwrap() > 0, "no surface tile arrived: {}", state["reader"]["tiles"]);
+}
+
+/// A place in the middle of one of `linked_document`'s links on page 1, as `qa pointer` takes it.
+fn on_link(index: usize) -> String {
+    let rect = recto_testpdf::LINKS_ON_PAGE_ONE[index].0;
+    format!("1:{},{}", (rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0)
+}
+
+/// The pointer over a link, waiting for its page's links to be read, as a person's next move would see them.
+fn hover(run: &Run, place: &str) -> Value {
+    run.ok(&["qa", "pointer", place]);
+    run.settled();
+    wait_for(run, |state| {
+        run.ok(&["qa", "pointer", place]);
+        state["app"]["pages"]["cursor"] == "link"
+    })
+}
+
+/// Failure: a link in the app doesn't show where it goes, or a click goes somewhere else or nowhere; Back and Forward, from the Go menu or a swipe, don't retrace it; a web address opens without the person being asked, or doesn't show its real target first; a script runs; or the page number in the corner and the go-to field don't know what the book calls its pages.
+#[test]
+fn links_back_forward_and_page_labels_in_the_app() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("linked.pdf", &recto_testpdf::linked_document());
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let rest = run.report();
+    assert_eq!(rest["app"]["place_label"], "i (1 of 12)", "the book's own number, and its place: {rest}");
+    let over = hover(&run, &on_link(0));
+    assert_eq!(over["app"]["links"]["hint"], "Go to page 5 (page 9)", "{over}");
+    assert_eq!(over["app"]["links"]["hint_in_lower_left"], true);
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(0))]);
+    run.ok(&["qa", "mouse-up"]);
+    let went = wait_for(&run, |state| state["app"]["place_label"] == "5 (9 of 12)");
+    let go = |state: &Value, id: &str| state["app"]["menu_bar"].as_array().unwrap().iter().flat_map(|menu| menu["items"].as_array().unwrap()).find(|item| item["id"] == id).map(|item| item["enabled"].clone()).unwrap();
+    assert_eq!((go(&went, "go.back"), go(&went, "go.forward")), (json!(true), json!(false)), "{went}");
+    run.ok(&["qa", "menu", "go.back"]);
+    let back = wait_for(&run, |state| state["app"]["place_label"] == "i (1 of 12)");
+    assert_eq!(go(&back, "go.forward"), json!(true));
+    run.ok(&["qa", "swipe", "-1"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "5 (9 of 12)");
+    run.ok(&["qa", "swipe", "1"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "i (1 of 12)");
+    // A web address: asked about first, with the whole address, and opened only on Open. A quiet run opens nothing and notes it.
+    let web = hover(&run, &on_link(2));
+    assert_eq!(web["app"]["links"]["hint"], "Web link: https://example.com/report?id=7");
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(2))]);
+    let asked = run.ok(&["qa", "mouse-up"]);
+    let asked = if asked["sheet"]["kind"] == "link_prompt" { run.report() } else { wait_for(&run, |state| state["app"]["sheet"]["kind"] == "link_prompt") };
+    assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("https://example.com/report?id=7"), "{asked}");
+    assert_eq!(asked["app"]["links"]["address_opened"], Value::Null, "nothing opens before the answer");
+    let cancelled = run.ok(&["qa", "sheet-answer", "second"]);
+    assert_eq!(cancelled["links"]["address_opened"], Value::Null, "Cancel opens nothing: {cancelled}");
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(2))]);
+    run.ok(&["qa", "mouse-up"]);
+    wait_for(&run, |state| state["app"]["sheet"]["kind"] == "link_prompt");
+    let opened = run.ok(&["qa", "sheet-answer", "first"]);
+    assert_eq!(opened["links"]["address_opened"], "https://example.com/report?id=7", "{opened}");
+    // A script: never run, and said so.
+    hover(&run, &on_link(3));
+    run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(3))]);
+    run.ok(&["qa", "mouse-up"]);
+    let refused = wait_for(&run, |state| state["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("script")));
+    assert_eq!((&refused["app"]["sheet"], &refused["app"]["place_label"]), (&json!({}), &json!("i (1 of 12)")), "{refused}");
+    // The go-to field, by label and by number, and something that names no page.
+    let field = run.ok(&["qa", "button", "page"]);
+    assert_eq!(field["links"]["page_field"], "i", "it starts with what the book calls this page: {field}");
+    run.ok(&["qa", "page-escape"]);
+    run.ok(&["qa", "page-type", "A-2"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "A-2 (12 of 12)");
+    run.ok(&["qa", "page-type", "iii"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "iii (3 of 12)");
+    run.ok(&["qa", "page-type", "no such page"]);
+    wait_for(&run, |state| state["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("No page is called")));
+    // An agent sees the same, and goes back the same way.
+    let place = run.ok(&["where"]);
+    assert_eq!((&place["page"], &place["untrusted"]["label"], &place["can_go_back"]), (&json!(3), &json!("iii"), &json!(true)), "{place}");
+    run.ok(&["back"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "A-2 (12 of 12)");
 }
 
 /// A page with a line of text and the 4 x 4 red JPEG of `export_svg.rs`, over 100..140 across and 252..292 down, shown from the top left.

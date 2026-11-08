@@ -12,7 +12,7 @@ use recto_render_service::{DocRenderer, Policy, RenderFailure, ServiceConfig, Ti
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::Thread;
@@ -67,6 +67,8 @@ struct Shared {
     events: Arc<dyn EngineEvents>,
     ops_signalled: AtomicBool,
     worker_pids: Mutex<Vec<u32>>,
+    /// Of those, the workers that said their walls were up.
+    walled_workers: AtomicU32,
     workers_by_file: Mutex<Vec<(PathBuf, u32)>>,
     /// The system's asked for memory back: workers with nothing to do go the next time this thread comes round.
     kill_idle_workers: AtomicBool,
@@ -103,7 +105,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Engine {
     pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self {
-        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), workers_by_file: Mutex::new(Vec::new()), kill_idle_workers: AtomicBool::new(false), last_note: Mutex::new(None), last_notice: Mutex::new(None), config, stopping: AtomicBool::new(false), pending: Mutex::new(Pending::default()) });
+        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), walled_workers: AtomicU32::new(0), workers_by_file: Mutex::new(Vec::new()), kill_idle_workers: AtomicBool::new(false), last_note: Mutex::new(None), last_notice: Mutex::new(None), config, stopping: AtomicBool::new(false), pending: Mutex::new(Pending::default()) });
         Self { shared, thread: Arc::new(Mutex::new(None)) }
     }
 
@@ -346,6 +348,47 @@ impl Engine {
         self.after(reader);
     }
 
+    /// A jump to a place in a page, as a link or Back goes: the page's top, margin above the first page included, or that far down it.
+    pub fn jump_within(&self, page: u32, within: f64) {
+        let mut reader = lock(&self.shared.reader);
+        if within.is_finite() && within > 0.0 {
+            lock(&self.shared.pending).follow = None;
+            reader.follow(page, within);
+        } else {
+            reader.jump_to(page);
+        }
+        self.after(reader);
+    }
+
+    /// The link under the pointer, if its page's links are here. A page not read yet is read next. A short lock, on the UI thread.
+    pub fn pointer_link(&self, x: f64, y: f64) -> Option<crate::links::LinkHit> {
+        let mut reader = lock(&self.shared.reader);
+        let hit = reader.pointer_link(x, y);
+        drop(reader);
+        self.wake();
+        hit
+    }
+
+    /// The link the last click landed on, taken once.
+    pub fn take_clicked_link(&self) -> Option<crate::links::LinkHit> {
+        lock(&self.shared.reader).take_clicked_link()
+    }
+
+    /// Where a link's page is now: see [`Reader::position_in_same_file`].
+    pub fn position_in_same_file(&self, from: u32, file_page: u32) -> Option<u32> {
+        lock(&self.shared.reader).position_in_same_file(from, file_page)
+    }
+
+    /// Which page of the tab's own file a page of the view is, if it's one.
+    pub fn own_file_page(&self, position: u32) -> Option<u32> {
+        lock(&self.shared.reader).own_file_page(position)
+    }
+
+    /// Pages whose links are held, for QA.
+    pub fn link_pages_held(&self) -> usize {
+        lock(&self.shared.reader).link_pages_held()
+    }
+
     pub fn set_paper(&self, paper: PaperKind) {
         let mut reader = lock(&self.shared.reader);
         reader.set_paper(paper);
@@ -567,6 +610,11 @@ impl Engine {
         lock(&self.shared.worker_pids).clone()
     }
 
+    /// How many of the workers running now said their walls were up: the App Sandbox on and their Mach rights dropped.
+    pub fn walled_workers(&self) -> u32 {
+        self.shared.walled_workers.load(Ordering::Relaxed)
+    }
+
     /// The footprint of every worker running now, from outside.
     pub fn workers_footprint(&self) -> (u64, u64) {
         let pids = lock(&self.shared.worker_pids).clone();
@@ -656,6 +704,7 @@ fn run_guarded(shared: &Shared) {
         note_change(shared, note);
         tell_selecting(shared, selecting);
         *lock(&shared.worker_pids) = Vec::new();
+        shared.walled_workers.store(0, Ordering::Relaxed);
         shared.settled.notify_all();
         if has_ops {
             signal_ops(shared);
@@ -733,6 +782,20 @@ fn run(shared: &Shared) {
         };
         resting_since = None;
         lock(&shared.reader).note_started(&job, None);
+        if matches!(job.kind, JobKind::Links) {
+            // Read from the file's structure, here and with no worker. Only a file a worker already has open and answering, so a disk gone to sleep holds this thread no longer than a draw would: a page that isn't drawn yet has its links read when it is.
+            // Through the renderer's own open file and its password, so the links are of the version being drawn, a protected file's too. A file seen replaced and not taken up yet offers none: they'd be the new version's over the old pages.
+            let links = renderers.get(&job.file).filter(|open| !open.replaced && !open.doc.file_seen_changed()).and_then(|open| open.doc.read_structure(|file, password| recto_core::nav::page_links_in(file, password, &[job.source_page]).ok().and_then(|read| read.into_iter().next()).map(|(_, links)| Arc::new(links))));
+            let mut reader = lock(&shared.reader);
+            let outcome = match links {
+                Some(found) => Outcome::Links(found),
+                None => Outcome::Cancelled,
+            };
+            reader.finish(job, outcome);
+            drop(reader);
+            shared.settled.notify_all();
+            continue;
+        }
         let mut file_changed = false;
         let outcome = match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
             Ok(open) => {
@@ -794,7 +857,16 @@ fn run(shared: &Shared) {
 }
 
 fn publish_workers(shared: &Shared, renderers: &mut HashMap<PathBuf, OpenDoc>) {
-    let by_file: Vec<(PathBuf, u32)> = renderers.iter_mut().filter_map(|(path, open)| Some((path.clone(), open.doc.worker_pid()?))).collect();
+    let mut walled = 0;
+    let by_file: Vec<(PathBuf, u32)> = renderers
+        .iter_mut()
+        .filter_map(|(path, open)| {
+            let pid = open.doc.worker_pid()?;
+            walled += u32::from(open.doc.worker_walled() == Some(true));
+            Some((path.clone(), pid))
+        })
+        .collect();
+    shared.walled_workers.store(walled, Ordering::Relaxed);
     *lock(&shared.worker_pids) = by_file.iter().map(|(_, pid)| *pid).collect();
     *lock(&shared.workers_by_file) = by_file;
 }
@@ -937,6 +1009,8 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
     let doc = &mut open.doc;
     match &job.kind {
         JobKind::Text { .. } => Outcome::TextFailed,
+        // Read before a renderer's asked for: see the thread's loop.
+        JobKind::Links => Outcome::Links(None),
         JobKind::Size => match doc.page_size(job.source_page) {
             Ok((width, height)) => Outcome::Size(PageBox { width, height }),
             Err(failure) if whole_file(failure) => Outcome::DocumentFailed(failure.message()),

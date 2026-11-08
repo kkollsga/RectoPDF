@@ -553,6 +553,8 @@ pub(crate) fn budget(path: &Path, args: &BudgetArgs) -> Result<Value, AgentError
         "heavy_retries": report.heavy_retries,
         "stopped_early": report.stopped_early,
         "spawns": report.spawns,
+        "walled": report.spawns > 0 && report.walled_spawns == report.spawns,
+        "walled_spawns": report.walled_spawns,
         "retirements": report.retirements,
         "memory_kills": report.memory_kills,
         "deadline_kills": report.deadline_kills,
@@ -827,7 +829,7 @@ mod tests {
             return;
         }
         let channel = Channel::inherited().unwrap();
-        send_all(&channel, &proto::encode_hello(std::process::id()), &[]).unwrap();
+        send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled: false }), &[]).unwrap();
         let mut reader = FrameReader::default();
         let mut kept = Vec::new();
         loop {

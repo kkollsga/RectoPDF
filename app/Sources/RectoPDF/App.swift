@@ -411,7 +411,21 @@ final class Bridge: AppListener, @unchecked Sendable {
         case .closeWindow: windowController?.window.performClose(nil)
         case .showSavePanel: showSavePanel()
         case .confirmClose: confirmClose()
+        case .showGoTo: windowController?.startPageEditing()
         }
+    }
+
+    /// The last address a quiet run would have opened, for QA: it opens nothing on a test's say-so.
+    private(set) var addressOpenedForQA: String?
+
+    /// An address the person chose to open on the sheet Rust worded: the system opens it in the browser or mail app. Nothing else reaches here.
+    func openAddress(_ address: String) {
+        if isQuiet {
+            addressOpenedForQA = address
+            return
+        }
+        guard let url = URL(string: address) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     /// Save As's sheet, the system's own, with Rust's words: the name it suggests, the folder, and a line for a signed document.
