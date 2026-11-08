@@ -35,7 +35,8 @@ fi
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
-if [ -f "$lib" ] && [ "$(sha "$lib")" = "$DYLIB_SHA256" ] && [ "$attest" = 0 ]; then
+# Its third-party licences come with it, for the notices (tools/notices.py): a checkout from before they were kept fetches once more.
+if [ -f "$lib" ] && [ "$(sha "$lib")" = "$DYLIB_SHA256" ] && [ -f "$dest/licenses/pdfium.txt" ] && [ "$attest" = 0 ]; then
   echo "$lib"
   exit 0
 fi
@@ -68,7 +69,7 @@ if tar -tzf "$tarball" | grep -E '(^/|(^|/)\.\.(/|$))' >&2; then
   exit 1
 fi
 mkdir "$work/unpacked"
-tar -xzf "$tarball" -C "$work/unpacked" lib/libpdfium.dylib LICENSE VERSION args.gn
+tar -xzf "$tarball" -C "$work/unpacked" lib/libpdfium.dylib LICENSE VERSION args.gn licenses
 got="$(sha "$work/unpacked/lib/libpdfium.dylib")"
 if [ "$got" != "$DYLIB_SHA256" ]; then
   echo "pdfium: library digest is $got, expected $DYLIB_SHA256. Stopping." >&2
@@ -76,6 +77,9 @@ if [ "$got" != "$DYLIB_SHA256" ]; then
 fi
 mkdir -p "$dest"
 cp -- "$work/unpacked/LICENSE" "$work/unpacked/VERSION" "$work/unpacked/args.gn" "$dest/"
+# Text only, and only regular files: under the tarball's digest, but read later by the notices generator.
+rm -rf "$dest/licenses" && mkdir -p "$dest/licenses"
+find "$work/unpacked/licenses" -maxdepth 1 -type f -exec cp -- {} "$dest/licenses/" \;
 # Into place in one step, so a run beside this one sees the old file or the whole new one. A unique name in the same folder, so two runs don't share it.
 partial="$(mktemp "$dest/libpdfium.XXXXXX")"
 cp -- "$work/unpacked/lib/libpdfium.dylib" "$partial"
