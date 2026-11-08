@@ -119,3 +119,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "Zoom level should auto hid 3s after last zoom change, and similar behaviour for page number."
 - "The margin above first page, and below last page should be 50% of page height"
 - "When you are testing the app it flashes open in lower left corner. Is it possible to test the app in the background? Ie headless?" A quiet run must never show a window on the screen, not even for a moment (rule: quiet runs never take the screen).
+
+## Product rules from the owner, before the first release (2026-11-08)
+- The contents helper (Generate contents, through distillPDF) reads untrusted PDFs outside the renderer's sandbox. Asked what 0.1.0 should do: "Turn its image decoding off". Headings come from text.
+- The ✦ agent icon does nothing until the agent sidebar ships. Asked what 0.1.0 should do with it: "Keep it as it is".
