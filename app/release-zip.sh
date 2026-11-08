@@ -79,7 +79,9 @@ team_of() { codesign -dv --verbose=2 "$1" 2>&1 | sed -n 's/^TeamIdentifier=//p';
 check_built() {
     echo "==> Verify the app"
     codesign --verify --deep --strict "$APP"
-    for f in "$APP/Contents/MacOS/"*; do
+    # The renderer is sandboxed, signed as it should be, and nothing could run in its place outside the sandbox.
+    "$APP_DIR/render-helper.sh" --check "$APP"
+    for f in "$APP/Contents/MacOS/"* "$APP/Contents/Helpers/RectoRender.app/Contents/MacOS/"* "$APP/Contents/Helpers/RectoRender.app/Contents/Frameworks/"*; do
         lipo -archs "$f" | grep -qx arm64 || { echo "unexpected architectures in $f: $(lipo -archs "$f")" >&2; exit 1; }
     done
     [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION" ] \
@@ -164,6 +166,7 @@ sign_it() {
     "$APP_DIR/build.sh" --sign-only
     echo "==> Developer ID: team $(team_of "$APP")"
     [ "$(team_of "$APP")" = "$TEAM_ID" ] || { echo "the app isn't signed by team $TEAM_ID" >&2; exit 1; }
+    [ "$(team_of "$APP/Contents/Helpers/RectoRender.app")" = "$TEAM_ID" ] || { echo "the renderer helper isn't signed by team $TEAM_ID" >&2; exit 1; }
     echo "==> Notarize and staple the app (waits for Apple)"
     ditto -c -k --sequesterRsrc --keepParent "$APP" "$WORK/notarize.zip"
     notarize "$WORK/notarize.zip"
@@ -216,6 +219,7 @@ check_zip() {
     (cd "$OUT" && shasum -a 256 -c SHA256SUMS >/dev/null)
     "$APP/Contents/MacOS/recto-updater" check-zip "$OUT/$ZIP" "$check"
     codesign --verify --deep --strict "$check/RectoPDF.app"
+    "$APP_DIR/render-helper.sh" --check "$check/RectoPDF.app"
     [ -x "$check/RectoPDF.app/Contents/MacOS/recto-updater" ] || { echo "the zipped app has no installer, so it could never update again" >&2; exit 1; }
     if [ "$1" = signed ]; then
         [ "$(team_of "$check/RectoPDF.app")" = "$TEAM_ID" ] || { echo "the zipped app lost its signature" >&2; exit 1; }
@@ -228,6 +232,7 @@ if [ "$CHECK_SIGNED" = 1 ]; then
     # In the signing job, once the keys are gone: the stapled app runs and draws, and the zip is one the updater takes.
     [ "$(team_of "$APP")" = "$TEAM_ID" ] || { echo "the app isn't signed by team $TEAM_ID" >&2; exit 1; }
     xcrun stapler validate "$APP"
+    "$APP_DIR/render-helper.sh" --check "$APP"
     run_it
     check_zip signed
 elif [ "$ALREADY_BUILT" = 1 ]; then

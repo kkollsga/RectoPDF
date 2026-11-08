@@ -713,7 +713,8 @@ fn next_step(code: &str, exit: i32) -> &'static str {
         "not_built" => "Tell the user this isn't in this version yet.",
         "too_large_at_this_scale" => "Try a smaller `--scale`. 2 is twice the page's size, and 1 is its own.",
         "page_too_large_to_read" => "Tell the user this page can't be read. The rest of the document may be fine.",
-        "render_worker_missing" => "Tell the user RectoPDF's install is incomplete: `recto-render-service` must be in the same folder as `recto`. In a source tree, `cargo build --workspace` builds both, which `cargo build -p recto-cli` doesn't.",
+        "render_worker_missing" => "Tell the user RectoPDF's install is incomplete: `recto-render-service` must be in the app's `Contents/Helpers/RectoRender.app`, or in a source tree in the same folder as `recto`. There, `cargo build --workspace` builds both, which `cargo build -p recto-cli` doesn't.",
+        "renderer_not_sandboxed" => "Tell the user this copy of RectoPDF is signed wrong, so its renderer refuses to read any PDF. Installing a release again fixes it. In a source tree, `app/build.sh` signs the helper as it should be.",
         "render_library_missing" => "Tell the user RectoPDF's install is incomplete. In a source tree, `tools/pdfium.sh` fetches the library.",
         "bad_command" => "`recto help` lists every command.",
         "bad_path" => "Give the whole path. `recto` does this for you.",
@@ -2567,6 +2568,9 @@ mod tests {
         let library = AgentError::from(recto_render_service::RenderFailure::LibraryMissing);
         assert!(library.message.contains("libpdfium.dylib"), "{}", library.message);
         assert!(library.next.contains("tools/pdfium.sh"), "{}", library.next);
+        let unsandboxed = AgentError::from(recto_render_service::RenderFailure::Unsandboxed);
+        assert!(unsandboxed.message.contains("sandbox"), "{}", unsandboxed.message);
+        assert!(unsandboxed.next.contains("signed wrong"), "{}", unsandboxed.next);
     }
 
     /// Failure: `4-x-` reads as `4-`, or a limit of none is quietly answered with one.

@@ -98,8 +98,9 @@ fn copy_app(to_folder: &Path, version: &str) -> PathBuf {
     app
 }
 
+/// The outer app only. `--deep` would sign the renderer helper again without its sandbox, and its worker would then refuse to draw.
 fn sign(app: &Path) {
-    let output = Command::new("/usr/bin/codesign").args(["--force", "--deep", "--sign", "-"]).arg(app).output().unwrap();
+    let output = Command::new("/usr/bin/codesign").args(["--force", "--sign", "-"]).arg(app).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
@@ -150,7 +151,10 @@ impl Bed {
                 sign(&app);
             }
             Broken::NoRenderer => {
-                std::fs::copy("/usr/bin/true", macos.join("recto-render-service")).unwrap();
+                let contents = app.join("Contents");
+                std::fs::copy("/usr/bin/true", contents.join("Helpers/RectoRender.app/Contents/MacOS/recto-render-service")).unwrap();
+                let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/render-helper.sh");
+                assert!(Command::new(helper).arg("--sign").arg(&contents).status().unwrap().success());
                 sign(&app);
             }
         }

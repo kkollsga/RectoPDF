@@ -271,20 +271,21 @@ pub enum ExportRefusal {
 }
 
 impl ServiceConfig {
-    /// Finds the worker beside this program (or one folder up, for a test binary in `deps/`) and PDFium beside the worker or in the
-    /// `pdfium` folder `tools/pdfium.sh` fills. In debug builds only, `RECTO_RENDER_SERVICE` and `RECTO_PDFIUM_LIB` override: nothing shipped loads code from
-    /// a path in its environment.
+    /// Finds the worker: in the app's sandboxed helper (`Contents/Helpers/RectoRender.app`) for a program in the app's `Contents/MacOS`, else beside this program, or one folder up
+    /// for a test binary in `deps/`. This program's path is followed through links first, so `recto` linked onto `PATH` finds the same helper the app uses. PDFium is beside the worker,
+    /// in the helper's `Frameworks`, or in the `pdfium` folder `tools/pdfium.sh` fills. In debug builds only, `RECTO_RENDER_SERVICE` and `RECTO_PDFIUM_LIB` override: nothing shipped loads
+    /// code from a path in its environment.
     pub fn discover() -> Result<Self, RenderFailure> {
-        let exe_name = format!("recto-render-service{}", std::env::consts::EXE_SUFFIX);
+        let exe_name = format!("{}{}", crate::bundle::WORKER, std::env::consts::EXE_SUFFIX);
         let worker_exe = match dev_override("RECTO_RENDER_SERVICE") {
             Some(path) => PathBuf::from(path),
             None => {
                 let this = std::env::current_exe().map_err(|_| RenderFailure::WorkerMissing)?;
+                let this = std::fs::canonicalize(&this).unwrap_or(this);
                 let here = this.parent().ok_or(RenderFailure::WorkerMissing)?;
-                [Some(here), here.parent()]
+                [crate::bundle::helper_worker(here), Some(here.join(&exe_name)), here.parent().map(|up| up.join(&exe_name))]
                     .into_iter()
                     .flatten()
-                    .map(|dir| dir.join(&exe_name))
                     .find(|path| path.is_file())
                     .ok_or(RenderFailure::WorkerMissing)?
             }
@@ -303,8 +304,10 @@ impl ServiceConfig {
             None => {
                 let dir = worker_exe.parent().ok_or(RenderFailure::WorkerMissing)?;
                 let beside = dir.join(&library);
-                let fetched = dir.parent().map(|parent| parent.join("pdfium").join(&library));
-                [Some(beside), fetched].into_iter().flatten().find(|path| path.is_file()).ok_or(RenderFailure::LibraryMissing)?
+                let up = dir.parent();
+                let frameworks = up.map(|parent| parent.join("Frameworks").join(&library));
+                let fetched = up.map(|parent| parent.join("pdfium").join(&library));
+                [Some(beside), frameworks, fetched].into_iter().flatten().find(|path| path.is_file()).ok_or(RenderFailure::LibraryMissing)?
             }
         };
         Ok(Self { worker_exe, pdfium_lib, heavy_slot: HeavySlot::session(), extra_env: Vec::new(), replace_args: None })
@@ -336,6 +339,8 @@ pub enum RenderFailure {
     WorkerMissing,
     /// PDFium isn't where it should be. `tools/pdfium.sh` puts it there.
     LibraryMissing,
+    /// The worker refused to run, because it's in the app and its sandbox isn't on: the app is signed wrong. It read nothing.
+    Unsandboxed,
     /// The file couldn't be opened or the worker couldn't be started.
     Unavailable,
     NotFound,
@@ -429,6 +434,7 @@ impl RenderFailure {
         match self {
             Self::WorkerMissing => "render_worker_missing",
             Self::LibraryMissing => "render_library_missing",
+            Self::Unsandboxed => "renderer_not_sandboxed",
             Self::Unavailable => "render_unavailable",
             Self::NotFound => "file_not_found",
             Self::NeedsPassword => "needs_password",
@@ -461,8 +467,9 @@ impl RenderFailure {
     /// Plain words for a person.
     pub fn message(self) -> String {
         match self {
-            Self::WorkerMissing => "RectoPDF's page renderer, `recto-render-service`, wasn't found beside `recto`, so no page can be read or drawn.".into(),
-            Self::LibraryMissing => "RectoPDF's PDF library, `libpdfium.dylib`, wasn't found beside `recto-render-service` or in `../pdfium/`, so no page can be read or drawn.".into(),
+            Self::WorkerMissing => "RectoPDF's page renderer, `recto-render-service`, wasn't found in `Contents/Helpers/RectoRender.app` or beside `recto`, so no page can be read or drawn.".into(),
+            Self::LibraryMissing => "RectoPDF's PDF library, `libpdfium.dylib`, wasn't found beside `recto-render-service`, in `../Frameworks/` or in `../pdfium/`, so no page can be read or drawn.".into(),
+            Self::Unsandboxed => "RectoPDF's page renderer wouldn't start, because its sandbox isn't on: this copy of RectoPDF is signed wrong, so it won't read any PDF. Install it again from a release.".into(),
             Self::Unavailable => "The page renderer couldn't be started.".into(),
             Self::NotFound => "That file couldn't be found.".into(),
             Self::NeedsPassword => "This PDF needs a password.".into(),
@@ -1561,6 +1568,7 @@ impl DocRenderer {
         }
         let (mut worker, ready) = started.map_err(|error| match error.kind() {
             io::ErrorKind::NotFound => RenderFailure::LibraryMissing,
+            io::ErrorKind::PermissionDenied => RenderFailure::Unsandboxed,
             _ => RenderFailure::Unavailable,
         })?;
         if let Some(ticket) = ticket {
@@ -1825,8 +1833,12 @@ impl Worker {
                 Ok(None) => {}
                 Err(_) => {
                     worker.child.kill_now();
-                    let no_library = worker.child.wait_bounded(EXIT_STATUS_WAIT) == Some(ChildExit::Code(exit_code::NO_LIBRARY));
-                    return Err(if no_library { io::ErrorKind::NotFound } else { io::ErrorKind::BrokenPipe }.into());
+                    return Err(match worker.child.wait_bounded(EXIT_STATUS_WAIT) {
+                        Some(ChildExit::Code(exit_code::NO_LIBRARY)) => io::ErrorKind::NotFound,
+                        Some(ChildExit::Code(exit_code::NO_WALL)) => io::ErrorKind::PermissionDenied,
+                        _ => io::ErrorKind::BrokenPipe,
+                    }
+                    .into());
                 }
             }
             if started.elapsed() > limit {

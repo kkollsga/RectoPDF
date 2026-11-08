@@ -1,18 +1,23 @@
 //! The renderer worker: one document, one thread drawing, killed from outside at any moment. Holds no policy beyond its own second-line
 //! limits. Designed so XPC can replace the transport: everything crosses as frames and handles on the channel, argv names only limits and
-//! the library, the document arrives as a descriptor, and the process has no file path to it.
+//! the library, the document arrives as a descriptor, and the process has no file path to it. In the app it runs sandboxed, in its own helper app, and checks that
+//! before it says hello: `recto_platform::wall`.
 
 use recto_platform::isolate::{self, Channel, Handle, SharedMemory, Wait};
 use recto_proto::contents::ContentsJob;
 use recto_platform::surface::SurfaceReceiver;
 use recto_proto::{self as proto, FailCode, Kind, PageSize, RegionReply, RenderJob, TextJob, TextReply, TileReply, TileStatus};
 use recto_render::{Cancel, Pdfium, PdfiumBackend, RenderBackend, TextOptions, TileOutcome};
-use recto_render_service::{control, exit_code, transport};
+use recto_platform::wall;
+use recto_render_service::{bundle, control, exit_code, transport};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use transport::{FrameReader, ReadError, send_all};
+
+/// Compiled as a release by `app/release-zip.sh`, which can't be changed afterwards. A release worker never runs without its walls, wherever it is.
+const RELEASE: bool = option_env!("RECTO_RELEASE").is_some();
 
 struct Args {
     pdfium: PathBuf,
@@ -44,6 +49,10 @@ fn main() {
     // Before the hello, so the host finds it waiting. The host may have sent no invitation: then there's no link, and shared memory does.
     let surfaces = SurfaceReceiver::from_invite();
     let Ok(pdfium) = Pdfium::load(&args.pdfium) else { std::process::exit(exit_code::NO_LIBRARY) };
+    // After loading, which asks system services for things, and before the hello, so no document can reach a worker whose walls aren't up.
+    if bundle::walls_required(std::env::current_exe().ok().as_deref(), RELEASE) && wall::put_up().is_err() {
+        std::process::exit(exit_code::NO_WALL);
+    }
     if send_all(&channel, &proto::encode_hello(std::process::id()), &[]).is_err() {
         std::process::exit(exit_code::ORPHANED);
     }

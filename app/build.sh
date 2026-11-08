@@ -23,17 +23,15 @@ APP="$BUILD/RectoPDF.app"
 VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' "$REPO/Cargo.toml" | head -1)"
 # The identity a release is signed with. `app/release-zip.sh --signed` sets it, and without it this is ad hoc.
 SIGN_IDENTITY="${RECTO_SIGN_IDENTITY:--}"
-# codesign is given the identity's SHA-1, never its name: it reads a name on its command line as Mac Roman, whatever the locale, so the owner's, with an "å" in it, is never
-# found ("no identity found", 2026-11-08). The name is matched here, byte for byte, against what the keychain lists.
+# By its SHA-1, as codesign can't find a name with a letter outside ASCII in it (render-helper.sh, `key`).
 if [ "$SIGN_IDENTITY" = - ]; then SIGN_ARGS=(--force --sign -); else
-    SIGN_KEY="$(security find-identity -v -p codesigning | awk -v want="\"$SIGN_IDENTITY\"" 'index($0, want) && $1 ~ /^[0-9]+\)$/ { print $2; exit }')"
-    [ -n "$SIGN_KEY" ] || { echo "the identity isn't in the keychain: $SIGN_IDENTITY" >&2; exit 1; }
+    SIGN_KEY="$("$APP_DIR/render-helper.sh" --key "$SIGN_IDENTITY")"
     SIGN_ARGS=(--force --sign "$SIGN_KEY" --options runtime --timestamp)
 fi
 
+# From the inside out, and never --deep, which would sign the renderer helper again without its sandbox.
 sign_app() {
-    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/libpdfium.dylib"
-    codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-render-service"
+    "$APP_DIR/render-helper.sh" --sign "$APP/Contents"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-indexer"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-headings"
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/recto-updater"
@@ -43,6 +41,7 @@ sign_app() {
 
 if [ "$mode" = --sign-only ]; then
     sign_app
+    "$APP_DIR/render-helper.sh" --check "$APP"
     echo "==> signed $APP"
     exit 0
 fi
@@ -74,13 +73,10 @@ echo "==> $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/RectoPDF"
-# Worker and library beside the app, where `ServiceConfig::discover` looks. Each is what `tools/pdfium.sh` checked.
 cp "$RUST_OUT/recto" "$APP/Contents/MacOS/recto"
-cp "$RUST_OUT/recto-render-service" "$APP/Contents/MacOS/recto-render-service"
 cp "$RUST_OUT/recto-indexer" "$APP/Contents/MacOS/recto-indexer"
 cp "$RUST_OUT/recto-headings" "$APP/Contents/MacOS/recto-headings"
 cp "$RUST_OUT/recto-updater" "$APP/Contents/MacOS/recto-updater"
-cp "$REPO/target/pdfium/libpdfium.dylib" "$APP/Contents/MacOS/libpdfium.dylib"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -114,5 +110,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+# The renderer: the worker and the library `tools/pdfium.sh` checked, in their sandboxed helper, where `ServiceConfig::discover` looks first. Signed by sign_app below.
+"$APP_DIR/render-helper.sh" --layout "$APP/Contents" "$RUST_OUT/recto-render-service" "$REPO/target/pdfium/libpdfium.dylib"
 sign_app
+"$APP_DIR/render-helper.sh" --check "$APP"
 echo "==> built $APP"

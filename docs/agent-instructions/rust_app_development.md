@@ -1296,6 +1296,24 @@ so **anything that must hold everywhere goes into a skill or the repo, not only 
   merge. Watch majors for on-disk format changes (a database 2 → 4 bump needed a converter).
 - Tidy at release time: open PRs, stale branches, worktrees, leftovers, dead code; ask about anything you didn't make.
 
+### 11.2.1 Signing a Mac app with a sandboxed helper inside
+
+- **Give codesign the identity's SHA-1, not its name.** codesign reads a name on its command line as Mac Roman, whatever the
+  locale, so a Developer ID whose name has a letter outside ASCII is "no identity found". A release flow that passed the
+  name from `security find-identity` would have failed at its first signing. Match the name against that list yourself,
+  byte for byte, and pass the hash.
+- **Never re-sign a bundle with `--deep` once something inside it carries entitlements.** `--deep --force` signs nested
+  code again without them: a sandboxed helper comes out unsandboxed, and a worker that checks its own wall refuses to run.
+  A test helper that copied the app and signed it `--deep` would have broken the renderer in an end-to-end update test.
+  Sign from the inside out, and keep one script for the layout, the signing and a check of the result, used by the
+  build, the release and the tests alike.
+- **A sandboxed process should test its wall, not trust its signature.** The sandbox comes from how the helper was signed,
+  so a packaging mistake removes it silently. A probe the sandbox must refuse, with the exact error it refuses with and
+  failing closed on anything else, costs microseconds per start.
+- **Development and release signatures get different bundle identifiers for a sandboxed helper,** since the identifier
+  names the container, and what the system does when a container meets a new signer is something you'd find out on the
+  user's Mac.
+
 ### 11.3 Infrastructure the user owns
 
 - Cloud resources (a Cloudflare Worker for rendezvous here) are set up by the user with their own tokens. Agents

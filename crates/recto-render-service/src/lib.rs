@@ -50,6 +50,56 @@ pub mod exit_code {
     pub const NO_LIBRARY: i32 = 74;
     pub const BAD_ARGUMENTS: i32 = 75;
     pub const PROTOCOL: i32 = 76;
+    /// It's in an app bundle, or a release, and its walls aren't up: the sandbox isn't on, or its Mach rights wouldn't go. It read no document. The helper is signed wrong.
+    pub const NO_WALL: i32 = 77;
+}
+
+/// Where the renderer lives in the app, and when it must be walled in. `docs/ENGINEERING.md`, "Renderer".
+pub mod bundle {
+    use std::path::{Path, PathBuf};
+
+    /// The helper app, in the main app's `Contents/Helpers`. Its own `.app`, because the App Sandbox takes its identity from a bundle's `Info.plist`.
+    pub const HELPER_APP: &str = "RectoRender.app";
+    /// The worker's file name, in the helper's `Contents/MacOS` and, in development, beside `recto`.
+    pub const WORKER: &str = "recto-render-service";
+
+    /// The helper's worker for a program in an app's `Contents/MacOS`: the app itself, `recto` and the other helpers there.
+    pub fn helper_worker(macos_dir: &Path) -> Option<PathBuf> {
+        Some(macos_dir.parent()?.join("Helpers").join(HELPER_APP).join("Contents/MacOS").join(format!("{WORKER}{}", std::env::consts::EXE_SUFFIX)))
+    }
+
+    /// Whether a worker at this path has to put its walls up before it reads a document: in any app bundle, or always in a release. Run from a bundle, it was put there to be sandboxed,
+    /// so one that isn't was signed wrong. Development and tests run it bare from `target/`, where it isn't. Not knowing where it is counts as a bundle.
+    pub fn walls_required(exe: Option<&Path>, release: bool) -> bool {
+        if release {
+            return true;
+        }
+        let Some(exe) = exe else { return true };
+        let folders: Vec<_> = exe.ancestors().skip(1).take(3).map(|dir| dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+        matches!(folders.as_slice(), [macos, contents, app] if macos == "MacOS" && contents == "Contents" && app.ends_with(".app"))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Failure: a worker in the shipped bundle skips its wall check, so a helper signed without the sandbox draws hostile files. Or a bare development worker demands a sandbox it can't have.
+        #[test]
+        fn only_a_bundled_or_released_worker_needs_its_walls() {
+            let bundled = Path::new("/Applications/RectoPDF.app/Contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service");
+            assert!(walls_required(Some(bundled), false));
+            assert!(walls_required(Some(Path::new("/tmp/Any.app/Contents/MacOS/recto-render-service")), false));
+            assert!(!walls_required(Some(Path::new("/repo/target/debug/recto-render-service")), false));
+            assert!(!walls_required(Some(Path::new("/repo/Contents/MacOS/recto-render-service")), false), "not in an app");
+            assert!(walls_required(Some(Path::new("/repo/target/release/recto-render-service")), true), "a release always");
+            assert!(walls_required(None, false), "not knowing where it is fails closed");
+            assert_eq!(helper_worker(Path::new("/A.app/Contents/MacOS")).unwrap(), bundled_in("/A.app"));
+        }
+
+        fn bundled_in(app: &str) -> PathBuf {
+            Path::new(app).join("Contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service")
+        }
+    }
 }
 
 /// Layout of the control page: one word the host writes and the worker reads, with no system call on either side.
