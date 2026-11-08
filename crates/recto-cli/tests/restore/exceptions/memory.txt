@@ -1,0 +1,1 @@
+memory. A new process's memory, threads and handles are its own: budgets, not state.

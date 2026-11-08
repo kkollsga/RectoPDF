@@ -1,0 +1,11 @@
+reader.counts. Jobs and steps of its own run.
+reader.documents_held Warm tabs come back cold, by rule: only the active tab loads, so the rest cost what a cold tab costs.
+reader.last_wake How long a wake took, and that this one was from a sleep file: about this launch.
+reader.left_picture_bytes Pictures warm tabs were left with, held for their sleep files: warm tabs come back cold, and a cold tab holds none.
+reader.selection.text_ Page text held for a selection, which is read again when it's wanted.
+reader.selection.unit What the last press took, words or lines. It says what a shift-click extends by, and nothing that shows.
+reader.tile_scale Comes from a zoom settled on, and a pinch at another zoom leaves it where it was.
+reader.tiles.attached Fewer are on layers if there's no preview under them: drawing, not state. What's visible is settled either way.
+reader.tiles.kept Tiles held off screen, which a new process doesn't have until it's been somewhere.
+reader.tiles.page_layers Pages laid out around the view.
+reader.tiles.previews_attached Previews behind sharp tiles, which depend on what the first draw was.

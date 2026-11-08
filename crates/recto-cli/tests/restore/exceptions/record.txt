@@ -1,0 +1,1 @@
+record. How many writes it's made and what its first frame was: it's the record of the restore itself.

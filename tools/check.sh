@@ -67,7 +67,13 @@ code_fingerprint() {
     env | grep -E '^(RECTO_|NEXTEST_|RUSTFLAGS=|RUSTDOCFLAGS=|CARGO_PROFILE_)' | sort || true
   } | shasum | cut -d' ' -f1
 }
-tree_is_clean() { [ -z "$(git status --porcelain)" ]; }
+# What's untracked and could still change a result: a file anywhere cargo, the app build or the tools read, such as a test file, a new crate or a
+# `.cargo/config.toml`, and the build's own files at the top. Not documents, the filter below, and not other files at the top, such as someone's notes:
+# nothing reads those, and counting them stopped a clean checkout's pass from being remembered at all.
+untracked_that_counts() {
+  git ls-files --others --exclude-standard | grep -vE '^docs/|\.md$' | grep -E '/|^(Cargo\.|rust-toolchain|clippy\.toml|rustfmt\.toml|\.heavy-inputs$)' || true
+}
+tree_is_clean() { [ -z "$(git status --porcelain --untracked-files=no)" ] && [ -z "$(untracked_that_counts)" ]; }
 # The commit a run tested goes to the push guard, not whatever HEAD is by the end.
 stamp_checked() {
   local commit=${1:-$(git rev-parse HEAD)}
@@ -79,18 +85,19 @@ docs_only_since() {
 }
 branch=$(git symbolic-ref --short -q HEAD || echo detached)
 
-# Whether a ledger line's commit still counts against this branch's budget. On `main`, a budget per range of commits not yet pushed: every merge is new code
-# and needs its check, so a count for all time would mean nothing, and a push starts the count again. Elsewhere, runs since the branch left main: a branch
-# cut again under an old name, or one that has taken in main, has new code under test.
+# Whether a ledger line's commit still counts against this branch's budget. Only a run of code still in HEAD's history counts: a merge taken back off, or
+# commits set aside, aren't what's being checked now (on main, a merge identical to a passed branch was refused, its count made of runs of two merges that
+# were no longer there). On `main`, a budget per range of commits not yet pushed: every merge is new code and needs its check, so a count for all time
+# would mean nothing, and a push starts the count again. Elsewhere, runs since the branch left main: a branch cut again under an old name, or one that has
+# taken in main, has new code under test.
 counts_now() {
   local commit=${1%+dirty} since
+  git merge-base --is-ancestor "$commit" HEAD 2>/dev/null || return 1
   if [ "$branch" = main ]; then
     git rev-parse -q --verify refs/remotes/origin/main >/dev/null || return 0
     ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main 2>/dev/null
   else
     since=$(git merge-base main HEAD 2>/dev/null) || return 0
-    # A commit that's gone can't be placed, so it still counts.
-    git cat-file -e "$commit" 2>/dev/null || return 0
     git merge-base --is-ancestor "$since" "$commit" 2>/dev/null
   fi
 }
@@ -197,7 +204,7 @@ case "$mode" in
   *) usage ;;
 esac
 # HEAD and everything uncommitted, to tell whether the code under test stayed what it was.
-code_state() { { git rev-parse HEAD; git status --porcelain; } | shasum | cut -d' ' -f1; }
+code_state() { { git rev-parse HEAD; git status --porcelain --untracked-files=no; untracked_that_counts; } | shasum | cut -d' ' -f1; }
 # Prints how long the last stage took, and leaves the name of the one now running where the caller can see it.
 stage() {
   local at
@@ -248,7 +255,7 @@ run() {
 tools/pdfium.sh >/dev/null
 check_mark=$(mktemp "${TMPDIR:-/tmp}/recto-check.XXXXXX")
 trap 'rm -f "$check_mark"' EXIT
-export -f run stage code_state
+export -f run stage code_state untracked_that_counts
 export check_mark mode tests_first
 export tests_joined="${tests[*]}"
 status=0

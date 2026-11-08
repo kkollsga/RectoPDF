@@ -1,0 +1,11 @@
+panes.panes.len
+panes.panes[].fit
+panes.panes[].magnification
+panes.panes[].page
+panes.panes[].pages
+panes.panes[].scroll_y
+panes.panes[].settled
+panes.panes[].spread
+panes.panes[].tab
+panes.panes[].thread
+panes.reading

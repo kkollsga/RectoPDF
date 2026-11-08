@@ -26,13 +26,13 @@ The whole suite decides a hand-back. It's never how you find out why something c
 ## What the tools do
 
 - **A pass on identical code counts.** `--full` on a clean tree whose code has passed before says which commit passed it and when, lets the push guard accept this commit, and runs nothing. That covers reverts, doc-only commits and a merge identical to its branch. Documents are `docs/` and any `.md`. `CHECK_AGAIN=1` runs it for real, to look into a pass you have reason to doubt.
-- **A branch gets two full runs:** one for hand-back, one after a review's fixes. The count starts again when the branch takes in new code from `main`. `main` gets two per range of commits not yet pushed, and a push starts its count again.
+- **A branch gets two full runs:** one for hand-back, one after a review's fixes. The count starts again when the branch takes in new code from `main`. `main` gets two per range of commits not yet pushed, and a push starts its count again. Only runs of commits still in HEAD's history count: a merge taken back off, or commits set aside, no longer do.
 - **A third run needs a reason:** `tools/check.sh --full --why "what this run decides"`. It starts at once, and the reason goes in the ledger with the time, branch, commit, result and seconds. It's a speed bump to make the run deliberate and visible, never a lock. If you're asked for one, first ask whether a smaller check would answer it.
 - **Stopping at the first failure** means a failed run shows one failure. A run stopped from outside, or refused by the queue, doesn't count against the budget.
 
 ## What a pass doesn't cover
 
-The memory of a pass covers the tracked code, the test tools' versions (nextest, Swift, macOS), whether the Windows target is installed, and settings that change what tests do (`RECTO_*`, `NEXTEST_*`, `RUSTFLAGS`). It doesn't cover the real PDFs in the distillPDF checkout, which `recto-reader`'s `looks_on_real_files` and the fuzz seeds read when they're there. After changing those, use `CHECK_AGAIN=1`.
+An untracked file stops a pass being remembered only if something could read it: one inside a folder, such as a new test file or crate, or a build file at the top (`Cargo.*`, `rust-toolchain*`, `clippy.toml`, `rustfmt.toml`, `.heavy-inputs`). Untracked documents and other files at the top, such as notes, don't. The memory of a pass covers the tracked code, the test tools' versions (nextest, Swift, macOS), whether the Windows target is installed, and settings that change what tests do (`RECTO_*`, `NEXTEST_*`, `RUSTFLAGS`). It doesn't cover the real PDFs in the distillPDF checkout, which `recto-reader`'s `looks_on_real_files` and the fuzz seeds read when they're there. After changing those, use `CHECK_AGAIN=1`.
 
 A test that fails only sometimes can pass once and then be remembered, so a failure you've seen still gets a fix. CI and the reviews still run on everything.
 

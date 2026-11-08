@@ -178,7 +178,7 @@ impl Bed {
         let output = command.args(["qa", "start", "--app", self.app.join("Contents/MacOS/RectoPDF").to_str().unwrap(), "--time-limit", "3m", "--json"]).stderr(std::process::Stdio::inherit()).output().unwrap();
         let reply: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&output.stdout)));
         assert_eq!(reply["ok"], true, "{reply}");
-        let run = Run { state: &self.state, pid: reply["data"]["pid"].as_u64().unwrap() as u32, done: false };
+        let run = Run::attach(&self.state, reply["data"]["pid"].as_u64().unwrap() as u32);
         run.ok(&["qa", "scroller-style", "overlay"]);
         run
     }
@@ -215,14 +215,14 @@ impl Bed {
     /// Waits for the old process to end and a new one to answer, which is what the user sees of an update.
     fn wait_for_new_app(&self, mut old: Run<'_>) -> Run<'_> {
         let old_pid = old.pid;
-        old.done = true;
+        old.ended();
         let began = Instant::now();
         loop {
             let (reply, code) = self.state.json(&["status"]);
             if code == 0 && reply["ok"] == true {
                 let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
                 if pid != old_pid && local::process_counters(old_pid).is_none() {
-                    return Run { state: &self.state, pid, done: false };
+                    return Run::attach(&self.state, pid);
                 }
                 // It's still the old one: no point in waiting if it's given up.
                 if pid == old_pid {
@@ -238,13 +238,13 @@ impl Bed {
     /// The same, when what's wanted is one version in particular, as what comes up first may be one that gets sent back.
     fn wait_for_new_app_of<'a>(&'a self, mut old: Run<'a>, version: &str) -> Run<'a> {
         let old_pid = old.pid;
-        old.done = true;
+        old.ended();
         let began = Instant::now();
         loop {
             let (status, code) = self.state.json(&["update", "status"]);
             let (pid, _) = self.state.json(&["status"]);
             if code == 0 && status["ok"] == true && status["data"]["version"] == version && pid["data"]["pid"].as_u64().is_some_and(|pid| pid as u32 != old_pid) {
-                return Run { state: &self.state, pid: pid["data"]["pid"].as_u64().unwrap() as u32, done: false };
+                return Run::attach(&self.state, pid["data"]["pid"].as_u64().unwrap() as u32);
             }
             assert!(began.elapsed() < Duration::from_secs(90), "{status}\n{}", self.log());
             std::thread::sleep(Duration::from_millis(20));
@@ -445,7 +445,7 @@ fn the_launch_guard_goes_back_by_itself() {
     let run = loop {
         let (status, code) = bed.state.json(&["status"]);
         if code == 0 && status["ok"] == true {
-            break Run { state: &bed.state, pid: status["data"]["pid"].as_u64().unwrap() as u32, done: false };
+            break Run::attach(&bed.state, status["data"]["pid"].as_u64().unwrap() as u32);
         }
         assert!(began.elapsed() < Duration::from_secs(60), "{status}\n{}", bed.log());
         std::thread::sleep(Duration::from_millis(20));
@@ -521,7 +521,7 @@ fn an_installer_killed_after_the_swap_loses_nothing() {
         assert!(began.elapsed() < Duration::from_secs(60), "{}", bed.log());
         std::thread::sleep(Duration::from_millis(20));
     }
-    run.done = true;
+    run.ended();
     // The installer's died, with the swap done and nothing started.
     let plan = recto_update::plan::Files::in_state(&bed.state.root).plan();
     let began = Instant::now();
@@ -759,7 +759,7 @@ fn what_an_agent_changes_about_updates_goes_in_the_changes_log() {
 fn a_development_build_only_asks_and_installing_needs_full() {
     let Some(_) = super::app_path() else { return };
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let status = run.ok(&["update", "status"]);
     assert_eq!(status["build"], "development");
     assert_eq!(status["next_wake_in_ms"], Value::Null, "no timer at all");
@@ -892,7 +892,7 @@ fn measure_what_the_updater_costs_at_rest() {
     };
     let Some(bed) = Bed::new() else { return };
     let dev_state = State::new();
-    let dev = Run::start(&dev_state).unwrap();
+    let dev = Run::on(&dev_state).unwrap();
     let dev_numbers = watch(&dev);
     dev.quit();
     let run = bed.start();
