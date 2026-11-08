@@ -413,6 +413,16 @@ pub fn process_path(pid: u32) -> Option<PathBuf> {
     Some(PathBuf::from(OsStr::from_bytes(&path[..length.min(path.len())])))
 }
 
+/// Whether a process with this number is running, whoever's it is: `kill` with no signal, where "not permitted" still means it's there. For files a run leaves behind, which go only once their maker is surely gone.
+pub fn process_exists(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else { return true };
+    if pid <= 0 {
+        return true;
+    }
+    // SAFETY: only a number goes in, and signal 0 sends nothing.
+    unsafe { libc::kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) }
+}
+
 /// Asks a process to end, or tells it to. Says whether it was there to be told.
 pub fn signal_process(pid: u32, kill: bool) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else { return false };

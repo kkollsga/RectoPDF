@@ -231,6 +231,11 @@ pub fn process_path(_pid: u32) -> Option<PathBuf> {
     None
 }
 
+/// Can't be asked here, so every process counts as running, and nothing of another run's is ever removed.
+pub fn process_exists(_pid: u32) -> bool {
+    true
+}
+
 pub fn signal_process(_pid: u32, _kill: bool) -> bool {
     false
 }
