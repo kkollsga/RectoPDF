@@ -501,6 +501,13 @@ impl Engine {
         lock(&self.shared.reader).has_selection()
     }
 
+    /// Selects Find's hit and brings it into view: characters `start..end` of a page, from 0. Off the UI thread.
+    pub fn reveal(&self, page: u32, start: u32, end: u32) {
+        let mut reader = lock(&self.shared.reader);
+        reader.reveal_range(recto_index::select::Range { start: recto_index::select::Place { page, at: start }, end: recto_index::select::Place { page, at: end } });
+        self.after(reader);
+    }
+
     pub fn has_document(&self) -> bool {
         lock(&self.shared.reader).has_document()
     }

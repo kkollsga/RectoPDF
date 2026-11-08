@@ -425,14 +425,21 @@ final class BookMark: NSView {
         delegate.core.windowShown(home: reader.home, tileLayers: UInt32(paneAreas.reduce(0) { $0 + ($1.report()["tile_layers"] as? Int ?? 0) }))
     }
 
-    /// Gives the keyboard to what's named. There's no Find field yet, so that's only kept.
+    /// Gives the keyboard to what's named: the page, the sidebar, or Find's field if Find is open.
     func applyFocus(_ view: String) {
         switch view {
         case "sidebar": window.makeFirstResponder(sidebar.table)
         case "page": window.makeFirstResponder(root)
+        case "find" where sidebar.find.model.open: sidebar.find.focusField()
         default: break
         }
         delegate.core.focusChanged(view: view)
+    }
+
+    /// ⌘F: Find's field takes the keyboard. Rust is opening Find, and showing the sidebar if it was hidden: the field takes it as soon as it's there, now if it already is.
+    func focusFind() {
+        sidebar.find.wantsFocus = true
+        if sidebar.find.model.open { sidebar.find.focusField() }
     }
 
     private func firstResponderChanged() {
@@ -448,6 +455,8 @@ final class BookMark: NSView {
         }
         if responder === sidebar.table || responder === sidebar.contentsTable {
             delegate.core.focusChanged(view: "sidebar")
+        } else if let editor = responder as? NSTextView, editor.delegate === sidebar.find.field {
+            delegate.core.focusChanged(view: "find")
         } else if responder === root || responder === window {
             delegate.core.focusChanged(view: "page")
         }

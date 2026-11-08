@@ -1865,6 +1865,144 @@ fn a_save_leaves_the_view_as_it_was() {
     assert!(saved.starts_with(&original) && saved.len() > original.len(), "and it was saved");
 }
 
+fn named_document(name: &str, count: usize, word: &str) -> TempPdf {
+    let list: Vec<Page> = (0..count).map(|index| Page::new(text_lines(&[&format!("{name} page {index}"), &format!("Here the word {word} shows")]))).collect();
+    TempPdf::new(&format!("{name}.pdf"), &pages(&list))
+}
+
+/// Failure: Find's field, list and steps don't do what `recto find` does, or the list grows over the tabs and contents (owner, 2026-11-07: "max height within scroll so it doesn't push everything of screen"), or Find takes room or keeps its hits once it's closed.
+#[test]
+fn find_in_the_sidebar_lists_steps_and_keeps_to_its_room() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(200);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let closed = run.report();
+    assert_eq!((closed["app"]["find"]["open"].as_bool(), closed["app"]["find"]["shown"].as_bool()), (Some(false), Some(false)), "nothing at rest: {}", closed["app"]["find"]);
+    let opened = run.ok(&["qa", "menu", "find.open"]);
+    let opened = wait_for(&run, |state| state["app"]["find"]["open"] == true).get("app").cloned().unwrap_or(opened);
+    assert_eq!(opened["focus_view"], "find", "⌘F gives the field the keyboard: {}", opened["find"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.settled();
+    let found = run.report();
+    let find = &found["app"]["find"];
+    assert_eq!((find["status"].as_str(), find["rows"].as_u64()), (Some("200 matches on 200 pages"), Some(400)), "{find}");
+    let room = found["app"]["window"]["height"].as_f64().unwrap();
+    assert!(find["list_height"].as_f64().unwrap() <= room * 0.4 && find["list_height"].as_f64().unwrap() > 0.0, "{find}");
+    assert_eq!(found["app"]["contents"]["footer_on_screen"], true, "the tabs and footer stay: {}", found["app"]["contents"]);
+    let stepped = run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    let stepped = run.report().get("app").cloned().unwrap_or(stepped);
+    assert_eq!((stepped["find"]["current_row"].as_u64(), stepped["place"].as_str()), (Some(1), Some("1 of 200")), "{}", stepped["find"]);
+    assert!(stepped["pages"]["highlight_rects"].as_u64().unwrap() > 0, "the hit is selected on the page");
+    run.ok(&["qa", "find-click", "5"]);
+    run.settled();
+    let clicked = run.report();
+    assert_eq!((clicked["app"]["find"]["current_row"].as_u64(), clicked["app"]["place"].as_str()), (Some(5), Some("3 of 200")), "{}", clicked["app"]["find"]);
+    run.ok(&["qa", "menu", "find.previous"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["current_row"], 3, "⇧⌘G");
+    let agent = run.ok(&["find", "--next"]);
+    assert_eq!(agent["current"]["page"], 3, "an agent's step goes on from the reader's: {agent}");
+    run.ok(&["qa", "find-key", "escape"]);
+    run.settled();
+    let gone = run.report();
+    assert_eq!((gone["app"]["find"]["open"].as_bool(), gone["app"]["find"]["shown"].as_bool()), (Some(false), Some(false)), "{}", gone["app"]["find"]);
+    let idle = run.ok(&["find"]);
+    assert_eq!((idle["state"].as_str(), idle["hits_listed"].as_u64()), (Some("idle"), Some(0)), "its hits went: {idle}");
+    assert_eq!(gone["session"]["find"]["draft"], "words", "what was typed stays for next time");
+}
+
+/// Failure: in a comparison Find looks in a pane that isn't the one being read, or stays with the old one when the reader moves (PLAN, comparison follow-ups).
+#[test]
+fn find_goes_by_the_pane_being_read() {
+    let Some(run) = Run::start() else { return };
+    let (left, right) = (named_document("left", 6, "apple"), named_document("right", 6, "quince"));
+    run.ok(&["open", left.0.to_str().unwrap()]);
+    run.ok(&["open", right.0.to_str().unwrap()]);
+    run.ok(&["compare", "--tabs", "#1,#2"]);
+    run.settled();
+    run.ok(&["qa", "pane-focus", "1"]);
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "quince"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["status"], "6 matches on 6 pages");
+    run.ok(&["qa", "pane-focus", "0"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["status"], "Not found", "found again in the pane now read");
+    run.ok(&["qa", "find-type", "apple"]);
+    run.settled();
+    run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    let state = run.report();
+    assert_eq!(state["app"]["find"]["current_row"], 1, "{}", state["app"]["find"]);
+}
+
+/// Failure: edit mode and a view's rotation are in the state record and nothing shows them (PLAN phase 3: they "draw what the state record already carries"), or Done doesn't leave edit mode.
+#[test]
+fn edit_mode_and_view_rotation_draw_what_the_record_carries() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "view-rotation", "1"]);
+    run.settled();
+    let turned = run.report();
+    let turns = turned["app"]["pages"]["page_turns"].as_array().unwrap().clone();
+    assert!(!turns.is_empty() && turns.iter().all(|turn| turn == 1), "every page drawn a quarter turn: {turns:?}");
+    assert_eq!(run.ok(&["edits"])["edited"], false, "and the file isn't edited by it");
+    run.ok(&["qa", "edit-mode", "on"]);
+    run.settled();
+    let panel = run.report()["app"]["panel"].clone();
+    assert_eq!(panel["open"], true, "the panel is open on edit mode's tools: {panel}");
+    assert_eq!(panel["items"][0]["id"], "edit_mode.done", "{panel}");
+    run.ok(&["qa", "panel", "edit_mode.done"]);
+    run.settled();
+    let done = run.report();
+    assert_eq!((done["app"]["panel"]["open"].as_bool(), done["session"]["edit_mode"].as_bool()), (Some(false), Some(false)), "{}", done["app"]["panel"]);
+    run.ok(&["qa", "view-rotation", "0"]);
+    run.settled();
+    assert!(run.report()["app"]["pages"]["page_turns"].as_array().unwrap().iter().all(|turn| turn == 0));
+}
+
+/// Failure: what Rust last heard of the field is put back into it while it's being typed in, so a late echo of "ab" takes away the "c" just typed (review, round 1). Here the session's word on the field changes under the editing field, as an echo would, and the field keeps what's typed; once it's left, it shows Rust's.
+#[test]
+fn find_never_types_over_what_is_being_typed() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(300);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "focus", "find"]);
+    for typed in ["w", "wo", "wor", "word"] {
+        let state = run.ok(&["qa", "find-type", typed]);
+        assert_eq!(state["find"]["untrusted"]["field"], typed, "{}", state["find"]);
+    }
+    run.ok(&["qa", "find-draft", "an echo"]);
+    run.settled();
+    let editing = run.report();
+    assert_eq!(editing["app"]["find"]["field_has_focus"], true);
+    assert_eq!(editing["app"]["find"]["untrusted"]["field"], "word", "never typed over while it's edited: {}", editing["app"]["find"]);
+    run.ok(&["qa", "focus", "page"]);
+    let left = wait_for(&run, |state| state["app"]["find"]["untrusted"]["field"] == "an echo");
+    assert_eq!(left["app"]["find"]["field_has_focus"], false);
+}
+
+/// Failure: the field takes the keyboard just before the session's draft reaches it, and then shows the old text for as long as it's focused, though nothing's been typed in it (the restore test after the merge with main: field "" with the draft "typed but not run"). Until typing starts, the field shows what the session has.
+#[test]
+fn find_shows_the_sessions_draft_until_typing_starts() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "focus", "find"]);
+    run.ok(&["qa", "find-draft", "set while focused"]);
+    let shown = wait_for(&run, |state| state["app"]["find"]["untrusted"]["field"] == "set while focused");
+    assert_eq!(shown["app"]["find"]["field_has_focus"], true, "still focused: {}", shown["app"]["find"]);
+    assert_eq!(shown["session"]["find"]["query"], "", "and not found, as it was only a draft: {}", shown["session"]["find"]);
+}
+
 /// Failure: the app draws its pages with a worker outside the sandbox, or the tile path breaks once the worker has dropped its Mach rights, and nothing an agent can read says so.
 /// The built app's helper is sandboxed, so every live worker must say its walls are up, and the tiles on screen came as IOSurfaces over the link, the only way one arrives.
 #[test]
@@ -2071,4 +2209,49 @@ fn usage_rights_alone_save_in_place_with_a_quiet_note() {
     let elsewhere = wait_for(&run, |state| state["app"]["document_name"] != saved["app"]["document_name"] || state["reader"]["pages"] == 3);
     run.settled();
     assert!(run.report()["app"]["copy_notice"].is_null(), "{}", elsewhere["app"]["copy_notice"]);
+}
+
+/// Failure: going to a Find hit by a click on its row or Return in the field leaves no mark for Back, so ⌘[ can't bring the reader to where they were reading, as it can after a link; or ⌘G's step, which only steps, marks the trail or takes the way forward away.
+#[test]
+fn a_find_hit_clicked_or_returned_to_is_a_jump_and_a_step_isnt() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(200);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let go = |state: &Value, id: &str| menu_item(state, id)["enabled"].clone();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.settled();
+    assert_eq!(go(&run.report(), "go.back"), json!(false), "nothing to go back to yet");
+    // Row 99 is page 50's hit: a page row, then its hit, for each page.
+    run.ok(&["qa", "find-click", "99"]);
+    let clicked = wait_for(&run, |state| state["app"]["place"] == "50 of 200");
+    assert_eq!(go(&clicked, "go.back"), json!(true), "a click on a hit is a jump: {}", clicked["app"]["find"]);
+    run.ok(&["qa", "menu", "go.back"]);
+    let back = wait_for(&run, |state| state["app"]["place"] == "1 of 200");
+    assert_eq!(go(&back, "go.forward"), json!(true));
+    run.ok(&["qa", "menu", "find.next"]);
+    let stepped = wait_for(&run, |state| state["app"]["place"] != "1 of 200");
+    assert_eq!(go(&stepped, "go.forward"), json!(true), "⌘G only steps, so the way forward stays: {}", stepped["app"]["place"]);
+    run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    let returned = run.report();
+    assert_eq!((go(&returned, "go.back"), go(&returned, "go.forward")), (json!(true), json!(false)), "Return is a jump, which takes the way forward: {}", returned["app"]["place"]);
+}
+
+/// Failure: a step asked for before a hit for it is known (⇧⌘G with Find closed, from the first page, so the last hit waits for the query's end) is done when the query has more while Find's field is still locked, and the session thread waits on itself; the UI thread then hangs on its next look at Find (found from the palette's Find Next).
+#[test]
+fn a_step_kept_for_the_querys_end_is_done_without_a_hang() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(300);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.ok(&["qa", "find-key", "escape"]);
+    wait_for(&run, |state| state["app"]["find"]["open"] == false);
+    // Opens Find with what was typed, finds it again from the start, and goes back round to the last hit once the end is known.
+    run.ok(&["qa", "menu", "find.previous"]);
+    let went = wait_for(&run, |state| state["app"]["place"] == "300 of 300");
+    assert_eq!(went["app"]["find"]["status"], "300 matches on 300 pages", "{}", went["app"]["find"]);
 }

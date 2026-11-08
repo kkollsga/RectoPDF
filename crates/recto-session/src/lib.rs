@@ -730,7 +730,7 @@ pub struct Session<L = DiskLoader> {
     woken: Vec<(TabId, Result<DocFacts, OpenError>, Option<FileStamp>)>,
     /// The last edit removed the page a tab was on, so its place moved to the nearest one. Read once with [`Session::take_place_lost`].
     place_lost: bool,
-    /// Find, as the reader left it. Nothing draws it yet.
+    /// Find, as the reader left it.
     find: FindRecord,
     /// Edit mode. Nothing draws it yet.
     edit_mode: bool,
@@ -2060,7 +2060,14 @@ impl<L: DocLoader> Session<L> {
             }
             text[..end].to_string()
         };
-        self.find = FindRecord { open, query: cut(query), draft: cut(draft) };
+        let (current, current_tab) = if query == self.find.query { (self.find.current, self.find.current_tab) } else { (None, None) };
+        self.find = FindRecord { open, query: cut(query), draft: cut(draft), current, current_tab };
+    }
+
+    /// The hit Find went to last, by its place, for the record.
+    pub fn set_find_current(&mut self, current: Option<(u32, u32)>, tab: Option<u32>) {
+        self.find.current = current;
+        self.find.current_tab = tab;
     }
 
     pub fn edit_mode(&self) -> bool {

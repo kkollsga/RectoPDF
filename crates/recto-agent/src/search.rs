@@ -25,7 +25,7 @@ const MAX_QUERY_BYTES: usize = 1024;
 /// How long one search may run before it stops and says where to go on from.
 const MAX_TIME: Duration = Duration::from_secs(30);
 /// How long one search may spend reading again pages that failed when their corpus was built, since each can cost a worker and a page's whole time. Past that they're said to have failed, as they did, and the clean pages behind them are still reached.
-const LIVE_REREAD_BUDGET: Duration = Duration::from_secs(5);
+pub(crate) const LIVE_REREAD_BUDGET: Duration = Duration::from_secs(5);
 /// How long past that a ranked search may go on reading its top pages for their snippets, a page at a time when there's no corpus. Past that, the rest are left out and it says how many.
 const SECOND_PASS_TIME: Duration = Duration::from_secs(5);
 /// Characters of context on each side of a hit.
@@ -39,10 +39,10 @@ const MAX_MATCH_SHOWN: usize = 400;
 const MAX_LISTED_EMPTY: usize = 200;
 
 /// Which pages to look at, in order: position in the document as edited, which file, and which page there.
-struct Plan {
+pub(crate) struct Plan {
     files: Vec<PlanFile>,
-    pages: Vec<(u32, u16, u32)>,
-    tab: u32,
+    pub(crate) pages: Vec<(u32, u16, u32)>,
+    pub(crate) tab: u32,
 }
 
 struct PlanFile {
@@ -117,6 +117,13 @@ fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<
     let range = pages.map(|pages| parse_pages(pages, true)).transpose()?;
     access.with(|s| {
         let id = select(s, tab)?;
+        plan_of(s, id, pages, range)
+    })
+}
+
+/// The pages of one tab to look at, as its edits have them, under the session's lock: a few bytes a page.
+pub(crate) fn plan_of<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: recto_session::TabId, pages: Option<&str>, range: Option<(u32, u32)>) -> Result<Plan, AgentError> {
+    {
         let total = s.pages_in(id);
         let (start, len) = range.unwrap_or((0, total));
         // `5-` runs to the end, which is what a search's `next_page` is for.
@@ -135,7 +142,7 @@ fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<
             }
         };
         Ok(Plan { files, pages: list, tab: id.0 })
-    })
+    }
 }
 
 /// How one file's pages get read in this search. Worked out when its first page comes up, and never again: a corpus doesn't change.
@@ -302,19 +309,19 @@ fn find_regex_hits(text: &str, matcher: &RegexMatcher, room: usize, deadline: In
 
 /// The settings of one search.
 #[derive(Clone, Copy)]
-struct Settings<'a> {
-    limit: usize,
-    context: usize,
+pub(crate) struct Settings<'a> {
+    pub(crate) limit: usize,
+    pub(crate) context: usize,
     /// When it stops reading, and stops counting.
-    deadline: Instant,
+    pub(crate) deadline: Instant,
     /// Past this no page is drawn to look for hidden text, and a page that needed it says it wasn't checked.
-    draw_until: Instant,
+    pub(crate) draw_until: Instant,
     /// Past this a ranked search reads no more of its top pages.
-    second_pass_until: Instant,
+    pub(crate) second_pass_until: Instant,
     /// How long it may spend reading again pages that failed when they were built.
-    live_budget: Duration,
-    indexing: Option<&'a dyn Indexing>,
-    force_scan: bool,
+    pub(crate) live_budget: Duration,
+    pub(crate) indexing: Option<&'a dyn Indexing>,
+    pub(crate) force_scan: bool,
 }
 
 /// What's been found so far. The same whichever way a page was read.
@@ -430,8 +437,8 @@ fn add_context(hit: &mut Value, text: &str, range: &Range<usize>, lines: usize) 
 }
 
 /// One page's text, whichever way it was read.
-struct PageView<'a> {
-    text: &'a str,
+pub(crate) struct PageView<'a> {
+    pub(crate) text: &'a str,
     also_spelled: Vec<&'a str>,
     has_tag_chars: bool,
     /// What a corpus has to say about it, if it came from one.
@@ -439,7 +446,7 @@ struct PageView<'a> {
 }
 
 /// What came of reading a page.
-enum Got<'a> {
+pub(crate) enum Got<'a> {
     Page(PageView<'a>),
     NoText,
     Failed,
@@ -449,13 +456,13 @@ enum Got<'a> {
 
 /// Where a page's text sits while it's in hand, so a search takes no allocation per page.
 #[derive(Default)]
-struct Slot {
+pub(crate) struct Slot {
     buffer: Vec<u8>,
     live: Option<recto_index::Normalized>,
 }
 
 /// Reads pages by whichever way each file's can be read, the one way for every kind of search.
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     plan: &'a Plan,
     indexing: Option<&'a dyn Indexing>,
     force_scan: bool,
@@ -476,7 +483,7 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    fn new(plan: &'a Plan, settings: &Settings<'a>) -> Self {
+    pub(crate) fn new(plan: &'a Plan, settings: &Settings<'a>) -> Self {
         Self { plan, indexing: settings.indexing, force_scan: settings.force_scan, current: None, corpus_open: None, routes: vec![FileRoute::NotLookedAt; plan.files.len()], not_ready: Vec::new(), changed: Vec::new(), used_index: false, used_scan: false, draw_until: settings.draw_until, live_budget: settings.live_budget, live_spent: Duration::ZERO, not_read_again: 0, deadline: settings.deadline }
     }
 
@@ -510,7 +517,7 @@ impl<'a> Reader<'a> {
     }
 
     /// One page's text. A file that won't be read at all is an error, of the whole search. One bad page isn't: it's `Failed`, so "not found" doesn't cover it.
-    fn read<'s>(&mut self, file: u16, page: u32, slot: &'s mut Slot) -> Result<Got<'s>, AgentError> {
+    pub(crate) fn read<'s>(&mut self, file: u16, page: u32, slot: &'s mut Slot) -> Result<Got<'s>, AgentError> {
         if self.changed.contains(&file) {
             return Ok(Got::Failed);
         }
@@ -590,7 +597,7 @@ impl<'a> Reader<'a> {
     }
 
     /// What's known of hidden text on this page: what the build found, or if it couldn't look, what drawing it now says.
-    fn hidden(&mut self, file: u16, page: u32, view: &PageView<'_>) -> HiddenOnPage {
+    pub(crate) fn hidden(&mut self, file: u16, page: u32, view: &PageView<'_>) -> HiddenOnPage {
         if let Some(stored) = view.stored.as_ref().filter(|stored| stored.hidden_checked) {
             return HiddenOnPage { summary: json!({ "checked": true, "flagged": stored.hidden_flagged }), spans: byte_spans(view.text, &stored.hidden_spans()), partial: stored.spans_dropped };
         }
@@ -633,7 +640,7 @@ impl<'a> Reader<'a> {
     }
 
     /// How this search's pages were read, and why, for its answer.
-    fn say_how(&self, value: &mut Value) {
+    pub(crate) fn say_how(&self, value: &mut Value) {
         let route = match (self.used_index, self.used_scan) {
             (true, true) => "mixed",
             (true, false) => "index",
@@ -849,7 +856,7 @@ fn say_where_from(hit: &mut Value, page: u32, source: &PlanFile) {
 }
 
 /// What drawing a page says about hidden text.
-struct HiddenOnPage {
+pub(crate) struct HiddenOnPage {
     summary: Value,
     /// Where it is in the page's text, in bytes, in order. Empty if there's none, or if they couldn't be placed.
     spans: Vec<Range<usize>>,
@@ -859,7 +866,7 @@ struct HiddenOnPage {
 
 impl HiddenOnPage {
     /// Whether a hit's words include hidden text: `null` if that can't be said, which isn't the same as no.
-    fn overlaps(&self, hit: &Range<usize>) -> Option<bool> {
+    pub(crate) fn overlaps(&self, hit: &Range<usize>) -> Option<bool> {
         let after = self.spans.partition_point(|span| span.end <= hit.start);
         if self.spans.get(after).is_some_and(|span| span.start < hit.end) {
             return Some(true);
@@ -911,7 +918,7 @@ fn byte_spans(text: &str, spans: &[(u32, u32)]) -> Vec<Range<usize>> {
 }
 
 /// What [`fold`] makes, into a buffer that's used again, with no map back to the text. It runs on every page of a search, and the map only matters on a page with a hit. An all-ASCII page, most of them, takes a shorter way.
-fn fold_into(text: &str, folded: &mut String) {
+pub(crate) fn fold_into(text: &str, folded: &mut String) {
     folded.clear();
     folded.reserve(text.len());
     let mut pending_space = false;
@@ -944,7 +951,7 @@ fn fold_into(text: &str, folded: &mut String) {
 }
 
 /// Lower-cases and joins whitespace, and notes where each byte of the result came from. Returns the folded text and that map.
-fn fold(text: &str) -> (String, Vec<u32>) {
+pub(crate) fn fold(text: &str) -> (String, Vec<u32>) {
     let mut folded = String::with_capacity(text.len());
     let mut sources = Vec::with_capacity(text.len());
     let mut pending_space = false;

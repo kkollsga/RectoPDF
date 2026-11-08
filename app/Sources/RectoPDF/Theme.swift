@@ -71,6 +71,15 @@ final class TextLine: NSView {
 
     var text: String { string.string }
 
+    /// Styled text on one line, cut at its end, as a Find row with its match in bold.
+    func setAttributed(_ next: NSAttributedString) {
+        guard next != string || wraps else { return }
+        string = next
+        wraps = false
+        measured = .zero
+        needsDisplay = true
+    }
+
     /// The room it takes, on one line or wrapped to this width.
     func size(width: CGFloat = 10_000) -> NSSize {
         if wraps {

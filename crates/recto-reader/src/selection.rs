@@ -354,6 +354,17 @@ impl Selecting {
         }
     }
 
+    /// Where some characters of a page are, as one rectangle round them all, once the page's text is here: `None` while it isn't, and `Some(None)` if they can't be seen, as hidden text or a page that couldn't be read. For bringing Find's hit into view.
+    pub fn bounds_of(&self, page: u32, start: u32, end: u32) -> Option<Option<Rect>> {
+        let held = self.texts.iter().find(|held| held.page == page)?;
+        let rects = held.text.rects(start, end);
+        Some(rects.into_iter().reduce(|one, other| {
+            let (x0, y0) = (one.x.min(other.x), one.y.min(other.y));
+            let (x1, y1) = ((one.x + one.width).max(other.x + other.width), (one.y + one.height).max(other.y + other.height));
+            Rect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+        }))
+    }
+
     /// What a page's layer should hold now, if that's not known to be what it has. `None` says leave it.
     pub fn layer_update(&mut self, page: u32) -> Option<Vec<Rect>> {
         if self.looked_at.contains(&page) {

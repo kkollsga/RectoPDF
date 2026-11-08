@@ -5,6 +5,7 @@
 
 #![allow(unsafe_code)] // What UniFFI's macros generate. Nothing here writes any of its own.
 
+mod find;
 mod generated_contents;
 pub mod linking;
 mod menus;
@@ -317,6 +318,12 @@ pub struct SidebarLayout {
     pub tabs_scroll: bool,
     /// The note's height over the contents, or nothing.
     pub note_height: f64,
+    /// Find's whole block over the tabs, and its list's part of that, both 0 while it's closed. The tabs and contents divide what's left.
+    pub find_block: f64,
+    pub find_list: f64,
+    pub find_row: f64,
+    pub find_field: f64,
+    pub find_status: f64,
 }
 
 /// What to do with the contents' scroll, from Rust's rule about following.
@@ -648,6 +655,10 @@ impl Host for AppHost {
             if events.iter().any(|event| event.name == "contents_generated") {
                 core.push(CoreCall::GeneratedFinished);
             }
+            // The Finder's news, for the sidebar's list and a step waiting for hits.
+            if events.iter().any(|event| matches!(event.name, "find_changed" | "find_finished")) {
+                core.push(CoreCall::Find(find::FindCall::News));
+            }
             notify(events);
         }));
     }
@@ -698,6 +709,14 @@ impl AppHost {
             return Ok(json!({ "safe": check.safe, "busy": busy, "seconds_since_input": check.seconds_since_input }));
         }
         let result = self.session.run(level, command, events);
+        // `recto find --next` went to a hit: the page view selects it, as ⌘G's does.
+        if let (Command::Find { .. }, Ok(answer)) = (command, &result)
+            && let Some(went) = answer.get("went_to").filter(|went| went.is_object())
+            && let (Some(tab), Some(page), Some(start), Some(end)) = (went["tab"].as_u64(), went["page"].as_u64(), went["start"].as_u64(), went["end"].as_u64())
+        {
+            let hit = recto_agent::find::Hit { page: (page as u32).saturating_sub(1), start: start as u32, end: end as u32, before: "".into(), matched: "".into(), after: "".into(), hidden: false };
+            self.core.push(CoreCall::Find(find::FindCall::Reveal(tab as u32, hit)));
+        }
         self.core.push(CoreCall::Reconcile);
         result
     }
@@ -772,6 +791,10 @@ enum CoreCall {
     GeneratedView(TabId, recto_session::GeneratedView, Option<FileStamp>),
     /// A contents section's chevron: fold it or open it.
     ToggleSection(TabId, u32),
+    /// The Find field, its list, and ⌘G.
+    Find(find::FindCall),
+    /// Into edit mode or out, by the owner.
+    SetEditMode(bool),
 }
 
 /// A marker through the session thread's queue, for QA to know what it asked for has happened.
@@ -818,7 +841,7 @@ impl CoreQueue {
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::Jump(..) | CoreCall::JumpTyped(..) | CoreCall::Step(_) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(..) | CoreCall::CompareClick(_) | CoreCall::FocusPane(_) | CoreCall::SetSynced(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
+        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::Jump(..) | CoreCall::JumpTyped(..) | CoreCall::Step(_) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(..) | CoreCall::CompareClick(_) | CoreCall::FocusPane(_) | CoreCall::SetSynced(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon | CoreCall::Find(_) | CoreCall::SetEditMode(_)) {
             return;
         }
         let mut calls = lock(&self.calls);
@@ -986,6 +1009,8 @@ struct Inner {
     link_prompts_made: AtomicU64,
     /// Saves from the window: how many run, and what one that failed says.
     save_ui: saving::SaveUi,
+    /// The Find field as the session thread last set it, for the UI thread.
+    find_field: Mutex<find::Field>,
 }
 
 /// What the host tells Rust about the window, kept for the record. A short lock: the UI thread sets these and a writer copies them.
@@ -1125,11 +1150,12 @@ impl Inner {
         let usage = |words: String| AgentError::new("usage", words, recto_agent::exit::USAGE);
         let session = &self.host.session;
         let result = match verb {
-            "find" => session.with_session(|session| {
-                let find = session.find().clone();
-                session.set_find(value == "open", &find.query, &find.draft);
+            // What ⌘F and Escape do.
+            "find" => {
+                self.core.push(CoreCall::Find(if value == "open" { find::FindCall::Open } else { find::FindCall::Close }));
+                self.core.flush(Duration::from_secs(5));
                 Ok(())
-            }),
+            }
             "find_query" => session.with_session(|session| {
                 let find = session.find().clone();
                 session.set_find(find.open, value, &find.draft);
@@ -1140,10 +1166,12 @@ impl Inner {
                 session.set_find(find.open, &find.query, value);
                 Ok(())
             }),
-            "edit_mode" => session.with_session(|session| {
-                session.set_edit_mode(value == "on");
+            // What going in does, and what Done does.
+            "edit_mode" => {
+                self.core.push(CoreCall::SetEditMode(value == "on"));
+                self.core.flush(Duration::from_secs(5));
                 Ok(())
-            }),
+            }
             "view_rotation" => match value.parse::<u8>() {
                 Ok(turns) if turns < 4 => session.with_session(|session| {
                     if let Some(id) = session.active() {
@@ -1412,6 +1440,7 @@ impl AppCore {
             link_prompt: Mutex::new(None),
             link_prompts_made: AtomicU64::new(0),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
+            find_field: Mutex::new(find::Field::default()),
         });
         saver.attach(Arc::downgrade(&inner));
         update_hooks.attach(Arc::downgrade(&inner));
@@ -1506,8 +1535,51 @@ impl AppCore {
         let rows = if published.sidebar.toc_open { published.sidebar.contents_count } else { 0 };
         let note = published.sidebar.toc_open && published.sidebar.contents_note.is_some();
         drop(published);
-        let heights = sidebar_heights_with_note(room, tabs, rows, note);
-        SidebarLayout { tab_row: TAB_ROW_HEIGHT, contents_row: CONTENTS_ROW_HEIGHT, contents_height: heights.contents, tabs_scroll: heights.tabs_scroll, note_height: heights.note }
+        // Find's block comes off the top first, and the rest divides as it always has.
+        let finding = find::view(&self.inner);
+        let found = find::heights(room, finding.open, finding.row_count);
+        let heights = sidebar_heights_with_note((room - found.block).max(0.0), tabs, rows, note);
+        SidebarLayout { tab_row: TAB_ROW_HEIGHT, contents_row: CONTENTS_ROW_HEIGHT, contents_height: heights.contents, tabs_scroll: heights.tabs_scroll, note_height: heights.note, find_block: found.block, find_list: found.list, find_row: find::ROW_HEIGHT, find_field: find::FIELD_HEIGHT, find_status: find::STATUS_HEIGHT }
+    }
+
+    /// Everything Find shows but its rows. Short locks, never the session's.
+    pub fn find_view(&self) -> find::FindView {
+        find::view(&self.inner)
+    }
+
+    /// Some of Find's rows, for what's on screen.
+    pub fn find_rows(&self, first: u32, count: u32) -> Vec<find::FindRow> {
+        find::rows(&self.inner, first, count)
+    }
+
+    /// What's in the Find field now, as it's typed: found at once.
+    pub fn find_typed(&self, text: String) {
+        self.inner.core.push(CoreCall::Find(find::FindCall::Typed(text)));
+    }
+
+    /// ⌘F: Find opens, with what was last typed.
+    pub fn find_open(&self) {
+        self.inner.core.push(CoreCall::Find(find::FindCall::Open));
+    }
+
+    /// Escape in the field, or its close button.
+    pub fn find_close(&self) {
+        self.inner.core.push(CoreCall::Find(find::FindCall::Close));
+    }
+
+    /// Return (forward) or ⇧Return (back) in the field: the person's jump to the hit, so Back comes here again. ⌘G and ⇧⌘G are the menu's, and only step.
+    pub fn find_return(&self, forward: bool) {
+        self.inner.core.push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Jump)));
+    }
+
+    /// A click on a row of Find's list.
+    pub fn find_choose(&self, row: u32) {
+        self.inner.core.push(CoreCall::Find(find::FindCall::Choose(row)));
+    }
+
+    /// What QA reads of Find, as JSON.
+    pub fn find_report(&self) -> String {
+        find::report(&self.inner).to_string()
     }
 
     /// The reader scrolled the contents themselves.
@@ -1667,6 +1739,12 @@ impl AppCore {
             menus::Action::Copy { anyway } => self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway),
             menus::Action::SelectAll => self.inner.panes.reading_engine(&self.inner.engine).select_all(),
             menus::Action::SetSynced(on) => self.inner.core.push(CoreCall::SetSynced(on)),
+            menus::Action::FindOpen => {
+                self.inner.core.push(CoreCall::Find(find::FindCall::Open));
+                return HostAction::FocusFind;
+            }
+            menus::Action::FindStep(forward) => self.inner.core.push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Step))),
+            menus::Action::LeaveEditMode => self.inner.core.push(CoreCall::SetEditMode(false)),
             menus::Action::Step(back) => self.inner.core.push(CoreCall::Step(back)),
             menus::Action::ClearEditHistory => self.inner.core.push(CoreCall::ClearEditHistory),
             menus::Action::Zoom(zoom) => {
@@ -2586,6 +2664,8 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::ToggleSection(id, entry) => host.session.with_session(|session| session.toggle_contents_section(id, entry)),
+            CoreCall::Find(call) => find::act(inner, call, &mut events),
+            CoreCall::SetEditMode(on) => host.session.with_session(|session| session.set_edit_mode(on)),
             CoreCall::SetSidebarHidden(hidden) => set_view(inner, &mut events, |view| view.sidebar_hidden = hidden),
             CoreCall::Rotate(turns) => {
                 let refused = host.session.with_session(|session| match session.active() {
@@ -2667,6 +2747,7 @@ fn session_thread(inner: &Arc<Inner>) {
             }
         }
         generated_contents::look_if_chosen(inner);
+        find::keep_up(inner);
         reconcile(inner, &mut synced, &mut events);
         if reads.running.is_empty() {
             for marker in reads.flushes.drain(..) {
@@ -2968,7 +3049,7 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
     let same_file = session.own_stamp(id).map(sleeper::version_of);
     // A save wrote these pages as they were shown: the page view goes on with its layout, place and selection.
     let follows = session.saved_from(id).map(sleeper::version_of);
-    let map = match session.page_edits(id) {
+    let mut map = match session.page_edits(id) {
         None => PageMap { files: vec![own], slots: None, own: same_file, turns: None, expected: Vec::new(), follows },
         Some(edits) => {
             let mut files = vec![own];
@@ -2984,6 +3065,13 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
             PageMap { files, slots, own: same_file, turns, expected, follows }
         }
     };
+    // The tab's view turned, as the state record carries it: every page drawn turned on top of what its edits turn, and nothing about the file. One byte a page of a hot or warm tab, and none while it's not turned.
+    let view_turns = tab.view_rotation % 4;
+    if view_turns != 0 {
+        let pages = session.pages_in(id) as usize;
+        let turns: Arc<[u8]> = (0..pages).map(|at| (map.turns.as_ref().and_then(|turns| turns.get(at)).copied().unwrap_or(0) + view_turns) % 4).collect();
+        map.turns = Some(turns);
+    }
     // Pane 0's page view keeps the warm tabs that aren't on screen, as many as the panes leave of the live documents. A tab in another pane is that pane's.
     let warm: Vec<u32> = if first { warm_beside_panes(session.warm_tabs(), panes) } else { Vec::new() };
     let problem = session.tab_notice_message(id).map(str::to_string).or_else(|| tab.problem.map(|problem| problem.message().to_string()));

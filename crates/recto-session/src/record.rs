@@ -312,17 +312,23 @@ impl Spread {
     }
 }
 
-/// Find, as the reader left it. Nothing draws a Find field yet.
+/// Find, as the reader left it: the field in the sidebar, what it's found for, and the hit gone to last.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FindRecord {
     #[serde(default)]
     pub open: bool,
-    /// What was last searched for.
+    /// What was last searched for. Its hits are found again on restore, as they're never kept.
     #[serde(default)]
     pub query: String,
     /// What's typed in the field and hasn't been run.
     #[serde(default)]
     pub draft: String,
+    /// The hit gone to last, as its page (from 0) and its first character there. A hit is found by its place, so a record from another version of the file can name one that isn't there, which is nothing.
+    #[serde(default)]
+    pub current: Option<(u32, u32)>,
+    /// The tab that hit is in, so a move into another document's pane can't take the same place there for it.
+    #[serde(default)]
+    pub current_tab: Option<u32>,
 }
 
 /// A file as last seen: the identity a restore goes by. The path alone wouldn't notice a replaced file, or find a moved one.

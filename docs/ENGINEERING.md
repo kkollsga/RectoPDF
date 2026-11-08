@@ -50,9 +50,10 @@ A crate may depend only on crates below it in this list. `recto-platform` sits u
 | `recto_index::select::Selection` | One, on the page view, for what's on screen. No tab holds one | ≤ 64 B |
 | `recto_index::order::Line` | Line of a page in hand, at most 16,384, only while it's being read | ≤ 72 B |
 | `recto_reader::layout::Override` | Visited page whose size isn't the document's usual one, or turned the other way from most, at most 65,536, hot and warm tabs only. Turning every page adds none | ≤ 32 B |
-| `recto_reader::tiles::PageMap::turns` | Page of an edited tab, hot and warm only, and only once a page of it is turned | 1 B |
+| `recto_reader::tiles::PageMap::turns` | Page of an edited tab, hot and warm only, and only once a page of it is turned; also every page of a tab whose view is turned (the state record's view rotation) | 1 B |
 | `corpus::PageRecord` | Page in a corpus, on disk, read back one at a time | 28 B on disk |
 | `indexing::IndexJob` | File waiting for an index, at most 16 and one running. No tab holds one | A path and 32 B |
+| `find::Hit` | Hit of Find's one query, at most 1,000. No tab holds one | ≤ 64 B plus its words: at most 24 characters before, 64 matched and 64 after |
 
 ## Dependencies
 
@@ -730,6 +731,21 @@ The checksum per page didn't show: NASA's plain search was 30 ms before it, and 
 **What the crates cost.** `recto` is 2.87 MB without `grep-regex` and 4.44 MB with it, 1.57 MB more, most of it Unicode's tables, so `\w` means what it should. `recto-indexer` and the worker don't link it. Linked and used, `grep-searcher` would add only another 40 KB, and it's left out because nothing needs it: pages are in memory, and a pattern here crosses lines. The session's footprint at the start goes up with it, by `recto budget` over 20 starts each, taken in turn: 1.438 MiB (s.d. 0.013) to 1.563 (s.d. 0.018), so 0.125 MiB, and that's real. It's `__DATA_CONST`, 64 KiB to 192 KiB, 128 KiB exactly: pointer tables in the engine's Unicode data, which the loader writes to at start. It's once per process, and nothing per tab.
 
 The session itself, NASA, by `recto budget`: 1.55 MiB at the start, 4.81 once it's open, **4.94 after indexing all 383 pages**, 5.86 after 20 searches of all kinds. The build before any of this: 1.44, 4.77, and 6.88 after 10 plain searches, with a worker on top of that during each. Handles are the same before and after, and a test holds that, and one thread once it's done. `recto budget index --file F` reports all of a build's numbers and times each kind of search both ways.
+
+## Find
+
+**One query, in the background, by `search`'s reading.** `recto_agent::find` runs a phrase over a plan of the document being read, page by page, from its corpus if there's one and through one worker if not, asking for a corpus for next time, so Find finds what `search` finds (`find_lists_what_search_finds_in_order_and_steps_from_the_reader`). It keeps at most 1,000 hits, counts the rest, and stops at 60 s. `recto_control::finding::Finder` holds the one query's hits: a new query stops the last between two pages, and its one thread exists only while a query runs, so a session at rest has none. Hits are places as characters of the page's text, which a selection counts too, so going to one is a selection (`Reader::reveal_range`), brought a third of the way down the view once its page's text says where it is. The app's sidebar reads the Finder's hits under a short lock and never the session's; every step goes through the session thread to `SessionHost::find_*`, the same calls as `recto find`.
+
+**Measured** 2026-11-08, release `recto` (`recto serve`, `recto find --json`'s `first_hit_ms` and `took_ms`), this Mac with other agents building (load 6 to 8), so under load. The session's footprint by `recto budget`.
+
+| | Pages | Page by page, first hit | Page by page, whole | From the index, first hit / whole | Footprint, open → after three queries |
+|---|---:|---:|---:|---:|---:|
+| NASA, `lunar` (one hit, on p. 194) | 383 | 948 ms | 1,619 ms | 1.4 / 2.3 ms | |
+| NASA, `the` (6,113 hits) | 383 | 10 ms | 1,196 ms | 0.4 / 8.8 ms | |
+| NASA, `e` (58,236 hits, 1,000 kept) | 383 | 9.8 ms | 1,318 ms | 0.4 / 6.3 ms | 5.36 → 7.28 MiB, 7.36 after the index's |
+| USGS map, `the` | 1 (330 MiB) | 276 ms | 276 ms | 0.4 / 0.4 ms | 2.91 → 3.78 MiB, 3.91 after the index's |
+
+Threads: 1 at rest; 2 while the index was building after the first query, the indexer's; back to 1 once it was done, so no thread stays for Find. **Two workers at once on a first query:** the query reads its pages through a worker of its own while the corpus it asked for is built by the indexer's, in that helper's process, so they can't share one; the indexer's is at background priority under half a reader's limit, and Find's goes when the query does. Later queries read the corpus and start none. Hidden text: a page with hits is checked as `search` checks one, from its corpus or by drawing it, for at most 10 s a query; past that its hits are listed as not hidden, unchecked. Not measured: a worker's peak during a query (it's `search`'s worker, under a reader's limits), the made 10,000-page PDF, and the app's own footprint with Find open (the app's QA runs show no stall over 1 s while finding).
 
 ## Generated contents
 

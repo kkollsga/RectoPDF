@@ -169,6 +169,22 @@ import QuartzCore
             if value == "note" { controller?.sidebar.clickNote() } else if value.hasPrefix("fold:") { controller?.sidebar.clickFold(Int(value.dropFirst(5)) ?? -1) } else { controller?.sidebar.clickRow(Int(value) ?? 0) }
         case "contents_scroll":
             controller?.sidebar.userScrollContents(toRow: Int(value) ?? 0)
+        case "find_type":
+            // What typing in the field does: the field holds it, and its change goes where a keystroke's does.
+            guard let find = controller?.sidebar.find, find.model.open else { return fail(id, "Find isn't open. `recto qa menu find.open` opens it.") }
+            find.field.stringValue = value
+            find.typed(value)
+        case "find_key":
+            guard let find = controller?.sidebar.find, find.model.open else { return fail(id, "Find isn't open.") }
+            switch value {
+            case "return": delegate.core.findReturn(forward: true)
+            case "shift_return": delegate.core.findReturn(forward: false)
+            case "escape": find.closeClicked()
+            default: return fail(id, "It's `return`, `shift_return` or `escape`.")
+            }
+        case "find_click":
+            guard let find = controller?.sidebar.find, find.model.open, let row = Int(value), row >= 0, row < Int(find.model.rowCount) else { return fail(id, "There's no such row in Find's list.") }
+            find.clickRow(row)
         case "contents_pointer":
             controller?.sidebar.setContentsPointer(value == "in")
         case "menu":
@@ -321,6 +337,7 @@ import QuartzCore
             "reveal": sidebar.revealReport(),
             "paper": reader.paper,
             "contents": sidebar.contentsReport(),
+            "find": sidebar.find.report(),
             "hover": sidebar.hoveredRow.map { $0 as Any } ?? NSNull(),
             "animations": controller.runningAnimations(),
             "place": reader.place,
