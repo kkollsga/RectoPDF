@@ -341,6 +341,58 @@ pub static TABLE: &[Spec] = &[
         ..BASE
     },
     Spec {
+        name: "images",
+        tag: "images",
+        group: GROUP_READ,
+        summary: "Where a page's images are, numbered in the order the page draws them, with each one's own size and whether it's a JPEG. `recto image` takes one out by its number.",
+        args: &[PAGE_OR_BARE, TAB],
+        bare_page: true,
+        data: "`{ page, source_page, from_added_file, count, listed, width_pt, height_pt, images: [ { number, rect: [x, y, width, height], width, height, jpeg, suggested_ending } ], untrusted: { added_file } }`. `rect` is in points from the page's top left, as it's shown, held to the page. `width` and `height` are the image's own pixels. `count` is every image, and `listed` how many are here: at most 4,096, the first drawn. An image wholly off the page keeps its number and isn't listed. `jpeg: true` means its stream is a JPEG, so `.jpg` may take its own bytes.",
+        examples: &["recto images 3", "recto images --page 3 --json"],
+        client_wait_s: 600,
+        ..BASE
+    },
+    Spec {
+        name: "image",
+        tag: "image",
+        group: GROUP_READ,
+        access: Access::At(Level::Full),
+        summary: "One of a page's images to a new file, as itself, whole or not at all. `.jpg` takes a JPEG's own bytes, unchanged, and refuses an image that isn't one, as that would be re-encoded. `.png` takes any image, losslessly, at its own resolution, a mask as transparency. It never replaces a file.",
+        args: &[
+            PAGE_OR_BARE,
+            Arg { key: "number", flag: Some("--number"), kind: Kind::Positive(1_000_000), required: true, help: "Which image, from 1, as `recto images` lists them." },
+            Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "A new file ending in `.png`, or `.jpg` for a JPEG's own bytes." },
+            Arg { key: "anyway", flag: Some("--anyway"), kind: Kind::Switch, required: false, help: "Take it from a file whose permissions ask that it isn't copied. Only once the user has said to. Each use goes in the activity log." },
+            TAB,
+        ],
+        bare_page: true,
+        data: "`{ page, source_page, from_added_file, number, out, coded, lossless, says, width, height, bytes, took_ms, anyway, untrusted: { added_file } }`. `coded` is `original_jpeg` (its own bytes), `jpeg_header_fixed` (its own picture, with what's around it corrected so it shows as on the page), `png`, `png_with_mask`, or `png_drawn`: an image that can be drawn but not handed over, drawn alone at 2x, with `lossless: false`. A file whose permissions ask that it isn't copied is exit 8, `copy_restricted`, unless `--anyway` is given.",
+        examples: &["recto image 3 --number 1 --out /tmp/photo.jpg", "recto image --page 3 --number 2 --out /tmp/chart.png --json"],
+        client_wait_s: 600,
+        ..BASE
+    },
+    Spec {
+        name: "snapshot",
+        tag: "snapshot",
+        group: GROUP_READ,
+        access: Access::At(Level::Full),
+        summary: "A box on a page, as the snapshot tool takes it: a PNG or JPG drawn sharp at the scale asked for, an SVG cut to the box as `export svg --rect` writes it, or its text, by a copy's rules. A file is new, whole or not at all. Text comes back in the answer, at Read-only, as `copy` gives it.",
+        args: &[
+            PAGE_OR_BARE,
+            Arg { key: "rect", flag: Some("--rect"), kind: Kind::Rect, required: true, help: "The box: `x,y,width,height` in points from the page's top left, as it's shown. The part on the page is taken." },
+            Arg { key: "as", flag: Some("--as"), kind: Kind::Choice(&["png", "jpg", "svg", "text"]), required: true, help: "`png`, `jpg` (re-encoded, so never lossless), `svg`, or `text`." },
+            Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: false, help: "A new file ending in `.png`, `.jpg`, or `.svg`. Not for text." },
+            SCALE,
+            Arg { key: "anyway", flag: Some("--anyway"), kind: Kind::Switch, required: false, help: "Take it from a file whose permissions ask that it isn't copied. Only once the user has said to. Each use goes in the activity log." },
+            TAB,
+        ],
+        bare_page: true,
+        data: "`{ page, source_page, from_added_file, rect, as, out, width, height, scale, reencoded, all_vector, raster_scale, bytes, chars, hidden_left_out, chrome_left_out, checked, stopped, took_ms, anyway, untrusted: { text, added_file } }`. A picture has `width`, `height`, `scale`, and `reencoded: true` for JPG. An SVG has `all_vector` and `raster_scale`, as `export svg` says them. Text has `chars`, what was left out as hidden or as running heads and page numbers, `checked: false` if it couldn't be checked for hidden text, and the text under `untrusted`: characters whose middle is in the box, in reading order, a line at a time. A file whose permissions ask that it isn't copied is exit 8, `copy_restricted`, unless `--anyway` is given.",
+        examples: &["recto snapshot 3 --rect 72,72,300,200 --as png --out /tmp/box.png", "recto snapshot 3 --rect 72,72,300,200 --as text --json", "recto snapshot --page 2 --rect 0,0,612,396 --as svg --out /tmp/top.svg", "recto snapshot 1 --rect 50,50,200,100 --as jpg --scale 3x --out /tmp/box.jpg"],
+        client_wait_s: 600,
+        ..BASE
+    },
+    Spec {
         name: "signatures",
         tag: "signatures",
         group: GROUP_READ,

@@ -62,6 +62,12 @@ pub mod hints {
     pub const ALL: u8 = SOFT_MASK | BLEND | SHADING_PATTERN | OPTIONAL_CONTENT | LAYER_NAMES_UNSAFE | JPEG_READ_DIFFERENTLY | MASK_NOT_SEPARABLE;
 }
 
+/// A job's [`ContentsJob::images`]: everything on the page, as an export wants it.
+pub const IMAGES_ALL: u32 = 0;
+/// Only where each image is, as [`Record::ImagePlace`], with none of their bytes and nothing else: what a click on an image is tested against, and what `recto image` lists.
+pub const IMAGES_LIST: u32 = u32::MAX;
+// Anything between is one image, counted from 1 in the order `IMAGES_LIST` gives them, whole and as itself, with nothing else of the page: what copying an image takes.
+
 /// Ask for a page's contents, or the next piece of them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContentsJob {
@@ -76,9 +82,11 @@ pub struct ContentsJob {
     pub rect: [f32; 4],
     pub text: TextMode,
     pub hints: u8,
+    /// [`IMAGES_ALL`], [`IMAGES_LIST`], or the one image wanted, counted from 1.
+    pub images: u32,
 }
 
-pub const CONTENTS_JOB_LEN: usize = 8 + 4 + 4 + 4 + 4 + 16 + 1 + 1;
+pub const CONTENTS_JOB_LEN: usize = 8 + 4 + 4 + 4 + 4 + 16 + 1 + 1 + 4;
 
 impl ContentsJob {
     /// Refuses a job that can't be done. The host checks before sending, and the worker checks again.
@@ -88,6 +96,10 @@ impl ContentsJob {
         }
         if self.hints & !hints::ALL != 0 {
             return Err(ProtoError("unknown hints"));
+        }
+        // An image is wanted whole, so a box means nothing to it.
+        if self.images != IMAGES_ALL && self.rect != [0.0; 4] {
+            return Err(ProtoError("images are asked for on the whole page"));
         }
         if self.rect != [0.0; 4] {
             let [x, y, width, height] = self.rect;
@@ -110,6 +122,7 @@ impl ContentsJob {
         }
         p.push(self.text as u8);
         p.push(self.hints);
+        p.extend_from_slice(&self.images.to_le_bytes());
         frame(Kind::ContentsRequest, &p)
     }
 
@@ -129,6 +142,7 @@ impl ContentsJob {
                 _ => return Err(ProtoError("unknown text mode")),
             },
             hints: r.u8()?,
+            images: r.u32()?,
         };
         r.end()?;
         job.check()?;
@@ -415,6 +429,8 @@ pub enum Record<'a> {
     ImageBytes(&'a [u8]),
     ImageEnd,
     Note { code: NoteCode, count: u32 },
+    /// Where an image is, and its own size, for a job that asked for [`IMAGES_LIST`]: none of its bytes. `jpeg` says its stream is a JPEG, which only says it may go as its own bytes.
+    ImagePlace { width: u32, height: u32, jpeg: bool, matrix: Mat },
 }
 
 const TAG_PAGE: u8 = 1;
@@ -430,6 +446,7 @@ const TAG_IMAGE_BEGIN: u8 = 10;
 const TAG_IMAGE_BYTES: u8 = 11;
 const TAG_IMAGE_END: u8 = 12;
 const TAG_NOTE: u8 = 13;
+const TAG_IMAGE_PLACE: u8 = 14;
 
 const FLAG_FILL: u8 = 1;
 const FLAG_EVEN_ODD: u8 = 2;
@@ -577,6 +594,15 @@ impl<'a> Records<'a> {
             }
             TAG_IMAGE_END => Record::ImageEnd,
             TAG_NOTE => Record::Note { code: NoteCode::from_u8(self.0.u8()?)?, count: self.0.u32()? },
+            TAG_IMAGE_PLACE => {
+                let (width, height) = (self.0.u32()?, self.0.u32()?);
+                let jpeg = match self.0.u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(ProtoError("unknown image flag")),
+                };
+                Record::ImagePlace { width, height, jpeg, matrix: self.matrix()? }
+            }
             _ => return Err(ProtoError("unknown record")),
         }))
     }
@@ -730,6 +756,14 @@ pub mod put {
         out.push(code as u8);
         out.extend_from_slice(&count.to_le_bytes());
     }
+
+    pub fn image_place(out: &mut Vec<u8>, width: u32, height: u32, jpeg: bool, m: &Mat) {
+        out.push(TAG_IMAGE_PLACE);
+        out.extend_from_slice(&width.to_le_bytes());
+        out.extend_from_slice(&height.to_le_bytes());
+        out.push(u8::from(jpeg));
+        matrix(out, m);
+    }
 }
 
 /// An image in progress, as the host follows it.
@@ -752,11 +786,19 @@ pub struct StreamCheck {
     /// A mask has just gone, and its JPEG must be next.
     mask_waiting: bool,
     jpeg_facts: JpegFacts,
+    /// What the job asked for, of [`ContentsJob::images`], and how many pictures have begun, a mask and its JPEG counting as one.
+    images: u32,
+    pictures: u32,
 }
 
 impl StreamCheck {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// For a job that asked for these images: a list holds nothing but where they are, and one image is one picture and nothing else.
+    pub fn for_images(images: u32) -> Self {
+        Self { images, ..Self::default() }
     }
 
     /// Checks the next record against everything before it. A violation kills the worker.
@@ -795,6 +837,16 @@ impl StreamCheck {
                 }
                 _ => Err(ProtoError("contents before the page")),
             };
+        }
+        let allowed = match (self.images, record) {
+            (_, Record::Page { .. } | Record::Note { .. }) => true,
+            (IMAGES_ALL, Record::ImagePlace { .. }) => false,
+            (IMAGES_ALL, _) => true,
+            (IMAGES_LIST, record) => matches!(record, Record::ImagePlace { .. }),
+            (_, record) => matches!(record, Record::ImageBegin { .. }),
+        };
+        if !allowed {
+            return Err(ProtoError("something the job didn't ask for"));
         }
         match record {
             Record::Page { .. } => Err(ProtoError("a second page")),
@@ -844,6 +896,12 @@ impl StreamCheck {
                 if wanted_a_mask != (*why == Why::JpegOverMask) {
                     return Err(ProtoError("a mask and its JPEG apart"));
                 }
+                if !wanted_a_mask {
+                    self.pictures = self.pictures.saturating_add(1);
+                    if self.images != IMAGES_ALL && self.pictures > 1 {
+                        return Err(ProtoError("more than the one image asked for"));
+                    }
+                }
                 if *why == Why::JpegMask {
                     if !matches!(coding, ImageCoding::Pixels { channels: 1 }) {
                         return Err(ProtoError("a mask that isn't one channel"));
@@ -878,6 +936,9 @@ impl StreamCheck {
                 Ok(())
             }
             Record::ImageBytes(_) | Record::ImageEnd => Err(ProtoError("image bytes with no image")),
+            Record::ImagePlace { width, height, .. } => {
+                if *width == 0 || *height == 0 { Err(ProtoError("an image with no size")) } else { Ok(()) }
+            }
         }
     }
 
@@ -1082,6 +1143,76 @@ mod tests {
         assert_eq!(all(&no_page), Err(ProtoError("contents before the page")));
     }
 
+    /// Failure: where an image is, from a compromised worker, says it has no size, or has a matrix with a NaN in it, and a click is tested against nonsense. Or a good one doesn't round-trip.
+    #[test]
+    fn an_image_place_round_trips_and_a_bad_one_is_refused() {
+        let mut out = Vec::new();
+        put::image_place(&mut out, 640, 480, true, &[2.0, 0.0, 0.0, 3.0, 4.0, 5.0]);
+        assert_eq!(Records::new(&out).next_record(), Ok(Some(Record::ImagePlace { width: 640, height: 480, jpeg: true, matrix: [2.0, 0.0, 0.0, 3.0, 4.0, 5.0] })));
+        let mut check = StreamCheck::for_images(IMAGES_LIST);
+        let mut listed = Vec::new();
+        put::page(&mut listed, 10.0, 10.0, &identity());
+        put::image_place(&mut listed, 0, 480, false, &identity());
+        let mut records = Records::new(&listed);
+        check.accept(&records.next_record().unwrap().unwrap()).unwrap();
+        assert_eq!(check.accept(&records.next_record().unwrap().unwrap()), Err(ProtoError("an image with no size")));
+        let mut nan = Vec::new();
+        put::image_place(&mut nan, 1, 1, false, &[f32::NAN, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        assert!(Records::new(&nan).next_record().is_err());
+        let mut flag = Vec::new();
+        put::image_place(&mut flag, 1, 1, false, &identity());
+        flag[9] = 7;
+        assert_eq!(Records::new(&flag).next_record(), Err(ProtoError("unknown image flag")));
+    }
+
+    /// Failure: a worker asked where images are sends paths, or bytes, so a list costs what a whole export does or carries what it shouldn't. Or one asked for one image sends two, or an export carries places. Each is a violation.
+    #[test]
+    fn a_job_for_images_takes_only_what_it_asked_for() {
+        let run = |images: u32, extra: &dyn Fn(&mut Vec<u8>)| {
+            let mut check = StreamCheck::for_images(images);
+            let mut out = Vec::new();
+            put::page(&mut out, 10.0, 10.0, &identity());
+            extra(&mut out);
+            let mut records = Records::new(&out);
+            while let Some(record) = records.next_record().unwrap() {
+                check.accept(&record)?;
+            }
+            check.finish()
+        };
+        let place = |out: &mut Vec<u8>| put::image_place(out, 2, 2, false, &identity());
+        let image = |out: &mut Vec<u8>| {
+            put::image_begin(out, ImageCoding::Pixels { channels: 1 }, Why::Image, 255, 1, 1, 1, &identity());
+            let at = put::image_bytes_begin(out);
+            out.push(7);
+            put::image_bytes_end(out, at);
+            put::image_end(out);
+        };
+        let path = |out: &mut Vec<u8>| {
+            put::path_begin(out, &identity(), Some([0, 0, 0, 255]), false, None, 0.0, 0, 0, 0.0, &[]);
+            let at = put::segs_begin(out);
+            put::segs_end(out, at, 0);
+        };
+        assert_eq!(run(IMAGES_LIST, &|out| {
+            place(out);
+            place(out);
+            put::note(out, NoteCode::HiddenLayer, 1);
+        }), Ok(()));
+        assert_eq!(run(IMAGES_LIST, &image), Err(ProtoError("something the job didn't ask for")));
+        assert_eq!(run(IMAGES_LIST, &path), Err(ProtoError("something the job didn't ask for")));
+        assert_eq!(run(2, &image), Ok(()));
+        assert_eq!(run(2, &|out| {
+            image(out);
+            image(out);
+        }), Err(ProtoError("more than the one image asked for")));
+        assert_eq!(run(2, &path), Err(ProtoError("something the job didn't ask for")));
+        assert_eq!(run(IMAGES_ALL, &place), Err(ProtoError("something the job didn't ask for")));
+        assert_eq!(run(IMAGES_ALL, &|out| {
+            image(out);
+            image(out);
+            path(out);
+        }), Ok(()));
+    }
+
     /// Failure: a NaN or an infinity from a compromised worker gets as far as the writer.
     #[test]
     fn numbers_that_are_not_finite_are_refused_at_the_door() {
@@ -1102,10 +1233,12 @@ mod tests {
     /// Failure: a job with a rectangle or scale that can't be drawn gets to a worker, or a job and its reply don't round-trip.
     #[test]
     fn jobs_round_trip_and_bad_ones_are_refused() {
-        let job = ContentsJob { generation: 9, job_id: 3, page: 2, seq: 7, scale: 2.0, rect: [1.0, 2.0, 3.0, 4.0], text: TextMode::Paths, hints: hints::BLEND };
+        let job = ContentsJob { generation: 9, job_id: 3, page: 2, seq: 7, scale: 2.0, rect: [1.0, 2.0, 3.0, 4.0], text: TextMode::Paths, hints: hints::BLEND, images: IMAGES_ALL };
         let bytes = job.encode();
         assert_eq!(ContentsJob::decode(&bytes[HEADER_LEN..]), Ok(job));
-        for bad in [ContentsJob { scale: 0.0, ..job }, ContentsJob { rect: [f32::NAN, 0.0, 1.0, 1.0], ..job }, ContentsJob { rect: [0.0, 0.0, -1.0, 1.0], ..job }, ContentsJob { rect: [-1.0, 0.0, 1.0, 1.0], ..job }, ContentsJob { hints: 0xF0, ..job }] {
+        let one_image = ContentsJob { rect: [0.0; 4], images: 3, ..job };
+        assert_eq!(ContentsJob::decode(&one_image.encode()[HEADER_LEN..]), Ok(one_image));
+        for bad in [ContentsJob { scale: 0.0, ..job }, ContentsJob { rect: [f32::NAN, 0.0, 1.0, 1.0], ..job }, ContentsJob { rect: [0.0, 0.0, -1.0, 1.0], ..job }, ContentsJob { rect: [-1.0, 0.0, 1.0, 1.0], ..job }, ContentsJob { hints: 0xF0, ..job }, ContentsJob { images: IMAGES_LIST, ..job }] {
             assert!(bad.check().is_err(), "{bad:?}");
         }
         let mut frame = Vec::new();

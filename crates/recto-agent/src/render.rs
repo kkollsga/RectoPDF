@@ -11,14 +11,25 @@ use recto_render_service::{
 };
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
+pub(crate) mod image;
+mod jpeg;
 mod png;
+pub(crate) mod snapshot;
 mod svg;
 
 pub(crate) use svg::{SvgArgs, export_svg};
+pub(crate) use svg::check_args as check_scale_and_box;
+
+/// A box on a page as SVG, into `out`: a snapshot's SVG, with text as outlines and real characters, as `export svg` writes it by default.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_svg_box<O: Output>(doc: &mut DocRenderer, path: &Path, page: u32, rect: [f32; 4], scale: f32, caps: &OutputCaps, out: &std::cell::RefCell<O>, started: Instant) -> Result<svg::SvgWritten, AgentError> {
+    svg::write_svg(doc, &svg::SvgJob { path, page, rect: Some(rect), text: recto_proto::contents::TextMode::Both, scale, strip_metadata: false }, caps, out, started)
+}
 
 pub const DEFAULT_SCALE: f32 = 2.0;
 
@@ -67,15 +78,15 @@ pub(crate) fn render(path: &Path, page: u32, scale: f32, out: &Path) -> Result<V
 }
 
 /// A temp file this process created, next to where the picture is going. Only ever deletes itself: never a file that was already there.
-struct OwnTemp {
-    path: PathBuf,
+pub(crate) struct OwnTemp {
+    pub(crate) path: PathBuf,
 }
 
 static NEXT_TEMP: AtomicU32 = AtomicU32::new(0);
 
 impl OwnTemp {
     /// Makes a new file with a name nobody else has. `create_new` is `O_CREAT | O_EXCL`, which refuses an existing name and doesn't follow a symlink.
-    fn create(out: &Path) -> Result<(Self, File), AgentError> {
+    pub(crate) fn create(out: &Path) -> Result<(Self, File), AgentError> {
         let failed = || AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED);
         if out.file_name().is_none() {
             return Err(failed());
@@ -97,6 +108,75 @@ impl OwnTemp {
 impl Drop for OwnTemp {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Where an export's bytes go as they're made: a temp file on its way to being published, or memory on its way to the clipboard. Either can be told to start again, when a worker stopped partway and a larger one starts over from the top.
+pub(crate) trait Output: io::Write {
+    fn start_over(&mut self) -> io::Result<()>;
+}
+
+/// A temp file's bytes, from its start.
+pub(crate) struct FileOut(pub File);
+
+impl io::Write for FileOut {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.0.write(data)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl Output for FileOut {
+    fn start_over(&mut self) -> io::Result<()> {
+        use std::io::Seek;
+        self.0.set_len(0)?;
+        self.0.rewind().map(|_| ())
+    }
+}
+
+/// Bytes held for the clipboard, up to a cap past which a write fails as a file too large would.
+pub(crate) struct MemoryOut {
+    pub bytes: Vec<u8>,
+    cap: usize,
+}
+
+impl MemoryOut {
+    pub(crate) fn new(cap: usize) -> Self {
+        Self { bytes: Vec::new(), cap }
+    }
+}
+
+impl io::Write for MemoryOut {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if self.bytes.len().saturating_add(data.len()) > self.cap {
+            return Err(io::ErrorKind::FileTooLarge.into());
+        }
+        self.bytes.extend_from_slice(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Output for MemoryOut {
+    fn start_over(&mut self) -> io::Result<()> {
+        self.bytes.clear();
+        Ok(())
+    }
+}
+
+/// One output written by more than one writer in turn, such as a PNG encoder and a JPEG's bytes passing through.
+pub(crate) struct Shared<'a, O: Output>(pub &'a std::cell::RefCell<O>);
+
+impl<O: Output> io::Write for Shared<'_, O> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.0.try_borrow_mut().map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?.write(data)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.try_borrow_mut().map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?.flush()
     }
 }
 

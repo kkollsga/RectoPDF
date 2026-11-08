@@ -56,6 +56,22 @@ fn every_decoder(payload: &[u8]) {
             assert!(tiles <= MAX_REGION_TILES, "{tiles} tiles");
         }
     }
+    // A page's contents, as an export, a list of images and one image each check it: none of them may panic or run long on hostile records.
+    if let Ok((_, records)) = contents::decode_contents(payload) {
+        for images in [contents::IMAGES_ALL, contents::IMAGES_LIST, 1] {
+            let mut check = contents::StreamCheck::for_images(images);
+            let mut reader = contents::Records::new(records);
+            while let Ok(Some(record)) = reader.next_record() {
+                if check.accept(&record).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    if let Ok(job) = contents::ContentsJob::decode(payload) {
+        assert!(job.check().is_ok());
+        assert_eq!(contents::ContentsJob::decode(&job.encode()[HEADER_LEN..]), Ok(job));
+    }
     if let Ok(reply) = TileReply::decode(payload) {
         assert_eq!(TileReply::decode(&reply.encode()[HEADER_LEN..]), Ok(reply));
     }

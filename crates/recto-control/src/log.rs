@@ -91,12 +91,12 @@ pub struct ActivityLog {
 
 /// What changed something: a command of that kind that worked. A failed one changed nothing, whatever it was stopped by, and a flood of those can't push the changes out. A list of refusals would miss the next one added, as `would_discard_user_edits` was. **Limit:** an agent's own working commands can still push out older ones, since each is a change to record.
 fn is_change(cmd: &str, outcome: &str) -> bool {
-    outcome == "ok" && matches!(cmd, "open" | "close" | "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" | "clear_history" | "render" | "export_svg" | "index_clear" | "stop" | "permission_set" | "update_install")
+    outcome == "ok" && matches!(cmd, "open" | "close" | "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" | "clear_history" | "render" | "export_svg" | "image" | "snapshot" | "index_clear" | "stop" | "permission_set" | "update_install")
 }
 
 /// Text given past what a file's permissions ask. Only an answer that worked gave anything.
 fn is_override(cmd: &str, outcome: &str, details: &Value) -> bool {
-    outcome == "ok" && matches!(cmd, "select" | "copy") && details["anyway"] == true
+    outcome == "ok" && matches!(cmd, "select" | "copy" | "image" | "snapshot") && details["anyway"] == true
 }
 
 /// What an agent can repeat for nothing, so it's counted rather than written each time.
@@ -394,6 +394,21 @@ mod tests {
         let seen = recent(&paths, Some(10_000));
         let rows = seen["entries"].as_array().unwrap();
         assert_eq!(rows.iter().filter(|row| row["details"]["anyway"] == true).count(), 4, "`recto log` shows them");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Failure: an image or a snapshot taken past a file's permissions leaves no line of its own, though the owner decided they get the same notice as text (2026-11-08) and each use of `--anyway` goes in the log.
+    #[test]
+    fn an_image_or_snapshot_taken_anyway_has_its_own_line() {
+        let dir = std::env::temp_dir().join(format!("recto-log-anyway-images-{}", std::process::id()));
+        let paths = StatePaths::overridden(&dir).unwrap();
+        let mut log = ActivityLog::new(&paths);
+        log.record("image", Level::Full, "ok", &json!({ "tab": "#1", "page": 1, "number": 2, "anyway": true }));
+        log.record("snapshot", Level::ReadOnly, "ok", &json!({ "tab": "#1", "page": 1, "as": "text", "anyway": true }));
+        log.record("image", Level::Full, "ok", &json!({ "tab": "#1", "page": 1, "number": 2, "anyway": false }));
+        let lines = |path: &PathBuf| std::fs::read_to_string(path).unwrap_or_default().lines().count();
+        assert_eq!(lines(&paths.overrides_log), 2);
+        assert_eq!(lines(&paths.log), 1, "an image written without it is a change, as a picture from `render` is");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

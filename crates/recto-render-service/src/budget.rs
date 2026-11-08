@@ -70,6 +70,19 @@ pub fn largest_scale_that_fits(width_points: f32, height_points: f32, caps: &Out
 mod scale_tests {
     use super::*;
 
+    /// Failure: a snapshot's box lands a pixel off what it covers, or past the page, or a box off the page draws something anyway.
+    #[test]
+    fn a_box_lands_on_the_pixels_it_covers() {
+        let page = (612.0, 792.0);
+        let pixels = (1224, 1584);
+        assert_eq!(box_pixels([72.0, 100.0, 200.0, 50.5], page, pixels), Some(TileRect { x: 144, y: 200, width: 400, height: 101 }));
+        assert_eq!(box_pixels([600.0, 780.0, 100.0, 100.0], page, pixels), Some(TileRect { x: 1200, y: 1560, width: 24, height: 24 }), "held to the page");
+        assert_eq!(box_pixels([-10.0, -10.0, 20.0, 20.0], page, pixels), Some(TileRect { x: 0, y: 0, width: 20, height: 20 }));
+        for off in [[700.0, 0.0, 10.0, 10.0], [0.0, 0.0, 0.0, 10.0], [f32::NAN, 0.0, 1.0, 1.0], [0.0, 900.0, 5.0, 5.0], [-20.0, 0.0, 10.0, 10.0]] {
+            assert_eq!(box_pixels(off, page, pixels), None, "{off:?}");
+        }
+    }
+
     /// Failure: a refusal names a scale that's itself refused, or one far below what would fit, so an agent still tries scales by hand. Checked on the real size of the USGS map, where 8 is refused and 4 fits, and on sizes where each cap is the one that matters.
     #[test]
     fn the_largest_scale_is_the_edge_of_what_fits() {
@@ -118,8 +131,42 @@ pub fn draw_whole_page(
     let started = Instant::now();
     let (width, height) = page_device_size(doc, page, scale, caps)?;
     sink(PageEvent::Begin { width, height })?;
-    let render_us = strips(doc, page, scale, generation, (width, height), started, caps, surface, &mut sink)?;
+    let render_us = strips(doc, page, scale, generation, TileRect { x: 0, y: 0, width, height }, started, caps, surface, &mut sink)?;
     Ok(PageDrawn { width, height, render_us })
+}
+
+/// Draws a box on a page, as [`draw_whole_page`] draws all of it and under the same rules: a snapshot. `rect` is in points from the page's top left, as it's shown, and the part of it that's on the page is drawn, to whole pixels at `scale`. The page itself must be drawable whole at that scale, so a box can't be a way past the caps.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_page_box(
+    doc: &mut DocRenderer,
+    page: u32,
+    scale: f32,
+    rect: [f32; 4],
+    generation: u64,
+    caps: &OutputCaps,
+    surface: &mut Option<SharedMemory>,
+    mut sink: impl FnMut(PageEvent<'_>) -> Result<(), RenderFailure>,
+) -> Result<PageDrawn, RenderFailure> {
+    let started = Instant::now();
+    let (width_points, height_points) = doc.page_size(page)?;
+    let (width, height) = fitted_size(width_points, height_points, scale, caps).ok_or(RenderFailure::TooLargeAtThisScale)?;
+    let region = box_pixels(rect, (width_points, height_points), (width, height)).ok_or(RenderFailure::BadRequest)?;
+    sink(PageEvent::Begin { width: region.width, height: region.height })?;
+    let render_us = strips(doc, page, scale, generation, region, started, caps, surface, &mut sink)?;
+    Ok(PageDrawn { width: region.width, height: region.height, render_us })
+}
+
+/// Where a box in points lands in a page drawn at `pixels`, rounded out to whole pixels and held to the page. `None` for a box that isn't on it.
+pub fn box_pixels([x, y, width, height]: [f32; 4], (page_width, page_height): (f32, f32), (pixels_wide, pixels_high): (u32, u32)) -> Option<TileRect> {
+    if ![x, y, width, height].iter().all(|value| value.is_finite()) || width <= 0.0 || height <= 0.0 || page_width <= 0.0 || page_height <= 0.0 {
+        return None;
+    }
+    let (across, down) = (f64::from(pixels_wide) / f64::from(page_width), f64::from(pixels_high) / f64::from(page_height));
+    let left = (f64::from(x.max(0.0)) * across).floor().min(f64::from(pixels_wide)) as u32;
+    let top = (f64::from(y.max(0.0)) * down).floor().min(f64::from(pixels_high)) as u32;
+    let right = (f64::from(x + width) * across).ceil().clamp(0.0, f64::from(pixels_wide)) as u32;
+    let bottom = (f64::from(y + height) * down).ceil().clamp(0.0, f64::from(pixels_high)) as u32;
+    (right > left && bottom > top).then(|| TileRect { x: left, y: top, width: right - left, height: bottom - top })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -128,12 +175,13 @@ fn strips(
     page: u32,
     scale: f32,
     generation: u64,
-    (width, height): (u32, u32),
+    region: TileRect,
     started: Instant,
     caps: &OutputCaps,
     surface: &mut Option<SharedMemory>,
     sink: &mut impl FnMut(PageEvent<'_>) -> Result<(), RenderFailure>,
 ) -> Result<u64, RenderFailure> {
+    let TileRect { x: left, y: top, width, height } = region;
     let stride = width.checked_mul(BYTES_PER_PIXEL).ok_or(RenderFailure::TooLargeAtThisScale)?;
     // A page with a huge image pays per pass, so it gets the largest piece the limits allow, as tiles do. The USGS map at 4x: 1.97 s at 32 MiB against 5.6 s at 8 MiB.
     let piece = if doc.largest_image_pixels(page, generation).unwrap_or(0) >= REGION_MIN_IMAGE_PIXELS { recto_proto::MAX_REGION_BYTES } else { STRIP_MAX_BYTES };
@@ -151,7 +199,7 @@ fn strips(
         if started.elapsed().saturating_sub(doc.time_waiting_for_slot().saturating_sub(waited_before)) >= caps.max_time {
             return Err(RenderFailure::TookTooLong);
         }
-        let rect = TileRect { x: 0, y, width, height: strip_rows.min(height - y) };
+        let rect = TileRect { x: left, y: top + y, width, height: strip_rows.min(height - y) };
         match doc.render_for(DrawPurpose::Export, &TileRequest { page, rect, scale, stride, generation }, memory)? {
             TileResult::Done(tile) => {
                 render_us += u64::from(tile.render_us);

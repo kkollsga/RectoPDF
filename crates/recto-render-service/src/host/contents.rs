@@ -18,6 +18,8 @@ pub struct ContentsRequest {
     pub text: TextMode,
     /// What the file's structure says the page uses: [`recto_proto::contents::hints`].
     pub hints: u8,
+    /// Everything, where each image is, or one image: [`recto_proto::contents::IMAGES_ALL`] and what follows it.
+    pub images: u32,
     /// Nothing more than this is spent on the page, time asleep waiting for the larger limit aside.
     pub max_time: Duration,
 }
@@ -142,7 +144,7 @@ impl DocRenderer {
         sink: &mut impl FnMut(ContentsEvent<'_>) -> Result<(), RenderFailure>,
     ) -> Result<TryEnd, JobFailure> {
         let page = request.page;
-        let mut check = StreamCheck::new();
+        let mut check = StreamCheck::for_images(request.images);
         let mut seq = 0u32;
         loop {
             if started.elapsed().saturating_sub(self.time_waiting_for_slot().saturating_sub(waited_before)) >= request.max_time {
@@ -204,5 +206,5 @@ impl DocRenderer {
 }
 
 fn job_of(request: &ContentsRequest, job_id: u32, seq: u32) -> ContentsJob {
-    ContentsJob { generation: request.generation, job_id, page: request.page, seq, scale: request.scale, rect: request.rect.unwrap_or([0.0; 4]), text: request.text, hints: request.hints }
+    ContentsJob { generation: request.generation, job_id, page: request.page, seq, scale: request.scale, rect: request.rect.unwrap_or([0.0; 4]), text: request.text, hints: request.hints, images: request.images }
 }

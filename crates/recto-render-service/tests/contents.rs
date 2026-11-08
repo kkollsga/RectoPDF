@@ -131,7 +131,7 @@ fn renderer(mode: &str, file: &TempPdf) -> DocRenderer {
 }
 
 fn request() -> ContentsRequest {
-    ContentsRequest { page: 0, generation: 0, scale: 2.0, rect: None, text: TextMode::Both, hints: 0, max_time: Duration::from_secs(20) }
+    ContentsRequest { page: 0, generation: 0, scale: 2.0, rect: None, text: TextMode::Both, hints: 0, images: 0, max_time: Duration::from_secs(20) }
 }
 
 fn file() -> TempPdf {
@@ -184,6 +184,17 @@ fn a_stream_that_breaks_the_rules_is_stopped() {
     for mode in ["jpeg_thats_not_an_image", "jpeg_with_no_mask", "mask_of_colour", "mask_with_no_jpeg", "not_really_a_jpeg", "row_too_long", "size_overflows", "page_twice", "clip_too_deep", "image_short", "image_left_open", "group_left_open", "garbage", "not_finite", "wrong_seq"] {
         let (result, _) = run(mode);
         assert!(matches!(result, Err(RenderFailure::PageFailed { reason: KillReason::Rejected(_), .. })), "{mode}: {result:?}");
+    }
+}
+
+/// Failure: a worker asked only where images are sends paths, or one asked for one image sends a page's worth, and the host passes it on, so a click costs what an export does, or a copied image carries something else. What the job didn't ask for kills the worker.
+#[test]
+fn a_job_for_images_refuses_what_it_didnt_ask_for() {
+    for images in [recto_proto::contents::IMAGES_LIST, 1] {
+        let file = file();
+        let mut doc = renderer("honest", &file);
+        let result = doc.read_contents(&ContentsRequest { images, ..request() }, |_| Ok(()));
+        assert!(matches!(result, Err(RenderFailure::PageFailed { reason: KillReason::Rejected("something the job didn't ask for"), .. })), "{images}: {result:?}");
     }
 }
 
