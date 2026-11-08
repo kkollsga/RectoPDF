@@ -145,7 +145,12 @@ impl Raw {
     }
 
     pub fn send(&mut self, line: &str) {
-        std::io::Write::write_all(&mut self.stream, format!("{line}\n").as_bytes()).unwrap();
+        self.try_send(line).unwrap();
+    }
+
+    /// Sends, and says if the connection had already ended. A connection the session dropped as it arrived fails here, as `EPIPE` or `ENOTCONN` depending on when the drop lands, or at the read after.
+    pub fn try_send(&mut self, line: &str) -> std::io::Result<()> {
+        std::io::Write::write_all(&mut self.stream, format!("{line}\n").as_bytes())
     }
 
     /// The next line, or `None` when the server has closed the connection. A client running out of patience isn't that, and says so.
