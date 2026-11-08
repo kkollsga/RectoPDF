@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+recto-core.workspace = true
 recto-index.workspace = true
 recto-platform.workspace = true
 recto-proto.workspace = true
