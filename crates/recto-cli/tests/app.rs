@@ -403,7 +403,7 @@ fn side_by_side_lays_out_selects_and_keeps_the_place() {
     assert_eq!(code, exit::USAGE, "{reply}");
 }
 
-/// Failure: the panel's Rotate can be pressed with nothing to turn, or turns one page, or takes a step a page so one undo doesn't take it back, or isn't drawn turned, or doesn't show as unsaved in the red button's dot, or Edit > Undo doesn't take it back; or what was drawn is dropped for a turn, which changes nothing of a page's pixels, so turning back draws it all again. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment)".
+/// Failure: the panel's Rotate can be pressed with nothing to turn, or turns one page, or takes a step a page so one undo doesn't take it back, or isn't drawn turned, or doesn't show as unsaved in the red button's dot, or Undo doesn't take it back with the window key, where NSWindow took it first (review of f05c998, B1); or what was drawn is dropped for a turn, which changes nothing of a page's pixels, so turning back draws it all again. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment)".
 #[test]
 fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
     let Some(run) = Run::start() else { return };
@@ -429,7 +429,7 @@ fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
     assert!(turned["app"]["pages"]["page_frames_landscape"].as_u64().unwrap() >= 1, "and wider than tall: {}", turned["app"]["pages"]);
     let edits = run.ok(&["edits"]);
     assert_eq!(edits["can_undo"], true, "{edits}");
-    run.ok(&["qa", "menu", "edit.undo"]);
+    run.ok(&["qa", "key-action", "undo"]);
     wait_for(&run, |state| state["app"]["document_edited"] == false);
     run.settled();
     let back = run.report();
@@ -437,10 +437,10 @@ fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
     assert_eq!(run.ok(&["edits"])["can_undo"], false, "it was one step");
     // A landscape page fits at another scale, so a turn draws at that scale; what was drawn before isn't dropped, so turning back draws nothing new.
     assert!(back["reader"]["counts"]["drawn"].as_u64().unwrap() <= drawn + 1, "turning back drew again: {drawn} then {}", back["reader"]["counts"]["drawn"]);
-    run.ok(&["qa", "menu", "edit.redo"]);
+    run.ok(&["qa", "key-action", "redo"]);
     wait_for(&run, |state| state["app"]["document_edited"] == true);
     // An agent's way, the same method.
-    run.ok(&["qa", "menu", "edit.undo"]);
+    run.ok(&["qa", "key-action", "undo"]);
     wait_for(&run, |state| state["app"]["document_edited"] == false);
     run.ok(&["page", "rotate", "all", "--by", "180"]);
     let half = wait_for(&run, |state| state["app"]["pages"]["page_turns"].as_array().is_some_and(|turns| !turns.is_empty() && turns.iter().all(|turn| turn == 2)));
@@ -597,7 +597,7 @@ fn what_appkit_calls_reaches_the_app() {
     let checked = found.as_object().unwrap();
     let failed: Vec<&String> = checked.iter().filter(|(_, ok)| **ok != true).map(|(name, _)| name).collect();
     assert!(failed.is_empty(), "these don't reach the app: {failed:?}\n{found}");
-    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "sidebar_button", "zoom_level", "zoom_field", "zoom_reset", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "copy_is_grey_with_nothing_selected", "select_all_can_be_chosen", "select_all_key_reaches_the_app", "select_all_selects", "copy_is_enabled_with_something_selected", "copy_key_reaches_the_app", "services_arent_offered_what_they_didnt_ask_for", "services_arent_offered_nothing", "services_write_nothing_with_nothing_selected", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
+    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "sidebar_button", "zoom_level", "zoom_field", "zoom_reset", "undo_reaches_the_app_with_the_window_key", "redo_reaches_the_app_with_the_window_key", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "copy_is_grey_with_nothing_selected", "select_all_can_be_chosen", "select_all_key_reaches_the_app", "select_all_selects", "copy_is_enabled_with_something_selected", "copy_key_reaches_the_app", "services_arent_offered_what_they_didnt_ask_for", "services_arent_offered_nothing", "services_write_nothing_with_nothing_selected", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
         assert!(checked.contains_key(name), "{name} wasn't checked: {found}");
     }
 }

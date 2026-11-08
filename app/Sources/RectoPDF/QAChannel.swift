@@ -167,6 +167,13 @@ import QuartzCore
             guard let item = menu.items.first(where: { ($0.representedObject as? String) == value }), let action = item.action else { return fail(id, "That isn't in the right-click menu.") }
             guard item.isEnabled else { return fail(id, "That's greyed out in the right-click menu right now.") }
             NSApp.sendAction(action, to: item.target, from: item)
+        case "key_action":
+            // What a key or the menu does with the window key, as it is for a person: the first in the window's own chain that answers it, asked whether it can, then sent it. A quiet window isn't key, so AppKit's own route would skip the window, and this doesn't.
+            guard let controller else { return fail(id, "The window is closed.") }
+            let action = NSSelectorFromString(value + ":")
+            guard let (target, enabled) = QAChannel.keyWindowTarget(for: action, in: controller.window) else { return fail(id, "Nothing in the window answers that.") }
+            guard enabled else { return fail(id, "That's greyed out with the window key.") }
+            target.perform(action, with: nil)
         case "zoom_type":
             guard let controller else { return fail(id, "The window is closed.") }
             if !controller.zoomEditing {
@@ -423,6 +430,12 @@ import QuartzCore
             found["copy_is_enabled_with_something_selected"] = enabled(copy)
             found["copy_key_reaches_the_app"] = key("c", .command).map { NSApp.mainMenu?.performKeyEquivalent(with: $0) == true } ?? false
         }
+        // Undo and Redo with the window key, which a quiet window isn't: what the window's own chain gives them to, and that it asks Rust. NSWindow alone takes them and greys them out.
+        for action in [#selector(ReaderWindow.undo(_:)), #selector(ReaderWindow.redo(_:))] {
+            let name = action == #selector(ReaderWindow.undo(_:)) ? "undo" : "redo"
+            let target = QAChannel.keyWindowTarget(for: action, in: controller.window)
+            found["\(name)_reaches_the_app_with_the_window_key"] = target.map { $0.0 is ReaderWindow && $0.1 == delegate.core.menuItemEnabled(id: "edit.\(name)") } ?? false
+        }
         // A silent update waits for nobody having touched the app, and that's more than a click: what the monitor's given, by what it was given.
         let watched = AppDelegate.actions.union(AppDelegate.nearby)
         let kinds: [NSEvent.EventType] = [.mouseMoved, .leftMouseDragged, .keyDown, .leftMouseDown, .scrollWheel, .magnify, .swipe, .rotate, .flagsChanged, .gesture]
@@ -443,6 +456,22 @@ import QuartzCore
         NotificationCenter.default.post(name: NSScrollView.didEndLiveMagnifyNotification, object: pages.scrollView)
         found["pinch_ends"] = !pages.isLive
         return found
+    }
+
+    /// The responder a key window gives an action to, and whether it says it can be chosen: up the chain from the window's first responder to the window, then its delegate, as AppKit goes before it reaches the app.
+    static func keyWindowTarget(for action: Selector, in window: NSWindow) -> (NSObject, Bool)? {
+        let item = NSMenuItem(title: "", action: action, keyEquivalent: "")
+        var responder: NSResponder? = window.firstResponder ?? window
+        var chain: [NSObject] = []
+        while let next = responder {
+            chain.append(next)
+            responder = next.nextResponder
+        }
+        if !chain.contains(where: { $0 === window }) { chain.append(window) }
+        if let delegate = window.delegate as? NSObject { chain.append(delegate) }
+        guard let target = chain.first(where: { $0.responds(to: action) }) else { return nil }
+        let enabled = (target as? NSMenuItemValidation)?.validateMenuItem(item) ?? (target as? NSUserInterfaceValidations)?.validateUserInterfaceItem(item) ?? true
+        return (target, enabled)
     }
 
     private func policyName() -> String {

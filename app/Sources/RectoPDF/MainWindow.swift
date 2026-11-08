@@ -1,7 +1,35 @@
 import AppKit
 
+/// The main window. Undo and Redo are the tab's edits, and NSWindow would take `undo:` and `redo:` itself, ahead of the app, and grey them out with an undo manager that has nothing in it. So the window answers them, by Rust's word, and a text field that has the keyboard still keeps its own.
+class ReaderWindow: NSWindow {
+    /// What an item does, and whether it can be chosen, by its id: the app's `perform` and Rust's `menuItemEnabled`.
+    var edit: ((String) -> Void)?
+    var editEnabled: ((String) -> Bool)?
+
+    static func editId(_ action: Selector?) -> String? {
+        switch action {
+        case #selector(ReaderWindow.undo(_:)): "edit.undo"
+        case #selector(ReaderWindow.redo(_:)): "edit.redo"
+        default: nil
+        }
+    }
+
+    @objc func undo(_ sender: Any?) {
+        edit?("edit.undo")
+    }
+
+    @objc func redo(_ sender: Any?) {
+        edit?("edit.redo")
+    }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if let id = Self.editId(item.action) { return editEnabled?(id) ?? false }
+        return super.validateUserInterfaceItem(item)
+    }
+}
+
 /// A window that draws as the key window without being it, and at 2x whatever the display, in a quiet run. It never reaches a screen.
-final class QuietWindow: NSWindow {
+final class QuietWindow: ReaderWindow {
     override var isKeyWindow: Bool { true }
     override var isMainWindow: Bool { true }
     override var canBecomeKey: Bool { false }
@@ -215,7 +243,7 @@ final class BookMark: NSView {
             // Off every screen, and never ordered in.
             window = QuietWindow(contentRect: rect.offsetBy(dx: -40_000, dy: -40_000), styleMask: style, backing: .buffered, defer: false)
         } else {
-            window = NSWindow(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
+            window = ReaderWindow(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
             window.center()
             if placement.saved { window.setFrame(NSRect(x: placement.x, y: placement.y, width: placement.width, height: placement.height), display: false) }
         }
@@ -235,6 +263,10 @@ final class BookMark: NSView {
         super.init()
         agentIcon.isHidden = reader.agentIconHidden
         window.delegate = self
+        if let reader = window as? ReaderWindow {
+            reader.edit = { [weak delegate] id in delegate?.perform(id) }
+            reader.editEnabled = { [weak delegate] id in delegate?.core.menuItemEnabled(id: id) ?? false }
+        }
         window.contentView = root
         root.wantsLayer = true
         root.layerContentsRedrawPolicy = .onSetNeedsDisplay
