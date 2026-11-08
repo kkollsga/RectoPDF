@@ -1818,7 +1818,7 @@ impl AppCore {
         let reader = lock(&self.inner.published).reader.clone();
         let recent = Arc::clone(&lock(&self.inner.published).recent);
         let items: Vec<menus::RecentItem> = recent.iter().map(|file| menus::RecentItem { key: &file.key, name: &file.name }).collect();
-        let mut bar = menus::menu_bar_with(ViewSettings { sidebar_hidden: reader.sidebar_hidden, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() }, record::Spread::from_name(&reader.layout), &self.inner.updates.menu_item().title, &items);
+        let mut bar = menus::menu_bar_with(ViewSettings { paper: Paper::from_name(&reader.paper), sidebar_hidden: reader.sidebar_hidden, agent_icon_hidden: reader.agent_icon_hidden }, record::Spread::from_name(&reader.layout), &self.inner.updates.menu_item().title, &items);
         bar.push(snapshot_tool::tools_menu(self.inner.tool.is_on()));
         bar
     }
@@ -1873,8 +1873,7 @@ impl AppCore {
     /// The sidebar's panel as it stands.
     pub fn panel(&self) -> PanelModel {
         let reader = lock(&self.inner.published).reader.clone();
-        let shown = Paper::from_name(&reader.paper).unwrap_or(Paper::White);
-        let mut panel = menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown, reader.edit_mode, reader.can_rotate);
+        let mut panel = menus::panel(self.inner.panel_open.load(Ordering::SeqCst), reader.edit_mode, reader.can_rotate);
         snapshot_tool::add_to_panel(&mut panel, self.inner.tool.is_on(), reader.edit_mode);
         panel
     }

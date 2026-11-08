@@ -99,21 +99,30 @@ pub(crate) fn items(core: &AppCore) -> Vec<PaletteRow> {
     let mut rows: Vec<PaletteRow> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for menu in core.menu_bar() {
+        let titles: std::collections::HashMap<String, String> = menu.entries.iter().map(|entry| (entry.id.clone(), entry.title.clone())).collect();
         for entry in menu.entries {
             // A line, a second key for an item, what the system fills, and the palette itself.
             // One row a command: Settings is in two menus, as on any Mac, and does one thing.
-            // An item in a submenu, such as an Open Recent file, isn't a command: a file named "Close" mustn't stand for Close. Open Recent's files are rows of their own, and its own item only opens the submenu.
-            if entry.id.is_empty() || entry.hidden || !entry.parent.is_empty() || matches!(entry.id.as_str(), "app.services" | "palette.open" | "file.open_recent") || !seen.insert(entry.id.clone()) || !seen.insert(format!("title:{}", entry.title)) || !core.menu_item_enabled(entry.id.clone()) {
+            // An Open Recent file isn't a command: a file named "Close" mustn't stand for Close. Open Recent's files are rows of their own. A submenu's own item only opens it.
+            if entry.id.is_empty() || entry.hidden || entry.parent == "file.open_recent" || matches!(entry.id.as_str(), "app.services" | "palette.open" | "file.open_recent" | "view.paper") || !seen.insert(entry.id.clone()) || !core.menu_item_enabled(entry.id.clone()) {
+                continue;
+            }
+            // A choice in a submenu, such as View > Paper's, is named with it, to stand alone: "Warm Paper".
+            let title = match titles.get(&entry.parent) {
+                Some(submenu) => format!("{} {submenu}", entry.title),
+                None => entry.title.trim_end_matches('…').to_string(),
+            };
+            if !seen.insert(format!("title:{title}")) {
                 continue;
             }
             let key = shortcut(&entry);
-            rows.push(row(entry.id, entry.title.trim_end_matches('…').to_string(), &menu.title, key, false));
+            rows.push(row(entry.id, title, &menu.title, key, false));
         }
     }
-    // The panel's tools, worded to stand alone. Rotating needs a document; a paper is always there to choose.
+    // The panel's tools, worded to stand alone. Rotating needs a document.
     let has_document = core.menu_item_enabled("edit.select_all".into());
     let reader = lock(&core.inner.published).reader.clone();
-    for section in menus::panel(true, recto_session::Paper::White, reader.edit_mode, reader.can_rotate).sections {
+    for section in menus::panel(true, reader.edit_mode, reader.can_rotate).sections {
         for item in section.items {
             let title = match item.id.as_str() {
                 "rotate.left" | "rotate.right" if !has_document || !item.enabled => continue,
@@ -122,7 +131,6 @@ pub(crate) fn items(core: &AppCore) -> Vec<PaletteRow> {
                 "rotate.left" => "Rotate All Pages Left".to_string(),
                 "rotate.right" => "Rotate All Pages Right".to_string(),
                 "edit_mode.done" => "Leave Edit Mode".to_string(),
-                paper if paper.starts_with("paper.") => format!("{} Paper", item.title),
                 _ => item.title.clone(),
             };
             if seen.insert(item.id.clone()) {

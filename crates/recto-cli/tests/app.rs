@@ -812,7 +812,7 @@ fn a_file_that_doesnt_answer_holds_up_nothing_else() {
     assert_ne!(run.report()["reader"]["tab"], 1, "a read coming back doesn't take the reader anywhere");
 }
 
-/// Failure: the owner couldn't see the settings: the panel is there only if it can be opened, says what's chosen, and changes what it says it does, through its real buttons, with no re-render for warm paper. And at rest there's only the button.
+/// Failure: the owner couldn't see the settings: the panel is there only if it can be opened, keeps to tools, and at rest there's only the button. Paper is in View > Paper (the owner's default of 2026-11-08), which ticks what's showing and changes it through the real menu item, with no re-render for warm paper.
 #[test]
 fn the_panel_opens_and_does_what_it_says() {
     let Some(run) = Run::start() else { return };
@@ -830,17 +830,20 @@ fn the_panel_opens_and_does_what_it_says() {
     run.settled();
     let open = run.report();
     let ids: Vec<&str> = open["app"]["panel"]["items"].as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["tools.snapshot", "rotate.left", "rotate.right", "paper.white", "paper.warm", "paper.dark"], "this and nothing else: tools first, and zoom is the top left's, by the owner's word");
+    assert_eq!(ids, ["tools.snapshot", "rotate.left", "rotate.right"], "tools and nothing else: paper is View's, and zoom is the top right's, by the owner's word");
     assert!(open["app"]["contents"]["list_height"].as_f64().unwrap() < list_at_rest, "it docks in room from the list: {open}");
+    assert!(menu_item(&open, "paper.white")["checked"] == true && menu_item(&open, "paper.warm")["checked"] == false, "View > Paper ticks the paper showing: {}", menu_item(&open, "paper.white"));
     let drawn = open["reader"]["counts"]["drawn"].clone();
-    run.ok(&["qa", "panel", "paper.warm"]);
-    let warm = wait_for(&run, |state| state["app"]["paper"] == "warm");
+    run.ok(&["qa", "menu", "paper.warm"]);
+    let warm = wait_for(&run, |state| state["app"]["paper"] == "warm" && menu_item(state, "paper.warm")["checked"] == true);
     assert_eq!(warm["app"]["pages"]["tint_layers"].as_u64().map(|layers| layers >= 1), Some(true), "{warm}");
     assert_eq!(warm["reader"]["counts"]["drawn"], drawn, "warm paper draws nothing");
-    let picked: Vec<&Value> = warm["app"]["panel"]["items"].as_array().unwrap().iter().filter(|item| item["selected"] == true).collect();
-    assert_eq!(picked.len(), 1);
-    assert_eq!(picked[0]["id"], "paper.warm");
+    let ticked: Vec<&str> = ["paper.white", "paper.warm", "paper.dark"].into_iter().filter(|id| menu_item(&warm, id)["checked"] == true).collect();
+    assert_eq!(ticked, ["paper.warm"]);
     assert_eq!(run.ok(&["view"])["paper"], "warm", "the same setting `recto view` has");
+    // The palette still offers each paper, named to stand alone.
+    let found = run.ok(&["palette", "dark paper"]);
+    assert_eq!((found["items"][0]["id"].as_str(), found["items"][0]["title"].as_str()), (Some("paper.dark"), Some("Dark Paper")), "{found}");
     run.ok(&["qa", "panel", "toggle"]);
     wait_for(&run, |state| state["app"]["panel"]["open"] == false);
 }
@@ -858,8 +861,9 @@ fn the_menu_bar_and_the_agent_icon() {
     assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go", "Tools"], "{state}");
     let view = &state["app"]["menu_bar"][3]["items"];
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
-    assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon", "Command Palette…"]);
-    assert_eq!(view[9]["key"], "k", "⌘K, as SPEC has it");
+    // Paper is View > Paper, its submenu's items following it (the owner's default of 2026-11-08).
+    assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Paper", "White", "Warm", "Dark", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon", "Command Palette…"]);
+    assert_eq!(view[13]["key"], "k", "⌘K, as SPEC has it");
     assert_eq!(state["app"]["agent_icon"], true);
     // Owner, 2026-11-07: the same margin to the right as above, and less above than the 16 it had.
     let (top, right) = (state["app"]["agent_icon_margins"]["top"].as_f64().unwrap(), state["app"]["agent_icon_margins"]["right"].as_f64().unwrap());
@@ -868,7 +872,7 @@ fn the_menu_bar_and_the_agent_icon() {
     run.ok(&["qa", "menu", "view.agent_icon"]);
     let hidden = wait_for(&run, |state| state["app"]["agent_icon"] == false);
     assert!(hidden["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() < state["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() + 1.0, "no lower than with the star, as the zoom level takes its place: {hidden}");
-    assert_eq!(hidden["app"]["menu_bar"][3]["items"][8]["checked"], false, "{hidden}");
+    assert_eq!(menu_item(&hidden, "view.agent_icon")["checked"], false, "{hidden}");
     assert_eq!(run.ok(&["view"])["agent_icon"], false, "the same setting `recto view` has");
     assert_eq!(hidden["session"]["view"]["agent_icon_hidden"], true, "remembered, as the state record has it");
     run.ok(&["view", "--agent-icon", "on"]);
