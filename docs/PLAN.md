@@ -159,6 +159,9 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
   - [x] The agent icon's margins: the same to the right and above, and less above than before
   - [x] Margin above the first page and below the last
   - [ ] The page's scroller: a slim thumb always shown, no rail, the sidebar's width and colours
+  - [ ] From the side-by-side review: a round trip through a small view, as a narrow window, can move the reader to the left page of a pair (finding 4)
+  - [ ] A fold-out's row makes `document_width` wide for every row, leaving empty horizontal room to scroll into beside the others
+  - [ ] Typing "1.5" in the zoom field with a Mac set to `,` reads as 15%, as `.` groups thousands there
   - [ ] Comparison view: several PDFs side by side, separate or synced scroll, zoom synced
 - [ ] **Blind agent test, next round**
 

@@ -278,6 +278,19 @@ mod tests {
         assert_eq!(decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap(), sleep);
     }
 
+    /// Failure: a sleep file keeps fewer pictures than a view side by side shows, twelve pages at an ordinary zoom, so a tab or an update's first frame wakes with bare pages; or a file of that many is read as damaged. And more than that is left out when written, never refused when read.
+    #[test]
+    fn a_sleep_file_keeps_a_side_by_side_views_pictures() {
+        let mut sleep = sample();
+        sleep.pages = 40;
+        sleep.file_pages = 40;
+        sleep.pictures = (0..12).map(|page| SleepPicture { page, scale: 0.25, width: 2, height: 2, dark: false, bgra: vec![200; 16] }).collect();
+        let back = decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).expect("twelve pictures read back");
+        assert_eq!(back.pictures.len(), 12);
+        sleep.pictures.push(SleepPicture { page: 12, scale: 0.25, width: 2, height: 2, dark: false, bgra: vec![200; 16] });
+        assert_eq!(decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap().pictures.len(), 12, "a thirteenth is left out when written");
+    }
+
     /// Failure: a picture whose numbers don't match its bytes gets written, so the file's refused for all of it. It's left out, and the rest stands.
     #[test]
     fn a_picture_of_the_wrong_size_is_left_out() {

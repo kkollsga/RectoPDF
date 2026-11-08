@@ -755,7 +755,9 @@ impl Reader {
             self.visible_pages(doc).collect()
         } else {
             let y = doc.exact_y.map_or_else(|| doc.left_at.map_or(0.0, |(_, anchor)| doc.layout.anchor_y(anchor)), |(y, _)| y);
-            let height = self.viewport.height.max(1.0);
+            // Its own view: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't.
+            let window_height = self.viewport.height * self.viewport.magnification.max(f64::MIN_POSITIVE);
+            let height = (window_height / doc.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
             if doc.layout.count() == 0 { Vec::new() } else { doc.layout.pages_between(y.max(0.0), y.max(0.0) + height).collect() }
         };
         let mut pictures = Vec::new();
@@ -2666,6 +2668,29 @@ mod tests {
         assert!(shown.len() > 6 && shown.len() <= 12, "the view shows {} pages", shown.len());
         let pictures: Vec<u32> = reader.sleep_material(1, None).unwrap().pictures.iter().map(|picture| picture.page).collect();
         assert_eq!(pictures, shown, "a picture for each page shown");
+    }
+
+    /// Failure (second review): a tab off screen gets its sleep pictures for the height of the tab showing's view at that tab's zoom, not its own, so a tab left side by side at a low zoom got 4 pictures of the 12 pages it showed, and woke with bare pages.
+    #[test]
+    fn a_tab_off_screen_gets_pictures_for_its_own_view() {
+        let mut reader = reader_on(40);
+        reader.note_version(Path::new("/d/a.pdf"), 1);
+        reader.scrolled_to = 0;
+        reader.set_spread(Spread::TwoUp);
+        let mut low = view(0.0);
+        low.magnification = 0.4;
+        low.width /= 0.4;
+        low.height /= 0.4;
+        reader.set_viewport(low);
+        settle(&mut reader);
+        let shown: Vec<u32> = reader.visible_pages(reader.doc().unwrap()).take(12).collect();
+        assert!(shown.len() > 6, "the low zoom shows {} pages", shown.len());
+        // Another tab comes to the screen at its own zoom, and the first is held, off screen.
+        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], ..map() }, &[1], None, Spread::Single);
+        reader.set_viewport(view(0.0));
+        settle(&mut reader);
+        let pictures: Vec<u32> = reader.sleep_material(1, None).unwrap().pictures.iter().map(|picture| picture.page).collect();
+        assert_eq!(pictures, shown, "a picture for each page it showed");
     }
 
     /// Failure (review of f05c998, finding 1): Rotate, Undo or Redo of a turn sends the reader to the top of their page and back to the left edge, as the tab showing was taken up again as if it had just been come to.

@@ -367,6 +367,7 @@ fn everything_comes_back_after_a_quit() {
 const KNOWN_PATHS: &[&str] = &[
     "app.activation",
     "app.agent_icon",
+    "app.agent_icon_margins.clear_of_pages",
     "app.agent_icon_margins.right",
     "app.agent_icon_margins.top",
     "app.appearance",
@@ -468,6 +469,7 @@ const KNOWN_PATHS: &[&str] = &[
     "app.window_open",
     "app.zoom_level.above_the_scroller",
     "app.zoom_level.clear_of_agent_icon",
+    "app.zoom_level.clear_of_pages",
     "app.zoom_level.editing",
     "app.zoom_level.field",
     "app.zoom_level.in_the_agent_icons_row",

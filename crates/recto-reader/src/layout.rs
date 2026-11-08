@@ -14,6 +14,8 @@ pub const END_MARGIN: f64 = 24.0;
 pub const READING_WIDTH: f64 = 760.0;
 /// The least room either side of a fitted page, so the agent icon's margin stays empty.
 pub const MIN_SIDE_MARGIN: f64 = 56.0;
+/// The least room to the right of a fitted page: the top right corner holds the agent icon and the zoom level beside it, and the owner's rule is that nothing sits over the page. The icon is 20 points, 12 from the edge, and the level's words, up to five characters, end 8 points left of it: about 84 points, and a little more so they don't touch. A margin the whole way down, as the left one is, so a page doesn't change width as it scrolls past the corner.
+pub const CORNER_MARGIN: f64 = 96.0;
 /// How far a fit may enlarge a tiny page, so a hostile page of a few points doesn't ask for a huge scale.
 pub const MAX_FIT: f64 = 8.0;
 /// Pages taken to be US Letter until one is known.
@@ -332,7 +334,7 @@ impl PageLayout {
 
     /// The fit follows the first page known, so pages keep their relative sizes, as they do on paper. Two side by side share the room.
     fn refit(&mut self) -> bool {
-        let room = (self.frame_width - 2.0 * MIN_SIDE_MARGIN).max(1.0);
+        let room = (self.frame_width - MIN_SIDE_MARGIN - CORNER_MARGIN).max(1.0);
         let fit = match self.spread {
             Spread::Single => READING_WIDTH.min(room) / f64::from(self.usual.width),
             Spread::TwoUp | Spread::TwoUpCover => ((2.0 * READING_WIDTH + PAGE_GAP).min(room) - PAGE_GAP).max(1.0) / (2.0 * f64::from(self.usual.width)),
@@ -395,17 +397,23 @@ impl PageLayout {
     }
 
     /// Where a page's row is centred: the middle of the window, each row on its own, so one wide page, as a fold-out, doesn't push every other row off to the side. A row too wide for the window starts at the margin and runs on to the right.
+    /// In the middle of the window when there's room, and otherwise moved left to keep clear of the top right corner, but never past the left margin.
     fn row_middle(&self, page: u32) -> f64 {
         let half = self.frame_width / 2.0;
         let width = |page: u32| f64::from(self.size(page).width) * self.fit;
-        match self.spread {
-            Spread::Single => half.max(MIN_SIDE_MARGIN + width(page) / 2.0),
+        let (lowest, highest) = match self.spread {
+            Spread::Single => (MIN_SIDE_MARGIN + width(page) / 2.0, self.frame_width - CORNER_MARGIN - width(page) / 2.0),
             _ => {
                 let (first, second) = self.row_pages(self.row_of(page));
-                let left = [Some(first), second].into_iter().flatten().find(|page| !self.on_the_right(*page)).map_or(0.0, width);
-                half.max(MIN_SIDE_MARGIN + left + PAGE_GAP / 2.0)
+                let pages = [Some(first), second];
+                // A page alone, the cover or the last of an odd count, sits in its column as if its pair were there, so the columns line up.
+                let usual = f64::from(self.usual.width) * self.fit;
+                let left = pages.into_iter().flatten().find(|page| !self.on_the_right(*page)).map_or(usual, width);
+                let right = pages.into_iter().flatten().find(|page| self.on_the_right(*page)).map_or(usual, width);
+                (MIN_SIDE_MARGIN + left + PAGE_GAP / 2.0, self.frame_width - CORNER_MARGIN - right - PAGE_GAP / 2.0)
             }
-        }
+        };
+        half.min(highest).max(lowest)
     }
 
     /// The widest a page is known to be, and the window's room.
@@ -415,7 +423,7 @@ impl PageLayout {
             Spread::Single => widest,
             Spread::TwoUp | Spread::TwoUpCover => 2.0 * widest + PAGE_GAP,
         };
-        self.frame_width.max(pages + 2.0 * MIN_SIDE_MARGIN)
+        self.frame_width.max(pages + MIN_SIDE_MARGIN + CORNER_MARGIN)
     }
 
     pub fn document_height(&self) -> f64 {
@@ -625,7 +633,9 @@ mod tests {
                 if let [left, right] = pages[..] {
                     let (one, two) = (layout.rect(left), layout.rect(right));
                     assert!((one.x + one.width + PAGE_GAP - two.x).abs() < 1e-6, "{spread:?} a pair meets with the gap between");
-                    assert!(((one.x + one.width + two.x) / 2.0 - layout.document_width() / 2.0).abs() < 1e-6, "{spread:?} about the middle");
+                    let middle = (one.x + one.width + two.x) / 2.0;
+                    let clear = 1400.0 - CORNER_MARGIN - (two.x + two.width);
+                    assert!((middle - 700.0).abs() < 1e-6 || clear.abs() < 1e-6, "{spread:?} about the middle, or as near it as the corner allows: {middle}, {clear} clear");
                     assert_eq!(layout.pages_between(top + 1.0, top + 2.0), left..=right);
                 }
             }
@@ -635,11 +645,11 @@ mod tests {
         let mut cover = PageLayout::with_spread(4, Spread::TwoUpCover);
         cover.set_frame(1400.0);
         cover.set_page_size(0, letter());
-        assert!(cover.rect(0).x > cover.document_width() / 2.0, "the cover's on the right, as a book's is");
+        assert!((cover.rect(0).x - cover.rect(2).x).abs() < 1e-6 && cover.rect(0).x > cover.rect(1).x, "the cover's on the right, as a book's is");
         let mut odd = PageLayout::with_spread(3, Spread::TwoUp);
         odd.set_frame(1400.0);
         odd.set_page_size(0, letter());
-        assert!(odd.rect(2).x + odd.rect(2).width < odd.document_width() / 2.0, "a last page alone is on the left");
+        assert!((odd.rect(2).x - odd.rect(0).x).abs() < 1e-6 && odd.rect(2).x < odd.rect(1).x, "a last page alone is on the left");
     }
 
     /// Failure: two pages side by side don't fit the room, or run into the agent icon's margin, or are drawn larger than one page would be.
@@ -774,6 +784,26 @@ mod tests {
         }
         assert_eq!(layout.size(count - 1), turned, "and after the cap clears the rest");
         assert_eq!(layout.size(1), turned);
+    }
+
+    /// Failure (second review): in a narrower window, a laptop's with the sidebar, the fitted page runs under the top right corner, so the zoom level and the agent icon sit on the page, where the owner's rule has nothing. Every layout keeps the corner's margin clear at any width, and is centred whenever there's room.
+    #[test]
+    fn pages_keep_clear_of_the_top_right_corner() {
+        for spread in [Spread::Single, Spread::TwoUp, Spread::TwoUpCover] {
+            for frame in [560.0, 740.0, 1000.0, 1180.0, 1440.0, 2200.0] {
+                let mut layout = PageLayout::with_spread(6, spread);
+                layout.set_frame(frame);
+                layout.set_page_size(0, letter());
+                for page in 0..6 {
+                    let rect = layout.rect(page);
+                    assert!(rect.x + rect.width <= frame - CORNER_MARGIN + 1e-6, "{spread:?} at {frame}: page {page} {rect:?}");
+                    assert!(rect.x >= MIN_SIDE_MARGIN - 1e-6, "{spread:?} at {frame}: page {page} {rect:?}");
+                }
+                if spread == Spread::Single && frame >= READING_WIDTH + 2.0 * CORNER_MARGIN {
+                    assert!((layout.rect(0).x + layout.rect(0).width / 2.0 - frame / 2.0).abs() < 1e-6, "centred with room: {frame}");
+                }
+            }
+        }
     }
 
     /// Failure (review of f05c998, finding 4): one very wide page, a fold-out, makes the document wide, and every other page or pair is centred on that and sits off to the side, out of the window, with the view at its left. Each row is centred in the window, and only the wide one runs past it.

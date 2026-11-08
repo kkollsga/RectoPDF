@@ -223,6 +223,15 @@ final class CenteringClipView: NSClipView {
         return (tint, rects)
     }
 
+    /// Whether any page showing is under a rectangle of a view, for QA: what sits in the top right corner must never be over the page.
+    func pagesOverlap(_ rect: NSRect, in view: NSView) -> Bool {
+        let visible = scrollView.convert(scrollView.bounds, to: view)
+        return pageLayers.values.contains { page in
+            let shown = documentView.convert(page.frame, to: view).intersection(visible)
+            return !shown.isNull && shown.intersects(rect)
+        }
+    }
+
     func hideTintForShot(_ hidden: Bool) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)

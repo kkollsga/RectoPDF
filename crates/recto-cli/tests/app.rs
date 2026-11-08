@@ -447,6 +447,31 @@ fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
     assert_eq!(half["app"]["document_edited"], true);
 }
 
+/// Failure (second review): in a narrower window, a laptop's with the sidebar, the zoom level or the agent icon sits on the page, where the owner's rule has nothing; at any width the window can be, with the sidebar shown or hidden, the icon on or off, single or side by side, both stay clear of every page showing at the fitted zoom.
+#[test]
+fn the_top_right_corner_stays_off_the_page() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    for layout in ["single", "two-up"] {
+        run.ok(&["view", "--layout", layout]);
+        for sidebar in ["on", "off"] {
+            run.ok(&["view", "--sidebar", sidebar]);
+            for icon in ["on", "off"] {
+                run.ok(&["view", "--agent-icon", icon]);
+                for size in ["700x500", "820x600", "1000x700", "1180x760", "1440x900"] {
+                    run.ok(&["qa", "resize", size]);
+                    run.settled();
+                    let state = run.report();
+                    let app = &state["app"];
+                    assert_eq!((&app["zoom_level"]["clear_of_pages"], &app["agent_icon_margins"]["clear_of_pages"]), (&json!(true), &json!(true)), "{layout}, sidebar {sidebar}, icon {icon}, {size}: zoom {} icon {}", app["zoom_level"], app["agent_icon_margins"]);
+                }
+            }
+        }
+    }
+}
+
 /// Failure: the zoom level isn't in the top right just left of the agent icon, in its row, or doesn't take the icon's place at the same margin when the icon's hidden, or the page's scroller runs up beside it; or it says a level the page isn't at, or clicking it doesn't let the reader type a level or fit the page again, or Escape or going elsewhere changes it. Owner, 2026-11-07: "clicking the zoom value enables you to type in zoom level or reset", and 2026-11-08: "The zoom level should be in the upper right of the app (not in the sidebar)". 100% is the page's real size.
 #[test]
 fn the_zoom_level_shows_and_takes_a_typed_level() {
