@@ -207,6 +207,10 @@ final class BookMark: NSView {
     let agentIcon = AgentIcon()
     /// Beside the window's controls: shows and hides the sidebar. Owner, 2026-11-08: "simply have a sidebar icon to the right of the traffic light buttons that toggles sidebar on and of".
     let sidebarButton = NSButton(title: "", target: nil, action: nil)
+    /// Save, beside the sidebar's button, while the document showing has unsaved edits (owner: "something that looks more like a native save / save as feature"). Rust says when, and its words.
+    let saveButton = NSButton(title: "", target: nil, action: nil)
+    /// The save problem showing as a sheet, so the same one isn't shown twice.
+    private var problemShowing: SaveProblem?
     /// The zoom level, in the top right just left of the agent icon. Clicking it opens a field to type a level in, with a button to fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". Its words are Rust's.
     let zoomButton = NSButton(title: "", target: nil, action: nil)
     let zoomField = NSTextField(string: "")
@@ -280,6 +284,7 @@ final class BookMark: NSView {
         root.addSubview(placeLabel)
         root.addSubview(copyNotice)
         root.addSubview(sidebarButton)
+        root.addSubview(saveButton)
         for view in [zoomButton, zoomField, zoomReset] as [NSView] { root.addSubview(view) }
         buildZoomLevel()
         pages.zoomChanged = { [weak self] in self?.updateZoomLevel() }
@@ -289,6 +294,12 @@ final class BookMark: NSView {
         sidebarButton.toolTip = delegate.strings.sidebarButtonTooltip
         sidebarButton.target = self
         sidebarButton.action = #selector(sidebarButtonPressed)
+        saveButton.isBordered = false
+        saveButton.imagePosition = .imageOnly
+        saveButton.image = NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: reader.saveTooltip)?.withSymbolConfiguration(.init(pointSize: 14, weight: .regular))
+        saveButton.target = self
+        saveButton.action = #selector(saveButtonPressed)
+        saveButton.isHidden = true
         copyNotice.isHidden = true
         copyNotice.button.target = self
         copyNotice.button.action = #selector(copyAnyway)
@@ -548,6 +559,7 @@ final class BookMark: NSView {
         let row = windowButtonsRow()
         let size: CGFloat = 24
         sidebarButton.frame = NSRect(x: (row.right + 10).rounded(), y: (row.middle - size / 2).rounded(), width: size, height: size)
+        saveButton.frame = NSRect(x: sidebarButton.frame.maxX + 4, y: sidebarButton.frame.minY, width: size, height: size)
     }
 
     /// The agent icon's margin from the window's top and right edges, the same both ways, by the owner's word of 2026-11-07.
@@ -576,6 +588,43 @@ final class BookMark: NSView {
 
     @objc private func sidebarButtonPressed() {
         delegate.perform("view.sidebar")
+    }
+
+    @objc private func saveButtonPressed() {
+        delegate.perform("save.button")
+    }
+
+    /// The Save icon: there while the document showing has unsaved edits, greyed while it's being saved, with Rust's words for what it's doing.
+    private func updateSaveButton() {
+        saveButton.isHidden = reader.home || !(reader.edited || reader.saving)
+        saveButton.isEnabled = !reader.saving
+        saveButton.toolTip = reader.saveTooltip
+        saveButton.setAccessibilityLabel(reader.saveTooltip)
+    }
+
+    /// A save that didn't happen, as a sheet over the window, as long as Rust has it. Save As opens the save sheet, where a copy is the way on.
+    private func showSaveProblemIfAny() {
+        guard let problem = reader.saveProblem else {
+            problemShowing = nil
+            return
+        }
+        guard problemShowing != problem, window.attachedSheet == nil else { return }
+        problemShowing = problem
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = problem.title
+        alert.informativeText = problem.message
+        alert.addButton(withTitle: problem.okTitle)
+        if let saveAs = problem.saveAsTitle { alert.addButton(withTitle: saveAs) }
+        let core = delegate.core
+        core.sheetChanged(open: true)
+        delegate.sheetShowing = ["kind": "save_problem", "message": problem.title, "informative": problem.message, "buttons": [problem.okTitle] + (problem.saveAsTitle.map { [$0] } ?? [])]
+        alert.beginSheetModal(for: window) { [weak self] response in
+            core.sheetChanged(open: false)
+            self?.delegate.sheetShowing = nil
+            let action = core.saveProblemAnswered(saveAs: response == .alertSecondButtonReturn)
+            if action == .showSavePanel { self?.delegate.showSavePanel() }
+        }
     }
 
     private static let zoomFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
@@ -676,6 +725,8 @@ final class BookMark: NSView {
         agentIcon.isHidden = reader.agentIconHidden
         // Unsaved edits: the red button's dot, as on any Mac app. Rust says.
         window.isDocumentEdited = reader.edited
+        updateSaveButton()
+        showSaveProblemIfAny()
         if reader.home { endZoomEditing() }
         updateZoomLevel()
         layout()
@@ -694,6 +745,7 @@ final class BookMark: NSView {
         sidebar.appearanceChanged()
         for view in [agentIcon, homeBook] { view.needsDisplay = true }
         sidebarButton.contentTintColor = Theme.textQuiet.ns
+        saveButton.contentTintColor = Theme.textQuiet.ns
         styleZoomLevel()
         for label in [noteLabel, placeLabel, copyNotice as MarginLabel] {
             label.layer?.backgroundColor = Theme.pill.cg

@@ -129,6 +129,8 @@ pub enum SaveError {
     Damaged,
     /// The document is certified, and these edits change its pages.
     BreaksCertification,
+    /// An unsigned copy of a signed document is a rewrite, which isn't built yet.
+    UnsignedCopyNeedsRewrite,
     /// Deleting pages saves by rewriting the file, which isn't built yet.
     NeedsRewrite,
     /// The file or its folder can't be written.
@@ -161,6 +163,7 @@ impl SaveError {
             Self::Protected => "protected",
             Self::Damaged => "damaged",
             Self::BreaksCertification => "breaks_certification",
+            Self::UnsignedCopyNeedsRewrite => "needs_rewrite",
             Self::NeedsRewrite => "needs_rewrite",
             Self::ReadOnly => "read_only",
             Self::HardLinks => "hard_links",
@@ -183,7 +186,8 @@ impl SaveError {
             Self::AddedFileUnreadable { name } => format!("Part of the pages added from “{name}” can't be read, so they can't be saved. Nothing was written."),
             Self::Protected => "This PDF is password-protected, and saving protected files isn't supported yet. Nothing was written.".into(),
             Self::Damaged => "This file's structure is damaged, so it can't be saved over safely. Nothing was written.".into(),
-            Self::BreaksCertification => "This document is certified, and changing its pages would break that, so it isn't saved over. Save As makes an unsigned copy. The original keeps its signature.".into(),
+            Self::BreaksCertification => "This document is certified, and changing its pages would break that, so it isn't saved over. Nothing was written, and the original keeps its signature.".into(),
+            Self::UnsignedCopyNeedsRewrite => "This document is certified, so a copy with its pages changed has to be written anew without its signature, and that isn't in this build yet. Nothing was written, and the original keeps its signature.".into(),
             Self::NeedsRewrite => "Deleting pages is saved by writing the file anew, so what was deleted is really gone, and that isn't in this build yet. Nothing was written.".into(),
             Self::ReadOnly => "This file or its folder is locked or read-only, so it can't be saved over. Nothing was written. Save As can put it somewhere else.".into(),
             Self::HardLinks => "This file has other names (hard links), which saving over it would leave with the old version. Nothing was written. Save As makes a separate copy.".into(),
@@ -358,7 +362,10 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
     let facts = signature_facts(&reader);
     let changes_pages = request.pages.iter().enumerate().any(|(at, page)| page.source != 0 || page.page as usize != at || page.quarter_turns != 0);
     if facts.certified && changes_pages {
-        return Err(SaveError::BreaksCertification);
+        return Err(match target {
+            Target::Same => SaveError::BreaksCertification,
+            Target::NewFile(_) | Target::Replace(_) => SaveError::UnsignedCopyNeedsRewrite,
+        });
     }
     reader.check_appendable().map_err(from_append)?;
     let plan = Plan::make(&reader, &map, request, &sources, facts)?;

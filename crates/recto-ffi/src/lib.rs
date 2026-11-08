@@ -1024,6 +1024,14 @@ impl Inner {
             },
             "owner_edit" => self.owner_edit(value),
             "save_from" => self.qa_save_from(value),
+            // What Save As's sheet does when it's answered with this path: the same call.
+            "save_as" => match self.saver.inner() {
+                Some(inner) if value.starts_with('/') => {
+                    saving::start_save(&inner, Some((PathBuf::from(value), false)), false);
+                    Ok(())
+                }
+                _ => Err(usage("It's the whole path of a new file.".to_string())),
+            },
             "dormant_after" => match value.parse::<u32>() {
                 Ok(seconds) => {
                     self.sleeper.set_after(seconds);
@@ -1525,7 +1533,8 @@ impl AppCore {
     /// Whether Save does anything now: the tab showing has unsaved edits and isn't being saved.
     fn can_save(&self) -> bool {
         let reader = lock(&self.inner.published).reader.clone();
-        !reader.home && reader.edited && !reader.saving
+        // Not under a sheet: the close prompt's own Save is how to save then.
+        !reader.home && reader.edited && !reader.saving && self.inner.sheets.load(Ordering::SeqCst) == 0
     }
 
     /// What Save As's sheet says, for the tab showing. Never waits: the path is read only if the session's free, and the signature line is what the session thread found.

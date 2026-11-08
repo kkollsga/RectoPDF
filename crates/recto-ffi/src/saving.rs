@@ -95,6 +95,8 @@ pub enum CloseChoice {
 
 /// The decided words for signed copies (SPEC decision 27).
 pub(crate) const UNSIGNED_COPY: &str = "The new copy won't be signed. The original keeps its signature.";
+/// Whether Save As makes that copy yet. It's the streaming rewrite's, the next stage of Save.
+const UNSIGNED_COPY_BUILT: bool = false;
 
 /// The app's side of saving that the window draws: how many saves are running, a problem waiting to be answered, and what's known of the tab showing's signatures.
 pub(crate) struct SaveUi {
@@ -119,7 +121,8 @@ impl SaveUi {
         {
             return note.clone();
         }
-        let note = recto_core::save::signature_facts_of(path).ok().filter(|facts| facts.certified).map(|_| UNSIGNED_COPY.to_string());
+        // Said on the sheet once Save As can make that copy, which is the rewrite's: until then saying it would promise what isn't there.
+        let note = recto_core::save::signature_facts_of(path).ok().filter(|facts| facts.certified && UNSIGNED_COPY_BUILT).map(|_| UNSIGNED_COPY.to_string());
         *known = Some((id, stamp, note.clone()));
         note
     }
@@ -146,7 +149,8 @@ impl SaveUi {
 
 /// The problem a failed save shows: what went wrong, in the save's own words, and Save As where a copy is the way on.
 pub(crate) fn problem_for(error: &recto_agent::AgentError) -> SaveProblem {
-    let copy_helps = matches!(error.code, "file_changed" | "read_only" | "hard_links" | "breaks_certification" | "protected");
+    // A certified document's unsigned copy is the rewrite's, which comes next: until then Save As can't help it.
+    let copy_helps = matches!(error.code, "file_changed" | "read_only" | "hard_links");
     SaveProblem { title: "The document couldn't be saved.".into(), message: error.message.clone(), save_as_title: copy_helps.then(|| "Save As…".to_string()), ok_title: "OK".into() }
 }
 

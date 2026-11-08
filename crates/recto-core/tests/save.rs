@@ -307,6 +307,9 @@ fn a_certified_files_pages_arent_changed() {
     assert_eq!(save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::BreaksCertification));
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert!(save::signature_facts_of(&path).unwrap().certified);
+    let copy = path.with_file_name("copy.pdf");
+    assert_eq!(save::save(&request(&path, 1, &order, &[]), Target::NewFile(&copy), None, &mut save::NoHooks), Err(SaveError::UnsignedCopyNeedsRewrite), "an unsigned copy is the rewrite's, and nothing says otherwise");
+    assert!(!copy.exists());
 }
 
 /// Failure: a file with usage rights alone, as IRS forms have, can't be saved, or is saved with rights a reader then calls broken. Saved, with them dropped from the new revision, and said (owner, 2026-11-08).
