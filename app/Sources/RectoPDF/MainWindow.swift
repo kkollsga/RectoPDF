@@ -538,6 +538,11 @@ final class BookMark: NSView {
     }
 
     /// Drains every pane, when Rust says there's something for the layers.
+    /// **Every host animation running that changes what a shot shows**, by name: the sidebar's, and a ⌘-scroll zoom about to settle. Each ends by itself in a moment. A notice that goes after some seconds isn't one: it's what's shown, not a move. Nor is a drag's autoscroll, which runs for as long as the button's held.
+    func runningAnimations() -> [String] {
+        sidebar.runningAnimations() + (paneAreas.contains { $0.zoomSettling } ? ["zoom_settling"] : [])
+    }
+
     func drainAll() {
         for area in paneAreas { area.drain() }
     }

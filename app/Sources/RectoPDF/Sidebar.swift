@@ -400,6 +400,9 @@ final class TabTable: NSTableView {
     private let revealDelay: TimeInterval
     /// How far rows opening and closing have moved the scroll, so what QA records is what the eye sees.
     private var rowShift = 0.0
+    /// When the contents' fade over rows going in ends, and when rows sliding in and out do. Times, not timers: nothing runs to keep them.
+    private var fadeUntil: CFTimeInterval = 0
+    private var rowsUntil: CFTimeInterval = 0
 
     init(core: AppCore, strings: AppStrings, isQuiet: Bool) {
         self.core = core
@@ -574,6 +577,17 @@ final class TabTable: NSTableView {
         return stale
     }
 
+    /// **What's moving in the sidebar**, by name, and nothing at rest: the contents' fade over rows going in, rows sliding in and out (a row view the table is still taking away counts), the contents drifting to the place being read, and a shortened name about to be shown in full. `qa wait-settled` waits until there's none, so a shot never catches two rows drawn over each other.
+    func runningAnimations() -> [String] {
+        let now = CACurrentMediaTime()
+        var running: [String] = []
+        if now < fadeUntil { running.append("contents_fade") }
+        if now < rowsUntil || contentsTable.subviews.contains(where: { $0 is NSTableRowView && !$0.isHidden && contentsTable.row(for: $0) < 0 }) { running.append("contents_rows") }
+        if frames?.isRunning == true { running.append("contents_drift") }
+        if revealTimer != nil { running.append("name_reveal") }
+        return running
+    }
+
     /// Tabs and contents, as a person counts them.
     var rowCount: Int { tabs.count + Int(model.tocOpen ? model.contentsCount : 0) }
 
@@ -663,7 +677,10 @@ final class TabTable: NSTableView {
             return
         }
         let timer = Timer(timeInterval: revealDelay, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.revealRow(row) }
+            MainActor.assumeIsolated {
+                self?.revealTimer = nil
+                self?.revealRow(row)
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         revealTimer = timer
@@ -944,12 +961,15 @@ final class TabTable: NSTableView {
                     fade.type = .fade
                     fade.duration = 0.15
                     contentsScroll.layer?.add(fade, forKey: "rows")
+                    fadeUntil = CACurrentMediaTime() + fade.duration
                 }
                 contentsTable.reloadData()
                 setContentsY(before + by)
                 return
             }
             let motion: NSTableView.AnimationOptions = shouldReduceMotion ? [] : [.effectFade, .slideUp]
+            // The table animates by the current context's duration, so that's how long the rows are moving.
+            if !motion.isEmpty, removed + inserted > 0 { rowsUntil = CACurrentMediaTime() + NSAnimationContext.current.duration }
             contentsTable.beginUpdates()
             if removed > 0 { contentsTable.removeRows(at: IndexSet(from..<(from + removed)), withAnimation: motion) }
             if inserted > 0 { contentsTable.insertRows(at: IndexSet(from..<(from + inserted)), withAnimation: motion) }

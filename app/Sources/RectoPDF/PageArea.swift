@@ -488,6 +488,9 @@ final class CenteringClipView: NSClipView {
         core.paneFocused(pane: pane)
     }
 
+    /// A zoom by ⌘-scroll waits a moment for the wheel to stop before its pages are drawn sharp: while it does, what's drawn is about to change.
+    var zoomSettling: Bool { liveEnd != nil }
+
     /// The scroller stops below the agent icon, and goes the whole way with none there.
     func setScrollerTop(_ top: CGFloat) {
         guard scrollView.scrollerInsets.top != top else { return }

@@ -421,6 +421,8 @@ const KNOWN_PATHS: &[&str] = &[
     "app.document_edited",
     "app.home",
     "app.hover",
+    "app.animations.len",
+    "app.animations[]",
     "app.is_active",
     "app.layout",
     "app.menu_bar.len",

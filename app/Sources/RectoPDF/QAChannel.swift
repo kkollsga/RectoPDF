@@ -44,6 +44,10 @@ import QuartzCore
         case "state":
             answer(id, state())
             return
+        case "animations":
+            // Cheap, as `qa wait-settled` asks it until there's nothing.
+            answer(id, controller?.runningAnimations() ?? [])
+            return
         case "entry_points":
             answer(id, entryPoints())
             return
@@ -296,6 +300,7 @@ import QuartzCore
             "paper": reader.paper,
             "contents": sidebar.contentsReport(),
             "hover": sidebar.hoveredRow.map { $0 as Any } ?? NSNull(),
+            "animations": controller.runningAnimations(),
             "place": reader.place,
             "note": controller.noteLabel.isHidden ? NSNull() as Any : controller.noteLabel.label.text,
             // Where the note's bubble is and how many lines it wraps to, so a check can hold its shape and not only its words.
