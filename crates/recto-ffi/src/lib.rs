@@ -951,8 +951,10 @@ struct Inner {
     qa: Option<Arc<QaBridge>>,
     paths: Option<StatePaths>,
     open_failure: Mutex<Option<String>>,
-    /// Why something the reader chose couldn't be done, as a notice that goes by itself.
+    /// Why something the reader chose couldn't be done, or what a save has to say, as a notice that goes by itself.
     action_notice: Mutex<Option<String>>,
+    /// The tab showing when the window was last brought up to date: a notice is about what was on screen, so it goes with a change of tab.
+    notice_tab: AtomicU32,
     /// Saves from the window: how many run, and what one that failed says.
     save_ui: saving::SaveUi,
 }
@@ -1368,6 +1370,7 @@ impl AppCore {
             paths: Some(paths),
             open_failure: Mutex::new(None),
             action_notice: Mutex::new(None),
+            notice_tab: AtomicU32::new(0),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
         });
         saver.attach(Arc::downgrade(&inner));
@@ -3022,6 +3025,10 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }
     });
     let (shown_tab, document_name, document_folder) = file.as_ref().map_or((0, String::new(), String::new()), |(id, path, _)| (id.0, path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(), path.parent().map(|folder| folder.display().to_string()).unwrap_or_default()));
+    // A notice about one document doesn't stay over another: a save's note, seen on the next tab, would read as being about that one.
+    if inner.notice_tab.swap(shown_tab, Ordering::SeqCst) != shown_tab {
+        lock(&inner.action_notice).take();
+    }
     // **Rust decides what a signed file's Save does** (SPEC decision 27): an edit a Save over it would break the signature with turns Save off, and Save As says its copy won't be signed.
     let facts = if edited { file.as_ref().map(|(id, path, stamp)| inner.save_ui.signature_facts(*id, path, *stamp)).unwrap_or_default() } else { recto_core::save::SignatureFacts::default() };
     let save_off = save_needs_copy(facts, needs_rewrite);

@@ -280,9 +280,13 @@ fn answer<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: TabId,
         });
     }
     let kept_words = outcome.document_data_kept.map(|kept| kept.kinds()).unwrap_or_default();
-    let kept_note = (outcome.pages_removed > 0 && !kept_words.is_empty()).then(|| format!("The deleted pages are gone from the file, but it still has things that belong to the whole document, which can repeat what was on them: {}.", list_words(&kept_words)));
+    let one = outcome.pages_removed == 1;
+    let kept_note = (outcome.pages_removed > 0 && !kept_words.is_empty()).then(|| {
+        let (gone, them) = if one { ("The deleted page is gone", "it") } else { ("The deleted pages are gone", "them") };
+        format!("{gone} from the file, but it still has things that belong to the whole document, which can repeat what was on {them}: {}.", list_words(&kept_words))
+    });
     if outcome.pages_removed > 0 && outcome.resources_left_whole > 0 {
-        notes.push("Some of what the deleted pages drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file.");
+        notes.push(if one { "Some of what the deleted page drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file." } else { "Some of what the deleted pages drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file." });
     }
     if outcome.attributes_missed {
         notes.push("Some of the file's Finder information, such as tags or who may open it, couldn't be kept on the saved file.");

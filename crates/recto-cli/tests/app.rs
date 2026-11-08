@@ -1971,4 +1971,10 @@ fn usage_rights_alone_save_in_place_with_a_quiet_note() {
     assert!(saved["app"]["copy_notice"]["text"].as_str().is_some_and(|note| note.contains("usage rights")), "{}", saved["app"]["copy_notice"]);
     let bytes = std::fs::read(&file.0).unwrap();
     assert!(!found_in(&bytes, "/UR3") && !found_in(&bytes, "DELETEDPAGEMARK"));
+    // A save's note is about that document: on another tab it goes, rather than read as about that one (found in the stage 2 shots).
+    let other = three_marked();
+    run.ok(&["open", other.0.to_str().unwrap()]);
+    let elsewhere = wait_for(&run, |state| state["app"]["document_name"] != saved["app"]["document_name"] || state["reader"]["pages"] == 3);
+    run.settled();
+    assert!(run.report()["app"]["copy_notice"].is_null(), "{}", elsewhere["app"]["copy_notice"]);
 }
