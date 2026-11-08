@@ -2304,3 +2304,20 @@ fn a_find_hit_clicked_or_returned_to_is_a_jump_and_a_step_isnt() {
     let returned = run.report();
     assert_eq!((go(&returned, "go.back"), go(&returned, "go.forward")), (json!(true), json!(false)), "Return is a jump, which takes the way forward: {}", returned["app"]["place"]);
 }
+
+/// Failure: a step asked for before a hit for it is known (⇧⌘G with Find closed, from the first page, so the last hit waits for the query's end) is done when the query has more while Find's field is still locked, and the session thread waits on itself; the UI thread then hangs on its next look at Find (found from the palette's Find Next).
+#[test]
+fn a_step_kept_for_the_querys_end_is_done_without_a_hang() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(300);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.ok(&["qa", "find-key", "escape"]);
+    wait_for(&run, |state| state["app"]["find"]["open"] == false);
+    // Opens Find with what was typed, finds it again from the start, and goes back round to the last hit once the end is known.
+    run.ok(&["qa", "menu", "find.previous"]);
+    let went = wait_for(&run, |state| state["app"]["place"] == "300 of 300");
+    assert_eq!(went["app"]["find"]["status"], "300 matches on 300 pages", "{}", went["app"]["find"]);
+}

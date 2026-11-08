@@ -249,7 +249,9 @@ pub(crate) fn act(inner: &Inner, call: FindCall, events: &mut Vec<Event>) {
             }
         }
         FindCall::News => {
-            if let Some((forward, going)) = lock(&inner.find_field).pending_step {
+            // Taken out first: a guard in the `if let` would be held through the step, which locks the field again, and the session thread would wait on itself.
+            let pending = lock(&inner.find_field).pending_step;
+            if let Some((forward, going)) = pending {
                 try_step(inner, forward, going, events);
             }
             // The hit gone to before a restart, chosen again by its place once the hits are back, if they're of the same tab. Its selection came back with the page view.
