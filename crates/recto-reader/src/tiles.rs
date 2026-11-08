@@ -2686,6 +2686,11 @@ impl Reader {
         })
     }
 
+    /// How far a page is shown turned, in quarter turns clockwise: its unsaved turn and the view's together. What a snapshot of it is turned by.
+    pub fn page_turns(&self, page: u32) -> u8 {
+        self.doc().map_or(0, |doc| doc.layout.turns_of(page))
+    }
+
     /// The other way, for QA, which says where a click goes as an agent found it from `recto select`, and then does what the mouse does.
     pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
         let doc = self.doc()?;

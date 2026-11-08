@@ -3445,6 +3445,37 @@ fn the_snapshot_tool_takes_a_box_and_an_image_to_the_clipboard() {
     assert_eq!(run.report()["snapshot"]["on"], false);
 }
 
+/// Failure (PLAN, snapshot follow-ups): with every page turned by an unsaved quarter turn, as the owner's rotate-all does to fix a sideways scan, the snapshot tool's box is drawn on the turned page but the clipboard's picture comes out unturned, sideways again. The coordinator's decision (2026-11-08): what's copied is what's seen. The app's PNG must be `snapshot_clip`'s for the box with the page's turn.
+#[test]
+fn a_snapshot_of_a_turned_page_is_copied_turned() {
+    use sha2::Digest;
+    let Some(run) = Run::start() else { return };
+    let (file, _) = snapshot_pdf();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["page", "rotate", "all", "--by", "90"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
+    run.settled();
+    run.ok(&["qa", "menu", "tools.snapshot"]);
+    run.ok(&["qa", "mouse-down", "1:60,50"]);
+    run.ok(&["qa", "mouse-drag", "1:300,400"]);
+    let shown = run.report()["app"]["pages"]["snapshot_box"].clone();
+    let side = |name: &str| shown[name].as_f64().unwrap_or_else(|| panic!("{name} in {shown}")) as f32;
+    let rect = [side("x"), side("y"), side("width"), side("height")];
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let items = clipboard_items(&run);
+    assert_eq!(items[0]["type"], "public.png", "{items:?}");
+    let digest = |bytes: &[u8]| sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let picture = |turns: u8| match recto_agent::extract::snapshot_clip(&file.0, 0, rect, turns, false, &recto_agent::extract::ClipStop::default()) {
+        recto_agent::extract::ClipOutcome::Ready(clip) => digest(clip.items[0].bytes().unwrap()),
+        other => panic!("{other:?}"),
+    };
+    let copied = items[0]["sha256"].as_str().unwrap();
+    assert_ne!(copied, picture(0), "the page was copied as the file stores it, unturned");
+    assert_eq!(copied, picture(1), "the page wasn't copied as it's seen, turned a quarter");
+}
+
 /// Failure: a snapshot of a file that asks not to be copied gets round it, or is refused with no "Copy anyway", though the owner decided on 2026-11-08 it gets the same notice as text. The button takes the same box again.
 #[test]
 fn a_snapshot_of_a_copy_restricted_file_offers_copy_anyway() {

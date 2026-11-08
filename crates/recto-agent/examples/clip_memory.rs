@@ -61,7 +61,7 @@ fn main() {
         .unwrap()
         .join("recto-render-service");
     measure("copy", &worker, || {
-        match extract::snapshot_clip(&file, page - 1, rect, false, &ClipStop::default()) {
+        match extract::snapshot_clip(&file, page - 1, rect, 0, false, &ClipStop::default()) {
             ClipOutcome::Ready(clip) => format!(
                 "{:?}, {} bytes made",
                 clip.types(),
@@ -72,7 +72,7 @@ fn main() {
     });
     if paste {
         measure("paste svg", &worker, || {
-            extract::snapshot_svg(&file, page - 1, rect, extract::MAX_CLIP_ITEM).map_or_else(|error| error.message, |svg| format!("{} bytes", svg.len()))
+            extract::snapshot_svg(&file, page - 1, rect, 0, extract::MAX_CLIP_ITEM).map_or_else(|error| error.message, |svg| format!("{} bytes", svg.len()))
         });
     }
 }

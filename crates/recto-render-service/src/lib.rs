@@ -30,8 +30,8 @@ pub mod transport;
 
 pub use budget::{
     BUDGET_MAX_TIME, BudgetOptions, BudgetReport, DrawStrategy, OutputCaps, PageDrawn, PageEvent, PageSample, REGION_MIN_IMAGE_PIXELS, STRIP_MAX_BYTES,
-    ViewportOptions, ViewportStep, box_pixels, draw_page_box, draw_whole_page, draw_whole_page_sized, fits_at, largest_scale_that_fits, measure_budget,
-    measure_viewport, page_device_size, plan_regions,
+    ViewportOptions, ViewportStep, box_pixels, draw_page_box, draw_page_region, draw_whole_page, draw_whole_page_sized, fits_at, largest_scale_that_fits,
+    measure_budget, measure_viewport, page_box_region, page_device_size, plan_regions,
 };
 pub use host::contents::{ContentsDone, ContentsEvent, ContentsRequest};
 pub use host::{
