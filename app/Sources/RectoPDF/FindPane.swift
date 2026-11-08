@@ -199,7 +199,7 @@ final class FindRowCell: NSView {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.insertNewline(_:)):
-            core.findStep(forward: !(NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false))
+            core.findReturn(forward: !(NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false))
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             closeClicked()

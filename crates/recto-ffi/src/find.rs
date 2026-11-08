@@ -6,7 +6,7 @@
 
 use crate::{Inner, lock};
 use recto_agent::Event;
-use recto_agent::find::{self, Finding, Row};
+use recto_agent::find::{self, Finding, Going, Row};
 use serde_json::{Value, json};
 
 /// A row of the hit list, a page's or a hit's: one height, so the list asks nothing per row.
@@ -27,7 +27,7 @@ pub(crate) struct Field {
     open: bool,
     text: String,
     /// A step asked for before a hit for it was known, done when one is, or when the query ends.
-    pending_step: Option<bool>,
+    pending_step: Option<(bool, Going)>,
     /// What was typed can't be found, in Rust's words, as when it's too long.
     note: Option<String>,
 }
@@ -41,8 +41,8 @@ pub(crate) enum FindCall {
     Open,
     /// Escape in the field.
     Close,
-    /// ⌘G, ⇧⌘G, Return and ⇧Return in the field.
-    Step(bool),
+    /// ⌘G and ⇧⌘G, which step, and Return and ⇧Return in the field, which jump: forward or not, and which.
+    Step(bool, Going),
     /// A click on a row of the list.
     Choose(u32),
     /// The Finder has more, or has finished.
@@ -191,14 +191,14 @@ fn find_typed(inner: &Inner, text: &str) {
 }
 
 /// Tries a step, or keeps it for when a hit for it is known: a query still running may not have reached it.
-fn try_step(inner: &Inner, forward: bool, events: &mut Vec<Event>) {
+fn try_step(inner: &Inner, forward: bool, going: Going, events: &mut Vec<Event>) {
     let session = &inner.host.session;
-    match session.find_step(forward) {
+    match session.find_step(forward, going) {
         Some((tab, hit)) => {
             lock(&inner.find_field).pending_step = None;
             reveal(inner, tab, &hit, events);
         }
-        None => lock(&inner.find_field).pending_step = session.finder().is_running().then_some(forward),
+        None => lock(&inner.find_field).pending_step = session.finder().is_running().then_some((forward, going)),
     }
 }
 
@@ -224,7 +224,7 @@ pub(crate) fn act(inner: &Inner, call: FindCall, events: &mut Vec<Event>) {
             lock(&inner.find_field).pending_step = None;
             events.push(Event::new("find_changed", json!({ "open": false })));
         }
-        FindCall::Step(forward) => {
+        FindCall::Step(forward, going) => {
             // ⌘G with Find closed opens it with what was typed last, as on a Mac.
             let (open, query, draft) = session.with_session(|s| (s.find().open, s.find().query.clone(), s.find().draft.clone()));
             if !open || query.is_empty() {
@@ -236,9 +236,9 @@ pub(crate) fn act(inner: &Inner, call: FindCall, events: &mut Vec<Event>) {
             match session.find_stale_query() {
                 Some(query) => {
                     let _ = session.find_begin(&query);
-                    lock(&inner.find_field).pending_step = Some(forward);
+                    lock(&inner.find_field).pending_step = Some((forward, going));
                 }
-                None => try_step(inner, forward, events),
+                None => try_step(inner, forward, going, events),
             }
         }
         FindCall::Choose(row) => {
@@ -249,8 +249,8 @@ pub(crate) fn act(inner: &Inner, call: FindCall, events: &mut Vec<Event>) {
             }
         }
         FindCall::News => {
-            if let Some(forward) = lock(&inner.find_field).pending_step {
-                try_step(inner, forward, events);
+            if let Some((forward, going)) = lock(&inner.find_field).pending_step {
+                try_step(inner, forward, going, events);
             }
             // The hit gone to before a restart, chosen again by its place once the hits are back, if they're of the same tab. Its selection came back with the page view.
             if !session.finder().is_running()

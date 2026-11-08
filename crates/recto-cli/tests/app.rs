@@ -2210,3 +2210,31 @@ fn usage_rights_alone_save_in_place_with_a_quiet_note() {
     run.settled();
     assert!(run.report()["app"]["copy_notice"].is_null(), "{}", elsewhere["app"]["copy_notice"]);
 }
+
+/// Failure: going to a Find hit by a click on its row or Return in the field leaves no mark for Back, so ⌘[ can't bring the reader to where they were reading, as it can after a link; or ⌘G's step, which only steps, marks the trail or takes the way forward away.
+#[test]
+fn a_find_hit_clicked_or_returned_to_is_a_jump_and_a_step_isnt() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(200);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let go = |state: &Value, id: &str| menu_item(state, id)["enabled"].clone();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.settled();
+    assert_eq!(go(&run.report(), "go.back"), json!(false), "nothing to go back to yet");
+    // Row 99 is page 50's hit: a page row, then its hit, for each page.
+    run.ok(&["qa", "find-click", "99"]);
+    let clicked = wait_for(&run, |state| state["app"]["place"] == "50 of 200");
+    assert_eq!(go(&clicked, "go.back"), json!(true), "a click on a hit is a jump: {}", clicked["app"]["find"]);
+    run.ok(&["qa", "menu", "go.back"]);
+    let back = wait_for(&run, |state| state["app"]["place"] == "1 of 200");
+    assert_eq!(go(&back, "go.forward"), json!(true));
+    run.ok(&["qa", "menu", "find.next"]);
+    let stepped = wait_for(&run, |state| state["app"]["place"] != "1 of 200");
+    assert_eq!(go(&stepped, "go.forward"), json!(true), "⌘G only steps, so the way forward stays: {}", stepped["app"]["place"]);
+    run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    let returned = run.report();
+    assert_eq!((go(&returned, "go.back"), go(&returned, "go.forward")), (json!(true), json!(false)), "Return is a jump, which takes the way forward: {}", returned["app"]["place"]);
+}

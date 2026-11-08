@@ -505,30 +505,48 @@ pub fn stale_query<A: crate::SessionAccess>(access: &A, finding: &dyn Finding) -
     (!wanted.0.is_empty() && have != wanted).then_some(wanted.0)
 }
 
+/// How going to a hit goes: a step, as ⌘G's and an agent's `--next`, or the person's jump, as Return in the field and a click on a row, which marks where they were for Back, as following a link does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Going {
+    Step,
+    Jump,
+}
+
 /// Goes to the next hit or the one before, from the current one or from where the reader is, and notes it in the state record. The tab's page goes there too; the app also selects the hit. `None` if there's nothing to go to.
-pub fn step<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, forward: bool) -> Option<(u32, Hit)> {
+pub fn step<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, forward: bool, going: Going) -> Option<(u32, Hit)> {
     let place = access.with(|s| s.active().and_then(|id| s.tab(id)).map_or((0, 0), |tab| (tab.page, 0)));
     let mut hit = None;
     finding.with_results(&mut |results| hit = results.step(forward, place).cloned().zip(results.tab));
     let (hit, tab) = hit?;
-    went_to(access, tab, &hit);
+    went_to(access, tab, &hit, going);
     Some((tab, hit))
 }
 
-/// Goes to a hit by its number in the list, as a click on its row does.
+/// Goes to a hit by its number in the list, as a click on its row does: the person's jump.
 pub fn choose<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, index: usize) -> Option<(u32, Hit)> {
     let mut hit = None;
     finding.with_results(&mut |results| hit = results.choose(index).cloned().zip(results.tab));
     let (hit, tab) = hit?;
-    went_to(access, tab, &hit);
+    went_to(access, tab, &hit, Going::Jump);
     Some((tab, hit))
 }
 
-fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit) {
+fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit, going: Going) {
     access.with(|s| {
         s.set_find_current(Some((hit.page, hit.start)), Some(tab));
         if s.active().map(|id| id.0) == Some(tab) {
-            let _ = s.go_to(TabId(tab), hit.page);
+            let id = TabId(tab);
+            match going {
+                Going::Step => {
+                    let _ = s.go_to(id, hit.page);
+                }
+                // Marked for Back, and the page view's told nothing more: the app brings the hit itself into view, a third down, which landing at the page's top would undo.
+                Going::Jump => {
+                    if s.jump_as(id, hit.page, 0.0, recto_session::Author::Owner).is_ok() {
+                        let _ = s.take_jump(id);
+                    }
+                }
+            }
         }
     });
 }
@@ -581,7 +599,7 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
     }
     let mut went = None;
     if asked.next || asked.previous {
-        let Some((tab, hit)) = step(access, finding, asked.next) else {
+        let Some((tab, hit)) = step(access, finding, asked.next, Going::Step) else {
             return Err(AgentError::new("nothing_found", "There's no hit to go to.", exit::NOT_FOUND).then("Find something first: `recto find \"words\"`."));
         };
         events.push(crate::Event::new("page_changed", serde_json::json!({ "tab": tab, "page": hit.page + 1 })));

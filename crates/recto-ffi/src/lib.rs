@@ -1567,9 +1567,9 @@ impl AppCore {
         self.inner.core.push(CoreCall::Find(find::FindCall::Close));
     }
 
-    /// ⌘G or Return (forward), ⇧⌘G or ⇧Return (back).
-    pub fn find_step(&self, forward: bool) {
-        self.inner.core.push(CoreCall::Find(find::FindCall::Step(forward)));
+    /// Return (forward) or ⇧Return (back) in the field: the person's jump to the hit, so Back comes here again. ⌘G and ⇧⌘G are the menu's, and only step.
+    pub fn find_return(&self, forward: bool) {
+        self.inner.core.push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Jump)));
     }
 
     /// A click on a row of Find's list.
@@ -1743,7 +1743,7 @@ impl AppCore {
                 self.inner.core.push(CoreCall::Find(find::FindCall::Open));
                 return HostAction::FocusFind;
             }
-            menus::Action::FindStep(forward) => self.inner.core.push(CoreCall::Find(find::FindCall::Step(forward))),
+            menus::Action::FindStep(forward) => self.inner.core.push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Step))),
             menus::Action::LeaveEditMode => self.inner.core.push(CoreCall::SetEditMode(false)),
             menus::Action::Step(back) => self.inner.core.push(CoreCall::Step(back)),
             menus::Action::ClearEditHistory => self.inner.core.push(CoreCall::ClearEditHistory),

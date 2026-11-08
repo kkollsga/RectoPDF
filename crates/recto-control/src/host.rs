@@ -131,9 +131,9 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         recto_agent::find::stale_query(&self.access(), &self.finder)
     }
 
-    /// ⌘G and ⇧⌘G, by the same step as `recto find --next`.
-    pub fn find_step(&self, forward: bool) -> Option<(u32, recto_agent::find::Hit)> {
-        recto_agent::find::step(&self.access(), &self.finder, forward)
+    /// ⌘G and ⇧⌘G, by the same step as `recto find --next`, or Return and ⇧Return in the field, the person's jump.
+    pub fn find_step(&self, forward: bool, going: recto_agent::find::Going) -> Option<(u32, recto_agent::find::Hit)> {
+        recto_agent::find::step(&self.access(), &self.finder, forward, going)
     }
 
     /// A click on a hit's row.
