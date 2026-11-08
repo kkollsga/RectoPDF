@@ -321,6 +321,8 @@ struct DocView {
     versions: HashMap<PathBuf, u64>,
     /// **What it showed when it was left,** a picture of each page in view then, for its sleep file. What it left on screen is marked discardable and the system takes that back whenever it needs the memory, without a word, so without these a tab put to sleep after that slept with no picture and woke to bare paper. Taken while it's still on the screen, so it's all there. At most [`MAX_LEFT_PICTURE_BYTES`] for each of the few tabs held off screen, the session's warm ones. Gone when it's shown again, its file's another version, the system says memory's short, or the window closes.
     left_pictures: Option<Vec<RawPicture>>,
+    /// The document's width as the host was last told it: the window's, or a fold-out's while its row is in view.
+    width_shown: f64,
 }
 
 /// Exactly where a tab's view is. For the session to keep, as a cold tab holds nothing here, and to bring back.
@@ -1379,6 +1381,7 @@ impl Reader {
                 size_on_trust: false,
                 versions: HashMap::new(),
                 left_pictures: None,
+                width_shown: 0.0,
             }
         });
         // A save wrote the pages that were shown, each as it was shown: another version of the file, with nothing on the screen to move.
@@ -1721,13 +1724,14 @@ impl Reader {
         doc.layout.set_margins(self.margins.0, self.margins.1);
         doc.layout.set_frame(self.viewport.frame_width);
         let (top_room, bottom_room) = doc.layout.end_room();
+        let y = Self::place_y(doc);
+        doc.width_shown = doc.layout.document_width_for(y, y + self.viewport.height);
         self.ops.push_back(Op::Document {
-            width: doc.layout.document_width(),
+            width: doc.width_shown,
             height: doc.layout.document_height(),
             top_room,
             bottom_room,
         });
-        let y = Self::place_y(doc);
         let seq = self.next_seq;
         self.next_seq += 1;
         if self.jump.is_some() {
@@ -1769,12 +1773,33 @@ impl Reader {
             self.lay_out();
         } else {
             self.track_place();
+            self.widen_for_view();
         }
         // After the refresh, which is what moves the tiles' scale on.
         self.refresh(MAX_ATTACH_PER_TURN);
         self.cancel_if_unwanted();
         self.count_blanks();
         self.take_ops()
+    }
+
+    /// The document as wide as the rows in view need, which is the window's unless a fold-out's row is in view: told to the host when that changes, as the view reaches a fold-out or leaves it.
+    fn widen_for_view(&mut self) {
+        let viewport = self.viewport;
+        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
+            return;
+        };
+        let width = doc.layout.document_width_for(viewport.y, viewport.y + viewport.height);
+        if (width - doc.width_shown).abs() < 0.5 {
+            return;
+        }
+        doc.width_shown = width;
+        let (top_room, bottom_room) = doc.layout.end_room();
+        self.ops.push_back(Op::Document {
+            width,
+            height: doc.layout.document_height(),
+            top_room,
+            bottom_room,
+        });
     }
 
     /// Follows the reader's place. Only a change the reader made is the session's business: arriving where a jump sent them isn't.
@@ -3954,6 +3979,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Failure (PLAN, side-by-side follow-ups): the host is told the document is as wide as a fold-out wherever the view is, leaving room to scroll across beside every other page; or it isn't told it's wider when the fold-out comes into view, so its right side can't be reached.
+    #[test]
+    fn the_host_hears_the_documents_width_for_what_it_shows() {
+        let mut reader = reader_on(40);
+        settle(&mut reader);
+        let doc = reader.docs.get_mut(&1).unwrap();
+        doc.layout.set_page_size(21, PageBox { width: 3000.0, height: 792.0 });
+        let (wide, frame) = (doc.layout.rect(21), doc.layout.document_width_for(0.0, 1.0));
+        reader.lay_out();
+        reader.take_ops();
+        let widths = |ops: Vec<Op>| {
+            ops.into_iter()
+                .filter_map(|op| if let Op::Document { width, .. } = op { Some(width) } else { None })
+                .collect::<Vec<_>>()
+        };
+        let there = widths(reader.set_viewport(view(wide.y - 200.0)));
+        assert!(there.last().is_some_and(|width| *width >= wide.x + wide.width), "{there:?} for {wide:?}");
+        assert!(
+            widths(reader.set_viewport(view(wide.y - 150.0))).is_empty(),
+            "nothing new to say while it's still in view"
+        );
+        assert_eq!(widths(reader.set_viewport(view(0.0))), [frame], "back to the window's width away from it");
     }
 
     /// The view the host goes to on the reader's next turn: wherever the last scroll it was told of says, as it would have applied it.
