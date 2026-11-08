@@ -1635,3 +1635,78 @@ fn each_use_of_copy_anyway_is_in_the_activity_log() {
     let log = run.ok(&["log", "--last", "200"]).to_string();
     assert!(!log.contains("Words that ask"), "no document text: {log}");
 }
+
+/// Failure (review): the window's Save, the close prompt and Save As act on the wrong tab, or nothing. A click dropped because the session was busy; "Save" in
+/// the prompt then refusing to close silently over undone steps; an agent's `tap` while Save As's sheet is up saving the other document. Driven through the
+/// QA verbs, which call what the window does: the Save icon saves the tab showing; the prompt's Don't Save closes without writing; Save As's sheet names the
+/// tab's file and its answer saves that tab; and with only undone steps, the prompt offers Close and says they'll go.
+#[test]
+fn the_windows_save_close_prompt_and_save_as_act_on_their_own_tab() {
+    let Some(run) = Run::start() else { return };
+    let first = long_document(3);
+    let second = long_document(2);
+    let original = std::fs::read(&first.0).unwrap();
+    run.ok(&["open", second.0.to_str().unwrap()]);
+    run.ok(&["open", first.0.to_str().unwrap()]);
+    run.settled();
+    // The Save icon shows with an edit, saves the tab showing, and goes.
+    run.ok(&["page", "rotate", "1", "--by", "90"]);
+    let edited = wait_for(&run, |state| state["app"]["save_button"]["visible"] == true);
+    assert_eq!(edited["app"]["document_edited"], true);
+    run.ok(&["qa", "button", "save"]);
+    wait_for(&run, |state| state["app"]["save_button"]["visible"] == false && state["app"]["document_edited"] == false);
+    let saved = std::fs::read(&first.0).unwrap();
+    assert!(saved.starts_with(&original) && saved.len() > original.len(), "the tab showing was saved");
+
+    // Don't Save closes without writing.
+    run.ok(&["page", "rotate", "1", "--by", "90"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
+    run.ok(&["qa", "menu", "file.close"]);
+    let asked = wait_for(&run, |state| state["app"]["sheet"]["kind"] == "close_prompt");
+    assert_eq!(asked["app"]["sheet"]["buttons"], json!(["Save", "Cancel", "Don't Save"]));
+    run.ok(&["qa", "sheet-answer", "third"]);
+    wait_for(&run, |state| state["app"]["sheet"].as_object().is_none_or(|sheet| sheet.is_empty()));
+    let (tabs, _) = run.state.json(&["tabs"]);
+    assert_eq!(tabs["data"]["count"], 1, "closed: {tabs}");
+    assert_eq!(std::fs::read(&first.0).unwrap(), saved, "and nothing was written");
+
+    // Save As's sheet names the tab's file, and its answer saves that tab: the system's sheet can't be typed into here, so `qa save-as` gives the answer it would.
+    run.ok(&["open", first.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["page", "rotate", "1", "--by", "180"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
+    run.ok(&["qa", "menu", "file.save_as"]);
+    let sheet = wait_for(&run, |state| state["app"]["sheet"]["kind"] == "save_panel");
+    assert!(sheet["app"]["sheet"]["name"].as_str().unwrap().ends_with(" copy.pdf"), "{}", sheet["app"]["sheet"]);
+    run.ok(&["qa", "sheet-answer", "cancel"]);
+    let copy = first.0.with_file_name("first-copy.pdf");
+    run.ok(&["qa", "save-as", copy.to_str().unwrap()]);
+    wait_for(&run, |state| state["app"]["document_edited"] == false);
+    assert!(std::fs::read(&copy).unwrap().starts_with(&saved), "the copy is of the tab it was for");
+
+    // Only undone steps: nothing to save, so the prompt offers Close, says the steps go, and closing lets them go.
+    // The owner's steps, as the app's own tools make them: an agent's undone steps are its own to lose, and closing doesn't ask about those.
+    run.ok(&["qa", "owner-edit", "rotate:1"]);
+    run.ok(&["qa", "owner-edit", "undo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == false);
+    run.ok(&["qa", "menu", "file.close"]);
+    let asked = wait_for(&run, |state| state["app"]["sheet"]["kind"] == "close_prompt");
+    assert_eq!(asked["app"]["sheet"]["buttons"], json!(["Close", "Cancel"]));
+    assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("undid"), "{}", asked["app"]["sheet"]);
+    run.ok(&["qa", "sheet-answer", "first"]);
+    wait_for(&run, |state| state["app"]["sheet"].as_object().is_none_or(|sheet| sheet.is_empty()));
+    let (tabs, _) = run.state.json(&["tabs"]);
+    assert_eq!(tabs["data"]["count"], 1, "closed over its undone steps, as it said: {tabs}");
+
+    // The prompt's Save writes the tab it asked about, then closes it.
+    run.ok(&["open", second.0.to_str().unwrap()]);
+    let before = std::fs::read(&second.0).unwrap();
+    run.ok(&["page", "rotate", "1", "--by", "90"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
+    run.ok(&["qa", "menu", "file.close"]);
+    wait_for(&run, |state| state["app"]["sheet"]["kind"] == "close_prompt");
+    run.ok(&["qa", "sheet-answer", "first"]);
+    wait_for(&run, |state| state["app"]["home"] == true);
+    assert!(std::fs::read(&second.0).unwrap().len() > before.len(), "saved before it closed");
+    let _ = std::fs::remove_file(copy);
+}

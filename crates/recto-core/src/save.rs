@@ -1140,7 +1140,7 @@ mod tests {
     #[test]
     fn the_writers_that_take_any_write_are_refused_by_name() {
         let config = include_str!("../../../clippy.toml");
-        for path in ["lopdf::Writer::write_object", "lopdf::Document::save", "lopdf::Document::save_to", "lopdf::IncrementalDocument::save", "lopdf::IncrementalDocument::save_to", "lopdf::IndexedReader::copy_revision_to", "lopdf::RewriteChanges::remove_object"] {
+        for path in ["lopdf::Writer::write_object", "lopdf::Document::save", "lopdf::Document::save_to", "lopdf::IncrementalDocument::save", "lopdf::IncrementalDocument::save_to", "lopdf::IndexedReader::copy_revision_to", "lopdf::RewriteChanges::remove_object", "lopdf::xref::XrefEntry::write_xref_entry", "lopdf::xref::XrefSection::write_xref_section"] {
             assert!(config.contains(&format!("path = \"{path}\"")), "{path} isn't refused");
         }
     }

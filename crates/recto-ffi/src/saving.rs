@@ -67,6 +67,8 @@ pub struct SaveProblem {
 /// What Save As's sheet says.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct SavePanelModel {
+    /// The tab it's for, as it was when the sheet opened: the answer saves that tab, whichever is showing by then.
+    pub tab: u32,
     pub prompt: String,
     pub suggested_name: String,
     /// The folder it opens in: the document's own.
@@ -78,11 +80,21 @@ pub struct SavePanelModel {
 /// What closing a document with unsaved edits asks, as any Mac app asks it.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct ClosePrompt {
+    /// The tab it's about, as it was when it was asked.
+    pub tab: u32,
     pub message: String,
     pub informative: String,
-    pub save_title: String,
-    pub dont_save_title: String,
-    pub cancel_title: String,
+    /// In the order they're shown, each with what it does.
+    pub buttons: Vec<CloseButton>,
+}
+
+/// One of the close prompt's buttons.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CloseButton {
+    pub title: String,
+    pub choice: CloseChoice,
+    /// Throws something away, so it's drawn as such.
+    pub destructive: bool,
 }
 
 /// The answer to it.
@@ -114,6 +126,10 @@ impl SaveUi {
 
     /// What Save As's sheet says of this file: that a certified document's copy with its pages changed won't be signed. Read from the file's catalog once a version, never on the UI thread.
     pub(crate) fn signature_note(&self, id: TabId, path: &std::path::Path, stamp: FileStamp) -> Option<String> {
+        // Nothing's said until Save As can make that copy, so nothing's read for it either (review).
+        if !UNSIGNED_COPY_BUILT {
+            return None;
+        }
         let mut known = crate::lock(&self.signature);
         if let Some((tab, at, note)) = known.as_ref()
             && *tab == id
@@ -155,25 +171,34 @@ pub(crate) fn problem_for(error: &recto_agent::AgentError) -> SaveProblem {
 }
 
 /// Save As's sheet for the tab showing.
-pub(crate) fn panel_for(path: Option<&std::path::Path>, note: Option<String>) -> SavePanelModel {
-    let suggested = path.and_then(|path| path.file_stem()).map(|stem| format!("{} copy.pdf", recto_core::clean_line(&stem.to_string_lossy()))).unwrap_or_else(|| "Untitled.pdf".into());
-    let directory = path.and_then(std::path::Path::parent).map(|folder| folder.display().to_string()).unwrap_or_default();
-    SavePanelModel { prompt: "Save".into(), suggested_name: suggested, directory, message: note }
+pub(crate) fn panel_for(tab: u32, name: &str, folder: &str, note: Option<String>) -> SavePanelModel {
+    let stem = std::path::Path::new(name).file_stem().map(|stem| recto_core::clean_line(&stem.to_string_lossy())).filter(|stem| !stem.is_empty());
+    let suggested = stem.map_or_else(|| "Untitled.pdf".into(), |stem| format!("{stem} copy.pdf"));
+    SavePanelModel { tab, prompt: "Save".into(), suggested_name: suggested, directory: folder.to_string(), message: note }
 }
 
 /// What closing asks, about this document.
-pub(crate) fn close_prompt(name: &str) -> ClosePrompt {
-    ClosePrompt { message: format!("Do you want to save the changes you made to “{}”?", recto_core::clean_line(name)), informative: "Your changes will be lost if you don't save them.".into(), save_title: "Save".into(), dont_save_title: "Don't Save".into(), cancel_title: "Cancel".into() }
+/// **What closing asks, decided here** (review): with unsaved edits, Save, Cancel or Don't Save, as any Mac app asks. Steps the person undid can't be redone
+/// once the tab's closed, so it says so, and closing after either answer lets them go. With only undone steps, there's nothing to save: Close or Cancel.
+pub(crate) fn close_prompt(tab: u32, name: &str, edited: bool, undone: bool) -> ClosePrompt {
+    let name = recto_core::clean_line(name);
+    let button = |title: &str, choice, destructive| CloseButton { title: title.into(), choice, destructive };
+    if edited {
+        let informative = if undone { "Your changes will be lost if you don't save them. Steps you undid can't be redone once it's closed." } else { "Your changes will be lost if you don't save them." };
+        ClosePrompt { tab, message: format!("Do you want to save the changes you made to “{name}”?"), informative: informative.into(), buttons: vec![button("Save", CloseChoice::Save, false), button("Cancel", CloseChoice::Cancel, false), button("Don't Save", CloseChoice::DontSave, true)] }
+    } else {
+        ClosePrompt { tab, message: format!("Close “{name}”?"), informative: "It has no unsaved changes, but steps you undid can't be redone once it's closed.".into(), buttons: vec![button("Close", CloseChoice::DontSave, true), button("Cancel", CloseChoice::Cancel, false)] }
+    }
 }
 
 /// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, at the owner's level. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.
-pub(crate) fn start_save(inner: &Arc<crate::Inner>, out: Option<(std::path::PathBuf, bool)>, close_after: bool) {
+pub(crate) fn start_save(inner: &Arc<crate::Inner>, tab: TabId, out: Option<std::path::PathBuf>, close_after: bool) {
     let inner = Arc::clone(inner);
     inner.save_ui.running.fetch_add(1, Ordering::SeqCst);
     let spawned = std::thread::Builder::new().name("recto-save-file".into()).stack_size(1024 * 1024).spawn({
         let inner = Arc::clone(&inner);
         move || {
-            run_save(&inner, out, close_after);
+            run_save(&inner, tab, out, close_after);
             inner.save_ui.running.fetch_sub(1, Ordering::SeqCst);
             inner.save_ui.step.store(0, Ordering::SeqCst);
             inner.core.push(crate::CoreCall::Reconcile);
@@ -186,13 +211,11 @@ pub(crate) fn start_save(inner: &Arc<crate::Inner>, out: Option<(std::path::Path
     }
 }
 
-fn run_save(inner: &crate::Inner, out: Option<(std::path::PathBuf, bool)>, close_after: bool) {
+/// The save of the tab the action was for, whichever is showing by now. A Save As's sheet has already asked whether to replace a file that's there, so one
+/// that's there was agreed to; it's looked at here, off the UI thread (review).
+fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, close_after: bool) {
     use recto_control::host::Host;
-    let Some(id) = inner.host.session.with_session(|session| session.active()) else { return };
-    let (out, replace) = match out {
-        Some((out, replace)) => (Some(out), replace),
-        None => (None, false),
-    };
+    let replace = out.as_deref().is_some_and(|out| std::fs::symlink_metadata(out).is_ok());
     let command = recto_agent::Command::Save { tab: format!("#{}", id.0), out, replace };
     let mut events = Vec::new();
     match inner.host.run(recto_agent::Level::Full, &command, &mut events) {
@@ -201,7 +224,7 @@ fn run_save(inner: &crate::Inner, out: Option<(std::path::PathBuf, bool)>, close
             *crate::lock(&inner.action_notice) = (!notes.is_empty()).then(|| notes.join(" "));
             inner.save_ui.set_problem(None);
             if close_after {
-                inner.core.push(crate::CoreCall::CloseTab(id, false));
+                inner.core.push(crate::CoreCall::CloseAfterSave(id));
             }
         }
         Err(error) => inner.save_ui.set_problem(Some(problem_for(&error))),

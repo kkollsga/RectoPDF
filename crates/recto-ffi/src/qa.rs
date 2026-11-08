@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 
 /// How long the UI thread may take with a QA request before the answer is that it's stuck.
 const UI_ANSWER_WAIT: Duration = Duration::from_secs(30);
+/// How long a shot waits for the page view to settle before it's taken anyway, saying so.
+const SHOT_SETTLE: Duration = Duration::from_secs(10);
+
 /// How long a drive verb waits for its effect before saying how things stand. A click on a tab whose file isn't answering is still a click that's been made, and `qa wait-settled` is for waiting on as long as it takes.
 const ANSWER_AFTER_CLICK: Duration = Duration::from_secs(3);
 const DEFAULT_SETTLE_WAIT: Duration = Duration::from_secs(30);
@@ -197,11 +200,16 @@ impl QaBridge {
     /// The host draws it into a temp file of ours, and it's published here, by the rule `render` keeps to: nothing already there is replaced. A QA run can be started from Off, and this is at Read-only.
     fn shot(&self, verb: &str, out: &Path) -> Result<Value, AgentError> {
         refuse_shot_path(out, is_in_real_home)?;
+        // A shot of a page mid-draw shows it blurred: it waits for the view to settle, for as long as a shot may, and says if it didn't (review).
+        let started = Instant::now();
+        let settled = self.core.flush(SHOT_SETTLE) && self.engine.wait_settled(SHOT_SETTLE.saturating_sub(started.elapsed()));
         let temp = std::env::temp_dir().join(format!("recto-shot-{}-{}.png", std::process::id(), self.next_id.fetch_add(1, Ordering::SeqCst)));
         let answer = self.ask(verb, &temp.to_string_lossy());
         let published = answer.and_then(|mut answer| {
             recto_agent::publish_picture(&temp, out)?;
             answer["out"] = json!(out);
+            answer["settled"] = json!(settled);
+            answer["settle_waited_ms"] = json!(started.elapsed().as_millis() as u64);
             Ok(answer)
         });
         let _ = std::fs::remove_file(&temp);

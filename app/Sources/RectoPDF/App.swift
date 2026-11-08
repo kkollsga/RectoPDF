@@ -424,8 +424,8 @@ final class Bridge: AppListener, @unchecked Sendable {
             core.sheetChanged(open: false)
             self?.sheetShowing = nil
             guard response == .OK, let url = panel.url else { return }
-            // The sheet has asked whether to replace a file that's there, so a path that exists was agreed to.
-            core.saveAs(path: url.path, replace: FileManager.default.fileExists(atPath: url.path))
+            // For the tab it opened for. Whether a file's there to replace, which the sheet has asked, is Rust's to look at, off this thread.
+            core.saveAs(tab: model.tab, path: url.path)
         }
     }
 
@@ -436,21 +436,19 @@ final class Bridge: AppListener, @unchecked Sendable {
         let alert = NSAlert()
         alert.messageText = prompt.message
         alert.informativeText = prompt.informative
-        alert.addButton(withTitle: prompt.saveTitle)
-        alert.addButton(withTitle: prompt.cancelTitle)
-        let dontSave = alert.addButton(withTitle: prompt.dontSaveTitle)
-        dontSave.hasDestructiveAction = true
+        // Rust's buttons, in Rust's order, each with what it does.
+        for button in prompt.buttons {
+            alert.addButton(withTitle: button.title).hasDestructiveAction = button.destructive
+        }
         let core = self.core
         core.sheetChanged(open: true)
-        sheetShowing = ["kind": "close_prompt", "message": prompt.message, "informative": prompt.informative, "buttons": [prompt.saveTitle, prompt.cancelTitle, prompt.dontSaveTitle]]
+        sheetShowing = ["kind": "close_prompt", "message": prompt.message, "informative": prompt.informative, "buttons": prompt.buttons.map(\.title)]
         alert.beginSheetModal(for: window) { [weak self] response in
             core.sheetChanged(open: false)
             self?.sheetShowing = nil
-            switch response {
-            case .alertFirstButtonReturn: core.closeAnswered(choice: .save)
-            case .alertThirdButtonReturn: core.closeAnswered(choice: .dontSave)
-            default: core.closeAnswered(choice: .cancel)
-            }
+            let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+            let choice = prompt.buttons.indices.contains(index) ? prompt.buttons[index].choice : .cancel
+            core.closeAnswered(tab: prompt.tab, choice: choice)
         }
     }
 
