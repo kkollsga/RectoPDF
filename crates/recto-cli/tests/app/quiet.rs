@@ -2,7 +2,8 @@
 //!
 //! The app's own report can't catch this. Its window says it was never ordered in, and is, until AppKit orders it in to hang a sheet on it, slides it onto the screen from where it was, and takes it away again a moment later (owner, 2026-11-08: "When you are testing the app it flashes open in lower left corner").
 
-use super::{Run, app_path, long_document};
+use super::common::app::numbered;
+use super::{Run, app_path};
 use recto_platform::screen::{ShownWindow, windows_on_screen};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -59,7 +60,7 @@ fn a_quiet_run_never_puts_a_window_on_screen() {
     let Some(app) = app_path() else { return };
     let watch = ScreenWatch::start(app.canonicalize().unwrap());
     let run = Run::start().unwrap();
-    let file = long_document(3);
+    let file = numbered(3);
     let folder = std::env::temp_dir().join(format!("recto-quiet-shots-{}", std::process::id()));
     std::fs::create_dir_all(&folder).unwrap();
     run.ok(&["open", file.0.to_str().unwrap()]);
