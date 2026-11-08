@@ -21,6 +21,7 @@ The whole suite decides a hand-back. It's never how you find out why something c
 2. **Fix before rerunning.** A failure names its test. Read it, fix it, then run that test or `--failed`. The queue refuses a command that failed on code that hasn't changed.
 3. **Run the whole suite once, last,** on the commit you're handing back, and again only if code changed.
 4. **Commit before the full run.** A dirty tree runs, but it's never recorded, so its pass is worth nothing later.
+5. **A test waits for what it checks.** Poll for the condition with a bound (say 10 s) and fail with what it saw. Never sleep a fixed time and then count threads, files or events, and never assume which of two queued jobs a background thread takes first. Four of five failed full runs in one stretch were tests like these, not product bugs. Fix them like any other bug: find what the test assumed, and check the property instead.
 
 ## What the tools do
 

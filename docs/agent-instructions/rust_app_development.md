@@ -1339,6 +1339,31 @@ A worker reported two tests as committed that were never added: its edit script 
 - **Test a dependent when its dependency moves, not at release.** A 141-document gate showed no change from a text-decoding merge, and three small unit tests caught two real regressions.
 - **Agents won't take a relayed approval to change their own configuration, and they're right.** Keep those steps with the coordinator, on the user's direct word.
 
+### Tests that wait, and tests that guess
+
+In one stretch, four of five failed full checks were tests making timing assumptions, not product bugs:
+- a thread count read a fixed 100 ms after a command, twice, which sometimes catches the command's thread on its way out;
+- a test that queued two background jobs and assumed the newer would start first, which holds only if the worker thread hadn't already taken the other;
+- a 100 ms deadline that was only four times the work it timed.
+
+A test waits for the condition it checks, polling with a bound and failing with what it saw. It never sleeps and then counts, and never assumes an order the code doesn't promise. Don't widen such a test until it passes. Find what it assumed: here, the deadline test also hid a real bug, where a page the machine was too busy to read was remembered as unreadable for the whole session.
+
+### Before a merge, look at what the branch adds
+
+A branch carried 649 MiB of build output from a helper crate built in its own folder: the root `.gitignore` said `/target`, which covers only the root. A review caught it before the push, and the fix was a history rewrite. Ignore `target/` everywhere. Before merging, check the objects a branch adds for build folders and their total size (`git rev-list --objects main..branch` piped to `git cat-file --batch-check`). It takes seconds, and a pushed mistake like this stays in the history for good.
+
+### A worker's visual claims get a look
+
+A worker reported a blurry page, and later a page gone white on dark paper. The first was a screenshot taken while tiles were still drawing. The second was a pixel average over a box that had moved because the zoom changed, and the zoom change was the real bug. Both were caught only because the coordinator opened the images. Make the screenshot command wait for drawing to settle and say whether it did. Ask for pixel samples of named regions when the claim is about colour, and open the image before acting on what a report says it shows.
+
+### Every write path gets the same checks
+
+An image export refused anything but `.png`. A later Save As checked only that its target was absolute and new, so an agent misled by a hostile PDF could write that PDF's bytes to a shell's startup file, which is usually absent and runs whatever it contains. The next round's review found that a symlink at the target still got past the check. Any path an agent can name for writing needs the same rules: the expected extension, no hidden part of the path after following every link, and no settings or library folders. A review checks each new write path against the existing ones.
+
+### A fresh worker for each stage
+
+A worker that built a large feature, took it through two review rounds and merged main twice ran out of room and handed the rest over mid-task. Give each stage of a large feature a fresh worker, with the previous report and the review findings as its brief, rather than resuming the same worker through every round.
+
 ## 12. Working with the user
 
 - **Few practical tasks for the user.** "Try avoiding giving me so many practical tasks. You guys can figure it

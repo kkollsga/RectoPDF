@@ -103,3 +103,29 @@ A failed run also went on to 453 s, because the gate keeps going after a failure
 
 **Check next time.** Was main red on CI at any point, and for how long? Conflicts per merge of main.
 
+
+## 2026-11-08, after four more merges (CI fixes, comparison view, dark paper after a replace, Save stage 1)
+
+**Numbers.** Full runs since the last review (`tools/check.sh --runs`): comparison 4 (2 failed), Save 4 (1 failed, and a third and fourth with `--why`), dark paper 2 (1 failed), main 2 for its unpushed range (1 failed). Queue: median wait 0 s, p90 37 s (4 s at the last review), average 1.02 jobs running. CI on main: green on every push since the watcher started (`a640e59`, `c52ad25`), so main wasn't red at any point in this stretch. Reviews: Save round 1 found 3 blockers and 5 serious items, round 2 found 2 blockers; comparison round 1 found 3 medium. The merge of each long branch had conflicts in the same hub files: `recto-session/src/lib.rs`, `recto-ffi/src/lib.rs`, `qa.rs`.
+
+**What the failed runs were.** Four of the five failures were tests making timing assumptions, not product bugs:
+- a thread count read 100 ms after a command, twice, which catches a command's thread on its way out;
+- a test that asked for two background jobs at once and assumed the newer would start first;
+- a 100 ms render deadline, only 4× a page read, which a loaded Mac passed.
+The fifth was a whole-state restore test that hadn't been told about new fields, which is its job. The deadline one also hid a real bug: a page read the Mac was too busy for was remembered as unreadable for the session.
+
+**Waste and misses.**
+- **649 MiB of build output was committed** on the Save branch: a helper built in its own folder, and the root `.gitignore` covered only `/target`. Review round 2 caught it before any push. The history was rewritten, and `target/` is now ignored anywhere. The coordinator now checks a branch's added objects for build folders and their total size before merging.
+- **A worker's visual claims were wrong twice.** It reported a blurry page (the shot was taken mid-draw) and then a white page on dark paper (a zoom change made the pixel sample brighter). The coordinator caught both by looking at the shots. `qa shot` now waits for drawing to settle, and the real bug behind the second, a save changing the zoom, is now on a branch.
+- **One worker ran out of working room** after building Save stage 1 and taking it through two review rounds and two merges of main. Its last report had to hand unfinished items to whoever came next. A stage now gets a fresh worker, with the previous report as its brief.
+- **Security came from review, not the build:** Save As would write a hostile PDF's bytes to any file name, including a shell's startup file. The worker had copied `render`'s checks elsewhere but not to Save As.
+
+**What worked.** Reviews ran their own repros: the symlink Save As bypass was reproduced, not argued. A "flaky" test traced to its cause found a real reader bug. Workers fixed every finding in one round before one full run, so no branch went past four full runs.
+
+**Changing.**
+- Tests wait for a condition with a bound, never a fixed sleep before counting threads, and never assume which of two queued jobs starts first. Added to the worker testing brief.
+- Before a merge, the coordinator checks the branch's size and that no build folder is in it.
+- Every path an agent can name for writing gets the same checks as the existing ones (extension, hidden parts after following links, `~/Library`). Reviewers check every new write path against them.
+- A fresh worker for each stage of a large feature.
+
+**Check next time.** Failed full runs that were tests' timing assumptions: still the main cause? Conflicts per merge of main in the hub files: worth splitting `recto-ffi/src/lib.rs`?
