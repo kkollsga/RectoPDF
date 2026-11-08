@@ -195,6 +195,7 @@ const EXCEPTIONS: &[(&str, &str)] = &[
     ("record.", "How many writes it's made and what its first frame was: it's the record of the restore itself."),
     ("reader.counts.", "Jobs and steps of its own run."),
     ("reader.documents_held", "Warm tabs come back cold, by rule: only the active tab loads, so the rest cost what a cold tab costs."),
+    ("reader.left_picture_bytes", "Pictures warm tabs were left with, held for their sleep files: warm tabs come back cold, and a cold tab holds none."),
     ("panes.documents_held", "The same, over every pane's page view."),
     ("reader.tiles.kept", "Tiles held off screen, which a new process doesn't have until it's been somewhere."),
     ("reader.tiles.previews_attached", "Previews behind sharp tiles, which depend on what the first draw was."),
