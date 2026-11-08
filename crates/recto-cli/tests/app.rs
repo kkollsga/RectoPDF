@@ -1918,6 +1918,29 @@ fn a_palette_row_does_what_the_host_is_left_to_do() {
     assert_eq!(shown["app"]["palette"]["open"], false);
 }
 
+/// Failure: Find Next run from the palette with Find closed goes nowhere the reader can see: Find doesn't open, or its field doesn't take the keyboard the palette had, so typing goes nowhere; or `recto palette "find next" --run` needs Full though `recto find --next` needs only Control.
+#[test]
+fn find_next_from_the_palette_opens_find_with_its_field_focused() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.ok(&["qa", "find-key", "escape"]);
+    wait_for(&run, |state| state["app"]["find"]["open"] == false);
+    run.ok(&["qa", "menu", "palette.open"]);
+    let typed = run.ok(&["qa", "palette-type", "find next"]);
+    assert_eq!(typed["palette"]["rows"][0]["id"], "find.next", "{}", typed["palette"]);
+    run.ok(&["qa", "palette-key", "return"]);
+    let found = wait_for(&run, |state| state["app"]["find"]["open"] == true && state["app"]["find"]["field_has_focus"] == true);
+    assert_eq!((found["app"]["palette"]["open"].as_bool(), found["app"]["focus_view"].as_str()), (Some(false), Some("find")), "{}", found["app"]["find"]);
+    assert_eq!(found["app"]["find"]["untrusted"]["field"], "words", "with what was typed last: {}", found["app"]["find"]);
+    run.state.set_level(Level::Control);
+    let stepped = run.ok(&["palette", "find next", "--run"]);
+    assert_eq!(stepped["ran"]["id"], "find.next", "at Control, as `recto find --next`: {stepped}");
+}
+
 /// Failure: `recto palette --run` at Control does what its direct command needs more for (review, round 1): installing an update, which needs Full; clearing history without the checks `clear-history` makes; undo, redo and rotate taken as the owner's steps; or writing the clipboard below `copy`'s level. What has an agent's command runs as that, at the agent's level; the rest needs Full.
 #[test]
 fn the_palettes_run_keeps_to_each_commands_level() {

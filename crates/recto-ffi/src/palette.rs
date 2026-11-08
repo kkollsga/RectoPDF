@@ -147,6 +147,7 @@ pub(crate) fn as_command(id: &str, reader: &crate::ReaderView) -> Option<recto_a
         "edit.redo" => Command::Redo { tab: active() },
         "edit.clear_history" => Command::ClearHistory { tab: active() },
         "file.save" => Command::Save { tab: active(), out: None, replace: false },
+        "find.next" | "find.previous" => Command::Find { query: None, next: id == "find.next", previous: id == "find.previous", close: false, limit: None },
         "rotate.left" if !reader.edit_mode => Command::PageRotate { tab: active(), pages: "all".into(), degrees: -90 },
         "rotate.right" if !reader.edit_mode => Command::PageRotate { tab: active(), pages: "all".into(), degrees: 90 },
         tab if tab.starts_with("tab:") => Command::Tap { tab: format!("#{}", tab.trim_start_matches("tab:")) },
@@ -203,7 +204,12 @@ pub(crate) fn run(core: &AppCore, id: &str) -> HostAction {
         core.inner.core.push(CoreCall::Tap(TabId(tab)));
         return HostAction::None;
     }
-    core.perform(id.to_string())
+    // Find Next or Previous with Find closed opens it, with what was typed last, and its field takes the keyboard, as ⌘F's would: the palette that had it has gone.
+    let find_was_closed = matches!(id, "find.next" | "find.previous") && !crate::find::is_open(&core.inner) && !core.inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst);
+    match core.perform(id.to_string()) {
+        HostAction::None if find_was_closed => HostAction::FocusFind,
+        action => action,
+    }
 }
 
 
