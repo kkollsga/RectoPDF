@@ -1335,6 +1335,10 @@ impl Reader {
             // Still on its way: where the view is now isn't where it's going, and taken for the place, it would be where it ends up on the next layout. On arrival the place is left as it was sent, to the pixel.
             if self.scrolled_to >= jump {
                 self.jump = None;
+                // Where it arrived can be another page than was asked, as when a pane's narrower than the view the place was taken in, or a place deep in a page puts the next one where the reader's eye is. The session's page goes with it, or the two disagree, and the place isn't brought back after a restart.
+                if self.last_view_page != Some(page) {
+                    self.moved_page = Some(page);
+                }
                 self.last_view_page = Some(page);
             }
             return;
@@ -2727,6 +2731,26 @@ mod tests {
         reader.set_viewport(pinch);
         assert!(!reader.take_user_scrolled(), "nor is a pinch");
         assert_eq!(reader.follow(10_000, 2.0), Some(99), "held to the document");
+    }
+
+    /// Failure (found by restore's whole-state test, with comparison): a view that arrives where it was sent shows another page where the reader's eye is, as a narrower pane does, and the page view's place says one page while the session says another, so the place isn't brought back after a restart. Arriving on another page than was asked says so.
+    #[test]
+    fn arriving_on_another_page_than_asked_says_so() {
+        let mut reader = reader_on(100);
+        reader.scrolled_to = 0;
+        settle(&mut reader);
+        reader.take_moved_page();
+        assert_eq!(reader.follow(40, 0.9), Some(40));
+        assert_eq!(reader.take_moved_page(), Some(40), "sent there");
+        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("no scroll") };
+        let mut there = view(y);
+        there.scrolled_to = seq;
+        reader.set_viewport(there);
+        assert_eq!(reader.take_moved_page(), Some(41), "a third of the way down the view is the next page");
+        let mut again = there;
+        again.y += 1.0;
+        reader.set_viewport(again);
+        assert_eq!(reader.take_moved_page(), None, "and nothing more until it moves on");
     }
 
     /// Failure: three panes of a comparison keep three times what one view keeps off screen. Shared, each keeps its share, and what's over goes at once.

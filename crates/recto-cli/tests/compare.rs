@@ -1,0 +1,226 @@
+//! Comparison view end to end: the real app in a quiet run, driven by what the UI calls. Owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view, right click menu can enable separate scroll (default) and synced scroll. Zoom is always synced."
+//!
+//! What comes back after a restart and an update is in `restore.rs`, whose whole-state comparison has a comparison in it.
+
+mod common;
+
+use common::State;
+use recto_platform::local::process_counters;
+use recto_testpdf::{Page, TempPdf, pages, text_lines};
+use serde_json::{Value, json};
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::{Duration, Instant};
+
+fn app_path() -> Option<PathBuf> {
+    if std::env::var_os("RECTO_SKIP_APP").is_some() {
+        return None;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/build/RectoPDF.app/Contents/MacOS/RectoPDF");
+    if root.is_file() {
+        return Some(root);
+    }
+    assert!(std::env::var_os("RECTO_REQUIRE_APP").is_none(), "the app isn't built, and this run needs it");
+    eprintln!("skipped: the app isn't built");
+    None
+}
+
+struct Run<'a> {
+    state: &'a State,
+    pid: u32,
+}
+
+impl<'a> Run<'a> {
+    fn start(state: &'a State) -> Option<Self> {
+        let app = app_path()?;
+        let (reply, code) = state.json(&["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m"]);
+        assert_eq!(code, 0, "{reply}");
+        Some(Self { state, pid: reply["data"]["pid"].as_u64().unwrap() as u32 })
+    }
+
+    fn ok(&self, args: &[&str]) -> Value {
+        let (reply, code) = self.state.json(args);
+        assert_eq!((code, &reply["ok"]), (0, &json!(true)), "{args:?}: {reply}");
+        reply["data"].clone()
+    }
+
+    fn settled(&self) {
+        self.ok(&["qa", "wait-settled", "--timeout", "30s"]);
+    }
+
+    fn report(&self) -> Value {
+        self.ok(&["qa", "state"])
+    }
+}
+
+impl Drop for Run<'_> {
+    fn drop(&mut self) {
+        let _ = self.state.json(&["qa", "quit", "now"]);
+        let began = Instant::now();
+        while process_counters(self.pid).is_some() && began.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = Command::new("/bin/kill").arg("-9").arg(self.pid.to_string()).status();
+    }
+}
+
+/// A document whose every page says which document and page it is, at a page size of its own.
+fn document(name: &str, count: usize, media: (f32, f32)) -> TempPdf {
+    let list: Vec<Page> = (0..count).map(|index| Page { media, ..Page::new(text_lines(&[&format!("{name}word page {index}"), "Words, so that the page isn't blank"])) }).collect();
+    TempPdf::new(&format!("{name}.pdf"), &pages(&list))
+}
+
+fn panes(report: &Value) -> Vec<Value> {
+    report["panes"]["panes"].as_array().unwrap().clone()
+}
+
+fn page_of(report: &Value, tab: u64) -> i64 {
+    panes(report).iter().find(|pane| pane["tab"] == tab).map(|pane| pane["page"].as_i64().unwrap()).unwrap_or(-1)
+}
+
+/// Failure: ⌘-click doesn't put PDFs side by side, a pane runs into the next or has no name on it, the right-click menu has no scroll choice, synced scroll doesn't keep the panes page for page from where it went on or says nothing of different lengths, zoom differs between panes, a selection or a copy isn't the pane being read's, closing a pane's tab leaves its page view behind with its thread and worker, or a plain click doesn't return to one. Mixed page sizes and lengths, and side by side inside a pane, as the brief asks.
+#[test]
+fn comparison_view_from_command_click_to_one_again() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let (a, b, c) = (document("alpha", 40, (612.0, 792.0)), document("beta", 12, (842.0, 595.0)), document("gamma", 25, (595.0, 842.0)));
+    run.ok(&["open", a.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["goto", "10"]);
+    for file in [&b, &c] {
+        run.ok(&["open", file.0.to_str().unwrap()]);
+    }
+    run.ok(&["qa", "scroller-style", "overlay"]);
+    run.settled();
+    let one = run.report();
+    let threads_alone = one["memory"]["threads"].as_u64().unwrap();
+    assert_eq!(panes(&one).len(), 1);
+    assert!(one["context_menu"].is_null() && one["app"]["context_menu"].as_array().unwrap().iter().all(|item| !item["id"].as_str().unwrap().starts_with("compare.")), "no scroll choice with one tab");
+
+    // ⌘-click on the first tab's row, with gamma showing: side by side, alpha read.
+    run.ok(&["qa", "compare-click", "0"]);
+    run.settled();
+    let two = run.report();
+    let shown: Vec<u64> = panes(&two).iter().map(|pane| pane["tab"].as_u64().unwrap()).collect();
+    assert_eq!(shown, vec![3, 1], "{}", two["panes"]);
+    assert_eq!(two["session"]["active"], 1, "the one clicked is read");
+    assert_eq!(two["app"]["place"], "10 of 40", "the page number is the pane being read's");
+    let app_panes = two["app"]["panes"].as_array().unwrap();
+    assert_eq!(app_panes.len(), 2);
+    for pane in app_panes {
+        assert_eq!(pane["pages_inside"], true, "{pane}");
+        assert_eq!(pane["label_in_lower_left"], true, "{pane}");
+    }
+    assert_eq!(app_panes[0]["label"], "gamma");
+    assert_eq!(app_panes[1]["reading"], true);
+    assert!(app_panes[0]["x"].as_f64().unwrap() + app_panes[0]["width"].as_f64().unwrap() <= app_panes[1]["x"].as_f64().unwrap());
+    let magnifications: Vec<f64> = panes(&two).iter().map(|pane| pane["magnification"].as_f64().unwrap()).collect();
+    assert!((magnifications[0] - magnifications[1]).abs() < 1e-9, "one zoom: {magnifications:?}");
+    assert_eq!(two["app"]["zoom_level"]["clear_of_pages"], true, "the corner stays clear in the pane at the right");
+    assert_eq!(two["app"]["agent_icon_margins"]["clear_of_pages"], true);
+    let menu: Vec<(String, bool)> = two["app"]["context_menu"].as_array().unwrap().iter().filter(|item| item["id"].as_str().unwrap().starts_with("compare.")).map(|item| (item["id"].as_str().unwrap().to_string(), item["checked"].as_bool().unwrap())).collect();
+    assert_eq!(menu, [("compare.separate".to_string(), true), ("compare.synced".to_string(), false)], "separate by default");
+
+    // Separate: a scroll in one leaves the other.
+    let gamma_was = page_of(&two, 3);
+    run.ok(&["qa", "pane-scroll", "1:3000"]);
+    run.settled();
+    assert_eq!(page_of(&run.report(), 3), gamma_was, "separate scroll moves one pane");
+
+    // Synced, from the right-click menu, then a scroll in gamma's pane leads, and alpha follows page for page.
+    run.ok(&["qa", "context-menu", "compare.synced"]);
+    run.settled();
+    let synced = run.report();
+    assert_eq!(synced["session"]["comparison"]["synced"], true);
+    assert!(synced["app"]["note"].as_str().is_some_and(|note| note.contains("25 and 40")), "different lengths are said: {}", synced["app"]["note"]);
+    let (gamma_start, alpha_start) = (page_of(&synced, 3), page_of(&synced, 1));
+    run.ok(&["qa", "pane-scroll", "0:4000"]);
+    run.settled();
+    let led = run.report();
+    let (gamma_now, alpha_now) = (page_of(&led, 3), page_of(&led, 1));
+    assert!(gamma_now > gamma_start, "the pane scrolled: {gamma_start} to {gamma_now}");
+    assert!(((alpha_now - alpha_start) - (gamma_now - gamma_start)).abs() <= 1, "page for page: gamma {gamma_start}→{gamma_now}, alpha {alpha_start}→{alpha_now}");
+    assert_eq!(led["session"]["active"], 3, "scrolling a pane makes it the one read");
+
+    // Zoom in the pane being read is zoom in each.
+    run.ok(&["qa", "zoom", "1.5"]);
+    run.settled();
+    let zoomed = run.report();
+    assert!(panes(&zoomed).iter().all(|pane| (pane["magnification"].as_f64().unwrap() - 1.5).abs() < 1e-6), "{}", zoomed["panes"]);
+    run.ok(&["view", "--zoom", "fit"]);
+    run.settled();
+
+    // A third, then out again by the same click.
+    run.ok(&["qa", "compare-click", "1"]);
+    run.settled();
+    assert_eq!(panes(&run.report()).len(), 3);
+    let three = run.report();
+    assert!(three["app"]["panes"].as_array().unwrap().iter().all(|pane| pane["pages_inside"] == true), "{}", three["app"]["panes"]);
+    run.ok(&["qa", "compare-click", "1"]);
+    run.settled();
+    assert_eq!(panes(&run.report()).len(), 2);
+
+    // Side by side inside a pane.
+    run.ok(&["qa", "pane-focus", "1"]);
+    run.ok(&["view", "--layout", "two-up"]);
+    run.settled();
+    let spreads = run.report();
+    assert_eq!(panes(&spreads)[1]["spread"], "TwoUp");
+    assert_eq!(panes(&spreads)[0]["spread"], "Single", "each tab keeps its own");
+    assert!(spreads["app"]["panes"].as_array().unwrap().iter().all(|pane| pane["pages_inside"] == true));
+
+    // A copy is the pane being read's: alpha's word, not gamma's.
+    // A click in the pane, then Select All and Copy, which are the pane being read's.
+    run.ok(&["qa", "mouse-down", &format!("{}:80,80:1", page_of(&spreads, 1))]);
+    run.ok(&["qa", "mouse-up"]);
+    run.ok(&["qa", "menu", "edit.select_all"]);
+    run.ok(&["qa", "menu", "edit.copy"]);
+    let began = Instant::now();
+    let copied = loop {
+        let copied = run.ok(&["qa", "copied"]);
+        if copied["chars"].as_u64().unwrap_or(0) > 0 || began.elapsed() > Duration::from_secs(10) {
+            break copied;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let text = copied["untrusted"]["text"].as_str().unwrap_or("");
+    assert!(text.contains("alpha") && !text.contains("gamma"), "{copied}");
+
+    // Closing the tab being read takes its pane, its page view, its thread and its worker.
+    run.ok(&["close", "--tab", "#1"]);
+    run.settled();
+    let closed = run.report();
+    assert_eq!(panes(&closed).len(), 1);
+    assert!(closed["session"]["comparison"].is_null());
+    assert_eq!(closed["session"]["active"], 3);
+    assert!(closed["memory"]["threads"].as_u64().unwrap() <= threads_alone + 1, "{} threads, {threads_alone} alone", closed["memory"]["threads"]);
+
+    // And a plain click returns to one.
+    run.ok(&["compare", "--tabs", "#2,#3"]);
+    run.settled();
+    assert_eq!(panes(&run.report()).len(), 2);
+    run.ok(&["qa", "click-row", "0"]);
+    run.settled();
+    let back = run.report();
+    assert_eq!(panes(&back).len(), 1);
+    assert!(back["app"]["panes"].as_array().unwrap()[0]["label"].is_null(), "one pane has no name on it");
+}
+
+/// Failure: a fourth PDF gets in, past what the live documents' rule allows, or it's refused with nothing said.
+#[test]
+fn a_fourth_pane_is_refused_with_words() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let files: Vec<TempPdf> = (0..4).map(|at| document(&format!("d{at}"), 3, (612.0, 792.0))).collect();
+    for file in &files {
+        run.ok(&["open", file.0.to_str().unwrap()]);
+    }
+    run.settled();
+    run.ok(&["compare", "--tabs", "#1,#2,#3"]);
+    run.settled();
+    run.ok(&["qa", "compare-click", "3"]);
+    run.settled();
+    let report = run.report();
+    assert_eq!(panes(&report).len(), 3);
+    assert!(report["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("three")), "{}", report["app"]["copy_notice"]);
+}
