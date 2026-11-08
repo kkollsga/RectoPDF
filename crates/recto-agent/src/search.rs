@@ -43,7 +43,12 @@ pub(crate) struct Plan {
     files: Vec<PlanFile>,
     pub(crate) pages: Vec<(u32, u16, u32)>,
     pub(crate) tab: u32,
+    /// The passwords the person typed, for the person's own Find only: never set for an agent's search or find. See [`KeyLookup`].
+    pub(crate) keys: Option<KeyLookup>,
 }
+
+/// **The person's passwords, for their own Find in a document they opened with one.** Looked up by file, on the thread that reads the pages, as a look can wait on a disk. A file with a password is read page by page through a worker opened with it, and never from or into a corpus: decrypted text is never written anywhere.
+pub type KeyLookup = std::sync::Arc<dyn Fn(&std::path::Path) -> Option<std::sync::Arc<recto_core::Password>> + Send + Sync>;
 
 struct PlanFile {
     path: PathBuf,
@@ -141,7 +146,7 @@ pub(crate) fn plan_of<L: recto_session::DocLoader>(s: &recto_session::Session<L>
                 edits.slots().iter().enumerate().skip(start as usize).take(len as usize).map(|(position, slot)| (u32::try_from(position).unwrap_or(u32::MAX), slot.source, slot.page)).collect()
             }
         };
-        Ok(Plan { files, pages: list, tab: id.0 })
+        Ok(Plan { files, pages: list, tab: id.0, keys: None })
     }
 }
 
@@ -480,18 +485,35 @@ pub(crate) struct Reader<'a> {
     live_spent: Duration,
     not_read_again: u32,
     deadline: Instant,
+    /// Each file's password, once looked up: `None` not yet looked.
+    file_keys: Vec<Option<Option<std::sync::Arc<recto_core::Password>>>>,
 }
 
 impl<'a> Reader<'a> {
     pub(crate) fn new(plan: &'a Plan, settings: &Settings<'a>) -> Self {
-        Self { plan, indexing: settings.indexing, force_scan: settings.force_scan, current: None, corpus_open: None, routes: vec![FileRoute::NotLookedAt; plan.files.len()], not_ready: Vec::new(), changed: Vec::new(), used_index: false, used_scan: false, draw_until: settings.draw_until, live_budget: settings.live_budget, live_spent: Duration::ZERO, not_read_again: 0, deadline: settings.deadline }
+        Self { plan, indexing: settings.indexing, force_scan: settings.force_scan, current: None, corpus_open: None, routes: vec![FileRoute::NotLookedAt; plan.files.len()], not_ready: Vec::new(), changed: Vec::new(), used_index: false, used_scan: false, draw_until: settings.draw_until, live_budget: settings.live_budget, live_spent: Duration::ZERO, not_read_again: 0, deadline: settings.deadline, file_keys: vec![None; plan.files.len()] }
     }
 
     /// Works out how a file's pages get read: from its corpus if there's a finished one for the file as it is now, or else page by page, asking for a corpus to be built for next time. A file reached only for the count doesn't change how the answer's hits were read, so it isn't said to have.
+    /// The password the person typed for this file, if this is their own Find and they did.
+    fn key_of(&mut self, file: u16) -> Option<std::sync::Arc<recto_core::Password>> {
+        let keys = self.plan.keys.as_ref()?;
+        let known = &mut self.file_keys[usize::from(file)];
+        if known.is_none() {
+            *known = Some(keys(&self.plan.files[usize::from(file)].path));
+        }
+        known.clone().flatten()
+    }
+
     fn route_of(&mut self, file: u16, only_counting: bool) -> FileRoute {
         let route = self.routes[usize::from(file)];
         if !matches!(route, FileRoute::NotLookedAt) {
             return route;
+        }
+        // Opened with a password: read through a worker with it, and no corpus is read or asked for, so its text is never written.
+        if self.key_of(file).is_some() {
+            self.routes[usize::from(file)] = FileRoute::Scan;
+            return FileRoute::Scan;
         }
         let source = &self.plan.files[usize::from(file)];
         let mut said = None;
@@ -571,9 +593,10 @@ impl<'a> Reader<'a> {
 
     /// One page's text, by a worker. `read_again_live` is that its corpus has it as failed, so this can only say it still is.
     fn read_live<'s>(&mut self, file: u16, page: u32, live: &'s mut Option<recto_index::Normalized>, read_again_live: bool) -> Result<Got<'s>, AgentError> {
+        let key = self.key_of(file);
         let source = &self.plan.files[usize::from(file)];
         self.used_scan = true;
-        let renderer = match worker_for(&mut self.current, file, source) {
+        let renderer = match worker_for(&mut self.current, file, source, key) {
             Ok(Some(renderer)) => renderer,
             Err(_) if read_again_live => return Ok(Got::Failed),
             Ok(None) | Err(RenderFailure::NotFound) if source.added || source.expected.is_some() => {
@@ -605,7 +628,8 @@ impl<'a> Reader<'a> {
         if Instant::now() >= self.draw_until {
             return HiddenOnPage { summary: json!({ "checked": false, "flagged": null }), spans: Vec::new(), partial: true };
         }
-        match worker_for(&mut self.current, file, &self.plan.files[usize::from(file)]) {
+        let key = self.key_of(file);
+        match worker_for(&mut self.current, file, &self.plan.files[usize::from(file)], key) {
             Ok(Some(renderer)) => hidden_on_page(renderer, page, view.text),
             Ok(None) | Err(_) => HiddenOnPage { summary: json!({ "checked": false, "flagged": null }), spans: Vec::new(), partial: true },
         }
@@ -668,14 +692,14 @@ impl<'a> Reader<'a> {
 }
 
 /// Opens this page's worker if it isn't the one already open. One at a time, whichever file it's for: a document with a thousand added files must not mean a thousand processes. `None` if the file isn't what its page numbers were recorded from, or can't be found.
-fn worker_for<'a>(current: &'a mut Option<(u16, DocRenderer)>, file: u16, source: &PlanFile) -> Result<Option<&'a mut DocRenderer>, RenderFailure> {
+fn worker_for<'a>(current: &'a mut Option<(u16, DocRenderer)>, file: u16, source: &PlanFile, key: Option<std::sync::Arc<recto_core::Password>>) -> Result<Option<&'a mut DocRenderer>, RenderFailure> {
     if current.as_ref().is_none_or(|(open_file, _)| *open_file != file) {
         // The old one goes first, so there's never more than one.
         *current = None;
         if !source.is_current() {
             return Ok(None);
         }
-        *current = Some((file, DocRenderer::new(&source.path, None, ServiceConfig::discover()?, Policy::default())?));
+        *current = Some((file, DocRenderer::new(&source.path, key, ServiceConfig::discover()?, Policy::default())?));
     }
     Ok(current.as_mut().map(|(_, renderer)| renderer))
 }
@@ -1275,7 +1299,7 @@ mod tests {
         let key = CorpusKey::of_file(&path).unwrap();
         let count = pages.len() as u32;
         recto_index::corpus::build(&root, key, &mut Pages(pages), &recto_index::corpus::DocMeta::default(), &recto_index::corpus::BuildLimits::default()).unwrap();
-        Fixture { folder, plan: Plan { files: vec![PlanFile { path, expected: None, added: false }], pages: (0..count).map(|page| (page, 0, page)).collect(), tab: 1 }, indexing: crate::index::ReadOnlyCorpus(root) }
+        Fixture { folder, plan: Plan { files: vec![PlanFile { path, expected: None, added: false }], pages: (0..count).map(|page| (page, 0, page)).collect(), tab: 1, keys: None }, indexing: crate::index::ReadOnlyCorpus(root) }
     }
 
     fn settings(fixture: &Fixture) -> Settings<'_> {

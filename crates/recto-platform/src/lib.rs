@@ -160,6 +160,10 @@ pub mod isolate;
 #[cfg_attr(not(target_os = "macos"), path = "local_stub.rs")]
 pub mod local;
 
+/// A password the person typed, held so its bytes are overwritten when it goes, and the file identity it's kept by.
+pub mod secret;
+pub use secret::{MAX_PASSWORD_BYTES, Password};
+
 /// Pixel memory the compositor can show directly, and the way it reaches a worker with no copy.
 #[cfg_attr(target_os = "macos", path = "surface_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "surface_stub.rs")]

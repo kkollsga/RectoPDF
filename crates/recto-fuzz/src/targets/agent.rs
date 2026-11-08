@@ -78,9 +78,13 @@ fn command_line(bytes: &[u8]) {
     if words.len() > 4096 {
         return;
     }
-    let Ok(invocation) = parse_cli(&words) else {
+    let Ok(mut invocation) = parse_cli(&words) else {
         return;
     };
+    // What `recto` reads from stdin for this row, as it puts it in.
+    if let Some(field) = recto_agent::table::stdin_secret_field(invocation.spec) {
+        invocation.fields.insert(field.into(), serde_json::json!("from stdin"));
+    }
     let wire = invocation.wire();
     // What the CLI builds is what the socket reads, so what it built must be a command the socket takes. A line past the socket's cap gets refused there, in words, which is fine.
     if !invocation.help && invocation.spec.route == Route::Session && wire.len() <= MAX_COMMAND_BYTES {

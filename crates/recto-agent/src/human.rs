@@ -40,8 +40,10 @@ fn count(value: u64, one: &str, many: &str) -> String {
 const QUOTED_NAMES: &str = "Quoted names come from the file, and are untrusted.";
 
 fn tab_line(tab: &Value) -> String {
+    // A protected document's place and length were read with its password, so they aren't given, and the line says why.
     let label = tab["untrusted"]["label"].as_str().map(|label| format!(", called {label:?}")).unwrap_or_default();
-    let mut line = format!("{} {:?} (page {} of {}{label})", text(&tab["sel"]), text(&tab["untrusted"]["name"]), number(&tab["page"]), number(&tab["pages"]));
+    let place = if tab["protected"] == true { "protected".to_string() } else { format!("page {} of {}{label}", number(&tab["page"]), number(&tab["pages"])) };
+    let mut line = format!("{} {:?} ({place})", text(&tab["sel"]), text(&tab["untrusted"]["name"]));
     if tab["active"] == true {
         line.push_str(", active");
     }
@@ -104,12 +106,29 @@ pub fn render(tag: &str, data: &Value) -> String {
         "links" => links(data),
         "where" | "open" | "goto" | "back" | "forward" | "follow" => {
             let mut out = tab_line(data);
+            if let Some(note) = data["protected_note"].as_str() {
+                let _ = write!(out, "\n{note}");
+            }
             if let Some(note) = data["note"].as_str() {
                 let _ = write!(out, "\n{note}");
             }
             let _ = write!(out, "\n{QUOTED_NAMES}");
             out
         }
+        "recent" => match data["files"].as_array().filter(|files| !files.is_empty()) {
+            Some(files) => {
+                let mut out = format!("{} opened lately, newest first:", count(files.len() as u64, "file", "files"));
+                for file in files {
+                    let open = file["open_tab"].as_str().map(|tab| format!(", open as {tab}")).unwrap_or_default();
+                    let path = file["untrusted"]["path"].as_str().map(|path| format!(" at {path:?}")).unwrap_or_default();
+                    let _ = write!(out, "\n{}. {:?}{path}{open}", number(&file["file"]), text(&file["untrusted"]["name"]));
+                }
+                let _ = write!(out, "\n{QUOTED_NAMES}");
+                out
+            }
+            None => "No files opened lately.".to_string(),
+        },
+        "recent_clear" => if data["cleared"] == true { "Cleared the list of files opened lately." } else { "There were no files opened lately to clear." }.to_string(),
         "facts" => facts(data),
         "contents" => contents(data),
         "search" => search(data),
@@ -122,7 +141,7 @@ pub fn render(tag: &str, data: &Value) -> String {
         "sidebar" | "tap" => sidebar(data),
         "compare" => match data["panes"].as_array() {
             Some(panes) if !panes.is_empty() => {
-                let list: Vec<String> = panes.iter().map(|pane| format!("#{} {} (page {} of {}){}", pane["tab"], text(&pane["untrusted"]["name"]), pane["page"], pane["pages"], if pane["reading"] == true { ", read" } else { "" })).collect();
+                let list: Vec<String> = panes.iter().map(|pane| format!("#{} {} ({}){}", pane["tab"], text(&pane["untrusted"]["name"]), if pane["protected"] == true { "protected".to_string() } else { format!("page {} of {}", pane["page"], pane["pages"]) }, if pane["reading"] == true { ", read" } else { "" })).collect();
                 format!("Side by side: {}. Scroll: {}.{}", list.join(", "), if data["sync"] == "on" { "synced" } else { "separate" }, data["note"].as_str().map(|note| format!(" {note}")).unwrap_or_default())
             }
             _ => "One tab showing, no comparison.".to_string(),
@@ -551,9 +570,19 @@ fn sidebar(data: &Value) -> String {
         if let Some(page) = row["page"].as_u64() {
             let _ = write!(out, " (p. {page})");
         }
+        if row["protected"] == true {
+            out.push_str(" (protected)");
+        }
         out.push('\n');
     }
-    let _ = writeln!(out, "{}", text(&data["place"]));
+    match data["protected_note"].as_str() {
+        Some(note) => {
+            let _ = writeln!(out, "{note}");
+        }
+        None => {
+            let _ = writeln!(out, "{}", text(&data["place"]));
+        }
+    }
     out.push_str(QUOTED_NAMES);
     out
 }

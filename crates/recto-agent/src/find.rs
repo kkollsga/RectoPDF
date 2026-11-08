@@ -6,6 +6,7 @@
 
 use crate::index::Indexing;
 use crate::search::{self, Got, Plan, Reader, Settings, Slot};
+pub use crate::search::KeyLookup;
 use crate::{AgentError, exit};
 use recto_session::{DocLoader, Session, TabId};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -79,6 +80,15 @@ impl FindPlan {
 /// A tab's pages to look through, as its edits have them, under the session's lock. A few bytes a page.
 pub fn plan<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<FindPlan, AgentError> {
     search::plan_of(session, id, None, None).map(|plan| FindPlan { plan, basis: basis(session, id) })
+}
+
+impl FindPlan {
+    /// **For the person's own Find:** the passwords they typed, so a document they opened with one is searched through a worker that has it, page by page, with no corpus read, built or asked for. Never for an agent's: an agent's `find` and `search` are refused for such a document before they plan anything.
+    #[must_use]
+    pub fn with_keys(mut self, keys: search::KeyLookup) -> Self {
+        self.plan.keys = Some(keys);
+        self
+    }
 }
 
 /// What's looked for, folded as a page is: lower case, any run of spaces and line breaks one space. `None` if there's nothing to look for.
@@ -484,12 +494,17 @@ impl Finding for Here {
 
 /// Starts finding `query` in the document being read, in the background if this session can, and otherwise here, to the end. Puts it in the Find field and opens Find. Says which run it is. **The one way a query starts,** for `recto find` and the app's field alike.
 pub fn begin<A: crate::SessionAccess>(access: &A, query: &str) -> Result<u64, AgentError> {
+    begin_keyed(access, query, None)
+}
+
+/// [`begin`], for the person's own Find, with their passwords: see [`FindPlan::with_keys`].
+pub fn begin_keyed<A: crate::SessionAccess>(access: &A, query: &str, keys: Option<search::KeyLookup>) -> Result<u64, AgentError> {
     let needle = needle(query).ok_or_else(|| if query.len() > MAX_QUERY_BYTES { too_long() } else { AgentError::new("bad_query", "That has nothing to find.", exit::FAILED).then("Find a word or a phrase.") })?;
     let plan = access.with(|s| {
         let id = s.active().ok_or_else(|| AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
         let plan = plan(s, id)?;
         s.set_find(true, query, query);
-        Ok::<_, AgentError>(plan)
+        Ok::<_, AgentError>(match keys { Some(keys) => plan.with_keys(keys), None => plan })
     })?;
     match access.finding() {
         Some(finding) => Ok(finding.start(plan, query, needle)),
@@ -613,6 +628,10 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
 fn answer<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, listed: usize, went: Option<(u32, Hit)>) -> serde_json::Value {
     use serde_json::json;
     let record = access.with(|s| s.find().clone());
+    // Hits from a document the person opened with a password are text read with it: none of them goes to an agent, whichever tab is being read now.
+    let mut about = None;
+    finding.with_results(&mut |results| about = results.tab);
+    let withheld = about.is_some_and(|tab| access.with(|s| s.withheld_from_agents(TabId(tab))));
     let mut value = json!(null);
     finding.with_results(&mut |results| {
         let state = match &results.end {
@@ -643,6 +662,9 @@ fn answer<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, listed: us
             "current": results.current.and_then(|at| results.hits.get(at).map(|hit| hit_json(at, hit))),
             "hits": results.hits.iter().take(listed).enumerate().map(|(at, hit)| hit_json(at, hit)).collect::<Vec<_>>(),
         });
+        if withheld {
+            value = json!({ "open": record.open, "tab": results.tab, "state": state, "protected": true, "protected_note": crate::PROTECTED_NOTE, "hits": [] });
+        }
     });
     if let Some((tab, hit)) = went {
         value["went_to"] = json!({ "tab": tab, "page": hit.page + 1, "start": hit.start, "end": hit.end });

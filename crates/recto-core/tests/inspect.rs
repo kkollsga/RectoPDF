@@ -179,3 +179,36 @@ fn chapters_nested_inside_chapter_one_read_as_the_file_has_them_and_look_bad() {
     assert_eq!(depths, [0, 1, 1, 1], "as the file has them");
     assert_eq!(recto_core::verdict::judge(&facts.toc, facts.page_count).code(), "misnested");
 }
+
+/// A file that opens only with the user password `"open sesame"`, written by lopdf's eager writer, which alone encrypts.
+#[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts; never over a user's file.
+fn locked_pdf() -> Vec<u8> {
+    use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
+    let mut document = lopdf::Document::load_mem(&recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Behind a password"]))])).unwrap();
+    document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));
+    let encryption = EncryptionState::try_from(EncryptionVersion::V2 { document: &document, owner_password: "owner", user_password: "open sesame", key_length: 128, permissions: Permissions::all() }).unwrap();
+    document.encrypt(&encryption).unwrap();
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).unwrap();
+    bytes
+}
+
+/// Failure: a PDF that opens only with a user password reads as "not a PDF", because the reader's `PasswordRequired` was folded into every other open error, so the person is told the file is broken instead of being asked for its password.
+#[test]
+fn a_user_password_pdf_reads_as_needing_its_password_not_as_not_a_pdf() {
+    let file = TempPdf::new("locked.pdf", &locked_pdf());
+    assert_eq!(inspect(&file.0).unwrap_err(), OpenError::PasswordNeeded);
+}
+
+/// Failure: a protected PDF opens with no password or a wrong one, doesn't open with the right one, or a password can be printed or holds a NUL the renderer would cut at.
+#[test]
+fn a_protected_file_opens_only_with_its_password() {
+    use recto_core::{Password, inspect_with_password};
+    let file = TempPdf::new("locked.pdf", &locked_pdf());
+    assert_eq!(inspect_with_password(&file.0, &Password::new("wrong").unwrap()).unwrap_err(), OpenError::PasswordNeeded);
+    let facts = inspect_with_password(&file.0, &Password::new("open sesame").unwrap()).unwrap();
+    assert_eq!((facts.page_count, facts.encrypted), (1, true));
+    let password = Password::new("open sesame").unwrap();
+    assert!(!format!("{password:?}").contains("sesame"), "never printed");
+    assert!(Password::new("").is_none() && Password::new("a\0b").is_none() && Password::new(&"x".repeat(recto_core::MAX_PASSWORD_BYTES + 1)).is_none());
+}

@@ -25,6 +25,8 @@ use std::sync::Arc;
 pub const MAX_WARM: usize = 3;
 /// A cap on tabs, because everything grown from outside has one.
 pub const MAX_TABS: usize = 10_000;
+/// Files kept in File > Open Recent and offered to ⌘K: twice what a Mac app lists by default, and a few kilobytes at most.
+pub const MAX_RECENT: usize = 20;
 
 /// Reads a document's facts. A seam so tests can stand in for the disk.
 pub trait DocLoader {
@@ -63,6 +65,8 @@ pub struct TabRecord {
     from_sleep: Option<u64>,
     /// Its file's protected. Its contents and pages are never written anywhere, so it has no sleep file.
     encrypted: bool,
+    /// Its file was opened with a password the person typed, this session or one before (it's in the record). Unlike `encrypted`, which a file anyone may open has too, this means what's known of it was decrypted for the person, so nothing of it goes to an agent: see [`Session::withheld_from_agents`].
+    password: bool,
     /// When it was last active, edited or worked on, in seconds of the session. What going dormant goes by, with no timer of its own.
     touched: u32,
     pub id: TabId,
@@ -756,8 +760,22 @@ pub struct Session<L = DiskLoader> {
     generated: Vec<(TabId, GeneratedView)>,
     /// Tabs a save has moved to another version of their file, as `(tab, before, after)`: the pages the new version has are the ones that were shown, each as it was shown, so the page view keeps its layout, place and selection. At most [`MAX_SAVED_OVER`], the oldest out; one is only believed while its tab is still on `after`.
     saved_over: Vec<(TabId, FileStamp, FileStamp)>,
+    /// Files opened lately, newest first, at most [`MAX_RECENT`]. In the state record.
+    recent: VecDeque<PathBuf>,
+    /// Moves whenever `recent` does, so the app rebuilds what it shows of it only then.
+    recent_version: u64,
     /// Jumps the page view hasn't taken yet, with how far down the page to land: one per tab at most, the latest.
     jumps: Vec<(TabId, trail::Stop)>,
+}
+
+/// A file opened lately, for File > Open Recent and ⌘K.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentFile {
+    pub path: PathBuf,
+    /// Its name as a tab shows it: the file's name without `.pdf`.
+    pub name: String,
+    /// The tab it's open in now, if it is.
+    pub open: Option<TabId>,
 }
 
 /// Saves remembered for the page view to carry its view over: one per tab saved lately is plenty, as it's asked for straight after.
@@ -869,7 +887,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, generated: Vec::new(), comparison: None, saving: Vec::new(), saved_over: Vec::new(), jumps: Vec::new() }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, generated: Vec::new(), comparison: None, saving: Vec::new(), saved_over: Vec::new(), jumps: Vec::new(), recent: VecDeque::new(), recent_version: 0 }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -961,12 +979,48 @@ impl<L: DocLoader> Session<L> {
             self.relocate(id, path);
         }
         self.activate(id);
+        if let Some(own) = self.path_of(id) {
+            self.note_recent(&own);
+        }
+    }
+
+    /// **A file opened, for File > Open Recent and ⌘K:** to the front, once, and the oldest past [`MAX_RECENT`] goes. Only a whole path is kept.
+    pub fn note_recent(&mut self, path: &Path) {
+        if !path.is_absolute() || !PathField::from_path(path).fits() {
+            return;
+        }
+        if self.recent.front().is_some_and(|front| front == path) {
+            return;
+        }
+        self.recent.retain(|known| known != path);
+        self.recent.push_front(path.to_path_buf());
+        self.recent.truncate(MAX_RECENT);
+        self.recent_version += 1;
+    }
+
+    /// Files opened lately, newest first, with the tab each is open in now. Never reads a file: one that's gone says so when it's opened.
+    pub fn recent_files(&self) -> Vec<RecentFile> {
+        self.recent.iter().map(|path| RecentFile { path: path.clone(), name: tab_name(path), open: self.tab_for_path(path) }).collect()
+    }
+
+    /// A number that moves whenever the list of files opened lately does. Which of them are open moves with the tabs.
+    pub fn recent_version(&self) -> u64 {
+        self.recent_version
+    }
+
+    /// File > Open Recent > Clear Menu.
+    pub fn clear_recent(&mut self) -> bool {
+        let had = !self.recent.is_empty();
+        self.recent.clear();
+        self.recent_version += 1;
+        had
     }
 
     /// Activates the tab already showing this file, if there is one. The first half of [`Self::open`], for a caller that reads the file without holding the session.
     pub fn go_to_open_file(&mut self, path: &Path) -> Option<TabId> {
         let id = self.tab_for_path(path)?;
         self.activate(id);
+        self.note_recent(path);
         Some(id)
     }
 
@@ -1000,6 +1054,7 @@ impl<L: DocLoader> Session<L> {
         self.tabs.push(TabRecord {
             from_sleep: None,
             encrypted: false,
+            password: false,
             touched: 0,
             id,
             dir,
@@ -1027,6 +1082,7 @@ impl<L: DocLoader> Session<L> {
         }
         self.remember_warm(id, Arc::new(facts.toc));
         self.active = Some(id);
+        self.note_recent(path);
         self.generated.retain(|(tab, view)| *tab == id || !matches!(view, GeneratedView::Ready(_)));
         // A new PDF shows alone, as going to any tab that isn't side by side does.
         self.comparison = None;
@@ -1097,6 +1153,53 @@ impl<L: DocLoader> Session<L> {
             drop(self.woken.remove(0));
         }
         self.woken.push((id, loaded, stamp));
+    }
+
+    /// **A protected tab, opened with the password the person typed:** its facts, read with that password off this lock, take the place of the problem it had, as a wake does. The password itself never comes here.
+    pub fn unlock(&mut self, id: TabId, facts: DocFacts, stamp: Option<FileStamp>) {
+        if self.tab(id).is_none() {
+            return;
+        }
+        self.note_password_used(id);
+        self.give_woken(id, Ok(facts), stamp);
+        if self.active == Some(id) {
+            self.activate(id);
+        }
+    }
+
+    /// **A file opened with the password the person typed,** as [`Self::open_with_facts`] opens one: the tab is marked, so nothing read from it goes to an agent.
+    pub fn open_unlocked(&mut self, path: &Path, facts: DocFacts, stamp: Option<FileStamp>) -> Result<TabId, SessionError> {
+        let id = self.open_with_facts(path, facts, stamp, None)?;
+        self.note_password_used(id);
+        Ok(id)
+    }
+
+    /// A tab's facts were, or are about to be, read with a password the person typed. Marked before they're taken in, and kept while the tab's open and in the record, so there's no moment an agent could read them.
+    pub fn note_password_used(&mut self, id: TabId) {
+        if let Some(tab) = self.tab_mut(id) {
+            tab.password = true;
+        }
+    }
+
+    /// **A tab's password went missing:** the renderer couldn't open its file with any password it has, as when the file moved to another volume or was replaced while it was open. What's held of it is let go, and the tab says it needs its password, so the app asks for it again with the sheet rather than showing pages it can't draw.
+    pub fn needs_password_again(&mut self, id: TabId) {
+        if self.tab(id).is_none() || self.needs_password(id) {
+            return;
+        }
+        self.forget_read(id);
+        if let Some(tab) = self.tab_mut(id) {
+            tab.problem = Some(OpenError::PasswordNeeded);
+        }
+    }
+
+    /// Whether a tab's file needs a password that hasn't been given, which the app asks for when it's showing.
+    pub fn needs_password(&self, id: TabId) -> bool {
+        self.tab(id).is_some_and(|tab| tab.problem == Some(OpenError::PasswordNeeded))
+    }
+
+    /// **Nothing of this tab's file goes to an agent:** it was opened with a password the person typed, or it needs one, and what the record has of it (its length, its place) was read with one. Reading a protected document needs the person's consent for that document (agent report §5.5), which isn't built, so it's refused outright. `encrypted` alone isn't this: a file anyone may open can be encrypted too.
+    pub fn withheld_from_agents(&self, id: TabId) -> bool {
+        self.tab(id).is_some_and(|tab| tab.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.notice.as_deref(), Some(FileNotice::NeedsPassword)))
     }
 
     /// **The sidebar's tap rule.** Tapping another PDF switches to it. Tapping the active PDF folds or opens its contents.
@@ -2215,12 +2318,12 @@ impl<L: DocLoader> Session<L> {
 
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
-        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, generated: _, comparison , saving: _, saved_over: _, jumps: _ } = self;
+        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, generated: _, comparison , saving: _, saved_over: _, jumps: _, recent, recent_version: _ } = self;
         let ViewSettings { paper, sidebar_hidden, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
             .map(|tab| {
-                let TabRecord { from_sleep: _, encrypted: _, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, spread, selection, notice, place_dirty: _, contents_verdict: _, generated_contents, folds, trail } = tab;
+                let TabRecord { from_sleep: _, encrypted: _, password, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, spread, selection, notice, place_dirty: _, contents_verdict: _, generated_contents, folds, trail } = tab;
                 TabEntry {
                     id: id.0,
                     path: PathField::from_path(&self.path_of(*id).unwrap_or_default()),
@@ -2238,13 +2341,15 @@ impl<L: DocLoader> Session<L> {
                     edits: edits.get(id).map(PageEdits::summary).or_else(|| asleep.get(id).copied()),
                     generated_contents: *generated_contents,
                     contents_folds: folds.as_deref().map(<[(u32, bool)]>::to_vec).unwrap_or_default(),
+                    password: *password,
                     back: trail.as_ref().map(|trail| trail.back().to_vec()).unwrap_or_default(),
                     forward: trail.as_ref().map(|trail| trail.forward().to_vec()).unwrap_or_default(),
                 }
             })
             .collect();
         let comparison = comparison.as_ref().map(|comparison| record::ComparisonRecord { tabs: comparison.tabs.iter().map(|tab| tab.0).collect(), synced: comparison.synced, sync_from: comparison.sync_from.clone() });
-        SessionRecord { app: record::AppRecord::default(), view: ViewRecord { paper: paper.map(Paper::to_record), focus: false, sidebar_hidden, agent_icon_hidden }, find: find.clone(), edit_mode: *edit_mode, active: active.map(|id| id.0), next_id: *next_id, tabs, comparison }
+        let recent = recent.iter().map(|path| PathField::from_path(path)).collect();
+        SessionRecord { app: record::AppRecord::default(), view: ViewRecord { paper: paper.map(Paper::to_record), focus: false, sidebar_hidden, agent_icon_hidden }, find: find.clone(), edit_mode: *edit_mode, active: active.map(|id| id.0), next_id: *next_id, tabs, comparison, recent }
     }
 
     /// A tab's edits whole, as QA reads them and for a journal's checkpoint.
@@ -2284,6 +2389,8 @@ impl<L: DocLoader> Session<L> {
         self.comparison = None;
         self.next_id = record.next_id;
         self.find = record.find.clone();
+        self.recent = record.recent.iter().filter(|path| path.fits()).filter_map(PathField::to_path).filter(|path| path.is_absolute()).take(MAX_RECENT).collect();
+        self.recent_version += 1;
         self.edit_mode = record.edit_mode;
         let sidebar_hidden = record.view.sidebar_comes_back_hidden();
         let ViewRecord { paper, focus: _, sidebar_hidden: _, agent_icon_hidden } = record.view;
@@ -2321,6 +2428,7 @@ impl<L: DocLoader> Session<L> {
             self.tabs.push(TabRecord {
                 from_sleep: None,
                 encrypted: false,
+                password: entry.password,
                 touched: 0,
                 id,
                 dir,
@@ -5464,6 +5572,76 @@ mod tests {
         assert_eq!(back.loader().loads.get(), read_ahead, "nothing read with the session held");
         assert!(read_ahead > loads);
         assert_eq!(back.active(), Some(ids[0]));
+    }
+}
+
+#[cfg(test)]
+mod recent_tests {
+    use super::*;
+
+    struct Any;
+
+    impl DocLoader for Any {
+        fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
+            Ok(DocFacts { page_count: 3, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+        }
+    }
+
+    /// Failure: File > Open Recent misses a file just opened, lists one twice, grows without a cap, or forgets them all after a quit; or Clear Menu leaves any.
+    #[test]
+    fn recent_files_are_newest_first_capped_and_kept() {
+        let mut s = Session::new(Any);
+        for at in 0..(MAX_RECENT + 5) {
+            s.open(&PathBuf::from(format!("/d/file{at}.pdf"))).unwrap();
+        }
+        s.open(Path::new("/d/file10.pdf")).unwrap();
+        let recent = s.recent_files();
+        assert_eq!(recent.len(), MAX_RECENT);
+        assert_eq!(recent[0].path, PathBuf::from("/d/file10.pdf"), "opening again brings it to the front");
+        assert_eq!(recent.iter().filter(|file| file.path == Path::new("/d/file10.pdf")).count(), 1);
+        assert_eq!((recent[0].name.as_str(), recent[0].open.is_some()), ("file10", true));
+        let record = s.to_record();
+        let mut again = Session::new(Any);
+        again.restore(&record, HashMap::new()).unwrap();
+        assert_eq!(again.recent_files().iter().map(|file| file.path.clone()).collect::<Vec<_>>(), recent.iter().map(|file| file.path.clone()).collect::<Vec<_>>());
+        let mut forged = record.clone();
+        forged.recent = vec![PathField::Text("relative.pdf".into()), PathField::Text("/d/ok.pdf".into())];
+        again.restore(&forged, HashMap::new()).unwrap();
+        assert_eq!(again.recent_files().len(), 1, "only a whole path is kept from a record");
+        assert!(again.clear_recent());
+        assert!(again.recent_files().is_empty() && again.to_record().recent.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod password_tests {
+    use super::*;
+
+    struct Locked;
+
+    impl DocLoader for Locked {
+        fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
+            Ok(DocFacts { page_count: 3, byte_len: 1, encrypted: true, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+        }
+    }
+
+    /// Failure (review O1): `encrypted` is taken for "opened with a password", so a file anyone may open is kept from agents, or one the person typed a password for isn't; or the mark's lost across a quit, so what the record kept of it (its length, its place) reaches an agent before the password's typed again; or a tab whose password went missing goes on showing what was read with it instead of asking (review O5).
+    #[test]
+    fn a_tab_opened_with_a_password_is_marked_kept_and_asks_again_when_its_key_is_gone() {
+        let mut s = Session::new(Locked);
+        let anyone = s.open(Path::new("/d/anyone.pdf")).unwrap();
+        assert!(!s.withheld_from_agents(anyone), "encrypted alone isn't protected from agents");
+        let locked = s.open_unlocked(Path::new("/d/locked.pdf"), Locked.load(Path::new("/d/locked.pdf")).unwrap(), None).unwrap();
+        assert!(s.withheld_from_agents(locked));
+        let record = s.to_record();
+        assert_eq!(record.tabs.iter().map(|tab| tab.password).collect::<Vec<_>>(), [false, true]);
+        let mut again = Session::new(Locked);
+        again.restore(&record, HashMap::new()).unwrap();
+        assert!(again.withheld_from_agents(TabId(locked.0)) && !again.withheld_from_agents(TabId(anyone.0)), "kept across a quit");
+        assert!(!s.needs_password(locked));
+        s.needs_password_again(locked);
+        assert!(s.needs_password(locked) && s.withheld_from_agents(locked));
+        assert!(!s.warm_tabs().any(|id| id == locked), "what was read with the password is let go");
     }
 }
 

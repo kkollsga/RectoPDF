@@ -69,11 +69,51 @@ pub(crate) struct Sleeper {
     /// One sleep file being written at a time, so a flush has what's on its way.
     writing: Mutex<()>,
     counts: Counts,
+    /// Looks at files under way, each on a thread of its own: one per tab at most, and [`MAX_LOOKS`] in all.
+    looks: std::sync::Arc<LookSlots>,
+}
+
+/// Looks at files that can be under way at once. A look is a stat, microseconds, unless the file's on a volume that's stopped answering, where it may never end: then this many threads are all that's ever held for it, however many times the app comes to the front.
+pub(crate) const MAX_LOOKS: usize = 8;
+
+/// **Which tabs have a look at their file under way.** A tab already being looked at doesn't get a second thread, and past [`MAX_LOOKS`] no more start, so coming back to the app over and over with a hung disk adds no threads (review O3). A look asked for while one's under way isn't lost: it's noted, and when the look under way ends it's asked for again, as the one under way may have looked before the file changed.
+#[derive(Debug, Default)]
+pub(crate) struct LookSlots {
+    /// Each tab being looked at, and whether another look was asked for meanwhile.
+    running: Mutex<Vec<(TabId, bool)>>,
+}
+
+impl LookSlots {
+    /// Takes a slot for a look at this tab's file, if it hasn't one and one's free. If it has one, another look is noted for when that ends.
+    pub(crate) fn start(&self, id: TabId) -> bool {
+        let mut running = lock(&self.running);
+        if let Some(entry) = running.iter_mut().find(|(tab, _)| *tab == id) {
+            entry.1 = true;
+            return false;
+        }
+        if running.len() >= MAX_LOOKS {
+            return false;
+        }
+        running.push((id, false));
+        true
+    }
+
+    /// The look's done, however it ended: whether another was asked for meanwhile, which the caller asks for again.
+    pub(crate) fn finish(&self, id: TabId) -> bool {
+        let mut running = lock(&self.running);
+        let again = running.iter().any(|(tab, again)| *tab == id && *again);
+        running.retain(|(tab, _)| *tab != id);
+        again
+    }
+
+    pub(crate) fn running(&self) -> usize {
+        lock(&self.running).len()
+    }
 }
 
 impl Sleeper {
     pub(crate) fn new() -> Self {
-        Self { clock: Instant::now(), after_seconds: AtomicU32::new(DORMANT_AFTER_SECONDS), budget_bytes: AtomicU64::new(LIVE_BUDGET_BYTES), due: AtomicU64::new(0), last_budget_look: Mutex::new(None), write_gap_seconds: AtomicU32::new(SLEEP_WRITE_EVERY_SECONDS), last_written: Mutex::new(HashMap::new()), this_hour: Mutex::new((Instant::now(), 0)), writing: Mutex::new(()), counts: Counts::default() }
+        Self { clock: Instant::now(), after_seconds: AtomicU32::new(DORMANT_AFTER_SECONDS), budget_bytes: AtomicU64::new(LIVE_BUDGET_BYTES), due: AtomicU64::new(0), last_budget_look: Mutex::new(None), write_gap_seconds: AtomicU32::new(SLEEP_WRITE_EVERY_SECONDS), last_written: Mutex::new(HashMap::new()), this_hour: Mutex::new((Instant::now(), 0)), writing: Mutex::new(()), counts: Counts::default(), looks: std::sync::Arc::new(LookSlots::default()) }
     }
 
     fn millis(&self) -> u64 {
@@ -135,6 +175,7 @@ impl Sleeper {
             "sleep_bytes_written": count(&counts.sleep_bytes),
             "woken_from_file": count(&counts.woken_from_file),
             "pressure_events": count(&counts.pressure_events),
+            "looks_running": self.looks.running(),
         })
     }
 }
@@ -360,10 +401,19 @@ pub(crate) fn version_of(stamp: FileStamp) -> FileStamp {
 /// **Looks at a tab's file before it's shown, for as long as a frame can wait for it.** Another file there means what's held of it is of something else, so the tab's read again, and nothing drawn of the old one is shown: the page view's told its version's changed. Past the time, which is a disk that's gone away, it's shown as it was, and the look goes on on its own thread. A stat, which is microseconds.
 pub(crate) fn look_before_showing(inner: &Inner, id: TabId) {
     let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else { return };
+    // One look per tab, and so many in all: with a disk that's stopped answering, showing tab after tab adds no threads past them.
+    if !inner.sleeper.looks.start(id) {
+        return;
+    }
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     let core = std::sync::Arc::clone(&inner.core);
+    let slots = std::sync::Arc::clone(&inner.sleeper.looks);
     let looking = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
         let status = look_at_file(&path, stamp);
+        // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.
+        if slots.finish(id) {
+            core.push(CoreCall::LookAtShown);
+        }
         let other = !matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) && !matches!(status, FileStatus::NotLooked);
         // Too late for the frame: it's said the usual way.
         if send.try_send((other, status.clone())).is_err() && other {
@@ -371,6 +421,7 @@ pub(crate) fn look_before_showing(inner: &Inner, id: TabId) {
         }
     });
     if looking.is_err() {
+        inner.sleeper.looks.finish(id);
         return;
     }
     if let Ok((true, status)) = receive.recv_timeout(LOOK_PATIENCE) {
@@ -385,14 +436,44 @@ pub(crate) fn look_before_showing(inner: &Inner, id: TabId) {
 /// How long a tab being shown waits for a look at its file.
 const LOOK_PATIENCE: Duration = Duration::from_millis(30);
 
-/// One thread looks at the one file a tab was woken from its sleep file on, and ends. If it's something else now, the session's told, and it's read after all.
+/// One thread looks at the one file a tab was woken from its sleep file on, or that's showing when the app comes to the front, and ends. If it's something else now, the session's told, and it's read after all. A tab with a look under way already, or past [`MAX_LOOKS`] in all, isn't looked at now: see [`LookSlots`].
 pub(crate) fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
     let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else { return };
-    let inner = std::sync::Arc::clone(inner);
-    let _ = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
+    if !inner.sleeper.looks.start(id) {
+        return;
+    }
+    let (slots, core) = (std::sync::Arc::clone(&inner.sleeper.looks), std::sync::Arc::clone(&inner.core));
+    let spawned = std::thread::Builder::new().name("recto-look".into()).stack_size(256 * 1024).spawn(move || {
         let status = look_at_file(&path, stamp);
         if !matches!(&status, FileStatus::Same(now) if Some(*now) == stamp) && !matches!(status, FileStatus::NotLooked) {
-            inner.core.push(CoreCall::WokenFileIsOther(id, status));
+            core.push(CoreCall::WokenFileIsOther(id, status));
+        }
+        // A look asked for meanwhile may be about a change made after this one looked: the files showing are looked at again.
+        if slots.finish(id) {
+            core.push(CoreCall::LookAtShown);
         }
     });
+    if spawned.is_err() {
+        inner.sleeper.looks.finish(id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: coming back to the app with a file on a disk that's stopped answering starts another look thread per tab each time, without end (review O3): a tab already being looked at must not get a second thread, and no more than `MAX_LOOKS` at once. And a look asked for while one is under way is lost, so a file changed after that one looked isn't noticed when the app comes to the front (seen once in the opening shots, under load).
+    #[test]
+    fn looks_are_one_per_tab_and_capped() {
+        let slots = LookSlots::default();
+        assert!(slots.start(TabId(1)));
+        assert!(!slots.start(TabId(1)), "one look per tab");
+        for id in 2..=(MAX_LOOKS as u32 + 4) {
+            slots.start(TabId(id));
+        }
+        assert_eq!(slots.running(), MAX_LOOKS, "capped in all");
+        assert!(slots.finish(TabId(1)), "the look asked for meanwhile is asked for again");
+        assert!(slots.start(TabId(1)), "a slot comes back when a look ends");
+        assert!(!slots.finish(TabId(1)), "nothing was asked for meanwhile this time");
+    }
 }

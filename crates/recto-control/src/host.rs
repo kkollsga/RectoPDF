@@ -52,6 +52,8 @@ pub struct SessionHost<L = DrawableLoader> {
     record: Option<RecordStore>,
     /// What a save needs beyond the session: where backups go, and the app's journals. Set once.
     saving: std::sync::OnceLock<Arc<dyn SaveSupport + Send>>,
+    /// The person's passwords, for their own Find: set by the app, and none for a session with no window.
+    find_keys: std::sync::OnceLock<recto_agent::find::KeyLookup>,
 }
 
 /// A session with no window keeps backups and no journals as it goes, so its saves need only the folder.
@@ -104,7 +106,7 @@ impl Default for SessionHost<DrawableLoader> {
 
 impl<L: DocLoader + Clone> SessionHost<L> {
     pub fn new(loader: L) -> Self {
-        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0), indexer: None, generator: None, finder: Finder::new(None), record: None, saving: std::sync::OnceLock::new() }
+        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0), indexer: None, generator: None, finder: Finder::new(None), record: None, saving: std::sync::OnceLock::new(), find_keys: std::sync::OnceLock::new() }
     }
 
     /// With documents indexed on demand, under the state folder's corpus folder.
@@ -123,7 +125,17 @@ impl<L: DocLoader + Clone> SessionHost<L> {
 
     /// What the Find field does, by the same steps as `recto find`: a query, which runs in the background.
     pub fn find_begin(&self, query: &str) -> Result<u64, AgentError> {
-        recto_agent::find::begin(&self.access(), query)
+        recto_agent::find::begin_keyed(&self.access(), query, self.find_keys.get().cloned())
+    }
+
+    /// The person's passwords, for their own Find in a document they opened with one, set once by the app: see [`recto_agent::find::FindPlan::with_keys`]. An agent's `find` never gets them.
+    pub fn set_find_keys(&self, keys: recto_agent::find::KeyLookup) {
+        let _ = self.find_keys.set(keys);
+    }
+
+    /// Those passwords, for a plan the app makes itself.
+    pub fn find_keys(&self) -> Option<recto_agent::find::KeyLookup> {
+        self.find_keys.get().cloned()
     }
 
     /// What's in the Find field that the hits held aren't of, if anything.
