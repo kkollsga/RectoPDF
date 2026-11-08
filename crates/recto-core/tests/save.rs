@@ -788,3 +788,105 @@ fn the_rewrite_in_memory_is_the_real_plan() {
     assert_eq!(save::rewrite_in_memory(&target, &added, true), Ok(3));
     assert_eq!(save::rewrite_in_memory(&marked(&["ONLY"]), &added, false), Err(SaveError::NoPagesLeft));
 }
+
+/// Failure (review round 1 of stage 2): a page added from a signed document brings its signature widget and value along, outside the form, so this document then reads as signed by its bytes: a later delete is refused as if a person had signed it, though nothing showed Save off, and a Save As "unsigned copy" keeps a `/ByteRange`. The widget and its value stay behind, the page's own drawing comes, and saving, a delete and a Save As all go as for an unsigned document.
+#[test]
+fn an_added_pages_signature_stays_behind() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["MINE", "ALSO"]));
+    let signed = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R 7 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["SIGNEDPAGEDRAWING"]) },
+        Raw::Dict("<< /FT /Sig /T (Signature1) /V 6 0 R /Rect [0 0 50 20] /Subtype /Widget /P 3 0 R >>".into()),
+        Raw::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 10 20 30] /Contents <00> >>".into()),
+        Raw::Dict("<< /Type /Annot /Subtype /Text /Rect [0 0 10 10] /Contents (A NOTE THAT STAYS) >>".into()),
+    ]);
+    let other = dir.write("signed.pdf", &signed);
+    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 1, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    save::save(&request(&path, 2, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(!contains(&bytes, "/ByteRange") && !contains(&bytes, "Signature1"), "no signature came along");
+    assert!(contains(&bytes, "SIGNEDPAGEDRAWING") && contains(&bytes, "A NOTE THAT STAYS"), "the page and its other annotations did");
+    let reader = IndexedReader::open(FileSource::open(&path).unwrap()).unwrap();
+    assert!(!save::persons_signature(&reader), "the fork finds no signature in it");
+    // A delete saves over it, as for any unsigned file, and a Save As copy has no signature either.
+    let delete = own(&[(0, 0), (2, 0)]);
+    assert_eq!(save::save(&request(&path, 3, &delete, &[]), Target::Same, None, &mut save::NoHooks).unwrap().writer, Writer::Rewrite);
+    let copy = dir.0.join("copy.pdf");
+    save::save(&request(&path, 2, &own(&[(0, 0)]), &[]), Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
+    assert!(!contains(&std::fs::read(&copy).unwrap(), "/ByteRange"));
+}
+
+/// Failure (review round 1 of stage 2): a hostile form makes a save's work unbounded, or a rename that runs out settles on a taken name, merging the added field into the document's own and changing its value. Every top name taken, as far as renames go, is refused with nothing written; a form whose `/Fields` names past the limit is refused; a widget chain shared by thousands of widgets is looked at once each.
+#[test]
+fn hostile_forms_are_bounded() {
+    let dir = Dir::new();
+    // The target's form already has `F` and `F_2` to `F_1000`.
+    let taken: String = (1..=1000).map(|n| if n == 1 { "<< /T (F) >> ".to_string() } else { format!("<< /T (F_{n}) >> ") }).collect();
+    let target = build(&[
+        Raw::Dict(format!("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [{taken}] >> >>")),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["TARGET"]) },
+    ]);
+    let path = dir.write("target.pdf", &target);
+    let before = std::fs::read(&path).unwrap();
+    // The added page: 2,000 widgets of one field named `F`.
+    let widgets: String = (0..2000).map(|at| format!("{} 0 R ", 6 + at)).collect();
+    let mut objects = vec![
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{widgets}] >>")),
+        Raw::Stream { dict: String::new(), data: text_lines(&["ADDED"]) },
+        Raw::Dict(format!("<< /T (F) /FT /Tx /Kids [{widgets}] >>")),
+    ];
+    for _ in 0..2000 {
+        objects.push(Raw::Dict("<< /Type /Annot /Subtype /Widget /Rect [0 0 5 5] /Parent 5 0 R >>".into()));
+    }
+    let other = dir.write("added.pdf", &build(&objects));
+    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    let started = std::time::Instant::now();
+    assert_eq!(save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks), Err(SaveError::FieldNamesTaken));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+    assert_eq!(std::fs::read(&path).unwrap(), before, "nothing was written");
+    // With one name free, it goes in, its 2,000 widgets under one field.
+    let mine = dir.write("free.pdf", &marked(&["FREE"]));
+    let outcome = save::save(&request(&mine, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(outcome.pages, 2);
+    // A form listing more fields than a save looks at is refused, not walked.
+    let many: String = (0..100_001).map(|_| "4 0 R ").collect();
+    let huge = build(&[
+        Raw::Dict(format!("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [{many}] >> >>")),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>".into()),
+        Raw::Dict("<< /T (X) >>".into()),
+    ]);
+    let huge_path = dir.write("huge.pdf", &huge);
+    // Refused before it's walked: as too much, or, by the signature look's own bound, as possibly locked, on the side of refusing.
+    assert!(matches!(save::save(&request(&huge_path, 1, &order, &added), Target::Same, None, &mut save::NoHooks), Err(SaveError::TooLarge | SaveError::LockedBySignature)));
+}
+
+/// Failure (review round 1 of stage 2): a page object the tree lists twice is one page to the rewrite, so a copy kept for "pages 0 and 1" holds one page, and undo past the save puts the wrong pages back. A copy with fewer pages than asked for isn't used, and one estimated past the limit isn't written.
+#[test]
+fn a_kept_copy_that_isnt_what_was_asked_isnt_used() {
+    let dir = Dir::new();
+    let twice = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 3 0 R 5 0 R] /Count 3 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["TWICE"]) },
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["ONCE"]) },
+    ]);
+    let path = dir.write("twice.pdf", &twice);
+    let kept = dir.0.join("kept.keptpages");
+    // Page 1 is page 0's object again: keeping page 0 alone removes page 1, which takes that object from both places.
+    assert!(save::keep_pages(&path, &[0], &kept, u64::MAX).is_err());
+    assert!(!kept.exists(), "and it isn't left there");
+    assert_eq!(save::keep_pages(&path, &[0, 1], &kept, 1), Err(SaveError::TooLarge), "past the limit, refused before writing");
+    assert!(!kept.exists());
+}

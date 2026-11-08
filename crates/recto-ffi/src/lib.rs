@@ -1186,11 +1186,22 @@ impl Inner {
         Some(result)
     }
 
-    /// **What a Save does around its writing, with the writing done by the test,** as Save isn't built: keeps what's needed, notes what's coming and flushes that, puts the file in place, and confirms. Every step's the real one.
+    /// **What a Save does around its writing, with the writing done by the test,** for crash and restore tests: keeps what's needed, notes what's coming and flushes that, puts the file in place, and confirms. Every step but the writing is the real one, and it's refused where Save would be.
     fn qa_save_from(&self, written: &str) -> Result<(), AgentError> {
         let failed = |what: &str| AgentError::new("save_failed", format!("{what} failed."), recto_agent::exit::FAILED);
         let written = PathBuf::from(written);
         let target = recto_platform::file_stamp(&written).map_err(|_| failed("Looking at the written file"))?;
+        // The checks Save makes before it writes: never over a signed file, never over one changed on disk, never while it's being saved.
+        let (path, known, saving) = self.host.session.with_session(|session| session.active().and_then(|id| Some((session.path_of(id)?, session.own_stamp(id), session.is_saving(id))))).ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
+        if saving {
+            return Err(AgentError::new("saving", "That document is being saved.", recto_agent::exit::FAILED));
+        }
+        if known.is_none_or(|known| recto_platform::file_stamp(&path).ok() != Some(known)) {
+            return Err(AgentError::new("file_changed", recto_core::save::SaveError::FileChanged.message(), recto_agent::exit::FAILED));
+        }
+        if recto_core::save::signature_facts_of(&path).is_ok_and(|facts| facts.has_persons_signature()) {
+            return Err(AgentError::new("signed_needs_copy", recto_core::save::SaveError::SignedNeedsCopy.message(), recto_agent::exit::FAILED));
+        }
         let (id, path, pages, needed) = self.host.session.with_session(|session| {
             let id = session.active()?;
             let needed = session.page_edits(id).map(recto_session::edit::PageEdits::own_pages_needed).unwrap_or_default();

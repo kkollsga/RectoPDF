@@ -277,6 +277,15 @@ fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
 mod tests {
     use super::*;
 
+    /// Failure (review round 1 of stage 2): the Close prompt offers Save where Save is off, so the answer is a refusal. With Save off it offers Save As, and says why; otherwise Save, as before.
+    #[test]
+    fn the_close_prompt_offers_what_works() {
+        let off = close_prompt(1, "signed.pdf", true, false, true);
+        assert_eq!(off.buttons.iter().map(|button| button.choice).collect::<Vec<_>>(), [CloseChoice::SaveAs, CloseChoice::Cancel, CloseChoice::DontSave]);
+        assert!(off.informative.contains("Save As makes a new copy"), "{}", off.informative);
+        assert_eq!(close_prompt(1, "plain.pdf", true, false, false).buttons[0].choice, CloseChoice::Save);
+    }
+
     /// Failure (SPEC decision 27): a save refused for a signature offers no way on, though Save As makes an unsigned copy and the original keeps its signature. The alert for a certified document, one a signature locks, and a signed one whose change needs a rewrite each offers Save As; one for a damaged file doesn't, as a copy can't help it.
     #[test]
     fn a_signature_refusal_offers_save_as() {

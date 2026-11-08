@@ -134,6 +134,36 @@ fn a_delete_is_saved_by_rewriting() {
     let bytes = std::fs::read(&file.0).unwrap();
     assert!(!found(&bytes, "DELETEDMARK") && found(&bytes, "KEEP"));
     assert_eq!(ok(&state, &["edits"])["edited"], false, "saved");
+    // A session with no window keeps no copy of the deleted page, so undo can't go back past the save, and the answer says so rather than leaving it to be found.
+    assert!(saved["notes"].as_array().unwrap().iter().any(|note| note.as_str().is_some_and(|note| note.contains("undo steps from before this save couldn't be kept"))), "{saved}");
+    assert_eq!(ok(&state, &["edits"])["can_undo"], false);
+}
+
+/// Failure (review round 1 of stage 2): an agent at Control gets a copy of a certified file written anew, which only Full may do, as it's decided inside the save rather than before the level's checked. Refused with exit 5, nothing written; at Full the copy is made.
+#[test]
+fn a_rewritten_copy_needs_full_whatever_decides_it() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let bytes = build(&[
+        Object::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> /Perms << /DocMDP 6 0 R >> >>".into()),
+        Object::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".into()),
+        Object::Stream { dict: String::new(), data: text_lines(&["A certified contract"]) },
+        Object::Dict("<< /FT /Sig /T (Tenant) /V 6 0 R >>".into()),
+        Object::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 5 10 5] /Contents <00> >>".into()),
+    ]);
+    let file = TempPdf::new("certified-control.pdf", &bytes);
+    ok(&state, &["open", path(&file)]);
+    ok(&state, &["page", "rotate", "1", "--by", "90"]);
+    let copy = file.0.with_file_name("certified control copy.pdf");
+    let (refused, code) = state.json(&["save-as", "--out", copy.to_str().unwrap()]);
+    assert_eq!(code, exit::PERMISSION, "{refused}");
+    assert!(!copy.exists());
+    state.set_level(Level::Full);
+    let saved = ok(&state, &["save-as", "--out", copy.to_str().unwrap()]);
+    assert_eq!((&saved["writer"], &saved["signatures_removed"]), (&json!("rewrite"), &json!(1)), "{saved}");
+    assert_eq!(std::fs::read(&file.0).unwrap(), bytes);
+    let _ = std::fs::remove_file(copy);
 }
 
 /// Failure (SPEC decision 25, on the real path): marked text that was only ever in the history reaches the saved file: an added PDF that was undone, its name, the journal. The save writes the document and nothing else.

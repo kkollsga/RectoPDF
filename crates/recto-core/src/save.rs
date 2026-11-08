@@ -736,9 +736,11 @@ pub fn keep_pages(original: &Path, pages: &[u32], dest: &Path, max_bytes: u64) -
         Ok(())
     })
     .map_err(from_rewrite)?;
-    // A page object the tree lists twice is one page to the rewrite, so the copy can hold fewer pages than asked for: its numbers would then be wrong, so it isn't used.
-    let held = written.reader.page_map().map(|map| map.len()).unwrap_or(0);
-    if written.durability_warning.is_some() || held != pages.len() {
+    // A page object the tree lists twice is one page to the rewrite, which removes it from every place, so the copy can hold other pages than asked for: its
+    // numbers would then be wrong, so it isn't used. Object numbers don't change in a rewrite, so the pages held are compared one for one.
+    let expected: Vec<ObjectId> = pages.iter().filter_map(|page| map.get(*page as usize).map(PageMapEntry::id)).collect();
+    let held: Vec<ObjectId> = written.reader.page_map().map(|map| map.iter().map(PageMapEntry::id).collect()).unwrap_or_default();
+    if written.durability_warning.is_some() || held != expected {
         // Not trusted to be there after a power cut, or not what was asked for: not relied on, and the history rolls those steps off instead.
         let _ = std::fs::remove_file(dest);
         return Err(SaveError::Failed);
@@ -836,6 +838,29 @@ pub fn rewrite_in_memory(target: &[u8], added: &[u8], with_added: bool) -> Resul
         return Err(SaveError::CheckFailed { detail: "pages out of place" });
     }
     Ok(expected.len())
+}
+
+/// **The signature rules and the kept copy on bytes in memory, for the fuzzer:** what `save` decides about a file's signatures, and the rewrite `keep_pages`
+/// runs for these pages, through the fork's own verify, with the pages held compared one for one. Gives back how many pages the copy holds.
+pub fn signatures_and_keep_in_memory(bytes: &[u8], pages: &[u32]) -> Result<usize, SaveError> {
+    let (reader, map) = open_bytes_for_save(bytes)?;
+    let facts = signature_facts(&reader);
+    let _ = (facts.has_persons_signature(), persons_signature(&reader));
+    reader.check_rewritable().map_err(from_rewrite)?;
+    let count = u32::try_from(map.len()).map_err(|_| SaveError::Damaged)?;
+    let keep: HashSet<u32> = pages.iter().copied().filter(|page| *page < count).collect();
+    if keep.is_empty() {
+        return Err(SaveError::NoPagesLeft);
+    }
+    let mut changes = RewriteChanges::new(&reader).map_err(from_rewrite)?;
+    for page in (0..count).filter(|page| !keep.contains(page)) {
+        changes.remove_page(page as usize);
+    }
+    let mut out = Vec::new();
+    let unverified = changes.write_unverified_to(RewritePolicy::new().remove_signatures().remove_usage_rights(), &mut out).map_err(from_rewrite)?;
+    let written: std::sync::Arc<[u8]> = out.into();
+    let (_, copy) = unverified.verify(&reader, std::sync::Arc::new(lopdf::BytesSource::new(written))).map_err(from_rewrite)?;
+    Ok(copy.page_map().map(|map| map.len()).unwrap_or(0))
 }
 
 /// Each added PDF that a page of the document comes from, opened and checked against what was known of it. One no page uses isn't opened.
