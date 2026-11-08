@@ -224,3 +224,38 @@ fn a_fourth_pane_is_refused_with_words() {
     assert_eq!(panes(&report).len(), 3);
     assert!(report["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("three")), "{}", report["app"]["copy_notice"]);
 }
+
+/// Failure: a tab gone dormant, with its sleep file, comes into a comparison blank or by reading its PDF with the session held; a pane's file gone missing or replaced under it hangs the app or takes the other pane with it; or a pane's tab can be put to sleep while it's on screen.
+#[test]
+fn a_dormant_tab_and_a_missing_file_in_a_comparison() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let (a, b, c) = (document("alpha", 20, (612.0, 792.0)), document("beta", 8, (612.0, 792.0)), document("gamma", 5, (612.0, 792.0)));
+    for file in [&a, &b, &c] {
+        run.ok(&["open", file.0.to_str().unwrap()]);
+        run.settled();
+    }
+    let slept = run.ok(&["session", "sleep", "--tab", "#1"]);
+    assert_eq!(slept["dormant"], true, "{slept}");
+    let woken_before = run.report()["record"]["sleep"]["woken_from_file"].as_u64().unwrap_or(0);
+    run.ok(&["qa", "compare-click", "0"]);
+    run.settled();
+    let compared = run.report();
+    assert_eq!(panes(&compared).len(), 2);
+    assert!(compared["record"]["sleep"]["woken_from_file"].as_u64().unwrap_or(0) > woken_before, "from its sleep file: {}", compared["record"]["sleep"]);
+    assert!(panes(&compared).iter().all(|pane| pane["settled"] == true), "{}", compared["panes"]);
+    assert_eq!(run.ok(&["session", "sleep", "--tab", "#3"])["dormant"], false, "a pane on screen doesn't go dormant");
+
+    // The other pane's file goes away and another comes in its place, under it.
+    std::fs::remove_file(&c.0).unwrap();
+    std::fs::write(&c.0, b"not a pdf at all").unwrap();
+    run.ok(&["qa", "pane-scroll", "0:2000"]);
+    run.ok(&["qa", "pane-focus", "0"]);
+    run.settled();
+    let after = run.report();
+    assert_eq!(panes(&after).len(), 2, "the comparison stays");
+    assert_eq!(after["hangs"]["over_2s"], 0);
+    run.ok(&["qa", "pane-scroll", "1:900"]);
+    run.settled();
+    assert!(panes(&run.report())[1]["page"].as_i64().unwrap() > 1, "the pane whose file is fine still reads");
+}

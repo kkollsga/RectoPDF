@@ -2776,10 +2776,8 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         synced.count = count;
     }
     synced.panes.resize_with(count, PaneSynced::default);
-    if snapshots.is_empty() {
-        if synced.panes[0].tab.take().is_some() {
-            inner.engine.deactivate();
-        }
+    if snapshots.is_empty() && synced.panes[0].tab.take().is_some() {
+        inner.engine.deactivate();
     }
     let mut panes_changed = false;
     for (pane, snapshot) in snapshots.iter().enumerate() {

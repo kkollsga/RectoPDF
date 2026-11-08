@@ -4526,7 +4526,7 @@ mod tests {
         s.tap(ids[2]).unwrap();
         assert!(s.comparison().is_none(), "a plain click returns to one");
         assert_eq!(s.panes(), vec![ids[2]]);
-        assert_eq!(s.tab(ids[2]).unwrap().toc_open, true, "and doesn't fold its contents");
+        assert!(s.tab(ids[2]).unwrap().toc_open, "and doesn't fold its contents");
         s.compare(&[ids[0], ids[1]], None).unwrap();
         s.open(&PathBuf::from("/d/e.pdf")).unwrap();
         assert!(s.comparison().is_none(), "opening another PDF shows it alone");
