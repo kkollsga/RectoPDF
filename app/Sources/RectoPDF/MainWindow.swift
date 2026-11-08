@@ -369,6 +369,8 @@ final class BookMark: NSView {
         buildHome()
         sidebar.addPressed = { [weak delegate] in delegate?.openDocument(nil) }
         sidebar.performAction = { [weak delegate] id in delegate?.perform(id) }
+        // What a row run from the palette leaves the host to do: the Open panel, Settings, Find's field taking the keyboard, and the rest.
+        sidebar.palette.hostAction = { [weak delegate] action in delegate?.handle(action) }
         sidebar.revealHost = root
         sidebarGrip.dragged = { [weak delegate] x in delegate?.core.setSidebarWidth(width: x) }
         root.appearanceChanged = { [weak self] in self?.appearanceChanged() }
@@ -426,6 +428,12 @@ final class BookMark: NSView {
         }
         applyFocus(placement.focusSidebar ? "sidebar" : delegate.core.focusView())
         delegate.core.windowShown(home: reader.home, tileLayers: UInt32(paneAreas.reduce(0) { $0 + ($1.report()["tile_layers"] as? Int ?? 0) }))
+    }
+
+    /// ⌘K: the palette's field takes the keyboard. Rust has opened it.
+    func focusPalette() {
+        sidebar.palette.wantsFocus = true
+        sidebar.palette.refresh()
     }
 
     /// Gives the keyboard to what's named: the page, the sidebar, or Find's field if Find is open.

@@ -6,6 +6,7 @@
 
 pub mod compare;
 pub mod edit;
+pub mod palette;
 pub mod record;
 pub mod sleep;
 pub mod trail;

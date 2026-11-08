@@ -203,6 +203,15 @@ pub enum Command {
         #[serde(default)]
         layout: Option<String>,
     },
+    /// ⌘K's palette: what a query finds among the app's commands and tabs, best first, and running the first.
+    Palette {
+        #[serde(default)]
+        query: Option<String>,
+        #[serde(default)]
+        run: bool,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
     /// The app's Find, in the document being read: a query, a step to the next or previous hit, or closing. With nothing, only says.
     Find {
         #[serde(default)]
@@ -578,6 +587,7 @@ impl Command {
             Self::Budget {} => "budget",
             Self::View { .. } => "view",
             Self::Compare { .. } => "compare",
+            Self::Palette { .. } => "palette",
             Self::Find { .. } => "find",
             Self::QaRead { .. } => "qa_read",
             Self::QaDrive { .. } => "qa_drive",
@@ -637,6 +647,8 @@ impl Command {
             Self::View { paper: None, sidebar: None, agent_icon: None, zoom: None, layout: None } => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
             Self::View { .. } => Access::At(Level::Control),
             Self::Compare { tabs: None, sync: None, off: false } => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
+            // Running a command is doing it, as its menu item would.
+            Self::Palette { run: true, .. } => Access::At(Level::Control),
             Self::Compare { .. } => Access::At(Level::Control),
             // Asking is reading. Whether this app replaces itself is as far-reaching as installing, so it's the same level.
             Self::Settings { auto_update: Some(_) } => Access::At(Level::Full),
@@ -678,6 +690,7 @@ impl Command {
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
             Self::Compare { sync, off, .. } => json!({ "sync": sync.as_deref().map(recto_core::clean_line), "off": off }),
+            Self::Palette { query, run, .. } => json!({ "query": query.as_deref().map(recto_core::clean_line), "run": run }),
             // Not what's looked for: that's the document's business, as a search's words are.
             Self::Find { query, next, previous, close, .. } => json!({ "query": query.is_some(), "next": next, "previous": previous, "close": close }),
             Self::Recent {} | Self::RecentClear {} | Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} | Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall {} => Value::Null,
@@ -1155,6 +1168,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden, "layout": s.active().and_then(|id| s.spread_of(id)).map(recto_session::record::Spread::name) }))
         }),
         Command::Compare { tabs, sync, off } => compare(access, tabs.as_deref(), sync.as_deref(), *off, events),
+        Command::Palette { .. } => Err(AgentError::new("palette_needs_app", "The palette lists the app's commands, and this session has no app.", exit::FAILED).then("It works when `recto` is talking to the app.")),
         Command::Find { query, next, previous, close, limit } => find::command(access, &find::Asked { query: query.as_deref(), next: *next, previous: *previous, close: *close, limit: *limit }, events),
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. } => Err(update_needs_app()),
@@ -2173,6 +2187,7 @@ mod tests {
             Command::Search { tab: tab(), query: "x".into(), pages: None, limit: None, scan: false, regex: false, rank: false, context: None },
             Command::Find { query: Some("x".into()), next: false, previous: false, close: false, limit: None },
             Command::Index { tab: tab(), agent: false },
+            Command::Palette { query: Some("zoom".into()), run: false, limit: None },
             Command::IndexStatus { tab: tab() },
             Command::IndexClear { tab: tab(), all: false },
             Command::Signatures { tab: tab() },

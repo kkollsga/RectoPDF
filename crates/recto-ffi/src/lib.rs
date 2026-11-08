@@ -9,6 +9,7 @@ mod find;
 mod generated_contents;
 pub mod linking;
 mod menus;
+mod palette;
 mod panes;
 pub mod passwords;
 mod qa;
@@ -713,6 +714,45 @@ impl AppHost {
             self.core.push(CoreCall::Reconcile);
             return Ok(answer);
         }
+        if let Command::Palette { query, run, limit } = command {
+            if !recto_agent::allowed(level, command.access()) {
+                return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
+            }
+            let inner = self.saver.inner().ok_or_else(|| AgentError::new("busy", "The app is going away.", recto_agent::exit::BUSY))?;
+            let core = AppCore { inner, qa_mode: false, start_with: Vec::new() };
+            // Nothing of a tab opened with a password, whose name may have been read with it, and files opened lately only at `recto recent`'s level.
+            let whom = palette::ForWhom {
+                hidden_tabs: self.session.with_session(|session| session.tabs().iter().filter(|tab| session.withheld_from_agents(tab.id)).map(|tab| tab.id.0).collect()),
+                recent: recto_agent::table::by_tag("recent").is_some_and(|spec| recto_agent::allowed(level, spec.access)),
+            };
+            let rows = palette::found_for(&core, query.as_deref().unwrap_or(""), &whom);
+            // A tab's name is the file's, so it's marked as the document's words.
+            let row_json = |row: &palette::PaletteRow| if row.from_file { json!({ "id": row.id, "detail": row.detail, "shortcut": row.shortcut, "untrusted": { "title": row.title } }) } else { json!({ "id": row.id, "title": row.title, "detail": row.detail, "shortcut": row.shortcut }) };
+            let mut answer = json!({ "query": query, "items": rows.iter().take(limit.unwrap_or(20).clamp(1, 50) as usize).map(row_json).collect::<Vec<_>>() });
+            if *run {
+                let first = rows.first().ok_or_else(|| AgentError::new("nothing_found", "Nothing matches that, so nothing was run.", recto_agent::exit::NOT_FOUND).then("`recto palette` lists what there is."))?;
+                let reader = lock(&core.inner.published).reader.clone();
+                // What it comes to as an agent's own command runs as that, at the agent's level, with that command's checks, and as the agent's step. What has none, or writes the clipboard, needs what the direct way needs: Full, or `copy`'s level.
+                let host = match palette::as_command(&first.id, &reader, &core.recent_files()) {
+                    Some(direct) => {
+                        palette::close(&core.inner);
+                        self.run_counted(level, &direct, events)?;
+                        HostAction::None
+                    }
+                    None => {
+                        let needed = if first.id.starts_with("edit.copy") { recto_agent::table::by_tag("copy").map_or(recto_agent::table::Access::At(Level::Full), |spec| spec.access) } else { recto_agent::table::Access::At(Level::Full) };
+                        if !recto_agent::allowed(level, needed) {
+                            return Err(recto_agent::refusal(&format!("palette --run for {}", first.id), level, needed).then("Run that command itself, if it has one, at the level it needs."));
+                        }
+                        palette::run(&core, &first.id)
+                    }
+                };
+                let ran = if first.from_file { json!({ "id": first.id, "untrusted": { "title": first.title }, "host": palette::host_word(host) }) } else { json!({ "id": first.id, "title": first.title, "host": palette::host_word(host) }) };
+                answer["ran"] = ran;
+                self.core.push(CoreCall::Reconcile);
+            }
+            return Ok(answer);
+        }
         if matches!(command, Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. }) {
             if !recto_agent::allowed(level, command.access()) {
                 return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
@@ -1040,6 +1080,8 @@ struct Inner {
     link_prompts_made: AtomicU64,
     /// Saves from the window: how many run, and what one that failed says.
     save_ui: saving::SaveUi,
+    /// ⌘K's palette, on the UI thread.
+    palette: Mutex<palette::State>,
     /// The Find field as the session thread last set it, for the UI thread.
     find_field: Mutex<find::Field>,
 }
@@ -1477,6 +1519,7 @@ impl AppCore {
             link_prompt: Mutex::new(None),
             link_prompts_made: AtomicU64::new(0),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
+            palette: Mutex::new(palette::State::default()),
             find_field: Mutex::new(find::Field::default()),
         });
         saver.attach(Arc::downgrade(&inner));
@@ -1825,6 +1868,15 @@ impl AppCore {
             menus::Action::Copy { anyway } => self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway),
             menus::Action::SelectAll => self.inner.panes.reading_engine(&self.inner.engine).select_all(),
             menus::Action::SetSynced(on) => self.inner.core.push(CoreCall::SetSynced(on)),
+            menus::Action::PaletteOpen => {
+                // The palette is in the sidebar, so ⌘K shows it.
+                if lock(&self.inner.published).reader.sidebar_hidden {
+                    self.inner.core.push(CoreCall::SetSidebarHidden(false));
+                }
+                palette::open(&self.inner);
+                self.inner.listener.model_changed();
+                return HostAction::FocusPalette;
+            }
             menus::Action::OpenRecent(key) => self.open_recent(key),
             menus::Action::ClearRecent => self.inner.core.push(CoreCall::ClearRecent),
             menus::Action::FindOpen => {
@@ -1873,6 +1925,32 @@ impl AppCore {
             }
         }
         HostAction::None
+    }
+
+    /// Everything ⌘K's palette draws: its rows, ranked, worded and with their keys, all Rust's. Short locks, never the session's.
+    pub fn palette_view(&self) -> palette::PaletteView {
+        palette::view(self)
+    }
+
+    /// What's in the palette's field now, as it's typed.
+    pub fn palette_typed(&self, text: String) {
+        palette::typed(&self.inner, &text);
+    }
+
+    /// ↑ (-1) and ↓ (1) in the palette.
+    pub fn palette_step(&self, by: i32) {
+        palette::step(self, by);
+    }
+
+    /// A click on a row of the palette.
+    pub fn palette_run(&self, id: String) -> HostAction {
+        palette::run(self, &id)
+    }
+
+    /// Escape, or the keyboard going elsewhere.
+    pub fn palette_close(&self) {
+        palette::close(&self.inner);
+        self.inner.listener.model_changed();
     }
 
     /// Whether a menu item can be chosen now. Asked when a menu opens and on its key.

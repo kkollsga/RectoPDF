@@ -301,6 +301,12 @@ impl QaBridge {
                 return self.ask(verb, value);
             }
             "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
+            "palette_type" | "palette_key" => {
+                check_drive_value(verb, value)?;
+                if !self.inner().is_some_and(|inner| inner.palette_open()) {
+                    return Err(bad("The palette isn't open. `recto qa menu palette.open` opens it."));
+                }
+            }
             // A test's password, for a test's own file: the sheet showing must be asking about a file in the quiet run's state folder or a temp folder, so this can't type into a sheet for one of the person's own (review O6).
             "password" => {
                 check_drive_value(verb, value)?;
@@ -548,6 +554,8 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "hover" | "reveal" => value == "none" || row(),
         "click_row" => value == "note" || value.strip_prefix("fold:").is_some_and(|row| row.parse::<u32>().is_ok()) || row(),
         "contents_scroll" | "compare_click" | "find_click" => row(),
+        "palette_type" => value.chars().count() <= 256,
+        "palette_key" => one_of(&["up", "down", "return", "escape"]),
         "find_type" => value.len() <= recto_session::record::MAX_FIND_BYTES,
         "find_key" => one_of(&["return", "shift_return", "escape"]),
         "pane_context_menu" => value.split_once(':').is_some_and(|(pane, item)| pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES) && crate::menus::context_menu(None, Some(false)).iter().any(|entry| !entry.id.is_empty() && entry.id == item)),

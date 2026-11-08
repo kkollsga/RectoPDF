@@ -858,7 +858,8 @@ fn the_menu_bar_and_the_agent_icon() {
     assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go"], "{state}");
     let view = &state["app"]["menu_bar"][3]["items"];
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
-    assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon"]);
+    assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon", "Command Palette…"]);
+    assert_eq!(view[9]["key"], "k", "⌘K, as SPEC has it");
     assert_eq!(state["app"]["agent_icon"], true);
     // Owner, 2026-11-07: the same margin to the right as above, and less above than the 16 it had.
     let (top, right) = (state["app"]["agent_icon_margins"]["top"].as_f64().unwrap(), state["app"]["agent_icon_margins"]["right"].as_f64().unwrap());
@@ -1863,6 +1864,153 @@ fn a_save_leaves_the_view_as_it_was() {
     assert_eq!(after, before, "the view after the save");
     let saved = std::fs::read(&file.0).unwrap();
     assert!(saved.starts_with(&original) && saved.len() > original.len(), "and it was saved");
+}
+
+/// Failure: ⌘K doesn't find a command by a few of its letters, lists what can't be chosen, words a key unlike its menu, can't be driven by the keyboard alone, or runs something other than what's selected; or an agent's `recto palette` ranks differently from what the reader sees.
+#[test]
+fn the_palette_finds_commands_and_tabs_and_runs_them_by_keyboard() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "palette.open"]);
+    let opened = wait_for(&run, |state| state["app"]["palette"]["open"] == true);
+    assert_eq!(opened["app"]["palette"]["field_has_focus"], true, "⌘K gives its field the keyboard");
+    assert!(opened["app"]["palette"]["rows"].as_array().unwrap().iter().any(|row| row["id"] == "tab:1"), "the open tab is listed: {}", opened["app"]["palette"]);
+    let typed = run.ok(&["qa", "palette-type", "zi"]);
+    assert_eq!(typed["palette"]["rows"][0]["id"], "view.zoom_in", "{}", typed["palette"]);
+    assert_eq!(typed["palette"]["rows"][0]["shortcut"], "⌘+", "the menu's own key");
+    let agent = run.ok(&["palette", "zi"]);
+    assert_eq!(agent["items"][0]["id"], "view.zoom_in", "an agent sees the same order: {agent}");
+    run.ok(&["qa", "palette-type", "side"]);
+    let moved = run.ok(&["qa", "palette-key", "down"]);
+    let second = moved["palette"]["rows"][1]["id"].as_str().unwrap().to_string();
+    assert_eq!(moved["palette"]["selected"], 1);
+    run.ok(&["qa", "palette-key", "return"]);
+    run.settled();
+    let ran = run.report();
+    assert_eq!(ran["app"]["palette"]["open"], false, "it closes once it runs");
+    assert_eq!(format!("layout.{}", ran["app"]["layout"].as_str().unwrap().replace('-', "_")), second, "what was selected ran");
+    // What can't be chosen now isn't listed.
+    let agent = run.ok(&["palette", "copy"]);
+    assert!(!agent["items"].as_array().unwrap().iter().any(|item| item["id"] == "edit.copy"), "nothing's selected, so Copy can't be chosen: {agent}");
+    run.ok(&["qa", "menu", "palette.open"]);
+    run.ok(&["qa", "palette-key", "escape"]);
+    assert_eq!(run.report()["app"]["palette"]["open"], false);
+    let refused = run.state.json(&["palette", "zzzzqqq", "--run"]);
+    assert_eq!(refused.1, exit::NOT_FOUND, "{}", refused.0);
+    // A tab's name is the file's words.
+    let tabs = run.ok(&["palette", "long"]);
+    let tab = tabs["items"].as_array().unwrap().iter().find(|item| item["id"] == "tab:1").unwrap();
+    assert!(tab["untrusted"]["title"].is_string() && tab.get("title").is_none(), "{tab}");
+}
+
+/// Failure: a palette row that leaves the host something to do (Settings, the Open panel, About, Save As, Find's field) does nothing when run with Return, because what's left for the host never reaches it.
+#[test]
+fn a_palette_row_does_what_the_host_is_left_to_do() {
+    let Some(run) = Run::start() else { return };
+    run.ok(&["qa", "menu", "palette.open"]);
+    wait_for(&run, |state| state["app"]["palette"]["open"] == true);
+    let typed = run.ok(&["qa", "palette-type", "settings"]);
+    assert_eq!(typed["palette"]["rows"][0]["id"], "app.settings", "{}", typed["palette"]);
+    run.ok(&["qa", "palette-key", "return"]);
+    let shown = wait_for(&run, |state| state["app"]["settings"]["open"] == true);
+    assert_eq!(shown["app"]["palette"]["open"], false);
+}
+
+/// Failure: Find Next run from the palette with Find closed goes nowhere the reader can see: Find doesn't open, or its field doesn't take the keyboard the palette had, so typing goes nowhere; or `recto palette "find next" --run` needs Full though `recto find --next` needs only Control.
+#[test]
+fn find_next_from_the_palette_opens_find_with_its_field_focused() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.ok(&["qa", "find-key", "escape"]);
+    wait_for(&run, |state| state["app"]["find"]["open"] == false);
+    run.ok(&["qa", "menu", "palette.open"]);
+    let typed = run.ok(&["qa", "palette-type", "find next"]);
+    assert_eq!(typed["palette"]["rows"][0]["id"], "find.next", "{}", typed["palette"]);
+    run.ok(&["qa", "palette-key", "return"]);
+    let found = wait_for(&run, |state| state["app"]["find"]["open"] == true && state["app"]["find"]["field_has_focus"] == true);
+    assert_eq!((found["app"]["palette"]["open"].as_bool(), found["app"]["focus_view"].as_str()), (Some(false), Some("find")), "{}", found["app"]["find"]);
+    assert_eq!(found["app"]["find"]["untrusted"]["field"], "words", "with what was typed last: {}", found["app"]["find"]);
+    run.state.set_level(Level::Control);
+    let stepped = run.ok(&["palette", "find next", "--run"]);
+    assert_eq!(stepped["ran"]["id"], "find.next", "at Control, as `recto find --next`: {stepped}");
+}
+
+/// Failure: ⌘K doesn't offer files opened lately, or opens another file than the row showed; a file in Open Recent named like a command ("Close") is listed as that command; an agent below `recto recent`'s level sees files opened lately; or an agent sees anything of a tab opened with a password the person typed, whose name may have been read with it.
+#[test]
+fn the_palette_offers_recent_files_and_keeps_protected_tabs_from_agents() {
+    let Some(run) = Run::start() else { return };
+    let closed = TempPdf::new("Close.pdf", &pages(&[Page::new(text_lines(&["A file named like a command"]))]));
+    let reading = long_document(3);
+    run.ok(&["open", closed.0.to_str().unwrap()]);
+    run.ok(&["close"]);
+    run.ok(&["open", reading.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "palette.open"]);
+    let typed = run.ok(&["qa", "palette-type", "Close"]);
+    let rows = typed["palette"]["rows"].as_array().unwrap().clone();
+    assert!(rows.iter().all(|row| !row["id"].as_str().unwrap().starts_with("recent.")), "Open Recent's items aren't commands: {rows:?}");
+    assert!(rows.iter().any(|row| row["id"] == "file.close"), "{rows:?}");
+    assert!(rows[0]["id"].as_str().unwrap().starts_with("recent:"), "the recent file, first among equals after the tabs: {rows:?}");
+    run.ok(&["qa", "palette-key", "return"]);
+    let opened = wait_for(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 2));
+    assert!(opened["session"]["tabs"].as_array().unwrap().iter().any(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with("Close.pdf"))), "the file the row showed");
+    run.ok(&["close"]);
+    run.settled();
+    let recent_ids = |reply: &Value| reply["items"].as_array().unwrap().iter().filter(|item| item["id"].as_str().unwrap().starts_with("recent:")).count();
+    run.state.set_level(Level::ReadOnly);
+    assert_eq!(recent_ids(&run.ok(&["palette", "close"])), 0, "files opened lately need `recto recent`'s level");
+    run.state.set_level(Level::Control);
+    let listed = run.ok(&["palette", "close"]);
+    assert_eq!(recent_ids(&listed), 1, "{listed}");
+    let ran = run.ok(&["palette", "Close", "--run"]);
+    assert!(ran["ran"]["id"].as_str().unwrap().starts_with("recent:"), "{ran}");
+    wait_for(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 2));
+    // A tab opened with the person's password: theirs to see in ⌘K, and nothing of it for an agent.
+    run.state.set_level(Level::Full);
+    let locked = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
+    run.ok(&["qa", "open-file", locked.0.to_str().unwrap()]);
+    sheet_of(&run, "password");
+    type_password(&run, "open sesame");
+    wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 3));
+    run.settled();
+    run.ok(&["qa", "menu", "palette.open"]);
+    let theirs = run.ok(&["qa", "palette-type", "locked"]);
+    assert!(theirs["palette"]["rows"].as_array().unwrap().iter().any(|row| row["id"].as_str().unwrap().starts_with("tab:")), "the person sees their tab: {}", theirs["palette"]);
+    run.ok(&["qa", "palette-key", "escape"]);
+    let agents = run.ok(&["palette", "locked"]);
+    assert!(agents["items"].as_array().unwrap().iter().all(|item| !item["id"].as_str().unwrap().starts_with("tab:")), "an agent gets nothing of it: {agents}");
+}
+
+/// Failure: `recto palette --run` at Control does what its direct command needs more for (review, round 1): installing an update, which needs Full; clearing history without the checks `clear-history` makes; undo, redo and rotate taken as the owner's steps; or writing the clipboard below `copy`'s level. What has an agent's command runs as that, at the agent's level; the rest needs Full.
+#[test]
+fn the_palettes_run_keeps_to_each_commands_level() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.state.set_level(Level::Control);
+    let zoomed = run.ok(&["palette", "zoom in", "--run"]);
+    assert_eq!(zoomed["ran"]["id"], "view.zoom_in", "{zoomed}");
+    let (update, code) = run.state.json(&["palette", "check for updates", "--run"]);
+    assert_ne!(code, 0, "an update's install needs Full: {update}");
+    assert_eq!(update["error"]["code"], "permission_denied", "{update}");
+    let rotated = run.ok(&["palette", "rotate all pages right", "--run"]);
+    assert_eq!(rotated["ran"]["id"], "rotate.right", "{rotated}");
+    let edits = run.ok(&["edits"]);
+    assert_eq!(edits["edited"], true, "{edits}");
+    // Below Full, `discard` throws away only agents' steps: it going through says the step is the agent's, as `page rotate` makes it, and not the owner's.
+    let (discarded, code) = run.state.json(&["discard"]);
+    assert_eq!(code, 0, "the step is the agent's: {discarded}");
+    run.state.set_level(Level::ReadOnly);
+    assert!(run.ok(&["palette", "zoom"])["items"].as_array().is_some_and(|items| !items.is_empty()), "listing is reading");
+    let (refused, code) = run.state.json(&["palette", "zoom in", "--run"]);
+    assert_ne!(code, 0, "running is doing: {refused}");
 }
 
 /// Waits for the sheet over the window to be of this kind, and gives the state then.

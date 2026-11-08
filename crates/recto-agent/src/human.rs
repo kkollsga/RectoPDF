@@ -132,6 +132,20 @@ pub fn render(tag: &str, data: &Value) -> String {
         "facts" => facts(data),
         "contents" => contents(data),
         "search" => search(data),
+        "palette" => {
+            let mut out = String::new();
+            if let Some(ran) = data["ran"].as_object() {
+                let _ = writeln!(out, "Ran {}.", text(&ran["title"]));
+            }
+            let items = data["items"].as_array().map_or(&[][..], Vec::as_slice);
+            if items.is_empty() {
+                out.push_str("Nothing matches.");
+            }
+            for item in items {
+                let _ = writeln!(out, "{}  ({}{}{})  {}", text(&item["title"]), text(&item["detail"]), if item["shortcut"].as_str().is_some_and(|key| !key.is_empty()) { ", " } else { "" }, text(&item["shortcut"]), text(&item["id"]));
+            }
+            out.trim_end().to_string()
+        }
         "find" => find(data),
         "index" | "index_status" => index(data),
         "index_clear" => format!("Cleared {}.{}", count(number(&data["cleared"]), "document's index", "documents' indexes"), if number(&data["being_built"]) > 0 { format!(" {} being built, and stayed.", count(number(&data["being_built"]), "is", "are")) } else { String::new() }),

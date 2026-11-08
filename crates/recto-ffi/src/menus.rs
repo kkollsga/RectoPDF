@@ -40,6 +40,8 @@ pub enum HostAction {
     ShowSavePanel,
     /// Closing a document with unsaved edits asks first, with what `AppCore::close_prompt` says.
     ConfirmClose,
+    /// ⌘K: the palette's field in the sidebar takes the keyboard. Rust has opened it.
+    FocusPalette,
     /// ⌘F: Find's field in the sidebar takes the keyboard, with what's in it selected. Rust has opened it.
     FocusFind,
     /// Go > Go to Page…: the field the page number opens, with what `AppCore::page_field` says.
@@ -74,6 +76,8 @@ pub(crate) enum Action {
     CloseDocument,
     /// A comparison's panes scroll together, page for page, or each on its own.
     SetSynced(bool),
+    /// ⌘K opens the command palette.
+    PaletteOpen,
     /// File > Open Recent's file with this key: the one the menu showed, whatever the list has become since.
     OpenRecent(String),
     /// File > Open Recent > Clear Menu.
@@ -204,6 +208,9 @@ pub(crate) fn menu_bar_with(view: ViewSettings, shown: Option<Spread>, update_ti
             .chain([
                 line(),
                 MenuEntry { checked: !view.agent_icon_hidden, ..entry("view.agent_icon", "Show Agent Icon", "") },
+                line(),
+                // SPEC §4: "⌘K finds any command."
+                entry("palette.open", "Command Palette…", "k"),
             ])
             .collect(),
         },
@@ -318,6 +325,7 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "go.page" => Action::Host(HostAction::ShowGoTo),
         "compare.separate" => Action::SetSynced(false),
         "compare.synced" => Action::SetSynced(true),
+        "palette.open" => Action::PaletteOpen,
         "edit_mode.done" => Action::LeaveEditMode,
         "find.open" => Action::FindOpen,
         "find.next" => Action::FindStep(true),

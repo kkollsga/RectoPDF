@@ -32,6 +32,11 @@ pub(crate) struct Field {
     note: Option<String>,
 }
 
+/// Whether Find's open, as the UI thread last heard: under the mirror's short lock, never the session's.
+pub(crate) fn is_open(inner: &Inner) -> bool {
+    lock(&inner.find_field).open
+}
+
 /// What the host's told to do about Find, through the session thread's queue.
 #[derive(Debug)]
 pub(crate) enum FindCall {

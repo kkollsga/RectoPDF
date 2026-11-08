@@ -170,6 +170,14 @@ import QuartzCore
             if value == "note" { controller?.sidebar.clickNote() } else if value.hasPrefix("fold:") { controller?.sidebar.clickFold(Int(value.dropFirst(5)) ?? -1) } else { controller?.sidebar.clickRow(Int(value) ?? 0) }
         case "contents_scroll":
             controller?.sidebar.userScrollContents(toRow: Int(value) ?? 0)
+        case "palette_type":
+            // Rust has checked it's open, and says so in its words if not.
+            guard let palette = controller?.sidebar.palette else { return }
+            palette.field.stringValue = value
+            palette.typed(value)
+        case "palette_key":
+            guard let palette = controller?.sidebar.palette else { return }
+            palette.press(value)
         case "find_type":
             // What typing in the field does: the field holds it, and its change goes where a keystroke's does.
             guard let find = controller?.sidebar.find, find.model.open else { return fail(id, "Find isn't open. `recto qa menu find.open` opens it.") }
@@ -345,6 +353,7 @@ import QuartzCore
             "reveal": sidebar.revealReport(),
             "paper": reader.paper,
             "contents": sidebar.contentsReport(),
+            "palette": sidebar.palette.report(),
             "find": sidebar.find.report(),
             "hover": sidebar.hoveredRow.map { $0 as Any } ?? NSNull(),
             "animations": controller.runningAnimations(),

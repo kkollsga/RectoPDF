@@ -405,8 +405,14 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     /// What every menu item, panel button and zoom key comes to.
     func perform(_ id: String) {
-        switch core.perform(id: id) {
+        handle(core.perform(id: id))
+    }
+
+    /// What's left for the host after a menu item, a panel button, a key or a palette row.
+    func handle(_ action: HostAction) {
+        switch action {
         case .none: break
+        case .focusPalette: windowController?.focusPalette()
         case .showOpenPanel: openDocument(nil)
         case .showAbout: NSApp.orderFrontStandardAboutPanel(nil)
         case .showSettings: showSettings()
