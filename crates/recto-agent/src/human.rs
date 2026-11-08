@@ -97,6 +97,13 @@ pub fn render(tag: &str, data: &Value) -> String {
         "select" | "copy" => selected(data),
         "signatures" => signatures(data),
         "sidebar" | "tap" => sidebar(data),
+        "compare" => match data["panes"].as_array() {
+            Some(panes) if !panes.is_empty() => {
+                let list: Vec<String> = panes.iter().map(|pane| format!("#{} {} (page {} of {}){}", pane["tab"], text(&pane["untrusted"]["name"]), pane["page"], pane["pages"], if pane["reading"] == true { ", read" } else { "" })).collect();
+                format!("Side by side: {}. Scroll: {}.{}", list.join(", "), if data["sync"] == "on" { "synced" } else { "separate" }, data["note"].as_str().map(|note| format!(" {note}")).unwrap_or_default())
+            }
+            _ => "One tab showing, no comparison.".to_string(),
+        },
         "view" => format!("Paper: {}. Sidebar: {}. Agent icon: {}.{}", text(&data["paper"]), if data["sidebar"] == false { "hidden" } else { "shown" }, if data["agent_icon"] == true { "on" } else { "off" }, data["layout"].as_str().map(|layout| format!(" Layout: {layout}.")).unwrap_or_default()),
         "session_show" => session_show(data),
         "session_save" => format!("Saved and read back: {}, {} bytes of record and {} of journals, {} written, in {} ms.", count(number(&data["tabs"]), "tab", "tabs"), number(&data["record_bytes"]), number(&data["journal_bytes"]), number(&data["wrote_bytes"]), number(&data["total_ms"])),
