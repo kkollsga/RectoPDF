@@ -18,7 +18,7 @@ name = "recto-headings"
 path = "src/main.rs"
 
 [dependencies]
-# The owner's library, at its published 0.1.7 commit, with no Python and no OCR. It's on lopdf `0e89b89`, and RectoPDF's crates on `8c8ba88` (the streaming rewrite), so this helper builds both until distillPDF moves: Cargo can't patch one git revision of a source to another of the same URL. Nothing here passes a lopdf type between them.
+# The owner's library, at its published 0.1.7 commit, with no Python and no OCR. Its own lopdf pin is taken to RectoPDF's by the patch below.
 distillpdf = { git = "https://github.com/kkollsga/distillPDF", rev = "fbf5b22f641982a41374507466aafdb615fbf512", default-features = false }
 recto-core = { path = "../recto-core" }
 recto-index = { path = "../recto-index" }
@@ -42,7 +42,7 @@ debug = "line-tables-only"
 [dev-dependencies]
 recto-testpdf = { path = "../recto-testpdf" }
 
-# distillPDF pins lopdf `0e89b89`; RectoPDF's crates are on `8c8ba88`, the streaming rewrite. One lopdf here, as `tests/lockfile.rs` holds: distillPDF's is
+# distillPDF pins lopdf `0e89b89`; RectoPDF's crates are on `598e61f`, the append writer's clone on the streaming rewrite. One lopdf here, as `tests/lockfile.rs` holds: distillPDF's is
 # taken to the app's commit. The URL names `www.github.com`, which GitHub sends on to the same repository, because Cargo won't patch a source to itself.
 [patch."https://github.com/kkollsga/lopdf.git"]
-lopdf = { git = "https://www.github.com/kkollsga/lopdf.git", rev = "8c8ba8838bb0815ec0ba7c04d945175088270d99" }
+lopdf = { git = "https://www.github.com/kkollsga/lopdf.git", rev = "598e61f6869a04d27b4990c4cc9648e5bf62f0f3" }

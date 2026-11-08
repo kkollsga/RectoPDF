@@ -83,7 +83,6 @@ impl<L: DocLoader + Clone> SessionAccess for Hosted<'_, L> {
     }
     fn saving(&self) -> Option<&dyn SaveSupport> {
         self.saving.map(|saving| saving as &dyn SaveSupport)
-
     }
     fn generating(&self) -> Option<&dyn recto_agent::generated::Generating> {
         self.generator.map(|generator| generator as &dyn recto_agent::generated::Generating)
@@ -120,7 +119,6 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     /// What saves need of whoever holds this session. The first one set stays.
     pub fn set_saving(&self, support: Arc<dyn SaveSupport + Send>) {
         let _ = self.saving.set(support);
-
     }
 
     /// With generated contents made on demand, kept in the state folder's contents folder.

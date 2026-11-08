@@ -580,7 +580,7 @@ fn open_added(request: &SaveRequest<'_>) -> Result<Vec<Opened>, SaveError> {
         let changed = || SaveError::AddedFileChanged { name: name.clone() };
         let known = added.stamp.ok_or_else(changed)?;
         let now = recto_platform::file_stamp(added.path).map_err(|_| changed())?;
-        if !now.same_contents(known) || now.inode != known.inode {
+        if !now.same_contents(known) || now.inode != known.inode || now.device != known.device {
             return Err(changed());
         }
         let reader = match open_for_save(added.path) {
