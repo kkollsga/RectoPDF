@@ -650,7 +650,15 @@ pub struct TabEntry {
     /// Contents sections the reader opened or closed against what following the place does, as `(entry, open)`. At most [`MAX_CONTENTS_FOLDS`].
     #[serde(default, deserialize_with = "capped::<_, _, MAX_CONTENTS_FOLDS>")]
     pub contents_folds: Vec<(u32, bool)>,
+    /// Back and forward: places to go back to, oldest first, and to go forward to, the nearest last. See [`crate::trail`]. Read up to [`MAX_TRAIL_READ`], and held to [`crate::trail::MAX_TRAIL`] when taken in.
+    #[serde(default, deserialize_with = "capped::<_, _, MAX_TRAIL_READ>", skip_serializing_if = "Vec::is_empty")]
+    pub back: Vec<crate::trail::Stop>,
+    #[serde(default, deserialize_with = "capped::<_, _, MAX_TRAIL_READ>", skip_serializing_if = "Vec::is_empty")]
+    pub forward: Vec<crate::trail::Stop>,
 }
+
+/// Most stops read from a record each way: past the trail's own cap, so a record from a build with a longer one still reads, and short enough that a forged one can't make it large.
+pub const MAX_TRAIL_READ: usize = 1024;
 
 /// Most folds kept for one tab's contents. A reader opens and closes a handful; past this the oldest goes.
 pub const MAX_CONTENTS_FOLDS: usize = 256;
@@ -1386,7 +1394,7 @@ mod tests {
     }
 
     fn entry(id: u32) -> TabEntry {
-        TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new() }
+        TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new(), back: Vec::new(), forward: Vec::new() }
     }
 
     fn record(tabs: Vec<TabEntry>) -> SessionRecord {

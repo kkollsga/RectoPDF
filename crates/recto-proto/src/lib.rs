@@ -203,18 +203,34 @@ fn frame(kind: Kind, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The worker's first frame, sent once PDFium is loaded.
-pub const HELLO_LEN: usize = 4;
+/// The worker's first frame, sent once PDFium is loaded and its walls are up: its process id and one byte of flags.
+pub const HELLO_LEN: usize = 5;
 
-pub fn encode_hello(pid: u32) -> Vec<u8> {
-    frame(Kind::Hello, &pid.to_le_bytes())
+/// A worker's first frame: its process, and whether its walls are up: the App Sandbox on and its Mach rights dropped. A release host refuses a worker that says they aren't.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hello {
+    pub pid: u32,
+    pub walled: bool,
 }
 
-pub fn decode_hello(payload: &[u8]) -> Result<u32, ProtoError> {
+const HELLO_WALLED: u8 = 1;
+
+pub fn encode_hello(hello: Hello) -> Vec<u8> {
+    let mut payload = hello.pid.to_le_bytes().to_vec();
+    payload.push(if hello.walled { HELLO_WALLED } else { 0 });
+    frame(Kind::Hello, &payload)
+}
+
+/// Refuses a flag it doesn't know, so an older host can't read a newer worker's hello as something it isn't.
+pub fn decode_hello(payload: &[u8]) -> Result<Hello, ProtoError> {
     let mut r = Reader(payload);
     let pid = r.u32()?;
+    let flags = r.u8()?;
     r.end()?;
-    Ok(pid)
+    if flags & !HELLO_WALLED != 0 {
+        return Err(ProtoError("unknown hello flags"));
+    }
+    Ok(Hello { pid, walled: flags & HELLO_WALLED != 0 })
 }
 
 pub fn encode_open(password: &[u8]) -> Result<Vec<u8>, ProtoError> {

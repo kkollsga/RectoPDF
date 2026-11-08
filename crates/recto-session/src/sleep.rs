@@ -5,6 +5,7 @@
 //! **Treated as hostile,** as anything in a folder can be changed. A checksum says it's whole and nothing more. Every number's held to what a real one could be before it sizes anything, and pictures are inflated to exactly the size they say, which is capped. Pixels only ever reach a surface of their own, and a title goes through the same cleaning as one from a PDF. A password-protected document never gets one, as this would be its contents in the clear.
 
 use crate::record::{FileRecord, RecordError, open_sealed, seal};
+use recto_core::nav::{LabelRange, LabelStyle, MAX_LABEL_PREFIX_BYTES, MAX_LABEL_RANGES, PageLabels};
 use recto_core::{MAX_TOC_DEPTH, MAX_TOC_ENTRIES, NONE, Toc, TocLine};
 use recto_platform::FileStamp;
 use serde::{Deserialize, Serialize};
@@ -85,6 +86,11 @@ struct Meta {
     version: Option<u64>,
     truncated: bool,
     toc: Vec<(String, u32, u32, u8)>,
+    /// The file's page labels, as `(start, first, style, prefix)`, so a tab that wakes from here shows `iv` as it did. An older file has none, and the tab shows numbers until its PDF is read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    labels: Vec<(u32, u32, u8, String)>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    labels_truncated: bool,
     usual: Option<(f32, f32)>,
     sizes: Vec<(u32, f32, f32)>,
     pictures: Vec<PictureLine>,
@@ -189,7 +195,8 @@ pub fn encode_sleep(sleep: &SleepFile) -> Vec<u8> {
         }
     }
     let sizes = sleep.sizes.iter().take(MAX_SIZES).copied().collect();
-    let meta = Meta { file: sleep.file.into(), file_pages: sleep.file_pages, pages: sleep.pages, list_seq: sleep.list_seq, renderer_only: sleep.renderer_only, version: sleep.version, truncated: sleep.toc.truncated, toc, usual: sleep.usual, sizes, pictures: lines };
+    let labels = sleep.toc.labels.ranges().iter().map(|range| (range.start, range.first, range.style.code(), range.prefix.to_string())).collect();
+    let meta = Meta { file: sleep.file.into(), file_pages: sleep.file_pages, pages: sleep.pages, list_seq: sleep.list_seq, renderer_only: sleep.renderer_only, version: sleep.version, truncated: sleep.toc.truncated, toc, labels, labels_truncated: sleep.toc.labels.truncated, usual: sleep.usual, sizes, pictures: lines };
     let mut body = serde_json::to_vec(&meta).unwrap_or_default();
     body.push(b'\n');
     body.extend_from_slice(&packed);
@@ -208,7 +215,7 @@ pub fn decode_sleep(bytes: &[u8], newest: u32) -> Result<SleepFile, RecordError>
     if meta.file_pages as usize > crate::edit::MAX_PAGES || meta.pages as usize > crate::edit::MAX_PAGES || meta.pages == 0 || meta.file_pages == 0 {
         return Err(bad("too many pages"));
     }
-    if meta.toc.len() > MAX_TOC_ENTRIES || meta.sizes.len() > MAX_SIZES || meta.pictures.len() > MAX_SLEEP_PICTURES {
+    if meta.toc.len() > MAX_TOC_ENTRIES || meta.sizes.len() > MAX_SIZES || meta.pictures.len() > MAX_SLEEP_PICTURES || meta.labels.len() > MAX_LABEL_RANGES {
         return Err(bad("too long a list"));
     }
     let lines = meta.toc.iter().enumerate().map(|(at, (title, page, parent, depth))| {
@@ -216,7 +223,12 @@ pub fn decode_sleep(bytes: &[u8], newest: u32) -> Result<SleepFile, RecordError>
         fits.then_some(TocLine { title: title.as_str(), page: *page, parent: *parent, depth: *depth })
     });
     let lines: Vec<TocLine<'_>> = lines.collect::<Option<_>>().ok_or(bad("contents out of range"))?;
-    let toc = Toc::from_lines(&lines, meta.truncated);
+    let mut toc = Toc::from_lines(&lines, meta.truncated);
+    if meta.labels.iter().any(|(start, _, _, prefix)| *start >= meta.file_pages || prefix.len() > MAX_LABEL_PREFIX_BYTES) {
+        return Err(bad("page labels out of range"));
+    }
+    // Held to the same rules as a PDF's own, as whatever wrote this can't be believed.
+    toc.labels = PageLabels::from_ranges(meta.labels.iter().map(|(start, first, style, prefix)| LabelRange { start: *start, first: *first, style: LabelStyle::from_code(*style), prefix: prefix.as_str().into() }).collect(), meta.labels_truncated);
     if meta.usual.is_some_and(|(width, height)| !good_size(width, height)) {
         return Err(bad("a page of an impossible size"));
     }
@@ -402,6 +414,20 @@ mod tests {
         sleep.pictures = vec![SleepPicture { page: 0, scale: 0.5, width, height, dark: false, bgra: vec![255; (width * height * 4) as usize] }];
         let back = decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap();
         assert_eq!(back.pictures[0].width, width);
+    }
+
+    /// Failure: a tab woken from its sleep file shows plain numbers where it showed `iv`, as its labels weren't kept; or a forged file's labels reach the screen uncleaned or out of range.
+    #[test]
+    fn page_labels_are_kept_and_checked() {
+        use recto_core::nav::{LabelRange, LabelStyle, PageLabels};
+        let mut sleep = sample();
+        let range = |start, style, prefix: &str| LabelRange { start, first: 1, style, prefix: prefix.into() };
+        sleep.toc.labels = PageLabels::from_ranges(vec![range(0, LabelStyle::RomanLower, ""), range(1, LabelStyle::Decimal, "A\u{202E}-")], false);
+        let back = decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap();
+        assert_eq!(back.toc.labels.label(0).as_deref(), Some("i"));
+        assert_eq!(back.toc.labels.label(1).as_deref(), Some("A-1"), "cleaned once, and the same after");
+        sleep.toc.labels = PageLabels::from_ranges(vec![range(0, LabelStyle::Decimal, ""), range(sleep.file_pages + 5, LabelStyle::Decimal, "")], false);
+        assert!(decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).is_err(), "a range past the file's last page is a forged file");
     }
 
     /// Failure: a title in a forged file carries what a title from a PDF can't, as it isn't cleaned, and reaches the sidebar and agents.

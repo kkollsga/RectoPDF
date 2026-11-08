@@ -48,7 +48,10 @@ if [ -n "${RECTO_PDFIUM_TARBALL:-}" ]; then
   cp -- "$RECTO_PDFIUM_TARBALL" "$tarball"
 else
   echo "pdfium: fetching $URL" >&2
-  curl --fail --silent --show-error --location --proto '=https' --output "$tarball" "$URL"
+  # Retried with pauses: GitHub's release downloads answered 504 for some minutes on 2026-11-08, failing CI before anything was built.
+  # The checksum below still decides what's kept.
+  curl --fail --silent --show-error --location --proto '=https' --retry 6 --retry-delay 20 --retry-all-errors \
+    --connect-timeout 30 --max-time 600 --output "$tarball" "$URL"
 fi
 
 got="$(sha "$tarball")"
