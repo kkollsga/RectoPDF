@@ -2,7 +2,9 @@
 //!
 //! **Where it goes** (owner, 2026-11-06: "We need to maximize vertical reading space", nothing above or over a page): in the sidebar, in place of its tabs and contents while it's open, and gone with Escape, a run, or a click elsewhere. Fully keyboard-driven: typing, ↑ and ↓, Return, Escape.
 //!
-//! Recent files aren't listed: the app keeps no list of them yet (PLAN phase 3, "Recent files"). When it does, they go in [`items`] after the tabs.
+//! Files opened lately are listed after the tabs, by the key File > Open Recent goes by, never an index, so a row opens the file it showed however the list has moved. One already open in a tab is that tab's row.
+//!
+//! **What an agent sees** (`recto palette`): never a tab opened with a password the person typed, whose name may have been read with it, and files opened lately only at the level `recto recent` needs.
 
 use crate::menus::{self, HostAction, MenuEntry};
 use crate::{AppCore, CoreCall, Inner, lock};
@@ -17,8 +19,11 @@ pub(crate) struct State {
     /// The row Return runs.
     selected: usize,
     /// The tabs ranked for a query, at a version of the tab list, so a query's tabs are ranked once however often the palette's drawn: there can be 10,000 of them.
-    tabs_ranked: Option<(String, u64, Vec<(PaletteRow, i32)>)>,
+    tabs_ranked: Option<(String, u64, Ranked)>,
 }
+
+/// Rows with their scores, best first.
+type Ranked = Vec<(PaletteRow, i32)>;
 
 /// One of the palette's rows.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -67,6 +72,28 @@ fn tab_rows(core: &AppCore) -> Vec<PaletteRow> {
     core.sidebar_tabs().into_iter().map(|tab| row(format!("tab:{}", tab.tab), tab.text, if tab.current { "Showing" } else { "Open tab" }, String::new(), true)).collect()
 }
 
+/// Files opened lately that aren't open now, newest first, as rows: `recent:<key>`, by Open Recent's key.
+fn recent_rows(core: &AppCore) -> Vec<PaletteRow> {
+    core.recent_files().into_iter().filter(|file| !file.open).map(|file| row(format!("{RECENT}{}", file.key), file.name, "Recent", String::new(), true)).collect()
+}
+
+/// The id a recent file's row has, before its key.
+const RECENT: &str = "recent:";
+
+/// Who the rows are for. The person sees everything; an agent sees less: see the module's notes.
+pub(crate) struct ForWhom {
+    /// Tabs left out, as tabs opened with a password are for an agent.
+    pub hidden_tabs: Vec<u32>,
+    /// Whether files opened lately are listed.
+    pub recent: bool,
+}
+
+impl ForWhom {
+    pub(crate) fn person() -> Self {
+        Self { hidden_tabs: Vec::new(), recent: true }
+    }
+}
+
 /// The commands that can be chosen now, menu by menu, then the panel's. A command that can't be chosen now isn't listed, as there's nothing it would do.
 pub(crate) fn items(core: &AppCore) -> Vec<PaletteRow> {
     let mut rows: Vec<PaletteRow> = Vec::new();
@@ -75,7 +102,8 @@ pub(crate) fn items(core: &AppCore) -> Vec<PaletteRow> {
         for entry in menu.entries {
             // A line, a second key for an item, what the system fills, and the palette itself.
             // One row a command: Settings is in two menus, as on any Mac, and does one thing.
-            if entry.id.is_empty() || entry.hidden || matches!(entry.id.as_str(), "app.services" | "palette.open") || !seen.insert(entry.id.clone()) || !seen.insert(format!("title:{}", entry.title)) || !core.menu_item_enabled(entry.id.clone()) {
+            // An item in a submenu, such as an Open Recent file, isn't a command: a file named "Close" mustn't stand for Close. Open Recent's files are rows of their own, and its own item only opens the submenu.
+            if entry.id.is_empty() || entry.hidden || !entry.parent.is_empty() || matches!(entry.id.as_str(), "app.services" | "palette.open" | "file.open_recent") || !seen.insert(entry.id.clone()) || !seen.insert(format!("title:{}", entry.title)) || !core.menu_item_enabled(entry.id.clone()) {
                 continue;
             }
             let key = shortcut(&entry);
@@ -105,8 +133,13 @@ pub(crate) fn items(core: &AppCore) -> Vec<PaletteRow> {
     rows
 }
 
-/// The rows a query finds, best first: the tabs and the commands ranked together, tabs first among equals, so an empty query lists the tabs then the commands. The tabs' ranking is kept for the query and the tab list's version.
+/// The rows a query finds for the person, best first.
 pub(crate) fn found(core: &AppCore, query: &str) -> Vec<PaletteRow> {
+    found_for(core, query, &ForWhom::person())
+}
+
+/// The rows a query finds, best first: the tabs, the files opened lately and the commands ranked together, in that order among equals, so an empty query lists the tabs, then the recent files, then the commands. The tabs' ranking is kept for the query and the tab list's version.
+pub(crate) fn found_for(core: &AppCore, query: &str, whom: &ForWhom) -> Vec<PaletteRow> {
     let version = lock(&core.inner.published).sidebar.tabs_version;
     let cached = lock(&core.inner.palette).tabs_ranked.as_ref().filter(|(was, at, _)| was == query && *at == version).map(|(_, _, rows)| rows.clone());
     let tabs = cached.unwrap_or_else(|| {
@@ -116,15 +149,19 @@ pub(crate) fn found(core: &AppCore, query: &str) -> Vec<PaletteRow> {
         ranked
     });
     let commands = items(core);
-    let mut both: Vec<(PaletteRow, i32)> = tabs;
+    let mut both: Vec<(PaletteRow, i32)> = tabs.into_iter().filter(|(row, _)| !whom.hidden_tabs.iter().any(|tab| row.id == format!("tab:{tab}"))).collect();
+    if whom.recent {
+        let recent = recent_rows(core);
+        both.extend(palette::rank(query, recent.iter().map(|row| row.title.as_str())).into_iter().filter_map(|(at, score)| Some((recent.get(at)?.clone(), score))));
+    }
     both.extend(palette::rank(query, commands.iter().map(|row| row.title.as_str())).into_iter().filter_map(|(at, score)| Some((commands.get(at)?.clone(), score))));
     // Stable, so equals keep tabs first and each list's own order.
-    both.sort_by(|a, b| b.1.cmp(&a.1));
+    both.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
     both.into_iter().take(palette::MAX_RESULTS).map(|(row, _)| row).collect()
 }
 
 /// The agent's command a palette row comes to, for `recto palette --run`, so it's run at the agent's level with its own checks and as the agent's step, as the command itself would be. `None` for what has no such command: that needs Full, and is done as the menu item does.
-pub(crate) fn as_command(id: &str, reader: &crate::ReaderView) -> Option<recto_agent::Command> {
+pub(crate) fn as_command(id: &str, reader: &crate::ReaderView, recent: &[crate::RecentFile]) -> Option<recto_agent::Command> {
     use recto_agent::Command;
     let active = || "active".to_string();
     let view = |paper: Option<&str>, sidebar: Option<&str>, agent_icon: Option<&str>, zoom: Option<&str>, layout: Option<&str>| Command::View { paper: paper.map(str::to_string), sidebar: sidebar.map(str::to_string), agent_icon: agent_icon.map(str::to_string), zoom: zoom.map(str::to_string), layout: layout.map(str::to_string) };
@@ -150,6 +187,7 @@ pub(crate) fn as_command(id: &str, reader: &crate::ReaderView) -> Option<recto_a
         "find.next" | "find.previous" => Command::Find { query: None, next: id == "find.next", previous: id == "find.previous", close: false, limit: None },
         "rotate.left" if !reader.edit_mode => Command::PageRotate { tab: active(), pages: "all".into(), degrees: -90 },
         "rotate.right" if !reader.edit_mode => Command::PageRotate { tab: active(), pages: "all".into(), degrees: 90 },
+        file if file.starts_with(RECENT) => Command::Open { path: recent.iter().find(|known| known.key == file[RECENT.len()..])?.path.clone().into(), page: None },
         tab if tab.starts_with("tab:") => Command::Tap { tab: format!("#{}", tab.trim_start_matches("tab:")) },
         _ => return None,
     })
@@ -202,6 +240,10 @@ pub(crate) fn run(core: &AppCore, id: &str) -> HostAction {
     close(&core.inner);
     if let Some(tab) = id.strip_prefix("tab:").and_then(|tab| tab.parse::<u32>().ok()) {
         core.inner.core.push(CoreCall::Tap(TabId(tab)));
+        return HostAction::None;
+    }
+    if let Some(key) = id.strip_prefix(RECENT) {
+        core.open_recent(key.to_string());
         return HostAction::None;
     }
     // Find Next or Previous with Find closed opens it, with what was typed last, and its field takes the keyboard, as ⌘F's would: the palette that had it has gone.

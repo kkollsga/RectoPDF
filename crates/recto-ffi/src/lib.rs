@@ -720,7 +720,12 @@ impl AppHost {
             }
             let inner = self.saver.inner().ok_or_else(|| AgentError::new("busy", "The app is going away.", recto_agent::exit::BUSY))?;
             let core = AppCore { inner, qa_mode: false, start_with: Vec::new() };
-            let rows = palette::found(&core, query.as_deref().unwrap_or(""));
+            // Nothing of a tab opened with a password, whose name may have been read with it, and files opened lately only at `recto recent`'s level.
+            let whom = palette::ForWhom {
+                hidden_tabs: self.session.with_session(|session| session.tabs().iter().filter(|tab| session.withheld_from_agents(tab.id)).map(|tab| tab.id.0).collect()),
+                recent: recto_agent::table::by_tag("recent").is_some_and(|spec| recto_agent::allowed(level, spec.access)),
+            };
+            let rows = palette::found_for(&core, query.as_deref().unwrap_or(""), &whom);
             // A tab's name is the file's, so it's marked as the document's words.
             let row_json = |row: &palette::PaletteRow| if row.from_file { json!({ "id": row.id, "detail": row.detail, "shortcut": row.shortcut, "untrusted": { "title": row.title } }) } else { json!({ "id": row.id, "title": row.title, "detail": row.detail, "shortcut": row.shortcut }) };
             let mut answer = json!({ "query": query, "items": rows.iter().take(limit.unwrap_or(20).clamp(1, 50) as usize).map(row_json).collect::<Vec<_>>() });
@@ -728,7 +733,7 @@ impl AppHost {
                 let first = rows.first().ok_or_else(|| AgentError::new("nothing_found", "Nothing matches that, so nothing was run.", recto_agent::exit::NOT_FOUND).then("`recto palette` lists what there is."))?;
                 let reader = lock(&core.inner.published).reader.clone();
                 // What it comes to as an agent's own command runs as that, at the agent's level, with that command's checks, and as the agent's step. What has none, or writes the clipboard, needs what the direct way needs: Full, or `copy`'s level.
-                let host = match palette::as_command(&first.id, &reader) {
+                let host = match palette::as_command(&first.id, &reader, &core.recent_files()) {
                     Some(direct) => {
                         palette::close(&core.inner);
                         self.run_counted(level, &direct, events)?;

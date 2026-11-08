@@ -129,7 +129,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Find follow-ups: highlight every hit on the pages showing, not only the one gone to; a hit on text that looks hidden is listed like any other, and selecting it shows nothing on the page; an edit to the pages while Find is open keeps the old hits until the next query; the made 10,000-page PDF and a worker's peak during a query aren't measured
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
 - [x] ⌘K: the command palette in the sidebar, commands and open tabs fuzzy-matched and ranked in Rust, fully keyboard-driven; `recto palette [--run]`, `qa palette-type`, `qa palette-key`
-- [ ] ⌘K follow-ups: recent files, once the app keeps them; the palette's rows aren't read out to VoiceOver as a list yet
+- [x] ⌘K: files opened lately as rows of their own, by Open Recent's key; submenu items never stand as commands; an agent sees no tab opened with a password, and recent files only at `recto recent`'s level
+- [ ] ⌘K follow-ups: the palette's rows aren't read out to VoiceOver as a list yet
 - [x] Session restore: the whole app state on every launch, unsaved edits included (SPEC decision 23). A whole-state comparison across quit, hand-off and kill, journals for edits, `recto session`, `AppCore::hand_off` for the updater
 - [x] Saved point in the history, so undo works past a Save, and Clear Edit History (SPEC decision 25). `Session::saved`, `save_prepared`, `clear_history`, `recto clear-history`, Edit > Clear Edit History. Tested directly, with `qa save-from`, as Save isn't built
 - [x] On Save's gate, for appended saves: `save_prepared` then `saved` on the real path, with the note read back from the journal on disk before the file's moved (`journal_says_saving`), and a never-in-PDF test on the real writer (`recto-cli/tests/save.rs`). `never_in_pdf.rs`'s delete keeps its stand-in until the rewrite saves deletes

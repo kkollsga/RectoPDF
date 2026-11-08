@@ -1941,6 +1941,52 @@ fn find_next_from_the_palette_opens_find_with_its_field_focused() {
     assert_eq!(stepped["ran"]["id"], "find.next", "at Control, as `recto find --next`: {stepped}");
 }
 
+/// Failure: ⌘K doesn't offer files opened lately, or opens another file than the row showed; a file in Open Recent named like a command ("Close") is listed as that command; an agent below `recto recent`'s level sees files opened lately; or an agent sees anything of a tab opened with a password the person typed, whose name may have been read with it.
+#[test]
+fn the_palette_offers_recent_files_and_keeps_protected_tabs_from_agents() {
+    let Some(run) = Run::start() else { return };
+    let closed = TempPdf::new("Close.pdf", &pages(&[Page::new(text_lines(&["A file named like a command"]))]));
+    let reading = long_document(3);
+    run.ok(&["open", closed.0.to_str().unwrap()]);
+    run.ok(&["close"]);
+    run.ok(&["open", reading.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "palette.open"]);
+    let typed = run.ok(&["qa", "palette-type", "Close"]);
+    let rows = typed["palette"]["rows"].as_array().unwrap().clone();
+    assert!(rows.iter().all(|row| !row["id"].as_str().unwrap().starts_with("recent.")), "Open Recent's items aren't commands: {rows:?}");
+    assert!(rows.iter().any(|row| row["id"] == "file.close"), "{rows:?}");
+    assert!(rows[0]["id"].as_str().unwrap().starts_with("recent:"), "the recent file, first among equals after the tabs: {rows:?}");
+    run.ok(&["qa", "palette-key", "return"]);
+    let opened = wait_for(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 2));
+    assert!(opened["session"]["tabs"].as_array().unwrap().iter().any(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with("Close.pdf"))), "the file the row showed");
+    run.ok(&["close"]);
+    run.settled();
+    let recent_ids = |reply: &Value| reply["items"].as_array().unwrap().iter().filter(|item| item["id"].as_str().unwrap().starts_with("recent:")).count();
+    run.state.set_level(Level::ReadOnly);
+    assert_eq!(recent_ids(&run.ok(&["palette", "close"])), 0, "files opened lately need `recto recent`'s level");
+    run.state.set_level(Level::Control);
+    let listed = run.ok(&["palette", "close"]);
+    assert_eq!(recent_ids(&listed), 1, "{listed}");
+    let ran = run.ok(&["palette", "Close", "--run"]);
+    assert!(ran["ran"]["id"].as_str().unwrap().starts_with("recent:"), "{ran}");
+    wait_for(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 2));
+    // A tab opened with the person's password: theirs to see in ⌘K, and nothing of it for an agent.
+    run.state.set_level(Level::Full);
+    let locked = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
+    run.ok(&["qa", "open-file", locked.0.to_str().unwrap()]);
+    sheet_of(&run, "password");
+    type_password(&run, "open sesame");
+    wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 3));
+    run.settled();
+    run.ok(&["qa", "menu", "palette.open"]);
+    let theirs = run.ok(&["qa", "palette-type", "locked"]);
+    assert!(theirs["palette"]["rows"].as_array().unwrap().iter().any(|row| row["id"].as_str().unwrap().starts_with("tab:")), "the person sees their tab: {}", theirs["palette"]);
+    run.ok(&["qa", "palette-key", "escape"]);
+    let agents = run.ok(&["palette", "locked"]);
+    assert!(agents["items"].as_array().unwrap().iter().all(|item| !item["id"].as_str().unwrap().starts_with("tab:")), "an agent gets nothing of it: {agents}");
+}
+
 /// Failure: `recto palette --run` at Control does what its direct command needs more for (review, round 1): installing an update, which needs Full; clearing history without the checks `clear-history` makes; undo, redo and rotate taken as the owner's steps; or writing the clipboard below `copy`'s level. What has an agent's command runs as that, at the agent's level; the rest needs Full.
 #[test]
 fn the_palettes_run_keeps_to_each_commands_level() {
