@@ -238,10 +238,9 @@ import QuartzCore
             }
         case "sheet_answer":
             // The answer a sheet's button gives, through the sheet's own ending, as a click on it ends it: the same completion runs.
-            guard let controller, let sheet = controller.window.attachedSheet else { return fail(id, "No sheet is open.") }
             let codes: [String: NSApplication.ModalResponse] = ["first": .alertFirstButtonReturn, "second": .alertSecondButtonReturn, "third": .alertThirdButtonReturn, "cancel": .cancel]
             guard let code = codes[value] else { return fail(id, "That isn't one of a sheet's answers.") }
-            controller.window.endSheet(sheet, returnCode: code)
+            guard delegate.sheets.answer(code, over: controller?.window) else { return fail(id, "No sheet is open.") }
         case "context_menu":
             guard let controller else { return fail(id, "The window is closed.") }
             let menu = controller.readingPane.contextMenu()
@@ -258,9 +257,9 @@ import QuartzCore
             target.perform(action, with: nil)
         case "password":
             // Types into the password sheet's secure field and presses Open, through the sheet's own ending, as a person's click ends it.
-            guard let controller, let sheet = controller.window.attachedSheet, controller.passwordField.window === sheet else { return fail(id, "No password sheet is open.") }
+            guard let controller, let sheet = delegate.sheets.sheetWindow(over: controller.window), controller.passwordField.window === sheet else { return fail(id, "No password sheet is open.") }
             controller.passwordField.stringValue = value
-            controller.window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+            _ = delegate.sheets.answer(.alertFirstButtonReturn, over: controller.window)
         case "zoom_escape":
             // Escape in the field, by the method AppKit calls for it.
             guard let controller, controller.zoomEditing else { return fail(id, "The zoom level's field isn't open.") }
@@ -356,6 +355,7 @@ import QuartzCore
             "sidebar_hidden": reader.sidebarHidden,
             "save_button": ["visible": !controller.saveButton.isHidden, "enabled": controller.saveButton.isEnabled, "tooltip": controller.saveButton.toolTip ?? "", "frame": [controller.saveButton.frame.minX, controller.saveButton.frame.minY, controller.saveButton.frame.width, controller.saveButton.frame.height], "clear_of_window_buttons": controller.windowButtonFrames(in: controller.root).allSatisfy { !$0.intersects(controller.saveButton.frame) } && !controller.sidebarButton.frame.intersects(controller.saveButton.frame)] as [String: Any],
             "sheet": delegate.sheetShowing ?? [:],
+            "about_asked": delegate.aboutAskedForQA,
             "sidebar_button": ["visible": !controller.sidebarButton.isHidden && controller.sidebarButton.superview != nil, "frame": [controller.sidebarButton.frame.minX, controller.sidebarButton.frame.minY, controller.sidebarButton.frame.width, controller.sidebarButton.frame.height], "clear_of_window_buttons": controller.windowButtonFrames(in: controller.root).allSatisfy { !$0.intersects(controller.sidebarButton.frame) }] as [String: Any],
             "window_buttons_shown": controller.windowButtonsShown,
             "zoom_level": ["text": controller.zoomButton.attributedTitle.string, "visible": !controller.zoomButton.isHidden, "editing": controller.zoomEditing, "field": controller.zoomEditing ? controller.zoomField.stringValue : NSNull() as Any, "reset": controller.zoomReset.isHidden ? NSNull() as Any : controller.zoomReset.attributedTitle.string, "in_the_top_right": controller.zoomButton.frame.maxX <= controller.root.bounds.maxX - 6 && controller.zoomButton.frame.minX > controller.root.bounds.maxX - 160 && controller.zoomButton.frame.minY < 30, "clear_of_agent_icon": controller.agentIcon.isHidden || (!controller.zoomButton.frame.intersects(controller.agentIcon.frame) && controller.zoomButton.frame.maxX - MainWindowController.zoomPadding <= controller.agentIcon.frame.minX - 4 && controller.zoomField.frame.maxX <= controller.agentIcon.frame.minX - 4), "in_the_agent_icons_row": abs(controller.zoomButton.frame.midY - controller.agentIcon.frame.midY) < 1, "right_margin": controller.root.bounds.maxX - (controller.zoomEditing ? controller.zoomField.frame.maxX : controller.zoomButton.frame.maxX - MainWindowController.zoomPadding), "reset_clear_of_field": controller.zoomReset.frame.maxX <= controller.zoomField.frame.minX, "clear_of_pages": controller.zoomButton.isHidden || !overPages(controller.zoomButton.frame.insetBy(dx: MainWindowController.zoomPadding, dy: 0)), "above_the_scroller": max(controller.zoomButton.frame.maxY, controller.zoomField.frame.maxY) + 4 <= controller.paneAreas[controller.paneAreas.count - 1].scrollView.scrollerInsets.top] as [String: Any],
@@ -672,18 +672,21 @@ import QuartzCore
     }
 
     /// A sheet over the window is a window of its own, which the window's drawing leaves out: its own drawing goes in where it sits, so a shot shows what a person would. A panel drawn by another process, as the save sheet's file browser is, may come out partly blank.
-    static func drawSheet(of window: NSWindow, into rep: NSBitmapImageRep, flipped: Bool, height: CGFloat) {
-        guard let sheet = window.attachedSheet, let sheetView = sheet.contentView?.superview ?? sheet.contentView else { return }
+    static func drawSheet(of window: NSWindow, sheets: SheetPresenter, into rep: NSBitmapImageRep, flipped: Bool, height: CGFloat) {
+        guard let sheet = sheets.sheetWindow(over: window), let origin = sheets.sheetOrigin(over: window), let sheetView = sheet.contentView?.superview ?? sheet.contentView else { return }
+        // A sheet takes its window's look, light or dark. One that's held, never attached, isn't told when that changes.
+        if sheet.appearance?.name != window.effectiveAppearance.name { sheet.appearance = window.effectiveAppearance }
         sheetView.layoutSubtreeIfNeeded()
         let size = sheetView.bounds
         guard let sheetRep = sheetView.bitmapImageRepForCachingDisplay(in: size) else { return }
         sheetView.cacheDisplay(in: size, to: sheetRep)
-        let x = sheet.frame.minX - window.frame.minX
-        var y = sheet.frame.minY - window.frame.minY
+        let x = origin.x
+        var y = origin.y
         if flipped { y = height - y - size.height }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        sheetRep.draw(in: NSRect(x: x, y: y, width: size.width, height: size.height))
+        // Over what's there, so its rounded corners show the window behind, as the window server would composite it. A plain draw copies them in clear.
+        sheetRep.draw(in: NSRect(x: x, y: y, width: size.width, height: size.height), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
         NSGraphicsContext.restoreGraphicsState()
     }
 
@@ -706,7 +709,7 @@ import QuartzCore
         }
         CATransaction.flush()
         view.cacheDisplay(in: bounds, to: rep)
-        QAChannel.drawSheet(of: controller.window, into: rep, flipped: view.isFlipped, height: bounds.height)
+        QAChannel.drawSheet(of: controller.window, sheets: delegate.sheets, into: rep, flipped: view.isFlipped, height: bounds.height)
         for area in controller.paneAreas {
             area.hideTintForShot(false)
             area.hideHighlightsForShot(false)
