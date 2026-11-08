@@ -63,6 +63,8 @@ final class FindRowCell: NSView {
     private var sentText = ""
     /// ⌘F asked for the keyboard, for once Find's open and laid out.
     var wantsFocus = false
+    /// The current row last brought into view, so it's brought there once and the reader's own scroll stays.
+    private var shownCurrent: UInt32?
 
     init(core: AppCore) {
         self.core = core
@@ -115,14 +117,18 @@ final class FindRowCell: NSView {
         }
         status.set(new.status, font: .systemFont(ofSize: 11.5), color: Theme.textQuiet.ns)
         list.rowHeight = heights.row
+        // Laid out first, so bringing the current row into view goes by the list's real height.
+        placeViews()
         if rowsChanged {
             list.reloadData()
-            if let current = new.currentRow { list.scrollRowToVisible(Int(current)) }
         }
+        if new.currentRow != shownCurrent, let current = new.currentRow, heights.list > 0 {
+            list.scrollRowToVisible(Int(current))
+        }
+        shownCurrent = heights.list > 0 ? new.currentRow : nil
         if !new.open && wasOpen, field.currentEditor() != nil {
             view.window?.makeFirstResponder(nil)
         }
-        placeViews()
         thumb.refresh()
         if wantsFocus && new.open {
             DispatchQueue.main.async { [weak self] in self?.focusField() }
