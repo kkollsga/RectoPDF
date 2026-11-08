@@ -57,9 +57,9 @@ pub(crate) fn image_to_file(path: &Path, page: u32, number: u32, out: &Path, any
     }
     let (temp, file) = OwnTemp::create(out)?;
     let written = RefCell::new(FileOut(file));
-    let copied = image::copy_into(&mut doc, path, index, number, if as_jpeg { Want::AsItIs } else { Want::Png }, DEFAULT_SCALE, &OutputCaps::default(), &written)?;
+    let copied = image::copy_into(&mut doc, path, index, number, if as_jpeg { Want::JpegOnly } else { Want::Png }, DEFAULT_SCALE, &OutputCaps::default(), &written)?;
     if as_jpeg && !copied.coded.is_jpeg() {
-        return Err(AgentError::new("not_a_jpeg", format!("Image {number} on page {page} can't go as its own JPEG bytes, so a .jpg would be re-encoded, which loses something."), exit::FAILED).then("Use a name ending in .png: that's lossless."));
+        return Err(image::not_a_jpeg(index, number));
     }
     drop(written);
     publish_picture(&temp.path, out)?;
@@ -76,6 +76,7 @@ pub(crate) fn image_to_file(path: &Path, page: u32, number: u32, out: &Path, any
         "bytes": std::fs::metadata(out).map(|meta| meta.len()).ok(),
         "took_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         "anyway": anyway,
+        "worker_peak_bytes": doc.stats().peak_footprint_bytes,
     }))
 }
 
@@ -159,6 +160,7 @@ pub(crate) fn snapshot_command(asked: &SnapshotAsked<'_>) -> Result<Value, Agent
     publish_picture(&temp.path, out)?;
     drop(temp);
     data["bytes"] = json!(std::fs::metadata(out).map(|meta| meta.len()).ok());
+    data["worker_peak_bytes"] = json!(doc.stats().peak_footprint_bytes);
     data["took_ms"] = json!(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
     Ok(data)
 }
@@ -277,14 +279,25 @@ pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], anyway: bool) -> Cl
         add_item(&mut clip, UTI_SVG, svg, &mut left_off);
         let jpg = in_memory(|out| snapshot::picture_into(&mut doc, page, rect, DEFAULT_SCALE, Format::Jpg, &caps, out).map(drop));
         add_item(&mut clip, UTI_JPEG, jpg, &mut left_off);
-        clip.note = snapshot_note(&text, &left_off);
+        clip.note = snapshot_note(&clip, &text, &left_off);
         Ok(ClipOutcome::Ready(clip))
     };
     run().unwrap_or_else(ClipOutcome::Failed)
 }
 
-fn snapshot_note(text: &recto_index::select::BoxText, left_off: &[&str]) -> String {
-    let mut note = if text.text.is_empty() { "Copied the snapshot as a picture and SVG.".to_string() } else { "Copied the snapshot as a picture, text and SVG.".to_string() };
+fn snapshot_note(clip: &Clip, text: &recto_index::select::BoxText, left_off: &[&str]) -> String {
+    let names: Vec<&str> = clip.items.iter().map(|item| match item.uti {
+        UTI_PNG => "PNG",
+        UTI_TEXT => "text",
+        UTI_SVG => "SVG",
+        _ => "JPG",
+    }).collect();
+    let listed = match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        Some((last, _)) => (*last).to_string(),
+        None => String::new(),
+    };
+    let mut note = format!("Copied the snapshot as {listed}.");
     if text.hidden_left_out > 0 {
         note.push_str(&format!(" {} hidden characters left out of the text.", text.hidden_left_out));
     }

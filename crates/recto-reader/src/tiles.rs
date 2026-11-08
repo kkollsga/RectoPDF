@@ -2007,6 +2007,15 @@ impl Reader {
         Some(PagePoint { page, x: u as f32, y: v as f32 })
     }
 
+    /// A page's size as it's shown, in its own coordinates, before any unsaved turn: what a point from [`Self::point_on_page`] is held to.
+    pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)> {
+        let doc = self.doc()?;
+        (page < doc.layout.count()).then(|| {
+            let size = doc.layout.raw_size(page);
+            (size.width, size.height)
+        })
+    }
+
     /// The other way, for QA, which says where a click goes as an agent found it from `recto select`, and then does what the mouse does.
     pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
         let doc = self.doc()?;

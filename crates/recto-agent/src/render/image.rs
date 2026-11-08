@@ -100,6 +100,8 @@ pub(crate) enum Want {
     AsItIs,
     /// PNG whatever it is, decoded as the page decodes it: for `.png`, and the clipboard's PNG beside a JPEG.
     Png,
+    /// Its own JPEG bytes or nothing, for `.jpg`: anything else stops at once, before a byte of it is written.
+    JpegOnly,
 }
 
 /// What an image came out as.
@@ -166,6 +168,11 @@ enum Writing<'a, O: Output> {
     Done,
 }
 
+/// A JPEG asked for, of an image that can't go as its own JPEG bytes.
+pub(crate) fn not_a_jpeg(page: u32, number: u32) -> AgentError {
+    AgentError::new("not_a_jpeg", format!("Image {number} on page {} can't go as its own JPEG bytes, so a .jpg would be re-encoded, which loses something.", page + 1), exit::FAILED).then("Use a name ending in .png: that's lossless.")
+}
+
 fn no_such_image(page: u32, number: u32) -> AgentError {
     AgentError::new("no_such_image", format!("Page {} has no image {number}.", page + 1), exit::NOT_FOUND).then(format!("`recto images {}` lists them.", page + 1))
 }
@@ -197,6 +204,9 @@ pub(crate) fn copy_into<O: Output>(doc: &mut DocRenderer, path: &Path, page: u32
                     if why == Why::JpegMask {
                         writing = Writing::Mask;
                         return Ok(());
+                    }
+                    if want == Want::JpegOnly && !matches!(coding, ImageCoding::Jpeg) {
+                        return Err(io::ErrorKind::Unsupported.into());
                     }
                     let coded = match (coding, why) {
                         (ImageCoding::Jpeg, Why::JpegHeaderFixed) => Coded::JpegHeaderFixed,
@@ -244,6 +254,7 @@ pub(crate) fn copy_into<O: Output>(doc: &mut DocRenderer, path: &Path, page: u32
     });
     if let Err(failure) = read {
         return Err(match sink_error {
+            Some(error) if error.kind() == io::ErrorKind::Unsupported => not_a_jpeg(page, number),
             Some(error) if error.kind() == io::ErrorKind::FileTooLarge => AgentError::new("output_too_large", "This image would be larger than RectoPDF will hand over.", exit::FAILED),
             Some(_) => AgentError::new("write_failed", "The image couldn't be written.", exit::FAILED),
             None => failure.into(),
@@ -265,7 +276,7 @@ pub(crate) fn list_command(path: &Path, page: u32) -> Result<serde_json::Value, 
         .iter()
         .map(|image| serde_json::json!({ "number": image.number, "rect": image.rect.map(round_points), "width": image.width, "height": image.height, "jpeg": image.jpeg, "suggested_ending": if image.jpeg { "jpg" } else { "png" } }))
         .collect();
-    Ok(serde_json::json!({ "page": page, "count": list.total, "listed": images.len(), "width_pt": round_points(list.page_size.0), "height_pt": round_points(list.page_size.1), "images": images }))
+    Ok(serde_json::json!({ "worker_peak_bytes": doc.stats().peak_footprint_bytes, "page": page, "count": list.total, "listed": images.len(), "width_pt": round_points(list.page_size.0), "height_pt": round_points(list.page_size.1), "images": images }))
 }
 
 /// Points to a hundredth, so a list reads as numbers a person would write.

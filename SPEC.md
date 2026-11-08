@@ -129,7 +129,7 @@ Reference: `docs/concepts/`. Rules from the owner:
 | Compare | Text first, read-only |
 | Compress | **Low, Medium, High to a fixed image DPI, then save.** Start: 220, 150, 96 DPI. Measured at printed size; never enlarges, leaves text, vectors and 1-bit scans alone; cleans the file first. Apply changes the open document, then it saves normally |
 | OCR | Tesseract, with **Save as searchable PDF**: an invisible text layer with an embedded Unicode font, in a helper process |
-| Extraction | **Click an image to copy it losslessly.** **Snapshot tool:** drag a box for text, PNG, SVG and JPG, all on the clipboard at once |
+| Extraction | **The snapshot tool** (Tools > Snapshot, ⇧⌘A, or Snapshot in the sidebar's panel; on until turned off): **click an image to copy it losslessly**, its own JPEG bytes with a PNG beside it, or a lossless PNG at its own size; **drag a box** for PNG, text, SVG and JPG, all on the clipboard at once. `recto images`, `recto image` and `recto snapshot` do the same to files |
 
 **SVG is hand-rolled** (owner, 2026-11-06): a small streaming generator in `recto-svg` that writes as it reads PDFium's page objects through the worker, with no
 document held in memory. Paths, clips, images and text are direct. Anything SVG or PDFium's calls can't express (PDFium has no way to read a shading, a pattern, a blend mode or a soft mask) is embedded as a raster of just that element and reported, and content outside the snapshot box is left out rather than hidden.
@@ -151,7 +151,7 @@ Signature trust through EU lists comes later, with the signing work.
 
 **Text copy on a PDF whose permissions forbid copying gets a small notice with "Copy anyway"**, for that file while it's on screen (decided by the owner, 2026-11-07). **An agent keeps `recto copy --anyway`, and each use goes in the activity log** (owner, 2026-11-07, passed on by the coordinator). Without it, `recto copy` is exit 8.
 
-[DECIDE] Image copy and snapshot on such PDFs (*default:* the same notice, as for text). Open-source readers differ: pdf.js and Evince ignore the flag by default, Okular obeys it with a setting to turn that off, and SumatraPDF blocks text copy but still copies as an image.
+**Copying images and snapshots from such a PDF gets the same notice, with "Copy anyway"** (owner, 2026-11-08). `recto image` and `recto snapshot` are exit 8 without `--anyway`, and each use of it goes in the activity log.
 
 **Left out:** paragraph reflow and image replacement (for now), conversion to Word or Excel, creating PDFs from Office files, sending documents for signature,
 print production, portfolios, 3D and media, V8.

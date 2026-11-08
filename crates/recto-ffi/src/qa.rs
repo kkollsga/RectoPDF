@@ -360,6 +360,7 @@ impl QaBridge {
                 "open_handles": recto_platform::open_handle_count(),
             },
             "hangs": { "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS },
+            "snapshot": self.inner().map_or(Value::Null, |inner| json!({ "on": inner.tool.is_on(), "drawing": inner.tool.is_drawing(), "busy": inner.tool.busy(), "notice": inner.tool.notice().map(|notice| notice.text) })),
         }))
     }
 
@@ -374,7 +375,9 @@ impl QaBridge {
                 return Err(AgentError::new("timed_out", "The page view didn't settle in time.", exit::TIMED_OUT).then("`recto qa state` shows what it's still waiting for."));
             }
             let running = self.ask("animations", "")?;
-            if running.as_array().is_none_or(Vec::is_empty) {
+            // A snapshot on its way to the clipboard is about to change what `qa copied` and the notice say.
+            let snapshot_busy = self.inner().is_some_and(|inner| inner.tool.busy());
+            if running.as_array().is_none_or(Vec::is_empty) && !snapshot_busy {
                 return Ok(json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64, "animations_waited_ms": animations_waited.as_millis() as u64 }));
             }
             if left().is_zero() {

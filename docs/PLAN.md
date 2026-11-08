@@ -122,7 +122,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Chrome: a page whose every line repeats on its neighbours, as a worksheet of identical questions, is all chrome, so a copy of it falls back to everything, its page number too
 - [ ] Chrome, `recto text`: `chrome_spans` compares with the file's own pages either side, not the tab's positions, so after unsaved moves or inserts its neighbours are the file's, and a page from an added file compares with that file's
 - [ ] Dark paper: an object shaded moderately, through only 3 lightnesses of one colour on white, still flips with the chart rule. The made balls span 4; a flatter rendering would pass
-- [ ] Owner, 2026-11-08, for the record: copying images and snapshots from a copy-restricted PDF gets the same notice as text, with "Copy anyway"
+- [x] Owner, 2026-11-08, for the record: copying images and snapshots from a copy-restricted PDF gets the same notice as text, with "Copy anyway". In SPEC section 6, and on `build/image-copy`
 - [ ] Find in the sidebar, with the hit list
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
 - [ ] ⌘K
@@ -151,9 +151,10 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] A check by hand with the window closed says its result only in Settings, as the notice has nowhere to show
 - [ ] Across an update, a minimised window or a hidden app comes back shown: `qa state` doesn't hold either yet, and the state record has neither
 - [ ] Links, back and forward, page labels
-- [ ] Click to copy an image losslessly
+- [x] Click to copy an image losslessly: the snapshot tool's click, `recto images`, `recto image`. A JPEG as its own bytes, otherwise a lossless PNG at its own size
 - [x] Hand-rolled streaming `recto-svg`, and `recto export svg`: a page or a box to a new SVG, images lossless, what can't be vector a named picture of just that element
-- [ ] Snapshot tool with text, PNG, JPG and SVG, on top of that
+- [x] Snapshot tool with text, PNG, JPG and SVG, on top of that: Tools > Snapshot, ⇧⌘A and the panel; `recto snapshot`; all four on the clipboard at once
+- [ ] Snapshot follow-ups: the clipboard's bytes stay in the app after a copy (23 MiB for the USGS map's image), as NSPasteboard keeps what it's given; a lazy `NSPasteboardItem` provider would hold them only until pasted. A snapshot of a page with an unsaved turn is of the page as it's stored, as `render` and `export svg` are, though the box is drawn on the turned page; decide whether the clipboard's should be turned. A box on the USGS map takes 14 s, nearly all its SVG, with "Copying…" shown meanwhile
 - [ ] SVG follow-ups, each on the PNG path today so nothing's wrong, only larger: a JPEG with `/Decode` kept through an SVG filter, measured in Chrome and WebKit first (owner's brief, 2026-11-07); `/ColorTransform` through an Adobe marker; a mask finer than its image at its own size, which takes reading it from the file since PDFium has no call for it; a page's JPEGs where drawing is past the 256 MiB look
 - [ ] Print
 - [x] Generated contents: `recto contents --generated`, then a quiet offer in the sidebar when a file's own are missing or look bad. distillPDF's headings, in a helper with a memory limit, labelled as generated

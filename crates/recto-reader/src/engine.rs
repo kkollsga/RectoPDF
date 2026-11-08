@@ -489,6 +489,13 @@ impl Engine {
         self.after(reader);
     }
 
+    /// Where a point in the document is on a page as it's shown, with that page's size, for the snapshot tool. A short lock and some sums.
+    pub fn point_on_page(&self, x: f64, y: f64) -> Option<(recto_index::select::PagePoint, (f32, f32))> {
+        let reader = lock(&self.shared.reader);
+        let point = reader.point_on_page(x, y)?;
+        Some((point, reader.page_size_shown(point.page)?))
+    }
+
     /// Where a point on a page is in the document.
     pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
         lock(&self.shared.reader).document_point(page, x, y)

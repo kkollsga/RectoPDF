@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import QuartzCore
 
 /// QA commands, on the UI thread. Each calls what the UI calls, posts no event, and answers once the app has done it and laid out. A shot is drawn in the app, so it needs no permission, no display and no focus.
@@ -82,7 +83,12 @@ import QuartzCore
             return
         case "copied":
             let text = delegate.pasteboard.string(forType: .string)
-            answer(id, ["chars": text?.count ?? 0, "clipboard": delegate.pasteboard.name.rawValue, "untrusted": ["text": text as Any? ?? NSNull()]] as [String: Any])
+            // Each type in the clipboard's order, with its size and a digest, so a test can say a JPEG went as its own bytes without the bytes crossing.
+            let types = (delegate.pasteboard.types ?? []).map { type -> [String: Any] in
+                let data = delegate.pasteboard.data(forType: type) ?? Data()
+                return ["type": type.rawValue, "bytes": data.count, "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
+            }
+            answer(id, ["chars": text?.count ?? 0, "clipboard": delegate.pasteboard.name.rawValue, "types": types, "untrusted": ["text": text as Any? ?? NSNull()]] as [String: Any])
             return
         case "services":
             // By the selector AppKit sends, to a clipboard nothing else can see.

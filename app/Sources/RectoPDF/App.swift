@@ -370,6 +370,13 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     /// A copy has come back from the thread that read it.
     func copyReady() {
+        // The snapshot tool's, in the types and order Rust gave, comes first.
+        if let items = core.takeClipboard(), !items.isEmpty {
+            pasteboard.clearContents()
+            pasteboard.declareTypes(items.map { NSPasteboard.PasteboardType($0.uti) }, owner: nil)
+            for item in items { pasteboard.setData(item.data, forType: NSPasteboard.PasteboardType(item.uti)) }
+            return
+        }
         guard let text = core.takeCopied() else { return }
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)

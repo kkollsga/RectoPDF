@@ -68,6 +68,8 @@ pub(crate) enum Action {
     CloseDocument,
     /// A comparison's panes scroll together, page for page, or each on its own.
     SetSynced(bool),
+    /// The snapshot tool, on or off: a drag takes a box, a click an image.
+    ToggleSnapshot,
 }
 
 fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
@@ -211,6 +213,19 @@ pub(crate) fn panel(open: bool, shown: Paper, edit_mode: bool, can_rotate: bool)
     PanelModel { open, button_tooltip: "View options".into(), sections }
 }
 
+/// The snapshot tool's item, ticked while it's on. The panel holds tools while reading (owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc."), and commands are in the menu bar too (decision 17).
+const SNAPSHOT_TITLE: &str = "Snapshot";
+
+/// The Tools menu: the snapshot tool. ⇧⌘A, as a key nothing else here takes, and the screenshot keys are the system's.
+pub(crate) fn tools_menu(snapshot_on: bool) -> MenuModel {
+    MenuModel { title: "Tools".into(), entries: vec![MenuEntry { checked: snapshot_on, ..entry("tools.snapshot", SNAPSHOT_TITLE, "A") }] }
+}
+
+/// The panel's tools, above its view options.
+pub(crate) fn tools_section(snapshot_on: bool) -> PanelSection {
+    PanelSection { title: "Tools".into(), items: vec![PanelItem { id: "tools.snapshot".into(), title: SNAPSHOT_TITLE.into(), selected: snapshot_on, enabled: true }] }
+}
+
 /// What an id does. Ids from the host, and only these do anything.
 pub(crate) fn action(id: &str) -> Option<Action> {
     Some(match id {
@@ -248,6 +263,7 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "paper.dark" => Action::SetPaper(Paper::Dark),
         "compare.separate" => Action::SetSynced(false),
         "compare.synced" => Action::SetSynced(true),
+        "tools.snapshot" => Action::ToggleSnapshot,
         _ => return None,
     })
 }
@@ -294,6 +310,18 @@ mod tests {
             }
         }
         assert_eq!(action("anything else"), None);
+    }
+
+    /// Failure: the snapshot tool can't be found or doesn't say whether it's on, in the menu bar or the panel, or its item does nothing.
+    #[test]
+    fn the_snapshot_tool_is_in_the_tools_menu_and_the_panel() {
+        let menu = tools_menu(true);
+        assert_eq!((menu.entries[0].id.as_str(), menu.entries[0].checked, menu.entries[0].key.as_str()), ("tools.snapshot", true, "A"));
+        assert!(!tools_menu(false).entries[0].checked);
+        assert!(tools_section(true).items[0].selected && !tools_section(false).items[0].selected);
+        assert_eq!(action("tools.snapshot"), Some(Action::ToggleSnapshot));
+        let taken: Vec<(String, bool)> = menu_bar(ViewSettings::default(), None, "").iter().flat_map(|menu| &menu.entries).map(|item| (item.key.clone(), item.with_control)).collect();
+        assert!(!taken.contains(&("A".to_string(), false)), "⇧⌘A is free");
     }
 
     /// Failure: Copy can be chosen with nothing selected, or Select All with nothing open, or a menu item that has nothing to do with selection goes grey with it. And Copy goes by the app's own action, so it takes ⌘C from a text field that has the focus.

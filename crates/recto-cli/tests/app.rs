@@ -1863,3 +1863,89 @@ fn a_save_leaves_the_view_as_it_was() {
     let saved = std::fs::read(&file.0).unwrap();
     assert!(saved.starts_with(&original) && saved.len() > original.len(), "and it was saved");
 }
+
+/// A page with a line of text and the 4 x 4 red JPEG of `export_svg.rs`, over 100..140 across and 252..292 down, shown from the top left.
+fn snapshot_pdf() -> (TempPdf, Vec<u8>) {
+    const JPEG_HEX: &str = "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a070706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffdb00430103040405040509050509140d0b0d1414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414ffc00011080004000403012200021101031101ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b51100020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00f0aa28a2be68fedd3fffd9";
+    let jpeg: Vec<u8> = (0..JPEG_HEX.len()).step_by(2).map(|at| u8::from_str_radix(&JPEG_HEX[at..at + 2], 16).unwrap()).collect();
+    let image = recto_testpdf::first_extra_object(1);
+    let content = [text_lines(&["Words to take in a box"]), b"q 40 0 0 40 100 500 cm /Im Do Q\n".to_vec()].concat();
+    let dict = "/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode".to_string();
+    let bytes = recto_testpdf::pages_with(&[Page::new(content)], &format!("/XObject << /Im {image} 0 R >>"), vec![Object::Stream { dict, data: jpeg.clone() }]);
+    (TempPdf::new("snapshot.pdf", &bytes), jpeg)
+}
+
+/// The types the app put on the clipboard, in order: the system adds older names for each, and a TIFF it can make from an image, which aren't the app's.
+fn clipboard_items(run: &Run) -> Vec<Value> {
+    run.ok(&["qa", "copied"])["types"].as_array().unwrap().iter().filter(|item| item["type"].as_str().is_some_and(|name| name.starts_with("public.") && name != "public.tiff")).cloned().collect()
+}
+
+fn clipboard_types(run: &Run) -> Vec<String> {
+    clipboard_items(run).iter().map(|item| item["type"].as_str().unwrap().to_string()).collect()
+}
+
+/// Failure: with the snapshot tool on, a drag still selects text, or the box isn't drawn while dragging, or the clipboard doesn't get PNG, text, SVG and JPG at once (SPEC section 6), or a click on a JPEG doesn't give its own bytes. Through the menu item, and the presses a real mouse makes, in window coordinates.
+#[test]
+fn the_snapshot_tool_takes_a_box_and_an_image_to_the_clipboard() {
+    use sha2::Digest;
+    let Some(run) = Run::start() else { return };
+    let (file, jpeg) = snapshot_pdf();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "tools.snapshot"]);
+    let on = run.report();
+    assert_eq!(on["snapshot"]["on"], true, "{on}");
+    assert_eq!(menu_item(&on, "tools.snapshot")["checked"], true, "the menu says so");
+    run.ok(&["qa", "mouse-down", "1:60,50"]);
+    run.ok(&["qa", "mouse-drag", "1:400,300"]);
+    let drawing = run.report();
+    let shown = &drawing["app"]["pages"]["snapshot_box"];
+    assert_eq!((shown["page"].as_u64(), shown["width"].as_f64(), shown["height"].as_f64()), (Some(0), Some(340.0), Some(250.0)), "{drawing}");
+    assert_eq!(drawing["reader"]["selection"]["selected"], false, "no text selected by the tool's drag");
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let after = run.report();
+    assert!(after["app"]["pages"]["snapshot_box"].is_null(), "the box goes on release: {after}");
+    assert_eq!(clipboard_types(&run), ["public.png", "public.utf8-plain-text", "public.svg-image", "public.jpeg"]);
+    assert_eq!(copied(&run), "Words to take in a box");
+    // A click on the image: its own JPEG, then a PNG for what can't take one.
+    run.ok(&["qa", "mouse-down", "1:120,270"]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let items = Value::Array(clipboard_items(&run));
+    assert_eq!(items[0]["type"], "public.jpeg", "{items}");
+    assert_eq!(items[0]["sha256"].as_str().unwrap(), sha2::Sha256::digest(&jpeg).iter().map(|byte| format!("{byte:02x}")).collect::<String>(), "its own bytes");
+    assert_eq!(items[1]["type"], "public.png");
+    // A click off any image says so, and leaves the clipboard as it was.
+    run.ok(&["qa", "mouse-down", "1:400,600"]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let told = wait_for(&run, |state| state["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("no image")));
+    assert!(told["app"]["copy_notice"]["button"].is_null(), "{told}");
+    assert_eq!(clipboard_types(&run)[0], "public.jpeg");
+    // Off again, a drag selects text as before.
+    run.ok(&["qa", "menu", "tools.snapshot"]);
+    assert_eq!(run.report()["snapshot"]["on"], false);
+}
+
+/// Failure: a snapshot of a file that asks not to be copied gets round it, or is refused with no "Copy anyway", though the owner decided on 2026-11-08 it gets the same notice as text. The button takes the same box again.
+#[test]
+fn a_snapshot_of_a_copy_restricted_file_offers_copy_anyway() {
+    let Some(run) = Run::start() else { return };
+    let file = restricted_pdf();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "tools.snapshot"]);
+    run.ok(&["qa", "mouse-down", "1:60,50"]);
+    run.ok(&["qa", "mouse-drag", "1:400,120"]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let asked = wait_for(&run, |state| state["app"]["copy_notice"].is_object());
+    assert!(asked["app"]["copy_notice"]["text"].as_str().unwrap().contains("permissions"), "{asked}");
+    assert_eq!(asked["app"]["copy_notice"]["button"], "Copy anyway");
+    assert!(clipboard_types(&run).is_empty(), "nothing on the clipboard yet");
+    run.ok(&["qa", "notice-button"]);
+    run.settled();
+    assert_eq!(clipboard_types(&run)[0], "public.png");
+    assert_eq!(copied(&run), "Words that ask not to be copied");
+}

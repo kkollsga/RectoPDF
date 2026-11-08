@@ -267,6 +267,39 @@ The last column is why `both` is the default: a font the reader doesn't have cha
 
 **Not tested.** Illustrator, Inkscape, Figma or any other reader of SVG but Chrome and WebKit, which matters most for `vector-effect` and `pointer-events`. A CMYK JPEG's colours against another engine. Embedded profiles in anything but Chrome and WebKit. An inline image naming a layer in its own dictionary, which no call or look reaches. A mark section naming a layer by a dictionary written in place, where PDFium takes no notice of its `/OC` but a name could be mistaken for a listed layer's. Vertical or right-to-left text. Encrypted files through a password. The hairline difference hasn't been measured apart from the rest. Pictures of whole pages past 100 Mpx: a page too large for the scale asked has its pictures drawn at the largest scale that fits, and says so.
 
+## Images and snapshots
+
+SPEC section 6, Extraction, and the owner's 2026-11-08 decision on copy-restricted files. `recto_agent::extract` is the one place that says what comes out and where it goes: `recto images`, `recto image` and `recto snapshot` write files or answer, and the app's snapshot tool asks `image_clip` and `snapshot_clip` for the clipboard, with its types and their order.
+
+**Images go through the contents walk, asking only for images.** A `ContentsJob` now says which images it wants (`images`): everything, as `export svg` has it; `IMAGES_LIST`, where each image is as an `ImagePlace` record (its own pixels, whether it's a JPEG stream, its matrix) with no bytes and nothing else of the page; or one number, that image whole and as itself, with no clip, group or blend, a masked one as a single RGBA picture (`MASK_NOT_SEPARABLE`). Both modes count images at the same point of the same walk, so a number from a list is the image it names, and layers still decide: an image in a layer that's off isn't listed and can't be clicked. The host's `StreamCheck::for_images` refuses whatever the job didn't ask for, and a second picture for one number, which kills the worker as any violation does. A list draws nothing, so on the 346 MiB USGS map (66 images) it took 0.82 s, release, at load 10 to 12, with the host at 3.8 MiB peak and the worker at 351 MiB, nearly all PDFium opening that page.
+
+**What an image comes out as.** `.jpg` takes a JPEG's own bytes, or its picture byte for byte with what's around it corrected (`jpeg_header_fixed`, as `export svg` does), and anything else is refused before a byte is written (`not_a_jpeg`), as it would be re-encoded. `.png` takes any image losslessly at its own size, a JPEG decoded as the page decodes it, a mask as alpha. An image PDFium can draw but not hand over is drawn alone at 2x and says `lossless: false`. On the clipboard, a JPEG goes as `public.jpeg` with a `public.png` beside it for apps that can't take a JPEG; anything else as `public.png` alone.
+
+**A snapshot** is a box in points on the page as it's shown. PNG and JPG go through the export's drawing (`draw_page_box`, strips over the box, the page itself held to the caps, so a box can't get past them), sharp at the scale asked or refused. JPG is a small baseline encoder of ours (`render/jpeg.rs`: 4:4:4, quality 90, Annex K tables, the AAN float transform), streaming eight rows at a time, and every answer says it's re-encoded. SVG is `export svg`'s writer cut to the box, now generic over where it writes (`Output`: a temp file, or memory up to a cap). Text is `PageText::text_in_box`: characters whose middle is in the box, a line at a time in reading order, hidden text and chrome left out by a copy's rules, and a box of only chrome gets the chrome. On the clipboard all four go at once, PNG, text, SVG and JPG, each up to 32 MiB and 64 MiB in all: past that one is left off and the notice says which. The PNG is the snapshot, so its failure is the snapshot's.
+
+**A file that asks not to be copied** is refused, exit 8 and `copy_restricted`, unless `--anyway`, for every format and for images; each use that gives something goes in `activity-overrides.jsonl`, as `copy --anyway` does. The permission comes from the worker, with a read of the page's characters and no drawing.
+
+**Where they write.** Every export now keeps Save As's rules (`saving::path_problem`, found in a review of Save): the right ending, no hidden folder on the way, as given or as it leads, nothing through a link to a file of another kind, and nothing in `~/Library`. `render` and `export svg` checked only the ending.
+
+**In the window.** The tool is `recto_reader::snapshot` (two points and a flag) and `recto-ffi::snapshot_tool`. While it's on, `selection_press`, `selection_drag` and `selection_release` go to it instead of to text selection, so the host's mouse code is the same, and so are QA's `mouse-down`, `mouse-drag` and `mouse-up`. A drag draws a box (`ReaderOp::SnapshotBox`, a dashed `CAShapeLayer` on the page's layer, in its coordinates, so it zooms and scrolls with it); a press that moves no more than 3 points is a click, which takes the image on top under it. A release starts one `recto-snapshot` thread with a worker of its own, says "Copying…", and only the newest release's answer is kept; it goes to the clipboard through `copy_ready` and `take_clipboard`, before any text copy. An update waits for it, and so does `qa wait-settled`. At rest the tool has no thread, worker, timer or buffer. "Copy anyway" on the notice takes the same box or image again. Its pointer is a crosshair. **It isn't in the state record:** it starts off on every launch, as a tool does in Preview, which is the one exception it adds to decision 23.
+
+**Measured** 2026-11-08, release `recto`, this Mac, other agents' builds running (load 8 to 12), whole process by `/usr/bin/time -l`, worker by its own peak:
+
+| | Took | `recto` peak | Worker peak |
+|---|---:|---:|---:|
+| USGS map, `images 1` | 0.82 s | 3.8 MiB | 351 MiB |
+| USGS map, `image 1 --number 1` to PNG, 5104 x 6004, 17.3 MB | 3.9 s | 7.2 MiB | 429 MiB |
+| USGS map, the same to `.jpg`, refused | 0.69 s | 4.5 MiB | |
+| USGS map, a 600 x 400 pt box as PNG at 2x | 0.43 s | 7.3 MiB | 352 MiB |
+| USGS map, the whole page as a box, PNG at 2x, 4464 x 4032 | 1.05 s | 37.1 MiB | 417 MiB |
+| USGS map, a 600 x 400 pt box as SVG | 2.7 s | 7.5 MiB | 742 MiB, in the larger worker |
+| A made 600 dpi scan, 5100 x 6600 grey, `image` to PNG | 0.10 s | 6.4 MiB | 39 MiB |
+| The scan, whole page as JPG at 4x, 2448 x 3168 | 0.10 s | 33.7 MiB | 84 MiB |
+
+The 30 MiB in the largest rows is the strip of shared memory the host copies rows out of, as `render` has. **The app,** a debug build in a quiet run, at load 8 to 9: on the USGS map, the app at 20.9 MiB before, a click on its image took 6 s and left it at 43.2 MiB, the PNG's 23 MiB being what NSPasteboard keeps in the process; a box of 1200 x 900 pt took 14 s, nearly all its 27.8 MB SVG, and left the app at 52.2 MiB. Workers back to 0 and threads back down after each. A release app and a real clipboard weren't measured.
+
+**Not tested.** A real paste into another app: a quiet run has a clipboard of its own, and what's on it is checked by type, size and SHA-256 (`qa copied`). A JPEG in CMYK or with a profile as the clipboard's JPEG: it goes as PNG, as `.jpg` refuses it. Right-to-left and vertical text in a box.
+
 ## The app
 
 `app/` is a Swift package with AppKit and no SwiftUI. `app/build.sh` makes `app/build/RectoPDF.app`: Rust, then the bindings, then Swift, then an ad-hoc signature, with `recto`, the worker and PDFium beside the app's executable for now (at release they move into the nested helper: `docs/research/2026-11-07-sandbox-spike.md`). `--quick` needs no Xcode. `--full` builds the app and drives it. Where a worker comes from is in one place, `Worker::start`.

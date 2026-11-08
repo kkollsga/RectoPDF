@@ -12,6 +12,7 @@ mod qa;
 mod saver;
 mod saving;
 mod sleeper;
+mod snapshot_tool;
 pub mod updates;
 mod watchdog;
 
@@ -496,6 +497,8 @@ pub enum ReaderOp {
     Detach { id: u64 },
     /// All of what's selected on a page, in its own coordinates. Nothing clears it.
     Highlight { page: u32, rects: Vec<HighlightRect> },
+    /// The snapshot tool's box on a page, in its own coordinates, or none to take it off.
+    SnapshotBox { page: u32, rect: Option<HighlightRect> },
 }
 
 impl From<Op> for ReaderOp {
@@ -945,6 +948,8 @@ struct Inner {
     action_notice: Mutex<Option<String>>,
     /// Saves from the window: how many run, and what one that failed says.
     save_ui: saving::SaveUi,
+    /// The snapshot tool: on or off, the box being drawn, and what's on its way to the clipboard.
+    tool: snapshot_tool::Tool,
 }
 
 /// What the host tells Rust about the window, kept for the record. A short lock: the UI thread sets these and a writer copies them.
@@ -1358,6 +1363,7 @@ impl AppCore {
             paths: Some(paths),
             open_failure: Mutex::new(None),
             action_notice: Mutex::new(None),
+            tool: snapshot_tool::Tool::default(),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
         });
         saver.attach(Arc::downgrade(&inner));
@@ -1592,14 +1598,20 @@ impl AppCore {
     /// The menu bar as it stands. The host rebuilds it only when this differs.
     pub fn menu_bar(&self) -> Vec<MenuModel> {
         let reader = lock(&self.inner.published).reader.clone();
-        menus::menu_bar(ViewSettings { sidebar_hidden: reader.sidebar_hidden, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() }, record::Spread::from_name(&reader.layout), &self.inner.updates.menu_item().title)
+        let mut bar = menus::menu_bar(ViewSettings { sidebar_hidden: reader.sidebar_hidden, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() }, record::Spread::from_name(&reader.layout), &self.inner.updates.menu_item().title);
+        bar.push(menus::tools_menu(self.inner.tool.is_on()));
+        bar
     }
 
     /// The sidebar's panel as it stands.
     pub fn panel(&self) -> PanelModel {
         let reader = lock(&self.inner.published).reader.clone();
         let shown = Paper::from_name(&reader.paper).unwrap_or(Paper::White);
-        menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown, reader.edit_mode, reader.can_rotate)
+        let mut panel = menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown, reader.edit_mode, reader.can_rotate);
+        if panel.open {
+            panel.sections.insert(0, menus::tools_section(self.inner.tool.is_on()));
+        }
+        panel
     }
 
     /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
@@ -1611,7 +1623,17 @@ impl AppCore {
         }
         match action {
             menus::Action::Host(host) => return host,
-            menus::Action::Copy { anyway } => self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway),
+            // "Copy anyway" on a snapshot's notice takes the snapshot again. Otherwise it's the selection's.
+            menus::Action::Copy { anyway } => {
+                if !(anyway && self.inner.tool.copy_anyway(&self.inner)) {
+                    self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway);
+                }
+            }
+            menus::Action::ToggleSnapshot => {
+                self.inner.tool.toggle();
+                self.inner.core.push(CoreCall::Reconcile);
+                self.inner.listener.model_changed();
+            }
             menus::Action::SelectAll => self.inner.panes.reading_engine(&self.inner.engine).select_all(),
             menus::Action::SetSynced(on) => self.inner.core.push(CoreCall::SetSynced(on)),
             menus::Action::ClearEditHistory => self.inner.core.push(CoreCall::ClearEditHistory),
@@ -1742,25 +1764,51 @@ impl AppCore {
             }
             self.focus_moved(tab);
         }
+        // With the snapshot tool on, a press is the tool's, not a selection's.
+        if self.inner.tool.is_on() {
+            return self.inner.tool.press(&engine, pane as usize, x, y);
+        }
         engine.selection_press(x, y, clicks, shift).into_iter().map(ReaderOp::from).collect()
     }
 
     pub fn selection_drag(&self, pane: u32, x: f64, y: f64) -> Vec<ReaderOp> {
-        self.inner.panes.engine(&self.inner.engine, pane as usize).map(|engine| engine.selection_drag(x, y).into_iter().map(ReaderOp::from).collect()).unwrap_or_default()
+        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else { return Vec::new() };
+        if self.inner.tool.is_drawing() {
+            return self.inner.tool.drag(&engine, pane as usize, x, y);
+        }
+        engine.selection_drag(x, y).into_iter().map(ReaderOp::from).collect()
     }
 
     pub fn selection_release(&self, pane: u32) -> Vec<ReaderOp> {
-        self.inner.panes.engine(&self.inner.engine, pane as usize).map(|engine| engine.selection_release().into_iter().map(ReaderOp::from).collect()).unwrap_or_default()
+        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else { return Vec::new() };
+        if self.inner.tool.is_drawing() {
+            return self.inner.tool.release(&self.inner, &engine, pane as usize);
+        }
+        engine.selection_release().into_iter().map(ReaderOp::from).collect()
     }
 
     /// Whether the pointer's over text, for the I-beam. A page not read yet says no, and its text is read when there's nothing better to do.
     pub fn pointer_is_over_text(&self, pane: u32, x: f64, y: f64) -> bool {
+        // The snapshot tool's pointer is a crosshair wherever it is.
+        if self.inner.tool.is_on() {
+            return false;
+        }
         self.inner.panes.engine(&self.inner.engine, pane as usize).is_some_and(|engine| engine.pointer_is_over_text(x, y))
+    }
+
+    /// Whether the snapshot tool is on, for the pointer's crosshair. A flag, read with no lock.
+    pub fn snapshot_tool_on(&self) -> bool {
+        self.inner.tool.is_on()
     }
 
     /// How far to scroll per step of a drag this far past the view's edge.
     pub fn autoscroll_step(&self, beyond: f64) -> f64 {
         recto_reader::selection::autoscroll_step(beyond)
+    }
+
+    /// What the snapshot tool has for the clipboard, in the order to offer it, each by its type. `copy_ready` says when, and this comes before `take_copied`.
+    pub fn take_clipboard(&self) -> Option<Vec<snapshot_tool::ClipboardItem>> {
+        self.inner.tool.take_ready()
     }
 
     /// What a copy has for the clipboard. `copy_ready` says when.
@@ -1784,6 +1832,7 @@ impl AppCore {
             engine.dismiss_selection_notice();
         }
         lock(&self.inner.action_notice).take();
+        self.inner.tool.dismiss_notice();
         self.inner.updates.dismiss_notice();
         self.inner.core.push(CoreCall::Reconcile);
     }
@@ -3054,7 +3103,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let holding = lock(&inner.holding_tab).is_some();
     let sidebar_width = lock(&inner.app).sidebar_width;
     let highlight = paper.highlight();
-    let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
+    let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| inner.tool.notice().map(|notice| SelectionNotice { action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: !notice.offers_copy_anyway, text: notice.text })).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
     let pane_views: Vec<PaneView> = if comparing { snapshots.iter().enumerate().map(|(pane, shown)| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active, layout: shown.spread.name().to_string(), note: shown.problem.clone().or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())) }).collect() } else { Vec::new() };
     let compare_synced = inner.host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
     let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: inner.save_ui.tooltip(), save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now) };
