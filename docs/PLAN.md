@@ -180,6 +180,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
   - [ ] Typing "1.5" in the zoom field with a Mac set to `,` reads as 15%, as `.` groups thousands there
   - [x] Comparison view: several PDFs side by side, separate or synced scroll, zoom synced (owner, 2026-11-08): ⌘- and ⌃-click, `recto compare`, restored and handed off
   - [ ] Comparison follow-ups: synced scroll lines panes up by the top of the view, so pages of different heights read a page apart where the eye is; a zoom in synced scroll moves each pane about its own middle and the panes can drift a little until the next scroll; other panes follow a pinch only once it ends; a tab off screen that's only ever been in a pane has no fresh sleep file when it leaves, as its contents were never read; Find, when it's built, goes by the pane being read
+- [x] Dark paper after the open file is replaced on disk (found reshooting Save, 2026-11-08): the first tile drawn of the new file went by the old file's look of its page, a kept picture's place left as dimmed white, and stayed, being of the new version. A replacement now clears every page's look before anything goes by it, and a tile whose file was replaced while its look was being worked out is drawn again
 - [ ] **Blind agent test, next round**
 
 **Done when:** it can replace your everyday reader for reading only.
