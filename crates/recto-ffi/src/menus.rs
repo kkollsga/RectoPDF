@@ -58,6 +58,8 @@ pub(crate) enum Action {
     TogglePanel,
     /// *Check for Updates…*, or *Update to X.Y.Z…* once there's one.
     Update,
+    /// A comparison's panes scroll together, page for page, or each on its own.
+    SetSynced(bool),
 }
 
 fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
@@ -83,14 +85,19 @@ fn layout_id(spread: Spread) -> String {
     format!("layout.{}", spread.name().replace('-', "_"))
 }
 
-/// What a right-click on a page offers: Copy and Select All, then the layouts. The system adds Services and the like itself, as it does to any menu that has a selection to act on.
-pub(crate) fn context_menu(shown: Option<Spread>) -> Vec<MenuEntry> {
+/// What a right-click on a page offers: Copy and Select All, then the layouts, and in a comparison, how its panes scroll, `synced` saying which. The system adds Services and the like itself, as it does to any menu that has a selection to act on. Owner, 2026-11-08: "right click menu can enable separate scroll (default) and synced scroll".
+pub(crate) fn context_menu(shown: Option<Spread>, comparing: Option<bool>) -> Vec<MenuEntry> {
     let mut entries = edit_entries();
     for item in &mut entries {
         item.key = String::new();
     }
     entries.push(line());
     entries.extend(layout_entries(shown));
+    if let Some(synced) = comparing {
+        entries.push(line());
+        entries.push(MenuEntry { checked: !synced, ..entry("compare.separate", "Separate Scroll", "") });
+        entries.push(MenuEntry { checked: synced, ..entry("compare.synced", "Synced Scroll", "") });
+    }
     entries
 }
 
@@ -227,6 +234,8 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "paper.white" => Action::SetPaper(Paper::White),
         "paper.warm" => Action::SetPaper(Paper::Warm),
         "paper.dark" => Action::SetPaper(Paper::Dark),
+        "compare.separate" => Action::SetSynced(false),
+        "compare.synced" => Action::SetSynced(true),
         _ => return None,
     })
 }
@@ -288,7 +297,7 @@ mod tests {
         assert_eq!((copy.key.as_str(), copy.system_action.as_str()), ("c", "copy:"));
         let all = edit.entries.iter().find(|item| item.id == "edit.select_all").unwrap();
         assert_eq!((all.key.as_str(), all.system_action.as_str()), ("a", "selectAll:"));
-        assert!(context_menu(None).iter().all(|item| item.key.is_empty() && (item.id.is_empty() || action(&item.id).is_some())), "no keys shown in a context menu");
+        assert!(context_menu(None, Some(false)).iter().all(|item| item.key.is_empty() && (item.id.is_empty() || action(&item.id).is_some())), "no keys shown in a context menu");
     }
 
     /// Failure: the toggle doesn't say which way it is, or the paper showing isn't picked out, or the panel has anything in it at rest.
@@ -333,7 +342,7 @@ mod tests {
     /// Failure: the right-click menu doesn't offer the three layouts, or doesn't tick the one showing, or offers focus view, which is gone; or a layout can be chosen with nothing open. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
     #[test]
     fn the_right_click_menu_offers_the_layouts() {
-        let menu = context_menu(Some(Spread::TwoUpCover));
+        let menu = context_menu(Some(Spread::TwoUpCover), None);
         let layouts: Vec<(&str, bool)> = menu.iter().filter(|item| item.id.starts_with("layout.")).map(|item| (item.id.as_str(), item.checked)).collect();
         assert_eq!(layouts, [("layout.single", false), ("layout.two_up", false), ("layout.two_up_cover", true)]);
         assert!(menu.iter().all(|item| !item.title.contains("Focus")));
@@ -343,6 +352,16 @@ mod tests {
         assert!(!enabled("layout.two_up", false, false) && enabled("layout.two_up", true, false));
         let view = menu_bar(ViewSettings::default(), Some(Spread::TwoUp), "").into_iter().find(|menu| menu.title == "View").unwrap();
         assert!(view.entries.iter().any(|item| item.id == "layout.two_up" && item.checked), "and in the View menu, as on a Mac");
+    }
+
+    /// Failure: the right-click menu has no scroll choice in a comparison, doesn't tick the one in use, or offers it with one tab showing, where it does nothing. Owner, 2026-11-08: "right click menu can enable separate scroll (default) and synced scroll".
+    #[test]
+    fn a_comparison_right_click_offers_separate_and_synced_scroll() {
+        let ticked = |synced| context_menu(None, Some(synced)).into_iter().filter(|item| item.id.starts_with("compare.")).map(|item| (item.id, item.checked)).collect::<Vec<_>>();
+        assert_eq!(ticked(false), [("compare.separate".to_string(), true), ("compare.synced".to_string(), false)]);
+        assert_eq!(ticked(true), [("compare.separate".to_string(), false), ("compare.synced".to_string(), true)]);
+        assert!(context_menu(None, None).iter().all(|item| !item.id.starts_with("compare.")), "nothing to choose with one tab");
+        assert_eq!((action("compare.separate"), action("compare.synced")), (Some(Action::SetSynced(false)), Some(Action::SetSynced(true))));
     }
 
     /// Failure: the owner's *Check for Updates…* isn't where it was asked for, doesn't turn into the offer, or Settings has no ⌘, as on any Mac app, or isn't under File as the owner asked.

@@ -103,6 +103,8 @@ final class CenteringClipView: NSClipView {
     let documentView = PageDocumentView()
     private let core: AppCore
     private let isQuiet: Bool
+    /// Which pane this is, left to right: 0 with one tab showing. Rust's page view for it goes by this.
+    let pane: UInt32
     private var pageLayers: [UInt32: CALayer] = [:]
     private var tiles: [UInt64: (layer: CALayer, page: UInt32)] = [:]
     private var tilesOnPage: [UInt32: [UInt64]] = [:]
@@ -134,9 +136,10 @@ final class CenteringClipView: NSClipView {
     var zoomChanged: (() -> Void)?
     private var toldZoom: (Double, Double) = (0, 0)
 
-    init(core: AppCore, limits: ReaderLimits, isQuiet: Bool) {
+    init(core: AppCore, limits: ReaderLimits, isQuiet: Bool, pane: UInt32 = 0) {
         self.core = core
         self.isQuiet = isQuiet
+        self.pane = pane
         delegateAutoscrollEvery = limits.autoscrollEverySeconds
         super.init()
         let clip = CenteringClipView()
@@ -165,8 +168,9 @@ final class CenteringClipView: NSClipView {
         center.addObserver(self, selector: #selector(systemColoursChanged), name: NSColor.systemColorsDidChangeNotification, object: nil)
     }
 
+    /// The clip view moved. While ops are being applied it's those, and they're sent afterwards as the host's own; otherwise it's the reader's scroll, or a QA scroll by the same call.
     @objc private func viewMoved() {
-        sendViewport()
+        sendViewport(byReader: !applying)
     }
 
     @objc private func pinchStarted() {
@@ -229,6 +233,15 @@ final class CenteringClipView: NSClipView {
         return pageLayers.values.contains { page in
             let shown = documentView.convert(page.frame, to: view).intersection(visible)
             return !shown.isNull && shown.intersects(rect)
+        }
+    }
+
+    /// Whether every page showing stays inside this pane, for QA: a page of one pane mustn't run under the next.
+    func pagesInside() -> Bool {
+        let visible = scrollView.bounds
+        return pageLayers.values.allSatisfy { page in
+            let shown = documentView.convert(page.frame, to: scrollView).intersection(visible)
+            return shown.isNull || (shown.minX >= visible.minX - 0.5 && shown.maxX <= visible.maxX + 0.5)
         }
     }
 
@@ -334,7 +347,7 @@ final class CenteringClipView: NSClipView {
         measured {
             let point = documentView.convert(place, from: nil)
             dragInWindow = place
-            apply(core.selectionPress(x: point.x, y: point.y, clicks: UInt32(max(clicks, 0)), shift: shift))
+            apply(core.selectionPress(pane: pane, x: point.x, y: point.y, clicks: UInt32(max(clicks, 0)), shift: shift))
         }
     }
 
@@ -342,7 +355,7 @@ final class CenteringClipView: NSClipView {
         measured {
             dragInWindow = place
             let point = documentView.convert(place, from: nil)
-            apply(core.selectionDrag(x: point.x, y: point.y))
+            apply(core.selectionDrag(pane: pane, x: point.x, y: point.y))
             keepScrollingIfPastTheEdge()
         }
     }
@@ -352,7 +365,7 @@ final class CenteringClipView: NSClipView {
             dragInWindow = nil
             autoscrollTimer?.invalidate()
             autoscrollTimer = nil
-            apply(core.selectionRelease())
+            apply(core.selectionRelease(pane: pane))
         }
     }
 
@@ -362,7 +375,7 @@ final class CenteringClipView: NSClipView {
             let inFrame = scrollView.superview?.convert(place, from: nil) ?? place
             let onPage = scrollView.hitTest(inFrame) === documentView || isQuiet
             let point = documentView.convert(place, from: nil)
-            setCursor(iBeam: onPage && core.pointerIsOverText(x: point.x, y: point.y))
+            setCursor(iBeam: onPage && core.pointerIsOverText(pane: pane, x: point.x, y: point.y))
         }
     }
 
@@ -457,6 +470,11 @@ final class CenteringClipView: NSClipView {
         liveEnd = timer
     }
 
+    /// What a press anywhere in this pane does first, before it reaches a page: this pane's the one being read.
+    func focus() {
+        core.paneFocused(pane: pane)
+    }
+
     /// The scroller stops below the agent icon, and goes the whole way with none there.
     func setScrollerTop(_ top: CGFloat) {
         guard scrollView.scrollerInsets.top != top else { return }
@@ -494,7 +512,7 @@ final class CenteringClipView: NSClipView {
         isQuiet ? 2 : Double(scrollView.window?.backingScaleFactor ?? 2)
     }
 
-    func sendViewport() {
+    func sendViewport(byReader: Bool = false) {
         guard !closed, scrollView.window != nil || isQuiet else { return }
         guard !applying else {
             viewportDirty = true
@@ -505,7 +523,7 @@ final class CenteringClipView: NSClipView {
         let scrollerRoom = scrollView.scrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
         let frameWidth = scrollView.frame.width - scrollerRoom
         guard frameWidth > 0 else { return }
-        let ops = core.setViewport(viewport: ViewportInput(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height, frameWidth: frameWidth, magnification: scrollView.magnification, backing: backing, live: live, scrolledTo: scrolledTo))
+        let ops = core.setViewport(pane: pane, viewport: ViewportInput(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height, frameWidth: frameWidth, magnification: scrollView.magnification, backing: backing, live: live, scrolledTo: scrolledTo, byReader: byReader))
         apply(ops)
         if toldZoom != (scrollView.magnification, fit) {
             toldZoom = (scrollView.magnification, fit)
@@ -516,7 +534,7 @@ final class CenteringClipView: NSClipView {
     /// There's more from Rust: tiles that have arrived, a change of tab. Called when it says so.
     func drain() {
         guard !closed else { return }
-        apply(core.drainOps())
+        apply(core.drainOps(pane: pane))
     }
 
     private func apply(_ ops: [ReaderOp]) {
@@ -532,7 +550,7 @@ final class CenteringClipView: NSClipView {
             viewportDirty = false
             sendViewport()
         }
-        core.opsApplied()
+        core.opsApplied(pane: pane)
     }
 
     private func apply(_ op: ReaderOp) {

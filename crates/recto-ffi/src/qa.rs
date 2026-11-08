@@ -135,6 +135,24 @@ impl QaBridge {
         self.inner.get().and_then(Weak::upgrade)
     }
 
+    /// Every page view: one, or a comparison's panes.
+    fn engines(&self) -> Vec<Engine> {
+        self.inner().map_or_else(|| vec![self.engine.clone()], |inner| inner.panes.engines(&inner.engine))
+    }
+
+    /// The page view of the pane being read, which QA's pointer goes to, as the reader's would.
+    fn reading_engine(&self) -> Engine {
+        self.inner().map_or_else(|| self.engine.clone(), |inner| inner.panes.reading_engine(&inner.engine))
+    }
+
+    /// The workers of every page view, now and at their peaks.
+    fn workers_footprint(&self) -> (u64, u64, usize) {
+        self.engines().iter().fold((0, 0, 0), |(now, peak, count), engine| {
+            let (one, top) = engine.workers_footprint();
+            (now + one, peak + top, count + engine.worker_pids().len())
+        })
+    }
+
     pub(crate) fn answer(&self, id: u64, ok: bool, json: String) {
         let mut answers = lock(&self.answers);
         if let Some(slot) = answers.get_mut(&id) {
@@ -265,12 +283,12 @@ impl QaBridge {
                 // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
                 return self.ask(verb, value);
             }
-            "appearance" | "window" | "hover" | "click_row" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
+            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
             "entry_points" | "services" => return self.ask(verb, value),
             // A place is said as an agent has it, on a page, and goes in by the document's coordinates, on the way to the window's, so it goes through what a real pointer's position does.
             "mouse_down" | "mouse_drag" | "pointer" => {
                 let place = parse_page_place(value)?;
-                let (x, y) = self.engine.document_point(place.page, place.x, place.y).ok_or_else(|| bad("That page isn't in this document."))?;
+                let (x, y) = self.reading_engine().document_point(place.page, place.x, place.y).ok_or_else(|| bad("That page isn't in this document."))?;
                 self.ask(verb, &format!("{x},{y},{},{}", place.clicks, u8::from(place.shift)))?;
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
@@ -296,7 +314,15 @@ impl QaBridge {
 
     fn state(&self) -> Result<Value, AgentError> {
         let app = self.ask("state", "")?;
-        let (worker_bytes, worker_peak) = self.engine.workers_footprint();
+        let (worker_bytes, worker_peak, workers) = self.workers_footprint();
+        let comparison = self.inner().map_or(Value::Null, |inner| {
+            let engines = inner.panes.engines(&inner.engine);
+            let panes: Vec<Value> = engines.iter().map(|engine| {
+                let report = engine.report().0;
+                json!({ "tab": report["tab"], "page": report["page"], "pages": report["pages"], "scroll_y": report["scroll_y"], "magnification": report["magnification"], "fit": report["fit"], "settled": report["settled"], "spread": report["spread"], "thread": engine.has_thread() })
+            }).collect();
+            json!({ "panes": panes, "reading": inner.panes.reading() })
+        });
         let own = recto_platform::footprint_bytes().unwrap_or(0);
         let mine = recto_platform::own_memory().unwrap_or_default();
         let counters = recto_platform::local::process_counters(std::process::id());
@@ -304,6 +330,7 @@ impl QaBridge {
         Ok(json!({
             "app": app,
             "reader": self.engine.report().0,
+            "panes": comparison,
             "session": self.inner().map_or(Value::Null, |inner| inner.state_json()),
             "update": self.inner().map_or(Value::Null, |inner| inner.update_report()),
             "record": self.inner().map_or(Value::Null, |inner| inner.record_report()),
@@ -311,7 +338,7 @@ impl QaBridge {
                 "footprint_bytes": own,
                 "compressed_bytes": mine.compressed,
                 "heap_bytes": mine.heap,
-                "workers": self.engine.worker_pids().len(),
+                "workers": workers,
                 "worker_bytes": worker_bytes,
                 "worker_peak_bytes": worker_peak,
                 "tree_bytes": own + worker_bytes,
@@ -326,7 +353,7 @@ impl QaBridge {
     fn settled(&self, limit: Duration) -> Result<Value, AgentError> {
         let started = Instant::now();
         // What's been asked of the session thread comes first: an `open` it hasn't reached yet isn't settled, it's not started.
-        if self.core.flush(limit) && self.engine.wait_settled(limit.saturating_sub(started.elapsed())) {
+        if self.core.flush(limit) && self.engines().iter().all(|engine| engine.wait_settled(limit.saturating_sub(started.elapsed()))) {
             Ok(json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64 }))
         } else {
             Err(AgentError::new("timed_out", "The page view didn't settle in time.", exit::TIMED_OUT).then("`recto qa state` shows what it's still waiting for."))
@@ -357,7 +384,7 @@ impl QaBridge {
             if sampled.elapsed() >= Duration::from_millis(20) {
                 sampled = Instant::now();
                 let own = recto_platform::footprint_bytes().unwrap_or(0);
-                let (worker, _) = self.engine.workers_footprint();
+                let (worker, _, _) = self.workers_footprint();
                 peak_own = peak_own.max(own);
                 peak_worker = peak_worker.max(worker);
                 peak_tree = peak_tree.max(own + worker);
@@ -453,11 +480,13 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "panel" => value == "toggle" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
         "button" => one_of(&["sidebar", "zoom", "zoom_reset"]),
         "key_action" => one_of(&["undo", "redo"]),
-        "context_menu" => crate::menus::context_menu(None).iter().any(|item| !item.id.is_empty() && item.id == value),
+        "context_menu" => crate::menus::context_menu(None, Some(false)).iter().any(|item| !item.id.is_empty() && item.id == value),
         // What a person can type in a short field, and no more. Whether it's a level is the field's to find out, as it is for a person.
         "zoom_type" => value.chars().count() <= 32,
         "hover" | "reveal" => value == "none" || row(),
-        "click_row" | "contents_scroll" => row(),
+        "click_row" | "contents_scroll" | "compare_click" => row(),
+        "pane_focus" => value.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES),
+        "pane_scroll" => value.split_once(':').is_some_and(|(pane, points)| pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES) && points.parse::<f64>().is_ok_and(|points| points.is_finite() && points.abs() <= 1e9)),
         "resize" => value.split_once('x').and_then(|(width, height)| Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?))).is_some_and(|(width, height)| (400.0..=8000.0).contains(&width) && (300.0..=8000.0).contains(&height)),
         _ => false,
     };

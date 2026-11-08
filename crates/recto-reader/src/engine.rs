@@ -147,6 +147,13 @@ impl Engine {
         lock(&self.shared.reader).set_share(views);
     }
 
+    /// The least room either side of the pages, as a comparison's pane has it.
+    pub fn set_margins(&self, left: f64, right: f64) {
+        let mut reader = lock(&self.shared.reader);
+        reader.set_margins(left, right);
+        self.after(reader);
+    }
+
     /// The tab showing's magnification.
     pub fn magnification(&self) -> Option<f64> {
         lock(&self.shared.reader).magnification()
@@ -163,6 +170,11 @@ impl Engine {
         let went = reader.follow(page, within);
         self.after(reader);
         went
+    }
+
+    /// Whether two handles are the same page view.
+    pub fn same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
     }
 
     /// Which tab this page view shows.

@@ -47,7 +47,8 @@ final class SidebarCell: NSView {
     func applyLook() {
         guard let row else { return }
         let isTab = row.kind == .tab
-        let active = isTab && row.current
+        // A tab side by side with others reads as the active one does, so the sidebar says which are being compared.
+        let active = isTab && (row.current || row.inComparison)
         pill.isHidden = !active
         pill.backgroundColor = Theme.rowActive.cg
         let font: NSFont = active ? .systemFont(ofSize: 14, weight: .semibold) : row.current ? .systemFont(ofSize: 13.5, weight: .semibold) : .systemFont(ofSize: isTab ? 14 : 13.5)
@@ -640,7 +641,30 @@ final class PanelView: FlippedView {
     }
 
     @objc private func tabClicked() {
+        // ⌘-click and ⌃-click put a tab side by side with what's showing, or take it out (owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"). Rust decides what that does.
+        let flags = NSApp.currentEvent?.modifierFlags ?? []
+        if !flags.intersection([.command, .control]).isEmpty {
+            compareTab(table.clickedRow)
+            return
+        }
         tapTab(table.clickedRow)
+    }
+
+    private func compareTab(_ row: Int) {
+        guard row >= 0, row < tabs.count else { return }
+        core.tapRowAdding(row: tabs[row])
+    }
+
+    /// What a ⌘-click on a row does, and what `recto qa compare-click` calls, rows counted as `clickRow` counts them. A contents row does what a click does.
+    func compareClickRow(_ row: Int) {
+        guard row >= 0 else { return }
+        guard model.tocOpen, let active = activeIndex, row > active else { return compareTab(row) }
+        let inContents = row - active - 1
+        if inContents < Int(model.contentsCount) {
+            tapContents(inContents)
+        } else {
+            compareTab(row - Int(model.contentsCount))
+        }
     }
 
     @objc private func contentsClicked() {

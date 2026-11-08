@@ -154,7 +154,7 @@ impl Comparison {
             [rest @ .., last] => format!("{} and {last}", rest.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")),
             [] => String::new(),
         };
-        Some(format!("These PDFs have {list} pages. Synced scroll keeps them page for page, and a shorter one waits at its end."))
+        Some(format!("Different lengths: {list} pages. Synced scroll waits at the end of a shorter one."))
     }
 }
 

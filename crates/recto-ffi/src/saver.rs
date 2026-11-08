@@ -300,11 +300,13 @@ fn micros(since: Instant) -> u64 {
 impl Inner {
     /// Takes in where the page view says each tab it holds is.
     pub(crate) fn take_places(&self) {
-        let places = self.engine.places();
+        let engines = self.panes.engines(&self.engine);
+        let places: Vec<_> = engines.iter().flat_map(recto_reader::Engine::places).collect();
         if places.is_empty() {
             return;
         }
-        let selection = self.engine.hot_selection();
+        // What's selected is the pane being read's: the session keeps one selection, on the tab it's on.
+        let selection = self.panes.reading_engine(&self.engine).hot_selection();
         self.host.session.with_session(|session| {
             if let Some((tab, range)) = selection {
                 session.note_selection(recto_session::TabId(tab), range.map(|range| Selection { from_page: range.start.page, from_char: range.start.at, to_page: range.end.page, to_char: range.end.at }));

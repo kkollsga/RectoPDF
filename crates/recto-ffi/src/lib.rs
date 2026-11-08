@@ -6,6 +6,7 @@
 #![allow(unsafe_code)] // What UniFFI's macros generate. Nothing here writes any of its own.
 
 mod menus;
+mod panes;
 mod qa;
 mod saver;
 mod sleeper;
@@ -236,6 +237,8 @@ pub struct SidebarRow {
     pub rail_last: bool,
     /// Something's wrong with this tab's file, in Rust's words.
     pub notice: Option<String>,
+    /// A tab side by side with others, which reads as the active one does.
+    pub in_comparison: bool,
 }
 
 /// A contents row as it's kept, with no more in it than it needs. Rows are fetched by the host for what's on screen, so a long outline crosses only as far as it's shown.
@@ -291,9 +294,23 @@ pub enum ContentsMove {
     Move,
 }
 
+/// A comparison's pane, as its label says it.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct PaneView {
+    pub tab: u32,
+    /// Its file's name, cleaned, so it's only ever drawn as text.
+    pub title: String,
+    /// It's the pane being read: the page number and the contents are its.
+    pub reading: bool,
+}
+
 /// What the page area shows.
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct ReaderView {
+    /// Tabs side by side, left to right, a pane each. Empty with one tab showing, which is one pane with no label.
+    pub panes: Vec<PaneView>,
+    /// Synced scroll's on, which the right-click menu ticks.
+    pub compare_synced: bool,
     /// No PDF is open, so it's the home state.
     pub home: bool,
     /// Something the reader needs to be told, such as a page at a lower resolution, in words.
@@ -406,6 +423,8 @@ pub struct ViewportInput {
     pub backing: f64,
     pub live: bool,
     pub scrolled_to: u64,
+    /// The view moved by the reader's own hand, a scroll or a drag of the scroller, and not by the host applying what it was told or the window changing. Synced scroll follows only that.
+    pub by_reader: bool,
 }
 
 /// What the host does to its layers, in order.
@@ -569,9 +588,11 @@ impl AppHost {
             let zoom = menus::zoom_from_word(word).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a zoom. It's `in`, `out`, `fit`, `actual` or a number.", recto_core::clean_line(word)), recto_agent::exit::USAGE))?;
             let rest = Command::View { paper: paper.clone(), sidebar: sidebar.clone(), agent_icon: agent_icon.clone(), zoom: None, layout: layout.clone() };
             let mut answer = self.session.run(level, &rest, events)?;
-            let value = self.engine.zoom(zoom).ok_or_else(|| AgentError::new("no_active_tab", "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
+            let inner = self.saver.inner();
+            let reading = inner.as_ref().map_or_else(|| self.engine.clone(), |inner| inner.panes.reading_engine(&inner.engine));
+            let value = inner.as_ref().map_or_else(|| self.engine.zoom(zoom), |inner| inner.panes.zoom_all(&inner.engine, zoom)).ok_or_else(|| AgentError::new("no_active_tab", "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
             answer["zoom"] = json!(value);
-            if let Some(fit) = self.engine.fit() {
+            if let Some(fit) = reading.fit() {
                 answer["zoom_level"] = json!(menus::zoom_label(value, fit).text);
             }
             self.core.push(CoreCall::Reconcile);
@@ -611,6 +632,12 @@ enum CoreCall {
     SetSidebarHidden(bool),
     /// The tab showing laid out another way.
     SetSpread(record::Spread),
+    /// ⌘-click or ⌃-click on a tab: into a comparison, or out of it.
+    CompareClick(TabId),
+    /// The reader's moved into another pane.
+    FocusPane(TabId),
+    /// Synced scroll, or separate.
+    SetSynced(bool),
     /// The panel's Rotate, by the owner.
     Rotate(i32),
     /// Edit > Undo or Redo, by the owner: true for Undo.
@@ -683,7 +710,7 @@ impl CoreQueue {
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
+        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(_) | CoreCall::CompareClick(_) | CoreCall::FocusPane(_) | CoreCall::SetSynced(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
             return;
         }
         let mut calls = lock(&self.calls);
@@ -777,14 +804,13 @@ impl EngineEvents for EngineHooks {
 /// What the session thread remembers between looks.
 #[derive(Default)]
 struct Synced {
-    tab: Option<TabId>,
-    page: u32,
-    pages: u32,
-    map: PageMap,
-    warm: Vec<u32>,
+    /// Each pane, left to right: one, or a comparison's.
+    panes: Vec<PaneSynced>,
     paper: Option<PaperKind>,
-    /// How the tab showing is laid out, as the page view was last told.
-    spread: Option<record::Spread>,
+    /// The tab being read, whose contents the sidebar has.
+    active: Option<TabId>,
+    /// How many page views there are.
+    count: usize,
 }
 
 /// The state the UI thread pulls, swapped whole. A short lock, never held across anything slow.
@@ -803,6 +829,8 @@ struct Inner {
     update_facts: Mutex<Option<recto_update::updater::Facts>>,
     host: Arc<AppHost>,
     engine: Engine,
+    /// A comparison's panes past the first, and what the UI thread needs to keep them in step.
+    panes: panes::Panes,
     core: Arc<CoreQueue>,
     listener: Arc<dyn AppListener>,
     published: Mutex<Published>,
@@ -1021,7 +1049,9 @@ impl Inner {
                 Err(_) => Err(usage("It's a number of MiB.".to_string())),
             },
             "hold_drawing" => {
-                self.engine.hold_drawing(value == "on");
+                for engine in self.panes.engines(&self.engine) {
+                    engine.hold_drawing(value == "on");
+                }
                 Ok(())
             }
             "sleep_write_gap" => match value.parse::<u32>() {
@@ -1188,7 +1218,8 @@ impl AppCore {
             // At or below the normal limit, this step is off, so a page reaches its lower-resolution version straight away.
             policy.heavy_limit_bytes = policy.memory_limit_bytes;
         }
-        let engine = Engine::new(EngineConfig { service: None, policy: Some(policy) }, hooks);
+        let config = EngineConfig { service: None, policy: Some(policy) };
+        let engine = Engine::new(config.clone(), Arc::clone(&hooks));
         let watchdog = Watchdog::new();
         let qa = args.qa.then(|| Arc::new(QaBridge::new(Arc::clone(&listener), engine.clone(), watchdog.clone(), Arc::clone(&core))));
         // Takes the record's lock, and reads nothing: that's `begin_restore`'s, on a thread that can wait for it.
@@ -1204,6 +1235,7 @@ impl AppCore {
             update_facts: Mutex::new(None),
             host: Arc::clone(&host),
             engine,
+            panes: panes::Panes::new(hooks, config),
             core: Arc::clone(&core),
             listener: Arc::clone(&listener),
             contents_follow: Mutex::new(ContentsFollow::default()),
@@ -1220,7 +1252,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1306,7 +1338,7 @@ impl AppCore {
         (first..end)
             .filter_map(|index| {
                 let entry = contents.get(index as usize)?;
-                Some(SidebarRow { kind: RowKind::Contents, tab: entry.tab, text: entry.text.to_string(), page: entry.page, depth: entry.depth, current: current == Some(index), rail_filled: index < rail_filled, rail_first: index == 0, rail_last: index + 1 == total, notice: None })
+                Some(SidebarRow { kind: RowKind::Contents, tab: entry.tab, text: entry.text.to_string(), page: entry.page, depth: entry.depth, current: current == Some(index), rail_filled: index < rail_filled, rail_first: index == 0, rail_last: index + 1 == total, notice: None, in_comparison: false })
             })
             .collect()
     }
@@ -1384,25 +1416,50 @@ impl AppCore {
         self.inner.core.push(call);
     }
 
+    /// ⌘-click or ⌃-click on a row: a tab goes into a comparison, or out of it (owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"). A contents row does what a click does.
+    pub fn tap_row_adding(&self, row: SidebarRow) {
+        match row.kind {
+            RowKind::Tab => self.inner.core.push(CoreCall::CompareClick(TabId(row.tab))),
+            RowKind::Contents => self.tap_row(row),
+        }
+    }
+
+    /// The pointer went down in a pane: it's the one being read. Cheap, and the session hears on its own thread.
+    pub fn pane_focused(&self, pane: u32) {
+        if let Some(tab) = self.inner.panes.focus(pane as usize) {
+            self.focus_moved(tab);
+        }
+    }
+
     pub fn open_file(&self, path: String) {
         self.inner.core.push(CoreCall::Open(PathBuf::from(path)));
     }
 
-    /// The view moved. On every scroll: a short lock and a few map lookups. Apply what comes back in the same transaction.
-    pub fn set_viewport(&self, viewport: ViewportInput) -> Vec<ReaderOp> {
+    /// A pane's view moved. On every scroll: a short lock and a few map lookups, and in a comparison with synced scroll, a short lock on each other pane to send it along, whose ops come by `ops_ready`. Apply what comes back in the same transaction.
+    pub fn set_viewport(&self, pane: u32, viewport: ViewportInput) -> Vec<ReaderOp> {
         self.inner.saver.view_changed();
-        let ops = self.inner.engine.set_viewport(Viewport { x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height, frame_width: viewport.frame_width, magnification: viewport.magnification, backing: viewport.backing, live: viewport.live, scrolled_to: viewport.scrolled_to });
+        let (ops, focused) = self.inner.panes.viewport(&self.inner.engine, pane as usize, viewport.by_reader, Viewport { x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height, frame_width: viewport.frame_width, magnification: viewport.magnification, backing: viewport.backing, live: viewport.live, scrolled_to: viewport.scrolled_to });
+        if let Some(tab) = focused {
+            self.focus_moved(tab);
+        }
         ops.into_iter().map(ReaderOp::from).collect()
     }
 
-    /// What's waiting for the layers, at most a few tiles at a time. If there's more, `ops_ready` comes again.
-    pub fn drain_ops(&self) -> Vec<ReaderOp> {
-        self.inner.engine.drain().into_iter().map(ReaderOp::from).collect()
+    /// What's waiting for a pane's layers, at most a few tiles at a time. If there's more, `ops_ready` comes again.
+    pub fn drain_ops(&self, pane: u32) -> Vec<ReaderOp> {
+        self.inner.panes.engine(&self.inner.engine, pane as usize).map(|engine| engine.drain().into_iter().map(ReaderOp::from).collect()).unwrap_or_default()
     }
 
-    /// The layers have what they were given, so what's off them can go.
-    pub fn ops_applied(&self) {
-        self.inner.engine.applied();
+    /// A pane's layers have what they were given, so what's off them can go.
+    pub fn ops_applied(&self, pane: u32) {
+        if let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) {
+            engine.applied();
+        }
+    }
+
+    /// How many panes there are now, for the host to have a page area each. One with no comparison.
+    pub fn pane_count(&self) -> u32 {
+        u32::try_from(self.inner.panes.count()).unwrap_or(1)
     }
 
     pub fn set_dark_appearance(&self, dark: bool) {
@@ -1438,11 +1495,12 @@ impl AppCore {
         }
         match action {
             menus::Action::Host(host) => return host,
-            menus::Action::Copy { anyway } => self.inner.engine.copy_selection(anyway),
-            menus::Action::SelectAll => self.inner.engine.select_all(),
+            menus::Action::Copy { anyway } => self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway),
+            menus::Action::SelectAll => self.inner.panes.reading_engine(&self.inner.engine).select_all(),
+            menus::Action::SetSynced(on) => self.inner.core.push(CoreCall::SetSynced(on)),
             menus::Action::ClearEditHistory => self.inner.core.push(CoreCall::ClearEditHistory),
             menus::Action::Zoom(zoom) => {
-                self.inner.engine.zoom(zoom);
+                self.inner.panes.zoom_all(&self.inner.engine, zoom);
             }
             menus::Action::ToggleSidebar => self.toggle_sidebar(),
             menus::Action::SetSpread(spread) => self.inner.core.push(CoreCall::SetSpread(spread)),
@@ -1470,7 +1528,8 @@ impl AppCore {
             let reader = lock(&self.inner.published).reader.clone();
             return if id == "edit.undo" { reader.can_undo } else { reader.can_redo };
         }
-        menus::enabled(&id, self.inner.engine.has_document(), self.inner.engine.has_selection())
+        let reading = self.inner.panes.reading_engine(&self.inner.engine);
+        menus::enabled(&id, reading.has_document(), reading.has_selection())
     }
 
     /// The system says memory's short. From a dispatch source the host keeps, which is all that's the host's about it.
@@ -1480,25 +1539,36 @@ impl AppCore {
 
     /// What a right-click on a page offers.
     pub fn context_menu(&self) -> Vec<MenuEntry> {
-        menus::context_menu(record::Spread::from_name(&lock(&self.inner.published).reader.layout))
+        let reader = lock(&self.inner.published).reader.clone();
+        menus::context_menu(record::Spread::from_name(&reader.layout), (!reader.panes.is_empty()).then_some(reader.compare_synced))
     }
 
     /// The mouse went down on a page, in the document view's coordinates, the same at any zoom. Apply what comes back in the same transaction. It looks through text already here and never waits for any.
-    pub fn selection_press(&self, x: f64, y: f64, clicks: u32, shift: bool) -> Vec<ReaderOp> {
-        self.inner.engine.selection_press(x, y, clicks, shift).into_iter().map(ReaderOp::from).collect()
+    /// In a comparison, a press in a pane makes it the one being read, and what was selected in another goes, so there's one selection to copy.
+    pub fn selection_press(&self, pane: u32, x: f64, y: f64, clicks: u32, shift: bool) -> Vec<ReaderOp> {
+        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else { return Vec::new() };
+        if let Some(tab) = self.inner.panes.focus(pane as usize) {
+            for other in self.inner.panes.engines(&self.inner.engine) {
+                if !other.same_as(&engine) && other.has_selection() {
+                    other.clear_selection();
+                }
+            }
+            self.focus_moved(tab);
+        }
+        engine.selection_press(x, y, clicks, shift).into_iter().map(ReaderOp::from).collect()
     }
 
-    pub fn selection_drag(&self, x: f64, y: f64) -> Vec<ReaderOp> {
-        self.inner.engine.selection_drag(x, y).into_iter().map(ReaderOp::from).collect()
+    pub fn selection_drag(&self, pane: u32, x: f64, y: f64) -> Vec<ReaderOp> {
+        self.inner.panes.engine(&self.inner.engine, pane as usize).map(|engine| engine.selection_drag(x, y).into_iter().map(ReaderOp::from).collect()).unwrap_or_default()
     }
 
-    pub fn selection_release(&self) -> Vec<ReaderOp> {
-        self.inner.engine.selection_release().into_iter().map(ReaderOp::from).collect()
+    pub fn selection_release(&self, pane: u32) -> Vec<ReaderOp> {
+        self.inner.panes.engine(&self.inner.engine, pane as usize).map(|engine| engine.selection_release().into_iter().map(ReaderOp::from).collect()).unwrap_or_default()
     }
 
     /// Whether the pointer's over text, for the I-beam. A page not read yet says no, and its text is read when there's nothing better to do.
-    pub fn pointer_is_over_text(&self, x: f64, y: f64) -> bool {
-        self.inner.engine.pointer_is_over_text(x, y)
+    pub fn pointer_is_over_text(&self, pane: u32, x: f64, y: f64) -> bool {
+        self.inner.panes.engine(&self.inner.engine, pane as usize).is_some_and(|engine| engine.pointer_is_over_text(x, y))
     }
 
     /// How far to scroll per step of a drag this far past the view's edge.
@@ -1508,30 +1578,37 @@ impl AppCore {
 
     /// What a copy has for the clipboard. `copy_ready` says when.
     pub fn take_copied(&self) -> Option<String> {
-        self.inner.engine.take_copied().map(|copied| copied.text)
+        self.inner.panes.engines(&self.inner.engine).iter().find_map(Engine::take_copied).map(|copied| copied.text)
     }
 
     /// The selection's text if it's all here, for what can't wait, as the Services menu can't. Nothing if not.
     pub fn selection_text_now(&self) -> Option<String> {
-        self.inner.engine.selection_text_now()
+        self.inner.panes.reading_engine(&self.inner.engine).selection_text_now()
     }
 
     /// Whether there's text the Services menu can be offered, which it asks often, on the UI thread. Builds nothing.
     pub fn selection_can_be_sent(&self) -> bool {
-        self.inner.engine.selection_can_be_sent()
+        self.inner.panes.reading_engine(&self.inner.engine).selection_can_be_sent()
     }
 
     /// The reader has dismissed the notice, or its time's up.
     pub fn dismiss_selection_notice(&self) {
-        self.inner.engine.dismiss_selection_notice();
+        for engine in self.inner.panes.engines(&self.inner.engine) {
+            engine.dismiss_selection_notice();
+        }
         lock(&self.inner.action_notice).take();
         self.inner.updates.dismiss_notice();
         self.inner.core.push(CoreCall::Reconcile);
     }
 
     /// Where a point on a page is in the document, for QA to go through what the mouse goes through.
-    pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<DocumentPoint> {
-        self.inner.engine.document_point(page, x, y).map(|(x, y)| DocumentPoint { x, y })
+    pub fn document_point(&self, pane: u32, page: u32, x: f64, y: f64) -> Option<DocumentPoint> {
+        self.inner.panes.engine(&self.inner.engine, pane as usize)?.document_point(page, x, y).map(|(x, y)| DocumentPoint { x, y })
+    }
+
+    /// The pane being read, for QA and the host.
+    pub fn reading_pane(&self) -> u32 {
+        u32::try_from(self.inner.panes.reading()).unwrap_or(0)
     }
 
     /// The id a key does with nothing held, or none.
@@ -1548,7 +1625,7 @@ impl AppCore {
     pub fn zoom_typed(&self, text: String, decimal_separator: String) -> bool {
         let decimal = decimal_separator.chars().next().unwrap_or('.');
         let Some(zoom) = recto_reader::tiles::typed_zoom(&text, decimal) else { return false };
-        self.inner.engine.zoom(zoom).is_some()
+        self.inner.panes.zoom_all(&self.inner.engine, zoom).is_some()
     }
 
     /// The zoom after this much ⌘-scroll, from where it is.
@@ -1563,13 +1640,17 @@ impl AppCore {
     }
 
     pub fn window_closed(&self) {
-        self.inner.engine.window_closed();
+        for engine in self.inner.panes.engines(&self.inner.engine) {
+            engine.window_closed();
+        }
         lock(&self.inner.app).window_closed = true;
         self.inner.saver.view_changed();
     }
 
     pub fn window_opened(&self) {
-        self.inner.engine.window_opened();
+        for engine in self.inner.panes.engines(&self.inner.engine) {
+            engine.window_opened();
+        }
         lock(&self.inner.app).window_closed = false;
         self.inner.saver.view_changed();
     }
@@ -1647,7 +1728,9 @@ impl AppCore {
 
     /// The window has just been put on the screen, showing this. For QA to see what the first frame was.
     pub fn window_shown(&self, home: bool, tile_layers: u32) {
-        self.inner.engine.window_up();
+        for engine in self.inner.panes.engines(&self.inner.engine) {
+            engine.window_up();
+        }
         let report = self.inner.engine.report().0;
         *lock(&self.inner.first_shown) = Some(json!({ "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"], "tile_layers": tile_layers, "ms_from_start": self.inner.started.elapsed().as_secs_f64() * 1000.0 }));
         // The installer's waiting for this, off this thread, as it writes a small file and may start a worker, and only for a version that's new here.
@@ -1862,6 +1945,13 @@ impl AppCore {
     }
 }
 
+impl AppCore {
+    /// The pane being read changed, by the pointer or a scroll: the session's told on its own thread, and nothing waits.
+    fn focus_moved(&self, tab: TabId) {
+        self.inner.core.push(CoreCall::FocusPane(tab));
+    }
+}
+
 /// Puts the session as what was read says, and lets everything that was waiting for that go on: the window, the socket, files named at launch.
 fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads: &mut FileReads, deferred: &mut Vec<PathBuf>) {
     let source: Arc<dyn HistorySource> = Arc::clone(&inner.saver.store) as Arc<dyn HistorySource>;
@@ -1870,8 +1960,11 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
         session.set_sleep_files(true);
     });
     // This goes for `session restore` too: nothing drawn stays from before.
-    if synced.tab.take().is_some() {
+    if synced.panes.iter_mut().any(|pane| pane.tab.take().is_some()) {
         inner.engine.deactivate();
+        inner.panes.set_count(&inner.engine, 1, synced.paper.unwrap_or(PaperKind::White), !lock(&inner.app).window_closed);
+        synced.count = 1;
+        synced.panes.truncate(1);
     }
     let mut notice = notice_for(&loaded);
     let host = &inner.host;
@@ -2147,6 +2240,36 @@ fn session_thread(inner: &Arc<Inner>) {
                     events.push(recto_agent::edits_changed(session, id));
                 }
             }),
+            CoreCall::CompareClick(id) => {
+                // A cold tab joining is read first with the session free, as a tap's is.
+                let cold = host.session.with_session(|session| session.comparison().is_none_or(|comparison| !comparison.contains(id)).then(|| session.wake_for_tap(id)).flatten());
+                match cold {
+                    Some((tab, path)) => {
+                        reads.wanted_tab = Some(tab);
+                        reads.start(inner, Reading::Compare(tab), path);
+                    }
+                    None => compare_click_now(inner, id, &mut events),
+                }
+            }
+            CoreCall::FocusPane(id) => {
+                let cold = host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.contains(id)).then(|| session.wake_for_tap(id)).flatten());
+                match cold {
+                    Some((tab, path)) => {
+                        reads.wanted_tab = Some(tab);
+                        reads.start(inner, Reading::Pane(tab), path);
+                    }
+                    None => {
+                        if host.session.with_session(|session| session.focus_pane(id)) {
+                            events.push(Event::new("tab_activated", json!({ "tab": id.0 })));
+                        }
+                    }
+                }
+            }
+            CoreCall::SetSynced(on) => {
+                if host.session.with_session(|session| session.set_compare_synced(on)) {
+                    events.push(Event::new("view_changed", json!({ "sync": if on { "on" } else { "off" } })));
+                }
+            }
             CoreCall::SetSpread(spread) => host.session.with_session(|session| {
                 if let Some(id) = session.active()
                     && session.set_spread(id, spread)
@@ -2195,6 +2318,10 @@ enum Reading {
     File(PathBuf),
     /// A restored active tab: what's become of its file, first, then its facts.
     Restored(TabId),
+    /// A cold tab ⌘-clicked into a comparison.
+    Compare(TabId),
+    /// A cold tab in a comparison's pane, which the reader's moved into.
+    Pane(TabId),
 }
 
 /// A file read off the session thread, on its way back to it.
@@ -2318,6 +2445,17 @@ impl FileReads {
                     tap_now(inner, tab, events);
                 }
             }
+            Reading::Compare(tab) | Reading::Pane(tab) => {
+                host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
+                if self.wanted_tab == Some(tab) {
+                    self.wanted_tab = None;
+                }
+                if matches!(read.what, Reading::Compare(_)) {
+                    compare_click_now(inner, tab, events);
+                } else if host.session.with_session(|session| session.focus_pane(tab)) {
+                    events.push(Event::new("tab_activated", json!({ "tab": tab.0 })));
+                }
+            }
             Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| host.session.with_session(|session| session.open_with_facts(&path, facts, read.stamp, read.history))) {
                 Ok(id) => {
                     events.push(Event::new("tab_opened", json!({ "tab": id.0 })));
@@ -2337,6 +2475,19 @@ fn set_view(inner: &Inner, events: &mut Vec<Event>, change: impl FnOnce(&mut Vie
         view
     });
     events.push(recto_agent::view_changed(view));
+}
+
+/// What a ⌘-click on a tab does, once whatever it needs from disk is here. Too many panes is said by the page, and goes by itself.
+fn compare_click_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
+    let outcome = inner.host.session.with_session(|session| session.toggle_compare(id));
+    match outcome {
+        Ok(recto_session::compare::CompareChange::Nothing) => {}
+        Ok(_) => {
+            let panes = inner.host.session.with_session(|session| session.panes());
+            events.push(Event::new("view_changed", json!({ "comparison": panes.iter().map(|tab| tab.0).collect::<Vec<_>>() })));
+        }
+        Err(error) => *lock(&inner.action_notice) = Some(error.message().to_string()),
+    }
 }
 
 /// What a tap on a tab does, once whatever it needs from disk is here.
@@ -2406,50 +2557,135 @@ fn reader_spread(spread: record::Spread) -> recto_reader::layout::Spread {
     }
 }
 
+/// What a pane shows, from the session.
+struct PaneSnapshot {
+    id: TabId,
+    pages: u32,
+    page: u32,
+    map: PageMap,
+    /// Tabs this pane's page view keeps warm besides: pane 0 has the warm tabs off screen, and the others none.
+    warm: Vec<u32>,
+    problem: Option<String>,
+    saved: Option<SavedPlace>,
+    spread: record::Spread,
+    /// Its file's name, cleaned, for its pane's label.
+    title: String,
+}
+
+/// What a page view was last told about the tab in its pane.
+#[derive(Default)]
+struct PaneSynced {
+    tab: Option<TabId>,
+    page: u32,
+    pages: u32,
+    map: PageMap,
+    warm: Vec<u32>,
+    spread: Option<record::Spread>,
+}
+
+fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, first: bool, panes: &[TabId]) -> Option<PaneSnapshot> {
+    let tab = session.tab(id)?;
+    let own = session.path_of(id)?;
+    let same_file = session.own_stamp(id).map(sleeper::version_of);
+    let map = match session.page_edits(id) {
+        None => PageMap { files: vec![own], slots: None, own: same_file, turns: None },
+        Some(edits) => {
+            let mut files = vec![own];
+            files.extend(edits.added_sources().iter().map(|added| added.path.to_path_buf()));
+            // A page's quarter turns, one byte a page of an edited tab, and none at all while nothing's turned.
+            let turns = edits.slots().iter().any(|slot| slot.quarter_turns % 4 != 0).then(|| edits.slots().iter().map(|slot| slot.quarter_turns).collect::<Arc<[u8]>>());
+            // Pages only turned are the file's own pages in its own order, which is what was drawn already: the same map, so nothing's dropped.
+            let own_order = edits.added_sources().is_empty() && edits.len() == edits.file_pages() && edits.slots().iter().enumerate().all(|(at, slot)| slot.source == 0 && slot.page as usize == at);
+            let slots = (!own_order).then(|| edits.slots().iter().map(|slot| (slot.source, slot.page)).collect());
+            PageMap { files, slots, own: same_file, turns }
+        }
+    };
+    // Pane 0's page view keeps the warm tabs that aren't on screen. A tab in another pane is that pane's.
+    let warm: Vec<u32> = if first { session.warm_tabs().filter(|other| !panes.contains(other)).map(|other| other.0).collect() } else { Vec::new() };
+    let problem = session.tab_notice_message(id).map(str::to_string).or_else(|| tab.problem.map(|problem| problem.message().to_string()));
+    let saved = session.place_to_show(id).map(|place| SavedPlace { page: place.page, anchor: (place.anchor_page, place.within), x: place.x, y: place.y, document_height: place.document_height, magnification: place.zoom, page_size: (place.page_width > 0.0 && place.page_height > 0.0).then_some(recto_reader::layout::PageBox { width: place.page_width, height: place.page_height }) });
+    // Edits that can't be read just now can't say what's on the pages, so it's the file that's shown.
+    let pages = if session.list_is_asleep(id) { tab.page_count } else { session.pages_in(id) };
+    Some(PaneSnapshot { id, pages, page: tab.page, map, warm, problem, saved, spread: tab.spread, title: tab.name.to_string() })
+}
+
+/// **Shows a tab in a pane,** or brings what's shown up to date: another tab, another list of pages, a layout, a page an agent sent it to, or the warm tabs. A tab a pane's page view hasn't held starts from its sleep file's pictures, as any wake does.
+fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, shown: &PaneSnapshot) {
+    let id = shown.id;
+    // Its file's being looked at: nothing goes on the page until that's known.
+    let holding = *lock(&inner.holding_tab) == Some(id) && synced.tab.is_none();
+    if holding {
+        return;
+    }
+    if synced.tab != Some(id) || synced.pages != shown.pages || synced.map != shown.map {
+        let left = inner.pictures_of_those_leaving();
+        // Whichever way it's been asked for, the first frame's what its sleep file has, if it's got one and nothing's held of this tab.
+        if !engine.holds(id.0) {
+            engine.note_wake(id.0, Instant::now());
+            inner.give_sleep_view(engine, id);
+        }
+        engine.activate(id.0, shown.pages, shown.page, shown.map.clone(), &shown.warm, shown.saved, reader_spread(shown.spread));
+        synced.spread = Some(shown.spread);
+        // What was selected comes back on the tab it was on, once.
+        let selection = { let mut app = lock(&inner.app); if app.selection_resume.as_ref().is_some_and(|(tab, _)| *tab == id) { app.selection_resume.take().map(|(_, selection)| selection) } else { None } };
+        if let Some(selection) = selection {
+            engine.restore_selection((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
+        }
+        inner.write_those_leaving(left);
+        synced.tab = Some(id);
+        synced.pages = shown.pages;
+        synced.map = shown.map.clone();
+        synced.page = shown.page;
+        synced.warm = shown.warm.clone();
+        return;
+    }
+    if synced.spread != Some(shown.spread) {
+        engine.set_spread(reader_spread(shown.spread));
+        synced.spread = Some(shown.spread);
+    }
+    if synced.page != shown.page {
+        engine.jump_to(shown.page);
+        synced.page = shown.page;
+    }
+    // A warm tab closed or gone cold: what it held goes now, and not at the next switch.
+    if synced.warm != shown.warm {
+        engine.set_warm(&shown.warm);
+        synced.warm = shown.warm.clone();
+    }
+}
+
 /// Brings everything into line with the session, on the session thread. The place in a tab can move two ways, by the reader or by an agent, and each is passed to the other side.
 fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
-    // A tab about to be shown that wasn't: its file's looked at first, so nothing of a version that's been replaced goes up, held or not.
-    let showing = inner.host.session.with_session(|session| session.active()).filter(|id| synced.tab != Some(*id) && lock(&inner.holding_tab).is_none());
-    if let Some(id) = showing {
-        sleeper::look_before_showing(inner, id);
-    }
-    let moved = inner.engine.take_moved_page();
-    // What the page view holds of tabs it's about to let go of goes in the session first, as a cold tab holds nothing there.
-    inner.take_places();
-    let synced_tab = synced.tab;
-    let (snapshot, sidebar, tabs, contents, rail_filled, view) = inner.host.session.with_session(|session| {
-        let active = session.active();
-        if let (Some(id), Some(page)) = (active, moved)
-            && synced_tab == Some(id)
-            && session.go_to(id, page).is_ok()
-        {
-            synced.page = session.tab(id).map_or(page, |tab| tab.page);
-            events.push(Event::new("page_changed", json!({ "tab": id.0, "page": synced.page + 1 })));
+    let nothing_held = lock(&inner.holding_tab).is_none();
+    // A tab about to be shown in a pane that wasn't: its file's looked at first, so nothing of a version that's been replaced goes up, held or not.
+    let panes_now = inner.host.session.with_session(|session| session.panes());
+    for (pane, id) in panes_now.iter().enumerate() {
+        if synced.panes.get(pane).and_then(|shown| shown.tab) != Some(*id) && nothing_held {
+            sleeper::look_before_showing(inner, *id);
         }
-        let snapshot = active.and_then(|id| {
-            let tab = session.tab(id)?;
-            let own = session.path_of(id)?;
-            let same_file = session.own_stamp(id).map(sleeper::version_of);
-            let map = match session.page_edits(id) {
-                None => PageMap { files: vec![own], slots: None, own: same_file, turns: None },
-                Some(edits) => {
-                    let mut files = vec![own];
-                    files.extend(edits.added_sources().iter().map(|added| added.path.to_path_buf()));
-                    // A page's quarter turns, one byte a page of an edited tab, and none at all while nothing's turned.
-                    let turns = edits.slots().iter().any(|slot| slot.quarter_turns % 4 != 0).then(|| edits.slots().iter().map(|slot| slot.quarter_turns).collect::<Arc<[u8]>>());
-                    // Pages only turned are the file's own pages in its own order, which is what was drawn already: the same map, so nothing's dropped.
-                    let own_order = edits.added_sources().is_empty() && edits.len() == edits.file_pages() && edits.slots().iter().enumerate().all(|(at, slot)| slot.source == 0 && slot.page as usize == at);
-                    let slots = (!own_order).then(|| edits.slots().iter().map(|slot| (slot.source, slot.page)).collect());
-                    PageMap { files, slots, own: same_file, turns }
+    }
+    let engines = inner.panes.engines(&inner.engine);
+    let moved: Vec<(usize, u32)> = engines.iter().enumerate().filter_map(|(pane, engine)| Some((pane, engine.take_moved_page()?))).collect();
+    // What the page views hold of tabs they're about to let go of goes in the session first, as a cold tab holds nothing there.
+    inner.take_places();
+    let shown_before: Vec<Option<TabId>> = synced.panes.iter().map(|pane| pane.tab).collect();
+    let (snapshots, plan, sidebar, tabs, contents, rail_filled, view) = inner.host.session.with_session(|session| {
+        let active = session.active();
+        let panes = session.panes();
+        for (pane, page) in &moved {
+            if let (Some(id), Some(Some(shown))) = (panes.get(*pane).copied(), shown_before.get(*pane))
+                && *shown == id
+                && session.go_to(id, *page).is_ok()
+            {
+                let page = session.tab(id).map_or(*page, |tab| tab.page);
+                if let Some(pane) = synced.panes.get_mut(*pane) {
+                    pane.page = page;
                 }
-            };
-            let warm: Vec<u32> = session.warm_tabs().filter(|other| *other != id).map(|other| other.0).collect();
-            let problem = session.tab_notice_message(id).map(str::to_string).or_else(|| tab.problem.map(|problem| problem.message().to_string()));
-            let saved = session.place_to_show(id).map(|place| SavedPlace { page: place.page, anchor: (place.anchor_page, place.within), x: place.x, y: place.y, document_height: place.document_height, magnification: place.zoom, page_size: (place.page_width > 0.0 && place.page_height > 0.0).then_some(recto_reader::layout::PageBox { width: place.page_width, height: place.page_height }) });
-            // Edits that can't be read just now can't say what's on the pages, so it's the file that's shown.
-            let pages = if session.list_is_asleep(id) { tab.page_count } else { session.pages_in(id) };
-            Some((id, pages, tab.page, map, warm, problem, saved, tab.spread))
-        });
+                events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page + 1 })));
+            }
+        }
+        let snapshots: Vec<PaneSnapshot> = panes.iter().enumerate().filter_map(|(pane, id)| pane_snapshot(session, *id, pane == 0, &panes)).collect();
+        let plan = (session.comparison().cloned(), panes.iter().map(|id| session.pages_in(*id)).collect::<Vec<u32>>(), session.compare_note(), active);
         let model = session.sidebar();
         let mut current = None;
         let mut active_index = None;
@@ -2473,11 +2709,12 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             (Arc::clone(&published.tabs), Arc::clone(&published.contents), Arc::clone(&published.sidebar))
         };
         let tab_rows = || model.rows.iter().filter(|row| row.kind != SessionRowKind::Contents);
-        let same_tabs = held_tabs.len() == tab_count as usize && tab_rows().zip(held_tabs.iter()).all(|(row, tab)| row.tab.0 == tab.tab && row.current == tab.current && row.text == tab.text.as_str() && row.notice == tab.notice.as_deref());
+        let compared = |id: TabId| session.comparison().is_some_and(|comparison| comparison.contains(id));
+        let same_tabs = held_tabs.len() == tab_count as usize && tab_rows().zip(held_tabs.iter()).all(|(row, tab)| row.tab.0 == tab.tab && row.current == tab.current && row.text == tab.text.as_str() && row.notice == tab.notice.as_deref() && compared(row.tab) == tab.in_comparison);
         let tabs = if same_tabs {
             held_tabs
         } else {
-            Arc::new(tab_rows().map(|row| SidebarRow { kind: RowKind::Tab, tab: row.tab.0, text: row.text.to_string(), page: row.page, depth: row.depth, current: row.current, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string) }).collect())
+            Arc::new(tab_rows().map(|row| SidebarRow { kind: RowKind::Tab, tab: row.tab.0, text: row.text.to_string(), page: row.page, depth: row.depth, current: row.current, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string), in_comparison: compared(row.tab) }).collect())
         };
         let tabs_version = if same_tabs { was.tabs_version } else { was.tabs_version + 1 };
         let same = held.len() == contents_row_count as usize && model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).zip(held.iter()).all(|(row, entry)| row.tab.0 == entry.tab && row.page == entry.page && row.depth == entry.depth && row.text == entry.text.as_ref());
@@ -2491,7 +2728,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
             (list, was.contents_version + 1, change, shift)
         };
         let view = SidebarView { tabs_version, tab_count, active_index, contents_count: contents_row_count, contents_version, contents_changed_from: change.0, contents_removed: change.1, contents_inserted: change.2, contents_place_shift, contents_current: current, toc_open: model.toc_open, place: model.place.clone(), edited: model.edited, undone_owner_steps: model.undone_owner_steps };
-        (snapshot, view, tabs, contents, rail_filled, session.view())
+        (snapshots, plan, view, tabs, contents, rail_filled, session.view())
     });
     // The paper first, so what's asked for next is drawn right.
     let dark = inner.dark.load(Ordering::SeqCst);
@@ -2504,82 +2741,70 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     };
     if synced.paper != Some(paper) {
         synced.paper = Some(paper);
-        inner.engine.set_paper(paper);
+        for engine in inner.panes.engines(&inner.engine) {
+            engine.set_paper(paper);
+        }
     }
-    let mut problem = None;
-    let layout = snapshot.as_ref().map_or(String::new(), |shown| shown.7.name().to_string());
+    let (comparison, pane_pages, compare_note, active) = plan;
+    let reading_snapshot = snapshots.iter().find(|shown| Some(shown.id) == active).or(snapshots.first());
+    let layout = reading_snapshot.map_or(String::new(), |shown| shown.spread.name().to_string());
     let (edited, (can_undo, can_redo), edit_mode, can_rotate) = inner.host.session.with_session(|session| {
         let edit_mode = session.edit_mode();
-        match snapshot.as_ref() {
-            Some(shown) => (session.is_edited(shown.0), session.undo_and_redo(shown.0), edit_mode, session.can_edit_pages(shown.0)),
+        match reading_snapshot {
+            Some(shown) => (session.is_edited(shown.id), session.undo_and_redo(shown.id), edit_mode, session.can_edit_pages(shown.id)),
             None => (false, (false, false), edit_mode, false),
         }
     });
-    match snapshot {
-        None => {
-            if synced.tab.take().is_some() {
-                inner.engine.deactivate();
-            }
+    let problem = reading_snapshot.and_then(|shown| shown.problem.clone());
+    // The contents follow the tab being read, whichever pane it's in.
+    let holding_now = *lock(&inner.holding_tab);
+    if synced.active != active && active.is_some() && holding_now != active {
+        let mut follow = lock(&inner.contents_follow);
+        follow.new_contents();
+        let mut app = lock(&inner.app);
+        match app.contents_resume.take() {
+            Some((tab, scroll)) if Some(tab) == active => follow.resume_at(scroll.y, scroll.following),
+            _ => {}
         }
-        Some((id, pages, page, map, warm, tab_problem, saved, spread)) => {
-            problem = tab_problem;
-            // Its file's being looked at: nothing goes on the page until that's known.
-            let holding = *lock(&inner.holding_tab) == Some(id) && synced.tab.is_none();
-            if synced.tab != Some(id) && !holding {
-                let mut follow = lock(&inner.contents_follow);
-                follow.new_contents();
-                let mut app = lock(&inner.app);
-                match app.contents_resume.take() {
-                    Some((tab, scroll)) if tab == id => follow.resume_at(scroll.y, scroll.following),
-                    _ => {}
-                }
-            }
-            if holding {
-            } else if synced.tab != Some(id) || synced.pages != pages || synced.map != map {
-                let left = inner.pictures_of_those_leaving();
-                // Whichever way it's been asked for, the first frame's what its sleep file has, if it's got one and nothing's held of this tab.
-                if !inner.engine.holds(id.0) {
-                    inner.engine.note_wake(id.0, Instant::now());
-                    inner.give_sleep_view(id);
-                }
-                inner.engine.activate(id.0, pages, page, map.clone(), &warm, saved, reader_spread(spread));
-                synced.spread = Some(spread);
-                // What was selected comes back on the tab it was on, once.
-                let selection = lock(&inner.app).selection_resume.take().filter(|(tab, _)| *tab == id).map(|(_, selection)| selection);
-                if let Some(selection) = selection {
-                    inner.engine.restore_selection((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
-                }
-                inner.write_those_leaving(left);
-                synced.tab = Some(id);
-                synced.pages = pages;
-                synced.map = map;
-                synced.page = page;
-                synced.warm = warm;
-            } else {
-                if synced.spread != Some(spread) {
-                    inner.engine.set_spread(reader_spread(spread));
-                    synced.spread = Some(spread);
-                }
-                if synced.page != page {
-                    inner.engine.jump_to(page);
-                    synced.page = page;
-                }
-                // A warm tab closed or gone cold: what it held goes now, and not at the next switch.
-                if synced.warm != warm {
-                    inner.engine.set_warm(&warm);
-                    synced.warm = warm;
-                }
-            }
+        synced.active = active;
+    }
+    // A page view for each pane, and no more: one that's gone ends with what it held.
+    let count = snapshots.len().max(1);
+    if synced.count != count {
+        let window_open = !lock(&inner.app).window_closed;
+        inner.panes.set_count(&inner.engine, count, paper, window_open);
+        synced.count = count;
+    }
+    synced.panes.resize_with(count, PaneSynced::default);
+    if snapshots.is_empty() {
+        if synced.panes[0].tab.take().is_some() {
+            inner.engine.deactivate();
         }
+    }
+    let mut panes_changed = false;
+    for (pane, snapshot) in snapshots.iter().enumerate() {
+        let Some(engine) = inner.panes.engine(&inner.engine, pane) else { continue };
+        panes_changed |= synced.panes[pane].tab != Some(snapshot.id);
+        show_in_pane(inner, &engine, &mut synced.panes[pane], snapshot);
+    }
+    let shown_tabs: Vec<TabId> = snapshots.iter().map(|shown| shown.id).collect();
+    let reading = active.and_then(|id| shown_tabs.iter().position(|shown| *shown == id)).unwrap_or(0);
+    let comparing = comparison.is_some();
+    inner.panes.lay_out(shown_tabs, reading, comparison, pane_pages);
+    if panes_changed && comparing {
+        inner.panes.even_out_zoom(&inner.engine);
     }
     let session_notice = lock(&inner.host.notice).as_deref().and_then(record::notices::words).map(str::to_string);
     let save_failed = inner.saver.has_failed().then(|| record::notices::SAVE_FAILED.to_string());
-    let note = lock(&inner.open_failure).clone().or(save_failed).or(problem).or(session_notice).or_else(|| inner.engine.note());
+    let reading_engine = inner.panes.reading_engine(&inner.engine);
+    let note = lock(&inner.open_failure).clone().or(save_failed).or(problem).or(session_notice).or(compare_note).or_else(|| reading_engine.note());
     let holding = lock(&inner.holding_tab).is_some();
     let sidebar_width = lock(&inner.app).sidebar_width;
     let highlight = paper.highlight();
-    let selection_notice = inner.engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
-    let reader = ReaderView { home: synced.tab.is_none() && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice };
+    let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
+    let pane_views: Vec<PaneView> = if comparing { snapshots.iter().map(|shown| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active }).collect() } else { Vec::new() };
+    let compare_synced = inner.host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
+    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice };
     let mut published = lock(&inner.published);
     let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {

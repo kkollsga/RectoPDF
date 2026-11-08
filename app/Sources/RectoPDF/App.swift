@@ -40,7 +40,7 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     func opsReady() {
         onMain { [weak self] in
-            self?.delegate?.windowController?.pages.drain()
+            self?.delegate?.windowController?.drainAll()
             self?.delegate?.windowController?.showIfReady()
         }
     }
@@ -388,7 +388,7 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     /// The page's fit, for QA.
     func engineFit() -> Double {
-        windowController?.pages.fitForQA ?? 1
+        windowController?.readingPane.fitForQA ?? 1
     }
 
     /// What every menu item, panel button and zoom key comes to.

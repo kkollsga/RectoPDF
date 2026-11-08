@@ -867,6 +867,8 @@ impl<L: DocLoader> Session<L> {
         }
         self.remember_warm(id, Arc::new(facts.toc));
         self.active = Some(id);
+        // A new PDF shows alone, as going to any tab that isn't side by side does.
+        self.comparison = None;
         if let Some(history) = history {
             let rolled_off = history.restored.rolled_off;
             self.take_up_history(id, &history.name, history.restored.edits, history.restored.seq);
@@ -2250,6 +2252,10 @@ impl<L: DocLoader> Session<L> {
     }
 
     fn activate(&mut self, id: TabId) {
+        // Going to a tab that isn't side by side, by opening it, an agent's `goto`, or closing what was showing, shows it alone.
+        if self.comparison.as_ref().is_some_and(|comparison| !comparison.contains(id)) {
+            self.comparison = None;
+        }
         self.wake_list(id);
         // A moved or changed file with nothing riding on it has been said on the way past.
         if let Some(left) = self.active.filter(|left| *left != id) {
@@ -4521,6 +4527,10 @@ mod tests {
         assert!(s.comparison().is_none(), "a plain click returns to one");
         assert_eq!(s.panes(), vec![ids[2]]);
         assert_eq!(s.tab(ids[2]).unwrap().toc_open, true, "and doesn't fold its contents");
+        s.compare(&[ids[0], ids[1]], None).unwrap();
+        s.open(&PathBuf::from("/d/e.pdf")).unwrap();
+        assert!(s.comparison().is_none(), "opening another PDF shows it alone");
+        assert_eq!(s.panes().len(), 1);
     }
 
     /// Failure: a tab on screen in a comparison pane goes dormant, by time, budget or pressure, and its pane goes blank or its edits leave memory under it. Panes are on screen, and only what's off screen goes.

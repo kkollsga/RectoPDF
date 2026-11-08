@@ -542,6 +542,8 @@ pub struct Reader {
     last_wake: Option<WakeReport>,
     /// How many page views share the caps on what's kept: one, or each pane of a comparison, so several panes keep no more between them than one view does.
     share: usize,
+    /// The least room either side of the pages: a comparison's pane has less than a window.
+    margins: (f64, f64),
     /// The last viewport was the reader scrolling, and not the host arriving where it was sent, a zoom, a resize or a pinch: what synced scroll goes by.
     user_scrolled: bool,
 }
@@ -595,6 +597,7 @@ impl Reader {
             last_wake: None,
             share: 1,
             user_scrolled: false,
+            margins: (crate::layout::MIN_SIDE_MARGIN, crate::layout::CORNER_MARGIN),
         }
     }
 
@@ -604,6 +607,17 @@ impl Reader {
         if views != self.share {
             self.share = views;
             self.evict();
+        }
+    }
+
+    /// The least room either side of the pages, as a comparison's pane has it. The place is kept.
+    pub fn set_margins(&mut self, left: f64, right: f64) {
+        self.margins = (left, right);
+        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else { return };
+        if doc.layout.set_margins(left, right) {
+            doc.exact_y = None;
+            self.lay_out();
+            self.refresh(MAX_ATTACH_PER_TURN);
         }
     }
 
@@ -981,6 +995,7 @@ impl Reader {
         let floor = self.next_generation;
         let doc = self.docs.entry(tab).or_insert_with(|| {
             let mut layout = PageLayout::with_spread(pages, spread);
+            layout.set_margins(self.margins.0, self.margins.1);
             layout.set_turns(map.turns.clone());
             // A tab it's never held, or that's gone cold: as the session has it. The numbers come from a record, so they're held to what a page can be.
             let saved = saved.filter(|saved| saved.page < pages.max(1));
@@ -1259,6 +1274,7 @@ impl Reader {
     /// The document's size, then the place in it. Called when the fit or a page's size has changed.
     fn lay_out(&mut self) {
         let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else { return };
+        doc.layout.set_margins(self.margins.0, self.margins.1);
         doc.layout.set_frame(self.viewport.frame_width);
         self.ops.push_back(Op::Document { width: doc.layout.document_width(), height: doc.layout.document_height() });
         let y = Self::place_y(doc);
