@@ -585,6 +585,12 @@ impl PageEdits {
         Some(out)
     }
 
+    /// A save noted with [`Self::note_saving`] didn't put its file in place: what it noted goes, and the edits stand. Gives back the copy it kept, if any, which nothing needs now.
+    pub(crate) fn save_abandoned(&mut self) -> Option<Box<Path>> {
+        self.saving = None;
+        self.keeping.take().filter(|kept| kept.kept).map(|kept| kept.path)
+    }
+
     /// Takes the history away and keeps the page order, for Clear Edit History with unsaved edits. Says which kept files nothing needs now.
     pub(crate) fn drop_history(&mut self) -> Vec<Box<Path>> {
         self.owner_step_dropped |= self.undo.iter().any(|entry| entry.by == Author::Owner);

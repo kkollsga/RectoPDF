@@ -177,6 +177,9 @@ import QuartzCore
             guard let controller else { return fail(id, "The window is closed.") }
             switch value {
             case "sidebar": controller.sidebarButton.performClick(nil)
+            case "save":
+                guard !controller.saveButton.isHidden, controller.saveButton.isEnabled else { return fail(id, "The Save icon isn't showing.") }
+                controller.saveButton.performClick(nil)
             case "zoom":
                 guard !controller.zoomButton.isHidden else { return fail(id, "The zoom level isn't showing.") }
                 controller.zoomButton.performClick(nil)
@@ -185,6 +188,12 @@ import QuartzCore
                 controller.zoomReset.performClick(nil)
             default: return fail(id, "That isn't one of the window's buttons.")
             }
+        case "sheet_answer":
+            // The answer a sheet's button gives, through the sheet's own ending, as a click on it ends it: the same completion runs.
+            guard let controller, let sheet = controller.window.attachedSheet else { return fail(id, "No sheet is open.") }
+            let codes: [String: NSApplication.ModalResponse] = ["first": .alertFirstButtonReturn, "second": .alertSecondButtonReturn, "third": .alertThirdButtonReturn, "cancel": .cancel]
+            guard let code = codes[value] else { return fail(id, "That isn't one of a sheet's answers.") }
+            controller.window.endSheet(sheet, returnCode: code)
         case "context_menu":
             guard let controller else { return fail(id, "The window is closed.") }
             let menu = controller.readingPane.contextMenu()
@@ -273,6 +282,8 @@ import QuartzCore
             "activation": policyName(),
             "appearance": Theme.isDark(controller.root) ? "dark" : "light",
             "sidebar_hidden": reader.sidebarHidden,
+            "save_button": ["visible": !controller.saveButton.isHidden, "enabled": controller.saveButton.isEnabled, "tooltip": controller.saveButton.toolTip ?? "", "frame": [controller.saveButton.frame.minX, controller.saveButton.frame.minY, controller.saveButton.frame.width, controller.saveButton.frame.height], "clear_of_window_buttons": controller.windowButtonFrames(in: controller.root).allSatisfy { !$0.intersects(controller.saveButton.frame) } && !controller.sidebarButton.frame.intersects(controller.saveButton.frame)] as [String: Any],
+            "sheet": delegate.sheetShowing ?? [:],
             "sidebar_button": ["visible": !controller.sidebarButton.isHidden && controller.sidebarButton.superview != nil, "frame": [controller.sidebarButton.frame.minX, controller.sidebarButton.frame.minY, controller.sidebarButton.frame.width, controller.sidebarButton.frame.height], "clear_of_window_buttons": controller.windowButtonFrames(in: controller.root).allSatisfy { !$0.intersects(controller.sidebarButton.frame) }] as [String: Any],
             "window_buttons_shown": controller.windowButtonsShown,
             "zoom_level": ["text": controller.zoomButton.attributedTitle.string, "visible": !controller.zoomButton.isHidden, "editing": controller.zoomEditing, "field": controller.zoomEditing ? controller.zoomField.stringValue : NSNull() as Any, "reset": controller.zoomReset.isHidden ? NSNull() as Any : controller.zoomReset.attributedTitle.string, "in_the_top_right": controller.zoomButton.frame.maxX <= controller.root.bounds.maxX - 6 && controller.zoomButton.frame.minX > controller.root.bounds.maxX - 160 && controller.zoomButton.frame.minY < 30, "clear_of_agent_icon": controller.agentIcon.isHidden || (!controller.zoomButton.frame.intersects(controller.agentIcon.frame) && controller.zoomButton.frame.maxX - MainWindowController.zoomPadding <= controller.agentIcon.frame.minX - 4 && controller.zoomField.frame.maxX <= controller.agentIcon.frame.minX - 4), "in_the_agent_icons_row": abs(controller.zoomButton.frame.midY - controller.agentIcon.frame.midY) < 1, "right_margin": controller.root.bounds.maxX - (controller.zoomEditing ? controller.zoomField.frame.maxX : controller.zoomButton.frame.maxX - MainWindowController.zoomPadding), "reset_clear_of_field": controller.zoomReset.frame.maxX <= controller.zoomField.frame.minX, "clear_of_pages": controller.zoomButton.isHidden || !overPages(controller.zoomButton.frame.insetBy(dx: MainWindowController.zoomPadding, dy: 0)), "above_the_scroller": max(controller.zoomButton.frame.maxY, controller.zoomField.frame.maxY) + 4 <= controller.paneAreas[controller.paneAreas.count - 1].scrollView.scrollerInsets.top] as [String: Any],
@@ -577,6 +588,22 @@ import QuartzCore
         }
     }
 
+    /// A sheet over the window is a window of its own, which the window's drawing leaves out: its own drawing goes in where it sits, so a shot shows what a person would. A panel drawn by another process, as the save sheet's file browser is, may come out partly blank.
+    static func drawSheet(of window: NSWindow, into rep: NSBitmapImageRep, flipped: Bool, height: CGFloat) {
+        guard let sheet = window.attachedSheet, let sheetView = sheet.contentView?.superview ?? sheet.contentView else { return }
+        sheetView.layoutSubtreeIfNeeded()
+        let size = sheetView.bounds
+        guard let sheetRep = sheetView.bitmapImageRepForCachingDisplay(in: size) else { return }
+        sheetView.cacheDisplay(in: size, to: sheetRep)
+        let x = sheet.frame.minX - window.frame.minX
+        var y = sheet.frame.minY - window.frame.minY
+        if flipped { y = height - y - size.height }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        sheetRep.draw(in: NSRect(x: x, y: y, width: size.width, height: size.height))
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
     private func shot(id: UInt64, path: String) {
         guard let controller = delegate.windowController else { return fail(id, "The window is closed, so there's nothing to draw.") }
         controller.window.layoutIfNeeded()
@@ -596,6 +623,7 @@ import QuartzCore
         }
         CATransaction.flush()
         view.cacheDisplay(in: bounds, to: rep)
+        QAChannel.drawSheet(of: controller.window, into: rep, flipped: view.isFlipped, height: bounds.height)
         for area in controller.paneAreas {
             area.hideTintForShot(false)
             area.hideHighlightsForShot(false)

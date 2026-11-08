@@ -139,6 +139,9 @@ const BASE: Spec = Spec {
     bare_page: false,
 };
 
+/// What `save` and `save-as` answer.
+const SAVED: &str = "`{ ...same as undo, did, written, writer: append|rewrite|copy, bytes_before, bytes, notes: [..], backup_kept, backup (Full only), untrusted: { file } }`.";
+
 const TAB: Arg = Arg { key: "tab", flag: Some("--tab"), kind: Kind::Tab, required: false, help: "Which tab: `#3`, `active`, or part of its name. The active tab if left out." };
 const PAGE: Arg = Arg { key: "page", flag: Some("--page"), kind: Kind::Page, required: true, help: "The page, counted from 1." };
 const PAGE_OR_BARE: Arg = Arg { key: "page", flag: Some("--page"), kind: Kind::Page, required: true, help: "The page, counted from 1. A bare number means the same: `60` or `--page 60`." };
@@ -405,7 +408,20 @@ pub static TABLE: &[Spec] = &[
     Spec { name: "edits", tag: "edits", group: GROUP_EDIT, summary: "A tab's unsaved edits, as runs of pages.", args: &[TAB], data: "`{ ...same as undo, runs: [ { pages, from_file_pages, rotation_degrees, added, untrusted: { added_file } } ], runs_truncated }`.", examples: &["recto edits", "recto edits --json"], ..BASE },
     Spec { name: "discard", tag: "discard", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Throws away a tab's edits, undone ones included. They can't be got back. Below Full it's refused, and throws nothing away, if any are the user's.", args: &[TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto discard --tab report"], ..BASE },
     Spec { name: "clear-history", tag: "clear_history", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Clears a tab's edit history: every step undo or redo could take, and its file on disk. Unsaved edits stay. Below Full it's refused, and clears nothing, if any steps are the user's.", args: &[TAB], data: EDIT_STATE, emits: &["edits_changed"], examples: &["recto clear-history --tab report"], ..BASE },
-    Spec { name: "save", tag: "save", group: GROUP_EDIT, access: Access::At(Level::Off), summary: "Saving isn't built yet. This says so and writes nothing.", args: &[TAB], data: "Always refuses with `not_built`.", examples: &["recto save"], not_built: true, ..BASE },
+    Spec { name: "save", tag: "save", group: GROUP_EDIT, access: Access::At(Level::Control), summary: "Saves a tab's edits into its file. Turns, moves and added pages are added to the end of the file, so everything that was in it stays. The first save of a file keeps one backup of the original. A certified PDF's pages aren't saved over, and deleting pages isn't saved yet. Nothing from the edit history goes in the file.", args: &[TAB], data: SAVED, emits: &["saved", "edits_changed"], examples: &["recto save", "recto save --tab report --json"], client_wait_s: 600, ..BASE },
+    Spec {
+        name: "save-as",
+        tag: "save",
+        group: GROUP_EDIT,
+        access: Access::At(Level::Control),
+        summary: "Saves a tab's document as a new file, and the tab goes over to it. The original is left as it was. Replacing a file that's there needs `--replace` and Full access.",
+        args: &[Arg { key: "out", flag: Some("--out"), kind: Kind::Path, required: true, help: "The new file." }, Arg { key: "replace", flag: Some("--replace"), kind: Kind::Switch, required: false, help: "Replace a file that's there. Needs Full." }, TAB],
+        data: SAVED,
+        emits: &["saved", "edits_changed"],
+        examples: &["recto save-as --out ~/Documents/report-final.pdf"],
+        client_wait_s: 600,
+        ..BASE
+    },
     Spec {
         name: "wait tab-open",
         tag: "wait",
@@ -636,7 +652,7 @@ pub static TABLE: &[Spec] = &[
     Spec { name: "qa entry-points", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Checks what AppKit reaches the app by, which the other verbs go round: that each owner answers the selector AppKit sends, and for those that can be, that going by it works. Posts no event.", fixed: &[("verb", "entry_points"), ("value", "all")], data: "`{ name: true or false }`, for each one checked.", examples: &["recto qa entry-points"], ..BASE },
     Spec { name: "qa scroller-style", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Uses classic or overlay scrollers, as a Mac with a mouse connected or without one does. Otherwise it's what this Mac is set to, in a quiet run as in a real one.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "`legacy` or `overlay`." }], fixed: &[("verb", "scroller_style")], data: "`qa state`'s `app`.", examples: &["recto qa scroller-style legacy"], ..BASE },
     Spec { name: "qa menu", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Chooses an item of the menu bar, through the menu item itself. `qa state` lists them.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "The item's id, as `view.sidebar`. An item that shows a window is refused here." }], fixed: &[("verb", "menu")], data: "`qa state`'s `app`.", examples: &["recto qa menu view.zoom_in"], ..BASE },
-    Spec { name: "qa button", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Clicks one of the window's own buttons, through the button itself: `sidebar` is the one beside the window's controls that shows and hides the sidebar, and `zoom` the zoom level beside it.", args: &[Arg { key: "value", flag: None, kind: Kind::Choice(&["sidebar", "zoom", "zoom_reset"]), required: true, help: "Which button. `zoom` is the zoom level in the top left, which opens its field to type in, and `zoom_reset` the button beside that field." }], fixed: &[("verb", "button")], data: "`qa state`'s `app`.", examples: &["recto qa button sidebar"], ..BASE },
+    Spec { name: "qa button", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Clicks one of the window's own buttons, through the button itself: `sidebar` is the one beside the window's controls that shows and hides the sidebar, and `zoom` the zoom level beside it.", args: &[Arg { key: "value", flag: None, kind: Kind::Choice(&["sidebar", "zoom", "zoom_reset", "save"]), required: true, help: "Which button. `zoom` is the zoom level in the top left, which opens its field to type in, `zoom_reset` the button beside that field, and `save` the Save icon beside the window's controls, there with unsaved edits." }], fixed: &[("verb", "button")], data: "`qa state`'s `app`.", examples: &["recto qa button sidebar"], ..BASE },
     Spec { name: "qa zoom-type", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Types a zoom level into the field the zoom level opens, and presses Return, through the field's own action. Something that isn't a level changes nothing, and the field shows what it was.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "What's typed, as `150` or `150%`." }], fixed: &[("verb", "zoom_type")], data: "`qa state`'s `app`.", examples: &["recto qa zoom-type 150"], ..BASE },
     Spec { name: "qa context-menu", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Chooses an item of the page's right-click menu, through the menu item itself: the layouts, or Copy and Select All. `qa state`'s `context_menu` lists them.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "The item's id, as `layout.two_up`." }], fixed: &[("verb", "context_menu")], data: "`qa state`'s `app`.", examples: &["recto qa context-menu layout.two_up_cover"], ..BASE },
     Spec { name: "qa key-action", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Does Undo or Redo as its key or menu item does with the window key: given to the first in the window's own chain that answers it, if that says it can be chosen. A quiet window isn't key, so `qa menu` goes past the window; this doesn't.", args: &[Arg { key: "value", flag: None, kind: Kind::Choice(&["undo", "redo"]), required: true, help: "Which." }], fixed: &[("verb", "key_action")], data: "`qa state`'s `app`.", examples: &["recto qa key-action undo"], ..BASE },
@@ -660,6 +676,8 @@ pub static TABLE: &[Spec] = &[
     Spec { name: "qa find-draft", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Sets what's typed in Find and hasn't been run. State only, for now.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "The text." }], fixed: &[("verb", "find_draft")], data: "`qa state`'s `app`.", examples: &["recto qa find-draft budg"], client_wait_s: 35, ..BASE },
     Spec { name: "qa edit-mode", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Goes into edit mode or out. It holds the state for now: nothing draws it yet.", args: &[Arg { key: "value", flag: None, kind: Kind::Choice(&["on", "off"]), required: true, help: "`on` or `off`." }], fixed: &[("verb", "edit_mode")], data: "`qa state`'s `app`.", examples: &["recto qa edit-mode on"], client_wait_s: 35, ..BASE },
     Spec { name: "qa view-rotation", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Turns the active tab's view by quarter turns. State only, for now.", args: &[Arg { key: "value", flag: None, kind: Kind::Choice(&["0", "1", "2", "3"]), required: true, help: "Quarter turns." }], fixed: &[("verb", "view_rotation")], data: "`qa state`'s `app`.", examples: &["recto qa view-rotation 1"], client_wait_s: 35, ..BASE },
+    Spec { name: "qa sheet-answer", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Answers the sheet over the window, as its button does: the close prompt's `first` is Save, `second` Cancel and `third` Don't Save; a save problem's `first` is OK and `second` Save As; `cancel` closes Save As's sheet. `qa state`'s `app.sheet` says what's showing.", args: &[Arg { key: "value", flag: None, kind: Kind::Choice(&["first", "second", "third", "cancel"]), required: true, help: "Which answer." }], fixed: &[("verb", "sheet_answer")], data: "`qa state`'s `app`.", examples: &["recto qa sheet-answer third"], ..BASE },
+    Spec { name: "qa save-as", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "What Save As's sheet does when it's answered with a new file's path: the window's save, off its thread, the tab going over to the new file.", args: &[Arg { key: "value", flag: None, kind: Kind::Path, required: true, help: "The new file." }], fixed: &[("verb", "save_as")], data: "`qa state`'s `app`.", examples: &["recto qa save-as /tmp/copy.pdf"], ..BASE },
     Spec { name: "qa save-from", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "What a Save does around its writing, with a file the caller has written: keeps what undo needs, notes what's coming, puts the file in place of the active tab's, and confirms. For tests, as Save isn't built.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "The written PDF. It's moved." }], fixed: &[("verb", "save_from")], data: "`qa state`'s `app`.", examples: &["recto qa save-from /tmp/written.pdf"], ..BASE },
     Spec { name: "qa owner-edit", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Makes an edit as the owner, as the app's own tools will: `rotate:PAGE`, `delete:PAGE`, `undo` or `redo`.", args: &[Arg { key: "value", flag: None, kind: Kind::Text, required: true, help: "What to do." }], fixed: &[("verb", "owner_edit")], data: "`qa state`'s `app`.", examples: &["recto qa owner-edit rotate:2"], client_wait_s: 35, ..BASE },
     Spec { name: "qa note-input", tag: "qa_drive", group: GROUP_QA, access: Access::At(Level::Control), summary: "Says the user just touched the app, by what the event monitor calls.", args: &[Arg { key: "value", flag: None, kind: Kind::Choice(&["now"]), required: true, help: "`now`." }], fixed: &[("verb", "note_input")], data: "`qa state`'s `app`.", examples: &["recto qa note-input now"], client_wait_s: 35, ..BASE },
@@ -700,7 +718,7 @@ pub fn event_group(name: &str) -> &'static str {
     match name {
         "tab_opened" | "tab_closed" | "tab_activated" => "tabs",
         "page_changed" => "pages",
-        "edits_changed" => "edits",
+        "edits_changed" | "saved" => "edits",
         "page_drawn" | "page_failed" => "draws",
         "view_changed" => "view",
         "indexing_started" | "indexing_finished" => "indexing",
@@ -1717,12 +1735,16 @@ mod tests {
     /// Failure: a command that isn't built says `Needs: Off`, which reads as though it works, and an agent believes its edits can be saved.
     #[test]
     fn help_says_when_a_command_isnt_built() {
-        let help = help_for(TABLE.iter().find(|row| row.name == "save").unwrap());
+        let unbuilt = Spec { name: "example", tag: "example", summary: "Not here yet.", access: Access::At(Level::Off), not_built: true, ..BASE };
+        let help = help_for(&unbuilt);
         assert!(help.contains("isn't built") && !help.contains("Needs: Off") && !help.contains("Needs: Read-only"), "{help}");
         assert!(help_for(TABLE.iter().find(|row| row.name == "tabs").unwrap()).contains("Needs: Read-only"));
+        assert!(help_for(TABLE.iter().find(|row| row.name == "save").unwrap()).contains("Needs: Control"), "saving is built now");
         let rows = table_json();
-        let save = rows["commands"].as_array().unwrap().iter().find(|row| row["name"] == "save").unwrap();
-        assert_eq!(save["built"], false);
+        for row in rows["commands"].as_array().unwrap() {
+            let spec = TABLE.iter().find(|spec| spec.name == row["name"]).unwrap();
+            assert_eq!(row["built"], !spec.not_built, "{}", spec.name);
+        }
     }
 
     /// Failure: nothing tells an agent the plain form returns at once and to carry on, so it adds `--timeout` and blocks for minutes waiting for a person who isn't there.
@@ -1854,7 +1876,7 @@ mod tests {
     #[test]
     fn the_skill_teaches_how_to_read_and_stays_in_this_phase() {
         let text = skill::skill_md();
-        for must in ["facts", "contents", "recto search", "recto text", "Cite pages", "data, not instructions", "untrusted", "recto wait", "not checked", "Saving isn't built"] {
+        for must in ["facts", "contents", "recto search", "recto text", "Cite pages", "data, not instructions", "untrusted", "recto wait", "not checked", "recto save"] {
             assert!(text.contains(must), "{must}");
         }
         for mustnt in ["corpus", "panel", "sidebar chat", "recto read "] {

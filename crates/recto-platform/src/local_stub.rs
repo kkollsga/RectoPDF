@@ -243,3 +243,19 @@ pub fn spawn_detached(_program: &Path, _args: &[String], _envs: &[(String, Strin
 pub fn path_of_file_number(_device: u64, _inode: u64) -> Option<PathBuf> {
     None
 }
+
+pub fn carry_attributes(_from: &Path, _to: &Path) -> io::Result<usize> {
+    Ok(0)
+}
+
+pub fn carry_origin(_from: &Path, _to: &Path) -> io::Result<usize> {
+    Ok(0)
+}
+
+pub fn attribute(_path: &Path, _name: &str) -> Option<Vec<u8>> {
+    None
+}
+
+pub fn set_attribute(_path: &Path, _name: &str, _value: &[u8]) -> io::Result<()> {
+    unsupported()
+}

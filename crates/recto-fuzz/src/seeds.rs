@@ -268,7 +268,7 @@ pub fn for_target(name: &str) -> Vec<Vec<u8>> {
             seeds.extend(real_pdfs(usize::MAX));
             seeds
         }
-        "pdf_tree" => tree_seeds(),
+        "pdf_tree" | "save_copy" => tree_seeds(),
         "proto" => proto_seeds(),
         "index" => index_seeds(),
         "select" => select_seeds(),
@@ -296,13 +296,14 @@ pub fn select_seeds() -> Vec<Vec<u8>> {
 }
 
 /// Every target's name.
-pub const TARGET_NAMES: &[&str] = &["pdf_bytes", "pdf_tree", "proto", "index", "select", "agent", "control", "edits", "record", "update", "generated"];
+pub const TARGET_NAMES: &[&str] = &["pdf_bytes", "pdf_tree", "save_copy", "proto", "index", "select", "agent", "control", "edits", "record", "update", "generated"];
 
 /// The check a target runs, by name.
 pub fn check_for(name: &str) -> Option<fn(&[u8])> {
     Some(match name {
         "pdf_bytes" => targets::pdf::check_bytes,
         "pdf_tree" => targets::pdf::check_tree,
+        "save_copy" => targets::pdf::check_save,
         "proto" => targets::proto::check,
         "index" => targets::index::check,
         "select" => targets::select::check,

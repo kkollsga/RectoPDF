@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 
 /// How long the UI thread may take with a QA request before the answer is that it's stuck.
 const UI_ANSWER_WAIT: Duration = Duration::from_secs(30);
+/// How long a shot waits for the page view to settle before it's taken anyway, saying so.
+const SHOT_SETTLE: Duration = Duration::from_secs(10);
+
 /// How long a drive verb waits for its effect before saying how things stand. A click on a tab whose file isn't answering is still a click that's been made, and `qa wait-settled` is for waiting on as long as it takes.
 const ANSWER_AFTER_CLICK: Duration = Duration::from_secs(3);
 const DEFAULT_SETTLE_WAIT: Duration = Duration::from_secs(30);
@@ -217,11 +220,16 @@ impl QaBridge {
     /// The host draws it into a temp file of ours, and it's published here, by the rule `render` keeps to: nothing already there is replaced. A QA run can be started from Off, and this is at Read-only.
     fn shot(&self, verb: &str, out: &Path) -> Result<Value, AgentError> {
         refuse_shot_path(out, is_in_real_home)?;
+        // A shot of a page mid-draw shows it blurred: it waits for the view to settle, for as long as a shot may, and says if it didn't (review).
+        let started = Instant::now();
+        let settled = self.core.flush(SHOT_SETTLE) && self.engine.wait_settled(SHOT_SETTLE.saturating_sub(started.elapsed()));
         let temp = std::env::temp_dir().join(format!("recto-shot-{}-{}.png", std::process::id(), self.next_id.fetch_add(1, Ordering::SeqCst)));
         let answer = self.ask(verb, &temp.to_string_lossy());
         let published = answer.and_then(|mut answer| {
             recto_agent::publish_picture(&temp, out)?;
             answer["out"] = json!(out);
+            answer["settled"] = json!(settled);
+            answer["settle_waited_ms"] = json!(started.elapsed().as_millis() as u64);
             Ok(answer)
         });
         let _ = std::fs::remove_file(&temp);
@@ -285,7 +293,7 @@ impl QaBridge {
                 // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
                 return self.ask(verb, value);
             }
-            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
+            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
             "entry_points" | "services" => return self.ask(verb, value),
             // A place is said as an agent has it, on a page, and goes in by the document's coordinates, on the way to the window's, so it goes through what a real pointer's position does.
             "mouse_down" | "mouse_drag" | "pointer" => {
@@ -487,9 +495,11 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "sheet" => one_of(&["open", "closed"]),
         "sidebar_width" => value.parse::<f64>().is_ok_and(f64::is_finite),
         // What shows a window is left out: a quiet run shows none.
+        // Save As's sheet is a sheet on the window, as the close prompt is, so a quiet run can show it and answer it.
         "menu" => !matches!(value, "file.open" | "app.about" | "app.quit") && crate::menus::action(value).is_some(),
         "panel" => value == "toggle" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
-        "button" => one_of(&["sidebar", "zoom", "zoom_reset"]),
+        "button" => one_of(&["sidebar", "zoom", "zoom_reset", "save"]),
+        "sheet_answer" => one_of(&["first", "second", "third", "cancel"]),
         "key_action" => one_of(&["undo", "redo"]),
         "context_menu" => crate::menus::context_menu(None, Some(false)).iter().any(|item| !item.id.is_empty() && item.id == value),
         // What a person can type in a short field, and no more. Whether it's a level is the field's to find out, as it is for a person.

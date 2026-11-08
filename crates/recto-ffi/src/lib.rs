@@ -10,6 +10,7 @@ mod menus;
 mod panes;
 mod qa;
 mod saver;
+mod saving;
 mod sleeper;
 pub mod updates;
 mod watchdog;
@@ -379,6 +380,21 @@ pub struct ReaderView {
     pub highlight_lighten: bool,
     /// A line by the page about a copy, going by itself if it says so.
     pub selection_notice: Option<SelectionNotice>,
+    /// A save of the tab showing is under way.
+    pub saving: bool,
+    /// What the Save icon beside the window's controls says, and the step a long save is at.
+    pub save_tooltip: String,
+    /// A save that didn't happen, for an alert over the window until it's answered.
+    pub save_problem: Option<saving::SaveProblem>,
+    /// What Save As's sheet says about this document, as for a signed one.
+    pub save_as_note: Option<String>,
+    /// The tab showing, which an action from the window is about. 0 with none.
+    pub shown_tab: u32,
+    /// Its file's name and folder, for Save As's sheet and the close prompt, so neither waits on the session.
+    pub document_name: String,
+    pub document_folder: String,
+    /// Whether the Save icon is beside the window's controls: with unsaved edits, or while saving.
+    pub save_button: bool,
 }
 
 /// What to say by the page about a copy.
@@ -707,6 +723,14 @@ enum CoreCall {
     Restored(Box<Loaded>),
     /// Patience is over for reading the state, or the file a restored tab is on.
     RestorePatienceOver,
+    /// What a save off this thread did, for watchers.
+    Events(Vec<Event>),
+    /// Closes a tab, by the owner: with its edits thrown away first if they said Don't Save.
+    CloseTab(TabId, bool),
+    /// The close prompt's answer, for the tab it asked about.
+    CloseAnswered(TabId, saving::CloseChoice),
+    /// A save from the close prompt finished: the tab closes, letting go of steps that were undone, as the prompt said.
+    CloseAfterSave(TabId),
     /// The reader tapped the note over a tab's contents.
     ContentsAction(TabId, recto_session::ContentsAction),
     /// Generated contents were made, or failed: tabs waiting for them look.
@@ -919,6 +943,8 @@ struct Inner {
     open_failure: Mutex<Option<String>>,
     /// Why something the reader chose couldn't be done, as a notice that goes by itself.
     action_notice: Mutex<Option<String>>,
+    /// Saves from the window: how many run, and what one that failed says.
+    save_ui: saving::SaveUi,
 }
 
 /// What the host tells Rust about the window, kept for the record. A short lock: the UI thread sets these and a writer copies them.
@@ -938,8 +964,8 @@ struct AppState {
     window_closed: bool,
 }
 
-/// What's in flight, for an update to wait for. A running save goes here when it exists, and an export is a command.
-fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32) -> Vec<BusyItem> {
+/// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command.
+fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, saves: u32) -> Vec<BusyItem> {
     let item = |code: &str, message: &str| BusyItem { code: code.to_string(), message: message.to_string() };
     let mut busy = Vec::new();
     if sheets > 0 {
@@ -951,6 +977,10 @@ fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32) -> Vec<Bus
     if inner_reads > 0 {
         busy.push(item("file_opening", "A file is being opened."));
     }
+    // An update waits for a save to finish, then goes on with what it wrote (SPEC decision 24).
+    if saves > 0 {
+        busy.push(item("saving", "A document is being saved."));
+    }
     busy
 }
 
@@ -961,7 +991,7 @@ fn hand_off_check(host: &AppHost) -> HandOffCheck {
 
 impl Inner {
     fn hand_off_check(&self) -> HandOffCheck {
-        let busy = hand_off_check_parts(self.reads_running.load(Ordering::SeqCst), self.sheets.load(Ordering::SeqCst), self.host.running.load(Ordering::SeqCst));
+        let busy = hand_off_check_parts(self.reads_running.load(Ordering::SeqCst), self.sheets.load(Ordering::SeqCst), self.host.running.load(Ordering::SeqCst), self.save_ui.running.load(Ordering::SeqCst));
         let last = self.last_input_ms.load(Ordering::Relaxed);
         let now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         HandOffCheck { safe: busy.is_empty(), busy, seconds_since_input: now.saturating_sub(last) as f64 / 1000.0 }
@@ -1084,6 +1114,17 @@ impl Inner {
             },
             "owner_edit" => self.owner_edit(value),
             "save_from" => self.qa_save_from(value),
+            // What Save As's sheet does when it's answered with this path: the same call.
+            "save_as" => match self.saver.inner() {
+                Some(inner) if value.starts_with('/') => match lock(&inner.published).reader.shown_tab {
+                    0 => Err(AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND)),
+                    tab => {
+                        saving::start_save(&inner, TabId(tab), Some(PathBuf::from(value)), false);
+                        Ok(())
+                    }
+                },
+                _ => Err(usage("It's the whole path of a new file.".to_string())),
+            },
             "dormant_after" => match value.parse::<u32>() {
                 Ok(seconds) => {
                     self.sleeper.set_after(seconds);
@@ -1276,6 +1317,10 @@ impl AppCore {
         // Takes the record's lock, and reads nothing: that's `begin_restore`'s, on a thread that can wait for it.
         let saver = Arc::new(Saver::new(RecordStore::open(&paths, Flavor::App), Arc::clone(&core)));
         let host = Arc::new(AppHost { engine: engine.clone(), session: SessionHost::new(DrawableLoader).with_indexing(&paths).with_generating(&paths), core: Arc::clone(&core), qa: qa.clone(), saver: Arc::clone(&saver), running: AtomicU32::new(0), handing_off: AtomicBool::new(false), notice: Mutex::new(None) });
+        let backups = recto_control::host::backups_folder(&paths);
+        recto_core::save::prune_backups(&backups, std::time::SystemTime::now());
+        let save_step = Arc::new(AtomicU8::new(0));
+        host.session.set_saving(Arc::new(saving::AppSaving { saver: Arc::clone(&saver), backups, step: Arc::clone(&save_step), core: Arc::clone(&core) }));
         let stopper = server.as_ref().and_then(|server| server.stopper().ok());
         let announcer = server.as_ref().and_then(|server| server.announcer().ok());
         let update_hooks = updates::Hooks::new();
@@ -1303,7 +1348,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1313,6 +1358,7 @@ impl AppCore {
             paths: Some(paths),
             open_failure: Mutex::new(None),
             action_notice: Mutex::new(None),
+            save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
         });
         saver.attach(Arc::downgrade(&inner));
         update_hooks.attach(Arc::downgrade(&inner));
@@ -1586,6 +1632,25 @@ impl AppCore {
             }
             // Off this thread by itself, and it says how it went.
             menus::Action::Update => self.inner.updates.menu_chosen(),
+            menus::Action::Save => {
+                let reader = lock(&self.inner.published).reader.clone();
+                if self.can_save() && reader.shown_tab != 0 {
+                    saving::start_save(&self.inner, TabId(reader.shown_tab), None, false);
+                }
+            }
+            menus::Action::CloseDocument => {
+                let reader = lock(&self.inner.published).reader.clone();
+                if reader.home || reader.saving {
+                    return HostAction::None;
+                }
+                // Unsaved edits, or the owner's undone ones, which closing would lose: it asks, as any Mac app does.
+                if reader.edited || lock(&self.inner.published).sidebar.undone_owner_steps {
+                    return HostAction::ConfirmClose;
+                }
+                if reader.shown_tab != 0 {
+                    self.inner.core.push(CoreCall::CloseTab(TabId(reader.shown_tab), false));
+                }
+            }
         }
         HostAction::None
     }
@@ -1595,12 +1660,60 @@ impl AppCore {
         if id == "app.update" {
             return self.inner.updates.menu_item().enabled;
         }
+        if id == "file.save" {
+            return self.can_save();
+        }
+        if id == "file.save_as" || id == "file.close" {
+            let reader = lock(&self.inner.published).reader.clone();
+            return !reader.home && !reader.saving;
+        }
         if id == "edit.undo" || id == "edit.redo" {
             let reader = lock(&self.inner.published).reader.clone();
             return if id == "edit.undo" { reader.can_undo } else { reader.can_redo };
         }
         let reading = self.inner.panes.reading_engine(&self.inner.engine);
         menus::enabled(&id, reading.has_document(), reading.has_selection())
+    }
+
+    /// Whether Save does anything now: the tab showing has unsaved edits and isn't being saved.
+    fn can_save(&self) -> bool {
+        let reader = lock(&self.inner.published).reader.clone();
+        // Not under a sheet: the close prompt's own Save is how to save then.
+        !reader.home && reader.edited && !reader.saving && self.inner.sheets.load(Ordering::SeqCst) == 0
+    }
+
+    /// What Save As's sheet says, for the tab showing. Never waits: the path is read only if the session's free, and the signature line is what the session thread found.
+    pub fn save_panel(&self) -> saving::SavePanelModel {
+        let reader = lock(&self.inner.published).reader.clone();
+        saving::panel_for(reader.shown_tab, &reader.document_name, &reader.document_folder, reader.save_as_note)
+    }
+
+    /// Save As's sheet was answered with this path. `replace` is whether the person agreed to replace a file that's there, which the sheet asks.
+    pub fn save_as(&self, tab: u32, path: String) {
+        if self.inner.core.frozen.load(Ordering::SeqCst) || tab == 0 {
+            return;
+        }
+        saving::start_save(&self.inner, TabId(tab), Some(PathBuf::from(path)), false);
+    }
+
+    /// What closing the document showing asks.
+    pub fn close_prompt(&self) -> saving::ClosePrompt {
+        let published = lock(&self.inner.published);
+        saving::close_prompt(published.reader.shown_tab, &published.reader.document_name, published.reader.edited, published.sidebar.undone_owner_steps)
+    }
+
+    /// The close prompt's answer. Save closes once it's saved, and not if the save fails, which says why. Don't Save throws the edits away and closes.
+    pub fn close_answered(&self, tab: u32, choice: saving::CloseChoice) {
+        if tab != 0 {
+            self.inner.core.push(CoreCall::CloseAnswered(TabId(tab), choice));
+        }
+    }
+
+    /// A save's problem was answered: with Save As, its sheet opens.
+    pub fn save_problem_answered(&self, save_as: bool) -> HostAction {
+        self.inner.save_ui.set_problem(None);
+        self.inner.core.push(CoreCall::Reconcile);
+        if save_as { HostAction::ShowSavePanel } else { HostAction::None }
     }
 
     /// The system says memory's short. From a dispatch source the host keeps, which is all that's the host's about it.
@@ -2286,6 +2399,31 @@ fn session_thread(inner: &Arc<Inner>) {
                     reads.start_restored(inner, id, path, stamp);
                 }
             }
+            CoreCall::Events(list) => events.extend(list),
+            CoreCall::CloseTab(id, discard) => close_tab(host, id, discard, &mut events),
+            CoreCall::CloseAnswered(id, choice) => match choice {
+                saving::CloseChoice::Save => {
+                    if let Some(inner) = inner.saver.inner() {
+                        saving::start_save(&inner, id, None, true);
+                    }
+                }
+                saving::CloseChoice::DontSave => close_tab(host, id, true, &mut events),
+                saving::CloseChoice::Cancel => {}
+            },
+            CoreCall::CloseAfterSave(id) => {
+                // An edit that came in between the save and now isn't in the file: the tab stays, and says so, rather than lose it (review).
+                let before = host.session.with_session(|session| session.active());
+                match host.session.with_session(|session| session.close_after_save(id).map(|closed| (closed, session.active()))) {
+                    Ok((false, _)) => *lock(&inner.action_notice) = Some(saving::SAVED_NOT_CLOSED.to_string()),
+                    Ok((true, now)) => {
+                        events.push(Event::new("tab_closed", json!({ "tab": id.0 })));
+                        if now != before && let Some(active) = now {
+                            events.push(Event::new("tab_activated", json!({ "tab": active.0 })));
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
             CoreCall::ClearEditHistory => inner.host.session.with_session(|session| {
                 if let Some(id) = session.active() {
                     session.clear_history(id, recto_session::ClearReason::UserAsked);
@@ -2745,6 +2883,24 @@ fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, shown: 
 }
 
 /// Brings everything into line with the session, on the session thread. The place in a tab can move two ways, by the reader or by an agent, and each is passed to the other side.
+/// Closes a tab by the owner's word, throwing away its edits and history first if `discard`. A close the session refuses, as for edits made meanwhile, leaves it open.
+fn close_tab(host: &AppHost, id: TabId, discard: bool, events: &mut Vec<Event>) {
+    host.session.with_session(|session| {
+        if discard {
+            session.discard_edits(id);
+        }
+        let before = session.active();
+        if session.close(id).is_ok() {
+            events.push(Event::new("tab_closed", json!({ "tab": id.0 })));
+            if session.active() != before
+                && let Some(active) = session.active()
+            {
+                events.push(Event::new("tab_activated", json!({ "tab": active.0 })));
+            }
+        }
+    });
+}
+
 fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let nothing_held = lock(&inner.holding_tab).is_none();
     // A tab about to be shown in a pane that wasn't: its file's looked at first, so nothing of a version that's been replaced goes up, held or not.
@@ -2843,13 +2999,15 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let (comparison, pane_pages, compare_note, active) = plan;
     let reading_snapshot = snapshots.iter().find(|shown| Some(shown.id) == active).or(snapshots.first());
     let layout = reading_snapshot.map_or(String::new(), |shown| shown.spread.name().to_string());
-    let (edited, (can_undo, can_redo), edit_mode, can_rotate) = inner.host.session.with_session(|session| {
+    let (edited, (can_undo, can_redo), edit_mode, can_rotate, saving_now, file) = inner.host.session.with_session(|session| {
         let edit_mode = session.edit_mode();
         match reading_snapshot {
-            Some(shown) => (session.is_edited(shown.id), session.undo_and_redo(shown.id), edit_mode, session.can_edit_pages(shown.id)),
-            None => (false, (false, false), edit_mode, false),
+            Some(shown) => (session.is_edited(shown.id), session.undo_and_redo(shown.id), edit_mode, session.can_edit_pages(shown.id), session.is_saving(shown.id), session.path_of(shown.id).zip(session.own_stamp(shown.id)).map(|(path, stamp)| (shown.id, path, stamp))),
+            None => (false, (false, false), edit_mode, false, false, None),
         }
     });
+    let (shown_tab, document_name, document_folder) = file.as_ref().map_or((0, String::new(), String::new()), |(id, path, _)| (id.0, path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(), path.parent().map(|folder| folder.display().to_string()).unwrap_or_default()));
+    let save_as_note = if edited { file.and_then(|(id, path, stamp)| inner.save_ui.signature_note(id, &path, stamp)) } else { None };
     let problem = reading_snapshot.and_then(|shown| shown.problem.clone());
     // The contents follow the tab being read, whichever pane it's in.
     let holding_now = *lock(&inner.holding_tab);
@@ -2897,7 +3055,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
     let pane_views: Vec<PaneView> = if comparing { snapshots.iter().enumerate().map(|(pane, shown)| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active, layout: shown.spread.name().to_string(), note: shown.problem.clone().or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())) }).collect() } else { Vec::new() };
     let compare_synced = inner.host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
-    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice };
+    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: inner.save_ui.tooltip(), save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now) };
     let mut published = lock(&inner.published);
     let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {
@@ -2929,6 +3087,15 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: an update goes ahead while a document is being saved from the window, so the app quits under the save (SPEC decision 24: a running save finishes first). Each thing in flight is named, and a save is one of them.
+    #[test]
+    fn a_hand_off_waits_for_a_save() {
+        assert!(hand_off_check_parts(0, 0, 0, 0).is_empty());
+        let busy = hand_off_check_parts(0, 0, 0, 1);
+        assert_eq!(busy.iter().map(|item| item.code.as_str()).collect::<Vec<_>>(), ["saving"]);
+        assert_eq!(hand_off_check_parts(1, 1, 1, 1).len(), 4);
+    }
 
     /// Failure: rows opening as the reader enters a chapter jump the list under a smooth drift, because the host wasn't told which went and which came. It must say exactly, a chapter closing and the next opening together included, and a change of nothing says nothing.
     #[test]

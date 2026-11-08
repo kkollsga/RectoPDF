@@ -61,7 +61,7 @@ fn page_edits_work_through_the_session() {
     assert_eq!(code, 0, "{moved}");
     assert_eq!(moved["data"]["edited"], true);
     assert_eq!(moved["cmd"], "page_move");
-    assert!(moved["data"]["note"].as_str().unwrap().contains("Saving isn't built"));
+    assert!(moved["data"]["note"].as_str().unwrap().contains("aren't saved"));
     assert!(page_text(&state, "1").contains("Gamma"), "reading must follow the move");
     let (read, _) = state.json(&["text", "--page", "1"]);
     assert_eq!(read["data"]["page"], 1);
@@ -96,9 +96,9 @@ fn page_edits_work_through_the_session() {
     assert_eq!(drawn["data"]["unsaved_rotation_degrees"], 90);
     std::fs::remove_file(&out).unwrap();
 
-    // Nothing reached the disk, and saving says so.
+    // Nothing reached the disk. These edits delete a page, which isn't saved yet, and saving says so with nothing written.
     let (save, code) = state.json(&["save"]);
-    assert_eq!((save["error"]["code"].as_str(), code), (Some("not_built"), exit::FAILED));
+    assert_eq!((save["error"]["code"].as_str(), code), (Some("needs_rewrite"), exit::FAILED));
     let (closed, code) = state.json(&["close"]);
     assert_eq!((closed["error"]["code"].as_str(), code), (Some("unsaved_changes"), exit::FAILED));
     let (stop, code) = state.json(&["stop"]);
@@ -1063,7 +1063,7 @@ fn asking_for_help_any_way_works() {
     assert_eq!(code, exit::USAGE);
     assert!(said.contains("--page 1"), "{said}");
     let (save, _, _) = state.text(&["help", "save"]);
-    assert!(save.contains("isn't built") && !save.contains("Needs: Off"), "{save}");
+    assert!(save.contains("Needs: Control") && save.contains("backup"), "{save}");
 }
 
 /// Failure: `--flag=value` reaches the session as something else. Over the real socket, it must mean what `--flag value` means.
@@ -1093,7 +1093,7 @@ fn a_refused_close_says_what_would_be_lost() {
     assert_eq!(refused["error"]["code"], "unsaved_changes");
     let (message, next) = (refused["error"]["message"].as_str().unwrap(), refused["error"]["next"].as_str().unwrap());
     assert!(message.contains("unsaved edits and undone steps"), "{message}");
-    assert!(next.contains("Saving isn't built") && next.contains("recto discard"), "{next}");
+    assert!(next.contains("recto save") && next.contains("recto discard"), "{next}");
     let (tabs, _) = state.json(&["tabs"]);
     assert_eq!(tabs["data"]["count"], 1);
     let (shown, said, _) = state.text(&["close"]);

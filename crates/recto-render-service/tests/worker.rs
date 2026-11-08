@@ -50,6 +50,7 @@ fn colour_drawn(doc: &mut DocRenderer) -> (u8, u8, u8) {
 
 /// Failure (review, the red frames): a worker that has a file open goes on drawing it after the file's been replaced, by a save or by another app, so a tab shows and keeps the old pages. It's opened again before the next job, says the file changed, and says another version, which is what lets everything drawn of the old one be thrown away. And a file rewritten with its size, time and number put back, which no stamp can tell, is told by its version as soon as it's opened again.
 #[test]
+#[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts or rebuilds; never over a user's file.
 fn a_replaced_file_is_drawn_as_it_is_now() {
     // With a file ID, as anything that writes PDFs gives one: it's what tells two versions of the same length apart.
     let colour = |rgb: &str| {

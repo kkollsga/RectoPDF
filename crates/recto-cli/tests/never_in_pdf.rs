@@ -18,6 +18,7 @@ fn found(bytes: &[u8], needle: &str) -> bool {
 }
 
 /// The stand-in for Save's writing: only the pages the document has, from where it says they are. It takes a rewrite, as removing has to.
+#[allow(clippy::disallowed_methods)] // The stand-in for a save that deletes pages, until the rewrite saves those.
 fn write_what_the_document_is(session: &Session<DiskLoader>, tab: recto_session::TabId, source: &Path, to: &Path) -> u32 {
     let mut document = lopdf::Document::load(source).unwrap();
     let wanted: Vec<u32> = (0..session.pages_in(tab)).map(|at| session.page_source(tab, at).unwrap()).inspect(|page| assert_eq!(page.path, source, "this test's document is all from one file")).map(|page| page.page + 1).collect();

@@ -73,6 +73,8 @@ final class Bridge: AppListener, @unchecked Sendable {
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, @preconcurrency NSServicesMenuRequestor {
     let core: AppCore
     let isQuiet: Bool
+    /// What the sheet over the window says, for `qa state`: its kind and words. Nothing with none.
+    var sheetShowing: [String: Any]?
     let strings: AppStrings
     let limits: ReaderLimits
     private let bridge: Bridge
@@ -400,6 +402,53 @@ final class Bridge: AppListener, @unchecked Sendable {
         case .showSettings: showSettings()
         case .quit: NSApp.terminate(nil)
         case .closeWindow: windowController?.window.performClose(nil)
+        case .showSavePanel: showSavePanel()
+        case .confirmClose: confirmClose()
+        }
+    }
+
+    /// Save As's sheet, the system's own, with Rust's words: the name it suggests, the folder, and a line for a signed document.
+    func showSavePanel() {
+        guard let window = windowController?.window, window.attachedSheet == nil else { return }
+        let model = core.savePanel()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = model.suggestedName
+        panel.prompt = model.prompt
+        if !model.directory.isEmpty { panel.directoryURL = URL(fileURLWithPath: model.directory, isDirectory: true) }
+        if let message = model.message { panel.message = message }
+        let core = self.core
+        core.sheetChanged(open: true)
+        sheetShowing = ["kind": "save_panel", "name": model.suggestedName, "message": model.message ?? "", "directory": model.directory]
+        panel.beginSheetModal(for: window) { [weak self] response in
+            core.sheetChanged(open: false)
+            self?.sheetShowing = nil
+            guard response == .OK, let url = panel.url else { return }
+            // For the tab it opened for. Whether a file's there to replace, which the sheet has asked, is Rust's to look at, off this thread.
+            core.saveAs(tab: model.tab, path: url.path)
+        }
+    }
+
+    /// Closing a document with unsaved edits asks, as any Mac app asks: Save, Don't Save or Cancel. A quit doesn't, as edits come back.
+    func confirmClose() {
+        guard let window = windowController?.window, window.attachedSheet == nil else { return }
+        let prompt = core.closePrompt()
+        let alert = NSAlert()
+        alert.messageText = prompt.message
+        alert.informativeText = prompt.informative
+        // Rust's buttons, in Rust's order, each with what it does.
+        for button in prompt.buttons {
+            alert.addButton(withTitle: button.title).hasDestructiveAction = button.destructive
+        }
+        let core = self.core
+        core.sheetChanged(open: true)
+        sheetShowing = ["kind": "close_prompt", "message": prompt.message, "informative": prompt.informative, "buttons": prompt.buttons.map(\.title)]
+        alert.beginSheetModal(for: window) { [weak self] response in
+            core.sheetChanged(open: false)
+            self?.sheetShowing = nil
+            let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+            let choice = prompt.buttons.indices.contains(index) ? prompt.buttons[index].choice : .cancel
+            core.closeAnswered(tab: prompt.tab, choice: choice)
         }
     }
 
