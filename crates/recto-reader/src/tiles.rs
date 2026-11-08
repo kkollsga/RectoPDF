@@ -67,7 +67,9 @@ pub fn zoom_percent(magnification: f64, fit: f64) -> f64 {
     if percent.is_finite() { percent } else { 100.0 }
 }
 
-/// What a zoom level typed by the reader asks for, or nothing if it isn't one. `150`, `150%` and ` 150 % ` are all 150%. `decimal` is the reader's own decimal sign, as their Mac has it: the other of `.` and `,`, and spaces and `'`, group thousands, so `1,000` is a thousand with `.` and `87,5` is 87.5 with `,`. It's held to the limits when it's applied, like any zoom.
+/// What a zoom level typed by the reader asks for, or nothing if it isn't one. `150`, `150%` and ` 150 % ` are all 150%. It's held to the limits when it's applied, like any zoom.
+///
+/// **`.` and `,` are read the same on any Mac,** as a number shows which it means: `1.5` and `1,5` are both one and a half, whatever the Mac's decimal sign (a Mac set to `,`, as Norwegian is, once read `1.5` as 15). With both in it, the last is the decimal sign, as in `1.250,5` and `1,250.5`. One that comes more than once groups thousands, as in `1.000.000`. Only a lone one with exactly three digits after it and one to three before can be either, `1,000` or `1.000`, and there `decimal`, the Mac's own decimal sign, says which. Spaces and `'` group thousands too.
 pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom> {
     let text = text.trim();
     let number = text.strip_suffix('%').unwrap_or(text).trim();
@@ -75,17 +77,46 @@ pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom> {
     if number.is_empty() || number.chars().count() > 16 {
         return None;
     }
-    let decimal = if decimal == ',' { ',' } else { '.' };
-    let grouping = if decimal == ',' { '.' } else { ',' };
-    let plain: String = number
-        .chars()
-        .filter(|c| !matches!(c, ' ' | '\u{a0}' | '\u{202f}' | '\'') && *c != grouping)
-        .map(|c| if c == decimal { '.' } else { c })
+    let marks: String = number.chars().filter(|c| !matches!(c, ' ' | '\u{a0}' | '\u{202f}' | '\'')).collect();
+    if !marks.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b',') {
+        return None;
+    }
+    let point = decimal_point(&marks, decimal)?;
+    // A mark that groups has three digits after it, up to the next mark: `1.2,5` isn't a number anyone means.
+    let whole = &marks[..point.unwrap_or(marks.len())];
+    if whole.split(['.', ',']).skip(1).any(|group| group.len() != 3) || (whole.contains(['.', ',']) && whole.starts_with(['.', ','])) {
+        return None;
+    }
+    let plain: String = marks
+        .char_indices()
+        .filter_map(|(at, c)| match c {
+            '.' | ',' => (Some(at) == point).then_some('.'),
+            digit => Some(digit),
+        })
         .collect();
-    if plain.is_empty() || plain.len() > 12 || !plain.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+    if plain.is_empty() || plain == "." || plain.len() > 12 {
         return None;
     }
     plain.parse::<f64>().ok().filter(|value| value.is_finite() && *value > 0.0).map(Zoom::Percent)
+}
+
+/// Where the decimal sign is in a number of digits, `.` and `,`, by [`typed_zoom`]'s rule: `Ok(None)` for a whole number, and `None` for marks no number has, such as a decimal sign twice beside the other mark.
+fn decimal_point(marks: &str, local: char) -> Option<Option<usize>> {
+    let Some(last) = marks.rfind(['.', ',']) else { return Some(None) };
+    let mark = marks.as_bytes()[last] as char;
+    let other = if mark == '.' { ',' } else { '.' };
+    let times = marks.matches(mark).count();
+    if marks.contains(other) {
+        // `1.250,5`: the last is the decimal sign, and the other only groups, before it.
+        return (times == 1 && marks.rfind(other) < Some(last)).then_some(Some(last));
+    }
+    if times > 1 {
+        return Some(None);
+    }
+    let (before, after) = (last, marks.len() - last - 1);
+    let either = after == 3 && (1..=3).contains(&before);
+    let local = if local == ',' { ',' } else { '.' };
+    Some((!either || mark == local).then_some(last))
 }
 
 /// How much one step of zoom is.
@@ -5257,6 +5288,40 @@ mod tests {
         for nonsense in ["", "%", "abc", "-50", "0", "NaN", "inf", "1e400", "9999999999999", "1%%"] {
             assert_eq!(typed_zoom(nonsense, '.'), None, "{nonsense}");
         }
+    }
+
+    /// Failure (PLAN, side-by-side follow-ups): typing "1.5" in the zoom field on a Mac set to a `,` decimal, as the owner's Norwegian one is, reads as 15%, since `.` groups thousands there; or "1,5" on a Mac set to `.` reads as 15%. A number says which mark it means wherever it can, and the Mac's own decimal sign decides only `1,000` and `1.000`.
+    #[test]
+    fn a_typed_zoom_reads_either_decimal_sign_on_any_mac() {
+        for decimal in ['.', ','] {
+            for (typed, wanted) in [
+                ("1.5", 1.5),
+                ("1,5", 1.5),
+                ("87.5%", 87.5),
+                ("87,5 %", 87.5),
+                ("150.25", 150.25),
+                ("150,25", 150.25),
+                ("1250.5", 1250.5),
+                ("1,250.5", 1250.5),
+                ("1.250,5", 1250.5),
+                ("1.000.000", 1_000_000.0),
+                ("1,000,000", 1_000_000.0),
+                (".5", 0.5),
+                (",5", 0.5),
+                ("150.", 150.0),
+                ("1 000", 1000.0),
+            ] {
+                assert_eq!(typed_zoom(typed, decimal), Some(Zoom::Percent(wanted)), "{typed} with {decimal}");
+            }
+            for nonsense in [".", ",", "1.2,3.4", "1,2.3,4", "1..5", "5.1,2"] {
+                assert_eq!(typed_zoom(nonsense, decimal), None, "{nonsense} with {decimal}");
+            }
+        }
+        // Only these can be either, and the Mac's sign decides.
+        assert_eq!(typed_zoom("1,000", '.'), Some(Zoom::Percent(1000.0)));
+        assert_eq!(typed_zoom("1.000", ','), Some(Zoom::Percent(1000.0)));
+        assert_eq!(typed_zoom("1.000", '.'), Some(Zoom::Percent(1.0)));
+        assert_eq!(typed_zoom("1,000", ','), Some(Zoom::Percent(1.0)));
     }
 
     /// Failure: the host's size change moves the reader away from what they were reading.
