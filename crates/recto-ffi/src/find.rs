@@ -282,12 +282,18 @@ fn reveal(inner: &Inner, tab: u32, hit: &find::Hit, events: &mut Vec<Event>) {
 pub(crate) fn keep_up(inner: &Inner) {
     let session = &inner.host.session;
     let (record, now) = session.with_session(|s| (s.find().clone(), s.active().map(|id| (id, find::basis(s, id)))));
-    {
+    let moved = {
         let mut field = lock(&inner.find_field);
-        if field.open != record.open || field.text != record.draft {
+        let moved = field.open != record.open || field.text != record.draft;
+        if moved {
             field.open = record.open;
             field.text.clone_from(&record.draft);
         }
+        moved
+    };
+    // The host is told, as Find's view isn't in what `reconcile` compares: a draft or an open that came from the record, as from an agent or a restore, would otherwise wait for something else to change.
+    if moved {
+        inner.listener.model_changed();
     }
     if !record.open || record.query.is_empty() {
         return;

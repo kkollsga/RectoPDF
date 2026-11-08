@@ -1987,6 +1987,21 @@ fn find_never_types_over_what_is_being_typed() {
     assert_eq!(left["app"]["find"]["field_has_focus"], false);
 }
 
+/// Failure: the field takes the keyboard just before the session's draft reaches it, and then shows the old text for as long as it's focused, though nothing's been typed in it (the restore test after the merge with main: field "" with the draft "typed but not run"). Until typing starts, the field shows what the session has.
+#[test]
+fn find_shows_the_sessions_draft_until_typing_starts() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "focus", "find"]);
+    run.ok(&["qa", "find-draft", "set while focused"]);
+    let shown = wait_for(&run, |state| state["app"]["find"]["untrusted"]["field"] == "set while focused");
+    assert_eq!(shown["app"]["find"]["field_has_focus"], true, "still focused: {}", shown["app"]["find"]);
+    assert_eq!(shown["session"]["find"]["query"], "", "and not found, as it was only a draft: {}", shown["session"]["find"]);
+}
+
 /// Failure: the app draws its pages with a worker outside the sandbox, or the tile path breaks once the worker has dropped its Mach rights, and nothing an agent can read says so.
 /// The built app's helper is sandboxed, so every live worker must say its walls are up, and the tiles on screen came as IOSurfaces over the link, the only way one arrives.
 #[test]

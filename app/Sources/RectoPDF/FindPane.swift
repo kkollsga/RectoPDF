@@ -66,6 +66,8 @@ final class FindRowCell: NSView {
     var wantsFocus = false
     /// The current row last brought into view, so it's brought there once and the reader's own scroll stays.
     private var shownCurrent: UInt32?
+    /// Something's been typed since the field took the keyboard. Until then the field still shows what Rust has, so a draft set a moment before focus came isn't left behind by it.
+    private var typedSinceFocus = false
 
     init(core: AppCore) {
         self.core = core
@@ -111,9 +113,9 @@ final class FindRowCell: NSView {
         heights = (layout.findField, layout.findStatus, layout.findList, layout.findRow)
         view.isHidden = !new.open
         field.placeholderString = new.placeholder
-        // What Rust says is in the field, never while it's being typed in: an echo of what was typed a moment ago would take the newest keys away.
-        if field.currentEditor() == nil, field.stringValue != new.text {
-            field.stringValue = new.text
+        // What Rust says is in the field, never once typing's started in it: an echo of what was typed a moment ago would take the newest keys away. A field that has the keyboard and nothing typed yet still shows Rust's, selected, as ⌘F leaves it.
+        if !typedSinceFocus, field.stringValue != new.text {
+            showRustText(new.text)
         }
         (field.cell as? NSSearchFieldCell)?.cancelButtonCell?.setAccessibilityLabel(new.closeTooltip)
         field.toolTip = new.closeTooltip.isEmpty ? nil : new.closeTooltip
@@ -166,8 +168,19 @@ final class FindRowCell: NSView {
 
     var hasFocus: Bool { field.currentEditor() != nil }
 
+    /// Rust's text in the field. While the field has the keyboard it goes through the field editor, all selected, so typing replaces it; that sends no change, so nothing is found for it.
+    private func showRustText(_ text: String) {
+        if let editor = field.currentEditor() {
+            editor.string = text
+            editor.selectAll(nil)
+        } else {
+            field.stringValue = text
+        }
+    }
+
     /// What typing does, and what `recto qa find-type` calls.
     func typed(_ text: String) {
+        if hasFocus { typedSinceFocus = true }
         core.findTyped(text: text)
     }
 
@@ -177,6 +190,7 @@ final class FindRowCell: NSView {
 
     /// Typing's over: the field shows what Rust has, which it didn't while it was being typed in. Rust's model is pulled again, as it may have moved meanwhile.
     func controlTextDidEndEditing(_ notification: Notification) {
+        typedSinceFocus = false
         model = core.findView()
         if field.stringValue != model.text { field.stringValue = model.text }
     }
