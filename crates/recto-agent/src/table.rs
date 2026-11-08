@@ -708,7 +708,7 @@ pub fn event_group(name: &str) -> &'static str {
     match name {
         "tab_opened" | "tab_closed" | "tab_activated" => "tabs",
         "page_changed" => "pages",
-        "edits_changed" => "edits",
+        "edits_changed" | "saved" => "edits",
         "page_drawn" | "page_failed" => "draws",
         "view_changed" => "view",
         "indexing_started" | "indexing_finished" => "indexing",
@@ -1724,12 +1724,16 @@ mod tests {
     /// Failure: a command that isn't built says `Needs: Off`, which reads as though it works, and an agent believes its edits can be saved.
     #[test]
     fn help_says_when_a_command_isnt_built() {
-        let help = help_for(TABLE.iter().find(|row| row.name == "save").unwrap());
+        let unbuilt = Spec { name: "example", tag: "example", summary: "Not here yet.", access: Access::At(Level::Off), not_built: true, ..BASE };
+        let help = help_for(&unbuilt);
         assert!(help.contains("isn't built") && !help.contains("Needs: Off") && !help.contains("Needs: Read-only"), "{help}");
         assert!(help_for(TABLE.iter().find(|row| row.name == "tabs").unwrap()).contains("Needs: Read-only"));
+        assert!(help_for(TABLE.iter().find(|row| row.name == "save").unwrap()).contains("Needs: Control"), "saving is built now");
         let rows = table_json();
-        let save = rows["commands"].as_array().unwrap().iter().find(|row| row["name"] == "save").unwrap();
-        assert_eq!(save["built"], false);
+        for row in rows["commands"].as_array().unwrap() {
+            let spec = TABLE.iter().find(|spec| spec.name == row["name"]).unwrap();
+            assert_eq!(row["built"], !spec.not_built, "{}", spec.name);
+        }
     }
 
     /// Failure: nothing tells an agent the plain form returns at once and to carry on, so it adds `--timeout` and blocks for minutes waiting for a person who isn't there.

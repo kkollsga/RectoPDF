@@ -96,9 +96,9 @@ fn page_edits_work_through_the_session() {
     assert_eq!(drawn["data"]["unsaved_rotation_degrees"], 90);
     std::fs::remove_file(&out).unwrap();
 
-    // Nothing reached the disk, and saving says so.
+    // Nothing reached the disk. These edits delete a page, which isn't saved yet, and saving says so with nothing written.
     let (save, code) = state.json(&["save"]);
-    assert_eq!((save["error"]["code"].as_str(), code), (Some("not_built"), exit::FAILED));
+    assert_eq!((save["error"]["code"].as_str(), code), (Some("needs_rewrite"), exit::FAILED));
     let (closed, code) = state.json(&["close"]);
     assert_eq!((closed["error"]["code"].as_str(), code), (Some("unsaved_changes"), exit::FAILED));
     let (stop, code) = state.json(&["stop"]);
@@ -1062,7 +1062,7 @@ fn asking_for_help_any_way_works() {
     assert_eq!(code, exit::USAGE);
     assert!(said.contains("--page 1"), "{said}");
     let (save, _, _) = state.text(&["help", "save"]);
-    assert!(save.contains("isn't built") && !save.contains("Needs: Off"), "{save}");
+    assert!(save.contains("Needs: Control") && save.contains("backup"), "{save}");
 }
 
 /// Failure: `--flag=value` reaches the session as something else. Over the real socket, it must mean what `--flag value` means.

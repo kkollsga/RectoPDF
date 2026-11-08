@@ -2009,7 +2009,7 @@ mod tests {
             }
         }
         off_allowed.sort_unstable();
-        assert_eq!(off_allowed, ["level_changed", "permission_request", "permission_show", "save", "status"], "what's open at Off must stay this short");
+        assert_eq!(off_allowed, ["level_changed", "permission_request", "permission_show", "status"], "what's open at Off must stay this short");
         assert_eq!(Command::Sign {}.access(), Access::Nobody);
         for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
             assert!(!allowed(level, Access::Nobody) && !allowed(level, Access::UserOnly));
