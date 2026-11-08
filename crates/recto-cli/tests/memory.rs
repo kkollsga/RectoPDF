@@ -222,8 +222,12 @@ fn out_of_descriptors_the_session_doesnt_spin() {
     // The session finds out they've gone as it next reads them, so the very next connection can still be one too many: dropped as it's accepted, it ends at the write or at the read, whichever comes after the drop.
     let started = std::time::Instant::now();
     loop {
-        let mut raw = early.take().unwrap_or_else(|| Raw::connect(&state));
-        if raw.try_send(&json!({ "cmd": "status" }).to_string()).is_ok() && raw.read().is_some_and(|reply| reply["ok"] == true) {
+        // A connection the session dropped as it accepted it can already be gone when its timeout is set, which is the same drop seen sooner.
+        let raw = early.take().map(Ok).unwrap_or_else(|| Raw::try_connect(&state));
+        if let Ok(mut raw) = raw
+            && raw.try_send(&json!({ "cmd": "status" }).to_string()).is_ok()
+            && raw.read().is_some_and(|reply| reply["ok"] == true)
+        {
             break;
         }
         assert!(started.elapsed() < Duration::from_secs(10), "with descriptors free again, it must take connections again");
