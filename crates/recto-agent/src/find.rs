@@ -459,6 +459,8 @@ pub trait Finding: Send + Sync {
     fn with_results(&self, step: &mut dyn FnMut(&mut Results));
     /// Waits up to `limit` for that run to end. Says whether it did.
     fn wait(&self, generation: u64, limit: Duration) -> bool;
+    /// Waits up to `limit` for the results to be other than at `version`, as when hits come or the run ends. Says whether they are.
+    fn wait_past(&self, version: u64, limit: Duration) -> bool;
 }
 
 /// How long `recto find` waits for a query to finish before answering with what's found so far.
@@ -488,6 +490,10 @@ impl Finding for Here {
         step(&mut self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
     }
     fn wait(&self, _generation: u64, _limit: Duration) -> bool {
+        true
+    }
+    // A run here is over before anything looks at it.
+    fn wait_past(&self, _version: u64, _limit: Duration) -> bool {
         true
     }
 }
@@ -535,6 +541,24 @@ pub fn step<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, forward:
     let (hit, tab) = hit?;
     went_to(access, tab, &hit, going);
     Some((tab, hit))
+}
+
+/// **A step that waits for its hit,** for an agent's `recto find --next` and `--previous`, which answer once: while the query runs, [`Results::step`] says wait when the hit wanted isn't known yet, as the app's kept step does, so it's tried again each time more is known, until there's a hit, the query ends, or `limit` passes. Only then is there nothing to go to. The same rule as the app's: what's waited on is [`step`] saying so, never a second judgement.
+pub fn step_waiting<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, forward: bool, going: Going, limit: Duration) -> Option<(u32, Hit)> {
+    let deadline = Instant::now() + limit;
+    loop {
+        // What was known before the try: anything after it is worth another.
+        let mut known = (0, false);
+        finding.with_results(&mut |results| known = (results.version, results.running()));
+        if let Some(went) = step(access, finding, forward, going) {
+            return Some(went);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if !known.1 || left.is_zero() {
+            return None;
+        }
+        finding.wait_past(known.0, left);
+    }
 }
 
 /// Goes to a hit by its number in the list, as a click on its row does: the person's jump.
@@ -586,6 +610,8 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
     }
     let here = Here(std::sync::Mutex::new(Results::default()));
     let finding: &dyn Finding = access.finding().unwrap_or(&here);
+    // One wait for the whole command, a query's and a step's together, inside the client's patience.
+    let deadline = Instant::now() + COMMAND_WAIT;
     if asked.close {
         close(access);
         events.push(crate::Event::new("find_changed", serde_json::json!({ "open": false })));
@@ -600,7 +626,7 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
     if let Some(query) = &query {
         let generation = begin(access, query)?;
         if access.finding().is_some() {
-            finding.wait(generation, COMMAND_WAIT);
+            finding.wait(generation, deadline.saturating_duration_since(Instant::now()));
         } else {
             let (plan, needle) = access.with(|s| Ok::<_, AgentError>((plan(s, s.active().ok_or_else(|| AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND))?)?, needle(query).unwrap_or_default())))?;
             let mut results = Results::default();
@@ -614,7 +640,7 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
     }
     let mut went = None;
     if asked.next || asked.previous {
-        let Some((tab, hit)) = step(access, finding, asked.next, Going::Step) else {
+        let Some((tab, hit)) = step_waiting(access, finding, asked.next, Going::Step, deadline.saturating_duration_since(Instant::now())) else {
             return Err(AgentError::new("nothing_found", "There's no hit to go to.", exit::NOT_FOUND).then("Find something first: `recto find \"words\"`."));
         };
         events.push(crate::Event::new("page_changed", serde_json::json!({ "tab": tab, "page": hit.page + 1 })));
@@ -675,6 +701,95 @@ fn answer<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, listed: us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Find whose run is driven by the test: its hits come only once a step is waiting for them, so the step is certainly asked while the query runs.
+    #[derive(Default)]
+    struct Driven {
+        results: std::sync::Mutex<Results>,
+        changed: std::sync::Condvar,
+        waiting: std::sync::atomic::AtomicBool,
+    }
+
+    impl Finding for Driven {
+        fn start(&self, _plan: FindPlan, _query: &str, _needle: String) -> u64 {
+            0
+        }
+        fn clear(&self) {}
+        fn with_results(&self, step: &mut dyn FnMut(&mut Results)) {
+            step(&mut self.results.lock().unwrap());
+        }
+        fn wait(&self, _generation: u64, _limit: Duration) -> bool {
+            true
+        }
+        fn wait_past(&self, version: u64, limit: Duration) -> bool {
+            let mut results = self.results.lock().unwrap();
+            self.waiting.store(true, std::sync::atomic::Ordering::SeqCst);
+            while results.version == version {
+                let (next, timeout) = self.changed.wait_timeout(results, limit).unwrap();
+                results = next;
+                if timeout.timed_out() {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+
+    #[derive(Clone)]
+    struct TenPages;
+
+    impl DocLoader for TenPages {
+        fn load(&self, _path: &std::path::Path) -> Result<recto_core::DocFacts, recto_core::OpenError> {
+            Ok(recto_core::DocFacts { page_count: 10, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: recto_core::Toc::default(), renderer_only: false })
+        }
+    }
+
+    fn found_on(page: u32) -> Hit {
+        Hit { page, start: 0, end: 4, before: "".into(), matched: "word".into(), after: "".into(), hidden: false }
+    }
+
+    /// Failure: an agent's `recto find --next` (and ⌘K's `--run` of it), asked while the query runs and before the hit it wants is known, answers that there's nothing to go to, where the app's own step waits for it (the palette's test, after the sandbox merge changed the timing). It waits, bounded, for a hit or the query's end, and only then says there's none.
+    #[test]
+    fn an_agents_step_waits_for_its_hit_while_the_query_runs() {
+        use std::sync::atomic::Ordering;
+        let session = std::sync::Mutex::new(Session::new(TenPages));
+        let tab = session.lock().unwrap().open(std::path::Path::new("/d/ten.pdf")).unwrap().0;
+        let finding = std::sync::Arc::new(Driven::default());
+        let run = |hits: Vec<Hit>| {
+            let generation = finding.results.lock().unwrap().begin(tab, "word", 10);
+            finding.waiting.store(false, Ordering::SeqCst);
+            let driver = std::sync::Arc::clone(&finding);
+            std::thread::spawn(move || {
+                // Bounded, so a step that never waits fails its assertion rather than hanging the test.
+                let given_up = Instant::now() + Duration::from_secs(10);
+                while !driver.waiting.load(Ordering::SeqCst) && Instant::now() < given_up {
+                    std::thread::yield_now();
+                }
+                let mut results = driver.results.lock().unwrap();
+                let progress = Progress { pages_done: 10, pages: 10, pages_with_hits: u32::try_from(hits.len()).unwrap(), total: hits.len() as u64, ..Progress::default() };
+                results.add(generation, hits, &progress);
+                results.finish(generation, End::Finished, progress);
+                driver.changed.notify_all();
+            })
+        };
+        // Forward from page 1: the hit on page 6 comes while the step waits.
+        let driver = run(vec![found_on(5)]);
+        let went = step_waiting(&session, &*finding, true, Going::Step, Duration::from_secs(10));
+        driver.join().unwrap();
+        assert_eq!(went.map(|(_, hit)| hit.page), Some(5), "the step waited for the hit");
+        // Back from page 1 goes round to the last hit, which is known only at the query's end.
+        session.lock().unwrap().go_to(TabId(tab), 0).unwrap();
+        let driver = run(vec![found_on(2), found_on(8)]);
+        let went = step_waiting(&session, &*finding, false, Going::Step, Duration::from_secs(10));
+        driver.join().unwrap();
+        assert_eq!(went.map(|(_, hit)| hit.page), Some(8), "it went round once the end was known");
+        // A query that ends with nothing: no hit, and the answer comes at the end, not at the limit.
+        let driver = run(Vec::new());
+        let began = Instant::now();
+        assert!(step_waiting(&session, &*finding, true, Going::Step, Duration::from_secs(10)).is_none());
+        driver.join().unwrap();
+        assert!(began.elapsed() < Duration::from_secs(5), "nothing to go to is said when the query ends");
+    }
 
     fn hits(text: &str, query: &str) -> Vec<Hit> {
         page_hits(text, &needle(query).unwrap(), 3, MAX_HITS, &|_| false).1
