@@ -150,7 +150,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Whether the hidden `previous/` copy gets registered with Launch Services, and installing during dark wake or a locked screen
 - [ ] A check by hand with the window closed says its result only in Settings, as the notice has nowhere to show
 - [ ] Across an update, a minimised window or a hidden app comes back shown: `qa state` doesn't hold either yet, and the state record has neither
-- [ ] Links, back and forward, page labels
+- [x] Links, back and forward, page labels: `recto_core::nav` reads links and `/PageLabels`, bounded and fuzzed; a trail per tab in the session and the state record; `recto links`, `follow`, `back`, `forward`, `goto label`; the pointing hand and hint, the click, the sheet before a web address, the Go menu on ⌘[ and ⌘], the system swipe, and the go-to field on the page number. QA: `qa pointer`, `qa swipe`, `qa page-type`, `qa page-escape`, `qa button page`, `qa sheet-answer`; `app/qa/links-shots.sh`
+- [ ] Links follow-ups: a two-finger swipe, which needs AppKit's scroll-event tracking rather than `swipe(with:)`, isn't done, as it fights a zoomed page's sideways scroll; a link's hint stays until the pointer moves after a jump; Find's hits will want `AppCore` to say a page's label, which `Session::page_label` already does; a link's box isn't turned with an unsaved quarter turn in `recto links`, which gives it as the file shows the page; links on a 10,000-page file read the whole page tree once a page, measured below
 - [ ] Click to copy an image losslessly
 - [x] Hand-rolled streaming `recto-svg`, and `recto export svg`: a page or a box to a new SVG, images lossless, what can't be vector a named picture of just that element
 - [ ] Snapshot tool with text, PNG, JPG and SVG, on top of that

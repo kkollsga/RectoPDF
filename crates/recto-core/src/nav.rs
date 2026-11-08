@@ -7,7 +7,7 @@
 //!
 //! Rectangles are in points on the page as it's shown, from its top left, y down: past the crop, turned by the page's own `/Rotate`, the same frame as a selection's. A file's turn the reader adds on top is the page view's to apply.
 
-use crate::{clean_text, deref, open_bytes, open_reader, OpenError};
+use crate::{clean_text, deref, open_bytes, open_reader_cached, OpenError};
 use lopdf::{Dictionary, IndexedReader, Object, ObjectId};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -178,11 +178,16 @@ struct Budget {
     visits_left: Cell<usize>,
     deadline: Instant,
     cut_short: Cell<bool>,
+    /// Name-tree nodes already read in this read, as a page of links into one tree reads the same nodes for each: at most [`MAX_NODES_KEPT`], for as long as the read.
+    nodes: std::cell::RefCell<HashMap<ObjectId, std::rc::Rc<Dictionary>>>,
 }
+
+/// Name-tree nodes kept for one read. A tree a few levels deep has its path in far fewer.
+const MAX_NODES_KEPT: usize = 256;
 
 impl Budget {
     fn new() -> Self {
-        Self { visits_left: Cell::new(MAX_TREE_VISITS), deadline: Instant::now() + MAX_READ_TIME, cut_short: Cell::new(false) }
+        Self { visits_left: Cell::new(MAX_TREE_VISITS), deadline: Instant::now() + MAX_READ_TIME, cut_short: Cell::new(false), nodes: std::cell::RefCell::new(HashMap::new()) }
     }
 
     fn may_visit(&self) -> bool {
@@ -198,7 +203,7 @@ impl Budget {
 
 /// Reads the links on some pages of a file, zero-based, at most [`MAX_PAGES_PER_READ`] of them, in one opening. A page that isn't there, or can't be read, comes back with no links. The file's closed again when this returns.
 pub fn page_links(path: &Path, pages: &[u32]) -> Result<Vec<(u32, PageLinks)>, OpenError> {
-    Ok(links_of(&open_reader(path)?, pages))
+    Ok(links_of(&open_reader_cached(path)?, pages))
 }
 
 /// [`page_links`] on bytes in memory: the same walk, for the fuzzer.
@@ -208,6 +213,7 @@ pub fn page_links_bytes(bytes: Arc<[u8]>, pages: &[u32]) -> Result<Vec<(u32, Pag
 
 fn links_of(reader: &IndexedReader, pages: &[u32]) -> Vec<(u32, PageLinks)> {
     let budget = Budget::new();
+    let (old_dests, names_tree) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
     let Ok(map) = reader.page_map() else { return pages.iter().take(MAX_PAGES_PER_READ).map(|page| (*page, PageLinks::default())).collect() };
     let index: HashMap<ObjectId, u32> = map.iter().enumerate().filter_map(|(at, entry)| Some((entry.id(), u32::try_from(at).ok()?))).collect();
     let count = u32::try_from(map.len()).unwrap_or(u32::MAX);
@@ -228,7 +234,7 @@ fn links_of(reader: &IndexedReader, pages: &[u32]) -> Vec<(u32, PageLinks)> {
             Some(Object::Array(items)) => items,
             _ => Vec::new(),
         };
-        let context = Context { reader, map: &map, root: &root, index: &index, count, page, budget: &budget };
+        let context = Context { old_dests: &old_dests, names_tree: &names_tree, reader, map: &map, root: &root, index: &index, count, page, budget: &budget };
         for item in annots.iter().take(MAX_PAGE_ANNOTS) {
             if found.links.len() >= MAX_PAGE_LINKS || Instant::now() >= budget.deadline {
                 found.truncated = true;
@@ -252,6 +258,8 @@ fn links_of(reader: &IndexedReader, pages: &[u32]) -> Vec<(u32, PageLinks)> {
 }
 
 struct Context<'a> {
+    old_dests: &'a std::cell::OnceCell<Option<Dictionary>>,
+    names_tree: &'a std::cell::OnceCell<Option<Object>>,
     reader: &'a IndexedReader,
     map: &'a lopdf::PageMap,
     root: &'a Dictionary,
@@ -317,10 +325,11 @@ impl Context<'_> {
             current = match current {
                 Some(Object::Array(items)) => return self.explicit(&items),
                 Some(Object::Dictionary(dict)) => dict.get(b"D").ok().and_then(|inner| deref(self.reader, inner)),
-                Some(Object::Name(name)) => self.root.get(b"Dests").ok().and_then(|dests| deref(self.reader, dests)).and_then(|dests| dests.as_dict().ok().and_then(|dests| dests.get(&name).ok()).and_then(|found| deref(self.reader, found))),
+                // The old `/Dests` dictionary and the `/Names` tree's root are read once a read, as a page of links names into them over and over: RFC 9110's `/Dests` is one object of every name.
+                Some(Object::Name(name)) => self.old_dests.get_or_init(|| self.root.get(b"Dests").ok().and_then(|dests| deref(self.reader, dests)).and_then(|dests| dests.as_dict().ok().cloned())).as_ref().and_then(|dests| dests.get(&name).ok()).and_then(|found| deref(self.reader, found)),
                 Some(Object::String(name, _)) => {
-                    let tree = self.root.get(b"Names").ok().and_then(|names| deref(self.reader, names)).and_then(|names| names.as_dict().ok().and_then(|names| names.get(b"Dests").ok()).and_then(|tree| deref(self.reader, tree)));
-                    tree.and_then(|tree| find_named(self.reader, &tree, &name, self.budget))
+                    let tree = self.names_tree.get_or_init(|| self.root.get(b"Names").ok().and_then(|names| deref(self.reader, names)).and_then(|names| names.as_dict().ok().and_then(|names| names.get(b"Dests").ok()).and_then(|tree| deref(self.reader, tree))));
+                    tree.as_ref().and_then(|tree| find_named(self.reader, tree, &name, self.budget))
                 }
                 _ => return LinkTarget::Nowhere,
             };
@@ -391,35 +400,67 @@ fn scheme_of(bytes: &[u8]) -> Option<String> {
 }
 
 fn find_named(reader: &IndexedReader, root: &Object, wanted: &[u8], budget: &Budget) -> Option<Object> {
-    let mut stack = vec![root.clone()];
+    let mut stack: Vec<Object> = Vec::new();
     let mut seen: HashSet<ObjectId> = HashSet::new();
+    // A root written in place is looked through where it is: copying a tree of every name for each link was most of a page's time.
+    match root {
+        Object::Dictionary(dict) => {
+            if !budget.may_visit() {
+                return None;
+            }
+            if let Some(found) = look_in(reader, dict, wanted, &mut stack, budget) {
+                return found;
+            }
+        }
+        other => stack.push(other.clone()),
+    }
     while let Some(node) = stack.pop() {
-        if let Object::Reference(id) = &node
-            && !seen.insert(*id)
-        {
+        let Object::Reference(id) = node else { continue };
+        if !seen.insert(id) {
             continue;
         }
         if !budget.may_visit() {
             return None;
         }
-        let Some(Object::Dictionary(dict)) = deref(reader, &node) else { continue };
-        if let Ok(limits) = dict.get(b"Limits").and_then(Object::as_array)
-            && let (Some(Ok(low)), Some(Ok(high))) = (limits.first().map(Object::as_str), limits.get(1).map(Object::as_str))
-            && (wanted < low || wanted > high)
-        {
-            continue;
-        }
-        if let Ok(pairs) = dict.get(b"Names").and_then(Object::as_array) {
-            for [name, value] in pairs.as_chunks::<2>().0 {
-                if name.as_str().ok() == Some(wanted) {
-                    return deref(reader, value);
+        let kept = budget.nodes.borrow().get(&id).cloned();
+        let dict = match kept {
+            Some(dict) => dict,
+            None => {
+                let Some(Object::Dictionary(dict)) = reader.resolve_object(id).ok() else { continue };
+                let dict = std::rc::Rc::new(dict);
+                let mut nodes = budget.nodes.borrow_mut();
+                if nodes.len() < MAX_NODES_KEPT {
+                    nodes.insert(id, std::rc::Rc::clone(&dict));
                 }
+                dict
+            }
+        };
+        if let Some(found) = look_in(reader, &dict, wanted, &mut stack, budget) {
+            return found;
+        }
+    }
+    None
+}
+
+/// One node of a name tree: what it names `wanted` as, if it does (`Some(None)` for a name whose value can't be read), and otherwise its kids, waiting.
+fn look_in(reader: &IndexedReader, dict: &Dictionary, wanted: &[u8], stack: &mut Vec<Object>, budget: &Budget) -> Option<Option<Object>> {
+    if let Ok(limits) = dict.get(b"Limits").and_then(Object::as_array)
+        && let (Some(Ok(low)), Some(Ok(high))) = (limits.first().map(Object::as_str), limits.get(1).map(Object::as_str))
+        && (wanted < low || wanted > high)
+    {
+        return None;
+    }
+    if let Ok(pairs) = dict.get(b"Names").and_then(Object::as_array) {
+        for [name, value] in pairs.as_chunks::<2>().0 {
+            if name.as_str().ok() == Some(wanted) {
+                return Some(deref(reader, value));
             }
         }
-        if let Ok(kids) = dict.get(b"Kids").and_then(Object::as_array) {
-            let room = budget.visits_left.get().saturating_sub(stack.len());
-            stack.extend(kids.iter().take(room).cloned());
-        }
+    }
+    if let Ok(kids) = dict.get(b"Kids").and_then(Object::as_array) {
+        let room = budget.visits_left.get().saturating_sub(stack.len());
+        // Only references wait: a kid written in place can't be told from its parent, and a real tree's kids are objects.
+        stack.extend(kids.iter().take(room).filter(|kid| matches!(kid, Object::Reference(_))).cloned());
     }
     None
 }

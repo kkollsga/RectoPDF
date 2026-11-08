@@ -160,6 +160,24 @@ fn open_reader(path: &Path) -> Result<IndexedReader, OpenError> {
     checked_reader(IndexedReader::open(source))
 }
 
+/// [`open_reader`] with a small cache of objects and object streams, for one read that resolves many objects packed in the same streams, as a page of links does: without it each is a fresh inflate of its stream. It lives as long as the reader, which is one read.
+pub(crate) fn open_reader_cached(path: &Path) -> Result<IndexedReader, OpenError> {
+    let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
+        ErrorKind::NotFound => OpenError::NotFound,
+        ErrorKind::PermissionDenied => OpenError::NotAllowed,
+        _ => OpenError::NotPdf,
+    })?;
+    if !meta.is_file() {
+        return Err(OpenError::NotPdf);
+    }
+    let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
+    checked_reader(IndexedReader::open_cached(source, lopdf::IndexedReaderOptions::default(), lopdf::IndexedReaderCacheOptions::new(READ_CACHE_BYTES, READ_CACHE_ENTRIES)))
+}
+
+/// What [`open_reader_cached`] may keep: enough for a page's annotations and their streams, and gone with the read.
+const READ_CACHE_BYTES: u64 = 4 * 1024 * 1024;
+const READ_CACHE_ENTRIES: usize = 256;
+
 /// What every way of opening shares: a file that needs a password is refused here, whichever bytes it came from.
 fn checked_reader(opened: Result<IndexedReader, lopdf::IndexedReaderError>) -> Result<IndexedReader, OpenError> {
     let reader = opened.map_err(|_| OpenError::NotPdf)?;

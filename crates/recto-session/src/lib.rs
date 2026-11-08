@@ -1168,6 +1168,11 @@ impl<L: DocLoader> Session<L> {
         self.trails.get(&id).map_or((false, false), |trail| (!trail.back().is_empty(), !trail.forward().is_empty()))
     }
 
+    /// A warm tab's contents and labels, shared: what the host needs to say a page by its label without asking the session again.
+    pub fn warm_toc(&self, id: TabId) -> Option<Arc<Toc>> {
+        self.warm.iter().find(|(tab, _)| *tab == id).map(|(_, toc)| Arc::clone(toc))
+    }
+
     /// A tab's trail, for QA and `recto where`.
     pub fn trail_of(&self, id: TabId) -> Option<&trail::Trail> {
         self.trails.get(&id)

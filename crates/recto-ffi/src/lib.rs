@@ -6,6 +6,7 @@
 #![allow(unsafe_code)] // What UniFFI's macros generate. Nothing here writes any of its own.
 
 mod generated_contents;
+pub mod linking;
 mod menus;
 mod panes;
 mod qa;
@@ -395,6 +396,13 @@ pub struct ReaderView {
     pub document_folder: String,
     /// Whether the Save icon is beside the window's controls: with unsaved edits, or while saving.
     pub save_button: bool,
+    /// Back and Forward can go somewhere in the tab being read: Go > Back and Forward, ⌘[ and ⌘], and a swipe.
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+    /// A web or email address a click asked to open, for the sheet that asks first.
+    pub link_prompt: Option<linking::LinkPrompt>,
+    /// The page being read, by its label if it has one: what the go-to field starts with.
+    pub page_text: String,
 }
 
 /// What to say by the page about a copy.
@@ -685,7 +693,12 @@ const MAX_FILE_READS: usize = 4;
 enum CoreCall {
     Reconcile,
     Tap(TabId),
-    GoTo(TabId, u32),
+    /// A jump, which Back comes back from: a contents entry, a link, or the go-to field, to a page and how far down it.
+    Jump(TabId, u32, f64),
+    /// What the go-to field had typed in it, for the tab showing.
+    JumpTyped(TabId, String),
+    /// Back, or forward, in the tab showing's trail: ⌘[ and ⌘], a swipe, or a link that says so.
+    Step(bool),
     Open(PathBuf),
     /// The sidebar hidden, or not.
     SetSidebarHidden(bool),
@@ -785,7 +798,7 @@ impl CoreQueue {
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(..) | CoreCall::CompareClick(_) | CoreCall::FocusPane(_) | CoreCall::SetSynced(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
+        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::Jump(..) | CoreCall::JumpTyped(..) | CoreCall::Step(_) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(..) | CoreCall::CompareClick(_) | CoreCall::FocusPane(_) | CoreCall::SetSynced(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
             return;
         }
         let mut calls = lock(&self.calls);
@@ -890,6 +903,8 @@ struct Synced {
 
 /// The state the UI thread pulls, swapped whole. A short lock, never held across anything slow.
 struct Published {
+    /// Each pane's contents and page labels, for a link's hint: the UI thread reads them here and never asks the session.
+    pane_tocs: Vec<Option<Arc<recto_core::Toc>>>,
     sidebar: Arc<SidebarView>,
     tabs: Arc<Vec<SidebarRow>>,
     contents: Arc<Vec<ContentsEntry>>,
@@ -943,6 +958,8 @@ struct Inner {
     open_failure: Mutex<Option<String>>,
     /// Why something the reader chose couldn't be done, as a notice that goes by itself.
     action_notice: Mutex<Option<String>>,
+    /// A web or email address a click asked to open, waiting for the person's answer on the sheet.
+    link_prompt: Mutex<Option<linking::LinkPrompt>>,
     /// Saves from the window: how many run, and what one that failed says.
     save_ui: saving::SaveUi,
 }
@@ -1348,7 +1365,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false } }),
+            published: Mutex::new(Published { pane_tocs: Vec::new(), contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false, can_go_back: false, can_go_forward: false, link_prompt: None, page_text: String::new() } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1358,6 +1375,7 @@ impl AppCore {
             paths: Some(paths),
             open_failure: Mutex::new(None),
             action_notice: Mutex::new(None),
+            link_prompt: Mutex::new(None),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
         });
         saver.attach(Arc::downgrade(&inner));
@@ -1522,7 +1540,7 @@ impl AppCore {
     pub fn tap_row(&self, row: SidebarRow) {
         let call = match (row.kind, row.page) {
             (RowKind::Tab, _) => CoreCall::Tap(TabId(row.tab)),
-            (RowKind::Contents, Some(page)) => CoreCall::GoTo(TabId(row.tab), page.saturating_sub(1)),
+            (RowKind::Contents, Some(page)) => CoreCall::Jump(TabId(row.tab), page.saturating_sub(1), 0.0),
             (RowKind::Contents, None) => return,
             (RowKind::Note, _) => match row.action.as_deref().and_then(recto_session::ContentsAction::from_id) {
                 Some(action) => CoreCall::ContentsAction(TabId(row.tab), action),
@@ -1614,6 +1632,7 @@ impl AppCore {
             menus::Action::Copy { anyway } => self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway),
             menus::Action::SelectAll => self.inner.panes.reading_engine(&self.inner.engine).select_all(),
             menus::Action::SetSynced(on) => self.inner.core.push(CoreCall::SetSynced(on)),
+            menus::Action::Step(back) => self.inner.core.push(CoreCall::Step(back)),
             menus::Action::ClearEditHistory => self.inner.core.push(CoreCall::ClearEditHistory),
             menus::Action::Zoom(zoom) => {
                 self.inner.panes.zoom_all(&self.inner.engine, zoom);
@@ -1670,6 +1689,10 @@ impl AppCore {
         if id == "edit.undo" || id == "edit.redo" {
             let reader = lock(&self.inner.published).reader.clone();
             return if id == "edit.undo" { reader.can_undo } else { reader.can_redo };
+        }
+        if id == "go.back" || id == "go.forward" {
+            let reader = lock(&self.inner.published).reader.clone();
+            return if id == "go.back" { reader.can_go_back } else { reader.can_go_forward };
         }
         let reading = self.inner.panes.reading_engine(&self.inner.engine);
         menus::enabled(&id, reading.has_document(), reading.has_selection())
@@ -1749,8 +1772,65 @@ impl AppCore {
         self.inner.panes.engine(&self.inner.engine, pane as usize).map(|engine| engine.selection_drag(x, y).into_iter().map(ReaderOp::from).collect()).unwrap_or_default()
     }
 
+    /// The mouse went up. A still single click on a link follows it, by Rust's rule: within the document at once, a web or email address only once the sheet's been answered, and anything else never, with a notice saying why.
     pub fn selection_release(&self, pane: u32) -> Vec<ReaderOp> {
-        self.inner.panes.engine(&self.inner.engine, pane as usize).map(|engine| engine.selection_release().into_iter().map(ReaderOp::from).collect()).unwrap_or_default()
+        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else { return Vec::new() };
+        let ops = engine.selection_release().into_iter().map(ReaderOp::from).collect();
+        if let Some(hit) = engine.take_clicked_link() {
+            follow_link(&self.inner, pane as usize, &engine, hit);
+        }
+        ops
+    }
+
+    /// **What the pointer looks like over a page, and what a link under it says.** A link's page not read yet says nothing for now and is read next, so the look comes with the next move. A short lock on the page view and the published state, never the session's.
+    pub fn pointer_look(&self, pane: u32, x: f64, y: f64) -> linking::PointerLook {
+        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else { return linking::PointerLook { cursor: "arrow".into(), hint: None } };
+        if let Some(hit) = engine.pointer_link(x, y) {
+            let hint = match &hit.target {
+                recto_core::nav::LinkTarget::Page { page, .. } => match engine.position_in_same_file(hit.page, *page) {
+                    Some(position) => {
+                        let toc = lock(&self.inner.published).pane_tocs.get(pane as usize).cloned().flatten();
+                        Some(linking::page_words(position, engine.own_file_page(position), toc.as_deref()))
+                    }
+                    None => Some("The page this link goes to isn't in the document as it's been edited".to_string()),
+                },
+                other => linking::hint_for(other),
+            };
+            return linking::PointerLook { cursor: "link".into(), hint };
+        }
+        linking::PointerLook { cursor: if engine.pointer_is_over_text(x, y) { "ibeam" } else { "arrow" }.into(), hint: None }
+    }
+
+    /// The sheet asking about a web or email address was answered. With Open, the address comes back for the host to hand to the system, exactly as the sheet showed it; with Cancel, nothing does.
+    pub fn link_prompt_answered(&self, open: bool) -> Option<String> {
+        let prompt = lock(&self.inner.link_prompt).take();
+        self.inner.core.push(CoreCall::Reconcile);
+        prompt.filter(|_| open).map(|prompt| prompt.address)
+    }
+
+    /// What the go-to field starts with, and its tooltip.
+    pub fn page_field(&self) -> linking::PageField {
+        let reader = lock(&self.inner.published).reader.clone();
+        linking::PageField { editing_text: reader.page_text, tooltip: "Page. Click to type a page number, or what the document calls a page, such as iv".into() }
+    }
+
+    /// Return in the go-to field: a label the file uses, or a page number. Says whether it was something to look up; one that names no page says so by the page.
+    pub fn page_typed(&self, text: String) -> bool {
+        let typed = text.trim();
+        if typed.is_empty() || typed.len() > linking::MAX_TYPED_PAGE || self.inner.core.frozen.load(Ordering::SeqCst) {
+            return false;
+        }
+        let reading = self.inner.panes.reading();
+        let Some(tab) = self.inner.panes.tab_of(reading) else { return false };
+        self.inner.core.push(CoreCall::JumpTyped(tab, typed.to_string()));
+        true
+    }
+
+    /// A swipe on the page, as the system reports it: Back or Forward, as in Safari.
+    pub fn swiped(&self, delta_x: f64) {
+        if let Some(back) = linking::swipe_goes_back(delta_x) {
+            self.inner.core.push(CoreCall::Step(back));
+        }
     }
 
     /// Whether the pointer's over text, for the I-beam. A page not read yet says no, and its text is read when there's nothing better to do.
@@ -2348,9 +2428,33 @@ fn session_thread(inner: &Arc<Inner>) {
                     }
                 }
             }
-            CoreCall::GoTo(id, page) => {
-                // `go_to` clamps: a contents entry can't send the reader off the end.
-                if host.session.with_session(|session| session.go_to(id, page)).is_ok() {
+            CoreCall::Jump(id, page, within) => {
+                // Where the reader is, as the page view has it now, is what Back comes back to. `jump` clamps: a contents entry can't send the reader off the end.
+                inner.take_places();
+                if let Ok(now) = host.session.with_session(|session| session.jump(id, page, within).map(|()| session.tab(id).map_or(page, |tab| tab.page))) {
+                    events.push(Event::new("page_changed", json!({ "tab": id.0, "page": now + 1 })));
+                }
+            }
+            CoreCall::JumpTyped(id, typed) => {
+                inner.take_places();
+                let went = host.session.with_session(|session| {
+                    let page = session.page_for_typed(id, &typed)?;
+                    session.jump(id, page, 0.0).ok()?;
+                    Some(page)
+                });
+                match went {
+                    Some(page) => events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page + 1 }))),
+                    None => *lock(&inner.action_notice) = Some(linking::no_such_page(&typed)),
+                }
+            }
+            CoreCall::Step(back) => {
+                inner.take_places();
+                let moved = host.session.with_session(|session| {
+                    let id = session.active()?;
+                    let moved = if back { session.go_back(id) } else { session.go_forward(id) };
+                    moved.ok().filter(|moved| *moved).and_then(|_| session.tab(id).map(|tab| (id, tab.page)))
+                });
+                if let Some((id, page)) = moved {
                     events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page + 1 })));
                 }
             }
@@ -2793,6 +2897,10 @@ struct PaneSnapshot {
     spread: record::Spread,
     /// Its file's name, cleaned, for its pane's label.
     title: String,
+    /// A jump the page view hasn't taken: where to land, as far down the page as it says.
+    jump: Option<recto_session::trail::Stop>,
+    /// Its contents and page labels, shared, so a link's hint can say a page by its label without asking the session.
+    toc: Option<Arc<recto_core::Toc>>,
 }
 
 /// What a page view was last told about the tab in its pane.
@@ -2831,12 +2939,39 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
     let saved = session.place_to_show(id).map(|place| SavedPlace { page: place.page, anchor: (place.anchor_page, place.within), x: place.x, y: place.y, document_height: place.document_height, magnification: place.zoom, page_size: (place.page_width > 0.0 && place.page_height > 0.0).then_some(recto_reader::layout::PageBox { width: place.page_width, height: place.page_height }) });
     // Edits that can't be read just now can't say what's on the pages, so it's the file that's shown.
     let pages = if session.list_is_asleep(id) { tab.page_count } else { session.pages_in(id) };
-    Some(PaneSnapshot { id, pages, page: tab.page, map, warm, problem, saved, spread: tab.spread, title: tab.name.to_string() })
+    Some(PaneSnapshot { id, pages, page: tab.page, map, warm, problem, saved, spread: tab.spread, title: tab.name.to_string(), jump: None, toc: session.warm_toc(id) })
 }
 
 /// The warm tabs off screen that pane 0's page view keeps: most recent first, and only as many as leave the panes and these at [`recto_session::MAX_WARM`] live documents (SPEC §2).
 fn warm_beside_panes(warm: impl Iterator<Item = TabId>, panes: &[TabId]) -> Vec<u32> {
     warm.filter(|other| !panes.contains(other)).take(recto_session::MAX_WARM.saturating_sub(panes.len())).map(|other| other.0).collect()
+}
+
+/// **Follows a link a click landed on,** by Rust's rule: a page of this document at once, as a jump; a web or email address only once the sheet's been answered; Back and Forward; and anything else never, with a notice saying why.
+fn follow_link(inner: &Inner, pane: usize, engine: &Engine, hit: recto_reader::links::LinkHit) {
+    if inner.core.frozen.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(tab) = inner.panes.tab_of(pane) else { return };
+    match hit.target {
+        recto_core::nav::LinkTarget::Page { page, within } => match engine.position_in_same_file(hit.page, page) {
+            Some(position) => inner.core.push(CoreCall::Jump(tab, position, within.map_or(0.0, f64::from))),
+            None => notice(inner, "The page this link goes to isn't in the document as it's been edited."),
+        },
+        recto_core::nav::LinkTarget::History { back } => inner.core.push(CoreCall::Step(back)),
+        recto_core::nav::LinkTarget::Web(address) => {
+            *lock(&inner.link_prompt) = Some(linking::prompt_for(&address));
+            inner.core.push(CoreCall::Reconcile);
+        }
+        recto_core::nav::LinkTarget::Refused(why) => notice(inner, why.message()),
+        recto_core::nav::LinkTarget::Nowhere => notice(inner, "This link goes nowhere in this document."),
+    }
+}
+
+/// A line by the page that goes by itself, in Rust's words.
+fn notice(inner: &Inner, words: &str) {
+    *lock(&inner.action_notice) = Some(words.to_string());
+    inner.core.push(CoreCall::Reconcile);
 }
 
 /// **Shows a tab in a pane,** or brings what's shown up to date: another tab, another list of pages, a layout, a page an agent sent it to, or the warm tabs. A tab a pane's page view hasn't held starts from its sleep file's pictures, as any wake does.
@@ -2873,7 +3008,11 @@ fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, shown: 
         engine.set_spread(reader_spread(shown.spread));
         synced.spread = Some(shown.spread);
     }
-    if synced.page != shown.page {
+    // A jump lands where it says, on its page and as far down it, even on the page the reader's on already, as Back to a place higher up the same page does.
+    if let Some(stop) = shown.jump {
+        engine.jump_within(stop.page, f64::from(stop.within));
+        synced.page = shown.page;
+    } else if synced.page != shown.page {
         engine.jump_to(shown.page);
         synced.page = shown.page;
     }
@@ -2932,7 +3071,10 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
                 events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page + 1 })));
             }
         }
-        let snapshots: Vec<PaneSnapshot> = panes.iter().enumerate().filter_map(|(pane, id)| pane_snapshot(session, *id, pane == 0, &panes)).collect();
+        let mut snapshots: Vec<PaneSnapshot> = panes.iter().enumerate().filter_map(|(pane, id)| pane_snapshot(session, *id, pane == 0, &panes)).collect();
+        for snapshot in &mut snapshots {
+            snapshot.jump = session.take_jump(snapshot.id);
+        }
         let plan = (session.comparison().cloned(), panes.iter().map(|id| session.pages_in(*id)).collect::<Vec<u32>>(), session.compare_note(), active);
         let model = session.sidebar();
         let mut current = None;
@@ -3001,11 +3143,15 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let (comparison, pane_pages, compare_note, active) = plan;
     let reading_snapshot = snapshots.iter().find(|shown| Some(shown.id) == active).or(snapshots.first());
     let layout = reading_snapshot.map_or(String::new(), |shown| shown.spread.name().to_string());
-    let (edited, (can_undo, can_redo), edit_mode, can_rotate, saving_now, file) = inner.host.session.with_session(|session| {
+    let (edited, (can_undo, can_redo), edit_mode, can_rotate, saving_now, file, (can_go_back, can_go_forward), page_text) = inner.host.session.with_session(|session| {
         let edit_mode = session.edit_mode();
         match reading_snapshot {
-            Some(shown) => (session.is_edited(shown.id), session.undo_and_redo(shown.id), edit_mode, session.can_edit_pages(shown.id), session.is_saving(shown.id), session.path_of(shown.id).zip(session.own_stamp(shown.id)).map(|(path, stamp)| (shown.id, path, stamp))),
-            None => (false, (false, false), edit_mode, false, false, None),
+            Some(shown) => {
+                let page = session.tab(shown.id).map_or(0, |tab| tab.page);
+                let page_text = session.page_label(shown.id, page).unwrap_or_else(|| (page + 1).to_string());
+                (session.is_edited(shown.id), session.undo_and_redo(shown.id), edit_mode, session.can_edit_pages(shown.id), session.is_saving(shown.id), session.path_of(shown.id).zip(session.own_stamp(shown.id)).map(|(path, stamp)| (shown.id, path, stamp)), session.can_go_back_and_forward(shown.id), page_text)
+            }
+            None => (false, (false, false), edit_mode, false, false, None, (false, false), String::new()),
         }
     });
     let (shown_tab, document_name, document_folder) = file.as_ref().map_or((0, String::new(), String::new()), |(id, path, _)| (id.0, path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(), path.parent().map(|folder| folder.display().to_string()).unwrap_or_default()));
@@ -3057,8 +3203,10 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
     let pane_views: Vec<PaneView> = if comparing { snapshots.iter().enumerate().map(|(pane, shown)| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active, layout: shown.spread.name().to_string(), note: shown.problem.clone().or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())) }).collect() } else { Vec::new() };
     let compare_synced = inner.host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
-    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: inner.save_ui.tooltip(), save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now) };
+    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: inner.save_ui.tooltip(), save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now), can_go_back, can_go_forward, link_prompt: lock(&inner.link_prompt).clone(), page_text };
+    let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = snapshots.iter().map(|shown| shown.toc.clone()).collect();
     let mut published = lock(&inner.published);
+    published.pane_tocs = pane_tocs;
     let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {
         published.tabs = tabs;
@@ -3161,7 +3309,7 @@ mod tests {
         let queue = CoreQueue::default();
         queue.frozen.store(true, Ordering::SeqCst);
         queue.push(CoreCall::Tap(TabId(1)));
-        queue.push(CoreCall::GoTo(TabId(1), 2));
+        queue.push(CoreCall::Jump(TabId(1), 2, 0.0));
         queue.push(CoreCall::Open(PathBuf::from("/d/a.pdf")));
         queue.push(CoreCall::SetSidebarHidden(true));
         queue.push(CoreCall::SetPaper(Paper::Dark));
