@@ -34,6 +34,12 @@ jobs:
       - name: nextest from source, when the download failed
         if: steps.nextest.outcome == 'failure'
         run: cargo install cargo-nextest --locked
+      # PDFium alone, in a cache every job shares: on 2026-11-08 GitHub's release downloads answered 504 for over an hour, and only a job
+      # whose own cache already held it could run. The checksum in tools/pdfium.sh still decides what's used.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/pdfium
+          key: pdfium-${{ hashFiles('tools/pdfium.sh') }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -70,6 +76,12 @@ jobs:
       - name: nextest from source, when the download failed
         if: steps.nextest.outcome == 'failure'
         run: cargo install cargo-nextest --locked
+      # PDFium alone, in a cache every job shares: on 2026-11-08 GitHub's release downloads answered 504 for over an hour, and only a job
+      # whose own cache already held it could run. The checksum in tools/pdfium.sh still decides what's used.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/pdfium
+          key: pdfium-${{ hashFiles('tools/pdfium.sh') }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
