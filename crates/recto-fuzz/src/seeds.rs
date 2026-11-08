@@ -250,6 +250,15 @@ fn record_seeds() -> Vec<Vec<u8>> {
     vec![record, journal, body, lines, br#"{"seq":1,"active":1,"places":[[1,3,{"page":3,"anchor_page":3,"within":0.5,"x":0,"y":10,"document_height":900,"zoom":1.5}]]}"#.to_vec()]
 }
 
+/// Generated contents as they're kept, and as the helper says them.
+fn generated_seeds() -> Vec<Vec<u8>> {
+    let kept = br#"{"format":"recto-generated-contents","version":1,"key":"abababababababababababababababababababababababababababababababab","pages":12,"truncated":false,"hidden_dropped":1,"pages_not_checked":0,"pages_failed":0,"entries":[[0,0,80,"1 Introduction"],[1,2,400,"1.1 Background"],[0,11,0,"References"]]}"#.to_vec();
+    let mut answer = br#"{"state":"ready","found":4,"kept":3,"elapsed_ms":120}"#.to_vec();
+    answer.push(b'\n');
+    answer.extend_from_slice(&kept);
+    vec![kept, answer, br#"{"state":"refused","code":"couldnt_read"}"#.to_vec(), (0..=255u8).collect()]
+}
+
 pub fn for_target(name: &str) -> Vec<Vec<u8>> {
     match name {
         "pdf_bytes" => {
@@ -265,6 +274,7 @@ pub fn for_target(name: &str) -> Vec<Vec<u8>> {
         "control" => control_seeds(),
         "edits" => sequence_seeds(),
         "record" => record_seeds(),
+        "generated" => generated_seeds(),
         "update" => update_seeds(),
         _ => Vec::new(),
     }
@@ -284,7 +294,7 @@ pub fn select_seeds() -> Vec<Vec<u8>> {
 }
 
 /// Every target's name.
-pub const TARGET_NAMES: &[&str] = &["pdf_bytes", "pdf_tree", "proto", "index", "select", "agent", "control", "edits", "record", "update"];
+pub const TARGET_NAMES: &[&str] = &["pdf_bytes", "pdf_tree", "proto", "index", "select", "agent", "control", "edits", "record", "update", "generated"];
 
 /// The check a target runs, by name.
 pub fn check_for(name: &str) -> Option<fn(&[u8])> {
@@ -298,6 +308,7 @@ pub fn check_for(name: &str) -> Option<fn(&[u8])> {
         "control" => targets::control::check,
         "edits" => targets::edits::check,
         "record" => targets::record::check,
+        "generated" => targets::generated::check,
         "update" => targets::update::check,
         _ => return None,
     })

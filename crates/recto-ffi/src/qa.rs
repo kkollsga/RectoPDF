@@ -457,7 +457,8 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         // What a person can type in a short field, and no more. Whether it's a level is the field's to find out, as it is for a person.
         "zoom_type" => value.chars().count() <= 32,
         "hover" | "reveal" => value == "none" || row(),
-        "click_row" | "contents_scroll" => row(),
+        "click_row" => value == "note" || value.strip_prefix("fold:").is_some_and(|row| row.parse::<u32>().is_ok()) || row(),
+        "contents_scroll" => row(),
         "resize" => value.split_once('x').and_then(|(width, height)| Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?))).is_some_and(|(width, height)| (400.0..=8000.0).contains(&width) && (300.0..=8000.0).contains(&height)),
         _ => false,
     };

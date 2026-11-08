@@ -8,7 +8,7 @@ mod ink;
 mod pdfium;
 
 pub use classify::classify_bgrx;
-pub use ink::{INK_PADDING_PX, INK_RANGE, box_has_ink};
+pub use ink::{INK_PADDING_PX, INK_RANGE, SAME_AS_GROUND, SEEN_PIXELS, adds_nothing_seen, box_has_ink, glyph_is_ground_coloured};
 pub use pdfium::{LibraryError, Pdfium, PdfiumBackend};
 pub use recto_proto::{CharBox, CharRecord, FailCode, PageFrame, TileKind, TileRect};
 

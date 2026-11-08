@@ -115,3 +115,67 @@ fn an_ordinary_name_tree_is_still_followed_past_a_dead_branch() {
     assert_eq!(toc.entries()[0].page, 2);
     assert!(!toc.truncated);
 }
+
+/// A 40-page document with an outline from `outline`, objects numbered from 3 + 2 × 40, and a name tree of `p0` and `p30`, as the EU's competitiveness report, part B, names its pages.
+fn outlined_by_names(outline: impl Fn(usize) -> Vec<String>) -> Vec<u8> {
+    use recto_testpdf::{Object, build};
+    let pages = 40;
+    let page = |index: usize| 3 + index * 2;
+    let first_extra = 3 + pages * 2;
+    let kids: Vec<String> = (0..pages).map(|index| format!("{} 0 R", page(index))).collect();
+    let names = first_extra;
+    let mut objects = vec![
+        Object::Dict(format!("<< /Type /Catalog /Pages 2 0 R /Outlines {} 0 R /Names << /Dests {names} 0 R >> >>", first_extra + 1)),
+        Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {pages} >>", kids.join(" "))),
+    ];
+    for index in 0..pages {
+        objects.push(Object::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {} 0 R >>", page(index) + 1)));
+        objects.push(Object::Stream { dict: String::new(), data: Vec::new() });
+    }
+    objects.push(Object::Dict(format!("<< /Names [(p0) [{} 0 R /Fit] (p30) [{} 0 R /Fit]] >>", page(0), page(30))));
+    objects.extend(outline(first_extra + 1).into_iter().map(Object::Dict));
+    build(&objects)
+}
+
+/// Failure: the EU's competitiveness report, part B, has every bookmark of its first half pointing at a named destination `p0`, which is page 1, so nearly every entry read 1 and one 227, and the owner saw numbers that "isnt logical". The numbers are the file's own, read as every reader reads them, so they're kept, and the verdict says these contents look bad, which is what offers generated ones.
+#[test]
+fn bookmarks_all_named_for_the_first_page_read_as_page_one_and_look_bad() {
+    let file = TempPdf::new("piled.pdf", &outlined_by_names(|root| {
+        let (first, children) = (root + 1, 12);
+        let mut objects = vec![format!("<< /Type /Outlines /First {first} 0 R /Last {} 0 R /Count 2 >>", first + children + 1)];
+        objects.push(format!("<< /Title (Sectoral policies) /Parent {root} 0 R /Next {} 0 R /First {} 0 R /Last {} 0 R /Count {children} /A << /S /GoTo /D (p0) >> >>", first + children + 1, first + 1, first + children));
+        for child in 0..children {
+            let at = first + 1 + child;
+            let links = format!("{}{}", if child > 0 { format!(" /Prev {} 0 R", at - 1) } else { String::new() }, if child + 1 < children { format!(" /Next {} 0 R", at + 1) } else { String::new() });
+            objects.push(format!("<< /Title ({}. Section) /Parent {first} 0 R{links} /A << /S /GoTo /D (p0) /NewWindow true >> >>", child + 1));
+        }
+        objects.push(format!("<< /Title (Horizontal policies) /Parent {root} 0 R /Prev {first} 0 R /A << /S /GoTo /D (p30) >> >>"));
+        objects
+    }));
+    let facts = inspect(&file.0).unwrap();
+    let pages: Vec<u32> = facts.toc.entries().iter().map(|entry| entry.page).collect();
+    assert_eq!(pages.len(), 14);
+    assert!(pages[..13].iter().all(|page| *page == 0), "{pages:?}");
+    assert_eq!(pages[13], 30);
+    assert_eq!(recto_core::verdict::judge(&facts.toc, facts.page_count).code(), "piled_on_one_page");
+}
+
+/// Failure: part A of the same report nests chapters 2 to 6 inside chapter 1. The indents are the file's own and are shown as they are, and the verdict says they look bad, which offers generated contents.
+#[test]
+fn chapters_nested_inside_chapter_one_read_as_the_file_has_them_and_look_bad() {
+    let file = TempPdf::new("misnested.pdf", &outlined_by_names(|root| {
+        let one = root + 1;
+        let mut objects = vec![format!("<< /Type /Outlines /First {one} 0 R /Last {one} 0 R /Count 1 >>")];
+        objects.push(format!("<< /Title (1. The starting point) /Parent {root} 0 R /First {} 0 R /Last {} 0 R /Count 3 /A << /S /GoTo /D (p0) >> >>", one + 1, one + 3));
+        for chapter in 0..3 {
+            let at = one + 1 + chapter;
+            let links = format!("{}{}", if chapter > 0 { format!(" /Prev {} 0 R", at - 1) } else { String::new() }, if chapter < 2 { format!(" /Next {} 0 R", at + 1) } else { String::new() });
+            objects.push(format!("<< /Title ({}. Chapter) /Parent {one} 0 R{links} /A << /S /GoTo /D (p30) >> >>", chapter + 2));
+        }
+        objects
+    }));
+    let facts = inspect(&file.0).unwrap();
+    let depths: Vec<u8> = facts.toc.entries().iter().map(|entry| entry.depth).collect();
+    assert_eq!(depths, [0, 1, 1, 1], "as the file has them");
+    assert_eq!(recto_core::verdict::judge(&facts.toc, facts.page_count).code(), "misnested");
+}
