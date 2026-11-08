@@ -73,6 +73,8 @@ struct Shared {
     last_note: Mutex<Option<String>>,
     last_notice: Mutex<Option<Notice>>,
     config: EngineConfig,
+    /// This page view's done with, as a comparison's pane is when it closes: its thread ends, and its workers and everything it drew go with it.
+    stopping: AtomicBool,
 }
 
 /// The page view's running half.
@@ -88,12 +90,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Engine {
     pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self {
-        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), workers_by_file: Mutex::new(Vec::new()), kill_idle_workers: AtomicBool::new(false), last_note: Mutex::new(None), last_notice: Mutex::new(None), config });
+        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), workers_by_file: Mutex::new(Vec::new()), kill_idle_workers: AtomicBool::new(false), last_note: Mutex::new(None), last_notice: Mutex::new(None), config, stopping: AtomicBool::new(false) });
         Self { shared, thread: Arc::new(Mutex::new(None)) }
     }
 
     /// Starts the thread the first time there's a document, and wakes it. `unpark` costs one atomic when it's already running.
     fn wake(&self) {
+        if self.shared.stopping.load(Ordering::SeqCst) {
+            return;
+        }
         let mut thread = lock(&self.thread);
         match &*thread {
             Some(running) => running.unpark(),
@@ -119,6 +124,50 @@ impl Engine {
             signal_ops(&self.shared);
         }
         self.wake();
+    }
+
+    /// **Ends this page view for good:** what's on screen comes off, its thread ends at its next turn, and its workers and everything drawn go with it. A comparison's pane closing does this, so a pane that's gone costs no thread, worker or surface.
+    pub fn shut_down(&self) {
+        let mut reader = lock(&self.shared.reader);
+        reader.deactivate();
+        drop(reader);
+        self.shared.stopping.store(true, Ordering::SeqCst);
+        if let Some(thread) = &*lock(&self.thread) {
+            thread.unpark();
+        }
+    }
+
+    /// Whether this page view's thread is running, for QA: a pane that's closed has none.
+    pub fn has_thread(&self) -> bool {
+        lock(&self.thread).is_some() && !self.shared.stopping.load(Ordering::SeqCst)
+    }
+
+    /// Shares what's kept off screen with this many page views in all.
+    pub fn set_share(&self, views: usize) {
+        lock(&self.shared.reader).set_share(views);
+    }
+
+    /// The tab showing's magnification.
+    pub fn magnification(&self) -> Option<f64> {
+        lock(&self.shared.reader).magnification()
+    }
+
+    /// Where the reader is in the tab showing, as a page and how far down it.
+    pub fn reading_anchor(&self) -> Option<(u32, f64)> {
+        lock(&self.shared.reader).reading_anchor()
+    }
+
+    /// Sends the view to a place in a page, for synced scroll. Says which page, held to the document.
+    pub fn follow(&self, page: u32, within: f64) -> Option<u32> {
+        let mut reader = lock(&self.shared.reader);
+        let went = reader.follow(page, within);
+        self.after(reader);
+        went
+    }
+
+    /// Which tab this page view shows.
+    pub fn hot_tab(&self) -> Option<u32> {
+        lock(&self.shared.reader).hot_tab()
     }
 
     /// Makes a tab the visible one. Off the UI thread, as the session decides this.
@@ -235,10 +284,16 @@ impl Engine {
 
     /// From the UI thread, on every scroll. A short lock and a few map lookups. What comes back is for the host to apply now.
     pub fn set_viewport(&self, viewport: Viewport) -> Vec<Op> {
+        self.set_viewport_scrolled(viewport).0
+    }
+
+    /// The same, and whether it was the reader scrolling, which synced scroll follows.
+    pub fn set_viewport_scrolled(&self, viewport: Viewport) -> (Vec<Op>, bool) {
         // What this returns is what was waiting, so nothing's waiting to be told about.
         self.shared.ops_signalled.store(false, Ordering::SeqCst);
         let mut reader = lock(&self.shared.reader);
         let ops = reader.set_viewport(viewport);
+        let scrolled = reader.take_user_scrolled();
         let moved = reader.has_moved_page();
         let more = reader.has_ops();
         let note = reader.note().map(str::to_string);
@@ -251,7 +306,7 @@ impl Engine {
             signal_ops(&self.shared);
         }
         self.wake();
-        ops
+        (ops, scrolled)
     }
 
     /// Runs what the mouse did, from the UI thread: a short lock, and at worst a look through one page already here. What comes back is for the host to apply now.
@@ -513,6 +568,12 @@ fn run(shared: &Shared) {
     let mut resting_since: Option<Instant> = None;
     let mut openings: HashMap<PathBuf, Receiver<Result<File, RenderFailure>>> = HashMap::new();
     loop {
+        if shared.stopping.load(Ordering::SeqCst) {
+            // Dropping them kills each worker and closes its file.
+            renderers.clear();
+            publish_workers(shared, &mut renderers);
+            return;
+        }
         let plan = {
             let mut reader = lock(&shared.reader);
             let files = reader.wanted_files();

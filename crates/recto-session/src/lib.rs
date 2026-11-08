@@ -4,6 +4,7 @@
 //! reads a PDF's facts and closes it. Only the active tab and the most recent others keep their contents, up to
 //! [`MAX_WARM`], and anything evicted is rebuilt from disk when it's needed again.
 
+pub mod compare;
 pub mod edit;
 pub mod record;
 pub mod sleep;
@@ -683,6 +684,8 @@ pub struct Session<L = DiskLoader> {
     history: Option<Arc<dyn HistorySource>>,
     /// An agent is acting at Full, so losing the owner's history is the holder's call. Set for each command.
     agent_at_full: bool,
+    /// Tabs side by side, if there's a comparison: see [`compare`]. The active tab is one of them, the pane being read.
+    comparison: Option<compare::Comparison>,
 }
 
 /// Files read ahead of waking their tabs, held at once. More than wakes can be under way together.
@@ -710,7 +713,7 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false }
+        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, comparison: None }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -922,6 +925,11 @@ impl<L: DocLoader> Session<L> {
         if self.tab(id).is_none() {
             return Err(SessionError::NoSuchTab);
         }
+        // A plain click on a tab during a comparison returns to one, that one (owner, 2026-11-08: comparison is by ⌘-click).
+        if self.comparison.take().is_some() {
+            self.activate(id);
+            return Ok(());
+        }
         if self.active == Some(id) {
             if let Some(tab) = self.tab_mut(id) {
                 tab.toc_open = !tab.toc_open;
@@ -1109,7 +1117,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The tabs that could go dormant, as they hold something: not the one on screen, and not one a save's under way on. Next to none however many tabs there are: the warm ones, and those with a list in memory.
     fn dormant_candidates(&self) -> impl Iterator<Item = TabId> + '_ {
-        self.warm.iter().map(|(id, _)| *id).chain(self.edits.keys().copied()).filter(move |id| Some(*id) != self.active && !self.held.contains(id) && self.edits.get(id).is_none_or(|list| list.saving().is_none()))
+        self.warm.iter().map(|(id, _)| *id).chain(self.edits.keys().copied()).filter(move |id| !self.on_screen(*id) && !self.held.contains(id) && self.edits.get(id).is_none_or(|list| list.saving().is_none()))
     }
 
     /// Something's working on this tab, a command of an agent's or an export, so it doesn't go dormant, whatever's asking. As many holds as there are, each let go by [`Self::let_go`].
@@ -1147,7 +1155,7 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether a tab may go dormant, whatever's asking: not the one on screen, one being worked on, or one being saved.
     pub fn can_go_dormant(&self, id: TabId) -> bool {
-        self.active != Some(id) && !self.held.contains(&id) && self.edits.get(&id).is_none_or(|list| list.saving().is_none())
+        !self.on_screen(id) && !self.held.contains(&id) && self.edits.get(&id).is_none_or(|list| list.saving().is_none())
     }
 
     /// What a dormant tab's journal has to say for its list to go to disk: the whole list, to compact to and compare with. `None` if there's no list, if it's not all in the file, or if nobody keeps journals here.
@@ -1747,7 +1755,7 @@ impl<L: DocLoader> Session<L> {
 
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
-        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _ } = self;
+        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, comparison } = self;
         let ViewSettings { paper, sidebar_hidden, agent_icon_hidden } = *view;
         let tabs = tabs
             .iter()
@@ -1771,7 +1779,8 @@ impl<L: DocLoader> Session<L> {
                 }
             })
             .collect();
-        SessionRecord { app: record::AppRecord::default(), view: ViewRecord { paper: paper.map(Paper::to_record), focus: false, sidebar_hidden, agent_icon_hidden }, find: find.clone(), edit_mode: *edit_mode, active: active.map(|id| id.0), next_id: *next_id, tabs }
+        let comparison = comparison.as_ref().map(|comparison| record::ComparisonRecord { tabs: comparison.tabs.iter().map(|tab| tab.0).collect(), synced: comparison.synced, sync_from: comparison.sync_from.clone() });
+        SessionRecord { app: record::AppRecord::default(), view: ViewRecord { paper: paper.map(Paper::to_record), focus: false, sidebar_hidden, agent_icon_hidden }, find: find.clone(), edit_mode: *edit_mode, active: active.map(|id| id.0), next_id: *next_id, tabs, comparison }
     }
 
     /// A tab's edits whole, as QA reads them and for a journal's checkpoint.
@@ -1807,6 +1816,7 @@ impl<L: DocLoader> Session<L> {
         self.journals.clear();
         self.fresh_journals.clear();
         self.active = None;
+        self.comparison = None;
         self.next_id = record.next_id;
         self.find = record.find.clone();
         self.edit_mode = record.edit_mode;
@@ -1865,9 +1875,23 @@ impl<L: DocLoader> Session<L> {
             });
         }
         self.active = record.active.map(TabId).filter(|id| self.tab(*id).is_some());
+        // Side by side as it was, of the tabs that came back. A record's been checked, but one tab per file can take one out.
+        self.comparison = record.comparison.as_ref().and_then(|saved| {
+            let mut comparison = compare::Comparison::new(saved.tabs.iter().copied().map(TabId).filter(|id| self.tab(*id).is_some()).collect()).ok()?;
+            if saved.synced && saved.sync_from.len() == saved.tabs.len() {
+                comparison.synced = true;
+                comparison.sync_from = saved.tabs.iter().zip(&saved.sync_from).filter(|(id, _)| comparison.contains(TabId(**id))).map(|(_, page)| *page).collect();
+            }
+            Some(comparison)
+        });
+        if let Some(comparison) = &self.comparison
+            && !self.active.is_some_and(|active| comparison.contains(active))
+        {
+            self.active = comparison.tabs.first().copied();
+        }
         // What's come back for tabs nobody's looking at is on disk already, and needn't be here too.
         if self.journaling && self.history.is_some() {
-            let others: Vec<TabId> = self.edits.keys().copied().filter(|id| Some(*id) != self.active).collect();
+            let others: Vec<TabId> = self.edits.keys().copied().filter(|id| !self.on_screen(*id)).collect();
             for id in others {
                 self.put_list_to_sleep(id);
             }
@@ -2062,6 +2086,23 @@ impl<L: DocLoader> Session<L> {
         self.draws.retain(|d| d.tab != id);
         self.warm.retain(|(tab, _)| *tab != id);
         self.woken.retain(|(tab, _, _)| *tab != id);
+        // Out of a comparison too. With one left it's that one alone, and the reader goes to another pane rather than the next tab along.
+        let mut next_pane = None;
+        if let Some(comparison) = &mut self.comparison
+            && comparison.contains(id)
+        {
+            comparison.remove(id);
+            next_pane = comparison.tabs.first().copied();
+            if comparison.tabs.len() < compare::MIN_PANES {
+                self.comparison = None;
+            }
+        }
+        if self.active == Some(id)
+            && let Some(next) = next_pane
+        {
+            self.active = None;
+            self.activate(next);
+        }
         if self.active == Some(id) {
             self.active = None;
             let next = self.tabs.get(index).or_else(|| index.checked_sub(1).and_then(|i| self.tabs.get(i))).map(|t| t.id);
@@ -2095,6 +2136,117 @@ impl<L: DocLoader> Session<L> {
         let edited = self.active.is_some_and(|id| self.is_edited(id));
         let undone_owner_steps = self.active.is_some_and(|id| self.has_undone_owner_steps(id));
         SidebarModel { rows, rail_filled, toc_open, place, edited, undone_owner_steps }
+    }
+
+    /// Tabs side by side, if there are.
+    pub fn comparison(&self) -> Option<&compare::Comparison> {
+        self.comparison.as_ref()
+    }
+
+    /// What's on screen, a pane each, left to right: a comparison's tabs, or the active tab alone, or nothing.
+    pub fn panes(&self) -> Vec<TabId> {
+        match &self.comparison {
+            Some(comparison) => comparison.tabs.clone(),
+            None => self.active.into_iter().collect(),
+        }
+    }
+
+    /// Whether a tab is on screen: active, or a pane of a comparison. Such a tab doesn't go dormant, whatever's asking.
+    pub fn on_screen(&self, id: TabId) -> bool {
+        self.active == Some(id) || self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id))
+    }
+
+    /// **Puts these tabs side by side,** in this order, separate scroll, with `reading` the pane being read, or the active tab if it's one of them, or the first. Their edits are woken, as a pane shows them. A tab that's cold is read here if nobody's read it ahead with the session free, as [`Self::wake_for_tap`] lets a caller do.
+    pub fn compare(&mut self, tabs: &[TabId], reading: Option<TabId>) -> Result<(), compare::CompareError> {
+        if tabs.iter().any(|id| self.tab(*id).is_none()) {
+            return Err(compare::CompareError::NoSuchTab);
+        }
+        let comparison = compare::Comparison::new(tabs.to_vec())?;
+        for id in tabs {
+            self.wake_list(*id);
+        }
+        let reading = reading.filter(|id| tabs.contains(id)).or(self.active.filter(|id| tabs.contains(id))).unwrap_or(tabs[0]);
+        // Synced scroll stays on through a change of tabs, starting again from where each is now.
+        let synced = self.comparison.as_ref().is_some_and(|was| was.synced);
+        self.comparison = Some(comparison);
+        if synced {
+            self.set_compare_synced(true);
+        }
+        self.activate(reading);
+        Ok(())
+    }
+
+    /// **⌘-click and ⌃-click on a tab** (owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"). A tab not in it joins at the right and is the one read; one in it leaves; down to one, that one's alone. On the only tab showing, nothing.
+    pub fn toggle_compare(&mut self, id: TabId) -> Result<compare::CompareChange, compare::CompareError> {
+        if self.tab(id).is_none() {
+            return Err(compare::CompareError::NoSuchTab);
+        }
+        let Some(mut comparison) = self.comparison.clone() else {
+            let Some(active) = self.active.filter(|active| *active != id) else { return Ok(compare::CompareChange::Nothing) };
+            self.compare(&[active, id], Some(id))?;
+            return Ok(compare::CompareChange::Added);
+        };
+        if comparison.contains(id) {
+            comparison.remove(id);
+            if comparison.tabs.len() < compare::MIN_PANES {
+                let last = comparison.tabs.first().copied();
+                self.comparison = None;
+                if let Some(last) = last {
+                    self.activate(last);
+                }
+                return Ok(compare::CompareChange::Ended);
+            }
+            let reading = comparison.tabs.first().copied();
+            self.comparison = Some(comparison);
+            if self.active == Some(id)
+                && let Some(reading) = reading
+            {
+                self.activate(reading);
+            }
+            return Ok(compare::CompareChange::Removed);
+        }
+        let page = self.tab(id).map_or(0, |tab| tab.page);
+        comparison.add(id, page)?;
+        self.wake_list(id);
+        self.comparison = Some(comparison);
+        self.activate(id);
+        Ok(compare::CompareChange::Added)
+    }
+
+    /// Back to one tab: the one being read.
+    pub fn end_compare(&mut self) -> bool {
+        self.comparison.take().is_some()
+    }
+
+    /// Synced scroll on, from where each pane is now, or separate. Says whether there was a comparison to set.
+    pub fn set_compare_synced(&mut self, on: bool) -> bool {
+        let pages: HashMap<TabId, u32> = self.tabs.iter().map(|tab| (tab.id, tab.page)).collect();
+        match &mut self.comparison {
+            Some(comparison) => {
+                comparison.set_synced(on, |id| pages.get(&id).copied().unwrap_or(0));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The reader's moved into another pane: it's the one read now, for the contents and the page number. Nothing changes on screen.
+    pub fn focus_pane(&mut self, id: TabId) -> bool {
+        if self.active == Some(id) || !self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id)) {
+            return false;
+        }
+        self.activate(id);
+        true
+    }
+
+    /// Where synced scroll sends the other panes when `leader` is on `page`: see [`compare::Comparison::sync_targets`].
+    pub fn sync_targets(&self, leader: TabId, page: u32) -> Vec<(TabId, u32)> {
+        self.comparison.as_ref().map(|comparison| comparison.sync_targets(leader, page, |id| self.pages_in(id))).unwrap_or_default()
+    }
+
+    /// What's said about the panes' lengths, if anything.
+    pub fn compare_note(&self) -> Option<String> {
+        self.comparison.as_ref()?.length_note(|id| self.pages_in(id))
     }
 
     fn activate(&mut self, id: TabId) {
@@ -4339,5 +4491,96 @@ mod tests {
         assert_eq!(back.tab(a).unwrap().page, 4);
         saved.active = Some(999);
         assert!(back.restore(&saved, HashMap::new()).is_err());
+    }
+
+    /// Failure: ⌘-click doesn't build a comparison the way Finder's does: a second tab doesn't join, one in it doesn't leave, the last one left isn't alone, a fourth gets in, or a plain click doesn't return to one. And the pane being read isn't the one clicked.
+    #[test]
+    fn command_click_builds_a_comparison_and_a_plain_click_ends_it() {
+        let mut s = session(10);
+        let ids: Vec<TabId> = ["a", "b", "c", "d"].iter().map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap()).collect();
+        s.tap(ids[0]).unwrap();
+        assert_eq!(s.toggle_compare(ids[0]), Ok(compare::CompareChange::Nothing), "the only tab showing");
+        assert_eq!(s.panes(), vec![ids[0]]);
+        assert_eq!(s.toggle_compare(ids[1]), Ok(compare::CompareChange::Added));
+        assert_eq!(s.panes(), vec![ids[0], ids[1]]);
+        assert_eq!(s.active(), Some(ids[1]), "the one clicked is read");
+        assert_eq!(s.toggle_compare(ids[2]), Ok(compare::CompareChange::Added));
+        assert_eq!(s.toggle_compare(ids[3]), Err(compare::CompareError::TooMany));
+        assert_eq!(s.panes().len(), compare::MAX_PANES);
+        assert!(s.focus_pane(ids[0]));
+        assert_eq!(s.active(), Some(ids[0]));
+        assert!(!s.focus_pane(ids[3]), "not a pane");
+        assert_eq!(s.toggle_compare(ids[0]), Ok(compare::CompareChange::Removed));
+        assert_eq!(s.panes(), vec![ids[1], ids[2]]);
+        assert_eq!(s.active(), Some(ids[1]), "reading moves to a pane that's left");
+        assert_eq!(s.toggle_compare(ids[2]), Ok(compare::CompareChange::Ended));
+        assert_eq!(s.panes(), vec![ids[1]]);
+        assert!(s.comparison().is_none());
+        s.compare(&[ids[0], ids[3]], None).unwrap();
+        s.tap(ids[2]).unwrap();
+        assert!(s.comparison().is_none(), "a plain click returns to one");
+        assert_eq!(s.panes(), vec![ids[2]]);
+        assert_eq!(s.tab(ids[2]).unwrap().toc_open, true, "and doesn't fold its contents");
+    }
+
+    /// Failure: a tab on screen in a comparison pane goes dormant, by time, budget or pressure, and its pane goes blank or its edits leave memory under it. Panes are on screen, and only what's off screen goes.
+    #[test]
+    fn panes_on_screen_dont_go_dormant() {
+        let mut s = session(10);
+        let ids: Vec<TabId> = ["a", "b", "c"].iter().map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap()).collect();
+        s.compare(&[ids[0], ids[1]], Some(ids[0])).unwrap();
+        assert!(!s.can_go_dormant(ids[1]), "a pane not being read is still on screen");
+        assert!(!s.dormant_oldest_first().contains(&ids[1]));
+        assert!(s.dormant_oldest_first().contains(&ids[2]), "the tab off screen can");
+        assert!(!s.go_dormant(ids[1]));
+    }
+
+    /// Failure: closing a pane's tab leaves a pane for a tab that's gone, or a comparison of one, or the reader on a tab that's off screen rather than a pane that's left.
+    #[test]
+    fn closing_a_panes_tab_takes_its_pane() {
+        let mut s = session(10);
+        let ids: Vec<TabId> = ["a", "b", "c", "d"].iter().map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap()).collect();
+        s.compare(&[ids[1], ids[2], ids[3]], Some(ids[2])).unwrap();
+        s.close(ids[2]).unwrap();
+        assert_eq!(s.panes(), vec![ids[1], ids[3]]);
+        assert_eq!(s.active(), Some(ids[1]), "to a pane, not the next tab along");
+        s.close(ids[1]).unwrap();
+        assert!(s.comparison().is_none(), "one left is alone");
+        assert_eq!(s.panes(), vec![ids[3]]);
+        s.compare(&[ids[0], ids[3]], Some(ids[0])).unwrap();
+        s.close(ids[3]).unwrap();
+        assert_eq!(s.panes(), vec![ids[0]]);
+    }
+
+    /// Failure: a comparison doesn't come back after a restart exactly: its tabs, their order, synced scroll and each pane's start; or a record naming a tab that isn't there, or of one, or of four, gets in.
+    #[test]
+    fn a_comparison_comes_back_from_the_record_exactly() {
+        let mut s = session(40);
+        let ids: Vec<TabId> = ["a", "b", "c"].iter().map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap()).collect();
+        s.go_to(ids[2], 7).unwrap();
+        s.go_to(ids[0], 3).unwrap();
+        s.compare(&[ids[2], ids[0]], Some(ids[0])).unwrap();
+        assert!(s.set_compare_synced(true));
+        let bytes = record::encode_record(&s.to_record(), 3);
+        let read = record::decode_record(&bytes, record::CURRENT_VERSION).unwrap();
+        let mut back = session(40);
+        back.restore(&read.record, HashMap::new()).unwrap();
+        assert_eq!(back.comparison(), s.comparison());
+        assert_eq!(back.comparison().unwrap().sync_from, vec![7, 3]);
+        assert_eq!(back.active(), Some(ids[0]));
+        assert_eq!(back.to_record(), s.to_record());
+        for tabs in [vec![ids[0].0], vec![ids[0].0, 99], vec![ids[0].0, ids[0].0], vec![1, 2, 3, 3]] {
+            let mut bad = s.to_record();
+            bad.comparison = Some(record::ComparisonRecord { tabs, synced: false, sync_from: Vec::new() });
+            assert!(record::validate_record(&bad).is_err(), "{:?}", bad.comparison);
+        }
+        let mut uneven = s.to_record();
+        uneven.comparison.as_mut().unwrap().sync_from = vec![1];
+        assert!(record::validate_record(&uneven).is_err(), "a start for each pane, or none");
+        // An older record has none, and reads.
+        let mut older = s.to_record();
+        older.comparison = None;
+        let json = serde_json::to_string(&older).unwrap();
+        assert!(!json.contains("comparison"), "nothing written for an older app to trip on");
     }
 }
