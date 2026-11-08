@@ -462,6 +462,8 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
         Ok(())
     });
     let appended = lopdf::append_atomically(&reader, destination, options, |writer| {
+        // The temporary file exists here, with the original copied into it and the update not yet written.
+        pause_for_a_kill("copying");
         match plan.write(&reader, &sources, writer) {
             Ok(ids) => {
                 *expected.borrow_mut() = ids;

@@ -6,7 +6,6 @@ use common::State;
 use recto_agent::{Level, exit};
 use recto_testpdf::{Object, Page, TempPdf, build, pages, text_lines};
 use serde_json::Value;
-use std::path::Path;
 
 fn marked(markers: &[&str]) -> Vec<u8> {
     pages(&markers.iter().map(|marker| Page::new(text_lines(&[marker]))).collect::<Vec<_>>())
@@ -43,6 +42,10 @@ fn an_agent_saves_turns_and_added_pages_and_undo_goes_past_it() {
     assert_eq!(saved["edited"], false);
     assert_eq!(saved["backup_kept"], true);
     assert!(saved.get("backup").is_none(), "where the backup is, is Full's to see");
+    // Undo goes past the save: the file has the added page, the document doesn't now. Redo comes back to the saved point.
+    let undone = ok(&state, &["undo"]);
+    assert_eq!((undone["edited"].as_bool(), undone["pages"].as_u64()), (Some(true), Some(2)), "{undone}");
+    assert_eq!(ok(&state, &["redo"])["edited"], false);
     let bytes = std::fs::read(&file.0).unwrap();
     assert!(bytes.starts_with(&original), "appended");
     assert!(found(&bytes, "ADDED"), "the added page is in the file");
@@ -50,7 +53,17 @@ fn an_agent_saves_turns_and_added_pages_and_undo_goes_past_it() {
     ok(&state, &["close"]);
     let opened = ok(&state, &["open", path(&file)]);
     assert_eq!(opened["pages"], 3);
-    // Which page is where is the core writer's test, read back with the fork's reader; here the worker may not be built.
+    // Each page where it should be, turned as it should be, read back from the file with the fork's own reader.
+    let reader = lopdf::IndexedReader::open(lopdf::FileSource::open(&file.0).unwrap()).unwrap();
+    let map = reader.page_map().unwrap();
+    let marker_of = |at: usize| {
+        let lopdf::Object::Dictionary(page) = reader.resolve_object(map.get(at).unwrap().id()).unwrap() else { panic!() };
+        let contents = page.get(b"Contents").and_then(lopdf::Object::as_reference).unwrap();
+        let lopdf::Object::Stream(stream) = reader.resolve_object(contents).unwrap() else { panic!() };
+        let rotate = page.get(b"Rotate").and_then(lopdf::Object::as_i64).unwrap_or(0);
+        (String::from_utf8_lossy(&stream.content).split('(').nth(1).unwrap_or("").split(')').next().unwrap_or("").to_string(), rotate)
+    };
+    assert_eq!((0..3).map(marker_of).collect::<Vec<_>>(), [("FIRST".to_string(), 0), ("SECOND".to_string(), 90), ("ADDED".to_string(), 0)]);
     let folder = state.paths.root.join("backups.noindex");
     let backups: Vec<_> = std::fs::read_dir(&folder).unwrap().filter_map(Result::ok).collect();
     assert_eq!(backups.len(), 1);
@@ -176,15 +189,70 @@ fn a_file_replaced_under_a_tab_isnt_saved_over() {
     std::thread::sleep(std::time::Duration::from_millis(20));
     std::fs::write(&file.0, marked(&["SOMEONE ELSE'S"])).unwrap();
     let (refused, code) = state.json(&["save"]);
-    assert_eq!(code, exit::FAILED, "{refused}");
+    assert_eq!((code, refused["error"]["code"].as_str()), (exit::FAILED, Some("file_changed")), "{refused}");
     assert_eq!(std::fs::read(&file.0).unwrap(), marked(&["SOMEONE ELSE'S"]));
-    let _ = Path::new("");
+    assert_eq!(ok(&state, &["edits"])["edited"], true, "the edits stand");
+}
+
+/// Failure (review): a prompt-injected agent at Control saves a hostile PDF as `~/.zshenv`, which the next shell runs, or somewhere else that reads it as other than a PDF. A Save As's name ends in `.pdf`, nothing in its path is hidden, and nothing goes in `~/Library`. Each refusal writes nothing.
+#[test]
+fn save_as_goes_only_where_a_pdf_belongs() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = TempPdf::new("doc.pdf", &marked(&["A"]));
+    ok(&state, &["open", path(&file)]);
+    ok(&state, &["page", "rotate", "1", "--by", "90"]);
+    let folder = file.0.parent().unwrap();
+    std::fs::create_dir_all(folder.join(".hidden")).unwrap();
+    let home = recto_platform::local::real_home().unwrap();
+    let refused = [folder.join("notes.txt"), folder.join("doc.PDF.sh"), folder.join(".zshenv.pdf"), folder.join(".hidden").join("doc.pdf"), home.join("Library").join("recto-review-test.pdf")];
+    for out in &refused {
+        let (reply, code) = state.json(&["save-as", "--out", out.to_str().unwrap()]);
+        assert_eq!((code, reply["error"]["code"].as_str()), (exit::USAGE, Some("bad_save_path")), "{}: {reply}", out.display());
+        assert!(!out.exists(), "{} was written", out.display());
+    }
+    let fine = folder.join("Copy.PDF");
+    assert_eq!(ok(&state, &["save-as", "--out", fine.to_str().unwrap()])["written"], true, "a .PDF name in an ordinary folder saves");
+    let _ = std::fs::remove_file(fine);
+    let _ = std::fs::remove_dir(folder.join(".hidden"));
+}
+
+/// Failure (review): Save As with replace onto the tab's own file skips the backup and the same-file check, and onto a file open in another tab leaves two tabs on one file (SPEC decision 26). Onto its own file it's a Save; onto another tab's it's refused, with that file untouched.
+#[test]
+fn save_as_onto_its_own_file_is_a_save_and_onto_another_tabs_is_refused() {
+    let state = State::at(Level::Full);
+    let _serving = state.serve();
+    let mine = TempPdf::new("mine.pdf", &marked(&["MINE"]));
+    let theirs = TempPdf::new("theirs.pdf", &marked(&["THEIRS"]));
+    ok(&state, &["open", path(&theirs)]);
+    ok(&state, &["open", path(&mine)]);
+    ok(&state, &["page", "rotate", "1", "--by", "90"]);
+    let (refused, code) = state.json(&["save-as", "--out", path(&theirs), "--replace"]);
+    assert_eq!((code, refused["error"]["code"].as_str()), (exit::FAILED, Some("open_in_another_tab")), "{refused}");
+    assert_eq!(std::fs::read(&theirs.0).unwrap(), marked(&["THEIRS"]));
+    let saved = ok(&state, &["save-as", "--out", path(&mine), "--replace"]);
+    assert_eq!((saved["written"].as_bool(), saved["backup_kept"].as_bool()), (Some(true), Some(true)), "a Save, with its backup: {saved}");
+    assert_eq!(ok(&state, &["tabs"])["count"], 2, "still two tabs, on two files");
+}
+
+/// Failure: a Save As of a document with nothing unsaved goes outside the one writer. It's the writer's append, with the original's bytes first, and the tab goes over to the copy.
+#[test]
+fn an_unedited_save_as_goes_through_the_writer() {
+    let state = State::at(Level::Control);
+    let _serving = state.serve();
+    let file = TempPdf::new("doc.pdf", &marked(&["A"]));
+    ok(&state, &["open", path(&file)]);
+    let copy = file.0.with_file_name("plain-copy.pdf");
+    let saved = ok(&state, &["save-as", "--out", copy.to_str().unwrap()]);
+    assert_eq!((saved["written"].as_bool(), saved["writer"].as_str()), (Some(true), Some("append")), "{saved}");
+    assert!(std::fs::read(&copy).unwrap().starts_with(&marked(&["A"])));
+    let _ = std::fs::remove_file(copy);
 }
 
 /// Failure: a kill during a save leaves a broken file, or half of one, under the document's name. At every step, writing, noted and about to move, and just after the move, the file is the original byte for byte or the whole new one, read back page by page.
 #[test]
 fn a_kill_at_every_step_leaves_the_original_or_the_new_file() {
-    for step in ["writing", "prepared", "committed"] {
+    for step in ["writing", "copying", "prepared", "committed"] {
         let state = State::at(Level::Control);
         let marker = state.root.join("paused");
         let mut server = state.command().args(["serve", "--json"]).env("RECTO_TEST_SAVE_PAUSE", step).env("RECTO_TEST_SAVE_MARKER", &marker).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap();
@@ -208,6 +276,12 @@ fn a_kill_at_every_step_leaves_the_original_or_the_new_file() {
         let _ = saving.kill();
         let _ = saving.wait();
         let now = std::fs::read(&file.0).unwrap();
+        // What a kill can leave is the writer's own temporary file, hidden beside the document and swept by a later save, never anything under its name.
+        let left: Vec<String> = std::fs::read_dir(file.0.parent().unwrap()).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name != "doc.pdf" && name != "extra.pdf").collect();
+        assert!(left.iter().all(|name| name.starts_with(".append-")), "{step}: left {left:?}");
+        if step == "copying" {
+            assert!(!left.is_empty(), "the temporary file was there when it was killed mid-write");
+        }
         if now == original {
             assert_ne!(step, "committed", "the move had happened");
         } else {
