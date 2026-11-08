@@ -7,3 +7,6 @@ tools/sysguard/local.env
 /fuzz/corpus
 /fuzz/artifacts
 /fuzz/coverage
+
+# Build output anywhere, as a helper with a workspace of its own builds beside itself.
+target/
