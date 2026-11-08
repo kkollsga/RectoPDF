@@ -1863,3 +1863,38 @@ fn a_save_leaves_the_view_as_it_was() {
     let saved = std::fs::read(&file.0).unwrap();
     assert!(saved.starts_with(&original) && saved.len() > original.len(), "and it was saved");
 }
+
+/// Failure: ⌘K doesn't find a command by a few of its letters, lists what can't be chosen, words a key unlike its menu, can't be driven by the keyboard alone, or runs something other than what's selected; or an agent's `recto palette` ranks differently from what the reader sees.
+#[test]
+fn the_palette_finds_commands_and_tabs_and_runs_them_by_keyboard() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "palette.open"]);
+    let opened = wait_for(&run, |state| state["app"]["palette"]["open"] == true);
+    assert_eq!(opened["app"]["palette"]["field_has_focus"], true, "⌘K gives its field the keyboard");
+    assert!(opened["app"]["palette"]["rows"].as_array().unwrap().iter().any(|row| row["id"] == "tab:1"), "the open tab is listed: {}", opened["app"]["palette"]);
+    let typed = run.ok(&["qa", "palette-type", "zi"]);
+    assert_eq!(typed["palette"]["rows"][0]["id"], "view.zoom_in", "{}", typed["palette"]);
+    assert_eq!(typed["palette"]["rows"][0]["shortcut"], "⌘+", "the menu's own key");
+    let agent = run.ok(&["palette", "zi"]);
+    assert_eq!(agent["items"][0]["id"], "view.zoom_in", "an agent sees the same order: {agent}");
+    run.ok(&["qa", "palette-type", "side"]);
+    let moved = run.ok(&["qa", "palette-key", "down"]);
+    let second = moved["palette"]["rows"][1]["id"].as_str().unwrap().to_string();
+    assert_eq!(moved["palette"]["selected"], 1);
+    run.ok(&["qa", "palette-key", "return"]);
+    run.settled();
+    let ran = run.report();
+    assert_eq!(ran["app"]["palette"]["open"], false, "it closes once it runs");
+    assert_eq!(format!("layout.{}", ran["app"]["layout"].as_str().unwrap().replace('-', "_")), second, "what was selected ran");
+    // What can't be chosen now isn't listed.
+    let agent = run.ok(&["palette", "copy"]);
+    assert!(!agent["items"].as_array().unwrap().iter().any(|item| item["id"] == "edit.copy"), "nothing's selected, so Copy can't be chosen: {agent}");
+    run.ok(&["qa", "menu", "palette.open"]);
+    run.ok(&["qa", "palette-key", "escape"]);
+    assert_eq!(run.report()["app"]["palette"]["open"], false);
+    let refused = run.state.json(&["palette", "zzzzqqq", "--run"]);
+    assert_eq!(refused.1, exit::NOT_FOUND, "{}", refused.0);
+}

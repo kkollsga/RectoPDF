@@ -169,6 +169,13 @@ import QuartzCore
             if value == "note" { controller?.sidebar.clickNote() } else if value.hasPrefix("fold:") { controller?.sidebar.clickFold(Int(value.dropFirst(5)) ?? -1) } else { controller?.sidebar.clickRow(Int(value) ?? 0) }
         case "contents_scroll":
             controller?.sidebar.userScrollContents(toRow: Int(value) ?? 0)
+        case "palette_type":
+            guard let palette = controller?.sidebar.palette, palette.model.open else { return fail(id, "The palette isn't open. `recto qa menu palette.open` opens it.") }
+            palette.field.stringValue = value
+            palette.typed(value)
+        case "palette_key":
+            guard let palette = controller?.sidebar.palette, palette.model.open else { return fail(id, "The palette isn't open.") }
+            palette.press(value)
         case "contents_pointer":
             controller?.sidebar.setContentsPointer(value == "in")
         case "menu":
@@ -299,6 +306,7 @@ import QuartzCore
             "reveal": sidebar.revealReport(),
             "paper": reader.paper,
             "contents": sidebar.contentsReport(),
+            "palette": sidebar.palette.report(),
             "hover": sidebar.hoveredRow.map { $0 as Any } ?? NSNull(),
             "animations": controller.runningAnimations(),
             "place": reader.place,

@@ -38,6 +38,8 @@ pub enum HostAction {
     ShowSavePanel,
     /// Closing a document with unsaved edits asks first, with what `AppCore::close_prompt` says.
     ConfirmClose,
+    /// ⌘K: the palette's field in the sidebar takes the keyboard. Rust has opened it.
+    FocusPalette,
 }
 
 /// What an item does.
@@ -68,6 +70,8 @@ pub(crate) enum Action {
     CloseDocument,
     /// A comparison's panes scroll together, page for page, or each on its own.
     SetSynced(bool),
+    /// ⌘K opens the command palette.
+    PaletteOpen,
 }
 
 fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
@@ -149,6 +153,9 @@ pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: 
             .chain([
                 line(),
                 MenuEntry { checked: !view.agent_icon_hidden, ..entry("view.agent_icon", "Show Agent Icon", "") },
+                line(),
+                // SPEC §4: "⌘K finds any command."
+                entry("palette.open", "Command Palette…", "k"),
             ])
             .collect(),
         },
@@ -248,6 +255,7 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "paper.dark" => Action::SetPaper(Paper::Dark),
         "compare.separate" => Action::SetSynced(false),
         "compare.synced" => Action::SetSynced(true),
+        "palette.open" => Action::PaletteOpen,
         _ => return None,
     })
 }

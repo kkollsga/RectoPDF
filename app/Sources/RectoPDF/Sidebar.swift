@@ -371,6 +371,8 @@ final class TabTable: NSTableView {
     let footer = TextLine()
     let addButton = NSButton(title: "", target: nil, action: nil)
     let moreButton = NSButton(title: "", target: nil, action: nil)
+    /// ⌘K's palette, over the tabs and contents while it's open.
+    let palette: PalettePane
     private(set) var panel: PanelView?
     private var panelModel = PanelModel(open: false, buttonTooltip: "", sections: [])
     private var panelHeight: CGFloat = 0
@@ -408,6 +410,7 @@ final class TabTable: NSTableView {
         self.core = core
         noticeMark = strings.noticeMark
         revealDelay = core.limits().revealDelaySeconds
+        palette = PalettePane(core: core)
         super.init()
         frames = FrameRunner(view: contentsScroll, onScreen: !isQuiet) { [weak self] dt in
             MainActor.assumeIsolated { self?.frame(dt) ?? false }
@@ -470,6 +473,7 @@ final class TabTable: NSTableView {
         moreButton.toolTip = core.panel().buttonTooltip
         moreButton.target = self
         moreButton.action = #selector(moreClicked)
+        view.addSubview(palette.view)
         NotificationCenter.default.addObserver(self, selector: #selector(frameChanged), name: NSView.frameDidChangeNotification, object: view)
         view.postsFrameChangedNotifications = true
     }
@@ -604,6 +608,8 @@ final class TabTable: NSTableView {
         let size = view.bounds.size
         scroll.frame = NSRect(x: 0, y: 52, width: size.width, height: max(size.height - 52 - 40 - panelHeight, 0))
         placeFooter()
+        palette.view.frame = NSRect(x: 0, y: 52, width: size.width, height: max(size.height - 52 - 40 - panelHeight, 0))
+        palette.placeViews()
         addButton.frame = NSRect(x: size.width - 38, y: 12, width: 22, height: 22)
         moreButton.frame = NSRect(x: size.width - 44, y: size.height - 36, width: 30, height: 26)
         panel?.frame = NSRect(x: 0, y: size.height - 40 - panelHeight, width: size.width, height: panelHeight)
@@ -875,6 +881,7 @@ final class TabTable: NSTableView {
 
     func update(_ new: SidebarView) {
         updatePanel()
+        palette.refresh()
         let (oldTabCount, oldActive, oldOpen) = (tabs.count, activeIndex, model.tocOpen)
         let noteChanged = new.contentsNote != model.contentsNote
         let oldActiveTab = activeTabID
@@ -981,6 +988,8 @@ final class TabTable: NSTableView {
 
     func appearanceChanged() {
         view.layer?.backgroundColor = Theme.sidebar.cg
+        palette.view.layer?.backgroundColor = Theme.sidebar.cg
+        palette.appearanceChanged()
         contentsThumb.refresh()
         tabsThumb.refresh()
         placeFooter()

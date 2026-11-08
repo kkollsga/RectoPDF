@@ -191,6 +191,7 @@ const EXCEPTIONS: &[(&str, &str)] = &[
     ("reader.last_wake", "How long a wake took, and that this one was from a sleep file: about this launch."),
     ("memory.", "A new process's memory, threads and handles are its own: budgets, not state."),
     ("hangs.", "Its own stalls, counted from its own start."),
+    ("app.palette.", "⌘K's palette is a moment's choice, as an open menu is, and closes when the keyboard goes elsewhere, so it isn't kept."),
     ("record.", "How many writes it's made and what its first frame was: it's the record of the restore itself."),
     ("reader.counts.", "Jobs and steps of its own run."),
     ("reader.documents_held", "Warm tabs come back cold, by rule: only the active tab loads, so the rest cost what a cold tab costs."),

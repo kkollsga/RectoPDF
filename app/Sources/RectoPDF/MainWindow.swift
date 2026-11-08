@@ -389,6 +389,12 @@ final class BookMark: NSView {
         delegate.core.windowShown(home: reader.home, tileLayers: UInt32(paneAreas.reduce(0) { $0 + ($1.report()["tile_layers"] as? Int ?? 0) }))
     }
 
+    /// ⌘K: the palette's field takes the keyboard. Rust has opened it.
+    func focusPalette() {
+        sidebar.palette.wantsFocus = true
+        sidebar.palette.refresh()
+    }
+
     /// Gives the keyboard to what's named. There's no Find field yet, so that's only kept.
     func applyFocus(_ view: String) {
         switch view {

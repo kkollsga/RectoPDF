@@ -125,7 +125,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Owner, 2026-11-08, for the record: copying images and snapshots from a copy-restricted PDF gets the same notice as text, with "Copy anyway"
 - [ ] Find in the sidebar, with the hit list
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
-- [ ] ⌘K
+- [x] ⌘K: the command palette in the sidebar, commands and open tabs fuzzy-matched and ranked in Rust, fully keyboard-driven; `recto palette [--run]`, `qa palette-type`, `qa palette-key`
+- [ ] ⌘K follow-ups: recent files, once the app keeps them; the palette's rows aren't read out to VoiceOver as a list yet
 - [x] Session restore: the whole app state on every launch, unsaved edits included (SPEC decision 23). A whole-state comparison across quit, hand-off and kill, journals for edits, `recto session`, `AppCore::hand_off` for the updater
 - [x] Saved point in the history, so undo works past a Save, and Clear Edit History (SPEC decision 25). `Session::saved`, `save_prepared`, `clear_history`, `recto clear-history`, Edit > Clear Edit History. Tested directly, with `qa save-from`, as Save isn't built
 - [x] On Save's gate, for appended saves: `save_prepared` then `saved` on the real path, with the note read back from the journal on disk before the file's moved (`journal_says_saving`), and a never-in-PDF test on the real writer (`recto-cli/tests/save.rs`). `never_in_pdf.rs`'s delete keeps its stand-in until the rewrite saves deletes
