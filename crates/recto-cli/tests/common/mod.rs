@@ -1,6 +1,9 @@
 //! Runs the real `recto` on temp state, the way an agent does. Every server these start ends with its [`Session`], and nothing here can reach the real state folder, because the override refuses it.
 #![allow(dead_code)]
 
+/// The real app in a quiet run.
+pub mod app;
+
 use recto_agent::Level;
 use recto_control::state::STATE_ENV;
 use recto_control::{StatePaths, levels};

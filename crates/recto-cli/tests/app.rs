@@ -4,86 +4,13 @@
 
 mod common;
 
+use common::app::{Run, app_path, chaptered, numbered, still_running, wait_for};
 use common::{State, bin};
 use recto_agent::{Level, exit};
 use recto_testpdf::{Object, Page, TempPdf, build, form_bomb, hidden_text_page, pages, text_lines};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::Command;
-
-fn app_path() -> Option<PathBuf> {
-    if std::env::var_os("RECTO_SKIP_APP").is_some() {
-        return None;
-    }
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/build/RectoPDF.app/Contents/MacOS/RectoPDF");
-    if root.is_file() {
-        return Some(root);
-    }
-    assert!(std::env::var_os("RECTO_REQUIRE_APP").is_none(), "the app isn't built, and this run needs it");
-    eprintln!("skipped: the app isn't built");
-    None
-}
-
-/// A quiet run, ended on drop.
-struct Run {
-    state: State,
-    pid: u32,
-}
-
-impl Run {
-    fn start() -> Option<Self> {
-        Self::start_with(&[])
-    }
-
-    fn start_with(extra: &[&str]) -> Option<Self> {
-        let app = app_path()?;
-        let state = State::new();
-        let mut args = vec!["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "2m"];
-        args.extend_from_slice(extra);
-        let (reply, code) = state.json(&args);
-        assert_eq!(code, 0, "{reply}");
-        let pid = reply["data"]["pid"].as_u64().unwrap() as u32;
-        Some(Self { state, pid })
-    }
-
-    fn ok(&self, args: &[&str]) -> Value {
-        let (reply, code) = self.state.json(args);
-        assert_eq!((code, &reply["ok"]), (0, &json!(true)), "{args:?}: {reply}");
-        reply["data"].clone()
-    }
-
-    fn settled(&self) {
-        self.ok(&["qa", "wait-settled", "--timeout", "30s"]);
-    }
-
-    fn report(&self) -> Value {
-        self.ok(&["qa", "state"])
-    }
-}
-
-impl Drop for Run {
-    fn drop(&mut self) {
-        let _ = self.state.json(&["stop"]);
-        // A run that's still here after that isn't to be left on the owner's Mac.
-        for _ in 0..100 {
-            if still_running(self.pid) {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            } else {
-                return;
-            }
-        }
-        let _ = Command::new("/bin/kill").arg("-9").arg(self.pid.to_string()).status();
-    }
-}
-
-fn still_running(pid: u32) -> bool {
-    recto_platform::local::process_counters(pid).is_some()
-}
-
-fn long_document(count: usize) -> TempPdf {
-    let list: Vec<Page> = (0..count).map(|index| Page::new(text_lines(&[&format!("Page number {index}"), "Words, so that the page isn't blank"]))).collect();
-    TempPdf::new("long.pdf", &pages(&list))
-}
 
 /// Two pages with an outline, so the sidebar has contents.
 fn outlined() -> TempPdf {
@@ -114,7 +41,7 @@ fn a_quiet_run_stays_out_of_the_way() {
     assert_eq!(app["window"]["on_any_screen"], false, "{app}");
     assert_eq!(app["home"], true, "no PDF open, so the home state: {app}");
     assert_eq!(app["agent_icon"], true);
-    let file = long_document(4);
+    let file = numbered(4);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let later = run.report()["app"].clone();
@@ -125,7 +52,7 @@ fn a_quiet_run_stays_out_of_the_way() {
 #[test]
 fn recto_acts_on_the_running_app_and_sees_what_it_does() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(30);
+    let file = numbered(30);
     let opened = run.ok(&["open", file.0.to_str().unwrap()]);
     assert_eq!(opened["pages"], 30);
     run.settled();
@@ -166,7 +93,7 @@ fn recto_acts_on_the_running_app_and_sees_what_it_does() {
 #[test]
 fn a_search_in_the_app_gets_its_index() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(4);
+    let file = numbered(4);
     run.ok(&["open", file.0.to_str().unwrap()]);
     let done = run.ok(&["wait", "indexing-done", "--tab", "active", "--timeout", "60s"]);
     assert_eq!(done["state"], "ready", "{done}");
@@ -179,7 +106,7 @@ fn a_search_in_the_app_gets_its_index() {
 #[test]
 fn the_sidebar_folds_switches_and_goes_to_contents() {
     let Some(run) = Run::start() else { return };
-    let (first, second) = (outlined(), long_document(2));
+    let (first, second) = (outlined(), numbered(2));
     run.ok(&["open", first.0.to_str().unwrap()]);
     run.settled();
     let open = run.report()["app"]["sidebar_rows"].as_u64().unwrap();
@@ -290,18 +217,6 @@ fn contents_fold_reveal_at_once_and_keep_a_thumb() {
     assert_eq!(shown["reveal"]["shown"], true, "{shown}");
 }
 
-fn wait_for(run: &Run, holds: impl Fn(&Value) -> bool) -> Value {
-    let mut last = Value::Null;
-    for _ in 0..400 {
-        last = run.report();
-        if holds(&last) {
-            return last;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    panic!("it never came to pass: {last}");
-}
-
 /// Failure: a QA command works below its level, or a read needs more than Read-only, so the level says nothing about a run an agent drives. Over the real socket, at each level.
 #[test]
 fn qa_commands_keep_to_their_levels() {
@@ -369,7 +284,7 @@ fn a_shot_is_a_real_picture_of_the_window_at_2x() {
     run.ok(&["qa", "resize", "1000x700"]);
     let before = run.ok(&["qa", "shot", "--out", empty.to_str().unwrap()]);
     assert_eq!((before["width"].as_u64(), before["height"].as_u64()), (Some(2000), Some(1400)), "{before}");
-    let file = long_document(2);
+    let file = numbered(2);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let shot = run.state.root.join("page.png");
@@ -383,7 +298,7 @@ fn a_shot_is_a_real_picture_of_the_window_at_2x() {
 #[test]
 fn dark_mode_paper_and_the_sidebar_change_what_is_drawn() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(3);
+    let file = numbered(3);
     run.ok(&["qa", "appearance", "light"]);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -421,7 +336,7 @@ fn dark_mode_paper_and_the_sidebar_change_what_is_drawn() {
 #[test]
 fn the_page_number_is_always_in_the_lower_right() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(5);
+    let file = numbered(5);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let first = run.report();
@@ -440,7 +355,7 @@ fn the_page_number_is_always_in_the_lower_right() {
 #[test]
 fn side_by_side_lays_out_selects_and_keeps_the_place() {
     let Some(run) = Run::start() else { return };
-    let (file, other) = (long_document(9), TempPdf::new("other.pdf", &pages(&[Page::new(text_lines(&["Another document"]))])));
+    let (file, other) = (numbered(9), TempPdf::new("other.pdf", &pages(&[Page::new(text_lines(&["Another document"]))])));
     run.ok(&["open", other.0.to_str().unwrap()]);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -498,7 +413,7 @@ fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
     let home = run.report();
     assert!(home["app"]["panel"]["items"].as_array().unwrap().iter().filter(|item| item["id"].as_str().unwrap().starts_with("rotate.")).all(|item| item["enabled"] == false), "{}", home["app"]["panel"]);
     run.ok(&["qa", "panel", "toggle"]);
-    let file = long_document(4);
+    let file = numbered(4);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let before = run.report();
@@ -537,7 +452,7 @@ fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
 #[test]
 fn the_top_right_corner_stays_off_the_page() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(4);
+    let file = numbered(4);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     for layout in ["single", "two-up"] {
@@ -562,7 +477,7 @@ fn the_top_right_corner_stays_off_the_page() {
 #[test]
 fn the_zoom_level_shows_and_takes_a_typed_level() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(5);
+    let file = numbered(5);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let magnification = |state: &Value| state["app"]["pages"]["magnification"].as_f64().unwrap();
@@ -724,7 +639,7 @@ fn what_appkit_calls_reaches_the_app() {
 #[test]
 fn a_fitted_page_fits_with_classic_scrollers() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(5);
+    let file = numbered(5);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     // With no one asking: thin ones that fade, as in Pages, unless this Mac is set to always show them. On automatic with a mouse paired, AppKit puts classic ones back by itself, as the owner saw on a real window.
@@ -742,7 +657,7 @@ fn a_fitted_page_fits_with_classic_scrollers() {
         assert_eq!(pages["horizontal_scroller"], false, "{style}: {pages}");
     }
     // Scrollers showing or not don't move the page: with classic ones, a page of a long document and of a one-page one, which has none to show, are the same width.
-    let short = long_document(1);
+    let short = numbered(1);
     run.ok(&["qa", "scroller-style", "legacy"]);
     run.settled();
     let long_fit = run.report()["reader"]["fit"].as_f64().unwrap();
@@ -756,7 +671,7 @@ fn a_fitted_page_fits_with_classic_scrollers() {
 #[test]
 fn reopening_the_window_keeps_the_place_and_the_zoom() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(60);
+    let file = numbered(60);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["goto", "40"]);
@@ -818,7 +733,7 @@ fn the_panel_opens_and_does_what_it_says() {
     let Some(run) = Run::start() else { return };
     // In a light window, where the paper with nothing chosen is white, and warm is that with a tint.
     run.ok(&["qa", "appearance", "light"]);
-    let file = long_document(5);
+    let file = numbered(5);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let rest = run.report();
@@ -852,7 +767,7 @@ fn the_panel_opens_and_does_what_it_says() {
 #[test]
 fn the_menu_bar_and_the_agent_icon() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(5);
+    let file = numbered(5);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let state = run.report();
@@ -900,7 +815,7 @@ fn a_page_that_cant_be_drawn_says_so() {
 #[test]
 fn a_long_document_is_quick_to_get_around() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(5000);
+    let file = numbered(5000);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["goto", "4800"]);
@@ -915,7 +830,7 @@ fn a_long_document_is_quick_to_get_around() {
 #[test]
 fn the_reader_script_passes_and_a_wrong_one_fails() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(12);
+    let file = numbered(12);
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/qa/reader.qa");
     let output = run.state.command().args(["qa", "run", script.to_str().unwrap(), "--json"]).env("RECTO_QA_PDF", &file.0).output().unwrap();
     let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -971,7 +886,7 @@ fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
     let Some(run) = Run::start() else { return };
     run.ok(&["qa", "scroller-style", "overlay"]);
     let long = outlined_with(2000);
-    let others: Vec<TempPdf> = (0..4).map(|_| long_document(1)).collect();
+    let others: Vec<TempPdf> = (0..4).map(|_| numbered(1)).collect();
     run.ok(&["open", long.0.to_str().unwrap()]);
     for other in &others {
         run.ok(&["open", other.0.to_str().unwrap()]);
@@ -1116,38 +1031,12 @@ fn outlined_with(count: usize) -> TempPdf {
 }
 
 /// A PDF with chapters of sections, each on a page, so the contents open and close as the reader moves.
-fn chaptered(chapters: usize, sections: usize) -> TempPdf {
-    let each = sections + 1;
-    let total = chapters * each;
-    let first_page = 4 + total;
-    let item = |chapter: usize, section: usize| 4 + chapter * each + section;
-    let mut objects = vec![
-        Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R >>".into()),
-        Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {total} >>", (0..total).map(|index| format!("{} 0 R", first_page + index)).collect::<Vec<_>>().join(" "))),
-        Object::Dict(format!("<< /Type /Outlines /First 4 0 R /Last {} 0 R /Count {chapters} >>", item(chapters - 1, 0))),
-    ];
-    for chapter in 0..chapters {
-        let prev = if chapter > 0 { format!("/Prev {} 0 R", item(chapter - 1, 0)) } else { String::new() };
-        let next = if chapter + 1 < chapters { format!("/Next {} 0 R", item(chapter + 1, 0)) } else { String::new() };
-        objects.push(Object::Dict(format!("<< /Title (Chapter {chapter}) /Parent 3 0 R {prev} {next} /First {} 0 R /Last {} 0 R /Count -{sections} /Dest [{} 0 R /Fit] >>", item(chapter, 1), item(chapter, sections), first_page + chapter * each)));
-        for section in 1..=sections {
-            let prev = if section > 1 { format!("/Prev {} 0 R", item(chapter, section - 1)) } else { String::new() };
-            let next = if section < sections { format!("/Next {} 0 R", item(chapter, section + 1)) } else { String::new() };
-            objects.push(Object::Dict(format!("<< /Title (Section {chapter}.{section}) /Parent {} 0 R {prev} {next} /Dest [{} 0 R /Fit] >>", item(chapter, 0), first_page + chapter * each + section)));
-        }
-    }
-    for _ in 0..total {
-        objects.push(Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".into()));
-    }
-    TempPdf::new("chapters.pdf", &build(&objects))
-}
-
 /// Failure: a chapter's change is published once and the next look republishes "nothing changed", and the host reads only the latest, so the table keeps its old row count, and later row changes go at the wrong places. Or a change is applied twice. The table must hold exactly what the model says through every kind of move, and reading forward never moves the contents back.
 #[test]
 fn the_contents_table_follows_chapters_opening_and_closing() {
     let Some(run) = Run::start() else { return };
     let (chapters, sections) = (40, 8);
-    let file = chaptered(chapters, sections);
+    let file = chaptered("chapters", chapters, sections);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let holds = |state: &Value, when: &str| {
@@ -1179,7 +1068,7 @@ fn the_contents_table_follows_chapters_opening_and_closing() {
 fn wait_settled_waits_for_the_sidebars_animations() {
     let Some(run) = Run::start() else { return };
     let sections = 8;
-    let file = chaptered(40, sections);
+    let file = chaptered("chapters", 40, sections);
     run.ok(&["qa", "reduce-motion", "off"]);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1204,7 +1093,7 @@ fn wait_settled_waits_for_the_sidebars_animations() {
 #[test]
 fn closing_a_warm_tab_lets_go_of_it() {
     let Some(run) = Run::start() else { return };
-    let (one, two) = (long_document(2), TempPdf::new("second.pdf", &pages(&[Page::new(text_lines(&["Second"]))])));
+    let (one, two) = (numbered(2), TempPdf::new("second.pdf", &pages(&[Page::new(text_lines(&["Second"]))])));
     run.ok(&["open", one.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["open", two.0.to_str().unwrap()]);
@@ -1219,7 +1108,7 @@ fn closing_a_warm_tab_lets_go_of_it() {
 #[test]
 fn a_shots_tint_stays_on_the_pages() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(2);
+    let file = numbered(2);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["view", "--paper", "warm"]);
@@ -1233,7 +1122,7 @@ fn a_shots_tint_stays_on_the_pages() {
 #[test]
 fn warm_paper_only_changes_what_is_on_screen() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(2);
+    let file = numbered(2);
     run.ok(&["qa", "appearance", "light"]);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1293,7 +1182,7 @@ fn a_shortened_name_can_be_read_in_full() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{long_name}.pdf"));
     std::fs::write(&path, pages(&[Page::new(text_lines(&["A page"]))])).unwrap();
-    let short = long_document(1);
+    let short = numbered(1);
     run.ok(&["open", path.to_str().unwrap()]);
     run.ok(&["open", short.0.to_str().unwrap()]);
     run.settled();
@@ -1556,7 +1445,7 @@ fn hidden_text_stays_off_the_clipboard_and_a_quiet_notice_says_so() {
 #[test]
 fn a_drag_past_the_edge_scrolls_until_it_is_let_go() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(20);
+    let file = numbered(20);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let first = place_on(&run, 1, 0, 0.0);
@@ -1677,7 +1566,7 @@ fn place_on_anyway(run: &Run) -> String {
 #[test]
 fn a_greyed_out_menu_item_cant_be_chosen_by_qa_either() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(3);
+    let file = numbered(3);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let (reply, status) = run.state.json(&["qa", "menu", "edit.copy"]);
@@ -1761,8 +1650,8 @@ fn each_use_of_copy_anyway_is_in_the_activity_log() {
 #[test]
 fn the_windows_save_close_prompt_and_save_as_act_on_their_own_tab() {
     let Some(run) = Run::start() else { return };
-    let first = long_document(3);
-    let second = long_document(2);
+    let first = numbered(3);
+    let second = numbered(2);
     let original = std::fs::read(&first.0).unwrap();
     run.ok(&["open", second.0.to_str().unwrap()]);
     run.ok(&["open", first.0.to_str().unwrap()]);
@@ -1841,7 +1730,7 @@ fn the_windows_save_close_prompt_and_save_as_act_on_their_own_tab() {
 #[test]
 fn a_save_leaves_the_view_as_it_was() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(4);
+    let file = numbered(4);
     let original = std::fs::read(&file.0).unwrap();
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1874,7 +1763,7 @@ fn a_save_leaves_the_view_as_it_was() {
 #[test]
 fn the_palette_finds_commands_and_tabs_and_runs_them_by_keyboard() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(4);
+    let file = numbered(4);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["qa", "menu", "palette.open"]);
@@ -1926,7 +1815,7 @@ fn a_palette_row_does_what_the_host_is_left_to_do() {
 #[test]
 fn find_next_from_the_palette_opens_find_with_its_field_focused() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(4);
+    let file = numbered(4);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["qa", "menu", "find.open"]);
@@ -1950,7 +1839,7 @@ fn find_next_from_the_palette_opens_find_with_its_field_focused() {
 fn the_palette_offers_recent_files_and_keeps_protected_tabs_from_agents() {
     let Some(run) = Run::start() else { return };
     let closed = TempPdf::new("Close.pdf", &pages(&[Page::new(text_lines(&["A file named like a command"]))]));
-    let reading = long_document(3);
+    let reading = numbered(3);
     run.ok(&["open", closed.0.to_str().unwrap()]);
     run.ok(&["close"]);
     run.ok(&["open", reading.0.to_str().unwrap()]);
@@ -1995,7 +1884,7 @@ fn the_palette_offers_recent_files_and_keeps_protected_tabs_from_agents() {
 #[test]
 fn the_palettes_run_keeps_to_each_commands_level() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(4);
+    let file = numbered(4);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     run.state.set_level(Level::Control);
@@ -2192,7 +2081,7 @@ fn qa_password_is_only_for_a_tests_own_file() {
 #[test]
 fn open_recent_lists_opens_and_clears() {
     let Some(run) = Run::start() else { return };
-    let (a, b) = (long_document(3), outlined());
+    let (a, b) = (numbered(3), outlined());
     run.ok(&["open", a.0.to_str().unwrap()]);
     run.ok(&["open", b.0.to_str().unwrap()]);
     run.settled();
@@ -2229,7 +2118,7 @@ fn open_recent_lists_opens_and_clears() {
 #[test]
 fn a_file_changed_while_open_is_said_when_the_app_comes_back() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(3);
+    let file = numbered(3);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["qa", "frontmost", "off"]);
@@ -2259,7 +2148,7 @@ fn named_document(name: &str, count: usize, word: &str) -> TempPdf {
 #[test]
 fn find_in_the_sidebar_lists_steps_and_keeps_to_its_room() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(200);
+    let file = numbered(200);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let closed = run.report();
@@ -2327,7 +2216,7 @@ fn find_goes_by_the_pane_being_read() {
 #[test]
 fn edit_mode_and_view_rotation_draw_what_the_record_carries() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(3);
+    let file = numbered(3);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["qa", "view-rotation", "1"]);
@@ -2354,7 +2243,7 @@ fn edit_mode_and_view_rotation_draw_what_the_record_carries() {
 #[test]
 fn find_never_types_over_what_is_being_typed() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(300);
+    let file = numbered(300);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["qa", "find", "open"]);
@@ -2377,7 +2266,7 @@ fn find_never_types_over_what_is_being_typed() {
 #[test]
 fn find_shows_the_sessions_draft_until_typing_starts() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(3);
+    let file = numbered(3);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["qa", "find", "open"]);
@@ -2393,7 +2282,7 @@ fn find_shows_the_sessions_draft_until_typing_starts() {
 #[test]
 fn the_app_draws_with_walled_workers_over_the_surface_link() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(3);
+    let file = numbered(3);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let state = run.report();
@@ -2788,7 +2677,7 @@ fn a_print_being_prepared_stops_with_its_stop_button() {
 #[test]
 fn a_find_hit_clicked_or_returned_to_is_a_jump_and_a_step_isnt() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(200);
+    let file = numbered(200);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     let go = |state: &Value, id: &str| menu_item(state, id)["enabled"].clone();
@@ -2816,7 +2705,7 @@ fn a_find_hit_clicked_or_returned_to_is_a_jump_and_a_step_isnt() {
 #[test]
 fn a_step_kept_for_the_querys_end_is_done_without_a_hang() {
     let Some(run) = Run::start() else { return };
-    let file = long_document(300);
+    let file = numbered(300);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["qa", "menu", "find.open"]);

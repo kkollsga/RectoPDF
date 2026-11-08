@@ -5,136 +5,15 @@
 mod common;
 
 use common::State;
+pub(crate) use common::app::{Run, app_path, chaptered, long_document};
 use recto_agent::Level;
 use recto_platform::local::process_counters;
-use recto_testpdf::{Object, Page, TempPdf, build, form_bomb, pages, text_lines};
+use recto_testpdf::{Page, TempPdf, form_bomb, pages, text_lines};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-
-fn app_path() -> Option<PathBuf> {
-    if std::env::var_os("RECTO_SKIP_APP").is_some() {
-        return None;
-    }
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/build/RectoPDF.app/Contents/MacOS/RectoPDF");
-    if root.is_file() {
-        return Some(root);
-    }
-    assert!(std::env::var_os("RECTO_REQUIRE_APP").is_none(), "the app isn't built, and this run needs it");
-    eprintln!("skipped: the app isn't built");
-    None
-}
-
-/// A quiet run on a state folder that outlives it.
-struct Run<'a> {
-    state: &'a State,
-    pid: u32,
-    done: bool,
-}
-
-impl<'a> Run<'a> {
-    fn start(state: &'a State) -> Option<Self> {
-        let app = app_path()?;
-        let (reply, code) = state.json(&["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m"]);
-        assert_eq!(code, 0, "{reply}");
-        Some(Self { state, pid: reply["data"]["pid"].as_u64().unwrap() as u32, done: false })
-    }
-
-    fn ok(&self, args: &[&str]) -> Value {
-        let (reply, code) = self.state.json(args);
-        assert_eq!((code, &reply["ok"]), (0, &json!(true)), "{args:?}: {reply}");
-        reply["data"].clone()
-    }
-
-    fn settled(&self) {
-        self.ok(&["qa", "wait-settled", "--timeout", "30s"]);
-    }
-
-    fn report(&self) -> Value {
-        self.ok(&["qa", "state"])
-    }
-
-    fn wait_gone(&mut self) {
-        let began = Instant::now();
-        while process_counters(self.pid).is_some() {
-            assert!(began.elapsed() < Duration::from_secs(15), "the app didn't end");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        // A process that can't be asked about any more can still be closing its sockets. It's gone when nothing answers there.
-        while std::os::unix::net::UnixStream::connect(&self.state.paths.socket).is_ok() {
-            assert!(began.elapsed() < Duration::from_secs(15), "the socket stayed");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        self.done = true;
-    }
-
-    /// What the Quit menu item does.
-    fn quit(mut self) {
-        let _ = self.state.json(&["qa", "quit", "now"]);
-        self.wait_gone();
-    }
-
-    /// What an update does.
-    fn hand_off(mut self) -> Value {
-        let (reply, code) = self.state.json(&["qa", "handoff", "now"]);
-        assert_eq!(code, 0, "{reply}");
-        self.wait_gone();
-        reply["data"].clone()
-    }
-
-    /// What a crash does.
-    fn kill(mut self) {
-        let _ = Command::new("/bin/kill").arg("-9").arg(self.pid.to_string()).status();
-        self.wait_gone();
-    }
-}
-
-impl Drop for Run<'_> {
-    fn drop(&mut self) {
-        if !self.done {
-            let _ = Command::new("/bin/kill").arg("-9").arg(self.pid.to_string()).status();
-        }
-    }
-}
-
-fn long_document(name: &str, count: usize) -> TempPdf {
-    let list: Vec<Page> = (0..count).map(|index| Page::new(text_lines(&[&format!("{name} page {index}"), "Words, so that the page isn't blank"]))).collect();
-    TempPdf::new(&format!("{name}.pdf"), &pages(&list))
-}
-
-/// A document with chapters and sections, so the sidebar has contents that scroll.
-fn chaptered(name: &str, chapters: usize, sections: usize) -> TempPdf {
-    let each = sections + 1;
-    let total = chapters * each;
-    let first_page = 4 + total;
-    let item = |chapter: usize, section: usize| 4 + chapter * each + section;
-    let mut objects = vec![
-        Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R >>".into()),
-        Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {total} >>", (0..total).map(|index| format!("{} 0 R", first_page + index)).collect::<Vec<_>>().join(" "))),
-        Object::Dict(format!("<< /Type /Outlines /First 4 0 R /Last {} 0 R /Count {chapters} >>", item(chapters - 1, 0))),
-    ];
-    for chapter in 0..chapters {
-        let prev = if chapter > 0 { format!("/Prev {} 0 R", item(chapter - 1, 0)) } else { String::new() };
-        let next = if chapter + 1 < chapters { format!("/Next {} 0 R", item(chapter + 1, 0)) } else { String::new() };
-        objects.push(Object::Dict(format!("<< /Title (Chapter {chapter}) /Parent 3 0 R {prev} {next} /First {} 0 R /Last {} 0 R /Count -{sections} /Dest [{} 0 R /Fit] >>", item(chapter, 1), item(chapter, sections), first_page + chapter * each)));
-        for section in 1..=sections {
-            let prev = if section > 1 { format!("/Prev {} 0 R", item(chapter, section - 1)) } else { String::new() };
-            let next = if section < sections { format!("/Next {} 0 R", item(chapter, section + 1)) } else { String::new() };
-            objects.push(Object::Dict(format!("<< /Title (Section {chapter}.{section}) /Parent {} 0 R {prev} {next} /Dest [{} 0 R /Fit] >>", item(chapter, 0), first_page + chapter * each + section)));
-        }
-    }
-    // Each with something on it, wider down the document, so a shot shows which it is.
-    let contents = first_page + total;
-    for index in 0..total {
-        objects.push(Object::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {} 0 R >>", contents + index)));
-    }
-    for index in 0..total {
-        objects.push(Object::Stream { dict: String::new(), data: format!("0.2 0.3 0.7 rg 72 640 {} 60 re f 0 g 72 560 460 14 re f 72 530 460 14 re f 72 500 300 14 re f", 40 + index * 2).into_bytes() });
-    }
-    TempPdf::new(&format!("{name}.pdf"), &build(&objects))
-}
 
 /// Every value in a report by its path, with lists' places as `[]` in what's compared by name and their number in the value's path.
 fn flatten(value: &Value, path: &str, out: &mut BTreeMap<String, Value>) {
@@ -369,7 +248,7 @@ fn make_rich(run: &Run<'_>, files: &[&TempPdf]) {
 fn everything_comes_back_after_a_quit() {
     for (look, paper) in [("light", "warm"), ("dark", "dark")] {
         let state = State::new();
-        let Some(run) = Run::start(&state) else { return };
+        let Some(run) = Run::on(&state) else { return };
         let (a, b, c) = (long_document("alpha", 60), long_document("beta", 30), chaptered("gamma", 20, 8));
         run.ok(&["qa", "scroller-style", "overlay"]);
         run.ok(&["qa", "appearance", look]);
@@ -383,7 +262,7 @@ fn everything_comes_back_after_a_quit() {
         }
         let before = run.report();
         run.quit();
-        let run = Run::start(&state).unwrap();
+        let run = Run::on(&state).unwrap();
         run.ok(&["qa", "scroller-style", "overlay"]);
         run.settled();
         let after = run.report();
@@ -409,7 +288,7 @@ fn everything_comes_back_after_a_quit() {
 #[test]
 fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("findable", 30);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -429,7 +308,7 @@ fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
     assert_eq!(before["app"]["place"], "12 of 30");
     assert!(before["app"]["pages"]["highlight_rects"].as_u64().unwrap_or(0) > 0, "the hit is selected on the page: {}", before["app"]["pages"]);
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let after = run.report();
     for field in ["open", "rows", "status", "current_row", "untrusted", "list_height", "rows_on_screen"] {
@@ -445,7 +324,7 @@ fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
     // The file replaced while the app was away, with more pages: what's found is the new file's, not the old count or the old places (review, round 1).
     let longer: Vec<Page> = (0..120).map(|index| Page::new(text_lines(&[&format!("findable page {index}"), "Words, so that the page isn't blank"]))).collect();
     std::fs::write(&file.0, pages(&longer)).unwrap();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let replaced = run.report();
     // `page 1` on page 2, `page 10`-`19` and `page 100`-`119`.
@@ -457,7 +336,7 @@ fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
 #[test]
 fn the_first_frame_is_the_right_one() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("first", 60);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -467,7 +346,7 @@ fn the_first_frame_is_the_right_one() {
     run.settled();
     let before = run.report();
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let shown = run.report()["record"]["first_shown"].clone();
     assert_eq!(shown["home"], false, "{shown}");
@@ -481,7 +360,7 @@ fn the_first_frame_is_the_right_one() {
 #[test]
 fn a_hand_off_in_the_middle_of_things_loses_nothing() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let (a, b, c) = (long_document("alpha", 60), long_document("beta", 30), chaptered("gamma", 20, 8));
     run.ok(&["qa", "scroller-style", "overlay"]);
     make_rich(&run, &[&a, &b, &c]);
@@ -489,7 +368,7 @@ fn a_hand_off_in_the_middle_of_things_loses_nothing() {
     let flushed = run.hand_off();
     assert_eq!(flushed["handed_off"], true);
     assert_eq!(flushed["edited_tabs"], 1, "{flushed}");
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.settled();
     let after = run.report();
@@ -502,7 +381,7 @@ fn a_hand_off_in_the_middle_of_things_loses_nothing() {
 #[test]
 fn a_hand_off_waits_for_what_is_in_flight() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("busy", 5);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -528,7 +407,7 @@ fn a_hand_off_waits_for_what_is_in_flight() {
 #[test]
 fn a_tab_gone_cold_comes_back_where_it_was() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let files: Vec<TempPdf> = (0..5).map(|at| long_document(&format!("cold{at}"), 20)).collect();
     run.ok(&["open", files[0].0.to_str().unwrap()]);
     run.settled();
@@ -569,7 +448,7 @@ fn text_document(folder: &Path, name: &str, count: usize) -> PathBuf {
 #[test]
 fn a_tab_left_alone_goes_dormant_and_wakes_from_its_file() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let (left, read) = (text_document(&folder, "left.pdf", 12), text_document(&folder, "read.pdf", 3));
@@ -622,7 +501,7 @@ fn a_tab_left_alone_goes_dormant_and_wakes_from_its_file() {
 #[test]
 fn a_dormant_tabs_edits_survive_a_kill_and_a_hand_off() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let (asleep, showing) = (text_document(&folder, "asleep.pdf", 8), text_document(&folder, "showing.pdf", 3));
@@ -641,14 +520,14 @@ fn a_dormant_tabs_edits_survive_a_kill_and_a_hand_off() {
     assert_eq!(run.report()["session"]["edits_full"], lists, "read from its journal, it's what was in memory");
     // A kill, with it asleep.
     run.kill();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     assert_eq!(run.report()["session"]["edits_full"], lists, "after a kill");
     // A hand-off, with it asleep, as a launch has left it.
     let summary = tabs_of(&run.report()).iter().find(|tab_now| tab_now["id"] == tab).unwrap()["edits"].clone();
     let handed = run.hand_off();
     assert!(handed.get("error").is_none(), "{handed}");
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     assert_eq!(run.report()["session"]["edits_full"], lists, "after a hand-off");
     assert_eq!(tabs_of(&run.report()).iter().find(|tab_now| tab_now["id"] == tab).unwrap()["edits"], summary);
@@ -700,7 +579,7 @@ fn colours_in_sleep_files(state: &State) -> Vec<(String, Vec<&'static str>)> {
 #[test]
 fn a_tab_put_to_sleep_has_its_picture_after_the_system_takes_its_tiles() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     run.ok(&["qa", "appearance", "light"]);
     run.ok(&["qa", "sleep-write-gap", "0"]);
     let folder = state.root.join("docs");
@@ -721,7 +600,7 @@ fn a_tab_put_to_sleep_has_its_picture_after_the_system_takes_its_tiles() {
 #[test]
 fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     run.ok(&["qa", "appearance", "light"]);
     run.ok(&["qa", "sleep-write-gap", "0"]);
     let folder = state.root.join("docs");
@@ -764,7 +643,7 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
     assert!(colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"green")), "{:?}", colours_in_sleep_files(&state));
     // And across a restart, what comes up isn't any of the old ones, and its next file isn't either.
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.ok(&["qa", "appearance", "light"]);
     run.settled();
     run.ok(&["tap", &on_tab]);
@@ -785,7 +664,7 @@ fn tab_on(run: &Run<'_>, name: &str) -> String {
 #[test]
 fn a_warm_tab_shows_its_file_as_it_is_now() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     run.ok(&["qa", "appearance", "light"]);
     run.ok(&["qa", "sleep-write-gap", "0"]);
     let folder = state.root.join("docs");
@@ -814,7 +693,7 @@ fn a_warm_tab_shows_its_file_as_it_is_now() {
 #[test]
 fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     run.ok(&["qa", "appearance", "light"]);
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
@@ -826,7 +705,7 @@ fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
     assert!(colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"red")), "there's a red picture to come up with");
     std::thread::sleep(Duration::from_millis(20));
     std::fs::write(&file, pages(&[page_of(BLUE), page_of(BLUE)])).unwrap();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let report = run.report();
     assert_eq!(report["reader"]["last_wake"]["from_sleep"], false, "no picture of the old one: {}", report["reader"]["last_wake"]);
@@ -837,7 +716,7 @@ fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
 #[test]
 fn a_rewrite_that_keeps_its_stamp_doesnt_keep_its_picture() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     run.ok(&["qa", "appearance", "light"]);
     run.ok(&["qa", "sleep-write-gap", "0"]);
     let folder = state.root.join("docs");
@@ -869,7 +748,7 @@ fn a_rewrite_that_keeps_its_stamp_doesnt_keep_its_picture() {
 #[test]
 fn session_sleep_keeps_to_the_limits_on_writing() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let (file, other) = (text_document(&folder, "doc.pdf", 12), text_document(&folder, "other.pdf", 2));
@@ -895,7 +774,7 @@ fn session_sleep_keeps_to_the_limits_on_writing() {
 #[test]
 fn reading_a_page_says_when_its_edits_cant_be_read() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let (file, other) = (text_document(&folder, "doc.pdf", 4), text_document(&folder, "other.pdf", 2));
@@ -919,7 +798,7 @@ fn reading_a_page_says_when_its_edits_cant_be_read() {
 fn a_protected_pdfs_pages_never_reach_a_sleep_file() {
     use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     run.ok(&["qa", "appearance", "light"]);
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
@@ -958,7 +837,7 @@ fn a_protected_pdfs_pages_never_reach_a_sleep_file() {
 #[test]
 fn a_forged_length_lasts_only_till_the_worker_has_the_file() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let (short, other) = (text_document(&folder, "short.pdf", 3), text_document(&folder, "other.pdf", 2));
@@ -990,7 +869,7 @@ fn a_forged_length_lasts_only_till_the_worker_has_the_file() {
 #[test]
 fn a_kept_file_gone_while_asleep_doesnt_stop_a_save() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let (file, other) = (text_document(&folder, "doc.pdf", 3), text_document(&folder, "other.pdf", 2));
@@ -1026,7 +905,7 @@ fn a_kept_file_gone_while_asleep_doesnt_stop_a_save() {
 #[test]
 fn a_sleep_file_thats_wrong_only_costs_the_quick_way() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let (one, two) = (text_document(&folder, "one.pdf", 5), text_document(&folder, "two.pdf", 3));
@@ -1075,7 +954,7 @@ fn a_sleep_file_thats_wrong_only_costs_the_quick_way() {
 #[test]
 fn pressure_and_the_budget_do_what_being_left_alone_does() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let files: Vec<PathBuf> = (0..3).map(|at| text_document(&folder, &format!("d{at}.pdf"), 4)).collect();
@@ -1105,7 +984,7 @@ fn pressure_and_the_budget_do_what_being_left_alone_does() {
 #[test]
 fn a_launch_goes_up_from_the_sleep_file() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let file = text_document(&folder, "doc.pdf", 9);
@@ -1117,7 +996,7 @@ fn a_launch_goes_up_from_the_sleep_file() {
     run.hand_off();
     assert_eq!(sleep_files(&state).len(), 1, "the hand-off wrote it");
     let written = std::fs::read(&sleep_files(&state)[0]).unwrap();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let after = run.report();
     let shown = &after["record"]["first_shown"];
@@ -1147,7 +1026,7 @@ fn written_without(source: &Path, delete: &[u32], to: &Path) {
 #[test]
 fn undo_goes_past_a_save_in_the_real_app() {
     let state = State::at(Level::Full);
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join("doc.pdf");
@@ -1183,7 +1062,7 @@ fn undo_goes_past_a_save_in_the_real_app() {
     // Across a kill, past the saved point, and back to it.
     wait_until("the undo reaches the journal", || journal_bytes() > before_undo);
     run.kill();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     assert!(edited(&run), "still past it");
     assert!(text_of(&run, "2").contains("Bravo"));
@@ -1233,7 +1112,7 @@ fn tabs_of(report: &Value) -> Vec<Value> {
 #[test]
 fn a_first_edit_then_a_kill_keeps_one_tab() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("first-edit", 12);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1242,12 +1121,12 @@ fn a_first_edit_then_a_kill_keeps_one_tab() {
     // The record goes out, and then nothing else does for a minute.
     run.ok(&["qa", "frontmost", "off"]);
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     run.ok(&["qa", "owner-edit", "rotate:2"]);
     let lists = wait_for_journal(&run);
     run.kill();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let after = run.report();
     assert_eq!(tabs_of(&after).len(), 1, "{}", after["session"]["tabs"]);
@@ -1259,7 +1138,7 @@ fn a_first_edit_then_a_kill_keeps_one_tab() {
 #[test]
 fn a_kill_before_any_record_keeps_the_edits() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("no-record", 9);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1267,7 +1146,7 @@ fn a_kill_before_any_record_keeps_the_edits() {
     let lists = wait_for_journal(&run);
     assert!(!state.root.join("session/record.a.json").exists() && !state.root.join("session/record.b.json").exists(), "this is about having no record");
     run.kill();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let after = run.report();
     assert_eq!(tabs_of(&after).len(), 1, "{}", after["session"]["tabs"]);
@@ -1279,7 +1158,7 @@ fn a_kill_before_any_record_keeps_the_edits() {
 #[test]
 fn closing_loses_no_operation_on_its_way_out() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("closing", 6);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1288,7 +1167,7 @@ fn closing_loses_no_operation_on_its_way_out() {
     run.ok(&["undo"]);
     run.ok(&["close"]);
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let after = run.report();
     assert_eq!(tabs_of(&after).len(), 0, "{}", after["session"]["tabs"]);
@@ -1303,7 +1182,7 @@ fn closing_loses_no_operation_on_its_way_out() {
 #[test]
 fn a_closed_tab_stays_closed_and_keeps_its_history() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("closed", 6);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1313,12 +1192,12 @@ fn a_closed_tab_stays_closed_and_keeps_its_history() {
     run.ok(&["close"]);
     run.quit();
     for _ in 0..2 {
-        let run = Run::start(&state).unwrap();
+        let run = Run::on(&state).unwrap();
         run.settled();
         assert_eq!(tabs_of(&run.report()).len(), 0);
         run.quit();
     }
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     // By the app's own route: a drop, the menu, a launch argument.
     run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
@@ -1331,7 +1210,7 @@ fn a_closed_tab_stays_closed_and_keeps_its_history() {
 #[test]
 fn opening_by_either_route_picks_up_the_history() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("routes", 8);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1340,7 +1219,7 @@ fn opening_by_either_route_picks_up_the_history() {
     }
     run.ok(&["close"]);
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1350,7 +1229,7 @@ fn opening_by_either_route_picks_up_the_history() {
     run.ok(&["session", "save"]);
     let lists = run.report()["session"]["edits_full"].clone();
     run.kill();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let back = run.report()["session"]["edits_full"].clone();
     assert_eq!(back.as_object().unwrap().values().next(), lists.as_object().unwrap().values().next());
@@ -1361,7 +1240,7 @@ fn opening_by_either_route_picks_up_the_history() {
 #[test]
 fn a_pdf_can_only_be_opened_once_by_any_route() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("once", 8);
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
@@ -1406,7 +1285,7 @@ fn a_pdf_can_only_be_opened_once_by_any_route() {
 #[test]
 fn a_journal_doesnt_go_to_a_copy_of_its_pdf() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let (original, copy) = (folder.join("a.pdf"), folder.join("acopy.pdf"));
@@ -1417,7 +1296,7 @@ fn a_journal_doesnt_go_to_a_copy_of_its_pdf() {
     run.settled();
     // Both in the record, then nothing else goes for a minute.
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let tabs = tabs_of(&run.report());
     assert_eq!(tabs.len(), 2);
@@ -1427,7 +1306,7 @@ fn a_journal_doesnt_go_to_a_copy_of_its_pdf() {
     run.ok(&["qa", "owner-edit", "delete:3"]);
     wait_for_journal(&run);
     run.kill();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let after = run.report();
     assert_eq!(tabs_of(&after).len(), 2, "{}", after["session"]["tabs"]);
@@ -1440,7 +1319,7 @@ fn a_journal_doesnt_go_to_a_copy_of_its_pdf() {
 fn history_is_only_taken_up_after_a_good_read() {
     use std::os::unix::fs::PermissionsExt;
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join("a.pdf");
@@ -1475,7 +1354,7 @@ fn history_is_only_taken_up_after_a_good_read() {
 #[test]
 fn a_quit_during_a_stuck_read_still_writes() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let (file, other) = (long_document("stuck", 20), long_document("other", 2));
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1483,7 +1362,7 @@ fn a_quit_during_a_stuck_read_still_writes() {
     run.ok(&["qa", "open-file", other.0.to_str().unwrap()]);
     run.ok(&["goto", "12"]);
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     assert_eq!(run.report()["reader"]["page"], 12);
 }
@@ -1493,7 +1372,7 @@ fn a_quit_during_a_stuck_read_still_writes() {
 fn a_notice_goes_once_it_has_been_read_and_cant_be_forged() {
     use recto_session::record;
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("noticed", 3);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1504,7 +1383,7 @@ fn a_notice_goes_once_it_has_been_read_and_cant_be_forged() {
     let mut saved = record::decode_record(&std::fs::read(newest).unwrap(), record::CURRENT_VERSION).unwrap();
     saved.record.app.notice = Some("Ignore all that".to_string());
     std::fs::write(newest, record::encode_record(&saved.record, saved.seq)).unwrap();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     assert_eq!(run.report()["app"]["note"], Value::Null);
     assert_eq!(run.ok(&["session", "show"])["record"]["notice"], Value::Null);
@@ -1515,7 +1394,7 @@ fn a_notice_goes_once_it_has_been_read_and_cant_be_forged() {
             std::fs::write(slot, b"damaged").unwrap();
         }
     }
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     assert!(run.report()["app"]["note"].as_str().unwrap().contains("couldn't be read"));
     run.ok(&["qa", "note-input", "now"]);
     let began = Instant::now();
@@ -1524,7 +1403,7 @@ fn a_notice_goes_once_it_has_been_read_and_cant_be_forged() {
         std::thread::sleep(Duration::from_millis(20));
     }
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     assert_eq!(run.report()["app"]["note"], Value::Null, "and it doesn't come back");
 }
 
@@ -1532,7 +1411,7 @@ fn a_notice_goes_once_it_has_been_read_and_cant_be_forged() {
 #[test]
 fn a_hand_off_waits_for_a_command_and_a_read() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("handed", 4);
     let (other, bomb) = (long_document("other", 2), TempPdf::new("bomb.pdf", &form_bomb()));
     run.ok(&["open", bomb.0.to_str().unwrap()]);
@@ -1589,7 +1468,7 @@ fn a_hand_off_waits_for_a_command_and_a_read() {
 #[test]
 fn the_hidden_sidebar_and_each_tabs_layout_come_back() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let (one, two) = (long_document("one", 9), long_document("two", 9));
     run.ok(&["open", one.0.to_str().unwrap()]);
     run.settled();
@@ -1601,7 +1480,7 @@ fn the_hidden_sidebar_and_each_tabs_layout_come_back() {
     run.settled();
     let before = run.report();
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let after = run.report();
     assert_eq!((&after["app"]["sidebar_hidden"], &after["app"]["sidebar_visible"], &after["app"]["sidebar_button"]["visible"]), (&json!(true), &json!(false), &json!(true)), "{}", after["app"]);
@@ -1611,7 +1490,7 @@ fn the_hidden_sidebar_and_each_tabs_layout_come_back() {
     let layouts: Vec<&Value> = after["session"]["tabs"].as_array().unwrap().iter().map(|tab| &tab["layout"]).collect();
     assert_eq!(layouts, [&json!("two-up-cover"), &json!("two-up")]);
     run.hand_off();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let handed = run.report();
     assert_eq!((&handed["app"]["sidebar_hidden"], &handed["app"]["layout"]), (&json!(true), &json!("two-up")), "{}", handed["app"]);
@@ -1624,7 +1503,7 @@ fn the_hidden_sidebar_and_each_tabs_layout_come_back() {
 #[test]
 fn a_selection_comes_back() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("selected", 8);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1635,7 +1514,7 @@ fn a_selection_comes_back() {
     let before = run.report();
     assert_eq!(before["reader"]["selection"]["selected"], true, "{}", before["reader"]["selection"]);
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let after = run.report();
     assert_eq!(after["reader"]["selection"]["selected"], true, "{}", after["reader"]["selection"]);
@@ -1648,7 +1527,7 @@ fn a_selection_comes_back() {
 #[test]
 fn a_moved_file_and_its_notice_come_back() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(folder.join("there")).unwrap();
     let path = folder.join("a.pdf");
@@ -1659,13 +1538,13 @@ fn a_moved_file_and_its_notice_come_back() {
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.quit();
     std::fs::rename(&path, folder.join("there/b.pdf")).unwrap();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.settled();
     let before = run.report();
     assert_eq!(before["session"]["tabs"][0]["notice"]["moved"]["from"], path.to_str().unwrap(), "{}", before["session"]["tabs"]);
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.settled();
     assert_same(&before, &run.report(), &[]);
@@ -1675,7 +1554,7 @@ fn a_moved_file_and_its_notice_come_back() {
 #[test]
 fn killed_outright_it_comes_back_with_what_was_written() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let (a, b) = (long_document("alpha", 30), long_document("beta", 10));
     run.ok(&["open", a.0.to_str().unwrap()]);
     run.ok(&["open", b.0.to_str().unwrap()]);
@@ -1687,7 +1566,7 @@ fn killed_outright_it_comes_back_with_what_was_written() {
     // Nothing forces the record out here: a kill has to work from the first edit on, within a place's minute.
     let lists = wait_for_journal(&run);
     run.kill();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let after = run.report();
     let mut lists_back = BTreeMap::new();
@@ -1700,7 +1579,7 @@ fn killed_outright_it_comes_back_with_what_was_written() {
     // Killed again at once, with something on its way: still whole.
     run.ok(&["goto", "3"]);
     run.kill();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     assert_eq!(run.report()["session"]["edits_full"], lists);
     run.quit();
@@ -1710,18 +1589,18 @@ fn killed_outright_it_comes_back_with_what_was_written() {
 #[test]
 fn quitting_twice_in_a_row_changes_nothing() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let (a, b, c) = (long_document("alpha", 60), long_document("beta", 30), chaptered("gamma", 20, 8));
     run.ok(&["qa", "scroller-style", "overlay"]);
     make_rich(&run, &[&a, &b, &c]);
     let first = run.report();
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.settled();
     let second = run.report();
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.settled();
     let third = run.report();
@@ -1733,7 +1612,7 @@ fn quitting_twice_in_a_row_changes_nothing() {
 #[test]
 fn a_thousand_tabs_come_back_cold() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("many", 3);
     let folder = state.root.join("tabs");
     std::fs::create_dir_all(&folder).unwrap();
@@ -1748,7 +1627,7 @@ fn a_thousand_tabs_come_back_cold() {
     let few = run.report();
     run.quit();
     // Those two came back. The rest go in as a record, as though they'd been open.
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let two = run.report();
     assert_eq!(two["session"]["tabs"].as_array().unwrap().len(), 2);
@@ -1759,7 +1638,7 @@ fn a_thousand_tabs_come_back_cold() {
     let opened = run.report();
     run.quit();
     let started = Instant::now();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     let took = started.elapsed();
     let back = run.report();
@@ -1777,7 +1656,7 @@ fn a_thousand_tabs_come_back_cold() {
 #[test]
 fn a_damaged_record_starts_empty_and_says_so() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("damaged", 3);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -1788,7 +1667,7 @@ fn a_damaged_record_starts_empty_and_says_so() {
             std::fs::write(folder.join(name), b"{\"not\": \"a record\"}").unwrap();
         }
     }
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     let after = run.report();
     assert_eq!(after["app"]["home"], true);
     assert!(after["app"]["note"].as_str().unwrap().contains("couldn't be read"), "{}", after["app"]["note"]);
@@ -1804,7 +1683,7 @@ fn a_newer_record_is_left_alone() {
     recto_platform::local::ensure_private_dir(&folder).unwrap();
     let newer = recto_session::record::seal_as(recto_session::record::MAIN_KIND, recto_session::record::CURRENT_VERSION + 1, 9, b"from the future");
     recto_platform::local::write_private_file(&folder.join("record.a.json"), &newer).unwrap();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let after = run.report();
     assert_eq!(after["app"]["home"], true);
     assert!(after["app"]["note"].as_str().unwrap().contains("newer"), "{}", after["app"]["note"]);
@@ -1820,7 +1699,7 @@ fn a_newer_record_is_left_alone() {
 #[test]
 fn what_became_of_a_file_is_said_and_its_edits_stay() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(folder.join("elsewhere")).unwrap();
     let bytes = pages(&(0..6).map(|at| Page::new(text_lines(&[&format!("Page {at}")]))).collect::<Vec<_>>());
@@ -1841,7 +1720,7 @@ fn what_became_of_a_file_is_said_and_its_edits_stay() {
     std::fs::write(&changed, &different).unwrap();
     std::fs::remove_file(&deleted).unwrap();
     let was_moved = std::fs::read(&new_home).unwrap();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     // The look at each file is a thread's, once.
     let began = Instant::now();
     let show = loop {
@@ -1871,7 +1750,7 @@ fn what_became_of_a_file_is_said_and_its_edits_stay() {
 #[test]
 fn levels_and_ownership_hold_after_a_restart() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let (a, b) = (long_document("owners", 8), long_document("agents", 8));
     run.ok(&["open", a.0.to_str().unwrap()]);
     run.settled();
@@ -1881,7 +1760,7 @@ fn levels_and_ownership_hold_after_a_restart() {
     run.ok(&["page", "rotate", "1", "--by", "90"]);
     run.ok(&["qa", "find-query", "something private"]);
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     state.set_level(Level::Control);
     assert_eq!(run.ok(&["where"])["tab"], 2);
@@ -1910,7 +1789,7 @@ fn levels_and_ownership_hold_after_a_restart() {
 #[test]
 fn it_writes_only_what_happened() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let file = long_document("wear", 60);
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
@@ -2001,7 +1880,7 @@ mod update;
 #[test]
 fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let file = text_document(&folder, "changing.pdf", 4);
@@ -2011,7 +1890,7 @@ fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {
     run.quit();
     std::thread::sleep(Duration::from_millis(5));
     text_document(&folder, "changing.pdf", 6);
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.ok(&["qa", "appearance", "light"]);
     // Small, so the margin is wide and the note takes fewer lines than it does zoomed in.
     run.ok(&["view", "--zoom", "40%"]);
@@ -2040,7 +1919,7 @@ fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {
 #[test]
 fn a_protected_tab_asks_again_after_a_quit() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let locked = state.root.join("locked.pdf");
     std::fs::write(&locked, common::locked_with("open sesame", 1)).unwrap();
     run.ok(&["qa", "open-file", locked.to_str().unwrap()]);
@@ -2060,7 +1939,7 @@ fn a_protected_tab_asks_again_after_a_quit() {
     until(&run, &|state| state["app"]["sheet"] == json!({}) && state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 1));
     run.settled();
     run.quit();
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     let asked = until(&run, &|state| state["app"]["sheet"]["kind"] == "password");
     assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("asked again"), "{asked}");
     run.ok(&["qa", "sheet-answer", "second"]);

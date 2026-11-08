@@ -5,80 +5,10 @@
 mod common;
 
 use common::State;
-use recto_platform::local::process_counters;
+use common::app::Run;
 use recto_testpdf::{Page, TempPdf, pages, text_lines};
-use serde_json::{Value, json};
-use std::path::PathBuf;
-use std::process::Command;
+use serde_json::Value;
 use std::time::{Duration, Instant};
-
-fn app_path() -> Option<PathBuf> {
-    if std::env::var_os("RECTO_SKIP_APP").is_some() {
-        return None;
-    }
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/build/RectoPDF.app/Contents/MacOS/RectoPDF");
-    if root.is_file() {
-        return Some(root);
-    }
-    assert!(std::env::var_os("RECTO_REQUIRE_APP").is_none(), "the app isn't built, and this run needs it");
-    eprintln!("skipped: the app isn't built");
-    None
-}
-
-struct Run<'a> {
-    state: &'a State,
-    pid: u32,
-}
-
-impl<'a> Run<'a> {
-    fn start(state: &'a State) -> Option<Self> {
-        let app = app_path()?;
-        let (reply, code) = state.json(&["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m"]);
-        assert_eq!(code, 0, "{reply}");
-        Some(Self { state, pid: reply["data"]["pid"].as_u64().unwrap() as u32 })
-    }
-
-    fn ok(&self, args: &[&str]) -> Value {
-        let (reply, code) = self.state.json(args);
-        assert_eq!((code, &reply["ok"]), (0, &json!(true)), "{args:?}: {reply}");
-        reply["data"].clone()
-    }
-
-    fn settled(&self) {
-        self.ok(&["qa", "wait-settled", "--timeout", "30s"]);
-    }
-
-    fn report(&self) -> Value {
-        self.ok(&["qa", "state"])
-    }
-}
-
-impl Run<'_> {
-    /// What the Quit menu item does, and waits for the app to have gone.
-    fn quit(&mut self) {
-        let _ = self.state.json(&["qa", "quit", "now"]);
-        let began = Instant::now();
-        while process_counters(self.pid).is_some() {
-            assert!(began.elapsed() < Duration::from_secs(15), "the app didn't end");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        while std::os::unix::net::UnixStream::connect(&self.state.paths.socket).is_ok() {
-            assert!(began.elapsed() < Duration::from_secs(15), "the socket stayed");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-}
-
-impl Drop for Run<'_> {
-    fn drop(&mut self) {
-        let _ = self.state.json(&["qa", "quit", "now"]);
-        let began = Instant::now();
-        while process_counters(self.pid).is_some() && began.elapsed() < Duration::from_secs(10) {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let _ = Command::new("/bin/kill").arg("-9").arg(self.pid.to_string()).status();
-    }
-}
 
 /// A document whose every page says which document and page it is, at a page size of its own.
 fn document(name: &str, count: usize, media: (f32, f32)) -> TempPdf {
@@ -98,7 +28,7 @@ fn page_of(report: &Value, tab: u64) -> i64 {
 #[test]
 fn comparison_view_from_command_click_to_one_again() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let (a, b, c) = (document("alpha", 40, (612.0, 792.0)), document("beta", 12, (842.0, 595.0)), document("gamma", 25, (595.0, 842.0)));
     run.ok(&["open", a.0.to_str().unwrap()]);
     run.settled();
@@ -235,7 +165,7 @@ fn comparison_view_from_command_click_to_one_again() {
 #[test]
 fn a_fourth_pane_is_refused_with_words() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let files: Vec<TempPdf> = (0..4).map(|at| document(&format!("d{at}"), 3, (612.0, 792.0))).collect();
     for file in &files {
         run.ok(&["open", file.0.to_str().unwrap()]);
@@ -254,7 +184,7 @@ fn a_fourth_pane_is_refused_with_words() {
 #[test]
 fn a_dormant_tab_and_a_missing_file_in_a_comparison() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let (a, b, c) = (document("alpha", 20, (612.0, 792.0)), document("beta", 8, (612.0, 792.0)), document("gamma", 5, (612.0, 792.0)));
     for file in [&a, &b, &c] {
         run.ok(&["open", file.0.to_str().unwrap()]);
@@ -289,7 +219,7 @@ fn a_dormant_tab_and_a_missing_file_in_a_comparison() {
 #[test]
 fn an_agent_comparison_of_cold_tabs_keeps_to_the_live_documents() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let files: Vec<TempPdf> = (0..5).map(|at| document(&format!("live{at}"), 6, (612.0, 792.0))).collect();
     for file in &files {
         run.ok(&["open", file.0.to_str().unwrap()]);
@@ -309,7 +239,7 @@ fn an_agent_comparison_of_cold_tabs_keeps_to_the_live_documents() {
 #[test]
 fn a_missing_file_in_a_pane_says_so_after_a_restart() {
     let state = State::new();
-    let Some(mut run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let (a, b) = (document("gone", 6, (612.0, 792.0)), document("here", 6, (612.0, 792.0)));
     run.ok(&["open", a.0.to_str().unwrap()]);
     run.ok(&["open", b.0.to_str().unwrap()]);
@@ -319,8 +249,7 @@ fn a_missing_file_in_a_pane_says_so_after_a_restart() {
     assert_eq!(run.report()["session"]["active"], 2, "the pane that stays is the one read");
     run.quit();
     std::fs::remove_file(&a.0).unwrap();
-    drop(run);
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     let began = Instant::now();
     let report = loop {
         run.settled();
@@ -341,7 +270,7 @@ fn a_missing_file_in_a_pane_says_so_after_a_restart() {
 #[test]
 fn a_right_click_on_a_pane_is_about_that_pane() {
     let state = State::new();
-    let Some(run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let (a, b) = (document("left", 8, (612.0, 792.0)), document("right", 8, (612.0, 792.0)));
     run.ok(&["open", a.0.to_str().unwrap()]);
     run.ok(&["open", b.0.to_str().unwrap()]);
@@ -364,7 +293,7 @@ fn a_right_click_on_a_pane_is_about_that_pane() {
 #[test]
 fn restoring_a_comparison_with_a_small_page_keeps_the_reader_and_the_places() {
     let state = State::new();
-    let Some(mut run) = Run::start(&state) else { return };
+    let Some(run) = Run::on(&state) else { return };
     let (a, b, small) = (document("first", 30, (612.0, 792.0)), document("second", 30, (612.0, 792.0)), document("card", 1, (300.0, 200.0)));
     for file in [&a, &b, &small] {
         run.ok(&["open", file.0.to_str().unwrap()]);
@@ -378,8 +307,7 @@ fn restoring_a_comparison_with_a_small_page_keeps_the_reader_and_the_places() {
     assert_eq!(before["session"]["active"], 1);
     let pages = |report: &Value| panes(report).iter().map(|pane| pane["page"].clone()).collect::<Vec<_>>();
     run.quit();
-    drop(run);
-    let run = Run::start(&state).unwrap();
+    let run = Run::on(&state).unwrap();
     run.settled();
     std::thread::sleep(Duration::from_millis(300));
     run.settled();
