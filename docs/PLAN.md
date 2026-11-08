@@ -151,7 +151,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] The rest of what they asked for: an unwrapped quote form of `text`, `edits` saying when turns cancel out, `watch` to a file, and what an encrypted file restricts in `facts`
 - From the owner's first use of the restore build (2026-11-07 and 08):
   - [x] A sidebar button beside the window's controls replaces focus view; View > Hide Sidebar on ⌃⌘S; `recto view --sidebar`
-  - [x] The zoom level in the top left, clicked to type a level or fit again; no zoom in the `⋯` panel; `recto view --zoom 150%`
+  - [x] The zoom level in the top right beside the agent icon (owner, 2026-11-08), clicked to type a level or fit again; no zoom in the `⋯` panel; `recto view --zoom 150%`
   - [x] The page number always in the lower right
   - [x] Right-click: single page, side by side, and side by side with the first page alone, per tab and restored
   - [x] File > Settings…

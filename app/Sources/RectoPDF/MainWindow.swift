@@ -179,7 +179,7 @@ final class BookMark: NSView {
     let agentIcon = AgentIcon()
     /// Beside the window's controls: shows and hides the sidebar. Owner, 2026-11-08: "simply have a sidebar icon to the right of the traffic light buttons that toggles sidebar on and of".
     let sidebarButton = NSButton(title: "", target: nil, action: nil)
-    /// The zoom level, beside the sidebar's button. Clicking it opens a field to type a level in, with a button to fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". Its words are Rust's.
+    /// The zoom level, in the top right just left of the agent icon. Clicking it opens a field to type a level in, with a button to fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". Its words are Rust's.
     let zoomButton = NSButton(title: "", target: nil, action: nil)
     let zoomField = NSTextField(string: "")
     let zoomReset = NSButton(title: "", target: nil, action: nil)
@@ -419,14 +419,12 @@ final class BookMark: NSView {
         pages.scrollView.frame = area
         home.frame = area
         // The same margin to the right as above, and less above than the 16 it had. Owner, 2026-11-07: "The margin left of the ai icon is too large. It should have the same margin to the right and above. Above should have slightly smaller margin then now (and right gets the same one)."
-        let iconMargin: CGFloat = 12
-        agentIcon.frame = NSRect(x: size.width - iconMargin - 20, y: iconMargin, width: 20, height: 20)
-        // Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon".
-        pages.setScrollerTop(agentIcon.isHidden ? 0 : agentIcon.frame.maxY + 8)
+        agentIcon.frame = NSRect(x: size.width - Self.cornerMargin - 20, y: Self.cornerMargin, width: 20, height: 20)
         layoutMargin(area: area)
         layoutHome()
         positionWindowButtons()
         layoutTopLeft()
+        layoutTopRight()
         pages.layoutChanged()
     }
 
@@ -518,13 +516,30 @@ final class BookMark: NSView {
         let row = windowButtonsRow()
         let size: CGFloat = 24
         sidebarButton.frame = NSRect(x: (row.right + 10).rounded(), y: (row.middle - size / 2).rounded(), width: size, height: size)
-        // The zoom level after it, in the same row, with room between so it doesn't crowd the button.
-        let x = sidebarButton.frame.maxX + 10
+    }
+
+    /// The agent icon's margin from the window's top and right edges, the same both ways, by the owner's word of 2026-11-07.
+    static let cornerMargin: CGFloat = 12
+    /// Room either side of the zoom level's words inside its button.
+    static let zoomPadding: CGFloat = 6
+
+    /// The top right margin, where the agent icon is: the zoom level just left of it, in its row, or in its place when it's hidden, at the same margin from the edge. Owner, 2026-11-08: "The zoom level should be in the upper right of the app (not in the sidebar)". Its field opens leftwards, with Fit before it. The page's scroller stops below whatever's there.
+    private func layoutTopRight() {
+        let width = root.bounds.width
+        let middle = agentIcon.frame.midY
+        let right = agentIcon.isHidden ? width - Self.cornerMargin : agentIcon.frame.minX - 8
         let text = zoomButton.attributedTitle.size()
-        zoomButton.frame = NSRect(x: x, y: (row.middle - 11).rounded(), width: (text.width + 12).rounded(.up), height: 22)
-        zoomField.frame = NSRect(x: x, y: (row.middle - 11).rounded(), width: 54, height: 22)
+        // The words have this much room either side inside the button, so it's they that keep the margin.
+        let padding = Self.zoomPadding
+        let buttonWidth = (text.width + 2 * padding).rounded(.up)
+        zoomButton.frame = NSRect(x: (right + padding - buttonWidth).rounded(), y: (middle - 11).rounded(), width: buttonWidth, height: 22)
+        zoomField.frame = NSRect(x: (right - 54).rounded(), y: (middle - 11).rounded(), width: 54, height: 22)
         let reset = zoomReset.attributedTitle.size()
-        zoomReset.frame = NSRect(x: zoomField.frame.maxX + 6, y: (row.middle - 11).rounded(), width: (reset.width + 10).rounded(.up), height: 22)
+        let resetWidth = (reset.width + 10).rounded(.up)
+        zoomReset.frame = NSRect(x: zoomField.frame.minX - 6 - resetWidth, y: (middle - 11).rounded(), width: resetWidth, height: 22)
+        // Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon". And below the zoom level beside it, and the whole way with nothing there.
+        let showing = [agentIcon, zoomButton, zoomField].filter { !$0.isHidden }
+        pages.setScrollerTop(showing.map(\.frame.maxY).max().map { $0 + 8 } ?? 0)
     }
 
     @objc private func sidebarButtonPressed() {
@@ -556,13 +571,17 @@ final class BookMark: NSView {
     /// The level as it stands, from the page's magnification and fit, in Rust's words. Not while it's being typed over.
     func updateZoomLevel() {
         let label = delegate.core.zoomLabel(magnification: pages.scrollView.magnification, fit: pages.fitForQA)
-        zoomButton.isHidden = reader.home || zoomEditing
+        let hidden = reader.home || zoomEditing
+        if zoomButton.isHidden != hidden {
+            zoomButton.isHidden = hidden
+            layoutTopRight()
+        }
         guard label != zoomLabel else { return }
         zoomLabel = label
         zoomButton.toolTip = label.tooltip
         zoomReset.toolTip = label.tooltip
         styleZoomLevel()
-        layoutTopLeft()
+        layoutTopRight()
     }
 
     private func styleZoomLevel() {
@@ -578,7 +597,7 @@ final class BookMark: NSView {
         zoomButton.isHidden = true
         zoomField.isHidden = false
         zoomReset.isHidden = false
-        layoutTopLeft()
+        layoutTopRight()
         window.makeFirstResponder(zoomField)
         zoomField.selectText(nil)
     }
@@ -602,7 +621,7 @@ final class BookMark: NSView {
         zoomReset.isHidden = true
         if window.firstResponder === zoomField.currentEditor() || window.firstResponder === zoomField { window.makeFirstResponder(root) }
         updateZoomLevel()
-        layoutTopLeft()
+        layoutTopRight()
     }
 
     /// Into the sidebar's top corner, where the concept has them, without a toolbar's strip across the page.

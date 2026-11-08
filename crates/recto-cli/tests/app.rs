@@ -442,7 +442,7 @@ fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
     assert_eq!(half["app"]["document_edited"], true);
 }
 
-/// Failure: the zoom level in the top left isn't there, says a level the page isn't at, crowds the sidebar's button or leaves the window's row, or clicking it doesn't let the reader type a level or fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". 100% is the page's real size.
+/// Failure: the zoom level isn't in the top right just left of the agent icon, in its row, or doesn't take the icon's place at the same margin when the icon's hidden, or the page's scroller runs up beside it; or it says a level the page isn't at, or clicking it doesn't let the reader type a level or fit the page again. Owner, 2026-11-07: "clicking the zoom value enables you to type in zoom level or reset", and 2026-11-08: "The zoom level should be in the upper right of the app (not in the sidebar)". 100% is the page's real size.
 #[test]
 fn the_zoom_level_shows_and_takes_a_typed_level() {
     let Some(run) = Run::start() else { return };
@@ -452,13 +452,14 @@ fn the_zoom_level_shows_and_takes_a_typed_level() {
     let magnification = |state: &Value| state["app"]["pages"]["magnification"].as_f64().unwrap();
     let rest = run.report();
     let level = &rest["app"]["zoom_level"];
-    assert_eq!((&level["visible"], &level["editing"], &level["clear_of_sidebar_button"], &level["in_the_window_buttons_row"]), (&json!(true), &json!(false), &json!(true), &json!(true)), "{rest}");
+    assert_eq!((&level["visible"], &level["editing"], &level["in_the_top_right"], &level["clear_of_agent_icon"], &level["in_the_agent_icons_row"], &level["above_the_scroller"]), (&json!(true), &json!(false), &json!(true), &json!(true), &json!(true), &json!(true)), "{rest}");
     let fit = rest["reader"]["fit"].as_f64().unwrap();
     assert_eq!(level["text"], format!("{:.0}%", (magnification(&rest) * fit * 100.0).round()), "it says the level the page is at: {rest}");
     let open = run.ok(&["qa", "button", "zoom"]);
     assert_eq!(open["zoom_level"]["editing"], true, "{open}");
     assert!(open["zoom_level"]["field"].as_str().is_some_and(|text| text.parse::<f64>().is_ok()), "the number alone, to type over: {open}");
     assert!(open["zoom_level"]["reset"].is_string(), "{open}");
+    assert_eq!((&open["zoom_level"]["reset_clear_of_field"], &open["zoom_level"]["above_the_scroller"]), (&json!(true), &json!(true)), "the field opens leftwards, Fit before it: {open}");
     run.ok(&["qa", "zoom-type", "200"]);
     let at_200 = wait_for(&run, |state| state["app"]["zoom_level"]["text"] == "200%");
     assert!((magnification(&at_200) * fit - 2.0).abs() < 0.01, "200% is twice the real size: {at_200}");
@@ -478,7 +479,14 @@ fn the_zoom_level_shows_and_takes_a_typed_level() {
     assert_eq!(run.ok(&["view", "--zoom", "50%"])["zoom_level"], "50%", "the same level an agent can ask for");
     run.ok(&["view", "--sidebar", "off"]);
     let hidden = wait_for(&run, |state| state["app"]["sidebar_visible"] == false);
-    assert_eq!((&hidden["app"]["zoom_level"]["visible"], &hidden["app"]["zoom_level"]["clear_of_sidebar_button"]), (&json!(true), &json!(true)), "{hidden}");
+    assert_eq!((&hidden["app"]["zoom_level"]["visible"], &hidden["app"]["zoom_level"]["in_the_top_right"]), (&json!(true), &json!(true)), "it doesn't go with the sidebar: {hidden}");
+    // With the agent icon hidden, the zoom level takes its place, at the same margin from the edge.
+    let margin = hidden["app"]["agent_icon_margins"]["right"].as_f64().unwrap();
+    run.ok(&["view", "--agent-icon", "off"]);
+    let alone = wait_for(&run, |state| state["app"]["agent_icon"] == false);
+    let level = &alone["app"]["zoom_level"];
+    assert_eq!((&level["visible"], &level["in_the_top_right"], &level["above_the_scroller"]), (&json!(true), &json!(true), &json!(true)), "{alone}");
+    assert!((level["right_margin"].as_f64().unwrap() - margin).abs() < 0.5, "the icon's margin: {alone}");
 }
 
 /// Failure: closing the window keeps tiles and a worker, so it's over budget, or the app quits, or the tabs are lost. The red button's path, and back. The agent's socket stays.
@@ -734,7 +742,7 @@ fn the_menu_bar_and_the_agent_icon() {
     assert!(state["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() > 28.0, "below the star: {state}");
     run.ok(&["qa", "menu", "view.agent_icon"]);
     let hidden = wait_for(&run, |state| state["app"]["agent_icon"] == false);
-    assert_eq!(hidden["app"]["pages"]["scroller_top_inset"], 0.0, "the whole way with no star: {hidden}");
+    assert!(hidden["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() < state["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() + 1.0, "no lower than with the star, as the zoom level takes its place: {hidden}");
     assert_eq!(hidden["app"]["menu_bar"][3]["items"][8]["checked"], false, "{hidden}");
     assert_eq!(run.ok(&["view"])["agent_icon"], false, "the same setting `recto view` has");
     assert_eq!(hidden["session"]["view"]["agent_icon_hidden"], true, "remembered, as the state record has it");
