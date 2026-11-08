@@ -4,7 +4,7 @@
 //!
 //! **What the UI thread pays.** A press, a drag or a pointer move looks through a page already here, or notes that it's wanted and returns. It never waits for text.
 //!
-//! **Running heads, footers and page numbers stay out of a copy of body text** (owner, 2026-11-07: "When selecting across pages the page number is copied. Both footer and header should be ignored when coppying body text."). A page's edge lines are compared with those of [`recto_index::chrome::NEIGHBOURS`] pages either side, so a copy, and what Services is offered, waits for those pages' text too: read with no drawing, once, and only their edge pieces kept, at most [`MAX_EDGE_PAGES`] pages of them, 768 B a page at most.
+//! **Running heads, footers and page numbers stay out of a copy of body text** (owner, 2026-11-07: "When selecting across pages the page number is copied. Both footer and header should be ignored when coppying body text."). A page's edge lines are compared with those of [`recto_index::chrome::NEIGHBOURS`] pages either side, so a copy, and what Services is offered, waits for those pages' text too: read with no drawing, once, and only their edge pieces kept, at most [`MAX_EDGE_PAGES`] pages of them, 1.1 KiB a page at most.
 //!
 //! **Hidden text takes a second look.** The first read of a page is quick and has no hidden-text check, since that draws the page. Once a page is in a selection and showing, or being copied, it's read again with the check when everything visible is drawn. No character moves. What changes is what's on them: an end that was on a hidden word goes to the nearest thing that shows. A page known to be heavy isn't drawn for this, since one more draw of a USGS map is hundreds of MiB, and a copy says it wasn't checked.
 
