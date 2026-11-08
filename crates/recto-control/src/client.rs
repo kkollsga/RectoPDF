@@ -5,6 +5,7 @@ use recto_agent::{AgentError, VERSION, exit};
 use recto_platform::local::{self, SocketFile, Stream};
 use serde_json::Value;
 use std::io::{ErrorKind, Read, Write};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// The largest answer a client will hold. A page's text is far less, and the server caps its own.
@@ -17,6 +18,8 @@ pub struct Client {
     buffer: Vec<u8>,
     /// How much of `buffer` is known to hold no line end.
     searched: usize,
+    /// The session's socket, asked whether the session is still there when a connection ends with no answer.
+    socket: Option<PathBuf>,
 }
 
 pub fn not_running() -> AgentError {
@@ -41,7 +44,7 @@ impl Client {
         if stream.peer_uid().map_or(true, |uid| uid != local::current_uid()) {
             return Err(refused());
         }
-        Ok(Self { stream, buffer: Vec::new(), searched: 0 })
+        Ok(Self { stream, buffer: Vec::new(), searched: 0, socket: Some(paths.socket.clone()) })
     }
 
     /// Sends one command, as the line the socket reads.
@@ -51,7 +54,7 @@ impl Client {
         let mut framed = String::with_capacity(line.len() + 1);
         framed.push_str(line);
         framed.push('\n');
-        (&self.stream).write_all(framed.as_bytes()).map_err(|error| if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) { no_answer(wait) } else { ended() })
+        (&self.stream).write_all(framed.as_bytes()).map_err(|error| if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) { no_answer(wait) } else { self.ended() })
     }
 
     /// Reads one line of answer, and checks it speaks this version.
@@ -72,13 +75,18 @@ impl Client {
             }
             let mut chunk = [0u8; 16 * 1024];
             match (&self.stream).read(&mut chunk) {
-                Ok(0) => return Err(ended()),
+                Ok(0) => return Err(self.ended()),
                 Ok(read) => self.buffer.extend_from_slice(&chunk[..read]),
                 Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => return Err(no_answer(wait)),
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
-                Err(_) => return Err(ended()),
+                Err(_) => return Err(self.ended()),
             }
         }
+    }
+
+    /// The connection ended with no answer. Whether the session ended too is asked of its socket: one that's gone takes no connection, and one that closed only this connection still does. Out of descriptors it drops a client as it arrives, and it lets go of the oldest of too many, and neither has lost anything.
+    fn ended(&self) -> AgentError {
+        if self.socket.as_deref().is_some_and(|socket| Stream::connect(socket).is_ok()) { dropped() } else { ended() }
     }
 
     /// Sends a command and waits for its one answer.
@@ -97,6 +105,11 @@ fn line_end(buffer: &[u8], searched: &mut usize) -> Option<usize> {
 
 fn ended() -> AgentError {
     AgentError::new("session_ended", "The session ended before it answered.", exit::NOT_RUNNING).then("Start it again with `recto serve --background`. Its tabs and unsaved edits are gone, and `recto status` will say what's there.")
+}
+
+fn dropped() -> AgentError {
+    AgentError::new("connection_dropped", "The session closed this connection without an answer. It's still running.", exit::BUSY)
+        .then("It does that when it's out of descriptors or has too many clients, and takes connections again as others close. Check whether the command took effect before trying it again.")
 }
 
 fn no_answer(wait: Duration) -> AgentError {
@@ -118,11 +131,47 @@ mod tests {
         let answer = format!("{}\n", serde_json::json!({ "v": VERSION, "ok": true }));
         (&theirs).write_all(answer.as_bytes()).unwrap();
         drop(theirs);
-        let mut client = Client { stream: ours, buffer: Vec::new(), searched: 0 };
+        let mut client = Client { stream: ours, buffer: Vec::new(), searched: 0, socket: None };
         let read = client.read(Duration::from_secs(5)).unwrap();
         assert_eq!(read["ok"], true);
         assert_eq!(client.read(Duration::from_secs(5)).unwrap_err().code, "session_ended", "and after it, the truth");
         assert_eq!(client.send("{}", Duration::from_secs(5)).unwrap_err().code, "session_ended", "a closed socket doesn't take a command");
+    }
+
+    /// Failure: a session that only closed this connection, out of descriptors or letting go of the oldest of too many clients, is reported as ended, with "its tabs and
+    /// unsaved edits are gone" and an instruction to start another. It's still running and has lost nothing. Once its socket takes no connection, it has ended.
+    #[test]
+    fn a_dropped_connection_isnt_a_session_that_ended() {
+        let socket = std::env::temp_dir().join(format!("recto-drop-{}", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = local::Listener::bind(&socket).unwrap();
+        let connect = || Client { stream: Stream::connect(&socket).unwrap(), buffer: Vec::new(), searched: 0, socket: Some(socket.clone()) };
+        // The client's own look at the socket leaves a connection behind it, already closed, which macOS can refuse to finish accepting. None is waiting before each client connects.
+        let clear = || while !matches!(listener.accept(), Ok(None)) {};
+        let drop_next = || {
+            let started = std::time::Instant::now();
+            loop {
+                if let Ok(Some(accepted)) = listener.accept() {
+                    break drop(accepted);
+                }
+                assert!(started.elapsed() < Duration::from_secs(5), "the client's connection never arrived");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        let mut reading = connect();
+        drop_next();
+        let error = reading.read(Duration::from_secs(5)).unwrap_err();
+        assert_eq!((error.code, error.exit), ("connection_dropped", exit::BUSY), "{}", error.message);
+        clear();
+        let mut writing = connect();
+        drop_next();
+        assert_eq!(writing.send("{}", Duration::from_secs(5)).unwrap_err().code, "connection_dropped");
+        clear();
+        let mut last = connect();
+        drop_next();
+        drop(listener);
+        assert_eq!(last.read(Duration::from_secs(5)).unwrap_err().code, "session_ended", "nothing takes a connection there now");
+        let _ = std::fs::remove_file(&socket);
     }
 
     /// Failure: every read of a large answer looks through all of it again for the line's end, so its cost grows with its square: a 5 MB answer took seconds, and on a slower machine that's enough to look like a client that's stopped. And looking only at what's new mustn't miss a line, or find one twice.
