@@ -1430,6 +1430,10 @@ A worker reported two tests as committed that were never added: its edit script 
 - **Test a dependent when its dependency moves, not at release.** A 141-document gate showed no change from a text-decoding merge, and three small unit tests caught two real regressions.
 - **Agents won't take a relayed approval to change their own configuration, and they're right.** Keep those steps with the coordinator, on the user's direct word.
 
+### A red main hides the next failure
+
+CI on one project's `main` stayed red for about four hours across ten pushes. Each red item was understood and unrelated to the merge behind it (an outside download outage, a test assuming one macOS version's port descriptions, two timing assumptions, a system setting compared as app state, a race between two features), so merging went on. Each push then added one more failure, which a green `main` would have shown on its own and at once; two were only noticed because every log was read line by line. Fix a red `main` before anything else merges, even when the cause is known. When a fix needs time, mark that one test known-failing in its own commit, with a tracked item and a deadline, so `main` is green again and the next failure stands out.
+
 ### Tests that wait, and tests that guess
 
 In one stretch, four of five failed full checks were tests making timing assumptions, not product bugs:
