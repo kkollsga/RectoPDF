@@ -604,6 +604,8 @@ struct Worker {
     heavy: bool,
     /// It said its walls were up.
     walled: bool,
+    /// Jobs in a row after which its footprint couldn't be read, or read as nothing.
+    unread_footprints: u32,
 }
 
 /// The kind of worker a job needs.
@@ -1543,12 +1545,14 @@ impl DocRenderer {
     /// the USGS map, 72 respawns and 14 s to draw one page.
     fn after_job(&mut self, page: u32) {
         let Some(worker) = self.worker.as_mut() else { return };
-        let footprint = worker.child.memory().map_or(0, |memory| {
+        let footprint = worker.child.memory().filter(|memory| memory.footprint_bytes > 0).map(|memory| {
             self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(memory.peak_footprint_bytes);
             memory.footprint_bytes
         });
+        worker.unread_footprints = if footprint.is_some() { 0 } else { worker.unread_footprints.saturating_add(1) };
         // A heavy worker holds one page alone, so it goes before any other page whatever its size.
-        self.retire_after_page = (footprint > self.policy.retire_bytes || worker.heavy || worker.surface_bytes_sent > self.policy.surface_bytes_cap).then_some(page);
+        let past_its_line = past_retirement_line(footprint, worker.unread_footprints, self.policy.retire_bytes);
+        self.retire_after_page = (past_its_line || worker.heavy || worker.surface_bytes_sent > self.policy.surface_bytes_cap).then_some(page);
     }
 
     /// Takes the worker away, killed and collected, keeping its last numbers.
@@ -1842,6 +1846,19 @@ fn was_starved(cpu_ns: u64, deadline: Duration) -> bool {
     u128::from(cpu_ns) < deadline.as_nanos() / 2
 }
 
+/// Jobs in a row with no footprint to read, after which a worker retires anyway. What a worker holds grows by at most a page's parsed streams a job, about 2 MiB on the image
+/// fixture, so this bounds the growth nobody could see.
+const RETIRE_AFTER_UNREAD_FOOTPRINTS: u32 = 8;
+
+/// Whether a worker should retire before its next page, by what's known of its footprint after this job. Fails safe: a footprint that can't be read, or reads as nothing, as a
+/// process the kernel won't describe would, isn't taken as small for ever. After [`RETIRE_AFTER_UNREAD_FOOTPRINTS`] such jobs in a row, it retires as though it were past the line.
+fn past_retirement_line(footprint: Option<u64>, unread_in_a_row: u32, retire_bytes: u64) -> bool {
+    match footprint {
+        Some(bytes) => bytes > retire_bytes,
+        None => unread_in_a_row >= RETIRE_AFTER_UNREAD_FOOTPRINTS,
+    }
+}
+
 /// Why a worker didn't come up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StartFailure {
@@ -1888,7 +1905,7 @@ impl Worker {
         // Busy until the document is open, whose exchange ends that: a start isn't idleness, and `start_timeout` and the open's own watch decide how long it may take. Marked idle here, a start slower than the idle rule was killed half way.
         child.note_activity(true);
         ours.set_nonblocking(true).map_err(|_| StartFailure::Other)?;
-        let mut worker = Self { child, channel: ours, reader: FrameReader::default(), surfaces: None, jobs_done: 0, surface_bytes_sent: 0, limit, heavy: false, walled: false };
+        let mut worker = Self { child, channel: ours, reader: FrameReader::default(), surfaces: None, jobs_done: 0, surface_bytes_sent: 0, limit, heavy: false, walled: false, unread_footprints: 0 };
         let started = Instant::now();
         let limit = policy.start_timeout;
         let hello = loop {
@@ -1993,5 +2010,21 @@ impl Worker {
             Some(ChildExit::Code(exit_code::DEADLINE)) => Stop::Killed(KillReason::Deadline),
             _ => Stop::Killed(KillReason::Crashed),
         }
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+
+    /// Failure: a footprint that can't be read, or reads as nothing, counts as small for ever, so on a Mac where the kernel won't describe the sandboxed worker it never retires and
+    /// its memory grows without bound. It retires after a bounded run of such jobs instead, and a readable footprint decides as before.
+    #[test]
+    fn an_unreadable_footprint_retires_after_a_bounded_run() {
+        let line = 64 * 1024 * 1024;
+        assert!(!past_retirement_line(Some(line), 0, line));
+        assert!(past_retirement_line(Some(line + 1), 0, line));
+        assert!(!past_retirement_line(None, RETIRE_AFTER_UNREAD_FOOTPRINTS - 1, line));
+        assert!(past_retirement_line(None, RETIRE_AFTER_UNREAD_FOOTPRINTS, line));
     }
 }
