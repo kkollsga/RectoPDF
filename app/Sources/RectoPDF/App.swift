@@ -404,6 +404,7 @@ final class Bridge: AppListener, @unchecked Sendable {
         case .closeWindow: windowController?.window.performClose(nil)
         case .showSavePanel: showSavePanel()
         case .confirmClose: confirmClose()
+        case .focusFind: windowController?.focusFind()
         }
     }
 

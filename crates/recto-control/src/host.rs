@@ -121,6 +121,31 @@ impl<L: DocLoader + Clone> SessionHost<L> {
         &self.finder
     }
 
+    /// What the Find field does, by the same steps as `recto find`: a query, which runs in the background.
+    pub fn find_begin(&self, query: &str) -> Result<u64, AgentError> {
+        recto_agent::find::begin(&self.access(), query)
+    }
+
+    /// What's in the Find field that the hits held aren't of, if anything.
+    pub fn find_stale_query(&self) -> Option<String> {
+        recto_agent::find::stale_query(&self.access(), &self.finder)
+    }
+
+    /// ⌘G and ⇧⌘G, by the same step as `recto find --next`.
+    pub fn find_step(&self, forward: bool) -> Option<(u32, recto_agent::find::Hit)> {
+        recto_agent::find::step(&self.access(), &self.finder, forward)
+    }
+
+    /// A click on a hit's row.
+    pub fn find_choose(&self, index: usize) -> Option<(u32, recto_agent::find::Hit)> {
+        recto_agent::find::choose(&self.access(), &self.finder, index)
+    }
+
+    /// Escape in the field, by the same step as `recto find --close`.
+    pub fn find_close(&self) {
+        recto_agent::find::close(&self.access());
+    }
+
     /// With the one backup of each original kept on its first save, in the state folder. Old backups go now, as a session starts, never on a timer.
     #[must_use]
     pub fn with_backups(self, paths: &StatePaths) -> Self {

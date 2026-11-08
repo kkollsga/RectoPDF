@@ -70,6 +70,11 @@ impl Finder {
         self.0.lock().results.running()
     }
 
+    /// How many hits are held now.
+    pub fn hits_held(&self) -> usize {
+        self.0.lock().results.hits.len()
+    }
+
     /// The thread that runs queries, while there's one.
     pub fn has_thread(&self) -> bool {
         self.0.lock().working

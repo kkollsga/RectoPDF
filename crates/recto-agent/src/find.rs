@@ -434,6 +434,69 @@ impl Finding for Here {
     }
 }
 
+/// Starts finding `query` in the document being read, in the background if this session can, and otherwise here, to the end. Puts it in the Find field and opens Find. Says which run it is. **The one way a query starts,** for `recto find` and the app's field alike.
+pub fn begin<A: crate::SessionAccess>(access: &A, query: &str) -> Result<u64, AgentError> {
+    let needle = needle(query).ok_or_else(|| if query.len() > MAX_QUERY_BYTES { too_long() } else { AgentError::new("bad_query", "That has nothing to find.", exit::FAILED).then("Find a word or a phrase.") })?;
+    let plan = access.with(|s| {
+        let id = s.active().ok_or_else(|| AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
+        let plan = plan(s, id)?;
+        s.set_find(true, query, query);
+        Ok::<_, AgentError>(plan)
+    })?;
+    match access.finding() {
+        Some(finding) => Ok(finding.start(plan, query, needle)),
+        None => Ok(0),
+    }
+}
+
+/// What's in the Find field that its hits aren't of, as after a restart or a move to another document, if anything: a query to find again before a step.
+pub fn stale_query<A: crate::SessionAccess>(access: &A, finding: &dyn Finding) -> Option<String> {
+    let wanted = access.with(|s| (s.find().query.clone(), s.active().map(|id| id.0)));
+    let mut have = (String::new(), None);
+    finding.with_results(&mut |results| have = (results.query.clone(), results.tab));
+    (!wanted.0.is_empty() && have != wanted).then_some(wanted.0)
+}
+
+/// Goes to the next hit or the one before, from the current one or from where the reader is, and notes it in the state record. The tab's page goes there too; the app also selects the hit. `None` if there's nothing to go to.
+pub fn step<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, forward: bool) -> Option<(u32, Hit)> {
+    let place = access.with(|s| s.active().and_then(|id| s.tab(id)).map_or((0, 0), |tab| (tab.page, 0)));
+    let mut hit = None;
+    finding.with_results(&mut |results| hit = results.step(forward, place).cloned().zip(results.tab));
+    let (hit, tab) = hit?;
+    went_to(access, tab, &hit);
+    Some((tab, hit))
+}
+
+/// Goes to a hit by its number in the list, as a click on its row does.
+pub fn choose<A: crate::SessionAccess>(access: &A, finding: &dyn Finding, index: usize) -> Option<(u32, Hit)> {
+    let mut hit = None;
+    finding.with_results(&mut |results| hit = results.choose(index).cloned().zip(results.tab));
+    let (hit, tab) = hit?;
+    went_to(access, tab, &hit);
+    Some((tab, hit))
+}
+
+fn went_to<A: crate::SessionAccess>(access: &A, tab: u32, hit: &Hit) {
+    access.with(|s| {
+        s.set_find_current(Some((hit.page, hit.start)));
+        if s.active().map(|id| id.0) == Some(tab) {
+            let _ = s.go_to(TabId(tab), hit.page);
+        }
+    });
+}
+
+/// Closes Find: what's running stops, the hits go, and what was typed stays for next time, as a Mac's Find keeps it.
+pub fn close<A: crate::SessionAccess>(access: &A) {
+    if let Some(finding) = access.finding() {
+        finding.clear();
+    }
+    access.with(|s| {
+        let draft = s.find().draft.clone();
+        s.set_find(false, "", &draft);
+        s.set_find_current(None);
+    });
+}
+
 /// `recto find`: the app's Find, for an agent. With a query, finds it in the document being read and waits for it; `--next` and `--previous` go to a hit, from where the reader is; `--close` closes Find. Always says where Find stands.
 pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, events: &mut Vec<crate::Event>) -> Result<serde_json::Value, AgentError> {
     let listed = crate::positive_limit(asked.limit, DEFAULT_LISTED, MAX_LISTED)?;
@@ -442,40 +505,23 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
     }
     let here = Here(std::sync::Mutex::new(Results::default()));
     let finding: &dyn Finding = access.finding().unwrap_or(&here);
-    let in_background = access.finding().is_some();
     if asked.close {
-        finding.clear();
-        access.with(|s| {
-            let draft = s.find().draft.clone();
-            s.set_find(false, "", &draft);
-            s.set_find_current(None);
-        });
+        close(access);
         events.push(crate::Event::new("find_changed", serde_json::json!({ "open": false })));
         return Ok(answer(access, finding, listed, None));
     }
     // A step needs the hits of what's in the field, for the document being read: found again if they're of something else, as after a restart.
     let query = match asked.query {
         Some(query) => Some(query.to_string()),
-        None if asked.next || asked.previous => {
-            let wanted = access.with(|s| (s.find().query.clone(), s.active().map(|id| id.0)));
-            let mut have = (String::new(), None);
-            finding.with_results(&mut |results| have = (results.query.clone(), results.tab));
-            (wanted.0.is_empty() || have != wanted).then_some(wanted.0).filter(|query| !query.is_empty())
-        }
+        None if asked.next || asked.previous => stale_query(access, finding),
         None => None,
     };
     if let Some(query) = &query {
-        let needle = needle(query).ok_or_else(|| if query.len() > MAX_QUERY_BYTES { too_long() } else { AgentError::new("bad_query", "That has nothing to find.", exit::FAILED).then("Find a word or a phrase.") })?;
-        let plan = access.with(|s| {
-            let id = s.active().ok_or_else(|| AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
-            let plan = plan(s, id)?;
-            s.set_find(true, query, query);
-            Ok::<_, AgentError>(plan)
-        })?;
-        if in_background {
-            let generation = finding.start(plan, query, needle);
+        let generation = begin(access, query)?;
+        if access.finding().is_some() {
             finding.wait(generation, COMMAND_WAIT);
         } else {
+            let (plan, needle) = access.with(|s| Ok::<_, AgentError>((plan(s, s.active().ok_or_else(|| AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND))?)?, needle(query).unwrap_or_default())))?;
             let mut results = Results::default();
             let generation = results.begin(plan.tab(), query, plan.pages());
             let stop = AtomicBool::new(false);
@@ -487,18 +533,9 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
     }
     let mut went = None;
     if asked.next || asked.previous {
-        let place = access.with(|s| s.active().and_then(|id| s.tab(id)).map_or((0, 0), |tab| (tab.page, 0)));
-        let mut hit = None;
-        finding.with_results(&mut |results| hit = results.step(asked.next, place).cloned().map(|hit| (hit, results.tab)));
-        let Some((hit, Some(tab))) = hit else {
+        let Some((tab, hit)) = step(access, finding, asked.next) else {
             return Err(AgentError::new("nothing_found", "There's no hit to go to.", exit::NOT_FOUND).then("Find something first: `recto find \"words\"`."));
         };
-        access.with(|s| {
-            s.set_find_current(Some((hit.page, hit.start)));
-            if s.active().map(|id| id.0) == Some(tab) {
-                let _ = s.go_to(TabId(tab), hit.page);
-            }
-        });
         events.push(crate::Event::new("page_changed", serde_json::json!({ "tab": tab, "page": hit.page + 1 })));
         events.push(crate::Event::new("find_changed", serde_json::json!({ "open": true, "page": hit.page + 1 })));
         went = Some((tab, hit));

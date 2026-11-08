@@ -38,6 +38,8 @@ pub enum HostAction {
     ShowSavePanel,
     /// Closing a document with unsaved edits asks first, with what `AppCore::close_prompt` says.
     ConfirmClose,
+    /// ⌘F: Find's field in the sidebar takes the keyboard, with what's in it selected. Rust has opened it.
+    FocusFind,
 }
 
 /// What an item does.
@@ -68,6 +70,9 @@ pub(crate) enum Action {
     CloseDocument,
     /// A comparison's panes scroll together, page for page, or each on its own.
     SetSynced(bool),
+    /// ⌘F opens Find, ⌘G and ⇧⌘G go to the next hit or the one before.
+    FindOpen,
+    FindStep(bool),
 }
 
 fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
@@ -82,6 +87,11 @@ fn edit_entries() -> Vec<MenuEntry> {
 /// Undo and Redo, by the standard selectors, so a text field with the focus keeps its own. `Z` is ⇧⌘Z.
 fn undo_entries() -> Vec<MenuEntry> {
     vec![MenuEntry { system_action: "undo:".into(), ..entry("edit.undo", "Undo", "z") }, MenuEntry { system_action: "redo:".into(), ..entry("edit.redo", "Redo", "Z") }]
+}
+
+/// Find, as on any Mac: ⌘F, ⌘G and ⇧⌘G. `G` is ⇧⌘G.
+fn find_entries() -> Vec<MenuEntry> {
+    vec![entry("find.open", "Find…", "f"), entry("find.next", "Find Next", "g"), entry("find.previous", "Find Previous", "G")]
 }
 
 /// The layouts, the one showing ticked. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
@@ -113,7 +123,7 @@ pub(crate) fn context_menu(shown: Option<Spread>, comparing: Option<bool>) -> Ve
 pub(crate) fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool {
     match id {
         "edit.copy" | "edit.copy_anyway" => has_selection,
-        "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" => has_document,
+        "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" | "find.open" | "find.next" | "find.previous" => has_document,
         layout if layout.starts_with("layout.") => has_document,
         _ => true,
     }
@@ -130,7 +140,7 @@ pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: 
         // Owner, 2026-11-07: "The full app settings should be accessible from file -> settings". The app menu keeps its own, as on any Mac, and both say ⌘,.
         // As in any Mac app: ⌘W closes the document showing, which here is a tab, and ⇧⌘W the window. ⌘S saves, and ⇧⌘S is Save As.
         MenuModel { title: "File".into(), entries: vec![entry("file.open", "Open…", "o"), line(), entry("file.close", "Close", "w"), entry("file.save", "Save", "s"), entry("file.save_as", "Save As…", "S"), line(), entry("file.settings", "Settings…", ","), line(), entry("file.close_window", "Close Window", "W")] },
-        MenuModel { title: "Edit".into(), entries: undo_entries().into_iter().chain([line()]).chain(edit_entries()).chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
+        MenuModel { title: "Edit".into(), entries: undo_entries().into_iter().chain([line()]).chain(edit_entries()).chain([line()]).chain(find_entries()).chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
         MenuModel {
             title: "View".into(),
             entries: vec![
@@ -248,6 +258,9 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "paper.dark" => Action::SetPaper(Paper::Dark),
         "compare.separate" => Action::SetSynced(false),
         "compare.synced" => Action::SetSynced(true),
+        "find.open" => Action::FindOpen,
+        "find.next" => Action::FindStep(true),
+        "find.previous" => Action::FindStep(false),
         _ => return None,
     })
 }

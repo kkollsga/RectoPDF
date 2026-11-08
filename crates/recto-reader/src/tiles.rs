@@ -524,6 +524,8 @@ pub struct Reader {
     moved_page: Option<u32>,
     /// What was selected on the tab showing when a renderer saw its file replaced, until the next activation says whether that was a save of what was shown.
     selection_before_change: Option<(u32, recto_index::select::Range)>,
+    /// Find's hit, selected and on its way into view once its page's text says where on the page it is: the tab, and the hit.
+    revealing: Option<(u32, recto_index::select::Range)>,
     more_to_attach: bool,
     counts: ReaderCounts,
     wanted_files: Arc<Vec<PathBuf>>,
@@ -587,6 +589,7 @@ impl Reader {
             last_view_page: None,
             moved_page: None,
             selection_before_change: None,
+            revealing: None,
             more_to_attach: false,
             counts: ReaderCounts::default(),
             wanted_files: Arc::new(Vec::new()),
@@ -2080,6 +2083,49 @@ impl Reader {
         self.selecting.has_selection()
     }
 
+    /// **Find's hit:** selects it, as Find on a Mac does, and brings it into view. Its page is gone to at once if none of it shows, and once the page's text is here, which a selection's end asks for first, the view moves again only if the hit itself isn't in it, to a third of the way down. Held to the document's pages.
+    pub fn reveal_range(&mut self, range: recto_index::select::Range) {
+        let Some(tab) = self.hot else { return };
+        let pages = self.doc().map_or(0, |doc| doc.layout.count());
+        if range.start.page >= pages || range.end.page >= pages || (range.start.page, range.start.at) > (range.end.page, range.end.at) {
+            return;
+        }
+        self.selecting.set_range(range);
+        self.highlight_ops();
+        self.revealing = Some((tab, range));
+        let shows = self.doc().is_some_and(|doc| self.visible_pages(doc).contains(&range.start.page));
+        if !self.try_reveal() && !shows {
+            self.follow(range.start.page, 0.0);
+        }
+    }
+
+    /// Moves the view to Find's hit if its place on the page is known now. Says whether it's settled, gone there or not needed.
+    fn try_reveal(&mut self) -> bool {
+        let Some((tab, range)) = self.revealing else { return true };
+        if self.hot != Some(tab) {
+            self.revealing = None;
+            return true;
+        }
+        let end = if range.end.page == range.start.page { range.end.at } else { u32::MAX };
+        let Some(bounds) = self.selecting.bounds_of(range.start.page, range.start.at, end) else { return false };
+        self.revealing = None;
+        let Some(bounds) = bounds else { return true };
+        let Some(doc) = self.doc() else { return true };
+        let rect = doc.layout.rect(range.start.page);
+        let fit = doc.layout.fit();
+        let (top, bottom) = (rect.y + f64::from(bounds.y) * fit, rect.y + f64::from(bounds.y + bounds.height) * fit);
+        let (view_top, view_height) = (self.viewport.y, self.viewport.height);
+        if view_height > 0.0 && top >= view_top && bottom <= view_top + view_height {
+            return true;
+        }
+        let want_top = (top - view_height / 3.0).max(0.0);
+        let within = ((want_top - rect.y) / rect.height.max(1.0)).clamp(0.0, 1.0);
+        let page = if want_top < rect.y { doc.layout.page_at(want_top) } else { range.start.page };
+        let within = if page == range.start.page { within } else { doc.layout.anchor_at(want_top).1 };
+        self.follow(page, within);
+        true
+    }
+
     pub fn has_document(&self) -> bool {
         self.doc().is_some_and(|doc| doc.layout.count() > 0)
     }
@@ -2129,6 +2175,9 @@ impl Reader {
         match outcome {
             Some((text, checked)) => self.selecting.page_read(position, text, checked, &visible),
             None => self.selecting.page_failed(position, &visible),
+        }
+        if self.revealing.is_some_and(|(_, range)| range.start.page == position) {
+            self.try_reveal();
         }
         self.advance_copy();
     }
