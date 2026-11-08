@@ -113,6 +113,8 @@ impl Shared {
                 find::run(&job.plan, &job.needle, indexing, &stop, &mut |hits, progress| {
                     let had_hits = !hits.is_empty();
                     self.lock().results.add(generation, hits, progress);
+                    // A step waiting for its hit looks again.
+                    self.changed.notify_all();
                     // The first hits are said at once, so the list starts as soon as there's something in it.
                     if said.elapsed() >= SAY_EVERY || (had_hits && progress.pages_with_hits == 1) {
                         said = Instant::now();
@@ -171,6 +173,21 @@ impl Finding for Finder {
 
     fn with_results(&self, step: &mut dyn FnMut(&mut Results)) {
         step(&mut self.0.lock().results);
+    }
+
+    fn wait_past(&self, version: u64, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        let mut inner = self.0.lock();
+        loop {
+            if inner.results.version != version {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            inner = self.0.changed.wait_timeout(inner, deadline - now).unwrap_or_else(PoisonError::into_inner).0;
+        }
     }
 
     fn wait(&self, generation: u64, limit: Duration) -> bool {

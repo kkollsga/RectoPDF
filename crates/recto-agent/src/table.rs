@@ -663,7 +663,7 @@ pub static TABLE: &[Spec] = &[
         tag: "find",
         group: GROUP_MOVE,
         access: Access::At(Level::Control),
-        summary: "The app's Find, in the document being read (in a comparison, the pane being read): what the Find field in the sidebar does. A query finds every hit in reading order and waits for them, up to 30 s; `--next` and `--previous` go to a hit, from where the reader is, and the app selects it; `--close` closes Find. With nothing, says where it stands. For finding words without touching what's on screen, use `search`.",
+        summary: "The app's Find, in the document being read (in a comparison, the pane being read): what the Find field in the sidebar does. A query finds every hit in reading order and waits for them, up to 30 s; `--next` and `--previous` go to a hit, from where the reader is, and the app selects it, waiting while a query runs for the hit wanted or the query's end, within the same 30 s; `--close` closes Find. With nothing, says where it stands. For finding words without touching what's on screen, use `search`.",
         args: &[
             Arg { key: "query", flag: None, kind: Kind::Text, required: false, help: "The words to find. Case and line breaks are ignored, as `search` ignores them." },
             Arg { key: "next", flag: Some("--next"), kind: Kind::Switch, required: false, help: "Go to the next hit, or the first at or past the page being read, as ⌘G does. It goes round at the end." },
