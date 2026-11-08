@@ -375,6 +375,7 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
         _ => None,
     };
     hooks.step(SaveStep::Writing);
+    pause_for_a_kill("writing");
     let destination = match target {
         Target::Same => AppendDestination::SameFile(request.path),
         Target::NewFile(path) => AppendDestination::NewFile(path),
@@ -397,6 +398,7 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
         let mut hooks = hooks_cell.borrow_mut();
         hooks.step(SaveStep::Prepared);
         hooks.prepared(written, stamp)?;
+        pause_for_a_kill("prepared");
         hooks.step(SaveStep::Committing);
         Ok(())
     });
@@ -416,6 +418,7 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
         Ok(appended) => appended,
         Err(error) => return Err(copy_failed.unwrap_or_else(|| from_append(error))),
     };
+    pause_for_a_kill("committed");
     let final_path = match target {
         Target::Same => request.path,
         Target::NewFile(path) | Target::Replace(path) => path,
@@ -431,6 +434,19 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
         stamp: recto_platform::file_stamp(final_path).ok().or(prepared_stamp),
         backup,
     })
+}
+
+/// **A test's seam, in debug builds only:** with `RECTO_TEST_SAVE_PAUSE` naming this step, the save says so in a file beside the state and waits, so a test can kill the process right there. A release build has none of it.
+fn pause_for_a_kill(step: &str) {
+    #[cfg(debug_assertions)]
+    if std::env::var("RECTO_TEST_SAVE_PAUSE").is_ok_and(|wanted| wanted == step)
+        && let Ok(marker) = std::env::var("RECTO_TEST_SAVE_MARKER")
+    {
+        let _ = std::fs::write(marker, step);
+        std::thread::sleep(Duration::from_secs(60));
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = step;
 }
 
 type Opened = Option<(IndexedReader, lopdf::PageMap)>;

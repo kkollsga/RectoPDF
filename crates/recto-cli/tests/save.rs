@@ -180,3 +180,41 @@ fn a_file_replaced_under_a_tab_isnt_saved_over() {
     assert_eq!(std::fs::read(&file.0).unwrap(), marked(&["SOMEONE ELSE'S"]));
     let _ = Path::new("");
 }
+
+/// Failure: a kill during a save leaves a broken file, or half of one, under the document's name. At every step, writing, noted and about to move, and just after the move, the file is the original byte for byte or the whole new one, read back page by page.
+#[test]
+fn a_kill_at_every_step_leaves_the_original_or_the_new_file() {
+    for step in ["writing", "prepared", "committed"] {
+        let state = State::at(Level::Control);
+        let marker = state.root.join("paused");
+        let mut server = state.command().args(["serve", "--json"]).env("RECTO_TEST_SAVE_PAUSE", step).env("RECTO_TEST_SAVE_MARKER", &marker).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let mut ready = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(server.stdout.take().unwrap()), &mut ready).unwrap();
+        assert!(ready.contains("\"ok\":true"), "{ready}");
+        let file = TempPdf::new("doc.pdf", &marked(&["ONE", "TWO"]));
+        let extra = TempPdf::new("extra.pdf", &marked(&["THREE"]));
+        let original = std::fs::read(&file.0).unwrap();
+        ok(&state, &["open", path(&file)]);
+        ok(&state, &["page", "rotate", "1", "--by", "90"]);
+        ok(&state, &["page", "insert", path(&extra), "--at", "3"]);
+        let mut saving = state.command().args(["save"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let waited = std::time::Instant::now();
+        while !marker.exists() {
+            assert!(waited.elapsed() < std::time::Duration::from_secs(30), "{step}: the save never got there");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        server.kill().unwrap();
+        server.wait().unwrap();
+        let _ = saving.kill();
+        let _ = saving.wait();
+        let now = std::fs::read(&file.0).unwrap();
+        if now == original {
+            assert_ne!(step, "committed", "the move had happened");
+        } else {
+            assert!(now.starts_with(&original), "{step}: appended to");
+            let reader = lopdf::IndexedReader::open(lopdf::FileSource::open(&file.0).unwrap()).unwrap();
+            assert_eq!(reader.page_count().unwrap(), 3, "{step}: the whole new file");
+            assert!(found(&now, "THREE"));
+        }
+    }
+}
