@@ -17,6 +17,8 @@ pub struct MenuEntry {
     pub hidden: bool,
     /// The standard selector this goes by, such as `copy:`, so it reaches whatever has the focus first, as it does in any Mac app: a text field in an open panel keeps its own ⌘C. Empty for items that are this app's own.
     pub system_action: String,
+    /// The item whose submenu this is in, by its id, such as `file.open_recent`. Empty for an item of the menu itself.
+    pub parent: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -40,12 +42,16 @@ pub enum HostAction {
     ConfirmClose,
     /// The system's print panel, with what `AppCore::print_model` says.
     ShowPrintPanel,
+    /// ⌘K: the palette's field in the sidebar takes the keyboard. Rust has opened it.
+    FocusPalette,
+    /// ⌘F: Find's field in the sidebar takes the keyboard, with what's in it selected. Rust has opened it.
+    FocusFind,
     /// Go > Go to Page…: the field the page number opens, with what `AppCore::page_field` says.
     ShowGoTo,
 }
 
 /// What an item does.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Action {
     /// Clears the showing tab's edit history, SPEC decision 25. Its unsaved edits stay.
     ClearEditHistory,
@@ -72,12 +78,23 @@ pub(crate) enum Action {
     CloseDocument,
     /// A comparison's panes scroll together, page for page, or each on its own.
     SetSynced(bool),
+    /// ⌘K opens the command palette.
+    PaletteOpen,
+    /// File > Open Recent's file with this key: the one the menu showed, whatever the list has become since.
+    OpenRecent(String),
+    /// File > Open Recent > Clear Menu.
+    ClearRecent,
+    /// ⌘F opens Find, ⌘G and ⇧⌘G go to the next hit or the one before.
+    FindOpen,
+    FindStep(bool),
+    /// Edit mode's Done: back to reading.
+    LeaveEditMode,
     /// Back in the tab being read's trail, or forward: ⌘[ and ⌘].
     Step(bool),
 }
 
 fn entry(id: &str, title: &str, key: &str) -> MenuEntry {
-    MenuEntry { id: id.into(), title: title.into(), key: key.into(), with_control: false, checked: false, hidden: false, system_action: String::new() }
+    MenuEntry { id: id.into(), title: title.into(), key: key.into(), with_control: false, checked: false, hidden: false, system_action: String::new(), parent: String::new() }
 }
 
 /// The items that go by a standard selector. In the menu bar and the context menu alike.
@@ -88,6 +105,11 @@ fn edit_entries() -> Vec<MenuEntry> {
 /// Undo and Redo, by the standard selectors, so a text field with the focus keeps its own. `Z` is ⇧⌘Z.
 fn undo_entries() -> Vec<MenuEntry> {
     vec![MenuEntry { system_action: "undo:".into(), ..entry("edit.undo", "Undo", "z") }, MenuEntry { system_action: "redo:".into(), ..entry("edit.redo", "Redo", "Z") }]
+}
+
+/// Find, as on any Mac: ⌘F, ⌘G and ⇧⌘G. `G` is ⇧⌘G.
+fn find_entries() -> Vec<MenuEntry> {
+    vec![entry("find.open", "Find…", "f"), entry("find.next", "Find Next", "g"), entry("find.previous", "Find Previous", "G")]
 }
 
 /// The layouts, the one showing ticked. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
@@ -119,7 +141,9 @@ pub(crate) fn context_menu(shown: Option<Spread>, comparing: Option<bool>) -> Ve
 pub(crate) fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool {
     match id {
         "edit.copy" | "edit.copy_anyway" => has_selection,
-        "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" | "go.page" | "file.print" => has_document,
+        "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" | "go.page" | "file.print" | "find.open" | "find.next" | "find.previous" => has_document,
+        // A submenu's own item opens it, and does nothing itself.
+        "file.open_recent" => true,
         layout if layout.starts_with("layout.") => has_document,
         _ => true,
     }
@@ -130,13 +154,44 @@ fn line() -> MenuEntry {
 }
 
 /// The whole menu bar, as it stands.
+/// A file in Open Recent, as the menu has it: its key, which its item's id carries (`recent.<key>`), and its name.
+pub(crate) struct RecentItem<'a> {
+    pub key: &'a str,
+    pub name: &'a str,
+}
+
+/// The key a file in Open Recent goes by: from its path, so it's the same file however the list has moved since the menu was made, and an item can't open another file than the one it showed. Sixteen hex digits, never a path, so nothing of where someone keeps their files is in a menu item's id.
+pub(crate) fn recent_key(path: &std::path::Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Open Recent's submenu: each file by its name, newest first, then Clear Menu, as on any Mac. Names come from file names, cleaned. Empty, it's Clear Menu alone, greyed out.
+fn recent_entries(recent: &[RecentItem]) -> Vec<MenuEntry> {
+    let in_recent = |item: MenuEntry| MenuEntry { parent: "file.open_recent".into(), ..item };
+    let mut entries: Vec<MenuEntry> = recent.iter().map(|item| in_recent(entry(&format!("recent.{}", item.key), &recto_core::clean_line(item.name), ""))).collect();
+    if !entries.is_empty() {
+        entries.push(in_recent(line()));
+    }
+    entries.push(in_recent(entry("recent.clear", "Clear Menu", "")));
+    entries
+}
+
+#[cfg(test)]
 pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: &str) -> Vec<MenuModel> {
+    menu_bar_with(view, shown, update_title, &[])
+}
+
+/// The menu bar, with the names of files opened lately for Open Recent.
+pub(crate) fn menu_bar_with(view: ViewSettings, shown: Option<Spread>, update_title: &str, recent: &[RecentItem]) -> Vec<MenuModel> {
     vec![
         MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), entry("app.update", update_title, ""), line(), entry("app.settings", "Settings…", ","), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
         // Owner, 2026-11-07: "The full app settings should be accessible from file -> settings". The app menu keeps its own, as on any Mac, and both say ⌘,.
         // As in any Mac app: ⌘W closes the document showing, which here is a tab, and ⇧⌘W the window. ⌘S saves, and ⇧⌘S is Save As.
-        MenuModel { title: "File".into(), entries: vec![entry("file.open", "Open…", "o"), line(), entry("file.close", "Close", "w"), entry("file.save", "Save", "s"), entry("file.save_as", "Save As…", "S"), line(), entry("file.print", "Print…", "p"), line(), entry("file.settings", "Settings…", ","), line(), entry("file.close_window", "Close Window", "W")] },
-        MenuModel { title: "Edit".into(), entries: undo_entries().into_iter().chain([line()]).chain(edit_entries()).chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
+        MenuModel { title: "File".into(), entries: [entry("file.open", "Open…", "o"), entry("file.open_recent", "Open Recent", "")].into_iter().chain(recent_entries(recent)).chain([line(), entry("file.close", "Close", "w"), entry("file.save", "Save", "s"), entry("file.save_as", "Save As…", "S"), line(), entry("file.print", "Print…", "p"), line(), entry("file.settings", "Settings…", ","), line(), entry("file.close_window", "Close Window", "W")]).collect() },
+        MenuModel { title: "Edit".into(), entries: undo_entries().into_iter().chain([line()]).chain(edit_entries()).chain([line()]).chain(find_entries()).chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
         MenuModel {
             title: "View".into(),
             entries: vec![
@@ -155,6 +210,9 @@ pub(crate) fn menu_bar(view: ViewSettings, shown: Option<Spread>, update_title: 
             .chain([
                 line(),
                 MenuEntry { checked: !view.agent_icon_hidden, ..entry("view.agent_icon", "Show Agent Icon", "") },
+                line(),
+                // SPEC §4: "⌘K finds any command."
+                entry("palette.open", "Command Palette…", "k"),
             ])
             .collect(),
         },
@@ -204,18 +262,19 @@ pub struct PanelModel {
     pub sections: Vec<PanelSection>,
 }
 
-/// The panel, with the paper showing now picked out. Owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc." So Rotate is here: every page together outside edit mode, and the page being read in it.
+/// The panel, with the paper showing now picked out. Owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc." So Rotate is here: every page together outside edit mode, and the page being read in it. **In edit mode the panel is open on its tools** (SPEC §4: "The panel changes to the edit tools when you enter … and Done returns to reading"), with Done first, whatever the panel button last did: the mode's state is what's drawn.
 pub(crate) fn panel(open: bool, shown: Paper, edit_mode: bool, can_rotate: bool) -> PanelModel {
     let item = |id: &str, title: &str, selected: bool| PanelItem { id: id.into(), title: title.into(), selected, enabled: true };
     let rotate = |id: &str, title: &str| PanelItem { enabled: can_rotate, ..item(id, title, false) };
-    let sections = if open {
-        vec![
-            PanelSection { title: if edit_mode { "Rotate this page" } else { "Rotate all pages" }.into(), items: vec![rotate("rotate.left", "Rotate left"), rotate("rotate.right", "Rotate right")] },
-            PanelSection { title: "Paper".into(), items: Paper::ALL.iter().map(|paper| item(&format!("paper.{}", paper.name()), paper.label(), *paper == shown)).collect() },
-        ]
-    } else {
-        Vec::new()
-    };
+    let open = open || edit_mode;
+    let mut sections = Vec::new();
+    if edit_mode {
+        sections.push(PanelSection { title: "Editing".into(), items: vec![item("edit_mode.done", "Done", false)] });
+    }
+    if open {
+        sections.push(PanelSection { title: if edit_mode { "Rotate this page" } else { "Rotate all pages" }.into(), items: vec![rotate("rotate.left", "Rotate left"), rotate("rotate.right", "Rotate right")] });
+        sections.push(PanelSection { title: "Paper".into(), items: Paper::ALL.iter().map(|paper| item(&format!("paper.{}", paper.name()), paper.label(), *paper == shown)).collect() });
+    }
     PanelModel { open, button_tooltip: "View options".into(), sections }
 }
 
@@ -255,11 +314,25 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "paper.white" => Action::SetPaper(Paper::White),
         "paper.warm" => Action::SetPaper(Paper::Warm),
         "paper.dark" => Action::SetPaper(Paper::Dark),
+        "file.open_recent" => Action::Host(HostAction::None),
+        "recent.clear" => Action::ClearRecent,
+        recent if recent.starts_with("recent.") => {
+            let key = &recent["recent.".len()..];
+            if key.len() != 16 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return None;
+            }
+            Action::OpenRecent(key.to_string())
+        }
         "go.back" => Action::Step(true),
         "go.forward" => Action::Step(false),
         "go.page" => Action::Host(HostAction::ShowGoTo),
         "compare.separate" => Action::SetSynced(false),
         "compare.synced" => Action::SetSynced(true),
+        "palette.open" => Action::PaletteOpen,
+        "edit_mode.done" => Action::LeaveEditMode,
+        "find.open" => Action::FindOpen,
+        "find.next" => Action::FindStep(true),
+        "find.previous" => Action::FindStep(false),
         _ => return None,
     })
 }
@@ -288,6 +361,20 @@ pub(crate) fn zoom_from_word(word: &str) -> Option<Zoom> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: edit mode is on and the panel doesn't show it, or shows no way back to reading (SPEC §4: "Done returns to reading"); or Find's keys aren't the Mac's.
+    #[test]
+    fn edit_mode_opens_the_panel_on_its_tools_and_find_has_the_macs_keys() {
+        let editing = panel(false, Paper::White, true, true);
+        assert!(editing.open, "open in edit mode, whatever the button last did");
+        assert_eq!(editing.sections[0].items[0].id, "edit_mode.done");
+        assert_eq!(action("edit_mode.done"), Some(Action::LeaveEditMode));
+        assert!(!panel(false, Paper::White, false, true).open);
+        let edit = menu_bar(ViewSettings::default(), None, "Check for Updates…").into_iter().find(|menu| menu.title == "Edit").unwrap();
+        let key = |id: &str| edit.entries.iter().find(|item| item.id == id).map(|item| item.key.clone()).unwrap();
+        assert_eq!((key("find.open"), key("find.next"), key("find.previous")), ("f".to_string(), "g".to_string(), "G".to_string()));
+        assert!(!enabled("find.open", false, false), "nothing to find in with nothing open");
+    }
 
     /// Failure: something in the menu bar or the panel does nothing when chosen, as an item with an id nobody handles would, or a list shows what doesn't exist.
     #[test]
@@ -438,6 +525,21 @@ mod tests {
         assert_eq!(zoom_from_word("x%"), None);
         assert_eq!(zoom_from_word("NaN"), None);
         assert_eq!(zoom_from_word("zzz"), None);
+    }
+
+    /// Failure: File has no Open Recent, it doesn't list the files newest first under it, Clear Menu isn't there, a name with control characters reaches the menu, or an id past the list does something.
+    #[test]
+    fn open_recent_lists_files_and_clears() {
+        let (a, b) = (recent_key(std::path::Path::new("/d/report.pdf")), recent_key(std::path::Path::new("/e/a.pdf")));
+        assert_ne!(a, b);
+        assert_eq!(a, recent_key(std::path::Path::new("/d/report.pdf")), "the same file's key every time");
+        let file = menu_bar_with(ViewSettings::default(), None, "", &[RecentItem { key: &a, name: "report" }, RecentItem { key: &b, name: "a\u{202E}b" }]).into_iter().find(|menu| menu.title == "File").unwrap().entries;
+        let under: Vec<(String, String)> = file.iter().filter(|item| item.parent == "file.open_recent" && !item.id.is_empty()).map(|item| (item.id.clone(), item.title.clone())).collect();
+        assert_eq!(under, [(format!("recent.{a}"), "report".to_string()), (format!("recent.{b}"), "ab".to_string()), ("recent.clear".to_string(), "Clear Menu".to_string())]);
+        assert!(file.iter().any(|item| item.id == "file.open_recent" && item.parent.is_empty()));
+        assert_eq!((action(&format!("recent.{b}")), action("recent.clear")), (Some(Action::OpenRecent(b.clone())), Some(Action::ClearRecent)));
+        assert_eq!(action("recent.999"), None, "not an index any more");
+        assert_eq!(action("recent.x"), None);
     }
 
     /// Failure: Back and Forward aren't in the Go menu with Safari's ⌘[ and ⌘], or Go to Page… does nothing or can be chosen with nothing open.

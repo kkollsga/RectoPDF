@@ -66,6 +66,8 @@ fn a_stale_socket_reads_as_not_running_and_doesnt_block_a_restart() {
 }
 
 /// Failure: a server killed in the middle of a command leaves a half-written picture under the real name, a stuck worker, a damaged log, or a client that hangs. It must all be cleanly recoverable.
+///
+/// And (CI run 42471845371): the kill came a fixed 20 ms after the commands were sent, and on CI the search had already answered by then, so the test failed on an answer rather than a hang. The kill now waits for evidence the render is drawing, a wait that can never be met is certainly still under way, and an answer already sent before the kill is allowed, as long as the end comes after it.
 #[test]
 fn a_server_killed_mid_command_recovers_on_restart() {
     let state = State::at(Level::Full);
@@ -80,11 +82,29 @@ fn a_server_killed_mid_command_recovers_on_restart() {
     search.send(&json!({ "cmd": "search", "query": "no such words", "limit": 200 }).to_string());
     let mut render = Raw::connect(&state);
     render.send(&json!({ "cmd": "render", "page": 2, "scale": 4.0, "out": out }).to_string());
-    std::thread::sleep(Duration::from_millis(20));
+    // Nothing will ever open a tab of this name, so this one is under way when the kill lands, however fast the rest is.
+    let mut waiting = Raw::connect(&state);
+    waiting.send(&json!({ "cmd": "wait", "condition": "tab_open", "tab": "never opened", "timeout_ms": 3_600_000 }).to_string());
+    // The render's temp file is made as its first strip begins, and a 5,600 x 7,200 picture of a busy page takes far longer to draw than this takes to notice it.
+    let dir = file.0.parent().unwrap();
+    let drawing = || std::fs::read_dir(dir).unwrap().filter_map(Result::ok).any(|entry| entry.file_name().to_string_lossy().ends_with(".partial"));
+    let started = Instant::now();
+    while !drawing() {
+        if out.exists() || started.elapsed() > Duration::from_secs(10) {
+            panic!("the render wasn't seen drawing in {:?}, and it said {:?}", started.elapsed(), render.read());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
     serving.kill();
-    assert!(search.read().is_none(), "a client on a dead session must see it end, not hang");
-    assert!(render.read().is_none());
-    assert!(!out.exists(), "a half-written picture under the real name");
+    assert!(waiting.read().is_none(), "a client on a dead session must see it end, not hang");
+    hears_the_end(&mut search, "search");
+    let drawn = hears_the_end(&mut render, "render");
+    // Under the real name there's nothing, or the whole picture, which is put there in one step once it's finished.
+    if out.exists() {
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(bytes.ends_with(b"IEND\xaeB`\x82"), "a half-written picture under the real name, {} bytes, and the render said {drawn:?}", bytes.len());
+        std::fs::remove_file(&out).unwrap();
+    }
     let _again = state.serve();
     let (status, code) = state.json(&["status"]);
     assert_eq!(code, 0, "{status}");
@@ -102,6 +122,15 @@ fn a_server_killed_mid_command_recovers_on_restart() {
             let _ = std::fs::remove_file(file.0.with_file_name(name));
         }
     }
+}
+
+/// What a client on a killed session hears: at most the answer that was already on its way, and then the end. `Raw::read` fails if it's left waiting instead, so a hang fails here.
+fn hears_the_end(client: &mut Raw, what: &str) -> Option<Value> {
+    let answer = client.read();
+    if let Some(answer) = &answer {
+        assert!(client.read().is_none(), "{what}: after its answer, a client on a dead session must see it end, not hang: {answer}");
+    }
+    answer
 }
 
 /// Failure: something planted at the socket's path is deleted or connected to, or a link there is followed. Only a socket of ours may be cleared.

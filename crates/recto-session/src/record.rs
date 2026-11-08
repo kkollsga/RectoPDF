@@ -312,17 +312,23 @@ impl Spread {
     }
 }
 
-/// Find, as the reader left it. Nothing draws a Find field yet.
+/// Find, as the reader left it: the field in the sidebar, what it's found for, and the hit gone to last.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FindRecord {
     #[serde(default)]
     pub open: bool,
-    /// What was last searched for.
+    /// What was last searched for. Its hits are found again on restore, as they're never kept.
     #[serde(default)]
     pub query: String,
     /// What's typed in the field and hasn't been run.
     #[serde(default)]
     pub draft: String,
+    /// The hit gone to last, as its page (from 0) and its first character there. A hit is found by its place, so a record from another version of the file can name one that isn't there, which is nothing.
+    #[serde(default)]
+    pub current: Option<(u32, u32)>,
+    /// The tab that hit is in, so a move into another document's pane can't take the same place there for it.
+    #[serde(default)]
+    pub current_tab: Option<u32>,
 }
 
 /// A file as last seen: the identity a restore goes by. The path alone wouldn't notice a replaced file, or find a moved one.
@@ -469,10 +475,10 @@ impl FileNotice {
     /// A plain sentence for the reader. A tab's name and path come from outside, so there's none of either in here.
     pub fn message(&self, has_edits: bool) -> &'static str {
         match (self, has_edits) {
-            (Self::Moved { .. }, true) => "This file moved since you last had it open, and the tab followed it. Your unsaved edits are still here, and nothing has been written to the file.",
-            (Self::Moved { .. }, false) => "This file moved since you last had it open, and the tab followed it.",
-            (Self::Changed, true) => "This file has changed since you last had it open. Your unsaved edits are still here, but they were made on the old version, so pages may not line up. Nothing has been written to the file.",
-            (Self::Changed, false) => "This file has changed since you last had it open, so this is the new version.",
+            (Self::Moved { .. }, true) => "This file was moved, and the tab followed it. Your unsaved edits are still here, and nothing has been written to the file.",
+            (Self::Moved { .. }, false) => "This file was moved, and the tab followed it.",
+            (Self::Changed, true) => "This file changed on disk since it was last read here. Your unsaved edits are still here, but they were made on the old version, so pages may not line up. Nothing has been written to the file.",
+            (Self::Changed, false) => "This file changed on disk since it was last read here, so this is the new version.",
             (Self::Missing, true) => "This file can't be found: it may have been moved or deleted, or its disk may not be connected. Your unsaved edits are still here, and this tab keeps them until you discard them.",
             (Self::Missing, false) => "This file can't be found: it may have been moved or deleted, or its disk may not be connected.",
             (Self::NeedsPassword, _) => "This PDF needs its password again. Passwords aren't kept between launches.",
@@ -650,6 +656,9 @@ pub struct TabEntry {
     /// Contents sections the reader opened or closed against what following the place does, as `(entry, open)`. At most [`MAX_CONTENTS_FOLDS`].
     #[serde(default, deserialize_with = "capped::<_, _, MAX_CONTENTS_FOLDS>")]
     pub contents_folds: Vec<(u32, bool)>,
+    /// Its file was opened with a password the person typed, so what's here of it (its length, its place) was read with one, and none of it goes to an agent. The password itself is never anywhere in the record. Added after version 1, so an older record has none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub password: bool,
     /// Back and forward: places to go back to, oldest first, and to go forward to, the nearest last. See [`crate::trail`]. Read up to [`MAX_TRAIL_READ`], and held to [`crate::trail::MAX_TRAIL`] when taken in.
     #[serde(default, deserialize_with = "capped::<_, _, MAX_TRAIL_READ>", skip_serializing_if = "Vec::is_empty")]
     pub back: Vec<crate::trail::Stop>,
@@ -682,7 +691,13 @@ pub struct SessionRecord {
     /// Tabs side by side, if they were. Added after version 1, so an older record has none and an older app ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comparison: Option<ComparisonRecord>,
+    /// Files opened lately, newest first: File > Open Recent and ⌘K. Read up to [`MAX_RECENT_READ`], and held to [`crate::MAX_RECENT`] when taken in; a path that couldn't be a file's is left out.
+    #[serde(default, deserialize_with = "capped::<_, _, MAX_RECENT_READ>", skip_serializing_if = "Vec::is_empty")]
+    pub recent: Vec<PathField>,
 }
+
+/// Most recent files read from a record: past the list's own cap, so a record from a build with a longer one still reads.
+pub const MAX_RECENT_READ: usize = 256;
 
 /// A comparison as the record keeps it: which tabs, left to right, synced scroll, and where each pane was when it went on. Each pane's place is its tab's own.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1394,11 +1409,11 @@ mod tests {
     }
 
     fn entry(id: u32) -> TabEntry {
-        TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new(), back: Vec::new(), forward: Vec::new() }
+        TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new(), back: Vec::new(), forward: Vec::new(), password: false }
     }
 
     fn record(tabs: Vec<TabEntry>) -> SessionRecord {
-        SessionRecord { app: AppRecord::default(), view: ViewRecord::default(), find: FindRecord::default(), edit_mode: false, active: tabs.first().map(|tab| tab.id), next_id: 1000, tabs, comparison: None }
+        SessionRecord { app: AppRecord::default(), view: ViewRecord::default(), find: FindRecord::default(), edit_mode: false, active: tabs.first().map(|tab| tab.id), next_id: 1000, tabs, comparison: None, recent: Vec::new() }
     }
 
     fn found(path: &str, stamp: FileStamp) -> Option<(PathBuf, FileStamp)> {

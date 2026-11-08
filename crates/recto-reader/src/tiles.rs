@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 
 /// Tiles attached in one turn of the UI thread. Platform report §2.6: it stays under budget, and the next turn takes the rest.
 pub const MAX_ATTACH_PER_TURN: usize = 8;
+/// Files remembered as needing a password the renderer has none for, until the app asks: no more than tabs that could be showing.
+const MAX_KEYLESS: usize = 8;
 /// Off-screen surfaces kept, by bytes and by count. Least recently used go first. Platform report §2.6.
 const MAX_KEPT_BYTES: usize = 256 * 1024 * 1024;
 const MAX_KEPT_SURFACES: usize = 1024;
@@ -445,8 +447,8 @@ pub enum Outcome {
     Cancelled,
     /// The page can't be drawn now or ever, in these words.
     PageFailed { message: String, may_pass: bool },
-    /// The file can't be drawn, in these words.
-    DocumentFailed(String),
+    /// The file can't be drawn, in these words. `needs_key`: because it needs a password the renderer wasn't given.
+    DocumentFailed { message: String, needs_key: bool },
     /// A page's text, for selecting. `checked` says a hidden-text check was asked for and has been tried, however it came out, and not stopped because nobody wanted it.
     Text { text: Arc<recto_index::select::PageText>, checked: bool },
     /// A page's text can't be read. That's the page's text, and nothing about drawing it.
@@ -532,6 +534,8 @@ pub struct Reader {
     moved_page: Option<u32>,
     /// What was selected on the tab showing when a renderer saw its file replaced, until the next activation says whether that was a save of what was shown.
     selection_before_change: Option<(u32, recto_index::select::Range)>,
+    /// Find's hit, selected and on its way into view once its page's text says where on the page it is: the tab, the hit, and whether its page was jumped to for it, which then places it whatever it shows.
+    revealing: Option<(u32, recto_index::select::Range, bool)>,
     more_to_attach: bool,
     counts: ReaderCounts,
     wanted_files: Arc<Vec<PathBuf>>,
@@ -545,6 +549,8 @@ pub struct Reader {
     sleep_view: Option<(u32, SleepView)>,
     /// Files whose renderers have the wrong version open, to be let go of and opened again.
     reopen_files: Vec<PathBuf>,
+    /// Files the renderer couldn't open for want of a password, which the app has none for: a protected file moved to another volume, or replaced, while it was open. The app asks for it again. At most [`MAX_KEYLESS`].
+    keyless: Vec<PathBuf>,
     /// Pictures that came from sleep files, which a worker's word on the version goes over.
     from_sleep: HashSet<u64>,
     /// The window's on the screen, so what the host applies is a frame someone can see.
@@ -597,6 +603,7 @@ impl Reader {
             last_view_page: None,
             moved_page: None,
             selection_before_change: None,
+            revealing: None,
             more_to_attach: false,
             counts: ReaderCounts::default(),
             wanted_files: Arc::new(Vec::new()),
@@ -606,6 +613,7 @@ impl Reader {
             gave_up: false,
             sleep_view: None,
             reopen_files: Vec::new(),
+            keyless: Vec::new(),
             from_sleep: HashSet::new(),
             window_up: false,
             hold_drawing: false,
@@ -750,6 +758,24 @@ impl Reader {
     /// Files whose renderers have to start again.
     pub fn take_reopen_files(&mut self) -> Vec<PathBuf> {
         std::mem::take(&mut self.reopen_files)
+    }
+
+    /// Files the renderer found need a password it has none for, since this was last asked. Asking clears them.
+    pub fn take_keyless(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.keyless)
+    }
+
+    /// **A password's been given for a file:** its renderer opens again with it, and what an open without it found, that it needs one, is forgotten, so its pages are asked for afresh.
+    pub fn key_given(&mut self, path: &std::path::Path) {
+        self.keyless.retain(|file| file != path);
+        self.reopen_files.push(path.to_path_buf());
+        for doc in self.docs.values_mut() {
+            if doc.map.files.iter().any(|file| file == path) {
+                doc.problem = None;
+                doc.issues.clear();
+            }
+        }
+        self.refresh(MAX_ATTACH_PER_TURN);
     }
 
     /// For QA: nothing's drawn till it's let go, so a first frame stays to be looked at.
@@ -2183,6 +2209,50 @@ impl Reader {
         self.selecting.has_selection()
     }
 
+    /// **Find's hit:** selects it, as Find on a Mac does, and brings it into view. Its page is gone to at once if none of it shows, and once the page's text is here, which a selection's end asks for first, the hit is put a third of the way down the view. A hit already showing, away from the view's edges, stays where it is, so stepping through hits on one screen doesn't move it. Held to the document's pages.
+    pub fn reveal_range(&mut self, range: recto_index::select::Range) {
+        let Some(tab) = self.hot else { return };
+        let pages = self.doc().map_or(0, |doc| doc.layout.count());
+        if range.start.page >= pages || range.end.page >= pages || (range.start.page, range.start.at) > (range.end.page, range.end.at) {
+            return;
+        }
+        self.selecting.set_range(range);
+        self.highlight_ops();
+        let shows = self.doc().is_some_and(|doc| self.visible_pages(doc).contains(&range.start.page));
+        self.revealing = Some((tab, range, !shows));
+        if !self.try_reveal() && !shows {
+            self.follow(range.start.page, 0.0);
+        }
+    }
+
+    /// Moves the view to Find's hit if its place on the page is known now. Says whether it's settled, gone there or not needed.
+    fn try_reveal(&mut self) -> bool {
+        let Some((tab, range, jumped)) = self.revealing else { return true };
+        if self.hot != Some(tab) {
+            self.revealing = None;
+            return true;
+        }
+        let end = if range.end.page == range.start.page { range.end.at } else { u32::MAX };
+        let Some(bounds) = self.selecting.bounds_of(range.start.page, range.start.at, end) else { return false };
+        self.revealing = None;
+        let Some(bounds) = bounds else { return true };
+        let Some(doc) = self.doc() else { return true };
+        let rect = doc.layout.rect(range.start.page);
+        let fit = doc.layout.fit();
+        let (top, bottom) = (rect.y + f64::from(bounds.y) * fit, rect.y + f64::from(bounds.y + bounds.height) * fit);
+        let (view_top, view_height) = (self.viewport.y, self.viewport.height);
+        // Away from the edges: a tenth of the view at the top, a fifth at the bottom, where the page number and a notice sit.
+        if !jumped && view_height > 0.0 && top >= view_top + view_height * 0.1 && bottom <= view_top + view_height * 0.8 {
+            return true;
+        }
+        let want_top = (top - view_height / 3.0).max(0.0);
+        let within = ((want_top - rect.y) / rect.height.max(1.0)).clamp(0.0, 1.0);
+        let page = if want_top < rect.y { doc.layout.page_at(want_top) } else { range.start.page };
+        let within = if page == range.start.page { within } else { doc.layout.anchor_at(want_top).1 };
+        self.follow(page, within);
+        true
+    }
+
     pub fn has_document(&self) -> bool {
         self.doc().is_some_and(|doc| doc.layout.count() > 0)
     }
@@ -2232,6 +2302,9 @@ impl Reader {
         match outcome {
             Some((text, checked)) => self.selecting.page_read(position, text, checked, &visible),
             None => self.selecting.page_failed(position, &visible),
+        }
+        if self.revealing.is_some_and(|(_, range, _)| range.start.page == position) {
+            self.try_reveal();
         }
         self.advance_copy();
     }
@@ -2309,7 +2382,7 @@ impl Reader {
         self.running = None;
         self.counts.jobs += 1;
         let mut kept = None;
-        let Job { tab, position, kind, generation, .. } = job;
+        let Job { tab, position, kind, generation, file, .. } = job;
         if matches!(kind, JobKind::Links) {
             // About the tab showing, as it is, or about nothing.
             match outcome {
@@ -2356,9 +2429,12 @@ impl Reader {
             (_, Outcome::PageFailed { message, may_pass }) => {
                 self.note_issue(tab, position, message, may_pass);
             }
-            (_, Outcome::DocumentFailed(message)) => {
+            (_, Outcome::DocumentFailed { message, needs_key }) => {
                 if let Some(doc) = self.docs.get_mut(&tab) {
                     doc.problem = Some(message);
+                }
+                if needs_key && !self.keyless.contains(&file) && self.keyless.len() < MAX_KEYLESS {
+                    self.keyless.push(file);
                 }
             }
             _ => {
@@ -2587,6 +2663,38 @@ mod tests {
         reader.activate(1, pages, 0, map(), &[], None, Spread::Single);
         reader.set_viewport(view(0.0));
         reader
+    }
+
+    /// A page with one line of text near its foot, in PDF points from the bottom.
+    fn page_with_line_at(pdf_y: f32) -> Arc<recto_index::select::PageText> {
+        let frame = recto_proto::PageFrame { turns: 0, left: 0.0, bottom: 0.0, right: 612.0, top: 792.0 };
+        let chars: Vec<recto_proto::CharRecord> = "find me here".chars().map(|ch| recto_proto::CharRecord::new(ch as u32, 0)).collect();
+        let boxes: Vec<recto_proto::CharBox> = (0..chars.len()).map(|at| [72.0 + at as f32 * 6.0, pdf_y, 77.0 + at as f32 * 6.0, pdf_y + 10.0]).collect();
+        Arc::new(recto_index::select::PageText::build(&chars, &boxes, frame, true, false))
+    }
+
+    /// Failure: going to Find's hit leaves it off screen or at the very edge of the view, as it did at the foot of a page jumped to; or stepping between hits already on screen moves the page each time. Selects the hit too.
+    #[test]
+    fn finds_hit_is_selected_and_brought_a_third_down_the_view() {
+        let mut reader = reader_on(10);
+        settle(&mut reader);
+        let range = recto_index::select::Range { start: recto_index::select::Place { page: 6, at: 0 }, end: recto_index::select::Place { page: 6, at: 4 } };
+        reader.reveal_range(range);
+        assert_eq!(reader.selection_range(), Some(range), "selected");
+        let to_page = reader.take_ops().into_iter().rev().find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None }).expect("its page, at once");
+        reader.set_viewport(view(to_page));
+        reader.take_text(1, 6, Some((page_with_line_at(40.0), true)));
+        let placed = reader.take_ops().into_iter().rev().find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None }).expect("then the hit, once its place is known");
+        let doc = reader.doc().unwrap();
+        let top = doc.layout.rect(6).y + (792.0 - 50.0) * doc.layout.fit();
+        let height = view(0.0).height;
+        assert!(top >= placed + height * 0.25 && top <= placed + height * 0.4, "a third down: hit at {top}, view from {placed}");
+        // Another hit on what's showing, away from the edges, moves nothing.
+        reader.set_viewport(view(placed));
+        reader.take_ops();
+        let near = recto_index::select::Range { start: recto_index::select::Place { page: 6, at: 5 }, end: recto_index::select::Place { page: 6, at: 7 } };
+        reader.reveal_range(near);
+        assert!(!reader.take_ops().iter().any(|op| matches!(op, Op::ScrollTo { .. })), "it's in view already");
     }
 
     /// Failure: a tile for the wrong place, or none at all, reaches the screen, because the grid and the view don't agree. Every visible cell must be covered when it says it's settled, and every attached tile must be in view.
@@ -3564,6 +3672,26 @@ mod tests {
         // Off the edge of the picture: nothing panics.
         shrink_into(&tile, 16, 4, 4, 2, (3, 3), &mut picture, 4, 4);
         shrink_into(&tile[..8], 16, 4, 4, 2, (0, 0), &mut picture, 4, 4);
+    }
+
+    /// Failure (review O5): a protected file's renderer finds it needs a password the keyring has none for, as when the file was moved to another volume or replaced while it was open, and the tab only says "needs a password", with no way to type one: the app has to hear of the file, once, to ask with the sheet. Another failure isn't that, and a password given clears it.
+    #[test]
+    fn a_file_the_renderer_has_no_password_for_is_told_to_the_app() {
+        let mut reader = reader_on(3);
+        let job = reader.next_job().expect("a job");
+        reader.finish(job, Outcome::DocumentFailed { message: "This PDF needs a password.".into(), needs_key: true });
+        assert_eq!(reader.take_keyless(), [PathBuf::from("/d/a.pdf")]);
+        assert!(reader.take_keyless().is_empty(), "told once");
+        let mut other = reader_on(3);
+        let job = other.next_job().expect("a job");
+        other.finish(job, Outcome::DocumentFailed { message: "Not a PDF.".into(), needs_key: false });
+        assert!(other.take_keyless().is_empty(), "only for want of a password");
+        let job = reader.next_job();
+        if let Some(job) = job {
+            reader.finish(job, Outcome::DocumentFailed { message: "This PDF needs a password.".into(), needs_key: true });
+        }
+        reader.key_given(Path::new("/d/a.pdf"));
+        assert!(reader.take_keyless().is_empty(), "a password given takes it off the list");
     }
 
     /// Failure (review): a tab's file turns out to be another, by a change outside or a save, and its previews stay, so its next sleep file has the old file's pictures under the new file's name, for good, and with a redaction that picture's what was removed. Another version of the file is a change of what's on the pages, and everything of it goes, on screen and off.

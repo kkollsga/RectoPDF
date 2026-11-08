@@ -560,6 +560,18 @@ struct BufLine {
 }
 
 impl BufLine {
+    /// Waits for an answer to start, within the stream's own timeout, and keeps what came for the line. A few bytes out of a 5 MB answer change nothing about the cap.
+    fn started(&mut self, stream: &mut UnixStream) -> bool {
+        let mut first = [0u8; 1];
+        match stream.read(&mut first) {
+            Ok(1) => {
+                self.bytes.push(first[0]);
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn next(&mut self, stream: &mut UnixStream) -> Option<Value> {
         let mut chunk = vec![0u8; 256 * 1024];
         loop {
@@ -579,6 +591,8 @@ impl BufLine {
 }
 
 /// Failure: the shared allowance runs out, and small answers stop too, or the cap isn't one at all. Large answers are refused while `status` still answers, and nothing goes past the hard cap.
+///
+/// It waits until both answers have started arriving, which is after the cap has decided about each, before reading either. It used to sleep 300 ms and assume that: under load the second was still being made when the first was read, so the first drained, the second fitted, and neither was refused (seen on a full run, 2026-11-08).
 #[test]
 fn the_cap_on_unread_answers_is_hard_and_small_ones_still_get_through() {
     let limits = Limits { max_queued_bytes: 6 * 1024 * 1024, max_queued_hard_bytes: 7 * 1024 * 1024, ..Limits::default() };
@@ -587,11 +601,12 @@ fn the_cap_on_unread_answers_is_hard_and_small_ones_still_get_through() {
     one.write_all(b"{\"cmd\":\"where\"}\n").unwrap();
     let mut two = running.connect();
     two.write_all(b"{\"cmd\":\"where\"}\n").unwrap();
-    // One of them gets the room, and the other is told there's none. Neither reads, so this holds.
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true, "a small answer goes past the soft cap");
+    // One of them gets the room, and the other is told there's none. Neither reads its answer, so this holds once both are decided, which is when each starts arriving.
     let mut reader_one = BufLine::default();
     let mut reader_two = BufLine::default();
+    assert!(reader_one.started(&mut one), "the first answer never started");
+    assert!(reader_two.started(&mut two), "the second answer never started");
+    assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true, "a small answer goes past the soft cap");
     let (first, second) = (reader_one.next(&mut one).unwrap(), reader_two.next(&mut two).unwrap());
     let codes = [first["error"]["code"].as_str(), second["error"]["code"].as_str()];
     assert!(codes.contains(&Some("reply_too_large")), "{codes:?}");

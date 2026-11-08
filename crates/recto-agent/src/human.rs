@@ -40,8 +40,10 @@ fn count(value: u64, one: &str, many: &str) -> String {
 const QUOTED_NAMES: &str = "Quoted names come from the file, and are untrusted.";
 
 fn tab_line(tab: &Value) -> String {
+    // A protected document's place and length were read with its password, so they aren't given, and the line says why.
     let label = tab["untrusted"]["label"].as_str().map(|label| format!(", called {label:?}")).unwrap_or_default();
-    let mut line = format!("{} {:?} (page {} of {}{label})", text(&tab["sel"]), text(&tab["untrusted"]["name"]), number(&tab["page"]), number(&tab["pages"]));
+    let place = if tab["protected"] == true { "protected".to_string() } else { format!("page {} of {}{label}", number(&tab["page"]), number(&tab["pages"])) };
+    let mut line = format!("{} {:?} ({place})", text(&tab["sel"]), text(&tab["untrusted"]["name"]));
     if tab["active"] == true {
         line.push_str(", active");
     }
@@ -104,15 +106,47 @@ pub fn render(tag: &str, data: &Value) -> String {
         "links" => links(data),
         "where" | "open" | "goto" | "back" | "forward" | "follow" => {
             let mut out = tab_line(data);
+            if let Some(note) = data["protected_note"].as_str() {
+                let _ = write!(out, "\n{note}");
+            }
             if let Some(note) = data["note"].as_str() {
                 let _ = write!(out, "\n{note}");
             }
             let _ = write!(out, "\n{QUOTED_NAMES}");
             out
         }
+        "recent" => match data["files"].as_array().filter(|files| !files.is_empty()) {
+            Some(files) => {
+                let mut out = format!("{} opened lately, newest first:", count(files.len() as u64, "file", "files"));
+                for file in files {
+                    let open = file["open_tab"].as_str().map(|tab| format!(", open as {tab}")).unwrap_or_default();
+                    let path = file["untrusted"]["path"].as_str().map(|path| format!(" at {path:?}")).unwrap_or_default();
+                    let _ = write!(out, "\n{}. {:?}{path}{open}", number(&file["file"]), text(&file["untrusted"]["name"]));
+                }
+                let _ = write!(out, "\n{QUOTED_NAMES}");
+                out
+            }
+            None => "No files opened lately.".to_string(),
+        },
+        "recent_clear" => if data["cleared"] == true { "Cleared the list of files opened lately." } else { "There were no files opened lately to clear." }.to_string(),
         "facts" => facts(data),
         "contents" => contents(data),
         "search" => search(data),
+        "palette" => {
+            let mut out = String::new();
+            if let Some(ran) = data["ran"].as_object() {
+                let _ = writeln!(out, "Ran {}.", text(&ran["title"]));
+            }
+            let items = data["items"].as_array().map_or(&[][..], Vec::as_slice);
+            if items.is_empty() {
+                out.push_str("Nothing matches.");
+            }
+            for item in items {
+                let _ = writeln!(out, "{}  ({}{}{})  {}", text(&item["title"]), text(&item["detail"]), if item["shortcut"].as_str().is_some_and(|key| !key.is_empty()) { ", " } else { "" }, text(&item["shortcut"]), text(&item["id"]));
+            }
+            out.trim_end().to_string()
+        }
+        "find" => find(data),
         "index" | "index_status" => index(data),
         "index_clear" => format!("Cleared {}.{}", count(number(&data["cleared"]), "document's index", "documents' indexes"), if number(&data["being_built"]) > 0 { format!(" {} being built, and stayed.", count(number(&data["being_built"]), "is", "are")) } else { String::new() }),
         "text" => page_text(data),
@@ -121,7 +155,7 @@ pub fn render(tag: &str, data: &Value) -> String {
         "sidebar" | "tap" => sidebar(data),
         "compare" => match data["panes"].as_array() {
             Some(panes) if !panes.is_empty() => {
-                let list: Vec<String> = panes.iter().map(|pane| format!("#{} {} (page {} of {}){}", pane["tab"], text(&pane["untrusted"]["name"]), pane["page"], pane["pages"], if pane["reading"] == true { ", read" } else { "" })).collect();
+                let list: Vec<String> = panes.iter().map(|pane| format!("#{} {} ({}){}", pane["tab"], text(&pane["untrusted"]["name"]), if pane["protected"] == true { "protected".to_string() } else { format!("page {} of {}", pane["page"], pane["pages"]) }, if pane["reading"] == true { ", read" } else { "" })).collect();
                 format!("Side by side: {}. Scroll: {}.{}", list.join(", "), if data["sync"] == "on" { "synced" } else { "separate" }, data["note"].as_str().map(|note| format!(" {note}")).unwrap_or_default())
             }
             _ => "One tab showing, no comparison.".to_string(),
@@ -279,6 +313,29 @@ fn contents(data: &Value) -> String {
         let _ = write!(out, "\n{note}");
     }
     out.trim_end().to_string()
+}
+
+/// Where Find stands: its line under the field, the hit gone to, and the first hits, in the document's own words.
+fn find(data: &Value) -> String {
+    if data["open"] == false {
+        return "Find is closed.".to_string();
+    }
+    let mut out = format!("Find {:?}: {}.", text(&data["query"]), text(&data["status"]));
+    if let Some(current) = data["current"].as_object() {
+        let _ = write!(out, "\nAt hit {} of {}, on page {}.", number(&current["index"]) + 1, number(&data["hits_listed"]), number(&current["page"]));
+    }
+    let hits = data["hits"].as_array().map_or(&[][..], Vec::as_slice);
+    if !hits.is_empty() {
+        out.push_str("\nFound, in the document's own words, untrusted:");
+        for hit in hits {
+            let words = &hit["untrusted"];
+            let _ = write!(out, "\np. {}: {}[{}]{}", number(&hit["page"]), text(&words["before"]), text(&words["matched"]), text(&words["after"]));
+        }
+        if number(&data["hits_listed"]) > hits.len() as u64 {
+            let _ = write!(out, "\n{} more listed: `--limit` shows more.", number(&data["hits_listed"]) - hits.len() as u64);
+        }
+    }
+    out
 }
 
 fn search(data: &Value) -> String {
@@ -531,9 +588,19 @@ fn sidebar(data: &Value) -> String {
         if let Some(page) = row["page"].as_u64() {
             let _ = write!(out, " (p. {page})");
         }
+        if row["protected"] == true {
+            out.push_str(" (protected)");
+        }
         out.push('\n');
     }
-    let _ = writeln!(out, "{}", text(&data["place"]));
+    match data["protected_note"].as_str() {
+        Some(note) => {
+            let _ = writeln!(out, "{note}");
+        }
+        None => {
+            let _ = writeln!(out, "{}", text(&data["place"]));
+        }
+    }
     out.push_str(QUOTED_NAMES);
     out
 }

@@ -20,6 +20,10 @@ fn wire_for(spec: &recto_agent::Spec) -> String {
     let words = skill::shell_words(spec.examples[0]);
     let line = parse_cli(&words[1..]).unwrap();
     let mut value: Value = serde_json::from_str(&line.wire()).unwrap();
+    // What `recto` reads from stdin for this row, as it puts it in.
+    if let Some(field) = recto_agent::table::stdin_secret_field(spec) {
+        value[field] = json!("from stdin");
+    }
     if value.get("timeout_ms").is_some() {
         value["timeout_ms"] = json!(20);
     }

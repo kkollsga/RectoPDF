@@ -25,7 +25,7 @@ const MAX_QUERY_BYTES: usize = 1024;
 /// How long one search may run before it stops and says where to go on from.
 const MAX_TIME: Duration = Duration::from_secs(30);
 /// How long one search may spend reading again pages that failed when their corpus was built, since each can cost a worker and a page's whole time. Past that they're said to have failed, as they did, and the clean pages behind them are still reached.
-const LIVE_REREAD_BUDGET: Duration = Duration::from_secs(5);
+pub(crate) const LIVE_REREAD_BUDGET: Duration = Duration::from_secs(5);
 /// How long past that a ranked search may go on reading its top pages for their snippets, a page at a time when there's no corpus. Past that, the rest are left out and it says how many.
 const SECOND_PASS_TIME: Duration = Duration::from_secs(5);
 /// Characters of context on each side of a hit.
@@ -39,11 +39,16 @@ const MAX_MATCH_SHOWN: usize = 400;
 const MAX_LISTED_EMPTY: usize = 200;
 
 /// Which pages to look at, in order: position in the document as edited, which file, and which page there.
-struct Plan {
+pub(crate) struct Plan {
     files: Vec<PlanFile>,
-    pages: Vec<(u32, u16, u32)>,
-    tab: u32,
+    pub(crate) pages: Vec<(u32, u16, u32)>,
+    pub(crate) tab: u32,
+    /// The passwords the person typed, for the person's own Find only: never set for an agent's search or find. See [`KeyLookup`].
+    pub(crate) keys: Option<KeyLookup>,
 }
+
+/// **The person's passwords, for their own Find in a document they opened with one.** Looked up by file, on the thread that reads the pages, as a look can wait on a disk. A file with a password is read page by page through a worker opened with it, and never from or into a corpus: decrypted text is never written anywhere.
+pub type KeyLookup = std::sync::Arc<dyn Fn(&std::path::Path) -> Option<std::sync::Arc<recto_core::Password>> + Send + Sync>;
 
 struct PlanFile {
     path: PathBuf,
@@ -117,6 +122,13 @@ fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<
     let range = pages.map(|pages| parse_pages(pages, true)).transpose()?;
     access.with(|s| {
         let id = select(s, tab)?;
+        plan_of(s, id, pages, range)
+    })
+}
+
+/// The pages of one tab to look at, as its edits have them, under the session's lock: a few bytes a page.
+pub(crate) fn plan_of<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: recto_session::TabId, pages: Option<&str>, range: Option<(u32, u32)>) -> Result<Plan, AgentError> {
+    {
         let total = s.pages_in(id);
         let (start, len) = range.unwrap_or((0, total));
         // `5-` runs to the end, which is what a search's `next_page` is for.
@@ -134,8 +146,8 @@ fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<
                 edits.slots().iter().enumerate().skip(start as usize).take(len as usize).map(|(position, slot)| (u32::try_from(position).unwrap_or(u32::MAX), slot.source, slot.page)).collect()
             }
         };
-        Ok(Plan { files, pages: list, tab: id.0 })
-    })
+        Ok(Plan { files, pages: list, tab: id.0, keys: None })
+    }
 }
 
 /// How one file's pages get read in this search. Worked out when its first page comes up, and never again: a corpus doesn't change.
@@ -302,19 +314,19 @@ fn find_regex_hits(text: &str, matcher: &RegexMatcher, room: usize, deadline: In
 
 /// The settings of one search.
 #[derive(Clone, Copy)]
-struct Settings<'a> {
-    limit: usize,
-    context: usize,
+pub(crate) struct Settings<'a> {
+    pub(crate) limit: usize,
+    pub(crate) context: usize,
     /// When it stops reading, and stops counting.
-    deadline: Instant,
+    pub(crate) deadline: Instant,
     /// Past this no page is drawn to look for hidden text, and a page that needed it says it wasn't checked.
-    draw_until: Instant,
+    pub(crate) draw_until: Instant,
     /// Past this a ranked search reads no more of its top pages.
-    second_pass_until: Instant,
+    pub(crate) second_pass_until: Instant,
     /// How long it may spend reading again pages that failed when they were built.
-    live_budget: Duration,
-    indexing: Option<&'a dyn Indexing>,
-    force_scan: bool,
+    pub(crate) live_budget: Duration,
+    pub(crate) indexing: Option<&'a dyn Indexing>,
+    pub(crate) force_scan: bool,
 }
 
 /// What's been found so far. The same whichever way a page was read.
@@ -430,8 +442,8 @@ fn add_context(hit: &mut Value, text: &str, range: &Range<usize>, lines: usize) 
 }
 
 /// One page's text, whichever way it was read.
-struct PageView<'a> {
-    text: &'a str,
+pub(crate) struct PageView<'a> {
+    pub(crate) text: &'a str,
     also_spelled: Vec<&'a str>,
     has_tag_chars: bool,
     /// What a corpus has to say about it, if it came from one.
@@ -439,7 +451,7 @@ struct PageView<'a> {
 }
 
 /// What came of reading a page.
-enum Got<'a> {
+pub(crate) enum Got<'a> {
     Page(PageView<'a>),
     NoText,
     Failed,
@@ -449,13 +461,13 @@ enum Got<'a> {
 
 /// Where a page's text sits while it's in hand, so a search takes no allocation per page.
 #[derive(Default)]
-struct Slot {
+pub(crate) struct Slot {
     buffer: Vec<u8>,
     live: Option<recto_index::Normalized>,
 }
 
 /// Reads pages by whichever way each file's can be read, the one way for every kind of search.
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     plan: &'a Plan,
     indexing: Option<&'a dyn Indexing>,
     force_scan: bool,
@@ -473,18 +485,35 @@ struct Reader<'a> {
     live_spent: Duration,
     not_read_again: u32,
     deadline: Instant,
+    /// Each file's password, once looked up: `None` not yet looked.
+    file_keys: Vec<Option<Option<std::sync::Arc<recto_core::Password>>>>,
 }
 
 impl<'a> Reader<'a> {
-    fn new(plan: &'a Plan, settings: &Settings<'a>) -> Self {
-        Self { plan, indexing: settings.indexing, force_scan: settings.force_scan, current: None, corpus_open: None, routes: vec![FileRoute::NotLookedAt; plan.files.len()], not_ready: Vec::new(), changed: Vec::new(), used_index: false, used_scan: false, draw_until: settings.draw_until, live_budget: settings.live_budget, live_spent: Duration::ZERO, not_read_again: 0, deadline: settings.deadline }
+    pub(crate) fn new(plan: &'a Plan, settings: &Settings<'a>) -> Self {
+        Self { plan, indexing: settings.indexing, force_scan: settings.force_scan, current: None, corpus_open: None, routes: vec![FileRoute::NotLookedAt; plan.files.len()], not_ready: Vec::new(), changed: Vec::new(), used_index: false, used_scan: false, draw_until: settings.draw_until, live_budget: settings.live_budget, live_spent: Duration::ZERO, not_read_again: 0, deadline: settings.deadline, file_keys: vec![None; plan.files.len()] }
     }
 
     /// Works out how a file's pages get read: from its corpus if there's a finished one for the file as it is now, or else page by page, asking for a corpus to be built for next time. A file reached only for the count doesn't change how the answer's hits were read, so it isn't said to have.
+    /// The password the person typed for this file, if this is their own Find and they did.
+    fn key_of(&mut self, file: u16) -> Option<std::sync::Arc<recto_core::Password>> {
+        let keys = self.plan.keys.as_ref()?;
+        let known = &mut self.file_keys[usize::from(file)];
+        if known.is_none() {
+            *known = Some(keys(&self.plan.files[usize::from(file)].path));
+        }
+        known.clone().flatten()
+    }
+
     fn route_of(&mut self, file: u16, only_counting: bool) -> FileRoute {
         let route = self.routes[usize::from(file)];
         if !matches!(route, FileRoute::NotLookedAt) {
             return route;
+        }
+        // Opened with a password: read through a worker with it, and no corpus is read or asked for, so its text is never written.
+        if self.key_of(file).is_some() {
+            self.routes[usize::from(file)] = FileRoute::Scan;
+            return FileRoute::Scan;
         }
         let source = &self.plan.files[usize::from(file)];
         let mut said = None;
@@ -510,7 +539,7 @@ impl<'a> Reader<'a> {
     }
 
     /// One page's text. A file that won't be read at all is an error, of the whole search. One bad page isn't: it's `Failed`, so "not found" doesn't cover it.
-    fn read<'s>(&mut self, file: u16, page: u32, slot: &'s mut Slot) -> Result<Got<'s>, AgentError> {
+    pub(crate) fn read<'s>(&mut self, file: u16, page: u32, slot: &'s mut Slot) -> Result<Got<'s>, AgentError> {
         if self.changed.contains(&file) {
             return Ok(Got::Failed);
         }
@@ -564,9 +593,10 @@ impl<'a> Reader<'a> {
 
     /// One page's text, by a worker. `read_again_live` is that its corpus has it as failed, so this can only say it still is.
     fn read_live<'s>(&mut self, file: u16, page: u32, live: &'s mut Option<recto_index::Normalized>, read_again_live: bool) -> Result<Got<'s>, AgentError> {
+        let key = self.key_of(file);
         let source = &self.plan.files[usize::from(file)];
         self.used_scan = true;
-        let renderer = match worker_for(&mut self.current, file, source) {
+        let renderer = match worker_for(&mut self.current, file, source, key) {
             Ok(Some(renderer)) => renderer,
             Err(_) if read_again_live => return Ok(Got::Failed),
             Ok(None) | Err(RenderFailure::NotFound) if source.added || source.expected.is_some() => {
@@ -590,7 +620,7 @@ impl<'a> Reader<'a> {
     }
 
     /// What's known of hidden text on this page: what the build found, or if it couldn't look, what drawing it now says.
-    fn hidden(&mut self, file: u16, page: u32, view: &PageView<'_>) -> HiddenOnPage {
+    pub(crate) fn hidden(&mut self, file: u16, page: u32, view: &PageView<'_>) -> HiddenOnPage {
         if let Some(stored) = view.stored.as_ref().filter(|stored| stored.hidden_checked) {
             return HiddenOnPage { summary: json!({ "checked": true, "flagged": stored.hidden_flagged }), spans: byte_spans(view.text, &stored.hidden_spans()), partial: stored.spans_dropped };
         }
@@ -598,7 +628,8 @@ impl<'a> Reader<'a> {
         if Instant::now() >= self.draw_until {
             return HiddenOnPage { summary: json!({ "checked": false, "flagged": null }), spans: Vec::new(), partial: true };
         }
-        match worker_for(&mut self.current, file, &self.plan.files[usize::from(file)]) {
+        let key = self.key_of(file);
+        match worker_for(&mut self.current, file, &self.plan.files[usize::from(file)], key) {
             Ok(Some(renderer)) => hidden_on_page(renderer, page, view.text),
             Ok(None) | Err(_) => HiddenOnPage { summary: json!({ "checked": false, "flagged": null }), spans: Vec::new(), partial: true },
         }
@@ -633,7 +664,7 @@ impl<'a> Reader<'a> {
     }
 
     /// How this search's pages were read, and why, for its answer.
-    fn say_how(&self, value: &mut Value) {
+    pub(crate) fn say_how(&self, value: &mut Value) {
         let route = match (self.used_index, self.used_scan) {
             (true, true) => "mixed",
             (true, false) => "index",
@@ -661,14 +692,14 @@ impl<'a> Reader<'a> {
 }
 
 /// Opens this page's worker if it isn't the one already open. One at a time, whichever file it's for: a document with a thousand added files must not mean a thousand processes. `None` if the file isn't what its page numbers were recorded from, or can't be found.
-fn worker_for<'a>(current: &'a mut Option<(u16, DocRenderer)>, file: u16, source: &PlanFile) -> Result<Option<&'a mut DocRenderer>, RenderFailure> {
+fn worker_for<'a>(current: &'a mut Option<(u16, DocRenderer)>, file: u16, source: &PlanFile, key: Option<std::sync::Arc<recto_core::Password>>) -> Result<Option<&'a mut DocRenderer>, RenderFailure> {
     if current.as_ref().is_none_or(|(open_file, _)| *open_file != file) {
         // The old one goes first, so there's never more than one.
         *current = None;
         if !source.is_current() {
             return Ok(None);
         }
-        *current = Some((file, DocRenderer::new(&source.path, None, ServiceConfig::discover()?, Policy::default())?));
+        *current = Some((file, DocRenderer::new(&source.path, key, ServiceConfig::discover()?, Policy::default())?));
     }
     Ok(current.as_mut().map(|(_, renderer)| renderer))
 }
@@ -849,7 +880,7 @@ fn say_where_from(hit: &mut Value, page: u32, source: &PlanFile) {
 }
 
 /// What drawing a page says about hidden text.
-struct HiddenOnPage {
+pub(crate) struct HiddenOnPage {
     summary: Value,
     /// Where it is in the page's text, in bytes, in order. Empty if there's none, or if they couldn't be placed.
     spans: Vec<Range<usize>>,
@@ -859,7 +890,7 @@ struct HiddenOnPage {
 
 impl HiddenOnPage {
     /// Whether a hit's words include hidden text: `null` if that can't be said, which isn't the same as no.
-    fn overlaps(&self, hit: &Range<usize>) -> Option<bool> {
+    pub(crate) fn overlaps(&self, hit: &Range<usize>) -> Option<bool> {
         let after = self.spans.partition_point(|span| span.end <= hit.start);
         if self.spans.get(after).is_some_and(|span| span.start < hit.end) {
             return Some(true);
@@ -911,7 +942,7 @@ fn byte_spans(text: &str, spans: &[(u32, u32)]) -> Vec<Range<usize>> {
 }
 
 /// What [`fold`] makes, into a buffer that's used again, with no map back to the text. It runs on every page of a search, and the map only matters on a page with a hit. An all-ASCII page, most of them, takes a shorter way.
-fn fold_into(text: &str, folded: &mut String) {
+pub(crate) fn fold_into(text: &str, folded: &mut String) {
     folded.clear();
     folded.reserve(text.len());
     let mut pending_space = false;
@@ -944,7 +975,7 @@ fn fold_into(text: &str, folded: &mut String) {
 }
 
 /// Lower-cases and joins whitespace, and notes where each byte of the result came from. Returns the folded text and that map.
-fn fold(text: &str) -> (String, Vec<u32>) {
+pub(crate) fn fold(text: &str) -> (String, Vec<u32>) {
     let mut folded = String::with_capacity(text.len());
     let mut sources = Vec::with_capacity(text.len());
     let mut pending_space = false;
@@ -1268,7 +1299,7 @@ mod tests {
         let key = CorpusKey::of_file(&path).unwrap();
         let count = pages.len() as u32;
         recto_index::corpus::build(&root, key, &mut Pages(pages), &recto_index::corpus::DocMeta::default(), &recto_index::corpus::BuildLimits::default()).unwrap();
-        Fixture { folder, plan: Plan { files: vec![PlanFile { path, expected: None, added: false }], pages: (0..count).map(|page| (page, 0, page)).collect(), tab: 1 }, indexing: crate::index::ReadOnlyCorpus(root) }
+        Fixture { folder, plan: Plan { files: vec![PlanFile { path, expected: None, added: false }], pages: (0..count).map(|page| (page, 0, page)).collect(), tab: 1, keys: None }, indexing: crate::index::ReadOnlyCorpus(root) }
     }
 
     fn settings(fixture: &Fixture) -> Settings<'_> {

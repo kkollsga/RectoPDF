@@ -180,7 +180,11 @@ pub(crate) const READ_CACHE_ENTRIES: usize = 256;
 
 /// What every way of opening shares: a file that needs a password is refused here, whichever bytes it came from.
 pub(crate) fn checked_reader(opened: Result<IndexedReader, lopdf::IndexedReaderError>) -> Result<IndexedReader, OpenError> {
-    let reader = opened.map_err(|_| OpenError::NotPdf)?;
+    // A file that needs a password the reader wasn't given, or was given wrongly, says so: it's a PDF, and only the person can open it.
+    let reader = opened.map_err(|error| match error {
+        lopdf::IndexedReaderError::PasswordRequired | lopdf::IndexedReaderError::InvalidPassword => OpenError::PasswordNeeded,
+        _ => OpenError::NotPdf,
+    })?;
     if reader.is_encrypted() && !reader.is_authenticated() {
         return Err(OpenError::PasswordNeeded);
     }
@@ -190,6 +194,24 @@ pub(crate) fn checked_reader(opened: Result<IndexedReader, lopdf::IndexedReaderE
 /// Opens bytes already in memory, the same way a file is opened.
 fn open_bytes(bytes: Arc<[u8]>) -> Result<IndexedReader, OpenError> {
     checked_reader(IndexedReader::open(BytesSource::new(bytes)))
+}
+
+pub use recto_platform::{MAX_PASSWORD_BYTES, Password};
+
+/// [`inspect`] with a password the person typed. A wrong one is [`OpenError::PasswordNeeded`], as no password is. The file's closed again when this returns, and the password isn't kept here.
+pub fn inspect_with_password(path: &Path, password: &Password) -> Result<DocFacts, OpenError> {
+    let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
+        ErrorKind::NotFound => OpenError::NotFound,
+        ErrorKind::PermissionDenied => OpenError::NotAllowed,
+        _ => OpenError::NotPdf,
+    })?;
+    if !meta.is_file() {
+        return Err(OpenError::NotPdf);
+    }
+    let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
+    // lopdf takes this copy out of the options and drops it once it's derived the file's key, without overwriting it: a copy that remains, listed in ENGINEERING. The options are moved in, so there's nothing left here to clear.
+    let options = lopdf::IndexedReaderOptions { password: Some(password.bytes().to_vec()), ..lopdf::IndexedReaderOptions::default() };
+    read_facts(&checked_reader(IndexedReader::open_with_options(source, options))?)
 }
 
 /// Opens a PDF lazily, reads its facts and closes it. No file handle stays open after this returns.

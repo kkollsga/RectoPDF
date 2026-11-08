@@ -191,6 +191,7 @@ const EXCEPTIONS: &[(&str, &str)] = &[
     ("reader.last_wake", "How long a wake took, and that this one was from a sleep file: about this launch."),
     ("memory.", "A new process's memory, threads and handles are its own: budgets, not state."),
     ("hangs.", "Its own stalls, counted from its own start."),
+    ("app.palette.", "⌘K's palette is a moment's choice, as an open menu is, and closes when the keyboard goes elsewhere, so it isn't kept."),
     ("record.", "How many writes it's made and what its first frame was: it's the record of the restore itself."),
     ("reader.counts.", "Jobs and steps of its own run."),
     ("reader.documents_held", "Warm tabs come back cold, by rule: only the active tab loads, so the rest cost what a cold tab costs."),
@@ -382,6 +383,54 @@ fn everything_comes_back_after_a_quit() {
     }
 }
 
+/// Failure: Find doesn't come back as it was left (decision 23): its field, the hits of what was found, the hit gone to, and that hit selected on the page, after a quit and a launch. The hits are found again, as they're never kept, and the hit is chosen again by its place.
+#[test]
+fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let file = long_document("findable", 30);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "find-type", "findable page 1"]);
+    run.settled();
+    for _ in 0..3 {
+        run.ok(&["qa", "find-key", "return"]);
+    }
+    run.settled();
+    let before = run.report();
+    let find = &before["app"]["find"];
+    // `findable page 1` on page 2, and `page 10` to `page 19` on pages 11 to 20: eleven, a page row and a hit each.
+    assert_eq!((find["rows"].as_u64(), find["status"].as_str()), (Some(22), Some("11 matches on 11 pages")), "{find}");
+    assert_eq!(find["current_row"], 5, "the third hit's row: {find}");
+    assert_eq!(before["session"]["find"]["current"], json!([11, 0]), "{}", before["session"]["find"]);
+    assert_eq!(before["app"]["place"], "12 of 30");
+    assert!(before["app"]["pages"]["highlight_rects"].as_u64().unwrap_or(0) > 0, "the hit is selected on the page: {}", before["app"]["pages"]);
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let after = run.report();
+    for field in ["open", "rows", "status", "current_row", "untrusted", "list_height", "rows_on_screen"] {
+        assert_eq!(after["app"]["find"][field], before["app"]["find"][field], "{field}: {}", after["app"]["find"]);
+    }
+    assert_eq!(after["app"]["place"], before["app"]["place"]);
+    assert_eq!(after["app"]["pages"]["highlight_rects"], before["app"]["pages"]["highlight_rects"], "the hit's still selected");
+    // And it goes on from there.
+    run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["current_row"], 7);
+    run.quit();
+    // The file replaced while the app was away, with more pages: what's found is the new file's, not the old count or the old places (review, round 1).
+    let longer: Vec<Page> = (0..120).map(|index| Page::new(text_lines(&[&format!("findable page {index}"), "Words, so that the page isn't blank"]))).collect();
+    std::fs::write(&file.0, pages(&longer)).unwrap();
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    let replaced = run.report();
+    // `page 1` on page 2, `page 10`-`19` and `page 100`-`119`.
+    assert_eq!(replaced["app"]["find"]["status"], "31 matches on 31 pages", "{}", replaced["app"]["find"]);
+    run.quit();
+}
+
 /// Every path in `qa state` that's been looked at: it comes back, as the test above shows, or it's in [`EXCEPTIONS`]. A new one fails until it's added here, which is the moment to carry it over.
 const KNOWN_PATHS: &[&str] = &[
     "app.pages.snapshot_box",
@@ -392,6 +441,8 @@ const KNOWN_PATHS: &[&str] = &[
     "snapshot.drawing",
     "snapshot.notice",
     "snapshot.on",
+    "session.recent.len",
+    "session.recent[]",
     "app.links.address_opened",
     "app.links.hint",
     "app.links.hint_in_lower_left",
@@ -446,6 +497,30 @@ const KNOWN_PATHS: &[&str] = &[
     "app.contents.table_rows",
     "app.contents.tabs_scroll",
     "app.contents.visible_rows",
+    "app.find.block_height",
+    "app.find.current_row",
+    "app.find.field_has_focus",
+    "app.find.first_visible",
+    "app.find.list_height",
+    "app.find.open",
+    "app.find.rows",
+    "app.find.rows_on_screen.len",
+    "app.find.rows_on_screen[].current",
+    "app.find.rows_on_screen[].kind",
+    "app.find.rows_on_screen[].note",
+    "app.find.rows_on_screen[].untrusted.label",
+    "app.find.rows_on_screen[].untrusted.matched",
+    "app.find.running",
+    "app.find.shown",
+    "app.find.status",
+    "app.find.thumb.hit_width",
+    "app.find.thumb.right_gap",
+    "app.find.thumb.shown",
+    "app.find.thumb.thumb_length",
+    "app.find.thumb.thumb_top",
+    "app.find.thumb.thumb_width",
+    "app.find.untrusted.field",
+    "app.find.visible_rows",
     "app.focus_view",
     "app.document_edited",
     "app.home",
@@ -649,6 +724,10 @@ const KNOWN_PATHS: &[&str] = &[
     "session.edits_full.N.undo[].step.rotate.len",
     "session.edits_full.N.undo[].step.rotate.quarter_turns",
     "session.edits_full.N.undo[].step.rotate.start",
+    "session.find.current",
+    "session.find.current.len",
+    "session.find.current[]",
+    "session.find.current_tab",
     "session.find.draft",
     "session.find.open",
     "session.find.query",
@@ -2216,7 +2295,7 @@ fn a_discard_stays_discarded_in_a_session_with_no_window() {
 #[path = "restore/update.rs"]
 mod update;
 
-/// Failure: a note's bubble keeps the shape it had for the margin when it was laid out, so after a zoom changes the margin it stays as narrow as it was zoomed in, until something unrelated, a change of appearance, lays it out again. "This file has changed since you last had it open" wrapped to 5 lines in light and 2 in dark (2026-11-08). Its shape follows the margin there is now, and is the same in light and dark.
+/// Failure: a note's bubble keeps the shape it had for the margin when it was laid out, so after a zoom changes the margin it stays as narrow as it was zoomed in, until something unrelated, a change of appearance, lays it out again. A file notice wrapped to 5 lines in light and 2 in dark (2026-11-08). Its shape follows the margin there is now, and is the same in light and dark.
 #[test]
 fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {
     let state = State::new();
@@ -2253,4 +2332,37 @@ fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {
     assert_eq!(dark["app"]["appearance"], "dark");
     let dark = bubble(&dark);
     assert!((width(&dark) - width(&light)).abs() < 0.5 && dark["lines"] == light["lines"], "the same note is the same shape in light and dark: {light} and {dark}");
+}
+
+/// Failure: a protected tab comes back after a quit open, as though its password had been kept; or it comes back saying nothing, with no way to type it again; or Cancel leaves it asking at once.
+#[test]
+fn a_protected_tab_asks_again_after_a_quit() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let locked = state.root.join("locked.pdf");
+    std::fs::write(&locked, common::locked_with("open sesame", 1)).unwrap();
+    run.ok(&["qa", "open-file", locked.to_str().unwrap()]);
+    let until = |run: &Run, holds: &dyn Fn(&Value) -> bool| {
+        for _ in 0..500 {
+            let state = run.report();
+            if holds(&state) {
+                return state;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("it never came to pass: {}", run.report());
+    };
+    until(&run, &|state| state["app"]["sheet"]["kind"] == "password");
+    let (reply, code) = state.json_with_stdin(&["qa", "password"], "open sesame");
+    assert_eq!(code, 0, "{reply}");
+    until(&run, &|state| state["app"]["sheet"] == json!({}) && state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 1));
+    run.settled();
+    run.quit();
+    let run = Run::start(&state).unwrap();
+    let asked = until(&run, &|state| state["app"]["sheet"]["kind"] == "password");
+    assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("asked again"), "{asked}");
+    run.ok(&["qa", "sheet-answer", "second"]);
+    let declined = until(&run, &|state| state["app"]["sheet"] == json!({}));
+    assert!(declined["app"]["note"].as_str().is_some_and(|note| note.contains("password again")), "{declined}");
+    run.quit();
 }

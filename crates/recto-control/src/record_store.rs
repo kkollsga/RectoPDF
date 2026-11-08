@@ -471,7 +471,7 @@ impl RecordStore {
                 }
                 record
             }
-            None => SessionRecord { app: AppRecord::default(), view: ViewRecord::default(), find: FindRecord::default(), edit_mode: false, active: None, next_id: 1, tabs: Vec::new(), comparison: None },
+            None => SessionRecord { app: AppRecord::default(), view: ViewRecord::default(), find: FindRecord::default(), edit_mode: false, active: None, next_id: 1, tabs: Vec::new(), comparison: None, recent: Vec::new() },
         };
         // What the disk has, so what loading the journals changes in it does get written.
         let as_read = had_record.then(|| crc_of(&record));
@@ -1200,7 +1200,7 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
         }
         let id = record.next_id;
         record.next_id += 1;
-        record.tabs.push(TabEntry { id, path: parsed.header.path.clone(), file: parsed.header.file, page: 0, page_count: parsed.header.file_pages, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: Some(name.clone()), edits: Some(restored.edits.summary()), generated_contents: false, contents_folds: Vec::new(), back: Vec::new(), forward: Vec::new() });
+        record.tabs.push(TabEntry { id, path: parsed.header.path.clone(), file: parsed.header.file, page: 0, page_count: parsed.header.file_pages, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: Some(name.clone()), edits: Some(restored.edits.summary()), generated_contents: false, contents_folds: Vec::new(), back: Vec::new(), forward: Vec::new(), password: false });
         taken_tabs.push(true);
         if record.active.is_none() {
             record.active = Some(id);
@@ -1325,8 +1325,9 @@ mod tests {
             edit_mode: false,
             active: (tabs > 0).then_some(1),
             next_id: tabs + 1,
-            tabs: (1..=tabs).map(|id| TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new(), back: Vec::new(), forward: Vec::new() }).collect(),
+            tabs: (1..=tabs).map(|id| TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new(), back: Vec::new(), forward: Vec::new(), password: false }).collect(),
             comparison: None,
+            recent: Vec::new(),
         }
     }
 

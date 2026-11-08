@@ -858,7 +858,8 @@ fn the_menu_bar_and_the_agent_icon() {
     assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go", "Tools"], "{state}");
     let view = &state["app"]["menu_bar"][3]["items"];
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
-    assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon"]);
+    assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon", "Command Palette…"]);
+    assert_eq!(view[9]["key"], "k", "⌘K, as SPEC has it");
     assert_eq!(state["app"]["agent_icon"], true);
     // Owner, 2026-11-07: the same margin to the right as above, and less above than the 16 it had.
     let (top, right) = (state["app"]["agent_icon_margins"]["top"].as_f64().unwrap(), state["app"]["agent_icon_margins"]["right"].as_f64().unwrap());
@@ -1865,6 +1866,524 @@ fn a_save_leaves_the_view_as_it_was() {
     assert!(saved.starts_with(&original) && saved.len() > original.len(), "and it was saved");
 }
 
+/// Failure: ⌘K doesn't find a command by a few of its letters, lists what can't be chosen, words a key unlike its menu, can't be driven by the keyboard alone, or runs something other than what's selected; or an agent's `recto palette` ranks differently from what the reader sees.
+#[test]
+fn the_palette_finds_commands_and_tabs_and_runs_them_by_keyboard() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "palette.open"]);
+    let opened = wait_for(&run, |state| state["app"]["palette"]["open"] == true);
+    assert_eq!(opened["app"]["palette"]["field_has_focus"], true, "⌘K gives its field the keyboard");
+    assert!(opened["app"]["palette"]["rows"].as_array().unwrap().iter().any(|row| row["id"] == "tab:1"), "the open tab is listed: {}", opened["app"]["palette"]);
+    let typed = run.ok(&["qa", "palette-type", "zi"]);
+    assert_eq!(typed["palette"]["rows"][0]["id"], "view.zoom_in", "{}", typed["palette"]);
+    assert_eq!(typed["palette"]["rows"][0]["shortcut"], "⌘+", "the menu's own key");
+    let agent = run.ok(&["palette", "zi"]);
+    assert_eq!(agent["items"][0]["id"], "view.zoom_in", "an agent sees the same order: {agent}");
+    run.ok(&["qa", "palette-type", "side"]);
+    let moved = run.ok(&["qa", "palette-key", "down"]);
+    let second = moved["palette"]["rows"][1]["id"].as_str().unwrap().to_string();
+    assert_eq!(moved["palette"]["selected"], 1);
+    run.ok(&["qa", "palette-key", "return"]);
+    run.settled();
+    let ran = run.report();
+    assert_eq!(ran["app"]["palette"]["open"], false, "it closes once it runs");
+    assert_eq!(format!("layout.{}", ran["app"]["layout"].as_str().unwrap().replace('-', "_")), second, "what was selected ran");
+    // What can't be chosen now isn't listed.
+    let agent = run.ok(&["palette", "copy"]);
+    assert!(!agent["items"].as_array().unwrap().iter().any(|item| item["id"] == "edit.copy"), "nothing's selected, so Copy can't be chosen: {agent}");
+    run.ok(&["qa", "menu", "palette.open"]);
+    run.ok(&["qa", "palette-key", "escape"]);
+    assert_eq!(run.report()["app"]["palette"]["open"], false);
+    let refused = run.state.json(&["palette", "zzzzqqq", "--run"]);
+    assert_eq!(refused.1, exit::NOT_FOUND, "{}", refused.0);
+    // A tab's name is the file's words.
+    let tabs = run.ok(&["palette", "long"]);
+    let tab = tabs["items"].as_array().unwrap().iter().find(|item| item["id"] == "tab:1").unwrap();
+    assert!(tab["untrusted"]["title"].is_string() && tab.get("title").is_none(), "{tab}");
+}
+
+/// Failure: a palette row that leaves the host something to do (Settings, the Open panel, About, Save As, Find's field) does nothing when run with Return, because what's left for the host never reaches it.
+#[test]
+fn a_palette_row_does_what_the_host_is_left_to_do() {
+    let Some(run) = Run::start() else { return };
+    run.ok(&["qa", "menu", "palette.open"]);
+    wait_for(&run, |state| state["app"]["palette"]["open"] == true);
+    let typed = run.ok(&["qa", "palette-type", "settings"]);
+    assert_eq!(typed["palette"]["rows"][0]["id"], "app.settings", "{}", typed["palette"]);
+    run.ok(&["qa", "palette-key", "return"]);
+    let shown = wait_for(&run, |state| state["app"]["settings"]["open"] == true);
+    assert_eq!(shown["app"]["palette"]["open"], false);
+}
+
+/// Failure: Find Next run from the palette with Find closed goes nowhere the reader can see: Find doesn't open, or its field doesn't take the keyboard the palette had, so typing goes nowhere; or `recto palette "find next" --run` needs Full though `recto find --next` needs only Control.
+#[test]
+fn find_next_from_the_palette_opens_find_with_its_field_focused() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.ok(&["qa", "find-key", "escape"]);
+    wait_for(&run, |state| state["app"]["find"]["open"] == false);
+    run.ok(&["qa", "menu", "palette.open"]);
+    let typed = run.ok(&["qa", "palette-type", "find next"]);
+    assert_eq!(typed["palette"]["rows"][0]["id"], "find.next", "{}", typed["palette"]);
+    run.ok(&["qa", "palette-key", "return"]);
+    let found = wait_for(&run, |state| state["app"]["find"]["open"] == true && state["app"]["find"]["field_has_focus"] == true);
+    assert_eq!((found["app"]["palette"]["open"].as_bool(), found["app"]["focus_view"].as_str()), (Some(false), Some("find")), "{}", found["app"]["find"]);
+    assert_eq!(found["app"]["find"]["untrusted"]["field"], "words", "with what was typed last: {}", found["app"]["find"]);
+    run.state.set_level(Level::Control);
+    let stepped = run.ok(&["palette", "find next", "--run"]);
+    assert_eq!(stepped["ran"]["id"], "find.next", "at Control, as `recto find --next`: {stepped}");
+}
+
+/// Failure: ⌘K doesn't offer files opened lately, or opens another file than the row showed; a file in Open Recent named like a command ("Close") is listed as that command; an agent below `recto recent`'s level sees files opened lately; or an agent sees anything of a tab opened with a password the person typed, whose name may have been read with it.
+#[test]
+fn the_palette_offers_recent_files_and_keeps_protected_tabs_from_agents() {
+    let Some(run) = Run::start() else { return };
+    let closed = TempPdf::new("Close.pdf", &pages(&[Page::new(text_lines(&["A file named like a command"]))]));
+    let reading = long_document(3);
+    run.ok(&["open", closed.0.to_str().unwrap()]);
+    run.ok(&["close"]);
+    run.ok(&["open", reading.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "palette.open"]);
+    let typed = run.ok(&["qa", "palette-type", "Close"]);
+    let rows = typed["palette"]["rows"].as_array().unwrap().clone();
+    assert!(rows.iter().all(|row| !row["id"].as_str().unwrap().starts_with("recent.")), "Open Recent's items aren't commands: {rows:?}");
+    assert!(rows.iter().any(|row| row["id"] == "file.close"), "{rows:?}");
+    assert!(rows[0]["id"].as_str().unwrap().starts_with("recent:"), "the recent file, first among equals after the tabs: {rows:?}");
+    run.ok(&["qa", "palette-key", "return"]);
+    let opened = wait_for(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 2));
+    assert!(opened["session"]["tabs"].as_array().unwrap().iter().any(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with("Close.pdf"))), "the file the row showed");
+    run.ok(&["close"]);
+    run.settled();
+    let recent_ids = |reply: &Value| reply["items"].as_array().unwrap().iter().filter(|item| item["id"].as_str().unwrap().starts_with("recent:")).count();
+    run.state.set_level(Level::ReadOnly);
+    assert_eq!(recent_ids(&run.ok(&["palette", "close"])), 0, "files opened lately need `recto recent`'s level");
+    run.state.set_level(Level::Control);
+    let listed = run.ok(&["palette", "close"]);
+    assert_eq!(recent_ids(&listed), 1, "{listed}");
+    let ran = run.ok(&["palette", "Close", "--run"]);
+    assert!(ran["ran"]["id"].as_str().unwrap().starts_with("recent:"), "{ran}");
+    wait_for(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 2));
+    // A tab opened with the person's password: theirs to see in ⌘K, and nothing of it for an agent.
+    run.state.set_level(Level::Full);
+    let locked = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
+    run.ok(&["qa", "open-file", locked.0.to_str().unwrap()]);
+    sheet_of(&run, "password");
+    type_password(&run, "open sesame");
+    wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 3));
+    run.settled();
+    run.ok(&["qa", "menu", "palette.open"]);
+    let theirs = run.ok(&["qa", "palette-type", "locked"]);
+    assert!(theirs["palette"]["rows"].as_array().unwrap().iter().any(|row| row["id"].as_str().unwrap().starts_with("tab:")), "the person sees their tab: {}", theirs["palette"]);
+    run.ok(&["qa", "palette-key", "escape"]);
+    let agents = run.ok(&["palette", "locked"]);
+    assert!(agents["items"].as_array().unwrap().iter().all(|item| !item["id"].as_str().unwrap().starts_with("tab:")), "an agent gets nothing of it: {agents}");
+}
+
+/// Failure: `recto palette --run` at Control does what its direct command needs more for (review, round 1): installing an update, which needs Full; clearing history without the checks `clear-history` makes; undo, redo and rotate taken as the owner's steps; or writing the clipboard below `copy`'s level. What has an agent's command runs as that, at the agent's level; the rest needs Full.
+#[test]
+fn the_palettes_run_keeps_to_each_commands_level() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.state.set_level(Level::Control);
+    let zoomed = run.ok(&["palette", "zoom in", "--run"]);
+    assert_eq!(zoomed["ran"]["id"], "view.zoom_in", "{zoomed}");
+    let (update, code) = run.state.json(&["palette", "check for updates", "--run"]);
+    assert_ne!(code, 0, "an update's install needs Full: {update}");
+    assert_eq!(update["error"]["code"], "permission_denied", "{update}");
+    let rotated = run.ok(&["palette", "rotate all pages right", "--run"]);
+    assert_eq!(rotated["ran"]["id"], "rotate.right", "{rotated}");
+    let edits = run.ok(&["edits"]);
+    assert_eq!(edits["edited"], true, "{edits}");
+    // Below Full, `discard` throws away only agents' steps: it going through says the step is the agent's, as `page rotate` makes it, and not the owner's.
+    let (discarded, code) = run.state.json(&["discard"]);
+    assert_eq!(code, 0, "the step is the agent's: {discarded}");
+    run.state.set_level(Level::ReadOnly);
+    assert!(run.ok(&["palette", "zoom"])["items"].as_array().is_some_and(|items| !items.is_empty()), "listing is reading");
+    let (refused, code) = run.state.json(&["palette", "zoom in", "--run"]);
+    assert_ne!(code, 0, "running is doing: {refused}");
+}
+
+/// Waits for the sheet over the window to be of this kind, and gives the state then.
+fn sheet_of(run: &Run, kind: &str) -> Value {
+    wait_for(run, |state| state["app"]["sheet"]["kind"] == kind)
+}
+
+/// Types a password into the sheet through `qa password`, which reads it from stdin, never the command line.
+fn type_password(run: &Run, password: &str) -> Value {
+    let (reply, code) = run.state.json_with_stdin(&["qa", "password"], password);
+    assert_eq!((code, &reply["ok"]), (0, &json!(true)), "qa password: {reply}");
+    reply["data"].clone()
+}
+
+/// Every file under a folder, and how many there were.
+fn walk(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut waiting = vec![root.to_path_buf()];
+    while let Some(folder) = waiting.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() { waiting.push(path) } else { out.push(path) }
+        }
+    }
+    out
+}
+
+/// The files under a folder that hold these bytes, after asserting there were files to look in, so an empty or missing folder can't pass for one without the password.
+fn files_holding(root: &std::path::Path, needle: &[u8]) -> Vec<PathBuf> {
+    let files = walk(root);
+    assert!(files.iter().any(|file| std::fs::metadata(file).is_ok_and(|meta| meta.len() > 0)), "there were no files to look in under {root:?}: {files:?}");
+    files.into_iter().filter(|file| std::fs::read(file).is_ok_and(|bytes| bytes.windows(needle.len()).any(|window| window == needle))).collect()
+}
+
+/// Failure (review O1, O9): a protected PDF just says it needs a password and can't be opened; a wrong password opens it, or the tries aren't counted; the right one doesn't draw its pages or show its contents to the person; once it's open an agent gets anything decrypted from it, at any level, through `sidebar`, `where`, `tabs`, `contents`, `facts`, `search` or `text`; or the password reaches the state folder, while the app runs or after it quits.
+#[test]
+fn a_protected_pdf_asks_for_its_password_and_keeps_it_nowhere() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    let asked = sheet_of(&run, "password");
+    assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("locked.pdf"), "{asked}");
+    type_password(&run, "not it");
+    wait_for(&run, |state| state["app"]["sheet"]["informative"].as_str().is_some_and(|text| text.contains("4 tries left")));
+    type_password(&run, "open sesame");
+    wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["app"]["place_label"] == "1 of 2");
+    run.settled();
+    // The sidebar shows its one chapter, read with the password: there's something to keep from agents.
+    let open = wait_for(&run, |state| state["app"]["contents"]["count"] == 1);
+    assert!(open["reader"]["tiles"]["attached"].as_u64().unwrap() > 0 && open["reader"]["note"].is_null(), "its pages are drawn, and the person sees its contents: {open}");
+    // What an agent gets, at every level: refused, or nothing read from the file.
+    let decrypted = |value: &Value| {
+        let text = value.to_string();
+        text.contains(common::LOCKED_CHAPTER) || text.contains("Locked page") || text.contains("\"pages\":2") || text.contains("of 2")
+    };
+    let commands: [&[&str]; 7] = [&["sidebar"], &["where"], &["tabs"], &["contents"], &["facts"], &["search", "Locked"], &["text", "1"]];
+    for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
+        run.state.set_level(level);
+        for args in commands {
+            let (reply, code) = run.state.json(args);
+            assert!(!decrypted(&reply), "{args:?} at {level:?} gave what's decrypted: {reply}");
+            if code != 0 {
+                assert!([exit::PERMISSION, exit::PROTECTED].contains(&code), "{args:?} at {level:?}: {reply}");
+            } else if args[0] == "where" {
+                assert_eq!(reply["data"]["protected"], true, "and says why: {reply}");
+            }
+            if level >= Level::ReadOnly && ["contents", "facts", "search", "text"].contains(&args[0]) {
+                assert_eq!((code, &reply["error"]["code"]), (exit::PROTECTED, &json!("protected")), "{args:?} at {level:?}: {reply}");
+            }
+        }
+    }
+    run.state.set_level(Level::Full);
+    run.ok(&["session", "save"]);
+    assert!(files_holding(&run.state.root, b"open sesame").is_empty(), "the password is on disk while it runs");
+    let pid = run.pid;
+    run.ok(&["stop"]);
+    for _ in 0..500 {
+        if !still_running(pid) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!still_running(pid), "the app didn't quit");
+    assert!(files_holding(&run.state.root, b"open sesame").is_empty(), "the password is on disk after a quit");
+}
+
+/// Failure: wrong passwords are asked for without end, or Cancel leaves the sheet coming back at once; the person isn't told why it stopped.
+#[test]
+fn wrong_passwords_are_bounded_and_cancel_is_heard() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("locked.pdf", &common::locked_with("right", 1));
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    sheet_of(&run, "password");
+    run.ok(&["qa", "sheet-answer", "second"]);
+    let cancelled = wait_for(&run, |state| state["app"]["sheet"] == json!({}));
+    assert_eq!(cancelled["app"]["home"], true, "nothing opened: {cancelled}");
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    for tries_left in (1..5).rev() {
+        sheet_of(&run, "password");
+        type_password(&run, "wrong");
+        wait_for(&run, |state| state["app"]["sheet"]["informative"].as_str().is_some_and(|text| text.contains(&format!("{tries_left} tr"))));
+    }
+    type_password(&run, "wrong");
+    let stopped = wait_for(&run, |state| state["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("stopped asking")));
+    assert_eq!((&stopped["app"]["sheet"], &stopped["app"]["home"]), (&json!({}), &json!(true)), "{stopped}");
+}
+
+/// Failure (review O2): with two protected files opened together, the second's ask takes the first's place, or a password typed for the file the sheet names is tried on the other, so neither opens, or the wrong one does.
+#[test]
+fn two_protected_files_opened_together_each_get_their_own_password() {
+    let Some(run) = Run::start() else { return };
+    let first = TempPdf::new("first.pdf", &common::locked_with("one", 1));
+    let second = TempPdf::new("second.pdf", &common::locked_with("two", 2));
+    run.ok(&["qa", "open-file", first.0.to_str().unwrap()]);
+    run.ok(&["qa", "open-file", second.0.to_str().unwrap()]);
+    let mut opened = Vec::new();
+    for _ in 0..2 {
+        let asked = sheet_of(&run, "password");
+        let names = asked["app"]["sheet"]["informative"].as_str().unwrap().to_string();
+        // Whichever's asked about first, its own password opens it.
+        let (password, name) = if names.contains("first.pdf") { ("one", "first") } else { assert!(names.contains("second.pdf"), "{asked}"); ("two", "second") };
+        assert!(!opened.contains(&name), "asked about {name} twice: {asked}");
+        type_password(&run, password);
+        wait_for(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.iter().any(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with(&format!("{name}.pdf"))))));
+        opened.push(name);
+    }
+    let both = wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 2));
+    assert!(both["app"]["copy_notice"].to_string().find("didn't open").is_none(), "{both}");
+}
+
+/// Failure (review O5): passwords are kept by path, so a protected file moved while it's open loses its password, and its pages, drawn again, say it needs one, with no sheet to type it in.
+#[test]
+fn a_protected_file_moved_while_open_keeps_its_password() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    sheet_of(&run, "password");
+    type_password(&run, "open sesame");
+    wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["app"]["place_label"] == "1 of 2");
+    run.settled();
+    run.ok(&["qa", "frontmost", "off"]);
+    let moved = file.0.with_file_name("moved away.pdf");
+    std::fs::rename(&file.0, &moved).unwrap();
+    run.ok(&["qa", "frontmost", "on"]);
+    wait_for(&run, |state| state["session"]["tabs"][0]["path"].as_str().is_some_and(|path| path.ends_with("moved away.pdf")));
+    // Drawn again at another zoom, by a renderer opened on the file where it is now.
+    run.ok(&["qa", "zoom", "2"]);
+    run.settled();
+    let after = run.report();
+    assert_eq!(after["app"]["sheet"], json!({}), "it didn't need asking again: {after}");
+    assert!(after["reader"]["note"].is_null() && after["reader"]["tiles"]["attached"].as_u64().unwrap() > 0, "its pages are drawn: {after}");
+    std::fs::rename(&moved, &file.0).ok();
+}
+
+/// Failure (review O6): `qa password` types into the sheet for any file, one of the person's own included, rather than only a quiet run's test file in its state folder or a temp folder; or it takes the password on the command line, where other processes see it.
+#[test]
+fn qa_password_is_only_for_a_tests_own_file() {
+    let Some(run) = Run::start() else { return };
+    let outside = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("not-a-test-folder-{}", std::process::id()));
+    std::fs::create_dir_all(&outside).unwrap();
+    let file = outside.join("locked.pdf");
+    std::fs::write(&file, common::locked_with("open sesame", 1)).unwrap();
+    run.ok(&["qa", "open-file", file.to_str().unwrap()]);
+    sheet_of(&run, "password");
+    let (reply, code) = run.state.json_with_stdin(&["qa", "password"], "open sesame");
+    assert_ne!(code, 0, "{reply}");
+    assert!(reply["error"]["message"].as_str().unwrap().contains("test's own file"), "{reply}");
+    assert_eq!(run.report()["session"]["tabs"].as_array().map_or(0, Vec::len), 0, "nothing opened");
+    let (reply, code) = run.state.json(&["qa", "password", "open sesame"]);
+    assert_eq!(code, exit::USAGE, "no password on the command line: {reply}");
+    std::fs::remove_dir_all(&outside).ok();
+}
+
+/// Failure (review O8): File > Open Recent misses files opened, lists them out of order, opens another file than the item showed once the list has moved, doesn't open one, or Clear Menu leaves any.
+#[test]
+fn open_recent_lists_opens_and_clears() {
+    let Some(run) = Run::start() else { return };
+    let (a, b) = (long_document(3), outlined());
+    run.ok(&["open", a.0.to_str().unwrap()]);
+    run.ok(&["open", b.0.to_str().unwrap()]);
+    run.settled();
+    let recent_items = |state: &Value| -> Vec<(String, String)> {
+        let file = state["app"]["menu_bar"].as_array().unwrap().iter().find(|menu| menu["title"] == "File").unwrap()["items"].as_array().unwrap().clone();
+        file.iter().filter_map(|item| Some((item["id"].as_str()?.to_string(), item["title"].as_str()?.to_string()))).filter(|(id, _)| id.starts_with("recent.") && id != "recent.clear").collect()
+    };
+    let state = run.report();
+    let ids: Vec<String> = state["app"]["menu_bar"].as_array().unwrap().iter().find(|menu| menu["title"] == "File").unwrap()["items"].as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap().to_string()).collect();
+    let at = ids.iter().position(|id| id == "file.open_recent").expect("Open Recent in File");
+    assert!(ids[at + 1].starts_with("recent.") && ids[at + 2].starts_with("recent.") && ids[at + 3] == "recent.clear", "{ids:?}");
+    let items = recent_items(&state);
+    let name = |document: &TempPdf| document.0.file_stem().unwrap().to_str().unwrap().to_string();
+    assert_eq!(items.iter().map(|(_, title)| title.clone()).collect::<Vec<_>>(), [name(&b), name(&a)], "newest first: {items:?}");
+    let listed = run.ok(&["recent"]);
+    assert_eq!(listed["count"], 2);
+    assert_eq!(listed["files"][0]["untrusted"]["path"], b.0.to_str().unwrap(), "newest first: {listed}");
+    // The item for the older file, kept from before the list moves: it opens that file, not whatever's at its old place in the list.
+    let older = items[1].0.clone();
+    run.ok(&["close", "--tab", "#1"]);
+    run.ok(&["open", a.0.to_str().unwrap()]);
+    run.ok(&["close"]);
+    run.settled();
+    assert_eq!(recent_items(&run.report())[0].1, name(&a), "the list moved, and only the other file is open");
+    run.ok(&["qa", "menu", &older]);
+    let a_name = a.0.file_name().unwrap().to_str().unwrap().to_string();
+    wait_for(&run, |state| state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 2 && tabs.iter().any(|tab| tab["path"].as_str().is_some_and(|path| path.ends_with(&a_name)))));
+    run.ok(&["qa", "menu", "recent.clear"]);
+    let cleared = wait_for(&run, |state| state["session"]["recent"].is_null() || state["session"]["recent"].as_array().is_some_and(Vec::is_empty));
+    assert!(recent_items(&cleared).is_empty(), "{cleared}");
+}
+
+/// Failure: a file deleted, moved or replaced while it's open isn't noticed when the person comes back to the app, so they read a file that's gone or an old version as the new one, with nothing said.
+#[test]
+fn a_file_changed_while_open_is_said_when_the_app_comes_back() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "frontmost", "off"]);
+    let moved = file.0.with_file_name("moved away.pdf");
+    std::fs::rename(&file.0, &moved).unwrap();
+    run.ok(&["qa", "frontmost", "on"]);
+    let followed = wait_for(&run, |state| state["session"]["tabs"][0]["path"].as_str().is_some_and(|path| path.ends_with("moved away.pdf")));
+    assert!(followed["session"]["tabs"][0]["notice"]["moved"].is_object(), "and says so: {followed}");
+    run.ok(&["qa", "frontmost", "off"]);
+    std::fs::write(&moved, recto_testpdf::pages(&[Page::new(text_lines(&["Another version"]))])).unwrap();
+    run.ok(&["qa", "frontmost", "on"]);
+    let changed = wait_for(&run, |state| state["app"]["note"].as_str().is_some_and(|note| note.contains("changed on disk")));
+    assert_eq!(changed["session"]["tabs"][0]["page_count"], 1, "the new version is what's shown: {changed}");
+    run.ok(&["qa", "frontmost", "off"]);
+    std::fs::remove_file(&moved).unwrap();
+    run.ok(&["qa", "frontmost", "on"]);
+    wait_for(&run, |state| state["app"]["note"].as_str().is_some_and(|note| note.contains("can't be found")));
+    std::fs::rename(&moved, &file.0).ok();
+}
+
+fn named_document(name: &str, count: usize, word: &str) -> TempPdf {
+    let list: Vec<Page> = (0..count).map(|index| Page::new(text_lines(&[&format!("{name} page {index}"), &format!("Here the word {word} shows")]))).collect();
+    TempPdf::new(&format!("{name}.pdf"), &pages(&list))
+}
+
+/// Failure: Find's field, list and steps don't do what `recto find` does, or the list grows over the tabs and contents (owner, 2026-11-07: "max height within scroll so it doesn't push everything of screen"), or Find takes room or keeps its hits once it's closed.
+#[test]
+fn find_in_the_sidebar_lists_steps_and_keeps_to_its_room() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(200);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let closed = run.report();
+    assert_eq!((closed["app"]["find"]["open"].as_bool(), closed["app"]["find"]["shown"].as_bool()), (Some(false), Some(false)), "nothing at rest: {}", closed["app"]["find"]);
+    let opened = run.ok(&["qa", "menu", "find.open"]);
+    let opened = wait_for(&run, |state| state["app"]["find"]["open"] == true).get("app").cloned().unwrap_or(opened);
+    assert_eq!(opened["focus_view"], "find", "⌘F gives the field the keyboard: {}", opened["find"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.settled();
+    let found = run.report();
+    let find = &found["app"]["find"];
+    assert_eq!((find["status"].as_str(), find["rows"].as_u64()), (Some("200 matches on 200 pages"), Some(400)), "{find}");
+    let room = found["app"]["window"]["height"].as_f64().unwrap();
+    assert!(find["list_height"].as_f64().unwrap() <= room * 0.4 && find["list_height"].as_f64().unwrap() > 0.0, "{find}");
+    assert_eq!(found["app"]["contents"]["footer_on_screen"], true, "the tabs and footer stay: {}", found["app"]["contents"]);
+    let stepped = run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    let stepped = run.report().get("app").cloned().unwrap_or(stepped);
+    assert_eq!((stepped["find"]["current_row"].as_u64(), stepped["place"].as_str()), (Some(1), Some("1 of 200")), "{}", stepped["find"]);
+    assert!(stepped["pages"]["highlight_rects"].as_u64().unwrap() > 0, "the hit is selected on the page");
+    run.ok(&["qa", "find-click", "5"]);
+    run.settled();
+    let clicked = run.report();
+    assert_eq!((clicked["app"]["find"]["current_row"].as_u64(), clicked["app"]["place"].as_str()), (Some(5), Some("3 of 200")), "{}", clicked["app"]["find"]);
+    run.ok(&["qa", "menu", "find.previous"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["current_row"], 3, "⇧⌘G");
+    let agent = run.ok(&["find", "--next"]);
+    assert_eq!(agent["current"]["page"], 3, "an agent's step goes on from the reader's: {agent}");
+    run.ok(&["qa", "find-key", "escape"]);
+    run.settled();
+    let gone = run.report();
+    assert_eq!((gone["app"]["find"]["open"].as_bool(), gone["app"]["find"]["shown"].as_bool()), (Some(false), Some(false)), "{}", gone["app"]["find"]);
+    let idle = run.ok(&["find"]);
+    assert_eq!((idle["state"].as_str(), idle["hits_listed"].as_u64()), (Some("idle"), Some(0)), "its hits went: {idle}");
+    assert_eq!(gone["session"]["find"]["draft"], "words", "what was typed stays for next time");
+}
+
+/// Failure: in a comparison Find looks in a pane that isn't the one being read, or stays with the old one when the reader moves (PLAN, comparison follow-ups).
+#[test]
+fn find_goes_by_the_pane_being_read() {
+    let Some(run) = Run::start() else { return };
+    let (left, right) = (named_document("left", 6, "apple"), named_document("right", 6, "quince"));
+    run.ok(&["open", left.0.to_str().unwrap()]);
+    run.ok(&["open", right.0.to_str().unwrap()]);
+    run.ok(&["compare", "--tabs", "#1,#2"]);
+    run.settled();
+    run.ok(&["qa", "pane-focus", "1"]);
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "quince"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["status"], "6 matches on 6 pages");
+    run.ok(&["qa", "pane-focus", "0"]);
+    run.settled();
+    assert_eq!(run.report()["app"]["find"]["status"], "Not found", "found again in the pane now read");
+    run.ok(&["qa", "find-type", "apple"]);
+    run.settled();
+    run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    let state = run.report();
+    assert_eq!(state["app"]["find"]["current_row"], 1, "{}", state["app"]["find"]);
+}
+
+/// Failure: edit mode and a view's rotation are in the state record and nothing shows them (PLAN phase 3: they "draw what the state record already carries"), or Done doesn't leave edit mode.
+#[test]
+fn edit_mode_and_view_rotation_draw_what_the_record_carries() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "view-rotation", "1"]);
+    run.settled();
+    let turned = run.report();
+    let turns = turned["app"]["pages"]["page_turns"].as_array().unwrap().clone();
+    assert!(!turns.is_empty() && turns.iter().all(|turn| turn == 1), "every page drawn a quarter turn: {turns:?}");
+    assert_eq!(run.ok(&["edits"])["edited"], false, "and the file isn't edited by it");
+    run.ok(&["qa", "edit-mode", "on"]);
+    run.settled();
+    let panel = run.report()["app"]["panel"].clone();
+    assert_eq!(panel["open"], true, "the panel is open on edit mode's tools: {panel}");
+    assert_eq!(panel["items"][0]["id"], "edit_mode.done", "{panel}");
+    run.ok(&["qa", "panel", "edit_mode.done"]);
+    run.settled();
+    let done = run.report();
+    assert_eq!((done["app"]["panel"]["open"].as_bool(), done["session"]["edit_mode"].as_bool()), (Some(false), Some(false)), "{}", done["app"]["panel"]);
+    run.ok(&["qa", "view-rotation", "0"]);
+    run.settled();
+    assert!(run.report()["app"]["pages"]["page_turns"].as_array().unwrap().iter().all(|turn| turn == 0));
+}
+
+/// Failure: what Rust last heard of the field is put back into it while it's being typed in, so a late echo of "ab" takes away the "c" just typed (review, round 1). Here the session's word on the field changes under the editing field, as an echo would, and the field keeps what's typed; once it's left, it shows Rust's.
+#[test]
+fn find_never_types_over_what_is_being_typed() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(300);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "focus", "find"]);
+    for typed in ["w", "wo", "wor", "word"] {
+        let state = run.ok(&["qa", "find-type", typed]);
+        assert_eq!(state["find"]["untrusted"]["field"], typed, "{}", state["find"]);
+    }
+    run.ok(&["qa", "find-draft", "an echo"]);
+    run.settled();
+    let editing = run.report();
+    assert_eq!(editing["app"]["find"]["field_has_focus"], true);
+    assert_eq!(editing["app"]["find"]["untrusted"]["field"], "word", "never typed over while it's edited: {}", editing["app"]["find"]);
+    run.ok(&["qa", "focus", "page"]);
+    let left = wait_for(&run, |state| state["app"]["find"]["untrusted"]["field"] == "an echo");
+    assert_eq!(left["app"]["find"]["field_has_focus"], false);
+}
+
+/// Failure: the field takes the keyboard just before the session's draft reaches it, and then shows the old text for as long as it's focused, though nothing's been typed in it (the restore test after the merge with main: field "" with the draft "typed but not run"). Until typing starts, the field shows what the session has.
+#[test]
+fn find_shows_the_sessions_draft_until_typing_starts() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(3);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "find", "open"]);
+    run.ok(&["qa", "focus", "find"]);
+    run.ok(&["qa", "find-draft", "set while focused"]);
+    let shown = wait_for(&run, |state| state["app"]["find"]["untrusted"]["field"] == "set while focused");
+    assert_eq!(shown["app"]["find"]["field_has_focus"], true, "still focused: {}", shown["app"]["find"]);
+    assert_eq!(shown["session"]["find"]["query"], "", "and not found, as it was only a draft: {}", shown["session"]["find"]);
+}
+
 /// Failure: the app draws its pages with a worker outside the sandbox, or the tile path breaks once the worker has dropped its Mach rights, and nothing an agent can read says so.
 /// The built app's helper is sandboxed, so every live worker must say its walls are up, and the tiles on screen came as IOSurfaces over the link, the only way one arrives.
 #[test]
@@ -2257,4 +2776,77 @@ fn a_print_being_prepared_stops_with_its_stop_button() {
     let pid = stopped["printing"]["pid"].as_u64().unwrap();
     let left: Vec<String> = std::fs::read_dir(std::env::temp_dir()).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with(&format!("recto-print-{pid}-"))).collect();
     assert!(left.is_empty(), "its file goes: {left:?}");
+}
+
+/// Failure: going to a Find hit by a click on its row or Return in the field leaves no mark for Back, so ⌘[ can't bring the reader to where they were reading, as it can after a link; or ⌘G's step, which only steps, marks the trail or takes the way forward away.
+#[test]
+fn a_find_hit_clicked_or_returned_to_is_a_jump_and_a_step_isnt() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(200);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let go = |state: &Value, id: &str| menu_item(state, id)["enabled"].clone();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.settled();
+    assert_eq!(go(&run.report(), "go.back"), json!(false), "nothing to go back to yet");
+    // Row 99 is page 50's hit: a page row, then its hit, for each page.
+    run.ok(&["qa", "find-click", "99"]);
+    let clicked = wait_for(&run, |state| state["app"]["place"] == "50 of 200");
+    assert_eq!(go(&clicked, "go.back"), json!(true), "a click on a hit is a jump: {}", clicked["app"]["find"]);
+    run.ok(&["qa", "menu", "go.back"]);
+    let back = wait_for(&run, |state| state["app"]["place"] == "1 of 200");
+    assert_eq!(go(&back, "go.forward"), json!(true));
+    run.ok(&["qa", "menu", "find.next"]);
+    let stepped = wait_for(&run, |state| state["app"]["place"] != "1 of 200");
+    assert_eq!(go(&stepped, "go.forward"), json!(true), "⌘G only steps, so the way forward stays: {}", stepped["app"]["place"]);
+    run.ok(&["qa", "find-key", "return"]);
+    run.settled();
+    let returned = run.report();
+    assert_eq!((go(&returned, "go.back"), go(&returned, "go.forward")), (json!(true), json!(false)), "Return is a jump, which takes the way forward: {}", returned["app"]["place"]);
+}
+
+/// Failure: a step asked for before a hit for it is known (⇧⌘G with Find closed, from the first page, so the last hit waits for the query's end) is done when the query has more while Find's field is still locked, and the session thread waits on itself; the UI thread then hangs on its next look at Find (found from the palette's Find Next).
+#[test]
+fn a_step_kept_for_the_querys_end_is_done_without_a_hang() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(300);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "find.open"]);
+    run.ok(&["qa", "find-type", "words"]);
+    run.ok(&["qa", "find-key", "escape"]);
+    wait_for(&run, |state| state["app"]["find"]["open"] == false);
+    // Opens Find with what was typed, finds it again from the start, and goes back round to the last hit once the end is known.
+    run.ok(&["qa", "menu", "find.previous"]);
+    let went = wait_for(&run, |state| state["app"]["place"] == "300 of 300");
+    assert_eq!(went["app"]["find"]["status"], "300 matches on 300 pages", "{}", went["app"]["find"]);
+}
+
+/// Failure: the person's own Find in a document they opened with its password finds nothing, or says nothing about why, because it reads pages with no password; or it gets there by writing the decrypted text to a corpus or index; or an agent's `recto find` gets its hits, at any level, as status or with a query.
+#[test]
+fn find_in_a_protected_document_works_for_the_person_and_never_for_an_agent() {
+    let Some(run) = Run::start() else { return };
+    let file = TempPdf::new("locked.pdf", &common::locked_with("open sesame", 2));
+    run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
+    sheet_of(&run, "password");
+    type_password(&run, "open sesame");
+    wait_for(&run, |state| state["app"]["sheet"] == json!({}) && state["app"]["place_label"] == "1 of 2");
+    run.settled();
+    run.ok(&["qa", "menu", "find.open"]);
+    wait_for(&run, |state| state["app"]["find"]["open"] == true);
+    run.ok(&["qa", "find-type", "locked page"]);
+    let found = wait_for(&run, |state| state["app"]["find"]["status"].as_str().is_some_and(|status| status.contains("2 matches")));
+    assert_eq!(found["app"]["find"]["rows"], 4, "two pages, a hit on each, read through the password: {}", found["app"]["find"]);
+    // Nothing decrypted was written: no corpus file anywhere in the state folder holds the pages' words.
+    assert!(files_holding(&run.state.root, b"Locked page").is_empty() && files_holding(&run.state.root, b"locked page").is_empty(), "decrypted text is on disk");
+    for level in [Level::ReadOnly, Level::Control, Level::Full] {
+        run.state.set_level(level);
+        for args in [&["find"][..], &["find", "Locked"], &["find", "--next"]] {
+            let (reply, code) = run.state.json(args);
+            assert!(!reply.to_string().contains("ocked page"), "{args:?} at {level:?} gave a hit: {reply}");
+            assert!([exit::PERMISSION, exit::PROTECTED].contains(&code), "{args:?} at {level:?}: {reply}");
+        }
+    }
+    run.state.set_level(Level::Full);
 }

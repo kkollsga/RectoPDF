@@ -268,7 +268,7 @@ impl Tool {
 
 /// The tool's place in the menu bar: Tools, with Snapshot ticked while it's on. ⇧⌘A, as a key nothing else here takes, and the screenshot keys are the system's.
 pub(crate) fn tools_menu(snapshot_on: bool) -> MenuModel {
-    MenuModel { title: "Tools".into(), entries: vec![MenuEntry { id: TOGGLE_ID.into(), title: SNAPSHOT_TITLE.into(), key: "A".into(), with_control: false, checked: snapshot_on, hidden: false, system_action: String::new() }] }
+    MenuModel { title: "Tools".into(), entries: vec![MenuEntry { id: TOGGLE_ID.into(), title: SNAPSHOT_TITLE.into(), key: "A".into(), with_control: false, checked: snapshot_on, hidden: false, system_action: String::new(), parent: String::new() }] }
 }
 
 /// The panel's tools, above its view options. The panel holds tools while reading (owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc."), and commands are in the menu bar too (decision 17).

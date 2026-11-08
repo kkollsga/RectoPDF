@@ -38,10 +38,35 @@ fn run(args: &[String]) -> i32 {
         print_out(&help_for(invocation.spec));
         return exit::OK;
     }
+    let mut invocation = invocation;
+    if let Some(field) = recto_agent::table::stdin_secret_field(invocation.spec) {
+        match read_secret_line() {
+            Ok(secret) => {
+                invocation.fields.insert(field.into(), Value::String(secret));
+            }
+            Err(error) => return finish(invocation.spec.tag, json_wanted, &Err(error)),
+        }
+    }
     match invocation.spec.route {
         Route::Session => through_session(&invocation),
         Route::Here => here(&invocation),
     }
+}
+
+/// The first line of stdin, for a secret that mustn't be on the command line: at most a password's length, and never from a terminal, where it would be echoed.
+fn read_secret_line() -> Result<String, AgentError> {
+    let refused = |words: &str| AgentError::new("usage", words, exit::USAGE).then("Pipe it in: `printf '%s' \"$PASSWORD\" | recto qa password`.");
+    if std::io::stdin().is_terminal() {
+        return Err(refused("This reads the password from stdin, and stdin is a terminal, which would show it."));
+    }
+    let mut bytes = Vec::new();
+    std::io::stdin().lock().take(recto_core::MAX_PASSWORD_BYTES as u64 + 2).read_to_end(&mut bytes).map_err(|_| refused("Stdin couldn't be read."))?;
+    let line = bytes.split(|byte| *byte == b'\n').next().unwrap_or_default();
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    if line.is_empty() || line.len() > recto_core::MAX_PASSWORD_BYTES {
+        return Err(refused("Stdin's first line must be the password, from 1 to 1024 bytes."));
+    }
+    String::from_utf8(line.to_vec()).map_err(|_| refused("The password must be UTF-8."))
 }
 
 /// Writes to stdout. A reader that's gone away, as in `recto tabs | head`, is no failure of ours.
