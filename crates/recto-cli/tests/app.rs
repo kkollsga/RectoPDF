@@ -854,7 +854,8 @@ fn the_menu_bar_and_the_agent_icon() {
     run.settled();
     let state = run.report();
     let titles: Vec<&str> = state["app"]["menu_bar"].as_array().unwrap().iter().map(|menu| menu["title"].as_str().unwrap()).collect();
-    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View"], "{state}");
+    // The Go menu has Back, Forward and Go to Page…, as SPEC lists the menus.
+    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go"], "{state}");
     let view = &state["app"]["menu_bar"][3]["items"];
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
     assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon"]);
