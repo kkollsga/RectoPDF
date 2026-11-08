@@ -142,6 +142,8 @@ fn client_wait(base_s: u64, command: &Command) -> Duration {
         Command::Wait { timeout_ms, .. } => *timeout_ms,
         Command::Watch { timeout_ms, .. } => timeout_ms.unwrap_or(recto_agent::DEFAULT_WATCH_MS),
         Command::PermissionRequest { timeout_ms, .. } => timeout_ms.unwrap_or(0),
+        // `qa wait-settled --timeout 2m` waits that long in the app, so the client waits that long too, past its own time to answer.
+        Command::QaRead { timeout_ms, .. } | Command::QaDrive { timeout_ms, .. } => timeout_ms.unwrap_or(0),
         _ => 0,
     };
     Duration::from_secs(base_s) + Duration::from_millis(waited)
@@ -557,4 +559,18 @@ fn error_from(value: &Value) -> AgentError {
     let error = &value["error"];
     let exit_code = error["exit"].as_i64().and_then(|code| i32::try_from(code).ok()).unwrap_or(exit::FAILED);
     AgentError::new("session_refused", error["message"].as_str().unwrap_or("The session refused this.").to_string(), exit_code).then(error["next"].as_str().unwrap_or("").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Failure: `recto qa wait-settled --timeout 2m` gives up after the client's own 35 s and says the session didn't answer, while the app is still waiting as it was asked to: found printing 300 pages, whose pages take longer than that to prepare.
+    #[test]
+    fn a_qa_command_with_a_timeout_is_waited_for_that_long() {
+        let settle = Command::QaRead { verb: "settled".into(), out: None, timeout_ms: Some(120_000) };
+        assert_eq!(client_wait(35, &settle), Duration::from_secs(155));
+        let plain = Command::QaRead { verb: "state".into(), out: None, timeout_ms: None };
+        assert_eq!(client_wait(35, &plain), Duration::from_secs(35));
+    }
 }
