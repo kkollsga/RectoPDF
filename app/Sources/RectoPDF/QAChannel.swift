@@ -58,6 +58,22 @@ import QuartzCore
             menu.update()
             plainShot(of: MenuDrawing(menu: menu), id: id, path: value)
             return
+        case "shot_menus":
+            let menus = (NSApp.mainMenu?.items ?? []).compactMap(\.submenu)
+            guard !menus.isEmpty else { return fail(id, "There's no menu.") }
+            let drawings = menus.map { menu -> MenuDrawing in
+                menu.update()
+                return MenuDrawing(menu: menu)
+            }
+            let row = FlippedView(frame: NSRect(x: 0, y: 0, width: drawings.reduce(0) { $0 + $1.frame.width + 8 }, height: drawings.map(\.frame.height).max() ?? 0))
+            var x: CGFloat = 0
+            for drawing in drawings {
+                drawing.frame.origin = NSPoint(x: x, y: 0)
+                row.addSubview(drawing)
+                x += drawing.frame.width + 8
+            }
+            plainShot(of: row, id: id, path: value)
+            return
         case "copied":
             let text = delegate.pasteboard.string(forType: .string)
             answer(id, ["chars": text?.count ?? 0, "clipboard": delegate.pasteboard.name.rawValue, "untrusted": ["text": text as Any? ?? NSNull()]] as [String: Any])
@@ -132,6 +148,46 @@ import QuartzCore
             item.menu?.update()
             guard item.isEnabled else { return fail(id, "That's greyed out in the menu right now.") }
             NSApp.sendAction(action, to: item.target, from: item)
+        case "button":
+            guard let controller else { return fail(id, "The window is closed.") }
+            switch value {
+            case "sidebar": controller.sidebarButton.performClick(nil)
+            case "zoom":
+                guard !controller.zoomButton.isHidden else { return fail(id, "The zoom level isn't showing.") }
+                controller.zoomButton.performClick(nil)
+            case "zoom_reset":
+                guard controller.zoomEditing else { return fail(id, "The zoom level's field isn't open.") }
+                controller.zoomReset.performClick(nil)
+            default: return fail(id, "That isn't one of the window's buttons.")
+            }
+        case "context_menu":
+            guard let controller else { return fail(id, "The window is closed.") }
+            let menu = controller.pages.contextMenu()
+            menu.update()
+            guard let item = menu.items.first(where: { ($0.representedObject as? String) == value }), let action = item.action else { return fail(id, "That isn't in the right-click menu.") }
+            guard item.isEnabled else { return fail(id, "That's greyed out in the right-click menu right now.") }
+            NSApp.sendAction(action, to: item.target, from: item)
+        case "key_action":
+            // What a key or the menu does with the window key, as it is for a person: the first in the window's own chain that answers it, asked whether it can, then sent it. A quiet window isn't key, so AppKit's own route would skip the window, and this doesn't.
+            guard let controller else { return fail(id, "The window is closed.") }
+            let action = NSSelectorFromString(value + ":")
+            guard let (target, enabled) = QAChannel.keyWindowTarget(for: action, in: controller.window) else { return fail(id, "Nothing in the window answers that.") }
+            guard enabled else { return fail(id, "That's greyed out with the window key.") }
+            target.perform(action, with: nil)
+        case "zoom_escape":
+            // Escape in the field, by the method AppKit calls for it.
+            guard let controller, controller.zoomEditing else { return fail(id, "The zoom level's field isn't open.") }
+            _ = controller.control(controller.zoomField, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+        case "zoom_type":
+            guard let controller else { return fail(id, "The window is closed.") }
+            if !controller.zoomEditing {
+                guard !controller.zoomButton.isHidden else { return fail(id, "The zoom level isn't showing.") }
+                controller.zoomButton.performClick(nil)
+            }
+            controller.zoomField.stringValue = value
+            // Return, by the field's own action.
+            controller.zoomField.sendAction(controller.zoomField.action, to: controller.zoomField.target)
+            controller.pages.drain()
         case "panel":
             guard let sidebar = controller?.sidebar else { return fail(id, "The window is closed.") }
             guard let button = value == "toggle" ? sidebar.moreButton : sidebar.panel?.buttons[value] else { return fail(id, "That isn't in the panel, or it isn't open.") }
@@ -184,7 +240,10 @@ import QuartzCore
             "is_active": NSApp.isActive,
             "activation": policyName(),
             "appearance": Theme.isDark(controller.root) ? "dark" : "light",
-            "focus": reader.focus,
+            "sidebar_hidden": reader.sidebarHidden,
+            "sidebar_button": ["visible": !controller.sidebarButton.isHidden && controller.sidebarButton.superview != nil, "frame": [controller.sidebarButton.frame.minX, controller.sidebarButton.frame.minY, controller.sidebarButton.frame.width, controller.sidebarButton.frame.height], "clear_of_window_buttons": controller.windowButtonFrames(in: controller.root).allSatisfy { !$0.intersects(controller.sidebarButton.frame) }] as [String: Any],
+            "window_buttons_shown": controller.windowButtonsShown,
+            "zoom_level": ["text": controller.zoomButton.attributedTitle.string, "visible": !controller.zoomButton.isHidden, "editing": controller.zoomEditing, "field": controller.zoomEditing ? controller.zoomField.stringValue : NSNull() as Any, "reset": controller.zoomReset.isHidden ? NSNull() as Any : controller.zoomReset.attributedTitle.string, "in_the_top_right": controller.zoomButton.frame.maxX <= controller.root.bounds.maxX - 6 && controller.zoomButton.frame.minX > controller.root.bounds.maxX - 160 && controller.zoomButton.frame.minY < 30, "clear_of_agent_icon": controller.agentIcon.isHidden || (!controller.zoomButton.frame.intersects(controller.agentIcon.frame) && controller.zoomButton.frame.maxX - MainWindowController.zoomPadding <= controller.agentIcon.frame.minX - 4 && controller.zoomField.frame.maxX <= controller.agentIcon.frame.minX - 4), "in_the_agent_icons_row": abs(controller.zoomButton.frame.midY - controller.agentIcon.frame.midY) < 1, "right_margin": controller.root.bounds.maxX - (controller.zoomEditing ? controller.zoomField.frame.maxX : controller.zoomButton.frame.maxX - MainWindowController.zoomPadding), "reset_clear_of_field": controller.zoomReset.frame.maxX <= controller.zoomField.frame.minX, "clear_of_pages": controller.zoomButton.isHidden || !controller.pages.pagesOverlap(controller.zoomButton.frame.insetBy(dx: MainWindowController.zoomPadding, dy: 0), in: controller.root), "above_the_scroller": max(controller.zoomButton.frame.maxY, controller.zoomField.frame.maxY) + 4 <= controller.pages.scrollView.scrollerInsets.top] as [String: Any],
             "home": !controller.home.isHidden,
             "sidebar_visible": !sidebar.view.isHidden,
             "sidebar_width": sidebar.view.frame.width,
@@ -198,9 +257,15 @@ import QuartzCore
             "note": controller.noteLabel.isHidden ? NSNull() as Any : controller.noteLabel.label.text,
             "copy_notice": controller.copyNotice.isHidden ? NSNull() as Any : ["text": controller.copyNotice.label.text, "button": controller.copyNotice.button.isHidden ? NSNull() as Any : controller.copyNotice.button.attributedTitle.string, "frame_ok": controller.root.bounds.contains(controller.copyNotice.frame)] as [String: Any],
             "place_label": controller.placeLabel.isHidden ? NSNull() as Any : controller.placeLabel.label.text,
+            "place_label_in_lower_right": !controller.placeLabel.isHidden && controller.placeLabel.frame.maxX > controller.root.bounds.maxX - 40 && controller.placeLabel.frame.maxY > controller.root.bounds.maxY - 40 && controller.root.bounds.contains(controller.placeLabel.frame),
             "agent_icon": !controller.agentIcon.isHidden,
+            "document_edited": controller.window.isDocumentEdited,
+            "agent_icon_margins": ["top": controller.agentIcon.frame.minY, "right": controller.root.bounds.maxX - controller.agentIcon.frame.maxX, "clear_of_pages": controller.agentIcon.isHidden || !controller.pages.pagesOverlap(controller.agentIcon.frame, in: controller.root)] as [String: Any],
             "panel": sidebar.panelReport(),
             "settings": delegate.settings?.report() ?? ["open": false],
+            // From Rust's list and its word on what's enabled, as the real menu is built from. Building an NSMenu on every state read costs the app megabytes that the budgets would count; `qa context-menu` goes through the real one.
+            "context_menu": delegate.core.contextMenu().filter { !$0.id.isEmpty }.map { ["id": $0.id, "title": $0.title, "checked": $0.checked, "enabled": delegate.core.menuItemEnabled(id: $0.id)] as [String: Any] },
+            "layout": reader.layout,
             "menu_bar": (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).map { menu -> [String: Any] in
                 // What AppKit itself says after asking whoever answers, as it does on opening a menu, and no copy of the rule.
                 menu.update()
@@ -222,10 +287,10 @@ import QuartzCore
         let moved = #selector(NSResponder.mouseMoved(with:))
         let wheel = #selector(NSResponder.scrollWheel(with:))
         // These two aren't responders, so nothing but their own code answers these, and tracking areas call them by name. Going by a selector nothing answers would throw, and this would never answer.
-        let owners: [(String, NSObject, Selector)] = [("sidebar_hover_in", sidebar, entered), ("sidebar_hover_out", sidebar, exited), ("sidebar_pointer_moved", sidebar, moved), ("corner_hover_in", controller, entered), ("corner_hover_out", controller, exited)]
+        let owners: [(String, NSObject, Selector)] = [("sidebar_hover_in", sidebar, entered), ("sidebar_hover_out", sidebar, exited), ("sidebar_pointer_moved", sidebar, moved)]
         for (name, owner, selector) in owners { found[name] = owner.responds(to: selector) }
         guard owners.allSatisfy({ $0.1.responds(to: $0.2) }) else { return found }
-        let actions: [(String, NSControl)] = [("tab_row_click", sidebar.table), ("contents_row_click", sidebar.contentsTable), ("add_button", sidebar.addButton), ("home_button", controller.homeButtonForQA)]
+        let actions: [(String, NSControl)] = [("tab_row_click", sidebar.table), ("contents_row_click", sidebar.contentsTable), ("add_button", sidebar.addButton), ("home_button", controller.homeButtonForQA), ("sidebar_button", controller.sidebarButton), ("zoom_level", controller.zoomButton), ("zoom_field", controller.zoomField), ("zoom_reset", controller.zoomReset)]
         for (name, control) in actions {
             found[name] = control.action.flatMap { action in (control.target as? NSObject)?.responds(to: action) } ?? false
         }
@@ -233,8 +298,6 @@ import QuartzCore
         found["sidebar_area_is_on_the_sidebar"] = sidebar.view.trackingAreas.contains { $0.owner === sidebar && $0.options.contains(.mouseMoved) && $0.options.contains(.inVisibleRect) }
         sidebar.contentsScroll.updateTrackingAreas()
         found["contents_area_is_on_the_contents"] = sidebar.contentsScroll.trackingAreas.contains { $0.owner === sidebar.contentsScroll && $0.options.contains(.inVisibleRect) }
-        let corner = controller.root.trackingAreas.first { $0.owner === controller }?.rect
-        found["corner_covers_the_buttons"] = corner.map { rect in controller.windowButtonFrames(in: controller.root).allSatisfy { rect.contains($0) } } ?? false
 
         let window = controller.window
         func crossing(_ type: NSEvent.EventType) -> NSEvent? {
@@ -371,6 +434,12 @@ import QuartzCore
             found["copy_is_enabled_with_something_selected"] = enabled(copy)
             found["copy_key_reaches_the_app"] = key("c", .command).map { NSApp.mainMenu?.performKeyEquivalent(with: $0) == true } ?? false
         }
+        // Undo and Redo with the window key, which a quiet window isn't: what the window's own chain gives them to, and that it asks Rust. NSWindow alone takes them and greys them out.
+        for action in [#selector(ReaderWindow.undo(_:)), #selector(ReaderWindow.redo(_:))] {
+            let name = action == #selector(ReaderWindow.undo(_:)) ? "undo" : "redo"
+            let target = QAChannel.keyWindowTarget(for: action, in: controller.window)
+            found["\(name)_reaches_the_app_with_the_window_key"] = target.map { $0.0 is ReaderWindow && $0.1 == delegate.core.menuItemEnabled(id: "edit.\(name)") } ?? false
+        }
         // A silent update waits for nobody having touched the app, and that's more than a click: what the monitor's given, by what it was given.
         let watched = AppDelegate.actions.union(AppDelegate.nearby)
         let kinds: [NSEvent.EventType] = [.mouseMoved, .leftMouseDragged, .keyDown, .leftMouseDown, .scrollWheel, .magnify, .swipe, .rotate, .flagsChanged, .gesture]
@@ -390,14 +459,23 @@ import QuartzCore
         found["pinch_starts"] = pages.isLive
         NotificationCenter.default.post(name: NSScrollView.didEndLiveMagnifyNotification, object: pages.scrollView)
         found["pinch_ends"] = !pages.isLive
-        // Focus view: the window's buttons, hidden, come back with the pointer near them.
-        if delegate.core.reader().focus {
-            controller.perform(entered, with: crossing(.mouseEntered))
-            found["buttons_come_back"] = controller.windowButtonsShown
-            controller.perform(exited, with: crossing(.mouseExited))
-            found["buttons_go_again"] = !controller.windowButtonsShown
-        }
         return found
+    }
+
+    /// The responder a key window gives an action to, and whether it says it can be chosen: up the chain from the window's first responder to the window, then its delegate, as AppKit goes before it reaches the app.
+    static func keyWindowTarget(for action: Selector, in window: NSWindow) -> (NSObject, Bool)? {
+        let item = NSMenuItem(title: "", action: action, keyEquivalent: "")
+        var responder: NSResponder? = window.firstResponder ?? window
+        var chain: [NSObject] = []
+        while let next = responder {
+            chain.append(next)
+            responder = next.nextResponder
+        }
+        if !chain.contains(where: { $0 === window }) { chain.append(window) }
+        if let delegate = window.delegate as? NSObject { chain.append(delegate) }
+        guard let target = chain.first(where: { $0.responds(to: action) }) else { return nil }
+        let enabled = (target as? NSMenuItemValidation)?.validateMenuItem(item) ?? (target as? NSUserInterfaceValidations)?.validateUserInterfaceItem(item) ?? true
+        return (target, enabled)
     }
 
     private func policyName() -> String {
@@ -523,9 +601,11 @@ private final class MenuDrawing: NSView {
                     continue
                 }
                 let colour: NSColor = item.isEnabled ? .labelColor : .tertiaryLabelColor
-                NSAttributedString(string: item.title, attributes: [.font: font, .foregroundColor: colour]).draw(at: NSPoint(x: 14, y: y + 2))
+                if item.state == .on { NSAttributedString(string: "✓", attributes: [.font: font, .foregroundColor: colour]).draw(at: NSPoint(x: 6, y: y + 2)) }
+                NSAttributedString(string: item.title, attributes: [.font: font, .foregroundColor: colour]).draw(at: NSPoint(x: 22, y: y + 2))
                 if !item.keyEquivalent.isEmpty {
-                    let key = NSAttributedString(string: "⌘" + item.keyEquivalent.uppercased(), attributes: [.font: font, .foregroundColor: item.isEnabled ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor])
+                    let control = item.keyEquivalentModifierMask.contains(.control) ? "⌃" : ""
+                    let key = NSAttributedString(string: control + "⌘" + item.keyEquivalent.uppercased(), attributes: [.font: font, .foregroundColor: item.isEnabled ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor])
                     key.draw(at: NSPoint(x: bounds.width - key.size().width - 14, y: y + 2))
                 }
                 y += Self.rowHeight

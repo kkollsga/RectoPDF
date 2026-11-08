@@ -293,9 +293,9 @@ fn a_shot_is_a_real_picture_of_the_window_at_2x() {
     assert_ne!(with_page["bytes"], before["bytes"], "a page changes the picture");
 }
 
-/// Failure: the appearance, paper or focus don't reach what's drawn, or a change draws nothing new. Read back from the app and from the tiles it attached.
+/// Failure: the appearance, paper or the sidebar don't reach what's drawn, or a change draws nothing new. Read back from the app and from the tiles it attached. The sidebar goes by its own button, and hiding it leaves the page, its number, the agent icon and the button to bring it back.
 #[test]
-fn dark_mode_paper_and_focus_change_what_is_drawn() {
+fn dark_mode_paper_and_the_sidebar_change_what_is_drawn() {
     let Some(run) = Run::start() else { return };
     let file = long_document(3);
     run.ok(&["qa", "appearance", "light"]);
@@ -312,16 +312,218 @@ fn dark_mode_paper_and_focus_change_what_is_drawn() {
     wait_for(&run, |state| state["reader"]["paper"] == "white");
     run.ok(&["view", "--paper", "auto"]);
     run.settled();
-    run.ok(&["view", "--focus", "on"]);
-    let focused = wait_for(&run, |state| state["app"]["focus"] == true);
-    assert_eq!(focused["app"]["sidebar_visible"], false, "{focused}");
-    assert_eq!(focused["app"]["agent_icon"], true, "kept");
-    assert!(focused["app"]["place_label"].as_str().is_some_and(|place| place.contains("of 3")), "the page number stays: {focused}");
+    let shown = run.report();
+    assert_eq!(shown["app"]["sidebar_button"]["visible"], true, "{shown}");
+    assert_eq!(shown["app"]["sidebar_button"]["clear_of_window_buttons"], true, "{shown}");
+    run.ok(&["qa", "button", "sidebar"]);
+    let hidden = wait_for(&run, |state| state["app"]["sidebar_hidden"] == true);
+    assert_eq!(hidden["app"]["sidebar_visible"], false, "{hidden}");
+    assert_eq!(hidden["app"]["agent_icon"], true, "kept");
+    assert_eq!(hidden["app"]["sidebar_button"]["visible"], true, "the way back stays: {hidden}");
+    assert_eq!(hidden["app"]["window_buttons_shown"], true, "nothing else goes with it: {hidden}");
+    assert!(hidden["app"]["place_label"].as_str().is_some_and(|place| place.contains("of 3")), "the page number stays: {hidden}");
+    assert_eq!(run.ok(&["view"])["sidebar"], false, "the same setting `recto view` has");
+    run.ok(&["qa", "menu", "view.sidebar"]);
+    wait_for(&run, |state| state["app"]["sidebar_visible"] == true);
+    run.ok(&["view", "--sidebar", "off"]);
+    wait_for(&run, |state| state["app"]["sidebar_visible"] == false);
+    run.ok(&["view", "--sidebar", "on"]);
+    wait_for(&run, |state| state["app"]["sidebar_visible"] == true);
+}
+
+/// Failure: the page number isn't in the lower right with the sidebar showing, or goes with it hidden, or doesn't follow the page. Owner, 2026-11-07: "The page number should always be visible in the lower right."
+#[test]
+fn the_page_number_is_always_in_the_lower_right() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(5);
+    run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    let wider = run.report()["reader"]["fit"].as_f64().unwrap();
-    run.ok(&["view", "--focus", "off"]);
-    let back = wait_for(&run, |state| state["app"]["sidebar_visible"] == true);
-    assert!(back["reader"]["fit"].as_f64().unwrap() < wider, "focus view's page is wider: {back}");
+    let first = run.report();
+    assert_eq!((&first["app"]["place_label"], &first["app"]["place_label_in_lower_right"]), (&json!("1 of 5"), &json!(true)), "{first}");
+    run.ok(&["goto", "4"]);
+    wait_for(&run, |state| state["app"]["place_label"] == "4 of 5");
+    run.ok(&["view", "--sidebar", "off"]);
+    let hidden = wait_for(&run, |state| state["app"]["sidebar_visible"] == false);
+    assert_eq!((&hidden["app"]["place_label"], &hidden["app"]["place_label_in_lower_right"]), (&json!("4 of 5"), &json!(true)), "{hidden}");
+    run.ok(&["qa", "resize", "700x500"]);
+    let narrow = run.report();
+    assert_eq!(narrow["app"]["place_label_in_lower_right"], true, "in a small window too: {narrow}");
+}
+
+/// Failure: the right-click menu doesn't offer the layouts or tick the one showing; side by side doesn't put two pages to a row, loses the reader's place, or leaves a click or a drag on the right-hand page landing on the left one; zoom or the page number stop working in it; or one tab's layout changes another's. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
+#[test]
+fn side_by_side_lays_out_selects_and_keeps_the_place() {
+    let Some(run) = Run::start() else { return };
+    let (file, other) = (long_document(9), TempPdf::new("other.pdf", &pages(&[Page::new(text_lines(&["Another document"]))])));
+    run.ok(&["open", other.0.to_str().unwrap()]);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let single = run.report();
+    let layouts = |state: &Value| -> Vec<(String, bool)> { state["app"]["context_menu"].as_array().unwrap().iter().filter(|item| item["id"].as_str().unwrap().starts_with("layout.")).map(|item| (item["id"].as_str().unwrap().to_string(), item["checked"] == true)).collect() };
+    assert_eq!(layouts(&single), [("layout.single".to_string(), true), ("layout.two_up".to_string(), false), ("layout.two_up_cover".to_string(), false)], "{single}");
+    run.ok(&["goto", "5"]);
+    run.settled();
+    let single_height = run.report()["reader"]["document_height"].as_f64().unwrap();
+    run.ok(&["qa", "context-menu", "layout.two_up"]);
+    wait_for(&run, |state| state["app"]["layout"] == "two-up");
+    run.settled();
+    let two = run.report();
+    assert!(layouts(&two)[1].1, "the one showing is ticked: {two}");
+    assert!(two["reader"]["document_height"].as_f64().unwrap() < single_height * 0.7, "two to a row: {two}");
+    assert!(two["reader"]["visible_pages"].as_array().unwrap().contains(&json!(5)), "still on page 5: {two}");
+    assert!(two["app"]["place_label"].as_str().is_some_and(|place| place.ends_with("of 9")), "{two}");
+    assert_eq!(run.ok(&["view"])["layout"], "two-up", "the same setting `recto view` has");
+    // A double click on the right-hand page's first word selects on that page, and a drag from the left page to the right takes both, in order.
+    run.ok(&["goto", "1"]);
+    run.settled();
+    run.ok(&["qa", "mouse-down", &format!("{}:2", place_on(&run, 2, 0, 0.3))]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let word = run.report();
+    assert_eq!(word["reader"]["selection"]["start"]["page"], 2, "{word}");
+    run.ok(&["qa", "mouse-down", &place_on(&run, 1, 0, 0.0)]);
+    run.ok(&["qa", "mouse-drag", &place_on(&run, 2, 0, 1.0)]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    copy_now(&run);
+    let text = copied(&run);
+    assert!(text.starts_with("Page number 0") && text.contains("Page number 1"), "{text:?}");
+    assert_eq!(run.ok(&["view", "--zoom", "150%"])["zoom_level"], "150%", "zoom works side by side");
+    run.ok(&["qa", "context-menu", "layout.two_up_cover"]);
+    wait_for(&run, |state| state["app"]["layout"] == "two-up-cover" && state["reader"]["spread"] == "TwoUpCover");
+    // Each tab its own.
+    run.ok(&["tap", "#1"]);
+    let first = wait_for(&run, |state| state["app"]["layout"] == "single");
+    assert_eq!(first["reader"]["spread"], "Single", "{first}");
+    run.ok(&["tap", "#2"]);
+    wait_for(&run, |state| state["app"]["layout"] == "two-up-cover");
+    run.ok(&["view", "--layout", "single"]);
+    wait_for(&run, |state| state["reader"]["spread"] == "Single");
+    let (reply, code) = run.state.json(&["view", "--layout", "three-up"]);
+    assert_eq!(code, exit::USAGE, "{reply}");
+}
+
+/// Failure: the panel's Rotate can be pressed with nothing to turn, or turns one page, or takes a step a page so one undo doesn't take it back, or isn't drawn turned, or doesn't show as unsaved in the red button's dot, or Undo doesn't take it back with the window key, where NSWindow took it first (review of f05c998, B1); or what was drawn is dropped for a turn, which changes nothing of a page's pixels, so turning back draws it all again. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment)".
+#[test]
+fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
+    let Some(run) = Run::start() else { return };
+    // With nothing open there's nothing to turn, so Rotate is greyed out rather than doing nothing.
+    run.ok(&["qa", "panel", "toggle"]);
+    let home = run.report();
+    assert!(home["app"]["panel"]["items"].as_array().unwrap().iter().filter(|item| item["id"].as_str().unwrap().starts_with("rotate.")).all(|item| item["enabled"] == false), "{}", home["app"]["panel"]);
+    run.ok(&["qa", "panel", "toggle"]);
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let before = run.report();
+    assert_eq!(before["app"]["document_edited"], false);
+    run.ok(&["qa", "panel", "toggle"]);
+    let open = run.report();
+    assert!(open["app"]["panel"]["items"].as_array().unwrap().iter().any(|item| item["id"] == "rotate.right"), "{open}");
+    run.ok(&["qa", "panel", "rotate.right"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
+    run.settled();
+    let turned = run.report();
+    let drawn = turned["reader"]["counts"]["drawn"].as_u64().unwrap();
+    assert!(turned["app"]["pages"]["page_turns"].as_array().unwrap().iter().all(|turn| turn == 1), "every page shows turned: {}", turned["app"]["pages"]);
+    assert!(turned["app"]["pages"]["page_frames_landscape"].as_u64().unwrap() >= 1, "and wider than tall: {}", turned["app"]["pages"]);
+    let edits = run.ok(&["edits"]);
+    assert_eq!(edits["can_undo"], true, "{edits}");
+    run.ok(&["qa", "key-action", "undo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == false);
+    run.settled();
+    let back = run.report();
+    assert!(back["app"]["pages"]["page_turns"].as_array().unwrap().iter().all(|turn| turn == 0), "one undo takes every page back: {}", back["app"]["pages"]);
+    assert_eq!(run.ok(&["edits"])["can_undo"], false, "it was one step");
+    // A landscape page fits at another scale, so a turn draws at that scale; what was drawn before isn't dropped, so turning back draws nothing new.
+    assert!(back["reader"]["counts"]["drawn"].as_u64().unwrap() <= drawn + 1, "turning back drew again: {drawn} then {}", back["reader"]["counts"]["drawn"]);
+    run.ok(&["qa", "key-action", "redo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == true);
+    // An agent's way, the same method.
+    run.ok(&["qa", "key-action", "undo"]);
+    wait_for(&run, |state| state["app"]["document_edited"] == false);
+    run.ok(&["page", "rotate", "all", "--by", "180"]);
+    let half = wait_for(&run, |state| state["app"]["pages"]["page_turns"].as_array().is_some_and(|turns| !turns.is_empty() && turns.iter().all(|turn| turn == 2)));
+    assert_eq!(half["app"]["document_edited"], true);
+}
+
+/// Failure (second review): in a narrower window, a laptop's with the sidebar, the zoom level or the agent icon sits on the page, where the owner's rule has nothing; at any width the window can be, with the sidebar shown or hidden, the icon on or off, single or side by side, both stay clear of every page showing at the fitted zoom.
+#[test]
+fn the_top_right_corner_stays_off_the_page() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(4);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    for layout in ["single", "two-up"] {
+        run.ok(&["view", "--layout", layout]);
+        for sidebar in ["on", "off"] {
+            run.ok(&["view", "--sidebar", sidebar]);
+            for icon in ["on", "off"] {
+                run.ok(&["view", "--agent-icon", icon]);
+                for size in ["700x500", "820x600", "1000x700", "1180x760", "1440x900"] {
+                    run.ok(&["qa", "resize", size]);
+                    run.settled();
+                    let state = run.report();
+                    let app = &state["app"];
+                    assert_eq!((&app["zoom_level"]["clear_of_pages"], &app["agent_icon_margins"]["clear_of_pages"]), (&json!(true), &json!(true)), "{layout}, sidebar {sidebar}, icon {icon}, {size}: zoom {} icon {}", app["zoom_level"], app["agent_icon_margins"]);
+                }
+            }
+        }
+    }
+}
+
+/// Failure: the zoom level isn't in the top right just left of the agent icon, in its row, or doesn't take the icon's place at the same margin when the icon's hidden, or the page's scroller runs up beside it; or it says a level the page isn't at, or clicking it doesn't let the reader type a level or fit the page again, or Escape or going elsewhere changes it. Owner, 2026-11-07: "clicking the zoom value enables you to type in zoom level or reset", and 2026-11-08: "The zoom level should be in the upper right of the app (not in the sidebar)". 100% is the page's real size.
+#[test]
+fn the_zoom_level_shows_and_takes_a_typed_level() {
+    let Some(run) = Run::start() else { return };
+    let file = long_document(5);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let magnification = |state: &Value| state["app"]["pages"]["magnification"].as_f64().unwrap();
+    let rest = run.report();
+    let level = &rest["app"]["zoom_level"];
+    assert_eq!((&level["visible"], &level["editing"], &level["in_the_top_right"], &level["clear_of_agent_icon"], &level["in_the_agent_icons_row"], &level["above_the_scroller"]), (&json!(true), &json!(false), &json!(true), &json!(true), &json!(true), &json!(true)), "{rest}");
+    let fit = rest["reader"]["fit"].as_f64().unwrap();
+    assert_eq!(level["text"], format!("{:.0}%", (magnification(&rest) * fit * 100.0).round()), "it says the level the page is at: {rest}");
+    let open = run.ok(&["qa", "button", "zoom"]);
+    assert_eq!(open["zoom_level"]["editing"], true, "{open}");
+    assert!(open["zoom_level"]["field"].as_str().is_some_and(|text| text.parse::<f64>().is_ok()), "the number alone, to type over: {open}");
+    assert!(open["zoom_level"]["reset"].is_string(), "{open}");
+    assert_eq!((&open["zoom_level"]["reset_clear_of_field"], &open["zoom_level"]["above_the_scroller"]), (&json!(true), &json!(true)), "the field opens leftwards, Fit before it: {open}");
+    run.ok(&["qa", "zoom-type", "200"]);
+    let at_200 = wait_for(&run, |state| state["app"]["zoom_level"]["text"] == "200%");
+    assert!((magnification(&at_200) * fit - 2.0).abs() < 0.01, "200% is twice the real size: {at_200}");
+    assert_eq!(at_200["app"]["zoom_level"]["editing"], false);
+    run.ok(&["qa", "zoom-type", "banana"]);
+    run.settled();
+    let same = run.report();
+    assert_eq!(same["app"]["zoom_level"]["text"], "200%", "what isn't a level changes nothing: {same}");
+    assert_eq!(same["app"]["zoom_level"]["editing"], false);
+    // Escape, and going elsewhere, leave the zoom as it was.
+    run.ok(&["qa", "button", "zoom"]);
+    let escaped = run.ok(&["qa", "zoom-escape"]);
+    assert_eq!((&escaped["zoom_level"]["editing"], &escaped["zoom_level"]["text"]), (&json!(false), &json!("200%")), "{escaped}");
+    run.ok(&["qa", "button", "zoom"]);
+    let away = run.ok(&["qa", "focus", "page"]);
+    assert_eq!((&away["zoom_level"]["editing"], &away["zoom_level"]["text"]), (&json!(false), &json!("200%")), "clicking away: {away}");
+    run.ok(&["qa", "zoom-type", "100000"]);
+    let most = wait_for(&run, |state| state["app"]["zoom_level"]["text"] != "200%");
+    assert!(magnification(&most) <= 8.0 + 1e-9, "held to the limits: {most}");
+    run.ok(&["qa", "button", "zoom"]);
+    run.ok(&["qa", "button", "zoom_reset"]);
+    let fitted = wait_for(&run, |state| (state["app"]["pages"]["magnification"].as_f64().unwrap() - 1.0).abs() < 1e-6);
+    assert_eq!(fitted["app"]["zoom_level"]["editing"], false, "{fitted}");
+    assert_eq!(run.ok(&["view", "--zoom", "50%"])["zoom_level"], "50%", "the same level an agent can ask for");
+    run.ok(&["view", "--sidebar", "off"]);
+    let hidden = wait_for(&run, |state| state["app"]["sidebar_visible"] == false);
+    assert_eq!((&hidden["app"]["zoom_level"]["visible"], &hidden["app"]["zoom_level"]["in_the_top_right"]), (&json!(true), &json!(true)), "it doesn't go with the sidebar: {hidden}");
+    // With the agent icon hidden, the zoom level takes its place, at the same margin from the edge.
+    let margin = hidden["app"]["agent_icon_margins"]["right"].as_f64().unwrap();
+    run.ok(&["view", "--agent-icon", "off"]);
+    let alone = wait_for(&run, |state| state["app"]["agent_icon"] == false);
+    let level = &alone["app"]["zoom_level"];
+    assert_eq!((&level["visible"], &level["in_the_top_right"], &level["above_the_scroller"]), (&json!(true), &json!(true), &json!(true)), "{alone}");
+    assert!((level["right_margin"].as_f64().unwrap() - margin).abs() < 0.5, "the icon's margin: {alone}");
 }
 
 /// Failure: closing the window keeps tiles and a worker, so it's over budget, or the app quits, or the tabs are lost. The red button's path, and back. The agent's socket stays.
@@ -427,14 +629,9 @@ fn what_appkit_calls_reaches_the_app() {
     let checked = found.as_object().unwrap();
     let failed: Vec<&String> = checked.iter().filter(|(_, ok)| **ok != true).map(|(name, _)| name).collect();
     assert!(failed.is_empty(), "these don't reach the app: {failed:?}\n{found}");
-    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "corner_covers_the_buttons", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "copy_is_grey_with_nothing_selected", "select_all_can_be_chosen", "select_all_key_reaches_the_app", "select_all_selects", "copy_is_enabled_with_something_selected", "copy_key_reaches_the_app", "services_arent_offered_what_they_didnt_ask_for", "services_arent_offered_nothing", "services_write_nothing_with_nothing_selected", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
+    for name in ["command_plus_zooms_in", "command_minus_zooms_out", "command_9_fits", "command_0_is_actual_size", "plain_plus_zooms_in", "plain_minus_zooms_out", "command_scroll_zooms", "command_scroll_keeps_the_point_still", "more_button", "panel_opens", "panel_button_answers", "panel_closes", "sidebar_area_is_on_the_sidebar", "contents_area_is_on_the_contents", "sidebar_button", "zoom_level", "zoom_field", "zoom_reset", "undo_reaches_the_app_with_the_window_key", "redo_reaches_the_app_with_the_window_key", "hover_shows_details", "pointer_finds_a_tab_row", "contents_hover_shows_their_scroller", "pointer_finds_the_contents_row", "contents_hover_reveals_the_full_name", "contents_hover_ends", "hover_ends", "reveal_goes_with_the_pointer", "plain_wheel_goes_to_the_scroll_view", "wheel_in_contents_stops_following", "pinch_starts", "pinch_ends", "mouse_reaches_the_selection", "pointer_reaches_the_cursor", "pointer_area_is_on_the_page", "right_click_has_a_menu", "copy_is_grey_with_nothing_selected", "select_all_can_be_chosen", "select_all_key_reaches_the_app", "select_all_selects", "copy_is_enabled_with_something_selected", "copy_key_reaches_the_app", "services_arent_offered_what_they_didnt_ask_for", "services_arent_offered_nothing", "services_write_nothing_with_nothing_selected", "tab_row_click", "contents_row_click", "add_button", "home_button"] {
         assert!(checked.contains_key(name), "{name} wasn't checked: {found}");
     }
-    run.ok(&["view", "--focus", "on"]);
-    run.settled();
-    let focused = run.ok(&["qa", "entry-points"]);
-    assert_eq!(focused["buttons_come_back"], true, "focus view's buttons have to come back: {focused}");
-    assert_eq!(focused["buttons_go_again"], true, "{focused}");
 }
 
 /// Failure: with a mouse connected, or "always show" set, a Mac's scrollers take their width from the view, and a page fitted to the view's whole width is wider than what's left, so a scroll bar sits under it for good and the vertical reading space goes down by it. Seen in a shot, when one was plugged in. A fitted page fits, by either style.
@@ -547,7 +744,7 @@ fn the_panel_opens_and_does_what_it_says() {
     run.settled();
     let open = run.report();
     let ids: Vec<&str> = open["app"]["panel"]["items"].as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["paper.white", "paper.warm", "paper.dark", "view.zoom_out", "view.zoom_in", "view.fit", "view.focus"], "this and nothing else");
+    assert_eq!(ids, ["rotate.left", "rotate.right", "paper.white", "paper.warm", "paper.dark"], "this and nothing else: tools first, and zoom is the top left's, by the owner's word");
     assert!(open["app"]["contents"]["list_height"].as_f64().unwrap() < list_at_rest, "it docks in room from the list: {open}");
     let drawn = open["reader"]["counts"]["drawn"].clone();
     run.ok(&["qa", "panel", "paper.warm"]);
@@ -558,15 +755,11 @@ fn the_panel_opens_and_does_what_it_says() {
     assert_eq!(picked.len(), 1);
     assert_eq!(picked[0]["id"], "paper.warm");
     assert_eq!(run.ok(&["view"])["paper"], "warm", "the same setting `recto view` has");
-    run.ok(&["qa", "panel", "view.zoom_in"]);
-    wait_for(&run, |state| state["app"]["pages"]["magnification"].as_f64().unwrap_or(0.0) > 1.0);
-    run.ok(&["qa", "panel", "view.fit"]);
-    wait_for(&run, |state| state["app"]["pages"]["magnification"] == 1.0);
     run.ok(&["qa", "panel", "toggle"]);
     wait_for(&run, |state| state["app"]["panel"]["open"] == false);
 }
 
-/// Failure: the menu bar isn't what Rust lists, or Show Agent Icon doesn't hide the star, or isn't remembered, or the page's scroller still runs under where the star is, or the full way with a star there. Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon. Add an option in the macos top bar to turn off agent bar (hides the icon), enable + - and command - scroll for zooming".
+/// Failure: the menu bar isn't what Rust lists, or the star's margins aren't the same to the right and above, or Show Agent Icon doesn't hide the star, or isn't remembered, or the page's scroller still runs under where the star is, or the full way with a star there. Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon. Add an option in the macos top bar to turn off agent bar (hides the icon), enable + - and command - scroll for zooming".
 #[test]
 fn the_menu_bar_and_the_agent_icon() {
     let Some(run) = Run::start() else { return };
@@ -578,13 +771,16 @@ fn the_menu_bar_and_the_agent_icon() {
     assert_eq!(titles, ["RectoPDF", "File", "Edit", "View"], "{state}");
     let view = &state["app"]["menu_bar"][3]["items"];
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
-    assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Focus View", "Show Agent Icon"]);
+    assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon"]);
     assert_eq!(state["app"]["agent_icon"], true);
-    assert!(state["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() > 30.0, "below the star: {state}");
+    // Owner, 2026-11-07: the same margin to the right as above, and less above than the 16 it had.
+    let (top, right) = (state["app"]["agent_icon_margins"]["top"].as_f64().unwrap(), state["app"]["agent_icon_margins"]["right"].as_f64().unwrap());
+    assert!((top - right).abs() < 0.5 && (8.0..16.0).contains(&top), "top {top}, right {right}");
+    assert!(state["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() > 28.0, "below the star: {state}");
     run.ok(&["qa", "menu", "view.agent_icon"]);
     let hidden = wait_for(&run, |state| state["app"]["agent_icon"] == false);
-    assert_eq!(hidden["app"]["pages"]["scroller_top_inset"], 0.0, "the whole way with no star: {hidden}");
-    assert_eq!(hidden["app"]["menu_bar"][3]["items"][5]["checked"], false, "{hidden}");
+    assert!(hidden["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() < state["app"]["pages"]["scroller_top_inset"].as_f64().unwrap() + 1.0, "no lower than with the star, as the zoom level takes its place: {hidden}");
+    assert_eq!(hidden["app"]["menu_bar"][3]["items"][8]["checked"], false, "{hidden}");
     assert_eq!(run.ok(&["view"])["agent_icon"], false, "the same setting `recto view` has");
     assert_eq!(hidden["session"]["view"]["agent_icon_hidden"], true, "remembered, as the state record has it");
     run.ok(&["view", "--agent-icon", "on"]);

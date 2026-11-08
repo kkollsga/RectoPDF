@@ -1,7 +1,35 @@
 import AppKit
 
+/// The main window. Undo and Redo are the tab's edits, and NSWindow would take `undo:` and `redo:` itself, ahead of the app, and grey them out with an undo manager that has nothing in it. So the window answers them, by Rust's word, and a text field that has the keyboard still keeps its own.
+class ReaderWindow: NSWindow {
+    /// What an item does, and whether it can be chosen, by its id: the app's `perform` and Rust's `menuItemEnabled`.
+    var edit: ((String) -> Void)?
+    var editEnabled: ((String) -> Bool)?
+
+    static func editId(_ action: Selector?) -> String? {
+        switch action {
+        case #selector(ReaderWindow.undo(_:)): "edit.undo"
+        case #selector(ReaderWindow.redo(_:)): "edit.redo"
+        default: nil
+        }
+    }
+
+    @objc func undo(_ sender: Any?) {
+        edit?("edit.undo")
+    }
+
+    @objc func redo(_ sender: Any?) {
+        edit?("edit.redo")
+    }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if let id = Self.editId(item.action) { return editEnabled?(id) ?? false }
+        return super.validateUserInterfaceItem(item)
+    }
+}
+
 /// A window that draws as the key window without being it, and at 2x whatever the display, in a quiet run. It never reaches a screen.
-final class QuietWindow: NSWindow {
+final class QuietWindow: ReaderWindow {
     override var isKeyWindow: Bool { true }
     override var isMainWindow: Bool { true }
     override var canBecomeKey: Bool { false }
@@ -80,7 +108,7 @@ final class AgentIcon: NSView {
     }
 }
 
-/// A small label in the margin: the page number in focus view, or what the reader needs to be told.
+/// A small label in the margin: the page number, or what the reader needs to be told.
 class MarginLabel: NSView {
     let label = TextLine()
 
@@ -168,7 +196,7 @@ final class BookMark: NSView {
 }
 
 /// The window, and everything in it. It draws what it's told and passes on what the user does.
-@MainActor final class MainWindowController: NSObject, NSWindowDelegate {
+@MainActor final class MainWindowController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     unowned let delegate: AppDelegate
     let window: NSWindow
     let root = RootView()
@@ -177,6 +205,14 @@ final class BookMark: NSView {
     let sidebarEdge = NSView()
     let sidebarGrip = SidebarGrip()
     let agentIcon = AgentIcon()
+    /// Beside the window's controls: shows and hides the sidebar. Owner, 2026-11-08: "simply have a sidebar icon to the right of the traffic light buttons that toggles sidebar on and of".
+    let sidebarButton = NSButton(title: "", target: nil, action: nil)
+    /// The zoom level, in the top right just left of the agent icon. Clicking it opens a field to type a level in, with a button to fit the page again. Owner, 2026-11-07: "lets show the zoom level in upper left and clicking the zoom value enables you to type in zoom level or reset". Its words are Rust's.
+    let zoomButton = NSButton(title: "", target: nil, action: nil)
+    let zoomField = NSTextField(string: "")
+    let zoomReset = NSButton(title: "", target: nil, action: nil)
+    private(set) var zoomEditing = false
+    private var zoomLabel: ZoomLabel?
     let noteLabel = MarginLabel()
     let placeLabel = MarginLabel()
     let copyNotice = CopyNotice()
@@ -207,7 +243,7 @@ final class BookMark: NSView {
             // Off every screen, and never ordered in.
             window = QuietWindow(contentRect: rect.offsetBy(dx: -40_000, dy: -40_000), styleMask: style, backing: .buffered, defer: false)
         } else {
-            window = NSWindow(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
+            window = ReaderWindow(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
             window.center()
             if placement.saved { window.setFrame(NSRect(x: placement.x, y: placement.y, width: placement.width, height: placement.height), display: false) }
         }
@@ -227,6 +263,10 @@ final class BookMark: NSView {
         super.init()
         agentIcon.isHidden = reader.agentIconHidden
         window.delegate = self
+        if let reader = window as? ReaderWindow {
+            reader.edit = { [weak delegate] id in delegate?.perform(id) }
+            reader.editEnabled = { [weak delegate] id in delegate?.core.menuItemEnabled(id: id) ?? false }
+        }
         window.contentView = root
         root.wantsLayer = true
         root.layerContentsRedrawPolicy = .onSetNeedsDisplay
@@ -239,6 +279,16 @@ final class BookMark: NSView {
         root.addSubview(noteLabel)
         root.addSubview(placeLabel)
         root.addSubview(copyNotice)
+        root.addSubview(sidebarButton)
+        for view in [zoomButton, zoomField, zoomReset] as [NSView] { root.addSubview(view) }
+        buildZoomLevel()
+        pages.zoomChanged = { [weak self] in self?.updateZoomLevel() }
+        sidebarButton.isBordered = false
+        sidebarButton.imagePosition = .imageOnly
+        sidebarButton.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: delegate.strings.sidebarButtonTooltip)?.withSymbolConfiguration(.init(pointSize: 14, weight: .regular))
+        sidebarButton.toolTip = delegate.strings.sidebarButtonTooltip
+        sidebarButton.target = self
+        sidebarButton.action = #selector(sidebarButtonPressed)
         copyNotice.isHidden = true
         copyNotice.button.target = self
         copyNotice.button.action = #selector(copyAnyway)
@@ -266,9 +316,6 @@ final class BookMark: NSView {
         }
         // AppKit changes the scrollers' style itself when the system's does, with a mouse plugged in or the setting changed. What's fitted to the room they leave follows.
         NotificationCenter.default.addObserver(self, selector: #selector(scrollerStyleChanged), name: NSScroller.preferredScrollerStyleDidChangeNotification, object: nil)
-        // In focus view the window's buttons come back with the pointer near them. One area in a fixed corner, and it costs nothing when nothing's there.
-        let corner = NSTrackingArea(rect: NSRect(x: 0, y: 0, width: 100, height: 44), options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self, userInfo: nil)
-        root.addTrackingArea(corner)
         layout()
         appearanceChanged()
         if delegate.isQuiet { QAChannel.drawActive(window) }
@@ -324,6 +371,11 @@ final class BookMark: NSView {
 
     private func firstResponderChanged() {
         guard let responder = window.firstResponder else { return }
+        // Going somewhere else with the zoom level's field open leaves the level as it was, as Escape does.
+        if zoomEditing, responder === root || responder === sidebar.table || responder === sidebar.contentsTable {
+            endZoomEditing()
+            return
+        }
         if responder === sidebar.table || responder === sidebar.contentsTable {
             delegate.core.focusChanged(view: "sidebar")
         } else if responder === root || responder === window {
@@ -385,14 +437,12 @@ final class BookMark: NSView {
         sidebar.updateContentsScroller()
         let size = window.frame.size
         root.frame = NSRect(origin: .zero, size: size)
-        let focus = reader.focus
+        let hidden = reader.sidebarHidden
         let sidebarWidth = CGFloat(reader.sidebarWidth)
-        let side = focus ? 0 : sidebarWidth
-        // In focus view nothing shows but the page, its number and the agent icon. The window's buttons come back with the pointer near them.
-        setWindowButtons(shown: windowButtonsShow(focus: focus, pointerNear: pointerNearButtons))
-        sidebar.view.isHidden = focus
-        sidebarEdge.isHidden = focus
-        sidebarGrip.isHidden = focus
+        let side = hidden ? 0 : sidebarWidth
+        sidebar.view.isHidden = hidden
+        sidebarEdge.isHidden = hidden
+        sidebarGrip.isHidden = hidden
         sidebar.view.frame = NSRect(x: 0, y: 0, width: sidebarWidth, height: size.height)
         sidebarEdge.frame = NSRect(x: sidebarWidth - 1, y: 0, width: 1, height: size.height)
         sidebarGrip.frame = NSRect(x: sidebarWidth - 3, y: 0, width: 7, height: size.height)
@@ -400,19 +450,21 @@ final class BookMark: NSView {
         let area = NSRect(x: side, y: 0, width: size.width - side, height: size.height)
         pages.scrollView.frame = area
         home.frame = area
-        agentIcon.frame = NSRect(x: size.width - 40, y: 16, width: 20, height: 20)
-        // Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon".
-        pages.setScrollerTop(agentIcon.isHidden ? 0 : agentIcon.frame.maxY + 8)
+        // The same margin to the right as above, and less above than the 16 it had. Owner, 2026-11-07: "The margin left of the ai icon is too large. It should have the same margin to the right and above. Above should have slightly smaller margin then now (and right gets the same one)."
+        agentIcon.frame = NSRect(x: size.width - Self.cornerMargin - 20, y: Self.cornerMargin, width: 20, height: 20)
         layoutMargin(area: area)
         layoutHome()
         positionWindowButtons()
+        layoutTopLeft()
+        layoutTopRight()
         pages.layoutChanged()
     }
 
     private func layoutMargin(area: NSRect) {
         let marginWidth = max(pages.marginWidth(), 140)
         var bottom = NSPoint(x: area.maxX - 16, y: area.maxY - 16)
-        if reader.focus && !reader.home {
+        // Owner, 2026-11-07: "The page number should always be visible in the lower right." In the margin's corner, quiet, over the page only when a page fills the width there.
+        if !reader.home {
             placeLabel.isHidden = false
             placeLabel.place(text: reader.place, maxWidth: 160, bottomRight: bottom)
             bottom.y = placeLabel.frame.minY - 8
@@ -469,17 +521,10 @@ final class BookMark: NSView {
         homeButton.frame = NSRect(x: middle - width / 2, y: y, width: width, height: 30)
     }
 
-    private var pointerNearButtons = false
-
     @objc private func scrollerStyleChanged() {
         sidebar.updateContentsScroller()
         layout()
     }
-
-    // AppKit calls these by name on a tracking area's owner. This isn't a responder, so they say so, by that name.
-    @objc(mouseEntered:) func mouseEntered(with event: NSEvent) { pointerNearButtons(true) }
-
-    @objc(mouseExited:) func mouseExited(with event: NSEvent) { pointerNearButtons(false) }
 
     /// Where the window's buttons are, in a view, for QA.
     func windowButtonFrames(in view: NSView) -> [NSRect] {
@@ -491,16 +536,124 @@ final class BookMark: NSView {
     /// Whether the window's buttons are showing, for QA.
     var windowButtonsShown: Bool { window.standardWindowButton(.closeButton)?.isHidden == false }
 
-    private func setWindowButtons(shown: Bool) {
-        for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            window.standardWindowButton(type)?.isHidden = !shown
-        }
+    /// The window's own buttons' row: where they end, and the middle of the row, in the root's coordinates, which run down.
+    private func windowButtonsRow() -> (right: CGFloat, middle: CGFloat) {
+        let frames = windowButtonFrames(in: root)
+        guard let last = frames.max(by: { $0.maxX < $1.maxX }) else { return (72, 19) }
+        return (last.maxX, last.midY)
     }
 
-    /// What the pointer reaching the window's top left corner does.
-    func pointerNearButtons(_ near: Bool) {
-        pointerNearButtons = near
-        setWindowButtons(shown: windowButtonsShow(focus: reader.focus, pointerNear: near))
+    /// Right of the window's buttons, in the same row: the sidebar's button. Shown whether the sidebar is or not, as it's the way back.
+    private func layoutTopLeft() {
+        let row = windowButtonsRow()
+        let size: CGFloat = 24
+        sidebarButton.frame = NSRect(x: (row.right + 10).rounded(), y: (row.middle - size / 2).rounded(), width: size, height: size)
+    }
+
+    /// The agent icon's margin from the window's top and right edges, the same both ways, by the owner's word of 2026-11-07.
+    static let cornerMargin: CGFloat = 12
+    /// Room either side of the zoom level's words inside its button.
+    static let zoomPadding: CGFloat = 6
+
+    /// The top right margin, where the agent icon is: the zoom level just left of it, in its row, or in its place when it's hidden, at the same margin from the edge. Owner, 2026-11-08: "The zoom level should be in the upper right of the app (not in the sidebar)". Its field opens leftwards, with Fit before it. The page's scroller stops below whatever's there.
+    private func layoutTopRight() {
+        let width = root.bounds.width
+        let middle = agentIcon.frame.midY
+        let right = agentIcon.isHidden ? width - Self.cornerMargin : agentIcon.frame.minX - 8
+        let text = zoomButton.attributedTitle.size()
+        // The words have this much room either side inside the button, so it's they that keep the margin.
+        let padding = Self.zoomPadding
+        let buttonWidth = (text.width + 2 * padding).rounded(.up)
+        zoomButton.frame = NSRect(x: (right + padding - buttonWidth).rounded(), y: (middle - 11).rounded(), width: buttonWidth, height: 22)
+        zoomField.frame = NSRect(x: (right - 54).rounded(), y: (middle - 11).rounded(), width: 54, height: 22)
+        let reset = zoomReset.attributedTitle.size()
+        let resetWidth = (reset.width + 10).rounded(.up)
+        zoomReset.frame = NSRect(x: zoomField.frame.minX - 6 - resetWidth, y: (middle - 11).rounded(), width: resetWidth, height: 22)
+        // Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon". And below the zoom level beside it, and the whole way with nothing there.
+        let showing = [agentIcon, zoomButton, zoomField].filter { !$0.isHidden }
+        pages.setScrollerTop(showing.map(\.frame.maxY).max().map { $0 + 8 } ?? 0)
+    }
+
+    @objc private func sidebarButtonPressed() {
+        delegate.perform("view.sidebar")
+    }
+
+    private static let zoomFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+
+    private func buildZoomLevel() {
+        zoomButton.isBordered = false
+        zoomButton.target = self
+        zoomButton.action = #selector(zoomButtonPressed)
+        zoomField.font = Self.zoomFont
+        zoomField.alignment = .center
+        zoomField.bezelStyle = .roundedBezel
+        zoomField.controlSize = .small
+        zoomField.target = self
+        zoomField.action = #selector(zoomTyped)
+        // Return applies a level, and nothing else does: leaving the field leaves it as it was.
+        zoomField.cell?.sendsActionOnEndEditing = false
+        zoomField.delegate = self
+        zoomField.isHidden = true
+        zoomReset.isBordered = false
+        zoomReset.target = self
+        zoomReset.action = #selector(zoomResetPressed)
+        zoomReset.isHidden = true
+    }
+
+    /// The level as it stands, from the page's magnification and fit, in Rust's words. Not while it's being typed over.
+    func updateZoomLevel() {
+        let label = delegate.core.zoomLabel(magnification: pages.scrollView.magnification, fit: pages.fitForQA)
+        let hidden = reader.home || zoomEditing
+        if zoomButton.isHidden != hidden {
+            zoomButton.isHidden = hidden
+            layoutTopRight()
+        }
+        guard label != zoomLabel else { return }
+        zoomLabel = label
+        zoomButton.toolTip = label.tooltip
+        zoomReset.toolTip = label.tooltip
+        styleZoomLevel()
+        layoutTopRight()
+    }
+
+    private func styleZoomLevel() {
+        guard let label = zoomLabel else { return }
+        zoomButton.attributedTitle = NSAttributedString(string: label.text, attributes: [.font: Self.zoomFont, .foregroundColor: Theme.textQuiet.ns])
+        zoomReset.attributedTitle = NSAttributedString(string: label.resetTitle, attributes: [.font: Self.zoomFont, .foregroundColor: Theme.accent.ns])
+    }
+
+    @objc private func zoomButtonPressed() {
+        guard !reader.home, let label = zoomLabel else { return }
+        zoomEditing = true
+        zoomField.stringValue = label.editingText
+        zoomButton.isHidden = true
+        zoomField.isHidden = false
+        zoomReset.isHidden = false
+        layoutTopRight()
+        window.makeFirstResponder(zoomField)
+        zoomField.selectText(nil)
+    }
+
+    /// Return in the field. Rust says whether it was a level, and if it wasn't, nothing changes.
+    @objc private func zoomTyped() {
+        guard zoomEditing else { return }
+        _ = delegate.core.zoomTyped(text: zoomField.stringValue, decimalSeparator: Locale.current.decimalSeparator ?? ".")
+        endZoomEditing()
+    }
+
+    @objc private func zoomResetPressed() {
+        delegate.perform("view.fit")
+        endZoomEditing()
+    }
+
+    func endZoomEditing() {
+        guard zoomEditing else { return }
+        zoomEditing = false
+        zoomField.isHidden = true
+        zoomReset.isHidden = true
+        if window.firstResponder === zoomField.currentEditor() || window.firstResponder === zoomField { window.makeFirstResponder(root) }
+        updateZoomLevel()
+        layoutTopRight()
     }
 
     /// Into the sidebar's top corner, where the concept has them, without a toolbar's strip across the page.
@@ -521,6 +674,10 @@ final class BookMark: NSView {
         pages.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: window.isKeyWindow || delegate.isQuiet)
         fadeNoticeIfItSaysTo()
         agentIcon.isHidden = reader.agentIconHidden
+        // Unsaved edits: the red button's dot, as on any Mac app. Rust says.
+        window.isDocumentEdited = reader.edited
+        if reader.home { endZoomEditing() }
+        updateZoomLevel()
         layout()
     }
 
@@ -536,10 +693,26 @@ final class BookMark: NSView {
         homeButton.layer?.backgroundColor = Theme.buttonFill.cg
         sidebar.appearanceChanged()
         for view in [agentIcon, homeBook] { view.needsDisplay = true }
+        sidebarButton.contentTintColor = Theme.textQuiet.ns
+        styleZoomLevel()
         for label in [noteLabel, placeLabel, copyNotice as MarginLabel] {
             label.layer?.backgroundColor = Theme.pill.cg
             if !label.label.text.isEmpty { label.label.set(label.label.text, font: .systemFont(ofSize: 11.5), color: Theme.textBody.ns, wraps: true) }
         }
+    }
+
+    /// Escape in the zoom level's field leaves it as it was.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard control === zoomField, selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        endZoomEditing()
+        return true
+    }
+
+    /// Going somewhere else with the field open, by Tab or a click, leaves the level as it was, as Escape does. A quiet run's window can't hold the keyboard, so there the field stays open until QA says what's typed.
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard (notification.object as? NSTextField) === zoomField, zoomEditing, window.canBecomeKey else { return }
+        let movement = (notification.userInfo?["NSTextMovement"] as? Int).flatMap(NSTextMovement.init(rawValue:))
+        if movement != .return { endZoomEditing() }
     }
 
     func windowDidResize(_ notification: Notification) {

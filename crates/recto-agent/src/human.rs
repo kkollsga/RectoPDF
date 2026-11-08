@@ -97,7 +97,7 @@ pub fn render(tag: &str, data: &Value) -> String {
         "select" | "copy" => selected(data),
         "signatures" => signatures(data),
         "sidebar" | "tap" => sidebar(data),
-        "view" => format!("Paper: {}. Focus view: {}. Agent icon: {}.", text(&data["paper"]), if data["focus"] == true { "on" } else { "off" }, if data["agent_icon"] == true { "on" } else { "off" }),
+        "view" => format!("Paper: {}. Sidebar: {}. Agent icon: {}.{}", text(&data["paper"]), if data["sidebar"] == false { "hidden" } else { "shown" }, if data["agent_icon"] == true { "on" } else { "off" }, data["layout"].as_str().map(|layout| format!(" Layout: {layout}.")).unwrap_or_default()),
         "session_show" => session_show(data),
         "session_save" => format!("Saved and read back: {}, {} bytes of record and {} of journals, {} written, in {} ms.", count(number(&data["tabs"]), "tab", "tabs"), number(&data["record_bytes"]), number(&data["journal_bytes"]), number(&data["wrote_bytes"]), number(&data["total_ms"])),
         "session_restore" => match data["notice"].as_str() {

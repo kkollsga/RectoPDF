@@ -13,8 +13,8 @@ use std::io::{Read, Write};
 /// What a sleep file says it is.
 pub const SLEEP_KIND: &str = "recto-sleep";
 
-/// Pictures in one file: enough for the pages one window shows at an ordinary zoom. A view of more than this comes up with those and sharpens.
-pub const MAX_SLEEP_PICTURES: usize = 6;
+/// Pictures in one file: enough for the pages one window shows at an ordinary zoom, side by side too, where a view has twice the pages, each a quarter of the pixels. A view of more than this comes up with those and sharpens. An older build reads a file with more as damaged, and rebuilds it from the PDF.
+pub const MAX_SLEEP_PICTURES: usize = 12;
 /// The most one picture can be, unpacked. As a preview is.
 pub const MAX_PICTURE_BYTES: usize = 4 * 1024 * 1024;
 /// The most a picture takes up on disk (owner, 2026-11-07: "reduce SSD wear as much as we can"). It's there for a moment, so a page that doesn't pack to this goes at a lower resolution, and fewer colours, till it does: see [`pack_picture`]. A page of text never comes near it.
@@ -276,6 +276,19 @@ mod tests {
     fn a_sleep_file_reads_back_as_it_was() {
         let sleep = sample();
         assert_eq!(decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap(), sleep);
+    }
+
+    /// Failure: a sleep file keeps fewer pictures than a view side by side shows, twelve pages at an ordinary zoom, so a tab or an update's first frame wakes with bare pages; or a file of that many is read as damaged. And more than that is left out when written, never refused when read.
+    #[test]
+    fn a_sleep_file_keeps_a_side_by_side_views_pictures() {
+        let mut sleep = sample();
+        sleep.pages = 40;
+        sleep.file_pages = 40;
+        sleep.pictures = (0..12).map(|page| SleepPicture { page, scale: 0.25, width: 2, height: 2, dark: false, bgra: vec![200; 16] }).collect();
+        let back = decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).expect("twelve pictures read back");
+        assert_eq!(back.pictures.len(), 12);
+        sleep.pictures.push(SleepPicture { page: 12, scale: 0.25, width: 2, height: 2, dark: false, bgra: vec![200; 16] });
+        assert_eq!(decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap().pictures.len(), 12, "a thirteenth is left out when written");
     }
 
     /// Failure: a picture whose numbers don't match its bytes gets written, so the file's refused for all of it. It's left out, and the rest stands.
