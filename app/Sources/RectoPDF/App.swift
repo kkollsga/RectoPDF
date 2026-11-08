@@ -84,6 +84,8 @@ final class Bridge: AppListener, @unchecked Sendable {
     var clipboardPromised: Set<String> = []
     let strings: AppStrings
     let limits: ReaderLimits
+    /// Every sheet and panel, which a quiet run holds rather than shows.
+    let sheets: SheetPresenter
     private let bridge: Bridge
     private(set) var windowController: MainWindowController?
     private(set) var qa: QAChannel?
@@ -109,6 +111,7 @@ final class Bridge: AppListener, @unchecked Sendable {
         }
         self.bridge = bridge
         isQuiet = core.isQa()
+        sheets = SheetPresenter(quiet: isQuiet)
         strings = core.strings()
         limits = core.limits()
         super.init()
@@ -127,6 +130,13 @@ final class Bridge: AppListener, @unchecked Sendable {
         }
         source.resume()
         memoryPressureSource = source
+    }
+
+    /// Keeps the system from putting a quiet run on the screen.
+    private let quietGuard = QuietRunGuard()
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        if isQuiet { quietGuard.install() }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -291,11 +301,15 @@ final class Bridge: AppListener, @unchecked Sendable {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        // A quiet run's window comes back by `qa window open` alone.
+        guard !isQuiet else { return false }
         openWindow()
         return true
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        // A quiet run opens what its QA channel says, and nothing the system sends it.
+        guard !isQuiet else { return }
         for url in urls where url.isFileURL { core.openFile(path: url.path) }
     }
 
@@ -428,7 +442,8 @@ final class Bridge: AppListener, @unchecked Sendable {
         case .none: break
         case .focusPalette: windowController?.focusPalette()
         case .showOpenPanel: openDocument(nil)
-        case .showAbout: NSApp.orderFrontStandardAboutPanel(nil)
+        // A panel of its own on the screen, which a quiet run doesn't show.
+        case .showAbout: if !isQuiet { NSApp.orderFrontStandardAboutPanel(nil) }
         case .showSettings: showSettings()
         case .quit: NSApp.terminate(nil)
         case .closeWindow: windowController?.window.performClose(nil)
@@ -455,7 +470,7 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     /// Save As's sheet, the system's own, with Rust's words: the name it suggests, the folder, and a line for a signed document.
     func showSavePanel() {
-        guard let window = windowController?.window, window.attachedSheet == nil else { return }
+        guard let window = windowController?.window, !sheets.isUp(over: window) else { return }
         let model = core.savePanel()
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
@@ -466,7 +481,7 @@ final class Bridge: AppListener, @unchecked Sendable {
         let core = self.core
         core.sheetChanged(open: true)
         sheetShowing = ["kind": "save_panel", "name": model.suggestedName, "message": model.message ?? "", "directory": model.directory]
-        panel.beginSheetModal(for: window) { [weak self] response in
+        sheets.present(panel, over: window) { [weak self] response in
             core.sheetChanged(open: false)
             self?.sheetShowing = nil
             guard response == .OK, let url = panel.url else { return }
@@ -477,7 +492,7 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     /// Closing a document with unsaved edits asks, as any Mac app asks: Save, Don't Save or Cancel. A quit doesn't, as edits come back.
     func confirmClose() {
-        guard let window = windowController?.window, window.attachedSheet == nil else { return }
+        guard let window = windowController?.window, !sheets.isUp(over: window) else { return }
         let prompt = core.closePrompt()
         let alert = NSAlert()
         alert.messageText = prompt.message
@@ -489,7 +504,7 @@ final class Bridge: AppListener, @unchecked Sendable {
         let core = self.core
         core.sheetChanged(open: true)
         sheetShowing = ["kind": "close_prompt", "message": prompt.message, "informative": prompt.informative, "buttons": prompt.buttons.map(\.title)]
-        alert.beginSheetModal(for: window) { [weak self] response in
+        sheets.present(alert, over: window) { [weak self] response in
             core.sheetChanged(open: false)
             self?.sheetShowing = nil
             let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
@@ -506,8 +521,10 @@ final class Bridge: AppListener, @unchecked Sendable {
         let core = self.core
         // An update waits for a panel.
         core.sheetChanged(open: true)
-        panel.begin { response in
+        sheetShowing = ["kind": "open_panel"]
+        sheets.present(panel) { [weak self] response in
             core.sheetChanged(open: false)
+            self?.sheetShowing = nil
             guard response == .OK else { return }
             for url in panel.urls { core.openFile(path: url.path) }
         }

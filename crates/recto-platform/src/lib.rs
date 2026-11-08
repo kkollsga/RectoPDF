@@ -164,6 +164,11 @@ pub mod local;
 pub mod secret;
 pub use secret::{MAX_PASSWORD_BYTES, Password};
 
+/// What the window server says is on screen, for tests that prove a quiet run shows nothing.
+#[cfg_attr(target_os = "macos", path = "screen_mac.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "screen_stub.rs")]
+pub mod screen;
+
 /// Pixel memory the compositor can show directly, and the way it reaches a worker with no copy.
 #[cfg_attr(target_os = "macos", path = "surface_mac.rs")]
 #[cfg_attr(not(target_os = "macos"), path = "surface_stub.rs")]

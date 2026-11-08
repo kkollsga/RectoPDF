@@ -238,10 +238,9 @@ import QuartzCore
             }
         case "sheet_answer":
             // The answer a sheet's button gives, through the sheet's own ending, as a click on it ends it: the same completion runs.
-            guard let controller, let sheet = controller.window.attachedSheet else { return fail(id, "No sheet is open.") }
             let codes: [String: NSApplication.ModalResponse] = ["first": .alertFirstButtonReturn, "second": .alertSecondButtonReturn, "third": .alertThirdButtonReturn, "cancel": .cancel]
             guard let code = codes[value] else { return fail(id, "That isn't one of a sheet's answers.") }
-            controller.window.endSheet(sheet, returnCode: code)
+            guard delegate.sheets.answer(code, over: controller?.window) else { return fail(id, "No sheet is open.") }
         case "context_menu":
             guard let controller else { return fail(id, "The window is closed.") }
             let menu = controller.readingPane.contextMenu()
@@ -258,9 +257,9 @@ import QuartzCore
             target.perform(action, with: nil)
         case "password":
             // Types into the password sheet's secure field and presses Open, through the sheet's own ending, as a person's click ends it.
-            guard let controller, let sheet = controller.window.attachedSheet, controller.passwordField.window === sheet else { return fail(id, "No password sheet is open.") }
+            guard let controller, let sheet = delegate.sheets.sheetWindow(over: controller.window), controller.passwordField.window === sheet else { return fail(id, "No password sheet is open.") }
             controller.passwordField.stringValue = value
-            controller.window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+            _ = delegate.sheets.answer(.alertFirstButtonReturn, over: controller.window)
         case "zoom_escape":
             // Escape in the field, by the method AppKit calls for it.
             guard let controller, controller.zoomEditing else { return fail(id, "The zoom level's field isn't open.") }
@@ -672,18 +671,21 @@ import QuartzCore
     }
 
     /// A sheet over the window is a window of its own, which the window's drawing leaves out: its own drawing goes in where it sits, so a shot shows what a person would. A panel drawn by another process, as the save sheet's file browser is, may come out partly blank.
-    static func drawSheet(of window: NSWindow, into rep: NSBitmapImageRep, flipped: Bool, height: CGFloat) {
-        guard let sheet = window.attachedSheet, let sheetView = sheet.contentView?.superview ?? sheet.contentView else { return }
+    static func drawSheet(of window: NSWindow, sheets: SheetPresenter, into rep: NSBitmapImageRep, flipped: Bool, height: CGFloat) {
+        guard let sheet = sheets.sheetWindow(over: window), let origin = sheets.sheetOrigin(over: window), let sheetView = sheet.contentView?.superview ?? sheet.contentView else { return }
+        // A sheet takes its window's look, light or dark. One that's held, never attached, isn't told when that changes.
+        if sheet.appearance?.name != window.effectiveAppearance.name { sheet.appearance = window.effectiveAppearance }
         sheetView.layoutSubtreeIfNeeded()
         let size = sheetView.bounds
         guard let sheetRep = sheetView.bitmapImageRepForCachingDisplay(in: size) else { return }
         sheetView.cacheDisplay(in: size, to: sheetRep)
-        let x = sheet.frame.minX - window.frame.minX
-        var y = sheet.frame.minY - window.frame.minY
+        let x = origin.x
+        var y = origin.y
         if flipped { y = height - y - size.height }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        sheetRep.draw(in: NSRect(x: x, y: y, width: size.width, height: size.height))
+        // Over what's there, so its rounded corners show the window behind, as the window server would composite it. A plain draw copies them in clear.
+        sheetRep.draw(in: NSRect(x: x, y: y, width: size.width, height: size.height), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
         NSGraphicsContext.restoreGraphicsState()
     }
 
@@ -706,7 +708,7 @@ import QuartzCore
         }
         CATransaction.flush()
         view.cacheDisplay(in: bounds, to: rep)
-        QAChannel.drawSheet(of: controller.window, into: rep, flipped: view.isFlipped, height: bounds.height)
+        QAChannel.drawSheet(of: controller.window, sheets: delegate.sheets, into: rep, flipped: view.isFlipped, height: bounds.height)
         for area in controller.paneAreas {
             area.hideTintForShot(false)
             area.hideHighlightsForShot(false)

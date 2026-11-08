@@ -707,7 +707,7 @@ final class BookMark: NSView {
 
     /// The go-to field opens over the page number, with the page being read in it to type over.
     func startPageEditing() {
-        guard !reader.home, window.attachedSheet == nil else { return }
+        guard !reader.home, !delegate.sheets.isUp(over: window) else { return }
         let field = delegate.core.pageField()
         pageEditing = true
         pageField.stringValue = field.editingText
@@ -739,7 +739,7 @@ final class BookMark: NSView {
             promptShowing = nil
             return
         }
-        guard promptShowing != prompt, window.attachedSheet == nil else { return }
+        guard promptShowing != prompt, !delegate.sheets.isUp(over: window) else { return }
         promptShowing = prompt
         let alert = NSAlert()
         alert.alertStyle = .informational
@@ -750,7 +750,7 @@ final class BookMark: NSView {
         let core = delegate.core
         core.sheetChanged(open: true)
         delegate.sheetShowing = ["kind": "link_prompt", "message": prompt.title, "informative": prompt.message, "buttons": [prompt.openTitle, prompt.cancelTitle], "address": prompt.address]
-        alert.beginSheetModal(for: window) { [weak self] response in
+        delegate.sheets.present(alert, over: window) { [weak self] response in
             core.sheetChanged(open: false)
             self?.delegate.sheetShowing = nil
             guard let address = core.linkPromptAnswered(id: prompt.id, open: response == .alertFirstButtonReturn) else { return }
@@ -874,7 +874,7 @@ final class BookMark: NSView {
             problemShowing = nil
             return
         }
-        guard problemShowing != problem, window.attachedSheet == nil else { return }
+        guard problemShowing != problem, !delegate.sheets.isUp(over: window) else { return }
         problemShowing = problem
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -885,7 +885,7 @@ final class BookMark: NSView {
         let core = delegate.core
         core.sheetChanged(open: true)
         delegate.sheetShowing = ["kind": "save_problem", "message": problem.title, "informative": problem.message, "buttons": [problem.okTitle] + (problem.saveAsTitle.map { [$0] } ?? [])]
-        alert.beginSheetModal(for: window) { [weak self] response in
+        delegate.sheets.present(alert, over: window) { [weak self] response in
             core.sheetChanged(open: false)
             self?.delegate.sheetShowing = nil
             let action = core.saveProblemAnswered(saveAs: response == .alertSecondButtonReturn)
@@ -899,7 +899,7 @@ final class BookMark: NSView {
             passwordShowing = nil
             return
         }
-        guard passwordShowing != prompt, window.attachedSheet == nil else { return }
+        guard passwordShowing != prompt, !delegate.sheets.isUp(over: window) else { return }
         passwordShowing = prompt
         let alert = NSAlert()
         alert.alertStyle = .informational
@@ -915,7 +915,7 @@ final class BookMark: NSView {
         let core = delegate.core
         core.sheetChanged(open: true)
         delegate.sheetShowing = ["kind": "password", "message": prompt.title, "informative": prompt.message, "buttons": [prompt.openTitle, prompt.cancelTitle]]
-        alert.beginSheetModal(for: window) { [weak self] response in
+        delegate.sheets.present(alert, over: window) { [weak self] response in
             guard let self else { return }
             core.sheetChanged(open: false)
             self.delegate.sheetShowing = nil

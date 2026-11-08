@@ -48,7 +48,7 @@ final class PrintPagesView: NSView {
 extension AppDelegate {
     /// File > Print: the system's panel, with Rust's answers about what there is to print. Its answer goes to Rust, which prepares the pages off this thread.
     func showPrintPanel() {
-        guard let window = windowController?.window, window.attachedSheet == nil else { return }
+        guard let window = windowController?.window, !sheets.isUp(over: window) else { return }
         let model = core.printModel()
         guard model.tab != 0, model.pages > 0 else { return }
         let info = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo.shared
@@ -61,7 +61,7 @@ extension AppDelegate {
         let core = self.core
         core.sheetChanged(open: true)
         sheetShowing = ["kind": "print_panel", "pages": model.pages]
-        panel.beginSheet(using: info, on: window) { [weak self] response in
+        sheets.present(panel, info: info, over: window) { [weak self] response in
             core.sheetChanged(open: false)
             self?.sheetShowing = nil
             guard response == .printed else { return }
