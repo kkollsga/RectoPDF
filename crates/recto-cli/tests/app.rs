@@ -3057,7 +3057,7 @@ fn hover(run: &Run, place: &str) -> Value {
     })
 }
 
-/// Failure: a link in the app doesn't show where it goes, or a click goes somewhere else or nowhere; Back and Forward, from the Go menu or a swipe, don't retrace it; a web address opens without the person being asked, or doesn't show its real target first; a script runs; or the page number in the corner and the go-to field don't know what the book calls its pages.
+/// Failure: a link in the app doesn't show where it goes, or a click goes somewhere else or nowhere, or its hint stays over the page it went to; Back and Forward, from the Go menu or a swipe, don't retrace it; a web address opens without the person being asked, or doesn't show its real target first; a script runs; or the page number in the corner and the go-to field don't know what the book calls its pages.
 #[test]
 fn links_back_forward_and_page_labels_in_the_app() {
     let Some(run) = Run::start() else { return };
@@ -3072,6 +3072,9 @@ fn links_back_forward_and_page_labels_in_the_app() {
     run.ok(&["qa", "mouse-down", &format!("{}:1", on_link(0))]);
     run.ok(&["qa", "mouse-up"]);
     let went = wait_for(&run, |state| state["app"]["place_label"] == "5 (9 of 12)");
+    // The page moved under the pointer, which didn't move: no link is under it now, so its hint and hand go (PLAN, links follow-ups: they stayed until the pointer moved).
+    let moved_on = wait_for(&run, |state| state["app"]["links"]["hint"].is_null());
+    assert_ne!(moved_on["app"]["pages"]["cursor"], "link", "{moved_on}");
     let go = |state: &Value, id: &str| {
         state["app"]["menu_bar"]
             .as_array()
