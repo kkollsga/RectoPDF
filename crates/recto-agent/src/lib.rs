@@ -883,7 +883,7 @@ pub fn session_show_json<L: DocLoader>(session: &Session<L>, level: Level, kept:
         .map(|tab| {
             let notice = session.tab_notice(tab.id).map(|notice| json!({ "code": notice.code(), "message": session.tab_notice_message(tab.id) }));
             let place = session.place_to_show(tab.id);
-            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.map(|place| place.within), "layout": tab.spread.name(), "edited": session.is_edited(tab.id), "can_undo": session.undo_and_redo(tab.id).0, "can_redo": session.undo_and_redo(tab.id).1, "notice": notice })
+            json!({ "tab": tab.id.0, "page": tab.page + 1, "pages": session.pages_in(tab.id), "zoom": place.map(|place| place.zoom), "within_page": place.filter(|place| place.anchor_page == place.page).map(|place| place.within), "layout": tab.spread.name(), "edited": session.is_edited(tab.id), "can_undo": session.undo_and_redo(tab.id).0, "can_redo": session.undo_and_redo(tab.id).1, "notice": notice })
         })
         .collect();
     let find = session.find();

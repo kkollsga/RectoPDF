@@ -902,6 +902,8 @@ impl Reader {
     #[allow(clippy::too_many_arguments)]
     pub fn activate(&mut self, tab: u32, pages: u32, page: u32, map: PageMap, warm: &[u32], saved: Option<SavedPlace>, spread: Spread) {
         self.keep_only(warm, tab);
+        // The tab showing taken up again, as a turn of its pages does: the reader stays where they are.
+        let staying = self.hot == Some(tab);
         if self.hot != Some(tab) {
             let last_page = self.last_view_page;
             let (left_x, left_y) = (self.viewport.x, self.viewport.y);
@@ -935,7 +937,7 @@ impl Reader {
         });
         // Back on the page it was left on, and it's back at the same place in that page. A tall page's reader isn't sent to its top.
         let same_pages = doc.map.same_pages(&map) && doc.layout.count() == pages;
-        let back_at = doc.left_at.take().filter(|(left, _)| *left == page && same_pages).map(|(_, anchor)| anchor);
+        let back_at = if staying && same_pages { Some(doc.anchor) } else { doc.left_at.take().filter(|(left, _)| *left == page && same_pages).map(|(_, anchor)| anchor) };
         if back_at.is_none() {
             doc.scroll_x = 0.0;
             doc.exact_y = None;
@@ -1262,7 +1264,7 @@ impl Reader {
         }
         let moved = doc.exact_y.is_none_or(|(y, _)| y != viewport.y);
         if moved {
-            doc.anchor = doc.layout.anchor_at(viewport.y);
+            doc.anchor = doc.layout.anchor_for(viewport.y, page);
             doc.exact_y = None;
         }
         doc.scroll_x = viewport.x;
@@ -2632,6 +2634,63 @@ mod tests {
         assert_eq!(reader.take_moved_page(), None, "reading on in the row isn't going to the left page");
         reader.set_spread(Spread::Single);
         assert_eq!(reader.places()[0].1.page, 51);
+    }
+
+    /// The view the host goes to on the reader's next turn: wherever the last scroll it was told of says, as it would have applied it.
+    fn follow_host(reader: &mut Reader, mut at: Viewport) -> Viewport {
+        if let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) {
+            at.y = y;
+            at.scrolled_to = seq;
+        }
+        reader.set_viewport(at);
+        at
+    }
+
+    /// Failure (review of f05c998, finding 1): Rotate, Undo or Redo of a turn sends the reader to the top of their page and back to the left edge, as the tab showing was taken up again as if it had just been come to.
+    #[test]
+    fn a_turn_keeps_the_place_in_the_page_and_across() {
+        let mut reader = reader_on(10);
+        reader.scrolled_to = 0;
+        settle(&mut reader);
+        let page = reader.doc().unwrap().layout.rect(3);
+        let mut at = view(page.y + page.height * 0.4);
+        at.x = 30.0;
+        at.magnification = 2.0;
+        reader.set_viewport(at);
+        reader.take_moved_page();
+        let before = reader.places()[0].1;
+        let turned = PageMap { turns: Some(Arc::from(vec![1u8; 10])), ..map() };
+        reader.activate(1, 10, 3, turned, &[], None, Spread::Single);
+        follow_host(&mut reader, at);
+        let after = reader.places()[0].1;
+        assert_eq!(after.page, 3);
+        assert!((after.anchor.1 - before.anchor.1).abs() < 0.02, "as far down the page: {:?} then {:?}", before.anchor, after.anchor);
+        assert_eq!(reader.docs[&1].scroll_x, 30.0, "and as far across");
+    }
+
+    /// Failure (review of f05c998, B2): side by side, after any scroll, a change of layout moves the reader off the page they were on: the place was kept on the first page of its row, so the right-hand page's reader lands on the left one, or two pages back going to the cover layout. Fed the host's next view, as the app is.
+    #[test]
+    fn a_change_of_layout_after_a_scroll_keeps_the_page() {
+        for (from, to) in [(Spread::TwoUp, Spread::Single), (Spread::TwoUp, Spread::TwoUpCover), (Spread::TwoUpCover, Spread::TwoUp)] {
+            let mut reader = reader_on(100);
+            reader.scrolled_to = 0;
+            reader.set_spread(from);
+            settle(&mut reader);
+            reader.jump_to(51);
+            let at = follow_host(&mut reader, view(0.0));
+            let mut scrolled = at;
+            scrolled.y += 20.0;
+            reader.set_viewport(scrolled);
+            reader.take_moved_page();
+            let was = reader.doc().unwrap().layout.rect(51);
+            let down = (scrolled.y - was.y) / was.height;
+            reader.set_spread(to);
+            follow_host(&mut reader, scrolled);
+            let place = reader.places()[0].1;
+            assert_eq!(place.page, 51, "{from:?} to {to:?}");
+            let rect = reader.doc().unwrap().layout.rect(51);
+            assert!((reader.viewport.y - (rect.y + down * rect.height)).abs() < 1.0, "{from:?} to {to:?}: as far down the page: {} against {}", reader.viewport.y, rect.y + down * rect.height);
+        }
     }
 
     /// Failure: a page that couldn't be drawn is asked for on every scroll, or holds up the rest, or shows no reason.

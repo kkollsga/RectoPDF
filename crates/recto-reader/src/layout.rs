@@ -456,6 +456,23 @@ impl PageLayout {
         (page, ((y - rect.y) / rect.height.max(1.0)).clamp(0.0, 1.0))
     }
 
+    /// Where a place is, to keep it across a change, on the page the reader's on, as the page view decides it. Side by side, that's the reader's own page of the row at this height if it reaches down this far, so a change of layout keeps their page; otherwise the row's tallest page, which reaches the whole row, so a short page beside a tall one can't hold the place to its own height.
+    pub fn anchor_for(&self, y: f64, reader: u32) -> (u32, f64) {
+        let (first, second) = self.row_pages(self.row_at(y));
+        let reaches = |page: u32| {
+            let rect = self.rect(page);
+            y <= rect.y + rect.height
+        };
+        let page = match second {
+            None => first,
+            Some(_) if (reader == first || Some(reader) == second) && reaches(reader) => reader,
+            Some(second) if self.rect(second).height > self.rect(first).height => second,
+            Some(_) => first,
+        };
+        let rect = self.rect(page);
+        (page, ((y - rect.y) / rect.height.max(1.0)).clamp(0.0, 1.0))
+    }
+
     pub fn anchor_y(&self, (page, within): (u32, f64)) -> f64 {
         // The top of the first row is the top of the document, so a new tab or one at its start shows the margin above it.
         if within <= 0.0 && self.row_of(page.min(self.count.saturating_sub(1))) == 0 {
@@ -690,6 +707,30 @@ mod tests {
         let rect = layout.rect(1);
         let (x, y) = layout.from_page(1, 0.0, 0.0);
         assert!((x - (rect.x + rect.width)).abs() < 1e-6 && (y - rect.y).abs() < 1e-6);
+    }
+
+    /// Failure (review of f05c998, B3): side by side, a pair of a short page and a tall one loses the place on any change of the frame, as a resize or the sidebar's button makes: the place was measured against the row's first page, and held to its height, so 80% down the tall right-hand page came back hundreds of points up.
+    #[test]
+    fn a_tall_page_beside_a_short_one_keeps_the_place_through_a_resize() {
+        let mut layout = PageLayout::with_spread(6, Spread::TwoUp);
+        layout.set_frame(1400.0);
+        layout.set_page_size(0, letter());
+        layout.set_page_size(2, PageBox { width: 612.0, height: 300.0 });
+        layout.set_page_size(3, PageBox { width: 612.0, height: 1400.0 });
+        for reader in [2, 3] {
+            let tall = layout.rect(3);
+            let y = tall.y + tall.height * 0.8;
+            let anchor = layout.anchor_for(y, reader);
+            for frame in [1000.0, 1700.0, 1400.0] {
+                layout.set_frame(frame);
+                let tall = layout.rect(3);
+                assert!((layout.anchor_y(anchor) - (tall.y + tall.height * 0.8)).abs() < 1e-6, "reader on page {reader}, frame {frame}");
+            }
+        }
+        // On the reader's own page when it holds the place, so a change of layout keeps that page.
+        let right = layout.rect(1);
+        assert_eq!(layout.anchor_for(right.y + 10.0, 1).0, 1);
+        assert_eq!(layout.anchor_for(right.y + 10.0, 0).0, 0);
     }
 
     /// Failure: the first page starts at the window's top edge or the last ends at its bottom, with no margin, or going to page 1 hides the margin above it. Owner, 2026-11-08: "add some margin above the first page, and below the last page".
