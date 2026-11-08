@@ -611,6 +611,28 @@ impl Engine {
         self.after(reader);
     }
 
+    /// Where a point in the document is on a page as it's shown, with that page's size, for the snapshot tool. A short lock and some sums.
+    pub fn point_on_page(&self, x: f64, y: f64) -> Option<(recto_index::select::PagePoint, (f32, f32))> {
+        let reader = lock(&self.shared.reader);
+        let point = reader.point_on_page(x, y)?;
+        Some((point, reader.page_size_shown(point.page)?))
+    }
+
+    /// Where a point in the document is on `page`, whichever page it's over, past its edges if it must: a snapshot's box stays on the page it was pressed on. A short lock and some sums.
+    pub fn point_on_given_page(&self, page: u32, x: f64, y: f64) -> Option<recto_index::select::PagePoint> {
+        lock(&self.shared.reader).point_on_given_page(page, x, y)
+    }
+
+    /// How many pages the tab shown has, edits and all. A short lock, for what can't wait, as the print panel can't.
+    pub fn page_count(&self) -> u32 {
+        lock(&self.shared.reader).page_count()
+    }
+
+    /// A page's size as it's shown, in its own coordinates. A short lock.
+    pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)> {
+        lock(&self.shared.reader).page_size_shown(page)
+    }
+
     /// Where a point on a page is in the document.
     pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
         lock(&self.shared.reader).document_point(page, x, y)

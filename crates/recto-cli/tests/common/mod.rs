@@ -151,9 +151,14 @@ pub struct Raw {
 
 impl Raw {
     pub fn connect(state: &State) -> Self {
-        let stream = std::os::unix::net::UnixStream::connect(state.socket()).unwrap();
-        stream.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
-        Self { stream, buffer: Vec::new() }
+        Self::try_connect(state).unwrap()
+    }
+
+    /// A connection that can fail, as it does when a session out of descriptors drops it: on macOS setting a timeout on a socket whose other end has gone is `EINVAL`.
+    pub fn try_connect(state: &State) -> std::io::Result<Self> {
+        let stream = std::os::unix::net::UnixStream::connect(state.socket())?;
+        stream.set_read_timeout(Some(READ_TIMEOUT))?;
+        Ok(Self { stream, buffer: Vec::new() })
     }
 
     pub fn send(&mut self, line: &str) {

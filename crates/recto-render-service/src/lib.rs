@@ -29,7 +29,7 @@ mod host;
 pub mod transport;
 
 pub use budget::{
-    BUDGET_MAX_TIME, BudgetOptions, BudgetReport, DrawStrategy, OutputCaps, PageDrawn, PageEvent, PageSample, REGION_MIN_IMAGE_PIXELS, STRIP_MAX_BYTES, ViewportOptions, ViewportStep, draw_whole_page, largest_scale_that_fits, measure_budget,
+    BUDGET_MAX_TIME, BudgetOptions, BudgetReport, DrawStrategy, OutputCaps, PageDrawn, PageEvent, PageSample, REGION_MIN_IMAGE_PIXELS, STRIP_MAX_BYTES, ViewportOptions, ViewportStep, box_pixels, draw_page_box, draw_whole_page, draw_whole_page_sized, fits_at, largest_scale_that_fits, measure_budget,
     measure_viewport, page_device_size, plan_regions,
 };
 pub use host::{CancelHandle, DocRenderer, DrawPurpose, ExportRefusal, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy, RenderFailure, RenderStats, ServiceConfig, Surface, Target, Tile, TileRequest, TileResult, WallsDown};

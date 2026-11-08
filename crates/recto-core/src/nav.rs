@@ -187,7 +187,12 @@ const MAX_NODES_KEPT: usize = 256;
 
 impl Budget {
     fn new() -> Self {
-        Self { visits_left: Cell::new(MAX_TREE_VISITS), deadline: Instant::now() + MAX_READ_TIME, cut_short: Cell::new(false), nodes: std::cell::RefCell::new(HashMap::new()) }
+        Self::lasting(MAX_READ_TIME)
+    }
+
+    /// A budget with a time of its own: a test of the caps on counts gives the time room, so a busy machine can't make it a test of the clock.
+    fn lasting(time: Duration) -> Self {
+        Self { visits_left: Cell::new(MAX_TREE_VISITS), deadline: Instant::now() + time, cut_short: Cell::new(false), nodes: std::cell::RefCell::new(HashMap::new()) }
     }
 
     fn may_visit(&self) -> bool {
@@ -220,7 +225,10 @@ pub fn page_links_bytes(bytes: Arc<[u8]>, pages: &[u32]) -> Result<Vec<(u32, Pag
 }
 
 fn links_of(reader: &IndexedReader, pages: &[u32]) -> Vec<(u32, PageLinks)> {
-    let budget = Budget::new();
+    links_within(reader, pages, Budget::new())
+}
+
+fn links_within(reader: &IndexedReader, pages: &[u32], budget: Budget) -> Vec<(u32, PageLinks)> {
     let (old_dests, names_tree) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
     let Ok(map) = reader.page_map() else { return pages.iter().take(MAX_PAGES_PER_READ).map(|page| (*page, PageLinks::default())).collect() };
     let index: HashMap<ObjectId, u32> = map.iter().enumerate().filter_map(|(at, entry)| Some((entry.id(), u32::try_from(at).ok()?))).collect();
@@ -690,7 +698,10 @@ fn normalise(mut ranges: Vec<LabelRange>) -> Box<[LabelRange]> {
 
 /// Reads `/PageLabels` from the catalog, bounded. A file with none, or one that can't be read, has none.
 pub(crate) fn read_labels(reader: &IndexedReader, pages: u32) -> PageLabels {
-    let budget = Budget::new();
+    labels_within(reader, pages, &Budget::new())
+}
+
+fn labels_within(reader: &IndexedReader, pages: u32, budget: &Budget) -> PageLabels {
     let Some(root) = reader.trailer_entry_owned(b"Root").ok().flatten() else { return PageLabels::default() };
     let Some(tree) = root.as_dict().ok().and_then(|root| root.get(b"PageLabels").ok()).cloned() else { return PageLabels::default() };
     let mut ranges = Vec::new();
@@ -829,6 +840,27 @@ fn parse_number(text: &str, style: LabelStyle, any_case: bool) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: a page of thousands of links, or a label tree of thousands of ranges, is read whole and held, as nothing counts them. The caps on counts, with the time cap given room, so a busy machine can't make this a test of the clock: `tests/nav.rs` holds the same files to their limits whatever stops them.
+    #[test]
+    fn counts_are_capped_whatever_the_time() {
+        let many = (0..MAX_PAGE_LINKS * 3).map(|at| format!("<< /Subtype /Link /Rect [{at} 0 {} 10] /Dest [3 0 R /Fit] >>", at + 1)).collect::<Vec<_>>().join(" ");
+        let bytes = recto_testpdf::pages(&[recto_testpdf::Page { content: Vec::new(), page_extra: format!("/Annots [{many}]"), media: (612.0, 792.0) }]);
+        let reader = open_bytes(Arc::from(bytes)).unwrap();
+        let read = links_within(&reader, &[0], Budget::lasting(Duration::from_secs(120)));
+        assert_eq!(read[0].1.links.len(), MAX_PAGE_LINKS);
+        assert!(read[0].1.truncated);
+        let pages = MAX_LABEL_RANGES * 5;
+        let nums = (0..MAX_LABEL_RANGES * 4).map(|at| format!("{at} << /S /D /P (p{at}-) >>")).collect::<Vec<_>>().join(" ");
+        let bytes = recto_testpdf::pages(&(0..pages).map(|_| recto_testpdf::Page::new(Vec::new())).collect::<Vec<_>>());
+        let at = bytes.windows(14).position(|window| window == b"/Type /Catalog").unwrap() + 14;
+        let bytes = [&bytes[..at], format!(" /PageLabels << /Nums [{nums}] >>").as_bytes(), &bytes[at..]].concat();
+        // The objects after it have moved, and the reader finds them again by their numbers when the table doesn't hold.
+        let reader = open_bytes(Arc::from(bytes)).unwrap();
+        let labels = labels_within(&reader, pages as u32, &Budget::lasting(Duration::from_secs(120)));
+        assert_eq!(labels.ranges().len(), MAX_LABEL_RANGES);
+        assert!(labels.truncated);
+    }
 
     /// Failure: a field added to `Link` makes every link of every page the pointer has crossed bigger.
     #[test]

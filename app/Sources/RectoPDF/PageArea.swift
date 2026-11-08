@@ -128,6 +128,8 @@ final class CenteringClipView: NSClipView {
     /// What's selected, one layer on a page that has any: a page's sublayer, so it scrolls and zooms with the page, and it's no tile's business. Under the tint, so warm paper warms it too.
     private var highlightLayers: [UInt32: CAShapeLayer] = [:]
     private var highlightRects: [UInt32: [HighlightRect]] = [:]
+    /// The snapshot tool's box, on the one page it's being drawn on: a page's sublayer, as a highlight is, so it scrolls and zooms with it.
+    private var snapshotBox: (page: UInt32, layer: CAShapeLayer)?
     private var highlightDark = false
     private var highlightLighten = false
     private var windowIsActive = true
@@ -419,6 +421,7 @@ final class CenteringClipView: NSClipView {
         switch look {
         case "link": NSCursor.pointingHand.set()
         case "ibeam": NSCursor.iBeam.set()
+        case "crosshair": NSCursor.crosshair.set()
         default: NSCursor.arrow.set()
         }
     }
@@ -427,6 +430,31 @@ final class CenteringClipView: NSClipView {
         guard hint != linkHint else { return }
         linkHint = hint
         linkHintChanged?(hint)
+    }
+
+    /// The snapshot tool's box where Rust says, or none. A dashed line in the system's accent colour over a light wash of it, so it shows on any paper.
+    private func applySnapshotBox(page: UInt32, rect: HighlightRect?) {
+        if let shown = snapshotBox, shown.page != page || rect == nil {
+            shown.layer.removeFromSuperlayer()
+            snapshotBox = nil
+        }
+        guard let rect, let parent = pageLayers[page] else { return }
+        let layer = snapshotBox?.layer ?? {
+            let made = CAShapeLayer()
+            made.anchorPoint = .zero
+            made.zPosition = 20
+            made.lineDashPattern = [4, 3]
+            parent.addSublayer(made)
+            snapshotBox = (page, made)
+            return made
+        }()
+        let accent = NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? .systemBlue
+        layer.strokeColor = accent.cgColor
+        layer.fillColor = accent.withAlphaComponent(0.12).cgColor
+        // The line stays a point wide at any zoom.
+        layer.lineWidth = 1 / max(parent.affineTransform().a.magnitude + parent.affineTransform().b.magnitude, 0.01) / max(scrollView.magnification, 0.01)
+        layer.frame = parent.bounds
+        layer.path = CGPath(rect: CGRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height), transform: nil)
     }
 
     /// A drag past the view's edge goes on scrolling with no further events, while it's there. The timer lives only that long.
@@ -617,6 +645,7 @@ final class CenteringClipView: NSClipView {
             tintLayers.removeAll()
             highlightLayers.removeAll()
             highlightRects.removeAll()
+            snapshotBox = nil
             for tile in tiles.values { tile.layer.contents = nil }
             pageLayers.removeAll()
             tiles.removeAll()
@@ -662,6 +691,7 @@ final class CenteringClipView: NSClipView {
             tintLayers.removeValue(forKey: page)
             highlightLayers.removeValue(forKey: page)
             highlightRects.removeValue(forKey: page)
+            if snapshotBox?.page == page { snapshotBox = nil }
             for id in tilesOnPage.removeValue(forKey: page) ?? [] {
                 if let tile = tiles.removeValue(forKey: id) { recycle(tile.layer) }
             }
@@ -690,6 +720,8 @@ final class CenteringClipView: NSClipView {
             recycle(tile.layer)
         case let .highlight(page, rects):
             applyHighlight(page: page, rects: rects)
+        case let .snapshotBox(page, rect):
+            applySnapshotBox(page: page, rect: rect)
         }
     }
 
@@ -747,6 +779,6 @@ final class CenteringClipView: NSClipView {
 
     /// What QA reads about the layers themselves, as opposed to what Rust thinks it asked for.
     func report() -> [String: Any] {
-        ["highlight_layers": highlightLayers.count, "highlight_rects": highlightRects.values.map(\.count).reduce(0, +), "cursor": cursorLook, "autoscrolling": autoscrollTimer != nil, "pointer_steps": pointerSteps, "worst_pointer_step_us": worstPointerMicros, "document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_layers": pageLayers.count, "page_turns": pageLayers.keys.sorted().map { page -> Int in let t = pageLayers[page]!.affineTransform(); return Int((atan2(t.b, t.a) / (.pi / 2)).rounded() + 4) % 4 }, "page_frames_landscape": pageLayers.values.filter { $0.frame.width > $0.frame.height }.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "scroll_x": scrollView.contentView.bounds.minX, "magnification": scrollView.magnification]
+        ["highlight_layers": highlightLayers.count, "snapshot_box": snapshotBox.map { ["page": $0.page, "x": $0.layer.path?.boundingBox.minX ?? 0, "y": $0.layer.path?.boundingBox.minY ?? 0, "width": $0.layer.path?.boundingBox.width ?? 0, "height": $0.layer.path?.boundingBox.height ?? 0] as [String: Any] } as Any? ?? NSNull(), "highlight_rects": highlightRects.values.map(\.count).reduce(0, +), "cursor": cursorLook, "autoscrolling": autoscrollTimer != nil, "pointer_steps": pointerSteps, "worst_pointer_step_us": worstPointerMicros, "document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_layers": pageLayers.count, "page_turns": pageLayers.keys.sorted().map { page -> Int in let t = pageLayers[page]!.affineTransform(); return Int((atan2(t.b, t.a) / (.pi / 2)).rounded() + 4) % 4 }, "page_frames_landscape": pageLayers.values.filter { $0.frame.width > $0.frame.height }.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "scroll_x": scrollView.contentView.bounds.minX, "magnification": scrollView.magnification]
     }
 }

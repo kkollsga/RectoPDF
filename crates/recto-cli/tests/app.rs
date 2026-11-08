@@ -830,7 +830,7 @@ fn the_panel_opens_and_does_what_it_says() {
     run.settled();
     let open = run.report();
     let ids: Vec<&str> = open["app"]["panel"]["items"].as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["rotate.left", "rotate.right", "paper.white", "paper.warm", "paper.dark"], "this and nothing else: tools first, and zoom is the top left's, by the owner's word");
+    assert_eq!(ids, ["tools.snapshot", "rotate.left", "rotate.right", "paper.white", "paper.warm", "paper.dark"], "this and nothing else: tools first, and zoom is the top left's, by the owner's word");
     assert!(open["app"]["contents"]["list_height"].as_f64().unwrap() < list_at_rest, "it docks in room from the list: {open}");
     let drawn = open["reader"]["counts"]["drawn"].clone();
     run.ok(&["qa", "panel", "paper.warm"]);
@@ -855,7 +855,7 @@ fn the_menu_bar_and_the_agent_icon() {
     let state = run.report();
     let titles: Vec<&str> = state["app"]["menu_bar"].as_array().unwrap().iter().map(|menu| menu["title"].as_str().unwrap()).collect();
     // The Go menu has Back, Forward and Go to Page…, as SPEC lists the menus.
-    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go"], "{state}");
+    assert_eq!(titles, ["RectoPDF", "File", "Edit", "View", "Go", "Tools"], "{state}");
     let view = &state["app"]["menu_bar"][3]["items"];
     let names: Vec<&str> = view.as_array().unwrap().iter().map(|item| item["title"].as_str().unwrap()).collect();
     assert_eq!(names, ["Zoom In", "Zoom Out", "Actual Size", "Fit", "Hide Sidebar", "Single Page", "Side by Side", "Side by Side, First Page Alone", "Show Agent Icon", "Command Palette…"]);
@@ -2590,6 +2590,192 @@ fn usage_rights_alone_save_in_place_with_a_quiet_note() {
     let elsewhere = wait_for(&run, |state| state["app"]["document_name"] != saved["app"]["document_name"] || state["reader"]["pages"] == 3);
     run.settled();
     assert!(run.report()["app"]["copy_notice"].is_null(), "{}", elsewhere["app"]["copy_notice"]);
+}
+
+/// A page with a line of text and the 4 x 4 red JPEG of `export_svg.rs`, over 100..140 across and 252..292 down, shown from the top left.
+fn snapshot_pdf() -> (TempPdf, Vec<u8>) {
+    const JPEG_HEX: &str = "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a070706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffdb00430103040405040509050509140d0b0d1414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414ffc00011080004000403012200021101031101ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b51100020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00f0aa28a2be68fedd3fffd9";
+    let jpeg: Vec<u8> = (0..JPEG_HEX.len()).step_by(2).map(|at| u8::from_str_radix(&JPEG_HEX[at..at + 2], 16).unwrap()).collect();
+    let image = recto_testpdf::first_extra_object(1);
+    let content = [text_lines(&["Words to take in a box"]), b"q 40 0 0 40 100 500 cm /Im Do Q\n".to_vec()].concat();
+    let dict = "/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode".to_string();
+    let bytes = recto_testpdf::pages_with(&[Page::new(content)], &format!("/XObject << /Im {image} 0 R >>"), vec![Object::Stream { dict, data: jpeg.clone() }]);
+    (TempPdf::new("snapshot.pdf", &bytes), jpeg)
+}
+
+/// The types the app put on the clipboard, in order: the system adds older names for each, and a TIFF it can make from an image, which aren't the app's.
+fn clipboard_items(run: &Run) -> Vec<Value> {
+    run.ok(&["qa", "copied"])["types"].as_array().unwrap().iter().filter(|item| item["type"].as_str().is_some_and(|name| name.starts_with("public.") && name != "public.tiff")).cloned().collect()
+}
+
+fn clipboard_types(run: &Run) -> Vec<String> {
+    clipboard_items(run).iter().map(|item| item["type"].as_str().unwrap().to_string()).collect()
+}
+
+/// Failure: with the snapshot tool on, a drag still selects text, or the box isn't drawn while dragging, or the clipboard doesn't get PNG, text, SVG and JPG at once (SPEC section 6), or a click on a JPEG doesn't give its own bytes. Through the menu item, and the presses a real mouse makes, in window coordinates.
+#[test]
+fn the_snapshot_tool_takes_a_box_and_an_image_to_the_clipboard() {
+    use sha2::Digest;
+    let Some(run) = Run::start() else { return };
+    let (file, jpeg) = snapshot_pdf();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "tools.snapshot"]);
+    let on = run.report();
+    assert_eq!(on["snapshot"]["on"], true, "{on}");
+    assert_eq!(menu_item(&on, "tools.snapshot")["checked"], true, "the menu says so");
+    run.ok(&["qa", "mouse-down", "1:60,50"]);
+    run.ok(&["qa", "mouse-drag", "1:400,300"]);
+    let drawing = run.report();
+    let shown = &drawing["app"]["pages"]["snapshot_box"];
+    assert_eq!((shown["page"].as_u64(), shown["width"].as_f64(), shown["height"].as_f64()), (Some(0), Some(340.0), Some(250.0)), "{drawing}");
+    assert_eq!(drawing["reader"]["selection"]["selected"], false, "no text selected by the tool's drag");
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let after = run.report();
+    assert!(after["app"]["pages"]["snapshot_box"].is_null(), "the box goes on release: {after}");
+    // The SVG is promised, and made only when a paste asks for it: seen on the first look, as a look in this process makes the system resolve it.
+    let first = clipboard_items(&run);
+    assert_eq!(first.iter().map(|item| item["type"].as_str().unwrap()).collect::<Vec<_>>(), ["public.png", "public.utf8-plain-text", "public.svg-image", "public.jpeg"]);
+    assert_eq!(first[2]["promised"], true, "{first:?}");
+    assert_eq!(copied(&run), "Words to take in a box");
+    let pasted = run.ok(&["qa", "paste", "public.svg-image"]);
+    let made = pasted["types"].as_array().unwrap().iter().find(|item| item["type"] == "public.svg-image").unwrap().clone();
+    assert!(made["bytes"].as_u64().unwrap() > 100, "made on the paste: {pasted}");
+    // A click on the image: its own JPEG, then a PNG for what can't take one.
+    run.ok(&["qa", "mouse-down", "1:120,270"]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let items = Value::Array(clipboard_items(&run));
+    assert_eq!(items[0]["type"], "public.jpeg", "{items}");
+    assert_eq!(items[0]["sha256"].as_str().unwrap(), sha2::Sha256::digest(&jpeg).iter().map(|byte| format!("{byte:02x}")).collect::<String>(), "its own bytes");
+    assert_eq!(items[1]["type"], "public.png");
+    // A click off any image says so, and leaves the clipboard as it was.
+    run.ok(&["qa", "mouse-down", "1:400,600"]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let told = wait_for(&run, |state| state["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("no image")));
+    assert!(told["app"]["copy_notice"]["button"].is_null(), "{told}");
+    assert_eq!(clipboard_types(&run)[0], "public.jpeg");
+    // Off again, a drag selects text as before.
+    run.ok(&["qa", "menu", "tools.snapshot"]);
+    assert_eq!(run.report()["snapshot"]["on"], false);
+}
+
+/// Failure: a snapshot of a file that asks not to be copied gets round it, or is refused with no "Copy anyway", though the owner decided on 2026-11-08 it gets the same notice as text. The button takes the same box again.
+#[test]
+fn a_snapshot_of_a_copy_restricted_file_offers_copy_anyway() {
+    let Some(run) = Run::start() else { return };
+    let file = restricted_pdf();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["qa", "menu", "tools.snapshot"]);
+    run.ok(&["qa", "mouse-down", "1:60,50"]);
+    run.ok(&["qa", "mouse-drag", "1:400,120"]);
+    run.ok(&["qa", "mouse-up"]);
+    run.settled();
+    let asked = wait_for(&run, |state| state["app"]["copy_notice"].is_object());
+    assert!(asked["app"]["copy_notice"]["text"].as_str().unwrap().contains("permissions"), "{asked}");
+    assert_eq!(asked["app"]["copy_notice"]["button"], "Copy anyway");
+    assert!(clipboard_types(&run).is_empty(), "nothing on the clipboard yet");
+    run.ok(&["qa", "notice-button"]);
+    run.settled();
+    assert_eq!(clipboard_types(&run)[0], "public.png");
+    assert_eq!(copied(&run), "Words that ask not to be copied");
+}
+
+/// How many 8 px blocks of two pictures of one size differ in mean by more than 24 of 255, of how many: what a print is held to against its source, as text edges move a little when a page's picture is drawn again and nothing missing or wrong passes.
+fn blocks_differing(one: &[u8], two: &[u8], width: usize, height: usize) -> (usize, usize) {
+    let (mut bad, mut all) = (0, 0);
+    for top in (0..height.saturating_sub(8)).step_by(8) {
+        for left in (0..width.saturating_sub(8)).step_by(8) {
+            let sum = |pixels: &[u8]| -> i64 { (top..top + 8).map(|y| pixels[(y * width + left) * 3..(y * width + left + 8) * 3].iter().map(|&value| i64::from(value)).sum::<i64>()).sum() };
+            all += 1;
+            bad += usize::from((sum(one) - sum(two)).abs() > 24 * 192);
+        }
+    }
+    (bad, all)
+}
+
+/// Failure: the app's print isn't the document's pages: drawn from the screen's tiles, with dark paper in it, missing pages or out of order, or the UI thread waits on it. Through File > Print's own path to a PDF, page by page against the source.
+#[test]
+fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
+    use recto_svg::verify::{Embedded, read_png};
+    let Some(run) = Run::start() else { return };
+    let page = |n: usize, colour: &str| Page::new([text_lines(&[&format!("Page {n} printed")]), format!("{colour} rg {} 300 120 80 re f\n", 60 + n * 100).into_bytes()].concat());
+    let file = TempPdf::new("print-me.pdf", &pages(&[page(1, "1 0 0"), page(2, "0 0.6 0"), page(3, "0 0 1")]));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["view", "--paper", "dark"]);
+    run.settled();
+    assert_eq!(menu_item(&run.report(), "file.print")["enabled"], true);
+    let out = file.0.with_file_name(format!("printed-{}.pdf", std::process::id()));
+    run.ok(&["qa", "print-to-pdf", &format!("{}|2|3", out.display())]);
+    run.settled();
+    let state = run.report();
+    assert_eq!(state["printing"]["busy"], false, "{state}");
+    assert!(state["hangs"]["over_1s"].as_u64() == Some(0), "the UI thread never waited: {state}");
+    let local = State::at(Level::Full);
+    let facts = local.json(&["local", out.to_str().unwrap(), "facts", "--json"]).0;
+    assert_eq!(facts["data"]["pages"], 2, "{facts}");
+    let draw = |pdf: &std::path::Path, page: u32| {
+        let png = pdf.with_file_name(format!("drawn-{}-{page}.png", std::process::id()));
+        let (reply, code) = local.json(&["local", pdf.to_str().unwrap(), "render", &page.to_string(), "--scale", "1", "--out", png.to_str().unwrap()]);
+        assert_eq!(code, 0, "{reply}");
+        let Embedded::Png { width, height, pixels, .. } = read_png(&std::fs::read(&png).unwrap()) else { panic!() };
+        std::fs::remove_file(&png).unwrap();
+        (width as usize, height as usize, pixels)
+    };
+    for (printed, source) in [(1, 2), (2, 3)] {
+        let (width, height, print) = draw(&out, printed);
+        let (source_width, source_height, original) = draw(&file.0, source);
+        assert_eq!((width, height), (source_width, source_height));
+        let (bad, all) = blocks_differing(&print, &original, width, height);
+        assert!(bad * 200 < all, "printed page {printed} against source page {source}: {bad} of {all} blocks differ, as dark paper or the wrong page would");
+    }
+    std::fs::remove_file(&out).unwrap();
+}
+
+/// Failure: a print to a PDF of a file that asks not to be copied gets round it, though the owner decided on 2026-11-08 that print to PDF gets the same step as Copy; or it's refused with no "Print anyway"; or the button prints nothing. Through File > Print's own path to a file, as the panel's Save as PDF takes it.
+#[test]
+fn a_print_to_a_file_of_a_copy_restricted_pdf_offers_print_anyway() {
+    let Some(run) = Run::start() else { return };
+    let file = restricted_pdf();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let out = file.0.with_file_name(format!("restricted-printed-{}.pdf", std::process::id()));
+    run.ok(&["qa", "print-to-pdf", out.to_str().unwrap()]);
+    run.settled();
+    let asked = wait_for(&run, |state| state["app"]["copy_notice"]["button"] == "Print anyway");
+    assert!(asked["app"]["copy_notice"]["text"].as_str().unwrap().contains("permissions"), "{asked}");
+    assert!(!out.exists(), "nothing printed yet");
+    run.ok(&["qa", "notice-button"]);
+    run.settled();
+    let done = wait_for(&run, |state| state["printing"]["busy"] == false);
+    assert!(out.exists(), "printed once asked: {done}");
+    std::fs::remove_file(&out).unwrap();
+}
+
+/// Failure: a long print can't be stopped, or Stop leaves its file in the temp folder, or the print goes on to the system anyway. The progress line has Stop beside it, through the button itself.
+#[test]
+fn a_print_being_prepared_stops_with_its_stop_button() {
+    let Some(run) = Run::start() else { return };
+    let list: Vec<Page> = (0..120).map(|n| Page::new(text_lines(&[&format!("Page {n} of a long print")]))).collect();
+    let file = TempPdf::new("long-print.pdf", &pages(&list));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let out = file.0.with_file_name(format!("stopped-{}.pdf", std::process::id()));
+    run.ok(&["qa", "print-to-pdf", out.to_str().unwrap()]);
+    let preparing = wait_for(&run, |state| state["app"]["copy_notice"]["button"] == "Stop");
+    assert!(preparing["app"]["copy_notice"]["text"].as_str().unwrap().contains("Preparing"), "{preparing}");
+    run.ok(&["qa", "notice-button"]);
+    run.settled();
+    let stopped = wait_for(&run, |state| state["printing"]["busy"] == false);
+    assert!(stopped["app"]["copy_notice"]["button"].is_null(), "{stopped}");
+    assert!(!out.exists(), "nothing printed");
+    let pid = stopped["printing"]["pid"].as_u64().unwrap();
+    let left: Vec<String> = std::fs::read_dir(std::env::temp_dir()).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with(&format!("recto-print-{pid}-"))).collect();
+    assert!(left.is_empty(), "its file goes: {left:?}");
 }
 
 /// Failure: going to a Find hit by a click on its row or Return in the field leaves no mark for Back, so ⌘[ can't bring the reader to where they were reading, as it can after a link; or ⌘G's step, which only steps, marks the trail or takes the way forward away.

@@ -11,14 +11,25 @@ use recto_render_service::{
 };
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
+pub(crate) mod image;
+mod jpeg;
 mod png;
+pub(crate) mod snapshot;
 mod svg;
 
 pub(crate) use svg::{SvgArgs, export_svg};
+pub(crate) use svg::check_args as check_scale_and_box;
+
+/// A box on a page as SVG, into `out`: a snapshot's SVG. `text` is `Both` for a file, with text as outlines and real characters, as `export svg` writes it by default, and `Paths` for the clipboard, whose text is the text item's, hidden text left out: outlines only carry what's drawn.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_svg_box<O: Output>(doc: &mut DocRenderer, path: &Path, page: u32, rect: [f32; 4], scale: f32, text: recto_proto::contents::TextMode, caps: &OutputCaps, out: &std::cell::RefCell<O>, started: Instant) -> Result<svg::SvgWritten, AgentError> {
+    svg::write_svg(doc, &svg::SvgJob { path, page, rect: Some(rect), text, scale, strip_metadata: false }, caps, out, started)
+}
 
 pub const DEFAULT_SCALE: f32 = 2.0;
 
@@ -67,15 +78,15 @@ pub(crate) fn render(path: &Path, page: u32, scale: f32, out: &Path) -> Result<V
 }
 
 /// A temp file this process created, next to where the picture is going. Only ever deletes itself: never a file that was already there.
-struct OwnTemp {
-    path: PathBuf,
+pub(crate) struct OwnTemp {
+    pub(crate) path: PathBuf,
 }
 
 static NEXT_TEMP: AtomicU32 = AtomicU32::new(0);
 
 impl OwnTemp {
     /// Makes a new file with a name nobody else has. `create_new` is `O_CREAT | O_EXCL`, which refuses an existing name and doesn't follow a symlink.
-    fn create(out: &Path) -> Result<(Self, File), AgentError> {
+    pub(crate) fn create(out: &Path) -> Result<(Self, File), AgentError> {
         let failed = || AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED);
         if out.file_name().is_none() {
             return Err(failed());
@@ -97,6 +108,109 @@ impl OwnTemp {
 impl Drop for OwnTemp {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Where an export's bytes go as they're made: a temp file on its way to being published, or memory on its way to the clipboard. Either can be told to start again, when a worker stopped partway and a larger one starts over from the top.
+pub(crate) trait Output: io::Write {
+    fn start_over(&mut self) -> io::Result<()>;
+}
+
+/// A temp file's bytes, from its start.
+pub(crate) struct FileOut(pub File);
+
+impl io::Write for FileOut {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.0.write(data)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl Output for FileOut {
+    fn start_over(&mut self) -> io::Result<()> {
+        use std::io::Seek;
+        self.0.set_len(0)?;
+        self.0.rewind().map(|_| ())
+    }
+}
+
+/// Any output held to a number of bytes, past which a write fails as a file too large would: an image written to a file is held to `OutputCaps::max_bytes`, as `render` is.
+pub(crate) struct LimitedOut<O: Output> {
+    pub inner: O,
+    written: u64,
+    cap: u64,
+}
+
+impl<O: Output> LimitedOut<O> {
+    pub(crate) fn new(inner: O, cap: u64) -> Self {
+        Self { inner, written: 0, cap }
+    }
+}
+
+impl<O: Output> io::Write for LimitedOut<O> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if self.written.saturating_add(data.len() as u64) > self.cap {
+            return Err(io::ErrorKind::FileTooLarge.into());
+        }
+        let wrote = self.inner.write(data)?;
+        self.written += wrote as u64;
+        Ok(wrote)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<O: Output> Output for LimitedOut<O> {
+    fn start_over(&mut self) -> io::Result<()> {
+        self.written = 0;
+        self.inner.start_over()
+    }
+}
+
+/// Bytes held for the clipboard, up to a cap past which a write fails as a file too large would.
+pub(crate) struct MemoryOut {
+    pub bytes: Vec<u8>,
+    cap: usize,
+}
+
+impl MemoryOut {
+    pub(crate) fn new(cap: usize) -> Self {
+        Self { bytes: Vec::new(), cap }
+    }
+}
+
+impl io::Write for MemoryOut {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if self.bytes.len().saturating_add(data.len()) > self.cap {
+            return Err(io::ErrorKind::FileTooLarge.into());
+        }
+        self.bytes.extend_from_slice(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Output for MemoryOut {
+    fn start_over(&mut self) -> io::Result<()> {
+        self.bytes.clear();
+        Ok(())
+    }
+}
+
+/// One output written by more than one writer in turn, such as a PNG encoder and a JPEG's bytes passing through.
+pub(crate) struct Shared<'a, O: Output>(pub &'a std::cell::RefCell<O>);
+
+impl<O: Output> io::Write for Shared<'_, O> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.0.try_borrow_mut().map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?.write(data)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.try_borrow_mut().map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?.flush()
     }
 }
 
@@ -139,10 +253,8 @@ fn render_with_caps(path: &Path, page: u32, scale: f32, out: &Path, caps: &Outpu
 
 fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &Path, caps: &OutputCaps) -> Result<Value, AgentError> {
     let page = page_index(page)?;
-    // Only ever a new picture. This also keeps `out` off the PDF itself, because only the append writer may change one.
-    if out.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("png")) {
-        return Err(AgentError::new("bad_output", "The output file must end in .png.", exit::FAILED));
-    }
+    // Only ever a new picture, where nothing reads it as anything else. The ending also keeps `out` off the PDF itself, because only the append writer may change one.
+    crate::saving::check_export_path(out, &["png"], "picture")?;
     let largest = scale == LARGEST_THAT_FITS;
     if !largest && !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&scale) {
         return Err(AgentError::new("bad_scale", format!("Scale must be between {} and {}.", recto_proto::MIN_SCALE, recto_proto::MAX_SCALE), exit::FAILED));
@@ -506,6 +618,18 @@ mod tests {
         TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["Words"]))]))
     }
 
+    /// Failure: `image --out` writes an image's own bytes with no cap, as `render` has one, so a file whose image is gigabytes writes gigabytes (review, 2026-11-08); or a worker's start over counts what it threw away against the cap.
+    #[test]
+    fn an_output_held_to_a_cap_refuses_past_it() {
+        use std::io::Write as _;
+        let mut out = LimitedOut::new(MemoryOut::new(usize::MAX), 10);
+        out.write_all(&[1; 10]).unwrap();
+        assert_eq!(out.write_all(&[1]).unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+        out.start_over().unwrap();
+        out.write_all(&[2; 10]).unwrap();
+        assert_eq!(out.inner.bytes, vec![2; 10]);
+    }
+
     fn folder_entries(file: &TempPdf) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(file.0.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         names.sort();
@@ -703,6 +827,31 @@ mod tests {
         assert!(matches!(error.code, "export_page_too_heavy" | "export_memory_tight"), "{}", error.code);
         assert!(error.message.contains("no file was written"), "{}", error.message);
         assert_eq!(folder_entries(&file), before);
+    }
+
+    /// Failure: a picture is written somewhere a shell or an app acts on what it finds: a hidden folder like `~/.config`, a name that leads through a link to a file of another kind, or `~/Library`. A review of Save found every write path needs the rules a Save As keeps.
+    #[test]
+    fn a_picture_is_never_written_where_something_acts_on_it() {
+        let file = doc();
+        let hidden = file.0.with_file_name(".hidden");
+        std::fs::create_dir_all(&hidden).unwrap();
+        assert_eq!(render(&file.0, 1, 1.0, &hidden.join("a.png")).unwrap_err().code, "bad_output");
+        let script = file.0.with_file_name("run.sh");
+        std::fs::write(&script, b"").unwrap();
+        let link = file.0.with_file_name("innocent.png");
+        std::os::unix::fs::symlink(&script, &link).unwrap();
+        let led = render(&file.0, 1, 1.0, &link).unwrap_err();
+        assert_eq!(led.code, "bad_output", "{}", led.message);
+        assert_eq!(render(&file.0, 1, 1.0, &file.0.with_file_name("a.jpg")).unwrap_err().code, "bad_output");
+        if let Some(home) = recto_platform::local::real_home() {
+            assert_eq!(render(&file.0, 1, 1.0, &home.join("Library/recto-never.png")).unwrap_err().code, "bad_output");
+            assert!(!home.join("Library/recto-never.png").exists());
+        }
+        assert_eq!(std::fs::read(&script).unwrap(), b"", "nothing went through the link");
+        for path in [&link, &script] {
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(&hidden).unwrap();
     }
 
     /// Failure: nobody can tell a slow draw from a fast one, so a slow page or a bad scale goes unnoticed.

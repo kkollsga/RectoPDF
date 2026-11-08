@@ -707,6 +707,76 @@ impl PageText {
         (hidden_out, chrome_out, false)
     }
 
+    /// What a snapshot's box takes as text: the characters that show whose middle is inside it, in reading order, a line at a time, past what's hidden and what's in `leave_out`, which is chrome, as a copy goes. A box of nothing but chrome gets the chrome, as a pick of only a header does. `rect` is on the page as it's shown, and the text stops at `room` bytes.
+    pub fn text_in_box(&self, rect: Rect, leave_out: &[(u32, u32)], room: usize) -> BoxText {
+        let ranges = self.ranges_in_box(rect);
+        let mut kept = self.copy_ranges(&ranges, leave_out, room);
+        if kept.text.is_empty() && kept.chrome_left_out > 0 {
+            kept = self.copy_ranges(&ranges, &[], room);
+        }
+        kept.restricted = self.copy_restricted;
+        kept.checked = self.hidden_checked || self.is_empty();
+        kept
+    }
+
+    /// Runs of characters inside a box, each on one line, with the line it's on.
+    fn ranges_in_box(&self, rect: Rect) -> Vec<(u32, u32, usize)> {
+        let (left, top, right, bottom) = (rect.x, rect.y, rect.x + rect.width, rect.y + rect.height);
+        if ![left, top, right, bottom].iter().all(|edge| edge.is_finite()) || right <= left || bottom <= top {
+            return Vec::new();
+        }
+        let inside = |at: usize| {
+            let view = &self.boxes[at];
+            let (x, y) = ((view[0] + view[2]) / 2.0, (view[1] + view[3]) / 2.0);
+            has_box(view) && x >= left && x <= right && y >= top && y <= bottom
+        };
+        let mut ranges = Vec::new();
+        for (index, line) in self.lines.iter().enumerate() {
+            if !line.seen() || line.x1 < left || line.x0 > right || line.y1 < top || line.y0 > bottom {
+                continue;
+            }
+            let mut run: Option<(u32, u32)> = None;
+            for at in line.start..line.end {
+                if inside(at as usize) {
+                    run = Some(run.map_or((at, at + 1), |(start, _)| (start, at + 1)));
+                } else if has_box(&self.boxes[at as usize]) && !self.text[at as usize].is_whitespace() {
+                    // Something that shows outside the box ends a run, as a column beside it does. A space doesn't.
+                    if let Some((start, end)) = run.take() {
+                        ranges.push((start, end, index));
+                    }
+                }
+            }
+            if let Some((start, end)) = run {
+                ranges.push((start, end, index));
+            }
+        }
+        ranges
+    }
+
+    fn copy_ranges(&self, ranges: &[(u32, u32, usize)], leave_out: &[(u32, u32)], room: usize) -> BoxText {
+        let mut kept = BoxText::default();
+        let mut last_line = None;
+        for &(start, end, line) in ranges {
+            if !kept.text.is_empty() {
+                let gap = if last_line == Some(line) { ' ' } else { '\n' };
+                if !kept.text.ends_with(char::is_whitespace) {
+                    kept.text.push(gap);
+                }
+            }
+            last_line = Some(line);
+            let (hidden, chrome, stopped) = self.copy_into(start, end, &mut kept.text, room, leave_out);
+            kept.hidden_left_out += hidden;
+            kept.chrome_left_out += chrome;
+            if stopped {
+                kept.stopped = true;
+                break;
+            }
+        }
+        let trimmed = kept.text.trim_end().len();
+        kept.text.truncate(trimmed);
+        kept
+    }
+
     /// The characters of `[start, end)` as they are, for `recto select`.
     pub fn text_of(&self, start: u32, end: u32) -> String {
         let mut out = String::new();
@@ -897,6 +967,22 @@ pub fn neighbour_pages(page: u32, pages: u32) -> impl Iterator<Item = u32> {
     (page.saturating_sub(chrome::NEIGHBOURS)..=page.saturating_add(chrome::NEIGHBOURS).min(pages.saturating_sub(1))).filter(move |other| *other != page)
 }
 
+/// What a snapshot's box takes as text. See [`PageText::text_in_box`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BoxText {
+    pub text: String,
+    /// Printed characters left out, because they can't be seen.
+    pub hidden_left_out: u64,
+    /// Printed characters left out as running heads, footers and page numbers.
+    pub chrome_left_out: u64,
+    /// It stopped at the limit on room.
+    pub stopped: bool,
+    /// The file asks that its text isn't copied.
+    pub restricted: bool,
+    /// The page was checked for hidden text, or has none to check.
+    pub checked: bool,
+}
+
 /// Text on its way to the clipboard, a page at a time, up to a limit.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CopiedText {
@@ -995,6 +1081,28 @@ mod tests {
             add_line(&mut chars, &mut boxes, text, *x, *y);
         }
         PageText::build(&chars, &boxes, frame, true, false)
+    }
+
+    /// Failure: a snapshot's box takes words from outside it, as the rest of a line or the column beside it, or loses the line breaks between lines, or keeps a running head inside it when there's body text too. Each line keeps what's inside, in reading order.
+    #[test]
+    fn a_box_takes_the_text_inside_it_a_line_at_a_time() {
+        let page = page_of(&[("Left column words", 72.0, 700.0), ("Right column", 300.0, 700.0), ("Second left line", 72.0, 680.0), ("Far away", 72.0, 100.0)]);
+        // Shown y runs down: the first line's band is about 82 to 92 points down.
+        let rect = Rect { x: 60.0, y: 80.0, width: 150.0, height: 40.0 };
+        let kept = page.text_in_box(rect, &[], usize::MAX);
+        assert_eq!(kept.text, "Left column words\nSecond left line");
+        assert!(!kept.text.contains("Right") && !kept.text.contains("Far"), "{}", kept.text);
+        // Only part of a word's letters: the ones whose middle is inside.
+        let part = page.text_in_box(Rect { x: 60.0, y: 80.0, width: 35.0, height: 15.0 }, &[], usize::MAX);
+        assert_eq!(part.text, "Left");
+        assert!(page.text_in_box(Rect { x: 0.0, y: 0.0, width: 0.0, height: 10.0 }, &[], usize::MAX).text.is_empty());
+        // Chrome inside the box goes when there's body too, and stays when it's all there is.
+        let left = page.text_of(0, 4).chars().count() as u32;
+        let chrome = [(0, left)];
+        let with_body = page.text_in_box(rect, &chrome, usize::MAX);
+        assert!(!with_body.text.starts_with("Left") && with_body.chrome_left_out == 4, "{with_body:?}");
+        let only = page.text_in_box(Rect { x: 60.0, y: 80.0, width: 35.0, height: 15.0 }, &chrome, usize::MAX);
+        assert_eq!((only.text.as_str(), only.chrome_left_out), ("Left", 0));
     }
 
     /// A y on the page as it's shown, for a line given at this y on the page itself.

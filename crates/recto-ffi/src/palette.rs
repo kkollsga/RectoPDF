@@ -269,6 +269,7 @@ pub(crate) fn host_word(action: HostAction) -> &'static str {
         HostAction::FocusPalette => "focus_palette",
         HostAction::FocusFind => "focus_find",
         HostAction::ShowGoTo => "show_go_to",
+        HostAction::ShowPrintPanel => "show_print_panel",
     }
 }
 

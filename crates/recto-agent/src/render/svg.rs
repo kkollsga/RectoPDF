@@ -1,6 +1,6 @@
 //! `export svg`: a page, or a box on it, as a new SVG file, written as it's read. Nothing is held: records come from the worker a frame at a time, and go straight through `recto-svg` to a temp file that's only published if the whole page got there. So a worker that's stopped, or a limit that's hit, leaves nothing behind under the real name.
 
-use super::{OwnTemp, hidden_text_facts, largest_scale_that_fits, output_exists, page_index, publish, too_heavy_to_export, with_time_taken};
+use super::{FileOut, Output, OwnTemp, Shared, hidden_text_facts, largest_scale_that_fits, output_exists, page_index, publish, too_heavy_to_export, with_time_taken};
 use crate::{AgentError, exit};
 use recto_proto::jpeg::{JpegFacts, JpegScan};
 use recto_proto::contents::{ImageCoding, NoteCode, PaintStyle, Record, SEG_CURVE, SEG_LINE, TextMode, WireSeg, Why, hints};
@@ -8,8 +8,8 @@ use recto_render_service::{ContentsEvent, ContentsRequest, DocRenderer, ExportRe
 use recto_svg::{GenericFamily, ImageData, Matrix, Paint, PathStyle, PngChannels, Rgb, Seg, SegKind, Stroke, SvgWriter, TextStyle};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::{self, Seek, Write};
+use std::cell::RefCell;
+use std::io::{self, Write};
 use std::path::Path;
 use std::time::Instant;
 
@@ -69,21 +69,21 @@ fn note_words(code: NoteCode) -> (&'static str, &'static str) {
 }
 
 /// Holds output to its limit, so a hostile page can't fill the disk.
-struct Capped<'a> {
-    file: &'a File,
+struct Capped<'a, O: Output> {
+    out: &'a RefCell<O>,
     left: u64,
     written: u64,
 }
 
-impl Write for Capped<'_> {
+impl<O: Output> Write for Capped<'_, O> {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         self.left = self.left.checked_sub(data.len() as u64).ok_or(io::ErrorKind::FileTooLarge)?;
-        (&*self.file).write_all(data)?;
+        Shared(self.out).write_all(data)?;
         self.written += data.len() as u64;
         Ok(data.len())
     }
     fn flush(&mut self) -> io::Result<()> {
-        (&*self.file).flush()
+        Shared(self.out).flush()
     }
 }
 
@@ -145,10 +145,10 @@ fn path_style(style: &PaintStyle<'_>) -> PathStyle {
 
 /// One record, written. The stream's rules have been checked by the time it gets here.
 #[allow(clippy::too_many_arguments)]
-fn write_record<'file>(svg: &mut Option<SvgWriter<Capped<'file>>>, file: &'file File, limit: u64, title: Option<&str>, strip: bool, tally: &mut Tally, record: &Record<'_>) -> io::Result<()> {
+fn write_record<'file, O: Output>(svg: &mut Option<SvgWriter<Capped<'file, O>>>, out: &'file RefCell<O>, limit: u64, title: Option<&str>, strip: bool, tally: &mut Tally, record: &Record<'_>) -> io::Result<()> {
     if let Record::Page { width, height, matrix } = record {
         tally.size = (*width, *height);
-        *svg = Some(SvgWriter::begin(Capped { file, left: limit, written: 0 }, f64::from(*width), f64::from(*height), &mat(matrix), title)?);
+        *svg = Some(SvgWriter::begin(Capped { out, left: limit, written: 0 }, f64::from(*width), f64::from(*height), &mat(matrix), title)?);
         return Ok(());
     }
     let Some(writer) = svg.as_mut() else { return Err(io::ErrorKind::InvalidInput.into()) };
@@ -240,12 +240,14 @@ fn write_record<'file>(svg: &mut Option<SvgWriter<Capped<'file>>>, file: &'file 
             *tally.image_bytes.entry(kind).or_default() += writer_position(writer).saturating_sub(start);
         }
         Record::Note { code, count } => tally.notes.entry(*code as u8).or_insert((*code, 0)).1 += u64::from(*count),
+        // An export doesn't ask where images are, and the stream's check refuses one that says.
+        Record::ImagePlace { .. } => return Err(io::ErrorKind::InvalidData.into()),
     }
     Ok(())
 }
 
 /// How far into the file the writer has got.
-fn writer_position(writer: &SvgWriter<Capped<'_>>) -> u64 {
+fn writer_position<O: Output>(writer: &SvgWriter<Capped<'_, O>>) -> u64 {
     writer.out().map_or(0, |out| out.written) + writer.buffered() as u64
 }
 
@@ -269,7 +271,7 @@ fn text_mode(word: Option<&str>) -> Result<TextMode, AgentError> {
     }
 }
 
-fn hints_for(path: &Path, page: u32) -> u8 {
+pub(crate) fn hints_for(path: &Path, page: u32) -> u8 {
     let Some(effects) = recto_core::page_effects(path, page) else { return hints::ALL };
     (u8::from(effects.soft_mask) * hints::SOFT_MASK) | (u8::from(effects.blend) * hints::BLEND) | (u8::from(effects.shading_pattern) * hints::SHADING_PATTERN) | (u8::from(effects.optional_content) * hints::OPTIONAL_CONTENT) | (u8::from(effects.layer_names_unsafe) * hints::LAYER_NAMES_UNSAFE) | (u8::from(effects.mask_not_separable) * hints::MASK_NOT_SEPARABLE) | (u8::from(effects.jpeg_read_differently) * hints::JPEG_READ_DIFFERENTLY)
 }
@@ -290,68 +292,19 @@ pub(crate) fn export_svg(args: &SvgArgs<'_>) -> Result<Value, AgentError> {
 
 pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &OutputCaps) -> Result<Value, AgentError> {
     let page = page_index(args.page)?;
-    // Only ever a new file. This also keeps `out` off the PDF itself, because only the append writer may change one.
-    if args.out.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("svg")) {
-        return Err(AgentError::new("bad_output", "The output file must end in .svg.", exit::FAILED).then("Choose a file name ending in .svg."));
-    }
-    if !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&args.scale) {
-        return Err(AgentError::new("bad_scale", format!("Scale must be between {} and {}.", recto_proto::MIN_SCALE, recto_proto::MAX_SCALE), exit::FAILED));
-    }
+    // Only ever a new file, where nothing reads it as anything else. The ending also keeps `out` off the PDF itself, because only the append writer may change one.
+    crate::saving::check_export_path(args.out, &["svg"], "SVG")?;
+    check_args(args.scale, args.rect)?;
     let text = text_mode(args.text)?;
-    if let Some([x, y, width, height]) = args.rect
-        && (!x.is_finite() || !y.is_finite() || !width.is_finite() || !height.is_finite() || x < 0.0 || y < 0.0 || width <= 0.0 || height <= 0.0)
-    {
-        return Err(bad_rect());
-    }
     // `symlink_metadata`, so a dangling link counts as being there. Early, to save the reading. The link below is what actually holds.
     if std::fs::symlink_metadata(args.out).is_ok() {
         return Err(output_exists());
     }
     let started = Instant::now();
-    let policy = Policy::default();
-    let limit = policy.heavy_limit_bytes;
-    let mut doc = DocRenderer::new(args.path, None, config, policy)?;
-    let (width_points, height_points) = doc.page_size(page).map_err(|failure| with_time_taken(failure.into(), started))?;
-    if let Some([x, y, _, _]) = args.rect
-        && (x >= width_points || y >= height_points)
-    {
-        return Err(bad_rect().then("The page is smaller than that. A box starts on the page, and is cut off at its edge."));
-    }
-    // A picture standing in for part of the page is drawn at this scale. What's vector has no scale, so a page too large for this one only changes what its pictures would be, and it's said.
-    let most = largest_scale_that_fits(width_points, height_points, caps).ok_or_else(|| AgentError::new("too_large_at_this_scale", format!("Page {} is {width_points} x {height_points} points, and no scale fits: a picture is at most {} Mpx.", page + 1, caps.max_pixels / 1_000_000), exit::FAILED).then("Tell the user this page can't be exported."))?;
-    let raster_scale = args.scale.min(most);
-    let request = ContentsRequest { page, generation: 0, scale: raster_scale, rect: args.rect, text, hints: hints_for(args.path, page), max_time: caps.max_time };
-    // A box is a piece of a document, so it doesn't say what the whole is called.
-    let title = if args.rect.is_some() || args.strip_metadata { None } else { recto_core::document_title(args.path) };
+    let mut doc = DocRenderer::new(args.path, None, config, Policy::default())?;
     let (temp, file) = OwnTemp::create(args.out).map_err(|_| write_failed())?;
-    let mut tally = Tally::default();
-    let mut sink_error = None;
-    let mut svg: Option<SvgWriter<Capped<'_>>> = None;
-    let read = doc.read_contents(&request, |event| {
-        let written = match event {
-            ContentsEvent::Restart => {
-                // A worker was stopped and a larger one is starting over, so all of this goes.
-                svg = None;
-                tally = Tally::default();
-                file.set_len(0).and_then(|()| (&file).rewind().map(|_| ()))
-            }
-            ContentsEvent::Record(record) => write_record(&mut svg, &file, caps.max_bytes, title.as_deref(), args.strip_metadata, &mut tally, &record),
-        };
-        written.map_err(|error| {
-            sink_error = Some(from_io(&error));
-            RenderFailure::Unavailable
-        })
-    });
-    let done = read.map_err(|failure| {
-        let error = sink_error.take().unwrap_or_else(|| match failure {
-            RenderFailure::ExportRefused { why: ExportRefusal::TooHeavy, .. } => too_heavy_to_export(failure, page, raster_scale, ((width_points * raster_scale) as u32, (height_points * raster_scale) as u32), limit),
-            _ => failure.into(),
-        });
-        with_time_taken(error, started)
-    })?;
-    let writer = svg.take().ok_or_else(|| with_time_taken(RenderFailure::Unavailable.into(), started))?;
-    tally.chars_dropped = writer.stats().chars_dropped;
-    let bytes = writer.finish().map_err(|error| from_io(&error))?.written;
+    let out = RefCell::new(FileOut(file));
+    let written = write_svg(&mut doc, &SvgJob { path: args.path, page, rect: args.rect, text, scale: args.scale, strip_metadata: args.strip_metadata }, caps, &out, started)?;
     // The same check `text` gives, after the page is known to draw, so a refused page pays nothing for it. It's about the whole page, and only matters if text is going in the file.
     let hidden_text = if text == TextMode::Paths {
         json!({ "checked": false })
@@ -360,15 +313,8 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
     };
     publish(&temp.path, args.out, |from, to| std::fs::hard_link(from, to))?;
     drop(temp);
-    let rasterised: Vec<Value> = tally
-        .rasterised
-        .iter()
-        .filter_map(|(why, count)| {
-            let why = WHYS.iter().find(|known| **known as u8 == *why)?;
-            let (code, says) = why_words(*why);
-            Some(json!({ "why": code, "count": count, "says": says }))
-        })
-        .collect();
+    let SvgWritten { tally, bytes, raster_scale, restarts, jpeg } = written;
+    let rasterised = rasterised_words(&tally);
     let mut notes: Vec<Value> = tally
         .notes
         .values()
@@ -377,7 +323,7 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
             json!({ "note": name, "count": count, "says": says })
         })
         .collect();
-    notes.extend(jpeg_notes(&done.jpeg, args.strip_metadata));
+    notes.extend(jpeg_notes(&jpeg, args.strip_metadata));
     Ok(json!({
         "page": page + 1,
         "out": args.out,
@@ -397,8 +343,107 @@ pub(super) fn export_with(config: ServiceConfig, args: &SvgArgs<'_>, caps: &Outp
         "rasterised": rasterised,
         "notes": notes,
         "worker_peak_bytes": doc.stats().peak_footprint_bytes,
-        "restarts": done.restarts,
+        "restarts": restarts,
     }))
+}
+
+/// Refuses a scale or a box that can't be drawn, before any work.
+pub(crate) fn check_args(scale: f32, rect: Option<[f32; 4]>) -> Result<(), AgentError> {
+    if !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&scale) {
+        return Err(AgentError::new("bad_scale", format!("Scale must be between {} and {}.", recto_proto::MIN_SCALE, recto_proto::MAX_SCALE), exit::FAILED));
+    }
+    if let Some([x, y, width, height]) = rect
+        && (!x.is_finite() || !y.is_finite() || !width.is_finite() || !height.is_finite() || x < 0.0 || y < 0.0 || width <= 0.0 || height <= 0.0)
+    {
+        return Err(bad_rect());
+    }
+    Ok(())
+}
+
+/// What's wanted of a page as SVG, once it's been checked.
+pub(crate) struct SvgJob<'a> {
+    pub path: &'a Path,
+    /// From 0.
+    pub page: u32,
+    pub rect: Option<[f32; 4]>,
+    pub text: TextMode,
+    pub scale: f32,
+    pub strip_metadata: bool,
+}
+
+/// How a page's SVG came out.
+pub(crate) struct SvgWritten {
+    tally: Tally,
+    pub bytes: u64,
+    pub raster_scale: f32,
+    pub restarts: u32,
+    jpeg: JpegFacts,
+}
+
+impl SvgWritten {
+    /// Whether anything had to go as a picture.
+    pub(crate) fn all_vector(&self) -> bool {
+        self.tally.rasterised.is_empty()
+    }
+}
+
+/// Writes a page, or a box on it, as SVG into `out`, whole or failing: `export svg` into a temp file, and a snapshot into memory for the clipboard. Can sleep waiting for the larger limit, so never on a UI thread.
+pub(crate) fn write_svg<O: Output>(doc: &mut DocRenderer, job: &SvgJob<'_>, caps: &OutputCaps, out: &RefCell<O>, started: Instant) -> Result<SvgWritten, AgentError> {
+    let page = job.page;
+    let limit = Policy::default().heavy_limit_bytes;
+    let (width_points, height_points) = doc.page_size(page).map_err(|failure| with_time_taken(failure.into(), started))?;
+    if let Some([x, y, _, _]) = job.rect
+        && (x >= width_points || y >= height_points)
+    {
+        return Err(bad_rect().then("The page is smaller than that. A box starts on the page, and is cut off at its edge."));
+    }
+    // A picture standing in for part of the page is drawn at this scale. What's vector has no scale, so a page too large for this one only changes what its pictures would be, and it's said.
+    let most = largest_scale_that_fits(width_points, height_points, caps).ok_or_else(|| AgentError::new("too_large_at_this_scale", format!("Page {} is {width_points} x {height_points} points, and no scale fits: a picture is at most {} Mpx.", page + 1, caps.max_pixels / 1_000_000), exit::FAILED).then("Tell the user this page can't be exported."))?;
+    let raster_scale = job.scale.min(most);
+    let request = ContentsRequest { page, generation: 0, scale: raster_scale, rect: job.rect, text: job.text, hints: hints_for(job.path, page), images: recto_proto::contents::IMAGES_ALL, max_time: caps.max_time };
+    // A box is a piece of a document, so it doesn't say what the whole is called.
+    let title = if job.rect.is_some() || job.strip_metadata { None } else { recto_core::document_title(job.path) };
+    let mut tally = Tally::default();
+    let mut sink_error = None;
+    let mut svg: Option<SvgWriter<Capped<'_, O>>> = None;
+    let read = doc.read_contents(&request, |event| {
+        let written = match event {
+            ContentsEvent::Restart => {
+                // A worker was stopped and a larger one is starting over, so all of this goes.
+                svg = None;
+                tally = Tally::default();
+                out.try_borrow_mut().map_err(|_| io::Error::from(io::ErrorKind::WouldBlock)).and_then(|mut out| out.start_over())
+            }
+            ContentsEvent::Record(record) => write_record(&mut svg, out, caps.max_bytes, title.as_deref(), job.strip_metadata, &mut tally, &record),
+        };
+        written.map_err(|error| {
+            sink_error = Some(from_io(&error));
+            RenderFailure::Unavailable
+        })
+    });
+    let done = read.map_err(|failure| {
+        let error = sink_error.take().unwrap_or_else(|| match failure {
+            RenderFailure::ExportRefused { why: ExportRefusal::TooHeavy, .. } => too_heavy_to_export(failure, page, raster_scale, ((width_points * raster_scale) as u32, (height_points * raster_scale) as u32), limit),
+            _ => failure.into(),
+        });
+        with_time_taken(error, started)
+    })?;
+    let writer = svg.take().ok_or_else(|| with_time_taken(RenderFailure::Unavailable.into(), started))?;
+    tally.chars_dropped = writer.stats().chars_dropped;
+    let bytes = writer.finish().map_err(|error| from_io(&error))?.written;
+    Ok(SvgWritten { tally, bytes, raster_scale, restarts: done.restarts, jpeg: done.jpeg })
+}
+
+fn rasterised_words(tally: &Tally) -> Vec<Value> {
+    tally
+        .rasterised
+        .iter()
+        .filter_map(|(why, count)| {
+            let why = WHYS.iter().find(|known| **known as u8 == *why)?;
+            let (code, says) = why_words(*why);
+            Some(json!({ "why": code, "count": count, "says": says }))
+        })
+        .collect()
 }
 
 /// What the JPEGs carried besides their pictures, in the answer's words. Without stripping, it's all still in the file, because a JPEG goes as its original bytes. Stripping keeps only what a decoder or a reader needs for the colours.

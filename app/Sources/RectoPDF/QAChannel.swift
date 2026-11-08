@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import QuartzCore
 
 /// QA commands, on the UI thread. Each calls what the UI calls, posts no event, and answers once the app has done it and laid out. A shot is drawn in the app, so it needs no permission, no display and no focus.
@@ -82,8 +83,16 @@ import QuartzCore
             plainShot(of: row, id: id, path: value)
             return
         case "copied":
+            // A type still promised is listed as such, and made only when the value names it, as a paste of it would. Which are promised is read first: reading any type in this process makes the system resolve the rest of the item's promises, which another app's paste doesn't (a second process reading the PNG and the JPEG left the SVG unmade, 2026-11-08), so it holds only for the first look after a copy.
+            let promised = delegate.clipboardPromised
             let text = delegate.pasteboard.string(forType: .string)
-            answer(id, ["chars": text?.count ?? 0, "clipboard": delegate.pasteboard.name.rawValue, "untrusted": ["text": text as Any? ?? NSNull()]] as [String: Any])
+            // Each type in the clipboard's order, with its size and a digest, so a test can say a JPEG went as its own bytes without the bytes crossing.
+            let types = (delegate.pasteboard.types ?? []).map { type -> [String: Any] in
+                if promised.contains(type.rawValue) && value != type.rawValue { return ["type": type.rawValue, "promised": true] }
+                let data = delegate.pasteboard.data(forType: type) ?? Data()
+                return ["type": type.rawValue, "bytes": data.count, "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
+            }
+            answer(id, ["chars": text?.count ?? 0, "clipboard": delegate.pasteboard.name.rawValue, "types": types, "untrusted": ["text": text as Any? ?? NSNull()]] as [String: Any])
             return
         case "services":
             // By the selector AppKit sends, to a clipboard nothing else can see.
@@ -106,6 +115,11 @@ import QuartzCore
             case "mouse_drag": pane.pointerDragged(atWindow: inWindow)
             default: pane.pointerMoved(atWindow: inWindow)
             }
+        case "print_to_pdf":
+            // `OUT` for every page, or `OUT|FIRST|LAST`, as Rust checked it.
+            let parts = value.split(separator: "|").map(String.init)
+            let (first, last) = parts.count == 3 ? (UInt32(parts[1]) ?? 0, UInt32(parts[2]) ?? 0) : (0, 0)
+            guard delegate.printToPDFForQA(out: parts[0], first: first, last: last) else { return fail(id, "There's nothing to print.") }
         case "mouse_up":
             controller?.readingPane.pointerUp()
         case "notice_button":

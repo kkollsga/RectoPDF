@@ -189,6 +189,10 @@ pub fn render(tag: &str, data: &Value) -> String {
         "edits" => edits(data),
         "render" => render_result(data),
         "export_svg" => export_svg_result(data),
+        "images" => images(data),
+        "image" => format!("Image {} of page {} written to {} in {}: {}, {} x {} pixels, {}.", number(&data["number"]), number(&data["page"]), text(&data["out"]), duration(number(&data["took_ms"])), text(&data["says"]), number(&data["width"]), number(&data["height"]), bytes(number(&data["bytes"]))),
+        "snapshot" => snapshot(data),
+        "print" => format!("Printed {} to {} at {} dpi in {}, {}.{}", count(number(&data["pages"]), "page", "pages"), text(&data["out"]), number(&data["dpi"]), duration(number(&data["took_ms"])), bytes(number(&data["bytes"])), if number(&data["turned_pages"]) > 0 { format!(" {} turned as the unsaved edits have them.", count(number(&data["turned_pages"]), "page", "pages")) } else { String::new() }),
         "wait" => wait(data),
         "permission_show" => permission_show(data),
         "permission_request" => permission_request(data),
@@ -626,6 +630,64 @@ fn render_result(data: &Value) -> String {
     let mut out = format!("Page {} drawn at {}x{largest} to {} in {}: {} x {} px, {}.", number(&data["page"]), data["scale"], text(&data["out"]), duration(number(&data["took_ms"])), number(&data["width"]), number(&data["height"]), bytes(number(&data["bytes"])));
     if let Some(degrees) = data["unsaved_rotation_degrees"].as_u64() {
         let _ = write!(out, " It doesn't show the unsaved turn of {degrees} degrees.");
+    }
+    out
+}
+
+fn images(data: &Value) -> String {
+    let rows = data["images"].as_array().map_or(&[][..], Vec::as_slice);
+    if number(&data["count"]) == 0 {
+        return format!("Page {} has no images.", number(&data["page"]));
+    }
+    let mut out = format!("Page {} has {}.", number(&data["page"]), count(number(&data["count"]), "image", "images"));
+    for row in rows {
+        let rect = &row["rect"];
+        let _ = write!(out, "
+{}: {} x {} pixels{}, at {}, {}, {} x {} pt.", number(&row["number"]), number(&row["width"]), number(&row["height"]), if row["jpeg"] == true { ", a JPEG" } else { "" }, rect[0], rect[1], rect[2], rect[3]);
+    }
+    if number(&data["listed"]) < number(&data["count"]) {
+        let _ = write!(out, "
+The rest aren't listed: {} are off the page or past the first 4,096.", number(&data["count"]) - number(&data["listed"]));
+    }
+    out
+}
+
+fn snapshot(data: &Value) -> String {
+    if data["as"] == "text" {
+        let mut out = format!("{} in the box on page {}.", count(number(&data["chars"]), "character", "characters"), number(&data["page"]));
+        if number(&data["hidden_left_out"]) > 0 {
+            let _ = write!(out, "
+{} that looked hidden left out.", count(number(&data["hidden_left_out"]), "character", "characters"));
+        }
+        if number(&data["chrome_left_out"]) > 0 {
+            let _ = write!(out, "
+{} of running heads, footers and page numbers left out.", count(number(&data["chrome_left_out"]), "character", "characters"));
+        }
+        if data["checked"] == false {
+            out.push_str("
+It couldn't be checked for hidden text.");
+        }
+        out.push_str("
+---");
+        write_page_lines(&mut out, text(&data["untrusted"]["text"]), &[]);
+        return out;
+    }
+    let mut out = format!("A box of page {} written to {} as {} in {}, {}", number(&data["page"]), text(&data["out"]), text(&data["as"]).to_uppercase(), duration(number(&data["took_ms"])), bytes(number(&data["bytes"])));
+    if data["width"].is_number() {
+        let _ = write!(out, ", {} x {} pixels at {}x", number(&data["width"]), number(&data["height"]), data["scale"].as_f64().unwrap_or(0.0));
+    }
+    out.push('.');
+    if data["reencoded"] == true {
+        out.push_str("
+A JPG is re-encoded, so it isn't lossless. PNG is.");
+    }
+    if data["all_vector"] == false {
+        let _ = write!(out, "
+Some of it had to be pictures, at {}x.", data["raster_scale"].as_f64().unwrap_or(0.0));
+    }
+    if let Some(degrees) = data["unsaved_rotation_degrees"].as_u64() {
+        let _ = write!(out, "
+It doesn't show the unsaved turn of {degrees} degrees.");
     }
     out
 }

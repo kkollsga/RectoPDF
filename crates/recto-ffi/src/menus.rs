@@ -40,6 +40,8 @@ pub enum HostAction {
     ShowSavePanel,
     /// Closing a document with unsaved edits asks first, with what `AppCore::close_prompt` says.
     ConfirmClose,
+    /// The system's print panel, with what `AppCore::print_model` says.
+    ShowPrintPanel,
     /// ⌘K: the palette's field in the sidebar takes the keyboard. Rust has opened it.
     FocusPalette,
     /// ⌘F: Find's field in the sidebar takes the keyboard, with what's in it selected. Rust has opened it.
@@ -139,7 +141,7 @@ pub(crate) fn context_menu(shown: Option<Spread>, comparing: Option<bool>) -> Ve
 pub(crate) fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool {
     match id {
         "edit.copy" | "edit.copy_anyway" => has_selection,
-        "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" | "go.page" | "find.open" | "find.next" | "find.previous" => has_document,
+        "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" | "go.page" | "file.print" | "find.open" | "find.next" | "find.previous" => has_document,
         // A submenu's own item opens it, and does nothing itself.
         "file.open_recent" => true,
         layout if layout.starts_with("layout.") => has_document,
@@ -188,7 +190,7 @@ pub(crate) fn menu_bar_with(view: ViewSettings, shown: Option<Spread>, update_ti
         MenuModel { title: "RectoPDF".into(), entries: vec![entry("app.about", "About RectoPDF", ""), entry("app.update", update_title, ""), line(), entry("app.settings", "Settings…", ","), line(), entry("app.services", "Services", ""), line(), entry("app.quit", "Quit RectoPDF", "q")] },
         // Owner, 2026-11-07: "The full app settings should be accessible from file -> settings". The app menu keeps its own, as on any Mac, and both say ⌘,.
         // As in any Mac app: ⌘W closes the document showing, which here is a tab, and ⇧⌘W the window. ⌘S saves, and ⇧⌘S is Save As.
-        MenuModel { title: "File".into(), entries: [entry("file.open", "Open…", "o"), entry("file.open_recent", "Open Recent", "")].into_iter().chain(recent_entries(recent)).chain([line(), entry("file.close", "Close", "w"), entry("file.save", "Save", "s"), entry("file.save_as", "Save As…", "S"), line(), entry("file.settings", "Settings…", ","), line(), entry("file.close_window", "Close Window", "W")]).collect() },
+        MenuModel { title: "File".into(), entries: [entry("file.open", "Open…", "o"), entry("file.open_recent", "Open Recent", "")].into_iter().chain(recent_entries(recent)).chain([line(), entry("file.close", "Close", "w"), entry("file.save", "Save", "s"), entry("file.save_as", "Save As…", "S"), line(), entry("file.print", "Print…", "p"), line(), entry("file.settings", "Settings…", ","), line(), entry("file.close_window", "Close Window", "W")]).collect() },
         MenuModel { title: "Edit".into(), entries: undo_entries().into_iter().chain([line()]).chain(edit_entries()).chain([line()]).chain(find_entries()).chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
         MenuModel {
             title: "View".into(),
@@ -291,6 +293,7 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "app.quit" => Action::Host(HostAction::Quit),
         "file.open" => Action::Host(HostAction::ShowOpenPanel),
         "file.close_window" => Action::Host(HostAction::CloseWindow),
+        "file.print" => Action::Host(HostAction::ShowPrintPanel),
         "file.save" | "save.button" => Action::Save,
         "file.save_as" => Action::Host(HostAction::ShowSavePanel),
         "file.close" => Action::CloseDocument,
@@ -390,6 +393,16 @@ mod tests {
             }
         }
         assert_eq!(action("anything else"), None);
+    }
+
+    /// Failure: there's no Print… with ⌘P in File, as on any Mac app, or it can be chosen with nothing open.
+    #[test]
+    fn file_has_print() {
+        let file = menu_bar(ViewSettings::default(), None, "").into_iter().find(|menu| menu.title == "File").unwrap().entries;
+        let print = file.iter().find(|item| item.id == "file.print").expect("Print… in File");
+        assert_eq!((print.title.as_str(), print.key.as_str()), ("Print…", "p"));
+        assert_eq!(action("file.print"), Some(Action::Host(HostAction::ShowPrintPanel)));
+        assert!(!enabled("file.print", false, false) && enabled("file.print", true, false));
     }
 
     /// Failure: Copy can be chosen with nothing selected, or Select All with nothing open, or a menu item that has nothing to do with selection goes grey with it. And Copy goes by the app's own action, so it takes ⌘C from a text field that has the focus.

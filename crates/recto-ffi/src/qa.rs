@@ -317,6 +317,13 @@ impl QaBridge {
                 }
             }
             "entry_points" | "services" => return self.ask(verb, value),
+            // A paste of one type from another app, as the system asks for it: a promised type is made now, and what's on the clipboard comes back as `qa copied` says it.
+            "paste" => {
+                if !value.starts_with("public.") || value.len() > 64 {
+                    return Err(bad("A paste names a type, as `public.svg-image`."));
+                }
+                return self.ask("copied", value);
+            }
             // A place is said as an agent has it, on a page, and goes in by the document's coordinates, on the way to the window's, so it goes through what a real pointer's position does.
             "mouse_down" | "mouse_drag" | "pointer" => {
                 let place = parse_page_place(value)?;
@@ -326,6 +333,21 @@ impl QaBridge {
                 return self.ask("state", "");
             }
             "mouse_up" | "notice_button" | "zoom_escape" | "page_escape" => {}
+            // Where the print goes is held to the rules every export keeps, and a file that's there isn't replaced.
+            "print_to_pdf" => {
+                let (out, range) = value.split_once('|').map_or((value, None), |(out, range)| (out, Some(range)));
+                let out = Path::new(out);
+                recto_agent::saving::check_export_path(out, &["pdf"], "PDF")?;
+                if !out.is_absolute() || std::fs::symlink_metadata(out).is_ok() {
+                    return Err(bad("A print goes to a new file, by its whole path."));
+                }
+                if let Some(range) = range {
+                    let (first, last) = range.split_once('|').ok_or_else(|| bad("A range is FIRST|LAST."))?;
+                    if first.parse::<u32>().is_err() || last.parse::<u32>().is_err() {
+                        return Err(bad("A range is two page numbers."));
+                    }
+                }
+            }
             "scroll" => {
                 number(-1e9, 1e9)?;
             }
@@ -381,6 +403,8 @@ impl QaBridge {
                 "open_handles": recto_platform::open_handle_count(),
             },
             "hangs": { "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS },
+            "printing": self.inner().map_or(Value::Null, |inner| json!({ "busy": inner.printing.busy(), "notice": inner.printing.notice(), "pid": std::process::id() })),
+            "snapshot": self.inner().map_or(Value::Null, |inner| json!({ "on": inner.tool.is_on(), "drawing": inner.tool.is_drawing(), "busy": inner.tool.busy(), "notice": inner.tool.notice().map(|notice| notice.text) })),
         }))
     }
 
@@ -395,7 +419,10 @@ impl QaBridge {
                 return Err(AgentError::new("timed_out", "The page view didn't settle in time.", exit::TIMED_OUT).then("`recto qa state` shows what it's still waiting for."));
             }
             let running = self.ask("animations", "")?;
-            if running.as_array().is_none_or(Vec::is_empty) {
+            // A snapshot on its way to the clipboard is about to change what `qa copied` and the notice say.
+            // A snapshot on its way to the clipboard, or a print's pages being drawn or handed to the system, is about to change what's shown.
+            let snapshot_busy = self.inner().is_some_and(|inner| inner.tool.busy() || inner.printing.busy());
+            if running.as_array().is_none_or(Vec::is_empty) && !snapshot_busy {
                 return Ok(json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64, "animations_waited_ms": animations_waited.as_millis() as u64 }));
             }
             if left().is_zero() {
@@ -539,7 +566,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "sidebar_width" => value.parse::<f64>().is_ok_and(f64::is_finite),
         // What shows a window is left out: a quiet run shows none.
         // Save As's sheet is a sheet on the window, as the close prompt is, so a quiet run can show it and answer it.
-        "menu" => !matches!(value, "file.open" | "app.about" | "app.quit") && crate::menus::action(value).is_some(),
+        "menu" => !matches!(value, "file.open" | "app.about" | "app.quit") && (crate::menus::action(value).is_some() || crate::snapshot_tool::is_menu_id(value)),
         "panel" => value == "toggle" || value == "edit_mode.done" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
         "button" => one_of(&["sidebar", "zoom", "zoom_reset", "save", "page"]),
         "sheet_answer" => one_of(&["first", "second", "third", "cancel"]),

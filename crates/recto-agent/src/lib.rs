@@ -11,6 +11,8 @@ pub mod index;
 pub mod linking;
 mod loader;
 mod reading;
+pub mod extract;
+pub mod print;
 pub mod saving;
 mod render;
 pub use render::{output_exists, publish_picture};
@@ -261,6 +263,9 @@ pub enum Command {
         #[serde(default = "render::default_scale", deserialize_with = "render::scale_or_max")]
         scale: f32,
         out: PathBuf,
+        /// Draws a page of a file that asks not to be copied. Only once the user has said to; logged.
+        #[serde(default)]
+        anyway: bool,
     },
     /// Writes a page, or a box on it, to a new SVG file.
     ExportSvg {
@@ -280,6 +285,57 @@ pub enum Command {
         /// Takes out of JPEGs what isn't the picture, and the document's title.
         #[serde(default)]
         strip_metadata: bool,
+        /// Exports a page of a file that asks not to be copied. Only once the user has said to; logged.
+        #[serde(default)]
+        anyway: bool,
+    },
+    /// Where a page's images are, and what each is.
+    Images {
+        #[serde(default = "active_tab")]
+        tab: String,
+        page: u32,
+    },
+    /// One of a page's images to a new file, as itself: a JPEG's own bytes, or a lossless PNG.
+    Image {
+        #[serde(default = "active_tab")]
+        tab: String,
+        page: u32,
+        /// From 1, as `images` lists them.
+        number: u32,
+        out: PathBuf,
+        #[serde(default)]
+        anyway: bool,
+    },
+    /// A box on a page as PNG, JPG, SVG or text.
+    Snapshot {
+        #[serde(default = "active_tab")]
+        tab: String,
+        page: u32,
+        /// `x, y, width, height`, in points from the page's top left, as it's shown.
+        rect: [f32; 4],
+        /// `png`, `jpg`, `svg` or `text`.
+        #[serde(rename = "as")]
+        format: String,
+        #[serde(default)]
+        out: Option<PathBuf>,
+        #[serde(default = "render::default_scale")]
+        scale: f32,
+        #[serde(default)]
+        anyway: bool,
+    },
+    /// Pages printed to a new PDF, through what the app prints with.
+    Print {
+        #[serde(default = "active_tab")]
+        tab: String,
+        /// `4`, `4-6` or `4-`: all of them if left out.
+        #[serde(default)]
+        pages: Option<String>,
+        #[serde(default = "print::default_dpi")]
+        dpi: u32,
+        to_pdf: PathBuf,
+        /// Prints a file that asks not to be copied to a PDF. Only once the user has said to; logged. Print to paper never asks.
+        #[serde(default)]
+        anyway: bool,
     },
     /// A page's text, normalised for search, with the hidden-text flag.
     Text {
@@ -593,6 +649,10 @@ impl Command {
             Self::QaDrive { .. } => "qa_drive",
             Self::Render { .. } => "render",
             Self::ExportSvg { .. } => "export_svg",
+            Self::Images { .. } => "images",
+            Self::Image { .. } => "image",
+            Self::Snapshot { .. } => "snapshot",
+            Self::Print { .. } => "print",
             Self::Text { .. } => "text",
             Self::Select { .. } => "select",
             Self::Copy { .. } => "copy",
@@ -652,6 +712,8 @@ impl Command {
             Self::Compare { .. } => Access::At(Level::Control),
             // Asking is reading. Whether this app replaces itself is as far-reaching as installing, so it's the same level.
             Self::Settings { auto_update: Some(_) } => Access::At(Level::Full),
+            // Text comes back in the answer, as `copy` gives it. A file written is an export.
+            Self::Snapshot { format, out: None, .. } if !extract::snapshot_writes(format) => Access::At(Level::ReadOnly),
             // A command with no row can't run: the table is the list.
             _ => table::by_tag(self.tag()).map_or(Access::Nobody, |spec| spec.access),
         }
@@ -659,7 +721,7 @@ impl Command {
 
     /// Whether this draws or reads pages through a worker. These run at most a few at a time, because each can use hundreds of megabytes.
     pub fn draws(&self) -> bool {
-        matches!(self, Self::Render { .. } | Self::ExportSvg { .. } | Self::Text { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. })
+        matches!(self, Self::Render { .. } | Self::ExportSvg { .. } | Self::Images { .. } | Self::Image { .. } | Self::Snapshot { .. } | Self::Print { .. } | Self::Text { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. })
     }
 
     /// What goes in the activity log about this command's arguments. Numbers and cleaned file names, and never anything that could hold document text: a tab's name as typed or a search's words aren't kept.
@@ -672,12 +734,17 @@ impl Command {
             Self::Open { path, page } => json!({ "page": page, "untrusted": file(path) }),
             Self::PageInsert { tab, path, at } => json!({ "tab": tab_of(tab), "at": at, "untrusted": file(path) }),
             Self::Save { tab, out: Some(out), replace } => json!({ "tab": tab_of(tab), "replace": replace, "untrusted": file(out) }),
-            Self::Render { tab, page, out, .. } | Self::ExportSvg { tab, page, out, .. } => json!({ "tab": tab_of(tab), "page": page, "untrusted": file(out) }),
+            Self::Render { tab, page, out, anyway, .. } | Self::ExportSvg { tab, page, out, anyway, .. } => json!({ "tab": tab_of(tab), "page": page, "anyway": anyway, "untrusted": file(out) }),
             Self::Text { tab, page } | Self::Links { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
             // A label is from the file, so it isn't kept: only that one was asked for.
             Self::Goto { tab, page, label } => json!({ "tab": tab_of(tab), "page": page, "by_label": label.is_some() }),
             Self::Follow { tab, page, link } => json!({ "tab": tab_of(tab), "page": page, "link": link }),
             Self::Back { tab } | Self::Forward { tab } => json!({ "tab": tab_of(tab) }),
+            Self::Images { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
+            Self::Image { tab, page, number, out, anyway } => json!({ "tab": tab_of(tab), "page": page, "number": number, "anyway": anyway, "untrusted": file(out) }),
+            // Which page and format, and not where on it.
+            Self::Print { tab, pages, dpi, to_pdf, anyway } => json!({ "tab": tab_of(tab), "pages": pages.as_deref().map(clean_range), "dpi": dpi, "anyway": anyway, "untrusted": file(to_pdf) }),
+            Self::Snapshot { tab, page, format, out, anyway, .. } => json!({ "tab": tab_of(tab), "page": page, "as": recto_core::clean_line(format), "anyway": anyway, "untrusted": out.as_deref().map(file) }),
             // Which pages, and not where on them or what's there.
             Self::Select { tab, page, to_page, all, anyway, .. } | Self::Copy { tab, page, to_page, all, anyway, .. } => json!({ "tab": tab_of(tab), "page": page, "to_page": to_page, "all": all, "anyway": anyway }),
             Self::PageMove { tab, pages, to } => json!({ "tab": tab_of(tab), "pages": clean_range(pages), "to": to }),
@@ -702,12 +769,12 @@ impl Command {
     /// The selector this command acts on, if it has one.
     /// Whether it reads what's on a tab's pages, which a tab's edits say.
     fn reads_pages(&self) -> bool {
-        matches!(self, Self::Text { .. } | Self::Render { .. } | Self::ExportSvg { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::Index { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. } | Self::Links { .. } | Self::Follow { .. })
+        matches!(self, Self::Text { .. } | Self::Render { .. } | Self::ExportSvg { .. } | Self::Select { .. } | Self::Copy { .. } | Self::Search { .. } | Self::Index { .. } | Self::BudgetRender { .. } | Self::BudgetViewport { .. } | Self::Links { .. } | Self::Follow { .. } | Self::Images { .. } | Self::Image { .. } | Self::Snapshot { .. } | Self::Print { .. })
     }
 
     fn tab_selector(&self) -> Option<&str> {
         match self {
-            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Links { tab, .. } | Self::Follow { tab, .. } | Self::Back { tab } | Self::Forward { tab } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab, .. } | Self::Wait { tab, .. } => Some(tab),
+            Self::Tap { tab } | Self::Goto { tab, .. } | Self::Links { tab, .. } | Self::Follow { tab, .. } | Self::Back { tab } | Self::Forward { tab } | Self::Close { tab } | Self::Render { tab, .. } | Self::ExportSvg { tab, .. } | Self::Images { tab, .. } | Self::Image { tab, .. } | Self::Snapshot { tab, .. } | Self::Print { tab, .. } | Self::Text { tab, .. } | Self::Select { tab, .. } | Self::Copy { tab, .. } | Self::BudgetRender { tab, .. } | Self::BudgetViewport { tab, .. } | Self::Where { tab } | Self::Facts { tab } | Self::Contents { tab, .. } | Self::Search { tab, .. } | Self::Index { tab, .. } | Self::IndexStatus { tab } | Self::IndexClear { tab, .. } | Self::Signatures { tab } | Self::Edits { tab } | Self::PageMove { tab, .. } | Self::PageRotate { tab, .. } | Self::PageDelete { tab, .. } | Self::PageInsert { tab, .. } | Self::Undo { tab } | Self::Redo { tab } | Self::Discard { tab } | Self::ClearHistory { tab } | Self::SessionSleep { tab } | Self::Save { tab, .. } | Self::Wait { tab, .. } => Some(tab),
             _ => None,
         }
     }
@@ -1193,9 +1260,10 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             let id = select(s, tab)?;
             Ok(edits_json(s, id))
         }),
-        Command::Render { tab, page, scale, out } => {
+        Command::Render { tab, page, scale, out, anyway } => {
             require_absolute(out)?;
             let (id, position, source) = locate(access, tab, *page)?;
+            extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let drawn = render::render(&source.path, source.page + 1, *scale, out);
             if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
                 note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code), events);
@@ -1204,9 +1272,10 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             describe_source(&mut data, *page, &source);
             Ok(data)
         }
-        Command::ExportSvg { tab, page, out, rect, text, scale, strip_metadata } => {
+        Command::ExportSvg { tab, page, out, rect, text, scale, strip_metadata, anyway } => {
             require_absolute(out)?;
             let (id, position, source) = locate(access, tab, *page)?;
+            extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let args = render::SvgArgs { path: &source.path, page: source.page + 1, out, rect: *rect, text: text.as_deref(), scale: *scale, strip_metadata: *strip_metadata };
             let drawn = render::export_svg(&args);
             if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
@@ -1215,6 +1284,33 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             let mut data = drawn?;
             describe_source(&mut data, *page, &source);
             Ok(data)
+        }
+        Command::Images { tab, page } => {
+            let (_, _, source) = locate(access, tab, *page)?;
+            let mut data = extract::images(&source.path, source.page + 1)?;
+            describe_source(&mut data, *page, &source);
+            Ok(data)
+        }
+        Command::Image { tab, page, number, out, anyway } => {
+            require_absolute(out)?;
+            let (_, _, source) = locate(access, tab, *page)?;
+            let mut data = extract::image_to_file(&source.path, source.page + 1, *number, out, *anyway)?;
+            describe_source(&mut data, *page, &source);
+            Ok(data)
+        }
+        Command::Snapshot { tab, page, rect, format, out, scale, anyway } => {
+            if let Some(out) = out {
+                require_absolute(out)?;
+            }
+            let (_, _, source) = locate(access, tab, *page)?;
+            let mut data = extract::snapshot_command(&extract::SnapshotAsked { path: &source.path, page: source.page + 1, rect: *rect, format, out: out.as_deref(), scale: *scale, anyway: *anyway })?;
+            describe_source(&mut data, *page, &source);
+            Ok(data)
+        }
+        Command::Print { tab, pages, dpi, to_pdf, anyway } => {
+            require_absolute(to_pdf)?;
+            let list = print::print_pages(access, tab, pages.as_deref())?;
+            print::print_to_file(&list, *dpi, to_pdf, *anyway)
         }
         Command::Text { tab, page } => {
             let (id, position, source) = locate(access, tab, *page)?;
@@ -2087,7 +2183,7 @@ mod tests {
         let mut session = with_tabs(&["a"]);
         let refused = run(&mut session, Level::Off, &text).unwrap_err();
         assert_eq!((refused.code, refused.exit), ("permission_denied", exit::PERMISSION));
-        let render = Command::Render { tab: "#1".into(), page: 1, scale: 2.0, out: "/tmp/x.png".into() };
+        let render = Command::Render { tab: "#1".into(), page: 1, scale: 2.0, out: "/tmp/x.png".into(), anyway: false };
         assert_eq!(run(&mut session, Level::Control, &render).unwrap_err().code, "permission_denied", "it writes to disk, so it needs Full");
     }
 
@@ -2174,8 +2270,12 @@ mod tests {
             Command::Budget {},
             Command::Compare { tabs: None, sync: None, off: false },
             Command::Compare { tabs: None, sync: None, off: true },
-            Command::Render { tab: tab(), page: 1, scale: 2.0, out: "/d/x.png".into() },
-            Command::ExportSvg { tab: tab(), page: 1, out: "/d/x.svg".into(), rect: None, text: None, scale: 2.0, strip_metadata: false },
+            Command::Render { tab: tab(), page: 1, scale: 2.0, out: "/d/x.png".into(), anyway: false },
+            Command::ExportSvg { tab: tab(), page: 1, out: "/d/x.svg".into(), rect: None, text: None, scale: 2.0, strip_metadata: false, anyway: false },
+            Command::Images { tab: tab(), page: 1 },
+            Command::Image { tab: tab(), page: 1, number: 1, out: "/d/x.png".into(), anyway: false },
+            Command::Snapshot { tab: tab(), page: 1, rect: [0.0, 0.0, 10.0, 10.0], format: "png".into(), out: Some("/d/x.png".into()), scale: 2.0, anyway: false },
+            Command::Print { tab: tab(), pages: None, dpi: 300, to_pdf: "/d/x.pdf".into(), anyway: false },
             Command::Text { tab: tab(), page: 1 },
             Command::Select { tab: tab(), page: Some(1), to_page: None, chars: None, at: None, to: None, unit: None, all: false, anyway: false },
             Command::Copy { tab: tab(), page: Some(1), to_page: None, chars: None, at: None, to: None, unit: None, all: false, anyway: false },

@@ -619,3 +619,26 @@ fn a_page_from_an_added_pdf_that_changed_isnt_drawn() {
     assert_eq!(engine.note(), None);
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
 }
+
+/// Failure: a snapshot box dragged from one page across the break onto the next reads the pointer in the next page's coordinates, so the box jumps to near the top of the pressed page, or comes out with the wrong size. The point must be taken onto the pressed page and held to its edge.
+#[test]
+fn a_snapshot_box_dragged_across_a_page_break_stays_on_its_page() {
+    use recto_reader::snapshot::{SnapshotTool, Taken};
+    let file = document(2);
+    let (engine, _events) = started(&file, 2);
+    settled_on_page(&engine, 0);
+    let (press_x, press_y) = engine.document_point(0, 100.0, 700.0).unwrap();
+    let (drag_x, drag_y) = engine.document_point(1, 300.0, 50.0).unwrap();
+    assert_eq!(engine.point_on_page(drag_x, drag_y).map(|(point, _)| point.page), Some(1), "the drag really is over the next page");
+    let mut tool = SnapshotTool::default();
+    tool.set_on(true);
+    let (pressed, size) = engine.point_on_page(press_x, press_y).unwrap();
+    tool.press(pressed, size);
+    let point = engine.point_on_given_page(tool.pressed_page().unwrap(), drag_x, drag_y).unwrap();
+    assert!(point.y > size.1, "past the pressed page's bottom: {point:?}");
+    tool.drag(point);
+    let Taken::Box { page, rect } = tool.release() else { panic!("a box") };
+    assert_eq!(page, 0);
+    assert!((rect.y - 700.0).abs() < 0.5 && (rect.y + rect.height - size.1).abs() < 0.5, "from the press down to the page's edge: {rect:?}");
+    assert!((rect.x - 100.0).abs() < 0.5 && (rect.width - 200.0).abs() < 0.5, "{rect:?}");
+}

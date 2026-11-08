@@ -11,7 +11,7 @@
 
 use super::*;
 use recto_proto::jpeg::{HeaderFix, JpegScan, MAX_ADDED_PROFILE, fix_header, frame_components, profile_says_srgb};
-use recto_proto::contents::{CONTENTS_CHUNK, ContentsJob, ImageCoding, MAX_CLIP_CHAIN, MAX_CLIPS, MAX_GLYPHS, MAX_GROUP_NESTING, MAX_IMAGE_ROW_BYTES, MAX_PATH_SEGMENTS, MAX_RUN_ITEMS, NoteCode, SEG_CURVE, SEG_LINE, SEG_MOVE, TextMode, Why, begin_contents, finish_contents, hints, put};
+use recto_proto::contents::{CONTENTS_CHUNK, ContentsJob, ImageCoding, MAX_CLIP_CHAIN, MAX_CLIPS, MAX_GLYPHS, MAX_GROUP_NESTING, MAX_IMAGE_ROW_BYTES, MAX_PATH_SEGMENTS, MAX_RUN_ITEMS, IMAGES_ALL, IMAGES_LIST, NoteCode, SEG_CURVE, SEG_LINE, SEG_MOVE, TextMode, Why, begin_contents, finish_contents, hints, put};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -300,6 +300,8 @@ pub(super) struct Walk {
     invisible_counted: HashSet<usize>,
     notes: [u32; 13],
     buffer: Vec<(u32, f32, f32)>,
+    /// Images met so far, counted the same way whichever images a job wants, so a number from a list is the same image when it's asked for.
+    images_seen: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -422,6 +424,7 @@ impl PdfiumBackend {
             invisible_counted: HashSet::new(),
             notes: [0; 13],
             buffer: Vec::new(),
+            images_seen: 0,
         };
         // SAFETY: the page is live.
         let count = unsafe { (api.FPDFPage_CountObjects)(page) }.max(0);
@@ -539,13 +542,14 @@ impl Walk {
                 Phase::Objects => self.step(out, form)?,
                 Phase::Annotations => {
                     self.phase = Phase::Whole;
-                    if !self.flatten {
+                    // Annotations aren't images in the file, and nothing else of the page is wanted with one.
+                    if !self.flatten && self.job.images == IMAGES_ALL {
                         self.annotations_patch(out);
                     }
                 }
                 Phase::Whole => {
                     self.phase = Phase::Notes;
-                    if self.flatten {
+                    if self.flatten && self.job.images == IMAGES_ALL {
                         self.whole_patch(out);
                     }
                 }
@@ -856,6 +860,14 @@ impl Walk {
                 self.flatten = true;
                 return Ok(());
             }
+        }
+        // Only images: whole and as themselves, wherever they are inside forms, and nothing else. Clips, groups and blends are about how a page looks, and an image copied is the image.
+        if self.job.images != IMAGES_ALL {
+            return match kind {
+                FPDF_PAGEOBJ_IMAGE if !self.flatten => self.image(object, area, out),
+                FPDF_PAGEOBJ_FORM if self.levels.len() < MAX_LEVELS => self.enter_form(object, out, true, None),
+                _ => Ok(()),
+            };
         }
         let text_only = self.level().text_only || self.flatten;
         if text_only {
@@ -1565,8 +1577,26 @@ impl Walk {
             return Ok(());
         };
         let matrix = then(&own, &self.level().matrix);
+        let only_images = self.job.images != IMAGES_ALL;
+        if only_images {
+            self.images_seen = self.images_seen.saturating_add(1);
+            if self.job.images == IMAGES_LIST {
+                let (mut width, mut height): (c_uint, c_uint) = (0, 0);
+                // SAFETY: as above.
+                unsafe { (self.api.FPDFImageObj_GetImagePixelSize)(object, &raw mut width, &raw mut height) };
+                match to_f32(&matrix) {
+                    // One whose size can't be read is still an image here, and copying it draws it, so it keeps its number.
+                    Some(wire) => put::image_place(out, width.max(1), height.max(1), self.is_dct(object), &wire),
+                    None => self.note(NoteCode::NotFinite),
+                }
+                return Ok(());
+            }
+            if self.images_seen != self.job.images {
+                return Ok(());
+            }
+        }
         let alpha = self.color_of(object, false).map_or(255, |color| color[3]);
-        if self.may_have_effects(object, alpha == 255) {
+        if !only_images && self.may_have_effects(object, alpha == 255) {
             self.effects_patch(object, area, Why::BlendOrMask, out);
             return Ok(());
         }
@@ -1585,7 +1615,7 @@ impl Walk {
             self.patch(object, area, Why::TooComplex, PatchKind::Alone, out);
             return Ok(());
         }
-        if !self.apply_clip_or_patch(object, area, out) {
+        if !only_images && !self.apply_clip_or_patch(object, area, out) {
             return Ok(());
         }
         let mut metadata = FPDF_IMAGEOBJ_METADATA::default();
