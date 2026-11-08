@@ -821,13 +821,9 @@ impl RecordStore {
         StoreError::new("other_instance", record::notices::OTHER_INSTANCE)
     }
 
-    /// **Keeps a copy of a file about to be replaced,** for undoing past that save: a step that puts back a page the save takes out needs it from somewhere, and the history's the only place. An APFS clone, so it costs nothing until the file's replaced, when it holds what only it has. Up to [`recto_session::edit::MAX_HISTORY_BYTES`], the limit a PDF's history has: past that, `None`, and the steps roll off. It's in the journals' folder, private and out of backups. `target` is what the save will put in place, which is what names it. On whatever thread is saving.
-    pub fn keep_pages_of(&self, path: &Path, target: FileStamp, pages: u32) -> Option<AddedSource> {
-        if self.refuses_writes().is_some() {
-            return None;
-        }
-        let was = file_stamp(path).ok()?;
-        if was.size > recto_session::edit::MAX_HISTORY_BYTES as u64 {
+    /// **Keeps a copy of the pages a history can put back, from a file about to be replaced,** for undoing past that save: a step that puts back a page the save takes out needs it from somewhere, and the history's the only place. **Only those pages** (owner, 2026-11-07: "keeps only the removed pages"), written by the save's own rewrite, so it works whatever the size of the PDF, within [`recto_session::edit::MAX_HISTORY_BYTES`], the limit a PDF's history has: past that, `None`, and the steps roll off. Synced before it's relied on, so a power cut can't leave the right stamp on the wrong contents. In the journals' folder, private and out of backups, and named so Spotlight has no importer for it: its text isn't indexed. `target` is what the save will put in place, which is what names it. On whatever thread is saving.
+    pub fn keep_pages_of(&self, path: &Path, target: FileStamp, pages: &[u32]) -> Option<AddedSource> {
+        if self.refuses_writes().is_some() || pages.is_empty() {
             return None;
         }
         let dir = self.dir();
@@ -835,23 +831,26 @@ impl RecordStore {
         let folder = dir.join(JOURNALS);
         let name = (0..64).map(|taken| record::kept_file_name(target, taken)).find(|name| std::fs::symlink_metadata(folder.join(name)).is_err())?;
         let kept = folder.join(&name);
-        let temp = kept.with_extension(format!("tmp{}", std::process::id()));
-        let _ = std::fs::remove_file(&temp);
-        if local::clone_file(path, &temp).is_err() {
-            std::fs::copy(path, &temp).ok()?;
-        }
-        // A clone has the file's mode and time. This one's private, and its age is its own, which is what the 30 days go by.
-        let made = (|| -> std::io::Result<()> {
-            local::make_private_file(&temp)?;
-            OpenOptions::new().write(true).open(&temp)?.set_modified(std::time::SystemTime::now())?;
-            std::fs::rename(&temp, &kept)
+        recto_core::save::keep_pages(path, pages, &kept).ok()?;
+        // Its age is its own, which is what the 30 days go by, and it's this user's alone. Synced again, as both are changes since the copy was synced.
+        let made = (|| -> std::io::Result<FileStamp> {
+            local::make_private_file(&kept)?;
+            let file = OpenOptions::new().write(true).open(&kept)?;
+            file.set_modified(std::time::SystemTime::now())?;
+            file.sync_all()?;
+            drop(file);
+            local::sync_folder_of(&kept)?;
+            file_stamp(&kept)
         })();
-        if made.is_err() {
-            let _ = std::fs::remove_file(&temp);
-            return None;
-        }
-        let stamp = file_stamp(&kept).ok()?;
-        Some(AddedSource { path: kept.into_boxed_path(), page_count: pages, stamp: Some(stamp), kept: true, protected: false })
+        let stamp = match made {
+            Ok(stamp) if stamp.size <= recto_session::edit::MAX_HISTORY_BYTES as u64 => stamp,
+            _ => {
+                let _ = std::fs::remove_file(&kept);
+                return None;
+            }
+        };
+        let count = u32::try_from(pages.len()).ok()?;
+        Some(AddedSource { path: kept.into_boxed_path(), page_count: count, stamp: Some(stamp), kept: true, protected: false, holds: Some(pages.into()) })
     }
 
     /// **What going dormant does to a list on disk:** the journal's checkpoint moves up, if that's worth it, and it's read back and compared, as what's in memory is about to go. Says whether it's all there.
@@ -1637,6 +1636,12 @@ mod tests {
         }
     }
 
+    /// Five pages, each saying `PAGEMARK` and its number.
+    fn five_pages() -> Vec<u8> {
+        let pages: Vec<recto_testpdf::Page> = (0..5).map(|at| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("PAGEMARK{at}")]))).collect();
+        recto_testpdf::pages(&pages)
+    }
+
     /// Failure (decision 25): the history's in Time Machine, for good, after it's been cleared here, however its folder came to be: new, already there unmarked, or brought over from another version's. Or a kept copy is anyone's to read, or has the file's own age, and is pruned as soon as it's made.
     #[test]
     fn history_stays_out_of_backups_and_is_private() {
@@ -1652,22 +1657,25 @@ mod tests {
         copy_folder(&root.join("session"), &copy).unwrap();
         assert!(local::is_excluded_from_backups(&copy.join(JOURNALS)));
         let file = root.join("doc.pdf");
-        std::fs::write(&file, b"as it was").unwrap();
+        std::fs::write(&file, five_pages()).unwrap();
         let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
-        let kept = store.keep_pages_of(&file, target, 5).unwrap();
+        let kept = store.keep_pages_of(&file, target, &[1, 3]).unwrap();
         assert!(kept.kept && kept.path.starts_with(&journals));
+        assert_eq!((kept.page_count, kept.holds.as_deref()), (2, Some(&[1, 3][..])), "only the pages asked for");
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&kept.path).unwrap().permissions().mode() & 0o077, 0, "it's the user's alone");
-        assert_eq!(std::fs::read(&kept.path).unwrap(), b"as it was");
+        let bytes = std::fs::read(&kept.path).unwrap();
+        assert!(bytes.windows(9).any(|window| window == b"PAGEMARK1") && bytes.windows(9).any(|window| window == b"PAGEMARK3"));
+        assert!(!bytes.windows(9).any(|window| window == b"PAGEMARK0" || window == b"PAGEMARK2"), "and nothing of the others");
         assert!(std::fs::metadata(&kept.path).unwrap().modified().unwrap().elapsed().unwrap().as_secs() < 60, "its age is its own");
         assert!(kept_file_is_there(&kept));
+        assert!(!kept.path.extension().is_some_and(|extension| extension == "pdf"), "no PDF importer for Spotlight to run on it");
         // A second for the same save is beside it, not over it.
-        let second = store.keep_pages_of(&file, target, 5).unwrap();
+        let second = store.keep_pages_of(&file, target, &[1]).unwrap();
         assert_ne!(second.path, kept.path);
-        // Past the limit a PDF's history has, it isn't kept.
-        let big = File::create(root.join("big.pdf")).unwrap();
-        big.set_len(recto_session::edit::MAX_HISTORY_BYTES as u64 + 1).unwrap();
-        assert!(store.keep_pages_of(&root.join("big.pdf"), target, 5).is_none());
+        // What isn't a PDF it can read isn't kept, and the steps roll off.
+        std::fs::write(root.join("junk.pdf"), b"not a pdf").unwrap();
+        assert!(store.keep_pages_of(&root.join("junk.pdf"), target, &[0]).is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1681,9 +1689,9 @@ mod tests {
         let name = record::journal_file_name(Some(now), &file, None);
         let store = RecordStore::open(&paths, Flavor::App);
         let original = root.join("original.pdf");
-        std::fs::write(&original, b"as it was").unwrap();
+        std::fs::write(&original, five_pages()).unwrap();
         let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
-        let kept = store.keep_pages_of(&original, target, 5).unwrap();
+        let kept = store.keep_pages_of(&original, target, &[0]).unwrap();
         let (mut list, _) = PageEdits::replay(5, None, &[JournalOp::Delete(0, 1, record::AuthorName::Owner)]).unwrap();
         list.rebase_on_saved(4, Some(kept.clone())).unwrap();
         assert!(list.can_undo());
@@ -1724,7 +1732,7 @@ mod tests {
         // A closed PDF's, opened again.
         let closed = closed_journal_name(&name).unwrap();
         std::fs::remove_file(root.join("session").join(JOURNALS).join(&name)).unwrap();
-        let kept_again = store.keep_pages_of(&original, target, 5).unwrap();
+        let kept_again = store.keep_pages_of(&original, target, &[0]).unwrap();
         let (mut list, _) = PageEdits::replay(5, None, &[JournalOp::Delete(0, 1, record::AuthorName::Owner)]).unwrap();
         list.rebase_on_saved(4, Some(kept_again.clone())).unwrap();
         let header = JournalHeader::new(1, &file, Some(now), 4, 1);

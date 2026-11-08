@@ -5,7 +5,7 @@ mod common;
 use common::State;
 use recto_agent::{Level, exit};
 use recto_testpdf::{Object, Page, TempPdf, build, pages, text_lines};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 fn marked(markers: &[&str]) -> Vec<u8> {
     pages(&markers.iter().map(|marker| Page::new(text_lines(&[marker]))).collect::<Vec<_>>())
@@ -114,19 +114,26 @@ fn levels_decide_what_an_agent_can_save() {
     let _ = std::fs::remove_file(copy);
 }
 
-/// Failure: a delete is saved by appending, so the deleted page stays in the file. Until the rewrite is built it's refused, nothing is written, and the edits stay.
+/// Failure: a delete is saved by appending, so the deleted page stays in the file, or an agent below Full removes it for good. At Control it's refused, with the edits standing. At Full it's a rewrite: the page's words are gone from the file, the answer says so in plain words, and the tab reads as saved.
 #[test]
-fn a_delete_isnt_saved_by_appending() {
-    let state = State::at(Level::Full);
+fn a_delete_is_saved_by_rewriting() {
+    let state = State::at(Level::Control);
     let _serving = state.serve();
-    let file = TempPdf::new("doc.pdf", &marked(&["KEEP", "DELETED"]));
+    let file = TempPdf::new("doc.pdf", &marked(&["KEEP", "DELETEDMARK"]));
     ok(&state, &["open", path(&file)]);
     ok(&state, &["page", "delete", "2"]);
     let (refused, code) = state.json(&["save"]);
-    assert_eq!((code, refused["error"]["code"].as_str()), (exit::FAILED, Some("needs_rewrite")), "{refused}");
-    assert!(refused["error"]["message"].as_str().unwrap().contains("Nothing was written"));
-    assert_eq!(std::fs::read(&file.0).unwrap(), marked(&["KEEP", "DELETED"]));
+    assert_eq!(code, exit::PERMISSION, "removing for good needs Full: {refused}");
+    assert_eq!(std::fs::read(&file.0).unwrap(), marked(&["KEEP", "DELETEDMARK"]));
     assert_eq!(ok(&state, &["edits"])["edited"], true, "the edits stand");
+    state.set_level(Level::Full);
+    let saved = ok(&state, &["save"]);
+    assert_eq!((&saved["writer"], &saved["pages_removed"], &saved["written"]), (&json!("rewrite"), &json!(1), &json!(true)), "{saved}");
+    assert!(saved["did"].as_str().unwrap().contains("gone"), "{saved}");
+    assert!(saved["document_data_kept"].is_object(), "{saved}");
+    let bytes = std::fs::read(&file.0).unwrap();
+    assert!(!found(&bytes, "DELETEDMARK") && found(&bytes, "KEEP"));
+    assert_eq!(ok(&state, &["edits"])["edited"], false, "saved");
 }
 
 /// Failure (SPEC decision 25, on the real path): marked text that was only ever in the history reaches the saved file: an added PDF that was undone, its name, the journal. The save writes the document and nothing else.
@@ -176,6 +183,39 @@ fn a_signed_pdfs_bytes_never_change() {
     let saved = ok(&state, &["save"]);
     assert!(std::fs::read(&file.0).unwrap().starts_with(&before));
     assert!(!saved.to_string().to_lowercase().contains("valid"), "{saved}");
+}
+
+/// Failure (SPEC decision 27): a delete on a signed PDF breaks its signature, or can't be saved anywhere. Save over it is refused, saying the original keeps its signature and Save As makes an unsigned copy; Save As makes that copy, saying "The new copy won't be signed. The original keeps its signature.", and never calls a signature valid.
+#[test]
+fn a_signed_pdfs_delete_goes_to_an_unsigned_copy() {
+    let state = State::at(Level::Full);
+    let _serving = state.serve();
+    let bytes = build(&[
+        Object::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
+        Object::Dict("<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".into()),
+        Object::Stream { dict: String::new(), data: text_lines(&["A contract"]) },
+        Object::Dict("<< /FT /Sig /T (Tenant) /V 6 0 R >>".into()),
+        Object::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 5 10 5] /Contents <00> >>".into()),
+        Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 8 0 R >>".into()),
+        Object::Stream { dict: String::new(), data: text_lines(&["DELETEDMARK"]) },
+    ]);
+    let file = TempPdf::new("signed2.pdf", &bytes);
+    ok(&state, &["open", path(&file)]);
+    ok(&state, &["page", "delete", "2"]);
+    let (refused, code) = state.json(&["save"]);
+    assert_eq!((code, refused["error"]["code"].as_str()), (exit::FAILED, Some("signed_needs_copy")), "{refused}");
+    assert!(refused["error"]["message"].as_str().unwrap().contains("keeps its signature"), "{refused}");
+    assert_eq!(std::fs::read(&file.0).unwrap(), bytes, "the signed original never changes");
+    let copy = file.0.with_file_name("unsigned copy.pdf");
+    let saved = ok(&state, &["save-as", "--out", copy.to_str().unwrap()]);
+    assert_eq!(saved["signatures_removed"], 1, "{saved}");
+    assert!(saved["notes"].as_array().unwrap().iter().any(|note| note == "The new copy won't be signed. The original keeps its signature."), "{saved}");
+    assert!(!saved.to_string().to_lowercase().contains("valid"), "{saved}");
+    let written = std::fs::read(&copy).unwrap();
+    assert!(!found(&written, "/ByteRange") && !found(&written, "DELETEDMARK") && found(&written, "A contract"));
+    assert_eq!(std::fs::read(&file.0).unwrap(), bytes);
+    let _ = std::fs::remove_file(copy);
 }
 
 /// Failure: the file changes on disk under an open tab, and a save writes over the other app's version. Refused, the other version stays, and the edits are still here.

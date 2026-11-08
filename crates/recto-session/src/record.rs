@@ -526,16 +526,20 @@ pub fn is_closed_journal_name(name: &str) -> bool {
     name.strip_prefix("closed-").is_some_and(|rest| is_journal_name(&format!("journal-{rest}")))
 }
 
-/// What a copy kept for a history is called, from the identity of the file that replaces it. `taken` is for when something's at that name.
+/// What a copy kept for a history is called, from the identity of the file that replaces it. `taken` is for when something's at that name. **Not `.pdf`:** Spotlight
+/// picks its importer by the name's extension, and has none for this, so the text of pages a person deleted isn't indexed from here. Nothing that reads it goes by the name.
 pub fn kept_file_name(target: FileStamp, taken: u32) -> String {
     let key = journal_file_name(Some(target), Path::new(""), None);
     let key = key.strip_prefix("journal-").and_then(|rest| rest.strip_suffix(".log")).unwrap_or_default();
-    if taken == 0 { format!("kept-{key}.pdf") } else { format!("kept-{key}-{taken}.pdf") }
+    if taken == 0 { format!("kept-{key}.{KEPT_EXTENSION}") } else { format!("kept-{key}-{taken}.{KEPT_EXTENSION}") }
 }
 
-/// Whether a name is that of a copy kept for a history. Nothing else is removed as one, so a journal naming a file can't reach out of its folder.
+/// The extension of a kept copy's name.
+pub const KEPT_EXTENSION: &str = "keptpages";
+
+/// Whether a name is that of a copy kept for a history: this build's, or an earlier one's, which ended in `.pdf`. Nothing else is removed as one, so a journal naming a file can't reach out of its folder.
 pub fn is_kept_name(name: &str) -> bool {
-    name.strip_prefix("kept-").and_then(|rest| rest.strip_suffix(".pdf")).is_some_and(|rest| is_journal_name(&format!("journal-{rest}.log")))
+    name.strip_prefix("kept-").and_then(|rest| rest.strip_suffix(".pdf").or_else(|| rest.strip_suffix(&format!(".{KEPT_EXTENSION}")))).is_some_and(|rest| is_journal_name(&format!("journal-{rest}.log")))
 }
 
 /// What a tab's sleep file is called: its file's identity, as a journal goes by.
@@ -696,6 +700,9 @@ pub struct AddedRecord {
     /// It's a protected file.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub protected: bool,
+    /// A kept copy of only these pages of the file as it was, in order, until the save it was kept for is confirmed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holds: Option<Vec<u32>>,
 }
 
 /// One step of history: how to go back. It's the shape of [`crate::edit`]'s own steps.

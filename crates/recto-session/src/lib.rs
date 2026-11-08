@@ -1121,6 +1121,14 @@ impl<L: DocLoader> Session<L> {
         self.edits.get(&id).is_some_and(PageEdits::is_edited) || self.asleep.get(&id).is_some_and(|summary| summary.edited)
     }
 
+    /// **Whether saving this tab's edits writes the file anew:** a page of the file isn't there once, as a delete leaves it. The writer's own rule, `recto_core::save::writer_for`. A list that's asleep is taken not to, and the save itself says if it does.
+    pub fn needs_rewrite(&self, id: TabId) -> bool {
+        self.edits.get(&id).filter(|list| list.is_edited()).is_some_and(|list| {
+            let pages: Vec<recto_core::save::PageRef> = list.slots().iter().map(|slot| recto_core::save::PageRef { source: slot.source, page: slot.page, quarter_turns: slot.quarter_turns }).collect();
+            recto_core::save::writer_for(list.file_pages(), &pages) == recto_core::save::Writer::Rewrite
+        })
+    }
+
     /// Whether the owner's edits on this tab have been undone and can still be redone. Closing would lose them.
     pub fn has_undone_owner_steps(&self, id: TabId) -> bool {
         self.edits.get(&id).is_some_and(PageEdits::owner_steps_undone) || self.asleep.get(&id).is_some_and(|summary| summary.owner_steps_undone)
@@ -1129,6 +1137,11 @@ impl<L: DocLoader> Session<L> {
     /// A tab's page edits, if it has any and they're in memory. A list that's asleep has to be woken first, with [`Self::wake_list`], which everything that's about a tab does: this says `None` of one that's on disk, so anything that reads a tab from here is after that.
     pub fn page_edits(&self, id: TabId) -> Option<&PageEdits> {
         self.edits.get(&id)
+    }
+
+    /// The file's pages this tab's history can put back, ascending: what a save keeps a copy of. Nothing for a tab without a history.
+    pub fn own_pages_needed(&self, id: TabId) -> Vec<u32> {
+        self.edits.get(&id).map(PageEdits::own_pages_needed).unwrap_or_default()
     }
 
     /// Applies the owner's page edit: rearranging, rotating or deleting. This is what the app's own edits call, with nothing to say whose they are. Everything from the agent interface goes through [`Self::edit_pages_as`] with [`Author::Agent`].
@@ -1667,7 +1680,7 @@ impl<L: DocLoader> Session<L> {
         let kept = kept.or_else(|| {
             saved_as?;
             let tab = self.tab(id)?;
-            Some(edit::AddedSource { path: self.path_of(id)?.into_boxed_path(), page_count: tab.page_count, stamp: tab.stamp, kept: false, protected: tab.encrypted })
+            Some(edit::AddedSource { path: self.path_of(id)?.into_boxed_path(), page_count: tab.page_count, stamp: tab.stamp, kept: false, protected: tab.encrypted, holds: None })
         });
         self.retire_sleep_file(id);
         let rebased = self.edits.get_mut(&id).map(|list| list.rebase_on_saved(pages, kept.clone()));
@@ -4159,7 +4172,7 @@ mod tests {
     }
 
     fn kept(name: &str, size: u64) -> edit::AddedSource {
-        edit::AddedSource { path: PathBuf::from(format!("/state/journals/{name}")).into_boxed_path(), page_count: 5, stamp: Some(FileStamp { size, mtime_ns: 1, device: 1, inode: 7 }), kept: true, protected: false }
+        edit::AddedSource { path: PathBuf::from(format!("/state/journals/{name}")).into_boxed_path(), page_count: 5, stamp: Some(FileStamp { size, mtime_ns: 1, device: 1, inode: 7 }), kept: true, protected: false, holds: None }
     }
 
     const KEPT_A: &str = "kept-00000000000000aa.pdf";

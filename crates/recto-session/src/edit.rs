@@ -164,6 +164,8 @@ pub struct AddedSource {
     pub kept: bool,
     /// It's protected, so nothing of its pages is written anywhere in the clear: a document with one has no pictures in its sleep file.
     pub protected: bool,
+    /// A copy kept for a save holds only these pages of the file as it was, in this order (owner, 2026-11-07: undoing a delete past a Save keeps only the removed pages). The save's rebase moves the history's page numbers onto it and drops this. `None` for a whole file.
+    pub holds: Option<Box<[u32]>>,
 }
 
 /// What came of a save, for a list that goes on.
@@ -215,11 +217,17 @@ struct Outbox {
 
 impl AddedSource {
     pub fn to_record(&self) -> AddedRecord {
-        AddedRecord { path: PathField::from_path(&self.path), page_count: self.page_count, file: self.stamp.map(FileRecord::from), kept: self.kept, protected: self.protected }
+        AddedRecord { path: PathField::from_path(&self.path), page_count: self.page_count, file: self.stamp.map(FileRecord::from), kept: self.kept, protected: self.protected, holds: self.holds.as_ref().map(|holds| holds.to_vec()) }
     }
 
     pub fn from_record(record: &AddedRecord) -> Option<Self> {
-        Some(Self { path: record.path.to_path()?.into_boxed_path(), page_count: record.page_count, stamp: record.file.map(FileStamp::from), kept: record.kept, protected: record.protected })
+        // A record can say anything: what it holds is ascending, within limits, and as long as the copy.
+        let holds = match &record.holds {
+            None => None,
+            Some(holds) if holds.len() == record.page_count as usize && holds.len() <= MAX_PAGES && holds.windows(2).all(|pair| pair[0] < pair[1]) => Some(holds.clone().into_boxed_slice()),
+            Some(_) => return None,
+        };
+        Some(Self { path: record.path.to_path()?.into_boxed_path(), page_count: record.page_count, stamp: record.file.map(FileStamp::from), kept: record.kept, protected: record.protected, holds })
     }
 }
 
@@ -526,6 +534,23 @@ impl PageEdits {
         self.undo.iter().chain(&self.redo).any(|entry| entry.step.uses_source(0))
     }
 
+    /// **The file's pages the history can put back,** ascending: what a copy kept for a save has to hold, and all it holds. Bounded by the history, which is capped.
+    pub fn own_pages_needed(&self) -> Vec<u32> {
+        let mut pages: Vec<u32> = self
+            .undo
+            .iter()
+            .chain(&self.redo)
+            .filter_map(|entry| match &entry.step {
+                Step::Restore { slots, .. } => Some(slots.iter().filter(|slot| slot.source == 0).map(|slot| slot.page)),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        pages.sort_unstable();
+        pages.dedup();
+        pages
+    }
+
     /// **What a confirmed save does to a list: it marks the saved point.** Everything that's been done is in the new file, in this order, so page `n` of the document is page `n` of the file. The list starts again from there, with every page in its own place, which is what "reads as saved" is: [`Self::is_edited`] is whether the document differs from the file, so undoing away from this point makes it unsaved, and coming back reads as saved, by any steps.
     ///
     /// **Steps stay meaningful, as they're about positions.** A turn, a move or a removal is, and the document's positions are what they were. The only steps that name pages are those that put pages back, and those are of pages that the document doesn't have now, so not in the new file, unless they're from an added PDF, which is still its own file. So they go over to `kept`, a copy of the file as it was, in the history's own folder. Where that isn't there, or doesn't fit, they roll off, with all older ones, as a step's way back depends on those after it: undo stops short and says so, rather than undoing wrongly.
@@ -562,12 +587,25 @@ impl PageEdits {
         }
         match own_pages_at {
             Some(source) => {
+                // A copy of only some pages has them at its own numbers: each step's page goes to where it is there. One it doesn't hold can't be put back, so it rolls off, with what's older.
+                let holds = self.added.last_mut().and_then(|kept| kept.holds.take());
+                let mut missing = false;
                 for entry in self.undo.iter_mut().chain(&mut self.redo) {
                     if let Step::Restore { slots, .. } = &mut entry.step {
                         for slot in slots.iter_mut().filter(|slot| slot.source == 0) {
-                            slot.source = source;
+                            match holds.as_deref().map(|holds| holds.binary_search(&slot.page)) {
+                                None => slot.source = source,
+                                Some(Ok(at)) => {
+                                    slot.source = source;
+                                    slot.page = u32::try_from(at).unwrap_or(u32::MAX);
+                                }
+                                Some(Err(_)) => missing = true,
+                            }
                         }
                     }
+                }
+                if missing {
+                    out.rolled_off += self.roll_off_source(0);
                 }
             }
             None => out.rolled_off += self.roll_off_source(0),
@@ -929,7 +967,7 @@ impl PageEdits {
         if self.added.len() >= MAX_SOURCES {
             return Err(EditError::TooManySources);
         }
-        let added = AddedSource { path: PathBuf::from(path).into_boxed_path(), page_count, stamp, kept: false, protected };
+        let added = AddedSource { path: PathBuf::from(path).into_boxed_path(), page_count, stamp, kept: false, protected, holds: None };
         self.note(|| JournalOp::AddSource(added.to_record()));
         self.added.push(added);
         u16::try_from(self.added.len()).map_err(|_| EditError::TooManySources)

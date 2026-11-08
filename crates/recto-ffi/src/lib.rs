@@ -395,6 +395,16 @@ pub struct ReaderView {
     pub document_folder: String,
     /// Whether the Save icon is beside the window's controls: with unsaved edits, or while saving.
     pub save_button: bool,
+    /// Whether it does anything: not while saving, and not when Save over the file would break a person's signature, which Save As's unsigned copy is the way round.
+    pub save_enabled: bool,
+}
+
+/// What the Save icon says when it's off for a signed document.
+const SAVE_OFF_TOOLTIP: &str = "This document is signed, and saving this change would take the signature off, so Save is off. Save As makes an unsigned copy.";
+
+/// **Whether a Save over this file would be refused for its signature,** so Save is off and Save As's copy is unsigned (SPEC decision 27): a person's signature and a change that has to be written anew, or a certification or lock and any change. Usage rights alone don't. The same rule `recto_core::save::save` refuses by.
+fn save_needs_copy(facts: recto_core::save::SignatureFacts, needs_rewrite: bool) -> bool {
+    facts.has_persons_signature() && (needs_rewrite || facts.certified || facts.field_locked)
 }
 
 /// What to say by the page about a copy.
@@ -1179,12 +1189,12 @@ impl Inner {
         let failed = |what: &str| AgentError::new("save_failed", format!("{what} failed."), recto_agent::exit::FAILED);
         let written = PathBuf::from(written);
         let target = recto_platform::file_stamp(&written).map_err(|_| failed("Looking at the written file"))?;
-        let (id, path, file_pages, pages, needs) = self.host.session.with_session(|session| {
+        let (id, path, pages, needed) = self.host.session.with_session(|session| {
             let id = session.active()?;
-            let list = session.page_edits(id);
-            Some((id, session.path_of(id)?, session.tab(id)?.page_count, session.pages_in(id), list.is_some_and(recto_session::edit::PageEdits::needs_own_pages)))
+            let needed = session.page_edits(id).map(recto_session::edit::PageEdits::own_pages_needed).unwrap_or_default();
+            Some((id, session.path_of(id)?, session.pages_in(id), needed))
         }).ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
-        let kept = needs.then(|| self.saver.store.keep_pages_of(&path, target, file_pages)).flatten();
+        let kept = self.saver.store.keep_pages_of(&path, target, &needed);
         self.host.session.with_session(|session| session.save_prepared(id, target, kept.as_ref()));
         self.saver.flush(false, Duration::from_secs(5)).map_err(|_| failed("Writing what's about to happen"))?;
         std::fs::rename(&written, &path).map_err(|_| failed("Putting the file in place"))?;
@@ -1348,7 +1358,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false } }),
+            published: Mutex::new(Published { contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false, save_enabled: false } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1679,7 +1689,7 @@ impl AppCore {
     fn can_save(&self) -> bool {
         let reader = lock(&self.inner.published).reader.clone();
         // Not under a sheet: the close prompt's own Save is how to save then.
-        !reader.home && reader.edited && !reader.saving && self.inner.sheets.load(Ordering::SeqCst) == 0
+        !reader.home && reader.edited && reader.save_enabled && self.inner.sheets.load(Ordering::SeqCst) == 0
     }
 
     /// What Save As's sheet says, for the tab showing. Never waits: the path is read only if the session's free, and the signature line is what the session thread found.
@@ -2999,15 +3009,18 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let (comparison, pane_pages, compare_note, active) = plan;
     let reading_snapshot = snapshots.iter().find(|shown| Some(shown.id) == active).or(snapshots.first());
     let layout = reading_snapshot.map_or(String::new(), |shown| shown.spread.name().to_string());
-    let (edited, (can_undo, can_redo), edit_mode, can_rotate, saving_now, file) = inner.host.session.with_session(|session| {
+    let (edited, (can_undo, can_redo), edit_mode, can_rotate, saving_now, file, needs_rewrite) = inner.host.session.with_session(|session| {
         let edit_mode = session.edit_mode();
         match reading_snapshot {
-            Some(shown) => (session.is_edited(shown.id), session.undo_and_redo(shown.id), edit_mode, session.can_edit_pages(shown.id), session.is_saving(shown.id), session.path_of(shown.id).zip(session.own_stamp(shown.id)).map(|(path, stamp)| (shown.id, path, stamp))),
-            None => (false, (false, false), edit_mode, false, false, None),
+            Some(shown) => (session.is_edited(shown.id), session.undo_and_redo(shown.id), edit_mode, session.can_edit_pages(shown.id), session.is_saving(shown.id), session.path_of(shown.id).zip(session.own_stamp(shown.id)).map(|(path, stamp)| (shown.id, path, stamp)), session.needs_rewrite(shown.id)),
+            None => (false, (false, false), edit_mode, false, false, None, false),
         }
     });
     let (shown_tab, document_name, document_folder) = file.as_ref().map_or((0, String::new(), String::new()), |(id, path, _)| (id.0, path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(), path.parent().map(|folder| folder.display().to_string()).unwrap_or_default()));
-    let save_as_note = if edited { file.and_then(|(id, path, stamp)| inner.save_ui.signature_note(id, &path, stamp)) } else { None };
+    // **Rust decides what a signed file's Save does** (SPEC decision 27): an edit a Save over it would break the signature with turns Save off, and Save As says its copy won't be signed.
+    let facts = if edited { file.as_ref().map(|(id, path, stamp)| inner.save_ui.signature_facts(*id, path, *stamp)).unwrap_or_default() } else { recto_core::save::SignatureFacts::default() };
+    let save_off = save_needs_copy(facts, needs_rewrite);
+    let save_as_note = save_off.then(|| saving::UNSIGNED_COPY.to_string());
     let problem = reading_snapshot.and_then(|shown| shown.problem.clone());
     // The contents follow the tab being read, whichever pane it's in.
     let holding_now = *lock(&inner.holding_tab);
@@ -3055,7 +3068,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
     let pane_views: Vec<PaneView> = if comparing { snapshots.iter().enumerate().map(|(pane, shown)| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active, layout: shown.spread.name().to_string(), note: shown.problem.clone().or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())) }).collect() } else { Vec::new() };
     let compare_synced = inner.host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
-    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: inner.save_ui.tooltip(), save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now) };
+    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: if save_off { SAVE_OFF_TOOLTIP.to_string() } else { inner.save_ui.tooltip() }, save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now), save_enabled: !save_off && !saving_now };
     let mut published = lock(&inner.published);
     let changed = *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
     if changed {

@@ -30,6 +30,10 @@ pub trait SaveSupport: Sync {
     }
     /// The save's done and confirmed. The record can follow it now, so a Save As isn't left with the record naming the old file.
     fn after_save(&self, _tab: TabId) {}
+    /// **Keeps these pages of `original`, ascending, for undoing past a save that replaces it with `target`**: only the pages the history can put back (owner, 2026-11-07). `None` keeps nothing, and those steps roll off. A host with no history folder keeps none.
+    fn keep_pages(&self, _tab: TabId, _original: &Path, _target: FileStamp, _pages: &[u32]) -> Option<recto_session::edit::AddedSource> {
+        None
+    }
     /// How a save is going, for progress on a big file.
     fn step(&self, _tab: TabId, _step: SaveStep) {}
 }
@@ -63,9 +67,9 @@ fn from_save(error: &SaveError) -> AgentError {
     let next = match error {
         SaveError::FileChanged => "Tell the user the file changed on disk. `recto save-as --out <new.pdf>` keeps both versions.",
         SaveError::ReadOnly | SaveError::HardLinks => "`recto save-as --out <new.pdf>` saves a separate copy.",
-        SaveError::BreaksCertification | SaveError::UnsignedCopyNeedsRewrite => "Tell the user. The edits stay unsaved, and the signed file is untouched.",
+        SaveError::BreaksCertification | SaveError::LockedBySignature | SaveError::SignedNeedsCopy => "Tell the user. The edits stay unsaved, and the signed file is untouched. `recto save-as --out <new.pdf>` makes an unsigned copy, if the user wants one.",
         SaveError::TargetExists => "Choose a new name, or ask the user whether to replace that file: `--replace` does, at Full.",
-        SaveError::NeedsRewrite => "Tell the user this isn't in this version yet. The edits stay unsaved, and nothing is lost.",
+        SaveError::NoPagesLeft => "Keep at least one of the file's own pages, or tell the user. The edits stay unsaved, and nothing is lost.",
         _ => "Tell the user what failed. The edits are still here, unsaved, and the file is as it was.",
     };
     AgentError::new(error.code(), error.message(), exit).then(next)
@@ -152,7 +156,6 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
     let pages: Vec<PageRef> = snapshot.slots.iter().map(|slot| PageRef { source: slot.source, page: slot.page, quarter_turns: slot.quarter_turns }).collect();
     let writer = recto_core::save::writer_for(snapshot.file_pages, &pages);
     if writer == Writer::Rewrite && level < Level::Full && level >= Level::Control {
-        // Checked again by the writer, which is what refuses it in this build.
         drop(ending);
         return Err(needs_full("A save that removes pages for good"));
     }
@@ -165,8 +168,9 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
     };
     let support = access.saving();
     let backups = support.and_then(SaveSupport::backups);
-    let mut hooks = Hooks { access, id, support };
+    let mut hooks = Hooks { access, id, support, original: &snapshot.path, needed: if snapshot.needs_own_pages { access.with(|s| s.own_pages_needed(id)) } else { Vec::new() }, kept: None };
     let saved = recto_core::save::save(&request, target, backups.as_deref(), &mut hooks);
+    let kept = hooks.kept.take();
     let outcome = match saved {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -181,7 +185,7 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
     let data = access.with(|s| {
         let stamp = outcome.stamp.or_else(|| recto_platform::file_stamp(saved_as.as_deref().unwrap_or(&snapshot.path)).ok());
         let rolled_off = match stamp {
-            Some(now) => s.saved(id, now, outcome.pages, saved_as.as_deref(), None),
+            Some(now) => s.saved(id, now, outcome.pages, saved_as.as_deref(), kept),
             None => 0,
         };
         s.end_save(id);
@@ -200,6 +204,12 @@ struct Hooks<'a, A: SessionAccess> {
     access: &'a A,
     id: TabId,
     support: Option<&'a dyn SaveSupport>,
+    /// The file as it is, before the save replaces it.
+    original: &'a Path,
+    /// The file's pages the history can put back, which a copy keeps.
+    needed: Vec<u32>,
+    /// That copy, once it's made.
+    kept: Option<recto_session::edit::AddedSource>,
 }
 
 impl<A: SessionAccess> SaveHooks for Hooks<'_, A> {
@@ -210,12 +220,26 @@ impl<A: SessionAccess> SaveHooks for Hooks<'_, A> {
     }
 
     fn prepared(&mut self, _written: &Path, stamp: FileStamp) -> std::io::Result<()> {
-        // A save that removes something for good keeps nothing, and an appended one needs nothing kept: every page it had is still in the file.
-        self.access.with(|s| s.save_prepared(self.id, stamp, None));
+        // Only the pages the history can put back are kept, from the file while it's still there, and noted with the save, so a crash after the move carries them over.
+        // A redaction's save will keep nothing, as a copy would hold what it removes: there's no redaction step yet.
+        self.kept = if self.needed.is_empty() { None } else { self.support.and_then(|support| support.keep_pages(self.id, self.original, stamp, &self.needed)) };
+        self.access.with(|s| s.save_prepared(self.id, stamp, self.kept.as_ref()));
         match self.support {
             Some(support) => support.note_on_disk(self.id, stamp).map_err(std::io::Error::other),
             None => Ok(()),
         }
+    }
+}
+
+/// The decided words for a signed file's copy (SPEC decision 27).
+pub const UNSIGNED_COPY: &str = "The new copy won't be signed. The original keeps its signature.";
+
+/// "a, b and c".
+fn list_words(words: &[String]) -> String {
+    match words {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -246,8 +270,19 @@ fn answer<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: TabId,
     if outcome.usage_rights_removed {
         notes.push("Its usage rights, which let Adobe Reader fill in and sign this form, were removed, as any change to its pages ends them. They weren't a person's signature.");
     }
+    if outcome.signatures_removed > 0 {
+        notes.push(UNSIGNED_COPY);
+    }
     if outcome.objects_missing > 0 {
-        notes.push("Part of an added page named something its file doesn't have, so it was left out, as other readers leave it out. Check the added pages look right.");
+        notes.push(match outcome.writer {
+            Writer::Append => "Part of an added page named something its file doesn't have, so it was left out, as other readers leave it out. Check the added pages look right.",
+            Writer::Rewrite => "Part of the file named something it doesn't have, so it was left out of the saved file, as most readers leave it out. Some readers can repair a damaged file and would have shown it: check the pages look right, and keep the backup if you're unsure.",
+        });
+    }
+    let kept_words = outcome.document_data_kept.map(|kept| kept.kinds()).unwrap_or_default();
+    let kept_note = (outcome.pages_removed > 0 && !kept_words.is_empty()).then(|| format!("The deleted pages are gone from the file, but it still has things that belong to the whole document, which can repeat what was on them: {}.", list_words(&kept_words)));
+    if outcome.pages_removed > 0 && outcome.resources_left_whole > 0 {
+        notes.push("Some of what the deleted pages drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file.");
     }
     if outcome.attributes_missed {
         notes.push("Some of the file's Finder information, such as tags or who may open it, couldn't be kept on the saved file.");
@@ -258,7 +293,16 @@ fn answer<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: TabId,
     if rolled_off > 0 {
         notes.push("Some undo steps from before this save couldn't be kept, so undo stops short of them.");
     }
+    let mut notes: Vec<String> = notes.into_iter().map(str::to_string).collect();
+    notes.extend(kept_note);
     data["notes"] = json!(notes);
+    data["pages_removed"] = json!(outcome.pages_removed);
+    data["signatures_removed"] = json!(outcome.signatures_removed);
+    data["objects_missing"] = json!(outcome.objects_missing);
+    data["document_data_kept"] = match outcome.document_data_kept {
+        Some(kept) => json!({ "embedded_files": kept.embedded_files, "metadata_streams": kept.metadata_streams, "info_entries": kept.info_entries, "javascript": kept.javascript, "piece_info": kept.piece_info, "document_parts": kept.document_parts, "xfa": kept.xfa, "hidden_layers": kept.hidden_layers }),
+        None => Value::Null,
+    };
     // Where the backup is says something about the user's disk, so only at Full.
     data["backup_kept"] = json!(outcome.backup.is_some());
     if level >= Level::Full {

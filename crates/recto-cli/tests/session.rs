@@ -96,9 +96,7 @@ fn page_edits_work_through_the_session() {
     assert_eq!(drawn["data"]["unsaved_rotation_degrees"], 90);
     std::fs::remove_file(&out).unwrap();
 
-    // Nothing reached the disk. These edits delete a page, which isn't saved yet, and saving says so with nothing written.
-    let (save, code) = state.json(&["save"]);
-    assert_eq!((save["error"]["code"].as_str(), code), (Some("needs_rewrite"), exit::FAILED));
+    // Nothing reached the disk, and nothing goes without saying so.
     let (closed, code) = state.json(&["close"]);
     assert_eq!((closed["error"]["code"].as_str(), code), (Some("unsaved_changes"), exit::FAILED));
     let (stop, code) = state.json(&["stop"]);

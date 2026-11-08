@@ -35,6 +35,10 @@ impl SaveSupport for AppSaving {
         }
     }
 
+    fn keep_pages(&self, _tab: TabId, original: &std::path::Path, target: FileStamp, pages: &[u32]) -> Option<recto_session::edit::AddedSource> {
+        self.saver.store.keep_pages_of(original, target, pages)
+    }
+
     fn after_save(&self, _tab: TabId) {
         self.step.store(0, Ordering::SeqCst);
         // A Save As moved the tab to another file, and a save renamed its journal: the record follows straight away, not in a minute.
@@ -118,16 +122,14 @@ pub(crate) fn replace_answered(out: &std::path::Path, answered: std::time::Syste
 }
 
 /// The decided words for signed copies (SPEC decision 27).
-pub(crate) const UNSIGNED_COPY: &str = "The new copy won't be signed. The original keeps its signature.";
-/// Whether Save As makes that copy yet. It's the streaming rewrite's, the next stage of Save.
-const UNSIGNED_COPY_BUILT: bool = false;
+pub(crate) const UNSIGNED_COPY: &str = recto_agent::saving::UNSIGNED_COPY;
 
 /// The app's side of saving that the window draws: how many saves are running, a problem waiting to be answered, and what's known of the tab showing's signatures.
 pub(crate) struct SaveUi {
     pub(crate) running: AtomicU32,
     problem: Mutex<Option<SaveProblem>>,
-    /// The tab showing's file, as of this version, and what Save As would say of it. Looked at once a version, on the session thread.
-    signature: Mutex<Option<(TabId, FileStamp, Option<String>)>>,
+    /// The tab showing's file, as of this version, and what's known of its signatures. Looked at once a version, on the session thread.
+    signature: Mutex<Option<(TabId, FileStamp, recto_core::save::SignatureFacts)>>,
     pub(crate) step: Arc<AtomicU8>,
 }
 
@@ -136,23 +138,18 @@ impl SaveUi {
         Self { running: AtomicU32::new(0), problem: Mutex::new(None), signature: Mutex::new(None), step }
     }
 
-    /// What Save As's sheet says of this file: that a certified document's copy with its pages changed won't be signed. Read from the file's catalog once a version, never on the UI thread.
-    pub(crate) fn signature_note(&self, id: TabId, path: &std::path::Path, stamp: FileStamp) -> Option<String> {
-        // Nothing's said until Save As can make that copy, so nothing's read for it either (review).
-        if !UNSIGNED_COPY_BUILT {
-            return None;
-        }
+    /// What's known of this file's signatures: read from its catalog and form once a version, never on the UI thread. A file that won't open says nothing.
+    pub(crate) fn signature_facts(&self, id: TabId, path: &std::path::Path, stamp: FileStamp) -> recto_core::save::SignatureFacts {
         let mut known = crate::lock(&self.signature);
-        if let Some((tab, at, note)) = known.as_ref()
+        if let Some((tab, at, facts)) = known.as_ref()
             && *tab == id
             && *at == stamp
         {
-            return note.clone();
+            return *facts;
         }
-        // Said on the sheet once Save As can make that copy, which is the rewrite's: until then saying it would promise what isn't there.
-        let note = recto_core::save::signature_facts_of(path).ok().filter(|facts| facts.certified && UNSIGNED_COPY_BUILT).map(|_| UNSIGNED_COPY.to_string());
-        *known = Some((id, stamp, note.clone()));
-        note
+        let facts = recto_core::save::signature_facts_of(path).unwrap_or_default();
+        *known = Some((id, stamp, facts));
+        facts
     }
 
     /// What the Save icon says: Save, or the step a long save is at.
@@ -177,8 +174,8 @@ impl SaveUi {
 
 /// The problem a failed save shows: what went wrong, in the save's own words, and Save As where a copy is the way on.
 pub(crate) fn problem_for(error: &recto_agent::AgentError) -> SaveProblem {
-    // A certified document's unsigned copy is the rewrite's, which comes next: until then Save As can't help it.
-    let copy_helps = matches!(error.code, "file_changed" | "read_only" | "hard_links");
+    // A signed document's copy is unsigned (SPEC decision 27), and the original keeps its signature: Save As is the way on for those too.
+    let copy_helps = matches!(error.code, "file_changed" | "read_only" | "hard_links" | "breaks_certification" | "locked_by_signature" | "signed_needs_copy");
     SaveProblem { title: "The document couldn't be saved.".into(), message: error.message.clone(), save_as_title: copy_helps.then(|| "Save As…".to_string()), ok_title: "OK".into() }
 }
 
