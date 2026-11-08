@@ -368,7 +368,6 @@ final class TabTable: NSTableView {
     let contentsTable = NSTableView()
     let contentsThumb = ThumbView()
     let tabsThumb = ThumbView()
-    let footer = TextLine()
     let addButton = NSButton(title: "", target: nil, action: nil)
     let moreButton = NSButton(title: "", target: nil, action: nil)
     /// ⌘K's palette, over the tabs and contents while it's open.
@@ -381,7 +380,7 @@ final class TabTable: NSTableView {
     var performAction: ((String) -> Void)?
     private let core: AppCore
     private let noticeMark: String
-    private(set) var model = SidebarView(tabsVersion: 0, tabCount: 0, activeIndex: nil, contentsCount: 0, contentsVersion: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsPlaceShift: 0, contentsCurrent: nil, tocOpen: false, place: "", edited: false, undoneOwnerSteps: false, contentsNote: nil)
+    private(set) var model = SidebarView(tabsVersion: 0, tabCount: 0, activeIndex: nil, contentsCount: 0, contentsVersion: 0, contentsChangedFrom: 0, contentsRemoved: 0, contentsInserted: 0, contentsPlaceShift: 0, contentsCurrent: nil, tocOpen: false, edited: false, undoneOwnerSteps: false, contentsNote: nil)
     /// The tabs, pulled only when their version moves.
     private(set) var tabs: [SidebarRow] = []
     private var shownTabsVersion: UInt64 = 0
@@ -459,7 +458,6 @@ final class TabTable: NSTableView {
         NotificationCenter.default.addObserver(self, selector: #selector(contentsLiveScrolled), name: NSScrollView.didLiveScrollNotification, object: contentsScroll)
         view.addSubview(find.view)
         view.addSubview(scroll)
-        view.addSubview(footer)
         view.addSubview(addButton)
         addButton.isBordered = false
         addButton.title = ""
@@ -569,7 +567,7 @@ final class TabTable: NSTableView {
             "tab_rows_on_screen": table.rows(in: table.visibleRect).length,
             "tabs_scroll": layout.tabsScroll,
             "list_height": scroll.frame.height,
-            "footer_on_screen": footer.frame.maxY <= view.bounds.height && !footer.isHidden,
+            "panel_button_on_screen": moreButton.frame.maxY <= view.bounds.height && !moreButton.isHidden,
             "note": model.tocOpen ? (model.contentsNote?.text ?? "") : "",
             "note_height": noteHeight,
         ]
@@ -610,7 +608,7 @@ final class TabTable: NSTableView {
         core.tapRow(row: note)
     }
 
-    /// The room between the header and the footer, which Find, the tabs and the contents share by Rust's rule.
+    /// The room between the header and the bottom bar, which Find, the tabs and the contents share by Rust's rule.
     private var room: CGFloat { max(view.bounds.height - 52 - 40 - panelHeight, 0) }
 
     /// Find's block at the top of that room, and the tabs under it.
@@ -624,7 +622,6 @@ final class TabTable: NSTableView {
     @objc private func frameChanged() {
         let size = view.bounds.size
         placeLists()
-        placeFooter()
         palette.view.frame = NSRect(x: 0, y: 52, width: size.width, height: max(size.height - 52 - 40 - panelHeight, 0))
         palette.placeViews()
         addButton.frame = NSRect(x: size.width - 38, y: 12, width: 22, height: 22)
@@ -649,12 +646,6 @@ final class TabTable: NSTableView {
             core.contentsViewChanged()
             revealPlace()
         }
-    }
-
-    private func placeFooter() {
-        footer.set(model.place, font: .systemFont(ofSize: 12.5), color: Theme.textQuiet.ns)
-        let size = footer.size()
-        footer.frame = NSRect(x: 18, y: view.bounds.height - size.height - 12, width: size.width, height: size.height)
     }
 
     private func updateTracking() {
@@ -869,7 +860,7 @@ final class TabTable: NSTableView {
         performAction?(id)
     }
 
-    /// The panel as Rust has it. It docks above the footer in room taken from the list, so the height rule goes by what's left. Built only when it's opened or changed.
+    /// The panel as Rust has it. It docks above the bottom bar in room taken from the list, so the height rule goes by what's left. Built only when it's opened or changed.
     private func updatePanel() {
         let next = core.panel()
         guard next != panelModel else { return }
@@ -913,7 +904,6 @@ final class TabTable: NSTableView {
         activeIndex = new.activeIndex.map { Int($0) }.flatMap { $0 < tabs.count ? $0 : nil }
         // A row under the label may have changed. It opens again only on the next rest.
         if tabsChanged || new.contentsVersion != shownContentsVersion { reveal.isHidden = true }
-        placeFooter()
         let next = core.sidebarLayout(room: room)
         find.update(core.findView(), layout: next)
         let sameTab = activeTabID == oldActiveTab
@@ -1014,7 +1004,6 @@ final class TabTable: NSTableView {
         find.appearanceChanged()
         contentsThumb.refresh()
         tabsThumb.refresh()
-        placeFooter()
         addButton.contentTintColor = Theme.textQuiet.ns
         moreButton.contentTintColor = (panelModel.open ? Theme.accent : Theme.textQuiet).ns
         moreButton.layer?.backgroundColor = panelModel.open ? Theme.rowActive.cg : nil

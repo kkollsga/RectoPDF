@@ -965,7 +965,7 @@ fn reading_doesnt_grow_the_app() {
     assert!(resident_after.saturating_sub(resident) < 1024 * 1024, "the app grew, {said}");
 }
 
-/// Failure: a long outline pushes the other tabs and the footer off the sidebar, the reason the owner asked for this, at a normal height or a short one. Or the rows of a long outline are all built. Or reading drags the contents back from where someone has scrolled them, or they lose the place while reading on.
+/// Failure: a long outline pushes the other tabs and the bottom bar off the sidebar, the reason the owner asked for this, at a normal height or a short one. Or the rows of a long outline are all built. Or reading drags the contents back from where someone has scrolled them, or they lose the place while reading on.
 #[test]
 fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
     let Some(run) = Run::start() else { return };
@@ -985,13 +985,13 @@ fn a_long_outline_scrolls_by_itself_and_keeps_the_tabs_on_screen() {
     assert_eq!(contents["tabs_scroll"], false, "five tabs fit in what's left: {contents}");
     assert!(contents["height"].as_f64().unwrap() + 5.0 * 32.0 <= contents["list_height"].as_f64().unwrap() + 0.5, "{contents}");
     assert_eq!(contents["tab_rows_on_screen"], 5, "all the tabs show: {contents}");
-    assert_eq!(contents["footer_on_screen"], true);
+    assert_eq!(contents["panel_button_on_screen"], true);
     assert!(contents["height"].as_f64().unwrap() <= contents["list_height"].as_f64().unwrap() * 0.6 + 0.5, "it stops at the maximum: {contents}");
     assert!(contents["row_views"].as_u64().unwrap() < 80, "views for what's on screen, not 2,000: {contents}");
     // A short window.
     let short = run.ok(&["qa", "resize", "900x420"]);
     assert!(short["contents"]["height"].as_f64().unwrap() <= short["contents"]["list_height"].as_f64().unwrap() * 0.6 + 0.5, "the same maximum, and the tabs scroll in what's left: {short}");
-    assert_eq!(short["contents"]["footer_on_screen"], true, "{short}");
+    assert_eq!(short["contents"]["panel_button_on_screen"], true, "{short}");
     assert_eq!(short["contents"]["current_in_view"], true, "a shorter window doesn't lose the place: {short}");
     run.ok(&["qa", "resize", "1440x900"]);
     run.settled();
@@ -2274,7 +2274,7 @@ fn find_in_the_sidebar_lists_steps_and_keeps_to_its_room() {
     assert_eq!((find["status"].as_str(), find["rows"].as_u64()), (Some("200 matches on 200 pages"), Some(400)), "{find}");
     let room = found["app"]["window"]["height"].as_f64().unwrap();
     assert!(find["list_height"].as_f64().unwrap() <= room * 0.4 && find["list_height"].as_f64().unwrap() > 0.0, "{find}");
-    assert_eq!(found["app"]["contents"]["footer_on_screen"], true, "the tabs and footer stay: {}", found["app"]["contents"]);
+    assert_eq!(found["app"]["contents"]["panel_button_on_screen"], true, "the tabs and the bottom bar stay: {}", found["app"]["contents"]);
     let stepped = run.ok(&["qa", "find-key", "return"]);
     run.settled();
     let stepped = run.report().get("app").cloned().unwrap_or(stepped);

@@ -484,7 +484,7 @@ const KNOWN_PATHS: &[&str] = &[
     "app.contents.current_in_view",
     "app.contents.first_visible",
     "app.contents.following",
-    "app.contents.footer_on_screen",
+    "app.contents.panel_button_on_screen",
     "app.contents.frames_running",
     "app.contents.height",
     "app.contents.list_height",
