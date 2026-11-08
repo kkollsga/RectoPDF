@@ -25,7 +25,7 @@
 //! here ever says a signature is valid.
 
 use crate::OpenError;
-use lopdf::{AppendDestination, AppendError, AppendOptions, AppendWriter, Dictionary, EncodedStreamReader, FileSource, IndexedReader, IndexedReaderOptions, Object, ObjectId, PageMapEntry};
+use lopdf::{AppendDestination, AppendError, AppendOptions, AppendWriter, Dictionary, EncodedStreamReader, FileSource, IndexedReader, IndexedReaderOptions, IndexedSignatureKind, Object, ObjectId, PageMapEntry, RewriteChanges, RewriteError, RewriteOptions, RewritePolicy};
 use recto_platform::FileStamp;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -110,6 +110,15 @@ pub struct SignatureFacts {
     pub usage_rights: bool,
     /// A signed signature field with a `/Lock` that has a `/P`: like a certification, it allows no change to pages once it's signed.
     pub field_locked: bool,
+    /// A signature field with a value: a person's signature, which additions keep and a rewrite of the file can't. Says nothing of whether it's valid.
+    pub signed: bool,
+}
+
+impl SignatureFacts {
+    /// Whether a person's signature is on it, of any kind: usage rights aren't one.
+    pub fn has_persons_signature(&self) -> bool {
+        self.signed || self.certified || self.field_locked
+    }
 }
 
 /// Why a save didn't happen. Every message is RectoPDF's own, never the system's: what's from outside goes only in `detail`, which is for logs.
@@ -133,10 +142,10 @@ pub enum SaveError {
     BreaksCertification,
     /// A signature on it locks it against changes, and these edits change its pages.
     LockedBySignature,
-    /// An unsigned copy of a signed document is a rewrite, which isn't built yet.
-    UnsignedCopyNeedsRewrite,
-    /// Deleting pages saves by rewriting the file, which isn't built yet.
-    NeedsRewrite,
+    /// These edits are saved by writing the file anew, and it has a person's signature, which that can't keep: Save is off, and Save As makes an unsigned copy (SPEC decision 27).
+    SignedNeedsCopy,
+    /// Every page of the file would go. The rewrite refuses that, even with pages added from other PDFs.
+    NoPagesLeft,
     /// The file or its folder can't be written.
     ReadOnly,
     /// The file has other names, which a save would separate from it.
@@ -168,8 +177,8 @@ impl SaveError {
             Self::Damaged => "damaged",
             Self::BreaksCertification => "breaks_certification",
             Self::LockedBySignature => "locked_by_signature",
-            Self::UnsignedCopyNeedsRewrite => "needs_rewrite",
-            Self::NeedsRewrite => "needs_rewrite",
+            Self::SignedNeedsCopy => "signed_needs_copy",
+            Self::NoPagesLeft => "no_pages_left",
             Self::ReadOnly => "read_only",
             Self::HardLinks => "hard_links",
             Self::TargetExists => "target_exists",
@@ -193,8 +202,8 @@ impl SaveError {
             Self::Damaged => "This file's structure is damaged, so it can't be saved over safely. Nothing was written.".into(),
             Self::BreaksCertification => "This document is certified, and changing its pages would break that, so it isn't saved over. Nothing was written, and the original keeps its signature.".into(),
             Self::LockedBySignature => "A signature on this document locks it against changes, and changing its pages would break that, so it isn't saved. Nothing was written, and the original keeps its signature.".into(),
-            Self::UnsignedCopyNeedsRewrite => "This document is certified, so a copy with its pages changed has to be written anew without its signature, and that isn't in this build yet. Nothing was written, and the original keeps its signature.".into(),
-            Self::NeedsRewrite => "Deleting pages is saved by writing the file anew, so what was deleted is really gone, and that isn't in this build yet. Nothing was written.".into(),
+            Self::SignedNeedsCopy => "This document is signed, and saving this change means writing the file anew, which would take its signature off, so it isn't saved over. Nothing was written, and the original keeps its signature. Save As makes a new copy without the signature.".into(),
+            Self::NoPagesLeft => "Every one of the file's own pages would be gone, which a save can't do yet, even with other pages added. Keep one of its pages, or Save As. Nothing was written.".into(),
             Self::ReadOnly => "This file or its folder is locked or read-only, so it can't be saved over. Nothing was written. Save As can put it somewhere else.".into(),
             Self::HardLinks => "This file has other names (hard links), which saving over it would leave with the old version. Nothing was written. Save As makes a separate copy.".into(),
             Self::TargetExists => "There's already a file with that name, and it wasn't replaced. Nothing was written.".into(),
@@ -234,6 +243,25 @@ fn from_append(error: AppendError) -> SaveError {
     }
 }
 
+fn from_rewrite(error: RewriteError) -> SaveError {
+    match error {
+        RewriteError::RecoveredIndex | RewriteError::PrevLoop | RewriteError::AmbiguousHybrid { .. } | RewriteError::InvalidRoot | RewriteError::UnreadableObject { .. } | RewriteError::OffsetTooLarge { .. } | RewriteError::PageOutOfRange { .. } => SaveError::Damaged,
+        RewriteError::Encrypted => SaveError::Protected,
+        RewriteError::SignedNeedsConsent { .. } | RewriteError::SignedFileCannotBeReplaced { .. } => SaveError::SignedNeedsCopy,
+        RewriteError::NoPagesLeft => SaveError::NoPagesLeft,
+        RewriteError::TooManyObjects { .. } | RewriteError::ObjectNumberTooLarge { .. } | RewriteError::WorkLimitExceeded { .. } | RewriteError::StructureTooLarge { .. } => SaveError::TooLarge,
+        RewriteError::VerificationFailed { reason } => SaveError::CheckFailed { detail: reason },
+        RewriteError::PrepareReplacement(error) => match error.kind() {
+            std::io::ErrorKind::InvalidData => SaveError::CheckFailed { detail: "pages read back wrong" },
+            _ => SaveError::PrepareFailed,
+        },
+        RewriteError::Destination(error) => from_append(error),
+        RewriteError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => SaveError::ReadOnly,
+        RewriteError::Source(_) | RewriteError::Reader(lopdf::IndexedReaderError::Source(_)) => SaveError::FileChanged,
+        _ => SaveError::Failed,
+    }
+}
+
 /// Opens a file the way a save reads it: with the 1 MiB limit on an object.
 pub fn open_for_save(path: &Path) -> Result<IndexedReader, SaveError> {
     let source = FileSource::open(path).map_err(|_| SaveError::FileChanged)?;
@@ -249,30 +277,33 @@ pub fn open_for_save(path: &Path) -> Result<IndexedReader, SaveError> {
 pub fn signature_facts(reader: &IndexedReader) -> SignatureFacts {
     let Some(root) = catalog(reader) else { return SignatureFacts::default() };
     let perms = root.get(b"Perms").ok().cloned().and_then(|perms| dict_value(reader, &perms)).unwrap_or_default();
-    SignatureFacts { certified: perms.has(b"DocMDP"), usage_rights: perms.has(b"UR3") || perms.has(b"UR"), field_locked: a_signed_field_locks(reader, &root) }
+    let (signed, field_locked) = signed_fields(reader, &root);
+    SignatureFacts { certified: perms.has(b"DocMDP"), usage_rights: perms.has(b"UR3") || perms.has(b"UR"), field_locked, signed }
 }
 
 /// Fields looked at for a lock. A form has far fewer; a hostile one can't make the look long.
 const MAX_FIELDS_FOR_LOCKS: usize = 16_384;
 
-/// Whether a signed signature field has a `/Lock` with a `/P`. Its permission, 1 to 3, allows no change to pages in any of them. A field that can't be read
-/// is passed over, and a form past the limit counts as locked, on the side of refusing.
-fn a_signed_field_locks(reader: &IndexedReader, root: &Dictionary) -> bool {
-    let Some(form) = root.get(b"AcroForm").ok().cloned().and_then(|form| dict_value(reader, &form)) else { return false };
-    let mut stack: Vec<Object> = match form.get(b"Fields").ok().cloned().map(|fields| match fields {
+/// Whether a signature field is signed, and whether a signed one has a `/Lock` with a `/P`. That permission, 1 to 3, allows no change to pages in any of them. A field that can't be read
+/// is passed over, and a form past the limit counts as signed and locked, on the side of refusing.
+fn signed_fields(reader: &IndexedReader, root: &Dictionary) -> (bool, bool) {
+    let Some(form) = root.get(b"AcroForm").ok().cloned().and_then(|form| dict_value(reader, &form)) else { return (false, false) };
+    // Each field with whether a parent of it says it's a signature field, as `/FT` is inherited.
+    let mut stack: Vec<(Object, bool)> = match form.get(b"Fields").ok().cloned().map(|fields| match fields {
         Object::Reference(id) => reader.resolve_object(id).unwrap_or(Object::Null),
         other => other,
     }) {
-        Some(Object::Array(fields)) => fields,
-        _ => return false,
+        Some(Object::Array(fields)) => fields.into_iter().map(|field| (field, false)).collect(),
+        _ => return (false, false),
     };
     let mut seen = HashSet::new();
     let mut visits = 0;
     let mut queued = stack.len();
-    while let Some(field) = stack.pop() {
+    let mut any_signed = false;
+    while let Some((field, parent_is_sig)) = stack.pop() {
         visits += 1;
         if visits > MAX_FIELDS_FOR_LOCKS {
-            return true;
+            return (true, true);
         }
         if let Object::Reference(id) = &field
             && !seen.insert(*id)
@@ -280,21 +311,26 @@ fn a_signed_field_locks(reader: &IndexedReader, root: &Dictionary) -> bool {
             continue;
         }
         let Some(field) = dict_value(reader, &field) else { continue };
-        let signed = matches!(field.get(b"FT"), Ok(Object::Name(kind)) if kind == b"Sig") && field.has(b"V");
+        let is_sig = match field.get(b"FT") {
+            Ok(Object::Name(kind)) => kind == b"Sig",
+            _ => parent_is_sig,
+        };
+        let signed = is_sig && field.has(b"V");
+        any_signed |= signed;
         if signed && field.get(b"Lock").ok().cloned().and_then(|lock| dict_value(reader, &lock)).is_some_and(|lock| lock.has(b"P")) {
-            return true;
+            return (true, true);
         }
         if let Ok(Object::Array(kids)) = field.get(b"Kids") {
             // Everything ever queued counts, so a tree of wide nodes can't hold millions (review).
             let room = MAX_FIELDS_FOR_LOCKS.saturating_sub(queued);
             if kids.len() > room {
-                return true;
+                return (true, true);
             }
             queued += kids.len();
-            stack.extend(kids.iter().cloned());
+            stack.extend(kids.iter().cloned().map(|kid| (kid, is_sig)));
         }
     }
-    false
+    (any_signed, false)
 }
 
 /// [`signature_facts`] of a file on disk, for deciding what's on offer before anyone saves. A file that won't open says nothing.
@@ -362,8 +398,16 @@ pub struct SaveOutcome {
     pub usage_rights_removed: bool,
     /// Some of the file's extended attributes or its ACL couldn't be carried to the new file.
     pub attributes_missed: bool,
-    /// Objects an added page names that couldn't be read, so they went as nothing, as viewers read them.
+    /// Objects something kept names that the file doesn't have, so they went as nothing, as viewers read them: an added page's, or, in a rewrite, anything's. MuPDF and poppler can repair what a copy drops, so this is a warning.
     pub objects_missing: u64,
+    /// Pages the file had that it doesn't now.
+    pub pages_removed: u32,
+    /// A person's signatures a copy no longer has (SPEC decision 27). Never checked, and never said to have been valid.
+    pub signatures_removed: u32,
+    /// What a rewrite kept that's the document's rather than a page's, which can repeat what was on a removed page. `None` for an append.
+    pub document_data_kept: Option<DocumentData>,
+    /// Shared resource dictionaries a removed page used that couldn't be searched, so what only it drew may still be in the file.
+    pub resources_left_whole: u64,
     /// The file was replaced, but its folder couldn't be synced, so a power cut in the next moments could bring the old one back.
     pub durability_warning: bool,
     /// The file as it is now.
@@ -416,27 +460,30 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
             return Err(SaveError::EditsDontMatch { file_pages: real_pages });
         }
     }
-    if writer_for(real_pages, request.pages) == Writer::Rewrite {
-        return Err(SaveError::NeedsRewrite);
-    }
+    let removed: Vec<usize> = removed_pages(real_pages, request.pages);
     let facts = signature_facts(&reader);
-    let changes_pages = request.pages.iter().enumerate().any(|(at, page)| page.source != 0 || page.page as usize != at || page.quarter_turns != 0);
-    // A copy of a certified or locked document with nothing changed would still append a revision, which its signature can show as a change. Its copy is the
-    // rewrite's, unsigned (stage 2), so for now it's refused, as Save is (review).
-    if !changes_pages && target != Target::Same && (facts.certified || facts.field_locked) {
-        return Err(SaveError::UnsignedCopyNeedsRewrite);
-    }
-    if facts.field_locked && changes_pages {
+    let changes_pages = !removed.is_empty() || request.pages.iter().enumerate().any(|(at, page)| page.source != 0 || page.page as usize != at || page.quarter_turns != 0);
+    let copy = target != Target::Same;
+    if !copy && facts.field_locked && changes_pages {
         return Err(SaveError::LockedBySignature);
     }
-    if facts.certified && changes_pages {
-        return Err(match target {
-            Target::Same => SaveError::BreaksCertification,
-            Target::NewFile(_) | Target::Replace(_) => SaveError::UnsignedCopyNeedsRewrite,
-        });
+    if !copy && facts.certified && changes_pages {
+        return Err(SaveError::BreaksCertification);
     }
-    reader.check_appendable().map_err(from_append)?;
-    let plan = Plan::make(&reader, &map, request, &sources, facts, MAX_COPY_WORK)?;
+    let mut writer = writer_for(real_pages, request.pages);
+    if !copy && writer == Writer::Rewrite && facts.has_persons_signature() {
+        return Err(SaveError::SignedNeedsCopy);
+    }
+    // A copy of a certified or locked document is a new, unsigned file (SPEC decision 27): its pages can't change under that signature, and even an unchanged copy
+    // would append a revision the certification can show as a change (review round 2).
+    if copy && (facts.certified || facts.field_locked) {
+        writer = Writer::Rewrite;
+    }
+    let plan = Plan::make(&reader, &map, request, &sources, facts, writer, MAX_COPY_WORK)?;
+    match writer {
+        Writer::Append => reader.check_appendable().map_err(from_append)?,
+        Writer::Rewrite => reader.check_rewritable().map_err(from_rewrite)?,
+    }
 
     let backup = match (target, backups) {
         (Target::Same, Some(folder)) => keep_backup(request.path, folder).ok().flatten(),
@@ -455,7 +502,7 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
     let attributes_missed = std::cell::Cell::new(false);
     let mut copy_failed = None;
     let hooks_cell = std::cell::RefCell::new(&mut *hooks);
-    let options = AppendOptions::new().prepare_replacement(|written: &Path, _target: &Path| {
+    let prepare = |written: &Path, _target: &Path| -> std::io::Result<()> {
         // A save over the file is the same file to the person using it, so it keeps its tags, quarantine and ACL. A copy keeps where it came from.
         // One the system won't let go, as `com.apple.macl` is, costs a note and not the save.
         let carried = match target {
@@ -472,39 +519,194 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
         pause_for_a_kill("prepared");
         hooks.step(SaveStep::Committing);
         Ok(())
-    });
-    let appended = lopdf::append_atomically(&reader, destination, options, |writer| {
-        // The temporary file exists here, with the original copied into it and the update not yet written.
-        pause_for_a_kill("copying");
-        match plan.write(&reader, &sources, writer) {
-            Ok(ids) => {
-                *expected.borrow_mut() = ids;
-                Ok(())
-            }
-            Err(error) => {
-                copy_failed = Some(error);
-                Err(AppendError::Abandoned)
+    };
+    let pages = u32::try_from(request.pages.len()).unwrap_or(u32::MAX);
+    let pages_removed = u32::try_from(removed.len()).unwrap_or(u32::MAX);
+    let outcome = match writer {
+        Writer::Append => {
+            let options = AppendOptions::new().prepare_replacement(prepare);
+            let appended = lopdf::append_atomically(&reader, destination, options, |writer| {
+                // The temporary file exists here, with the original copied into it and the update not yet written.
+                pause_for_a_kill("copying");
+                let began = writer.position();
+                match plan.write(&reader, &sources, &mut AppendSink { writer, began }) {
+                    Ok(ids) => {
+                        *expected.borrow_mut() = ids;
+                        Ok(())
+                    }
+                    Err(error) => {
+                        copy_failed = Some(error);
+                        Err(AppendError::Abandoned)
+                    }
+                }
+            });
+            let appended = match appended {
+                Ok(appended) => appended,
+                Err(error) => return Err(copy_failed.unwrap_or_else(|| from_append(error))),
+            };
+            SaveOutcome {
+                writer: Writer::Append,
+                previous_len: appended.summary.previous_len,
+                new_len: appended.summary.new_len,
+                pages,
+                usage_rights_removed: plan.drop_usage_rights,
+                attributes_missed: attributes_missed.get(),
+                objects_missing: plan.missing,
+                pages_removed,
+                signatures_removed: 0,
+                document_data_kept: None,
+                resources_left_whole: 0,
+                durability_warning: appended.durability_warning.is_some(),
+                stamp: None,
+                backup,
             }
         }
-    });
-    let appended = match appended {
-        Ok(appended) => appended,
-        Err(error) => return Err(copy_failed.unwrap_or_else(|| from_append(error))),
+        Writer::Rewrite => {
+            // Over the file itself only usage rights may go, which aren't a person's signature (owner, 2026-11-08): the fork refuses anything else there. A copy goes
+            // without every signature, as SPEC decision 27 has it.
+            let policy = if copy { RewritePolicy::new().remove_signatures().remove_usage_rights() } else { RewritePolicy::new().remove_usage_rights() };
+            let options = RewriteOptions::new().policy(policy).prepare_replacement(prepare);
+            let cap = plan.append_cap.min(MAX_REWRITE_HELD_BYTES);
+            let rewritten = lopdf::rewrite_atomically(&reader, destination, options, |changes| {
+                for index in &removed {
+                    changes.remove_page(*index);
+                }
+                match plan.write(&reader, &sources, &mut RewriteSink { changes, held: 0, cap }) {
+                    Ok(ids) => {
+                        *expected.borrow_mut() = ids;
+                        Ok(())
+                    }
+                    Err(error) => {
+                        copy_failed = Some(error);
+                        Err(RewriteError::Io(std::io::Error::other("the save's plan stopped")))
+                    }
+                }
+            });
+            let rewritten = match rewritten {
+                Ok(rewritten) => rewritten,
+                Err(error) => return Err(copy_failed.unwrap_or_else(|| from_rewrite(error))),
+            };
+            let summary = &rewritten.summary;
+            let persons = summary.removed_signatures.iter().filter(|signature| signature.kind != IndexedSignatureKind::UsageRights).count();
+            let rights = summary.removed_signatures.iter().any(|signature| signature.kind == IndexedSignatureKind::UsageRights);
+            SaveOutcome {
+                writer: Writer::Rewrite,
+                previous_len: summary.previous_len,
+                new_len: summary.new_len,
+                pages,
+                usage_rights_removed: rights,
+                attributes_missed: attributes_missed.get(),
+                objects_missing: plan.missing.saturating_add(summary.objects_missing.len() as u64),
+                pages_removed,
+                signatures_removed: u32::try_from(persons).unwrap_or(u32::MAX),
+                document_data_kept: Some(DocumentData::from(&summary.document_data_kept)),
+                resources_left_whole: (summary.removal.resources_left_whole.len() as u64).saturating_add(summary.removal.resource_dictionaries_unlisted),
+                durability_warning: rewritten.durability_warning.is_some(),
+                stamp: None,
+                backup,
+            }
+        }
     };
     pause_for_a_kill("committed");
-    Ok(SaveOutcome {
-        writer: Writer::Append,
-        previous_len: appended.summary.previous_len,
-        new_len: appended.summary.new_len,
-        pages: u32::try_from(request.pages.len()).unwrap_or(u32::MAX),
-        usage_rights_removed: plan.drop_usage_rights,
-        attributes_missed: attributes_missed.get(),
-        objects_missing: plan.missing,
-        durability_warning: appended.durability_warning.is_some(),
-        // What it was as it was written, which the rename keeps: a look now could see another app's write in the moment since, and take it as this save's.
-        stamp: prepared_stamp,
-        backup,
+    // What it was as it was written, which the rename keeps: a look now could see another app's write in the moment since, and take it as this save's.
+    Ok(SaveOutcome { stamp: prepared_stamp, ..outcome })
+}
+
+/// The file's pages that the document doesn't have: each is deleted by the save. By position in the file, in order.
+pub fn removed_pages(file_pages: u32, pages: &[PageRef]) -> Vec<usize> {
+    let mut there = vec![false; file_pages as usize];
+    for page in pages.iter().filter(|page| page.source == 0) {
+        if let Some(slot) = there.get_mut(page.page as usize) {
+            *slot = true;
+        }
+    }
+    there.iter().enumerate().filter(|(_, there)| !**there).map(|(at, _)| at).collect()
+}
+
+/// Most a rewrite holds in new and replaced objects until it writes them: page dictionaries, a new tree, catalogs. Streams aren't held, they're read as they're written.
+pub const MAX_REWRITE_HELD_BYTES: u64 = 256 * 1024 * 1024;
+
+/// What a rewrite kept that's the document's rather than a page's (the fork's `DocumentDataKept`), as counts. It can repeat what was on a page that's gone, so a save that removed pages says so (the streaming rewrite's review).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DocumentData {
+    pub embedded_files: u64,
+    pub metadata_streams: u64,
+    pub info_entries: u64,
+    pub javascript: u64,
+    pub piece_info: u64,
+    pub document_parts: bool,
+    pub xfa: bool,
+    pub hidden_layers: u64,
+}
+
+impl From<&lopdf::DocumentDataKept> for DocumentData {
+    fn from(kept: &lopdf::DocumentDataKept) -> Self {
+        Self { embedded_files: kept.embedded_files, metadata_streams: kept.metadata_streams, info_entries: kept.info_entries, javascript: kept.javascript, piece_info: kept.piece_info, document_parts: kept.document_parts, xfa: kept.xfa, hidden_layers: kept.hidden_layers }
+    }
+}
+
+impl DocumentData {
+    /// What's there, in words, for a note: "2 attached files", "the document's information (title, author and the like)". Empty if nothing is.
+    pub fn kinds(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let counted = |n: u64, one: &str, many: &str| if n == 1 { one.to_string() } else { format!("{n} {many}") };
+        if self.embedded_files > 0 {
+            out.push(counted(self.embedded_files, "an attached file", "attached files"));
+        }
+        if self.metadata_streams > 0 {
+            out.push("XMP metadata".to_string());
+        }
+        if self.info_entries > 0 {
+            out.push("the document's information (title, author and the like)".to_string());
+        }
+        if self.javascript > 0 {
+            out.push(counted(self.javascript, "a script", "scripts"));
+        }
+        if self.piece_info > 0 {
+            out.push("another app's private data".to_string());
+        }
+        if self.document_parts {
+            out.push("document-part metadata".to_string());
+        }
+        if self.xfa {
+            out.push("an XFA form".to_string());
+        }
+        if self.hidden_layers > 0 {
+            out.push(counted(self.hidden_layers, "a hidden layer", "hidden layers"));
+        }
+        out
+    }
+}
+
+/// **A copy of only some of a file's pages,** for undoing past a save that deletes them (owner, 2026-11-07: "keeps only the removed pages"). Written by the
+/// rewrite to a new file, so the copy holds what those pages use and nothing of the rest, without a signature, as it's a working copy for the history and
+/// never the document. Synced, checked and moved into place by the fork, so a power cut leaves either nothing or the whole copy. Its pages are `pages` in
+/// that order, which has to be ascending. Gives its stamp.
+pub fn keep_pages(original: &Path, pages: &[u32], dest: &Path) -> Result<FileStamp, SaveError> {
+    if pages.is_empty() || pages.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(SaveError::EditsDontMatch { file_pages: 0 });
+    }
+    let reader = open_for_save(original)?;
+    let map = reader.page_map().map_err(|_| SaveError::Damaged)?;
+    let count = u32::try_from(map.len()).map_err(|_| SaveError::Damaged)?;
+    if pages.last().is_some_and(|last| *last >= count) {
+        return Err(SaveError::EditsDontMatch { file_pages: count });
+    }
+    let keep: HashSet<u32> = pages.iter().copied().collect();
+    let options = RewriteOptions::new().policy(RewritePolicy::new().remove_signatures().remove_usage_rights());
+    let written = lopdf::rewrite_atomically(&reader, AppendDestination::NewFile(dest), options, |changes| {
+        for page in (0..count).filter(|page| !keep.contains(page)) {
+            changes.remove_page(page as usize);
+        }
+        Ok(())
     })
+    .map_err(from_rewrite)?;
+    if written.durability_warning.is_some() {
+        // Not trusted to be there after a power cut, so not relied on: the history rolls those steps off instead.
+        let _ = std::fs::remove_file(dest);
+        return Err(SaveError::Failed);
+    }
+    recto_platform::file_stamp(dest).map_err(|_| SaveError::Failed)
 }
 
 /// **A test's seam, in debug builds only:** with `RECTO_TEST_SAVE_PAUSE` naming this step, the save says so in a file beside the state and waits, so a test can kill the process right there. A release build has none of it.
@@ -553,10 +755,11 @@ pub fn plan_in_memory_within(target: &[u8], added: &[u8], work_limit: u64) -> Re
     let added_file = [AddedFile { path: Path::new("added.pdf"), page_count: added_pages, stamp: None }];
     let request = SaveRequest { path: Path::new("target.pdf"), stamp: None, file_pages: pages, pages: &order, added: &added_file };
     let sources = vec![Some((source, source_map))];
-    let plan = Plan::make(&reader, &map, &request, &sources, signature_facts(&reader), work_limit.min(MAX_COPY_WORK))?;
+    let plan = Plan::make(&reader, &map, &request, &sources, signature_facts(&reader), Writer::Append, work_limit.min(MAX_COPY_WORK))?;
     let mut out = Vec::new();
     let mut writer = AppendWriter::new(&reader, &mut out).map_err(from_append)?;
-    let expected = plan.write(&reader, &sources, &mut writer)?;
+    let began = writer.position();
+    let expected = plan.write(&reader, &sources, &mut AppendSink { writer: &mut writer, began })?;
     writer.finish().map_err(from_append)?;
     // Read back as a save reads back what it wrote: the pages are the objects written, in order.
     let (_, written) = open_bytes_for_save(&out).map_err(|_| SaveError::CheckFailed { detail: "doesn't open" })?;
@@ -650,8 +853,9 @@ struct Copy {
 }
 
 impl Plan {
-    fn make(reader: &IndexedReader, map: &lopdf::PageMap, request: &SaveRequest<'_>, sources: &[Opened], facts: SignatureFacts, work_limit: u64) -> Result<Self, SaveError> {
-        let in_order = request.pages.len() == map.len() && request.pages.iter().enumerate().all(|(at, page)| page.source == 0 && page.page as usize == at);
+    fn make(reader: &IndexedReader, map: &lopdf::PageMap, request: &SaveRequest<'_>, sources: &[Opened], facts: SignatureFacts, writer: Writer, work_limit: u64) -> Result<Self, SaveError> {
+        // The file's own pages in their own order, some perhaps deleted: the tree stays, and a rewrite takes the deleted ones out of it. Anything else is a new tree.
+        let in_order = request.pages.iter().all(|page| page.source == 0) && request.pages.windows(2).all(|pair| pair[0].page < pair[1].page) && (writer == Writer::Rewrite || request.pages.len() == map.len());
         let tree = if in_order {
             None
         } else {
@@ -686,16 +890,17 @@ impl Plan {
             copies[at] = Some(copy);
         }
         let sizes: u64 = reader.source_len() + sources.iter().flatten().map(|(source, _)| source.source_len()).sum::<u64>();
-        Ok(Self { new_tree: tree, pages, copies, drop_usage_rights: facts.usage_rights && !facts.certified, missing, append_cap: sizes.saturating_mul(2).saturating_add(64 * 1024 * 1024) })
+        // A rewrite's policy takes usage rights off, with whatever shows of them; an append takes them out of the new revision's catalog.
+        let drop_usage_rights = writer == Writer::Append && facts.usage_rights && !facts.certified;
+        Ok(Self { new_tree: tree, pages, copies, drop_usage_rights, missing, append_cap: sizes.saturating_mul(2).saturating_add(64 * 1024 * 1024) })
     }
 
-    /// Writes the plan into an update. Gives back the document's page objects in order, for reading the result back.
-    fn write<W: lopdf::AppendOutput>(&self, reader: &IndexedReader, sources: &[Opened], writer: &mut AppendWriter<'_, W>) -> Result<Vec<ObjectId>, SaveError> {
+    /// Writes the plan into an update or a rewrite's changes. Gives back the document's page objects in order, for reading the result back.
+    fn write<'c>(&self, reader: &IndexedReader, sources: &'c [Opened], writer: &mut impl Sink<'c>) -> Result<Vec<ObjectId>, SaveError> {
         let map = reader.page_map().map_err(|_| SaveError::Damaged)?;
-        let began = writer.position();
         // Bounded by what's being saved: a small file's pages rewritten under a new tree can't append gigabytes (review).
         let cap = self.append_cap;
-        let within = |writer: &AppendWriter<'_, W>| if writer.position().saturating_sub(began) > cap { Err(SaveError::TooLarge) } else { Ok(()) };
+        let within = |writer: &dyn Sink<'c>| if writer.taken() > cap { Err(SaveError::TooLarge) } else { Ok(()) };
         // An inherited value written in place, as a `/Resources` dictionary on the root of the tree can be, goes in once as an object of its own that every
         // page names: otherwise each page would carry its own copy, and 200,000 pages under a 1 MiB dictionary would append 200 GB (review).
         let mut shared: HashMap<(usize, ObjectId, &'static [u8]), Object> = HashMap::new();
@@ -705,7 +910,7 @@ impl Plan {
             let mut numbers = HashMap::new();
             if let Some(copy) = copy {
                 for id in &copy.order {
-                    numbers.insert(id.0, writer.allocate().map_err(from_append)?);
+                    numbers.insert(id.0, writer.allocate()?);
                 }
             }
             renumbered.push(numbers);
@@ -714,7 +919,7 @@ impl Plan {
         let mut used_own: HashSet<ObjectId> = HashSet::new();
         let mut used_copy: Vec<HashSet<u32>> = vec![HashSet::new(); self.copies.len()];
         for (page, degrees) in &self.pages {
-            within(writer)?;
+            within(&*writer)?;
             if page.source == 0 {
                 let entry = map.get(page.page as usize).ok_or(SaveError::Damaged)?;
                 let id = entry.id();
@@ -723,7 +928,7 @@ impl Plan {
                     if turned {
                         let mut dict = page_dict(reader, id)?;
                         dict.set("Rotate", Object::Integer(*degrees));
-                        writer.write_object(id, &Object::Dictionary(dict)).map_err(from_append)?;
+                        writer.put(id, Object::Dictionary(dict))?;
                     }
                     ids.push(id);
                     continue;
@@ -743,10 +948,10 @@ impl Plan {
                 dict.set("Rotate", Object::Integer(*degrees));
                 // A page the tree lists twice is one object in the file, and can't take one new version for each place: the second is a copy of it.
                 if used_own.insert(id) {
-                    writer.write_object(id, &Object::Dictionary(dict)).map_err(from_append)?;
+                    writer.put(id, Object::Dictionary(dict))?;
                     ids.push(id);
                 } else {
-                    ids.push(writer.add_object(&Object::Dictionary(dict)).map_err(from_append)?.id);
+                    ids.push(writer.add(Object::Dictionary(dict))?);
                 }
             } else {
                 let at = usize::from(page.source) - 1;
@@ -773,10 +978,10 @@ impl Plan {
                 }
                 dict.set("Rotate", Object::Integer(*degrees));
                 if used_copy[at].insert(entry.id().0) {
-                    writer.write_object(new_id, &Object::Dictionary(dict)).map_err(from_append)?;
+                    writer.put(new_id, Object::Dictionary(dict))?;
                     ids.push(new_id);
                 } else {
-                    ids.push(writer.add_object(&Object::Dictionary(dict)).map_err(from_append)?.id);
+                    ids.push(writer.add(Object::Dictionary(dict))?);
                 }
             }
         }
@@ -786,11 +991,11 @@ impl Plan {
             let pages: HashSet<u32> = source_map.iter().map(|entry| entry.id().0).collect();
             let numbers = &renumbered[at];
             for id in &copy.order {
-                within(writer)?;
+                within(&*writer)?;
                 if pages.contains(&id.0) {
                     if !used_copy[at].contains(&id.0) {
                         // A page found only as something another page names, such as a link's target, isn't in this document: it goes as nothing, as remap has it. Its number was taken, so it's written as null.
-                        writer.write_object(numbers[&id.0], &Object::Null).map_err(from_append)?;
+                        writer.put(numbers[&id.0], Object::Null)?;
                     }
                     continue;
                 }
@@ -802,12 +1007,12 @@ impl Plan {
                     };
                     dict.remove(b"Length");
                     let length = descriptor.encoded_len().ok_or(SaveError::Damaged)?;
-                    let mut bytes = EncodedRead(descriptor.open_plain_encoded().map_err(|_| SaveError::Damaged)?);
-                    writer.write_stream_from(new_id, &dict, length, &mut bytes).map_err(from_append)?;
+                    drop(descriptor);
+                    writer.put_stream(new_id, dict, length, source, *id)?;
                 } else {
                     let object = source.resolve_object(*id).map_err(|_| SaveError::Damaged)?;
                     let object = remap(&object, copy, numbers).unwrap_or(Object::Null);
-                    writer.write_object(new_id, &object).map_err(from_append)?;
+                    writer.put(new_id, object)?;
                 }
             }
         }
@@ -816,7 +1021,7 @@ impl Plan {
             node.set("Type", Object::Name(b"Pages".to_vec()));
             node.set("Kids", Object::Array(ids.iter().map(|id| Object::Reference(*id)).collect()));
             node.set("Count", Object::Integer(i64::try_from(ids.len()).map_err(|_| SaveError::TooLarge)?));
-            writer.write_object(tree, &Object::Dictionary(node)).map_err(from_append)?;
+            writer.put(tree, Object::Dictionary(node))?;
         }
         // Layers the added pages draw with, and which of them their own files hide, so the saved file hides them too.
         let mut layers: Vec<(ObjectId, bool)> = Vec::new();
@@ -834,24 +1039,24 @@ impl Plan {
             update_catalog(reader, writer, self.drop_usage_rights, &layers)?;
         }
         // A copy of the document as it is, for a Save As with nothing unsaved: an update has to hold something, and the catalog as it was changes nothing.
-        within(writer)?;
-        if writer.position() == began {
+        within(&*writer)?;
+        if writer.taken() == 0 && writer.needs_something() {
             let root = catalog_id(reader).ok_or(SaveError::Damaged)?;
-            writer.write_object(root, &Object::Dictionary(page_dict(reader, root)?)).map_err(from_append)?;
+            writer.put(root, Object::Dictionary(page_dict(reader, root)?))?;
         }
         Ok(ids)
     }
 }
 
 /// An inherited value as a page names it: a reference stays one, and a value written in place goes in once, as an object of its own, for every page that inherits it.
-fn share<W: lopdf::AppendOutput>(writer: &mut AppendWriter<'_, W>, shared: &mut HashMap<(usize, ObjectId, &'static [u8]), Object>, key: (usize, ObjectId, &'static [u8]), value: Object) -> Result<Object, SaveError> {
+fn share<'c>(writer: &mut impl Sink<'c>, shared: &mut HashMap<(usize, ObjectId, &'static [u8]), Object>, key: (usize, ObjectId, &'static [u8]), value: Object) -> Result<Object, SaveError> {
     if matches!(value, Object::Reference(_)) {
         return Ok(value);
     }
     if let Some(known) = shared.get(&key) {
         return Ok(known.clone());
     }
-    let written = Object::Reference(writer.add_object(&value).map_err(from_append)?.id);
+    let written = Object::Reference(writer.add(value)?);
     shared.insert(key, written.clone());
     Ok(written)
 }
@@ -1014,6 +1219,123 @@ fn remap_dict(dict: &Dictionary, copy: &Copy, numbers: &HashMap<u32, ObjectId>) 
     out
 }
 
+/// **Where a plan's objects go:** an appended update, or a rewrite's changes. The plan is the same for both, so what a save copies, renumbers and drops is
+/// one piece of code whichever writer takes it.
+trait Sink<'c> {
+    fn allocate(&mut self) -> Result<ObjectId, SaveError>;
+    fn put(&mut self, id: ObjectId, object: Object) -> Result<(), SaveError>;
+    fn add(&mut self, object: Object) -> Result<ObjectId, SaveError>;
+    /// A copied stream: `dict` as it's written, and `length` stored bytes of object `from` in `source`, copied as they are.
+    fn put_stream(&mut self, id: ObjectId, dict: Dictionary, length: u64, source: &'c IndexedReader, from: ObjectId) -> Result<(), SaveError>;
+    /// What this has taken so far: bytes appended, or about what a rewrite holds until it writes.
+    fn taken(&self) -> u64;
+    /// An update has to hold something; a rewrite doesn't.
+    fn needs_something(&self) -> bool;
+}
+
+struct AppendSink<'w, 'r, W: lopdf::AppendOutput> {
+    writer: &'w mut AppendWriter<'r, W>,
+    began: u64,
+}
+
+impl<'c, W: lopdf::AppendOutput> Sink<'c> for AppendSink<'_, '_, W> {
+    fn allocate(&mut self) -> Result<ObjectId, SaveError> {
+        self.writer.allocate().map_err(from_append)
+    }
+    fn put(&mut self, id: ObjectId, object: Object) -> Result<(), SaveError> {
+        self.writer.write_object(id, &object).map(|_| ()).map_err(from_append)
+    }
+    fn add(&mut self, object: Object) -> Result<ObjectId, SaveError> {
+        self.writer.add_object(&object).map(|written| written.id).map_err(from_append)
+    }
+    fn put_stream(&mut self, id: ObjectId, dict: Dictionary, length: u64, source: &'c IndexedReader, from: ObjectId) -> Result<(), SaveError> {
+        let descriptor = source.resolve_stream_descriptor(from).map_err(|_| SaveError::Damaged)?;
+        let mut bytes = EncodedRead(descriptor.open_plain_encoded().map_err(|_| SaveError::Damaged)?);
+        self.writer.write_stream_from(id, &dict, length, &mut bytes).map(|_| ()).map_err(from_append)
+    }
+    fn taken(&self) -> u64 {
+        self.writer.position().saturating_sub(self.began)
+    }
+    fn needs_something(&self) -> bool {
+        true
+    }
+}
+
+/// A rewrite's changes, which it holds until it writes the file: what's held is counted, and a plan that would hold more than `cap` is refused.
+struct RewriteSink<'w, 'r, 'c> {
+    changes: &'w mut RewriteChanges<'r, 'c>,
+    held: u64,
+    cap: u64,
+}
+
+impl RewriteSink<'_, '_, '_> {
+    fn hold(&mut self, object: &Object) -> Result<(), SaveError> {
+        self.held = self.held.saturating_add(held_size(object, 0));
+        if self.held > self.cap { Err(SaveError::TooLarge) } else { Ok(()) }
+    }
+}
+
+impl<'c> Sink<'c> for RewriteSink<'_, '_, 'c> {
+    fn allocate(&mut self) -> Result<ObjectId, SaveError> {
+        self.changes.allocate().map_err(from_rewrite)
+    }
+    fn put(&mut self, id: ObjectId, object: Object) -> Result<(), SaveError> {
+        self.hold(&object)?;
+        self.changes.write_object(id, object).map_err(from_rewrite)
+    }
+    fn add(&mut self, object: Object) -> Result<ObjectId, SaveError> {
+        self.hold(&object)?;
+        self.changes.add_object(object).map_err(from_rewrite)
+    }
+    fn put_stream(&mut self, id: ObjectId, dict: Dictionary, length: u64, source: &'c IndexedReader, from: ObjectId) -> Result<(), SaveError> {
+        self.hold(&Object::Dictionary(dict.clone()))?;
+        // Opened only when the rewrite reaches it, and let go at its end, so a million copied streams hold no reader each until then.
+        self.changes.write_stream_from(id, dict, length, LazyStream { source, id: from, open: None }).map_err(from_rewrite)
+    }
+    fn taken(&self) -> u64 {
+        self.held
+    }
+    fn needs_something(&self) -> bool {
+        false
+    }
+}
+
+/// About what an object costs held in memory: a few dozen bytes for each value and its bytes. Only for a bound, so close is enough.
+fn held_size(object: &Object, depth: usize) -> u64 {
+    const EACH: u64 = 32;
+    if depth > 128 {
+        return EACH;
+    }
+    match object {
+        Object::String(bytes, _) | Object::Name(bytes) => EACH + bytes.len() as u64,
+        Object::Array(items) => EACH + items.iter().map(|item| held_size(item, depth + 1)).sum::<u64>(),
+        Object::Dictionary(dict) => EACH + dict.iter().map(|(key, value)| EACH + key.len() as u64 + held_size(value, depth + 1)).sum::<u64>(),
+        Object::Stream(stream) => EACH + held_size(&Object::Dictionary(stream.dict.clone()), depth + 1) + stream.content.len() as u64,
+        _ => EACH,
+    }
+}
+
+/// A copied stream's stored bytes, opened at the first read.
+struct LazyStream<'c> {
+    source: &'c IndexedReader,
+    id: ObjectId,
+    open: Option<EncodedRead>,
+}
+
+impl Read for LazyStream<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.open.is_none() {
+            let descriptor = self.source.resolve_stream_descriptor(self.id).map_err(|_| std::io::Error::other("a stream's bytes couldn't be read"))?;
+            self.open = Some(EncodedRead(descriptor.open_plain_encoded().map_err(|_| std::io::Error::other("a stream's bytes couldn't be read"))?));
+        }
+        let read = self.open.as_mut().map_or(Ok(0), |open| open.read(buf))?;
+        if read == 0 {
+            self.open = None;
+        }
+        Ok(read)
+    }
+}
+
 /// A stream's stored bytes, read as they are, a piece at a time.
 struct EncodedRead(EncodedStreamReader);
 
@@ -1048,7 +1370,7 @@ fn layer_states(reader: &IndexedReader) -> (Vec<u32>, HashSet<u32>) {
 }
 
 /// **A new version of the catalog,** for what a save changes there. Usage rights go: any page edit ends them, a reader that finds them broken says so, and they aren't a person's signature (owner, 2026-11-08). Layers of added pages join the file's own, with the ones their files hide hidden here too: otherwise a layer a file hides, which can be what it keeps out of sight, would show on its page in this one.
-fn update_catalog<W: lopdf::AppendOutput>(reader: &IndexedReader, writer: &mut AppendWriter<'_, W>, drop_rights: bool, layers: &[(ObjectId, bool)]) -> Result<(), SaveError> {
+fn update_catalog<'c>(reader: &IndexedReader, writer: &mut impl Sink<'c>, drop_rights: bool, layers: &[(ObjectId, bool)]) -> Result<(), SaveError> {
     let root = catalog_id(reader).ok_or(SaveError::Damaged)?;
     let mut catalog = page_dict(reader, root)?;
     if drop_rights && let Some(mut perms) = catalog.get(b"Perms").ok().cloned().and_then(|perms| dict_value(reader, &perms)) {
@@ -1084,7 +1406,7 @@ fn update_catalog<W: lopdf::AppendOutput>(reader: &IndexedReader, writer: &mut A
         properties.set("D", Object::Dictionary(defaults));
         catalog.set("OCProperties", Object::Dictionary(properties));
     }
-    writer.write_object(root, &Object::Dictionary(catalog)).map_err(from_append)?;
+    writer.put(root, Object::Dictionary(catalog))?;
     Ok(())
 }
 

@@ -177,15 +177,24 @@ fn added_pages_are_copied_in_without_the_rest_of_their_file() {
     assert!(contains(&bytes, "/Helvetica"), "the font the added page draws with is");
 }
 
-/// Failure: a delete is appended, so the deleted page's objects stay in the file for anyone to read back. It needs the rewrite, and until that's built the save is refused with nothing written.
+/// Failure: a delete is appended, so the deleted page's objects stay in the file for anyone to read back, in the bytes or an old revision. It's a rewrite: the deleted page's words are nowhere in the new file, plainly or in any stream, its old revisions are gone, and the kept pages are there in order with their turns.
 #[test]
-fn a_delete_isnt_appended() {
+fn a_delete_is_a_rewrite_and_the_page_is_gone() {
     let dir = Dir::new();
-    let path = dir.write("doc.pdf", &marked(&["KEEP", "DELETED"]));
-    let before = std::fs::read(&path).unwrap();
-    let order = own(&[(0, 0)]);
-    assert_eq!(save::save(&request(&path, 2, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::NeedsRewrite));
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let path = dir.write("doc.pdf", &marked(&["KEEPONE", "DELETEDMARK", "KEEPTWO"]));
+    // An earlier revision that turned the page to be deleted, so its old version is in the bytes twice.
+    save::save(&request(&path, 3, &own(&[(0, 0), (1, 1), (2, 0)]), &[]), Target::Same, None, &mut save::NoHooks).unwrap();
+    let order = own(&[(0, 0), (2, 1)]);
+    let mut noted = Noted::default();
+    let outcome = save::save(&request(&path, 3, &order, &[]), Target::Same, None, &mut noted).unwrap();
+    assert_eq!((outcome.writer, outcome.pages_removed, outcome.pages), (Writer::Rewrite, 1, 2));
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(!contains(&bytes, "DELETEDMARK"), "the deleted page's words are gone");
+    assert_eq!(bytes.windows(9).filter(|window| window == b"startxref").count(), 1, "one section: no old revision holds it");
+    assert_eq!(read_pages(&path), [("KEEPONE".into(), 0), ("KEEPTWO".into(), 90)]);
+    assert_eq!(noted.steps, [SaveStep::Checking, SaveStep::Writing, SaveStep::Prepared, SaveStep::Committing]);
+    assert_eq!(outcome.stamp, Some(stamp(&path)));
+    assert!(outcome.document_data_kept.is_some(), "a rewrite says what it kept of the document's own");
     assert_eq!(save::writer_for(2, &order), Writer::Rewrite);
     assert_eq!(save::writer_for(2, &own(&[(0, 0), (0, 0)])), Writer::Rewrite, "a page twice and another gone is still a page gone");
     assert_eq!(save::writer_for(2, &own(&[(1, 2), (0, 0)])), Writer::Append);
@@ -308,12 +317,111 @@ fn a_certified_files_pages_arent_changed() {
     assert_eq!(save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::BreaksCertification));
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert!(save::signature_facts_of(&path).unwrap().certified);
+    // Save As makes a new copy with every signature removed (SPEC decision 27), and the original is untouched.
     let copy = path.with_file_name("copy.pdf");
-    assert_eq!(save::save(&request(&path, 1, &order, &[]), Target::NewFile(&copy), None, &mut save::NoHooks), Err(SaveError::UnsignedCopyNeedsRewrite), "an unsigned copy is the rewrite's, and nothing says otherwise");
-    assert!(!copy.exists());
+    let outcome = save::save(&request(&path, 1, &order, &[]), Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
+    assert_eq!((outcome.writer, outcome.signatures_removed), (Writer::Rewrite, 1));
+    assert_unsigned(&copy);
+    assert_eq!(read_pages(&copy)[0].1, 90, "with the turn");
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the original keeps its signature");
+    // A copy with nothing changed is unsigned too: an appended copy would add a revision its certification can show as a change (review round 2).
     let unchanged = own(&[(0, 0)]);
-    assert_eq!(save::save(&request(&path, 1, &unchanged, &[]), Target::NewFile(&copy), None, &mut save::NoHooks), Err(SaveError::UnsignedCopyNeedsRewrite), "a copy with nothing changed would still append a revision its certification can show (review round 2)");
-    assert!(!copy.exists());
+    let second = path.with_file_name("second.pdf");
+    save::save(&request(&path, 1, &unchanged, &[]), Target::NewFile(&second), None, &mut save::NoHooks).unwrap();
+    assert_unsigned(&second);
+}
+
+/// A copy has no signature of any kind: no field, value, drawn box, `/Perms` or `/SigFlags`, and nothing with a `/ByteRange` anywhere in its bytes.
+fn assert_unsigned(path: &Path) {
+    let bytes = std::fs::read(path).unwrap();
+    for mark in ["/ByteRange", "/Sig ", "/Sig>", "/DocMDP", "/UR3", "/SigFlags", "/Perms", "Signature1"] {
+        assert!(!contains(&bytes, mark), "{mark} is still in {}", path.display());
+    }
+    let facts = save::signature_facts_of(path).unwrap();
+    assert!(!facts.has_persons_signature() && !facts.usage_rights, "{facts:?}");
+}
+
+/// Failure (SPEC decision 27): a delete on a signed PDF rewrites the signed file, so its signature breaks, or is refused with no way on. Save over it is refused with nothing written, and Save As makes an unsigned copy without the page, saying how many signatures went.
+#[test]
+fn a_delete_on_a_signed_file_is_an_unsigned_copy() {
+    let dir = Dir::new();
+    let bytes = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["SIGNEDPAGE"]) },
+        Raw::Dict("<< /FT /Sig /T (Signature1) /V 6 0 R /Rect [0 0 50 20] /Subtype /Widget /P 3 0 R >>".into()),
+        Raw::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 10 20 30] /Contents <00> >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 8 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["GOESMARK"]) },
+    ]);
+    let path = dir.write("signed.pdf", &bytes);
+    assert!(save::signature_facts_of(&path).unwrap().signed);
+    let order = own(&[(0, 0)]);
+    assert_eq!(save::save(&request(&path, 2, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::SignedNeedsCopy));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "the signed original never changes");
+    let copy = dir.0.join("copy.pdf");
+    let outcome = save::save(&request(&path, 2, &order, &[]), Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
+    assert_eq!((outcome.writer, outcome.signatures_removed, outcome.pages_removed), (Writer::Rewrite, 1, 1));
+    assert_unsigned(&copy);
+    assert!(!contains(&std::fs::read(&copy).unwrap(), "GOESMARK"));
+    assert_eq!(read_pages(&copy), [("SIGNEDPAGE".into(), 0)]);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    // A turn is still an addition, which keeps the signature: appended, with every byte it signs.
+    let turned = own(&[(0, 1), (1, 0)]);
+    assert_eq!(save::save(&request(&path, 2, &turned, &[]), Target::Same, None, &mut save::NoHooks).unwrap().writer, Writer::Append);
+    assert!(std::fs::read(&path).unwrap().starts_with(&bytes));
+}
+
+/// Failure: a delete on a file whose only signature is usage rights, as IRS forms have, is refused as if a person had signed it, or keeps rights a reader then calls broken. It's rewritten in place with them removed, and says so (owner, 2026-11-08).
+#[test]
+fn usage_rights_alone_allow_a_rewrite_in_place() {
+    let dir = Dir::new();
+    let bytes = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /Perms << /UR3 7 0 R >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["FORMPAGE"]) },
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["INSTRUCTIONSMARK"]) },
+        Raw::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 10 20 30] /Contents <00> /Reference [<< /TransformMethod /UR3 >>] >>".into()),
+    ]);
+    let path = dir.write("irs.pdf", &bytes);
+    let order = own(&[(0, 0)]);
+    let outcome = save::save(&request(&path, 2, &order, &[]), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!((outcome.writer, outcome.usage_rights_removed, outcome.signatures_removed), (Writer::Rewrite, true, 0));
+    assert_unsigned(&path);
+    assert!(!contains(&std::fs::read(&path).unwrap(), "INSTRUCTIONSMARK"));
+}
+
+/// Failure: moves, turns, pages added from another PDF and a delete in one save come out in the wrong order, lose the added page, or keep the deleted one. All in one rewrite.
+#[test]
+fn a_delete_with_moves_turns_and_added_pages_is_one_rewrite() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["AAA", "DELETEDMARK", "CCC"]));
+    let other = dir.write("other.pdf", &marked(&["ADDEDPAGE"]));
+    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 2, quarter_turns: 1 }, PageRef { source: 1, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 0, quarter_turns: 0 }];
+    let outcome = save::save(&request(&path, 3, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!((outcome.writer, outcome.pages_removed), (Writer::Rewrite, 1));
+    assert_eq!(read_pages(&path), [("CCC".into(), 90), ("ADDEDPAGE".into(), 0), ("AAA".into(), 0)]);
+    assert!(!contains(&std::fs::read(&path).unwrap(), "DELETEDMARK"));
+}
+
+/// Failure (owner, 2026-11-07): undoing a delete past a Save needs a copy of the whole file, so a big PDF can't, or the copy holds pages nobody can bring back. The copy holds the pages asked for, in order, and nothing of the others.
+#[test]
+fn a_kept_copy_holds_only_the_pages_asked_for() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["STAYS1", "GONE1", "STAYS2", "GONE2"]));
+    let kept = dir.0.join("kept.pdf");
+    let stamp_kept = save::keep_pages(&path, &[1, 3], &kept).unwrap();
+    assert_eq!(stamp_kept, stamp(&kept));
+    assert_eq!(read_pages(&kept), [("GONE1".into(), 0), ("GONE2".into(), 0)]);
+    let bytes = std::fs::read(&kept).unwrap();
+    assert!(!contains(&bytes, "STAYS1") && !contains(&bytes, "STAYS2"));
+    assert!(save::keep_pages(&path, &[3, 1], &dir.0.join("other.pdf")).is_err(), "in order");
+    assert!(save::keep_pages(&path, &[9], &dir.0.join("other.pdf")).is_err(), "pages it has");
+    assert!(save::keep_pages(&path, &[1], &kept).is_err(), "never over a file that's there");
 }
 
 /// Failure: a file with usage rights alone, as IRS forms have, can't be saved, or is saved with rights a reader then calls broken. Saved, with them dropped from the new revision, and said (owner, 2026-11-08).
