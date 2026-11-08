@@ -23,7 +23,13 @@ APP="$BUILD/RectoPDF.app"
 VERSION="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' "$REPO/Cargo.toml" | head -1)"
 # The identity a release is signed with. `app/release-zip.sh --signed` sets it, and without it this is ad hoc.
 SIGN_IDENTITY="${RECTO_SIGN_IDENTITY:--}"
-if [ "$SIGN_IDENTITY" = - ]; then SIGN_ARGS=(--force --sign -); else SIGN_ARGS=(--force --sign "$SIGN_IDENTITY" --options runtime --timestamp); fi
+# codesign is given the identity's SHA-1, never its name: it reads a name on its command line as Mac Roman, whatever the locale, so the owner's, with an "å" in it, is never
+# found ("no identity found", 2026-11-08). The name is matched here, byte for byte, against what the keychain lists.
+if [ "$SIGN_IDENTITY" = - ]; then SIGN_ARGS=(--force --sign -); else
+    SIGN_KEY="$(security find-identity -v -p codesigning | awk -v want="\"$SIGN_IDENTITY\"" 'index($0, want) && $1 ~ /^[0-9]+\)$/ { print $2; exit }')"
+    [ -n "$SIGN_KEY" ] || { echo "the identity isn't in the keychain: $SIGN_IDENTITY" >&2; exit 1; }
+    SIGN_ARGS=(--force --sign "$SIGN_KEY" --options runtime --timestamp)
+fi
 
 sign_app() {
     codesign "${SIGN_ARGS[@]}" "$APP/Contents/MacOS/libpdfium.dylib"
