@@ -56,6 +56,18 @@ pub(crate) enum FindCall {
     Reveal(u32, find::Hit),
 }
 
+impl FindCall {
+    /// Whether a hand-off's freeze holds it back: see `CoreCall::is_user_action`. The Finder's news isn't a person's doing, and dropped it would leave the list as it was for good if the freeze lifted, with no more news coming.
+    pub(crate) fn is_user_action(&self) -> bool {
+        match self {
+            Self::Typed(_) | Self::Open | Self::Close | Self::Step(..) | Self::Choose(_) => true,
+            // An agent's step, shown as a person's: it moves the page view, which wouldn't come back.
+            Self::Reveal(..) => true,
+            Self::News => false,
+        }
+    }
+}
+
 /// Everything the sidebar draws of Find but its rows, which are pulled with [`rows`] as they come on screen.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct FindView {
@@ -254,9 +266,11 @@ pub(crate) fn act(inner: &Inner, call: FindCall, events: &mut Vec<Event>) {
             }
         }
         FindCall::News => {
-            // Taken out first: a guard in the `if let` would be held through the step, which locks the field again, and the session thread would wait on itself.
+            // Taken out first: a guard in the `if let` would be held through the step, which locks the field again, and the session thread would wait on itself. A step waiting for hits waits on through a hand-off's freeze, as it would move the page after what comes back was written.
             let pending = lock(&inner.find_field).pending_step;
-            if let Some((forward, going)) = pending {
+            if let Some((forward, going)) = pending
+                && !inner.core.frozen.load(std::sync::atomic::Ordering::SeqCst)
+            {
                 try_step(inner, forward, going, events);
             }
             // The hit gone to before a restart, chosen again by its place once the hits are back, if they're of the same tab. Its selection came back with the page view.

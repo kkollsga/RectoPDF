@@ -868,6 +868,59 @@ enum CoreCall {
     SetEditMode(bool),
 }
 
+impl CoreCall {
+    /// **Whether a hand-off's freeze holds it back** (review C8): what a person does, which past the hand-off's last look wouldn't come back, as what's on disk is what does. Every variant decides here, with no default, so a new one can't slip through by being forgotten.
+    ///
+    /// What isn't held back is the end of something already under way, or the system's or a worker's news. Dropping one of those would leave something waiting for good, or the session not answering, if the freeze lifts again: a quit that stays, or a hand-off that fails.
+    fn is_user_action(&self) -> bool {
+        match self {
+            Self::Tap(_)
+            | Self::ClearRecent
+            | Self::Jump(..)
+            | Self::JumpTyped(..)
+            | Self::Step(_)
+            | Self::Open(_)
+            | Self::SetSidebarHidden(_)
+            | Self::SetSpread(..)
+            | Self::CompareClick(_)
+            | Self::FocusPane(_)
+            | Self::SetSynced(_)
+            | Self::Rotate(_)
+            | Self::UndoOrRedo(_)
+            | Self::SetPaper(_)
+            | Self::ToggleAgentIcon
+            | Self::ClearEditHistory
+            // Closing a tab, by File > Close or the close prompt's answer: a save or a throwing away of edits that the state already written wouldn't know of.
+            | Self::CloseTab(..)
+            | Self::CloseAnswered(..)
+            // The note over the contents, and a section's chevron: both kept in the record.
+            | Self::ContentsAction(..)
+            | Self::ToggleSection(..)
+            | Self::SetEditMode(_) => true,
+            Self::Find(call) => call.is_user_action(),
+            // A password tried on its own thread: dropped, its prompt would wait for good. Its file's read as a `Read` is.
+            Self::Unlocked(..)
+            // The end of a save the close prompt started, which a hand-off waits for: dropped, a quit that stays would leave the saved tab open.
+            | Self::CloseAfterSave(_)
+            | Self::Reconcile
+            | Self::LookAtShown
+            | Self::SleepTabs(..)
+            | Self::MemoryPressure(_)
+            | Self::WokenFileIsOther(..)
+            | Self::FileLength(..)
+            | Self::LookAgain(_)
+            | Self::Page(..)
+            | Self::Read(_)
+            | Self::Flush(_)
+            | Self::Restored(_)
+            | Self::RestorePatienceOver
+            | Self::Events(_)
+            | Self::GeneratedFinished
+            | Self::GeneratedView(..) => false,
+        }
+    }
+}
+
 /// A marker through the session thread's queue, for QA to know what it asked for has happened.
 #[derive(Debug, Default)]
 pub(crate) struct Flushed {
@@ -912,7 +965,7 @@ impl CoreQueue {
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::ClearRecent | CoreCall::Tap(_) | CoreCall::Jump(..) | CoreCall::JumpTyped(..) | CoreCall::Step(_) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(..) | CoreCall::CompareClick(_) | CoreCall::FocusPane(_) | CoreCall::SetSynced(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon | CoreCall::Find(_) | CoreCall::SetEditMode(_)) {
+        if self.frozen.load(Ordering::SeqCst) && call.is_user_action() {
             return;
         }
         let mut calls = lock(&self.calls);
@@ -3827,6 +3880,160 @@ mod tests {
         queue.frozen.store(false, Ordering::SeqCst);
         queue.push(CoreCall::Tap(TabId(1)));
         assert_eq!(lock(&queue.calls).len(), 3);
+    }
+
+    /// One of every call, and the find calls one of each, with its place in the list. `place` names every variant with no default, so a new one doesn't compile here until it has a place, and the test below fails until it's sampled.
+    fn every_call() -> Vec<CoreCall> {
+        let tab = TabId(1);
+        let stamp = recto_platform::FileStamp { size: 1, mtime_ns: 1, device: 1, inode: 1 };
+        let ask = passwords::Ask { id: 1, target: passwords::Target::File, path: PathBuf::from("/d/a.pdf"), wrong: 0, trying: true };
+        let read = FileRead { what: Reading::Tab(tab), loaded: Err(recto_core::OpenError::NotFound), stamp: None, status: None, history: None, unlocked: false };
+        let hit = recto_agent::find::Hit { page: 0, start: 0, end: 1, before: "".into(), matched: "".into(), after: "".into(), hidden: false };
+        vec![
+            CoreCall::Reconcile,
+            CoreCall::Tap(tab),
+            CoreCall::ClearRecent,
+            CoreCall::Unlocked(ask, Err(recto_core::OpenError::NotFound), Some(stamp), Arc::new(recto_core::Password::new("pw").unwrap())),
+            CoreCall::LookAtShown,
+            CoreCall::Jump(tab, 2, 0.0),
+            CoreCall::JumpTyped(tab, "3".into()),
+            CoreCall::Step(true),
+            CoreCall::Open(PathBuf::from("/d/a.pdf")),
+            CoreCall::SetSidebarHidden(true),
+            CoreCall::SetSpread(None, record::Spread::TwoUp),
+            CoreCall::CompareClick(tab),
+            CoreCall::FocusPane(tab),
+            CoreCall::SetSynced(true),
+            CoreCall::Rotate(1),
+            CoreCall::UndoOrRedo(true),
+            CoreCall::SetPaper(Paper::Dark),
+            CoreCall::ToggleAgentIcon,
+            CoreCall::ClearEditHistory,
+            CoreCall::SleepTabs(vec![tab], sleeper::Why::Asked),
+            CoreCall::MemoryPressure(false),
+            CoreCall::WokenFileIsOther(tab, FileStatus::Same(stamp)),
+            CoreCall::FileLength(tab, 1, 1),
+            CoreCall::LookAgain(tab),
+            CoreCall::Page(1, None, tab),
+            CoreCall::Read(Box::new(read)),
+            CoreCall::Flush(Arc::new(Flushed::default())),
+            CoreCall::Restored(Box::new(Loaded::Nothing)),
+            CoreCall::RestorePatienceOver,
+            CoreCall::Events(Vec::new()),
+            CoreCall::CloseTab(tab, false),
+            CoreCall::CloseAnswered(tab, saving::CloseChoice::Save),
+            CoreCall::CloseAfterSave(tab),
+            CoreCall::ContentsAction(tab, recto_session::ContentsAction::Generate),
+            CoreCall::GeneratedFinished,
+            CoreCall::GeneratedView(tab, recto_session::GeneratedView::Making, None),
+            CoreCall::ToggleSection(tab, 0),
+            CoreCall::Find(find::FindCall::Typed("a".into())),
+            CoreCall::Find(find::FindCall::Open),
+            CoreCall::Find(find::FindCall::Close),
+            CoreCall::Find(find::FindCall::Step(true, recto_agent::find::Going::Jump)),
+            CoreCall::Find(find::FindCall::Choose(0)),
+            CoreCall::Find(find::FindCall::News),
+            CoreCall::Find(find::FindCall::Reveal(1, hit)),
+            CoreCall::SetEditMode(true),
+        ]
+    }
+
+    /// Each variant's place, and each find call's: `(place, how many places in all)`.
+    fn place(call: &CoreCall) -> (usize, usize) {
+        let place = match call {
+            CoreCall::Reconcile => 0,
+            CoreCall::Tap(_) => 1,
+            CoreCall::ClearRecent => 2,
+            CoreCall::Unlocked(..) => 3,
+            CoreCall::LookAtShown => 4,
+            CoreCall::Jump(..) => 5,
+            CoreCall::JumpTyped(..) => 6,
+            CoreCall::Step(_) => 7,
+            CoreCall::Open(_) => 8,
+            CoreCall::SetSidebarHidden(_) => 9,
+            CoreCall::SetSpread(..) => 10,
+            CoreCall::CompareClick(_) => 11,
+            CoreCall::FocusPane(_) => 12,
+            CoreCall::SetSynced(_) => 13,
+            CoreCall::Rotate(_) => 14,
+            CoreCall::UndoOrRedo(_) => 15,
+            CoreCall::SetPaper(_) => 16,
+            CoreCall::ToggleAgentIcon => 17,
+            CoreCall::ClearEditHistory => 18,
+            CoreCall::SleepTabs(..) => 19,
+            CoreCall::MemoryPressure(_) => 20,
+            CoreCall::WokenFileIsOther(..) => 21,
+            CoreCall::FileLength(..) => 22,
+            CoreCall::LookAgain(_) => 23,
+            CoreCall::Page(..) => 24,
+            CoreCall::Read(_) => 25,
+            CoreCall::Flush(_) => 26,
+            CoreCall::Restored(_) => 27,
+            CoreCall::RestorePatienceOver => 28,
+            CoreCall::Events(_) => 29,
+            CoreCall::CloseTab(..) => 30,
+            CoreCall::CloseAnswered(..) => 31,
+            CoreCall::CloseAfterSave(_) => 32,
+            CoreCall::ContentsAction(..) => 33,
+            CoreCall::GeneratedFinished => 34,
+            CoreCall::GeneratedView(..) => 35,
+            CoreCall::ToggleSection(..) => 36,
+            CoreCall::Find(find_call) => match find_call {
+                find::FindCall::Typed(_) => 37,
+                find::FindCall::Open => 38,
+                find::FindCall::Close => 39,
+                find::FindCall::Step(..) => 40,
+                find::FindCall::Choose(_) => 41,
+                find::FindCall::News => 42,
+                find::FindCall::Reveal(..) => 43,
+            },
+            CoreCall::SetEditMode(_) => 44,
+        };
+        (place, 45)
+    }
+
+    /// Failure (review C8): a call a person makes isn't on the hand-off freeze's list, so it's taken while a hand-off writes what comes back, and lost: closing a tab, the close prompt's answer, the contents' note and a section's chevron were. Every variant is sampled, and those a person makes, named here apart from the code that decides, are exactly the ones held back. The rest get through.
+    #[test]
+    fn every_person_originated_call_is_frozen_during_a_hand_off() {
+        let calls = every_call();
+        let mut places: Vec<usize> = calls.iter().map(|call| place(call).0).collect();
+        places.sort_unstable();
+        assert_eq!(places, (0..place(&CoreCall::Reconcile).1).collect::<Vec<_>>(), "one sample of every call, and of every find call");
+        let a_persons = |call: &CoreCall| {
+            matches!(
+                call,
+                CoreCall::Tap(_)
+                    | CoreCall::ClearRecent
+                    | CoreCall::Jump(..)
+                    | CoreCall::JumpTyped(..)
+                    | CoreCall::Step(_)
+                    | CoreCall::Open(_)
+                    | CoreCall::SetSidebarHidden(_)
+                    | CoreCall::SetSpread(..)
+                    | CoreCall::CompareClick(_)
+                    | CoreCall::FocusPane(_)
+                    | CoreCall::SetSynced(_)
+                    | CoreCall::Rotate(_)
+                    | CoreCall::UndoOrRedo(_)
+                    | CoreCall::SetPaper(_)
+                    | CoreCall::ToggleAgentIcon
+                    | CoreCall::ClearEditHistory
+                    | CoreCall::CloseTab(..)
+                    | CoreCall::CloseAnswered(..)
+                    | CoreCall::ContentsAction(..)
+                    | CoreCall::ToggleSection(..)
+                    | CoreCall::SetEditMode(_)
+                    | CoreCall::Find(find::FindCall::Typed(_) | find::FindCall::Open | find::FindCall::Close | find::FindCall::Step(..) | find::FindCall::Choose(_) | find::FindCall::Reveal(..))
+            )
+        };
+        for call in calls {
+            let queue = CoreQueue::default();
+            queue.frozen.store(true, Ordering::SeqCst);
+            let persons = a_persons(&call);
+            let name = format!("{call:?}");
+            queue.push(call);
+            assert_eq!(lock(&queue.calls).is_empty(), persons, "{name}: a person's call is held back during a hand-off, and nothing else is");
+        }
     }
 
     /// Failure: each tile of a page is a note, so an ordinary page of tiles uses a dozen places, and the queue's cap is reached by reading alone. In a row, one note for one page is enough.
