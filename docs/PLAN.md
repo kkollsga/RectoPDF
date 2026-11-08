@@ -4,7 +4,7 @@ Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it ar
 
 ## Where we are
 
-**Release scope (owner, 2026-11-08): "Lets release after phase 3. the rest we tackle after", then "No we release everything we have started in the first release. We don't park anything (finish on going features)."** The first release is the complete reader (phases 2 and 3), every feature already under way, and phase 7's release work. That includes all of Save, stages 1 and 2. What hasn't started (the rest of phase 4's editing, phases 5 and 6) comes after it.
+**Release scope (owner, 2026-11-08): "Lets release after phase 3. the rest we tackle after", then "No we release everything we have started in the first release. We don't park anything (finish on going features)."** The first release is the complete reader (phases 2 and 3), every feature already under way, and phase 7's release work. That includes all of Save, stages 1 and 2. What hasn't started (the rest of phase 4's editing, phases 5 and 6) comes after it. And: "But don't start new post phase 3 features before release".
 
 | Phase | What you get | Status | Size (agent-days) |
 |---|---|---|---:|
