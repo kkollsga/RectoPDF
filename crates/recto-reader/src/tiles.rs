@@ -540,6 +540,12 @@ pub struct Reader {
     /// When the wake under way was asked for, and how it's gone.
     waking: Option<(Instant, WakeReport)>,
     last_wake: Option<WakeReport>,
+    /// How many page views share the caps on what's kept: one, or each pane of a comparison, so several panes keep no more between them than one view does.
+    share: usize,
+    /// The least room either side of the pages: a comparison's pane has less than a window.
+    margins: (f64, f64),
+    /// The last viewport was the reader scrolling, and not the host arriving where it was sent, a zoom, a resize or a pinch: what synced scroll goes by.
+    user_scrolled: bool,
 }
 
 /// What a page says once the thread that draws has given up.
@@ -589,7 +595,72 @@ impl Reader {
             hold_drawing: false,
             waking: None,
             last_wake: None,
+            share: 1,
+            user_scrolled: false,
+            margins: (crate::layout::MIN_SIDE_MARGIN, crate::layout::CORNER_MARGIN),
         }
+    }
+
+    /// Shares the caps on what's kept off screen with this many page views in all, as a comparison's panes do: each keeps its share, so between them they keep what one does. Anything over the new share goes now.
+    pub fn set_share(&mut self, views: usize) {
+        let views = views.clamp(1, 8);
+        if views != self.share {
+            self.share = views;
+            self.evict();
+        }
+    }
+
+    /// The least room either side of the pages, as a comparison's pane has it. The place is kept.
+    pub fn set_margins(&mut self, left: f64, right: f64) {
+        self.margins = (left, right);
+        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else { return };
+        if doc.layout.set_margins(left, right) {
+            doc.exact_y = None;
+            self.lay_out();
+            self.refresh(MAX_ATTACH_PER_TURN);
+        }
+    }
+
+    /// The last scroll the host said it had reached, for a test to go on from.
+    #[cfg(test)]
+    pub(crate) fn viewport_scrolled_to(&self) -> u64 {
+        self.viewport.scrolled_to
+    }
+
+    /// The tab showing's magnification, if one is.
+    pub fn magnification(&self) -> Option<f64> {
+        self.doc().map(|doc| doc.magnification)
+    }
+
+    /// Where the reader is in the tab showing: a page and how far down it, as a change of layout keeps it.
+    pub fn reading_anchor(&self) -> Option<(u32, f64)> {
+        self.doc().map(|doc| doc.anchor)
+    }
+
+    /// Whether the last viewport was the reader scrolling, which another pane follows with synced scroll. Asking clears it.
+    pub fn take_user_scrolled(&mut self) -> bool {
+        std::mem::take(&mut self.user_scrolled)
+    }
+
+    /// Sends the view to a place in a page, as another pane's reader is in theirs, for synced scroll. A jump, so arriving there isn't the reader moving, and neither is it this pane leading the others. Held to the document. Says which page it went to.
+    pub fn follow(&mut self, page: u32, within: f64) -> Option<u32> {
+        self.finish_wake();
+        let doc = self.hot.and_then(|tab| self.docs.get_mut(&tab))?;
+        let page = page.min(doc.layout.count().saturating_sub(1));
+        let within = if within.is_finite() { within.clamp(0.0, 1.0) } else { 0.0 };
+        doc.anchor = (page, within);
+        let y = doc.layout.anchor_y((page, within));
+        doc.exact_y = Some((y, doc.layout.document_height()));
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.jump = Some(seq);
+        let moved = self.last_view_page != Some(page);
+        self.last_view_page = Some(page);
+        if moved {
+            self.moved_page = Some(page);
+        }
+        self.ops.push_back(Op::ScrollTo { y, seq });
+        Some(page)
     }
 
     /// **What a tab's first frame shows, from its sleep file, ahead of [`Self::activate`].** Pictures of the pages at its place, kept as those pages' previews, so they go on as a preview does, and the same rules take them off. The tab's been asked for from here, for how long it takes.
@@ -930,6 +1001,7 @@ impl Reader {
         let floor = self.next_generation;
         let doc = self.docs.entry(tab).or_insert_with(|| {
             let mut layout = PageLayout::with_spread(pages, spread);
+            layout.set_margins(self.margins.0, self.margins.1);
             layout.set_turns(map.turns.clone());
             // A tab it's never held, or that's gone cold: as the session has it. The numbers come from a record, so they're held to what a page can be.
             let saved = saved.filter(|saved| saved.page < pages.max(1));
@@ -1208,6 +1280,7 @@ impl Reader {
     /// The document's size, then the place in it. Called when the fit or a page's size has changed.
     fn lay_out(&mut self) {
         let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else { return };
+        doc.layout.set_margins(self.margins.0, self.margins.1);
         doc.layout.set_frame(self.viewport.frame_width);
         self.ops.push_back(Op::Document { width: doc.layout.document_width(), height: doc.layout.document_height() });
         let y = Self::place_y(doc);
@@ -1229,6 +1302,8 @@ impl Reader {
         if !self.window_open {
             return self.take_ops();
         }
+        // The reader's own scroll: the view moved down or up, with nothing the host was sent arriving, no change of zoom or room, and no pinch or resize under way.
+        self.user_scrolled = !viewport.live && self.jump.is_none() && viewport.y != was.y && viewport.scrolled_to == was.scrolled_to && viewport.magnification == was.magnification && viewport.frame_width == was.frame_width && viewport.height == was.height;
         let mut moved_layout = false;
         if let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) {
             if doc.layout.set_frame(viewport.frame_width) && was.frame_width != viewport.frame_width {
@@ -1266,6 +1341,10 @@ impl Reader {
             // Still on its way: where the view is now isn't where it's going, and taken for the place, it would be where it ends up on the next layout. On arrival the place is left as it was sent, to the pixel.
             if self.scrolled_to >= jump {
                 self.jump = None;
+                // Where it arrived can be another page than was asked, as when a pane's narrower than the view the place was taken in, or a place deep in a page puts the next one where the reader's eye is. The session's page goes with it, or the two disagree, and the place isn't brought back after a restart.
+                if self.last_view_page != Some(page) {
+                    self.moved_page = Some(page);
+                }
                 self.last_view_page = Some(page);
             }
             return;
@@ -1709,8 +1788,9 @@ impl Reader {
                     oldest_tile = Some(oldest_tile.map_or(age, |known| known.min(age)));
                 }
             }
-            let too_many_tiles = tile_bytes > MAX_KEPT_BYTES || tile_surfaces > MAX_KEPT_SURFACES || self.entries.len() > MAX_ENTRIES;
-            let victim = if previews > MAX_KEPT_PREVIEWS { oldest_preview } else if too_many_tiles { oldest_tile.or(oldest_preview) } else { None };
+            let share = self.share.max(1);
+            let too_many_tiles = tile_bytes > MAX_KEPT_BYTES / share || tile_surfaces > MAX_KEPT_SURFACES / share || self.entries.len() > MAX_ENTRIES / share;
+            let victim = if previews > MAX_KEPT_PREVIEWS / share { oldest_preview } else if too_many_tiles { oldest_tile.or(oldest_preview) } else { None };
             let Some((_, id)) = victim else { return };
             self.forget_entry(id);
         }
@@ -2620,6 +2700,80 @@ mod tests {
         there.y = y + 5000.0;
         reader.set_viewport(there);
         assert!(reader.take_moved_page().is_some_and(|page| page > 50), "the reader moved");
+    }
+
+    /// Failure: synced scroll can't tell the reader's own scroll from a pane arriving where it was sent, so two panes keep sending each other back and forth, or a resize or a zoom drags the other pane along. Only a real scroll counts, and a pane sent somewhere by `follow` arrives there without leading.
+    #[test]
+    fn only_the_readers_own_scroll_leads_a_synced_pane() {
+        let mut reader = reader_on(100);
+        reader.scrolled_to = 0;
+        settle(&mut reader);
+        let mut base = view(0.0);
+        base.scrolled_to = 0;
+        reader.set_viewport(base);
+        reader.take_user_scrolled();
+        let mut scrolled = base;
+        scrolled.y = 2000.0;
+        reader.set_viewport(scrolled);
+        assert!(reader.take_user_scrolled(), "the reader scrolled");
+        assert!(!reader.take_user_scrolled(), "asking clears it");
+        let page = reader.follow(40, 0.25).expect("a tab is showing");
+        assert_eq!(page, 40);
+        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("no scroll") };
+        let mut there = scrolled;
+        there.y = y;
+        there.scrolled_to = seq;
+        reader.set_viewport(there);
+        assert!(!reader.take_user_scrolled(), "arriving isn't leading");
+        assert_eq!(reader.reading_anchor().map(|(page, _)| page), Some(40));
+        let mut zoomed = there;
+        zoomed.magnification = 1.5;
+        zoomed.y += 300.0;
+        reader.set_viewport(zoomed);
+        assert!(!reader.take_user_scrolled(), "a zoom isn't a scroll");
+        let mut pinch = zoomed;
+        pinch.live = true;
+        pinch.y += 50.0;
+        reader.set_viewport(pinch);
+        assert!(!reader.take_user_scrolled(), "nor is a pinch");
+        assert_eq!(reader.follow(10_000, 2.0), Some(99), "held to the document");
+    }
+
+    /// Failure (found by restore's whole-state test, with comparison): a view that arrives where it was sent shows another page where the reader's eye is, as a narrower pane does, and the page view's place says one page while the session says another, so the place isn't brought back after a restart. Arriving on another page than was asked says so.
+    #[test]
+    fn arriving_on_another_page_than_asked_says_so() {
+        let mut reader = reader_on(100);
+        reader.scrolled_to = 0;
+        settle(&mut reader);
+        reader.take_moved_page();
+        assert_eq!(reader.follow(40, 0.9), Some(40));
+        assert_eq!(reader.take_moved_page(), Some(40), "sent there");
+        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("no scroll") };
+        let mut there = view(y);
+        there.scrolled_to = seq;
+        reader.set_viewport(there);
+        assert_eq!(reader.take_moved_page(), Some(41), "a third of the way down the view is the next page");
+        let mut again = there;
+        again.y += 1.0;
+        reader.set_viewport(again);
+        assert_eq!(reader.take_moved_page(), None, "and nothing more until it moves on");
+    }
+
+    /// Failure: three panes of a comparison keep three times what one view keeps off screen. Shared, each keeps its share, and what's over goes at once.
+    #[test]
+    fn panes_share_the_caps_on_what_is_kept() {
+        let mut reader = reader_on(400);
+        settle(&mut reader);
+        for step in 0..60 {
+            reader.set_viewport(view(f64::from(step) * 4000.0));
+            settle(&mut reader);
+        }
+        let previews = |reader: &Reader| reader.entries.values().filter(|entry| entry.preview && !entry.attached).count();
+        assert!(previews(&reader) > MAX_KEPT_PREVIEWS / 3, "enough kept to see the share: {}", previews(&reader));
+        reader.set_share(3);
+        assert!(previews(&reader) <= MAX_KEPT_PREVIEWS / 3, "{}", previews(&reader));
+        reader.set_share(0);
+        assert_eq!(reader.share, 1, "never none");
     }
 
     /// Failure (found by restore's whole-state test): side by side, going to a right-hand page arrives at a view whose top row starts with the left one, so the page view's place says the left page while the session says the right, and the place isn't brought back after a restart. And a change of layout moves the place to the other page of a row.

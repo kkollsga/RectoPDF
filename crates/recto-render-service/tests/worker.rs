@@ -481,14 +481,50 @@ fn checks_past_their_deadline_cant_stop_a_document_drawing() {
     let content = full_page_fills(20_000);
     let list: Vec<Page> = (0..6).map(|_| Page::new(content.clone())).collect();
     let file = TempPdf::new("slows.pdf", &pages(&list));
-    let mut doc = renderer(&file.0, Policy { page_deadline: Duration::from_millis(100), max_kills_per_document: 2, ..Policy::default() });
+    // A check of one of these pages draws for over 2 s here, and reading its text takes 20 to 45 ms on a fresh worker, unloaded and at load 58. A deadline of 500 ms is far past a read and far short of a check, where 100 ms was within a few times of a read that a loaded run could take past it (the full check of 2026-11-08 at load 11).
+    let mut doc = renderer(&file.0, Policy { page_deadline: Duration::from_millis(500), max_kills_per_document: 2, ..Policy::default() });
     for page in 0..6 {
-        let read = doc.page_characters(page, true, true).unwrap_or_else(|failure| panic!("page {page}: {failure:?}"));
+        let read = doc.page_characters(page, true, true).unwrap_or_else(|failure| panic!("page {page}: {failure:?}, {:?}", doc.stats()));
         assert!(!read.hidden_checked);
     }
     assert!(doc.stats().deadline_kills >= 2, "{:?}", doc.stats());
     assert_eq!(doc.page_draw_state_at(0, 1.0), recto_render_service::PageDrawState::Sharp);
     assert!(doc.page_size(0).is_ok(), "the document hasn't been stopped");
+}
+
+/// Failure (seen in a full check at load 11, `checks_past_their_deadline_cant_stop_a_document_drawing`): a page's text read runs out of time because the Mac is too busy to give its worker the processor, and the page is remembered as unreadable for the rest of the session, so selecting and copying it say "took too long" though nothing's wrong with it. A worker that got under half its deadline in processor time is the Mac being busy, as an open already reckons it: counted as that, not remembered, and read again when it's next asked. Made here by stopping the worker, so it has no processor time at all.
+#[test]
+fn a_read_the_mac_was_too_busy_for_is_tried_again() {
+    let file = TempPdf::new("busy-read.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
+    let mut doc = renderer(&file.0, Policy { page_deadline: Duration::from_millis(400), ..Policy::default() });
+    doc.page_size(0).unwrap();
+    let pid = doc.worker_pid().expect("a worker with the file open");
+    assert!(std::process::Command::new("/bin/kill").arg("-STOP").arg(pid.to_string()).status().unwrap().success());
+    let stopped = doc.page_characters(1, true, false);
+    assert!(matches!(stopped, Err(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Deadline })), "{stopped:?}");
+    assert!(doc.stats().too_busy >= 1, "counted as the Mac being busy: {:?}", doc.stats());
+    let again = doc.page_characters(1, true, false).unwrap_or_else(|failure| panic!("read again, on a worker that has the processor: {failure:?}"));
+    assert!(!again.chars.is_empty());
+}
+
+/// Failure (review 1): busy reads count towards the kills that stop a document, so a busy Mac stops a document drawing; or a page whose worker hangs every time, which looks just like a busy Mac, costs a deadline for every ask for ever. Busy kills don't count towards stopping, and three busy reads of a page in a row remember it as unreadable after all.
+#[test]
+fn busy_reads_dont_stop_a_document_and_three_in_a_row_are_remembered() {
+    let list: Vec<Page> = (0..6).map(|at| Page::new(text_lines(&[&format!("page {at}")]))).collect();
+    let file = TempPdf::new("busy-reads.pdf", &pages(&list));
+    let mut doc = renderer(&file.0, Policy { page_deadline: Duration::from_millis(400), max_kills_per_document: 2, ..Policy::default() });
+    for (round, other) in [2u32, 3, 4].into_iter().enumerate() {
+        doc.page_characters(other, false, false).unwrap_or_else(|failure| panic!("round {round}: {failure:?}"));
+        let pid = doc.worker_pid().expect("a worker");
+        assert!(std::process::Command::new("/bin/kill").arg("-STOP").arg(pid.to_string()).status().unwrap().success());
+        let busy = doc.page_characters(1, false, false);
+        assert!(matches!(busy, Err(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Deadline })), "round {round}: {busy:?}");
+    }
+    assert!(doc.stats().too_busy >= 3, "{:?}", doc.stats());
+    assert!(doc.page_size(5).is_ok() && doc.page_characters(5, false, false).is_ok(), "three kills past an allowance of two, and the document still reads: {:?}", doc.stats());
+    let spawns = doc.stats().spawns;
+    assert!(matches!(doc.page_characters(1, false, false), Err(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Deadline })), "remembered");
+    assert_eq!(doc.stats().spawns, spawns, "with no worker started to learn it again");
 }
 
 /// Failure: a check nobody wants any more holds the thread that draws for as long as its deadline, up to 5 s, and on a hostile file again and again, while the page in view stays blank. It has to stop when it's told to, and a text job's generation has to reach the worker.

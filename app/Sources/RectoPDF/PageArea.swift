@@ -20,7 +20,7 @@ final class PageDocumentView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        // Control-click is a right click on a Mac, and this doesn't pass it up to anything that would know.
+        // Control-click is a right click on a Mac, and this doesn't pass it up to anything that would know. `menu(for:)` makes this pane the one read first.
         if event.modifierFlags.contains(.control) {
             if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
             return
@@ -50,7 +50,9 @@ final class PageDocumentView: NSView {
 
     /// What a right-click offers, from Rust's list. Each goes by a standard selector, up the chain to whoever has it, and the system adds Services by itself once something answers for them.
     override func menu(for event: NSEvent) -> NSMenu? {
-        pointer?.contextMenu()
+        // In a comparison, a right-click on a pane is about that pane: it's the one read from here, and the menu ticks its own layout and acts on it.
+        pointer?.focus()
+        return pointer?.contextMenu()
     }
 }
 
@@ -103,6 +105,8 @@ final class CenteringClipView: NSClipView {
     let documentView = PageDocumentView()
     private let core: AppCore
     private let isQuiet: Bool
+    /// Which pane this is, left to right: 0 with one tab showing. Rust's page view for it goes by this.
+    let pane: UInt32
     private var pageLayers: [UInt32: CALayer] = [:]
     private var tiles: [UInt64: (layer: CALayer, page: UInt32)] = [:]
     private var tilesOnPage: [UInt32: [UInt64]] = [:]
@@ -134,9 +138,10 @@ final class CenteringClipView: NSClipView {
     var zoomChanged: (() -> Void)?
     private var toldZoom: (Double, Double) = (0, 0)
 
-    init(core: AppCore, limits: ReaderLimits, isQuiet: Bool) {
+    init(core: AppCore, limits: ReaderLimits, isQuiet: Bool, pane: UInt32 = 0) {
         self.core = core
         self.isQuiet = isQuiet
+        self.pane = pane
         delegateAutoscrollEvery = limits.autoscrollEverySeconds
         super.init()
         let clip = CenteringClipView()
@@ -165,8 +170,18 @@ final class CenteringClipView: NSClipView {
         center.addObserver(self, selector: #selector(systemColoursChanged), name: NSColor.systemColorsDidChangeNotification, object: nil)
     }
 
+    /// The clip view moved. It's the reader's only while something of theirs is moving it: a wheel or two fingers, with their momentum, the scroller dragged, a key, a drag past the edge, or `scroll(by:)`. A layout, a resize or a document smaller than the view being centred moves it too, and that isn't the reader leading the other panes: found by restoring a comparison with a map in a pane, which took the reading pane and moved the others.
     @objc private func viewMoved() {
-        sendViewport()
+        sendViewport(byReader: !applying && (readerScrolling || PageArea.isReadersOwn(NSApp.currentEvent)))
+    }
+
+    /// Set while `scroll(by:)` moves the view, which is what a scroll does, and what QA and the drag past the edge call.
+    private var readerScrolling = false
+
+    /// Whether the event being handled now is the reader's hand on the view.
+    private static func isReadersOwn(_ event: NSEvent?) -> Bool {
+        guard let event else { return false }
+        return [.scrollWheel, .leftMouseDragged, .leftMouseDown, .keyDown, .swipe].contains(event.type)
     }
 
     @objc private func pinchStarted() {
@@ -229,6 +244,15 @@ final class CenteringClipView: NSClipView {
         return pageLayers.values.contains { page in
             let shown = documentView.convert(page.frame, to: view).intersection(visible)
             return !shown.isNull && shown.intersects(rect)
+        }
+    }
+
+    /// Whether every page showing stays inside this pane, for QA: a page of one pane mustn't run under the next.
+    func pagesInside() -> Bool {
+        let visible = scrollView.bounds
+        return pageLayers.values.allSatisfy { page in
+            let shown = documentView.convert(page.frame, to: scrollView).intersection(visible)
+            return shown.isNull || (shown.minX >= visible.minX - 0.5 && shown.maxX <= visible.maxX + 0.5)
         }
     }
 
@@ -334,7 +358,7 @@ final class CenteringClipView: NSClipView {
         measured {
             let point = documentView.convert(place, from: nil)
             dragInWindow = place
-            apply(core.selectionPress(x: point.x, y: point.y, clicks: UInt32(max(clicks, 0)), shift: shift))
+            apply(core.selectionPress(pane: pane, x: point.x, y: point.y, clicks: UInt32(max(clicks, 0)), shift: shift))
         }
     }
 
@@ -342,7 +366,7 @@ final class CenteringClipView: NSClipView {
         measured {
             dragInWindow = place
             let point = documentView.convert(place, from: nil)
-            apply(core.selectionDrag(x: point.x, y: point.y))
+            apply(core.selectionDrag(pane: pane, x: point.x, y: point.y))
             keepScrollingIfPastTheEdge()
         }
     }
@@ -352,7 +376,7 @@ final class CenteringClipView: NSClipView {
             dragInWindow = nil
             autoscrollTimer?.invalidate()
             autoscrollTimer = nil
-            apply(core.selectionRelease())
+            apply(core.selectionRelease(pane: pane))
         }
     }
 
@@ -362,7 +386,7 @@ final class CenteringClipView: NSClipView {
             let inFrame = scrollView.superview?.convert(place, from: nil) ?? place
             let onPage = scrollView.hitTest(inFrame) === documentView || isQuiet
             let point = documentView.convert(place, from: nil)
-            setCursor(iBeam: onPage && core.pointerIsOverText(x: point.x, y: point.y))
+            setCursor(iBeam: onPage && core.pointerIsOverText(pane: pane, x: point.x, y: point.y))
         }
     }
 
@@ -406,6 +430,8 @@ final class CenteringClipView: NSClipView {
         let beyond = beyondTheEdge()
         guard beyond != .zero else { return keepScrollingIfPastTheEdge() }
         let clip = scrollView.contentView
+        readerScrolling = true
+        defer { readerScrolling = false }
         var origin = clip.bounds.origin
         origin.x += core.autoscrollStep(beyond: beyond.x)
         origin.y += core.autoscrollStep(beyond: beyond.y)
@@ -423,7 +449,7 @@ final class CenteringClipView: NSClipView {
     /// Rust's list: Copy and Select All by their standard selectors, then the layouts, which go to the app's own action as the menu bar's items do.
     func contextMenu() -> NSMenu {
         let menu = NSMenu()
-        for entry in core.contextMenu() {
+        for entry in core.contextMenu(pane: pane) {
             if entry.id.isEmpty {
                 menu.addItem(.separator())
                 continue
@@ -455,6 +481,11 @@ final class CenteringClipView: NSClipView {
         }
         RunLoop.main.add(timer, forMode: .common)
         liveEnd = timer
+    }
+
+    /// What a press anywhere in this pane does first, before it reaches a page: this pane's the one being read.
+    func focus() {
+        core.paneFocused(pane: pane)
     }
 
     /// The scroller stops below the agent icon, and goes the whole way with none there.
@@ -494,7 +525,7 @@ final class CenteringClipView: NSClipView {
         isQuiet ? 2 : Double(scrollView.window?.backingScaleFactor ?? 2)
     }
 
-    func sendViewport() {
+    func sendViewport(byReader: Bool = false) {
         guard !closed, scrollView.window != nil || isQuiet else { return }
         guard !applying else {
             viewportDirty = true
@@ -505,7 +536,7 @@ final class CenteringClipView: NSClipView {
         let scrollerRoom = scrollView.scrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
         let frameWidth = scrollView.frame.width - scrollerRoom
         guard frameWidth > 0 else { return }
-        let ops = core.setViewport(viewport: ViewportInput(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height, frameWidth: frameWidth, magnification: scrollView.magnification, backing: backing, live: live, scrolledTo: scrolledTo))
+        let ops = core.setViewport(pane: pane, viewport: ViewportInput(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height, frameWidth: frameWidth, magnification: scrollView.magnification, backing: backing, live: live, scrolledTo: scrolledTo, byReader: byReader))
         apply(ops)
         if toldZoom != (scrollView.magnification, fit) {
             toldZoom = (scrollView.magnification, fit)
@@ -516,7 +547,7 @@ final class CenteringClipView: NSClipView {
     /// There's more from Rust: tiles that have arrived, a change of tab. Called when it says so.
     func drain() {
         guard !closed else { return }
-        apply(core.drainOps())
+        apply(core.drainOps(pane: pane))
     }
 
     private func apply(_ ops: [ReaderOp]) {
@@ -532,7 +563,7 @@ final class CenteringClipView: NSClipView {
             viewportDirty = false
             sendViewport()
         }
-        core.opsApplied()
+        core.opsApplied(pane: pane)
     }
 
     private func apply(_ op: ReaderOp) {
@@ -661,6 +692,8 @@ final class CenteringClipView: NSClipView {
 
     /// What a scroll does, and what `recto qa scroll` calls.
     func scroll(by points: Double) {
+        readerScrolling = true
+        defer { readerScrolling = false }
         let clip = scrollView.contentView
         var origin = clip.bounds.origin
         origin.y += points

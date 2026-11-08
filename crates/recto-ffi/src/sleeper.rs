@@ -197,7 +197,7 @@ impl Inner {
     pub(crate) fn write_sleep_for(&self, id: TabId, now: bool) {
         let Some(facts) = self.host.session.with_session(|session| session.sleep_facts(id)) else { return };
         let own = Some(version_of(facts.sleep.file));
-        let Some(material) = self.engine.sleep_material(id.0, own) else { return };
+        let Some(material) = self.panes.engine_for_tab(&self.engine, id).sleep_material(id.0, own) else { return };
         self.write_with_material(facts, material, now);
     }
 
@@ -230,7 +230,7 @@ impl Inner {
         let left = self.host.session.with_session(|session| session.take_left_warm());
         left.into_iter().filter_map(|facts| {
             let own = Some(version_of(facts.sleep.file));
-            let material = self.engine.sleep_material(facts.id.0, own)?;
+            let material = self.panes.engine_for_tab(&self.engine, facts.id).sleep_material(facts.id.0, own)?;
             Some((facts, material))
         }).collect()
     }
@@ -263,7 +263,7 @@ impl Inner {
     }
 
     /// What a tab's first frame shows, for the page view: from the file just read, or its sleep file if nobody's read it, whichever way this tab's been asked for. Only what's about the document as it is now. Each picture says what paper it's for, and only goes on that. On the session thread, with no lock on the page view while the surfaces are made.
-    pub(crate) fn give_sleep_view(&self, id: TabId) {
+    pub(crate) fn give_sleep_view(&self, engine: &recto_reader::Engine, id: TabId) {
         let read = self.host.session.with_session(|session| session.take_sleep_read(id));
         let sleep = read.or_else(|| {
             let (stamp, path) = self.host.session.with_session(|session| session.sleep_to_read_awake(id))?;
@@ -285,7 +285,7 @@ impl Inner {
                 pictures.push(SleepShot { page: picture.page, scale: picture.scale, paper: if picture.dark { PaperKind::Dark } else { PaperKind::White }, surface });
             }
         }
-        self.engine.give_sleep(id.0, SleepView { version: sleep.version, usual: sleep.usual.map(page_box), sizes: sleep.sizes.iter().map(|(page, width, height)| (*page, page_box((*width, *height)))).collect(), pictures });
+        engine.give_sleep(id.0, SleepView { version: sleep.version, usual: sleep.usual.map(page_box), sizes: sleep.sizes.iter().map(|(page, width, height)| (*page, page_box((*width, *height)))).collect(), pictures });
     }
 
     /// The documents off screen against their budget. At most once a second, and only with something off screen, which most of the time there's little of.
@@ -303,7 +303,7 @@ impl Inner {
             *last = Some((Instant::now(), active));
         }
         let budget = self.sleeper.budget_bytes.load(Ordering::SeqCst);
-        let costs: Vec<(TabId, u64)> = warm.iter().map(|id| (*id, self.engine.worker_bytes(id.0) + self.host.session.with_session(|session| session.page_edits(*id).map_or(0, |list| list.history_bytes() as u64)))).collect();
+        let costs: Vec<(TabId, u64)> = warm.iter().map(|id| (*id, self.panes.engine_for_tab(&self.engine, *id).worker_bytes(id.0) + self.host.session.with_session(|session| session.page_edits(*id).map_or(0, |list| list.history_bytes() as u64)))).collect();
         let mut total: u64 = costs.iter().map(|(_, cost)| cost).sum();
         let mut over = Vec::new();
         for (id, cost) in costs {
@@ -323,7 +323,9 @@ impl Inner {
         self.sleeper.counts.pressure_events.fetch_add(1, Ordering::Relaxed);
         let tabs = self.host.session.with_session(|session| session.dormant_oldest_first());
         self.go_dormant(&tabs, Why::Pressure);
-        self.engine.memory_pressure(critical);
+        for engine in self.panes.engines(&self.engine) {
+            engine.memory_pressure(critical);
+        }
     }
 }
 

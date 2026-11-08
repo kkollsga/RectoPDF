@@ -49,7 +49,8 @@ class SidebarCell: NSView {
     func applyLook() {
         guard let row else { return }
         let isTab = row.kind == .tab
-        let active = isTab && row.current
+        // A tab side by side with others reads as the active one does, so the sidebar says which are being compared.
+        let active = isTab && (row.current || row.inComparison)
         pill.isHidden = !active
         pill.backgroundColor = Theme.rowActive.cg
         let isNote = row.kind == .note
@@ -337,10 +338,32 @@ final class PanelView: FlippedView {
 }
 
 /// The tabs, with the active tab's contents under it in a scrolling area of their own, whose height Rust decides. Both are tables with reused rows, and contents rows are fetched for what's on screen, so a thousand tabs or a 10,000-entry outline cost what fills the sidebar.
+/// The tabs' table. A control-click on a Mac is a right-click unless something takes it, and AppKit can turn it into one before the table's action: here it's the owner's way to compare (2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"), so it's taken first and said by row.
+final class TabTable: NSTableView {
+    var controlClicked: ((Int) -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control), let controlClicked {
+            controlClicked(row(at: convert(event.locationInWindow, from: nil)))
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        // A control-click that reached here as a right-click, with no menu of the table's own to show.
+        if event.modifierFlags.contains(.control), let controlClicked {
+            controlClicked(row(at: convert(event.locationInWindow, from: nil)))
+            return
+        }
+        super.rightMouseDown(with: event)
+    }
+}
+
 @MainActor final class SidebarPane: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let view = FlippedView()
     let scroll = NSScrollView()
-    let table = NSTableView()
+    let table = TabTable()
     let contentsScroll = ContentsScrollView()
     let contentsTable = NSTableView()
     let contentsThumb = ThumbView()
@@ -412,6 +435,7 @@ final class PanelView: FlippedView {
         table.refusesFirstResponder = true
         contentsTable.refusesFirstResponder = true
         table.action = #selector(tabClicked)
+        table.controlClicked = { [weak self] row in MainActor.assumeIsolated { self?.compareTab(row) } }
         contentsTable.action = #selector(contentsClicked)
         // One height for every row, so the table asks nothing per row, however many there are.
         contentsTable.rowHeight = 28
@@ -722,7 +746,30 @@ final class PanelView: FlippedView {
     }
 
     @objc private func tabClicked() {
+        // ⌘-click and ⌃-click put a tab side by side with what's showing, or take it out (owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"). Rust decides what that does.
+        let flags = NSApp.currentEvent?.modifierFlags ?? []
+        if !flags.intersection([.command, .control]).isEmpty {
+            compareTab(table.clickedRow)
+            return
+        }
         tapTab(table.clickedRow)
+    }
+
+    private func compareTab(_ row: Int) {
+        guard row >= 0, row < tabs.count else { return }
+        core.tapRowAdding(row: tabs[row])
+    }
+
+    /// What a ⌘-click on a row does, and what `recto qa compare-click` calls, rows counted as `clickRow` counts them. A contents row does what a click does.
+    func compareClickRow(_ row: Int) {
+        guard row >= 0 else { return }
+        guard model.tocOpen, let active = activeIndex, row > active else { return compareTab(row) }
+        let inContents = row - active - 1
+        if inContents < Int(model.contentsCount) {
+            tapContents(inContents)
+        } else {
+            compareTab(row - Int(model.contentsCount))
+        }
     }
 
     @objc private func contentsClicked() {

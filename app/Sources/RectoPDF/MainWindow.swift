@@ -122,8 +122,8 @@ class MarginLabel: NSView {
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
 
     /// Lays itself out at most this wide, with its bottom right at the point given.
-    func place(text: String, maxWidth: CGFloat, bottomRight: NSPoint, flippedParent: Bool = true) {
-        label.set(text, font: .systemFont(ofSize: 11.5), color: Theme.textBody.ns, wraps: true)
+    func place(text: String, maxWidth: CGFloat, bottomRight: NSPoint, flippedParent: Bool = true, font: NSFont = .systemFont(ofSize: 11.5), color: NSColor? = nil) {
+        label.set(text, font: font, color: color ?? Theme.textBody.ns, wraps: true)
         let room = max(maxWidth - 20, 40)
         let size = label.size(width: room)
         let width = min(size.width, room)
@@ -200,7 +200,18 @@ final class BookMark: NSView {
     unowned let delegate: AppDelegate
     let window: NSWindow
     let root = RootView()
-    let pages: PageArea
+    /// A page area for each pane, left to right: one, or a comparison's. Owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view".
+    private(set) var paneAreas: [PageArea]
+    /// The first pane: the only one with one tab showing.
+    var pages: PageArea { paneAreas[0] }
+    /// The pane being read, as Rust says: where the zoom level, the pointer's selection and QA go.
+    var readingPane: PageArea { paneAreas[min(Int(delegate.core.readingPane()), paneAreas.count - 1)] }
+    /// Each pane's name, in its lower left corner, with more than one: see `layoutPanes`.
+    private var paneLabels: [MarginLabel] = []
+    /// What's wrong with a pane's file, in the pane, for a pane that isn't read: the one read says it with the page number.
+    private var paneNotes: [MarginLabel] = []
+    /// A hairline between panes, as between the sidebar and the page.
+    private var paneEdges: [NSView] = []
     let sidebar: SidebarPane
     let sidebarEdge = NSView()
     let sidebarGrip = SidebarGrip()
@@ -261,7 +272,7 @@ final class BookMark: NSView {
         window.colorSpace = .sRGB
         if delegate.isQuiet { window.setFrameOrigin(NSPoint(x: -40_000, y: -40_000)) }
         window.animationBehavior = .none
-        pages = PageArea(core: delegate.core, limits: limits, isQuiet: delegate.isQuiet)
+        paneAreas = [PageArea(core: delegate.core, limits: limits, isQuiet: delegate.isQuiet)]
         sidebar = SidebarPane(core: delegate.core, strings: delegate.strings, isQuiet: delegate.isQuiet)
         reader = delegate.core.reader()
         super.init()
@@ -319,6 +330,7 @@ final class BookMark: NSView {
             for url in urls { delegate?.core.openFile(path: url.path) }
         }
         root.registerForDraggedTypes([.fileURL])
+        syncPaneAreas()
         root.keyPressed = { [weak delegate] event in
             // Plain keys, with nothing held. With no text field having the focus they get here, and when there is one it has them first.
             guard let delegate, event.modifierFlags.intersection([.command, .control, .option]).isEmpty, let id = delegate.core.plainKeyAction(characters: event.charactersIgnoringModifiers ?? "") else { return false }
@@ -335,7 +347,7 @@ final class BookMark: NSView {
     /// The window's made and laid out. It isn't on the screen yet: the page is drawn behind it first, so what comes up is right from its first frame.
     func windowIsUp() {
         quietFullScreen = delegate.isQuiet && placement.fullScreen
-        pages.windowReady()
+        for area in paneAreas { area.windowReady() }
         noteWindow()
         firstResponderWatch = window.observe(\.firstResponder, options: []) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.firstResponderChanged() }
@@ -367,7 +379,7 @@ final class BookMark: NSView {
             }
         }
         applyFocus(placement.focusSidebar ? "sidebar" : delegate.core.focusView())
-        delegate.core.windowShown(home: reader.home, tileLayers: UInt32(pages.report()["tile_layers"] as? Int ?? 0))
+        delegate.core.windowShown(home: reader.home, tileLayers: UInt32(paneAreas.reduce(0) { $0 + ($1.report()["tile_layers"] as? Int ?? 0) }))
     }
 
     /// Gives the keyboard to what's named. There's no Find field yet, so that's only kept.
@@ -444,7 +456,7 @@ final class BookMark: NSView {
     func layout() {
         // Thin scrollers that come with scrolling and fade, as in Pages, with nothing reserved for them, unless the Mac is set to always show them. With the setting on automatic and a mouse paired, AppKit puts classic ones back whatever a view was told, so it's said again here. QA can ask for either.
         let style = delegate.qa?.scrollerStyle ?? (UserDefaults.standard.string(forKey: "AppleShowScrollBars") == "Always" ? .legacy : .overlay)
-        if pages.scrollView.scrollerStyle != style { pages.scrollView.scrollerStyle = style }
+        for area in paneAreas where area.scrollView.scrollerStyle != style { area.scrollView.scrollerStyle = style }
         // The sidebar's lists always have the slim thumb over their margin, with no track, whatever the setting (owner, 2026-11-07: "the scroll thumb always visible, the rail always hidden"), so they're overlay whatever AppKit puts back.
         for view in [sidebar.scroll, sidebar.contentsScroll as NSScrollView] where view.scrollerStyle != .overlay { view.scrollerStyle = .overlay }
         sidebar.updateContentsScroller()
@@ -461,7 +473,7 @@ final class BookMark: NSView {
         sidebarGrip.frame = NSRect(x: sidebarWidth - 3, y: 0, width: 7, height: size.height)
         window.invalidateCursorRects(for: sidebarGrip)
         let area = NSRect(x: side, y: 0, width: size.width - side, height: size.height)
-        pages.scrollView.frame = area
+        layoutPanes(in: area)
         home.frame = area
         // The same margin to the right as above, and less above than the 16 it had. Owner, 2026-11-07: "The margin left of the ai icon is too large. It should have the same margin to the right and above. Above should have slightly smaller margin then now (and right gets the same one)."
         agentIcon.frame = NSRect(x: size.width - Self.cornerMargin - 20, y: Self.cornerMargin, width: 20, height: 20)
@@ -470,11 +482,97 @@ final class BookMark: NSView {
         positionWindowButtons()
         layoutTopLeft()
         layoutTopRight()
-        pages.layoutChanged()
+        for area in paneAreas { area.layoutChanged() }
+    }
+
+    /// **Panes side by side**, the same width, with a hairline between. Each one's name sits in its lower left corner, as the page number sits in the lower right, small and quiet: the owner's rule has nothing above or over a page, and a pill in the margin's corner is what the page number already is (owner, 2026-11-07: "The page number should always be visible in the lower right"), so it costs no reading height. The pane being read has its name in the accent colour. With one tab there's one pane and no name, as before.
+    private func layoutPanes(in area: NSRect) {
+        let count = CGFloat(paneAreas.count)
+        let width = ((area.width - (count - 1)) / count).rounded(.down)
+        let comparing = reader.panes.count > 1
+        for (index, pane) in paneAreas.enumerated() {
+            let x = area.minX + CGFloat(index) * (width + 1)
+            let last = index == paneAreas.count - 1
+            pane.scrollView.frame = NSRect(x: x, y: area.minY, width: last ? area.maxX - x : width, height: area.height)
+            if index > 0, index - 1 < paneEdges.count { paneEdges[index - 1].frame = NSRect(x: x - 1, y: area.minY, width: 1, height: area.height) }
+            guard index < paneLabels.count, index < paneNotes.count else { continue }
+            let label = paneLabels[index]
+            if comparing, index < reader.panes.count {
+                let view = reader.panes[index]
+                label.isHidden = false
+                label.place(text: view.title, maxWidth: min(width - 32, 260), bottomRight: NSPoint(x: x + 16, y: area.maxY - 16), font: .systemFont(ofSize: 11.5, weight: view.reading ? .semibold : .regular), color: (view.reading ? Theme.accent : Theme.textBody).ns)
+                // Laid out from its left: `place` puts its bottom right at the point, so it's moved by its width.
+                label.frame.origin.x = x + 16
+                let note = paneNotes[index]
+                if let words = view.note, !view.reading {
+                    note.isHidden = false
+                    note.place(text: words, maxWidth: min(width - 32, 320), bottomRight: NSPoint(x: x + 16, y: label.frame.minY - 8))
+                    note.frame.origin.x = x + 16
+                } else {
+                    note.isHidden = true
+                }
+            } else {
+                label.isHidden = true
+                paneNotes[index].isHidden = true
+            }
+        }
+    }
+
+    /// What QA reads about the panes: one, or a comparison's, each with its label and frame, and whether pages run under the pane beside them.
+    func paneReport() -> [[String: Any]] {
+        paneAreas.enumerated().map { index, area in
+            let frame = area.scrollView.frame
+            let label = index < paneLabels.count && !paneLabels[index].isHidden ? paneLabels[index] : nil
+            let report = area.report()
+            let note = index < paneNotes.count && !paneNotes[index].isHidden ? paneNotes[index].label.text : nil
+            return ["pane": index, "note": note as Any? ?? NSNull(), "x": frame.minX, "width": frame.width, "label": label.map { $0.label.text as Any } ?? NSNull(), "label_in_lower_left": label.map { $0.frame.minX >= frame.minX && $0.frame.maxX <= frame.maxX && $0.frame.maxY > frame.maxY - 40 } ?? false, "reading": index == Int(delegate.core.readingPane()), "magnification": report["magnification"] ?? 0, "scroll_y": report["scroll_y"] ?? 0, "highlight_rects": report["highlight_rects"] ?? 0, "pages_inside": area.pagesInside()]
+        }
+    }
+
+    /// Drains every pane, when Rust says there's something for the layers.
+    func drainAll() {
+        for area in paneAreas { area.drain() }
+    }
+
+    /// **As many page areas as Rust has panes,** made or let go of here, each drawing what its pane's page view says. A pane that goes takes its layers with it.
+    private func syncPaneAreas() {
+        let wanted = max(1, reader.panes.count)
+        while paneAreas.count < wanted {
+            let area = PageArea(core: delegate.core, limits: delegate.limits, isQuiet: delegate.isQuiet, pane: UInt32(paneAreas.count))
+            area.zoomChanged = { [weak self] in self?.updateZoomLevel() }
+            area.scrollView.backgroundColor = Theme.margin.ns
+            root.addSubview(area.scrollView, positioned: .above, relativeTo: paneAreas.last?.scrollView)
+            let edge = NSView()
+            edge.wantsLayer = true
+            edge.layer?.backgroundColor = Theme.hairline.cg
+            root.addSubview(edge, positioned: .above, relativeTo: area.scrollView)
+            paneEdges.append(edge)
+            paneAreas.append(area)
+            if window.isVisible || delegate.isQuiet { area.windowReady() }
+        }
+        while paneAreas.count > wanted, let gone = paneAreas.popLast() {
+            gone.windowClosing()
+            gone.scrollView.removeFromSuperview()
+            paneEdges.popLast()?.removeFromSuperview()
+        }
+        while paneLabels.count < paneAreas.count {
+            let label = MarginLabel()
+            label.isHidden = true
+            root.addSubview(label, positioned: .below, relativeTo: placeLabel)
+            paneLabels.append(label)
+        }
+        while paneLabels.count > paneAreas.count { paneLabels.popLast()?.removeFromSuperview() }
+        while paneNotes.count < paneAreas.count {
+            let note = MarginLabel()
+            note.isHidden = true
+            root.addSubview(note, positioned: .below, relativeTo: placeLabel)
+            paneNotes.append(note)
+        }
+        while paneNotes.count > paneAreas.count { paneNotes.popLast()?.removeFromSuperview() }
     }
 
     private func layoutMargin(area: NSRect) {
-        let marginWidth = max(pages.marginWidth(), 140)
+        let marginWidth = max(paneAreas[paneAreas.count - 1].marginWidth(), 140)
         var bottom = NSPoint(x: area.maxX - 16, y: area.maxY - 16)
         // Owner, 2026-11-07: "The page number should always be visible in the lower right." In the margin's corner, quiet, over the page only when a page fills the width there.
         if !reader.home {
@@ -585,7 +683,10 @@ final class BookMark: NSView {
         zoomReset.frame = NSRect(x: zoomField.frame.minX - 6 - resetWidth, y: (middle - 11).rounded(), width: resetWidth, height: 22)
         // Owner, 2026-11-07: "To save horizontal space the scrollbar can stop below the agent icon". And below the zoom level beside it, and the whole way with nothing there.
         let showing = [agentIcon, zoomButton, zoomField].filter { !$0.isHidden }
-        pages.setScrollerTop(showing.map(\.frame.maxY).max().map { $0 + 8 } ?? 0)
+        // Only the pane at the right reaches the corner.
+        for (index, area) in paneAreas.enumerated() {
+            area.setScrollerTop(index == paneAreas.count - 1 ? showing.map(\.frame.maxY).max().map { $0 + 8 } ?? 0 : 0)
+        }
     }
 
     @objc private func sidebarButtonPressed() {
@@ -653,7 +754,9 @@ final class BookMark: NSView {
 
     /// The level as it stands, from the page's magnification and fit, in Rust's words. Not while it's being typed over.
     func updateZoomLevel() {
-        let label = delegate.core.zoomLabel(magnification: pages.scrollView.magnification, fit: pages.fitForQA)
+        // One zoom for every pane: the level's the pane being read's.
+        let reading = readingPane
+        let label = delegate.core.zoomLabel(magnification: reading.scrollView.magnification, fit: reading.fitForQA)
         let hidden = reader.home || zoomEditing
         if zoomButton.isHidden != hidden {
             zoomButton.isHidden = hidden
@@ -718,11 +821,15 @@ final class BookMark: NSView {
 
     func refreshModel() {
         reader = delegate.core.reader()
+        syncPaneAreas()
         sidebar.update(delegate.core.sidebar())
         home.isHidden = !reader.home
-        pages.scrollView.isHidden = reader.home
-        pages.setTint(reader.pageTint)
-        pages.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: window.isKeyWindow || delegate.isQuiet)
+        for area in paneAreas {
+            area.scrollView.isHidden = reader.home
+            area.setTint(reader.pageTint)
+            area.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: window.isKeyWindow || delegate.isQuiet)
+        }
+        for edge in paneEdges { edge.isHidden = reader.home }
         fadeNoticeIfItSaysTo()
         agentIcon.isHidden = reader.agentIconHidden
         // Unsaved edits: the red button's dot, as on any Mac app. Rust says.
@@ -738,7 +845,8 @@ final class BookMark: NSView {
         Theme.dark = Theme.isDark(root)
         delegate.core.setDarkAppearance(dark: Theme.dark)
         root.layer?.backgroundColor = Theme.margin.cg
-        pages.scrollView.backgroundColor = Theme.margin.ns
+        for area in paneAreas { area.scrollView.backgroundColor = Theme.margin.ns }
+        for edge in paneEdges { edge.layer?.backgroundColor = Theme.hairline.cg }
         home.layer?.backgroundColor = Theme.margin.cg
         sidebarEdge.layer?.backgroundColor = Theme.hairline.cg
         homeTitle.set(delegate.strings.appName, font: .boldSystemFont(ofSize: 28), color: Theme.textStrong.ns)
@@ -749,6 +857,9 @@ final class BookMark: NSView {
         sidebarButton.contentTintColor = Theme.textQuiet.ns
         saveButton.contentTintColor = Theme.textQuiet.ns
         styleZoomLevel()
+        // A pane's label takes its colour from whether it's read, when it's laid out.
+        for label in paneLabels + paneNotes { label.layer?.backgroundColor = Theme.pill.cg }
+        if paneLabels.contains(where: { !$0.isHidden }) { layout() }
         for label in [noteLabel, placeLabel, copyNotice as MarginLabel] {
             label.layer?.backgroundColor = Theme.pill.cg
             if !label.label.text.isEmpty { label.label.set(label.label.text, font: .systemFont(ofSize: 11.5), color: Theme.textBody.ns, wraps: true) }
@@ -788,30 +899,30 @@ final class BookMark: NSView {
 
 
     func windowWillStartLiveResize(_ notification: Notification) {
-        pages.setLive(true)
+        for area in paneAreas { area.setLive(true) }
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
-        pages.setLive(false)
+        for area in paneAreas { area.setLive(false) }
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
         if !delegate.isQuiet { delegate.core.frontmostChanged(app: NSApp.isActive, windowKey: true) }
-        pages.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: true)
+        for area in paneAreas { area.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: true) }
     }
 
     func windowDidResignKey(_ notification: Notification) {
         if !delegate.isQuiet { delegate.core.frontmostChanged(app: NSApp.isActive, windowKey: false) }
-        pages.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: delegate.isQuiet)
+        for area in paneAreas { area.setHighlightLook(darkColour: reader.highlightDarkColour, lighten: reader.highlightLighten, active: delegate.isQuiet) }
     }
 
     func windowDidChangeBackingProperties(_ notification: Notification) {
-        pages.layoutChanged()
+        for area in paneAreas { area.layoutChanged() }
     }
 
     func windowWillClose(_ notification: Notification) {
         firstResponderWatch = nil
-        pages.windowClosing()
+        for area in paneAreas { area.windowClosing() }
         delegate.windowDidClose()
     }
 }

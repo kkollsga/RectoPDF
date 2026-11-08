@@ -14,6 +14,18 @@ fn footprint(raw: &mut Raw) -> u64 {
     raw.call(&json!({ "cmd": "budget" }))["data"]["footprint_bytes"].as_u64().unwrap()
 }
 
+/// The session's threads once the last command's thread has gone. Each command runs on a thread that sends its answer and then ends, so the answer can arrive while it's still there, for longer on a busy machine than any fixed sleep: one thread at rest is waited for, up to a bound, and what there is then is returned. A thread kept per tab never goes, and is still counted.
+fn threads_at_rest(pid: u32) -> u32 {
+    let started = std::time::Instant::now();
+    loop {
+        let threads = process_counters(pid).unwrap().threads;
+        if threads <= 1 || started.elapsed() > Duration::from_secs(10) {
+            return threads;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Failure: an idle server wakes up, ticks or holds a thread. **The budget is one thread, asleep:** no timer, no thread per client or tab, and no CPU while nothing happens. Asserted by what the kernel counted over a second.
 #[test]
 fn an_idle_server_is_one_sleeping_thread() {
@@ -87,13 +99,12 @@ fn a_thousand_tabs_through_the_socket_stay_cheap() {
     println!("footprint: 2 tabs {start} B, 1000 tabs {end} B, {per_tab} B a tab, handles {start_handles} to {end_handles}");
     assert!(per_tab <= 4096, "a tab costs {per_tab} B");
     assert_eq!(end_handles, start_handles, "tabs must hold no handles");
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(process_counters(serving.pid()).unwrap().threads, 1, "tabs must hold no threads");
+    assert_eq!(threads_at_rest(serving.pid()), 1, "tabs must hold no threads");
     drop(raw);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Failure: a tab that comes back from a record costs more than one that was opened: anything a restore keeps per tab beyond what a cold tab has. A cold tab costs at most 4 KiB, with no handle and no thread, however it got there. Two fresh sessions, one restoring 2 tabs and the other 1,000.
+/// Failure: a tab that comes back from a record costs more than one that was opened: anything a restore keeps per tab beyond what a cold tab has. A cold tab costs at most 4 KiB, with no handle and no thread, however it got there. Two fresh sessions, one restoring 2 tabs and the other 1,000. Threads are counted at rest: a command's thread that has answered and is on its way out isn't a tab's, and once failed this under load, 2 against 1, with a fixed sleep.
 #[test]
 fn a_restored_cold_tab_costs_what_a_cold_tab_costs() {
     let file = TempPdf::new("restored.pdf", &pages(&[Page::new(text_lines(&["Words"]))]));
@@ -121,7 +132,7 @@ fn a_restored_cold_tab_costs_what_a_cold_tab_costs() {
         let restored = raw.call(&json!({ "cmd": "session_restore" }));
         assert_eq!(restored["data"]["count"], count, "{restored}");
         std::thread::sleep(Duration::from_millis(100));
-        (footprint(&mut raw), raw.call(&json!({ "cmd": "budget" }))["data"]["open_handles"].as_u64().unwrap(), process_counters(serving.pid()).unwrap().threads)
+        (footprint(&mut raw), raw.call(&json!({ "cmd": "budget" }))["data"]["open_handles"].as_u64().unwrap(), threads_at_rest(serving.pid()))
     };
     let (few, few_handles, few_threads) = footprint_of_restored(2);
     let (many, many_handles, many_threads) = footprint_of_restored(1000);
@@ -129,7 +140,7 @@ fn a_restored_cold_tab_costs_what_a_cold_tab_costs() {
     println!("footprint restored: 2 tabs {few} B, 1000 tabs {many} B, {per_tab} B a tab");
     assert!(per_tab <= 4096, "a restored tab costs {per_tab} B");
     assert_eq!(many_handles, few_handles, "they hold no handles");
-    assert_eq!(many_threads, few_threads, "and no threads");
+    assert_eq!((few_threads, many_threads), (1, 1), "and no threads");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
