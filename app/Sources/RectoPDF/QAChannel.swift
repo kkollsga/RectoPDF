@@ -65,7 +65,8 @@ import QuartzCore
             plainShot(of: MenuDrawing(menu: menu), id: id, path: value)
             return
         case "shot_menus":
-            let menus = (NSApp.mainMenu?.items ?? []).compactMap(\.submenu)
+            // Each menu, then any submenu one of its own items opens, as File's Open Recent, so what's in it is seen too. The system's own, such as Services, aren't ours to show.
+            let menus = (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).flatMap { menu in [menu] + menu.items.filter { ($0.representedObject as? String)?.isEmpty == false && $0.submenu?.items.isEmpty == false }.compactMap(\.submenu) }
             guard !menus.isEmpty else { return fail(id, "There's no menu.") }
             let drawings = menus.map { menu -> MenuDrawing in
                 menu.update()
