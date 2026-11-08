@@ -78,27 +78,67 @@ fn needs_full(what: &str) -> AgentError {
     error
 }
 
+fn bad_path(message: &str) -> AgentError {
+    AgentError::new("bad_save_path", message, exit::USAGE).then("Choose a name ending in .pdf, in a folder that isn't hidden or in ~/Library.")
+}
+
+/// **Where a Save As may write** (review): a PDF's bytes are a hostile file's, so they never go where something reads them as anything else. The name ends
+/// in `.pdf`; no part of the path, as given or as it leads, is hidden (a dotfile like `~/.zshenv` is run by a shell); and nothing goes in `~/Library`,
+/// where the system and apps keep files they act on.
+pub fn check_save_path(out: &Path) -> Result<(), AgentError> {
+    if !out.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf")) {
+        return Err(bad_path("A saved PDF's name has to end in .pdf."));
+    }
+    let real = out.parent().and_then(|folder| folder.canonicalize().ok()).map(|folder| folder.join(out.file_name().unwrap_or_default()));
+    let hidden = |path: &Path| path.components().any(|part| matches!(part, std::path::Component::Normal(name) if name.to_string_lossy().starts_with('.')));
+    if hidden(out) || real.as_deref().is_some_and(hidden) {
+        return Err(bad_path("That's a hidden file or folder, which a PDF isn't saved to."));
+    }
+    if let Some(home) = recto_platform::local::real_home() {
+        let library = home.join("Library");
+        let library_real = library.canonicalize().unwrap_or_else(|_| library.clone());
+        if out.starts_with(&library) || real.as_deref().is_some_and(|real| real.starts_with(&library_real)) {
+            return Err(bad_path("That's inside ~/Library, where the system and apps keep files of their own, so a PDF isn't saved there."));
+        }
+    }
+    Ok(())
+}
+
 /// **Saves a tab.** The one way an agent, the CLI or the app saves.
 pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    if let SaveTo::As { out, replace } = to {
+    let mut to = to.clone();
+    if let SaveTo::As { out, replace } = &to {
         crate::require_absolute(out)?;
+        check_save_path(out)?;
         if *replace && level < Level::Full {
             return Err(needs_full("Replacing another file"));
         }
         if !*replace && std::fs::symlink_metadata(out).is_ok() {
             return Err(from_save(&SaveError::TargetExists));
         }
+        // Over the tab's own file is a Save, with its backup and its checks. Over a file open in another tab would leave two tabs on one file (SPEC decision 26).
+        let there = recto_platform::file_stamp(out).ok();
+        let (own, elsewhere) = access.with(|s| {
+            let id = select(s, tab)?;
+            let own = s.own_stamp(id).zip(there).is_some_and(|(mine, theirs)| mine.inode == theirs.inode && mine.device == theirs.device);
+            let elsewhere = there.is_some() && s.tab_for_file(out, there).is_some_and(|other| other != id);
+            Ok::<_, AgentError>((own, elsewhere))
+        })?;
+        if elsewhere {
+            return Err(AgentError::new("open_in_another_tab", "That file is open in another tab, so it isn't replaced. A PDF can only be open once.", exit::FAILED).then("Close that tab first, or choose another name."));
+        }
+        if own {
+            to = SaveTo::Same;
+        }
     }
+    let to = &to;
     let (id, snapshot) = access.with(|s| {
         let id = select(s, tab)?;
-        let snapshot = s.begin_save(id)?;
+        let snapshot = s.begin_save(id, matches!(to, SaveTo::As { .. }))?;
         Ok::<_, AgentError>((id, snapshot))
     })?;
     let Some(snapshot) = snapshot else {
-        return match to {
-            SaveTo::Same => Ok(access.with(|s| nothing_to_save(s, id))),
-            SaveTo::As { out, replace } => copy_as_is(access, id, out, *replace, events),
-        };
+        return Ok(access.with(|s| nothing_to_save(s, id)));
     };
     let ending = Ending { access, id };
     let pages: Vec<PageRef> = snapshot.slots.iter().map(|slot| PageRef { source: slot.source, page: slot.page, quarter_turns: slot.quarter_turns }).collect();
@@ -178,48 +218,6 @@ fn nothing_to_save<L: recto_session::DocLoader>(s: &recto_session::Session<L>, i
     data
 }
 
-/// A Save As of a document with nothing unsaved: a copy of the file as it is, byte for byte, as a Mac app's Save As makes. It's written beside the target and linked into place, so it never replaces anything unasked. The tab goes over to the copy.
-fn copy_as_is<A: SessionAccess>(access: &A, id: TabId, out: &Path, replace: bool, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-    let path = access.with(|s| crate::tab_path(s, id))?;
-    let folder = out.parent().ok_or_else(|| from_save(&SaveError::Failed))?;
-    let partial = folder.join(format!(".{}.recto-copy", std::process::id()));
-    let _ = std::fs::remove_file(&partial);
-    let copied = (|| -> std::io::Result<()> {
-        if recto_platform::local::clone_file(&path, &partial).is_err() {
-            std::fs::copy(&path, &partial)?;
-        }
-        recto_platform::local::carry_origin(&path, &partial)?;
-        std::fs::File::open(&partial)?.sync_all()?;
-        if replace {
-            std::fs::rename(&partial, out)?;
-        } else {
-            std::fs::hard_link(&partial, out)?;
-            std::fs::remove_file(&partial)?;
-        }
-        recto_platform::local::sync_folder_of(out)
-    })();
-    if let Err(error) = copied {
-        let _ = std::fs::remove_file(&partial);
-        return Err(from_save(&match error.kind() {
-            std::io::ErrorKind::AlreadyExists => SaveError::TargetExists,
-            std::io::ErrorKind::PermissionDenied => SaveError::ReadOnly,
-            _ => SaveError::Failed,
-        }));
-    }
-    let now = recto_platform::file_stamp(out).map_err(|_| from_save(&SaveError::Failed))?;
-    Ok(access.with(|s| {
-        let pages = s.pages_in(id);
-        s.saved(id, now, pages, Some(out), None);
-        events.push(Event::new("saved", json!({ "tab": id.0, "writer": "copy" })));
-        let mut data = crate::edit_state_json(s, id);
-        data["did"] = json!(format!("Saved a copy as “{}”. This tab shows the copy now.", file_label(out)));
-        data["written"] = json!(true);
-        data["writer"] = json!("copy");
-        data["untrusted"] = json!({ "file": file_label(out) });
-        data
-    }))
-}
-
 /// What a save answers: what it did in plain words, and the facts behind them.
 fn answer<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: TabId, outcome: &SaveOutcome, rolled_off: usize, saved_as: Option<&Path>, level: Level) -> Value {
     let mut data = crate::edit_state_json(s, id);
@@ -242,6 +240,9 @@ fn answer<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: TabId,
     }
     if outcome.objects_missing > 0 {
         notes.push("Part of an added page named something its file doesn't have, so it was left out, as other readers leave it out. Check the added pages look right.");
+    }
+    if outcome.attributes_missed {
+        notes.push("Some of the file's Finder information, such as tags or who may open it, couldn't be kept on the saved file.");
     }
     if outcome.durability_warning {
         notes.push("The file was saved, but the disk didn't confirm it, so a power cut in the next moments could bring back the old version.");

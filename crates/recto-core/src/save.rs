@@ -353,6 +353,8 @@ pub struct SaveOutcome {
     pub pages: u32,
     /// Usage rights were dropped from the new revision.
     pub usage_rights_removed: bool,
+    /// Some of the file's extended attributes or its ACL couldn't be carried to the new file.
+    pub attributes_missed: bool,
     /// Objects an added page names that couldn't be read, so they went as nothing, as viewers read them.
     pub objects_missing: u64,
     /// The file was replaced, but its folder couldn't be synced, so a power cut in the next moments could bring the old one back.
@@ -438,14 +440,17 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
     let original = request.path.to_path_buf();
     let expected = std::cell::RefCell::new(Vec::new());
     let mut prepared_stamp = None;
+    let attributes_missed = std::cell::Cell::new(false);
     let mut copy_failed = None;
     let hooks_cell = std::cell::RefCell::new(&mut *hooks);
     let options = AppendOptions::new().prepare_replacement(|written: &Path, _target: &Path| {
         // A save over the file is the same file to the person using it, so it keeps its tags, quarantine and ACL. A copy keeps where it came from.
-        match target {
-            Target::Same => recto_platform::local::carry_attributes(&original, written)?,
-            Target::NewFile(_) | Target::Replace(_) => recto_platform::local::carry_origin(&original, written)?,
-        }
+        // One the system won't let go, as `com.apple.macl` is, costs a note and not the save.
+        let carried = match target {
+            Target::Same => recto_platform::local::carry_attributes(&original, written),
+            Target::NewFile(_) | Target::Replace(_) => recto_platform::local::carry_origin(&original, written),
+        };
+        attributes_missed.set(!matches!(carried, Ok(0)));
         check_pages(written, &expected.borrow())?;
         let stamp = recto_platform::file_stamp(written)?;
         prepared_stamp = Some(stamp);
@@ -479,6 +484,7 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
         new_len: appended.summary.new_len,
         pages: u32::try_from(request.pages.len()).unwrap_or(u32::MAX),
         usage_rights_removed: plan.drop_usage_rights,
+        attributes_missed: attributes_missed.get(),
         objects_missing: plan.missing,
         durability_warning: appended.durability_warning.is_some(),
         // What it was as it was written, which the rename keeps: a look now could see another app's write in the moment since, and take it as this save's.
@@ -649,7 +655,7 @@ impl Plan {
             pages.push((*page, (base + 90 * i64::from(page.quarter_turns)).rem_euclid(360)));
         }
         let mut copies: Vec<Option<Copy>> = (0..sources.len()).map(|_| None).collect();
-        let mut missing = 0;
+        let missing = 0;
         let mut total = 0;
         // Counted down from the bound, so a smaller one can be asked for.
         let mut work = MAX_COPY_WORK.saturating_sub(work_limit);

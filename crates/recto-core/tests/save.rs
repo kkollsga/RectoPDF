@@ -327,13 +327,15 @@ fn usage_rights_go_quietly() {
     assert!(!save::signature_facts_of(&path).unwrap().usage_rights, "the new revision has none");
 }
 
-/// Failure: a save over a file loses its Finder tags and, worse, the quarantine flag of a download, which Gatekeeper goes by. A Save As keeps where it came from, and nothing that's about the original alone.
+/// Failure: a save over a file loses its Finder tags, an attribute longer than 4 KiB, or, worse, the quarantine flag of a download, which Gatekeeper goes by. A Save As keeps where it came from, and nothing that's about the original alone.
 #[test]
 fn a_saved_file_keeps_its_attributes() {
     let dir = Dir::new();
     let path = dir.write("download.pdf", &marked(&["A"]));
     recto_platform::local::set_attribute(&path, "com.apple.quarantine", b"0083;5f000000;Safari;").unwrap();
     recto_platform::local::set_attribute(&path, "com.apple.metadata:_kMDItemUserTags", b"red-tag").unwrap();
+    let long = vec![b'q'; 10_000];
+    recto_platform::local::set_attribute(&path, "com.example.long", &long).unwrap();
     let order = own(&[(0, 1)]);
     let copy = dir.0.join("copy.pdf");
     save::save(&request(&path, 1, &order, &[]), Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
@@ -342,6 +344,7 @@ fn a_saved_file_keeps_its_attributes() {
     save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut save::NoHooks).unwrap();
     assert_eq!(recto_platform::local::attribute(&path, "com.apple.quarantine").as_deref(), Some(&b"0083;5f000000;Safari;"[..]));
     assert_eq!(recto_platform::local::attribute(&path, "com.apple.metadata:_kMDItemUserTags").as_deref(), Some(&b"red-tag"[..]));
+    assert_eq!(recto_platform::local::attribute(&path, "com.example.long"), Some(long), "one longer than the 4 KiB the first version read is carried whole (review)");
 }
 
 /// Failure: a save over a file with other hard links leaves those names with the old version, silently; a read-only file is replaced as readily as any other; Save As replaces a file that's there. Each is refused, with nothing written.

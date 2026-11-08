@@ -1557,7 +1557,7 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// **Starts a save of this tab:** what's to be written, copied out, and the tab held so that nothing changes its edits until [`Self::end_save`]. `None` if there's nothing unsaved. Refused while another save of it runs, for a file only the renderer can read, and for edits that can't be read back.
-    pub fn begin_save(&mut self, id: TabId) -> Result<Option<SaveSnapshot>, SessionError> {
+    pub fn begin_save(&mut self, id: TabId, even_unedited: bool) -> Result<Option<SaveSnapshot>, SessionError> {
         if self.is_saving(id) {
             return Err(SessionError::Saving);
         }
@@ -1568,9 +1568,17 @@ impl<L: DocLoader> Session<L> {
         if !self.wake_list(id) {
             return Err(SessionError::EditsUnreadable);
         }
-        let Some(list) = self.edits.get(&id).filter(|list| list.is_edited()) else { return Ok(None) };
         let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
-        let snapshot = SaveSnapshot { path: self.path_of(id).ok_or(SessionError::NoSuchTab)?, stamp: tab.stamp, file_pages: list.file_pages(), slots: list.slots().to_vec(), added: list.added_sources().to_vec(), holds_owner_edits: list.holds_owner_edits(), needs_own_pages: list.needs_own_pages() };
+        let path = self.path_of(id).ok_or(SessionError::NoSuchTab)?;
+        let snapshot = match self.edits.get(&id).filter(|list| list.is_edited()) {
+            Some(list) => SaveSnapshot { path, stamp: tab.stamp, file_pages: list.file_pages(), slots: list.slots().to_vec(), added: list.added_sources().to_vec(), holds_owner_edits: list.holds_owner_edits(), needs_own_pages: list.needs_own_pages() },
+            // A Save As of the document as it is: every page in its place.
+            None if even_unedited => {
+                let pages = tab.page_count;
+                SaveSnapshot { path, stamp: tab.stamp, file_pages: pages, slots: (0..pages).map(|page| edit::PageSlot { source: 0, page, quarter_turns: 0 }).collect(), added: Vec::new(), holds_owner_edits: false, needs_own_pages: false }
+            }
+            None => return Ok(None),
+        };
         self.saving.push(id);
         self.hold(id);
         Ok(Some(snapshot))
@@ -2415,11 +2423,11 @@ mod tests {
     fn nothing_changes_a_tab_while_it_is_saved() {
         let mut s = session(3);
         let id = s.open(Path::new("/d/a.pdf")).unwrap();
-        assert!(s.begin_save(id).unwrap().is_none(), "nothing unsaved, nothing to write");
+        assert!(s.begin_save(id, false).unwrap().is_none(), "nothing unsaved, nothing to write");
         s.edit_pages(id, |edits| edits.rotate(0, 1, 1)).unwrap();
         s.edit_pages(id, |edits| edits.rotate(2, 1, 1)).unwrap();
         s.undo_edit(id);
-        let snapshot = s.begin_save(id).unwrap().unwrap();
+        let snapshot = s.begin_save(id, false).unwrap().unwrap();
         assert_eq!((snapshot.slots.len(), snapshot.slots[0].quarter_turns, snapshot.file_pages), (3, 1, 3));
         assert!(snapshot.holds_owner_edits);
         assert_eq!(s.edit_pages(id, |edits| edits.rotate(1, 1, 1)), Err(SessionError::Saving));
@@ -2429,7 +2437,7 @@ mod tests {
         assert_eq!(s.redo_edit_as(id, Author::Owner), Err(SessionError::Saving));
         assert!(!s.clear_history(id, ClearReason::Discard), "a discard waits too");
         assert_eq!(s.close(id), Err(SessionError::Saving));
-        assert_eq!(s.begin_save(id).err(), Some(SessionError::Saving), "one save at a time");
+        assert_eq!(s.begin_save(id, true).err(), Some(SessionError::Saving), "one save at a time");
         assert!(s.any_saving() && !s.can_go_dormant(id), "and it's held, so it can't go dormant");
         s.save_prepared(id, FileStamp { size: 9, mtime_ns: 9, device: 9, inode: 9 }, None);
         assert!(s.page_edits(id).unwrap().saving().is_some());

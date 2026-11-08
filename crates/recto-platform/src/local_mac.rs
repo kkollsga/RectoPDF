@@ -601,48 +601,95 @@ pub fn process_counters(pid: u32) -> Option<ProcessCounters> {
 }
 
 /// What a copy of a file carries over from the original. Only those a new file of the same document should have: where it came from, which keeps Gatekeeper's word on a download, and nothing that's about this copy alone.
-const CARRIED_TO_A_COPY: [&[u8]; 2] = [b"com.apple.quarantine\0", b"com.apple.metadata:kMDItemWhereFroms\0"];
+const CARRIED_TO_A_COPY: [&str; 2] = ["com.apple.quarantine", "com.apple.metadata:kMDItemWhereFroms"];
 
-/// **Gives a replacement file what the one it replaces had,** for a save that writes a new file and moves it into place: every extended attribute, among them Finder tags and `com.apple.quarantine`, and the ACL. A save over a file is the same file to the person using it, so none of that may go. Its times and mode aren't touched: the writer sets the mode, and the time is what says it was saved.
-pub fn carry_attributes(from: &Path, to: &Path) -> io::Result<()> {
-    let (from_c, to_c) = (c_path(from)?, c_path(to)?);
-    // SAFETY: both strings are NUL-terminated and live for the call, and a null state is copyfile's own default. Only attributes and the ACL are asked for, never data or times.
-    let rc = unsafe { libc::copyfile(from_c.as_ptr(), to_c.as_ptr(), std::ptr::null_mut(), libc::COPYFILE_XATTR | libc::COPYFILE_ACL) };
+/// The longest attribute or list of names carried. Far past a quarantine flag or a set of tags.
+const MAX_ATTRIBUTE_BYTES: usize = 1024 * 1024;
+
+/// One attribute's value, read at its own size: `None` if it isn't there.
+fn read_attribute(path: &std::ffi::CStr, name: &std::ffi::CStr) -> io::Result<Option<Vec<u8>>> {
+    // SAFETY: a null buffer asks only for the value's length, and the strings live for the call.
+    let size = unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, 0) };
+    if size < 0 {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::ENOATTR) { Ok(None) } else { Err(error) };
+    }
+    let size = usize::try_from(size).unwrap_or(usize::MAX);
+    if size > MAX_ATTRIBUTE_BYTES {
+        return Err(io::Error::other("an attribute too long to carry"));
+    }
+    let mut value = vec![0u8; size];
+    // SAFETY: the buffer is valid for its length, and the strings live for the call. If it grew meanwhile this fails with ERANGE, and isn't carried.
+    let read = unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len(), 0, 0) };
+    if read < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    value.truncate(usize::try_from(read).unwrap_or(0));
+    Ok(Some(value))
+}
+
+fn write_attribute(path: &std::ffi::CStr, name: &std::ffi::CStr, value: &[u8]) -> io::Result<()> {
+    // SAFETY: both strings are NUL-terminated, the value is its own length, and all live for the call.
+    let rc = unsafe { libc::setxattr(path.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0) };
     if rc == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
-/// **Gives a copy of a file what it should keep of the original:** the quarantine flag and where it was downloaded from, so a copy of a download is still one. A Save As, which is another file, gets only these.
-pub fn carry_origin(from: &Path, to: &Path) -> io::Result<()> {
+/// The names of a file's extended attributes.
+fn attribute_names(path: &std::ffi::CStr) -> io::Result<Vec<std::ffi::CString>> {
+    // SAFETY: a null buffer asks only for the list's length.
+    let size = unsafe { libc::listxattr(path.as_ptr(), std::ptr::null_mut(), 0, 0) };
+    if size < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let size = usize::try_from(size).unwrap_or(usize::MAX).min(MAX_ATTRIBUTE_BYTES);
+    let mut names = vec![0u8; size];
+    // SAFETY: the buffer is valid for its length, and the path lives for the call.
+    let read = unsafe { libc::listxattr(path.as_ptr(), names.as_mut_ptr().cast(), names.len(), 0) };
+    if read < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    names.truncate(usize::try_from(read).unwrap_or(0));
+    Ok(names.split(|byte| *byte == 0).filter(|name| !name.is_empty()).filter_map(|name| std::ffi::CString::new(name).ok()).collect())
+}
+
+/// **Gives a replacement file what the one it replaces had,** for a save that writes a new file and moves it into place: every extended attribute it can,
+/// among them Finder tags and `com.apple.quarantine`, and the ACL. A save over a file is the same file to the person using it. Each attribute goes by
+/// itself, so one the system protects, as `com.apple.macl` is, doesn't stop the rest. Says how many couldn't be carried; the save goes on either way, and
+/// says so. Its times and mode aren't touched.
+pub fn carry_attributes(from: &Path, to: &Path) -> io::Result<usize> {
     let (from_c, to_c) = (c_path(from)?, c_path(to)?);
-    for name in CARRIED_TO_A_COPY {
-        let mut value = vec![0u8; 4096];
-        // SAFETY: the name is NUL-terminated, the buffer is valid for its length, and the strings live for the call. An attribute longer than the buffer fails with ERANGE, and isn't one of these.
-        let read = unsafe { libc::getxattr(from_c.as_ptr(), name.as_ptr().cast(), value.as_mut_ptr().cast(), value.len(), 0, 0) };
-        if read < 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ENOATTR) {
-                continue;
-            }
-            return Err(error);
-        }
-        value.truncate(usize::try_from(read).unwrap_or(0));
-        // SAFETY: as above, with the value its own length.
-        let rc = unsafe { libc::setxattr(to_c.as_ptr(), name.as_ptr().cast(), value.as_ptr().cast(), value.len(), 0, 0) };
-        if rc != 0 {
-            return Err(io::Error::last_os_error());
+    let mut missed = 0;
+    for name in attribute_names(&from_c)? {
+        match read_attribute(&from_c, &name).and_then(|value| value.map_or(Ok(()), |value| write_attribute(&to_c, &name, &value))) {
+            Ok(()) => {}
+            Err(_) => missed += 1,
         }
     }
-    Ok(())
+    // SAFETY: both strings are NUL-terminated and live for the call, and a null state is copyfile's own default. Only the ACL is asked for.
+    if unsafe { libc::copyfile(from_c.as_ptr(), to_c.as_ptr(), std::ptr::null_mut(), libc::COPYFILE_ACL) } != 0 {
+        missed += 1;
+    }
+    Ok(missed)
+}
+
+/// **Gives a copy of a file what it should keep of the original:** the quarantine flag and where it was downloaded from, so a copy of a download is still one. A Save As, which is another file, gets only these. Says how many couldn't be carried.
+pub fn carry_origin(from: &Path, to: &Path) -> io::Result<usize> {
+    let (from_c, to_c) = (c_path(from)?, c_path(to)?);
+    let mut missed = 0;
+    for name in CARRIED_TO_A_COPY {
+        let name = std::ffi::CString::new(name).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        match read_attribute(&from_c, &name).and_then(|value| value.map_or(Ok(()), |value| write_attribute(&to_c, &name, &value))) {
+            Ok(()) => {}
+            Err(_) => missed += 1,
+        }
+    }
+    Ok(missed)
 }
 
 /// The value of one extended attribute, for tests and reports. `None` if it isn't there.
 pub fn attribute(path: &Path, name: &str) -> Option<Vec<u8>> {
     let (path, name) = (c_path(path).ok()?, std::ffi::CString::new(name).ok()?);
-    let mut value = vec![0u8; 4096];
-    // SAFETY: both strings are NUL-terminated, the buffer is valid for its length, and all live for the call.
-    let read = unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len(), 0, 0) };
-    value.truncate(usize::try_from(read).ok()?);
-    Some(value)
+    read_attribute(&path, &name).ok().flatten()
 }
 
 /// Sets one extended attribute, for tests.
