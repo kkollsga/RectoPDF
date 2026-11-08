@@ -603,6 +603,9 @@ pub fn process_counters(pid: u32) -> Option<ProcessCounters> {
 /// What a copy of a file carries over from the original. Only those a new file of the same document should have: where it came from, which keeps Gatekeeper's word on a download, and nothing that's about this copy alone.
 const CARRIED_TO_A_COPY: [&str; 2] = ["com.apple.quarantine", "com.apple.metadata:kMDItemWhereFroms"];
 
+/// Attributes the system keeps for itself, which no app may write.
+const SYSTEM_ATTRIBUTES: [&str; 3] = ["com.apple.macl", "com.apple.rootless", "com.apple.provenance"];
+
 /// The longest attribute or list of names carried. Far past a quarantine flag or a set of tags.
 const MAX_ATTRIBUTE_BYTES: usize = 1024 * 1024;
 
@@ -660,6 +663,10 @@ pub fn carry_attributes(from: &Path, to: &Path) -> io::Result<usize> {
     let (from_c, to_c) = (c_path(from)?, c_path(to)?);
     let mut missed = 0;
     for name in attribute_names(&from_c)? {
+        // What the system keeps for itself and won't let a process set, as the sandbox's access list is: not carried, and not worth a note on every save (review).
+        if SYSTEM_ATTRIBUTES.iter().any(|system| name.to_bytes().starts_with(system.as_bytes())) {
+            continue;
+        }
         match read_attribute(&from_c, &name).and_then(|value| value.map_or(Ok(()), |value| write_attribute(&to_c, &name, &value))) {
             Ok(()) => {}
             Err(_) => missed += 1,

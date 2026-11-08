@@ -421,6 +421,11 @@ pub fn save(request: &SaveRequest<'_>, target: Target<'_>, backups: Option<&Path
     }
     let facts = signature_facts(&reader);
     let changes_pages = request.pages.iter().enumerate().any(|(at, page)| page.source != 0 || page.page as usize != at || page.quarter_turns != 0);
+    // A copy of a certified or locked document with nothing changed would still append a revision, which its signature can show as a change. Its copy is the
+    // rewrite's, unsigned (stage 2), so for now it's refused, as Save is (review).
+    if !changes_pages && target != Target::Same && (facts.certified || facts.field_locked) {
+        return Err(SaveError::UnsignedCopyNeedsRewrite);
+    }
     if facts.field_locked && changes_pages {
         return Err(SaveError::LockedBySignature);
     }

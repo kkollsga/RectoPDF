@@ -2310,8 +2310,13 @@ fn session_thread(inner: &Arc<Inner>) {
                 saving::CloseChoice::Cancel => {}
             },
             CoreCall::CloseAfterSave(id) => {
-                let undone = host.session.with_session(|session| session.has_undone_owner_steps(id));
-                close_tab(host, id, undone, &mut events);
+                // An edit that came in between the save and now isn't in the file: the tab stays, and says so, rather than lose it (review).
+                let (edited, undone) = host.session.with_session(|session| (session.is_edited(id), session.has_undone_owner_steps(id)));
+                if edited {
+                    *lock(&inner.action_notice) = Some("It was saved, but not closed: there are new changes since.".to_string());
+                } else {
+                    close_tab(host, id, undone, &mut events);
+                }
             }
             CoreCall::ClearEditHistory => inner.host.session.with_session(|session| {
                 if let Some(id) = session.active() {

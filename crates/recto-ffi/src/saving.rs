@@ -193,12 +193,14 @@ pub(crate) fn close_prompt(tab: u32, name: &str, edited: bool, undone: bool) -> 
 
 /// **A save from the window, off the UI thread,** through the same command an agent's `recto save` runs, at the owner's level. `out` makes it a Save As. `close_after` closes the tab once it's saved, for the close prompt's Save. A hand-off waits for it, as it's a running command.
 pub(crate) fn start_save(inner: &Arc<crate::Inner>, tab: TabId, out: Option<std::path::PathBuf>, close_after: bool) {
+    // When the person answered Save As's sheet: a file made at that name after this isn't one they agreed to replace (review).
+    let answered = std::time::SystemTime::now();
     let inner = Arc::clone(inner);
     inner.save_ui.running.fetch_add(1, Ordering::SeqCst);
     let spawned = std::thread::Builder::new().name("recto-save-file".into()).stack_size(1024 * 1024).spawn({
         let inner = Arc::clone(&inner);
         move || {
-            run_save(&inner, tab, out, close_after);
+            run_save(&inner, tab, out, close_after, answered);
             inner.save_ui.running.fetch_sub(1, Ordering::SeqCst);
             inner.save_ui.step.store(0, Ordering::SeqCst);
             inner.core.push(crate::CoreCall::Reconcile);
@@ -213,9 +215,14 @@ pub(crate) fn start_save(inner: &Arc<crate::Inner>, tab: TabId, out: Option<std:
 
 /// The save of the tab the action was for, whichever is showing by now. A Save As's sheet has already asked whether to replace a file that's there, so one
 /// that's there was agreed to; it's looked at here, off the UI thread (review).
-fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, close_after: bool) {
+fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, close_after: bool, answered: std::time::SystemTime) {
     use recto_control::host::Host;
-    let replace = out.as_deref().is_some_and(|out| std::fs::symlink_metadata(out).is_ok());
+    let there = out.as_deref().and_then(|out| std::fs::symlink_metadata(out).ok());
+    if there.as_ref().is_some_and(|there| there.created().is_ok_and(|made| made > answered)) {
+        inner.save_ui.set_problem(Some(SaveProblem { title: "The document couldn't be saved.".into(), message: "A file appeared at that name after you chose it, so it wasn't replaced. Nothing was written.".into(), save_as_title: Some("Save As…".into()), ok_title: "OK".into() }));
+        return;
+    }
+    let replace = there.is_some();
     let command = recto_agent::Command::Save { tab: format!("#{}", id.0), out, replace };
     let mut events = Vec::new();
     match inner.host.run(recto_agent::Level::Full, &command, &mut events) {
@@ -223,6 +230,8 @@ fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
             let notes: Vec<&str> = data["notes"].as_array().map(|notes| notes.iter().filter_map(|note| note.as_str()).collect()).unwrap_or_default();
             *crate::lock(&inner.action_notice) = (!notes.is_empty()).then(|| notes.join(" "));
             inner.save_ui.set_problem(None);
+            // Watchers hear it was saved before they hear it closed.
+            inner.core.push(crate::CoreCall::Events(std::mem::take(&mut events)));
             if close_after {
                 inner.core.push(crate::CoreCall::CloseAfterSave(id));
             }
