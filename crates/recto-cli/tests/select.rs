@@ -107,6 +107,12 @@ fn a_copy_of_body_text_leaves_out_running_heads_and_page_numbers() {
     let page = data(&file, &["text", "2"]);
     let read = page["untrusted"]["text"].as_str().unwrap();
     assert!(read.contains("Annual report 2024") && read.lines().any(|line| line.trim() == "2"), "recto text is unchanged: {read:?}");
+    // It marks them, by the same rule, in characters of its text.
+    let chars: Vec<char> = read.chars().collect();
+    let marked: Vec<String> = page["chrome_spans"].as_array().unwrap().iter().map(|span| chars[span[0].as_u64().unwrap() as usize..span[1].as_u64().unwrap() as usize].iter().collect::<String>()).collect();
+    assert_eq!(marked, vec!["Annual report 2024".to_string(), "2".to_string()], "{page}");
+    let (shown, _, _) = State::at(recto_agent::Level::Control).text(&["local", file.0.to_str().unwrap(), "text", "2"]);
+    assert!(shown.contains("2 lines are marked as running heads, footers or page numbers"), "{shown}");
     // Picking only the running head copies it.
     let head = read.find("Annual").unwrap();
     let only = data(&file, &["copy", "--page", "2", "--chars", &format!("{head}-{}", head + 18)]);
