@@ -275,7 +275,7 @@ impl QaBridge {
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
             }
-            "mouse_up" | "notice_button" => {}
+            "mouse_up" | "notice_button" | "zoom_escape" => {}
             "scroll" => {
                 number(-1e9, 1e9)?;
             }

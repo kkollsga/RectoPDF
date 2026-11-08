@@ -2068,9 +2068,12 @@ mod tests {
         assert_eq!(tabs["tabs"][0]["edited"], true);
         run(&mut s, Level::Control, &Command::PageRotate { tab: "active".into(), pages: "2-3".into(), degrees: -90 }).unwrap();
         assert_eq!(s.page_edits(id).unwrap().slots()[1].quarter_turns, 3);
+        let turns = |s: &Session<_>| s.page_edits(id).unwrap().slots().iter().map(|slot| slot.quarter_turns).collect::<Vec<u8>>();
+        let before = turns(&s);
         run(&mut s, Level::Control, &Command::PageRotate { tab: "active".into(), pages: "all".into(), degrees: 90 }).unwrap();
-        assert!(s.page_edits(id).unwrap().slots().iter().all(|slot| slot.quarter_turns % 2 == 1 || slot.quarter_turns == 0), "every page a quarter more, as one step");
-        assert_eq!(s.page_edits(id).unwrap().slots()[0].quarter_turns, 1);
+        assert!(turns(&s).iter().zip(&before).all(|(now, was)| *now == (was + 1) % 4), "every page a quarter more: {:?} from {before:?}", turns(&s));
+        assert!(s.undo_edit(id));
+        assert_eq!(turns(&s), before, "one undo takes every page back, as it was one step");
         run(&mut s, Level::Control, &Command::PageDelete { tab: "active".into(), pages: "1".into() }).unwrap();
         assert_eq!(s.pages_in(id), 9);
         run(&mut s, Level::Control, &Command::PageInsert { tab: "active".into(), path: "/d/b.pdf".into(), at: 10 }).unwrap();

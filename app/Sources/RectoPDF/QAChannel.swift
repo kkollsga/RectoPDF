@@ -174,6 +174,10 @@ import QuartzCore
             guard let (target, enabled) = QAChannel.keyWindowTarget(for: action, in: controller.window) else { return fail(id, "Nothing in the window answers that.") }
             guard enabled else { return fail(id, "That's greyed out with the window key.") }
             target.perform(action, with: nil)
+        case "zoom_escape":
+            // Escape in the field, by the method AppKit calls for it.
+            guard let controller, controller.zoomEditing else { return fail(id, "The zoom level's field isn't open.") }
+            _ = controller.control(controller.zoomField, textView: NSTextView(), doCommandBy: #selector(NSResponder.cancelOperation(_:)))
         case "zoom_type":
             guard let controller else { return fail(id, "The window is closed.") }
             if !controller.zoomEditing {

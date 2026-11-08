@@ -447,7 +447,7 @@ fn the_panels_rotate_turns_every_page_and_undoes_in_one() {
     assert_eq!(half["app"]["document_edited"], true);
 }
 
-/// Failure: the zoom level isn't in the top right just left of the agent icon, in its row, or doesn't take the icon's place at the same margin when the icon's hidden, or the page's scroller runs up beside it; or it says a level the page isn't at, or clicking it doesn't let the reader type a level or fit the page again. Owner, 2026-11-07: "clicking the zoom value enables you to type in zoom level or reset", and 2026-11-08: "The zoom level should be in the upper right of the app (not in the sidebar)". 100% is the page's real size.
+/// Failure: the zoom level isn't in the top right just left of the agent icon, in its row, or doesn't take the icon's place at the same margin when the icon's hidden, or the page's scroller runs up beside it; or it says a level the page isn't at, or clicking it doesn't let the reader type a level or fit the page again, or Escape or going elsewhere changes it. Owner, 2026-11-07: "clicking the zoom value enables you to type in zoom level or reset", and 2026-11-08: "The zoom level should be in the upper right of the app (not in the sidebar)". 100% is the page's real size.
 #[test]
 fn the_zoom_level_shows_and_takes_a_typed_level() {
     let Some(run) = Run::start() else { return };
@@ -474,6 +474,13 @@ fn the_zoom_level_shows_and_takes_a_typed_level() {
     let same = run.report();
     assert_eq!(same["app"]["zoom_level"]["text"], "200%", "what isn't a level changes nothing: {same}");
     assert_eq!(same["app"]["zoom_level"]["editing"], false);
+    // Escape, and going elsewhere, leave the zoom as it was.
+    run.ok(&["qa", "button", "zoom"]);
+    let escaped = run.ok(&["qa", "zoom-escape"]);
+    assert_eq!((&escaped["zoom_level"]["editing"], &escaped["zoom_level"]["text"]), (&json!(false), &json!("200%")), "{escaped}");
+    run.ok(&["qa", "button", "zoom"]);
+    let away = run.ok(&["qa", "focus", "page"]);
+    assert_eq!((&away["zoom_level"]["editing"], &away["zoom_level"]["text"]), (&json!(false), &json!("200%")), "clicking away: {away}");
     run.ok(&["qa", "zoom-type", "100000"]);
     let most = wait_for(&run, |state| state["app"]["zoom_level"]["text"] != "200%");
     assert!(magnification(&most) <= 8.0 + 1e-9, "held to the limits: {most}");
