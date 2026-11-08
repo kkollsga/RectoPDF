@@ -256,6 +256,16 @@ fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
 mod tests {
     use super::*;
 
+    /// Failure (SPEC decision 27): a save refused for a signature offers no way on, though Save As makes an unsigned copy and the original keeps its signature. The alert for a certified document, one a signature locks, and a signed one whose change needs a rewrite each offers Save As; one for a damaged file doesn't, as a copy can't help it.
+    #[test]
+    fn a_signature_refusal_offers_save_as() {
+        for code in ["breaks_certification", "locked_by_signature", "signed_needs_copy"] {
+            let problem = problem_for(&recto_agent::AgentError::new(code, "refused", recto_agent::exit::FAILED));
+            assert_eq!(problem.save_as_title.as_deref(), Some("Save As…"), "{code}");
+        }
+        assert_eq!(problem_for(&recto_agent::AgentError::new("damaged", "refused", recto_agent::exit::FAILED)).save_as_title, None);
+    }
+
     /// Failure (review round 2): Save As decides "replace" from the disk at save time, so a file someone makes at the chosen name after the person answered "new" is replaced, though nobody agreed to that. A file there at the answer is replaced, as the sheet asked; one made after is refused; none is a new file.
     #[test]
     fn save_as_keeps_the_answer_the_person_gave() {
