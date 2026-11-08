@@ -2060,32 +2060,32 @@ mod tests {
     /// The event names in the first argument of each `Event::new(` in some code, with the line of each, and the lines whose name isn't a literal at all.
     fn emitted_names(code: &str) -> (Vec<(String, usize)>, Vec<usize>) {
         let (mut names, mut unnamed) = (Vec::new(), Vec::new());
-        for (number, line) in code.lines().enumerate() {
-            if line.trim_start().starts_with("//") {
-                continue;
+        // Comment lines blanked, keeping the count, as rustfmt puts an argument on a line of its own.
+        let text: String = code.lines().map(|line| if line.trim_start().starts_with("//") { "\n".to_string() } else { format!("{line}\n") }).collect();
+        let mut from = 0;
+        while let Some(at) = text[from..].find("Event::new(") {
+            let start = from + at + "Event::new(".len();
+            let line = text[..start].matches('\n').count() + 1;
+            let rest = &text[start..];
+            // The first argument: up to the comma at depth 0.
+            let mut depth = 0i32;
+            let end = rest
+                .char_indices()
+                .find(|&(_, c)| {
+                    match c {
+                        '(' | '{' | '[' => depth += 1,
+                        ')' | '}' | ']' => depth -= 1,
+                        _ => {}
+                    }
+                    depth < 0 || (depth == 0 && c == ',')
+                })
+                .map_or(rest.len(), |(at, _)| at);
+            let literals: Vec<&str> = rest[..end].split('"').skip(1).step_by(2).collect();
+            if literals.is_empty() {
+                unnamed.push(line);
             }
-            let mut rest = line;
-            while let Some(at) = rest.find("Event::new(") {
-                rest = &rest[at + "Event::new(".len()..];
-                // The first argument: up to the comma at depth 0.
-                let mut depth = 0i32;
-                let end = rest
-                    .char_indices()
-                    .find(|&(_, c)| {
-                        match c {
-                            '(' | '{' | '[' => depth += 1,
-                            ')' | '}' | ']' => depth -= 1,
-                            _ => {}
-                        }
-                        depth < 0 || (depth == 0 && c == ',')
-                    })
-                    .map_or(rest.len(), |(at, _)| at);
-                let literals: Vec<&str> = rest[..end].split('"').skip(1).step_by(2).collect();
-                if literals.is_empty() {
-                    unnamed.push(number + 1);
-                }
-                names.extend(literals.into_iter().map(|name| (name.to_string(), number + 1)));
-            }
+            names.extend(literals.into_iter().map(|name| (name.to_string(), line)));
+            from = start;
         }
         (names, unnamed)
     }
@@ -2093,8 +2093,9 @@ mod tests {
     /// Failure (review C6): an event made somewhere isn't listed, so it fell into the `access` group, and `watch --events` never selected it where a watcher would look. Every `Event::new` in every crate names its event with a literal, and each one is listed with a group `--events` takes. The reference lists every group's events from the same list.
     #[test]
     fn every_emitted_event_is_listed() {
-        let (names, _) = emitted_names(r#"x.push(Event::new(if a { "tab_opened" } else { "tab_activated" }, json!({ "tab": 1 }))); Event::new("saved", v)"#);
-        assert_eq!(names.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["tab_opened", "tab_activated", "saved"]);
+        let (names, unnamed) = emitted_names("x.push(Event::new(if a { \"tab_opened\" } else { \"tab_activated\" }, json!({ \"tab\": 1 }))); Event::new(\"saved\", v)\n// Event::new(name, v)\nEvent::new(\n    \"page_changed\",\n    v,\n)");
+        assert_eq!(names.iter().map(|(name, line)| (name.as_str(), *line)).collect::<Vec<_>>(), [("tab_opened", 1), ("tab_activated", 1), ("saved", 1), ("page_changed", 3)], "an argument on a line of its own, as rustfmt lays one out, is read too, and a comment isn't");
+        assert!(unnamed.is_empty());
         let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
         let mut folders = vec![crates];
         let mut seen = 0;
