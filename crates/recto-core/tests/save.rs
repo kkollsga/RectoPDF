@@ -891,9 +891,8 @@ fn a_kept_copy_that_isnt_what_was_asked_isnt_used() {
     assert!(!kept.exists());
 }
 
-/// Failure (review round 1 of stage 2): a blank signature field, the place a person is to sign, goes when usage rights are removed in place or a copy is made unsigned, though nobody signed it. It stays, with the form's `SignaturesExist`. Needs the fork's `work/blank-signature-fields-stay` (`1336343`): until RectoPDF is pinned to it, this is ignored.
+/// Failure (review round 1 of stage 2): a blank signature field, the place a person is to sign, goes when usage rights are removed in place or a copy is made unsigned, though nobody signed it. It stays, with the form's `SignaturesExist`. The fork keeps them from `1336343`, in its `main` at `e5f4971`.
 #[test]
-#[ignore = "needs the lopdf fork's 1336343, not yet pushed"]
 fn a_blank_signature_field_stays_through_a_rewrite() {
     let dir = Dir::new();
     let bytes = build(&[
