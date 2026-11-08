@@ -4436,6 +4436,42 @@ mod linking_tests {
         assert!(human::render("links", &answer).contains("only the user can open"));
     }
 
+    /// Failure (PLAN, links follow-ups): on a page with an unsaved quarter turn, `links` gives only the box where the file has it, so an agent looking at the page as the reader sees it points at the wrong place. Each link then has `shown_rect` too, turned with the page, and the answer says by how much.
+    #[test]
+    fn links_on_a_turned_page_say_where_they_are_as_its_seen() {
+        let file = TempPdf::new("links.pdf", &linked_document());
+        let mut session = opened(&file);
+        let flat = run(&mut session, Level::ReadOnly, &line("links 1")).unwrap();
+        assert!(flat.get("quarter_turns").is_none() && flat["links"][0].get("shown_rect").is_none(), "{flat}");
+        run(&mut session, Level::Full, &line("page rotate 1 --by 90")).unwrap();
+        let turned = run(&mut session, Level::ReadOnly, &line("links 1")).unwrap();
+        assert_eq!(turned["quarter_turns"], 1, "{turned}");
+        let rect: Vec<f64> = turned["links"][0]["rect"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_f64().unwrap())
+            .collect();
+        let shown: Vec<f64> = turned["links"][0]["shown_rect"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_f64().unwrap())
+            .collect();
+        assert_eq!(
+            rect,
+            flat["links"][0]["rect"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_f64().unwrap())
+                .collect::<Vec<_>>(),
+            "the file's box stays"
+        );
+        // A quarter turn clockwise of a 612 x 792 page: x is 792 less the bottom, y is the old x, and the box is as tall as it was wide.
+        assert_eq!(shown, [792.0 - (rect[1] + rect[3]), rect[0], rect[3], rect[2]], "{turned}");
+    }
+
     /// Failure: following a link doesn't leave a way back, `back` and `forward` don't retrace it, `goto label` misses what the file calls a page, or an agent can open a web address by following its link.
     #[test]
     fn follow_back_forward_and_labels() {
