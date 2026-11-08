@@ -93,7 +93,7 @@ pub struct TabRecord {
     /// The reader chose generated contents over the file's own. Kept in the record.
     pub generated_contents: bool,
     /// Sections the reader opened or closed by hand, as `(entry, open)`, against what following the place opens. Nothing for a tab nobody's folded, so a cold tab pays a pointer.
-    folds: Option<Box<Vec<(u32, bool)>>>,
+    folds: Option<Box<[(u32, bool)]>>,
 }
 
 /// Where a page of a tab comes from now.
@@ -1883,7 +1883,7 @@ impl<L: DocLoader> Session<L> {
                     journal: journals.get(id).map(ToString::to_string),
                     edits: edits.get(id).map(PageEdits::summary).or_else(|| asleep.get(id).copied()),
                     generated_contents: *generated_contents,
-                    contents_folds: folds.as_deref().cloned().unwrap_or_default(),
+                    contents_folds: folds.as_deref().map(<[(u32, bool)]>::to_vec).unwrap_or_default(),
                 }
             })
             .collect();
@@ -1978,7 +1978,7 @@ impl<L: DocLoader> Session<L> {
                 place_dirty: false,
                 contents_verdict: ContentsVerdict::Fine,
                 generated_contents: entry.generated_contents,
-                folds: (!entry.contents_folds.is_empty()).then(|| Box::new(entry.contents_folds.iter().copied().take(record::MAX_CONTENTS_FOLDS).collect())),
+                folds: (!entry.contents_folds.is_empty()).then(|| entry.contents_folds.iter().copied().take(record::MAX_CONTENTS_FOLDS).collect()),
             });
         }
         self.active = record.active.map(TabId).filter(|id| self.tab(*id).is_some());
@@ -2261,19 +2261,16 @@ impl<L: DocLoader> Session<L> {
             return;
         }
         let Some(tab) = self.tab_mut(id) else { return };
-        let open_now = section_open(tab.folds.as_deref().map(Vec::as_slice), &chain, entry);
-        let folds = tab.folds.get_or_insert_with(Default::default);
+        let open_now = section_open(tab.folds.as_deref(), &chain, entry);
+        let mut folds: Vec<(u32, bool)> = tab.folds.take().map(Vec::from).unwrap_or_default();
         folds.retain(|(at, _)| *at != entry);
         // Back to what following does is no fold at all.
         if chain.contains(&entry) == open_now {
             folds.push((entry, !open_now));
         }
-        while folds.len() > record::MAX_CONTENTS_FOLDS {
-            folds.remove(0);
-        }
-        if folds.is_empty() {
-            tab.folds = None;
-        }
+        let over = folds.len().saturating_sub(record::MAX_CONTENTS_FOLDS);
+        folds.drain(..over);
+        tab.folds = (!folds.is_empty()).then(|| folds.into_boxed_slice());
         tab.place_dirty = true;
     }
 
@@ -2431,7 +2428,7 @@ impl<L: DocLoader> Session<L> {
 fn contents_rows<'a>(toc: &'a Toc, tab: &TabRecord, edits: Option<&PageEdits>, rows: &mut Vec<SidebarRow<'a>>) -> usize {
     let here = section_here(toc, tab, edits);
     let chain = following_chain(toc, tab, edits);
-    let folds = tab.folds.as_deref().map(Vec::as_slice);
+    let folds = tab.folds.as_deref();
     // Whether each entry's own children show: it's shown, and open. Entries come in document order, so a parent is always decided first.
     let mut children_show = vec![false; toc.entries().len()];
     let first_row = rows.len();
