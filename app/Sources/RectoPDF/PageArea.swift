@@ -48,6 +48,11 @@ final class PageDocumentView: NSView {
         pointer?.pointerLeft()
     }
 
+    /// A swipe on the trackpad, as the system sends it with its setting for swiping between pages: Rust says which way that goes.
+    override func swipe(with event: NSEvent) {
+        pointer?.swiped(deltaX: event.deltaX)
+    }
+
     /// What a right-click offers, from Rust's list. Each goes by a standard selector, up the chain to whoever has it, and the system adds Services by itself once something answers for them.
     override func menu(for event: NSEvent) -> NSMenu? {
         // In a comparison, a right-click on a pane is about that pane: it's the one read from here, and the menu ticks its own layout and acts on it.
@@ -126,7 +131,12 @@ final class CenteringClipView: NSClipView {
     private var highlightDark = false
     private var highlightLighten = false
     private var windowIsActive = true
-    private(set) var cursorIsIBeam = false
+    /// The pointer's look, as Rust said: `link`, `ibeam` or `arrow`.
+    private(set) var cursorLook = "arrow"
+    var cursorIsIBeam: Bool { cursorLook == "ibeam" }
+    /// Where the link under the pointer goes, in Rust's words, for the window to show. Told only when it changes.
+    var linkHintChanged: ((String?) -> Void)?
+    private(set) var linkHint: String?
     /// A drag that's gone past the view's edge, and where it is, for the timer that keeps it scrolling.
     private var dragInWindow: NSPoint?
     private var autoscrollTimer: Timer?
@@ -386,19 +396,37 @@ final class CenteringClipView: NSClipView {
             let inFrame = scrollView.superview?.convert(place, from: nil) ?? place
             let onPage = scrollView.hitTest(inFrame) === documentView || isQuiet
             let point = documentView.convert(place, from: nil)
-            setCursor(iBeam: onPage && core.pointerIsOverText(pane: pane, x: point.x, y: point.y))
+            let look = onPage ? core.pointerLook(pane: pane, x: point.x, y: point.y) : PointerLook(cursor: "arrow", hint: nil)
+            setCursor(look.cursor)
+            setLinkHint(look.hint)
         }
     }
 
     func pointerLeft() {
-        setCursor(iBeam: false)
+        setCursor("arrow")
+        setLinkHint(nil)
     }
 
-    private func setCursor(iBeam: Bool) {
-        cursorIsIBeam = iBeam
+    /// A swipe, by what the system's swipe calls.
+    func swiped(deltaX: Double) {
+        core.swiped(deltaX: deltaX)
+    }
+
+    private func setCursor(_ look: String) {
+        cursorLook = look
         // A quiet run's pointer is nobody's, and the real one's left alone.
         guard !isQuiet else { return }
-        (iBeam ? NSCursor.iBeam : NSCursor.arrow).set()
+        switch look {
+        case "link": NSCursor.pointingHand.set()
+        case "ibeam": NSCursor.iBeam.set()
+        default: NSCursor.arrow.set()
+        }
+    }
+
+    private func setLinkHint(_ hint: String?) {
+        guard hint != linkHint else { return }
+        linkHint = hint
+        linkHintChanged?(hint)
     }
 
     /// A drag past the view's edge goes on scrolling with no further events, while it's there. The timer lives only that long.
@@ -719,6 +747,6 @@ final class CenteringClipView: NSClipView {
 
     /// What QA reads about the layers themselves, as opposed to what Rust thinks it asked for.
     func report() -> [String: Any] {
-        ["highlight_layers": highlightLayers.count, "highlight_rects": highlightRects.values.map(\.count).reduce(0, +), "cursor": cursorIsIBeam ? "ibeam" : "arrow", "autoscrolling": autoscrollTimer != nil, "pointer_steps": pointerSteps, "worst_pointer_step_us": worstPointerMicros, "document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_layers": pageLayers.count, "page_turns": pageLayers.keys.sorted().map { page -> Int in let t = pageLayers[page]!.affineTransform(); return Int((atan2(t.b, t.a) / (.pi / 2)).rounded() + 4) % 4 }, "page_frames_landscape": pageLayers.values.filter { $0.frame.width > $0.frame.height }.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "scroll_x": scrollView.contentView.bounds.minX, "magnification": scrollView.magnification]
+        ["highlight_layers": highlightLayers.count, "highlight_rects": highlightRects.values.map(\.count).reduce(0, +), "cursor": cursorLook, "autoscrolling": autoscrollTimer != nil, "pointer_steps": pointerSteps, "worst_pointer_step_us": worstPointerMicros, "document_width": documentView.frame.width, "view_width": scrollView.contentView.bounds.width, "horizontal_scroller": scrollView.scrollerStyle == .legacy && scrollView.horizontalScroller?.isHidden == false, "scroller_top_inset": scrollView.scrollerInsets.top, "scroller_style": scrollView.scrollerStyle == .legacy ? "legacy" : "overlay", "system_scroller_style": NSScroller.preferredScrollerStyle == .legacy ? "legacy" : "overlay", "shot_tint_left": tintRectsForShot(in: scrollView.window?.contentView?.superview ?? documentView)?.rects.map(\.minX).min() ?? 0, "page_layers": pageLayers.count, "page_turns": pageLayers.keys.sorted().map { page -> Int in let t = pageLayers[page]!.affineTransform(); return Int((atan2(t.b, t.a) / (.pi / 2)).rounded() + 4) % 4 }, "page_frames_landscape": pageLayers.values.filter { $0.frame.width > $0.frame.height }.count, "tint_layers": tintLayers.count, "tile_layers": tiles.count, "spare_layers": spareLayers.count, "document_height": documentView.frame.height, "scroll_y": scrollView.contentView.bounds.minY, "scroll_x": scrollView.contentView.bounds.minX, "magnification": scrollView.magnification]
     }
 }
