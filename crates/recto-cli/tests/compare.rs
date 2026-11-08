@@ -359,3 +359,32 @@ fn a_right_click_on_a_pane_is_about_that_pane() {
     run.settled();
     assert_eq!(run.report()["session"]["active"], 2, "pane-focus goes the same way");
 }
+
+/// Failure (found shooting review 1's pictures): restoring a comparison with a page smaller than its pane, a map fitted or a small card, took the reading pane and moved the others: the clip view centring that page at launch counted as the reader's scroll, which led synced scroll and focused the pane. Only the reader's hand leads, and everything comes back as it was.
+#[test]
+fn restoring_a_comparison_with_a_small_page_keeps_the_reader_and_the_places() {
+    let state = State::new();
+    let Some(mut run) = Run::start(&state) else { return };
+    let (a, b, small) = (document("first", 30, (612.0, 792.0)), document("second", 30, (612.0, 792.0)), document("card", 1, (300.0, 200.0)));
+    for file in [&a, &b, &small] {
+        run.ok(&["open", file.0.to_str().unwrap()]);
+        run.settled();
+    }
+    run.ok(&["compare", "--tabs", "#1,#2,#3", "--sync", "on"]);
+    run.settled();
+    run.ok(&["qa", "pane-scroll", "0:5000"]);
+    run.settled();
+    let before = run.report();
+    assert_eq!(before["session"]["active"], 1);
+    let pages = |report: &Value| panes(report).iter().map(|pane| pane["page"].clone()).collect::<Vec<_>>();
+    run.quit();
+    drop(run);
+    let run = Run::start(&state).unwrap();
+    run.settled();
+    std::thread::sleep(Duration::from_millis(300));
+    run.settled();
+    let after = run.report();
+    assert_eq!(after["session"]["active"], 1, "the pane read is the one that was");
+    assert_eq!(after["panes"]["reading"], 0);
+    assert_eq!(pages(&after), pages(&before), "each pane where it was");
+}

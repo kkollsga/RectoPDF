@@ -170,9 +170,18 @@ final class CenteringClipView: NSClipView {
         center.addObserver(self, selector: #selector(systemColoursChanged), name: NSColor.systemColorsDidChangeNotification, object: nil)
     }
 
-    /// The clip view moved. While ops are being applied it's those, and they're sent afterwards as the host's own; otherwise it's the reader's scroll, or a QA scroll by the same call.
+    /// The clip view moved. It's the reader's only while something of theirs is moving it: a wheel or two fingers, with their momentum, the scroller dragged, a key, a drag past the edge, or `scroll(by:)`. A layout, a resize or a document smaller than the view being centred moves it too, and that isn't the reader leading the other panes: found by restoring a comparison with a map in a pane, which took the reading pane and moved the others.
     @objc private func viewMoved() {
-        sendViewport(byReader: !applying)
+        sendViewport(byReader: !applying && (readerScrolling || PageArea.isReadersOwn(NSApp.currentEvent)))
+    }
+
+    /// Set while `scroll(by:)` moves the view, which is what a scroll does, and what QA and the drag past the edge call.
+    private var readerScrolling = false
+
+    /// Whether the event being handled now is the reader's hand on the view.
+    private static func isReadersOwn(_ event: NSEvent?) -> Bool {
+        guard let event else { return false }
+        return [.scrollWheel, .leftMouseDragged, .leftMouseDown, .keyDown, .swipe].contains(event.type)
     }
 
     @objc private func pinchStarted() {
@@ -421,6 +430,8 @@ final class CenteringClipView: NSClipView {
         let beyond = beyondTheEdge()
         guard beyond != .zero else { return keepScrollingIfPastTheEdge() }
         let clip = scrollView.contentView
+        readerScrolling = true
+        defer { readerScrolling = false }
         var origin = clip.bounds.origin
         origin.x += core.autoscrollStep(beyond: beyond.x)
         origin.y += core.autoscrollStep(beyond: beyond.y)
@@ -681,6 +692,8 @@ final class CenteringClipView: NSClipView {
 
     /// What a scroll does, and what `recto qa scroll` calls.
     func scroll(by points: Double) {
+        readerScrolling = true
+        defer { readerScrolling = false }
         let clip = scrollView.contentView
         var origin = clip.bounds.origin
         origin.y += points
