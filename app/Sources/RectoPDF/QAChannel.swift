@@ -44,6 +44,10 @@ import QuartzCore
         case "state":
             answer(id, state())
             return
+        case "animations":
+            // Cheap, as `qa wait-settled` asks it until there's nothing.
+            answer(id, controller?.runningAnimations() ?? [])
+            return
         case "entry_points":
             answer(id, entryPoints())
             return
@@ -296,9 +300,12 @@ import QuartzCore
             "paper": reader.paper,
             "contents": sidebar.contentsReport(),
             "hover": sidebar.hoveredRow.map { $0 as Any } ?? NSNull(),
+            "animations": controller.runningAnimations(),
             "place": reader.place,
             "note": controller.noteLabel.isHidden ? NSNull() as Any : controller.noteLabel.label.text,
-            "copy_notice": controller.copyNotice.isHidden ? NSNull() as Any : ["text": controller.copyNotice.label.text, "button": controller.copyNotice.button.isHidden ? NSNull() as Any : controller.copyNotice.button.attributedTitle.string, "frame_ok": controller.root.bounds.contains(controller.copyNotice.frame)] as [String: Any],
+            // Where the note's bubble is and how many lines it wraps to, so a check can hold its shape and not only its words.
+            "note_box": controller.noteLabel.isHidden ? NSNull() as Any : controller.noteLabel.qaBox(in: controller.root),
+            "copy_notice": controller.copyNotice.isHidden ? NSNull() as Any : ["text": controller.copyNotice.label.text, "button": controller.copyNotice.button.isHidden ? NSNull() as Any : controller.copyNotice.button.attributedTitle.string, "frame_ok": controller.root.bounds.contains(controller.copyNotice.frame), "box": controller.copyNotice.qaBox(in: controller.root)] as [String: Any],
             "place_label": controller.placeLabel.isHidden ? NSNull() as Any : controller.placeLabel.label.text,
             "place_label_in_lower_right": !controller.placeLabel.isHidden && controller.placeLabel.frame.maxX > controller.root.bounds.maxX - 40 && controller.placeLabel.frame.maxY > controller.root.bounds.maxY - 40 && controller.root.bounds.contains(controller.placeLabel.frame),
             "agent_icon": !controller.agentIcon.isHidden,

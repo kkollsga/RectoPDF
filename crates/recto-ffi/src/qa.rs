@@ -20,6 +20,8 @@ const SHOT_SETTLE: Duration = Duration::from_secs(10);
 /// How long a drive verb waits for its effect before saying how things stand. A click on a tab whose file isn't answering is still a click that's been made, and `qa wait-settled` is for waiting on as long as it takes.
 const ANSWER_AFTER_CLICK: Duration = Duration::from_secs(3);
 const DEFAULT_SETTLE_WAIT: Duration = Duration::from_secs(30);
+/// How often `qa wait-settled` asks whether the window's animations have ended: a frame and a bit, so it's back within one of the end, and a 0.15 s fade is asked about some ten times.
+const ANIMATION_POLL: Duration = Duration::from_millis(15);
 /// How long `qa handoff` gives its answer to get out, before it quits. In what a QA run measures as the gap, and in no real update.
 const HANDOFF_ANSWER_WAIT: Duration = Duration::from_millis(50);
 /// How long a sweep may be asked to run.
@@ -220,9 +222,9 @@ impl QaBridge {
     /// The host draws it into a temp file of ours, and it's published here, by the rule `render` keeps to: nothing already there is replaced. A QA run can be started from Off, and this is at Read-only.
     fn shot(&self, verb: &str, out: &Path) -> Result<Value, AgentError> {
         refuse_shot_path(out, is_in_real_home)?;
-        // A shot of a page mid-draw shows it blurred: it waits for the view to settle, for as long as a shot may, and says if it didn't (review).
+        // A shot of a page mid-draw shows it blurred, and one of the contents mid-slide shows two rows over each other: it waits for settled, as `qa wait-settled` has it, every pane and the window's animations, for as long as a shot may, and says if it didn't (review).
         let started = Instant::now();
-        let settled = self.core.flush(SHOT_SETTLE) && self.engine.wait_settled(SHOT_SETTLE.saturating_sub(started.elapsed()));
+        let settled = self.settled(SHOT_SETTLE).is_ok();
         let temp = std::env::temp_dir().join(format!("recto-shot-{}-{}.png", std::process::id(), self.next_id.fetch_add(1, Ordering::SeqCst)));
         let answer = self.ask(verb, &temp.to_string_lossy());
         let published = answer.and_then(|mut answer| {
@@ -361,13 +363,26 @@ impl QaBridge {
         }))
     }
 
+    /// Settled is the session thread done with what it was asked, every page view drawn, and no host animation running that changes what's shown: the sidebar contents' fade and slide, their drift, a name about to be shown, a zoom about to go sharp. Each of those ends by itself, and one ending can start drawing again (a zoom going sharp), so all of it is asked again until it holds at once, within the one limit.
     fn settled(&self, limit: Duration) -> Result<Value, AgentError> {
         let started = Instant::now();
-        // What's been asked of the session thread comes first: an `open` it hasn't reached yet isn't settled, it's not started.
-        if self.core.flush(limit) && self.engines().iter().all(|engine| engine.wait_settled(limit.saturating_sub(started.elapsed()))) {
-            Ok(json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64 }))
-        } else {
-            Err(AgentError::new("timed_out", "The page view didn't settle in time.", exit::TIMED_OUT).then("`recto qa state` shows what it's still waiting for."))
+        let left = || limit.saturating_sub(started.elapsed());
+        let mut animations_waited = Duration::ZERO;
+        loop {
+            // What's been asked of the session thread comes first: an `open` it hasn't reached yet isn't settled, it's not started.
+            if !(self.core.flush(left()) && self.engines().iter().all(|engine| engine.wait_settled(left()))) {
+                return Err(AgentError::new("timed_out", "The page view didn't settle in time.", exit::TIMED_OUT).then("`recto qa state` shows what it's still waiting for."));
+            }
+            let running = self.ask("animations", "")?;
+            if running.as_array().is_none_or(Vec::is_empty) {
+                return Ok(json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64, "animations_waited_ms": animations_waited.as_millis() as u64 }));
+            }
+            if left().is_zero() {
+                return Err(AgentError::new("timed_out", format!("Something in the window was still moving: {running}."), exit::TIMED_OUT).then("`recto qa state` shows what's running under `app.animations`."));
+            }
+            let pause = ANIMATION_POLL.min(left());
+            std::thread::sleep(pause);
+            animations_waited += pause;
         }
     }
 

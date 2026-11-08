@@ -84,6 +84,13 @@ final class TextLine: NSView {
         return measured
     }
 
+    /// How many lines it's drawn on, at the height it's been given: for QA, which counts what the eye sees.
+    var lineCount: Int {
+        let one = ceil(string.size().height)
+        guard one > 0, !string.string.isEmpty else { return 0 }
+        return max(1, Int((bounds.height / one).rounded()))
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         string.draw(with: bounds, options: wraps ? [.usesLineFragmentOrigin] : [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
     }

@@ -488,6 +488,9 @@ final class CenteringClipView: NSClipView {
         core.paneFocused(pane: pane)
     }
 
+    /// A zoom by ⌘-scroll waits a moment for the wheel to stop before its pages are drawn sharp: while it does, what's drawn is about to change.
+    var zoomSettling: Bool { liveEnd != nil }
+
     /// The scroller stops below the agent icon, and goes the whole way with none there.
     func setScrollerTop(_ top: CGFloat) {
         guard scrollView.scrollerInsets.top != top else { return }
@@ -513,11 +516,22 @@ final class CenteringClipView: NSClipView {
         sendViewport()
     }
 
-    /// The room left either side of a fitted page, for what goes in the margin.
+    /// The room left either side of the pages, for what goes in the margin: beside the widest page there is, so what goes there is clear of every one. The same pages give the same room whatever order they're held in: this once took whichever page a dictionary gave first, which differs from run to run.
     func marginWidth() -> CGFloat {
-        guard let page = pageLayers.values.first else { return scrollView.bounds.width / 4 }
-        let width = page.frame.width * scrollView.magnification
-        return max((scrollView.bounds.width - width) / 2, 0)
+        guard let widest = pageLayers.values.map(\.frame.width).max() else { return scrollView.bounds.width / 4 }
+        return max((scrollView.bounds.width - widest * scrollView.magnification) / 2, 0)
+    }
+
+    /// Said when `marginWidth` has changed, so what's laid out in the margin follows it.
+    var marginChanged: (() -> Void)?
+    private var toldMargin: CGFloat = -1
+
+    /// Half points are as fine as anything in the margin is placed.
+    private func noteMarginIfChanged() {
+        let now = (marginWidth() * 2).rounded() / 2
+        guard now != toldMargin else { return }
+        toldMargin = now
+        marginChanged?()
     }
 
     /// How many device pixels a point is. Fixed at 2 in a quiet run, whatever display this Mac has.
@@ -542,12 +556,14 @@ final class CenteringClipView: NSClipView {
             toldZoom = (scrollView.magnification, fit)
             zoomChanged?()
         }
+        noteMarginIfChanged()
     }
 
     /// There's more from Rust: tiles that have arrived, a change of tab. Called when it says so.
     func drain() {
         guard !closed else { return }
         apply(core.drainOps(pane: pane))
+        noteMarginIfChanged()
     }
 
     private func apply(_ ops: [ReaderOp]) {

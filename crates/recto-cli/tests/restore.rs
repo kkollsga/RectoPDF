@@ -421,6 +421,8 @@ const KNOWN_PATHS: &[&str] = &[
     "app.document_edited",
     "app.home",
     "app.hover",
+    "app.animations.len",
+    "app.animations[]",
     "app.is_active",
     "app.layout",
     "app.menu_bar.len",
@@ -432,6 +434,11 @@ const KNOWN_PATHS: &[&str] = &[
     "app.menu_bar[].items[].title",
     "app.menu_bar[].title",
     "app.note",
+    "app.note_box.x",
+    "app.note_box.y",
+    "app.note_box.width",
+    "app.note_box.height",
+    "app.note_box.lines",
     "app.pages.autoscrolling",
     "app.pages.cursor",
     "app.pages.document_height",
@@ -2178,3 +2185,42 @@ fn a_discard_stays_discarded_in_a_session_with_no_window() {
 // The real update, whole, with this file's own comparison.
 #[path = "restore/update.rs"]
 mod update;
+
+/// Failure: a note's bubble keeps the shape it had for the margin when it was laid out, so after a zoom changes the margin it stays as narrow as it was zoomed in, until something unrelated, a change of appearance, lays it out again. "This file has changed since you last had it open" wrapped to 5 lines in light and 2 in dark (2026-11-08). Its shape follows the margin there is now, and is the same in light and dark.
+#[test]
+fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let folder = state.root.join("docs");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = text_document(&folder, "changing.pdf", 4);
+    run.ok(&["qa", "appearance", "light"]);
+    run.ok(&["open", file.to_str().unwrap()]);
+    run.settled();
+    run.quit();
+    std::thread::sleep(Duration::from_millis(5));
+    text_document(&folder, "changing.pdf", 6);
+    let run = Run::start(&state).unwrap();
+    run.ok(&["qa", "appearance", "light"]);
+    // Small, so the margin is wide and the note takes fewer lines than it does zoomed in.
+    run.ok(&["view", "--zoom", "40%"]);
+    run.settled();
+    let bubble = |state: &Value| state["app"]["note_box"].clone();
+    wait_until("the note comes", || run.report()["app"]["note"].as_str().is_some_and(|note| note.contains("changed")));
+    let before = bubble(&run.report());
+    let width = |shape: &Value| shape["width"].as_f64().unwrap_or_else(|| panic!("no bubble: {shape}"));
+    run.ok(&["view", "--zoom", "300%"]);
+    run.settled();
+    let zoomed = bubble(&run.report());
+    assert!(width(&zoomed) < width(&before) - 20.0 && zoomed["lines"].as_u64() > before["lines"].as_u64(), "zoomed in, the margin is narrower, so the bubble is: {before} then {zoomed}");
+    run.ok(&["view", "--zoom", "40%"]);
+    run.settled();
+    let light = bubble(&run.report());
+    assert!((width(&light) - width(&before)).abs() < 0.5 && light["lines"] == before["lines"], "back at the same zoom, the bubble is as it was: {before} then {light}");
+    run.ok(&["qa", "appearance", "dark"]);
+    run.settled();
+    let dark = run.report();
+    assert_eq!(dark["app"]["appearance"], "dark");
+    let dark = bubble(&dark);
+    assert!((width(&dark) - width(&light)).abs() < 0.5 && dark["lines"] == light["lines"], "the same note is the same shape in light and dark: {light} and {dark}");
+}

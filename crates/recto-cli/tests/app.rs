@@ -1168,6 +1168,32 @@ fn the_contents_table_follows_chapters_opening_and_closing() {
     holds(&wait_for(&run, at_rest), "after a fast sweep");
 }
 
+/// Failure: `qa wait-settled` comes back while the sidebar's contents are still fading, sliding or drifting after a change of chapter, so a shot taken straight after catches two contents rows drawn over each other. Settled takes in every host animation that changes what's shown, and still comes back, and `qa shot` waits for the same.
+#[test]
+fn wait_settled_waits_for_the_sidebars_animations() {
+    let Some(run) = Run::start() else { return };
+    let sections = 8;
+    let file = chaptered(40, sections);
+    run.ok(&["qa", "reduce-motion", "off"]);
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let mut waited = 0;
+    for chapter in [1, 2, 3, 10, 9, 30, 0] {
+        run.ok(&["goto", &(chapter * (sections + 1) + 1).to_string()]);
+        let settled = run.ok(&["qa", "wait-settled", "--timeout", "30s"]);
+        let state = run.report();
+        assert_eq!(state["app"]["animations"], json!([]), "chapter {chapter}: settled, and still moving: {settled} {}", state["app"]["contents"]);
+        assert_eq!(state["app"]["contents"]["stale_rows"], 0, "chapter {chapter}: {}", state["app"]["contents"]);
+        waited += settled["animations_waited_ms"].as_u64().unwrap();
+    }
+    assert!(waited > 0, "a change of chapter moves the contents, so there was something to wait for");
+    // A shot waits for the same settled by itself.
+    run.ok(&["goto", &(20 * (sections + 1) + 1).to_string()]);
+    let shot = run.ok(&["qa", "shot", "--out", run.state.root.join("settled.png").to_str().unwrap()]);
+    assert_eq!(shot["settled"], true, "{shot}");
+    assert_eq!(run.report()["app"]["animations"], json!([]), "a shot is taken with nothing moving");
+}
+
 /// Failure: closing a warm tab leaves its document, tiles and worker held until the next switch of tab, which may never come.
 #[test]
 fn closing_a_warm_tab_lets_go_of_it() {
