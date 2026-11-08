@@ -691,6 +691,8 @@ pub struct Reader {
     margins: (f64, f64),
     /// The last viewport was the reader scrolling, and not the host arriving where it was sent, a zoom, a resize or a pinch: what synced scroll goes by.
     user_scrolled: bool,
+    /// The last viewport was the host arriving at a scroll it was sent, as a change of layout sends one to keep the place. Where it arrived is the place, or as near as the view reaches, so the place isn't taken again from it.
+    arrived: bool,
 }
 
 /// What a page says once the thread that draws has given up.
@@ -750,6 +752,7 @@ impl Reader {
             last_wake: None,
             share: 1,
             user_scrolled: false,
+            arrived: false,
             margins: (crate::layout::MIN_SIDE_MARGIN, crate::layout::CORNER_MARGIN),
         }
     }
@@ -1751,6 +1754,7 @@ impl Reader {
             && viewport.magnification == was.magnification
             && viewport.frame_width == was.frame_width
             && viewport.height == was.height;
+        self.arrived = viewport.scrolled_to > was.scrolled_to && viewport.scrolled_to != u64::MAX;
         let mut moved_layout = false;
         if let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) {
             if doc.layout.set_frame(viewport.frame_width) && was.frame_width != viewport.frame_width {
@@ -1788,6 +1792,8 @@ impl Reader {
         // Side by side, the reader's page stays whichever of its row they were on: a jump to a right-hand page, or reading on in a row, isn't a move to the left one.
         let page = match self.last_view_page {
             Some(was) if doc.layout.same_row(was, page) => was,
+            // The host arrived where a change of layout sent it, back to the place: the page the place was kept on, if it's in the row. A round trip through a view too small to reach the place, where the last page was taken for the reader's, otherwise lands on the row's left page (side-by-side review, finding 4).
+            _ if self.arrived && doc.layout.same_row(doc.anchor.0, page) => doc.anchor.0,
             _ => page,
         };
         if let Some(jump) = self.jump {
@@ -1802,7 +1808,8 @@ impl Reader {
             }
             return;
         }
-        let moved = doc.exact_y.is_none_or(|(y, _)| y != viewport.y);
+        // Arriving where a change of layout sent it, the place stays as it was kept, even where the view couldn't reach it, as at the foot of a document smaller than the view.
+        let moved = !self.arrived && doc.exact_y.is_none_or(|(y, _)| y != viewport.y);
         if moved {
             doc.anchor = doc.layout.anchor_for(viewport.y, page);
             doc.exact_y = None;
@@ -3894,6 +3901,59 @@ mod tests {
         assert_eq!(reader.take_moved_page(), None, "reading on in the row isn't going to the left page");
         reader.set_spread(Spread::Single);
         assert_eq!(reader.places()[0].1.page, 51);
+    }
+
+    /// Failure (PLAN, from the side-by-side review, finding 4): side by side, on the right-hand page of a pair, a round trip through a view too small to reach the place, as a window made narrow and tall, where the last page is taken for the reader's, comes back on the left page of the pair, and the session's page moves with it. Each page, as the host applies what it's sent, comes back to itself.
+    #[test]
+    fn a_round_trip_through_a_small_view_keeps_the_right_hand_page() {
+        fn host(reader: &mut Reader, mut at: Viewport) -> Viewport {
+            let mut ops = reader.set_viewport(at);
+            for _ in 0..6 {
+                let Some(Op::ScrollTo { y, seq }) = ops.into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
+                    break;
+                };
+                at.y = y;
+                at.scrolled_to = seq;
+                ops = reader.set_viewport(at);
+            }
+            at
+        }
+        for (wide, high) in [(200.0, 900.0), (100.0, 60.0), (300.0, 200.0)] {
+            for target in [51u32, 11, 97] {
+                let mut reader = reader_on(100);
+                reader.scrolled_to = 0;
+                reader.set_spread(Spread::TwoUp);
+                settle(&mut reader);
+                reader.jump_to(target);
+                let mut at = follow_host(&mut reader, view(0.0));
+                reader.take_moved_page();
+                for scroll in [0.0, 37.0] {
+                    at.y += scroll;
+                    at = host(&mut reader, at);
+                    let small = host(
+                        &mut reader,
+                        Viewport {
+                            width: wide,
+                            frame_width: wide,
+                            height: high,
+                            ..at
+                        },
+                    );
+                    at = host(
+                        &mut reader,
+                        Viewport {
+                            width: 1168.0,
+                            frame_width: 1168.0,
+                            height: 900.0,
+                            ..small
+                        },
+                    );
+                    assert_eq!(reader.places()[0].1.page, target, "{wide} x {high}, page {target}, {scroll} down");
+                    assert_eq!(reader.reading_anchor().map(|(page, _)| page), Some(target));
+                    assert!(reader.take_moved_page().is_none_or(|page| page == target), "the session's page left {target}");
+                }
+            }
+        }
     }
 
     /// The view the host goes to on the reader's next turn: wherever the last scroll it was told of says, as it would have applied it.

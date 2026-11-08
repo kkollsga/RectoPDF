@@ -126,7 +126,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Dark paper: an object shaded moderately, through only 3 lightnesses of one colour on white, still flips with the chart rule. The made balls span 4; a flatter rendering would pass
 - [x] Owner, 2026-11-08, for the record: copying images and snapshots from a copy-restricted PDF gets the same notice as text, with "Copy anyway". In SPEC section 6, and on `build/image-copy`
 - [x] Find in the sidebar, with the hit list: ⌘F opens a field over the tabs, typing finds at once by `search`'s reading of the pages, hits stream in grouped by page in a list of at most 40% of the sidebar, a click or ⌘G and ⇧⌘G select the hit on the page, and in a comparison it goes by the pane being read. `recto find`, `qa find-type`, `find-key`, `find-click`. Numbers in `docs/ENGINEERING.md`, under load
-- [ ] Find follow-ups: highlight every hit on the pages showing, not only the one gone to; a hit on text that looks hidden is listed like any other, and selecting it shows nothing on the page; an edit to the pages while Find is open keeps the old hits until the next query; the made 10,000-page PDF and a worker's peak during a query aren't measured
+- [ ] Find follow-ups: highlight every hit on the pages showing, not only the one gone to; the made 10,000-page PDF and a worker's peak during a query aren't measured. Done before this was struck, in `090cd14`: a hit on hidden text says `hidden text` in its row and is never gone to (`hidden_hits_are_listed_and_never_gone_to`), and an edit to the pages finds the query again (`hits_follow_the_pages_after_an_edit`)
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
 - [x] ⌘K: the command palette in the sidebar, commands and open tabs fuzzy-matched and ranked in Rust, fully keyboard-driven; `recto palette [--run]`, `qa palette-type`, `qa palette-key`
 - [x] ⌘K: files opened lately as rows of their own, by Open Recent's key; submenu items never stand as commands; an agent sees no tab opened with a password, and recent files only at `recto recent`'s level
@@ -190,7 +190,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
   - [x] The agent icon's margins: the same to the right and above, and less above than before
   - [x] Margin above the first page and below the last
   - [x] The page's scroller: a slim thumb always shown, no rail, the sidebar's width and colours
-  - [ ] From the side-by-side review: a round trip through a small view, as a narrow window, can move the reader to the left page of a pair (finding 4)
+  - [x] From the side-by-side review: a round trip through a small view, as a narrow window, can move the reader to the left page of a pair (finding 4): arriving where a change of layout sent it keeps the place as it was, even where the view couldn't reach it, and its page if it's in the row (`a_round_trip_through_a_small_view_keeps_the_right_hand_page`)
   - [ ] A fold-out's row makes `document_width` wide for every row, leaving empty horizontal room to scroll into beside the others
   - [x] Typing "1.5" in the zoom field with a Mac set to `,` reads as 15%, as `.` groups thousands there: `.` and `,` are read by the number on any Mac, and only `1,000` and `1.000` go by the Mac's decimal sign (`a_typed_zoom_reads_either_decimal_sign_on_any_mac`)
   - [x] Comparison view: several PDFs side by side, separate or synced scroll, zoom synced (owner, 2026-11-08): ⌘- and ⌃-click, `recto compare`, restored and handed off
