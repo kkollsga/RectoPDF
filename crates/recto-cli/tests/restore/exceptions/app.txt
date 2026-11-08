@@ -1,3 +1,4 @@
+app.chrome The zoom level, the page number and the window's buttons come and go by the time since their last change and where the pointer is, which a restart doesn't carry: they show after it as after any change.
 app.contents.row_views Rows the table has made so far.
 app.contents.tabs_thumb.thumb_top As for the contents' thumb.
 app.contents.thumb.thumb_top Where the thumb is follows the contents' scroll, which is carried; the thumb's own number can differ by a fraction of a point as the table lays out.
@@ -9,6 +10,7 @@ app.pages.pointer_steps Its own pointer moves, counted from its own start.
 app.pages.snapshot_box The snapshot tool's box, there only while a drag is going on.
 app.pages.spare_layers A pool of its own.
 app.pages.system_scroller_style The system's own scroll bar setting, which macOS can change between launches: CI's virtual machine read legacy, then overlay. The app's own scroller_style is compared.
+app.pages.thumb.thumb_top As for the contents' thumb.
 app.pages.tile_layers The same, as the app has them.
 app.pages.tint_layers One per page layer.
 app.pages.worst_pointer_step_us The same, timed.

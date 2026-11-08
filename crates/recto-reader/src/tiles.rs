@@ -124,9 +124,12 @@ pub struct Viewport {
 pub enum Op {
     /// Everything comes off: another tab, or pages that changed.
     Clear,
+    /// The document's size, and how far the view may scroll past its top and its end, which is the rest of the margin at each end ([`crate::layout::PageLayout::end_room`]).
     Document {
         width: f64,
         height: f64,
+        top_room: f64,
+        bottom_room: f64,
     },
     Magnify {
         value: f64,
@@ -1683,9 +1686,12 @@ impl Reader {
         };
         doc.layout.set_margins(self.margins.0, self.margins.1);
         doc.layout.set_frame(self.viewport.frame_width);
+        let (top_room, bottom_room) = doc.layout.end_room();
         self.ops.push_back(Op::Document {
             width: doc.layout.document_width(),
             height: doc.layout.document_height(),
+            top_room,
+            bottom_room,
         });
         let y = Self::place_y(doc);
         let seq = self.next_seq;

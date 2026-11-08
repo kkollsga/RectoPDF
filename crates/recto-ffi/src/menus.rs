@@ -881,6 +881,27 @@ mod tests {
         );
     }
 
+    /// Failure: Check for Updates… isn't in the RectoPDF menu, sits elsewhere, is hidden, or has no words, in some build or state of the updater, as a development build or a quiet run's. Owner, 2026-11-08: "Im not seeing check for updates button in the macos top bar menu". Whatever the updater says, it's the app menu's second item, shown, by its own rule.
+    #[test]
+    fn check_for_updates_is_always_in_the_app_menu() {
+        for title in ["Check for Updates…", "Update to 0.2.0…", "Updating to 0.2.0…"] {
+            for view in [
+                ViewSettings::default(),
+                ViewSettings {
+                    sidebar_hidden: true,
+                    agent_icon_hidden: true,
+                    ..ViewSettings::default()
+                },
+            ] {
+                let bar = menu_bar(view, None, title);
+                assert_eq!(bar[0].title, "RectoPDF", "the app menu comes first");
+                let item = &bar[0].entries[1];
+                assert_eq!((item.id.as_str(), item.title.as_str(), item.hidden), ("app.update", title, false), "{bar:?}");
+                assert_eq!(enable_rule("app.update"), Some(Enable::Update));
+            }
+        }
+    }
+
     /// Failure: the owner's *Check for Updates…* isn't where it was asked for, doesn't turn into the offer, or Settings has no ⌘, as on any Mac app, or isn't under File as the owner asked.
     #[test]
     fn the_app_menu_has_the_update_item_and_settings() {

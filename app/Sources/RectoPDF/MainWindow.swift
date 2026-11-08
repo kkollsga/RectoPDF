@@ -259,6 +259,10 @@ final class BookMark: NSView {
     /// The go-to field: a page number, or what the document calls a page, such as iv. Rust reads it.
     let pageField = NSTextField(string: "")
     private(set) var pageEditing = false
+    /// The zoom level, the page number and the window's buttons, which come and go as Rust says.
+    let chrome: ChromeFader
+    /// The page number last shown, so a new one counts as a change.
+    private var shownPlace = ""
     /// The sheet asking before a link's address opens, so the same one isn't shown twice.
     private var promptShowing: LinkPrompt?
     let copyNotice = CopyNotice()
@@ -306,7 +310,12 @@ final class BookMark: NSView {
         paneAreas = [PageArea(core: delegate.core, limits: limits, isQuiet: delegate.isQuiet)]
         sidebar = SidebarPane(core: delegate.core, strings: delegate.strings, isQuiet: delegate.isQuiet)
         reader = delegate.core.reader()
+        chrome = ChromeFader(core: delegate.core)
         super.init()
+        chrome.zoomViews = { [unowned self] in [zoomButton] }
+        chrome.placeViews = { [unowned self] in [placeLabel] }
+        chrome.buttonViews = { [unowned self] in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) } + [sidebarButton, saveButton] }
+        chrome.reduceMotion = { [unowned self] in sidebar.reduceMotion ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
         agentIcon.isHidden = reader.agentIconHidden
         window.delegate = self
         if let reader = window as? ReaderWindow {
@@ -333,6 +342,7 @@ final class BookMark: NSView {
         buildZoomLevel()
         pages.zoomChanged = { [weak self] in self?.updateZoomLevel() }
         pages.marginChanged = { [weak self] in self?.relayoutMargin() }
+        pages.readerScrolled = { [weak self] in self?.chrome.changed(.place) }
         sidebarButton.isBordered = false
         sidebarButton.imagePosition = .imageOnly
         sidebarButton.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: delegate.strings.sidebarButtonTooltip)?.withSymbolConfiguration(.init(pointSize: 14, weight: .regular))
@@ -550,7 +560,15 @@ final class BookMark: NSView {
         positionWindowButtons()
         layoutTopLeft()
         layoutTopRight()
+        watchCorners()
         for area in paneAreas { area.layoutChanged() }
+    }
+
+    /// The corners the pointer brings a mark back in: the window's buttons with the sidebar's, the zoom level, the page number. A little more than each, as the system's own hidden controls answer near them.
+    private func watchCorners() {
+        let buttons = windowButtonFrames(in: root) + [sidebarButton.frame] + (saveButton.isHidden ? [] : [saveButton.frame])
+        let topLeft = buttons.reduce(NSRect.null) { $0.union($1) }.insetBy(dx: -12, dy: -10)
+        chrome.watch([(.windowButtons, topLeft.isNull ? .zero : topLeft), (.zoom, zoomButton.isHidden ? .zero : zoomButton.frame.insetBy(dx: -8, dy: -6)), (.place, placeLabel.isHidden ? .zero : placeLabel.frame.insetBy(dx: -8, dy: -6))], in: root)
     }
 
     /// **Panes side by side**, the same width, with a hairline between. Each one's name sits in its lower left corner, as the page number sits in the lower right, small and quiet: the owner's rule has nothing above or over a page, and a pill in the margin's corner is what the page number already is (owner, 2026-11-07: "The page number should always be visible in the lower right"), so it costs no reading height. The pane being read has its name in the accent colour. With one tab there's one pane and no name, as before.
@@ -599,7 +617,7 @@ final class BookMark: NSView {
 
     /// **Every host animation running that changes what a shot shows**, by name: the sidebar's, and a ⌘-scroll zoom about to settle. Each ends by itself in a moment. A notice that goes after some seconds isn't one: it's what's shown, not a move. Nor is a drag's autoscroll, which runs for as long as the button's held.
     func runningAnimations() -> [String] {
-        sidebar.runningAnimations() + (paneAreas.contains { $0.zoomSettling } ? ["zoom_settling"] : [])
+        sidebar.runningAnimations() + (paneAreas.contains { $0.zoomSettling } ? ["zoom_settling"] : []) + (chrome.fading > 0 ? ["chrome_fading"] : [])
     }
 
     /// Drains every pane, when Rust says there's something for the layers.
@@ -614,6 +632,7 @@ final class BookMark: NSView {
             let area = PageArea(core: delegate.core, limits: delegate.limits, isQuiet: delegate.isQuiet, pane: UInt32(paneAreas.count))
             area.zoomChanged = { [weak self] in self?.updateZoomLevel() }
             area.marginChanged = { [weak self] in self?.relayoutMargin() }
+            area.readerScrolled = { [weak self] in self?.chrome.changed(.place) }
             area.linkHintChanged = { [weak self, weak area] hint in self?.showLinkHint(hint, in: area) }
             area.scrollView.backgroundColor = Theme.margin.ns
             root.addSubview(area.scrollView, positioned: .above, relativeTo: paneAreas.last?.scrollView)
@@ -662,6 +681,10 @@ final class BookMark: NSView {
         if !reader.home {
             placeLabel.isHidden = pageEditing
             placeLabel.place(text: reader.place, maxWidth: 160, bottomRight: bottom)
+            if reader.place != shownPlace {
+                shownPlace = reader.place
+                chrome.changed(.place)
+            }
             window.invalidateCursorRects(for: placeLabel)
             let fieldWidth = max(placeLabel.frame.width, 72)
             pageField.frame = NSRect(x: placeLabel.frame.maxX - fieldWidth, y: placeLabel.frame.midY - 11, width: fieldWidth, height: 22).integral
@@ -710,6 +733,7 @@ final class BookMark: NSView {
         guard !reader.home, !delegate.sheets.isUp(over: window) else { return }
         let field = delegate.core.pageField()
         pageEditing = true
+        chrome.held(.place, true)
         pageField.stringValue = field.editingText
         pageField.toolTip = field.tooltip
         placeLabel.isHidden = true
@@ -728,6 +752,7 @@ final class BookMark: NSView {
     func endPageEditing() {
         guard pageEditing else { return }
         pageEditing = false
+        chrome.held(.place, false)
         pageField.isHidden = true
         placeLabel.isHidden = reader.home
         if window.firstResponder === pageField.currentEditor() || window.firstResponder === pageField { window.makeFirstResponder(root) }
@@ -961,6 +986,7 @@ final class BookMark: NSView {
         }
         guard label != zoomLabel else { return }
         zoomLabel = label
+        chrome.changed(.zoom)
         zoomButton.toolTip = label.tooltip
         zoomReset.toolTip = label.tooltip
         styleZoomLevel()
@@ -976,6 +1002,7 @@ final class BookMark: NSView {
     @objc private func zoomButtonPressed() {
         guard !reader.home, let label = zoomLabel else { return }
         zoomEditing = true
+        chrome.held(.zoom, true)
         zoomField.stringValue = label.editingText
         zoomButton.isHidden = true
         zoomField.isHidden = false
@@ -1000,6 +1027,7 @@ final class BookMark: NSView {
     func endZoomEditing() {
         guard zoomEditing else { return }
         zoomEditing = false
+        chrome.held(.zoom, false)
         zoomField.isHidden = true
         zoomReset.isHidden = true
         if window.firstResponder === zoomField.currentEditor() || window.firstResponder === zoomField { window.makeFirstResponder(root) }
@@ -1039,6 +1067,7 @@ final class BookMark: NSView {
         if reader.home { endZoomEditing() }
         updateZoomLevel()
         layout()
+        chrome.refresh()
     }
 
     func appearanceChanged() {

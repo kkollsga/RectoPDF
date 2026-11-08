@@ -95,7 +95,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - Replaces the focus part of that: "Actually instead of focus view, simply have a sidebar icon to the right of the traffic light buttons that toggles sidebar on and of. No need mor a separate mode". So there is no focus mode; a sidebar button beside the window controls shows and hides the sidebar.
 - Contents: "The hover delay before showing the full toc name makes in not intuitive, and the expanded name should have the color of the title." "there should be a collapse toggle button for sections with sub chapters on the left side of the headers." Page numbers on the right that don't make sense, and section indents, are bugs.
 - "When selecting across pages the page number is copied. Both footer and header should be ignored when coppying body text."
-- "The page number should always be visible in the lower right."
+- "The page number should always be visible in the lower right." Replaced on 2026-11-08 by "Zoom level should auto hid 3s after last zoom change, and similar behaviour for page number": the page number shows when the place changes, and fades 3 s after.
 - "The font in the future competitiveness is not super readible. I think its a bit to skinny. Can you check?"
 - Dark mode: images with a white background should be dark, as a chart with a white background was left light.
 - "The full app settings should be accessible from file -> settings"
@@ -103,7 +103,7 @@ Progress and phases: `docs/PLAN.md`. Tick items there in the same commit that fi
 - "The margin left of the ai icon is too large. It should have the same margin to the right and above. Above should have slightly smaller margin then now (and right gets the same one)."
 - "and improve the styling of the scrollbar. The sidebar thumb should always be visible, and lets hide the rail."
 - "the thumb should be thinner": slimmer than the system's default thumb, in the sidebar and the page area.
-- "add some margin above the first page, and below the last page"
+- "add some margin above the first page, and below the last page". Replaced on 2026-11-08 by "The margin above first page, and below last page should be 50% of page height".
 - "the scroll thumb always visible, the rail always hidden": for the page area too, whatever the system's scroll bar setting.
 - "Ctrl clicking more then one pdf should enable comparison view, right click menu can enable separate scroll (default) and synced scroll. Zoom is always synced."
 

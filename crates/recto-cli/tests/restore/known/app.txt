@@ -94,6 +94,8 @@ app.pages.autoscrolling
 app.pages.cursor
 app.pages.document_height
 app.pages.document_width
+app.pages.end_room.len
+app.pages.end_room[]
 app.pages.highlight_layers
 app.pages.highlight_rects
 app.pages.horizontal_scroller
@@ -105,6 +107,13 @@ app.pages.scroller_top_inset
 app.pages.shot_tint_left
 app.pages.snapshot_box
 app.pages.system_scroller_style
+app.pages.thumb.hit_width
+app.pages.thumb.right_gap
+app.pages.thumb.shown
+app.pages.thumb.thumb_length
+app.pages.thumb.thumb_width
+app.pages.vertical_scroller
+app.pages.view_height
 app.pages.view_width
 app.pages.visible
 app.panel.height

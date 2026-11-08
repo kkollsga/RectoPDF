@@ -2331,6 +2331,32 @@ pub static TABLE: &[Spec] = &[
         ..BASE
     },
     Spec {
+        name: "qa corner-pointer",
+        tag: "qa_drive",
+        group: GROUP_QA,
+        access: Access::At(Level::Control),
+        summary: "Says the pointer has come over a corner's mark or left it, as the corner's tracking area does, with no pointer: `top-left` the window's buttons and the sidebar's, `top-right` the zoom level, `lower-right` the page number.",
+        args: &[Arg {
+            key: "value",
+            flag: None,
+            kind: Kind::Choice(&[
+                "top-left:in",
+                "top-left:out",
+                "top-right:in",
+                "top-right:out",
+                "lower-right:in",
+                "lower-right:out",
+            ]),
+            required: true,
+            help: "A corner and `in` or `out`, as `top-left:in`.",
+        }],
+        fixed: &[("verb", "corner_pointer")],
+        data: "`qa state`'s `app`, whose `chrome` says what shows.",
+        examples: &["recto qa corner-pointer top-left:in"],
+        client_wait_s: 35,
+        ..BASE
+    },
+    Spec {
         name: "qa reduce-motion",
         tag: "qa_drive",
         group: GROUP_QA,
