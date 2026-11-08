@@ -649,6 +649,12 @@ mod tests {
         Hit { page, start, end: start + 1, before: "".into(), matched: "x".into(), after: "".into() }
     }
 
+    /// Failure: a hit held in the list grows, so 1,000 of them cost more than ENGINEERING's table says.
+    #[test]
+    fn a_hit_is_small() {
+        assert!(std::mem::size_of::<Hit>() <= 64, "{}", std::mem::size_of::<Hit>());
+    }
+
     /// Failure: ⌘G starts from the top whatever's being read, or doesn't go round at the end, as Find does on a Mac.
     #[test]
     fn stepping_starts_where_the_reader_is_and_goes_round() {

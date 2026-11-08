@@ -123,7 +123,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [ ] Chrome, `recto text`: `chrome_spans` compares with the file's own pages either side, not the tab's positions, so after unsaved moves or inserts its neighbours are the file's, and a page from an added file compares with that file's
 - [ ] Dark paper: an object shaded moderately, through only 3 lightnesses of one colour on white, still flips with the chart rule. The made balls span 4; a flatter rendering would pass
 - [ ] Owner, 2026-11-08, for the record: copying images and snapshots from a copy-restricted PDF gets the same notice as text, with "Copy anyway"
-- [ ] Find in the sidebar, with the hit list
+- [x] Find in the sidebar, with the hit list: ⌘F opens a field over the tabs, typing finds at once by `search`'s reading of the pages, hits stream in grouped by page in a list of at most 40% of the sidebar, a click or ⌘G and ⇧⌘G select the hit on the page, and in a comparison it goes by the pane being read. `recto find`, `qa find-type`, `find-key`, `find-click`. Numbers in `docs/ENGINEERING.md`, under load
+- [ ] Find follow-ups: highlight every hit on the pages showing, not only the one gone to; a hit on text that looks hidden is listed like any other, and selecting it shows nothing on the page; an edit to the pages while Find is open keeps the old hits until the next query; the made 10,000-page PDF and a worker's peak during a query aren't measured
 - [x] macOS menu bar, driven by a Rust model; `⋯` panel
 - [ ] ⌘K
 - [x] Session restore: the whole app state on every launch, unsaved edits included (SPEC decision 23). A whole-state comparison across quit, hand-off and kill, journals for edits, `recto session`, `AppCore::hand_off` for the updater
@@ -131,7 +132,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [x] On Save's gate, for appended saves: `save_prepared` then `saved` on the real path, with the note read back from the journal on disk before the file's moved (`journal_says_saving`), and a never-in-PDF test on the real writer (`recto-cli/tests/save.rs`). `never_in_pdf.rs`'s delete keeps its stand-in until the rewrite saves deletes
 - [x] On Save's gate: every page checked against the real file when writing: its page count, each page asked for, each added PDF's stamp and length, and the written file read back page by page before it's moved (`a_journals_claims_are_checked_against_the_real_file`)
 - [x] Deep sleep for idle tabs, with sleep files and a byte budget across documents (SPEC decision 25). `recto session sleep`, `qa dormant-after`, `qa live-budget`, `qa memory-pressure`, and `long_session.rs`
-- [ ] Find's field, edit mode and view rotation draw what the state record already carries
+- [x] Find's field, edit mode and view rotation draw what the state record already carries: Find comes back with its field, hits found again and the hit gone to; edit mode opens the panel on its tools with Done; a view rotation turns every page on screen
 - [x] Deep sleep, with session restore as one piece of work (SPEC decision 25): dormant tabs go to disk, sleep files wake a tab within one frame, a byte budget across documents, a response to memory pressure, previews written once when a tab goes dormant
 - [ ] Sleep, from its own review: a page that's a sliver at the top of the view has no picture if it wasn't drawn when the tab was left, and shows bare for a moment
 - [ ] Sleep: look at a photograph's first frame with the owner. It's soft for the 25 to 30 ms it's there. Worth a stronger preview format if it bothers them
@@ -180,7 +181,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
   - [ ] A fold-out's row makes `document_width` wide for every row, leaving empty horizontal room to scroll into beside the others
   - [ ] Typing "1.5" in the zoom field with a Mac set to `,` reads as 15%, as `.` groups thousands there
   - [x] Comparison view: several PDFs side by side, separate or synced scroll, zoom synced (owner, 2026-11-08): ⌘- and ⌃-click, `recto compare`, restored and handed off
-  - [ ] Comparison follow-ups: synced scroll lines panes up by the top of the view, so pages of different heights read a page apart where the eye is; a zoom in synced scroll moves each pane about its own middle and the panes can drift a little until the next scroll; other panes follow a pinch only once it ends; a tab off screen that's only ever been in a pane has no fresh sleep file when it leaves, as its contents were never read; Find, when it's built, goes by the pane being read
+  - [ ] Comparison follow-ups: synced scroll lines panes up by the top of the view, so pages of different heights read a page apart where the eye is; a zoom in synced scroll moves each pane about its own middle and the panes can drift a little until the next scroll; other panes follow a pinch only once it ends; a tab off screen that's only ever been in a pane has no fresh sleep file when it leaves, as its contents were never read. Find goes by the pane being read: done with Find
 - [x] Dark paper after the open file is replaced on disk (found reshooting Save, 2026-11-08): the first tile drawn of the new file went by the old file's look of its page, a kept picture's place left as dimmed white, and stayed, being of the new version. A replacement now clears every page's look before anything goes by it, and a tile whose file was replaced while its look was being worked out is drawn again
 - [ ] **Blind agent test, next round**
 
