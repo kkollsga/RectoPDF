@@ -568,7 +568,7 @@ fn run(shared: &Shared) {
             Ok(open) => {
                 lock(&shared.reader).set_cancel(open.doc.cancel_handle());
                 let outcome = do_job(open, &job);
-                file_changed = open.doc.take_file_changed();
+                file_changed = seen_replaced(open) | std::mem::take(&mut open.replaced);
                 if file_changed {
                     open.looks.clear();
                     open.length_told = false;
@@ -633,7 +633,20 @@ struct OpenDoc {
     /// Whoever's asked has been told how long this file is.
     length_told: bool,
     doc: DocRenderer,
+    /// Of the file that's open now. A replacement clears them before anything goes by them: see [`seen_replaced`].
     looks: HashMap<u32, Arc<PageLook>>,
+    /// The file's been seen to be another one in the middle of a job, and whoever's asked hasn't been told yet.
+    replaced: bool,
+}
+
+/// **The renderer has seen its file replaced: what was decided about the old one's pages goes, now, before anything goes by it.** The renderer opens the new file at the start of whichever job comes next, a draw included, so the tile that job draws is of the new file, and the look it's put on dark paper by has to be too. Says whether it had.
+fn seen_replaced(open: &mut OpenDoc) -> bool {
+    if !open.doc.take_file_changed() {
+        return false;
+    }
+    open.looks.clear();
+    open.replaced = true;
+    true
 }
 
 /// Pages whose look is remembered. Many more than the tiles and previews kept, so a page can't have tiles on the screen from before it was forgotten. Each is at most 64 boxes.
@@ -734,7 +747,7 @@ fn renderer_for<'a>(shared: &Shared, renderers: &'a mut HashMap<PathBuf, OpenDoc
         openings.remove(path);
         let file = opened.map_err(Unopened::Failed)?;
         let doc = DocRenderer::with_file(file, path, None, config, policy.clone()).map_err(Unopened::Failed)?;
-        renderers.insert(path.to_path_buf(), OpenDoc { length_told: false, doc, looks: HashMap::new() });
+        renderers.insert(path.to_path_buf(), OpenDoc { length_told: false, doc, looks: HashMap::new(), replaced: false });
     }
     renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))
 }
@@ -781,9 +794,15 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                         let drawn_scale = low_res_scale.unwrap_or(*scale);
                         // A preview is a picture of the whole page, as drawn for white paper, which is what's wanted to judge it: no extra draw.
                         let whole = (*what == DrawKind::Preview && low_res.is_none()).then_some(*rect);
-                        let Some(look) = page_look(open, job.source_page, job.generation, whole.map(|rect| (surface, rect))) else { return Outcome::Cancelled };
-                        let doc = &mut open.doc;
-                        let page = doc.page_size(job.source_page).ok().and_then(|(width, height)| recto_proto::device_size(width, height, drawn_scale).ok());
+                        // Replaced as this was drawn, so it's of the new file, and no look of the old one's may go for it.
+                        seen_replaced(open);
+                        let look = page_look(open, job.source_page, job.generation, whole.map(|rect| (surface, rect)));
+                        let page = look.as_ref().and_then(|_| open.doc.page_size(job.source_page).ok()).and_then(|(width, height)| recto_proto::device_size(width, height, drawn_scale).ok());
+                        // Replaced after it was drawn, while its look or size was being asked: the tile's of the old file, and the look may be of either, or of a draw that failed for it. Neither is kept, and the tile's drawn again.
+                        if seen_replaced(open) {
+                            return Outcome::Cancelled;
+                        }
+                        let Some(look) = look else { return Outcome::Cancelled };
                         // What keeps no surface comes down to its one colour. With the lower-resolution version, the surface is kept whatever's in it.
                         let colour_only = *what == DrawKind::Tile && low_res.is_none();
                         let dark = look.in_tile(page, drawn);

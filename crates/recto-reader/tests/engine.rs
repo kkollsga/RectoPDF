@@ -229,6 +229,37 @@ fn a_chart_on_white_turns_over_on_dark_paper() {
     assert!(surfaces.contains(&paper) && !surfaces.contains(&dimmed), "the chart's white is the paper's tone: {surfaces:?} against {paper:?}, and dimmed white is {dimmed:?}");
 }
 
+/// Failure: another app, or a save, puts a new file in the open one's place, and the first tile drawn of the new file on dark paper goes by the old file's look of that page, kept from before. That tile is of the new version, so nothing ever draws it again: a part of the page where the old file had a picture stays paper as drawn for white, only dimmed, never turned over. The replacement is a rename of a changed copy, as editors and saves do, and the old page had a picture at its top left that the new one hasn't. Every tile of the new page is on the paper's tone.
+#[test]
+fn a_replaced_file_gets_its_pages_looked_at_again_on_dark_paper() {
+    let red = [0xFF, 0x00, 0x00].repeat(64);
+    let image = first_extra_object(1);
+    // The top left quarter is a picture, kept as it is on dark paper, and the rest is paper, turned over.
+    let page = Page::new(b"q 306 0 0 396 0 396 cm /Im0 Do Q".to_vec());
+    let extra = vec![Object::Stream { dict: "/Type /XObject /Subtype /Image /Width 8 /Height 8 /BitsPerComponent 8 /ColorSpace /DeviceRGB".into(), data: red }];
+    let file = TempPdf::new("replaced.pdf", &pages_with(&[page], &format!("/XObject << /Im0 {image} 0 R >>"), extra));
+    let (engine, _events) = started(&file, 1);
+    engine.set_paper(PaperKind::Dark);
+    pump(&engine, Duration::from_secs(20));
+    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    // The new file: the same page with text and no picture, written beside it and renamed over it.
+    let copy = file.0.with_extension("new");
+    std::fs::write(&copy, pages(&[Page::new(text_lines(&["Only words now"]))])).unwrap();
+    std::fs::rename(&copy, &file.0).unwrap();
+    // Anything that draws again does: here a zoom.
+    engine.set_viewport(Viewport { magnification: 1.5, ..view(0.0) });
+    let ops = pump(&engine, Duration::from_secs(20));
+    assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
+    let rgb = PaperKind::Dark.rgb();
+    let paper = [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
+    let colours: Vec<u32> = ops.iter().filter_map(|op| if let Op::Attach { rgb, surface: 0, .. } = op { *rgb } else { None }).collect();
+    let surfaces = corners(&ops);
+    assert!(!colours.is_empty() || !surfaces.is_empty(), "something was drawn: {ops:?}");
+    assert!(colours.iter().all(|colour| *colour == rgb), "every blank tile is the paper's tone: {colours:06x?} against {rgb:06x}");
+    // The one line of words is near the top, between the tiles' corners, so every corner is paper, the old picture's quarter included.
+    assert!(surfaces.iter().all(|corner| *corner == paper), "every tile is on the paper's tone: {surfaces:?} against {paper:?}");
+}
+
 /// Failure: a tab's file doesn't answer, on a dead volume, and the page view's one thread sits in `File::open` for it, so a healthy tab gets no tiles. A FIFO with no writer is a file whose open never returns, as a dead volume's does. The reader moving on is all it takes, and that tab's page says what's wrong.
 #[test]
 fn a_file_that_doesnt_answer_holds_up_no_other_tab() {

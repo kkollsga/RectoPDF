@@ -179,6 +179,7 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
   - [ ] A fold-out's row makes `document_width` wide for every row, leaving empty horizontal room to scroll into beside the others
   - [ ] Typing "1.5" in the zoom field with a Mac set to `,` reads as 15%, as `.` groups thousands there
   - [ ] Comparison view: several PDFs side by side, separate or synced scroll, zoom synced
+- [x] Dark paper after the open file is replaced on disk (found reshooting Save, 2026-11-08): the first tile drawn of the new file went by the old file's look of its page, a kept picture's place left as dimmed white, and stayed, being of the new version. A replacement now clears every page's look before anything goes by it, and a tile whose file was replaced while its look was being worked out is drawn again
 - [ ] **Blind agent test, next round**
 
 **Done when:** it can replace your everyday reader for reading only.
