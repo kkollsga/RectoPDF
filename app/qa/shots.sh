@@ -16,7 +16,8 @@ export RECTO_STATE_DIR="$root/s"
 r() { "$recto" "$@" >/dev/null; }
 settle() { r qa wait-settled --timeout 60s; }
 # A shot is never written over anything, so what an earlier run left goes first.
-shot() { rm -f "$out/$1.png"; r qa shot --out "$out/$1.png"; }
+# A shot waits for the pages and the window's animations, a contents drift included, and says if it gave up: that's a shot not to trust.
+shot() { rm -f "$out/$1.png"; "$recto" qa shot --out "$out/$1.png" --json | grep -q '"settled":true' || echo "not settled: $1" >&2; }
 
 r qa start --time-limit 5m
 # Shots look the same whatever this Mac's mouse and settings are.
@@ -66,8 +67,6 @@ for look in light dark; do
     settle
     r goto 90
     settle
-    # Long enough for a drift to end. Time is the scenario.
-    sleep 1.5
     shot "sidebar-long-contents-$look"
     r qa resize 1100x460
     settle
@@ -87,11 +86,9 @@ for look in light dark; do
     r qa appearance "$look"
     r goto 90
     settle
-    sleep 1.5
     shot "sidebar-long-contents-one-tab-$look"
     r goto 1
     settle
-    sleep 1.5
     # Row 2 is the second contents row, a long title.
     r qa reveal 2
     shot "reveal-long-name-$look"
