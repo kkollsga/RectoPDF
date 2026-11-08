@@ -252,11 +252,8 @@ import QuartzCore
             "agent_icon_margins": ["top": controller.agentIcon.frame.minY, "right": controller.root.bounds.maxX - controller.agentIcon.frame.maxX] as [String: Any],
             "panel": sidebar.panelReport(),
             "settings": delegate.settings?.report() ?? ["open": false],
-            "context_menu": { () -> [[String: Any]] in
-                let menu = controller.pages.contextMenu()
-                menu.update()
-                return menu.items.filter { !$0.isSeparatorItem }.map { ["id": ($0.representedObject as? String) ?? "", "title": $0.title, "checked": $0.state == .on, "enabled": $0.isEnabled] as [String: Any] }
-            }(),
+            // From Rust's list and its word on what's enabled, as the real menu is built from. Building an NSMenu on every state read costs the app megabytes that the budgets would count; `qa context-menu` goes through the real one.
+            "context_menu": delegate.core.contextMenu().filter { !$0.id.isEmpty }.map { ["id": $0.id, "title": $0.title, "checked": $0.checked, "enabled": delegate.core.menuItemEnabled(id: $0.id)] as [String: Any] },
             "layout": reader.layout,
             "menu_bar": (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).map { menu -> [String: Any] in
                 // What AppKit itself says after asking whoever answers, as it does on opening a menu, and no copy of the rule.
