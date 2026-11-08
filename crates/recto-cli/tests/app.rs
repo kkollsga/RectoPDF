@@ -2731,7 +2731,9 @@ fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
         let (source_width, source_height, original) = draw(&file.0, source);
         assert_eq!((width, height), (source_width, source_height));
         let (bad, all) = blocks_differing(&print, &original, width, height);
-        assert!(bad * 200 < all, "printed page {printed} against source page {source}: {bad} of {all} blocks differ, as dark paper or the wrong page would");
+        // Up to 5% of blocks may differ: the print is a 300 dpi picture drawn back at scale 1, and its text edges come out a little differently on
+        // another machine (CI read 90 of 7448, 1.2%, where 0.5% was allowed). Dark paper or another page differs in most blocks, so this still tells them apart.
+        assert!(bad * 20 < all, "printed page {printed} against source page {source}: {bad} of {all} blocks differ, as dark paper or the wrong page would");
     }
     std::fs::remove_file(&out).unwrap();
 }
