@@ -4,7 +4,7 @@ Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it ar
 
 ## Where we are
 
-**Release scope (owner, 2026-11-08): "Lets release after phase 3. the rest we tackle after".** The first release is the complete reader: phases 2 and 3, then phase 7's release work. Phases 4 to 6 come after it. Save stage 1 (turns, moves and added pages, Save As, a backup) is already on main and ships, as rotating all pages outside edit mode is a phase 3 rule that Save commits. Save stage 2 (the rewrite) is parked on its branch until after the release.
+**Release scope (owner, 2026-11-08): "Lets release after phase 3. the rest we tackle after", then "No we release everything we have started in the first release. We don't park anything (finish on going features)."** The first release is the complete reader (phases 2 and 3), every feature already under way, and phase 7's release work. That includes all of Save, stages 1 and 2. What hasn't started (the rest of phase 4's editing, phases 5 and 6) comes after it.
 
 | Phase | What you get | Status | Size (agent-days) |
 |---|---|---|---:|
@@ -13,7 +13,7 @@ Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it ar
 | **2. First real app** | A native window you can read in, with real screenshots | **Nearly done** | 8–12 |
 | **3. Complete reader** | Find, menus, ⌘K, session restore, image copy, snapshot and SVG | **In progress: first release** | 10–15 |
 | **7. Release** | Hardened, signed, installable first release | **Next, with phase 3: first release** | 8–12 |
-| **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | Stage 1 on main; the rest after the first release | 25–40 |
+| **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | Save (stages 1 and 2) in the first release; the rest of editing after it | 25–40 |
 | **5. Tools** | Compress, OCR, passwords, compare, redaction, watermarks and more | After the first release | 20–35 |
 | **6. Agent sidebar** | Ask a question about a PDF, with your own `claude` | After the first release | 8–12 |
 
@@ -188,9 +188,9 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 
 ## Phase 4: Saving and editing
 
-- [ ] **Save stage 2, parked for after the first release** on local branch `build/save-rewrite` at `9dad399` (5 commits on `d27a0e7`, not pushed), worktree `.worktrees/save-rewrite`, status in its `docs/SAVE-STAGE2-STATUS.md`. Built: deletes by the streaming rewrite, signed files' unsigned copies, usage rights removed in place, kept pages only for undo past a delete, IRS form fields on added pages fillable, a changed added PDF not drawn. Left: a fuzz target for the rewrite plan, delete measurements, app QA and screenshots, docs. Merge main first when it resumes
+- [ ] **Save stage 2, in the first release (owner: "We don't park anything")**, resumed on local branch `build/save-rewrite` at `9dad399` (5 commits on `d27a0e7`, not pushed), worktree `.worktrees/save-rewrite`, status in its `docs/SAVE-STAGE2-STATUS.md`. Built: deletes by the streaming rewrite, signed files' unsigned copies, usage rights removed in place, kept pages only for undo past a delete, IRS form fields on added pages fillable, a changed added PDF not drawn. Left: a fuzz target for the rewrite plan, delete measurements, app QA and screenshots, docs. Merge main first when it resumes
 
-Moved here from phase 3 on 2026-11-08, as they belong to the rewrite (Save stage 2), after the first release:
+Moved here from phase 3 on 2026-11-08, as they belong to the rewrite (Save stage 2):
 - [ ] On Save's gate: a redaction's crash must not leave sleep files for earlier versions, as those are pictures of what's being removed
 - [ ] On Save's gate: call `save_prepared`, then `saved`, on the real path, with a redaction keeping nothing; keep `never_in_pdf.rs` on that path rather than its stand-in writer; have the reader take up the new file; and keep only the pages a save removes rather than a copy of the whole file, so a PDF over 64 MiB can undo past a save too. Today it's a whole-file clone or nothing
 - [ ] On Save's gate, for the rewrite: check every page against the real file when writing, as `validate_edits` checks against what a journal says of itself, which can be forged; and check the save marker again once it's on disk
