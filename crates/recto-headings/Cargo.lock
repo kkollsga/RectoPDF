@@ -736,6 +736,7 @@ name = "recto-headings"
 version = "0.1.0"
 dependencies = [
  "distillpdf",
+ "flate2",
  "recto-core",
  "recto-index",
  "recto-platform",

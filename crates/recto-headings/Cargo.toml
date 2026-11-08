@@ -40,6 +40,8 @@ panic = "unwind"
 debug = "line-tables-only"
 
 [dev-dependencies]
+# To make a decompression bomb for `tests/images.rs`. Already in this lockfile through distillPDF, so it adds no crate.
+flate2 = "1"
 recto-testpdf = { path = "../recto-testpdf" }
 
 # distillPDF pins lopdf `0e89b89`; RectoPDF's crates are on `e5f4971`, the fork's `main`. One lopdf here, as `tests/lockfile.rs` holds: distillPDF's is
