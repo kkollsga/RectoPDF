@@ -459,6 +459,66 @@ pub fn select_budget(invocation: &Invocation) -> Result<Value, AgentError> {
     }))
 }
 
+/// `recto qa compare-budget`: a comparison of `panes` of these files against the budgets, on its own quiet runs. With one pane it opens them all and shows one, which is the same files before comparison view, and works on a build without it. Memory, idle, a sweep in the first pane (which leads the others with `--sync on`), and starts from the record with the comparison in it.
+pub fn compare_budget(invocation: &Invocation) -> Result<Value, AgentError> {
+    let app = find_app(invocation.fields.get("app").and_then(Value::as_str).map(Path::new))?;
+    let files: Vec<PathBuf> = invocation.fields.get("files").and_then(Value::as_str).unwrap_or_default().split(',').map(str::trim).filter(|file| !file.is_empty()).map(PathBuf::from).collect();
+    if files.is_empty() || files.iter().any(|file| !file.is_absolute()) {
+        return Err(failed("usage", "`--files` takes whole paths, with commas between."));
+    }
+    let panes = invocation.fields.get("panes").and_then(Value::as_u64).unwrap_or(files.len() as u64).clamp(1, 3) as usize;
+    let synced = invocation.fields.get("sync").and_then(Value::as_str) == Some("on");
+    let runs = invocation.fields.get("runs").and_then(Value::as_u64).unwrap_or(5).max(1);
+    let mut run = Measured::start(&app, &Launch::default())?;
+    for file in &files {
+        run.call(json!({ "cmd": "open", "path": file }))?;
+    }
+    run.settled()?;
+    if panes > 1 {
+        let tabs: Vec<String> = (1..=panes).map(|tab| format!("#{tab}")).collect();
+        run.call(json!({ "cmd": "compare", "tabs": tabs.join(","), "sync": if synced { "on" } else { "off" } }))?;
+    } else {
+        run.call(json!({ "cmd": "tap", "tab": "#1" }))?;
+    }
+    run.settled()?;
+    std::thread::sleep(Duration::from_millis(1500));
+    let state = run.state()?;
+    let memory = |state: &Value, key: &str| state["memory"][key].as_u64().unwrap_or(0);
+    let shown = |state: &Value| json!({ "tree_mib": mib(memory(state, "tree_bytes")), "app_mib": mib(memory(state, "footprint_bytes")), "worker_mib": mib(memory(state, "worker_bytes")), "workers": state["memory"]["workers"], "threads": state["memory"]["threads"], "handles": state["memory"]["open_handles"] });
+    let mut report = json!({ "build": if cfg!(debug_assertions) { "debug" } else { "release" }, "panes": panes, "synced": synced, "files": files.iter().map(|file| file.file_name().map(|name| name.to_string_lossy().to_string())).collect::<Vec<_>>(), "at_rest": shown(&state), "panes_shown": state["panes"]["panes"].as_array().map_or(0, Vec::len) });
+    let before = recto_platform::local::process_counters(run.pid);
+    let idle_for = Duration::from_secs(10);
+    std::thread::sleep(idle_for);
+    if let (Some(before), Some(after)) = (before, recto_platform::local::process_counters(run.pid)) {
+        report["idle"] = json!({ "seconds": idle_for.as_secs(), "cpu_percent": round((after.cpu_ns.saturating_sub(before.cpu_ns)) as f64 / 1e9 / idle_for.as_secs_f64() * 100.0), "wakeups_per_second": round((after.wakeups.saturating_sub(before.wakeups)) as f64 / idle_for.as_secs_f64()), "budget_wakeups_per_second": 1, "note": "The app's own process. Workers parked in `poll` aren't counted." });
+    }
+    let sweep = run.call(json!({ "cmd": "qa_drive", "verb": "sweep", "value": "6", "timeout_ms": 5000 }))?;
+    let after_sweep = run.state()?;
+    report["scroll"] = json!({ "pages_per_second": 6, "steps": sweep["steps"], "ui_step_us": sweep["step_us"], "budget_ui_step_us_p99": 2000, "blank_seen_steps": sweep["blank_seen_steps"], "peak_tree_mib": mib(sweep["peak_tree_bytes"].as_u64().unwrap_or(0)), "settled": sweep["settled"], "pages_after": after_sweep["panes"]["panes"].as_array().map(|panes| panes.iter().map(|pane| pane["page"].clone()).collect::<Vec<_>>()), "note": "Steps in the first pane, which leads the others when synced. The UI thread's work, off screen." });
+    report["after_scroll"] = shown(&after_sweep);
+    // Starting from the record with the comparison in it: from the process starting to its first frame, and to every pane settled.
+    let mut first = Vec::new();
+    let mut sharp = Vec::new();
+    for _ in 0..runs {
+        let _ = run.call(json!({ "cmd": "qa_drive", "verb": "quit", "value": "now" }));
+        let _ = run.child.wait();
+        let started = Instant::now();
+        let (child, ready) = launch(&app, &run.paths, &Launch::default())?;
+        run.child = child;
+        run.pid = ready["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok()).unwrap_or(0);
+        run.settled()?;
+        sharp.push(started.elapsed().as_secs_f64() * 1000.0);
+        let state = run.state()?;
+        first.push(state["record"]["first_shown"]["ms_from_start"].as_f64().unwrap_or(0.0));
+    }
+    first.sort_by(f64::total_cmp);
+    sharp.sort_by(f64::total_cmp);
+    let restarted = run.state()?;
+    report["cold_start_ms"] = json!({ "runs": runs, "first_frame_p50": round(percentile(&first, 0.5)), "first_frame_max": round(percentile(&first, 1.0)), "all_panes_settled_p50": round(percentile(&sharp, 0.5)), "all_panes_settled_max": round(percentile(&sharp, 1.0)), "panes_back": restarted["panes"]["panes"].as_array().map_or(0, Vec::len), "budget_p50": 300, "budget_p95": 500, "note": "A restart on the record, the comparison coming back, so files come from the cache warm." });
+    report["hangs"] = restarted["hangs"].clone();
+    Ok(report)
+}
+
 /// `recto qa budget`.
 pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     let app = find_app(invocation.fields.get("app").and_then(Value::as_str).map(Path::new))?;
