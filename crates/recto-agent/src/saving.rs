@@ -89,7 +89,15 @@ pub fn check_save_path(out: &Path) -> Result<(), AgentError> {
     if !out.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf")) {
         return Err(bad_path("A saved PDF's name has to end in .pdf."));
     }
-    let real = out.parent().and_then(|folder| folder.canonicalize().ok()).map(|folder| folder.join(out.file_name().unwrap_or_default()));
+    // Where it really goes: through its folder's links, and through itself if it's there already, as a replaced link leads somewhere else (review).
+    let real = if std::fs::symlink_metadata(out).is_ok() {
+        out.canonicalize().ok()
+    } else {
+        out.parent().and_then(|folder| folder.canonicalize().ok()).map(|folder| folder.join(out.file_name().unwrap_or_default()))
+    };
+    if real.as_deref().is_some_and(|real| !real.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))) {
+        return Err(bad_path("That name leads to a file that isn't a .pdf, which a PDF isn't saved over."));
+    }
     let hidden = |path: &Path| path.components().any(|part| matches!(part, std::path::Component::Normal(name) if name.to_string_lossy().starts_with('.')));
     if hidden(out) || real.as_deref().is_some_and(hidden) {
         return Err(bad_path("That's a hidden file or folder, which a PDF isn't saved to."));

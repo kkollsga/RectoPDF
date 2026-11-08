@@ -211,6 +211,17 @@ fn save_as_goes_only_where_a_pdf_belongs() {
         assert_eq!((code, reply["error"]["code"].as_str()), (exit::USAGE, Some("bad_save_path")), "{}: {reply}", out.display());
         assert!(!out.exists(), "{} was written", out.display());
     }
+    // A link with an innocent name that leads into a hidden file: what it leads to is what's checked (review, reproduced with --replace at Full).
+    std::fs::create_dir_all(folder.join(".dot")).unwrap();
+    std::fs::write(folder.join(".dot").join("zshenv-decoy"), b"echo decoy").unwrap();
+    let innocent = folder.join("innocent.pdf");
+    std::os::unix::fs::symlink(folder.join(".dot").join("zshenv-decoy"), &innocent).unwrap();
+    state.set_level(Level::Full);
+    let (reply, code) = state.json(&["save-as", "--out", innocent.to_str().unwrap(), "--replace"]);
+    assert_eq!((code, reply["error"]["code"].as_str()), (exit::USAGE, Some("bad_save_path")), "{reply}");
+    assert_eq!(std::fs::read(folder.join(".dot").join("zshenv-decoy")).unwrap(), b"echo decoy", "the hidden file is untouched");
+    let _ = std::fs::remove_file(&innocent);
+    let _ = std::fs::remove_dir_all(folder.join(".dot"));
     let fine = folder.join("Copy.PDF");
     assert_eq!(ok(&state, &["save-as", "--out", fine.to_str().unwrap()])["written"], true, "a .PDF name in an ordinary folder saves");
     let _ = std::fs::remove_file(fine);
