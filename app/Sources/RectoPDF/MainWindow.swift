@@ -841,7 +841,7 @@ final class BookMark: NSView {
     /// The Save icon: there while the document showing has unsaved edits, greyed while it's being saved, with Rust's words for what it's doing.
     private func updateSaveButton() {
         saveButton.isHidden = !reader.saveButton
-        saveButton.isEnabled = !reader.saving
+        saveButton.isEnabled = reader.saveEnabled
         saveButton.toolTip = reader.saveTooltip
         saveButton.setAccessibilityLabel(reader.saveTooltip)
     }

@@ -35,6 +35,10 @@ impl SaveSupport for AppSaving {
         }
     }
 
+    fn keep_pages(&self, _tab: TabId, original: &std::path::Path, target: FileStamp, pages: &[u32]) -> Option<recto_session::edit::AddedSource> {
+        self.saver.store.keep_pages_of(original, target, pages)
+    }
+
     fn after_save(&self, _tab: TabId) {
         self.step.store(0, Ordering::SeqCst);
         // A Save As moved the tab to another file, and a save renamed its journal: the record follows straight away, not in a minute.
@@ -101,6 +105,8 @@ pub struct CloseButton {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum CloseChoice {
     Save,
+    /// Save is off for this document, as for a signed one: Save As's sheet, for an unsigned copy.
+    SaveAs,
     DontSave,
     Cancel,
 }
@@ -118,41 +124,94 @@ pub(crate) fn replace_answered(out: &std::path::Path, answered: std::time::Syste
 }
 
 /// The decided words for signed copies (SPEC decision 27).
-pub(crate) const UNSIGNED_COPY: &str = "The new copy won't be signed. The original keeps its signature.";
-/// Whether Save As makes that copy yet. It's the streaming rewrite's, the next stage of Save.
-const UNSIGNED_COPY_BUILT: bool = false;
+pub(crate) const UNSIGNED_COPY: &str = recto_agent::saving::UNSIGNED_COPY;
 
 /// The app's side of saving that the window draws: how many saves are running, a problem waiting to be answered, and what's known of the tab showing's signatures.
 pub(crate) struct SaveUi {
     pub(crate) running: AtomicU32,
     problem: Mutex<Option<SaveProblem>>,
-    /// The tab showing's file, as of this version, and what Save As would say of it. Looked at once a version, on the session thread.
-    signature: Mutex<Option<(TabId, FileStamp, Option<String>)>>,
+    /// What's known of the signatures of the last few files asked about, each as of a version, newest last. Looked at once a version, on a thread of its own, as it
+    /// reads the whole file. At most [`SIGNATURE_LOOKS`] are kept.
+    signature: Arc<Mutex<Vec<(TabId, FileStamp, recto_core::save::SignatureFacts)>>>,
+    /// The looks under way, one per file and version, at most [`SIGNATURE_LOOKS`]: one slow disk doesn't hold up every other tab's (review round 2).
+    looking: Arc<Mutex<Vec<(TabId, FileStamp)>>>,
     pub(crate) step: Arc<AtomicU8>,
+}
+
+/// How many signature looks run at once, and how many answers are kept.
+pub(crate) const SIGNATURE_LOOKS: usize = 4;
+
+/// **A look under way ends however its thread does** (review round 2): it's taken off the list when the thread ends, and a look that panicked counts as
+/// having found nothing, as a file that won't open does, so it isn't started again at every update of the window. The save itself looks again, and refuses
+/// what it can't look through.
+struct LookEnds {
+    key: (TabId, FileStamp),
+    known: Arc<Mutex<Vec<(TabId, FileStamp, recto_core::save::SignatureFacts)>>>,
+    looking: Arc<Mutex<Vec<(TabId, FileStamp)>>>,
+}
+
+impl Drop for LookEnds {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            remember(&self.known, self.key, recto_core::save::SignatureFacts::default());
+        }
+        crate::lock(&self.looking).retain(|key| *key != self.key);
+    }
+}
+
+/// Keeps `facts` as the answer for `key`, in place of any older answer for that tab, dropping the oldest past [`SIGNATURE_LOOKS`].
+fn remember(known: &Mutex<Vec<(TabId, FileStamp, recto_core::save::SignatureFacts)>>, key: (TabId, FileStamp), facts: recto_core::save::SignatureFacts) {
+    let mut known = crate::lock(known);
+    known.retain(|(tab, _, _)| *tab != key.0);
+    known.push((key.0, key.1, facts));
+    if known.len() > SIGNATURE_LOOKS {
+        known.remove(0);
+    }
 }
 
 impl SaveUi {
     pub(crate) fn new(step: Arc<AtomicU8>) -> Self {
-        Self { running: AtomicU32::new(0), problem: Mutex::new(None), signature: Mutex::new(None), step }
+        Self { running: AtomicU32::new(0), problem: Mutex::new(None), signature: Arc::new(Mutex::new(Vec::new())), looking: Arc::new(Mutex::new(Vec::new())), step }
     }
 
-    /// What Save As's sheet says of this file: that a certified document's copy with its pages changed won't be signed. Read from the file's catalog once a version, never on the UI thread.
-    pub(crate) fn signature_note(&self, id: TabId, path: &std::path::Path, stamp: FileStamp) -> Option<String> {
-        // Nothing's said until Save As can make that copy, so nothing's read for it either (review).
-        if !UNSIGNED_COPY_BUILT {
+    /// **What's known of this file's signatures,** as the save itself would find them (`signature_facts_of`, the fork's look through the bytes included), cached
+    /// per version. Not known yet starts the look on a thread of its own, as it reads the whole file, and `done` is called when it has an answer; until then it's
+    /// `None`. One look per file and version, and at most [`SIGNATURE_LOOKS`] at once: past that, `None` until one ends.
+    pub(crate) fn signature_facts(&self, id: TabId, path: &std::path::Path, stamp: FileStamp, done: impl FnOnce() + Send + 'static) -> Option<recto_core::save::SignatureFacts> {
+        self.signature_facts_by(id, path, stamp, recto_core::save::signature_facts_of, done)
+    }
+
+    /// [`Self::signature_facts`], with what does the looking given, so a test can make it slow or panic.
+    fn signature_facts_by(
+        &self,
+        id: TabId,
+        path: &std::path::Path,
+        stamp: FileStamp,
+        look: impl FnOnce(&std::path::Path) -> Result<recto_core::save::SignatureFacts, recto_core::OpenError> + Send + 'static,
+        done: impl FnOnce() + Send + 'static,
+    ) -> Option<recto_core::save::SignatureFacts> {
+        if let Some((_, _, facts)) = crate::lock(&self.signature).iter().find(|(tab, at, _)| *tab == id && *at == stamp) {
+            return Some(*facts);
+        }
+        let key = (id, stamp);
+        let mut looking = crate::lock(&self.looking);
+        if looking.contains(&key) || looking.len() >= SIGNATURE_LOOKS {
             return None;
         }
-        let mut known = crate::lock(&self.signature);
-        if let Some((tab, at, note)) = known.as_ref()
-            && *tab == id
-            && *at == stamp
-        {
-            return note.clone();
+        looking.push(key);
+        drop(looking);
+        let ends = LookEnds { key, known: Arc::clone(&self.signature), looking: Arc::clone(&self.looking) };
+        let path = path.to_path_buf();
+        let spawned = std::thread::Builder::new().name("recto-signatures".into()).stack_size(512 * 1024).spawn(move || {
+            let facts = look(&path).unwrap_or_default();
+            remember(&ends.known, ends.key, facts);
+            drop(ends);
+            done();
+        });
+        if spawned.is_err() {
+            crate::lock(&self.looking).retain(|looked| *looked != key);
         }
-        // Said on the sheet once Save As can make that copy, which is the rewrite's: until then saying it would promise what isn't there.
-        let note = recto_core::save::signature_facts_of(path).ok().filter(|facts| facts.certified && UNSIGNED_COPY_BUILT).map(|_| UNSIGNED_COPY.to_string());
-        *known = Some((id, stamp, note.clone()));
-        note
+        None
     }
 
     /// What the Save icon says: Save, or the step a long save is at.
@@ -177,8 +236,8 @@ impl SaveUi {
 
 /// The problem a failed save shows: what went wrong, in the save's own words, and Save As where a copy is the way on.
 pub(crate) fn problem_for(error: &recto_agent::AgentError) -> SaveProblem {
-    // A certified document's unsigned copy is the rewrite's, which comes next: until then Save As can't help it.
-    let copy_helps = matches!(error.code, "file_changed" | "read_only" | "hard_links");
+    // A signed document's copy is unsigned (SPEC decision 27), and the original keeps its signature: Save As is the way on for those too.
+    let copy_helps = matches!(error.code, "file_changed" | "read_only" | "hard_links" | "breaks_certification" | "locked_by_signature" | "signed_needs_copy" | "signed_original");
     SaveProblem { title: "The document couldn't be saved.".into(), message: error.message.clone(), save_as_title: copy_helps.then(|| "Save As…".to_string()), ok_title: "OK".into() }
 }
 
@@ -192,12 +251,14 @@ pub(crate) fn panel_for(tab: u32, name: &str, folder: &str, note: Option<String>
 /// What closing asks, about this document.
 /// **What closing asks, decided here** (review): with unsaved edits, Save, Cancel or Don't Save, as any Mac app asks. Steps the person undid can't be redone
 /// once the tab's closed, so it says so, and closing after either answer lets them go. With only undone steps, there's nothing to save: Close or Cancel.
-pub(crate) fn close_prompt(tab: u32, name: &str, edited: bool, undone: bool) -> ClosePrompt {
+pub(crate) fn close_prompt(tab: u32, name: &str, edited: bool, undone: bool, save_off: bool) -> ClosePrompt {
     let name = recto_core::clean_line(name);
     let button = |title: &str, choice, destructive| CloseButton { title: title.into(), choice, destructive };
     if edited {
         let informative = if undone { "Your changes will be lost if you don't save them. Steps you undid can't be redone once it's closed." } else { "Your changes will be lost if you don't save them." };
-        ClosePrompt { tab, message: format!("Do you want to save the changes you made to “{name}”?"), informative: informative.into(), buttons: vec![button("Save", CloseChoice::Save, false), button("Cancel", CloseChoice::Cancel, false), button("Don't Save", CloseChoice::DontSave, true)] }
+        let save = if save_off { button("Save As…", CloseChoice::SaveAs, false) } else { button("Save", CloseChoice::Save, false) };
+        let informative = if save_off { "This document is signed, so these changes can't be saved over it. Save As makes a new copy without the signature." } else { informative };
+        ClosePrompt { tab, message: format!("Do you want to save the changes you made to “{name}”?"), informative: informative.into(), buttons: vec![save, button("Cancel", CloseChoice::Cancel, false), button("Don't Save", CloseChoice::DontSave, true)] }
     } else {
         ClosePrompt { tab, message: format!("Close “{name}”?"), informative: "It has no unsaved changes, but steps you undid can't be redone once it's closed.".into(), buttons: vec![button("Close", CloseChoice::DontSave, true), button("Cancel", CloseChoice::Cancel, false)] }
     }
@@ -259,6 +320,25 @@ fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
 mod tests {
     use super::*;
 
+    /// Failure (review round 1 of stage 2): the Close prompt offers Save where Save is off, so the answer is a refusal. With Save off it offers Save As, and says why; otherwise Save, as before.
+    #[test]
+    fn the_close_prompt_offers_what_works() {
+        let off = close_prompt(1, "signed.pdf", true, false, true);
+        assert_eq!(off.buttons.iter().map(|button| button.choice).collect::<Vec<_>>(), [CloseChoice::SaveAs, CloseChoice::Cancel, CloseChoice::DontSave]);
+        assert!(off.informative.contains("Save As makes a new copy"), "{}", off.informative);
+        assert_eq!(close_prompt(1, "plain.pdf", true, false, false).buttons[0].choice, CloseChoice::Save);
+    }
+
+    /// Failure (SPEC decision 27): a save refused for a signature offers no way on, though Save As makes an unsigned copy and the original keeps its signature. The alert for a certified document, one a signature locks, a signed one whose change needs a rewrite, and Save As onto a signed file's own name (review round 2) each offers Save As; one for a damaged file doesn't, as a copy can't help it.
+    #[test]
+    fn a_signature_refusal_offers_save_as() {
+        for code in ["breaks_certification", "locked_by_signature", "signed_needs_copy", "signed_original"] {
+            let problem = problem_for(&recto_agent::AgentError::new(code, "refused", recto_agent::exit::FAILED));
+            assert_eq!(problem.save_as_title.as_deref(), Some("Save As…"), "{code}");
+        }
+        assert_eq!(problem_for(&recto_agent::AgentError::new("damaged", "refused", recto_agent::exit::FAILED)).save_as_title, None);
+    }
+
     /// Failure (review round 2): Save As decides "replace" from the disk at save time, so a file someone makes at the chosen name after the person answered "new" is replaced, though nobody agreed to that. A file there at the answer is replaced, as the sheet asked; one made after is refused; none is a new file.
     #[test]
     fn save_as_keeps_the_answer_the_person_gave() {
@@ -275,5 +355,47 @@ mod tests {
         assert_eq!(replace_answered(&after, answered), Err(()), "made after the answer: refused");
         assert_eq!(replace_answered(&dir.join("none.pdf"), answered), Ok(false), "nothing there: a new file");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Failure (review round 2): the signature look's one slot stays taken forever when the look panics, so Save is never offered as off for any file again; and one
+    /// slow disk holds that slot for every tab. A look that panics ends, counting as having found nothing; a slow look on one file doesn't stop another's; and no
+    /// more than the cap run at once.
+    #[test]
+    fn a_signature_look_ends_however_it_ends_and_one_file_doesnt_hold_the_rest() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let ui = SaveUi::new(Arc::new(AtomicU8::new(0)));
+        let stamp = |n: u64| FileStamp { size: n, mtime_ns: n as i64, device: 1, inode: n };
+        let path = std::path::Path::new("/nowhere.pdf");
+        let wait_for = |what: &dyn Fn() -> bool| {
+            let started = Instant::now();
+            while !what() {
+                assert!(started.elapsed() < Duration::from_secs(10), "waited 10 s");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        // A look that panics: its place is given back, and its answer is "nothing found".
+        assert_eq!(ui.signature_facts_by(TabId(1), path, stamp(1), |_| panic!("a hostile file"), || {}), None);
+        wait_for(&|| crate::lock(&ui.looking).is_empty());
+        assert_eq!(ui.signature_facts_by(TabId(1), path, stamp(1), |_| unreachable!("answered already"), || {}), Some(Default::default()));
+        // Slow looks on other files: each has its own place, up to the cap.
+        let mut release = Vec::new();
+        for n in 0..SIGNATURE_LOOKS as u64 {
+            let (go, wait) = mpsc::channel::<()>();
+            release.push(go);
+            let look = move |_: &std::path::Path| {
+                let _ = wait.recv();
+                Ok(recto_core::save::SignatureFacts { signed: true, ..Default::default() })
+            };
+            assert_eq!(ui.signature_facts_by(TabId(10 + n as u32), path, stamp(10 + n), look, || {}), None);
+        }
+        assert_eq!(crate::lock(&ui.looking).len(), SIGNATURE_LOOKS, "one per file");
+        assert_eq!(ui.signature_facts_by(TabId(99), path, stamp(99), |_| unreachable!("past the cap"), || {}), None, "past the cap, none starts");
+        assert_eq!(ui.signature_facts_by(TabId(10), path, stamp(10), |_| unreachable!("looked at already"), || {}), None, "and one file isn't looked at twice");
+        // Let them end: each answer is kept, and the places are free.
+        release.remove(0).send(()).unwrap();
+        drop(release);
+        wait_for(&|| crate::lock(&ui.looking).is_empty());
+        assert!(ui.signature_facts_by(TabId(10), path, stamp(10), |_| unreachable!("answered already"), || {}).is_some_and(|facts| facts.signed));
     }
 }
