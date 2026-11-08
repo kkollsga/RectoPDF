@@ -13,6 +13,7 @@ Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it ar
 | **2. First real app** | A native window you can read in, with real screenshots | **Nearly done** | 8–12 |
 | **3. Complete reader** | Find, menus, ⌘K, session restore, image copy, snapshot and SVG | **In progress: first release** | 10–15 |
 | **7. Release** | Hardened, signed, installable first release | **Next, with phase 3: first release** | 8–12 |
+| **R. Restructuring** | Every feature in its own compartment: the architecture review's steps 4 to 13 | After the first release, before any other phase 4–6 work | 24–37 |
 | **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | Save (stages 1 and 2) in the first release; the rest of editing after it | 25–40 |
 | **5. Tools** | Compress, OCR, passwords, compare, redaction, watermarks and more | After the first release | 20–35 |
 | **6. Agent sidebar** | Ask a question about a PDF, with your own `claude` | After the first release | 8–12 |
@@ -278,6 +279,12 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 ## Phase 7: Release
 
+**Structure quick fixes, before the release** (owner, 2026-11-08: "let's do the quick fixes now before release, then add the large restructuring into the plan before we start on the other features"). Steps 1 to 3 of `docs/reviews/2026-11-08-architecture.md` §4.6, at the first merge point with no branches open:
+- [ ] Step 1: drifted docs fixed, `Theme.sidebarWidth` deleted; every person-originated `CoreCall` decided for the update hand-off freeze (`CloseTab`, `ToggleSection`, `ContentsAction`, `CloseAnswered`), with an exhaustive test; `menus::enabled` and `event_group` exhaustive, with tests that every menu id and every emitted event is listed
+- [ ] Step 2: restore's `KNOWN_PATHS` sorted and split into per-area files, with a test that each is sorted with no duplicates; the app test harness (`Run`, `app_path`, `settled`, `wait_for`, document makers) moved into `tests/common/app.rs`
+- [ ] Step 3: `rustfmt` adopted (`max_width` about 160, `wrap_comments = false`) in one mechanical commit with no branches open, `.git-blame-ignore-revs`, and `cargo fmt --check` in `check.sh --quick`
+
+
 - [x] Release blocker, first half: the renderer is built into its sandboxed helper, signed (ad hoc in the tests and the app's own checks, and with the owner's Developer ID on this Mac, hardened runtime and library validation on) and fails closed, each failure named
 - [ ] **Release blocker, second half:** the renderer's sandbox on a notarized run of the release; the sandbox and wall tests passing on `macos-15` and `macos-26` CI runners, where the home folder is under `/Users` (the `sandbox` job in `ci.yml`, first run to be watched); and the Developer ID run of the renderer suite matched to the ad hoc one. That gap is explained: the 138 against 143 was the 5 tests of `sandbox.rs`, left out by the filter of that run because they lay out ad hoc helpers of their own, and `surfaces.rs`'s 8 used the bare worker in both runs, since fixed to follow `RECTO_TEST_WORKER`
 - [ ] Fuzzing on every parser of untrusted input
@@ -307,6 +314,20 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 ---
 
+## Phase R: Restructuring, after the first release and before any other new feature
+
+Owner, 2026-11-08: "add the large restructuring into the plan before we start on the other features". Steps 4 to 13 of `docs/reviews/2026-11-08-architecture.md` §4.6, each its own branch with its own tests, mergeable alone, smallest first. Guide §2.8 and AGENTS rule 7 hold from now on, so new work doesn't add to the hubs meanwhile.
+- [ ] 4. The pure part of `reconcile` into `model.rs`, returning the view models from plain inputs, with 10–20 unit tests (notice precedence, Save icon, pane labels, contents deltas). 2 d
+- [ ] 5. A typed `Event` enum, with session methods returning change sets. 1–2 d
+- [ ] 6. `Session`'s `impl` split into per-concern files, and its inline tests into `src/tests/<concern>.rs` (moves only). 1–2 d
+- [ ] 7. `Session`'s fields into component structs, one concern per merge. 4–6 d
+- [ ] 8. A `commands!` macro and `CommandImpl` trait, one table group per branch, with every command declaring `draws` and `tab`. 4–6 d
+- [ ] 9. The two record-command implementations merged behind a `RecordHost` trait, with one level check. 1–2 d
+- [ ] 10. `CoreCall` split into per-feature sub-enums with `handle`. 2–3 d
+- [ ] 11. A toolkit-free `recto-app` crate, so the app core is unit-tested in `--quick`; `recto-ffi` becomes adapters only. 4–6 d
+- [ ] 12. A QA verb table in `recto-app`, with Swift's verbs checked against it. 1–2 d
+- [ ] 13. Swift child controllers and `InlineEditField`. 2–4 d
+
 ## Later, after the first release
 
 Real digital signatures to the official standards, signature trust checks, Windows, Link and Join text, document-wide reflow, a second agent CLI.
@@ -331,6 +352,8 @@ Real digital signatures to the official standards, signature trust checks, Windo
 - **Before a public release:** a name search for the trademark, no registration yet; wait for Anthropic's written answer and add an API-key route.
 
 ## Decisions made by the owner, 2026-11-08
+
+- **Structure** (after the architecture review): "let's do the quick fixes now before release, then add the large restructuring into the plan before we start on the other features". Steps 1–3 in phase 7; steps 4–13 as phase R, after the release and before phases 4–6's other features.
 
 "I agree with all your recommendations":
 - **The lopdf streaming rewrite** goes to the fork's `work/streaming-rewrite` branch.
