@@ -890,3 +890,24 @@ fn a_kept_copy_that_isnt_what_was_asked_isnt_used() {
     assert_eq!(save::keep_pages(&path, &[0, 1], &kept, 1), Err(SaveError::TooLarge), "past the limit, refused before writing");
     assert!(!kept.exists());
 }
+
+/// Failure (review round 1 of stage 2): a blank signature field, the place a person is to sign, goes when usage rights are removed in place or a copy is made unsigned, though nobody signed it. It stays, with the form's `SignaturesExist`. Needs the fork's `work/blank-signature-fields-stay` (`1336343`): until RectoPDF is pinned to it, this is ignored.
+#[test]
+#[ignore = "needs the lopdf fork's 1336343, not yet pushed"]
+fn a_blank_signature_field_stays_through_a_rewrite() {
+    let dir = Dir::new();
+    let bytes = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /Perms << /UR3 7 0 R >> /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["FORM"]) },
+        Raw::Dict("<< /Type /Annot /Subtype /Widget /FT /Sig /T (SIGNHERE) /Rect [0 0 90 20] /P 3 0 R >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>".into()),
+        Raw::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 10 20 30] /Contents <00> /Reference [<< /TransformMethod /UR3 >>] >>".into()),
+    ]);
+    let path = dir.write("irs-blank.pdf", &bytes);
+    let outcome = save::save(&request(&path, 2, &own(&[(0, 0)]), &[]), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert!(outcome.usage_rights_removed);
+    let after = std::fs::read(&path).unwrap();
+    assert!(contains(&after, "SIGNHERE") && contains(&after, "/SigFlags 1") && !contains(&after, "/UR3"), "the blank field stays");
+}
