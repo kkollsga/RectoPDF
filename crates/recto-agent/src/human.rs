@@ -212,7 +212,14 @@ fn contents(data: &Value) -> String {
     let rows = data["entries"].as_array().map_or(&[][..], Vec::as_slice);
     if rows.is_empty() {
         // Generated ones that came to nothing say why, in Rust's words, and never that the file has no contents.
-        return if generated { text(&data["note"]).to_string() } else { "This document has no contents.".to_string() };
+        if generated {
+            return text(&data["note"]).to_string();
+        }
+        // With none of its own, the way to generated ones is said, as it is under a list.
+        return match data["verdict_note"].as_str() {
+            Some(note) => format!("This document has no contents.\n{note}"),
+            None => "This document has no contents.".to_string(),
+        };
     }
     let mut out = String::new();
     // Generated contents say so first, so nobody takes them for the file's own.
@@ -742,6 +749,9 @@ mod tests {
         }
         let none = render("contents", &json!({ "available": true, "generated": true, "note": "No headings were found.", "entries": [], "total": 0 }));
         assert_eq!(none, "No headings were found.");
+        // Failure: a file with no contents of its own doesn't say generated ones can be asked for.
+        let missing = render("contents", &json!({ "available": true, "entries": [], "total": 0, "verdict_note": "This file has no contents of its own. `recto contents --generated` gives contents made from the headings on its pages." }));
+        assert!(missing.contains("--generated"), "{missing}");
         assert!(contents.contains("untrusted"), "{contents}");
     }
 

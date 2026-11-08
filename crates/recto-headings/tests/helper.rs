@@ -114,3 +114,13 @@ fn place_is_right_on_a_media_box_that_doesnt_start_at_zero() {
     // The headings' baseline is 72 points from the top of 792.
     assert!(generated.entries.iter().all(|entry| (60..140).contains(&entry.place)), "{:?}", generated.entries);
 }
+
+/// Failure: headings in heavy type, which cover more than half of each glyph's box, are taken for hidden text and left out, as a review's crafted file lost all six. Drawn with and without them, they add what anyone can see.
+#[test]
+fn headings_in_heavy_type_stay() {
+    let pdf = TempPdf::new("bold.pdf", &recto_testpdf::bold_headings_document());
+    let key = CorpusKey::of_file(&pdf.0).unwrap();
+    let (report, generated, _) = run(&pdf.0, key, false);
+    let titles: Vec<String> = generated.unwrap_or_else(|| panic!("{report}")).entries.iter().map(|entry| entry.title.clone()).collect();
+    assert_eq!(titles, ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"], "{report}");
+}

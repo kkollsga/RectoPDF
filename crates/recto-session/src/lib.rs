@@ -1608,8 +1608,11 @@ impl<L: DocLoader> Session<L> {
 
     /// **The one method a confirmed Save or Save As calls, and it marks a saved point.** Owner, 2026-11-07: "after a save you might still have regrets and want to make changes. But you definitely don't want history to leak into the pdf file". What was written is the file now, so the document reads as saved, and the history goes on: undoing past this makes it unsaved again, and back to here reads as saved. A failed save calls nothing, and everything stays. `saved_as` moves the tab if it went to another file, and the history goes with it. `kept` is what [`Self::save_prepared`] was told, and a Save As has the old file itself for that. What a step can't get pages from rolls off: see [`PageEdits::rebase_on_saved`], and the tab says so. The steps around it, and what a crash at each does, are in `docs/ENGINEERING.md`. Says how many steps rolled off.
     pub fn saved(&mut self, id: TabId, now: FileStamp, pages: u32, saved_as: Option<&Path>, kept: Option<edit::AddedSource>) -> usize {
-        // Another version of the file now: the old one's generated contents aren't about it.
+        // Another version of the file now: the old one's generated contents and folds aren't about it.
         self.generated.retain(|(tab, _)| *tab != id);
+        if let Some(tab) = self.tab_mut(id) {
+            tab.folds = None;
+        }
         if !self.wake_list(id) {
             self.give_up_on_asleep(id);
         }
@@ -1805,6 +1808,10 @@ impl<L: DocLoader> Session<L> {
         // A file changed or gone takes its generated contents with it, so the sidebar shows what an agent's `contents --generated` finds, which goes by the file as it is now.
         if matches!(status, FileStatus::Changed(_) | FileStatus::Missing) {
             self.generated.retain(|(tab, _)| *tab != id);
+            // Folds are by entry number, which another version's contents don't share.
+            if let Some(tab) = self.tab_mut(id) {
+                tab.folds = None;
+            }
         }
         let has_edits = self.has_list(id);
         match status {
@@ -2234,6 +2241,13 @@ impl<L: DocLoader> Session<L> {
     /// Forgets where a tab's generated contents stand, so it offers them again.
     pub fn forget_generated(&mut self, id: TabId) {
         self.generated.retain(|(tab, _)| *tab != id);
+    }
+
+    /// The same, from a look at the file as it was at `version`: dropped if the tab's file has changed since, as a look that comes back late is about the old one.
+    pub fn set_generated_view_for(&mut self, id: TabId, view: GeneratedView, version: Option<FileStamp>) {
+        if version.is_none() || self.own_stamp(id) == version {
+            self.set_generated_view(id, view);
+        }
     }
 
     /// Tabs whose generated contents are being made.
@@ -3271,8 +3285,18 @@ mod tests {
         // A file changed underneath: the old version's list goes, as an agent's `contents --generated` would find none for the new one.
         s.choose_generated(id, true);
         s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
+        s.apply_file_status(id, FileStatus::Changed(FileStamp { size: 8, mtime_ns: 8, device: 1, inode: 2 }));
+        let before = s.own_stamp(id);
+        s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
         s.apply_file_status(id, FileStatus::Changed(FileStamp { size: 9, mtime_ns: 9, device: 1, inode: 2 }));
         assert!(s.generated_view(id).is_none(), "an old version's list stayed");
+        // A look that started before the change comes back after it: about the old version, so it's dropped.
+        assert!(before.is_some() && s.own_stamp(id) != before);
+        s.set_generated_view_for(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))), before);
+        assert!(s.generated_view(id).is_none(), "a late answer about the old version was shown");
+        s.set_generated_view_for(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))), s.own_stamp(id));
+        assert!(s.generated_view(id).is_some(), "an answer about this version is shown");
+
         s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
         s.go_dormant(id);
         assert!(s.generated_view(id).is_none(), "a dormant tab held its list");
@@ -3313,6 +3337,9 @@ mod tests {
         again.restore(&record, HashMap::new()).unwrap();
         again.wake_active();
         assert_eq!(shown(&again), shown(&s), "the folds come back");
+        // Another version of the file: its entries aren't these, so the folds go.
+        again.apply_file_status(again.active().unwrap(), FileStatus::Changed(FileStamp { size: 9, mtime_ns: 9, device: 1, inode: 2 }));
+        assert!(again.to_record().tabs[0].contents_folds.is_empty(), "folds by entry number stayed for another version");
         // Back to what following does is no fold at all.
         s.toggle_contents_section(id, 0);
         s.toggle_contents_section(id, 2);

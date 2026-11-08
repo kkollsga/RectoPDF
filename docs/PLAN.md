@@ -148,6 +148,9 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [x] Generated contents: `recto contents --generated`, then a quiet offer in the sidebar when a file's own are missing or look bad. distillPDF's headings, in a helper with a memory limit, labelled as generated
 - [x] The owner's first use, contents: the full name at once in the row's colour, sections folding from a chevron, kept in the record, the slim thumb always shown with no track in the sidebar, and the wrong page numbers and indents found to be the files' own and now read as bad, which offers generated contents
 - [ ] The page area's scroller to use `recto_session::SCROLL_THUMB` (`AppCore.scroll_thumb()`), as the sidebar's does: the reader-UI worker's
+- [ ] Accessibility of the sidebar's own thumb and the fold chevron: a VoiceOver role and value for `ThumbView`, a way to fold a section without a pointer (a key or an accessibility action), and Increase Contrast for the thumb's colours
+- [ ] The helper's lockfile against the main one: compare every package the two share, not only lopdf
+- [ ] The hidden-text check marks parts of a NASA map's symbol-font markers (`!` glyphs on 3 pages of `ntrs20240002628`) as hidden: no words, but `recto text` marks them
 - [ ] Generated contents follow-ups: go to a heading's place on its page, not only its page (`place` is in the answer); `recto index clear` takes generated contents too; a heading quality pass over legal texts, where distillPDF takes numbered paragraphs for headings and misses `Article N`; headings on a turned page, where distillPDF 0.1.7 finds none (see `docs/ENGINEERING.md`)
 - [x] `recto search --regex` by ripgrep's engine in process, and `--rank` by BM25, with no new index (owner, 2026-11-07)
 - [x] What blind agents asked for: a whole-document hit total in `search`

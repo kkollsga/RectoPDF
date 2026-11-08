@@ -48,27 +48,66 @@ pub fn glyph_is_ground_coloured(pixels: &[u8], width: i32, height: i32, stride: 
     if x1 <= x0 || y1 <= y0 {
         return false;
     }
-    // Colours to 4 bits a channel: anti-aliasing and dithering land in the same bin.
-    let mut bins = [0u32; 4096];
-    let mut total = 0u32;
+    // Half or more of the box within reach of the glyph's colour: a count, with no table to fill for each of a page's characters.
+    let (mut close, mut total) = (0u32, 0u32);
+    let near = |pixel: &[u8; 4]| (i32::from(pixel[2]) - i32::from(rgb.0)).abs() <= SAME_AS_GROUND && (i32::from(pixel[1]) - i32::from(rgb.1)).abs() <= SAME_AS_GROUND && (i32::from(pixel[0]) - i32::from(rgb.2)).abs() <= SAME_AS_GROUND;
     for y in y0..y1 {
         let start = y as usize * stride + x0 as usize * 4;
         let end = y as usize * stride + x1 as usize * 4;
         let Some(row) = pixels.get(start..end) else { return false };
         for px in row.as_chunks::<4>().0 {
-            let (b, g, r) = (usize::from(px[0] >> 4), usize::from(px[1] >> 4), usize::from(px[2] >> 4));
-            bins[(r << 8) | (g << 4) | b] += 1;
+            close += u32::from(near(px));
             total += 1;
         }
     }
-    let Some((bin, count)) = bins.iter().enumerate().max_by_key(|(_, count)| **count) else { return false };
-    if *count * 2 < total {
-        return false;
-    }
-    let centre = |part: usize| ((part as i32) << 4) + 8;
-    let (r, g, b) = (centre(bin >> 8), centre((bin >> 4) & 15), centre(bin & 15));
-    (r - i32::from(rgb.0)).abs() <= SAME_AS_GROUND && (g - i32::from(rgb.1)).abs() <= SAME_AS_GROUND && (b - i32::from(rgb.2)).abs() <= SAME_AS_GROUND
+    total > 0 && close * 2 >= total
 }
+
+/// Fewest pixels a character has to change against its ground for it to be seen.
+pub const SEEN_PIXELS: u32 = 3;
+
+/// Whether drawing a character adds nothing anyone could see: its box drawn with it (`with`) and with its text object turned off (`without`), over the same region. A pixel counts only if the character took it farther from the colour most of its box is drawn in without it: contrast it added. So white text over a paragraph, which only paints white over black strokes on a white page, adds nothing, and bold black text on white, or white text on a dark box, adds a great deal. The cheap colour test only proposes; this decides. BGRx, both buffers `stride` bytes a row; never reads outside them.
+pub fn adds_nothing_seen(with: &[u8], without: &[u8], stride: usize, (width, height): (i32, i32), (x0, y0, x1, y1): (i32, i32, i32, i32)) -> bool {
+    let (x0, x1) = (x0.min(x1).saturating_sub(INK_PADDING_PX).max(0), x0.max(x1).saturating_add(INK_PADDING_PX).min(width));
+    let (y0, y1) = (y0.min(y1).saturating_sub(INK_PADDING_PX).max(0), y0.max(y1).saturating_add(INK_PADDING_PX).min(height));
+    if x1 <= x0 || y1 <= y0 {
+        return true;
+    }
+    let mut bins = [0u32; 4096];
+    let rows = |buffer: &'_ [u8], y: i32| buffer.get(y as usize * stride + x0 as usize * 4..y as usize * stride + x1 as usize * 4).map(|row| row.as_chunks::<4>().0.to_vec());
+    for y in y0..y1 {
+        let Some(row) = rows(without, y) else { return false };
+        for px in row {
+            bins[(usize::from(px[2] >> 4) << 8) | (usize::from(px[1] >> 4) << 4) | usize::from(px[0] >> 4)] += 1;
+        }
+    }
+    let Some((bin, _)) = bins.iter().enumerate().max_by_key(|(_, count)| **count) else { return false };
+    let centre = |part: usize| ((part as i32) << 4) + 8;
+    let ground = [centre(bin & 15), centre((bin >> 4) & 15), centre(bin >> 8)];
+    let (mut seen, mut changed, mut all) = (0, 0u32, 0u32);
+    for y in y0..y1 {
+        let (Some(drawn), Some(under)) = (rows(with, y), rows(without, y)) else { return false };
+        for (px, before) in drawn.iter().zip(&under) {
+            all += 1;
+            if (0..3).any(|channel| (i32::from(px[channel]) - i32::from(before[channel])).abs() >= INK_RANGE) {
+                changed += 1;
+            }
+            // Farther from the ground than it was without the character, by more than anti-aliasing: contrast it added. White painted over black strokes brings them nearer the white ground, and its grey edges too.
+            let from_ground = |pixel: &[u8; 4]| (0..3).map(|channel| (i32::from(pixel[channel]) - ground[channel]).abs()).max().unwrap_or(0);
+            if from_ground(px) > from_ground(before) + INK_RANGE && from_ground(px) > SAME_AS_GROUND {
+                seen += 1;
+                if seen >= SEEN_PIXELS {
+                    return false;
+                }
+            }
+        }
+    }
+    // Or it changes much of its box, against whatever's under it there: a white dot in a black one, the hollow vertex of a graph, is its whole shape. White text over a paragraph changes only where it crosses the paragraph's strokes.
+    changed * 100 < all * SHAPE_PERCENT
+}
+
+/// The share of its padded box a character must change, against what's under it, to be seen by its shape alone.
+pub const SHAPE_PERCENT: u32 = 18;
 
 #[cfg(test)]
 mod tests {
@@ -108,6 +147,53 @@ mod tests {
         let dark = vec![20u8; 40 * 40 * 4];
         assert!(!glyph_is_ground_coloured(&dark, 40, 40, 160, whole, (255, 255, 255)), "white on a dark box can be seen");
         assert!(!glyph_is_ground_coloured(&dark, 40, 40, 160, (60, 60, 80, 80), (0, 0, 0)), "off the bitmap is nothing");
+    }
+
+    /// Failure: bold black text, which covers more than half its box, is marked hidden because its own colour is the box's main one, so a heading, the big "990" on an IRS form, or a line of display type, goes from contents, `recto text` and a copy. Drawn with and without it, it adds black to white, and that's seen; white painted over black strokes on a white page isn't.
+    #[test]
+    fn what_a_glyph_adds_decides_not_its_colour() {
+        let white = vec![255u8; 20 * 20 * 4];
+        let mut bold = white.clone();
+        for px in bold.chunks_mut(4).take(300) {
+            px[..3].copy_from_slice(&[0, 0, 0]);
+        }
+        let whole = (0, 0, 20, 20);
+        assert!(!adds_nothing_seen(&bold, &white, 80, (20, 20), whole), "bold black on white is seen");
+        // Black strokes of a paragraph, and the same with white painted over some of them.
+        let mut paragraph = white.clone();
+        for row in 0..20 {
+            for x in [3usize, 4, 10, 11] {
+                paragraph[(row * 20 + x) * 4..(row * 20 + x) * 4 + 3].copy_from_slice(&[0, 0, 0]);
+            }
+        }
+        let mut painted = paragraph.clone();
+        for row in 5..15 {
+            painted[(row * 20 + 10) * 4..(row * 20 + 10) * 4 + 3].copy_from_slice(&[255, 255, 255]);
+        }
+        assert!(adds_nothing_seen(&painted, &paragraph, 80, (20, 20), whole), "white over a paragraph adds nothing");
+        let dark = vec![20u8; 20 * 20 * 4];
+        let mut on_dark = dark.clone();
+        on_dark[..40].fill(255);
+        assert!(!adds_nothing_seen(&on_dark, &dark, 80, (20, 20), whole), "white on a dark box is seen");
+        assert!(adds_nothing_seen(&white, &white, 80, (20, 20), whole), "nothing changed is nothing seen");
+        // A white dot drawn in a black one, a graph's hollow vertex: its whole shape changes, so it's seen.
+        let disk = vec![0u8; 20 * 20 * 4];
+        let mut hollow = disk.clone();
+        for row in 4..16 {
+            for x in 4..16 {
+                hollow[(row * 20 + x) * 4..(row * 20 + x) * 4 + 3].copy_from_slice(&[255, 255, 255]);
+            }
+        }
+        let mut page = white.clone();
+        for row in 2..18 {
+            page[row * 80 + 8..row * 80 + 72].fill(0);
+        }
+        let mut dotted = page.clone();
+        for row in 4..16 {
+            dotted[row * 80 + 16..row * 80 + 64].fill(255);
+        }
+        assert!(!adds_nothing_seen(&dotted, &page, 80, (20, 20), whole), "a hollow vertex is seen");
+        let _ = (disk, hollow);
     }
 
     /// Failure: thin glyphs like `·` read as hidden, because their box lands a pixel beside the ink. Padding forgives that.

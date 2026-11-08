@@ -435,6 +435,34 @@ fn white_text_over_a_paragraph_is_marked_hidden() {
     assert_eq!(marked("ordinary body"), 0, "the paragraph under it is still seen");
 }
 
+/// Failure: heavy type is marked hidden because it covers more than half its box, so its own colour is the box's main one: bold headings, display type, heavy numerals like an IRS form's "990", thin letters and marks that are mostly ink at a large size (`I l | .`), and solid symbols. They then go from `recto text`, a copy and generated contents. A review's crafted `bold_solid.pdf` and bench100's `forms_irs_f990.pdf`.
+#[test]
+fn heavy_type_is_never_marked_hidden() {
+    let _turn = turn();
+    let content = "BT /F2 28 Tf 72 720 Td (1 Introduction) Tj ET\n\
+        BT /F2 48 Tf 72 640 Td (Will. Fill) Tj ET\n\
+        BT /F2 96 Tf 72 520 Td (990) Tj ET\n\
+        BT /F2 120 Tf 72 360 Td (I l | .) Tj ET\n\
+        BT /F2 72 Tf 72 240 Td (\\225 \\267 #) Tj ET\n\
+        BT /F1 10 Tf 72 120 Td (Body text in an ordinary size under them.) Tj ET\n\
+        q 1 1 1 rg BT /F2 20 Tf 300 640 Td (HIDDENWHITE) Tj ET Q\n";
+    let objects = vec![
+        recto_testpdf::Object::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>".into()),
+        recto_testpdf::Object::Stream { dict: String::new(), data: content.as_bytes().to_vec() },
+        recto_testpdf::Object::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".into()),
+        recto_testpdf::Object::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>".into()),
+    ];
+    let file = TempPdf::new("heavy.pdf", &recto_testpdf::build(&objects));
+    let mut backend = open(&file);
+    let page = backend.page_text(0, TextOptions { boxes: false, hidden_check: true }).unwrap();
+    assert!(page.hidden_checked);
+    let text: String = page.chars.iter().map(|record| record.ch()).collect();
+    let flagged: String = page.chars.iter().filter(|record| record.has(CharRecord::NO_INK)).map(|record| record.ch()).collect();
+    assert_eq!(flagged, "HIDDENWHITE", "only the white line is hidden, in {text:?}");
+}
+
 /// Failure: an ordinary page reports hidden text, so the flag means nothing and an agent learns to ignore it.
 #[test]
 fn an_ordinary_page_has_no_hidden_text() {

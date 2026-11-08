@@ -656,8 +656,8 @@ enum CoreCall {
     ContentsAction(TabId, recto_session::ContentsAction),
     /// Generated contents were made, or failed: tabs waiting for them look.
     GeneratedFinished,
-    /// What a look off this thread found of a tab's generated contents.
-    GeneratedView(TabId, recto_session::GeneratedView),
+    /// What a look off this thread found of a tab's generated contents, for the version of the file it looked at.
+    GeneratedView(TabId, recto_session::GeneratedView, Option<FileStamp>),
     /// A contents section's chevron: fold it or open it.
     ToggleSection(TabId, u32),
 }
@@ -2151,7 +2151,7 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::ToggleAgentIcon => set_view(inner, &mut events, |view| view.agent_icon_hidden = !view.agent_icon_hidden),
             CoreCall::ContentsAction(id, action) => generated_contents::act(inner, id, action),
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
-            CoreCall::GeneratedView(id, view) => host.session.with_session(|session| session.set_generated_view(id, view)),
+            CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::ToggleSection(id, entry) => host.session.with_session(|session| session.toggle_contents_section(id, entry)),
             CoreCall::SetFocus(focus) => {
                 let view = host.session.with_session(|session| {

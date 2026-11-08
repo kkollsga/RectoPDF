@@ -108,12 +108,18 @@ fn misnested(toc: &Toc) -> usize {
     let entries = toc.entries();
     let numbers: Vec<Option<([u16; 4], usize)>> = entries.iter().map(|entry| section_number(toc.title(entry))).collect();
     let mut wrong = 0;
-    // The latest entry with each length of number under each parent.
+    // The latest entry with each length of number under each parent, and whether a parent's numbered children start again at 1, as a chapter's own "1. 2. 3." do.
     let mut latest: std::collections::HashMap<(u32, usize), usize> = std::collections::HashMap::new();
+    let mut restarts: std::collections::HashMap<u32, bool> = std::collections::HashMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if let Some((number, parts)) = numbers[index] {
+            restarts.entry(entry.parent).or_insert(number[parts - 1] == 1);
+        }
+    }
     for (index, entry) in entries.iter().enumerate() {
         let Some((number, parts)) = numbers[index] else { continue };
         let parent = numbers.get(entry.parent as usize).copied().flatten();
-        let under_its_sibling = parent.is_some_and(|(above, above_parts)| above_parts == parts && number[..parts - 1] == above[..parts - 1] && number[parts - 1] > above[parts - 1]);
+        let under_its_sibling = !restarts.get(&entry.parent).copied().unwrap_or(false) && parent.is_some_and(|(above, above_parts)| above_parts == parts && number[..parts - 1] == above[..parts - 1] && number[parts - 1] > above[parts - 1]);
         let beside_its_parent = parts > 1 && latest.get(&(entry.parent, parts - 1)).and_then(|at| numbers[*at]).is_some_and(|(before, _)| number[..parts - 1] == before[..parts - 1]);
         if under_its_sibling || beside_its_parent {
             wrong += 1;
@@ -236,6 +242,9 @@ mod tests {
         // Numbered as they're nested, or numbers that aren't section numbers.
         let good = titled(&[("1. Introduction", 0, NONE, 0), ("1.1 Scope", 1, 0, 1), ("1.2 Terms", 2, 0, 1), ("2. Method", 4, NONE, 0), ("2.1 Data", 5, 3, 1), ("2024 in review", 8, NONE, 0), ("3D printing", 9, NONE, 0), ("3. Results", 10, NONE, 0)]);
         assert_eq!(judge(&good, 12), ContentsVerdict::Fine);
+        // A chapter whose own sections are numbered from 1 again, "3. Results" holding "1. Data" to "4. Limits": nested as its numbering says.
+        let restarting = titled(&[("3. Results", 0, NONE, 0), ("1. Data", 1, 0, 1), ("2. Method", 2, 0, 1), ("3. Findings", 3, 0, 1), ("4. Limits", 4, 0, 1), ("4. Discussion", 6, NONE, 0)]);
+        assert_eq!(judge(&restarting, 12), ContentsVerdict::Fine);
         assert_eq!(section_number("3.1 Computing"), Some(([3, 1, 0, 0], 2)));
         assert_eq!(section_number("3.1. Computing").map(|(_, parts)| parts), Some(2));
         assert_eq!(section_number("2024 report"), None);
