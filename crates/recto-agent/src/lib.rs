@@ -973,8 +973,8 @@ impl Event {
         Self { name, data }
     }
 
-    /// The group `watch --events` selects it by.
-    pub fn group(&self) -> &'static str {
+    /// The group `watch --events` selects it by, if it's listed.
+    pub fn group(&self) -> Option<&'static str> {
         table::event_group(self.name)
     }
 

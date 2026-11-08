@@ -848,19 +848,29 @@ pub static TABLE: &[Spec] = &[
 /// What `watch --events` can ask for.
 pub const EVENT_GROUPS: &[&str] = &["tabs", "pages", "edits", "draws", "indexing", "contents", "access", "view", "find"];
 
-/// The group an event belongs to.
-pub fn event_group(name: &str) -> &'static str {
-    match name {
-        "tab_opened" | "tab_closed" | "tab_activated" => "tabs",
-        "page_changed" => "pages",
-        "edits_changed" | "saved" => "edits",
-        "page_drawn" | "page_failed" => "draws",
-        "view_changed" => "view",
-        "find_changed" | "find_finished" => "find",
-        "indexing_started" | "indexing_finished" => "indexing",
-        "contents_generating" | "contents_generated" => "contents",
-        _ => "access",
-    }
+/// Every event a session tells watchers of, with the `watch --events` group it's in, in the order of [`EVENT_GROUPS`]. **No default** (review C6): an event that isn't here has no group, so `--events` can't select it, and a test reads the code for every `Event::new` and holds it to this list.
+pub const EVENTS: &[(&str, &str)] = &[
+    ("tab_opened", "tabs"),
+    ("tab_closed", "tabs"),
+    ("tab_activated", "tabs"),
+    ("page_changed", "pages"),
+    ("edits_changed", "edits"),
+    ("saved", "edits"),
+    ("page_drawn", "draws"),
+    ("page_failed", "draws"),
+    ("indexing_started", "indexing"),
+    ("indexing_finished", "indexing"),
+    ("contents_generating", "contents"),
+    ("contents_generated", "contents"),
+    ("level_changed", "access"),
+    ("view_changed", "view"),
+    ("find_changed", "find"),
+    ("find_finished", "find"),
+];
+
+/// The group an event belongs to, if it's listed.
+pub fn event_group(name: &str) -> Option<&'static str> {
+    EVENTS.iter().find(|(event, _)| *event == name).map(|(_, group)| *group)
 }
 
 /// The row for a wire name. Rows sharing a tag share their access, which a test holds them to.
@@ -2038,12 +2048,81 @@ mod tests {
     fn documented_events_belong_to_a_group() {
         for spec in TABLE {
             for event in spec.emits {
-                assert_ne!(event_group(event), "access", "{event} has no group of its own, so `--events` can't select it");
+                assert!(event_group(event).is_some(), "{event} has no group of its own, so `--events` can't select it");
             }
         }
         for group in EVENT_GROUPS {
             assert!(skill::reference_md().contains(&format!("`{group}`")), "{group}");
         }
         let _ = Command::Stop {};
+    }
+
+    /// The event names in the first argument of each `Event::new(` in some code, with the line of each, and the lines whose name isn't a literal at all.
+    fn emitted_names(code: &str) -> (Vec<(String, usize)>, Vec<usize>) {
+        let (mut names, mut unnamed) = (Vec::new(), Vec::new());
+        for (number, line) in code.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let mut rest = line;
+            while let Some(at) = rest.find("Event::new(") {
+                rest = &rest[at + "Event::new(".len()..];
+                // The first argument: up to the comma at depth 0.
+                let mut depth = 0i32;
+                let end = rest
+                    .char_indices()
+                    .find(|&(_, c)| {
+                        match c {
+                            '(' | '{' | '[' => depth += 1,
+                            ')' | '}' | ']' => depth -= 1,
+                            _ => {}
+                        }
+                        depth < 0 || (depth == 0 && c == ',')
+                    })
+                    .map_or(rest.len(), |(at, _)| at);
+                let literals: Vec<&str> = rest[..end].split('"').skip(1).step_by(2).collect();
+                if literals.is_empty() {
+                    unnamed.push(number + 1);
+                }
+                names.extend(literals.into_iter().map(|name| (name.to_string(), number + 1)));
+            }
+        }
+        (names, unnamed)
+    }
+
+    /// Failure (review C6): an event made somewhere isn't listed, so it fell into the `access` group, and `watch --events` never selected it where a watcher would look. Every `Event::new` in every crate names its event with a literal, and each one is listed with a group `--events` takes. The reference lists every group's events from the same list.
+    #[test]
+    fn every_emitted_event_is_listed() {
+        let (names, _) = emitted_names(r#"x.push(Event::new(if a { "tab_opened" } else { "tab_activated" }, json!({ "tab": 1 }))); Event::new("saved", v)"#);
+        assert_eq!(names.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["tab_opened", "tab_activated", "saved"]);
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+        let mut folders = vec![crates];
+        let mut seen = 0;
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() && path.file_name().is_some_and(|name| name != "target") {
+                    folders.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "rs") && !path.ends_with("recto-agent/src/table.rs") {
+                    // This file makes no events, and this test's own code would read as if it did.
+                    let code = std::fs::read_to_string(&path).unwrap();
+                    let (names, unnamed) = emitted_names(&code);
+                    assert!(unnamed.is_empty(), "{}:{unnamed:?}: an event is named with a literal, so it can be checked", path.display());
+                    for (name, line) in names {
+                        seen += 1;
+                        let group = event_group(&name).unwrap_or_else(|| panic!("{}:{line}: `{name}` isn't in `EVENTS`, so it has no group", path.display()));
+                        assert!(EVENT_GROUPS.contains(&group), "{name}: {group}");
+                    }
+                }
+            }
+        }
+        assert!(seen > 30, "the code was read: {seen} events found");
+        for group in EVENT_GROUPS {
+            assert!(EVENTS.iter().any(|(_, listed)| listed == group), "{group} has no events");
+        }
+        let reference = skill::reference_md();
+        for (event, _) in EVENTS {
+            assert!(reference.contains(&format!("`{event}`")), "{event} is in the reference");
+        }
     }
 }

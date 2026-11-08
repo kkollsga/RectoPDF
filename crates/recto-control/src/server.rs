@@ -736,13 +736,13 @@ impl<H: Host> Loop<H> {
         for event in events {
             let group = event_group(event.name);
             for index in 0..self.conns.len() {
-                let looks = matches!(&self.conns[index].state, State::Waiting { what: WaitFor::Condition { condition, .. }, .. } if condition_topics(*condition).contains(&group));
+                let looks = matches!(&self.conns[index].state, State::Waiting { what: WaitFor::Condition { condition, .. }, .. } if group.is_some_and(|group| condition_topics(*condition).contains(&group)));
                 if looks {
                     self.look(index);
                     continue;
                 }
                 let State::Watching { groups, remaining, delivered, .. } = &mut self.conns[index].state else { continue };
-                if groups.as_ref().is_some_and(|groups| !groups.iter().any(|wanted| wanted == group)) {
+                if groups.as_ref().is_some_and(|groups| !group.is_some_and(|group| groups.iter().any(|wanted| wanted == group))) {
                     continue;
                 }
                 *delivered += 1;
