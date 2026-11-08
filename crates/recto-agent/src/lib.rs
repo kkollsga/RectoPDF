@@ -4,6 +4,7 @@
 //! This crate holds no state of its own. A caller brings a session through [`SessionAccess`], and [`execute`] takes the session only for as long as each step needs it: reading a file or drawing
 //! a page happens outside, so one slow PDF never stalls another client. [`table`] is the one list of commands, and the CLI grammar, `recto help`, `SKILL.md` and the level checks all come from it.
 
+pub mod find;
 pub mod generated;
 pub mod human;
 pub mod index;
@@ -201,6 +202,19 @@ pub enum Command {
         /// The active tab's layout: `single`, `two-up` or `two-up-cover`.
         #[serde(default)]
         layout: Option<String>,
+    },
+    /// The app's Find, in the document being read: a query, a step to the next or previous hit, or closing. With nothing, only says.
+    Find {
+        #[serde(default)]
+        query: Option<String>,
+        #[serde(default)]
+        next: bool,
+        #[serde(default)]
+        previous: bool,
+        #[serde(default)]
+        close: bool,
+        #[serde(default)]
+        limit: Option<u32>,
     },
     /// Tabs side by side: which, and separate or synced scroll. With nothing, only says.
     Compare {
@@ -564,6 +578,7 @@ impl Command {
             Self::Budget {} => "budget",
             Self::View { .. } => "view",
             Self::Compare { .. } => "compare",
+            Self::Find { .. } => "find",
             Self::QaRead { .. } => "qa_read",
             Self::QaDrive { .. } => "qa_drive",
             Self::Render { .. } => "render",
@@ -663,6 +678,8 @@ impl Command {
             Self::QaRead { verb, .. } | Self::QaDrive { verb, .. } => json!({ "verb": recto_core::clean_line(verb) }),
             Self::Settings { auto_update } => json!({ "auto_update": auto_update.as_deref().map(recto_core::clean_line) }),
             Self::Compare { sync, off, .. } => json!({ "sync": sync.as_deref().map(recto_core::clean_line), "off": off }),
+            // Not what's looked for: that's the document's business, as a search's words are.
+            Self::Find { query, next, previous, close, .. } => json!({ "query": query.is_some(), "next": next, "previous": previous, "close": close }),
             Self::Recent {} | Self::RecentClear {} | Self::View { .. } | Self::Wait { .. } | Self::Watch { .. } | Self::WatchStop {} | Self::Log { .. } | Self::Tabs { .. } | Self::Sidebar {} | Self::Budget {} | Self::Sign {} | Self::Status {} | Self::PermissionShow {} | Self::LevelChanged {} | Self::Stop {} | Self::SessionShow {} | Self::SessionSave {} | Self::SessionRestore {} | Self::SessionCheck {} | Self::UpdateStatus {} | Self::UpdateCheck {} | Self::UpdateInstall {} => Value::Null,
         }
     }
@@ -905,6 +922,10 @@ pub trait SessionAccess {
     fn generating(&self) -> Option<&dyn generated::Generating> {
         None
     }
+    /// How Find runs in the background here, if it does. Without it, `recto find` finds in the command itself.
+    fn finding(&self) -> Option<&dyn find::Finding> {
+        None
+    }
 }
 
 impl<L: DocLoader + Clone> SessionAccess for Mutex<Session<L>> {
@@ -1007,7 +1028,9 @@ pub fn execute<A: SessionAccess>(access: &A, level: Level, command: &Command, ev
         return Err(refusal(table::display_name(command.tag()), level, needed));
     }
     // A protected document the person opened with its password gives an agent nothing read from it: agent report §5.5. Closing it, tapping its row or asking where it is reads nothing of it, and what they answer leaves it out and says why. Asked before the tab is touched, woken or held.
-    if let Some(selector) = command.tab_selector()
+    // Find has no tab of its own: it's in the document being read, so that's the one asked about.
+    let about = command.tab_selector().or_else(|| matches!(command, Command::Find { .. }).then_some("active"));
+    if let Some(selector) = about
         && !matches!(command, Command::Close { .. } | Command::Tap { .. } | Command::Where { .. })
         && access.with(|s| select(s, selector).is_ok_and(|id| s.withheld_from_agents(id)))
     {
@@ -1132,6 +1155,7 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             Ok(json!({ "paper": paper_name(view), "papers": recto_session::Paper::ALL.map(recto_session::Paper::name), "sidebar": !view.sidebar_hidden, "agent_icon": !view.agent_icon_hidden, "layout": s.active().and_then(|id| s.spread_of(id)).map(recto_session::record::Spread::name) }))
         }),
         Command::Compare { tabs, sync, off } => compare(access, tabs.as_deref(), sync.as_deref(), *off, events),
+        Command::Find { query, next, previous, close, limit } => find::command(access, &find::Asked { query: query.as_deref(), next: *next, previous: *previous, close: *close, limit: *limit }, events),
         Command::QaRead { .. } | Command::QaDrive { .. } => Err(qa_needs_app()),
         Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. } => Err(update_needs_app()),
         Command::Budget {} => Ok(json!({
@@ -2147,6 +2171,7 @@ mod tests {
             Command::Facts { tab: tab() },
             Command::Contents { tab: tab(), from: None, limit: None, depth: None, generated: false },
             Command::Search { tab: tab(), query: "x".into(), pages: None, limit: None, scan: false, regex: false, rank: false, context: None },
+            Command::Find { query: Some("x".into()), next: false, previous: false, close: false, limit: None },
             Command::Index { tab: tab(), agent: false },
             Command::IndexStatus { tab: tab() },
             Command::IndexClear { tab: tab(), all: false },
@@ -2842,7 +2867,7 @@ mod protected_tests {
         }
     }
 
-    /// Failure (review O1): once the person types a protected PDF's password, what was decrypted reaches an agent: its chapter titles in `sidebar`, its length or place in `where`, `tabs`, `session show` or a comparison, its pages through `goto`, `goto label`, `links`, `follow`, `back`, `forward`, `wait` or an open with `--page`, or anything from `contents`, `facts`, `search` or `text`, at any level. `encrypted` isn't the gate, as a file anyone may open is encrypted too.
+    /// Failure (review O1): once the person types a protected PDF's password, what was decrypted reaches an agent: its chapter titles in `sidebar`, its length or place in `where`, `tabs`, `session show` or a comparison, its pages through `goto`, `goto label`, `links`, `follow`, `back`, `forward`, `wait` or an open with `--page`, Find's hits through `find`, or anything from `contents`, `facts`, `search` or `text`, at any level. `encrypted` isn't the gate, as a file anyone may open is encrypted too.
     #[test]
     fn nothing_decrypted_reaches_an_agent_at_any_level() {
         let mut session = Session::new(Unlocked);
@@ -2872,6 +2897,9 @@ mod protected_tests {
                 Command::Follow { tab: tab.clone(), page: 1, link: 1 },
                 Command::Back { tab: tab.clone() },
                 Command::Forward { tab: tab.clone() },
+                Command::Find { query: Some("Secret".into()), next: false, previous: false, close: false, limit: None },
+                Command::Find { query: None, next: true, previous: false, close: false, limit: None },
+                Command::Find { query: None, next: false, previous: false, close: false, limit: None },
                 Command::Edits { tab: tab.clone() },
                 Command::Signatures { tab: tab.clone() },
                 Command::Open { path: "/d/locked.pdf".into(), page: Some(7) },

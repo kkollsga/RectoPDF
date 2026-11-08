@@ -4,7 +4,10 @@
 #   app/qa/save-shots.sh OUT_DIR READER.pdf
 #
 # OUT_DIR gets, each -light and -dark: edited (page 1 turned, the red button's dot and the Save icon), saved (the same view after ⌘S's path, with the dot and the icon gone),
-# close-prompt (File > Close with an unsaved turn) and certified-alert (Save on a certified copy, refused). READER.pdf is copied: the original is never written.
+# close-prompt (File > Close with an unsaved turn), delete-edited and delete-saved (page 2 deleted, then saved by the rewrite), undo-past-delete (undone past that save,
+# page 2 back from the history's copy), signed-save-off and certified-save-off (a change a Save would break the signature with: the Save icon is there and off),
+# signed-copy-saved (Save As's unsigned copy, with its note) and usage-rights-saved (a delete on a file with usage rights alone, saved in place, with its note).
+# READER.pdf is copied: the original is never written.
 set -euo pipefail
 out="$1"; reader="$2"
 here="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -27,33 +30,43 @@ until_state() {
     echo "never held: $1" >&2; return 1
 }
 
-# A certified copy: the reader's file with `/Perms /DocMDP` added to its catalog by an appended update, as a certification has it.
-certify() { # IN OUT
-    /usr/bin/python3 -I - "$1" "$2" <<'PY'
+# A signed copy of the reader's file, by an appended update: `certified` adds `/Perms /DocMDP`, `signed` a signed signature field, `usage_rights` `/Perms /UR3`.
+sign() { # KIND IN OUT
+    /usr/bin/python3 -I - "$1" "$2" "$3" <<'PY'
 import re, sys
-data = open(sys.argv[1], 'rb').read()
+kind = sys.argv[1]
+data = open(sys.argv[2], 'rb').read()
 startxref = int(re.findall(rb'startxref\s+(\d+)', data)[-1])
 root = re.findall(rb'/Root\s+(\d+)\s+(\d+)\s+R', data)[-1]
 size = max(int(n) for n in re.findall(rb'/Size\s+(\d+)', data))
 num, gen = int(root[0]), int(root[1])
-# The catalog's dictionary as the file has it, last definition wins; its /Perms is replaced.
 body = re.findall(rb'(?<!\d)' + str(num).encode() + rb'\s+' + str(gen).encode() + rb'\s+obj\s*<<(.*?)>>\s*endobj', data, re.S)
 if not body:
     sys.exit('the catalog is in an object stream; use another file')
 cat = re.sub(rb'/Perms\s*<<.*?>>', b'', body[-1], flags=re.S)
-sig = size
+sig, field = size, size + 1
 out = bytearray(data if data.endswith(b'\n') else data + b'\n')
 offsets = {}
 offsets[sig] = len(out)
-out += b'%d 0 obj\n<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /Reference [ << /Type /SigRef /TransformMethod /DocMDP /TransformParams << /Type /TransformParams /P 1 /V /1.2 >> >> ] >>\nendobj\n' % sig
+method = b'/UR3' if kind == 'usage_rights' else b'/DocMDP'
+out += b'%d 0 obj\n<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 10 20 30] /Contents <00> /Reference [ << /Type /SigRef /TransformMethod %s /TransformParams << /Type /TransformParams /P 1 /V /1.2 >> >> ] >>\nendobj\n' % (sig, method)
+extra = b''
+if kind == 'signed':
+    offsets[field] = len(out)
+    out += b'%d 0 obj\n<< /FT /Sig /T (Tenant) /V %d 0 R >>\nendobj\n' % (field, sig)
+    extra = b' /AcroForm << /Fields [%d 0 R] /SigFlags 3 >>' % field
+elif kind == 'certified':
+    extra = b' /Perms << /DocMDP %d 0 R >>' % sig
+else:
+    extra = b' /Perms << /UR3 %d 0 R >>' % sig
 offsets[num] = len(out)
-out += b'%d %d obj\n<<' % (num, gen) + cat + b' /Perms << /DocMDP %d 0 R >> >>\nendobj\n' % sig
+out += b'%d %d obj\n<<' % (num, gen) + cat + extra + b' >>\nendobj\n'
 xref = len(out)
 out += b'xref\n0 1\n0000000000 65535 f \n'
 for n in sorted(offsets):
     out += b'%d 1\n%010d %05d n \n' % (n, offsets[n], gen if n == num else 0)
-out += b'trailer\n<< /Size %d /Root %d %d R /Prev %d >>\nstartxref\n%d\n%%%%EOF\n' % (sig + 1, num, gen, startxref, xref)
-open(sys.argv[2], 'wb').write(out)
+out += b'trailer\n<< /Size %d /Root %d %d R /Prev %d >>\nstartxref\n%d\n%%%%EOF\n' % (field + 1, num, gen, startxref, xref)
+open(sys.argv[3], 'wb').write(out)
 PY
 }
 
@@ -84,21 +97,62 @@ for look in light dark; do
     r undo
     until_state "not a['document_edited']"
 
-    signed="$root/certified-$look.pdf"
-    certify "$reader" "$signed"
-    r open "$signed"
-    settle
-    r page rotate 1 --by 90
-    until_state "a['document_edited']"
-    r qa button save
-    until_state "a['sheet'].get('kind') == 'save_problem'"
-    settle
-    shot "certified-alert-$look"
-    r qa sheet-answer first
-    until_state "not a['sheet']"
-    r undo
-    until_state "not a['document_edited']"
     r close
+
+    # A delete, saved by the rewrite, then undone past the save: page 2 comes back from the history's copy.
+    copy="$root/delete-$look.pdf"
+    cp "$reader" "$copy"
+    r open "$copy"
+    settle
+    r qa owner-edit delete:2
+    until_state "a['document_edited'] and a['save_button']['visible']"
+    r goto 2
+    settle
+    shot "delete-edited-$look"
+    r qa button save
+    until_state "not a['document_edited'] and not a['save_button']['visible']"
+    settle
+    shot "delete-saved-$look"
+    r qa owner-edit undo
+    until_state "a['document_edited']"
+    r goto 2
+    settle
+    shot "undo-past-delete-$look"
+    r discard
+    r close
+
+    # A person's signature, and a certification: a change a Save over it would break turns Save off.
+    for kind in signed certified; do
+        signed="$root/$kind-$look.pdf"
+        sign "$kind" "$reader" "$signed"
+        r open "$signed"
+        settle
+        if [ "$kind" = certified ]; then r qa owner-edit rotate:1; else r qa owner-edit delete:2; fi
+        until_state "a['save_button']['visible'] and not a['save_button']['enabled']"
+        settle
+        shot "$kind-save-off-$look"
+        if [ "$kind" = signed ]; then
+            r qa save-as "$root/signed unsigned copy-$look.pdf"
+            until_state "not a['document_edited'] and a.get('copy_notice')"
+            settle
+            shot "signed-copy-saved-$look"
+        else
+            r discard
+        fi
+        r close
+    done
+
+    # Usage rights alone: a delete saves in place, with them removed, and says so quietly.
+    rights="$root/usage-rights-$look.pdf"
+    sign usage_rights "$reader" "$rights"
+    r open "$rights"
+    settle
+    r qa owner-edit delete:2
+    until_state "a['save_button']['visible'] and a['save_button']['enabled']"
+    r qa button save
+    until_state "not a['document_edited'] and a.get('copy_notice')"
+    settle
+    shot "usage-rights-saved-$look"
     r close
 done
 echo "shots are in $out"

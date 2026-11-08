@@ -300,7 +300,7 @@ impl QaBridge {
                 // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
                 return self.ask(verb, value);
             }
-            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "page_type" | "swipe" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
+            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
             // A test's password, for a test's own file: the sheet showing must be asking about a file in the quiet run's state folder or a temp folder, so this can't type into a sheet for one of the person's own (review O6).
             "password" => {
                 check_drive_value(verb, value)?;
@@ -534,7 +534,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         // What shows a window is left out: a quiet run shows none.
         // Save As's sheet is a sheet on the window, as the close prompt is, so a quiet run can show it and answer it.
         "menu" => !matches!(value, "file.open" | "app.about" | "app.quit") && crate::menus::action(value).is_some(),
-        "panel" => value == "toggle" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
+        "panel" => value == "toggle" || value == "edit_mode.done" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
         "button" => one_of(&["sidebar", "zoom", "zoom_reset", "save", "page"]),
         "sheet_answer" => one_of(&["first", "second", "third", "cancel"]),
         "key_action" => one_of(&["undo", "redo"]),
@@ -547,7 +547,9 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "swipe" => value.parse::<f64>().is_ok_and(|delta| delta.is_finite() && delta.abs() <= 100.0),
         "hover" | "reveal" => value == "none" || row(),
         "click_row" => value == "note" || value.strip_prefix("fold:").is_some_and(|row| row.parse::<u32>().is_ok()) || row(),
-        "contents_scroll" | "compare_click" => row(),
+        "contents_scroll" | "compare_click" | "find_click" => row(),
+        "find_type" => value.len() <= recto_session::record::MAX_FIND_BYTES,
+        "find_key" => one_of(&["return", "shift_return", "escape"]),
         "pane_context_menu" => value.split_once(':').is_some_and(|(pane, item)| pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES) && crate::menus::context_menu(None, Some(false)).iter().any(|entry| !entry.id.is_empty() && entry.id == item)),
         "pane_focus" => value.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES),
         "pane_scroll" => value.split_once(':').is_some_and(|(pane, points)| pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES) && points.parse::<f64>().is_ok_and(|points| points.is_finite() && points.abs() <= 1e9)),

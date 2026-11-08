@@ -107,6 +107,8 @@ const MAX_OPENINGS: usize = 4;
 /// How long a job waits for its file to open before the page says so. It stays being tried.
 const OPEN_PATIENCE: Duration = Duration::from_secs(3);
 const OPEN_LOOK: Duration = Duration::from_millis(20);
+/// A page from a PDF added to this one, which has changed since: its page numbers are about the version it was, so what's there now isn't drawn as it.
+const ADDED_FILE_CHANGED: &str = "This page comes from a PDF that has changed or moved since it was added, so it isn't drawn.";
 /// What a page says while its file doesn't answer.
 const NOT_ANSWERING: &str = "This file isn't answering. Its disk may have gone to sleep or been disconnected.";
 
@@ -569,6 +571,13 @@ impl Engine {
         lock(&self.shared.reader).has_selection()
     }
 
+    /// Selects Find's hit and brings it into view: characters `start..end` of a page, from 0. Off the UI thread.
+    pub fn reveal(&self, page: u32, start: u32, end: u32) {
+        let mut reader = lock(&self.shared.reader);
+        reader.reveal_range(recto_index::select::Range { start: recto_index::select::Place { page, at: start }, end: recto_index::select::Place { page, at: end } });
+        self.after(reader);
+    }
+
     pub fn has_document(&self) -> bool {
         lock(&self.shared.reader).has_document()
     }
@@ -860,7 +869,15 @@ fn run(shared: &Shared) {
             continue;
         }
         let mut file_changed = false;
-        let outcome = match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
+        // **An added PDF that's changed isn't drawn from** (the saved point's review): a stat, before each job, since drawing goes by path.
+        let expected = lock(&shared.reader).expected_stamp(job.tab, &job.file);
+        let added_changed = expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
+        let outcome = if added_changed {
+            match job.kind {
+                JobKind::Text { .. } => Outcome::TextFailed,
+                _ => Outcome::PageFailed { message: ADDED_FILE_CHANGED.to_string(), may_pass: false },
+            }
+        } else { match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
             Ok(open) => {
                 lock(&shared.reader).set_cancel(open.doc.cancel_handle());
                 let outcome = do_job(open, &job);
@@ -887,7 +904,7 @@ fn run(shared: &Shared) {
             Err(Unopened::Failed(failure)) => document_failed(failure),
             Err(Unopened::NotWanted) => Outcome::Cancelled,
             Err(Unopened::NotAnswering) => Outcome::PageFailed { message: NOT_ANSWERING.to_string(), may_pass: true },
-        };
+        } };
         publish_workers(shared, &mut renderers);
         let drawn = match (&job.kind, &outcome) {
             (JobKind::Draw { what: DrawKind::Tile | DrawKind::Region, .. }, Outcome::Drawn { .. }) => Some(None),

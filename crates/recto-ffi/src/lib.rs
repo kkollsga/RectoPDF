@@ -5,6 +5,7 @@
 
 #![allow(unsafe_code)] // What UniFFI's macros generate. Nothing here writes any of its own.
 
+mod find;
 mod generated_contents;
 pub mod linking;
 mod menus;
@@ -318,6 +319,12 @@ pub struct SidebarLayout {
     pub tabs_scroll: bool,
     /// The note's height over the contents, or nothing.
     pub note_height: f64,
+    /// Find's whole block over the tabs, and its list's part of that, both 0 while it's closed. The tabs and contents divide what's left.
+    pub find_block: f64,
+    pub find_list: f64,
+    pub find_row: f64,
+    pub find_field: f64,
+    pub find_status: f64,
 }
 
 /// What to do with the contents' scroll, from Rust's rule about following.
@@ -399,6 +406,8 @@ pub struct ReaderView {
     pub save_button: bool,
     /// A password being asked for, for the system's sheet with a secure field.
     pub password_prompt: Option<passwords::PasswordPrompt>,
+    /// Whether it does anything: not while saving, and not when Save over the file would break a person's signature, which Save As's unsigned copy is the way round.
+    pub save_enabled: bool,
     /// Back and Forward can go somewhere in the tab being read: Go > Back and Forward, ⌘[ and ⌘], and a swipe.
     pub can_go_back: bool,
     pub can_go_forward: bool,
@@ -420,6 +429,24 @@ pub struct RecentFile {
     pub path: String,
     /// It's open in a tab now, so choosing it goes there.
     pub open: bool,
+}
+
+/// What the Save icon says when it's off for a signed document.
+const SAVE_OFF_TOOLTIP: &str = "This document is signed, and saving this change would take the signature off, so Save is off. Save As makes an unsigned copy.";
+
+/// **Whether a Save over this file would be refused for its signature,** so Save is off and Save As's copy is unsigned (SPEC decision 27): a person's signature and a change that has to be written anew, or a certification or lock and any change. Usage rights alone don't. The same rule `recto_core::save::save` refuses by.
+fn save_needs_copy(facts: recto_core::save::SignatureFacts, needs_rewrite: bool) -> bool {
+    facts.has_persons_signature() && (needs_rewrite || facts.certified || facts.field_locked)
+}
+
+/// **`qa save-from`'s signature check,** on what was found of the file's signatures: a person's signature refuses it, and so does a file that couldn't be looked
+/// at, as the save itself refuses what it can't look through (review round 2).
+fn save_from_signature_check(facts: Result<recto_core::save::SignatureFacts, recto_core::OpenError>) -> Result<(), AgentError> {
+    match facts {
+        Ok(facts) if !facts.has_persons_signature() => Ok(()),
+        Ok(_) => Err(AgentError::new("signed_needs_copy", recto_core::save::SaveError::SignedNeedsCopy.message(), recto_agent::exit::FAILED)),
+        Err(error) => Err(AgentError::new(error.code(), format!("{} Its signatures couldn't be looked at, so nothing was put in place.", error.message()), recto_agent::exit::FAILED)),
+    }
 }
 
 /// What to say by the page about a copy.
@@ -645,6 +672,10 @@ impl Host for AppHost {
             if events.iter().any(|event| event.name == "contents_generated") {
                 core.push(CoreCall::GeneratedFinished);
             }
+            // The Finder's news, for the sidebar's list and a step waiting for hits.
+            if events.iter().any(|event| matches!(event.name, "find_changed" | "find_finished")) {
+                core.push(CoreCall::Find(find::FindCall::News));
+            }
             notify(events);
         }));
     }
@@ -695,6 +726,14 @@ impl AppHost {
             return Ok(json!({ "safe": check.safe, "busy": busy, "seconds_since_input": check.seconds_since_input }));
         }
         let result = self.session.run(level, command, events);
+        // `recto find --next` went to a hit: the page view selects it, as ⌘G's does.
+        if let (Command::Find { .. }, Ok(answer)) = (command, &result)
+            && let Some(went) = answer.get("went_to").filter(|went| went.is_object())
+            && let (Some(tab), Some(page), Some(start), Some(end)) = (went["tab"].as_u64(), went["page"].as_u64(), went["start"].as_u64(), went["end"].as_u64())
+        {
+            let hit = recto_agent::find::Hit { page: (page as u32).saturating_sub(1), start: start as u32, end: end as u32, before: "".into(), matched: "".into(), after: "".into(), hidden: false };
+            self.core.push(CoreCall::Find(find::FindCall::Reveal(tab as u32, hit)));
+        }
         self.core.push(CoreCall::Reconcile);
         result
     }
@@ -775,6 +814,10 @@ enum CoreCall {
     GeneratedView(TabId, recto_session::GeneratedView, Option<FileStamp>),
     /// A contents section's chevron: fold it or open it.
     ToggleSection(TabId, u32),
+    /// The Find field, its list, and ⌘G.
+    Find(find::FindCall),
+    /// Into edit mode or out, by the owner.
+    SetEditMode(bool),
 }
 
 /// A marker through the session thread's queue, for QA to know what it asked for has happened.
@@ -821,7 +864,7 @@ impl CoreQueue {
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::ClearRecent | CoreCall::Tap(_) | CoreCall::Jump(..) | CoreCall::JumpTyped(..) | CoreCall::Step(_) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(..) | CoreCall::CompareClick(_) | CoreCall::FocusPane(_) | CoreCall::SetSynced(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
+        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::ClearRecent | CoreCall::Tap(_) | CoreCall::Jump(..) | CoreCall::JumpTyped(..) | CoreCall::Step(_) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(..) | CoreCall::CompareClick(_) | CoreCall::FocusPane(_) | CoreCall::SetSynced(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon | CoreCall::Find(_) | CoreCall::SetEditMode(_)) {
             return;
         }
         let mut calls = lock(&self.calls);
@@ -983,18 +1026,22 @@ struct Inner {
     qa: Option<Arc<QaBridge>>,
     paths: Option<StatePaths>,
     open_failure: Mutex<Option<String>>,
-    /// Why something the reader chose couldn't be done, as a notice that goes by itself.
+    /// Why something the reader chose couldn't be done, or what a save has to say, as a notice that goes by itself.
     action_notice: Mutex<Option<String>>,
     /// Passwords typed for protected files that are open, shared with every page view's workers. Memory only.
     keys: Arc<recto_reader::engine::Keyring>,
     /// Passwords being asked for, in turn, on the system's sheet, and what each file's tries have come to.
     password_asks: Mutex<passwords::Asks>,
+    /// The tab showing when the window was last brought up to date: a notice is about what was on screen, so it goes with a change of tab.
+    notice_tab: AtomicU32,
     /// A web or email address a click asked to open, waiting for the person's answer on the sheet.
     link_prompt: Mutex<Option<linking::LinkPrompt>>,
     /// Link sheets asked so far, which numbers each.
     link_prompts_made: AtomicU64,
     /// Saves from the window: how many run, and what one that failed says.
     save_ui: saving::SaveUi,
+    /// The Find field as the session thread last set it, for the UI thread.
+    find_field: Mutex<find::Field>,
 }
 
 /// What the host tells Rust about the window, kept for the record. A short lock: the UI thread sets these and a writer copies them.
@@ -1134,11 +1181,12 @@ impl Inner {
         let usage = |words: String| AgentError::new("usage", words, recto_agent::exit::USAGE);
         let session = &self.host.session;
         let result = match verb {
-            "find" => session.with_session(|session| {
-                let find = session.find().clone();
-                session.set_find(value == "open", &find.query, &find.draft);
+            // What ⌘F and Escape do.
+            "find" => {
+                self.core.push(CoreCall::Find(if value == "open" { find::FindCall::Open } else { find::FindCall::Close }));
+                self.core.flush(Duration::from_secs(5));
                 Ok(())
-            }),
+            }
             "find_query" => session.with_session(|session| {
                 let find = session.find().clone();
                 session.set_find(find.open, value, &find.draft);
@@ -1149,10 +1197,12 @@ impl Inner {
                 session.set_find(find.open, &find.query, value);
                 Ok(())
             }),
-            "edit_mode" => session.with_session(|session| {
-                session.set_edit_mode(value == "on");
+            // What going in does, and what Done does.
+            "edit_mode" => {
+                self.core.push(CoreCall::SetEditMode(value == "on"));
+                self.core.flush(Duration::from_secs(5));
                 Ok(())
-            }),
+            }
             "view_rotation" => match value.parse::<u8>() {
                 Ok(turns) if turns < 4 => session.with_session(|session| {
                     if let Some(id) = session.active() {
@@ -1224,17 +1274,26 @@ impl Inner {
         Some(result)
     }
 
-    /// **What a Save does around its writing, with the writing done by the test,** as Save isn't built: keeps what's needed, notes what's coming and flushes that, puts the file in place, and confirms. Every step's the real one.
+    /// **What a Save does around its writing, with the writing done by the test,** for crash and restore tests: keeps what's needed, notes what's coming and flushes that, puts the file in place, and confirms. Every step but the writing is the real one, and it's refused where Save would be.
     fn qa_save_from(&self, written: &str) -> Result<(), AgentError> {
         let failed = |what: &str| AgentError::new("save_failed", format!("{what} failed."), recto_agent::exit::FAILED);
         let written = PathBuf::from(written);
         let target = recto_platform::file_stamp(&written).map_err(|_| failed("Looking at the written file"))?;
-        let (id, path, file_pages, pages, needs) = self.host.session.with_session(|session| {
+        // The checks Save makes before it writes: never over a signed file, never over one changed on disk, never while it's being saved.
+        let (path, known, saving) = self.host.session.with_session(|session| session.active().and_then(|id| Some((session.path_of(id)?, session.own_stamp(id), session.is_saving(id))))).ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
+        if saving {
+            return Err(AgentError::new("saving", "That document is being saved.", recto_agent::exit::FAILED));
+        }
+        if known.is_none_or(|known| recto_platform::file_stamp(&path).ok() != Some(known)) {
+            return Err(AgentError::new("file_changed", recto_core::save::SaveError::FileChanged.message(), recto_agent::exit::FAILED));
+        }
+        save_from_signature_check(recto_core::save::signature_facts_of(&path))?;
+        let (id, path, pages, needed) = self.host.session.with_session(|session| {
             let id = session.active()?;
-            let list = session.page_edits(id);
-            Some((id, session.path_of(id)?, session.tab(id)?.page_count, session.pages_in(id), list.is_some_and(recto_session::edit::PageEdits::needs_own_pages)))
+            let needed = session.page_edits(id).map(recto_session::edit::PageEdits::own_pages_needed).unwrap_or_default();
+            Some((id, session.path_of(id)?, session.pages_in(id), needed))
         }).ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
-        let kept = needs.then(|| self.saver.store.keep_pages_of(&path, target, file_pages)).flatten();
+        let kept = self.saver.store.keep_pages_of(&path, target, &needed);
         self.host.session.with_session(|session| session.save_prepared(id, target, kept.as_ref()));
         self.saver.flush(false, Duration::from_secs(5)).map_err(|_| failed("Writing what's about to happen"))?;
         std::fs::rename(&written, &path).map_err(|_| failed("Putting the file in place"))?;
@@ -1368,6 +1427,9 @@ impl AppCore {
         // Takes the record's lock, and reads nothing: that's `begin_restore`'s, on a thread that can wait for it.
         let saver = Arc::new(Saver::new(RecordStore::open(&paths, Flavor::App), Arc::clone(&core)));
         let host = Arc::new(AppHost { engine: engine.clone(), session: SessionHost::new(DrawableLoader).with_indexing(&paths).with_generating(&paths), core: Arc::clone(&core), qa: qa.clone(), saver: Arc::clone(&saver), running: AtomicU32::new(0), handing_off: AtomicBool::new(false), notice: Mutex::new(None) });
+        // The person's own Find reads a document they opened with a password through its key, as the page views draw it.
+        let find_keys = Arc::clone(&keys);
+        host.session.set_find_keys(Arc::new(move |path: &std::path::Path| find_keys.for_path(path)));
         let backups = recto_control::host::backups_folder(&paths);
         recto_core::save::prune_backups(&backups, std::time::SystemTime::now());
         let save_step = Arc::new(AtomicU8::new(0));
@@ -1399,7 +1461,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { recent: Arc::new(Vec::new()), recent_key: None, pane_tocs: Vec::new(), contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false, can_go_back: false, can_go_forward: false, link_prompt: None, page_text: String::new(), password_prompt: None } }),
+            published: Mutex::new(Published { recent: Arc::new(Vec::new()), recent_key: None, pane_tocs: Vec::new(), contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false, save_enabled: false, can_go_back: false, can_go_forward: false, link_prompt: None, page_text: String::new(), password_prompt: None } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1411,9 +1473,11 @@ impl AppCore {
             action_notice: Mutex::new(None),
             keys,
             password_asks: Mutex::new(passwords::Asks::default()),
+            notice_tab: AtomicU32::new(0),
             link_prompt: Mutex::new(None),
             link_prompts_made: AtomicU64::new(0),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
+            find_field: Mutex::new(find::Field::default()),
         });
         saver.attach(Arc::downgrade(&inner));
         update_hooks.attach(Arc::downgrade(&inner));
@@ -1508,8 +1572,51 @@ impl AppCore {
         let rows = if published.sidebar.toc_open { published.sidebar.contents_count } else { 0 };
         let note = published.sidebar.toc_open && published.sidebar.contents_note.is_some();
         drop(published);
-        let heights = sidebar_heights_with_note(room, tabs, rows, note);
-        SidebarLayout { tab_row: TAB_ROW_HEIGHT, contents_row: CONTENTS_ROW_HEIGHT, contents_height: heights.contents, tabs_scroll: heights.tabs_scroll, note_height: heights.note }
+        // Find's block comes off the top first, and the rest divides as it always has.
+        let finding = find::view(&self.inner);
+        let found = find::heights(room, finding.open, finding.row_count);
+        let heights = sidebar_heights_with_note((room - found.block).max(0.0), tabs, rows, note);
+        SidebarLayout { tab_row: TAB_ROW_HEIGHT, contents_row: CONTENTS_ROW_HEIGHT, contents_height: heights.contents, tabs_scroll: heights.tabs_scroll, note_height: heights.note, find_block: found.block, find_list: found.list, find_row: find::ROW_HEIGHT, find_field: find::FIELD_HEIGHT, find_status: find::STATUS_HEIGHT }
+    }
+
+    /// Everything Find shows but its rows. Short locks, never the session's.
+    pub fn find_view(&self) -> find::FindView {
+        find::view(&self.inner)
+    }
+
+    /// Some of Find's rows, for what's on screen.
+    pub fn find_rows(&self, first: u32, count: u32) -> Vec<find::FindRow> {
+        find::rows(&self.inner, first, count)
+    }
+
+    /// What's in the Find field now, as it's typed: found at once.
+    pub fn find_typed(&self, text: String) {
+        self.inner.core.push(CoreCall::Find(find::FindCall::Typed(text)));
+    }
+
+    /// ⌘F: Find opens, with what was last typed.
+    pub fn find_open(&self) {
+        self.inner.core.push(CoreCall::Find(find::FindCall::Open));
+    }
+
+    /// Escape in the field, or its close button.
+    pub fn find_close(&self) {
+        self.inner.core.push(CoreCall::Find(find::FindCall::Close));
+    }
+
+    /// Return (forward) or ⇧Return (back) in the field: the person's jump to the hit, so Back comes here again. ⌘G and ⇧⌘G are the menu's, and only step.
+    pub fn find_return(&self, forward: bool) {
+        self.inner.core.push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Jump)));
+    }
+
+    /// A click on a row of Find's list.
+    pub fn find_choose(&self, row: u32) {
+        self.inner.core.push(CoreCall::Find(find::FindCall::Choose(row)));
+    }
+
+    /// What QA reads of Find, as JSON.
+    pub fn find_report(&self) -> String {
+        find::report(&self.inner).to_string()
     }
 
     /// The reader scrolled the contents themselves.
@@ -1720,6 +1827,12 @@ impl AppCore {
             menus::Action::SetSynced(on) => self.inner.core.push(CoreCall::SetSynced(on)),
             menus::Action::OpenRecent(key) => self.open_recent(key),
             menus::Action::ClearRecent => self.inner.core.push(CoreCall::ClearRecent),
+            menus::Action::FindOpen => {
+                self.inner.core.push(CoreCall::Find(find::FindCall::Open));
+                return HostAction::FocusFind;
+            }
+            menus::Action::FindStep(forward) => self.inner.core.push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Step))),
+            menus::Action::LeaveEditMode => self.inner.core.push(CoreCall::SetEditMode(false)),
             menus::Action::Step(back) => self.inner.core.push(CoreCall::Step(back)),
             menus::Action::ClearEditHistory => self.inner.core.push(CoreCall::ClearEditHistory),
             menus::Action::Zoom(zoom) => {
@@ -1793,7 +1906,7 @@ impl AppCore {
     fn can_save(&self) -> bool {
         let reader = lock(&self.inner.published).reader.clone();
         // Not under a sheet: the close prompt's own Save is how to save then.
-        !reader.home && reader.edited && !reader.saving && self.inner.sheets.load(Ordering::SeqCst) == 0
+        !reader.home && reader.edited && reader.save_enabled && self.inner.sheets.load(Ordering::SeqCst) == 0
     }
 
     /// What Save As's sheet says, for the tab showing. Never waits: the path is read only if the session's free, and the signature line is what the session thread found.
@@ -1813,14 +1926,21 @@ impl AppCore {
     /// What closing the document showing asks.
     pub fn close_prompt(&self) -> saving::ClosePrompt {
         let published = lock(&self.inner.published);
-        saving::close_prompt(published.reader.shown_tab, &published.reader.document_name, published.reader.edited, published.sidebar.undone_owner_steps)
+        // Save offered only where Save works: with it off for a signed document, the way on is Save As's unsigned copy.
+        let save_off = published.reader.edited && !published.reader.save_enabled && !published.reader.saving;
+        saving::close_prompt(published.reader.shown_tab, &published.reader.document_name, published.reader.edited, published.sidebar.undone_owner_steps, save_off)
     }
 
-    /// The close prompt's answer. Save closes once it's saved, and not if the save fails, which says why. Don't Save throws the edits away and closes.
-    pub fn close_answered(&self, tab: u32, choice: saving::CloseChoice) {
-        if tab != 0 {
-            self.inner.core.push(CoreCall::CloseAnswered(TabId(tab), choice));
+    /// The close prompt's answer. Save closes once it's saved, and not if the save fails, which says why. Don't Save throws the edits away and closes. Save As opens its sheet, and the tab stays.
+    pub fn close_answered(&self, tab: u32, choice: saving::CloseChoice) -> HostAction {
+        if tab == 0 {
+            return HostAction::None;
         }
+        if choice == saving::CloseChoice::SaveAs {
+            return HostAction::ShowSavePanel;
+        }
+        self.inner.core.push(CoreCall::CloseAnswered(TabId(tab), choice));
+        HostAction::None
     }
 
     /// A save's problem was answered: with Save As, its sheet opens.
@@ -2666,7 +2786,7 @@ fn session_thread(inner: &Arc<Inner>) {
                     }
                 }
                 saving::CloseChoice::DontSave => close_tab(host, id, true, &mut events),
-                saving::CloseChoice::Cancel => {}
+                saving::CloseChoice::Cancel | saving::CloseChoice::SaveAs => {}
             },
             CoreCall::CloseAfterSave(id) => {
                 // An edit that came in between the save and now isn't in the file: the tab stays, and says so, rather than lose it (review).
@@ -2692,6 +2812,8 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::GeneratedFinished => generated_contents::look_again(inner),
             CoreCall::GeneratedView(id, view, version) => host.session.with_session(|session| session.set_generated_view_for(id, view, version)),
             CoreCall::ToggleSection(id, entry) => host.session.with_session(|session| session.toggle_contents_section(id, entry)),
+            CoreCall::Find(call) => find::act(inner, call, &mut events),
+            CoreCall::SetEditMode(on) => host.session.with_session(|session| session.set_edit_mode(on)),
             CoreCall::SetSidebarHidden(hidden) => set_view(inner, &mut events, |view| view.sidebar_hidden = hidden),
             CoreCall::Rotate(turns) => {
                 let refused = host.session.with_session(|session| match session.active() {
@@ -2773,6 +2895,7 @@ fn session_thread(inner: &Arc<Inner>) {
             }
         }
         generated_contents::look_if_chosen(inner);
+        find::keep_up(inner);
         reconcile(inner, &mut synced, &mut events);
         if reads.running.is_empty() {
             for marker in reads.flushes.drain(..) {
@@ -3095,8 +3218,8 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
     let same_file = session.own_stamp(id).map(sleeper::version_of);
     // A save wrote these pages as they were shown: the page view goes on with its layout, place and selection.
     let follows = session.saved_from(id).map(sleeper::version_of);
-    let map = match session.page_edits(id) {
-        None => PageMap { files: vec![own], slots: None, own: same_file, turns: None, follows },
+    let mut map = match session.page_edits(id) {
+        None => PageMap { files: vec![own], slots: None, own: same_file, turns: None, expected: Vec::new(), follows },
         Some(edits) => {
             let mut files = vec![own];
             files.extend(edits.added_sources().iter().map(|added| added.path.to_path_buf()));
@@ -3105,9 +3228,19 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
             // Pages only turned are the file's own pages in its own order, which is what was drawn already: the same map, so nothing's dropped.
             let own_order = edits.added_sources().is_empty() && edits.len() == edits.file_pages() && edits.slots().iter().enumerate().all(|(at, slot)| slot.source == 0 && slot.page as usize == at);
             let slots = (!own_order).then(|| edits.slots().iter().map(|slot| (slot.source, slot.page)).collect());
-            PageMap { files, slots, own: same_file, turns, follows }
+            // What each added PDF was when its pages were added: a page from one that's changed since isn't drawn.
+            let mut expected = vec![None];
+            expected.extend(edits.added_sources().iter().map(|added| added.stamp));
+            PageMap { files, slots, own: same_file, turns, expected, follows }
         }
     };
+    // The tab's view turned, as the state record carries it: every page drawn turned on top of what its edits turn, and nothing about the file. One byte a page of a hot or warm tab, and none while it's not turned.
+    let view_turns = tab.view_rotation % 4;
+    if view_turns != 0 {
+        let pages = session.pages_in(id) as usize;
+        let turns: Arc<[u8]> = (0..pages).map(|at| (map.turns.as_ref().and_then(|turns| turns.get(at)).copied().unwrap_or(0) + view_turns) % 4).collect();
+        map.turns = Some(turns);
+    }
     // Pane 0's page view keeps the warm tabs that aren't on screen, as many as the panes leave of the live documents. A tab in another pane is that pane's.
     let warm: Vec<u32> = if first { warm_beside_panes(session.warm_tabs(), panes) } else { Vec::new() };
     let problem = session.tab_notice_message(id).map(str::to_string).or_else(|| tab.problem.map(|problem| problem.message().to_string()));
@@ -3318,19 +3451,28 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let (comparison, pane_pages, compare_note, active) = plan;
     let reading_snapshot = snapshots.iter().find(|shown| Some(shown.id) == active).or(snapshots.first());
     let layout = reading_snapshot.map_or(String::new(), |shown| shown.spread.name().to_string());
-    let (edited, (can_undo, can_redo), edit_mode, can_rotate, saving_now, file, (can_go_back, can_go_forward), page_text) = inner.host.session.with_session(|session| {
+    let (edited, (can_undo, can_redo), edit_mode, can_rotate, saving_now, file, needs_rewrite, (can_go_back, can_go_forward), page_text) = inner.host.session.with_session(|session| {
         let edit_mode = session.edit_mode();
         match reading_snapshot {
             Some(shown) => {
                 let page = session.tab(shown.id).map_or(0, |tab| tab.page);
                 let page_text = session.page_label(shown.id, page).unwrap_or_else(|| (page + 1).to_string());
-                (session.is_edited(shown.id), session.undo_and_redo(shown.id), edit_mode, session.can_edit_pages(shown.id), session.is_saving(shown.id), session.path_of(shown.id).zip(session.own_stamp(shown.id)).map(|(path, stamp)| (shown.id, path, stamp)), session.can_go_back_and_forward(shown.id), page_text)
+                (session.is_edited(shown.id), session.undo_and_redo(shown.id), edit_mode, session.can_edit_pages(shown.id), session.is_saving(shown.id), session.path_of(shown.id).zip(session.own_stamp(shown.id)).map(|(path, stamp)| (shown.id, path, stamp)), session.needs_rewrite(shown.id), session.can_go_back_and_forward(shown.id), page_text)
             }
-            None => (false, (false, false), edit_mode, false, false, None, (false, false), String::new()),
+            None => (false, (false, false), edit_mode, false, false, None, false, (false, false), String::new()),
         }
     });
     let (shown_tab, document_name, document_folder) = file.as_ref().map_or((0, String::new(), String::new()), |(id, path, _)| (id.0, path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(), path.parent().map(|folder| folder.display().to_string()).unwrap_or_default()));
-    let save_as_note = if edited { file.and_then(|(id, path, stamp)| inner.save_ui.signature_note(id, &path, stamp)) } else { None };
+    // A notice about one document doesn't stay over another: a save's note, seen on the next tab, would read as being about that one.
+    if inner.notice_tab.swap(shown_tab, Ordering::SeqCst) != shown_tab {
+        lock(&inner.action_notice).take();
+    }
+    // **Rust decides what a signed file's Save does** (SPEC decision 27): an edit a Save over it would break the signature with turns Save off, and Save As says its copy won't be signed.
+    // Asked only with edits to save, off this thread, and the window's brought up to date again once it's known.
+    let core_queue = Arc::clone(&inner.core);
+    let facts = if edited { file.as_ref().and_then(|(id, path, stamp)| inner.save_ui.signature_facts(*id, path, *stamp, move || core_queue.push(CoreCall::Reconcile))).unwrap_or_default() } else { recto_core::save::SignatureFacts::default() };
+    let save_off = save_needs_copy(facts, needs_rewrite);
+    let save_as_note = save_off.then(|| saving::UNSIGNED_COPY.to_string());
     let problem = reading_snapshot.and_then(|shown| shown.problem.clone());
     // The contents follow the tab being read, whichever pane it's in.
     let holding_now = *lock(&inner.holding_tab);
@@ -3410,7 +3552,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
     let pane_views: Vec<PaneView> = if comparing { snapshots.iter().enumerate().map(|(pane, shown)| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active, layout: shown.spread.name().to_string(), note: shown.problem.clone().or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())) }).collect() } else { Vec::new() };
     let compare_synced = inner.host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
-    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: inner.save_ui.tooltip(), save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now), can_go_back, can_go_forward, link_prompt: lock(&inner.link_prompt).clone(), page_text, password_prompt };
+    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: if save_off { SAVE_OFF_TOOLTIP.to_string() } else { inner.save_ui.tooltip() }, save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now), save_enabled: !save_off && !saving_now, can_go_back, can_go_forward, link_prompt: lock(&inner.link_prompt).clone(), page_text, password_prompt };
     // Open Recent is built again only when its list has moved, or the tabs have, which say which of its files are open: not at every reconcile.
     let recent_key = (inner.host.session.with_session(|session| session.recent_version()), sidebar.tabs_version);
     let recent = (lock(&inner.published).recent_key != Some(recent_key)).then(|| {
@@ -3456,6 +3598,17 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
 
 #[cfg(test)]
 mod tests {
+    /// Failure (review round 2 of stage 2): `qa save-from` lets a file whose signatures couldn't be looked at through the signature check, so a crash test can put a file in place over a signed one the save itself would refuse. A signed file and one that won't open are both refused; an unsigned one goes.
+    #[test]
+    fn save_from_refuses_a_file_it_cant_look_at() {
+        use recto_core::save::SignatureFacts;
+        assert!(super::save_from_signature_check(Ok(SignatureFacts::default())).is_ok());
+        assert_eq!(super::save_from_signature_check(Ok(SignatureFacts { signed: true, ..SignatureFacts::default() })).unwrap_err().code, "signed_needs_copy");
+        let unreadable = recto_core::save::signature_facts_of(std::path::Path::new("/nowhere/at/all.pdf"));
+        assert!(unreadable.is_err());
+        assert_eq!(super::save_from_signature_check(unreadable).unwrap_err().code, "not_found");
+    }
+
     use super::*;
 
     /// Failure: an update goes ahead while a document is being saved from the window, so the app quits under the save (SPEC decision 24: a running save finishes first). Each thing in flight is named, and a save is one of them.

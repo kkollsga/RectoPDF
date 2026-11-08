@@ -40,6 +40,8 @@ pub enum HostAction {
     ShowSavePanel,
     /// Closing a document with unsaved edits asks first, with what `AppCore::close_prompt` says.
     ConfirmClose,
+    /// ⌘F: Find's field in the sidebar takes the keyboard, with what's in it selected. Rust has opened it.
+    FocusFind,
     /// Go > Go to Page…: the field the page number opens, with what `AppCore::page_field` says.
     ShowGoTo,
 }
@@ -76,6 +78,11 @@ pub(crate) enum Action {
     OpenRecent(String),
     /// File > Open Recent > Clear Menu.
     ClearRecent,
+    /// ⌘F opens Find, ⌘G and ⇧⌘G go to the next hit or the one before.
+    FindOpen,
+    FindStep(bool),
+    /// Edit mode's Done: back to reading.
+    LeaveEditMode,
     /// Back in the tab being read's trail, or forward: ⌘[ and ⌘].
     Step(bool),
 }
@@ -92,6 +99,11 @@ fn edit_entries() -> Vec<MenuEntry> {
 /// Undo and Redo, by the standard selectors, so a text field with the focus keeps its own. `Z` is ⇧⌘Z.
 fn undo_entries() -> Vec<MenuEntry> {
     vec![MenuEntry { system_action: "undo:".into(), ..entry("edit.undo", "Undo", "z") }, MenuEntry { system_action: "redo:".into(), ..entry("edit.redo", "Redo", "Z") }]
+}
+
+/// Find, as on any Mac: ⌘F, ⌘G and ⇧⌘G. `G` is ⇧⌘G.
+fn find_entries() -> Vec<MenuEntry> {
+    vec![entry("find.open", "Find…", "f"), entry("find.next", "Find Next", "g"), entry("find.previous", "Find Previous", "G")]
 }
 
 /// The layouts, the one showing ticked. Owner, 2026-11-07: "In the right click menu you can select side by side layout, with and without header page."
@@ -123,7 +135,7 @@ pub(crate) fn context_menu(shown: Option<Spread>, comparing: Option<bool>) -> Ve
 pub(crate) fn enabled(id: &str, has_document: bool, has_selection: bool) -> bool {
     match id {
         "edit.copy" | "edit.copy_anyway" => has_selection,
-        "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" | "go.page" => has_document,
+        "edit.select_all" | "edit.clear_history" | "file.close" | "file.save_as" | "go.page" | "find.open" | "find.next" | "find.previous" => has_document,
         // A submenu's own item opens it, and does nothing itself.
         "file.open_recent" => true,
         layout if layout.starts_with("layout.") => has_document,
@@ -173,7 +185,7 @@ pub(crate) fn menu_bar_with(view: ViewSettings, shown: Option<Spread>, update_ti
         // Owner, 2026-11-07: "The full app settings should be accessible from file -> settings". The app menu keeps its own, as on any Mac, and both say ⌘,.
         // As in any Mac app: ⌘W closes the document showing, which here is a tab, and ⇧⌘W the window. ⌘S saves, and ⇧⌘S is Save As.
         MenuModel { title: "File".into(), entries: [entry("file.open", "Open…", "o"), entry("file.open_recent", "Open Recent", "")].into_iter().chain(recent_entries(recent)).chain([line(), entry("file.close", "Close", "w"), entry("file.save", "Save", "s"), entry("file.save_as", "Save As…", "S"), line(), entry("file.settings", "Settings…", ","), line(), entry("file.close_window", "Close Window", "W")]).collect() },
-        MenuModel { title: "Edit".into(), entries: undo_entries().into_iter().chain([line()]).chain(edit_entries()).chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
+        MenuModel { title: "Edit".into(), entries: undo_entries().into_iter().chain([line()]).chain(edit_entries()).chain([line()]).chain(find_entries()).chain([line(), entry("edit.clear_history", "Clear Edit History", "")]).collect() },
         MenuModel {
             title: "View".into(),
             entries: vec![
@@ -241,18 +253,19 @@ pub struct PanelModel {
     pub sections: Vec<PanelSection>,
 }
 
-/// The panel, with the paper showing now picked out. Owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc." So Rotate is here: every page together outside edit mode, and the page being read in it.
+/// The panel, with the paper showing now picked out. Owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc." So Rotate is here: every page together outside edit mode, and the page being read in it. **In edit mode the panel is open on its tools** (SPEC §4: "The panel changes to the edit tools when you enter … and Done returns to reading"), with Done first, whatever the panel button last did: the mode's state is what's drawn.
 pub(crate) fn panel(open: bool, shown: Paper, edit_mode: bool, can_rotate: bool) -> PanelModel {
     let item = |id: &str, title: &str, selected: bool| PanelItem { id: id.into(), title: title.into(), selected, enabled: true };
     let rotate = |id: &str, title: &str| PanelItem { enabled: can_rotate, ..item(id, title, false) };
-    let sections = if open {
-        vec![
-            PanelSection { title: if edit_mode { "Rotate this page" } else { "Rotate all pages" }.into(), items: vec![rotate("rotate.left", "Rotate left"), rotate("rotate.right", "Rotate right")] },
-            PanelSection { title: "Paper".into(), items: Paper::ALL.iter().map(|paper| item(&format!("paper.{}", paper.name()), paper.label(), *paper == shown)).collect() },
-        ]
-    } else {
-        Vec::new()
-    };
+    let open = open || edit_mode;
+    let mut sections = Vec::new();
+    if edit_mode {
+        sections.push(PanelSection { title: "Editing".into(), items: vec![item("edit_mode.done", "Done", false)] });
+    }
+    if open {
+        sections.push(PanelSection { title: if edit_mode { "Rotate this page" } else { "Rotate all pages" }.into(), items: vec![rotate("rotate.left", "Rotate left"), rotate("rotate.right", "Rotate right")] });
+        sections.push(PanelSection { title: "Paper".into(), items: Paper::ALL.iter().map(|paper| item(&format!("paper.{}", paper.name()), paper.label(), *paper == shown)).collect() });
+    }
     PanelModel { open, button_tooltip: "View options".into(), sections }
 }
 
@@ -305,6 +318,10 @@ pub(crate) fn action(id: &str) -> Option<Action> {
         "go.page" => Action::Host(HostAction::ShowGoTo),
         "compare.separate" => Action::SetSynced(false),
         "compare.synced" => Action::SetSynced(true),
+        "edit_mode.done" => Action::LeaveEditMode,
+        "find.open" => Action::FindOpen,
+        "find.next" => Action::FindStep(true),
+        "find.previous" => Action::FindStep(false),
         _ => return None,
     })
 }
@@ -333,6 +350,20 @@ pub(crate) fn zoom_from_word(word: &str) -> Option<Zoom> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Failure: edit mode is on and the panel doesn't show it, or shows no way back to reading (SPEC §4: "Done returns to reading"); or Find's keys aren't the Mac's.
+    #[test]
+    fn edit_mode_opens_the_panel_on_its_tools_and_find_has_the_macs_keys() {
+        let editing = panel(false, Paper::White, true, true);
+        assert!(editing.open, "open in edit mode, whatever the button last did");
+        assert_eq!(editing.sections[0].items[0].id, "edit_mode.done");
+        assert_eq!(action("edit_mode.done"), Some(Action::LeaveEditMode));
+        assert!(!panel(false, Paper::White, false, true).open);
+        let edit = menu_bar(ViewSettings::default(), None, "Check for Updates…").into_iter().find(|menu| menu.title == "Edit").unwrap();
+        let key = |id: &str| edit.entries.iter().find(|item| item.id == id).map(|item| item.key.clone()).unwrap();
+        assert_eq!((key("find.open"), key("find.next"), key("find.previous")), ("f".to_string(), "g".to_string(), "G".to_string()));
+        assert!(!enabled("find.open", false, false), "nothing to find in with nothing open");
+    }
 
     /// Failure: something in the menu bar or the panel does nothing when chosen, as an item with an id nobody handles would, or a list shows what doesn't exist.
     #[test]
