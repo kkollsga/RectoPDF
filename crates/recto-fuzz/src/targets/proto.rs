@@ -35,8 +35,8 @@ pub fn check(data: &[u8]) {
 
 /// Every decoder on the same bytes. What a decoder took has to mean the same once sent again.
 fn every_decoder(payload: &[u8]) {
-    if let Ok(pid) = decode_hello(payload) {
-        assert_eq!(decode_hello(&encode_hello(pid)[HEADER_LEN..]), Ok(pid));
+    if let Ok(hello) = decode_hello(payload) {
+        assert_eq!(decode_hello(&encode_hello(hello)[HEADER_LEN..]), Ok(hello));
     }
     if let Ok((pages, _)) = decode_opened(payload) {
         assert!(pages <= MAX_PAGE_COUNT);

@@ -92,7 +92,7 @@ fn fake_worker() {
     let Ok(mode) = std::env::var("RECTO_FAKE") else { return };
     let limit: u64 = std::env::var("RECTO_WORKER_LIMIT").unwrap().parse().unwrap();
     let channel = Channel::inherited().unwrap();
-    send_all(&channel, &proto::encode_hello(std::process::id()), &[]).unwrap();
+    send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled: false }), &[]).unwrap();
     let mut reader = FrameReader::default();
     let mut started = false;
     loop {

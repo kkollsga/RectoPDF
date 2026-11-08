@@ -36,7 +36,7 @@ fn fake_worker() {
         // Starting as slowly as a loaded runner can, and longer than the idle rule the test gives it.
         std::thread::sleep(Duration::from_millis(300));
     }
-    send_all(&channel, &proto::encode_hello(std::process::id()), &[]).unwrap();
+    send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled: false }), &[]).unwrap();
     let mut reader = FrameReader::default();
     let mut cancel_word = None;
     loop {

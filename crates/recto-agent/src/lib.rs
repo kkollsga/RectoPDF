@@ -730,7 +730,11 @@ fn next_step(code: &str, exit: i32) -> &'static str {
         "not_built" => "Tell the user this isn't in this version yet.",
         "too_large_at_this_scale" => "Try a smaller `--scale`. 2 is twice the page's size, and 1 is its own.",
         "page_too_large_to_read" => "Tell the user this page can't be read. The rest of the document may be fine.",
-        "render_worker_missing" => "Tell the user RectoPDF's install is incomplete: `recto-render-service` must be in the same folder as `recto`. In a source tree, `cargo build --workspace` builds both, which `cargo build -p recto-cli` doesn't.",
+        "render_worker_missing" => "Tell the user RectoPDF's install is incomplete: `recto-render-service` must be in the app's `Contents/Helpers/RectoRender.app`, or in a source tree in the same folder as `recto`. There, `cargo build --workspace` builds both, which `cargo build -p recto-cli` doesn't.",
+        "renderer_not_sandboxed" => "Tell the user this copy of RectoPDF is signed wrong, so its renderer refuses to read any PDF. Installing a release again fixes it. In a source tree, `app/build.sh` signs the helper as it should be.",
+        "renderer_inside_another_sandbox" => "Run `recto` outside the sandbox it's in, or ask the user to: the renderer can't start inside another sandbox. Nothing needs reinstalling.",
+        "renderer_mach_drop_failed" | "renderer_launchd_reachable" => "Tell the user RectoPDF's renderer can't close itself off on this version of macOS, so it won't read PDFs here, and give them this code and their macOS version to report. Nothing needs reinstalling.",
+        "renderer_start_refused" => "Tell the user macOS refused to start RectoPDF's renderer. A security tool, or a sandbox `recto` runs in, may be blocking it.",
         "render_library_missing" => "Tell the user RectoPDF's install is incomplete. In a source tree, `tools/pdfium.sh` fetches the library.",
         "bad_command" => "`recto help` lists every command.",
         "bad_path" => "Give the whole path. `recto` does this for you.",
@@ -2590,6 +2594,17 @@ mod tests {
         let library = AgentError::from(recto_render_service::RenderFailure::LibraryMissing);
         assert!(library.message.contains("libpdfium.dylib"), "{}", library.message);
         assert!(library.next.contains("tools/pdfium.sh"), "{}", library.next);
+        use recto_render_service::{RenderFailure, WallsDown};
+        let unsandboxed = AgentError::from(RenderFailure::WallsDown(WallsDown::NotSandboxed));
+        assert!(unsandboxed.message.contains("sandbox"), "{}", unsandboxed.message);
+        assert!(unsandboxed.next.contains("signed wrong"), "{}", unsandboxed.next);
+        // Only a helper signed without its sandbox is the install's fault. The rest are about where it runs, and must never send the user to reinstall.
+        for failure in [RenderFailure::WallsDown(WallsDown::InsideAnotherSandbox), RenderFailure::WallsDown(WallsDown::NothingToDrop), RenderFailure::WallsDown(WallsDown::LaunchdReachable), RenderFailure::StartRefused] {
+            let error = AgentError::from(failure);
+            assert!(!error.message.contains("signed wrong") && !error.next.contains("signed wrong"), "{failure:?}: {} / {}", error.message, error.next);
+            assert!(!error.next.starts_with("`recto status`"), "{failure:?} has no next step of its own: {}", error.next);
+        }
+        assert!(AgentError::from(RenderFailure::WallsDown(WallsDown::InsideAnotherSandbox)).message.contains("from inside another sandbox"));
     }
 
     /// Failure: `4-x-` reads as `4-`, or a limit of none is quietly answered with one.

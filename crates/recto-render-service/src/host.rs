@@ -271,20 +271,23 @@ pub enum ExportRefusal {
 }
 
 impl ServiceConfig {
-    /// Finds the worker beside this program (or one folder up, for a test binary in `deps/`) and PDFium beside the worker or in the
-    /// `pdfium` folder `tools/pdfium.sh` fills. In debug builds only, `RECTO_RENDER_SERVICE` and `RECTO_PDFIUM_LIB` override: nothing shipped loads code from
-    /// a path in its environment.
+    /// Finds the worker: in the app's sandboxed helper (`Contents/Helpers/RectoRender.app`) for a program in the app's `Contents/MacOS`, and, in a development build only, beside this
+    /// program, or one folder up for a test binary in `deps/`. A release looks nowhere but the helper. This program's path is followed through links first, so `recto` linked onto `PATH` finds the same helper the app uses. PDFium is beside the worker,
+    /// in the helper's `Frameworks`, or in the `pdfium` folder `tools/pdfium.sh` fills. In debug builds only, `RECTO_RENDER_SERVICE` and `RECTO_PDFIUM_LIB` override: nothing shipped loads
+    /// code from a path in its environment.
     pub fn discover() -> Result<Self, RenderFailure> {
-        let exe_name = format!("recto-render-service{}", std::env::consts::EXE_SUFFIX);
+        let exe_name = format!("{}{}", crate::bundle::WORKER, std::env::consts::EXE_SUFFIX);
         let worker_exe = match dev_override("RECTO_RENDER_SERVICE") {
             Some(path) => PathBuf::from(path),
             None => {
                 let this = std::env::current_exe().map_err(|_| RenderFailure::WorkerMissing)?;
+                let this = std::fs::canonicalize(&this).unwrap_or(this);
                 let here = this.parent().ok_or(RenderFailure::WorkerMissing)?;
-                [Some(here), here.parent()]
+                // A release starts only the sandboxed helper's worker: nothing beside it could stand in.
+                let development = !crate::bundle::RELEASE;
+                [crate::bundle::helper_worker(here), development.then(|| here.join(&exe_name)), here.parent().filter(|_| development).map(|up| up.join(&exe_name))]
                     .into_iter()
                     .flatten()
-                    .map(|dir| dir.join(&exe_name))
                     .find(|path| path.is_file())
                     .ok_or(RenderFailure::WorkerMissing)?
             }
@@ -303,8 +306,10 @@ impl ServiceConfig {
             None => {
                 let dir = worker_exe.parent().ok_or(RenderFailure::WorkerMissing)?;
                 let beside = dir.join(&library);
-                let fetched = dir.parent().map(|parent| parent.join("pdfium").join(&library));
-                [Some(beside), fetched].into_iter().flatten().find(|path| path.is_file()).ok_or(RenderFailure::LibraryMissing)?
+                let up = dir.parent();
+                let frameworks = up.map(|parent| parent.join("Frameworks").join(&library));
+                let fetched = up.map(|parent| parent.join("pdfium").join(&library));
+                [Some(beside), frameworks, fetched].into_iter().flatten().find(|path| path.is_file()).ok_or(RenderFailure::LibraryMissing)?
             }
         };
         Ok(Self { worker_exe, pdfium_lib, heavy_slot: HeavySlot::session(), extra_env: Vec::new(), replace_args: None })
@@ -336,6 +341,10 @@ pub enum RenderFailure {
     WorkerMissing,
     /// PDFium isn't where it should be. `tools/pdfium.sh` puts it there.
     LibraryMissing,
+    /// The worker's walls weren't up, so it read nothing, and why.
+    WallsDown(WallsDown),
+    /// macOS refused to start the worker at all: permission denied.
+    StartRefused,
     /// The file couldn't be opened or the worker couldn't be started.
     Unavailable,
     NotFound,
@@ -364,6 +373,19 @@ pub enum RenderFailure {
     DocumentStopped,
     /// Drawing the whole page ran past its time cap. No worker was at fault.
     TookTooLong,
+}
+
+/// Why a worker's walls weren't up. Only the first says the app is signed wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WallsDown {
+    /// It isn't in the App Sandbox: the helper was signed without it, or a release was given a worker that says it isn't walled.
+    NotSandboxed,
+    /// It was started from inside another sandbox, an agent's for one, and macOS won't start an app's sandbox inside it.
+    InsideAnotherSandbox,
+    /// macOS gave it no Mach rights to let go of.
+    NothingToDrop,
+    /// launchd still answered after it let go of its rights.
+    LaunchdReachable,
 }
 
 /// Why a tile holds a lower-resolution version of its page.
@@ -429,6 +451,11 @@ impl RenderFailure {
         match self {
             Self::WorkerMissing => "render_worker_missing",
             Self::LibraryMissing => "render_library_missing",
+            Self::WallsDown(WallsDown::NotSandboxed) => "renderer_not_sandboxed",
+            Self::WallsDown(WallsDown::InsideAnotherSandbox) => "renderer_inside_another_sandbox",
+            Self::WallsDown(WallsDown::NothingToDrop) => "renderer_mach_drop_failed",
+            Self::WallsDown(WallsDown::LaunchdReachable) => "renderer_launchd_reachable",
+            Self::StartRefused => "renderer_start_refused",
             Self::Unavailable => "render_unavailable",
             Self::NotFound => "file_not_found",
             Self::NeedsPassword => "needs_password",
@@ -461,8 +488,13 @@ impl RenderFailure {
     /// Plain words for a person.
     pub fn message(self) -> String {
         match self {
-            Self::WorkerMissing => "RectoPDF's page renderer, `recto-render-service`, wasn't found beside `recto`, so no page can be read or drawn.".into(),
-            Self::LibraryMissing => "RectoPDF's PDF library, `libpdfium.dylib`, wasn't found beside `recto-render-service` or in `../pdfium/`, so no page can be read or drawn.".into(),
+            Self::WorkerMissing => "RectoPDF's page renderer, `recto-render-service`, wasn't found in `Contents/Helpers/RectoRender.app` or beside `recto`, so no page can be read or drawn.".into(),
+            Self::LibraryMissing => "RectoPDF's PDF library, `libpdfium.dylib`, wasn't found beside `recto-render-service`, in `../Frameworks/` or in `../pdfium/`, so no page can be read or drawn.".into(),
+            Self::WallsDown(WallsDown::NotSandboxed) => "RectoPDF's page renderer wouldn't start, because its sandbox isn't on: this copy of RectoPDF is signed wrong, so it won't read any PDF. Install it again from a release.".into(),
+            Self::WallsDown(WallsDown::InsideAnotherSandbox) => "RectoPDF can't start its page renderer from inside another sandbox, such as one an agent runs `recto` in: the renderer has a sandbox of its own, and macOS won't start one inside another. Nothing is wrong with the install.".into(),
+            Self::WallsDown(WallsDown::NothingToDrop) => "RectoPDF's page renderer couldn't close itself off from the rest of macOS: this version of macOS gave it no system connections to let go of, which RectoPDF doesn't expect, so it won't read any PDF. Nothing is wrong with the install.".into(),
+            Self::WallsDown(WallsDown::LaunchdReachable) => "RectoPDF's page renderer couldn't close itself off from the rest of macOS: it could still reach system services after letting go of its connections, so it won't read any PDF. Nothing is wrong with the install.".into(),
+            Self::StartRefused => "macOS refused to start RectoPDF's page renderer (permission denied), so no page can be read or drawn. Something on this Mac, such as a security tool or a sandbox around `recto`, is blocking it.".into(),
             Self::Unavailable => "The page renderer couldn't be started.".into(),
             Self::NotFound => "That file couldn't be found.".into(),
             Self::NeedsPassword => "This PDF needs a password.".into(),
@@ -540,6 +572,8 @@ pub struct RenderStats {
     pub idle_exits: u32,
     /// Times a page was retried alone at the larger limit.
     pub heavy_retries: u32,
+    /// Workers that said in their hello that their walls were up: the App Sandbox on and their Mach rights dropped.
+    pub walled_spawns: u32,
     /// Pages that have needed a heavy worker: it's these that count towards [`Policy::max_heavy_retries`]. Starting one again for the same page, after a rest or after it was sent its fill of surfaces, says nothing new about the document.
     pub heavy_pages: u32,
     /// Tiles that came back at a lower resolution.
@@ -568,6 +602,8 @@ struct Worker {
     surface_bytes_sent: u64,
     /// A heavy worker. Its ticket is in its process's end action, so the slot goes free when the process has really gone.
     heavy: bool,
+    /// It said its walls were up.
+    walled: bool,
 }
 
 /// The kind of worker a job needs.
@@ -844,6 +880,12 @@ impl DocRenderer {
     pub fn worker_pid(&mut self) -> Option<u32> {
         self.reap_if_gone();
         self.worker.as_ref().map(|worker| worker.child.pid())
+    }
+
+    /// Whether the current worker said its walls were up, if there is one.
+    pub fn worker_walled(&mut self) -> Option<bool> {
+        self.reap_if_gone();
+        self.worker.as_ref().map(|worker| worker.walled)
     }
 
     /// The current worker's footprint, from outside.
@@ -1556,13 +1598,18 @@ impl DocRenderer {
         let (limit, idle_exit) = if ticket.is_some() { (self.policy.heavy_limit_bytes, self.policy.heavy_idle_exit) } else { (self.policy.memory_limit_bytes, self.policy.idle_exit) };
         let started = Worker::start(&self.config, &self.policy, limit, idle_exit);
         // No file has reached it yet, so whatever kept it from saying hello isn't the file's doing.
-        if started.as_ref().is_err_and(|error| error.kind() == io::ErrorKind::TimedOut) {
+        if matches!(started, Err(StartFailure::TimedOut)) {
             self.stats.too_busy += 1;
         }
-        let (mut worker, ready) = started.map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => RenderFailure::LibraryMissing,
-            _ => RenderFailure::Unavailable,
+        let (mut worker, ready) = started.map_err(|failure| match failure {
+            StartFailure::NoLibrary => RenderFailure::LibraryMissing,
+            StartFailure::Walls(why) => RenderFailure::WallsDown(why),
+            StartFailure::Refused => RenderFailure::StartRefused,
+            StartFailure::TimedOut | StartFailure::Other => RenderFailure::Unavailable,
         })?;
+        if worker.walled {
+            self.stats.walled_spawns += 1;
+        }
         if let Some(ticket) = ticket {
             self.stats.heavy_retries += 1;
             worker.heavy = true;
@@ -1781,10 +1828,21 @@ fn was_starved(cpu_ns: u64, deadline: Duration) -> bool {
     u128::from(cpu_ns) < deadline.as_nanos() / 2
 }
 
+/// Why a worker didn't come up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartFailure {
+    NoLibrary,
+    TimedOut,
+    Walls(WallsDown),
+    /// The system refused to start it: `EPERM` or `EACCES` from the spawn, both `PermissionDenied`.
+    Refused,
+    Other,
+}
+
 impl Worker {
     /// Starts a worker, waits for its hello, and returns it with its footprint at that moment.
-    fn start(config: &ServiceConfig, policy: &Policy, limit: u64, idle_exit: Duration) -> io::Result<(Self, u64)> {
-        let (ours, theirs) = Channel::pair()?;
+    fn start(config: &ServiceConfig, policy: &Policy, limit: u64, idle_exit: Duration) -> Result<(Self, u64), StartFailure> {
+        let (ours, theirs) = Channel::pair().map_err(|_| StartFailure::Other)?;
         let default_args: Vec<OsString>;
         let args: &[OsString] = match &config.replace_args {
             Some(args) => args,
@@ -1812,11 +1870,11 @@ impl Worker {
         let rule = IdleRule { after: idle_exit.saturating_add(policy.idle_grace), memory_limit_bytes: limit };
         // The one seam that says how a worker comes to exist. With no invitation it still runs: it just can't draw into surfaces.
         let invite = LinkInvite::new().ok();
-        let child = ChildProcess::spawn_linked(&config.worker_exe, &arg_refs, &env_refs, theirs, Some(rule), invite.as_ref())?;
+        let child = ChildProcess::spawn_linked(&config.worker_exe, &arg_refs, &env_refs, theirs, Some(rule), invite.as_ref()).map_err(|error| if error.kind() == io::ErrorKind::PermissionDenied { StartFailure::Refused } else { StartFailure::Other })?;
         // Busy until the document is open, whose exchange ends that: a start isn't idleness, and `start_timeout` and the open's own watch decide how long it may take. Marked idle here, a start slower than the idle rule was killed half way.
         child.note_activity(true);
-        ours.set_nonblocking(true)?;
-        let mut worker = Self { child, channel: ours, reader: FrameReader::default(), surfaces: None, jobs_done: 0, surface_bytes_sent: 0, limit, heavy: false };
+        ours.set_nonblocking(true).map_err(|_| StartFailure::Other)?;
+        let mut worker = Self { child, channel: ours, reader: FrameReader::default(), surfaces: None, jobs_done: 0, surface_bytes_sent: 0, limit, heavy: false, walled: false };
         let started = Instant::now();
         let limit = policy.start_timeout;
         let hello = loop {
@@ -1825,18 +1883,29 @@ impl Worker {
                 Ok(None) => {}
                 Err(_) => {
                     worker.child.kill_now();
-                    let no_library = worker.child.wait_bounded(EXIT_STATUS_WAIT) == Some(ChildExit::Code(exit_code::NO_LIBRARY));
-                    return Err(if no_library { io::ErrorKind::NotFound } else { io::ErrorKind::BrokenPipe }.into());
+                    return Err(match worker.child.wait_bounded(EXIT_STATUS_WAIT) {
+                        Some(ChildExit::Code(exit_code::NO_LIBRARY)) => StartFailure::NoLibrary,
+                        Some(ChildExit::Code(exit_code::NO_WALL)) => StartFailure::Walls(WallsDown::NotSandboxed),
+                        Some(ChildExit::Code(exit_code::NO_RIGHTS_TO_DROP)) => StartFailure::Walls(WallsDown::NothingToDrop),
+                        Some(ChildExit::Code(exit_code::LAUNCHD_REACHABLE)) => StartFailure::Walls(WallsDown::LaunchdReachable),
+                        // An app's sandbox can't start inside another: the system ends the helper before its first line. Measured: SIGTRAP under `sandbox-exec`.
+                        _ if crate::bundle::walls_required(Some(&config.worker_exe), crate::bundle::RELEASE) && recto_platform::wall::in_a_sandbox() => StartFailure::Walls(WallsDown::InsideAnotherSandbox),
+                        _ => StartFailure::Other,
+                    });
                 }
             }
             if started.elapsed() > limit {
-                return Err(io::ErrorKind::TimedOut.into());
+                return Err(StartFailure::TimedOut);
             }
-            worker.channel.wait_readable(Some(policy.watch_step))?;
+            worker.channel.wait_readable(Some(policy.watch_step)).map_err(|_| StartFailure::Other)?;
         };
-        if hello.kind != Kind::Hello || !hello.handles.is_empty() || proto::decode_hello(&hello.payload).is_err() {
-            return Err(io::ErrorKind::InvalidData.into());
+        let said = (hello.kind == Kind::Hello && hello.handles.is_empty()).then(|| proto::decode_hello(&hello.payload).ok()).flatten().ok_or(StartFailure::Other)?;
+        // A release, or a worker from a helper, has to have its walls up, and says so. One that doesn't is killed before it sees a document.
+        if !said.walled && (crate::bundle::RELEASE || crate::bundle::walls_required(Some(&config.worker_exe), false)) {
+            worker.child.kill_now();
+            return Err(StartFailure::Walls(WallsDown::NotSandboxed));
         }
+        worker.walled = said.walled;
         // A worker answers the invitation before it says hello, so by now its message is waiting, or isn't coming.
         worker.surfaces = invite.and_then(|invite| invite.accept(Duration::ZERO));
         let footprint = worker.child.memory().map_or(0, |memory| memory.footprint_bytes);

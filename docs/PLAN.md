@@ -4,7 +4,7 @@ Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it ar
 
 ## Where we are
 
-**Release scope (owner, 2026-11-08): "Lets release after phase 3. the rest we tackle after".** The first release is the complete reader: phases 2 and 3, then phase 7's release work. Phases 4 to 6 come after it. Save stage 1 (turns, moves and added pages, Save As, a backup) is already on main and ships, as rotating all pages outside edit mode is a phase 3 rule that Save commits. Save stage 2 (the rewrite) is parked on its branch until after the release.
+**Release scope (owner, 2026-11-08): "Lets release after phase 3. the rest we tackle after", then "No we release everything we have started in the first release. We don't park anything (finish on going features)."** The first release is the complete reader (phases 2 and 3), every feature already under way, and phase 7's release work. That includes all of Save, stages 1 and 2. What hasn't started (the rest of phase 4's editing, phases 5 and 6) comes after it. And: "But don't start new post phase 3 features before release".
 
 | Phase | What you get | Status | Size (agent-days) |
 |---|---|---|---:|
@@ -13,7 +13,7 @@ Last updated 2026-11-07. Behaviour is in `SPEC.md`, and the reasons behind it ar
 | **2. First real app** | A native window you can read in, with real screenshots | **Nearly done** | 8–12 |
 | **3. Complete reader** | Find, menus, ⌘K, session restore, image copy, snapshot and SVG | **In progress: first release** | 10–15 |
 | **7. Release** | Hardened, signed, installable first release | **Next, with phase 3: first release** | 8–12 |
-| **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | Stage 1 on main; the rest after the first release | 25–40 |
+| **4. Saving and editing** | Native Save, edit mode, annotations, forms, signature image | Save (stages 1 and 2) in the first release; the rest of editing after it | 25–40 |
 | **5. Tools** | Compress, OCR, passwords, compare, redaction, watermarks and more | After the first release | 20–35 |
 | **6. Agent sidebar** | Ask a question about a PDF, with your own `claude` | After the first release | 8–12 |
 
@@ -100,7 +100,8 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 - [x] Budget tests: cold start, one document, scrolling, idle CPU, closed window (`recto qa budget`, off screen; numbers in `docs/ENGINEERING.md`)
 - [ ] Spike on the MacBook: 120 Hz and on-screen memory
 - [x] Sandbox spike: PDFium sandboxed in a nested helper, not XPC (`docs/research/2026-11-07-sandbox-spike.md`)
-- [ ] Build it: the worker's wall check and Mach drop, finding the helper in the bundle, the signed layout
+- [x] Build it: the worker's wall check and Mach drop, finding the helper in the bundle, the signed layout (`app/render-helper.sh`, `docs/ENGINEERING.md`, "Renderer")
+- [ ] The indexer and headings helpers read untrusted PDFs with lopdf, and the headings helper with distillPDF's image decoders too, outside any sandbox. The app parses the same files with the same lopdf in its own process, so sandboxing them alone wouldn't narrow lopdf's exposure; distillPDF's decoders are what only they add. Not the renderer's pattern: they open the file by path, the indexer writes its index, and both start render workers, which a sandboxed parent can't start in their own sandbox. Decide whether the headings helper gets a wall of its own
 
 **Done when:** you can read in it, an agent can screenshot every state without touching your screen, and the budgets are measured.
 
@@ -189,7 +190,9 @@ From round 3 the brief added that a clear refusal of access the agent wasn't giv
 
 ## Phase 4: Saving and editing
 
-Moved here from phase 3 on 2026-11-08, as they belong to the rewrite (Save stage 2), after the first release:
+- [ ] **Save stage 2, in the first release (owner: "We don't park anything")**, resumed on local branch `build/save-rewrite` at `9dad399` (5 commits on `d27a0e7`, not pushed), worktree `.worktrees/save-rewrite`, status in its `docs/SAVE-STAGE2-STATUS.md`. Built: deletes by the streaming rewrite, signed files' unsigned copies, usage rights removed in place, kept pages only for undo past a delete, IRS form fields on added pages fillable, a changed added PDF not drawn. Left: a fuzz target for the rewrite plan, delete measurements, app QA and screenshots, docs. Merge main first when it resumes
+
+Moved here from phase 3 on 2026-11-08, as they belong to the rewrite (Save stage 2):
 - [ ] On Save's gate: a redaction's crash must not leave sleep files for earlier versions, as those are pictures of what's being removed
 - [ ] On Save's gate: call `save_prepared`, then `saved`, on the real path, with a redaction keeping nothing; keep `never_in_pdf.rs` on that path rather than its stand-in writer; have the reader take up the new file; and keep only the pages a save removes rather than a copy of the whole file, so a PDF over 64 MiB can undo past a save too. Today it's a whole-file clone or nothing
 - [ ] On Save's gate, for the rewrite: check every page against the real file when writing, as `validate_edits` checks against what a journal says of itself, which can be forged; and check the save marker again once it's on disk
@@ -264,7 +267,8 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 
 ## Phase 7: Release
 
-- [ ] **Release blocker:** the renderer runs in the sandbox, tested on the signed build
+- [x] Release blocker, first half: the renderer is built into its sandboxed helper, signed (ad hoc in the tests and the app's own checks, and with the owner's Developer ID on this Mac, hardened runtime and library validation on) and fails closed, each failure named
+- [ ] **Release blocker, second half:** the renderer's sandbox on a notarized run of the release; the sandbox and wall tests passing on `macos-15` and `macos-26` CI runners, where the home folder is under `/Users` (the `sandbox` job in `ci.yml`, first run to be watched); and the Developer ID run of the renderer suite matched to the ad hoc one. That gap is explained: the 138 against 143 was the 5 tests of `sandbox.rs`, left out by the filter of that run because they lay out ad hoc helpers of their own, and `surfaces.rs`'s 8 used the bare worker in both runs, since fixed to follow `RECTO_TEST_WORKER`
 - [ ] Fuzzing on every parser of untrusted input
 - [ ] Corpus run across all benchmark PDFs, with a dated report
 - [ ] Fuzz `recto_index::corpus`'s reader with damaged files on disk, as for every parser
@@ -276,7 +280,7 @@ Built last among features because it stands on the CLI, the corpus and OCR.
 - [ ] Test line order on a real right-to-left PDF (none among the 454 in distillPDF)
 - [ ] 24-hour soak, flat memory
 - [x] Installer that checks checksum, team and Gatekeeper, and goes back to the previous app if the new one fails. `app/release-zip.sh` and the release workflow are written and read; the workflow hasn't run, and `docs/RELEASING.md` says what the owner has to add
-- [ ] The release workflow run for real, with Developer ID signing and notarization (needs the signing secrets on this repo)
+- [ ] The release workflow run for real, with Developer ID signing and notarization (needs the signing secrets on this repo). It also settles what the sandboxed renderer helper couldn't be tested for here: notarization of a nested helper, Gatekeeper and quarantine on a downloaded copy, and App Translocation
 - [ ] A real signed update end to end, state compared before and after (needs the signing secrets on this repo)
 - [ ] Licences and notices for PDFium, Tesseract and the rest
 - [ ] Privacy statement and first-run wording

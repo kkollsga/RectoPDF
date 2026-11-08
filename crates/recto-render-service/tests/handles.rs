@@ -69,10 +69,10 @@ fn fake_worker() {
     let channel = Channel::inherited().unwrap();
     if mode == "handle_on_hello" {
         let extra = SharedMemory::create(4096).unwrap();
-        send_all(&channel, &proto::encode_hello(std::process::id()), &[extra.handle()]).unwrap();
+        send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled: false }), &[extra.handle()]).unwrap();
         std::thread::sleep(Duration::from_secs(600));
     }
-    send_all(&channel, &proto::encode_hello(std::process::id()), &[]).unwrap();
+    send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled: false }), &[]).unwrap();
     let mut reader = FrameReader::default();
     loop {
         let Ok(frame) = reader.read_blocking(&channel) else { isolate::exit_now(0) };
