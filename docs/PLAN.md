@@ -262,10 +262,20 @@ Real digital signatures to the official standards, signature trust checks, Windo
 - **Tab names:** the file name, with the full name and title on hover.
 - **Before a public release:** a name search for the trademark, no registration yet; wait for Anthropic's written answer and add an API-key route.
 
+## Decisions made by the owner, 2026-11-08
+
+"I agree with all your recommendations":
+- **The lopdf streaming rewrite** goes to the fork's `work/streaming-rewrite` branch.
+- **Dark paper:** the text-weight curve applies to text and lines; coloured areas in flipped images keep the gentler old curve, so charts keep richer colours.
+- **Usage rights (UR3), as on IRS forms:** a rewrite such as a page delete allows a normal Save, removes the usage rights and shows a quiet note. Usage rights aren't a person's signature. Signed files still follow decision 27.
+- **`recto text` marks headers, footers and page numbers** in a separate field next to hidden spans; the text itself is unchanged.
+- **Copying images and snapshots from copy-restricted PDFs** gets the same notice with Copy anyway as text.
+- **The first Save keeps one backup of the original.**
+- **Later:** signing secrets in a protected `release` environment with the owner as required reviewer; a public release waits for Anthropic's written answer and adds an API-key route; a trademark name search before release.
+
 ## Decisions waiting on you
 
 | Decision | Needed by | Current default |
 |---|---|---|
-| Image copy and snapshot on copy-restricted PDFs: the same notice with Copy anyway as text has? | Phase 3 | Yes |
-| What Save does the first time: keep one backup of the original? | Phase 4 | Yes |
-| Anthropic's answer before public release; API-key route | Phase 6 | Wait; add it |
+| Move paper colour from the `⋯` panel to View > Paper, keeping the panel for tools | Phase 3 | Move it |
+| Remove the sidebar footer's "N of M", now that the page number is always in the lower right | Phase 3 | Remove it |
