@@ -1019,9 +1019,25 @@ impl<L: DocLoader> Session<L> {
         if self.active != Some(id) {
             return None;
         }
-        let index = self.tabs.iter().position(|tab| tab.id == id)?;
-        let next = self.tabs.get(index + 1).or_else(|| index.checked_sub(1).and_then(|before| self.tabs.get(before)))?;
-        let file = self.file_to_wake(next.id)?;
+        let next = match self.pane_after(id) {
+            Some(pane) => pane,
+            None => {
+                let index = self.tabs.iter().position(|tab| tab.id == id)?;
+                self.tabs.get(index + 1).or_else(|| index.checked_sub(1).and_then(|before| self.tabs.get(before)))?.id
+            }
+        };
+        self.file_to_wake_now(next)
+    }
+
+    /// The pane that's read next when the one being read leaves a comparison, by closing or a ⌘-click: the first of those left. `None` without a comparison, or one that ends with it.
+    fn pane_after(&self, leaving: TabId) -> Option<TabId> {
+        let comparison = self.comparison.as_ref()?;
+        comparison.contains(leaving).then(|| comparison.tabs.iter().copied().find(|tab| *tab != leaving)).flatten()
+    }
+
+    /// A cold tab's file to read ahead, unless its sleep file says all a read would.
+    fn file_to_wake_now(&mut self, id: TabId) -> Option<(TabId, PathBuf)> {
+        let file = self.file_to_wake(id)?;
         if self.wake_from_sleep_file(file.0) {
             return None;
         }
@@ -2414,8 +2430,31 @@ impl<L: DocLoader> Session<L> {
         if synced {
             self.set_compare_synced(true);
         }
+        // Every pane is a live document, so each is one of the warm tabs, the one read last and so first: a tab warm before that isn't a pane goes cold, and the live documents stay at [`MAX_WARM`] (SPEC §2), as `compare::MAX_PANES` is.
+        // Those warm already first, so a pane coming in from cold pushes out a tab that isn't a pane, and never another pane, which would then be read with the session held.
+        let mut others: Vec<TabId> = tabs.iter().copied().filter(|id| *id != reading).collect();
+        others.sort_by_key(|id| !self.warm.iter().any(|(tab, _)| tab == id));
+        for id in others {
+            self.activate(id);
+        }
         self.activate(reading);
         Ok(())
+    }
+
+    /// What a ⌘-click on this tab would wake from cold, and its file, to read with the session free: the tab joining, or the pane read next if the one being read leaves. `None` if nothing needs reading.
+    pub fn wake_for_compare_click(&mut self, id: TabId) -> Option<(TabId, PathBuf)> {
+        let joining = !self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id));
+        let next = if joining { id } else if self.active == Some(id) { self.pane_after(id)? } else { return None };
+        if self.active == Some(next) {
+            return None;
+        }
+        self.file_to_wake_now(next)
+    }
+
+    /// The panes a comparison of these tabs would wake from cold, with their files, to read with the session free before [`Self::compare`].
+    pub fn wake_for_compare(&mut self, tabs: &[TabId]) -> Vec<(TabId, PathBuf)> {
+        let active = self.active;
+        tabs.iter().filter(|id| active != Some(**id)).filter_map(|id| self.file_to_wake_now(*id)).collect()
     }
 
     /// **⌘-click and ⌃-click on a tab** (owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"). A tab not in it joins at the right and is the one read; one in it leaves; down to one, that one's alone. On the only tab showing, nothing.
@@ -4980,5 +5019,53 @@ mod tests {
         older.comparison = None;
         let json = serde_json::to_string(&older).unwrap();
         assert!(!json.contains("comparison"), "nothing written for an older app to trip on");
+    }
+
+    /// Failure (review 1): a comparison with cold tabs leaves more live documents than SPEC §2 allows, as only the pane being read was made warm and the tabs warm before stayed; or making them warm reads their files with the session held. Each pane is one of the warm tabs, the rest go cold, and what's read ahead is all that's read.
+    #[test]
+    fn a_comparison_of_cold_tabs_is_the_live_documents_and_reads_nothing_held() {
+        let mut s = session(10);
+        let ids: Vec<TabId> = ["a", "b", "c", "d", "e"].iter().map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap()).collect();
+        assert_eq!(s.active(), Some(ids[4]));
+        let panes = [ids[0], ids[1], ids[2]];
+        let cold = s.wake_for_compare(&panes);
+        assert_eq!(cold.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![ids[0], ids[1]], "the warm one needs no read");
+        for (id, _) in cold {
+            let facts = s.loader().load(Path::new("/d/x.pdf"));
+            s.give_woken(id, facts, None);
+        }
+        let loads = s.loader().loads.get();
+        s.compare(&panes, None).unwrap();
+        assert_eq!(s.loader().loads.get(), loads, "nothing read with the session held");
+        let mut warm: Vec<TabId> = s.warm_tabs().collect();
+        warm.sort();
+        assert_eq!(warm, panes.to_vec(), "the panes are the live documents, and only they");
+        assert!(warm.len() <= MAX_WARM);
+    }
+
+    /// Failure (review 1): the pane read next, when the one being read leaves by closing or a ⌘-click, is read from disk with the session held, as nobody read it ahead. Both say which file to read first.
+    #[test]
+    fn the_pane_read_next_is_read_ahead() {
+        let mut s = session(10);
+        let ids: Vec<TabId> = ["a", "b", "c"].iter().map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap()).collect();
+        s.compare(&[ids[0], ids[1], ids[2]], Some(ids[1])).unwrap();
+        // Come back from a record, every pane cold.
+        let record = s.to_record();
+        let mut back = session(10);
+        back.restore(&record, HashMap::new()).unwrap();
+        assert_eq!(back.active(), Some(ids[1]));
+        back.wake_active();
+        assert_eq!(back.wake_for_close(ids[1]).map(|(id, _)| id), Some(ids[0]), "closing the read pane wakes the first left, not the next tab along");
+        assert_eq!(back.wake_for_compare_click(ids[1]).map(|(id, _)| id), Some(ids[0]), "and so does ⌘-clicking it out");
+        assert_eq!(back.wake_for_compare_click(ids[2]), None, "a pane that isn't read leaving wakes nothing");
+        let loads = back.loader().loads.get();
+        let (next, _) = back.wake_for_compare_click(ids[1]).unwrap();
+        let facts = back.loader().load(Path::new("/d/a.pdf"));
+        back.give_woken(next, facts, None);
+        let read_ahead = back.loader().loads.get();
+        back.toggle_compare(ids[1]).unwrap();
+        assert_eq!(back.loader().loads.get(), read_ahead, "nothing read with the session held");
+        assert!(read_ahead > loads);
+        assert_eq!(back.active(), Some(ids[0]));
     }
 }

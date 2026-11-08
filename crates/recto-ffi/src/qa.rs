@@ -285,7 +285,7 @@ impl QaBridge {
                 // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
                 return self.ask(verb, value);
             }
-            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
+            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sidebar_width" => check_drive_value(verb, value)?,
             "entry_points" | "services" => return self.ask(verb, value),
             // A place is said as an agent has it, on a page, and goes in by the document's coordinates, on the way to the window's, so it goes through what a real pointer's position does.
             "mouse_down" | "mouse_drag" | "pointer" => {
@@ -323,7 +323,8 @@ impl QaBridge {
                 let report = engine.report().0;
                 json!({ "tab": report["tab"], "page": report["page"], "pages": report["pages"], "scroll_y": report["scroll_y"], "magnification": report["magnification"], "fit": report["fit"], "settled": report["settled"], "spread": report["spread"], "thread": engine.has_thread() })
             }).collect();
-            json!({ "panes": panes, "reading": inner.panes.reading() })
+            let held: u64 = engines.iter().map(|engine| engine.report().0["documents_held"].as_u64().unwrap_or(0)).sum();
+            json!({ "panes": panes, "reading": inner.panes.reading(), "documents_held": held })
         });
         let own = recto_platform::footprint_bytes().unwrap_or(0);
         let mine = recto_platform::own_memory().unwrap_or_default();
@@ -496,6 +497,7 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "hover" | "reveal" => value == "none" || row(),
         "click_row" => value == "note" || value.strip_prefix("fold:").is_some_and(|row| row.parse::<u32>().is_ok()) || row(),
         "contents_scroll" | "compare_click" => row(),
+        "pane_context_menu" => value.split_once(':').is_some_and(|(pane, item)| pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES) && crate::menus::context_menu(None, Some(false)).iter().any(|entry| !entry.id.is_empty() && entry.id == item)),
         "pane_focus" => value.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES),
         "pane_scroll" => value.split_once(':').is_some_and(|(pane, points)| pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES) && points.parse::<f64>().is_ok_and(|points| points.is_finite() && points.abs() <= 1e9)),
         "resize" => value.split_once('x').and_then(|(width, height)| Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?))).is_some_and(|(width, height)| (400.0..=8000.0).contains(&width) && (300.0..=8000.0).contains(&height)),

@@ -1301,9 +1301,15 @@ fn compare<A: SessionAccess>(access: &A, tabs: Option<&str>, sync: Option<&str>,
         }
         let ids = access.with(|s| selectors.iter().map(|selector| select(s, selector)).collect::<Result<Vec<TabId>, AgentError>>())?;
         recto_session::compare::Comparison::check(&ids).map_err(refused)?;
-        // The pane being read becomes the active tab, and a cold one's read here with the session free, as a tap's is.
+        // Each pane is a live document, so each cold one is read here with the session free, as a tap's is, and none with it held.
         let reading = access.with(|s| s.active().filter(|active| ids.contains(active)).unwrap_or(ids[0]));
-        read_ahead(access, |s| s.wake_for_tap(reading));
+        let cold = access.with(|s| s.wake_for_compare(&ids));
+        let loader = access.with(|s| s.loader().clone());
+        for (id, path) in cold {
+            let stamp = recto_platform::file_stamp(&path).ok();
+            let loaded = loader.load(&path);
+            access.with(|s| s.give_woken(id, loaded, stamp));
+        }
         access.with(|s| s.compare(&ids, Some(reading))).map_err(refused)?;
     }
     if let Some(on) = sync {

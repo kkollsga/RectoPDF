@@ -621,6 +621,12 @@ impl Reader {
         }
     }
 
+    /// The last scroll the host said it had reached, for a test to go on from.
+    #[cfg(test)]
+    pub(crate) fn viewport_scrolled_to(&self) -> u64 {
+        self.viewport.scrolled_to
+    }
+
     /// The tab showing's magnification, if one is.
     pub fn magnification(&self) -> Option<f64> {
         self.doc().map(|doc| doc.magnification)

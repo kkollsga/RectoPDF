@@ -53,6 +53,22 @@ impl<'a> Run<'a> {
     }
 }
 
+impl Run<'_> {
+    /// What the Quit menu item does, and waits for the app to have gone.
+    fn quit(&mut self) {
+        let _ = self.state.json(&["qa", "quit", "now"]);
+        let began = Instant::now();
+        while process_counters(self.pid).is_some() {
+            assert!(began.elapsed() < Duration::from_secs(15), "the app didn't end");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        while std::os::unix::net::UnixStream::connect(&self.state.paths.socket).is_ok() {
+            assert!(began.elapsed() < Duration::from_secs(15), "the socket stayed");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 impl Drop for Run<'_> {
     fn drop(&mut self) {
         let _ = self.state.json(&["qa", "quit", "now"]);
@@ -267,4 +283,79 @@ fn a_dormant_tab_and_a_missing_file_in_a_comparison() {
     run.ok(&["qa", "pane-scroll", "1:900"]);
     run.settled();
     assert!(panes(&run.report())[1]["page"].as_i64().unwrap() > 1, "the pane whose file is fine still reads");
+}
+
+/// Failure (review 1): a comparison of cold tabs made by an agent leaves more live documents than SPEC §2's three: only the pane being read was made warm, and pane 0's page view kept every warm tab off screen beside the panes. Counted over every page view, and by workers.
+#[test]
+fn an_agent_comparison_of_cold_tabs_keeps_to_the_live_documents() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let files: Vec<TempPdf> = (0..5).map(|at| document(&format!("live{at}"), 6, (612.0, 792.0))).collect();
+    for file in &files {
+        run.ok(&["open", file.0.to_str().unwrap()]);
+        run.settled();
+    }
+    // #5 showing, #4 and #3 warm, #1 and #2 cold.
+    run.ok(&["compare", "--tabs", "#1,#2,#3"]);
+    run.settled();
+    let report = run.report();
+    assert_eq!(panes(&report).len(), 3);
+    let held = report["panes"]["documents_held"].as_u64().unwrap();
+    assert!(held <= 3, "{held} documents held over the page views: {}", report["panes"]);
+    assert!(report["memory"]["workers"].as_u64().unwrap() <= 3, "{} workers", report["memory"]["workers"]);
+}
+
+/// Failure (review 1): a comparison's pane that isn't being read, whose file has gone missing by the next launch, comes back blank with nothing said, as only the pane being read had a place for a note. It says so in the pane, under its name.
+#[test]
+fn a_missing_file_in_a_pane_says_so_after_a_restart() {
+    let state = State::new();
+    let Some(mut run) = Run::start(&state) else { return };
+    let (a, b) = (document("gone", 6, (612.0, 792.0)), document("here", 6, (612.0, 792.0)));
+    run.ok(&["open", a.0.to_str().unwrap()]);
+    run.ok(&["open", b.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["compare", "--tabs", "#1,#2"]);
+    run.settled();
+    assert_eq!(run.report()["session"]["active"], 2, "the pane that stays is the one read");
+    run.quit();
+    std::fs::remove_file(&a.0).unwrap();
+    drop(run);
+    let run = Run::start(&state).unwrap();
+    let began = Instant::now();
+    let report = loop {
+        run.settled();
+        let report = run.report();
+        if !report["app"]["panes"][0]["note"].is_null() || began.elapsed() > Duration::from_secs(10) {
+            break report;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(panes(&report).len(), 2, "the comparison comes back");
+    let gone = &report["app"]["panes"][0];
+    assert_eq!(gone["label"], "gone", "{gone}");
+    assert!(gone["note"].as_str().is_some_and(|note| !note.is_empty()), "the pane says what's wrong: {gone}");
+    assert!(report["app"]["panes"][1]["note"].is_null(), "the read pane's file is fine");
+}
+
+/// Failure (review 1): a right-click on a pane that isn't being read ticks the read pane's layout and changes the read pane's, as only `qa pane-focus` made a pane the one read. The right-click itself does, by what AppKit calls for one.
+#[test]
+fn a_right_click_on_a_pane_is_about_that_pane() {
+    let state = State::new();
+    let Some(run) = Run::start(&state) else { return };
+    let (a, b) = (document("left", 8, (612.0, 792.0)), document("right", 8, (612.0, 792.0)));
+    run.ok(&["open", a.0.to_str().unwrap()]);
+    run.ok(&["open", b.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["compare", "--tabs", "#1,#2"]);
+    run.settled();
+    assert_eq!(run.report()["session"]["active"], 2);
+    run.ok(&["qa", "pane-context-menu", "0:layout.two_up"]);
+    run.settled();
+    let after = run.report();
+    assert_eq!(after["session"]["active"], 1, "the pane right-clicked is the one read");
+    assert_eq!(panes(&after)[0]["spread"], "TwoUp", "and the layout chosen is its");
+    assert_eq!(panes(&after)[1]["spread"], "Single", "and not the other's");
+    run.ok(&["qa", "pane-focus", "1"]);
+    run.settled();
+    assert_eq!(run.report()["session"]["active"], 2, "pane-focus goes the same way");
 }

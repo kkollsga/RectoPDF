@@ -145,8 +145,18 @@ import QuartzCore
             controller.paneAreas[pane].scroll(by: points)
             controller.drainAll()
         case "pane_focus":
+            // As a right-click on the pane reaches it, by the method AppKit calls for one: the menu's made and not shown.
             guard let controller, let pane = Int(value), pane < controller.paneAreas.count else { return fail(id, "There's no such pane.") }
-            controller.paneAreas[pane].focus()
+            _ = controller.paneAreas[pane].documentView.menu(for: rightClick(in: controller.paneAreas[pane], window: controller.window))
+        case "pane_context_menu":
+            // A right-click on a pane, by what AppKit calls for one, then the item, as a person would choose it.
+            let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
+            guard let controller, parts.count == 2, let pane = Int(parts[0]), pane < controller.paneAreas.count else { return fail(id, "That isn't a pane and an item.") }
+            guard let menu = controller.paneAreas[pane].documentView.menu(for: rightClick(in: controller.paneAreas[pane], window: controller.window)) else { return fail(id, "There's no menu.") }
+            menu.update()
+            guard let item = menu.items.first(where: { ($0.representedObject as? String) == parts[1] }), let action = item.action else { return fail(id, "That isn't in the pane's right-click menu.") }
+            guard item.isEnabled else { return fail(id, "That's greyed out in the right-click menu right now.") }
+            NSApp.sendAction(action, to: item.target, from: item)
         case "compare_click":
             controller?.sidebar.compareClickRow(Int(value) ?? 0)
         case "hover":
@@ -235,6 +245,12 @@ import QuartzCore
         answer(id, state())
     }
 
+    /// A right-click in the middle of a pane, made and handed over by selector, as the entry points are: nothing's posted.
+    private func rightClick(in pane: PageArea, window: NSWindow) -> NSEvent {
+        let place = pane.scrollView.convert(NSPoint(x: pane.scrollView.bounds.midX, y: pane.scrollView.bounds.midY), to: nil)
+        return NSEvent.mouseEvent(with: .rightMouseDown, location: place, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+
     /// An item of the real menu bar, by its id.
     private func menuItem(_ id: String) -> NSMenuItem? {
         NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).first { ($0.representedObject as? String) == id && !$0.isHidden }
@@ -280,7 +296,7 @@ import QuartzCore
             "panel": sidebar.panelReport(),
             "settings": delegate.settings?.report() ?? ["open": false],
             // From Rust's list and its word on what's enabled, as the real menu is built from. Building an NSMenu on every state read costs the app megabytes that the budgets would count; `qa context-menu` goes through the real one.
-            "context_menu": delegate.core.contextMenu().filter { !$0.id.isEmpty }.map { ["id": $0.id, "title": $0.title, "checked": $0.checked, "enabled": delegate.core.menuItemEnabled(id: $0.id)] as [String: Any] },
+            "context_menu": delegate.core.contextMenu(pane: delegate.core.readingPane()).filter { !$0.id.isEmpty }.map { ["id": $0.id, "title": $0.title, "checked": $0.checked, "enabled": delegate.core.menuItemEnabled(id: $0.id)] as [String: Any] },
             "layout": reader.layout,
             "menu_bar": (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).map { menu -> [String: Any] in
                 // What AppKit itself says after asking whoever answers, as it does on opening a menu, and no copy of the rule.
@@ -475,13 +491,15 @@ import QuartzCore
         if sidebar.table.numberOfRows > 1 {
             let rowRect = sidebar.table.rect(ofRow: 1)
             let place = sidebar.table.convert(NSPoint(x: rowRect.midX, y: rowRect.midY), to: nil)
-            let before = sidebar.table.controlClickedRows.count
+            // What it would do is swapped for a note of the row for the check, so the comparison is as it was after.
+            let real = sidebar.table.controlClicked
+            var taken: [Int] = []
+            sidebar.table.controlClicked = { row in taken.append(row) }
             if let event = NSEvent.mouseEvent(with: .leftMouseDown, location: place, modifierFlags: .control, timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
                 sidebar.table.perform(#selector(NSResponder.mouseDown(with:)), with: event)
-                found["tab_row_control_click_compares"] = sidebar.table.controlClickedRows.count == before + 1 && sidebar.table.controlClickedRows.last == 1
-                // And back as it was.
-                sidebar.table.perform(#selector(NSResponder.mouseDown(with:)), with: event)
             }
+            sidebar.table.controlClicked = real
+            found["tab_row_control_click_compares"] = taken == [1]
         }
         // A pinch comes with these from AppKit, and they're what stops drawing until it ends.
         found["pages_can_be_pinched"] = pages.scrollView.allowsMagnification

@@ -334,6 +334,10 @@ pub struct PaneView {
     pub title: String,
     /// It's the pane being read: the page number and the contents are its.
     pub reading: bool,
+    /// Its tab's layout, by name, which its right-click ticks.
+    pub layout: String,
+    /// What's wrong with its file, in Rust's words, shown in the pane: a pane that isn't read has no other place to say so.
+    pub note: Option<String>,
 }
 
 /// What the page area shows.
@@ -669,8 +673,8 @@ enum CoreCall {
     Open(PathBuf),
     /// The sidebar hidden, or not.
     SetSidebarHidden(bool),
-    /// The tab showing laid out another way.
-    SetSpread(record::Spread),
+    /// A tab laid out another way: the pane being read's when it was chosen, or the active tab's.
+    SetSpread(Option<TabId>, record::Spread),
     /// ⌘-click or ⌃-click on a tab: into a comparison, or out of it.
     CompareClick(TabId),
     /// The reader's moved into another pane.
@@ -757,7 +761,7 @@ impl CoreQueue {
         if matches!(call, CoreCall::Reconcile) && self.reconcile_queued.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(_) | CoreCall::CompareClick(_) | CoreCall::FocusPane(_) | CoreCall::SetSynced(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
+        if self.frozen.load(Ordering::SeqCst) && matches!(call, CoreCall::ClearEditHistory | CoreCall::Tap(_) | CoreCall::GoTo(..) | CoreCall::Open(_) | CoreCall::SetSidebarHidden(_) | CoreCall::SetSpread(..) | CoreCall::CompareClick(_) | CoreCall::FocusPane(_) | CoreCall::SetSynced(_) | CoreCall::Rotate(_) | CoreCall::UndoOrRedo(_) | CoreCall::SetPaper(_) | CoreCall::ToggleAgentIcon) {
             return;
         }
         let mut calls = lock(&self.calls);
@@ -1569,7 +1573,8 @@ impl AppCore {
                 self.inner.panes.zoom_all(&self.inner.engine, zoom);
             }
             menus::Action::ToggleSidebar => self.toggle_sidebar(),
-            menus::Action::SetSpread(spread) => self.inner.core.push(CoreCall::SetSpread(spread)),
+            // The pane being read as it's chosen, which a right-click on a pane has just made it, whatever the session's still to hear.
+            menus::Action::SetSpread(spread) => self.inner.core.push(CoreCall::SetSpread((self.inner.panes.count() > 1).then(|| self.inner.panes.tab_of(self.inner.panes.reading())).flatten(), spread)),
             menus::Action::Rotate(turns) => self.inner.core.push(CoreCall::Rotate(turns)),
             menus::Action::Undo => self.inner.core.push(CoreCall::UndoOrRedo(true)),
             menus::Action::Redo => self.inner.core.push(CoreCall::UndoOrRedo(false)),
@@ -1604,9 +1609,11 @@ impl AppCore {
     }
 
     /// What a right-click on a page offers.
-    pub fn context_menu(&self) -> Vec<MenuEntry> {
+    /// What a right-click on a pane offers: its own layout ticked, so a pane that isn't being read shows its own.
+    pub fn context_menu(&self, pane: u32) -> Vec<MenuEntry> {
         let reader = lock(&self.inner.published).reader.clone();
-        menus::context_menu(record::Spread::from_name(&reader.layout), (!reader.panes.is_empty()).then_some(reader.compare_synced))
+        let layout = reader.panes.get(pane as usize).map_or(reader.layout.as_str(), |view| view.layout.as_str());
+        menus::context_menu(record::Spread::from_name(layout), (!reader.panes.is_empty()).then_some(reader.compare_synced))
     }
 
     /// The mouse went down on a page, in the document view's coordinates, the same at any zoom. Apply what comes back in the same transaction. It looks through text already here and never waits for any.
@@ -1614,9 +1621,10 @@ impl AppCore {
     pub fn selection_press(&self, pane: u32, x: f64, y: f64, clicks: u32, shift: bool) -> Vec<ReaderOp> {
         let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else { return Vec::new() };
         if let Some(tab) = self.inner.panes.focus(pane as usize) {
+            // Never a wait on another pane: a busy one lets go of its selection from its own thread.
             for other in self.inner.panes.engines(&self.inner.engine) {
-                if !other.same_as(&engine) && other.has_selection() {
-                    other.clear_selection();
+                if !other.same_as(&engine) {
+                    other.clear_selection_soon();
                 }
             }
             self.focus_moved(tab);
@@ -2312,11 +2320,12 @@ fn session_thread(inner: &Arc<Inner>) {
             }),
             CoreCall::CompareClick(id) => {
                 // A cold tab joining is read first with the session free, as a tap's is.
-                let cold = host.session.with_session(|session| session.comparison().is_none_or(|comparison| !comparison.contains(id)).then(|| session.wake_for_tap(id)).flatten());
+                // The tab joining, or the pane read next if the one read leaves, is read first with the session free, as a tap's is.
+                let cold = host.session.with_session(|session| session.wake_for_compare_click(id));
                 match cold {
                     Some((tab, path)) => {
                         reads.wanted_tab = Some(tab);
-                        reads.start(inner, Reading::Compare(tab), path);
+                        reads.start(inner, Reading::Compare(id, tab), path);
                     }
                     None => compare_click_now(inner, id, &mut events),
                 }
@@ -2340,8 +2349,8 @@ fn session_thread(inner: &Arc<Inner>) {
                     events.push(Event::new("view_changed", json!({ "sync": if on { "on" } else { "off" } })));
                 }
             }
-            CoreCall::SetSpread(spread) => host.session.with_session(|session| {
-                if let Some(id) = session.active()
+            CoreCall::SetSpread(tab, spread) => host.session.with_session(|session| {
+                if let Some(id) = tab.filter(|tab| session.tab(*tab).is_some()).or(session.active())
                     && session.set_spread(id, spread)
                 {
                     events.push(Event::new("view_changed", json!({ "tab": id.0, "layout": spread.name() })));
@@ -2389,8 +2398,8 @@ enum Reading {
     File(PathBuf),
     /// A restored active tab: what's become of its file, first, then its facts.
     Restored(TabId),
-    /// A cold tab ⌘-clicked into a comparison.
-    Compare(TabId),
+    /// A ⌘-click on the first tab, with the second, cold, being read for it: the tab joining, or the pane read next.
+    Compare(TabId, TabId),
     /// A cold tab in a comparison's pane, which the reader's moved into.
     Pane(TabId),
 }
@@ -2516,14 +2525,19 @@ impl FileReads {
                     tap_now(inner, tab, events);
                 }
             }
-            Reading::Compare(tab) | Reading::Pane(tab) => {
+            Reading::Compare(clicked, tab) => {
                 host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
                 if self.wanted_tab == Some(tab) {
                     self.wanted_tab = None;
                 }
-                if matches!(read.what, Reading::Compare(_)) {
-                    compare_click_now(inner, tab, events);
-                } else if host.session.with_session(|session| session.focus_pane(tab)) {
+                compare_click_now(inner, clicked, events);
+            }
+            Reading::Pane(tab) => {
+                host.session.with_session(|session| session.give_woken(tab, read.loaded, read.stamp));
+                if self.wanted_tab == Some(tab) {
+                    self.wanted_tab = None;
+                }
+                if host.session.with_session(|session| session.focus_pane(tab)) {
                     events.push(Event::new("tab_activated", json!({ "tab": tab.0 })));
                 }
             }
@@ -2671,13 +2685,18 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
             PageMap { files, slots, own: same_file, turns }
         }
     };
-    // Pane 0's page view keeps the warm tabs that aren't on screen. A tab in another pane is that pane's.
-    let warm: Vec<u32> = if first { session.warm_tabs().filter(|other| !panes.contains(other)).map(|other| other.0).collect() } else { Vec::new() };
+    // Pane 0's page view keeps the warm tabs that aren't on screen, as many as the panes leave of the live documents. A tab in another pane is that pane's.
+    let warm: Vec<u32> = if first { warm_beside_panes(session.warm_tabs(), panes) } else { Vec::new() };
     let problem = session.tab_notice_message(id).map(str::to_string).or_else(|| tab.problem.map(|problem| problem.message().to_string()));
     let saved = session.place_to_show(id).map(|place| SavedPlace { page: place.page, anchor: (place.anchor_page, place.within), x: place.x, y: place.y, document_height: place.document_height, magnification: place.zoom, page_size: (place.page_width > 0.0 && place.page_height > 0.0).then_some(recto_reader::layout::PageBox { width: place.page_width, height: place.page_height }) });
     // Edits that can't be read just now can't say what's on the pages, so it's the file that's shown.
     let pages = if session.list_is_asleep(id) { tab.page_count } else { session.pages_in(id) };
     Some(PaneSnapshot { id, pages, page: tab.page, map, warm, problem, saved, spread: tab.spread, title: tab.name.to_string() })
+}
+
+/// The warm tabs off screen that pane 0's page view keeps: most recent first, and only as many as leave the panes and these at [`recto_session::MAX_WARM`] live documents (SPEC §2).
+fn warm_beside_panes(warm: impl Iterator<Item = TabId>, panes: &[TabId]) -> Vec<u32> {
+    warm.filter(|other| !panes.contains(other)).take(recto_session::MAX_WARM.saturating_sub(panes.len())).map(|other| other.0).collect()
 }
 
 /// **Shows a tab in a pane,** or brings what's shown up to date: another tab, another list of pages, a layout, a page an agent sent it to, or the warm tabs. A tab a pane's page view hasn't held starts from its sleep file's pictures, as any wake does.
@@ -2876,7 +2895,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let sidebar_width = lock(&inner.app).sidebar_width;
     let highlight = paper.highlight();
     let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
-    let pane_views: Vec<PaneView> = if comparing { snapshots.iter().map(|shown| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active }).collect() } else { Vec::new() };
+    let pane_views: Vec<PaneView> = if comparing { snapshots.iter().enumerate().map(|(pane, shown)| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active, layout: shown.spread.name().to_string(), note: shown.problem.clone().or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())) }).collect() } else { Vec::new() };
     let compare_synced = inner.host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
     let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice };
     let mut published = lock(&inner.published);
@@ -2998,6 +3017,18 @@ mod tests {
         queue.push(CoreCall::Page(3, Some("page_failed"), TabId(1)));
         queue.push(CoreCall::Page(4, None, TabId(1)));
         assert_eq!(lock(&queue.calls).len(), 3);
+    }
+
+    /// Failure (review 1): pane 0's page view keeps every warm tab off screen beside a comparison's panes, so three panes and two recent tabs are five live documents where SPEC §2 allows three.
+    #[test]
+    fn panes_and_warm_tabs_stay_within_the_live_documents() {
+        let tabs = |ids: &[u32]| ids.iter().copied().map(TabId).collect::<Vec<_>>();
+        assert_eq!(warm_beside_panes(tabs(&[5, 4, 3]).into_iter(), &tabs(&[5])), vec![4, 3], "one tab showing keeps two recent");
+        assert_eq!(warm_beside_panes(tabs(&[5, 4, 3]).into_iter(), &tabs(&[1, 2])), vec![5], "two panes leave room for one");
+        assert!(warm_beside_panes(tabs(&[5, 4, 3]).into_iter(), &tabs(&[1, 2, 3])).is_empty(), "three panes are all of them");
+        for panes in [tabs(&[1]), tabs(&[1, 2]), tabs(&[1, 2, 3])] {
+            assert!(panes.len() + warm_beside_panes(tabs(&[9, 8, 7, 6]).into_iter(), &panes).len() <= recto_session::MAX_WARM);
+        }
     }
 
     struct TestEngineEvents;

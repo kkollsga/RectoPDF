@@ -208,6 +208,8 @@ final class BookMark: NSView {
     var readingPane: PageArea { paneAreas[min(Int(delegate.core.readingPane()), paneAreas.count - 1)] }
     /// Each pane's name, in its lower left corner, with more than one: see `layoutPanes`.
     private var paneLabels: [MarginLabel] = []
+    /// What's wrong with a pane's file, in the pane, for a pane that isn't read: the one read says it with the page number.
+    private var paneNotes: [MarginLabel] = []
     /// A hairline between panes, as between the sidebar and the page.
     private var paneEdges: [NSView] = []
     let sidebar: SidebarPane
@@ -482,7 +484,7 @@ final class BookMark: NSView {
             let last = index == paneAreas.count - 1
             pane.scrollView.frame = NSRect(x: x, y: area.minY, width: last ? area.maxX - x : width, height: area.height)
             if index > 0, index - 1 < paneEdges.count { paneEdges[index - 1].frame = NSRect(x: x - 1, y: area.minY, width: 1, height: area.height) }
-            guard index < paneLabels.count else { continue }
+            guard index < paneLabels.count, index < paneNotes.count else { continue }
             let label = paneLabels[index]
             if comparing, index < reader.panes.count {
                 let view = reader.panes[index]
@@ -490,8 +492,17 @@ final class BookMark: NSView {
                 label.place(text: view.title, maxWidth: min(width - 32, 260), bottomRight: NSPoint(x: x + 16, y: area.maxY - 16), font: .systemFont(ofSize: 11.5, weight: view.reading ? .semibold : .regular), color: (view.reading ? Theme.accent : Theme.textBody).ns)
                 // Laid out from its left: `place` puts its bottom right at the point, so it's moved by its width.
                 label.frame.origin.x = x + 16
+                let note = paneNotes[index]
+                if let words = view.note, !view.reading {
+                    note.isHidden = false
+                    note.place(text: words, maxWidth: min(width - 32, 320), bottomRight: NSPoint(x: x + 16, y: label.frame.minY - 8))
+                    note.frame.origin.x = x + 16
+                } else {
+                    note.isHidden = true
+                }
             } else {
                 label.isHidden = true
+                paneNotes[index].isHidden = true
             }
         }
     }
@@ -502,7 +513,8 @@ final class BookMark: NSView {
             let frame = area.scrollView.frame
             let label = index < paneLabels.count && !paneLabels[index].isHidden ? paneLabels[index] : nil
             let report = area.report()
-            return ["pane": index, "x": frame.minX, "width": frame.width, "label": label.map { $0.label.text as Any } ?? NSNull(), "label_in_lower_left": label.map { $0.frame.minX >= frame.minX && $0.frame.maxX <= frame.maxX && $0.frame.maxY > frame.maxY - 40 } ?? false, "reading": index == Int(delegate.core.readingPane()), "magnification": report["magnification"] ?? 0, "scroll_y": report["scroll_y"] ?? 0, "highlight_rects": report["highlight_rects"] ?? 0, "pages_inside": area.pagesInside()]
+            let note = index < paneNotes.count && !paneNotes[index].isHidden ? paneNotes[index].label.text : nil
+            return ["pane": index, "note": note as Any? ?? NSNull(), "x": frame.minX, "width": frame.width, "label": label.map { $0.label.text as Any } ?? NSNull(), "label_in_lower_left": label.map { $0.frame.minX >= frame.minX && $0.frame.maxX <= frame.maxX && $0.frame.maxY > frame.maxY - 40 } ?? false, "reading": index == Int(delegate.core.readingPane()), "magnification": report["magnification"] ?? 0, "scroll_y": report["scroll_y"] ?? 0, "highlight_rects": report["highlight_rects"] ?? 0, "pages_inside": area.pagesInside()]
         }
     }
 
@@ -539,6 +551,13 @@ final class BookMark: NSView {
             paneLabels.append(label)
         }
         while paneLabels.count > paneAreas.count { paneLabels.popLast()?.removeFromSuperview() }
+        while paneNotes.count < paneAreas.count {
+            let note = MarginLabel()
+            note.isHidden = true
+            root.addSubview(note, positioned: .below, relativeTo: placeLabel)
+            paneNotes.append(note)
+        }
+        while paneNotes.count > paneAreas.count { paneNotes.popLast()?.removeFromSuperview() }
     }
 
     private func layoutMargin(area: NSRect) {
@@ -787,7 +806,7 @@ final class BookMark: NSView {
         sidebarButton.contentTintColor = Theme.textQuiet.ns
         styleZoomLevel()
         // A pane's label takes its colour from whether it's read, when it's laid out.
-        for label in paneLabels { label.layer?.backgroundColor = Theme.pill.cg }
+        for label in paneLabels + paneNotes { label.layer?.backgroundColor = Theme.pill.cg }
         if paneLabels.contains(where: { !$0.isHidden }) { layout() }
         for label in [noteLabel, placeLabel, copyNotice as MarginLabel] {
             label.layer?.backgroundColor = Theme.pill.cg

@@ -135,9 +135,10 @@ impl Panes {
         let value = reading.zoom(zoom)?;
         if self.count() > 1 {
             lock(&self.plan).magnification = Some(value);
+            // The others never hold the UI thread up: a busy one takes the zoom from its own thread.
             for engine in self.engines(primary) {
                 if !engine.same_as(&reading) {
-                    engine.zoom(Zoom::To(value));
+                    engine.zoom_soon(value);
                 }
             }
         }
@@ -160,7 +161,7 @@ impl Panes {
                 drop(plan);
                 for (other, engine) in self.engines(primary).into_iter().enumerate() {
                     if other != pane {
-                        engine.zoom(Zoom::To(viewport.magnification));
+                        engine.zoom_soon(viewport.magnification);
                     }
                 }
             }

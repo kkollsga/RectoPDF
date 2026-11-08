@@ -20,7 +20,7 @@ final class PageDocumentView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        // Control-click is a right click on a Mac, and this doesn't pass it up to anything that would know.
+        // Control-click is a right click on a Mac, and this doesn't pass it up to anything that would know. `menu(for:)` makes this pane the one read first.
         if event.modifierFlags.contains(.control) {
             if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
             return
@@ -50,7 +50,9 @@ final class PageDocumentView: NSView {
 
     /// What a right-click offers, from Rust's list. Each goes by a standard selector, up the chain to whoever has it, and the system adds Services by itself once something answers for them.
     override func menu(for event: NSEvent) -> NSMenu? {
-        pointer?.contextMenu()
+        // In a comparison, a right-click on a pane is about that pane: it's the one read from here, and the menu ticks its own layout and acts on it.
+        pointer?.focus()
+        return pointer?.contextMenu()
     }
 }
 
@@ -436,7 +438,7 @@ final class CenteringClipView: NSClipView {
     /// Rust's list: Copy and Select All by their standard selectors, then the layouts, which go to the app's own action as the menu bar's items do.
     func contextMenu() -> NSMenu {
         let menu = NSMenu()
-        for entry in core.contextMenu() {
+        for entry in core.contextMenu(pane: pane) {
             if entry.id.isEmpty {
                 menu.addItem(.separator())
                 continue

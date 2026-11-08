@@ -681,7 +681,12 @@ struct PageMemory {
     size: Option<KillReason>,
     /// Drawing it for the hidden-text check stopped a worker. Nothing about drawing it for the screen follows from that.
     check_stopped: bool,
+    /// Reads of its text in a row that ran out of time with the Mac too busy to say anything about the page.
+    busy_reads: u8,
 }
+
+/// Busy reads of a page in a row past which it's remembered as unreadable after all: a worker that hangs looks starved too, and this bounds what a hostile page can cost to that many deadlines.
+const MAX_BUSY_READS: u8 = 3;
 
 /// Workers the hidden-text check may have killed in one document, past which pages go unchecked. They don't count towards `max_kills_per_document`, so a copy of a file of slow pages can't stop it drawing, and this keeps them from costing a respawn each for ever.
 const MAX_CHECK_KILLS: u32 = 16;
@@ -721,6 +726,8 @@ pub struct DocRenderer {
     kills_counted_from: u32,
     /// Of those since then, what the hidden-text check took.
     check_kills: u32,
+    /// Of those since then, deadlines the Mac was too busy for the worker to meet: nothing about the document, so they don't count towards stopping it.
+    busy_kills: u32,
     /// `image_places` has been forgotten, past its cap, and nobody's been told.
     image_places_cleared: bool,
     heavy_retries_counted_from: u32,
@@ -777,6 +784,7 @@ impl DocRenderer {
             image_places: HashMap::new(),
             image_places_cleared: false,
             check_kills: 0,
+            busy_kills: 0,
             file_changed: false,
             waited_ticket: None,
             open_failure: None,
@@ -861,6 +869,7 @@ impl DocRenderer {
         self.open_failure = None;
         self.kills_counted_from = self.kills();
         self.check_kills = 0;
+        self.busy_kills = 0;
         self.heavy_retries_counted_from = self.stats.heavy_pages;
     }
 
@@ -1126,7 +1135,7 @@ impl DocRenderer {
 
     /// Whether this document has had too many workers killed.
     fn stopped(&self) -> bool {
-        (self.kills() - self.kills_counted_from).saturating_sub(self.check_kills) >= self.policy.max_kills_per_document
+        (self.kills() - self.kills_counted_from).saturating_sub(self.check_kills).saturating_sub(self.busy_kills) >= self.policy.max_kills_per_document
     }
 
     fn kills(&self) -> u32 {
@@ -1264,6 +1273,7 @@ impl DocRenderer {
         let may_check = hidden_check && self.check_kills < MAX_CHECK_KILLS && !self.remembered(page).is_some_and(|memory| memory.check_stopped) && self.page_draw_state_at(page, 2.0) == PageDrawState::Sharp;
         if may_check {
             let kills = self.kills();
+            let busy_before = self.busy_kills;
             match self.text_job(page, boxes, true, generation) {
                 // A worker that breaks the protocol is that worker's doing, whatever it was asked.
                 Err(JobFailure::Stopped(reason @ KillReason::Rejected(_))) => {
@@ -1271,7 +1281,9 @@ impl DocRenderer {
                     return Err(RenderFailure::PageReadFailed { page, reason });
                 }
                 Err(JobFailure::Stopped(_)) => {
-                    self.check_kills = self.check_kills.saturating_add(self.kills() - kills);
+                    // A busy kill's already left out of the count; it isn't left out twice.
+                    let busy = self.busy_kills - busy_before;
+                    self.check_kills = self.check_kills.saturating_add((self.kills() - kills).saturating_sub(busy));
                     self.remember(page).check_stopped = true;
                 }
                 other => return other.map_err(RenderFailure::from),
@@ -1279,11 +1291,24 @@ impl DocRenderer {
         }
         let busy = self.stats.too_busy;
         match self.text_job(page, boxes, false, generation) {
-            // The Mac was too busy for the read to get its time: nothing's known about the page, so nothing's remembered, and the next ask reads it again. Before, a busy moment left a page unreadable for the session, the copy of it saying it took too long.
-            Err(JobFailure::Stopped(reason @ KillReason::Deadline)) if self.stats.too_busy > busy => Err(RenderFailure::PageReadFailed { page, reason }),
+            // The Mac was too busy for the read to get its time: nothing's known about the page, so it isn't remembered, and the next ask reads it again. Before, a busy moment left a page unreadable for the session, the copy of it saying it took too long. A worker that hangs looks the same, so after [`MAX_BUSY_READS`] of them in a row the page is remembered after all, and a hostile page costs a deadline at most that many times.
+            Err(JobFailure::Stopped(reason @ KillReason::Deadline)) if self.stats.too_busy > busy => {
+                let memory = self.remember(page);
+                memory.busy_reads = memory.busy_reads.saturating_add(1);
+                if memory.busy_reads >= MAX_BUSY_READS {
+                    memory.text = Some(reason);
+                }
+                Err(RenderFailure::PageReadFailed { page, reason })
+            }
             Err(JobFailure::Stopped(reason)) => {
                 self.remember(page).text = Some(reason);
                 Err(RenderFailure::PageReadFailed { page, reason })
+            }
+            Ok(read) => {
+                if let Some(memory) = self.remembered.iter_mut().find(|memory| memory.page == page) {
+                    memory.busy_reads = 0;
+                }
+                Ok(read)
             }
             other => other.map_err(RenderFailure::from),
         }
@@ -1315,7 +1340,7 @@ impl DocRenderer {
                 if self.remembered.len() >= MAX_FAILED_PAGES {
                     self.remembered.remove(0);
                 }
-                self.remembered.push(PageMemory { page, counted_as_heavy: false, needs_heavy_from: None, low_res_from: None, failed_from: None, low_res_stopped: false, text: None, size: None, check_stopped: false });
+                self.remembered.push(PageMemory { page, counted_as_heavy: false, needs_heavy_from: None, low_res_from: None, failed_from: None, low_res_stopped: false, text: None, size: None, check_stopped: false, busy_reads: 0 });
                 self.remembered.len() - 1
             }
         };
@@ -1440,6 +1465,7 @@ impl DocRenderer {
                     // Out of time with too little of the processor to have been the cause: the Mac was busy, as `open_in` reckons it, and it says nothing about the page.
                     if matches!(reason, KillReason::Deadline) && cpu_ns.is_some_and(|cpu| was_starved(cpu, self.policy.page_deadline)) {
                         self.stats.too_busy += 1;
+                        self.busy_kills = self.busy_kills.saturating_add(1);
                     }
                     match reason {
                         KillReason::MemoryLimit => self.stats.memory_kills += 1,

@@ -341,12 +341,9 @@ final class PanelView: FlippedView {
 /// The tabs' table. A control-click on a Mac is a right-click unless something takes it, and AppKit can turn it into one before the table's action: here it's the owner's way to compare (2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"), so it's taken first and said by row.
 final class TabTable: NSTableView {
     var controlClicked: ((Int) -> Void)?
-    /// For QA: control-clicks taken, by row.
-    private(set) var controlClickedRows: [Int] = []
 
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control), let controlClicked {
-            controlClickedRows.append(row(at: convert(event.locationInWindow, from: nil)))
             controlClicked(row(at: convert(event.locationInWindow, from: nil)))
             return
         }
