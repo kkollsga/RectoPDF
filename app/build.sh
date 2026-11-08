@@ -82,7 +82,9 @@ cp "$RUST_OUT/recto-headings" "$APP/Contents/MacOS/recto-headings"
 cp "$RUST_OUT/recto-updater" "$APP/Contents/MacOS/recto-updater"
 # Every third-party component that ships, with its licence (tools/notices.py writes it; recto-cli's `notices` test holds it to the lockfiles).
 mkdir -p "$APP/Contents/Resources"
-cp "$REPO/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/Licenses.txt"
+# Without extended attributes (-X): a checkout's file can carry one (macOS adds `com.apple.provenance`), a zip holds it as a `._` entry,
+# and the updater's reader writes that out as a file the signature doesn't cover, so the update is refused.
+cp -X "$REPO/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/Licenses.txt"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

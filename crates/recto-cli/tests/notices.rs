@@ -121,19 +121,40 @@ fn every_shipped_licence_is_one_an_mit_app_can_ship() {
     }
 }
 
-/// Failure: the bundle ships without its notices, or with an old copy of them. Skipped when the app isn't built, and required
-/// where a run says the app must be there (`--full`).
-#[test]
-fn the_built_app_carries_the_notices() {
+/// The built bundle's `Contents`, unless this run skips the app. Required where a run says the app must be there (`--full`).
+fn built_bundle() -> Option<PathBuf> {
     if std::env::var_os("RECTO_SKIP_APP").is_some() {
-        return;
+        return None;
     }
     let bundle = repo().join("app/build/RectoPDF.app/Contents");
     if !bundle.join("MacOS/RectoPDF").is_file() {
         assert!(std::env::var_os("RECTO_REQUIRE_APP").is_none(), "the app isn't built, and this run needs it");
         eprintln!("skipped: the app isn't built");
-        return;
+        return None;
     }
+    Some(bundle)
+}
+
+/// Failure: the bundle ships without its notices, or with an old copy of them. Skipped when the app isn't built.
+#[test]
+fn the_built_app_carries_the_notices() {
+    let Some(bundle) = built_bundle() else { return };
     let copy = std::fs::read_to_string(bundle.join("Resources/Licenses.txt")).expect("the app has no Contents/Resources/Licenses.txt");
     assert!(copy == notices(), "the app's Licenses.txt isn't THIRD-PARTY-NOTICES.txt: build the app again");
+}
+
+/// Failure: a file in the bundle carries an extended attribute, as one copied from a checkout can (macOS adds `com.apple.provenance`
+/// to files some processes write). A zip holds it as a `._` entry, the updater's reader writes that out as a file the signature
+/// doesn't cover, and every update is refused as unsigned: the notices' first copy did this to ten update tests.
+#[test]
+fn nothing_in_the_built_app_has_extended_attributes() {
+    let Some(bundle) = built_bundle() else { return };
+    let listed = std::process::Command::new("/usr/bin/xattr")
+        .arg("-r")
+        .arg(&bundle)
+        .output()
+        .expect("xattr runs");
+    assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
+    let text = String::from_utf8_lossy(&listed.stdout);
+    assert!(text.trim().is_empty(), "files in the bundle with extended attributes:\n{text}");
 }
