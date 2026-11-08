@@ -34,6 +34,12 @@ pub fn check_save(data: &[u8]) {
         let _ = recto_core::save::plan_in_memory(&plain, &hostile);
         let _ = recto_core::save::plan_in_memory(&hostile, &plain);
     });
+    // The rewrite: a delete in a hostile file, with and without pages added, and hostile pages added to a plain file. What it writes passes the fork's verify, or it refuses.
+    within("planning and writing a rewrite", BUDGET, || {
+        let _ = recto_core::save::rewrite_in_memory(&hostile, &plain, false);
+        let _ = recto_core::save::rewrite_in_memory(&hostile, &plain, true);
+        let _ = recto_core::save::rewrite_in_memory(&plain, &hostile, true);
+    });
 }
 
 fn read(bytes: &[u8]) {

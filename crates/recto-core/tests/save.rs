@@ -778,3 +778,13 @@ fn irs_forms_added_to_irs_forms_stay_fillable() {
         eprintln!("{} + {}: qpdf exit {:?}", target.file_name().unwrap().to_string_lossy(), other.file_name().unwrap().to_string_lossy(), out.status.code());
     }
 }
+
+/// Failure: the fuzzer's way into the rewrite plans a different save from a real one, or what it writes doesn't pass the fork's verify. On ordinary files it deletes, adds and reads back, and refuses a delete of the only page.
+#[test]
+fn the_rewrite_in_memory_is_the_real_plan() {
+    let target = marked(&["GONE", "STAYS", "ALSO"]);
+    let added = marked(&["ADDED"]);
+    assert_eq!(save::rewrite_in_memory(&target, &added, false), Ok(2));
+    assert_eq!(save::rewrite_in_memory(&target, &added, true), Ok(3));
+    assert_eq!(save::rewrite_in_memory(&marked(&["ONLY"]), &added, false), Err(SaveError::NoPagesLeft));
+}

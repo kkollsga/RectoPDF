@@ -769,6 +769,38 @@ pub fn plan_in_memory_within(target: &[u8], added: &[u8], work_limit: u64) -> Re
     Ok(expected.len())
 }
 
+/// **The rewrite's planner on bytes in memory, for the fuzzer:** `target` with its first page deleted, and with `added`'s pages after the rest when `with_added`,
+/// written by the rewrite into memory, checked by the fork's own verify and read back. Gives back the pages the result has. The same plan and sink a save
+/// uses, with no file. A target of one page has nothing left to delete, so it's refused as a save would refuse it.
+pub fn rewrite_in_memory(target: &[u8], added: &[u8], with_added: bool) -> Result<usize, SaveError> {
+    let (reader, map) = open_bytes_for_save(target)?;
+    reader.check_rewritable().map_err(from_rewrite)?;
+    let pages = u32::try_from(map.len()).map_err(|_| SaveError::Damaged)?;
+    let (source, source_map) = open_bytes_for_save(added)?;
+    let added_pages = if with_added { u32::try_from(source_map.len()).map_err(|_| SaveError::Damaged)?.min(64) } else { 0 };
+    let mut order: Vec<PageRef> = (1..pages).map(|page| PageRef { source: 0, page, quarter_turns: u8::from(page == 1) }).collect();
+    order.extend((0..added_pages).map(|page| PageRef { source: 1, page, quarter_turns: 3 }));
+    if order.is_empty() {
+        return Err(SaveError::NoPagesLeft);
+    }
+    let added_file = [AddedFile { path: Path::new("added.pdf"), page_count: added_pages, stamp: None }];
+    let request = SaveRequest { path: Path::new("target.pdf"), stamp: None, file_pages: pages, pages: &order, added: &added_file };
+    let sources = vec![Some((source, source_map))];
+    let plan = Plan::make(&reader, &map, &request, &sources, signature_facts(&reader), Writer::Rewrite, MAX_COPY_WORK)?;
+    let mut changes = RewriteChanges::new(&reader).map_err(from_rewrite)?;
+    changes.remove_page(0);
+    let expected = plan.write(&reader, &sources, &mut RewriteSink { changes: &mut changes, held: 0, cap: plan.append_cap.min(MAX_REWRITE_HELD_BYTES) })?;
+    let mut out = Vec::new();
+    let unverified = changes.write_unverified_to(RewritePolicy::new().remove_signatures().remove_usage_rights(), &mut out).map_err(from_rewrite)?;
+    let bytes: std::sync::Arc<[u8]> = out.into();
+    unverified.verify(&reader, std::sync::Arc::new(lopdf::BytesSource::new(std::sync::Arc::clone(&bytes)))).map_err(from_rewrite)?;
+    let (_, written) = open_bytes_for_save(&bytes).map_err(|_| SaveError::CheckFailed { detail: "doesn't open" })?;
+    if written.len() != expected.len() || written.iter().zip(&expected).any(|(entry, id)| entry.id() != *id) {
+        return Err(SaveError::CheckFailed { detail: "pages out of place" });
+    }
+    Ok(expected.len())
+}
+
 /// Each added PDF that a page of the document comes from, opened and checked against what was known of it. One no page uses isn't opened.
 fn open_added(request: &SaveRequest<'_>) -> Result<Vec<Opened>, SaveError> {
     let mut used = vec![false; request.added.len()];
