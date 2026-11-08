@@ -16,7 +16,11 @@
 use crate::state::StatePaths;
 use recto_platform::{FileStamp, file_stamp, local};
 use recto_session::edit::{AddedSource, PageEdits};
-use recto_session::record::{self, AppRecord, CURRENT_VERSION, DecodedRecord, FileNotice, FindRecord, JOURNAL_COMPACT_ABOVE, JournalHeader, JournalOp, MAX_JOURNAL_BYTES, MAX_PLACES_LOG_BYTES, MAX_RECORD_BYTES, ParsedJournal, PlaceDelta, RecordError, SessionRecord, TabEntry, ViewRecord, closed_journal_name, is_closed_journal_name, is_journal_name, journal_is_for, journal_named_is_for};
+use recto_session::record::{
+    self, AppRecord, CURRENT_VERSION, DecodedRecord, FileNotice, FindRecord, JOURNAL_COMPACT_ABOVE, JournalHeader, JournalOp, MAX_JOURNAL_BYTES,
+    MAX_PLACES_LOG_BYTES, MAX_RECORD_BYTES, ParsedJournal, PlaceDelta, RecordError, SessionRecord, TabEntry, ViewRecord, closed_journal_name,
+    is_closed_journal_name, is_journal_name, journal_is_for, journal_named_is_for,
+};
 use recto_session::sleep::{MAX_SLEEP_FILE_BYTES, SleepFile, decode_sleep, encode_sleep};
 use recto_session::{HistorySource, JournalOutcome, JournalWork, RestoredEdits, TakenHistory};
 use std::collections::HashMap;
@@ -198,7 +202,9 @@ fn replace(path: &Path, bytes: &[u8], force: bool) -> std::io::Result<()> {
 
 /// What a journal's file reads as, if it's there.
 fn read_journal(path: &Path) -> Result<Option<(ParsedJournal, u64)>, RecordError> {
-    let Ok(bytes) = read_ours(path, MAX_JOURNAL_BYTES) else { return Err(RecordError::Damaged("unreadable")) };
+    let Ok(bytes) = read_ours(path, MAX_JOURNAL_BYTES) else {
+        return Err(RecordError::Damaged("unreadable"));
+    };
     let Some(bytes) = bytes else { return Ok(None) };
     let length = bytes.len() as u64;
     record::parse_journal(&bytes, CURRENT_VERSION).map(|parsed| Some((parsed, length)))
@@ -207,24 +213,47 @@ fn read_journal(path: &Path) -> Result<Option<(ParsedJournal, u64)>, RecordError
 /// Whether a journal was saved away: it says a save was about to put a file of this identity in place, and that's what's there. So its edits are in the PDF, and it's stale, whether or not the crash let it be removed.
 fn saved_into_its_file(parsed: &ParsedJournal, now: Option<FileStamp>) -> bool {
     let Some(now) = now else { return false };
-    parsed.ops.iter().rev().find_map(|op| if let JournalOp::Saving(target) = op { Some(FileStamp::from(*target)) } else { None }).or_else(|| parsed.header.saving.map(FileStamp::from)).is_some_and(|target| target.same_contents(now))
+    parsed
+        .ops
+        .iter()
+        .rev()
+        .find_map(|op| {
+            if let JournalOp::Saving(target) = op {
+                Some(FileStamp::from(*target))
+            } else {
+                None
+            }
+        })
+        .or_else(|| parsed.header.saving.map(FileStamp::from))
+        .is_some_and(|target| target.same_contents(now))
 }
 
 /// A list brought back from what a journal's file says.
 fn restored_from(parsed: &ParsedJournal) -> Option<RestoredEdits> {
     let (edits, applied) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).ok()?;
     let lost = parsed.lost_lines || applied < parsed.ops.len();
-    Some(RestoredEdits { edits, seq: parsed.header.base_seq + applied as u64, lost_lines: lost, rolled_off: false })
+    Some(RestoredEdits {
+        edits,
+        seq: parsed.header.base_seq + applied as u64,
+        lost_lines: lost,
+        rolled_off: false,
+    })
 }
 
 /// Whether a file kept for a history is the one it was. A sleeping history can be gone back to months on, by which time this file's a stranger.
 fn kept_file_is_there(added: &AddedSource) -> bool {
-    added.stamp.is_some_and(|want| file_stamp(&added.path).is_ok_and(|now| now.same_contents(want) && now.inode == want.inode))
+    added
+        .stamp
+        .is_some_and(|want| file_stamp(&added.path).is_ok_and(|now| now.same_contents(want) && now.inode == want.inode))
 }
 
 /// Takes off the steps that need a kept file that isn't what it was, so undo stops short of them rather than undoing wrongly. A look at each, which are few. Says whether any went.
 fn roll_off_what_isnt_kept(edits: &mut PageEdits) -> bool {
-    let gone: Vec<u16> = edits.kept_sources().filter(|(_, added)| !kept_file_is_there(added)).map(|(source, _)| source).collect();
+    let gone: Vec<u16> = edits
+        .kept_sources()
+        .filter(|(_, added)| !kept_file_is_there(added))
+        .map(|(source, _)| source)
+        .collect();
     let mut rolled = 0;
     for source in gone {
         rolled += edits.roll_off_kept(source);
@@ -238,7 +267,12 @@ fn carried_over(folder: &Path, parsed: &ParsedJournal, now: FileStamp, path: &Pa
     if restored.lost_lines {
         return None;
     }
-    let keeping = restored.edits.keeping().cloned().or_else(|| parsed.header.keeping.as_ref().and_then(AddedSource::from_record)).filter(kept_file_is_there);
+    let keeping = restored
+        .edits
+        .keeping()
+        .cloned()
+        .or_else(|| parsed.header.keeping.as_ref().and_then(AddedSource::from_record))
+        .filter(kept_file_is_there);
     let pages = restored.edits.len();
     let rebased = restored.edits.rebase_on_saved(pages, keeping)?;
     for gone in &rebased.let_go {
@@ -271,7 +305,14 @@ impl RecordStore {
         let dir = paths.root.join(fold_name(flavor));
         let lock_path = paths.root.join("run").join(format!("{}.lock", fold_name(flavor)));
         let lock = paths.prepare().ok().and_then(|()| take_lock(&lock_path));
-        Self { root: paths.root.clone(), dir: Mutex::new(dir), lock: Mutex::new(lock), lock_path, progress: Mutex::new(Progress::default()), version }
+        Self {
+            root: paths.root.clone(),
+            dir: Mutex::new(dir),
+            lock: Mutex::new(lock),
+            lock_path,
+            progress: Mutex::new(Progress::default()),
+            version,
+        }
     }
 
     /// Whether this process is the one keeping this record.
@@ -417,13 +458,22 @@ impl RecordStore {
     }
 
     fn version_folder(&self, main: &Path, version: u32) -> PathBuf {
-        self.root.join(format!("{}.v{version}", main.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned())))
+        self.root.join(format!(
+            "{}.v{version}",
+            main.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned())
+        ))
     }
 
     /// Makes room for one more damaged state, the oldest going, and says where it goes.
     fn make_room_for_damaged(&self, main: &Path) -> PathBuf {
         let name = main.file_name().map_or(String::new(), |name| name.to_string_lossy().into_owned());
-        let slot = |at: usize| if at == 0 { self.root.join(format!("{name}.damaged")) } else { self.root.join(format!("{name}.damaged.{at}")) };
+        let slot = |at: usize| {
+            if at == 0 {
+                self.root.join(format!("{name}.damaged"))
+            } else {
+                self.root.join(format!("{name}.damaged.{at}"))
+            }
+        };
         let _ = std::fs::remove_dir_all(slot(DAMAGED_KEPT - 1));
         for at in (0..DAMAGED_KEPT - 1).rev() {
             let _ = std::fs::rename(slot(at), slot(at + 1));
@@ -471,7 +521,17 @@ impl RecordStore {
                 }
                 record
             }
-            None => SessionRecord { app: AppRecord::default(), view: ViewRecord::default(), find: FindRecord::default(), edit_mode: false, active: None, next_id: 1, tabs: Vec::new(), comparison: None, recent: Vec::new() },
+            None => SessionRecord {
+                app: AppRecord::default(),
+                view: ViewRecord::default(),
+                find: FindRecord::default(),
+                edit_mode: false,
+                active: None,
+                next_id: 1,
+                tabs: Vec::new(),
+                comparison: None,
+                recent: Vec::new(),
+            },
         };
         // What the disk has, so what loading the journals changes in it does get written.
         let as_read = had_record.then(|| crc_of(&record));
@@ -482,7 +542,16 @@ impl RecordStore {
         progress.whole_crc = as_read;
         drop(progress);
         prune_sleep_files(&dir.join(JOURNALS));
-        let in_use: Vec<String> = journals.values().flat_map(|restored| restored.edits.kept_sources().filter_map(|(_, added)| added.path.file_name()?.to_str().map(str::to_string)).collect::<Vec<_>>()).collect();
+        let in_use: Vec<String> = journals
+            .values()
+            .flat_map(|restored| {
+                restored
+                    .edits
+                    .kept_sources()
+                    .filter_map(|(_, added)| added.path.file_name()?.to_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         prune_history(&dir.join(JOURNALS), Some(&in_use));
         if !had_record && record.tabs.is_empty() {
             return Loaded::Nothing;
@@ -544,7 +613,10 @@ impl RecordStore {
             }
             // A journal starting again is the whole list, in one step, and whatever it takes over from goes once it's there.
             if let Some(base) = &append.base {
-                let header = JournalHeader { base_seq: append.through, ..append.header.clone() };
+                let header = JournalHeader {
+                    base_seq: append.through,
+                    ..append.header.clone()
+                };
                 let start = record::journal_start(&header, Some(base));
                 let path = folder.join(&name);
                 if replace(&path, &start, force).is_err() {
@@ -575,7 +647,10 @@ impl RecordStore {
             let mut lines = Vec::new();
             if known.is_none() {
                 // New: its header goes first, for as many operations as came before these.
-                let header = JournalHeader { base_seq: append.through.saturating_sub(append.ops.len() as u64), ..append.header.clone() };
+                let header = JournalHeader {
+                    base_seq: append.through.saturating_sub(append.ops.len() as u64),
+                    ..append.header.clone()
+                };
                 lines.extend_from_slice(&record::journal_start(&header, None));
             }
             lines.extend_from_slice(&record::journal_lines(&append.ops));
@@ -620,7 +695,9 @@ impl RecordStore {
         if !self.holds_the_record() {
             return Some(self.other_instance());
         }
-        self.progress().read_only.then(|| StoreError::new("record_unreadable", record::notices::words(record::notices::UNREADABLE).unwrap_or_default()))
+        self.progress()
+            .read_only
+            .then(|| StoreError::new("record_unreadable", record::notices::words(record::notices::UNREADABLE).unwrap_or_default()))
     }
 
     /// Working beside a newer app's record, this folder is what going forward has to bring with it.
@@ -687,7 +764,12 @@ impl RecordStore {
         let bare = crc_of(&record::without_what_deltas_carry(record));
         // A line, if that's all that's needed and the log has room.
         if progress.bare_crc == Some(bare) && progress.newest_slot.is_some() && progress.places_bytes < MAX_PLACES_LOG_BYTES {
-            let delta = PlaceDelta { seq: progress.seq, contents_scroll: record.app.contents_scroll, focus: Some(record.app.focus), ..delta.clone() };
+            let delta = PlaceDelta {
+                seq: progress.seq,
+                contents_scroll: record.app.contents_scroll,
+                focus: Some(record.app.focus),
+                ..delta.clone()
+            };
             let line = record::places_line(&delta);
             let path = dir.join(PLACES);
             let appended = (|| -> std::io::Result<()> {
@@ -754,7 +836,12 @@ impl RecordStore {
     }
 
     /// [`Self::verify`], and lists that have gone to disk have to read as what's known of them.
-    pub fn verify_with_asleep(&self, want: &SessionRecord, lists: &HashMap<String, record::EditsRecord>, asleep: &HashMap<String, record::EditsSummary>) -> Result<(), StoreError> {
+    pub fn verify_with_asleep(
+        &self,
+        want: &SessionRecord,
+        lists: &HashMap<String, record::EditsRecord>,
+        asleep: &HashMap<String, record::EditsSummary>,
+    ) -> Result<(), StoreError> {
         let dir = self.dir();
         let mismatch = |what: &str| StoreError::new("read_back_differs", format!("What was written doesn't read back the same: {what}."));
         let (decoded, _) = Self::read_slots(&dir, self.version).ok().flatten().ok_or_else(|| mismatch("the main record"))?;
@@ -770,14 +857,20 @@ impl RecordStore {
         }
         for (name, list) in lists {
             let path = dir.join(JOURNALS).join(name);
-            let parsed = read_journal(&path).map_err(|_| mismatch("a journal"))?.ok_or_else(|| mismatch("a journal that isn't there"))?.0;
+            let parsed = read_journal(&path)
+                .map_err(|_| mismatch("a journal"))?
+                .ok_or_else(|| mismatch("a journal that isn't there"))?
+                .0;
             let restored = restored_from(&parsed).ok_or_else(|| mismatch("a journal"))?;
             if restored.lost_lines || restored.edits.to_record() != *list {
                 return Err(mismatch("unsaved edits"));
             }
         }
         for (name, summary) in asleep {
-            let parsed = read_journal(&dir.join(JOURNALS).join(name)).map_err(|_| mismatch("a journal"))?.ok_or_else(|| mismatch("a journal that isn't there"))?.0;
+            let parsed = read_journal(&dir.join(JOURNALS).join(name))
+                .map_err(|_| mismatch("a journal"))?
+                .ok_or_else(|| mismatch("a journal that isn't there"))?
+                .0;
             let restored = restored_from(&parsed).ok_or_else(|| mismatch("a journal"))?;
             if restored.lost_lines || restored.edits.summary() != *summary {
                 return Err(mismatch("unsaved edits"));
@@ -808,7 +901,10 @@ impl RecordStore {
     pub fn sizes(&self) -> (u64, u64) {
         let progress = self.progress();
         let dir = self.dir();
-        let main = progress.newest_slot.and_then(|slot| std::fs::metadata(dir.join(SLOTS[slot])).ok()).map_or(0, |meta| meta.len());
+        let main = progress
+            .newest_slot
+            .and_then(|slot| std::fs::metadata(dir.join(SLOTS[slot])).ok())
+            .map_or(0, |meta| meta.len());
         (main + progress.places_bytes, progress.journal_bytes.values().sum())
     }
 
@@ -829,7 +925,9 @@ impl RecordStore {
         let dir = self.dir();
         Self::ensure_dirs(&dir).ok()?;
         let folder = dir.join(JOURNALS);
-        let name = (0..64).map(|taken| record::kept_file_name(target, taken)).find(|name| std::fs::symlink_metadata(folder.join(name)).is_err())?;
+        let name = (0..64)
+            .map(|taken| record::kept_file_name(target, taken))
+            .find(|name| std::fs::symlink_metadata(folder.join(name)).is_err())?;
         let kept = folder.join(&name);
         recto_core::save::keep_pages(path, pages, &kept, recto_session::edit::MAX_HISTORY_BYTES as u64).ok()?;
         // Its age is its own, which is what the 30 days go by, and it's this user's alone. Synced again, as both are changes since the copy was synced.
@@ -850,7 +948,14 @@ impl RecordStore {
             }
         };
         let count = u32::try_from(pages.len()).ok()?;
-        Some(AddedSource { path: kept.into_boxed_path(), page_count: count, stamp: Some(stamp), kept: true, protected: false, holds: Some(pages.into()) })
+        Some(AddedSource {
+            path: kept.into_boxed_path(),
+            page_count: count,
+            stamp: Some(stamp),
+            kept: true,
+            protected: false,
+            holds: Some(pages.into()),
+        })
     }
 
     /// **What going dormant does to a list on disk:** the journal's checkpoint moves up, if that's worth it, and it's read back and compared, as what's in memory is about to go. Says whether it's all there.
@@ -958,7 +1063,10 @@ impl HistorySource for RecordStore {
         let mut bytes = parsed.good_bytes;
         if roll_off_what_isnt_kept(&mut restored.edits) {
             restored.rolled_off = true;
-            let header = JournalHeader { base_seq: restored.seq, ..parsed.header.clone() };
+            let header = JournalHeader {
+                base_seq: restored.seq,
+                ..parsed.header.clone()
+            };
             let start = record::journal_start(&header, Some(&restored.edits.to_record()));
             if replace(&folder.join(&name), &start, false).is_ok() {
                 bytes = start.len() as u64;
@@ -979,7 +1087,9 @@ fn newest_passed_over(dir: &Path, slot: usize) -> bool {
 /// A journal's other name, as something's at this one that isn't to be touched.
 fn free_name(folder: &Path, append: &recto_session::JournalAppend) -> Option<String> {
     let path = append.header.path.to_path().unwrap_or_default();
-    (0..64u32).map(|at| record::journal_file_name(append.header.file.map(Into::into), &path, Some(append.tab.0.saturating_add(at)))).find(|name| std::fs::symlink_metadata(folder.join(name)).is_err())
+    (0..64u32)
+        .map(|at| record::journal_file_name(append.header.file.map(Into::into), &path, Some(append.tab.0.saturating_add(at))))
+        .find(|name| std::fs::symlink_metadata(folder.join(name)).is_err())
 }
 
 fn truncate_ours(path: &Path, length: u64) -> std::io::Result<()> {
@@ -991,7 +1101,18 @@ fn remove_temp_files(dir: &Path) {
     for folder in [dir.to_path_buf(), dir.join(JOURNALS)] {
         for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
             let name = entry.file_name();
-            let is_temp = name.to_str().is_some_and(|name| (name.starts_with("record.") || name.starts_with("journal-") || name.starts_with("closed-") || name.starts_with("kept-") || name.starts_with("sleep-") || name.starts_with(PLACES)) && name.rsplit('.').next().is_some_and(|tail| tail.starts_with("tmp") && tail[3..].bytes().all(|byte| byte.is_ascii_digit())));
+            let is_temp = name.to_str().is_some_and(|name| {
+                (name.starts_with("record.")
+                    || name.starts_with("journal-")
+                    || name.starts_with("closed-")
+                    || name.starts_with("kept-")
+                    || name.starts_with("sleep-")
+                    || name.starts_with(PLACES))
+                    && name
+                        .rsplit('.')
+                        .next()
+                        .is_some_and(|tail| tail.starts_with("tmp") && tail[3..].bytes().all(|byte| byte.is_ascii_digit()))
+            });
             if is_temp && entry.file_type().is_ok_and(|kind| kind.is_file()) {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1014,7 +1135,11 @@ fn prune_history(folder: &Path, kept_in_use: Option<&[String]>) {
                 return None;
             }
             let meta = entry.metadata().ok()?;
-            let age = meta.modified().ok().and_then(|modified| now.duration_since(modified).ok()).map_or(0, |age| age.as_secs());
+            let age = meta
+                .modified()
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .map_or(0, |age| age.as_secs());
             Some((age, entry.path(), meta.len(), is_kept))
         })
         .collect();
@@ -1025,7 +1150,13 @@ fn prune_history(folder: &Path, kept_in_use: Option<&[String]>) {
         if age <= CLOSED_JOURNAL_DAYS * 86_400 && total <= MAX_CLOSED_JOURNAL_BYTES {
             continue;
         }
-        let may_go = !is_kept || kept_in_use.is_some_and(|in_use| !path.file_name().and_then(|name| name.to_str()).is_some_and(|name| in_use.iter().any(|used| used == name)));
+        let may_go = !is_kept
+            || kept_in_use.is_some_and(|in_use| {
+                !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| in_use.iter().any(|used| used == name))
+            });
         if may_go {
             let _ = std::fs::remove_file(path);
         }
@@ -1042,7 +1173,11 @@ fn prune_sleep_files(folder: &Path) {
         .filter(|entry| entry.file_name().to_str().is_some_and(record::is_sleep_name))
         .filter_map(|entry| {
             let meta = entry.metadata().ok()?;
-            let age = meta.modified().ok().and_then(|modified| now.duration_since(modified).ok()).map_or(0, |age| age.as_secs());
+            let age = meta
+                .modified()
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .map_or(0, |age| age.as_secs());
             Some((age, entry.path(), meta.len()))
         })
         .collect();
@@ -1059,7 +1194,9 @@ fn prune_sleep_files(folder: &Path) {
 /// What a record comes to, to know it's changed. Encoded with sequence zero, so only what's in it counts.
 fn crc_of(record: &SessionRecord) -> u32 {
     let bytes = record::encode_record(record, 0);
-    bytes.iter().fold(0x811c_9dc5u32, |value, byte| (value ^ u32::from(*byte)).wrapping_mul(0x0100_0193))
+    bytes
+        .iter()
+        .fold(0x811c_9dc5u32, |value, byte| (value ^ u32::from(*byte)).wrapping_mul(0x0100_0193))
 }
 
 /// Copies a folder of ours one level deep, and its journals. For keeping what an older app wrote.
@@ -1102,7 +1239,13 @@ struct JournalRead {
 fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress, not_merged: &[String]) -> HashMap<String, RestoredEdits> {
     let folder = dir.join(JOURNALS);
     let mut journals = HashMap::new();
-    let mut names: Vec<String> = std::fs::read_dir(&folder).into_iter().flatten().flatten().filter_map(|entry| entry.file_name().to_str().map(str::to_string)).filter(|name| is_journal_name(name)).collect();
+    let mut names: Vec<String> = std::fs::read_dir(&folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .filter(|name| is_journal_name(name))
+        .collect();
     names.sort_unstable();
     let mut read_total = 0u64;
     let mut reads = Vec::new();
@@ -1131,7 +1274,10 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
     // First everything a tab names, so a tab on the same file can't take what another has claimed.
     let mut unclaimed = Vec::new();
     for read in reads {
-        let named = record.tabs.iter().position(|tab| tab.journal.as_deref() == Some(read.name.as_str()) && journal_named_is_for(&read.parsed.header, tab.file.map(Into::into), &tab.path.to_path().unwrap_or_default()));
+        let named = record.tabs.iter().position(|tab| {
+            tab.journal.as_deref() == Some(read.name.as_str())
+                && journal_named_is_for(&read.parsed.header, tab.file.map(Into::into), &tab.path.to_path().unwrap_or_default())
+        });
         match named {
             Some(at) if !taken_tabs[at] => {
                 taken_tabs[at] = true;
@@ -1149,8 +1295,16 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
         let moved_on = record.tabs.iter().enumerate().position(|(at, tab)| {
             !taken_tabs[at]
                 && tab.path == read.parsed.header.path
-                && tab.journal.as_deref().is_some_and(|named| std::fs::symlink_metadata(folder.join(named)).is_err())
-                && read.parsed.header.file.is_some_and(|said| tab.path.to_path().and_then(|path| file_stamp(&path).ok()).is_some_and(|now| FileStamp::from(said).same_contents(now) && FileStamp::from(said).inode == now.inode))
+                && tab
+                    .journal
+                    .as_deref()
+                    .is_some_and(|named| std::fs::symlink_metadata(folder.join(named)).is_err())
+                && read.parsed.header.file.is_some_and(|said| {
+                    tab.path
+                        .to_path()
+                        .and_then(|path| file_stamp(&path).ok())
+                        .is_some_and(|now| FileStamp::from(said).same_contents(now) && FileStamp::from(said).inode == now.inode)
+                })
         });
         if let Some(at) = moved_on {
             taken_tabs[at] = true;
@@ -1159,7 +1313,9 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
             claim(&folder, read, record, at, progress, &mut journals);
             continue;
         }
-        let same_file = record.tabs.iter().enumerate().position(|(at, tab)| !taken_tabs[at] && tab.journal.is_none() && journal_is_for(&read.parsed.header, tab.file.map(Into::into), &tab.path.to_path().unwrap_or_default()));
+        let same_file = record.tabs.iter().enumerate().position(|(at, tab)| {
+            !taken_tabs[at] && tab.journal.is_none() && journal_is_for(&read.parsed.header, tab.file.map(Into::into), &tab.path.to_path().unwrap_or_default())
+        });
         if let Some(at) = same_file {
             taken_tabs[at] = true;
             claim(&folder, read, record, at, progress, &mut journals);
@@ -1200,7 +1356,27 @@ fn load_journals(dir: &Path, record: &mut SessionRecord, progress: &mut Progress
         }
         let id = record.next_id;
         record.next_id += 1;
-        record.tabs.push(TabEntry { id, path: parsed.header.path.clone(), file: parsed.header.file, page: 0, page_count: parsed.header.file_pages, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: Some(name.clone()), edits: Some(restored.edits.summary()), generated_contents: false, contents_folds: Vec::new(), back: Vec::new(), forward: Vec::new(), password: false });
+        record.tabs.push(TabEntry {
+            id,
+            path: parsed.header.path.clone(),
+            file: parsed.header.file,
+            page: 0,
+            page_count: parsed.header.file_pages,
+            place: None,
+            view_rotation: 0,
+            toc_open: true,
+            layout: Default::default(),
+            renderer_only: false,
+            selection: None,
+            notice: None,
+            journal: Some(name.clone()),
+            edits: Some(restored.edits.summary()),
+            generated_contents: false,
+            contents_folds: Vec::new(),
+            back: Vec::new(),
+            forward: Vec::new(),
+            password: false,
+        });
         taken_tabs.push(true);
         if record.active.is_none() {
             record.active = Some(id);
@@ -1242,7 +1418,9 @@ fn claim(folder: &Path, read: JournalRead, record: &mut SessionRecord, at: usize
                 if rolled_off > 0 {
                     tab.notice = Some(FileNotice::HistoryRolledOff);
                 }
-                progress.journal_bytes.insert(carried.clone(), std::fs::metadata(folder.join(&carried)).map_or(0, |meta| meta.len()));
+                progress
+                    .journal_bytes
+                    .insert(carried.clone(), std::fs::metadata(folder.join(&carried)).map_or(0, |meta| meta.len()));
                 journals.insert(carried, restored);
             }
             None => {
@@ -1263,7 +1441,10 @@ fn claim(folder: &Path, read: JournalRead, record: &mut SessionRecord, at: usize
     if restored.lost_lines {
         // What couldn't be used is kept, as the notice says it is. Then there's a clean start: a line replay can't pass would otherwise hide everything added after it, and every hand-off would fail against it.
         let _ = std::fs::copy(&path, path.with_extension("kept"));
-        let header = JournalHeader { base_seq: restored.seq, ..parsed.header.clone() };
+        let header = JournalHeader {
+            base_seq: restored.seq,
+            ..parsed.header.clone()
+        };
         let start = record::journal_start(&header, Some(&restored.edits.to_record()));
         if replace(&path, &start, false).is_ok() {
             good_bytes = start.len() as u64;
@@ -1276,7 +1457,10 @@ fn claim(folder: &Path, read: JournalRead, record: &mut SessionRecord, at: usize
         restored.rolled_off = true;
         tab.notice = Some(FileNotice::HistoryRolledOff);
         // The journal has to say what the list now does, or it would differ on reading back.
-        let header = JournalHeader { base_seq: restored.seq, ..parsed.header.clone() };
+        let header = JournalHeader {
+            base_seq: restored.seq,
+            ..parsed.header.clone()
+        };
         let start = record::journal_start(&header, Some(&restored.edits.to_record()));
         if replace(&path, &start, false).is_ok() {
             good_bytes = start.len() as u64;
@@ -1310,7 +1494,11 @@ mod tests {
 
     fn state() -> (PathBuf, StatePaths) {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!("rs{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        let root =
+            std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("rs{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         let _ = std::fs::remove_dir_all(&root);
         let paths = StatePaths::overridden(&root).unwrap();
         paths.prepare().unwrap();
@@ -1325,7 +1513,29 @@ mod tests {
             edit_mode: false,
             active: (tabs > 0).then_some(1),
             next_id: tabs + 1,
-            tabs: (1..=tabs).map(|id| TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new(), back: Vec::new(), forward: Vec::new(), password: false }).collect(),
+            tabs: (1..=tabs)
+                .map(|id| TabEntry {
+                    id,
+                    path: PathField::Text(format!("/d/{id}.pdf")),
+                    file: None,
+                    page: 0,
+                    page_count: 5,
+                    place: None,
+                    view_rotation: 0,
+                    toc_open: true,
+                    layout: Default::default(),
+                    renderer_only: false,
+                    selection: None,
+                    notice: None,
+                    journal: None,
+                    edits: None,
+                    generated_contents: false,
+                    contents_folds: Vec::new(),
+                    back: Vec::new(),
+                    forward: Vec::new(),
+                    password: false,
+                })
+                .collect(),
             comparison: None,
             recent: Vec::new(),
         }
@@ -1339,7 +1549,17 @@ mod tests {
     }
 
     fn place() -> record::PlaceRecord {
-        record::PlaceRecord { page: 3, anchor_page: 3, within: 0.25, x: 1.0, y: 2.0, document_height: 900.0, zoom: 1.5, page_width: 612.0, page_height: 792.0 }
+        record::PlaceRecord {
+            page: 3,
+            anchor_page: 3,
+            within: 0.25,
+            x: 1.0,
+            y: 2.0,
+            document_height: 900.0,
+            zoom: 1.5,
+            page_width: 612.0,
+            page_height: 792.0,
+        }
     }
 
     /// Failure: a place turning over rewrites a thousand tabs' record, or nothing having changed writes something. A line is all it takes, nothing at all when nothing moved, and what's read back has the place in it.
@@ -1353,7 +1573,11 @@ mod tests {
         assert_eq!(store.write_record(&record, &PlaceDelta::default(), false).unwrap(), 0, "nothing changed");
         record.tabs[0].page = 3;
         record.tabs[0].place = Some(place());
-        let delta = PlaceDelta { places: vec![(1, 3, Some(place()))], active: Some(1), ..PlaceDelta::default() };
+        let delta = PlaceDelta {
+            places: vec![(1, 3, Some(place()))],
+            active: Some(1),
+            ..PlaceDelta::default()
+        };
         let line = store.write_record(&record, &delta, false).unwrap();
         assert!(line < 512, "{line} bytes for a place");
         drop(store);
@@ -1437,7 +1661,11 @@ mod tests {
         drop(store);
         let next = RecordStore::open_as(&paths, Flavor::App, CURRENT_VERSION + 1);
         assert_eq!(loaded_record(&next).tabs.len(), 3, "migrated");
-        assert_eq!(std::fs::read(root.join(format!("session.v{CURRENT_VERSION}")).join(SLOTS[0])).unwrap(), v1, "kept");
+        assert_eq!(
+            std::fs::read(root.join(format!("session.v{CURRENT_VERSION}")).join(SLOTS[0])).unwrap(),
+            v1,
+            "kept"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1450,7 +1678,10 @@ mod tests {
         let second = RecordStore::open(&paths, Flavor::App);
         assert!(!second.holds_the_record());
         assert!(matches!(second.load(), Loaded::OtherInstance));
-        assert_eq!(second.write_record(&sample(1), &PlaceDelta::default(), false).unwrap_err().code, "other_instance");
+        assert_eq!(
+            second.write_record(&sample(1), &PlaceDelta::default(), false).unwrap_err().code,
+            "other_instance"
+        );
         assert!(second.write_journals(&JournalWork::default(), false).1.is_some());
         let windowless = RecordStore::open(&paths, Flavor::Windowless);
         assert!(windowless.holds_the_record(), "a session with no window has its own");
@@ -1475,25 +1706,50 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-/// Failure: a save moves its file into place though its note never reached the disk, so a crash just after finds a journal that doesn't say a save happened, and replays the edits over the saved file. The note is read back from the file itself, and only this target's counts.
+    /// Failure: a save moves its file into place though its note never reached the disk, so a crash just after finds a journal that doesn't say a save happened, and replays the edits over the saved file. The note is read back from the file itself, and only this target's counts.
     #[test]
     fn a_saves_note_is_read_back_from_the_disk() {
         let (_root, paths) = state();
         let store = RecordStore::open(&paths, Flavor::App);
         let name = record::journal_file_name(None, Path::new("/d/1.pdf"), None);
-        let target = FileStamp { size: 77, mtime_ns: 88, device: 1, inode: 99 };
+        let target = FileStamp {
+            size: 77,
+            mtime_ns: 88,
+            device: 1,
+            inode: 99,
+        };
         assert!(!store.journal_says_saving(&name, target), "no journal, no note");
         assert!(store.write_journals(&journal_work_for(&name, vec![rotation()], 1), false).1.is_none());
         assert!(!store.journal_says_saving(&name, target), "edits, but no save");
-        assert!(store.write_journals(&journal_work_for(&name, vec![JournalOp::Saving(target.into())], 2), false).1.is_none());
+        assert!(
+            store
+                .write_journals(&journal_work_for(&name, vec![JournalOp::Saving(target.into())], 2), false)
+                .1
+                .is_none()
+        );
         assert!(store.journal_says_saving(&name, target));
-        assert!(!store.journal_says_saving(&name, FileStamp { size: 78, ..target }), "another file isn't this save's");
+        assert!(
+            !store.journal_says_saving(&name, FileStamp { size: 78, ..target }),
+            "another file isn't this save's"
+        );
         assert!(!store.journal_says_saving("../../etc/passwd", target), "only a journal's own name is read");
     }
 
-        fn journal_work_for(name: &str, ops: Vec<JournalOp>, through: u64) -> JournalWork {
+    fn journal_work_for(name: &str, ops: Vec<JournalOp>, through: u64) -> JournalWork {
         let header = JournalHeader::new(1, Path::new("/d/1.pdf"), None, 5, 0);
-        JournalWork { retired: Vec::new(), appends: vec![recto_session::JournalAppend { tab: TabId(1), name: name.to_string(), header, through, ops, closing: false, base: None, replaces: None }] }
+        JournalWork {
+            retired: Vec::new(),
+            appends: vec![recto_session::JournalAppend {
+                tab: TabId(1),
+                name: name.to_string(),
+                header,
+                through,
+                ops,
+                closing: false,
+                base: None,
+                replaces: None,
+            }],
+        }
     }
 
     fn rotation() -> JournalOp {
@@ -1556,7 +1812,19 @@ mod tests {
         };
         let write = |store: &RecordStore| {
             let header = JournalHeader::new(1, &file, Some(before), 5, 0);
-            let work = JournalWork { retired: Vec::new(), appends: vec![recto_session::JournalAppend { tab: TabId(1), name: name.clone(), header, through: 2, ops: vec![rotation(), JournalOp::Saving(target.into())], closing: false, base: None, replaces: None }] };
+            let work = JournalWork {
+                retired: Vec::new(),
+                appends: vec![recto_session::JournalAppend {
+                    tab: TabId(1),
+                    name: name.clone(),
+                    header,
+                    through: 2,
+                    ops: vec![rotation(), JournalOp::Saving(target.into())],
+                    closing: false,
+                    base: None,
+                    replaces: None,
+                }],
+            };
             assert!(store.write_journals(&work, false).1.is_none());
             let mut record = sample(1);
             tab(&mut record);
@@ -1605,7 +1873,19 @@ mod tests {
             let target = file_stamp(&temp).unwrap();
             let store = RecordStore::open(&paths, Flavor::App);
             let header = JournalHeader::new(1, &file, Some(before), 5, 0);
-            let work = JournalWork { retired: Vec::new(), appends: vec![recto_session::JournalAppend { tab: TabId(1), name: old.clone(), header, through: 2, ops: vec![rotation(), JournalOp::Saving(target.into())], closing: false, base: None, replaces: None }] };
+            let work = JournalWork {
+                retired: Vec::new(),
+                appends: vec![recto_session::JournalAppend {
+                    tab: TabId(1),
+                    name: old.clone(),
+                    header,
+                    through: 2,
+                    ops: vec![rotation(), JournalOp::Saving(target.into())],
+                    closing: false,
+                    base: None,
+                    replaces: None,
+                }],
+            };
             assert!(store.write_journals(&work, false).1.is_none());
             let mut record = sample(1);
             record.tabs[0].path = PathField::from_path(&file);
@@ -1618,7 +1898,19 @@ mod tests {
             list.rebase_on_saved(5, None).unwrap();
             let name = record::journal_file_name(Some(target), &file, None);
             let header = JournalHeader::new(1, &file, Some(target), 5, 0);
-            let work = JournalWork { retired: Vec::new(), appends: vec![recto_session::JournalAppend { tab: TabId(1), name: name.clone(), header, through: 3, ops: Vec::new(), closing: false, base: Some(list.to_record()), replaces: (!old_still_there).then(|| old.clone()) }] };
+            let work = JournalWork {
+                retired: Vec::new(),
+                appends: vec![recto_session::JournalAppend {
+                    tab: TabId(1),
+                    name: name.clone(),
+                    header,
+                    through: 3,
+                    ops: Vec::new(),
+                    closing: false,
+                    base: Some(list.to_record()),
+                    replaces: (!old_still_there).then(|| old.clone()),
+                }],
+            };
             assert!(store.write_journals(&work, false).1.is_none());
             assert_eq!(root.join("session").join(JOURNALS).join(&old).exists(), old_still_there);
             drop(store);
@@ -1639,7 +1931,9 @@ mod tests {
 
     /// Five pages, each saying `PAGEMARK` and its number.
     fn five_pages() -> Vec<u8> {
-        let pages: Vec<recto_testpdf::Page> = (0..5).map(|at| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("PAGEMARK{at}")]))).collect();
+        let pages: Vec<recto_testpdf::Page> = (0..5)
+            .map(|at| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("PAGEMARK{at}")])))
+            .collect();
         recto_testpdf::pages(&pages)
     }
 
@@ -1652,14 +1946,24 @@ mod tests {
         local::ensure_private_dir(&root.join("session")).unwrap();
         local::ensure_private_dir(&journals).unwrap();
         assert!(!local::is_excluded_from_backups(&journals));
-        assert!(store.write_journals(&journal_work_for("journal-00000000000000aa.log", vec![rotation()], 1), false).1.is_none());
+        assert!(
+            store
+                .write_journals(&journal_work_for("journal-00000000000000aa.log", vec![rotation()], 1), false)
+                .1
+                .is_none()
+        );
         assert!(local::is_excluded_from_backups(&journals), "marked, though it was already there");
         let copy = root.join("copied");
         copy_folder(&root.join("session"), &copy).unwrap();
         assert!(local::is_excluded_from_backups(&copy.join(JOURNALS)));
         let file = root.join("doc.pdf");
         std::fs::write(&file, five_pages()).unwrap();
-        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        let target = FileStamp {
+            size: 9,
+            mtime_ns: 1,
+            device: 1,
+            inode: 2,
+        };
         let kept = store.keep_pages_of(&file, target, &[1, 3]).unwrap();
         assert!(kept.kept && kept.path.starts_with(&journals));
         assert_eq!((kept.page_count, kept.holds.as_deref()), (2, Some(&[1, 3][..])), "only the pages asked for");
@@ -1667,10 +1971,19 @@ mod tests {
         assert_eq!(std::fs::metadata(&kept.path).unwrap().permissions().mode() & 0o077, 0, "it's the user's alone");
         let bytes = std::fs::read(&kept.path).unwrap();
         assert!(bytes.windows(9).any(|window| window == b"PAGEMARK1") && bytes.windows(9).any(|window| window == b"PAGEMARK3"));
-        assert!(!bytes.windows(9).any(|window| window == b"PAGEMARK0" || window == b"PAGEMARK2"), "and nothing of the others");
-        assert!(std::fs::metadata(&kept.path).unwrap().modified().unwrap().elapsed().unwrap().as_secs() < 60, "its age is its own");
+        assert!(
+            !bytes.windows(9).any(|window| window == b"PAGEMARK0" || window == b"PAGEMARK2"),
+            "and nothing of the others"
+        );
+        assert!(
+            std::fs::metadata(&kept.path).unwrap().modified().unwrap().elapsed().unwrap().as_secs() < 60,
+            "its age is its own"
+        );
         assert!(kept_file_is_there(&kept));
-        assert!(!kept.path.extension().is_some_and(|extension| extension == "pdf"), "no PDF importer for Spotlight to run on it");
+        assert!(
+            !kept.path.extension().is_some_and(|extension| extension == "pdf"),
+            "no PDF importer for Spotlight to run on it"
+        );
         // A second for the same save is beside it, not over it.
         let second = store.keep_pages_of(&file, target, &[1]).unwrap();
         assert_ne!(second.path, kept.path);
@@ -1691,14 +2004,31 @@ mod tests {
         let store = RecordStore::open(&paths, Flavor::App);
         let original = root.join("original.pdf");
         std::fs::write(&original, five_pages()).unwrap();
-        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        let target = FileStamp {
+            size: 9,
+            mtime_ns: 1,
+            device: 1,
+            inode: 2,
+        };
         let kept = store.keep_pages_of(&original, target, &[0]).unwrap();
         let (mut list, _) = PageEdits::replay(5, None, &[JournalOp::Delete(0, 1, record::AuthorName::Owner)]).unwrap();
         list.rebase_on_saved(4, Some(kept.clone())).unwrap();
         assert!(list.can_undo());
         let write = |store: &RecordStore, name: &str, record_it: bool| {
             let header = JournalHeader::new(1, &file, Some(now), 4, 0);
-            let work = JournalWork { retired: Vec::new(), appends: vec![recto_session::JournalAppend { tab: TabId(1), name: name.to_string(), header, through: 1, ops: Vec::new(), closing: false, base: Some(list.to_record()), replaces: None }] };
+            let work = JournalWork {
+                retired: Vec::new(),
+                appends: vec![recto_session::JournalAppend {
+                    tab: TabId(1),
+                    name: name.to_string(),
+                    header,
+                    through: 1,
+                    ops: Vec::new(),
+                    closing: false,
+                    base: Some(list.to_record()),
+                    replaces: None,
+                }],
+            };
             assert!(store.write_journals(&work, false).1.is_none());
             if record_it {
                 let mut record = sample(1);
@@ -1737,7 +2067,11 @@ mod tests {
         let (mut list, _) = PageEdits::replay(5, None, &[JournalOp::Delete(0, 1, record::AuthorName::Owner)]).unwrap();
         list.rebase_on_saved(4, Some(kept_again.clone())).unwrap();
         let header = JournalHeader::new(1, &file, Some(now), 4, 1);
-        std::fs::write(root.join("session").join(JOURNALS).join(&closed), record::journal_start(&header, Some(&list.to_record()))).unwrap();
+        std::fs::write(
+            root.join("session").join(JOURNALS).join(&closed),
+            record::journal_start(&header, Some(&list.to_record())),
+        )
+        .unwrap();
         std::fs::remove_file(&kept_again.path).unwrap();
         let taken = store.history_of(Some(now), &file).unwrap();
         assert!(taken.restored.rolled_off && !taken.restored.edits.can_undo());
@@ -1757,14 +2091,38 @@ mod tests {
         let target = file_stamp(&temp).unwrap();
         let store = RecordStore::open(&paths, Flavor::App);
         let header = JournalHeader::new(1, &file, Some(before), 5, 0);
-        let work = JournalWork { retired: Vec::new(), appends: vec![recto_session::JournalAppend { tab: TabId(1), name: old.clone(), header, through: 2, ops: vec![rotation(), JournalOp::Saving(target.into())], closing: false, base: None, replaces: None }] };
+        let work = JournalWork {
+            retired: Vec::new(),
+            appends: vec![recto_session::JournalAppend {
+                tab: TabId(1),
+                name: old.clone(),
+                header,
+                through: 2,
+                ops: vec![rotation(), JournalOp::Saving(target.into())],
+                closing: false,
+                base: None,
+                replaces: None,
+            }],
+        };
         assert!(store.write_journals(&work, false).1.is_none());
         std::fs::rename(&temp, &file).unwrap();
         let (mut list, _) = PageEdits::replay(5, None, &[rotation(), rotation()]).unwrap();
         list.rebase_on_saved(5, None).unwrap();
         let name = record::journal_file_name(Some(target), &file, None);
         let header = JournalHeader::new(1, &file, Some(target), 5, 3);
-        let work = JournalWork { retired: Vec::new(), appends: vec![recto_session::JournalAppend { tab: TabId(1), name: name.clone(), header, through: 3, ops: Vec::new(), closing: false, base: Some(list.to_record()), replaces: None }] };
+        let work = JournalWork {
+            retired: Vec::new(),
+            appends: vec![recto_session::JournalAppend {
+                tab: TabId(1),
+                name: name.clone(),
+                header,
+                through: 3,
+                ops: Vec::new(),
+                closing: false,
+                base: Some(list.to_record()),
+                replaces: None,
+            }],
+        };
         assert!(store.write_journals(&work, false).1.is_none());
         let live = std::fs::read(root.join("session").join(JOURNALS).join(&name)).unwrap();
         let mut record = sample(1);
@@ -1794,7 +2152,18 @@ mod tests {
         let file = root.join("doc.pdf");
         std::fs::write(&file, b"contents").unwrap();
         let stamp = file_stamp(&file).unwrap();
-        let sleep = SleepFile { file: stamp, file_pages: 3, pages: 3, list_seq: 0, renderer_only: false, version: None, toc: recto_core::Toc::default(), usual: Some((612.0, 792.0)), sizes: Vec::new(), pictures: Vec::new() };
+        let sleep = SleepFile {
+            file: stamp,
+            file_pages: 3,
+            pages: 3,
+            list_seq: 0,
+            renderer_only: false,
+            version: None,
+            toc: recto_core::Toc::default(),
+            usual: Some((612.0, 792.0)),
+            sizes: Vec::new(),
+            pictures: Vec::new(),
+        };
         assert!(store.write_sleep(&file, &sleep) > 0);
         assert_eq!(store.read_sleep(stamp, &file), Some(sleep.clone()));
         let on_disk = root.join("session").join(JOURNALS).join(record::sleep_file_name(stamp, &file));
@@ -1807,7 +2176,10 @@ mod tests {
         assert!(on_disk.exists());
         // Swapped under another's name, or damaged: gone.
         let other = root.join("other.pdf");
-        let other_stamp = FileStamp { inode: stamp.inode + 1, ..stamp };
+        let other_stamp = FileStamp {
+            inode: stamp.inode + 1,
+            ..stamp
+        };
         std::fs::copy(&on_disk, root.join("session").join(JOURNALS).join(record::sleep_file_name(other_stamp, &other))).unwrap();
         assert_eq!(store.read_sleep(other_stamp, &other), None);
         assert!(!root.join("session").join(JOURNALS).join(record::sleep_file_name(other_stamp, &other)).exists());
@@ -1860,7 +2232,8 @@ mod tests {
             let path = folder.join(name);
             std::fs::write(&path, b"x").unwrap();
             let file = OpenOptions::new().write(true).open(&path).unwrap();
-            file.set_modified(std::time::SystemTime::now() - Duration::from_secs((CLOSED_JOURNAL_DAYS + 1) * 86_400)).unwrap();
+            file.set_modified(std::time::SystemTime::now() - Duration::from_secs((CLOSED_JOURNAL_DAYS + 1) * 86_400))
+                .unwrap();
             path
         };
         let in_use = old("kept-00000000000000aa.pdf");
@@ -1883,11 +2256,35 @@ mod tests {
         store.write_record(&sample(1), &PlaceDelta::default(), false).unwrap();
         let name = record::journal_file_name(None, Path::new("/d/new.pdf"), None);
         let header = JournalHeader::new(9, Path::new("/d/new.pdf"), None, 5, 0);
-        let work = JournalWork { retired: Vec::new(), appends: vec![recto_session::JournalAppend { tab: TabId(9), name: name.clone(), header, through: 1, ops: vec![rotation()], closing: false, base: None, replaces: None }] };
+        let work = JournalWork {
+            retired: Vec::new(),
+            appends: vec![recto_session::JournalAppend {
+                tab: TabId(9),
+                name: name.clone(),
+                header,
+                through: 1,
+                ops: vec![rotation()],
+                closing: false,
+                base: None,
+                replaces: None,
+            }],
+        };
         assert!(store.write_journals(&work, false).1.is_none());
         let closed = record::journal_file_name(None, Path::new("/d/closed.pdf"), None);
         let header = JournalHeader::new(8, Path::new("/d/closed.pdf"), None, 5, 0);
-        let work = JournalWork { retired: Vec::new(), appends: vec![recto_session::JournalAppend { tab: TabId(8), name: closed.clone(), header, through: 2, ops: vec![JournalOp::Rotate(0, 1, 1, record::AuthorName::Agent), JournalOp::Undo], closing: false, base: None, replaces: None }] };
+        let work = JournalWork {
+            retired: Vec::new(),
+            appends: vec![recto_session::JournalAppend {
+                tab: TabId(8),
+                name: closed.clone(),
+                header,
+                through: 2,
+                ops: vec![JournalOp::Rotate(0, 1, 1, record::AuthorName::Agent), JournalOp::Undo],
+                closing: false,
+                base: None,
+                replaces: None,
+            }],
+        };
         assert!(store.write_journals(&work, false).1.is_none());
         drop(store);
         let store = RecordStore::open(&paths, Flavor::App);
@@ -1896,7 +2293,10 @@ mod tests {
         assert_eq!(restored.record.tabs[1].journal.as_deref(), Some(name.as_str()));
         assert!(restored.journals.contains_key(&name));
         assert!(!restored.journals.contains_key(&closed), "a closed PDF's history");
-        assert!(root.join("session").join(JOURNALS).join(record::closed_journal_name(&closed).unwrap()).exists(), "kept for when it's opened, under a name no launch reads");
+        assert!(
+            root.join("session").join(JOURNALS).join(record::closed_journal_name(&closed).unwrap()).exists(),
+            "kept for when it's opened, under a name no launch reads"
+        );
         assert!(record::validate_record(&restored.record).is_ok());
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -1914,7 +2314,11 @@ mod tests {
         assert_eq!(store.verify(&other, &HashMap::new()).unwrap_err().code, "read_back_differs");
         let list = PageEdits::new(5).to_record();
         let lists = HashMap::from([(record::journal_file_name(None, Path::new("/d/1.pdf"), None), list)]);
-        assert_eq!(store.verify(&record, &lists).unwrap_err().code, "read_back_differs", "a journal that isn't there");
+        assert_eq!(
+            store.verify(&record, &lists).unwrap_err().code,
+            "read_back_differs",
+            "a journal that isn't there"
+        );
         std::fs::remove_dir_all(root.join("session")).unwrap();
         assert_eq!(store.verify(&record, &HashMap::new()).unwrap_err().code, "read_back_differs");
         std::fs::remove_dir_all(&root).unwrap();
@@ -1933,13 +2337,25 @@ mod tests {
         let store = RecordStore::open(&paths, Flavor::App);
         let good = record::journal_file_name(None, Path::new("/d/good.pdf"), None);
         let bad = record::journal_file_name(None, Path::new("/d/bad.pdf"), None);
-        let append = |tab: u32, name: &str, path: &str| recto_session::JournalAppend { tab: TabId(tab), name: name.to_string(), header: JournalHeader::new(tab, Path::new(path), None, 5, 0), through: 1, ops: vec![rotation()], closing: false, base: None, replaces: None };
+        let append = |tab: u32, name: &str, path: &str| recto_session::JournalAppend {
+            tab: TabId(tab),
+            name: name.to_string(),
+            header: JournalHeader::new(tab, Path::new(path), None, 5, 0),
+            through: 1,
+            ops: vec![rotation()],
+            closing: false,
+            base: None,
+            replaces: None,
+        };
         // Known as a journal, and something that can't be opened as a file is in its place: a folder does it, as a real ENOSPC or EIO would.
         write_ok(&store, &journal_work_for(&bad, vec![rotation()], 1));
         let folder = root.join("session").join(JOURNALS);
         std::fs::remove_file(folder.join(&bad)).unwrap();
         std::fs::create_dir(folder.join(&bad)).unwrap();
-        let work = JournalWork { retired: Vec::new(), appends: vec![append(9, &bad, "/d/bad.pdf"), append(1, &good, "/d/good.pdf")] };
+        let work = JournalWork {
+            retired: Vec::new(),
+            appends: vec![append(9, &bad, "/d/bad.pdf"), append(1, &good, "/d/good.pdf")],
+        };
         let (outcome, failed) = store.write_journals(&work, false);
         assert!(failed.is_some());
         assert_eq!(outcome.written.len(), 1, "the good one went");
@@ -1963,7 +2379,13 @@ mod tests {
         let went_to = &outcome.written[0].2;
         assert_ne!(went_to, &name);
         assert!(record::is_journal_name(went_to));
-        assert_eq!(record::parse_journal(&std::fs::read(folder.join(went_to)).unwrap(), CURRENT_VERSION).unwrap().ops.len(), 1);
+        assert_eq!(
+            record::parse_journal(&std::fs::read(folder.join(went_to)).unwrap(), CURRENT_VERSION)
+                .unwrap()
+                .ops
+                .len(),
+            1
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1973,7 +2395,12 @@ mod tests {
         let (root, paths) = state();
         let store = RecordStore::open(&paths, Flavor::App);
         let mut saved = sample(1);
-        let was = FileStamp { size: 10, mtime_ns: 20, device: 1, inode: 30 };
+        let was = FileStamp {
+            size: 10,
+            mtime_ns: 20,
+            device: 1,
+            inode: 30,
+        };
         saved.tabs[0].file = Some(was.into());
         let name = record::journal_file_name(Some(was), Path::new("/d/1.pdf"), None);
         saved.tabs[0].journal = Some(name.clone());
@@ -2005,7 +2432,11 @@ mod tests {
         let path = folder.join(&name);
         // A good step, an operation that won't apply, and another good one behind it.
         let mut bytes = record::journal_start(&JournalHeader::new(1, Path::new("/d/1.pdf"), None, 5, 0), None);
-        bytes.extend_from_slice(&record::journal_lines(&[rotation(), JournalOp::Rotate(99, 1, 1, record::AuthorName::Owner), rotation()]));
+        bytes.extend_from_slice(&record::journal_lines(&[
+            rotation(),
+            JournalOp::Rotate(99, 1, 1, record::AuthorName::Owner),
+            rotation(),
+        ]));
         local::write_private_file(&path, &bytes).unwrap();
         drop(store);
         let store = RecordStore::open(&paths, Flavor::App);
@@ -2018,7 +2449,12 @@ mod tests {
         let parsed = read_journal(&path).unwrap().unwrap().0;
         assert_eq!(restored_from(&parsed).unwrap().edits.to_record(), lists[&name], "it reads back the same");
         assert!(!parsed.lost_lines);
-        assert!(store.write_journals(&journal_work_for(&name, vec![rotation()], list.seq + 1), false).1.is_none());
+        assert!(
+            store
+                .write_journals(&journal_work_for(&name, vec![rotation()], list.seq + 1), false)
+                .1
+                .is_none()
+        );
         let parsed = read_journal(&path).unwrap().unwrap().0;
         let replayed = restored_from(&parsed).unwrap();
         assert_eq!(replayed.edits.slots()[0].quarter_turns, 2, "and the next one is reachable");
@@ -2039,7 +2475,11 @@ mod tests {
         assert_eq!(loaded_record(&store), saved);
         saved.tabs[0].page = 3;
         saved.tabs[0].place = Some(place());
-        let delta = PlaceDelta { places: vec![(1, 3, Some(place()))], active: Some(1), ..PlaceDelta::default() };
+        let delta = PlaceDelta {
+            places: vec![(1, 3, Some(place()))],
+            active: Some(1),
+            ..PlaceDelta::default()
+        };
         store.write_record(&saved, &delta, false).unwrap();
         drop(store);
         let store = RecordStore::open(&paths, Flavor::App);
@@ -2062,7 +2502,12 @@ mod tests {
         let whole = std::fs::read(&slots[1]).unwrap();
         std::fs::write(&slots[1], b"damaged").unwrap();
         // Written after the good one, by its time.
-        File::options().write(true).open(&slots[0]).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(60)).unwrap();
+        File::options()
+            .write(true)
+            .open(&slots[0])
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
         let store = RecordStore::open(&paths, Flavor::App);
         let Loaded::Restored(restored) = store.load() else { panic!() };
         assert_eq!(restored.record, older);
@@ -2071,7 +2516,12 @@ mod tests {
         // The older one damaged instead: nothing's been lost by that.
         std::fs::write(&slots[1], &whole).unwrap();
         std::fs::write(&slots[0], b"damaged").unwrap();
-        File::options().write(true).open(&slots[0]).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(60)).unwrap();
+        File::options()
+            .write(true)
+            .open(&slots[0])
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+            .unwrap();
         let store = RecordStore::open(&paths, Flavor::App);
         let Loaded::Restored(restored) = store.load() else { panic!() };
         assert_eq!(restored.record, newer);
@@ -2094,7 +2544,10 @@ mod tests {
         assert!(matches!(loaded, Loaded::Unreadable), "{loaded:?}");
         assert_eq!(notice_for(&loaded), Some(record::notices::UNREADABLE));
         assert!(slot.exists() && !root.join("session.damaged").exists());
-        assert_eq!(store.write_record(&sample(2), &PlaceDelta::default(), false).unwrap_err().code, "record_unreadable");
+        assert_eq!(
+            store.write_record(&sample(2), &PlaceDelta::default(), false).unwrap_err().code,
+            "record_unreadable"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -2140,8 +2593,14 @@ mod tests {
         // Its own record is replaced by what was done since, which reads through this version's decoder.
         let loaded = loaded_record(&next);
         assert_eq!(loaded.tabs.len(), 4, "the journal goes with the tab on its file");
-        assert!(loaded.tabs.iter().any(|tab| tab.journal.as_deref() == Some(name.as_str())), "with what it was editing");
-        assert!(!root.join(format!("session.v{CURRENT_VERSION}")).join(WENT_BACK).exists(), "and that's done with");
+        assert!(
+            loaded.tabs.iter().any(|tab| tab.journal.as_deref() == Some(name.as_str())),
+            "with what it was editing"
+        );
+        assert!(
+            !root.join(format!("session.v{CURRENT_VERSION}")).join(WENT_BACK).exists(),
+            "and that's done with"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

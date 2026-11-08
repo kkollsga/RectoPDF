@@ -198,7 +198,13 @@ impl<'a> Reader<'a> {
 
 fn frame(kind: Kind, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
-    out.extend_from_slice(&Header { kind, len: payload.len() as u32 }.encode());
+    out.extend_from_slice(
+        &Header {
+            kind,
+            len: payload.len() as u32,
+        }
+        .encode(),
+    );
     out.extend_from_slice(payload);
     out
 }
@@ -230,7 +236,10 @@ pub fn decode_hello(payload: &[u8]) -> Result<Hello, ProtoError> {
     if flags & !HELLO_WALLED != 0 {
         return Err(ProtoError("unknown hello flags"));
     }
-    Ok(Hello { pid, walled: flags & HELLO_WALLED != 0 })
+    Ok(Hello {
+        pid,
+        walled: flags & HELLO_WALLED != 0,
+    })
 }
 
 pub fn encode_open(password: &[u8]) -> Result<Vec<u8>, ProtoError> {
@@ -350,7 +359,12 @@ impl RenderJob {
             job_id: r.u32()?,
             page: r.u32()?,
             scale: r.f32()?,
-            rect: TileRect { x: r.u32()?, y: r.u32()?, width: r.u32()?, height: r.u32()? },
+            rect: TileRect {
+                x: r.u32()?,
+                y: r.u32()?,
+                width: r.u32()?,
+                height: r.u32()?,
+            },
             stride: r.u32()?,
             tile_edge: r.u32()?,
         };
@@ -397,7 +411,12 @@ pub fn region_tiles(rect: TileRect, edge: u32) -> impl Iterator<Item = TileRect>
     (0..rows).flat_map(move |row| {
         (0..columns).map(move |column| {
             let (dx, dy) = (column * edge, row * edge);
-            TileRect { x: rect.x + dx, y: rect.y + dy, width: edge.min(rect.width - dx), height: edge.min(rect.height - dy) }
+            TileRect {
+                x: rect.x + dx,
+                y: rect.y + dy,
+                width: edge.min(rect.width - dx),
+                height: edge.min(rect.height - dy),
+            }
         })
     })
 }
@@ -406,7 +425,9 @@ pub fn region_tiles(rect: TileRect, edge: u32) -> impl Iterator<Item = TileRect>
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TileKind {
     /// Every pixel is this colour, read as `0x00RRGGBB`.
-    Blank { rgb: u32 },
+    Blank {
+        rgb: u32,
+    },
     /// Red, green and blue are equal in every pixel.
     Grey,
     Colour,
@@ -484,7 +505,15 @@ impl TileReply {
         };
         let render_us = r.u32()?;
         r.end()?;
-        Ok(Self { generation, job_id, width, height, stride, status, render_us })
+        Ok(Self {
+            generation,
+            job_id,
+            width,
+            height,
+            stride,
+            status,
+            render_us,
+        })
     }
 }
 
@@ -568,7 +597,11 @@ pub fn validate_region(job: &RenderJob, reply: &RegionReply, surface_len: u64) -
     if job.tile_edge == 0 {
         return Err(ProtoError("a region reply to a single tile"));
     }
-    let expected = if reply.tile.status == TileStatus::Cancelled { 0 } else { region_tiles(job.rect, job.tile_edge).count() };
+    let expected = if reply.tile.status == TileStatus::Cancelled {
+        0
+    } else {
+        region_tiles(job.rect, job.tile_edge).count()
+    };
     if reply.kinds.len() != expected {
         return Err(ProtoError("region has the wrong number of tiles"));
     }
@@ -619,7 +652,10 @@ impl PageTraits {
 
     pub fn decode(payload: &[u8]) -> Result<Self, ProtoError> {
         let mut r = Reader(payload);
-        let traits = Self { job_id: r.u32()?, largest_image_pixels: r.u64()? };
+        let traits = Self {
+            job_id: r.u32()?,
+            largest_image_pixels: r.u64()?,
+        };
         r.end()?;
         Ok(traits)
     }
@@ -696,7 +732,11 @@ impl PageSize {
 
     pub fn decode(payload: &[u8]) -> Result<Self, ProtoError> {
         let mut r = Reader(payload);
-        let size = Self { job_id: r.u32()?, width: r.f32()?, height: r.f32()? };
+        let size = Self {
+            job_id: r.u32()?,
+            width: r.f32()?,
+            height: r.f32()?,
+        };
         r.end()?;
         Ok(size)
     }
@@ -761,7 +801,13 @@ impl TextJob {
         if flags & !0b11 != 0 {
             return Err(ProtoError("unknown text flags"));
         }
-        Ok(Self { job_id, page, boxes: flags & 1 != 0, hidden_check: flags & 2 != 0, generation })
+        Ok(Self {
+            job_id,
+            page,
+            boxes: flags & 1 != 0,
+            hidden_check: flags & 2 != 0,
+            generation,
+        })
     }
 }
 
@@ -874,7 +920,13 @@ impl TextReply {
             return Err(ProtoError("unknown text flags"));
         }
         let has_boxes = flags & 1 != 0;
-        let frame = PageFrame { turns: (flags >> 3) & 3, left: r.f32()?, bottom: r.f32()?, right: r.f32()?, top: r.f32()? };
+        let frame = PageFrame {
+            turns: (flags >> 3) & 3,
+            left: r.f32()?,
+            bottom: r.f32()?,
+            right: r.f32()?,
+            top: r.f32()?,
+        };
         if ![frame.left, frame.bottom, frame.right, frame.top].iter().all(|edge| edge.is_finite()) {
             return Err(ProtoError("page frame isn't finite"));
         }
@@ -896,7 +948,15 @@ impl TextReply {
             }
         }
         r.end()?;
-        Ok(Self { job_id, page, hidden_checked: flags & 2 != 0, chars, boxes, frame, copy_restricted: flags & 4 != 0 })
+        Ok(Self {
+            job_id,
+            page,
+            hidden_checked: flags & 2 != 0,
+            chars,
+            boxes,
+            frame,
+            copy_restricted: flags & 4 != 0,
+        })
     }
 }
 

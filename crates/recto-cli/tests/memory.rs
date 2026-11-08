@@ -42,7 +42,11 @@ fn an_idle_server_is_one_sleeping_thread() {
     let after = process_counters(serving.pid()).unwrap();
     println!("idle over 1 s: {before:?} to {after:?}");
     assert_eq!(after.threads, 1, "an idle server should have one thread");
-    assert!(after.context_switches - before.context_switches <= 2, "it woke up {} times", after.context_switches - before.context_switches);
+    assert!(
+        after.context_switches - before.context_switches <= 2,
+        "it woke up {} times",
+        after.context_switches - before.context_switches
+    );
     assert!(after.wakeups - before.wakeups <= 2, "{} wake-ups", after.wakeups - before.wakeups);
     assert!(after.cpu_ns - before.cpu_ns < 1_000_000, "{} ns of CPU", after.cpu_ns - before.cpu_ns);
 }
@@ -67,7 +71,11 @@ fn waiting_clients_cost_no_thread_and_no_wake_ups() {
     let after = process_counters(serving.pid()).unwrap();
     println!("50 waiting clients over 1 s: {before:?} to {after:?}");
     assert_eq!(after.threads, 1, "waiting must not hold a thread");
-    assert!(after.context_switches - before.context_switches <= 2, "{}", after.context_switches - before.context_switches);
+    assert!(
+        after.context_switches - before.context_switches <= 2,
+        "{}",
+        after.context_switches - before.context_switches
+    );
     drop(clients);
 }
 
@@ -132,7 +140,11 @@ fn a_restored_cold_tab_costs_what_a_cold_tab_costs() {
         let restored = raw.call(&json!({ "cmd": "session_restore" }));
         assert_eq!(restored["data"]["count"], count, "{restored}");
         std::thread::sleep(Duration::from_millis(100));
-        (footprint(&mut raw), raw.call(&json!({ "cmd": "budget" }))["data"]["open_handles"].as_u64().unwrap(), threads_at_rest(serving.pid()))
+        (
+            footprint(&mut raw),
+            raw.call(&json!({ "cmd": "budget" }))["data"]["open_handles"].as_u64().unwrap(),
+            threads_at_rest(serving.pid()),
+        )
     };
     let (few, few_handles, few_threads) = footprint_of_restored(2);
     let (many, many_handles, many_threads) = footprint_of_restored(1000);
@@ -178,12 +190,20 @@ fn after_drawing_nothing_is_left_running() {
     assert_eq!(raw.call(&json!({ "cmd": "open", "path": file.0 }))["ok"], true);
     assert_eq!(raw.call(&json!({ "cmd": "text", "page": 1 }))["ok"], true);
     let children = || {
-        let output = std::process::Command::new("/usr/bin/pgrep").args(["-P", &serving.pid().to_string()]).output().unwrap();
+        let output = std::process::Command::new("/usr/bin/pgrep")
+            .args(["-P", &serving.pid().to_string()])
+            .output()
+            .unwrap();
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     };
     let started = std::time::Instant::now();
     while process_counters(serving.pid()).unwrap().threads != 1 || !children().is_empty() {
-        assert!(started.elapsed() < Duration::from_secs(10), "threads {:?}, children {:?}", process_counters(serving.pid()), children());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "threads {:?}, children {:?}",
+            process_counters(serving.pid()),
+            children()
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -213,7 +233,11 @@ fn out_of_descriptors_the_session_doesnt_spin() {
     std::thread::sleep(Duration::from_millis(500));
     let after = process_counters(pid).unwrap();
     let cpu = after.cpu_ns - before.cpu_ns;
-    println!("out of descriptors, over 500 ms: {} ms of CPU, {} context switches", cpu / 1_000_000, after.context_switches - before.context_switches);
+    println!(
+        "out of descriptors, over 500 ms: {} ms of CPU, {} context switches",
+        cpu / 1_000_000,
+        after.context_switches - before.context_switches
+    );
     assert!(cpu < 100_000_000, "{} ms of CPU in 500 ms: it's spinning", cpu / 1_000_000);
     // One that arrives while it's still out of descriptors, and writes only after the session's accept has dropped it. On a slow runner the first try below can be this by chance; here it always is.
     let mut early = Some(Raw::connect(&state));
@@ -230,7 +254,10 @@ fn out_of_descriptors_the_session_doesnt_spin() {
         {
             break;
         }
-        assert!(started.elapsed() < Duration::from_secs(10), "with descriptors free again, it must take connections again");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "with descriptors free again, it must take connections again"
+        );
     }
     serving.kill();
 }
@@ -258,10 +285,28 @@ fn an_export_holds_nothing_of_the_page() {
         }
         content.push_str("S\n");
     }
-    let file = TempPdf::new("large.pdf", &pages_with(&[Page::new(content)], &resources, vec![Object::Stream { dict, data: pixels }]));
+    let file = TempPdf::new(
+        "large.pdf",
+        &pages_with(&[Page::new(content)], &resources, vec![Object::Stream { dict, data: pixels }]),
+    );
     let out = file.0.with_file_name("large.svg");
     let state = State::at(Level::Full);
-    let mut child = state.command().args(["local", file.0.to_str().unwrap(), "export", "svg", "1", "--out", out.to_str().unwrap(), "--json"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let mut child = state
+        .command()
+        .args([
+            "local",
+            file.0.to_str().unwrap(),
+            "export",
+            "svg",
+            "1",
+            "--out",
+            out.to_str().unwrap(),
+            "--json",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
     let mut peak = 0;
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
@@ -313,5 +358,8 @@ fn an_index_leaves_nothing_in_the_session() {
     assert!(after < before + 2 * 1024 * 1024, "{before} to {after}");
     // No more than before, and not exactly as many: `open` can still be holding a descriptor it lets go of a moment later, which made this fail under load with fewer after, 13 against 14.
     let handles_after = raw.call(&json!({ "cmd": "budget" }))["data"]["open_handles"].as_u64().unwrap();
-    assert!(handles_after <= handles_before, "a descriptor stayed behind: {handles_before} then {handles_after}");
+    assert!(
+        handles_after <= handles_before,
+        "a descriptor stayed behind: {handles_before} then {handles_after}"
+    );
 }

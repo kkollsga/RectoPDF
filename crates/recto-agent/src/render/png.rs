@@ -10,7 +10,11 @@ const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 const CHUNK: usize = 64 * 1024;
 
 fn write_chunk(out: &mut impl Write, kind: &[u8; 4], data: &[u8]) -> io::Result<()> {
-    out.write_all(&u32::try_from(data.len()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?.to_be_bytes())?;
+    out.write_all(
+        &u32::try_from(data.len())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?
+            .to_be_bytes(),
+    )?;
     out.write_all(kind)?;
     out.write_all(data)?;
     let mut crc = Crc::new();
@@ -56,7 +60,10 @@ impl RgbWriter {
         header[9] = 2; // RGB.
         write_chunk(&mut file, b"IHDR", &header)?;
         let chunks = BufWriter::with_capacity(CHUNK, IdatChunks { file, left: max_bytes });
-        Ok(Self { encoder: ZlibEncoder::new(chunks, Compression::fast()), row: Vec::with_capacity(width as usize * 3 + 1) })
+        Ok(Self {
+            encoder: ZlibEncoder::new(chunks, Compression::fast()),
+            row: Vec::with_capacity(width as usize * 3 + 1),
+        })
     }
 
     /// Adds one row of blue, green, red, unused.

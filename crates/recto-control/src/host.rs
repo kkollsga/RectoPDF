@@ -7,12 +7,14 @@ use crate::record_store::{Flavor, Loaded, RecordStore, StoreError, notice_for};
 use crate::state::StatePaths;
 use recto_agent::index::Indexing;
 use recto_agent::saving::SaveSupport;
-use std::path::PathBuf;
-use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, SessionAccess, acted_tab, check_condition, exit, with_tab_candidates};
+use recto_agent::{
+    AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level, SessionAccess, acted_tab, check_condition, exit, with_tab_candidates,
+};
 use recto_session::{DocLoader, Session, TabId};
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// The session, as the server sees it. Called from job threads, never the thread watching the socket.
 pub trait Host: Send + Sync + 'static {
@@ -106,7 +108,16 @@ impl Default for SessionHost<DrawableLoader> {
 
 impl<L: DocLoader + Clone> SessionHost<L> {
     pub fn new(loader: L) -> Self {
-        Self { session: Mutex::new(Session::new(loader)), tabs: AtomicU32::new(0), indexer: None, generator: None, finder: Finder::new(None), record: None, saving: std::sync::OnceLock::new(), find_keys: std::sync::OnceLock::new() }
+        Self {
+            session: Mutex::new(Session::new(loader)),
+            tabs: AtomicU32::new(0),
+            indexer: None,
+            generator: None,
+            finder: Finder::new(None),
+            record: None,
+            saving: std::sync::OnceLock::new(),
+            find_keys: std::sync::OnceLock::new(),
+        }
     }
 
     /// With documents indexed on demand, under the state folder's corpus folder.
@@ -192,7 +203,13 @@ impl<L: DocLoader + Clone> SessionHost<L> {
     }
 
     fn access(&self) -> Hosted<'_, L> {
-        Hosted { session: &self.session, indexer: self.indexer.as_ref(), generator: self.generator.as_ref(), finder: &self.finder, saving: self.saving.get().map(|saving| &**saving) }
+        Hosted {
+            session: &self.session,
+            indexer: self.indexer.as_ref(),
+            generator: self.generator.as_ref(),
+            finder: &self.finder,
+            saving: self.saving.get().map(|saving| &**saving),
+        }
     }
 
     /// The session itself, unless something's got it now. For a thread that mustn't wait for a read under the session's lock, as the UI thread mustn't.
@@ -220,12 +237,19 @@ impl<L: DocLoader + Clone> SessionHost<L> {
 impl<L: DocLoader + Clone> SessionHost<L> {
     /// The record's commands, for a session with no window: nothing writes until it's told to, and each save is the whole of it. The app has its own, as it keeps its record as it goes.
     fn run_record_command(&self, level: Level, command: &Command) -> Option<Result<Value, AgentError>> {
-        if !matches!(command, Command::SessionSleep { .. } | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {}) {
+        if !matches!(
+            command,
+            Command::SessionSleep { .. } | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {} | Command::SessionCheck {}
+        ) {
             return None;
         }
         // The level was checked by the server against the row. Checked here too, as `execute` would.
         if !recto_agent::allowed(level, command.access()) {
-            return Some(Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access())));
+            return Some(Err(recto_agent::refusal(
+                recto_agent::table::display_name(command.tag()),
+                level,
+                command.access(),
+            )));
         }
         let Some(store) = &self.record else { return Some(Err(no_record())) };
         Some(match command {
@@ -263,10 +287,14 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             store.write_checkpoint(name, header, list).map_err(store_error)?;
         }
         store.next_write_whole();
-        store.write_record(&record, &recto_session::record::PlaceDelta::default(), true).map_err(store_error)?;
+        store
+            .write_record(&record, &recto_session::record::PlaceDelta::default(), true)
+            .map_err(store_error)?;
         store.verify(&record, &lists).map_err(store_error)?;
         let (record_bytes, journal_bytes) = store.sizes();
-        Ok(json!({ "saved": true, "tabs": record.tabs.len(), "edited_tabs": edited, "record_bytes": record_bytes, "journal_bytes": journal_bytes, "wrote_bytes": store.wrote_bytes(), "total_ms": started.elapsed().as_millis() as u64 }))
+        Ok(
+            json!({ "saved": true, "tabs": record.tabs.len(), "edited_tabs": edited, "record_bytes": record_bytes, "journal_bytes": journal_bytes, "wrote_bytes": store.wrote_bytes(), "total_ms": started.elapsed().as_millis() as u64 }),
+        )
     }
 
     fn restore_from(&self, store: &RecordStore, level: Level) -> Result<Value, AgentError> {
@@ -279,7 +307,9 @@ impl<L: DocLoader + Clone> SessionHost<L> {
             return Ok(json!({ "restored": false, "count": self.tabs.load(Ordering::Relaxed), "notice": notice }));
         };
         self.with_session(|session| {
-            session.restore(&restored.record, restored.journals).map_err(|error| AgentError::new(error.code(), "The record can't be used.", exit::FAILED))?;
+            session
+                .restore(&restored.record, restored.journals)
+                .map_err(|error| AgentError::new(error.code(), "The record can't be used.", exit::FAILED))?;
             // The active tab's facts are what a session with no window would otherwise have to find out at its next look.
             session.wake_active();
             Ok(json!({ "restored": true, "count": session.tabs().len(), "active": session.active().map(|id| id.0), "notice": notice }))
@@ -309,7 +339,9 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
             return answer;
         }
         // A tab that closes takes its generated contents' job with it, if one's running or waiting.
-        let closing = matches!(command, Command::Close { .. }).then(|| self.acted_tab(command).and_then(|id| self.with_session(|session| session.path_of(id)))).flatten();
+        let closing = matches!(command, Command::Close { .. })
+            .then(|| self.acted_tab(command).and_then(|id| self.with_session(|session| session.path_of(id))))
+            .flatten();
         let result = recto_agent::execute(&self.access(), level, command, events);
         if let (Some(path), Ok(_), Some(generator)) = (&closing, &result, &self.generator) {
             generator.cancel_path(path);
@@ -364,13 +396,22 @@ impl<L: DocLoader + Clone + Send + 'static> Host for SessionHost<L> {
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
         let session = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Undone steps count: they can still be got back, and stopping would lose them.
-        session.tabs().iter().filter(|tab| session.is_edited(tab.id) || session.page_edits(tab.id).is_some_and(recto_session::edit::PageEdits::can_redo)).map(|tab| (tab.id, tab.name.to_string())).collect()
+        session
+            .tabs()
+            .iter()
+            .filter(|tab| session.is_edited(tab.id) || session.page_edits(tab.id).is_some_and(recto_session::edit::PageEdits::can_redo))
+            .map(|tab| (tab.id, tab.name.to_string()))
+            .collect()
     }
 }
 
 /// The refusal for stopping with unsaved edits.
 pub(crate) fn unsaved_refusal(tabs: &[(TabId, String)]) -> AgentError {
-    let mut error = AgentError::new("unsaved_changes", "The session wasn't stopped: these tabs have unsaved edits, which would be lost.", exit::FAILED);
+    let mut error = AgentError::new(
+        "unsaved_changes",
+        "The session wasn't stopped: these tabs have unsaved edits, which would be lost.",
+        exit::FAILED,
+    );
     with_tab_candidates(&mut error, tabs.iter().map(|(id, name)| (*id, name.as_str())));
     error
 }

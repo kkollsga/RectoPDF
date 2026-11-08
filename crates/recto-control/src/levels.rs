@@ -30,7 +30,10 @@ fn read(paths: &StatePaths) -> Option<Stored> {
 pub fn parse_stored(bytes: &[u8]) -> Option<Stored> {
     let value: Value = serde_json::from_slice(bytes).ok()?;
     let level = Level::parse(value["level"].as_str()?)?;
-    Some(Stored { level, set_at_ms: value["set_at_ms"].as_u64().unwrap_or(0) })
+    Some(Stored {
+        level,
+        set_at_ms: value["set_at_ms"].as_u64().unwrap_or(0),
+    })
 }
 
 /// Writes the level. Only `recto permission set`, the app's settings later, and test setup call this. No command reaches it.
@@ -41,26 +44,36 @@ pub fn store(paths: &StatePaths, level: Level) -> std::io::Result<()> {
 }
 
 pub(crate) fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// What each level allows, in the one place.
 fn allows(level: Level) -> &'static str {
     match level {
-        Level::Off => "Status, help, and asking for more. It can see how many PDFs are open, and nothing from any of them: no names, no page text and no drawing.",
+        Level::Off => {
+            "Status, help, and asking for more. It can see how many PDFs are open, and nothing from any of them: no names, no page text and no drawing."
+        }
         Level::ReadOnly => "Read and search documents that are open, and watch what happens. Changes nothing.",
-        Level::Control => "Open and close PDFs, move around, edit pages in memory, and throw away agents' own edits. Never the user's edits, and nothing reaches a file.",
+        Level::Control => {
+            "Open and close PDFs, move around, edit pages in memory, and throw away agents' own edits. Never the user's edits, and nothing reaches a file."
+        }
         Level::Full => "Write new pictures to disk, throw away the user's edits too, and choose a worker's limits. Signing is never included.",
     }
 }
 
-pub const HOW_TO_CHANGE: &str = "Only you can raise this, by running `recto permission set <level>` in your own terminal. Later, the app's settings take this over.";
+pub const HOW_TO_CHANGE: &str =
+    "Only you can raise this, by running `recto permission set <level>` in your own terminal. Later, the app's settings take this over.";
 
 /// `recto permission show`.
 pub fn show(paths: &StatePaths, pending: Option<Level>) -> Value {
     let stored = read(paths);
     let level = stored.map_or(Level::Off, |stored| stored.level);
-    let levels: Vec<Value> = [Level::Off, Level::ReadOnly, Level::Control, Level::Full].iter().map(|level| json!({ "level": level.name(), "label": level.label(), "allows": allows(*level) })).collect();
+    let levels: Vec<Value> = [Level::Off, Level::ReadOnly, Level::Control, Level::Full]
+        .iter()
+        .map(|level| json!({ "level": level.name(), "label": level.label(), "allows": allows(*level) }))
+        .collect();
     json!({
         "level": level.name(),
         "label": level.label(),

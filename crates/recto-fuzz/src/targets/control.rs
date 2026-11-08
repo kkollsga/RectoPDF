@@ -19,7 +19,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-const BUDGET: Budget = Budget { time: Duration::from_secs(60), memory: 512 * 1024 * 1024 };
+const BUDGET: Budget = Budget {
+    time: Duration::from_secs(60),
+    memory: 512 * 1024 * 1024,
+};
 const STATUS: &[u8] = b"\n{\"cmd\":\"status\"}\n";
 /// More than twice the longest line a client may send, so what's past the cap gets sent.
 pub const MAX_INPUT: usize = 256 * 1024;
@@ -62,7 +65,10 @@ fn state_folder() -> PathBuf {
     if let Some(chosen) = std::env::var_os("RECTO_FUZZ_STATE") {
         return PathBuf::from(chosen);
     }
-    std::env::temp_dir().canonicalize().unwrap_or_else(|_| std::env::temp_dir()).join(format!("rf{}", std::process::id()))
+    std::env::temp_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(format!("rf{}", std::process::id()))
 }
 
 fn start() -> Running {
@@ -118,7 +124,10 @@ pub fn check(data: &[u8]) {
 fn must_be_ending(running: &Running) {
     let started = Instant::now();
     while !running.thread.is_finished() {
-        assert!(started.elapsed() < Duration::from_secs(20), "a new client couldn't get in, and the session hasn't ended");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "a new client couldn't get in, and the session hasn't ended"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -141,7 +150,12 @@ fn answers_status(running: &Running) -> bool {
 
 /// Whether a line asks to be left waiting. A client that does that and has more to say gets its next line read when the wait ends, which is its own affair: it holds its own slot, and nobody else's.
 fn asks_to_wait(bytes: &[u8]) -> bool {
-    bytes.split(|byte| *byte == b'\n').any(|line| std::str::from_utf8(line.trim_ascii()).ok().and_then(|line| parse(line).ok()).is_some_and(|command| matches!(command, Command::Wait { .. } | Command::Watch { .. } | Command::PermissionRequest { .. })))
+    bytes.split(|byte| *byte == b'\n').any(|line| {
+        std::str::from_utf8(line.trim_ascii())
+            .ok()
+            .and_then(|line| parse(line).ok())
+            .is_some_and(|command| matches!(command, Command::Wait { .. } | Command::Watch { .. } | Command::PermissionRequest { .. }))
+    })
 }
 
 /// Sends the bytes, in pieces the input chooses, and a `status` behind them, and reads until that's answered or the connection ends.
@@ -200,7 +214,11 @@ fn read_answers(stream: &Stream, running: &Running, may_stay_silent: bool) {
         if done {
             return;
         }
-        assert!(started.elapsed() < Duration::from_secs(45) || running.thread.is_finished(), "still reading answers after {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(45) || running.thread.is_finished(),
+            "still reading answers after {:?}",
+            started.elapsed()
+        );
     }
     // The connection ended. Whatever came before that was still whole lines, or nothing.
     assert!(seen.is_empty(), "half an answer: {} bytes", seen.len());

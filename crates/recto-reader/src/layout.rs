@@ -35,7 +35,10 @@ pub struct PageBox {
 }
 
 fn swap(size: PageBox) -> PageBox {
-    PageBox { width: size.height, height: size.width }
+    PageBox {
+        width: size.height,
+        height: size.width,
+    }
 }
 
 /// A page's place, in document points.
@@ -101,7 +104,21 @@ impl PageLayout {
     }
 
     pub fn with_spread(count: u32, spread: Spread) -> Self {
-        Self { count, usual: DEFAULT_PAGE, usual_known: false, overrides: Vec::new(), known: HashSet::new(), fit: 1.0, frame_width: 0.0, spread, turns: None, base_odd: false, turned_other_way: 0, cap: MAX_OVERRIDES, margins: (MIN_SIDE_MARGIN, CORNER_MARGIN) }
+        Self {
+            count,
+            usual: DEFAULT_PAGE,
+            usual_known: false,
+            overrides: Vec::new(),
+            known: HashSet::new(),
+            fit: 1.0,
+            frame_width: 0.0,
+            spread,
+            turns: None,
+            base_odd: false,
+            turned_other_way: 0,
+            cap: MAX_OVERRIDES,
+            margins: (MIN_SIDE_MARGIN, CORNER_MARGIN),
+        }
     }
 
     pub fn count(&self) -> u32 {
@@ -148,7 +165,11 @@ impl PageLayout {
 
     /// The pages that aren't the usual size, and their sizes as the file has them, unturned.
     pub fn other_sizes(&self) -> Vec<(u32, PageBox)> {
-        self.overrides.iter().filter(|known| self.known.contains(&known.page)).map(|known| (known.page, self.raw_size(known.page))).collect()
+        self.overrides
+            .iter()
+            .filter(|known| self.known.contains(&known.page))
+            .map(|known| (known.page, self.raw_size(known.page)))
+            .collect()
     }
 
     /// The size every page is taken to be as the file has it, unturned, if it came from a real page.
@@ -177,7 +198,12 @@ impl PageLayout {
         if turns.as_deref() == self.turns.as_deref() {
             return false;
         }
-        let known: Vec<(u32, PageBox)> = self.overrides.iter().filter(|o| self.known.contains(&o.page)).map(|o| (o.page, self.raw_size(o.page))).collect();
+        let known: Vec<(u32, PageBox)> = self
+            .overrides
+            .iter()
+            .filter(|o| self.known.contains(&o.page))
+            .map(|o| (o.page, self.raw_size(o.page)))
+            .collect();
         let usual_raw = if self.base_odd { swap(self.usual) } else { self.usual };
         self.turns = turns;
         let odd = self.turns.as_deref().map_or(0, |turns| turns.iter().filter(|turn| *turn % 2 == 1).count());
@@ -192,12 +218,32 @@ impl PageLayout {
     pub fn as_saved(&self) -> Self {
         let mut known = self.known.clone();
         known.extend(self.overrides.iter().map(|o| o.page));
-        Self { count: self.count, usual: self.usual, usual_known: self.usual_known, overrides: self.overrides.clone(), known, fit: self.fit, frame_width: self.frame_width, spread: self.spread, turns: None, base_odd: false, turned_other_way: 0, cap: self.cap, margins: self.margins }
+        Self {
+            count: self.count,
+            usual: self.usual,
+            usual_known: self.usual_known,
+            overrides: self.overrides.clone(),
+            known,
+            fit: self.fit,
+            frame_width: self.frame_width,
+            spread: self.spread,
+            turns: None,
+            base_odd: false,
+            turned_other_way: 0,
+            cap: self.cap,
+            margins: self.margins,
+        }
     }
 
     /// Builds the overrides again: each known page of another size, and each page turned the other way from most, from their sizes as the file has them.
     fn retune(&mut self, known: Option<Vec<(u32, PageBox)>>) {
-        let known = known.unwrap_or_else(|| self.overrides.iter().filter(|o| self.known.contains(&o.page)).map(|o| (o.page, self.raw_size(o.page))).collect());
+        let known = known.unwrap_or_else(|| {
+            self.overrides
+                .iter()
+                .filter(|o| self.known.contains(&o.page))
+                .map(|o| (o.page, self.raw_size(o.page)))
+                .collect()
+        });
         let usual_raw = if self.base_odd { swap(self.usual) } else { self.usual };
         let mut sizes: std::collections::BTreeMap<u32, PageBox> = known.into_iter().collect();
         self.turned_other_way = 0;
@@ -214,14 +260,25 @@ impl PageLayout {
             .map(|(page, raw)| (page, if self.odd(page) { swap(raw) } else { raw }))
             .filter(|(_, shown)| *shown != self.usual)
             .take(self.cap + self.turned_other_way)
-            .map(|(page, size)| Override { page, size, row_extra: 0.0, before: 0.0 })
+            .map(|(page, size)| Override {
+                page,
+                size,
+                row_extra: 0.0,
+                before: 0.0,
+            })
             .collect();
         self.reckon();
     }
 
     /// The least room to the left and the right of the pages, as a pane of a comparison has it. Returns whether anything moved. Held to sense.
     pub fn set_margins(&mut self, left: f64, right: f64) -> bool {
-        let fit = |value: f64| if value.is_finite() { value.clamp(0.0, CORNER_MARGIN) } else { MIN_SIDE_MARGIN };
+        let fit = |value: f64| {
+            if value.is_finite() {
+                value.clamp(0.0, CORNER_MARGIN)
+            } else {
+                MIN_SIDE_MARGIN
+            }
+        };
         let margins = (fit(left), fit(right));
         if margins == self.margins {
             return false;
@@ -281,7 +338,15 @@ impl PageLayout {
                 return true;
             }
             let at = self.overrides.partition_point(|o| o.page < page);
-            self.overrides.insert(at, Override { page, size, row_extra: 0.0, before: 0.0 });
+            self.overrides.insert(
+                at,
+                Override {
+                    page,
+                    size,
+                    row_extra: 0.0,
+                    before: 0.0,
+                },
+            );
         }
         self.reckon();
         self.refit();
@@ -344,7 +409,10 @@ impl PageLayout {
             }
             let (_, second) = self.row_pages(row);
             let in_row = 1 + usize::from(second.is_some());
-            let tallest = self.overrides[at..end].iter().map(|o| o.size.height).fold(if end - at < in_row { usual } else { f32::MIN }, f32::max);
+            let tallest = self.overrides[at..end]
+                .iter()
+                .map(|o| o.size.height)
+                .fold(if end - at < in_row { usual } else { f32::MIN }, f32::max);
             let extra = tallest - usual;
             for entry in &mut self.overrides[at..end] {
                 entry.before = total;
@@ -416,7 +484,12 @@ impl PageLayout {
             _ if self.on_the_right(page) => middle + PAGE_GAP / 2.0,
             _ => middle - PAGE_GAP / 2.0 - width,
         };
-        PageRect { x: x.max(0.0), y: self.top(page), width, height: f64::from(size.height) * self.fit }
+        PageRect {
+            x: x.max(0.0),
+            y: self.top(page),
+            width,
+            height: f64::from(size.height) * self.fit,
+        }
     }
 
     /// Where a page's row is centred: the middle of the window, each row on its own, so one wide page, as a fold-out, doesn't push every other row off to the side. A row too wide for the window starts at the margin and runs on to the right.
@@ -433,7 +506,10 @@ impl PageLayout {
                 let usual = f64::from(self.usual.width) * self.fit;
                 let left = pages.into_iter().flatten().find(|page| !self.on_the_right(*page)).map_or(usual, width);
                 let right = pages.into_iter().flatten().find(|page| self.on_the_right(*page)).map_or(usual, width);
-                (self.margins.0 + left + PAGE_GAP / 2.0, self.frame_width - self.margins.1 - right - PAGE_GAP / 2.0)
+                (
+                    self.margins.0 + left + PAGE_GAP / 2.0,
+                    self.frame_width - self.margins.1 - right - PAGE_GAP / 2.0,
+                )
             }
         };
         half.min(highest).max(lowest)
@@ -486,7 +562,13 @@ impl PageLayout {
         let Some(second) = second else { return first };
         let distance = |page: u32| {
             let rect = self.rect(page);
-            if x < rect.x { rect.x - x } else if x > rect.x + rect.width { x - rect.x - rect.width } else { 0.0 }
+            if x < rect.x {
+                rect.x - x
+            } else if x > rect.x + rect.width {
+                x - rect.x - rect.width
+            } else {
+                0.0
+            }
         };
         if distance(second) < distance(first) { second } else { first }
     }
@@ -497,7 +579,11 @@ impl PageLayout {
         let first = self.row_at(from);
         let last = self.row_at(to);
         // A stretch that ends in the gap below a row needn't count the next one, and one that starts in a gap doesn't count the row above.
-        let first = if first + 1 < rows && self.row_top(first) + self.row_height(first) < from { first + 1 } else { first };
+        let first = if first + 1 < rows && self.row_top(first) + self.row_height(first) < from {
+            first + 1
+        } else {
+            first
+        };
         let last = last.max(first);
         let (last_first, last_second) = self.row_pages(last);
         self.first_of_row(first)..=last_second.unwrap_or(last_first)
@@ -612,7 +698,11 @@ mod tests {
         }
         let mut expected_top = END_MARGIN;
         for page in 0..200 {
-            assert!((layout.top(page) - expected_top).abs() < 1e-6, "page {page}: {} against {expected_top}", layout.top(page));
+            assert!(
+                (layout.top(page) - expected_top).abs() < 1e-6,
+                "page {page}: {} against {expected_top}",
+                layout.top(page)
+            );
             let rect = layout.rect(page);
             assert_eq!(layout.page_at(rect.y + rect.height / 2.0), page);
             assert_eq!(layout.page_at(rect.y), page);
@@ -637,7 +727,16 @@ mod tests {
     /// Failure: side by side puts pages where finding them doesn't look, so the wrong tiles are drawn or a click lands on the wrong page; pages of a pair don't line up at the top, overlap, or sit off the middle; a row is as tall as its first page when the other is taller. Held against a list worked out the slow way, with odd-sized pages on either side, for both kinds.
     #[test]
     fn side_by_side_agrees_with_placing_its_pages() {
-        for (spread, rows) in [(Spread::TwoUp, (0..7u32).map(|row| (row * 2..(row * 2 + 2).min(13)).collect()).collect::<Vec<Vec<u32>>>()), (Spread::TwoUpCover, std::iter::once(vec![0]).chain((0..6u32).map(|row| vec![row * 2 + 1, row * 2 + 2])).collect())] {
+        for (spread, rows) in [
+            (
+                Spread::TwoUp,
+                (0..7u32).map(|row| (row * 2..(row * 2 + 2).min(13)).collect()).collect::<Vec<Vec<u32>>>(),
+            ),
+            (
+                Spread::TwoUpCover,
+                std::iter::once(vec![0]).chain((0..6u32).map(|row| vec![row * 2 + 1, row * 2 + 2])).collect(),
+            ),
+        ] {
             let mut layout = PageLayout::with_spread(13, spread);
             layout.set_frame(1400.0);
             layout.set_page_size(0, letter());
@@ -651,14 +750,24 @@ mod tests {
                     let rect = layout.rect(page);
                     assert!((rect.y - top).abs() < 1e-6, "{spread:?} page {page}: {} against {top}", rect.y);
                     assert_eq!(layout.page_at(top + height / 2.0), pages[0], "{spread:?} row {row}");
-                    assert_eq!(layout.page_at_point(rect.x + rect.width / 2.0, rect.y + 1.0), page, "{spread:?} a click on page {page}");
+                    assert_eq!(
+                        layout.page_at_point(rect.x + rect.width / 2.0, rect.y + 1.0),
+                        page,
+                        "{spread:?} a click on page {page}"
+                    );
                 }
                 if let [left, right] = pages[..] {
                     let (one, two) = (layout.rect(left), layout.rect(right));
-                    assert!((one.x + one.width + PAGE_GAP - two.x).abs() < 1e-6, "{spread:?} a pair meets with the gap between");
+                    assert!(
+                        (one.x + one.width + PAGE_GAP - two.x).abs() < 1e-6,
+                        "{spread:?} a pair meets with the gap between"
+                    );
                     let middle = (one.x + one.width + two.x) / 2.0;
                     let clear = 1400.0 - CORNER_MARGIN - (two.x + two.width);
-                    assert!((middle - 700.0).abs() < 1e-6 || clear.abs() < 1e-6, "{spread:?} about the middle, or as near it as the corner allows: {middle}, {clear} clear");
+                    assert!(
+                        (middle - 700.0).abs() < 1e-6 || clear.abs() < 1e-6,
+                        "{spread:?} about the middle, or as near it as the corner allows: {middle}, {clear} clear"
+                    );
                     assert_eq!(layout.pages_between(top + 1.0, top + 2.0), left..=right);
                 }
             }
@@ -668,11 +777,17 @@ mod tests {
         let mut cover = PageLayout::with_spread(4, Spread::TwoUpCover);
         cover.set_frame(1400.0);
         cover.set_page_size(0, letter());
-        assert!((cover.rect(0).x - cover.rect(2).x).abs() < 1e-6 && cover.rect(0).x > cover.rect(1).x, "the cover's on the right, as a book's is");
+        assert!(
+            (cover.rect(0).x - cover.rect(2).x).abs() < 1e-6 && cover.rect(0).x > cover.rect(1).x,
+            "the cover's on the right, as a book's is"
+        );
         let mut odd = PageLayout::with_spread(3, Spread::TwoUp);
         odd.set_frame(1400.0);
         odd.set_page_size(0, letter());
-        assert!((odd.rect(2).x - odd.rect(0).x).abs() < 1e-6 && odd.rect(2).x < odd.rect(1).x, "a last page alone is on the left");
+        assert!(
+            (odd.rect(2).x - odd.rect(0).x).abs() < 1e-6 && odd.rect(2).x < odd.rect(1).x,
+            "a last page alone is on the left"
+        );
     }
 
     /// Failure: two pages side by side don't fit the room, or run into the agent icon's margin, or are drawn larger than one page would be.
@@ -682,7 +797,10 @@ mod tests {
         layout.set_page_size(0, letter());
         layout.set_frame(1100.0);
         let (left, right) = (layout.rect(0), layout.rect(1));
-        assert!(left.x >= MIN_SIDE_MARGIN - 1e-6 && right.x + right.width <= 1100.0 - MIN_SIDE_MARGIN + 1e-6, "{left:?} {right:?}");
+        assert!(
+            left.x >= MIN_SIDE_MARGIN - 1e-6 && right.x + right.width <= 1100.0 - MIN_SIDE_MARGIN + 1e-6,
+            "{left:?} {right:?}"
+        );
         assert!(left.width <= READING_WIDTH);
         layout.set_frame(4000.0);
         assert!((layout.rect(0).width - READING_WIDTH).abs() < 1e-6, "no wider than a page alone");
@@ -723,7 +841,11 @@ mod tests {
         assert_eq!(layout.usual_size(), Some(letter()), "a place keeps the size as the file has it");
         assert_eq!(layout.other_sizes(), vec![(4, PageBox { width: 612.0, height: 1008.0 })]);
         assert_eq!(layout.overrides.len(), 1, "turning every page costs nothing per page");
-        assert!(layout.rect(2).width > before.width * 0.99 && layout.rect(2).height < before.height, "landscape now: {:?}", layout.rect(2));
+        assert!(
+            layout.rect(2).width > before.width * 0.99 && layout.rect(2).height < before.height,
+            "landscape now: {:?}",
+            layout.rect(2)
+        );
         // Some pages: those turned the other way from most are overrides, and finding a page still agrees with placing it.
         assert!(layout.set_turns(Some(Arc::from(vec![0u8, 1, 0, 2, 0, 3]))));
         assert_eq!(layout.size(1), PageBox { width: 792.0, height: 612.0 });
@@ -754,7 +876,10 @@ mod tests {
             let rect = layout.rect(page);
             for (u, v) in [(0.0, 0.0), (612.0, 0.0), (0.0, 792.0), (300.0, 100.0)] {
                 let (x, y) = layout.from_page(page, u, v);
-                assert!(x >= rect.x - 1e-6 && x <= rect.x + rect.width + 1e-6 && y >= rect.y - 1e-6 && y <= rect.y + rect.height + 1e-6, "page {page} ({u}, {v}) lands off it");
+                assert!(
+                    x >= rect.x - 1e-6 && x <= rect.x + rect.width + 1e-6 && y >= rect.y - 1e-6 && y <= rect.y + rect.height + 1e-6,
+                    "page {page} ({u}, {v}) lands off it"
+                );
                 let (back_u, back_v) = layout.to_page(page, x, y);
                 assert!((back_u - u).abs() < 1e-6 && (back_v - v).abs() < 1e-6, "page {page}");
             }
@@ -780,7 +905,10 @@ mod tests {
             for frame in [1000.0, 1700.0, 1400.0] {
                 layout.set_frame(frame);
                 let tall = layout.rect(3);
-                assert!((layout.anchor_y(anchor) - (tall.y + tall.height * 0.8)).abs() < 1e-6, "reader on page {reader}, frame {frame}");
+                assert!(
+                    (layout.anchor_y(anchor) - (tall.y + tall.height * 0.8)).abs() < 1e-6,
+                    "reader on page {reader}, frame {frame}"
+                );
             }
         }
         // On the reader's own page when it holds the place, so a change of layout keeps that page.
@@ -819,11 +947,17 @@ mod tests {
                 layout.set_page_size(0, letter());
                 for page in 0..6 {
                     let rect = layout.rect(page);
-                    assert!(rect.x + rect.width <= frame - CORNER_MARGIN + 1e-6, "{spread:?} at {frame}: page {page} {rect:?}");
+                    assert!(
+                        rect.x + rect.width <= frame - CORNER_MARGIN + 1e-6,
+                        "{spread:?} at {frame}: page {page} {rect:?}"
+                    );
                     assert!(rect.x >= MIN_SIDE_MARGIN - 1e-6, "{spread:?} at {frame}: page {page} {rect:?}");
                 }
                 if spread == Spread::Single && frame >= READING_WIDTH + 2.0 * CORNER_MARGIN {
-                    assert!((layout.rect(0).x + layout.rect(0).width / 2.0 - frame / 2.0).abs() < 1e-6, "centred with room: {frame}");
+                    assert!(
+                        (layout.rect(0).x + layout.rect(0).width / 2.0 - frame / 2.0).abs() < 1e-6,
+                        "centred with room: {frame}"
+                    );
                 }
             }
         }
@@ -839,10 +973,16 @@ mod tests {
             layout.set_page_size(5, PageBox { width: 3000.0, height: 792.0 });
             for page in (0..8).filter(|page| !layout.same_row(*page, 5)) {
                 let rect = layout.rect(page);
-                assert!(rect.x >= MIN_SIDE_MARGIN - 1e-6 && rect.x + rect.width <= 1400.0 - MIN_SIDE_MARGIN + 1e-6, "{spread:?} page {page} {rect:?}");
+                assert!(
+                    rect.x >= MIN_SIDE_MARGIN - 1e-6 && rect.x + rect.width <= 1400.0 - MIN_SIDE_MARGIN + 1e-6,
+                    "{spread:?} page {page} {rect:?}"
+                );
             }
             let wide = layout.rect(5);
-            assert!(wide.x >= MIN_SIDE_MARGIN - 1e-6 && wide.x + wide.width <= layout.document_width() + 1e-6, "{spread:?} the fold-out stays in the document: {wide:?}");
+            assert!(
+                wide.x >= MIN_SIDE_MARGIN - 1e-6 && wide.x + wide.width <= layout.document_width() + 1e-6,
+                "{spread:?} the fold-out stays in the document: {wide:?}"
+            );
         }
     }
 
@@ -893,7 +1033,13 @@ mod tests {
             assert!(layout.fit() >= 1.0 / 64.0 && layout.fit() <= MAX_FIT, "{width}: {}", layout.fit());
         }
         let mut layout = PageLayout::new(2);
-        assert!(!layout.set_page_size(0, PageBox { width: f32::NAN, height: 100.0 }));
+        assert!(!layout.set_page_size(
+            0,
+            PageBox {
+                width: f32::NAN,
+                height: 100.0
+            }
+        ));
         assert!(!layout.set_page_size(0, PageBox { width: -1.0, height: 100.0 }));
         assert!(!layout.set_page_size(9, letter()), "no such page");
     }

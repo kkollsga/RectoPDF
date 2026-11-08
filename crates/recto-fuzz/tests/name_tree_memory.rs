@@ -23,7 +23,10 @@ fn pdf_with_a_self_listing_name_tree(width: usize) -> Vec<u8> {
 fn a_name_tree_that_lists_itself_stays_small() {
     let bytes: Arc<[u8]> = pdf_with_a_self_listing_name_tree(65_536).into();
     let (facts, peak) = peak_of(|| recto_core::inspect_bytes(Arc::clone(&bytes)));
-    assert!(facts.expect("the file itself is fine to open").toc.truncated, "it left children out, so it has to say the contents may not be whole");
+    assert!(
+        facts.expect("the file itself is fine to open").toc.truncated,
+        "it left children out, so it has to say the contents may not be whole"
+    );
     // The file as read, a page map and the child list a few times over. Nothing like a child list per visit.
     assert!(peak < 64 * 1024 * 1024, "{peak} bytes held for a {} byte file", bytes.len());
 }

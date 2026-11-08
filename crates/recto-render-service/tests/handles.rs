@@ -38,7 +38,10 @@ fn flood(fd: i32, count: usize) {
     let file = std::fs::File::open("/dev/null").unwrap();
     let mut control = vec![0u64; (count * 4 + 64).div_ceil(8)];
     let byte = b'R';
-    let mut iov = libc::iovec { iov_base: (&raw const byte).cast_mut().cast(), iov_len: 1 };
+    let mut iov = libc::iovec {
+        iov_base: (&raw const byte).cast_mut().cast(),
+        iov_len: 1,
+    };
     // SAFETY: a zeroed `msghdr` is valid.
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_iov = &raw mut iov;
@@ -69,10 +72,26 @@ fn fake_worker() {
     let channel = Channel::inherited().unwrap();
     if mode == "handle_on_hello" {
         let extra = SharedMemory::create(4096).unwrap();
-        send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled: false }), &[extra.handle()]).unwrap();
+        send_all(
+            &channel,
+            &proto::encode_hello(proto::Hello {
+                pid: std::process::id(),
+                walled: false,
+            }),
+            &[extra.handle()],
+        )
+        .unwrap();
         std::thread::sleep(Duration::from_secs(600));
     }
-    send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled: false }), &[]).unwrap();
+    send_all(
+        &channel,
+        &proto::encode_hello(proto::Hello {
+            pid: std::process::id(),
+            walled: false,
+        }),
+        &[],
+    )
+    .unwrap();
     let mut reader = FrameReader::default();
     loop {
         let Ok(frame) = reader.read_blocking(&channel) else { isolate::exit_now(0) };
@@ -106,7 +125,16 @@ fn fake_worker() {
                 if ASKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                     send_all(&channel, &proto::encode_failed(job_id, proto::FailCode::BadPage), &[]).unwrap();
                 } else {
-                    send_all(&channel, &proto::PageImages { job_id, boxes: vec![[0, 0, 100, 100]] }.encode(), &[]).unwrap();
+                    send_all(
+                        &channel,
+                        &proto::PageImages {
+                            job_id,
+                            boxes: vec![[0, 0, 100, 100]],
+                        }
+                        .encode(),
+                        &[],
+                    )
+                    .unwrap();
                 }
             }
             _ => isolate::exit_now(1),
@@ -120,12 +148,28 @@ fn config(mode: &str) -> ServiceConfig {
         pdfium_lib: "/nonexistent".into(),
         heavy_slot: recto_render_service::HeavySlot::new(),
         extra_env: vec![("RECTO_FAKE".into(), mode.into())],
-        replace_args: Some(["--exact", "fake_worker", "--nocapture", "--test-threads=1"].into_iter().map(OsString::from).collect()),
+        replace_args: Some(
+            ["--exact", "fake_worker", "--nocapture", "--test-threads=1"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        ),
     }
 }
 
 fn request() -> TileRequest {
-    TileRequest { page: 0, rect: TileRect { x: 0, y: 0, width: 512, height: 512 }, scale: 2.0, stride: 2048, generation: 1 }
+    TileRequest {
+        page: 0,
+        rect: TileRect {
+            x: 0,
+            y: 0,
+            width: 512,
+            height: 512,
+        },
+        scale: 2.0,
+        stride: 2048,
+        generation: 1,
+    }
 }
 
 /// Waits for a state, not a time. The bound only turns a hang into a failure.
@@ -157,7 +201,16 @@ fn a_handle_from_a_worker_is_a_violation_and_isnt_kept() {
     let mut doc = DocRenderer::new(&file.0, None, config("one_handle"), Policy::default()).unwrap();
     let surface = SharedMemory::create(512 * 512 * 4).unwrap();
     let failure = doc.render_tile(&request(), &surface).unwrap_err();
-    assert!(matches!(failure, RenderFailure::PageFailed { reason: KillReason::Rejected(_), .. }), "{failure:?}");
+    assert!(
+        matches!(
+            failure,
+            RenderFailure::PageFailed {
+                reason: KillReason::Rejected(_),
+                ..
+            }
+        ),
+        "{failure:?}"
+    );
     drop((doc, surface));
     wait_until("descriptors to go back to where they were", || recto_platform::open_handle_count() == before);
 }
@@ -173,7 +226,16 @@ fn a_flood_of_handles_kills_the_worker_and_closes_every_one() {
     let mut doc = DocRenderer::new(&file.0, None, config("flood"), Policy::default()).unwrap();
     let surface = SharedMemory::create(512 * 512 * 4).unwrap();
     let failure = doc.render_tile(&request(), &surface).unwrap_err();
-    assert!(matches!(failure, RenderFailure::PageFailed { reason: KillReason::Rejected(_), .. }), "{failure:?}");
+    assert!(
+        matches!(
+            failure,
+            RenderFailure::PageFailed {
+                reason: KillReason::Rejected(_),
+                ..
+            }
+        ),
+        "{failure:?}"
+    );
     assert!(!doc.has_worker());
     drop((doc, surface));
     wait_until("descriptors to go back to where they were", || recto_platform::open_handle_count() == before);

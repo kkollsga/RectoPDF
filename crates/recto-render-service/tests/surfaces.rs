@@ -12,18 +12,34 @@ fn doc(file: &TempPdf) -> DocRenderer {
 }
 
 fn tile_rect() -> TileRect {
-    TileRect { x: 0, y: 0, width: TILE_EDGE, height: TILE_EDGE }
+    TileRect {
+        x: 0,
+        y: 0,
+        width: TILE_EDGE,
+        height: TILE_EDGE,
+    }
 }
 
 /// Failure: the surface reaches the worker but the pixels don't reach the surface, or come out different from the path everything else uses, so what's on screen isn't what `recto render` draws.
 #[test]
 fn a_tile_drawn_into_a_surface_is_the_same_as_one_in_shared_memory() {
-    let file = TempPdf::new("surface.pdf", &pages(&[Page::new(text_lines(&["Words on a page, and more words, drawn twice"]))]));
+    let file = TempPdf::new(
+        "surface.pdf",
+        &pages(&[Page::new(text_lines(&["Words on a page, and more words, drawn twice"]))]),
+    );
     let mut doc = doc(&file);
     let surface = PixelSurface::create(TILE_EDGE, TILE_EDGE).unwrap();
-    let request = TileRequest { page: 0, rect: tile_rect(), scale: 2.0, stride: surface.stride(), generation: 1 };
+    let request = TileRequest {
+        page: 0,
+        rect: tile_rect(),
+        scale: 2.0,
+        stride: surface.stride(),
+        generation: 1,
+    };
     assert!(matches!(doc.render_tile(&request, &surface).unwrap(), TileResult::Done(_)));
-    let drawn: Vec<u8> = surface.with_pixels(|pixels| pixels[..(surface.stride() * TILE_EDGE) as usize].to_vec()).unwrap();
+    let drawn: Vec<u8> = surface
+        .with_pixels(|pixels| pixels[..(surface.stride() * TILE_EDGE) as usize].to_vec())
+        .unwrap();
     assert!(drawn.chunks(4).any(|pixel| pixel[0] < 200), "there's ink in it");
     let memory = Surface::create((surface.stride() * TILE_EDGE) as usize).unwrap();
     assert!(matches!(doc.render_tile(&request, &memory).unwrap(), TileResult::Done(_)));
@@ -39,9 +55,20 @@ fn a_tile_drawn_into_a_surface_is_the_same_as_one_in_shared_memory() {
 fn a_region_draws_into_a_surface_with_its_own_row_padding() {
     let file = TempPdf::new("region.pdf", &pages(&[Page::new(busy_page())]));
     let mut doc = doc(&file);
-    let rect = TileRect { x: 0, y: 0, width: TILE_EDGE * 2 + 13, height: TILE_EDGE * 2 };
+    let rect = TileRect {
+        x: 0,
+        y: 0,
+        width: TILE_EDGE * 2 + 13,
+        height: TILE_EDGE * 2,
+    };
     let surface = PixelSurface::create(rect.width, rect.height).unwrap();
-    let request = TileRequest { page: 0, rect, scale: 2.0, stride: surface.stride(), generation: 1 };
+    let request = TileRequest {
+        page: 0,
+        rect,
+        scale: 2.0,
+        stride: surface.stride(),
+        generation: 1,
+    };
     let result = doc.render_region(&request, TILE_EDGE, &surface).unwrap();
     let TileResult::Done(tile) = result else { panic!("{result:?}") };
     assert_eq!(tile.region_kinds.len(), 6, "3 columns by 2 rows, the last column narrow");
@@ -53,7 +80,13 @@ fn a_new_worker_gets_a_link_of_its_own() {
     let file = TempPdf::new("link.pdf", &pages(&[Page::new(text_lines(&["A page"]))]));
     let mut doc = doc(&file);
     let surface = PixelSurface::create(TILE_EDGE, TILE_EDGE).unwrap();
-    let request = TileRequest { page: 0, rect: tile_rect(), scale: 1.0, stride: surface.stride(), generation: 1 };
+    let request = TileRequest {
+        page: 0,
+        rect: tile_rect(),
+        scale: 1.0,
+        stride: surface.stride(),
+        generation: 1,
+    };
     assert!(matches!(doc.render_tile(&request, &surface).unwrap(), TileResult::Done(_)));
     let first = doc.worker_pid().unwrap();
     doc.kill_worker();
@@ -68,21 +101,40 @@ fn surfaces_cost_the_host_and_not_the_worker() {
     let file = TempPdf::new("charged.pdf", &pages(&[Page::new(text_lines(&["A page"]))]));
     let mut doc = doc(&file);
     let probe = PixelSurface::create(TILE_EDGE, TILE_EDGE).unwrap();
-    let request = TileRequest { page: 0, rect: tile_rect(), scale: 1.0, stride: probe.stride(), generation: 1 };
+    let request = TileRequest {
+        page: 0,
+        rect: tile_rect(),
+        scale: 1.0,
+        stride: probe.stride(),
+        generation: 1,
+    };
     doc.render_tile(&request, &probe).unwrap();
     let worker_before = doc.worker_footprint().unwrap();
     let host_before = recto_platform::footprint_bytes().unwrap();
     let live: Vec<PixelSurface> = (0..64)
         .map(|_| {
             let surface = PixelSurface::create(TILE_EDGE, TILE_EDGE).unwrap();
-            doc.render_tile(&TileRequest { stride: surface.stride(), ..request }, &surface).unwrap();
+            doc.render_tile(
+                &TileRequest {
+                    stride: surface.stride(),
+                    ..request
+                },
+                &surface,
+            )
+            .unwrap();
             surface
         })
         .collect();
     let host_grew = recto_platform::footprint_bytes().unwrap().saturating_sub(host_before);
     let worker_grew = doc.worker_footprint().unwrap().saturating_sub(worker_before);
-    assert!(host_grew >= 32 * 1024 * 1024, "the host's footprint rose by only {host_grew}: are the tiles elsewhere?");
-    assert!(worker_grew < 16 * 1024 * 1024, "the worker's rose by {worker_grew}, with 64 MiB of surfaces in the host");
+    assert!(
+        host_grew >= 32 * 1024 * 1024,
+        "the host's footprint rose by only {host_grew}: are the tiles elsewhere?"
+    );
+    assert!(
+        worker_grew < 16 * 1024 * 1024,
+        "the worker's rose by {worker_grew}, with 64 MiB of surfaces in the host"
+    );
     drop(live);
 }
 
@@ -112,11 +164,20 @@ fn a_surface_that_cant_be_sent_means_a_new_worker() {
     let file = TempPdf::new("gone.pdf", &pages(&[Page::new(text_lines(&["Words"]))]));
     let mut doc = doc(&file);
     let surface = PixelSurface::create(TILE_EDGE, TILE_EDGE).unwrap();
-    let request = |generation| TileRequest { page: 0, rect: tile_rect(), scale: 2.0, stride: surface.stride(), generation };
+    let request = |generation| TileRequest {
+        page: 0,
+        rect: tile_rect(),
+        scale: 2.0,
+        stride: surface.stride(),
+        generation,
+    };
     assert!(matches!(doc.render_tile(&request(1), &surface).unwrap(), TileResult::Done(_)));
     let first = doc.worker_pid().expect("a worker");
     doc.break_surface_link_for_test();
-    assert!(matches!(doc.render_tile(&request(2), &surface).unwrap(), TileResult::Done(_)), "the document is fine");
+    assert!(
+        matches!(doc.render_tile(&request(2), &surface).unwrap(), TileResult::Done(_)),
+        "the document is fine"
+    );
     assert_ne!(doc.worker_pid(), Some(first), "by a new worker");
 }
 
@@ -125,11 +186,20 @@ fn a_surface_that_cant_be_sent_means_a_new_worker() {
 fn a_worker_sent_too_much_is_let_go() {
     let file = TempPdf::new("pinned.pdf", &pages(&[Page::new(text_lines(&["Words"]))]));
     let surface = PixelSurface::create(TILE_EDGE, TILE_EDGE).unwrap();
-    let policy = Policy { surface_bytes_cap: surface.len() as u64 * 3, ..Policy::default() };
+    let policy = Policy {
+        surface_bytes_cap: surface.len() as u64 * 3,
+        ..Policy::default()
+    };
     let mut doc = DocRenderer::new(&file.0, None, real_config(), policy).unwrap();
     let mut workers = std::collections::HashSet::new();
     for generation in 1..=16 {
-        let request = TileRequest { page: 0, rect: tile_rect(), scale: 2.0, stride: surface.stride(), generation };
+        let request = TileRequest {
+            page: 0,
+            rect: tile_rect(),
+            scale: 2.0,
+            stride: surface.stride(),
+            generation,
+        };
         assert!(matches!(doc.render_tile(&request, &surface).unwrap(), TileResult::Done(_)));
         workers.insert(doc.worker_pid().unwrap());
     }

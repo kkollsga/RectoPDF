@@ -9,7 +9,10 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     // In a test's broken release, this program stands where the app should be: it does what a broken new version might, to the real record, and ends without coming up. Nothing in a release build.
-    if !recto_update::RELEASE_BUILD && std::env::current_exe().is_ok_and(|exe| exe.file_name().is_some_and(|name| name == "RectoPDF")) && words.first() != Some(&"test-app") {
+    if !recto_update::RELEASE_BUILD
+        && std::env::current_exe().is_ok_and(|exe| exe.file_name().is_some_and(|name| name == "RectoPDF"))
+        && words.first() != Some(&"test-app")
+    {
         if let Some(state) = std::env::var_os("RECTO_STATE_DIR") {
             let _ = std::fs::write(Path::new(&state).join("session/record.a.json"), "damaged by the new version");
             let _ = std::fs::write(Path::new(&state).join("session/record.b.json"), "damaged by the new version");
@@ -23,7 +26,11 @@ fn main() {
                 eprintln!("recto-updater: that's not a plan");
                 std::process::exit(2);
             };
-            let ended = if words[0] == "install" { install::run(&plan) } else { install::run_back(&plan) };
+            let ended = if words[0] == "install" {
+                install::run(&plan)
+            } else {
+                install::run_back(&plan)
+            };
             i32::from(ended != Ended::Updated)
         }
         // A stand-in for the app, in a test's fake bundle, so the installer's watching a real process at a real path. Nothing in a release build.
@@ -31,7 +38,13 @@ fn main() {
         ["source"] => {
             let source = source::from_env(false);
             let takes_test_hooks = !recto_update::RELEASE_BUILD;
-            println!("{{\"mode\":\"{}\",\"repo\":\"{}\",\"release_build\":{},\"trust\":\"{}\",\"takes_test_hooks\":{takes_test_hooks}}}", source.mode_name(), source.repo, recto_update::RELEASE_BUILD, source.trust_name());
+            println!(
+                "{{\"mode\":\"{}\",\"repo\":\"{}\",\"release_build\":{},\"trust\":\"{}\",\"takes_test_hooks\":{takes_test_hooks}}}",
+                source.mode_name(),
+                source.repo,
+                recto_update::RELEASE_BUILD,
+                source.trust_name()
+            );
             0
         }
         ["check-zip", zip, into] => {
@@ -54,7 +67,11 @@ fn main() {
 /// How a test's stand-in app behaves: it reaches its first frame, or it does what a broken new version might, damaging the record and then ending or hanging.
 fn test_app(version: &str, behaviour: &str, work: &Path, session: &Path) -> i32 {
     // The installer opens whatever's at the app's path with the same words, so the old version coming back has to know it isn't the one that's broken.
-    let own = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.parent()?.parent()?.to_path_buf())).and_then(|app| recto_update::stage::app_version(&app)).unwrap_or_default();
+    let own = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.parent()?.to_path_buf()))
+        .and_then(|app| recto_update::stage::app_version(&app))
+        .unwrap_or_default();
     let _ = std::fs::write(work.join(format!("ran-{own}")), "");
     let behaviour = if own == version { behaviour } else { "ok" };
     match behaviour {

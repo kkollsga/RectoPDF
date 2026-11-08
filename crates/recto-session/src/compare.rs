@@ -83,7 +83,11 @@ impl Comparison {
 
     pub fn new(tabs: Vec<TabId>) -> Result<Self, CompareError> {
         Self::check(&tabs)?;
-        Ok(Self { tabs, synced: false, sync_from: Vec::new() })
+        Ok(Self {
+            tabs,
+            synced: false,
+            sync_from: Vec::new(),
+        })
     }
 
     pub fn contains(&self, id: TabId) -> bool {
@@ -93,7 +97,11 @@ impl Comparison {
     /// Synced scroll on from these pages, one for each pane, or off.
     pub fn set_synced(&mut self, on: bool, pages_now: impl Fn(TabId) -> u32) {
         self.synced = on;
-        self.sync_from = if on { self.tabs.iter().map(|tab| pages_now(*tab)).collect() } else { Vec::new() };
+        self.sync_from = if on {
+            self.tabs.iter().map(|tab| pages_now(*tab)).collect()
+        } else {
+            Vec::new()
+        };
     }
 
     /// Takes a tab out, as closing it or a ⌘-click does. Its start goes with it.
@@ -126,7 +134,9 @@ impl Comparison {
         if !self.synced || self.sync_from.len() != self.tabs.len() {
             return Vec::new();
         }
-        let Some(from) = self.tabs.iter().position(|tab| *tab == leader) else { return Vec::new() };
+        let Some(from) = self.tabs.iter().position(|tab| *tab == leader) else {
+            return Vec::new();
+        };
         let moved = i64::from(page) - i64::from(self.sync_from[from]);
         self.tabs
             .iter()
@@ -187,13 +197,29 @@ mod tests {
         assert!(comparison.sync_targets(TabId(1), 12, length).is_empty(), "separate moves nothing");
         comparison.set_synced(true, start);
         assert_eq!(comparison.sync_targets(TabId(1), 12, length), vec![(TabId(2), 5), (TabId(3), 2)]);
-        assert_eq!(comparison.sync_targets(TabId(1), 60, length), vec![(TabId(2), 19), (TabId(3), 49)], "each held to its own end");
-        assert_eq!(comparison.sync_targets(TabId(2), 0, length), vec![(TabId(1), 7), (TabId(3), 0)], "and its own start");
-        assert_eq!(comparison.sync_targets(TabId(1), 11, length), vec![(TabId(2), 4), (TabId(3), 1)], "back in step");
+        assert_eq!(
+            comparison.sync_targets(TabId(1), 60, length),
+            vec![(TabId(2), 19), (TabId(3), 49)],
+            "each held to its own end"
+        );
+        assert_eq!(
+            comparison.sync_targets(TabId(2), 0, length),
+            vec![(TabId(1), 7), (TabId(3), 0)],
+            "and its own start"
+        );
+        assert_eq!(
+            comparison.sync_targets(TabId(1), 11, length),
+            vec![(TabId(2), 4), (TabId(3), 1)],
+            "back in step"
+        );
         comparison.remove(TabId(2));
         assert_eq!(comparison.sync_targets(TabId(1), 12, length), vec![(TabId(3), 2)], "the rest keep their starts");
         comparison.add(TabId(2), 7).unwrap();
-        assert_eq!(comparison.sync_targets(TabId(1), 12, length), vec![(TabId(3), 2), (TabId(2), 9)], "a tab added starts in step where it is");
+        assert_eq!(
+            comparison.sync_targets(TabId(1), 12, length),
+            vec![(TabId(3), 2), (TabId(2), 9)],
+            "a tab added starts in step where it is"
+        );
         comparison.set_synced(false, start);
         assert!(comparison.sync_from.is_empty());
     }

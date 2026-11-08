@@ -16,7 +16,13 @@ fn recto(args: &[&str]) -> (Value, i32) {
 }
 
 fn doc() -> TempPdf {
-    TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["First page words", "more words"])), Page::new(text_lines(&["Second page"]))]))
+    TempPdf::new(
+        "doc.pdf",
+        &pages(&[
+            Page::new(text_lines(&["First page words", "more words"])),
+            Page::new(text_lines(&["Second page"])),
+        ]),
+    )
 }
 
 fn path_of(file: &TempPdf) -> &str {
@@ -44,7 +50,11 @@ fn render_writes_a_png_of_the_size_it_reports() {
 /// large page is the size it says, and no surface is larger than a strip.
 #[test]
 fn a_large_page_is_drawn_in_strips() {
-    let big = Page { content: text_lines(&["Large page"]), page_extra: String::new(), media: (3000.0, 3000.0) };
+    let big = Page {
+        content: text_lines(&["Large page"]),
+        page_extra: String::new(),
+        media: (3000.0, 3000.0),
+    };
     let file = TempPdf::new("big.pdf", &pages(&[big]));
     let out = file.0.with_file_name("big.png");
     let (reply, code) = recto(&["local", path_of(&file), "render", "--page", "1", "--scale", "2", "--out", out.to_str().unwrap()]);
@@ -52,8 +62,14 @@ fn a_large_page_is_drawn_in_strips() {
     assert_eq!((&reply["data"]["width"], &reply["data"]["height"]), (&Value::from(6000), &Value::from(6000)));
     std::fs::remove_file(&out).unwrap();
     let (budget, _) = recto(&["local", path_of(&file), "budget", "render", "--count", "1", "--scale", "2"]);
-    assert!(budget["data"]["surface_bytes"].as_u64().unwrap() <= recto_render_service::STRIP_MAX_BYTES, "{budget}");
-    assert!(budget["data"]["peak_footprint_bytes"].as_u64().unwrap() < 144 * 1024 * 1024, "the page's 144 MiB of pixels shouldn't all be in memory at once: {budget}");
+    assert!(
+        budget["data"]["surface_bytes"].as_u64().unwrap() <= recto_render_service::STRIP_MAX_BYTES,
+        "{budget}"
+    );
+    assert!(
+        budget["data"]["peak_footprint_bytes"].as_u64().unwrap() < 144 * 1024 * 1024,
+        "the page's 144 MiB of pixels shouldn't all be in memory at once: {budget}"
+    );
 }
 
 /// Failure: a bad page or output path writes something anyway, or overwrites the PDF itself through `--out`, breaking the one-writer rule.
@@ -71,13 +87,25 @@ fn render_refuses_what_it_shouldnt_write() {
     assert_eq!(code, recto_agent::exit::NOT_FOUND);
     assert!(!out.exists(), "a failed render left a file");
     let (reply, code) = recto(&["local", path_of(&file), "render", "--page", "0", "--out", out.to_str().unwrap()]);
-    assert_eq!((reply["error"]["code"].as_str(), code), (Some("usage"), recto_agent::exit::USAGE), "pages count from 1");
+    assert_eq!(
+        (reply["error"]["code"].as_str(), code),
+        (Some("usage"), recto_agent::exit::USAGE),
+        "pages count from 1"
+    );
 }
 
 /// Failure: a word broken across a line can't be found in `text`, because the agent gets PDFium's raw marker rather than the normalised form.
 #[test]
 fn text_is_normalised_for_search() {
-    let file = TempPdf::new("hyphen.pdf", &pages(&[Page::new(text_lines(&["this is very valu-", "able to know and it's", "simulation-", "based too"]))]));
+    let file = TempPdf::new(
+        "hyphen.pdf",
+        &pages(&[Page::new(text_lines(&[
+            "this is very valu-",
+            "able to know and it's",
+            "simulation-",
+            "based too",
+        ]))]),
+    );
     let (reply, code) = recto(&["local", path_of(&file), "text", "--page", "1"]);
     assert_eq!(code, 0, "{reply}");
     let text = reply["data"]["untrusted"]["text"].as_str().unwrap();
@@ -97,7 +125,10 @@ fn text_flags_hidden_text_without_dropping_it() {
     assert_eq!(data["hidden_text"]["flagged"], true);
     assert!(data["hidden_text"]["chars"].as_u64().unwrap() > 50);
     let text = data["untrusted"]["text"].as_str().unwrap();
-    assert!(text.contains("HIDDEN-WHITE") && text.contains("VISIBLE-SENTINEL"), "nothing may be dropped: {text:?}");
+    assert!(
+        text.contains("HIDDEN-WHITE") && text.contains("VISIBLE-SENTINEL"),
+        "nothing may be dropped: {text:?}"
+    );
     assert!(!data["untrusted"]["hidden_runs"].as_array().unwrap().is_empty());
 }
 
@@ -147,7 +178,11 @@ fn the_session_runs_the_same_commands() {
     writeln!(input, r##"{{"cmd":"text","tab":"#9","page":1}}"##).unwrap();
     drop(input);
     let output = child.wait_with_output().unwrap();
-    let lines: Vec<Value> = String::from_utf8(output.stdout).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    let lines: Vec<Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
     assert_eq!(lines.len(), 4);
     assert!(lines[1]["data"]["untrusted"]["text"].as_str().unwrap().contains("Second page"));
     assert_eq!(lines[2]["ok"], true, "{}", lines[2]);
@@ -159,7 +194,14 @@ fn the_session_runs_the_same_commands() {
 /// Failure: `budget render --viewport` misses a step, or claims work a scroll didn't need: a scroll draws only what it brings into view, and zoom draws all of it again.
 #[test]
 fn the_viewport_budget_reports_first_view_scroll_and_zoom() {
-    let file = TempPdf::new("view.pdf", &pages(&[Page::new(recto_testpdf::busy_page()), Page::new(recto_testpdf::busy_page()), Page::new(recto_testpdf::busy_page())]));
+    let file = TempPdf::new(
+        "view.pdf",
+        &pages(&[
+            Page::new(recto_testpdf::busy_page()),
+            Page::new(recto_testpdf::busy_page()),
+            Page::new(recto_testpdf::busy_page()),
+        ]),
+    );
     for strategy in [&["--strategy", "per_tile"][..], &["--strategy", "region"][..], &[][..]] {
         let mut args = vec!["local", path_of(&file), "budget", "viewport", "--viewport", "1600x1000", "--scale", "2"];
         args.extend_from_slice(strategy);

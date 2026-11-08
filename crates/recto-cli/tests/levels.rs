@@ -12,7 +12,10 @@ use std::io::{Read, Write};
 use std::process::Stdio;
 
 fn doc() -> TempPdf {
-    TempPdf::new("private.pdf", &pages(&[Page::new(text_lines(&["Private words on a page"])), Page::new(hidden_text_page())]))
+    TempPdf::new(
+        "private.pdf",
+        &pages(&[Page::new(text_lines(&["Private words on a page"])), Page::new(hidden_text_page())]),
+    )
 }
 
 /// The line a row's first example sends, with any wait cut short so an allowed one can't hold up the walk.
@@ -42,7 +45,10 @@ fn every_row_is_enforced_at_every_level_over_the_socket() {
     let state = State::new();
     let _serving = state.serve();
     let mut raw = Raw::connect(&state);
-    let rows: Vec<_> = TABLE.iter().filter(|spec| spec.route == Route::Session && !spec.hidden && spec.name != "stop").collect();
+    let rows: Vec<_> = TABLE
+        .iter()
+        .filter(|spec| spec.route == Route::Session && !spec.hidden && spec.name != "stop")
+        .collect();
     assert!(rows.len() > 25, "{}", rows.len());
     for level in [Level::Off, Level::ReadOnly, Level::Control, Level::Full] {
         state.set_level(level);
@@ -59,7 +65,10 @@ fn every_row_is_enforced_at_every_level_over_the_socket() {
             if refused && let Access::At(needed) = spec.access {
                 assert_eq!(reply["error"]["code"], "permission_denied", "{reply}");
                 let message = reply["error"]["message"].as_str().unwrap();
-                assert!(message.contains(needed.label()) && message.contains(level.label()), "it must say what's missing: {message}");
+                assert!(
+                    message.contains(needed.label()) && message.contains(level.label()),
+                    "it must say what's missing: {message}"
+                );
                 let ask = reply["error"]["ask"].as_str().unwrap();
                 assert_eq!(ask, format!("recto permission request {}", needed.name()));
                 assert!(reply["error"]["candidates"].as_array().unwrap().is_empty());
@@ -100,7 +109,11 @@ fn nothing_from_a_document_is_available_at_off() {
     ];
     for attempt in attempts {
         let (reply, code) = state.json(&attempt);
-        assert_eq!((reply["error"]["code"].as_str(), code), (Some("permission_denied"), exit::PERMISSION), "{attempt:?}: {reply}");
+        assert_eq!(
+            (reply["error"]["code"].as_str(), code),
+            (Some("permission_denied"), exit::PERMISSION),
+            "{attempt:?}: {reply}"
+        );
         let text = reply.to_string();
         assert!(!text.contains("Private") && !text.contains("private.pdf"), "{attempt:?} leaked: {text}");
     }
@@ -110,7 +123,10 @@ fn nothing_from_a_document_is_available_at_off() {
     assert_eq!(status["data"]["level"], "off");
     // Failure: an agent at Off can't tell whether asking for access is worthwhile. A count is all it gets: no name of a PDF, in JSON or plain words.
     assert_eq!(status["data"]["tabs"], 1, "{status}");
-    assert!(!status.to_string().contains("private.pdf") && !status.to_string().contains("Private"), "{status}");
+    assert!(
+        !status.to_string().contains("private.pdf") && !status.to_string().contains("Private"),
+        "{status}"
+    );
     let (shown, _, _) = state.text(&["status"]);
     assert!(shown.contains("Open PDFs: 1") && !shown.contains("private.pdf"), "{shown}");
     let (raised, _) = state.json(&["permission", "show"]);
@@ -128,7 +144,11 @@ fn lowering_applies_to_the_next_command_on_a_connection_already_open() {
     let text = json!({ "cmd": "text", "page": 1 });
     assert_eq!(raw.call(&text)["ok"], true);
     state.set_level(Level::Off);
-    assert_eq!(raw.call(&text)["error"]["code"], "permission_denied", "the same connection must lose access at once");
+    assert_eq!(
+        raw.call(&text)["error"]["code"],
+        "permission_denied",
+        "the same connection must lose access at once"
+    );
     state.set_level(Level::ReadOnly);
     assert_eq!(raw.call(&text)["ok"], true);
     assert_eq!(raw.call(&json!({ "cmd": "close" }))["error"]["code"], "permission_denied");
@@ -162,17 +182,31 @@ fn nothing_an_agent_can_send_or_set_raises_a_level() {
     assert_eq!(levels::current(&state.paths), Level::Off);
     assert!(!state.paths.level.exists(), "the server must never write the level");
 
-    for (name, value) in [("RECTO_LEVEL", "full"), ("RECTO_PERMISSION", "full"), ("RECTO_AGENT_LEVEL", "control"), ("RECTO_ALLOW", "1")] {
+    for (name, value) in [
+        ("RECTO_LEVEL", "full"),
+        ("RECTO_PERMISSION", "full"),
+        ("RECTO_AGENT_LEVEL", "control"),
+        ("RECTO_ALLOW", "1"),
+    ] {
         let output = state.command().env(name, value).args(["text", "--page", "1", "--json"]).output().unwrap();
         assert_eq!(output.status.code(), Some(exit::PERMISSION), "{name}");
     }
-    for flag in [&["tabs", "--level", "full"][..], &["--level", "full", "tabs"][..], &["tabs", "--force"][..], &["tabs", "--yes"][..]] {
+    for flag in [
+        &["tabs", "--level", "full"][..],
+        &["--level", "full", "tabs"][..],
+        &["tabs", "--force"][..],
+        &["tabs", "--yes"][..],
+    ] {
         let (reply, code) = state.json(flag);
         assert_eq!((reply["error"]["code"].as_str(), code), (Some("usage"), exit::USAGE), "{flag:?}");
     }
     // The in-process route can't be a way round it.
     let (reply, code) = state.json(&["local", file.0.to_str().unwrap(), "text", "--page", "1"]);
-    assert_eq!((reply["error"]["code"].as_str(), code), (Some("permission_denied"), exit::PERMISSION), "{reply}");
+    assert_eq!(
+        (reply["error"]["code"].as_str(), code),
+        (Some("permission_denied"), exit::PERMISSION),
+        "{reply}"
+    );
     let mut session = state.command().arg("session").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     writeln!(session.stdin.take().unwrap(), "{}", open_cmd(&file.0)).unwrap();
     let mut said = String::new();
@@ -188,18 +222,30 @@ fn the_in_process_route_has_the_same_levels() {
     let state = State::at(Level::ReadOnly);
     let file = doc();
     let (reply, code) = state.json(&["local", file.0.to_str().unwrap(), "text", "--page", "1"]);
-    assert_eq!((reply["error"]["code"].as_str(), code), (Some("permission_denied"), exit::PERMISSION), "opening needs Control: {reply}");
+    assert_eq!(
+        (reply["error"]["code"].as_str(), code),
+        (Some("permission_denied"), exit::PERMISSION),
+        "opening needs Control: {reply}"
+    );
     state.set_level(Level::Control);
     let (reply, code) = state.json(&["local", file.0.to_str().unwrap(), "text", "--page", "1"]);
     assert_eq!(code, 0, "{reply}");
     let out = file.0.with_file_name("local.png");
     let (reply, code) = state.json(&["local", file.0.to_str().unwrap(), "render", "--page", "1", "--out", out.to_str().unwrap()]);
-    assert_eq!((reply["error"]["code"].as_str(), code), (Some("permission_denied"), exit::PERMISSION), "{reply}");
+    assert_eq!(
+        (reply["error"]["code"].as_str(), code),
+        (Some("permission_denied"), exit::PERMISSION),
+        "{reply}"
+    );
     let (reply, code) = state.json(&["budget", "tabs", "--file", file.0.to_str().unwrap(), "--count", "2", "--in-process"]);
     assert_eq!(code, 0, "{reply}");
     state.set_level(Level::ReadOnly);
     let (reply, code) = state.json(&["budget", "tabs", "--file", file.0.to_str().unwrap(), "--count", "2", "--in-process"]);
-    assert_eq!((reply["error"]["code"].as_str(), code), (Some("permission_denied"), exit::PERMISSION), "{reply}");
+    assert_eq!(
+        (reply["error"]["code"].as_str(), code),
+        (Some("permission_denied"), exit::PERMISSION),
+        "{reply}"
+    );
 }
 
 /// Failure: choosing a worker's limits slips through at a lower level, which decides what a hostile file may use.
@@ -210,7 +256,11 @@ fn choosing_a_workers_limits_needs_full_over_the_socket() {
     let file = doc();
     state.json(&["open", file.0.to_str().unwrap()]);
     let (reply, code) = state.json(&["budget", "render", "--count", "1", "--limit-mib", "4096"]);
-    assert_eq!((reply["error"]["code"].as_str(), code), (Some("permission_denied"), exit::PERMISSION), "{reply}");
+    assert_eq!(
+        (reply["error"]["code"].as_str(), code),
+        (Some("permission_denied"), exit::PERMISSION),
+        "{reply}"
+    );
     assert_eq!(reply["error"]["ask"], "recto permission request full");
     let (reply, code) = state.json(&["budget", "render", "--count", "1"]);
     assert_eq!(code, 0, "{reply}");
@@ -220,11 +270,21 @@ fn choosing_a_workers_limits_needs_full_over_the_socket() {
 #[test]
 fn raising_needs_a_real_terminal_and_lowering_doesnt() {
     let state = State::at(Level::ReadOnly);
-    let mut child = state.command().args(["permission", "set", "full", "--json"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut child = state
+        .command()
+        .args(["permission", "set", "full", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
     writeln!(child.stdin.take().unwrap(), "yes").unwrap();
     let output = child.wait_with_output().unwrap();
     let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!((reply["error"]["code"].as_str(), output.status.code()), (Some("needs_terminal"), Some(exit::PERMISSION)), "{reply}");
+    assert_eq!(
+        (reply["error"]["code"].as_str(), output.status.code()),
+        (Some("needs_terminal"), Some(exit::PERMISSION)),
+        "{reply}"
+    );
     assert!(reply["error"]["next"].as_str().unwrap().contains("recto permission set full"));
     assert_eq!(levels::current(&state.paths), Level::ReadOnly, "the level moved with no terminal");
 

@@ -19,5 +19,12 @@ fn main() {
     }
     times.sort_by(f64::total_cmp);
     let at = |share: f64| times[((times.len() - 1) as f64 * share) as usize];
-    println!("{pages} pages, {} read, {links} links, ms per page p50 {:.2} p95 {:.2} max {:.2}, label ranges {}", times.len(), at(0.5), at(0.95), at(1.0), facts.toc.labels.ranges().len());
+    println!(
+        "{pages} pages, {} read, {links} links, ms per page p50 {:.2} p95 {:.2} max {:.2}, label ranges {}",
+        times.len(),
+        at(0.5),
+        at(0.95),
+        at(1.0),
+        facts.toc.labels.ranges().len()
+    );
 }

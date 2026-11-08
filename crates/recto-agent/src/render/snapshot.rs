@@ -58,13 +58,31 @@ impl Format {
 pub(crate) const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Draws the box at `scale` into `out` as PNG or JPG. Returns the picture's size in pixels. `page` is from 0. Can sleep waiting for the larger limit, so never on a UI thread.
-pub(crate) fn picture_into<O: Output>(doc: &mut DocRenderer, page: u32, rect: [f32; 4], scale: f32, format: Format, caps: &OutputCaps, out: &RefCell<O>) -> Result<(u32, u32), AgentError> {
+pub(crate) fn picture_into<O: Output>(
+    doc: &mut DocRenderer,
+    page: u32,
+    rect: [f32; 4],
+    scale: f32,
+    format: Format,
+    caps: &OutputCaps,
+    out: &RefCell<O>,
+) -> Result<(u32, u32), AgentError> {
     pictures_into(doc, page, rect, scale, format, caps, out, None, 0).map(|(size, _)| size)
 }
 
 /// [`picture_into`], and a JPG of the same rows into `jpg` as it goes, if given: one drawing for both, as the clipboard has them. The JPG is an extra, so one that fails, as by passing its buffer's cap, is dropped and the rest goes on; the second value says whether it came. `generation` is what a [`recto_render_service::CancelHandle`] stops.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn pictures_into<O: Output>(doc: &mut DocRenderer, page: u32, rect: [f32; 4], scale: f32, format: Format, caps: &OutputCaps, out: &RefCell<O>, jpg: Option<&RefCell<O>>, generation: u64) -> Result<((u32, u32), bool), AgentError> {
+pub(crate) fn pictures_into<O: Output>(
+    doc: &mut DocRenderer,
+    page: u32,
+    rect: [f32; 4],
+    scale: f32,
+    format: Format,
+    caps: &OutputCaps,
+    out: &RefCell<O>,
+    jpg: Option<&RefCell<O>>,
+    generation: u64,
+) -> Result<((u32, u32), bool), AgentError> {
     let started = Instant::now();
     let mut writer: Option<Writer<'_, O>> = None;
     let mut extra: Option<Box<JpegWriter<Shared<'_, O>>>> = None;
@@ -95,7 +113,9 @@ pub(crate) fn pictures_into<O: Output>(doc: &mut DocRenderer, page: u32, rect: [
             }
         }
         PageEvent::Rows { memory, rect, stride, .. } => {
-            let Some(writer) = writer.as_mut() else { return Err(RenderFailure::Unavailable) };
+            let Some(writer) = writer.as_mut() else {
+                return Err(RenderFailure::Unavailable);
+            };
             for y in 0..rect.height as usize {
                 // A copy out, never a look in place: the worker still holds this memory, and it isn't trusted.
                 if !memory.copy_out(y * stride as usize, &mut row) {
@@ -121,8 +141,14 @@ pub(crate) fn pictures_into<O: Output>(doc: &mut DocRenderer, page: u32, rect: [
     })
     .map_err(|failure| {
         let error = sink_error.take().unwrap_or_else(|| match (failure, size) {
-            (RenderFailure::ExportRefused { why: ExportRefusal::TooHeavy, .. }, Some(size)) => too_heavy_to_export(failure, page, scale, size, Policy::default().heavy_limit_bytes),
-            (RenderFailure::BadRequest, _) => AgentError::new("bad_rect", "That box isn't on the page.", exit::FAILED).then("A box is x,y,width,height in points from the page's top left, as it's shown, and starts on the page."),
+            (
+                RenderFailure::ExportRefused {
+                    why: ExportRefusal::TooHeavy, ..
+                },
+                Some(size),
+            ) => too_heavy_to_export(failure, page, scale, size, Policy::default().heavy_limit_bytes),
+            (RenderFailure::BadRequest, _) => AgentError::new("bad_rect", "That box isn't on the page.", exit::FAILED)
+                .then("A box is x,y,width,height in points from the page's top left, as it's shown, and starts on the page."),
             _ => failure.into(),
         });
         with_time_taken(error, started)
@@ -145,12 +171,28 @@ enum Writer<'a, O: Output> {
 /// What the box holds as text, by a copy's rules: hidden text left out, running heads and page numbers left out of body text, in reading order. `page` is from 0.
 pub(crate) fn text(doc: &mut DocRenderer, page: u32, rect: [f32; 4]) -> Result<BoxText, AgentError> {
     let characters = doc.page_characters(page, true, true)?;
-    let own = PageText::build(&characters.chars, &characters.boxes, characters.frame, characters.hidden_checked, characters.copy_restricted);
+    let own = PageText::build(
+        &characters.chars,
+        &characters.boxes,
+        characters.frame,
+        characters.hidden_checked,
+        characters.copy_restricted,
+    );
     let chrome = if own.edge_lines().is_empty() {
         Vec::new()
     } else {
         let pages = doc.page_count().unwrap_or(page + 1);
-        let neighbours: Vec<(i64, Vec<EdgeLine>)> = neighbour_pages(page, pages).filter_map(|other| Some((i64::from(other) - i64::from(page), doc.page_characters(other, true, false).ok()?))).map(|(away, read)| (away, PageText::build(&read.chars, &read.boxes, read.frame, false, read.copy_restricted).edge_lines().to_vec())).collect();
+        let neighbours: Vec<(i64, Vec<EdgeLine>)> = neighbour_pages(page, pages)
+            .filter_map(|other| Some((i64::from(other) - i64::from(page), doc.page_characters(other, true, false).ok()?)))
+            .map(|(away, read)| {
+                (
+                    away,
+                    PageText::build(&read.chars, &read.boxes, read.frame, false, read.copy_restricted)
+                        .edge_lines()
+                        .to_vec(),
+                )
+            })
+            .collect();
         let borrowed: Vec<(i64, &[EdgeLine])> = neighbours.iter().map(|(away, lines)| (*away, lines.as_slice())).collect();
         own.chrome_spans(&borrowed)
     };

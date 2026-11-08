@@ -8,7 +8,10 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-const BUDGET: Budget = Budget { time: Duration::from_secs(120), memory: 512 * 1024 * 1024 };
+const BUDGET: Budget = Budget {
+    time: Duration::from_secs(120),
+    memory: 512 * 1024 * 1024,
+};
 const APP: &str = "RectoPDF.app";
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
@@ -16,7 +19,9 @@ static NEXT: AtomicU32 = AtomicU32::new(0);
 pub fn check(data: &[u8]) {
     within("update", BUDGET, || {
         let _ = parse_latest(data);
-        let Ok(entries) = recto_update::zip::read_directory(&mut Cursor::new(data), APP) else { return };
+        let Ok(entries) = recto_update::zip::read_directory(&mut Cursor::new(data), APP) else {
+            return;
+        };
         let folder = std::env::temp_dir().join(format!("recto-fuzz-update-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         let _ = std::fs::remove_dir_all(&folder);
         if std::fs::create_dir_all(&folder).is_ok() {

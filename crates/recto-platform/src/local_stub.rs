@@ -102,7 +102,14 @@ pub struct PollEntry {
 
 impl PollEntry {
     pub fn new(token: Token, want_read: bool, want_write: bool) -> Self {
-        Self { token, want_read, want_write, readable: false, writable: false, gone: false }
+        Self {
+            token,
+            want_read,
+            want_write,
+            readable: false,
+            writable: false,
+            gone: false,
+        }
     }
 }
 

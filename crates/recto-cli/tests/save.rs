@@ -57,13 +57,30 @@ fn an_agent_saves_turns_and_added_pages_and_undo_goes_past_it() {
     let reader = lopdf::IndexedReader::open(lopdf::FileSource::open(&file.0).unwrap()).unwrap();
     let map = reader.page_map().unwrap();
     let marker_of = |at: usize| {
-        let lopdf::Object::Dictionary(page) = reader.resolve_object(map.get(at).unwrap().id()).unwrap() else { panic!() };
+        let lopdf::Object::Dictionary(page) = reader.resolve_object(map.get(at).unwrap().id()).unwrap() else {
+            panic!()
+        };
         let contents = page.get(b"Contents").and_then(lopdf::Object::as_reference).unwrap();
-        let lopdf::Object::Stream(stream) = reader.resolve_object(contents).unwrap() else { panic!() };
+        let lopdf::Object::Stream(stream) = reader.resolve_object(contents).unwrap() else {
+            panic!()
+        };
         let rotate = page.get(b"Rotate").and_then(lopdf::Object::as_i64).unwrap_or(0);
-        (String::from_utf8_lossy(&stream.content).split('(').nth(1).unwrap_or("").split(')').next().unwrap_or("").to_string(), rotate)
+        (
+            String::from_utf8_lossy(&stream.content)
+                .split('(')
+                .nth(1)
+                .unwrap_or("")
+                .split(')')
+                .next()
+                .unwrap_or("")
+                .to_string(),
+            rotate,
+        )
     };
-    assert_eq!((0..3).map(marker_of).collect::<Vec<_>>(), [("FIRST".to_string(), 0), ("SECOND".to_string(), 90), ("ADDED".to_string(), 0)]);
+    assert_eq!(
+        (0..3).map(marker_of).collect::<Vec<_>>(),
+        [("FIRST".to_string(), 0), ("SECOND".to_string(), 90), ("ADDED".to_string(), 0)]
+    );
     let folder = state.paths.root.join("backups.noindex");
     let backups: Vec<_> = std::fs::read_dir(&folder).unwrap().filter_map(Result::ok).collect();
     assert_eq!(backups.len(), 1);
@@ -128,14 +145,23 @@ fn a_delete_is_saved_by_rewriting() {
     assert_eq!(ok(&state, &["edits"])["edited"], true, "the edits stand");
     state.set_level(Level::Full);
     let saved = ok(&state, &["save"]);
-    assert_eq!((&saved["writer"], &saved["pages_removed"], &saved["written"]), (&json!("rewrite"), &json!(1), &json!(true)), "{saved}");
+    assert_eq!(
+        (&saved["writer"], &saved["pages_removed"], &saved["written"]),
+        (&json!("rewrite"), &json!(1), &json!(true)),
+        "{saved}"
+    );
     assert!(saved["did"].as_str().unwrap().contains("gone"), "{saved}");
     assert!(saved["document_data_kept"].is_object(), "{saved}");
     let bytes = std::fs::read(&file.0).unwrap();
     assert!(!found(&bytes, "DELETEDMARK") && found(&bytes, "KEEP"));
     assert_eq!(ok(&state, &["edits"])["edited"], false, "saved");
     // A session with no window keeps no copy of the deleted page, so undo can't go back past the save, and the answer says so rather than leaving it to be found.
-    assert!(saved["notes"].as_array().unwrap().iter().any(|note| note.as_str().is_some_and(|note| note.contains("undo steps from before this save couldn't be kept"))), "{saved}");
+    assert!(
+        saved["notes"].as_array().unwrap().iter().any(|note| note
+            .as_str()
+            .is_some_and(|note| note.contains("undo steps from before this save couldn't be kept"))),
+        "{saved}"
+    );
     assert_eq!(ok(&state, &["edits"])["can_undo"], false);
 }
 
@@ -148,7 +174,10 @@ fn a_rewritten_copy_needs_full_whatever_decides_it() {
         Object::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> /Perms << /DocMDP 6 0 R >> >>".into()),
         Object::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
         Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".into()),
-        Object::Stream { dict: String::new(), data: text_lines(&["A certified contract"]) },
+        Object::Stream {
+            dict: String::new(),
+            data: text_lines(&["A certified contract"]),
+        },
         Object::Dict("<< /FT /Sig /T (Tenant) /V 6 0 R >>".into()),
         Object::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 5 10 5] /Contents <00> >>".into()),
     ]);
@@ -195,7 +224,10 @@ fn signed() -> Vec<u8> {
         Object::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
         Object::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
         Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".into()),
-        Object::Stream { dict: String::new(), data: text_lines(&["A contract"]) },
+        Object::Stream {
+            dict: String::new(),
+            data: text_lines(&["A contract"]),
+        },
         Object::Dict("<< /FT /Sig /T (Tenant) /V 6 0 R >>".into()),
         Object::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 5 10 5] /Contents <00> >>".into()),
     ])
@@ -224,23 +256,40 @@ fn a_signed_pdfs_delete_goes_to_an_unsigned_copy() {
         Object::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
         Object::Dict("<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>".into()),
         Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>".into()),
-        Object::Stream { dict: String::new(), data: text_lines(&["A contract"]) },
+        Object::Stream {
+            dict: String::new(),
+            data: text_lines(&["A contract"]),
+        },
         Object::Dict("<< /FT /Sig /T (Tenant) /V 6 0 R >>".into()),
         Object::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 5 10 5] /Contents <00> >>".into()),
         Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 8 0 R >>".into()),
-        Object::Stream { dict: String::new(), data: text_lines(&["DELETEDMARK"]) },
+        Object::Stream {
+            dict: String::new(),
+            data: text_lines(&["DELETEDMARK"]),
+        },
     ]);
     let file = TempPdf::new("signed2.pdf", &bytes);
     ok(&state, &["open", path(&file)]);
     ok(&state, &["page", "delete", "2"]);
     let (refused, code) = state.json(&["save"]);
-    assert_eq!((code, refused["error"]["code"].as_str()), (exit::FAILED, Some("signed_needs_copy")), "{refused}");
+    assert_eq!(
+        (code, refused["error"]["code"].as_str()),
+        (exit::FAILED, Some("signed_needs_copy")),
+        "{refused}"
+    );
     assert!(refused["error"]["message"].as_str().unwrap().contains("keeps its signature"), "{refused}");
     assert_eq!(std::fs::read(&file.0).unwrap(), bytes, "the signed original never changes");
     let copy = file.0.with_file_name("unsigned copy.pdf");
     let saved = ok(&state, &["save-as", "--out", copy.to_str().unwrap()]);
     assert_eq!(saved["signatures_removed"], 1, "{saved}");
-    assert!(saved["notes"].as_array().unwrap().iter().any(|note| note == "The new copy won't be signed. The original keeps its signature."), "{saved}");
+    assert!(
+        saved["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note == "The new copy won't be signed. The original keeps its signature."),
+        "{saved}"
+    );
     assert!(!saved.to_string().to_lowercase().contains("valid"), "{saved}");
     let written = std::fs::read(&copy).unwrap();
     assert!(!found(&written, "/ByteRange") && !found(&written, "DELETEDMARK") && found(&written, "A contract"));
@@ -275,10 +324,21 @@ fn save_as_goes_only_where_a_pdf_belongs() {
     let folder = file.0.parent().unwrap();
     std::fs::create_dir_all(folder.join(".hidden")).unwrap();
     let home = recto_platform::local::real_home().unwrap();
-    let refused = [folder.join("notes.txt"), folder.join("doc.PDF.sh"), folder.join(".zshenv.pdf"), folder.join(".hidden").join("doc.pdf"), home.join("Library").join("recto-review-test.pdf")];
+    let refused = [
+        folder.join("notes.txt"),
+        folder.join("doc.PDF.sh"),
+        folder.join(".zshenv.pdf"),
+        folder.join(".hidden").join("doc.pdf"),
+        home.join("Library").join("recto-review-test.pdf"),
+    ];
     for out in &refused {
         let (reply, code) = state.json(&["save-as", "--out", out.to_str().unwrap()]);
-        assert_eq!((code, reply["error"]["code"].as_str()), (exit::USAGE, Some("bad_save_path")), "{}: {reply}", out.display());
+        assert_eq!(
+            (code, reply["error"]["code"].as_str()),
+            (exit::USAGE, Some("bad_save_path")),
+            "{}: {reply}",
+            out.display()
+        );
         assert!(!out.exists(), "{} was written", out.display());
     }
     // A link with an innocent name that leads into a hidden file: what it leads to is what's checked (review, reproduced with --replace at Full).
@@ -289,11 +349,19 @@ fn save_as_goes_only_where_a_pdf_belongs() {
     state.set_level(Level::Full);
     let (reply, code) = state.json(&["save-as", "--out", innocent.to_str().unwrap(), "--replace"]);
     assert_eq!((code, reply["error"]["code"].as_str()), (exit::USAGE, Some("bad_save_path")), "{reply}");
-    assert_eq!(std::fs::read(folder.join(".dot").join("zshenv-decoy")).unwrap(), b"echo decoy", "the hidden file is untouched");
+    assert_eq!(
+        std::fs::read(folder.join(".dot").join("zshenv-decoy")).unwrap(),
+        b"echo decoy",
+        "the hidden file is untouched"
+    );
     let _ = std::fs::remove_file(&innocent);
     let _ = std::fs::remove_dir_all(folder.join(".dot"));
     let fine = folder.join("Copy.PDF");
-    assert_eq!(ok(&state, &["save-as", "--out", fine.to_str().unwrap()])["written"], true, "a .PDF name in an ordinary folder saves");
+    assert_eq!(
+        ok(&state, &["save-as", "--out", fine.to_str().unwrap()])["written"],
+        true,
+        "a .PDF name in an ordinary folder saves"
+    );
     let _ = std::fs::remove_file(fine);
     let _ = std::fs::remove_dir(folder.join(".hidden"));
 }
@@ -309,10 +377,18 @@ fn save_as_onto_its_own_file_is_a_save_and_onto_another_tabs_is_refused() {
     ok(&state, &["open", path(&mine)]);
     ok(&state, &["page", "rotate", "1", "--by", "90"]);
     let (refused, code) = state.json(&["save-as", "--out", path(&theirs), "--replace"]);
-    assert_eq!((code, refused["error"]["code"].as_str()), (exit::FAILED, Some("open_in_another_tab")), "{refused}");
+    assert_eq!(
+        (code, refused["error"]["code"].as_str()),
+        (exit::FAILED, Some("open_in_another_tab")),
+        "{refused}"
+    );
     assert_eq!(std::fs::read(&theirs.0).unwrap(), marked(&["THEIRS"]));
     let saved = ok(&state, &["save-as", "--out", path(&mine), "--replace"]);
-    assert_eq!((saved["written"].as_bool(), saved["backup_kept"].as_bool()), (Some(true), Some(true)), "a Save, with its backup: {saved}");
+    assert_eq!(
+        (saved["written"].as_bool(), saved["backup_kept"].as_bool()),
+        (Some(true), Some(true)),
+        "a Save, with its backup: {saved}"
+    );
     assert_eq!(ok(&state, &["tabs"])["count"], 2, "still two tabs, on two files");
 }
 
@@ -336,7 +412,15 @@ fn a_kill_at_every_step_leaves_the_original_or_the_new_file() {
     for step in ["writing", "copying", "prepared", "committed"] {
         let state = State::at(Level::Control);
         let marker = state.root.join("paused");
-        let mut server = state.command().args(["serve", "--json"]).env("RECTO_TEST_SAVE_PAUSE", step).env("RECTO_TEST_SAVE_MARKER", &marker).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let mut server = state
+            .command()
+            .args(["serve", "--json"])
+            .env("RECTO_TEST_SAVE_PAUSE", step)
+            .env("RECTO_TEST_SAVE_MARKER", &marker)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
         let mut ready = String::new();
         std::io::BufRead::read_line(&mut std::io::BufReader::new(server.stdout.take().unwrap()), &mut ready).unwrap();
         assert!(ready.contains("\"ok\":true"), "{ready}");
@@ -346,7 +430,13 @@ fn a_kill_at_every_step_leaves_the_original_or_the_new_file() {
         ok(&state, &["open", path(&file)]);
         ok(&state, &["page", "rotate", "1", "--by", "90"]);
         ok(&state, &["page", "insert", path(&extra), "--at", "3"]);
-        let mut saving = state.command().args(["save"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let mut saving = state
+            .command()
+            .args(["save"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
         let waited = std::time::Instant::now();
         while !marker.exists() {
             assert!(waited.elapsed() < std::time::Duration::from_secs(30), "{step}: the save never got there");
@@ -358,7 +448,12 @@ fn a_kill_at_every_step_leaves_the_original_or_the_new_file() {
         let _ = saving.wait();
         let now = std::fs::read(&file.0).unwrap();
         // What a kill can leave is the writer's own temporary file, hidden beside the document and swept by a later save, never anything under its name.
-        let left: Vec<String> = std::fs::read_dir(file.0.parent().unwrap()).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name != "doc.pdf" && name != "extra.pdf").collect();
+        let left: Vec<String> = std::fs::read_dir(file.0.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "doc.pdf" && name != "extra.pdf")
+            .collect();
         assert!(left.iter().all(|name| name.starts_with(".append-")), "{step}: left {left:?}");
         if step == "copying" {
             assert!(!left.is_empty(), "the temporary file was there when it was killed mid-write");

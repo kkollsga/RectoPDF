@@ -21,32 +21,38 @@ mod snapshot_tool;
 pub mod updates;
 mod watchdog;
 
+pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use qa::QaBridge;
-use recto_core::{DocFacts, OpenError};
-use recto_platform::FileStamp;
 use recto_agent::{AgentError, Command, Condition, ConditionState, DrawableLoader, Event, Level};
 use recto_control::StatePaths;
 use recto_control::host::{Host, SessionHost, kept_json, store_error};
 use recto_control::indexing::Notifier;
 use recto_control::record_store::{Flavor, FlushReport, Loaded, RecordStore, notice_for};
 use recto_control::server::{Announcer, Limits, Server, Stopper};
+use recto_core::{DocFacts, OpenError};
+use recto_platform::FileStamp;
 use recto_reader::engine::EngineEvents;
+use recto_reader::tiles::SavedPlace;
 use recto_reader::tiles::{MAX_ZOOM, MIN_ZOOM, Op, PageMap, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
 use recto_render_service::Policy;
-use recto_reader::tiles::SavedPlace;
 use recto_session::HistorySource;
-use recto_session::record::{self, Appearance, AppRecord, ContentsScroll, FileStatus, FocusRecord, FocusView, Rect, ScreenNow, ScreenRecord, SettingsWindow, WindowRecord, look_at_file, place_window};
-use recto_session::{CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsRowChange, ContentsView, DocLoader, FollowMove, WARM_PAPER, row_full_text, DrawNote, Paper, RowKind as SessionRowKind, SessionError, TAB_ROW_HEIGHT, TabId, ViewSettings, sidebar_heights_with_note};
+use recto_session::record::{
+    self, AppRecord, Appearance, ContentsScroll, FileStatus, FocusRecord, FocusView, Rect, ScreenNow, ScreenRecord, SettingsWindow, WindowRecord, look_at_file,
+    place_window,
+};
+use recto_session::{
+    CONTENTS_ROW_HEIGHT, ContentsFollow, ContentsRowChange, ContentsView, DocLoader, DrawNote, FollowMove, Paper, RowKind as SessionRowKind, SessionError,
+    TAB_ROW_HEIGHT, TabId, ViewSettings, WARM_PAPER, row_full_text, sidebar_heights_with_note,
+};
+use saver::Saver;
 use serde_json::{Value, json};
 use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
-use saver::Saver;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
-pub use menus::{HostAction, MenuEntry, MenuModel, PanelItem, PanelModel, PanelSection};
 use watchdog::Watchdog;
 
 uniffi::setup_scaffolding!();
@@ -203,7 +209,15 @@ pub struct HandOffReport {
 
 impl From<FlushReport> for HandOffReport {
     fn from(report: FlushReport) -> Self {
-        Self { tabs: report.tabs as u64, edited_tabs: report.edited_tabs as u64, record_bytes: report.record_bytes, journal_bytes: report.journal_bytes, wrote_bytes: report.wrote_bytes, force_us: report.force_us, total_us: report.total_us }
+        Self {
+            tabs: report.tabs as u64,
+            edited_tabs: report.edited_tabs as u64,
+            record_bytes: report.record_bytes,
+            journal_bytes: report.journal_bytes,
+            wrote_bytes: report.wrote_bytes,
+            force_us: report.force_us,
+            total_us: report.total_us,
+        }
     }
 }
 
@@ -332,7 +346,9 @@ pub struct SidebarLayout {
 #[derive(Clone, Copy, Debug, PartialEq, uniffi::Enum)]
 pub enum ContentsMove {
     Stay,
-    SetTo { y: f64 },
+    SetTo {
+        y: f64,
+    },
     /// Run frames, calling `contents_step` on each.
     Move,
 }
@@ -448,8 +464,16 @@ fn save_needs_copy(facts: recto_core::save::SignatureFacts, needs_rewrite: bool)
 fn save_from_signature_check(facts: Result<recto_core::save::SignatureFacts, recto_core::OpenError>) -> Result<(), AgentError> {
     match facts {
         Ok(facts) if !facts.has_persons_signature() => Ok(()),
-        Ok(_) => Err(AgentError::new("signed_needs_copy", recto_core::save::SaveError::SignedNeedsCopy.message(), recto_agent::exit::FAILED)),
-        Err(error) => Err(AgentError::new(error.code(), format!("{} Its signatures couldn't be looked at, so nothing was put in place.", error.message()), recto_agent::exit::FAILED)),
+        Ok(_) => Err(AgentError::new(
+            "signed_needs_copy",
+            recto_core::save::SaveError::SignedNeedsCopy.message(),
+            recto_agent::exit::FAILED,
+        )),
+        Err(error) => Err(AgentError::new(
+            error.code(),
+            format!("{} Its signatures couldn't be looked at, so nothing was put in place.", error.message()),
+            recto_agent::exit::FAILED,
+        )),
     }
 }
 
@@ -541,21 +565,62 @@ pub struct ViewportInput {
 #[derive(Clone, Debug, PartialEq, uniffi::Enum)]
 pub enum ReaderOp {
     Clear,
-    Document { width: f64, height: f64 },
-    Magnify { value: f64 },
-    ScrollTo { y: f64, seq: u64 },
+    Document {
+        width: f64,
+        height: f64,
+    },
+    Magnify {
+        value: f64,
+    },
+    ScrollTo {
+        y: f64,
+        seq: u64,
+    },
     /// Across, when zoomed in.
-    ScrollAcross { x: f64 },
+    ScrollAcross {
+        x: f64,
+    },
     /// `width` and `height` are the page before it's turned, and `turns` quarter turns clockwise turn it, with its turned top left at `x` and `y`.
-    ShowPage { page: u32, x: f64, y: f64, width: f64, height: f64, fit: f64, paper_rgb: u32, turns: u8 },
-    HidePage { page: u32 },
+    ShowPage {
+        page: u32,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        fit: f64,
+        paper_rgb: u32,
+        turns: u8,
+    },
+    HidePage {
+        page: u32,
+    },
     /// `surface` is an `IOSurfaceRef` the host now owns one reference to, as a number, or zero if `rgb` is the colour.
-    Attach { id: u64, page: u32, x: f64, y: f64, width: f64, height: f64, surface: u64, rgb: Option<u32>, crop_width: f64, crop_height: f64, below: bool },
-    Detach { id: u64 },
+    Attach {
+        id: u64,
+        page: u32,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        surface: u64,
+        rgb: Option<u32>,
+        crop_width: f64,
+        crop_height: f64,
+        below: bool,
+    },
+    Detach {
+        id: u64,
+    },
     /// All of what's selected on a page, in its own coordinates. Nothing clears it.
-    Highlight { page: u32, rects: Vec<HighlightRect> },
+    Highlight {
+        page: u32,
+        rects: Vec<HighlightRect>,
+    },
     /// The snapshot tool's box on a page, in its own coordinates, or none to take it off.
-    SnapshotBox { page: u32, rect: Option<HighlightRect> },
+    SnapshotBox {
+        page: u32,
+        rect: Option<HighlightRect>,
+    },
 }
 
 impl From<Op> for ReaderOp {
@@ -566,11 +631,64 @@ impl From<Op> for ReaderOp {
             Op::Magnify { value } => Self::Magnify { value },
             Op::ScrollTo { y, seq } => Self::ScrollTo { y, seq },
             Op::ScrollAcross { x } => Self::ScrollAcross { x },
-            Op::ShowPage { page, x, y, width, height, fit, paper_rgb, turns } => Self::ShowPage { page, x, y, width, height, fit, paper_rgb, turns },
+            Op::ShowPage {
+                page,
+                x,
+                y,
+                width,
+                height,
+                fit,
+                paper_rgb,
+                turns,
+            } => Self::ShowPage {
+                page,
+                x,
+                y,
+                width,
+                height,
+                fit,
+                paper_rgb,
+                turns,
+            },
             Op::HidePage { page } => Self::HidePage { page },
-            Op::Attach { id, page, x, y, width, height, surface, rgb, crop_width, crop_height, below } => Self::Attach { id, page, x, y, width, height, surface, rgb, crop_width, crop_height, below },
+            Op::Attach {
+                id,
+                page,
+                x,
+                y,
+                width,
+                height,
+                surface,
+                rgb,
+                crop_width,
+                crop_height,
+                below,
+            } => Self::Attach {
+                id,
+                page,
+                x,
+                y,
+                width,
+                height,
+                surface,
+                rgb,
+                crop_width,
+                crop_height,
+                below,
+            },
             Op::Detach { id } => Self::Detach { id },
-            Op::Highlight { page, rects } => Self::Highlight { page, rects: rects.into_iter().map(|rect| HighlightRect { x: f64::from(rect.x), y: f64::from(rect.y), width: f64::from(rect.width), height: f64::from(rect.height) }).collect() },
+            Op::Highlight { page, rects } => Self::Highlight {
+                page,
+                rects: rects
+                    .into_iter()
+                    .map(|rect| HighlightRect {
+                        x: f64::from(rect.x),
+                        y: f64::from(rect.y),
+                        width: f64::from(rect.width),
+                        height: f64::from(rect.height),
+                    })
+                    .collect(),
+            },
         }
     }
 }
@@ -602,12 +720,16 @@ impl AppHost {
                 let id = self.session.with_session(|session| recto_agent::select_tab(session, tab))?;
                 self.core.push(CoreCall::SleepTabs(vec![id], sleeper::Why::Asked));
                 self.core.flush(Duration::from_secs(5));
-                let (warm, list_asleep) = self.session.with_session(|session| (session.warm_tabs().any(|other| other == id), session.list_is_asleep(id)));
+                let (warm, list_asleep) = self
+                    .session
+                    .with_session(|session| (session.warm_tabs().any(|other| other == id), session.list_is_asleep(id)));
                 Ok(json!({ "tab": id.0, "dormant": !warm, "list_asleep": list_asleep }))
             }
             Command::SessionSave {} => {
                 let report = self.saver.flush(false, Duration::from_secs(5)).map_err(store_error)?;
-                Ok(json!({ "saved": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_ms": report.total_us / 1000, "total_us": report.total_us, "write_us": report.write_us, "force_us": report.force_us, "verify_us": report.verify_us }))
+                Ok(
+                    json!({ "saved": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_ms": report.total_us / 1000, "total_us": report.total_us, "write_us": report.write_us, "force_us": report.force_us, "verify_us": report.verify_us }),
+                )
             }
             Command::SessionRestore {} => {
                 if level < Level::Full && self.session.with_session(|session| session.holds_owner_edits()) {
@@ -628,16 +750,31 @@ impl AppHost {
 
 impl Host for AppHost {
     fn run(&self, level: Level, command: &Command, events: &mut Vec<Event>) -> Result<Value, AgentError> {
-        let asks_only = matches!(command, Command::QaRead { .. } | Command::QaDrive { .. } | Command::SessionCheck {} | Command::SessionShow {} | Command::SessionSave {} | Command::UpdateStatus {} | Command::Settings { auto_update: None });
+        let asks_only = matches!(
+            command,
+            Command::QaRead { .. }
+                | Command::QaDrive { .. }
+                | Command::SessionCheck {}
+                | Command::SessionShow {}
+                | Command::SessionSave {}
+                | Command::UpdateStatus {}
+                | Command::Settings { auto_update: None }
+        );
         // Counted first, and then looked: a hand-off that's set this flag and sees no count can't have this one slip past both looks. Past the last look, a change would be lost: what's been written is what comes back.
         if !asks_only {
             self.running.fetch_add(1, Ordering::SeqCst);
             if self.handing_off.load(Ordering::SeqCst) {
                 self.running.fetch_sub(1, Ordering::SeqCst);
-                return Err(AgentError::new("busy", "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY).then("Try again in a moment, when it's back."));
+                return Err(
+                    AgentError::new("busy", "The app is being updated, so this wasn't done.", recto_agent::exit::BUSY)
+                        .then("Try again in a moment, when it's back."),
+                );
             }
         }
-        if matches!(command, Command::SessionSleep { .. } | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {}) {
+        if matches!(
+            command,
+            Command::SessionSleep { .. } | Command::SessionShow {} | Command::SessionSave {} | Command::SessionRestore {}
+        ) {
             let result = self.record_command(level, command);
             if !asks_only {
                 self.running.fetch_sub(1, Ordering::SeqCst);
@@ -666,7 +803,11 @@ impl Host for AppHost {
 
     /// Nothing's lost by this session ending: its edits are in the state record, if it's the one keeping it.
     fn unsaved_tabs(&self) -> Vec<(TabId, String)> {
-        if self.saver.store.holds_the_record() { Vec::new() } else { self.session.unsaved_tabs() }
+        if self.saver.store.holds_the_record() {
+            Vec::new()
+        } else {
+            self.session.unsaved_tabs()
+        }
     }
 
     fn acted_tab(&self, command: &Command) -> Option<TabId> {
@@ -707,13 +848,40 @@ impl AppHost {
             };
         }
         // Zoom is about what's on the screen, so it's the page view's. The rest of the command is the session's.
-        if let Command::View { paper, sidebar, agent_icon, zoom: Some(word), layout } = command {
-            let zoom = menus::zoom_from_word(word).ok_or_else(|| AgentError::new("usage", format!("`{}` isn't a zoom. It's `in`, `out`, `fit`, `actual` or a number.", recto_core::clean_line(word)), recto_agent::exit::USAGE))?;
-            let rest = Command::View { paper: paper.clone(), sidebar: sidebar.clone(), agent_icon: agent_icon.clone(), zoom: None, layout: layout.clone() };
+        if let Command::View {
+            paper,
+            sidebar,
+            agent_icon,
+            zoom: Some(word),
+            layout,
+        } = command
+        {
+            let zoom = menus::zoom_from_word(word).ok_or_else(|| {
+                AgentError::new(
+                    "usage",
+                    format!(
+                        "`{}` isn't a zoom. It's `in`, `out`, `fit`, `actual` or a number.",
+                        recto_core::clean_line(word)
+                    ),
+                    recto_agent::exit::USAGE,
+                )
+            })?;
+            let rest = Command::View {
+                paper: paper.clone(),
+                sidebar: sidebar.clone(),
+                agent_icon: agent_icon.clone(),
+                zoom: None,
+                layout: layout.clone(),
+            };
             let mut answer = self.session.run(level, &rest, events)?;
             let inner = self.saver.inner();
-            let reading = inner.as_ref().map_or_else(|| self.engine.clone(), |inner| inner.panes.reading_engine(&inner.engine));
-            let value = inner.as_ref().map_or_else(|| self.engine.zoom(zoom), |inner| inner.panes.zoom_all(&inner.engine, zoom)).ok_or_else(|| AgentError::new("no_active_tab", "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
+            let reading = inner
+                .as_ref()
+                .map_or_else(|| self.engine.clone(), |inner| inner.panes.reading_engine(&inner.engine));
+            let value = inner
+                .as_ref()
+                .map_or_else(|| self.engine.zoom(zoom), |inner| inner.panes.zoom_all(&inner.engine, zoom))
+                .ok_or_else(|| AgentError::new("no_active_tab", "There's no page to zoom.", recto_agent::exit::NOT_FOUND))?;
             answer["zoom"] = json!(value);
             if let Some(fit) = reading.fit() {
                 answer["zoom_level"] = json!(menus::zoom_label(value, fit).text);
@@ -725,19 +893,42 @@ impl AppHost {
             if !recto_agent::allowed(level, command.access()) {
                 return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
             }
-            let inner = self.saver.inner().ok_or_else(|| AgentError::new("busy", "The app is going away.", recto_agent::exit::BUSY))?;
-            let core = AppCore { inner, qa_mode: false, start_with: Vec::new() };
+            let inner = self
+                .saver
+                .inner()
+                .ok_or_else(|| AgentError::new("busy", "The app is going away.", recto_agent::exit::BUSY))?;
+            let core = AppCore {
+                inner,
+                qa_mode: false,
+                start_with: Vec::new(),
+            };
             // Nothing of a tab opened with a password, whose name may have been read with it, and files opened lately only at `recto recent`'s level.
             let whom = palette::ForWhom {
-                hidden_tabs: self.session.with_session(|session| session.tabs().iter().filter(|tab| session.withheld_from_agents(tab.id)).map(|tab| tab.id.0).collect()),
+                hidden_tabs: self.session.with_session(|session| {
+                    session
+                        .tabs()
+                        .iter()
+                        .filter(|tab| session.withheld_from_agents(tab.id))
+                        .map(|tab| tab.id.0)
+                        .collect()
+                }),
                 recent: recto_agent::table::by_tag("recent").is_some_and(|spec| recto_agent::allowed(level, spec.access)),
             };
             let rows = palette::found_for(&core, query.as_deref().unwrap_or(""), &whom);
             // A tab's name is the file's, so it's marked as the document's words.
-            let row_json = |row: &palette::PaletteRow| if row.from_file { json!({ "id": row.id, "detail": row.detail, "shortcut": row.shortcut, "untrusted": { "title": row.title } }) } else { json!({ "id": row.id, "title": row.title, "detail": row.detail, "shortcut": row.shortcut }) };
+            let row_json = |row: &palette::PaletteRow| {
+                if row.from_file {
+                    json!({ "id": row.id, "detail": row.detail, "shortcut": row.shortcut, "untrusted": { "title": row.title } })
+                } else {
+                    json!({ "id": row.id, "title": row.title, "detail": row.detail, "shortcut": row.shortcut })
+                }
+            };
             let mut answer = json!({ "query": query, "items": rows.iter().take(limit.unwrap_or(20).clamp(1, 50) as usize).map(row_json).collect::<Vec<_>>() });
             if *run {
-                let first = rows.first().ok_or_else(|| AgentError::new("nothing_found", "Nothing matches that, so nothing was run.", recto_agent::exit::NOT_FOUND).then("`recto palette` lists what there is."))?;
+                let first = rows.first().ok_or_else(|| {
+                    AgentError::new("nothing_found", "Nothing matches that, so nothing was run.", recto_agent::exit::NOT_FOUND)
+                        .then("`recto palette` lists what there is.")
+                })?;
                 let reader = lock(&core.inner.published).reader.clone();
                 // What it comes to as an agent's own command runs as that, at the agent's level, with that command's checks, and as the agent's step. What has none, or writes the clipboard, needs what the direct way needs: Full, or `copy`'s level.
                 let host = match palette::as_command(&first.id, &reader, &core.recent_files()) {
@@ -747,20 +938,32 @@ impl AppHost {
                         HostAction::None
                     }
                     None => {
-                        let needed = if first.id.starts_with("edit.copy") { recto_agent::table::by_tag("copy").map_or(recto_agent::table::Access::At(Level::Full), |spec| spec.access) } else { recto_agent::table::Access::At(Level::Full) };
+                        let needed = if first.id.starts_with("edit.copy") {
+                            recto_agent::table::by_tag("copy").map_or(recto_agent::table::Access::At(Level::Full), |spec| spec.access)
+                        } else {
+                            recto_agent::table::Access::At(Level::Full)
+                        };
                         if !recto_agent::allowed(level, needed) {
-                            return Err(recto_agent::refusal(&format!("palette --run for {}", first.id), level, needed).then("Run that command itself, if it has one, at the level it needs."));
+                            return Err(recto_agent::refusal(&format!("palette --run for {}", first.id), level, needed)
+                                .then("Run that command itself, if it has one, at the level it needs."));
                         }
                         palette::run(&core, &first.id)
                     }
                 };
-                let ran = if first.from_file { json!({ "id": first.id, "untrusted": { "title": first.title }, "host": palette::host_word(host) }) } else { json!({ "id": first.id, "title": first.title, "host": palette::host_word(host) }) };
+                let ran = if first.from_file {
+                    json!({ "id": first.id, "untrusted": { "title": first.title }, "host": palette::host_word(host) })
+                } else {
+                    json!({ "id": first.id, "title": first.title, "host": palette::host_word(host) })
+                };
                 answer["ran"] = ran;
                 self.core.push(CoreCall::Reconcile);
             }
             return Ok(answer);
         }
-        if matches!(command, Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. }) {
+        if matches!(
+            command,
+            Command::UpdateStatus {} | Command::UpdateCheck {} | Command::UpdateInstall {} | Command::Settings { .. }
+        ) {
             if !recto_agent::allowed(level, command.access()) {
                 return Err(recto_agent::refusal(recto_agent::table::display_name(command.tag()), level, command.access()));
             }
@@ -778,7 +981,15 @@ impl AppHost {
             && let Some(went) = answer.get("went_to").filter(|went| went.is_object())
             && let (Some(tab), Some(page), Some(start), Some(end)) = (went["tab"].as_u64(), went["page"].as_u64(), went["start"].as_u64(), went["end"].as_u64())
         {
-            let hit = recto_agent::find::Hit { page: (page as u32).saturating_sub(1), start: start as u32, end: end as u32, before: "".into(), matched: "".into(), after: "".into(), hidden: false };
+            let hit = recto_agent::find::Hit {
+                page: (page as u32).saturating_sub(1),
+                start: start as u32,
+                end: end as u32,
+                before: "".into(),
+                matched: "".into(),
+                after: "".into(),
+                hidden: false,
+            };
             self.core.push(CoreCall::Find(find::FindCall::Reveal(tab as u32, hit)));
         }
         self.core.push(CoreCall::Reconcile);
@@ -970,7 +1181,9 @@ impl CoreQueue {
         let mut calls = lock(&self.calls);
         if let CoreCall::Page(page, failure, tab) = &call {
             // Only notes of what was drawn can go, as they're told on to watchers and no more. Many tiles of a page are one note, which is most of them, so this is hard to reach. With the session thread held up for some reason this stops them growing without end. Anything a person did always gets in.
-            if calls.len() >= MAX_QUEUED_CALLS || matches!(calls.back(), Some(CoreCall::Page(last_page, last_failure, last_tab)) if last_page == page && last_failure == failure && last_tab == tab) {
+            if calls.len() >= MAX_QUEUED_CALLS
+                || matches!(calls.back(), Some(CoreCall::Page(last_page, last_failure, last_tab)) if last_page == page && last_failure == failure && last_tab == tab)
+            {
                 return;
             }
         }
@@ -1169,7 +1382,10 @@ struct AppState {
 
 /// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command.
 fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, saves: u32, printing: bool) -> Vec<BusyItem> {
-    let item = |code: &str, message: &str| BusyItem { code: code.to_string(), message: message.to_string() };
+    let item = |code: &str, message: &str| BusyItem {
+        code: code.to_string(),
+        message: message.to_string(),
+    };
     let mut busy = Vec::new();
     if sheets > 0 {
         busy.push(item("sheet_open", "A sheet or panel is open over the window."));
@@ -1192,16 +1408,32 @@ fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, saves: u32
 }
 
 fn hand_off_check(host: &AppHost) -> HandOffCheck {
-    let Some(inner) = host.saver.inner() else { return HandOffCheck { safe: false, busy: Vec::new(), seconds_since_input: 0.0 } };
+    let Some(inner) = host.saver.inner() else {
+        return HandOffCheck {
+            safe: false,
+            busy: Vec::new(),
+            seconds_since_input: 0.0,
+        };
+    };
     inner.hand_off_check()
 }
 
 impl Inner {
     fn hand_off_check(&self) -> HandOffCheck {
-        let busy = hand_off_check_parts(self.reads_running.load(Ordering::SeqCst), self.sheets.load(Ordering::SeqCst), self.host.running.load(Ordering::SeqCst), self.save_ui.running.load(Ordering::SeqCst), self.printing.busy());
+        let busy = hand_off_check_parts(
+            self.reads_running.load(Ordering::SeqCst),
+            self.sheets.load(Ordering::SeqCst),
+            self.host.running.load(Ordering::SeqCst),
+            self.save_ui.running.load(Ordering::SeqCst),
+            self.printing.busy(),
+        );
         let last = self.last_input_ms.load(Ordering::Relaxed);
         let now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        HandOffCheck { safe: busy.is_empty(), busy, seconds_since_input: now.saturating_sub(last) as f64 / 1000.0 }
+        HandOffCheck {
+            safe: busy.is_empty(),
+            busy,
+            seconds_since_input: now.saturating_sub(last) as f64 / 1000.0,
+        }
     }
 
     /// **The hand-off.** If nothing's in flight, stops taking commands and what a person does, writes everything, forces it all to the drive, and reads it back. On success the state is exactly what comes back, and the caller quits with no prompt, by [`AppCore::hand_off_quit_now`], which goes only after this has said yes. Otherwise it says why, everything's taken again, and nothing's changed. Waits on the disk, so never on the UI thread.
@@ -1235,7 +1467,10 @@ impl Inner {
             }
             Err(error) => {
                 undo();
-                Err(HandOffError::NotSaved { code: error.code.to_string(), message: error.message })
+                Err(HandOffError::NotSaved {
+                    code: error.code.to_string(),
+                    message: error.message,
+                })
             }
         }
     }
@@ -1268,14 +1503,33 @@ impl Inner {
         let app = lock(&self.app).clone();
         let following = lock(&self.contents_follow).is_following();
         let notice = lock(&self.host.notice).clone();
-        AppRecord { window: app.window, appearance: app.appearance, sidebar_width: Some(app.sidebar_width), panel_open: self.panel_open.load(Ordering::SeqCst), contents_scroll: Some(ContentsScroll { y: app.contents_y.unwrap_or(0.0), following }), focus: app.focus, notice, settings_window: app.settings_window, window_closed: app.window_closed }
+        AppRecord {
+            window: app.window,
+            appearance: app.appearance,
+            sidebar_width: Some(app.sidebar_width),
+            panel_open: self.panel_open.load(Ordering::SeqCst),
+            contents_scroll: Some(ContentsScroll {
+                y: app.contents_y.unwrap_or(0.0),
+                following,
+            }),
+            focus: app.focus,
+            notice,
+            settings_window: app.settings_window,
+            window_closed: app.window_closed,
+        }
     }
 
     /// Everything the record holds and QA compares: the record as it would be written, and each tab's edits in full.
     pub(crate) fn state_json(&self) -> Value {
         let (record, _) = self.gather_record();
         let mut value = serde_json::to_value(&record).unwrap_or(Value::Null);
-        let lists = self.host.session.with_session(|session| session.tabs().iter().filter_map(|tab| Some((tab.id.0.to_string(), serde_json::to_value(session.list_record_anywhere(tab.id)?).ok()?))).collect::<serde_json::Map<_, _>>());
+        let lists = self.host.session.with_session(|session| {
+            session
+                .tabs()
+                .iter()
+                .filter_map(|tab| Some((tab.id.0.to_string(), serde_json::to_value(session.list_record_anywhere(tab.id)?).ok()?)))
+                .collect::<serde_json::Map<_, _>>()
+        });
         value["edits_full"] = Value::Object(lists);
         value
     }
@@ -1293,7 +1547,8 @@ impl Inner {
         let result = match verb {
             // What ⌘F and Escape do.
             "find" => {
-                self.core.push(CoreCall::Find(if value == "open" { find::FindCall::Open } else { find::FindCall::Close }));
+                self.core
+                    .push(CoreCall::Find(if value == "open" { find::FindCall::Open } else { find::FindCall::Close }));
                 self.core.flush(Duration::from_secs(5));
                 Ok(())
             }
@@ -1397,22 +1652,40 @@ impl Inner {
         let written = PathBuf::from(written);
         let target = recto_platform::file_stamp(&written).map_err(|_| failed("Looking at the written file"))?;
         // The checks Save makes before it writes: never over a signed file, never over one changed on disk, never while it's being saved.
-        let (path, known, saving) = self.host.session.with_session(|session| session.active().and_then(|id| Some((session.path_of(id)?, session.own_stamp(id), session.is_saving(id))))).ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
+        let (path, known, saving) = self
+            .host
+            .session
+            .with_session(|session| {
+                session
+                    .active()
+                    .and_then(|id| Some((session.path_of(id)?, session.own_stamp(id), session.is_saving(id))))
+            })
+            .ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
         if saving {
             return Err(AgentError::new("saving", "That document is being saved.", recto_agent::exit::FAILED));
         }
         if known.is_none_or(|known| recto_platform::file_stamp(&path).ok() != Some(known)) {
-            return Err(AgentError::new("file_changed", recto_core::save::SaveError::FileChanged.message(), recto_agent::exit::FAILED));
+            return Err(AgentError::new(
+                "file_changed",
+                recto_core::save::SaveError::FileChanged.message(),
+                recto_agent::exit::FAILED,
+            ));
         }
         save_from_signature_check(recto_core::save::signature_facts_of(&path))?;
-        let (id, path, pages, needed) = self.host.session.with_session(|session| {
-            let id = session.active()?;
-            let needed = session.page_edits(id).map(recto_session::edit::PageEdits::own_pages_needed).unwrap_or_default();
-            Some((id, session.path_of(id)?, session.pages_in(id), needed))
-        }).ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
+        let (id, path, pages, needed) = self
+            .host
+            .session
+            .with_session(|session| {
+                let id = session.active()?;
+                let needed = session.page_edits(id).map(recto_session::edit::PageEdits::own_pages_needed).unwrap_or_default();
+                Some((id, session.path_of(id)?, session.pages_in(id), needed))
+            })
+            .ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
         let kept = self.saver.store.keep_pages_of(&path, target, &needed);
         self.host.session.with_session(|session| session.save_prepared(id, target, kept.as_ref()));
-        self.saver.flush(false, Duration::from_secs(5)).map_err(|_| failed("Writing what's about to happen"))?;
+        self.saver
+            .flush(false, Duration::from_secs(5))
+            .map_err(|_| failed("Writing what's about to happen"))?;
         std::fs::rename(&written, &path).map_err(|_| failed("Putting the file in place"))?;
         let now = recto_platform::file_stamp(&path).map_err(|_| failed("Looking at the saved file"))?;
         self.host.session.with_session(|session| session.saved(id, now, pages, None, kept));
@@ -1421,9 +1694,17 @@ impl Inner {
 
     /// An edit as the owner's, as the app's own tools will make it: they aren't built yet.
     fn owner_edit(&self, value: &str) -> Result<(), AgentError> {
-        let usage = || AgentError::new("usage", "It's `rotate:PAGE`, `delete:PAGE`, `undo` or `redo`.".to_string(), recto_agent::exit::USAGE);
+        let usage = || {
+            AgentError::new(
+                "usage",
+                "It's `rotate:PAGE`, `delete:PAGE`, `undo` or `redo`.".to_string(),
+                recto_agent::exit::USAGE,
+            )
+        };
         self.host.session.with_session(|session| {
-            let id = session.active().ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
+            let id = session
+                .active()
+                .ok_or_else(|| AgentError::new("no_active_tab", "No tab is open.", recto_agent::exit::NOT_FOUND))?;
             let page = |word: &str| word.parse::<u32>().ok().and_then(|page| page.checked_sub(1)).ok_or_else(usage);
             match value.split_once(':') {
                 Some(("rotate", word)) => {
@@ -1447,11 +1728,13 @@ impl Inner {
     }
 
     fn note_nearby(&self) {
-        self.last_input_ms.store(u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+        self.last_input_ms
+            .store(u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
     fn note_input(&self) {
-        self.last_input_ms.store(u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
+        self.last_input_ms
+            .store(u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX), Ordering::Relaxed);
         // One lock per input, and an uncontended one. It's what lets a notice go when the reader has moved on.
         self.notice_read();
     }
@@ -1480,8 +1763,19 @@ fn parse_args(args: &[String]) -> Result<LaunchArgs, String> {
     while let Some(word) = words.next() {
         match word.as_str() {
             "--qa" => parsed.qa = true,
-            "--qa-memory-limit-mib" => parsed.memory_limit_mib = Some(words.next().and_then(|value| value.parse().ok()).ok_or("--qa-memory-limit-mib takes a number.")?),
-            "--qa-time-limit-ms" => parsed.time_limit = Some(Duration::from_millis(words.next().and_then(|value| value.parse().ok()).ok_or("--qa-time-limit-ms takes a number.")?)),
+            "--qa-memory-limit-mib" => {
+                parsed.memory_limit_mib = Some(
+                    words
+                        .next()
+                        .and_then(|value| value.parse().ok())
+                        .ok_or("--qa-memory-limit-mib takes a number.")?,
+                )
+            }
+            "--qa-time-limit-ms" => {
+                parsed.time_limit = Some(Duration::from_millis(
+                    words.next().and_then(|value| value.parse().ok()).ok_or("--qa-time-limit-ms takes a number.")?,
+                ))
+            }
             // What macOS adds to a launch from elsewhere, and a file to open.
             other if other.starts_with("-psn_") || other.starts_with("-NS") || other.starts_with("-Apple") => {
                 let _ = words.next();
@@ -1529,7 +1823,10 @@ impl AppCore {
             Err(_) => None,
         };
         let core = Arc::new(CoreQueue::default());
-        let hooks: Arc<dyn EngineEvents> = Arc::new(EngineHooks { core: Arc::clone(&core), listener: Arc::clone(&listener) });
+        let hooks: Arc<dyn EngineEvents> = Arc::new(EngineHooks {
+            core: Arc::clone(&core),
+            listener: Arc::clone(&listener),
+        });
         let mut policy = Policy::default();
         if let Some(limit) = args.memory_limit_mib {
             policy.memory_limit_bytes = limit * 1024 * 1024;
@@ -1537,20 +1834,40 @@ impl AppCore {
             policy.heavy_limit_bytes = policy.memory_limit_bytes;
         }
         let keys = Arc::new(recto_reader::engine::Keyring::default());
-        let config = EngineConfig { service: None, policy: Some(policy), keys: Some(Arc::clone(&keys)) };
+        let config = EngineConfig {
+            service: None,
+            policy: Some(policy),
+            keys: Some(Arc::clone(&keys)),
+        };
         let engine = Engine::new(config.clone(), Arc::clone(&hooks));
         let watchdog = Watchdog::new();
-        let qa = args.qa.then(|| Arc::new(QaBridge::new(Arc::clone(&listener), engine.clone(), watchdog.clone(), Arc::clone(&core))));
+        let qa = args
+            .qa
+            .then(|| Arc::new(QaBridge::new(Arc::clone(&listener), engine.clone(), watchdog.clone(), Arc::clone(&core))));
         // Takes the record's lock, and reads nothing: that's `begin_restore`'s, on a thread that can wait for it.
         let saver = Arc::new(Saver::new(RecordStore::open(&paths, Flavor::App), Arc::clone(&core)));
-        let host = Arc::new(AppHost { engine: engine.clone(), session: SessionHost::new(DrawableLoader).with_indexing(&paths).with_generating(&paths), core: Arc::clone(&core), qa: qa.clone(), saver: Arc::clone(&saver), running: AtomicU32::new(0), handing_off: AtomicBool::new(false), notice: Mutex::new(None) });
+        let host = Arc::new(AppHost {
+            engine: engine.clone(),
+            session: SessionHost::new(DrawableLoader).with_indexing(&paths).with_generating(&paths),
+            core: Arc::clone(&core),
+            qa: qa.clone(),
+            saver: Arc::clone(&saver),
+            running: AtomicU32::new(0),
+            handing_off: AtomicBool::new(false),
+            notice: Mutex::new(None),
+        });
         // The person's own Find reads a document they opened with a password through its key, as the page views draw it.
         let find_keys = Arc::clone(&keys);
         host.session.set_find_keys(Arc::new(move |path: &std::path::Path| find_keys.for_path(path)));
         let backups = recto_control::host::backups_folder(&paths);
         recto_core::save::prune_backups(&backups, std::time::SystemTime::now());
         let save_step = Arc::new(AtomicU8::new(0));
-        host.session.set_saving(Arc::new(saving::AppSaving { saver: Arc::clone(&saver), backups, step: Arc::clone(&save_step), core: Arc::clone(&core) }));
+        host.session.set_saving(Arc::new(saving::AppSaving {
+            saver: Arc::clone(&saver),
+            backups,
+            step: Arc::clone(&save_step),
+            core: Arc::clone(&core),
+        }));
         let stopper = server.as_ref().and_then(|server| server.stopper().ok());
         let announcer = server.as_ref().and_then(|server| server.announcer().ok());
         let update_hooks = updates::Hooks::new();
@@ -1568,7 +1885,17 @@ impl AppCore {
             started: Instant::now(),
             saver: Arc::clone(&saver),
             sleeper: sleeper::Sleeper::new(),
-            app: Mutex::new(AppState { window: None, appearance: Appearance::System, sidebar_width: record::SIDEBAR_WIDTH, contents_y: None, contents_resume: None, selection_resume: None, focus: FocusRecord::default(), settings_window: None, window_closed: false }),
+            app: Mutex::new(AppState {
+                window: None,
+                appearance: Appearance::System,
+                sidebar_width: record::SIDEBAR_WIDTH,
+                contents_y: None,
+                contents_resume: None,
+                selection_resume: None,
+                focus: FocusRecord::default(),
+                settings_window: None,
+                window_closed: false,
+            }),
             restored: AtomicBool::new(false),
             waiting_server: Mutex::new(server),
             holding_tab: Mutex::new(None),
@@ -1578,7 +1905,67 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { recent: Arc::new(Vec::new()), recent_key: None, pane_tocs: Vec::new(), contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false, save_enabled: false, print_ready: false, can_go_back: false, can_go_forward: false, link_prompt: None, page_text: String::new(), password_prompt: None } }),
+            published: Mutex::new(Published {
+                recent: Arc::new(Vec::new()),
+                recent_key: None,
+                pane_tocs: Vec::new(),
+                contents: Arc::new(Vec::new()),
+                rail_filled: 0,
+                tabs: Arc::new(Vec::new()),
+                sidebar: Arc::new(SidebarView {
+                    tabs_version: 0,
+                    tab_count: 0,
+                    active_index: None,
+                    contents_version: 0,
+                    contents_count: 0,
+                    contents_changed_from: 0,
+                    contents_removed: 0,
+                    contents_inserted: 0,
+                    contents_place_shift: 0,
+                    contents_current: None,
+                    toc_open: false,
+                    edited: false,
+                    undone_owner_steps: false,
+                    contents_note: None,
+                }),
+                reader: ReaderView {
+                    panes: Vec::new(),
+                    compare_synced: false,
+                    home: true,
+                    note: None,
+                    sidebar_hidden: false,
+                    layout: String::new(),
+                    edited: false,
+                    can_undo: false,
+                    can_redo: false,
+                    edit_mode: false,
+                    can_rotate: false,
+                    place: String::new(),
+                    paper: Paper::White.name().to_string(),
+                    paper_rgb: PaperKind::White.rgb(),
+                    page_tint: None,
+                    agent_icon_hidden: false,
+                    sidebar_width: record::SIDEBAR_WIDTH,
+                    highlight_dark_colour: false,
+                    highlight_lighten: false,
+                    selection_notice: None,
+                    saving: false,
+                    save_tooltip: String::new(),
+                    save_problem: None,
+                    save_as_note: None,
+                    shown_tab: 0,
+                    document_name: String::new(),
+                    document_folder: String::new(),
+                    save_button: false,
+                    save_enabled: false,
+                    print_ready: false,
+                    can_go_back: false,
+                    can_go_forward: false,
+                    link_prompt: None,
+                    page_text: String::new(),
+                    password_prompt: None,
+                },
+            }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1605,7 +1992,11 @@ impl AppCore {
             qa.attach(Arc::downgrade(&inner));
         }
         let session_side = Arc::clone(&inner);
-        std::thread::Builder::new().name("recto-session".into()).stack_size(8 * 1024 * 1024).spawn(move || session_thread(&session_side)).map_err(|_| refused("The app couldn't start its session thread.".into()))?;
+        std::thread::Builder::new()
+            .name("recto-session".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || session_thread(&session_side))
+            .map_err(|_| refused("The app couldn't start its session thread.".into()))?;
         if let Some(limit) = args.time_limit.or(args.qa.then_some(Duration::from_secs(600))) {
             // Every QA run has a limit, so a run nobody ended can't sit on the owner's Mac.
             let _ = std::thread::Builder::new().name("recto-qa-limit".into()).stack_size(64 * 1024).spawn(move || {
@@ -1613,7 +2004,11 @@ impl AppCore {
                 std::process::exit(124);
             });
         }
-        Ok(Arc::new(Self { inner, qa_mode: args.qa, start_with: args.open }))
+        Ok(Arc::new(Self {
+            inner,
+            qa_mode: args.qa,
+            start_with: args.open,
+        }))
     }
 
     /// Whether this is a quiet run: off every screen, never active, with no Dock icon.
@@ -1651,7 +2046,18 @@ impl AppCore {
     }
 
     pub fn limits(&self) -> ReaderLimits {
-        ReaderLimits { min_zoom: MIN_ZOOM, max_zoom: MAX_ZOOM, window_width: 1440.0, window_height: 900.0, sidebar_width: record::SIDEBAR_WIDTH, reveal_delay_seconds: 0.0, restore_patience_seconds: RESTORE_PATIENCE.as_secs_f64(), show_patience_seconds: SHOW_PATIENCE.as_secs_f64(), autoscroll_every_seconds: recto_reader::selection::AUTOSCROLL_EVERY, notice_seconds: 6.0 }
+        ReaderLimits {
+            min_zoom: MIN_ZOOM,
+            max_zoom: MAX_ZOOM,
+            window_width: 1440.0,
+            window_height: 900.0,
+            sidebar_width: record::SIDEBAR_WIDTH,
+            reveal_delay_seconds: 0.0,
+            restore_patience_seconds: RESTORE_PATIENCE.as_secs_f64(),
+            show_patience_seconds: SHOW_PATIENCE.as_secs_f64(),
+            autoscroll_every_seconds: recto_reader::selection::AUTOSCROLL_EVERY,
+            notice_seconds: 6.0,
+        }
     }
 
     /// The sidebar as it stands, but for its tabs. A short lock and a small copy.
@@ -1675,7 +2081,22 @@ impl AppCore {
         (first..end)
             .filter_map(|index| {
                 let entry = contents.get(index as usize)?;
-                Some(SidebarRow { kind: RowKind::Contents, tab: entry.tab, text: entry.text.to_string(), page: entry.page, depth: entry.depth, current: current == Some(index), rail_filled: index < rail_filled, rail_first: index == 0, rail_last: index + 1 == total, notice: None, action: None, expandable: entry.expandable, expanded: entry.expanded, in_comparison: false })
+                Some(SidebarRow {
+                    kind: RowKind::Contents,
+                    tab: entry.tab,
+                    text: entry.text.to_string(),
+                    page: entry.page,
+                    depth: entry.depth,
+                    current: current == Some(index),
+                    rail_filled: index < rail_filled,
+                    rail_first: index == 0,
+                    rail_last: index + 1 == total,
+                    notice: None,
+                    action: None,
+                    expandable: entry.expandable,
+                    expanded: entry.expanded,
+                    in_comparison: false,
+                })
             })
             .collect()
     }
@@ -1683,7 +2104,19 @@ impl AppCore {
     /// The scroll thumb's look, the same for the sidebar's lists and the page area.
     pub fn scroll_thumb(&self) -> ScrollThumbLook {
         let thumb = recto_session::SCROLL_THUMB;
-        ScrollThumbLook { width: thumb.width, hover_width: thumb.hover_width, hit_width: thumb.hit_width, inset: thumb.inset, min_length: thumb.min_length, light_rgb: thumb.light.0, light_alpha: thumb.light.1, light_hover_alpha: thumb.light_hover.1, dark_rgb: thumb.dark.0, dark_alpha: thumb.dark.1, dark_hover_alpha: thumb.dark_hover.1 }
+        ScrollThumbLook {
+            width: thumb.width,
+            hover_width: thumb.hover_width,
+            hit_width: thumb.hit_width,
+            inset: thumb.inset,
+            min_length: thumb.min_length,
+            light_rgb: thumb.light.0,
+            light_alpha: thumb.light.1,
+            light_hover_alpha: thumb.light_hover.1,
+            dark_rgb: thumb.dark.0,
+            dark_alpha: thumb.dark.1,
+            dark_hover_alpha: thumb.dark_hover.1,
+        }
     }
 
     /// The sidebar's height rule, for this much room between its header and footer.
@@ -1697,7 +2130,18 @@ impl AppCore {
         let finding = find::view(&self.inner);
         let found = find::heights(room, finding.open, finding.row_count);
         let heights = sidebar_heights_with_note((room - found.block).max(0.0), tabs, rows, note);
-        SidebarLayout { tab_row: TAB_ROW_HEIGHT, contents_row: CONTENTS_ROW_HEIGHT, contents_height: heights.contents, tabs_scroll: heights.tabs_scroll, note_height: heights.note, find_block: found.block, find_list: found.list, find_row: find::ROW_HEIGHT, find_field: find::FIELD_HEIGHT, find_status: find::STATUS_HEIGHT }
+        SidebarLayout {
+            tab_row: TAB_ROW_HEIGHT,
+            contents_row: CONTENTS_ROW_HEIGHT,
+            contents_height: heights.contents,
+            tabs_scroll: heights.tabs_scroll,
+            note_height: heights.note,
+            find_block: found.block,
+            find_list: found.list,
+            find_row: find::ROW_HEIGHT,
+            find_field: find::FIELD_HEIGHT,
+            find_status: find::STATUS_HEIGHT,
+        }
     }
 
     /// Everything Find shows but its rows. Short locks, never the session's.
@@ -1727,7 +2171,9 @@ impl AppCore {
 
     /// Return (forward) or ⇧Return (back) in the field: the person's jump to the hit, so Back comes here again. ⌘G and ⇧⌘G are the menu's, and only step.
     pub fn find_return(&self, forward: bool) {
-        self.inner.core.push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Jump)));
+        self.inner
+            .core
+            .push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Jump)));
     }
 
     /// A click on a row of Find's list.
@@ -1773,7 +2219,15 @@ impl AppCore {
 
     /// Rows closed or opened. Says how many points to move the scroll by with no animation, or nothing if the rows are to slide.
     pub fn contents_row_change(&self, scroll_y: f64, from: u32, removed: u32, inserted: u32, place_shift: i32) -> Option<f64> {
-        lock(&self.inner.contents_follow).row_change(ContentsRowChange { from, removed, inserted, place_shift }, scroll_y)
+        lock(&self.inner.contents_follow).row_change(
+            ContentsRowChange {
+                from,
+                removed,
+                inserted,
+                place_shift,
+            },
+            scroll_y,
+        )
     }
 
     /// Rows above changed, and the host moved its scroll by this many points to match.
@@ -1795,7 +2249,10 @@ impl AppCore {
 
     /// A contents row's chevron was tapped: its sections fold or open. On the session thread, as every change to what the sidebar shows is.
     pub fn toggle_contents_section(&self, first: u32) {
-        let entry = lock(&self.inner.published).contents.get(first as usize).map(|entry| (entry.tab, entry.entry, entry.expandable));
+        let entry = lock(&self.inner.published)
+            .contents
+            .get(first as usize)
+            .map(|entry| (entry.tab, entry.entry, entry.expandable));
         if let Some((tab, entry, true)) = entry {
             self.inner.core.push(CoreCall::ToggleSection(TabId(tab), entry));
         }
@@ -1837,7 +2294,22 @@ impl AppCore {
     /// A pane's view moved. On every scroll: a short lock and a few map lookups, and in a comparison with synced scroll, a short lock on each other pane to send it along, whose ops come by `ops_ready`. Apply what comes back in the same transaction.
     pub fn set_viewport(&self, pane: u32, viewport: ViewportInput) -> Vec<ReaderOp> {
         self.inner.saver.view_changed();
-        let (ops, focused) = self.inner.panes.viewport(&self.inner.engine, pane as usize, viewport.by_reader, Viewport { x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height, frame_width: viewport.frame_width, magnification: viewport.magnification, backing: viewport.backing, live: viewport.live, scrolled_to: viewport.scrolled_to });
+        let (ops, focused) = self.inner.panes.viewport(
+            &self.inner.engine,
+            pane as usize,
+            viewport.by_reader,
+            Viewport {
+                x: viewport.x,
+                y: viewport.y,
+                width: viewport.width,
+                height: viewport.height,
+                frame_width: viewport.frame_width,
+                magnification: viewport.magnification,
+                backing: viewport.backing,
+                live: viewport.live,
+                scrolled_to: viewport.scrolled_to,
+            },
+        );
         if let Some(tab) = focused {
             self.focus_moved(tab);
         }
@@ -1846,7 +2318,11 @@ impl AppCore {
 
     /// What's waiting for a pane's layers, at most a few tiles at a time. If there's more, `ops_ready` comes again.
     pub fn drain_ops(&self, pane: u32) -> Vec<ReaderOp> {
-        self.inner.panes.engine(&self.inner.engine, pane as usize).map(|engine| engine.drain().into_iter().map(ReaderOp::from).collect()).unwrap_or_default()
+        self.inner
+            .panes
+            .engine(&self.inner.engine, pane as usize)
+            .map(|engine| engine.drain().into_iter().map(ReaderOp::from).collect())
+            .unwrap_or_default()
     }
 
     /// A pane's layers have what they were given, so what's off them can go.
@@ -1869,15 +2345,33 @@ impl AppCore {
     /// What hovering over a row reveals: its full text, clean and bounded, and what it is.
     pub fn row_reveal(&self, row: SidebarRow) -> RowReveal {
         let full = row_full_text(&row.text, row.kind == RowKind::Tab);
-        RowReveal { text: full.text, is_file_name: full.is_file_name }
+        RowReveal {
+            text: full.text,
+            is_file_name: full.is_file_name,
+        }
     }
 
     /// The menu bar as it stands. The host rebuilds it only when this differs.
     pub fn menu_bar(&self) -> Vec<MenuModel> {
         let reader = lock(&self.inner.published).reader.clone();
         let recent = Arc::clone(&lock(&self.inner.published).recent);
-        let items: Vec<menus::RecentItem> = recent.iter().map(|file| menus::RecentItem { key: &file.key, name: &file.name }).collect();
-        let mut bar = menus::menu_bar_with(ViewSettings { paper: Paper::from_name(&reader.paper), sidebar_hidden: reader.sidebar_hidden, agent_icon_hidden: reader.agent_icon_hidden }, record::Spread::from_name(&reader.layout), &self.inner.updates.menu_item().title, &items);
+        let items: Vec<menus::RecentItem> = recent
+            .iter()
+            .map(|file| menus::RecentItem {
+                key: &file.key,
+                name: &file.name,
+            })
+            .collect();
+        let mut bar = menus::menu_bar_with(
+            ViewSettings {
+                paper: Paper::from_name(&reader.paper),
+                sidebar_hidden: reader.sidebar_hidden,
+                agent_icon_hidden: reader.agent_icon_hidden,
+            },
+            record::Spread::from_name(&reader.layout),
+            &self.inner.updates.menu_item().title,
+            &items,
+        );
         bar.push(snapshot_tool::tools_menu(self.inner.tool.is_on()));
         bar
     }
@@ -1923,7 +2417,11 @@ impl AppCore {
 
     /// Opens a file from that list by its key, as File > Open Recent does: the very file that was offered, however the list has moved since, and nothing if it's left the list. Its tab if it's open, and otherwise it's read as any open is, and says so if it's gone.
     pub fn open_recent(&self, key: String) {
-        let path = lock(&self.inner.published).recent.iter().find(|file| file.key == key).map(|file| PathBuf::from(&file.path));
+        let path = lock(&self.inner.published)
+            .recent
+            .iter()
+            .find(|file| file.key == key)
+            .map(|file| PathBuf::from(&file.path));
         if let Some(path) = path {
             self.inner.core.push(CoreCall::Open(path));
         }
@@ -1968,7 +2466,10 @@ impl AppCore {
                 self.inner.core.push(CoreCall::Find(find::FindCall::Open));
                 return HostAction::FocusFind;
             }
-            menus::Action::FindStep(forward) => self.inner.core.push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Step))),
+            menus::Action::FindStep(forward) => self
+                .inner
+                .core
+                .push(CoreCall::Find(find::FindCall::Step(forward, recto_agent::find::Going::Step))),
             menus::Action::LeaveEditMode => self.inner.core.push(CoreCall::SetEditMode(false)),
             menus::Action::Step(back) => self.inner.core.push(CoreCall::Step(back)),
             menus::Action::ClearEditHistory => self.inner.core.push(CoreCall::ClearEditHistory),
@@ -1977,7 +2478,12 @@ impl AppCore {
             }
             menus::Action::ToggleSidebar => self.toggle_sidebar(),
             // The pane being read as it's chosen, which a right-click on a pane has just made it, whatever the session's still to hear.
-            menus::Action::SetSpread(spread) => self.inner.core.push(CoreCall::SetSpread((self.inner.panes.count() > 1).then(|| self.inner.panes.tab_of(self.inner.panes.reading())).flatten(), spread)),
+            menus::Action::SetSpread(spread) => self.inner.core.push(CoreCall::SetSpread(
+                (self.inner.panes.count() > 1)
+                    .then(|| self.inner.panes.tab_of(self.inner.panes.reading()))
+                    .flatten(),
+                spread,
+            )),
             menus::Action::Rotate(turns) => self.inner.core.push(CoreCall::Rotate(turns)),
             menus::Action::Undo => self.inner.core.push(CoreCall::UndoOrRedo(true)),
             menus::Action::Redo => self.inner.core.push(CoreCall::UndoOrRedo(false)),
@@ -2087,7 +2593,13 @@ impl AppCore {
         let published = lock(&self.inner.published);
         // Save offered only where Save works: with it off for a signed document, the way on is Save As's unsigned copy.
         let save_off = published.reader.edited && !published.reader.save_enabled && !published.reader.saving;
-        saving::close_prompt(published.reader.shown_tab, &published.reader.document_name, published.reader.edited, published.sidebar.undone_owner_steps, save_off)
+        saving::close_prompt(
+            published.reader.shown_tab,
+            &published.reader.document_name,
+            published.reader.edited,
+            published.sidebar.undone_owner_steps,
+            save_off,
+        )
     }
 
     /// The close prompt's answer. Save closes once it's saved, and not if the save fails, which says why. Don't Save throws the edits away and closes. Save As opens its sheet, and the tab stays.
@@ -2125,7 +2637,9 @@ impl AppCore {
     /// The mouse went down on a page, in the document view's coordinates, the same at any zoom. Apply what comes back in the same transaction. It looks through text already here and never waits for any.
     /// In a comparison, a press in a pane makes it the one being read, and what was selected in another goes, so there's one selection to copy.
     pub fn selection_press(&self, pane: u32, x: f64, y: f64, clicks: u32, shift: bool) -> Vec<ReaderOp> {
-        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else { return Vec::new() };
+        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else {
+            return Vec::new();
+        };
         if let Some(tab) = self.inner.panes.focus(pane as usize) {
             // Never a wait on another pane: a busy one lets go of its selection from its own thread.
             for other in self.inner.panes.engines(&self.inner.engine) {
@@ -2143,7 +2657,9 @@ impl AppCore {
     }
 
     pub fn selection_drag(&self, pane: u32, x: f64, y: f64) -> Vec<ReaderOp> {
-        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else { return Vec::new() };
+        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else {
+            return Vec::new();
+        };
         if self.inner.tool.is_drawing() {
             return self.inner.tool.drag(&engine, pane as usize, x, y);
         }
@@ -2152,7 +2668,9 @@ impl AppCore {
 
     /// The mouse went up. A still single click on a link follows it, by Rust's rule: within the document at once, a web or email address only once the sheet's been answered, and anything else never, with a notice saying why.
     pub fn selection_release(&self, pane: u32) -> Vec<ReaderOp> {
-        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else { return Vec::new() };
+        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else {
+            return Vec::new();
+        };
         if self.inner.tool.is_drawing() {
             return self.inner.tool.release(&self.inner, &engine, pane as usize);
         }
@@ -2165,10 +2683,18 @@ impl AppCore {
 
     /// **What the pointer looks like over a page, and what a link under it says.** A link's page not read yet says nothing for now and is read next, so the look comes with the next move. A short lock on the page view and the published state, never the session's.
     pub fn pointer_look(&self, pane: u32, x: f64, y: f64) -> linking::PointerLook {
-        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else { return linking::PointerLook { cursor: "arrow".into(), hint: None } };
+        let Some(engine) = self.inner.panes.engine(&self.inner.engine, pane as usize) else {
+            return linking::PointerLook {
+                cursor: "arrow".into(),
+                hint: None,
+            };
+        };
         // The snapshot tool's pointer is a crosshair wherever it is, and a link isn't followed while it's on.
         if self.inner.tool.is_on() {
-            return linking::PointerLook { cursor: "crosshair".into(), hint: None };
+            return linking::PointerLook {
+                cursor: "crosshair".into(),
+                hint: None,
+            };
         }
         if let Some(hit) = engine.pointer_link(x, y) {
             let hint = match &hit.target {
@@ -2183,7 +2709,10 @@ impl AppCore {
             };
             return linking::PointerLook { cursor: "link".into(), hint };
         }
-        linking::PointerLook { cursor: if engine.pointer_is_over_text(x, y) { "ibeam" } else { "arrow" }.into(), hint: None }
+        linking::PointerLook {
+            cursor: if engine.pointer_is_over_text(x, y) { "ibeam" } else { "arrow" }.into(),
+            hint: None,
+        }
     }
 
     /// The sheet asking about a web or email address was answered, by its id. With Open, the address comes back for the host to hand to the system, exactly as the sheet showed it; with Cancel, nothing does.
@@ -2202,7 +2731,10 @@ impl AppCore {
     /// What the go-to field starts with, and its tooltip.
     pub fn page_field(&self) -> linking::PageField {
         let reader = lock(&self.inner.published).reader.clone();
-        linking::PageField { editing_text: reader.page_text, tooltip: "Page. Click to type a page number, or what the document calls a page, such as iv".into() }
+        linking::PageField {
+            editing_text: reader.page_text,
+            tooltip: "Page. Click to type a page number, or what the document calls a page, such as iv".into(),
+        }
     }
 
     /// Return in the go-to field: a label the file uses, or a page number. Says whether it was something to look up; one that names no page says so by the page.
@@ -2230,7 +2762,10 @@ impl AppCore {
         if self.inner.tool.is_on() {
             return false;
         }
-        self.inner.panes.engine(&self.inner.engine, pane as usize).is_some_and(|engine| engine.pointer_is_over_text(x, y))
+        self.inner
+            .panes
+            .engine(&self.inner.engine, pane as usize)
+            .is_some_and(|engine| engine.pointer_is_over_text(x, y))
     }
 
     /// How far to scroll per step of a drag this far past the view's edge.
@@ -2262,7 +2797,11 @@ impl AppCore {
 
     /// Where a point on a page is in the document, for QA to go through what the mouse goes through.
     pub fn document_point(&self, pane: u32, page: u32, x: f64, y: f64) -> Option<DocumentPoint> {
-        self.inner.panes.engine(&self.inner.engine, pane as usize)?.document_point(page, x, y).map(|(x, y)| DocumentPoint { x, y })
+        self.inner
+            .panes
+            .engine(&self.inner.engine, pane as usize)?
+            .document_point(page, x, y)
+            .map(|(x, y)| DocumentPoint { x, y })
     }
 
     /// The pane being read, for QA and the host.
@@ -2283,7 +2822,9 @@ impl AppCore {
     /// What the reader typed in the zoom level's field, with their Mac's decimal sign. Says whether it was a level: if not, nothing changes and the field shows what it was. Held to the limits as every zoom is.
     pub fn zoom_typed(&self, text: String, decimal_separator: String) -> bool {
         let decimal = decimal_separator.chars().next().unwrap_or('.');
-        let Some(zoom) = recto_reader::tiles::typed_zoom(&text, decimal) else { return false };
+        let Some(zoom) = recto_reader::tiles::typed_zoom(&text, decimal) else {
+            return false;
+        };
         self.inner.panes.zoom_all(&self.inner.engine, zoom).is_some()
     }
 
@@ -2322,7 +2863,10 @@ impl AppCore {
     /// There's no window to wait for, so this launch has come up as far as it goes.
     pub fn no_window_to_show(&self) {
         let updates = Arc::clone(&self.inner.updates);
-        let _ = std::thread::Builder::new().name("recto-update-frame".into()).stack_size(UPDATE_FRAME_STACK).spawn(move || updates.first_frame(recto_update::wall_ms()));
+        let _ = std::thread::Builder::new()
+            .name("recto-update-frame".into())
+            .stack_size(UPDATE_FRAME_STACK)
+            .spawn(move || updates.first_frame(recto_update::wall_ms()));
     }
 
     /// The UI thread has woken.
@@ -2381,7 +2925,9 @@ impl AppCore {
             return false;
         }
         // It's asked on the UI thread, which doesn't wait for whatever has the session: this comes round again.
-        let Some(active) = self.inner.host.session.try_with_session(|session| session.active()) else { return false };
+        let Some(active) = self.inner.host.session.try_with_session(|session| session.active()) else {
+            return false;
+        };
         active.is_none() || self.inner.engine.is_on_place() || self.inner.engine.is_showable()
     }
 
@@ -2391,10 +2937,15 @@ impl AppCore {
             engine.window_up();
         }
         let report = self.inner.engine.report().0;
-        *lock(&self.inner.first_shown) = Some(json!({ "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"], "tile_layers": tile_layers, "ms_from_start": self.inner.started.elapsed().as_secs_f64() * 1000.0 }));
+        *lock(&self.inner.first_shown) = Some(
+            json!({ "home": home, "page": report["page"], "scroll_y": report["scroll_y"], "scroll_x": report["scroll_x"], "magnification": report["magnification"], "settled": report["settled"], "tab": report["tab"], "tile_layers": tile_layers, "ms_from_start": self.inner.started.elapsed().as_secs_f64() * 1000.0 }),
+        );
         // The installer's waiting for this, off this thread, as it writes a small file and may start a worker, and only for a version that's new here.
         let updates = Arc::clone(&self.inner.updates);
-        let _ = std::thread::Builder::new().name("recto-update-frame".into()).stack_size(UPDATE_FRAME_STACK).spawn(move || updates.first_frame(recto_update::wall_ms()));
+        let _ = std::thread::Builder::new()
+            .name("recto-update-frame".into())
+            .stack_size(UPDATE_FRAME_STACK)
+            .spawn(move || updates.first_frame(recto_update::wall_ms()));
     }
 
     /// Where the new window goes, on the screens there are now. Rust's rule, from what was saved. In a quiet run it keeps its place off every screen, and only its size comes back.
@@ -2403,24 +2954,100 @@ impl AppCore {
         let activate = app.focus.app_frontmost;
         let focus_sidebar = app.focus.view == FocusView::Sidebar;
         let in_background = updates::opens_in_background(self.inner.updates.arrived_by_update(), activate);
-        let Some(saved) = app.window else { return WindowPlacement { saved: false, x: 0.0, y: 0.0, width: 0.0, height: 0.0, full_screen: false, activate, focus_sidebar, in_background, full_screen_when_active: false } };
+        let Some(saved) = app.window else {
+            return WindowPlacement {
+                saved: false,
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 0.0,
+                full_screen: false,
+                activate,
+                focus_sidebar,
+                in_background,
+                full_screen_when_active: false,
+            };
+        };
         if self.qa_mode {
-            return WindowPlacement { saved: true, x: -40_000.0, y: -40_000.0, width: saved.frame.width.max(record::WINDOW_MIN.0), height: saved.frame.height.max(record::WINDOW_MIN.1), full_screen: saved.full_screen, activate, focus_sidebar, in_background: false, full_screen_when_active: false };
+            return WindowPlacement {
+                saved: true,
+                x: -40_000.0,
+                y: -40_000.0,
+                width: saved.frame.width.max(record::WINDOW_MIN.0),
+                height: saved.frame.height.max(record::WINDOW_MIN.1),
+                full_screen: saved.full_screen,
+                activate,
+                focus_sidebar,
+                in_background: false,
+                full_screen_when_active: false,
+            };
         }
-        let now: Vec<ScreenNow> = screens.into_iter().map(|screen| ScreenNow { id: screen.id, name: screen.name, frame: Rect { x: screen.x, y: screen.y, width: screen.width, height: screen.height }, visible: Rect { x: screen.visible_x, y: screen.visible_y, width: screen.visible_width, height: screen.visible_height } }).collect();
+        let now: Vec<ScreenNow> = screens
+            .into_iter()
+            .map(|screen| ScreenNow {
+                id: screen.id,
+                name: screen.name,
+                frame: Rect {
+                    x: screen.x,
+                    y: screen.y,
+                    width: screen.width,
+                    height: screen.height,
+                },
+                visible: Rect {
+                    x: screen.visible_x,
+                    y: screen.visible_y,
+                    width: screen.visible_width,
+                    height: screen.visible_height,
+                },
+            })
+            .collect();
         let place = place_window(&saved, &now);
         let (full_screen, full_screen_when_active) = updates::full_screen_on_showing(place.full_screen, in_background);
-        WindowPlacement { saved: true, x: place.frame.x, y: place.frame.y, width: place.frame.width, height: place.frame.height, full_screen, activate, focus_sidebar, in_background, full_screen_when_active }
+        WindowPlacement {
+            saved: true,
+            x: place.frame.x,
+            y: place.frame.y,
+            width: place.frame.width,
+            height: place.frame.height,
+            full_screen,
+            activate,
+            focus_sidebar,
+            in_background,
+            full_screen_when_active,
+        }
     }
 
     /// The window moved, resized or went full screen. Off a window's delegate, so at most as often as those.
     pub fn window_changed(&self, frame: Option<Vec<f64>>, screen: Option<ScreenInfo>, full_screen: bool) {
         let mut app = lock(&self.inner.app);
-        let saved = app.window.get_or_insert(WindowRecord { frame: Rect { x: 0.0, y: 0.0, width: 1440.0, height: 900.0 }, screen: None, full_screen: false });
+        let saved = app.window.get_or_insert(WindowRecord {
+            frame: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1440.0,
+                height: 900.0,
+            },
+            screen: None,
+            full_screen: false,
+        });
         // Its frame in full screen isn't where leaving full screen takes it.
         if let Some([x, y, width, height]) = frame.as_deref() {
-            saved.frame = Rect { x: *x, y: *y, width: *width, height: *height };
-            saved.screen = screen.map(|screen| ScreenRecord { id: screen.id, name: recto_core::clean_line(&screen.name), frame: Rect { x: screen.x, y: screen.y, width: screen.width, height: screen.height } });
+            saved.frame = Rect {
+                x: *x,
+                y: *y,
+                width: *width,
+                height: *height,
+            };
+            saved.screen = screen.map(|screen| ScreenRecord {
+                id: screen.id,
+                name: recto_core::clean_line(&screen.name),
+                frame: Rect {
+                    x: screen.x,
+                    y: screen.y,
+                    width: screen.width,
+                    height: screen.height,
+                },
+            });
         }
         saved.full_screen = full_screen;
         drop(app);
@@ -2459,7 +3086,11 @@ impl AppCore {
         state.focus.app_frontmost = app;
         state.focus.window_key = window_key;
         drop(state);
-        if went_back { self.inner.saver.write_soon() } else { self.inner.saver.view_changed() }
+        if went_back {
+            self.inner.saver.write_soon()
+        } else {
+            self.inner.saver.view_changed()
+        }
         // Back from another app, which may have moved, replaced or deleted a file that's showing: each is looked at, a stat on a thread of its own, and said if it's something else now.
         if came_back {
             self.inner.core.push(CoreCall::LookAtShown);
@@ -2596,9 +3227,21 @@ impl AppCore {
                 inner.updates.stop_over();
             }
             inner.listener.quit_answer(if fine || unsaved.is_empty() {
-                QuitAnswer { go: true, title: String::new(), message: String::new(), quit_button: String::new(), stay_button: String::new() }
+                QuitAnswer {
+                    go: true,
+                    title: String::new(),
+                    message: String::new(),
+                    quit_button: String::new(),
+                    stay_button: String::new(),
+                }
             } else {
-                QuitAnswer { go: false, title: "Your unsaved edits couldn't be kept".into(), message: "RectoPDF couldn't write them to the state folder. If you quit now, they'll be lost.".into(), quit_button: "Quit Anyway".into(), stay_button: "Stay".into() }
+                QuitAnswer {
+                    go: false,
+                    title: "Your unsaved edits couldn't be kept".into(),
+                    message: "RectoPDF couldn't write them to the state folder. If you quit now, they'll be lost.".into(),
+                    quit_button: "Quit Anyway".into(),
+                    stay_button: "Stay".into(),
+                }
             });
         });
     }
@@ -2628,7 +3271,9 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
     // This goes for `session restore` too: nothing drawn stays from before.
     if synced.panes.iter_mut().any(|pane| pane.tab.take().is_some()) {
         inner.engine.deactivate();
-        inner.panes.set_count(&inner.engine, 1, synced.paper.unwrap_or(PaperKind::White), !lock(&inner.app).window_closed);
+        inner
+            .panes
+            .set_count(&inner.engine, 1, synced.paper.unwrap_or(PaperKind::White), !lock(&inner.app).window_closed);
         synced.count = 1;
         synced.panes.truncate(1);
     }
@@ -2661,12 +3306,22 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
                     app.focus = saved.focus;
                     let active = restored.record.active.map(TabId);
                     app.contents_resume = active.zip(saved.contents_scroll);
-                    app.selection_resume = active.and_then(|id| restored.record.tabs.iter().find(|tab| tab.id == id.0)?.selection.map(|selection| (id, selection)));
+                    app.selection_resume = active.and_then(|id| {
+                        restored
+                            .record
+                            .tabs
+                            .iter()
+                            .find(|tab| tab.id == id.0)?
+                            .selection
+                            .map(|selection| (id, selection))
+                    });
                     app.contents_y = saved.contents_scroll.map(|scroll| scroll.y);
                 }
                 // A code this build doesn't know has no words, and goes.
                 *lock(&host.notice) = saved.notice.clone().filter(|code| record::notices::words(code).is_some());
-                holding = host.session.with_session(|session| session.active().and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id)))));
+                holding = host
+                    .session
+                    .with_session(|session| session.active().and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id)))));
             }
         }
         Loaded::Nothing if first_time => migrate_older_settings(inner),
@@ -2701,12 +3356,21 @@ fn apply_restored(inner: &Arc<Inner>, loaded: Loaded, synced: &mut Synced, reads
 /// The two small files that held the paper and the agent icon before there was a record. Read once, and they go when the record's written.
 fn migrate_older_settings(inner: &Inner) {
     let Some(paths) = &inner.paths else { return };
-    let paper = recto_platform::local::read_private_file(&paths.root.join(PAPER_FILE), 16).ok().flatten().and_then(|bytes| std::str::from_utf8(&bytes).ok().and_then(Paper::from_name));
+    let paper = recto_platform::local::read_private_file(&paths.root.join(PAPER_FILE), 16)
+        .ok()
+        .flatten()
+        .and_then(|bytes| std::str::from_utf8(&bytes).ok().and_then(Paper::from_name));
     let hidden = paths.root.join(AGENT_ICON_FILE).exists();
     if paper.is_none() && !hidden {
         return;
     }
-    inner.host.session.with_session(|session| session.set_view(ViewSettings { paper: paper.or(session.view().paper), agent_icon_hidden: hidden, ..session.view() }));
+    inner.host.session.with_session(|session| {
+        session.set_view(ViewSettings {
+            paper: paper.or(session.view().paper),
+            agent_icon_hidden: hidden,
+            ..session.view()
+        })
+    });
     inner.saver.write_soon();
     let _ = std::fs::remove_file(paths.root.join(PAPER_FILE));
     let _ = std::fs::remove_file(paths.root.join(AGENT_ICON_FILE));
@@ -2742,26 +3406,23 @@ fn start_serving(inner: &Arc<Inner>) {
     let served = Arc::clone(&inner.host);
     let inner = Arc::clone(inner);
     // Blocked in `poll` with nothing happening, as `recto serve` is.
-    let _ = std::thread::Builder::new()
-        .name("recto-control".into())
-        .stack_size(512 * 1024)
-        .spawn(move || {
-            // The socket wasn't free at the start. If that's the app this one takes over from, on its way out, it soon will be, and an update mustn't lose the socket to that. If it's another session it stays that one's, and this thread goes.
-            let began = Instant::now();
-            let mut server = waiting;
-            while server.is_none() && began.elapsed() < SOCKET_PATIENCE {
-                std::thread::sleep(Duration::from_millis(20));
-                server = inner.paths.as_ref().and_then(|paths| Server::bind(paths).ok());
-                if let Some(bound) = &server {
-                    *lock(&inner.stopper) = bound.stopper().ok();
-                    *lock(&inner.announcer) = bound.announcer().ok();
-                }
+    let _ = std::thread::Builder::new().name("recto-control".into()).stack_size(512 * 1024).spawn(move || {
+        // The socket wasn't free at the start. If that's the app this one takes over from, on its way out, it soon will be, and an update mustn't lose the socket to that. If it's another session it stays that one's, and this thread goes.
+        let began = Instant::now();
+        let mut server = waiting;
+        while server.is_none() && began.elapsed() < SOCKET_PATIENCE {
+            std::thread::sleep(Duration::from_millis(20));
+            server = inner.paths.as_ref().and_then(|paths| Server::bind(paths).ok());
+            if let Some(bound) = &server {
+                *lock(&inner.stopper) = bound.stopper().ok();
+                *lock(&inner.announcer) = bound.announcer().ok();
             }
-            let Some(server) = server else { return };
-            drop(inner);
-            let _ = server.run(served, Limits::default());
-            ending.session_ended();
-        });
+        }
+        let Some(server) = server else { return };
+        drop(inner);
+        let _ = server.run(served, Limits::default());
+        ending.session_ended();
+    });
 }
 
 fn session_thread(inner: &Arc<Inner>) {
@@ -2876,7 +3537,11 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::Jump(id, page, within) => {
                 // Where the reader is, as the page view has it now, is what Back comes back to. `jump` clamps: a contents entry can't send the reader off the end.
                 inner.take_places();
-                if let Ok(event) = host.session.with_session(|session| session.jump(id, page, within).map(|()| recto_agent::page_changed(session, id, session.tab(id).map_or(page, |tab| tab.page) + 1))) {
+                if let Ok(event) = host.session.with_session(|session| {
+                    session
+                        .jump(id, page, within)
+                        .map(|()| recto_agent::page_changed(session, id, session.tab(id).map_or(page, |tab| tab.page) + 1))
+                }) {
                     events.push(event);
                 }
             }
@@ -2897,7 +3562,10 @@ fn session_thread(inner: &Arc<Inner>) {
                 let moved = host.session.with_session(|session| {
                     let id = session.active()?;
                     let moved = if back { session.go_back(id) } else { session.go_forward(id) };
-                    moved.ok().filter(|moved| *moved).and_then(|_| session.tab(id).map(|tab| recto_agent::page_changed(session, id, tab.page + 1)))
+                    moved
+                        .ok()
+                        .filter(|moved| *moved)
+                        .and_then(|_| session.tab(id).map(|tab| recto_agent::page_changed(session, id, tab.page + 1)))
                 });
                 if let Some(event) = moved {
                     events.push(event);
@@ -2911,7 +3579,9 @@ fn session_thread(inner: &Arc<Inner>) {
                     (tab, tab.and_then(|id| session.path_of(id)))
                 });
                 lock(&inner.password_asks).opened_again(&[Some(path.clone()), own].into_iter().flatten().collect::<Vec<_>>(), tab);
-                let cold = host.session.with_session(|session| session.tab_for_path(&path).and_then(|id| session.wake_for_tap(id)));
+                let cold = host
+                    .session
+                    .with_session(|session| session.tab_for_path(&path).and_then(|id| session.wake_for_tap(id)));
                 if let Some((tab, file)) = cold {
                     reads.wanted_tab = Some(tab);
                     reads.start(inner, Reading::Tab(tab), file);
@@ -2934,7 +3604,12 @@ fn session_thread(inner: &Arc<Inner>) {
                     session.apply_file_status(id, status);
                     session.forget_read(id);
                 });
-                let reread = host.session.with_session(|session| session.active().filter(|active| *active == id).and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id)))));
+                let reread = host.session.with_session(|session| {
+                    session
+                        .active()
+                        .filter(|active| *active == id)
+                        .and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id))))
+                });
                 if let Some((id, path, stamp)) = reread {
                     reads.wanted_tab = Some(id);
                     reads.start_restored(inner, id, path, stamp);
@@ -2948,7 +3623,12 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::FileLength(id, pages, version) => {
                 // What a sleep file said of it is wrong, so it's read after all.
                 let wrong = host.session.with_session(|session| session.file_length_is(id, pages, version));
-                let reread = host.session.with_session(|session| session.active().filter(|active| wrong && *active == id).and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id)))));
+                let reread = host.session.with_session(|session| {
+                    session
+                        .active()
+                        .filter(|active| wrong && *active == id)
+                        .and_then(|id| Some((id, session.path_of(id)?, session.own_stamp(id))))
+                });
                 if let Some((id, path, stamp)) = reread {
                     reads.wanted_tab = Some(id);
                     reads.start_restored(inner, id, path, stamp);
@@ -2968,11 +3648,16 @@ fn session_thread(inner: &Arc<Inner>) {
             CoreCall::CloseAfterSave(id) => {
                 // An edit that came in between the save and now isn't in the file: the tab stays, and says so, rather than lose it (review).
                 let before = host.session.with_session(|session| session.active());
-                match host.session.with_session(|session| session.close_after_save(id).map(|closed| (closed, session.active()))) {
+                match host
+                    .session
+                    .with_session(|session| session.close_after_save(id).map(|closed| (closed, session.active())))
+                {
                     Ok((false, _)) => *lock(&inner.action_notice) = Some(saving::SAVED_NOT_CLOSED.to_string()),
                     Ok((true, now)) => {
                         events.push(Event::new("tab_closed", json!({ "tab": id.0 })));
-                        if now != before && let Some(active) = now {
+                        if now != before
+                            && let Some(active) = now
+                        {
                             events.push(Event::new("tab_activated", json!({ "tab": active.0 })));
                         }
                     }
@@ -3008,7 +3693,12 @@ fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::UndoOrRedo(undo) => host.session.with_session(|session| {
                 if let Some(id) = session.active()
-                    && (if undo { session.undo_edit_as(id, recto_session::Author::Owner) } else { session.redo_edit_as(id, recto_session::Author::Owner) }).unwrap_or(false)
+                    && (if undo {
+                        session.undo_edit_as(id, recto_session::Author::Owner)
+                    } else {
+                        session.redo_edit_as(id, recto_session::Author::Owner)
+                    })
+                    .unwrap_or(false)
                 {
                     events.push(recto_agent::edits_changed(session, id));
                 }
@@ -3025,7 +3715,13 @@ fn session_thread(inner: &Arc<Inner>) {
                 }
             }
             CoreCall::FocusPane(id) => {
-                let cold = host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.contains(id)).then(|| session.wake_for_tap(id)).flatten());
+                let cold = host.session.with_session(|session| {
+                    session
+                        .comparison()
+                        .is_some_and(|comparison| comparison.contains(id))
+                        .then(|| session.wake_for_tap(id))
+                        .flatten()
+                });
                 match cold {
                     Some((tab, path)) => {
                         reads.wanted_tab = Some(tab);
@@ -3062,7 +3758,10 @@ fn session_thread(inner: &Arc<Inner>) {
             }
             CoreCall::Page(page, failure, tab) => {
                 host.session.with_session(|session| session.note_drawn(DrawNote { tab, page, failure }));
-                events.push(Event::new(if failure.is_some() { "page_failed" } else { "page_drawn" }, json!({ "tab": tab.0, "page": page + 1 })));
+                events.push(Event::new(
+                    if failure.is_some() { "page_failed" } else { "page_drawn" },
+                    json!({ "tab": tab.0, "page": page + 1 }),
+                ));
                 // Nothing the sidebar or the reader shows comes from this. Going round for it would rebuild the model per tile drawn.
                 if let Some(announcer) = lock(&inner.announcer).as_ref() {
                     announcer.announce(events);
@@ -3153,7 +3852,14 @@ impl FileReads {
             let path = if let FileStatus::Moved(moved, _) = &status { moved.clone() } else { path };
             let stamp = recto_platform::file_stamp(&path).ok();
             let (loaded, unlocked) = read_facts(&keys, &path);
-            core.push(CoreCall::Read(Box::new(FileRead { what, loaded, stamp, status: Some(status), history: None, unlocked })));
+            core.push(CoreCall::Read(Box::new(FileRead {
+                what,
+                loaded,
+                stamp,
+                status: Some(status),
+                history: None,
+                unlocked,
+            })));
         });
         if spawned.is_err() {
             self.running.remove(&Reading::Restored(id));
@@ -3188,13 +3894,25 @@ impl FileReads {
             let stamp = recto_platform::file_stamp(&path).ok();
             let (loaded, unlocked) = read_facts(&inner_for_read.keys, &path);
             // A PDF already open by another name keeps what it has. The session says for sure when this gets there.
-            let already = matches!(reading, Reading::File(_)) && inner_for_read.host.session.with_session(|session| session.tab_for_file(&path, stamp).is_some());
+            let already =
+                matches!(reading, Reading::File(_)) && inner_for_read.host.session.with_session(|session| session.tab_for_file(&path, stamp).is_some());
             // Only after a good read: taking it up marks it as open, and a file that couldn't be read won't have a tab to hold it.
-            let history = if matches!(reading, Reading::File(_)) && !already && loaded.is_ok() { saver.store.history_of(stamp, &path) } else { None };
+            let history = if matches!(reading, Reading::File(_)) && !already && loaded.is_ok() {
+                saver.store.history_of(stamp, &path)
+            } else {
+                None
+            };
             if let Some(before) = before {
                 before.wait(OPEN_ORDER_WAIT);
             }
-            core.push(CoreCall::Read(Box::new(FileRead { what: reading, loaded, stamp, status: None, history, unlocked })));
+            core.push(CoreCall::Read(Box::new(FileRead {
+                what: reading,
+                loaded,
+                stamp,
+                status: None,
+                history,
+                unlocked,
+            })));
             if let Some(done) = done {
                 done.finished();
             }
@@ -3226,7 +3944,11 @@ impl FileReads {
                 // The tab it's for may have been left already.
                 if lock(&inner.holding_tab).take().is_some() || self.wanted_tab == Some(tab) {
                     self.wanted_tab = None;
-                    host.session.with_session(|session| if session.active() == Some(tab) { session.wake_active() });
+                    host.session.with_session(|session| {
+                        if session.active() == Some(tab) {
+                            session.wake_active()
+                        }
+                    });
                 }
             }
             Reading::Tab(tab) => {
@@ -3253,7 +3975,15 @@ impl FileReads {
                     events.push(Event::new("tab_activated", json!({ "tab": tab.0 })));
                 }
             }
-            Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| host.session.with_session(|session| if read.unlocked { session.open_unlocked(&path, facts, read.stamp) } else { session.open_with_facts(&path, facts, read.stamp, read.history) })) {
+            Reading::File(path) => match read.loaded.map_err(SessionError::Open).and_then(|facts| {
+                host.session.with_session(|session| {
+                    if read.unlocked {
+                        session.open_unlocked(&path, facts, read.stamp)
+                    } else {
+                        session.open_with_facts(&path, facts, read.stamp, read.history)
+                    }
+                })
+            }) {
                 Ok(id) => {
                     events.push(Event::new("tab_opened", json!({ "tab": id.0 })));
                 }
@@ -3285,7 +4015,10 @@ fn compare_click_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
         Ok(recto_session::compare::CompareChange::Nothing) => {}
         Ok(_) => {
             let panes = inner.host.session.with_session(|session| session.panes());
-            events.push(Event::new("view_changed", json!({ "comparison": panes.iter().map(|tab| tab.0).collect::<Vec<_>>() })));
+            events.push(Event::new(
+                "view_changed",
+                json!({ "comparison": panes.iter().map(|tab| tab.0).collect::<Vec<_>>() }),
+            ));
         }
         Err(error) => *lock(&inner.action_notice) = Some(error.message().to_string()),
     }
@@ -3302,10 +4035,18 @@ fn tap_now(inner: &Inner, id: TabId, events: &mut Vec<Event>) {
 }
 
 /// By how many rows a change moved the place, for the host to take back so it stays put on screen: the place's row if it was listed before, or else the row it came from if that's listed still, or else the nearest chapter of it that was.
-fn place_shift(before: &[ContentsEntry], after: &[ContentsEntry], (from, removed, inserted): (u32, u32, u32), place_before: Option<u32>, place_after: Option<u32>) -> i32 {
+fn place_shift(
+    before: &[ContentsEntry],
+    after: &[ContentsEntry],
+    (from, removed, inserted): (u32, u32, u32),
+    place_before: Option<u32>,
+    place_after: Option<u32>,
+) -> i32 {
     let (from, removed, inserted) = (from as usize, removed as usize, inserted as usize);
     let rows = |count: usize| i32::try_from(count).unwrap_or(i32::MAX);
-    let Some(place) = place_after.map(|row| row as usize).filter(|&row| row < after.len()) else { return 0 };
+    let Some(place) = place_after.map(|row| row as usize).filter(|&row| row < after.len()) else {
+        return 0;
+    };
     if place < from {
         return 0;
     }
@@ -3344,7 +4085,12 @@ fn rows_changed(before: &[ContentsEntry], after: &[ContentsEntry]) -> (u32, u32,
         return (0, 0, 0);
     }
     let start = before.iter().zip(after).take_while(|(one, two)| one == two).count();
-    let end = before[start..].iter().rev().zip(after[start..].iter().rev()).take_while(|(one, two)| one == two).count();
+    let end = before[start..]
+        .iter()
+        .rev()
+        .zip(after[start..].iter().rev())
+        .take_while(|(one, two)| one == two)
+        .count();
     let count = |list: &[ContentsEntry]| u32::try_from(list.len() - start - end).unwrap_or(u32::MAX);
     (u32::try_from(start).unwrap_or(u32::MAX), count(before), count(after))
 }
@@ -3395,40 +4141,91 @@ fn pane_snapshot<L: DocLoader>(session: &recto_session::Session<L>, id: TabId, f
     // A save wrote these pages as they were shown: the page view goes on with its layout, place and selection.
     let follows = session.saved_from(id).map(sleeper::version_of);
     let mut map = match session.page_edits(id) {
-        None => PageMap { files: vec![own], slots: None, own: same_file, turns: None, expected: Vec::new(), follows },
+        None => PageMap {
+            files: vec![own],
+            slots: None,
+            own: same_file,
+            turns: None,
+            expected: Vec::new(),
+            follows,
+        },
         Some(edits) => {
             let mut files = vec![own];
             files.extend(edits.added_sources().iter().map(|added| added.path.to_path_buf()));
             // A page's quarter turns, one byte a page of an edited tab, and none at all while nothing's turned.
-            let turns = edits.slots().iter().any(|slot| slot.quarter_turns % 4 != 0).then(|| edits.slots().iter().map(|slot| slot.quarter_turns).collect::<Arc<[u8]>>());
+            let turns = edits
+                .slots()
+                .iter()
+                .any(|slot| slot.quarter_turns % 4 != 0)
+                .then(|| edits.slots().iter().map(|slot| slot.quarter_turns).collect::<Arc<[u8]>>());
             // Pages only turned are the file's own pages in its own order, which is what was drawn already: the same map, so nothing's dropped.
-            let own_order = edits.added_sources().is_empty() && edits.len() == edits.file_pages() && edits.slots().iter().enumerate().all(|(at, slot)| slot.source == 0 && slot.page as usize == at);
+            let own_order = edits.added_sources().is_empty()
+                && edits.len() == edits.file_pages()
+                && edits.slots().iter().enumerate().all(|(at, slot)| slot.source == 0 && slot.page as usize == at);
             let slots = (!own_order).then(|| edits.slots().iter().map(|slot| (slot.source, slot.page)).collect());
             // What each added PDF was when its pages were added: a page from one that's changed since isn't drawn.
             let mut expected = vec![None];
             expected.extend(edits.added_sources().iter().map(|added| added.stamp));
-            PageMap { files, slots, own: same_file, turns, expected, follows }
+            PageMap {
+                files,
+                slots,
+                own: same_file,
+                turns,
+                expected,
+                follows,
+            }
         }
     };
     // The tab's view turned, as the state record carries it: every page drawn turned on top of what its edits turn, and nothing about the file. One byte a page of a hot or warm tab, and none while it's not turned.
     let view_turns = tab.view_rotation % 4;
     if view_turns != 0 {
         let pages = session.pages_in(id) as usize;
-        let turns: Arc<[u8]> = (0..pages).map(|at| (map.turns.as_ref().and_then(|turns| turns.get(at)).copied().unwrap_or(0) + view_turns) % 4).collect();
+        let turns: Arc<[u8]> = (0..pages)
+            .map(|at| (map.turns.as_ref().and_then(|turns| turns.get(at)).copied().unwrap_or(0) + view_turns) % 4)
+            .collect();
         map.turns = Some(turns);
     }
     // Pane 0's page view keeps the warm tabs that aren't on screen, as many as the panes leave of the live documents. A tab in another pane is that pane's.
     let warm: Vec<u32> = if first { warm_beside_panes(session.warm_tabs(), panes) } else { Vec::new() };
-    let problem = session.tab_notice_message(id).map(str::to_string).or_else(|| tab.problem.map(|problem| problem.message().to_string()));
-    let saved = session.place_to_show(id).map(|place| SavedPlace { page: place.page, anchor: (place.anchor_page, place.within), x: place.x, y: place.y, document_height: place.document_height, magnification: place.zoom, page_size: (place.page_width > 0.0 && place.page_height > 0.0).then_some(recto_reader::layout::PageBox { width: place.page_width, height: place.page_height }) });
+    let problem = session
+        .tab_notice_message(id)
+        .map(str::to_string)
+        .or_else(|| tab.problem.map(|problem| problem.message().to_string()));
+    let saved = session.place_to_show(id).map(|place| SavedPlace {
+        page: place.page,
+        anchor: (place.anchor_page, place.within),
+        x: place.x,
+        y: place.y,
+        document_height: place.document_height,
+        magnification: place.zoom,
+        page_size: (place.page_width > 0.0 && place.page_height > 0.0).then_some(recto_reader::layout::PageBox {
+            width: place.page_width,
+            height: place.page_height,
+        }),
+    });
     // Edits that can't be read just now can't say what's on the pages, so it's the file that's shown.
     let pages = if session.list_is_asleep(id) { tab.page_count } else { session.pages_in(id) };
-    Some(PaneSnapshot { id, pages, page: tab.page, map, warm, problem, saved, spread: tab.spread, title: tab.name.to_string(), jump: None, toc: session.warm_toc(id) })
+    Some(PaneSnapshot {
+        id,
+        pages,
+        page: tab.page,
+        map,
+        warm,
+        problem,
+        saved,
+        spread: tab.spread,
+        title: tab.name.to_string(),
+        jump: None,
+        toc: session.warm_toc(id),
+    })
 }
 
 /// The warm tabs off screen that pane 0's page view keeps: most recent first, and only as many as leave the panes and these at [`recto_session::MAX_WARM`] live documents (SPEC §2).
 fn warm_beside_panes(warm: impl Iterator<Item = TabId>, panes: &[TabId]) -> Vec<u32> {
-    warm.filter(|other| !panes.contains(other)).take(recto_session::MAX_WARM.saturating_sub(panes.len())).map(|other| other.0).collect()
+    warm.filter(|other| !panes.contains(other))
+        .take(recto_session::MAX_WARM.saturating_sub(panes.len()))
+        .map(|other| other.0)
+        .collect()
 }
 
 /// **Follows a link a click landed on,** by Rust's rule: a page of this document at once, as a jump; a web or email address only once the sheet's been answered; Back and Forward; and anything else never, with a notice saying why.
@@ -3473,10 +4270,25 @@ fn show_in_pane(inner: &Inner, engine: &Engine, synced: &mut PaneSynced, shown: 
             engine.note_wake(id.0, Instant::now());
             inner.give_sleep_view(engine, id);
         }
-        engine.activate(id.0, shown.pages, shown.page, shown.map.clone(), &shown.warm, shown.saved, reader_spread(shown.spread));
+        engine.activate(
+            id.0,
+            shown.pages,
+            shown.page,
+            shown.map.clone(),
+            &shown.warm,
+            shown.saved,
+            reader_spread(shown.spread),
+        );
         synced.spread = Some(shown.spread);
         // What was selected comes back on the tab it was on, once.
-        let selection = { let mut app = lock(&inner.app); if app.selection_resume.as_ref().is_some_and(|(tab, _)| *tab == id) { app.selection_resume.take().map(|(_, selection)| selection) } else { None } };
+        let selection = {
+            let mut app = lock(&inner.app);
+            if app.selection_resume.as_ref().is_some_and(|(tab, _)| *tab == id) {
+                app.selection_resume.take().map(|(_, selection)| selection)
+            } else {
+                None
+            }
+        };
         if let Some(selection) = selection {
             engine.restore_selection((selection.from_page, selection.from_char), (selection.to_page, selection.to_char));
         }
@@ -3536,7 +4348,11 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }
     }
     let engines = inner.panes.engines(&inner.engine);
-    let moved: Vec<(usize, u32)> = engines.iter().enumerate().filter_map(|(pane, engine)| Some((pane, engine.take_moved_page()?))).collect();
+    let moved: Vec<(usize, u32)> = engines
+        .iter()
+        .enumerate()
+        .filter_map(|(pane, engine)| Some((pane, engine.take_moved_page()?)))
+        .collect();
     // What the page views hold of tabs they're about to let go of goes in the session first, as a cold tab holds nothing there.
     inner.take_places();
     let shown_before: Vec<Option<TabId>> = synced.panes.iter().map(|pane| pane.tab).collect();
@@ -3555,11 +4371,20 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
                 events.push(recto_agent::page_changed(session, id, page + 1));
             }
         }
-        let mut snapshots: Vec<PaneSnapshot> = panes.iter().enumerate().filter_map(|(pane, id)| pane_snapshot(session, *id, pane == 0, &panes)).collect();
+        let mut snapshots: Vec<PaneSnapshot> = panes
+            .iter()
+            .enumerate()
+            .filter_map(|(pane, id)| pane_snapshot(session, *id, pane == 0, &panes))
+            .collect();
         for snapshot in &mut snapshots {
             snapshot.jump = session.take_jump(snapshot.id);
         }
-        let plan = (session.comparison().cloned(), panes.iter().map(|id| session.pages_in(*id)).collect::<Vec<u32>>(), session.compare_note(), active);
+        let plan = (
+            session.comparison().cloned(),
+            panes.iter().map(|id| session.pages_in(*id)).collect::<Vec<u32>>(),
+            session.compare_note(),
+            active,
+        );
         let model = session.sidebar();
         let mut current = None;
         let mut active_index = None;
@@ -3587,26 +4412,116 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         };
         let tab_rows = || model.rows.iter().filter(|row| row.kind == SessionRowKind::Tab);
         let compared = |id: TabId| session.comparison().is_some_and(|comparison| comparison.contains(id));
-        let same_tabs = held_tabs.len() == tab_count as usize && tab_rows().zip(held_tabs.iter()).all(|(row, tab)| row.tab.0 == tab.tab && row.current == tab.current && row.text == tab.text.as_str() && row.notice == tab.notice.as_deref() && compared(row.tab) == tab.in_comparison);
+        let same_tabs = held_tabs.len() == tab_count as usize
+            && tab_rows().zip(held_tabs.iter()).all(|(row, tab)| {
+                row.tab.0 == tab.tab
+                    && row.current == tab.current
+                    && row.text == tab.text.as_str()
+                    && row.notice == tab.notice.as_deref()
+                    && compared(row.tab) == tab.in_comparison
+            });
         let tabs = if same_tabs {
             held_tabs
         } else {
-            Arc::new(tab_rows().map(|row| SidebarRow { kind: RowKind::Tab, tab: row.tab.0, text: row.text.to_string(), page: row.page, depth: row.depth, current: row.current, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string), action: None, expandable: false, expanded: false, in_comparison: compared(row.tab) }).collect())
+            Arc::new(
+                tab_rows()
+                    .map(|row| SidebarRow {
+                        kind: RowKind::Tab,
+                        tab: row.tab.0,
+                        text: row.text.to_string(),
+                        page: row.page,
+                        depth: row.depth,
+                        current: row.current,
+                        rail_filled: false,
+                        rail_first: false,
+                        rail_last: false,
+                        notice: row.notice.map(str::to_string),
+                        action: None,
+                        expandable: false,
+                        expanded: false,
+                        in_comparison: compared(row.tab),
+                    })
+                    .collect(),
+            )
         };
         let tabs_version = if same_tabs { was.tabs_version } else { was.tabs_version + 1 };
-        let same = held.len() == contents_row_count as usize && model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).zip(held.iter()).all(|(row, entry)| row.tab.0 == entry.tab && row.page == entry.page && row.depth == entry.depth && row.text == entry.text.as_ref() && row.entry == entry.entry && row.expanded == entry.expanded && row.expandable == entry.expandable);
+        let same = held.len() == contents_row_count as usize
+            && model
+                .rows
+                .iter()
+                .filter(|row| row.kind == SessionRowKind::Contents)
+                .zip(held.iter())
+                .all(|(row, entry)| {
+                    row.tab.0 == entry.tab
+                        && row.page == entry.page
+                        && row.depth == entry.depth
+                        && row.text == entry.text.as_ref()
+                        && row.entry == entry.entry
+                        && row.expanded == entry.expanded
+                        && row.expandable == entry.expandable
+                });
         let rail_filled = u32::try_from(model.rail_filled).unwrap_or(u32::MAX);
         let (contents, contents_version, change, contents_place_shift) = if same {
-            (held, was.contents_version, (was.contents_changed_from, was.contents_removed, was.contents_inserted), was.contents_place_shift)
+            (
+                held,
+                was.contents_version,
+                (was.contents_changed_from, was.contents_removed, was.contents_inserted),
+                was.contents_place_shift,
+            )
         } else {
-            let list: Arc<Vec<ContentsEntry>> = Arc::new(model.rows.iter().filter(|row| row.kind == SessionRowKind::Contents).map(|row| ContentsEntry { tab: row.tab.0, text: row.text.into(), page: row.page, depth: row.depth, entry: row.entry, expandable: row.expandable, expanded: row.expanded }).collect());
+            let list: Arc<Vec<ContentsEntry>> = Arc::new(
+                model
+                    .rows
+                    .iter()
+                    .filter(|row| row.kind == SessionRowKind::Contents)
+                    .map(|row| ContentsEntry {
+                        tab: row.tab.0,
+                        text: row.text.into(),
+                        page: row.page,
+                        depth: row.depth,
+                        entry: row.entry,
+                        expandable: row.expandable,
+                        expanded: row.expanded,
+                    })
+                    .collect(),
+            );
             let change = rows_changed(&held, &list);
             let shift = place_shift(&held, &list, change, was.contents_current, current);
             (list, was.contents_version + 1, change, shift)
         };
         // The note over the contents stays put while they scroll, so it's drawn apart from them.
-        let contents_note = model.rows.iter().find(|row| row.kind == SessionRowKind::Note).map(|row| SidebarRow { kind: RowKind::Note, tab: row.tab.0, text: row.text.to_string(), page: None, depth: 0, current: false, rail_filled: false, rail_first: false, rail_last: false, notice: row.notice.map(str::to_string), action: row.action.map(|action| action.id().to_string()), expandable: false, expanded: false, in_comparison: false });
-        let view = SidebarView { contents_note, tabs_version, tab_count, active_index, contents_count: contents_row_count, contents_version, contents_changed_from: change.0, contents_removed: change.1, contents_inserted: change.2, contents_place_shift, contents_current: current, toc_open: model.toc_open, edited: model.edited, undone_owner_steps: model.undone_owner_steps };
+        let contents_note = model.rows.iter().find(|row| row.kind == SessionRowKind::Note).map(|row| SidebarRow {
+            kind: RowKind::Note,
+            tab: row.tab.0,
+            text: row.text.to_string(),
+            page: None,
+            depth: 0,
+            current: false,
+            rail_filled: false,
+            rail_first: false,
+            rail_last: false,
+            notice: row.notice.map(str::to_string),
+            action: row.action.map(|action| action.id().to_string()),
+            expandable: false,
+            expanded: false,
+            in_comparison: false,
+        });
+        let view = SidebarView {
+            contents_note,
+            tabs_version,
+            tab_count,
+            active_index,
+            contents_count: contents_row_count,
+            contents_version,
+            contents_changed_from: change.0,
+            contents_removed: change.1,
+            contents_inserted: change.2,
+            contents_place_shift,
+            contents_current: current,
+            toc_open: model.toc_open,
+            edited: model.edited,
+            undone_owner_steps: model.undone_owner_steps,
+        };
         (snapshots, plan, view, tabs, contents, rail_filled, session.view(), model.place.clone())
     });
     // The paper first, so what's asked for next is drawn right.
@@ -3627,18 +4542,38 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let (comparison, pane_pages, compare_note, active) = plan;
     let reading_snapshot = snapshots.iter().find(|shown| Some(shown.id) == active).or(snapshots.first());
     let layout = reading_snapshot.map_or(String::new(), |shown| shown.spread.name().to_string());
-    let (edited, (can_undo, can_redo), edit_mode, can_rotate, saving_now, file, needs_rewrite, (can_go_back, can_go_forward), page_text) = inner.host.session.with_session(|session| {
-        let edit_mode = session.edit_mode();
-        match reading_snapshot {
-            Some(shown) => {
-                let page = session.tab(shown.id).map_or(0, |tab| tab.page);
-                let page_text = session.page_label(shown.id, page).unwrap_or_else(|| (page + 1).to_string());
-                (session.is_edited(shown.id), session.undo_and_redo(shown.id), edit_mode, session.can_edit_pages(shown.id), session.is_saving(shown.id), session.path_of(shown.id).zip(session.own_stamp(shown.id)).map(|(path, stamp)| (shown.id, path, stamp)), session.needs_rewrite(shown.id), session.can_go_back_and_forward(shown.id), page_text)
+    let (edited, (can_undo, can_redo), edit_mode, can_rotate, saving_now, file, needs_rewrite, (can_go_back, can_go_forward), page_text) =
+        inner.host.session.with_session(|session| {
+            let edit_mode = session.edit_mode();
+            match reading_snapshot {
+                Some(shown) => {
+                    let page = session.tab(shown.id).map_or(0, |tab| tab.page);
+                    let page_text = session.page_label(shown.id, page).unwrap_or_else(|| (page + 1).to_string());
+                    (
+                        session.is_edited(shown.id),
+                        session.undo_and_redo(shown.id),
+                        edit_mode,
+                        session.can_edit_pages(shown.id),
+                        session.is_saving(shown.id),
+                        session
+                            .path_of(shown.id)
+                            .zip(session.own_stamp(shown.id))
+                            .map(|(path, stamp)| (shown.id, path, stamp)),
+                        session.needs_rewrite(shown.id),
+                        session.can_go_back_and_forward(shown.id),
+                        page_text,
+                    )
+                }
+                None => (false, (false, false), edit_mode, false, false, None, false, (false, false), String::new()),
             }
-            None => (false, (false, false), edit_mode, false, false, None, false, (false, false), String::new()),
-        }
+        });
+    let (shown_tab, document_name, document_folder) = file.as_ref().map_or((0, String::new(), String::new()), |(id, path, _)| {
+        (
+            id.0,
+            path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+            path.parent().map(|folder| folder.display().to_string()).unwrap_or_default(),
+        )
     });
-    let (shown_tab, document_name, document_folder) = file.as_ref().map_or((0, String::new(), String::new()), |(id, path, _)| (id.0, path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(), path.parent().map(|folder| folder.display().to_string()).unwrap_or_default()));
     // A notice about one document doesn't stay over another: a save's note, seen on the next tab, would read as being about that one.
     if inner.notice_tab.swap(shown_tab, Ordering::SeqCst) != shown_tab {
         lock(&inner.action_notice).take();
@@ -3646,7 +4581,13 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // **Rust decides what a signed file's Save does** (SPEC decision 27): an edit a Save over it would break the signature with turns Save off, and Save As says its copy won't be signed.
     // Asked only with edits to save, off this thread, and the window's brought up to date again once it's known.
     let core_queue = Arc::clone(&inner.core);
-    let facts = if edited { file.as_ref().and_then(|(id, path, stamp)| inner.save_ui.signature_facts(*id, path, *stamp, move || core_queue.push(CoreCall::Reconcile))).unwrap_or_default() } else { recto_core::save::SignatureFacts::default() };
+    let facts = if edited {
+        file.as_ref()
+            .and_then(|(id, path, stamp)| inner.save_ui.signature_facts(*id, path, *stamp, move || core_queue.push(CoreCall::Reconcile)))
+            .unwrap_or_default()
+    } else {
+        recto_core::save::SignatureFacts::default()
+    };
     let save_off = save_needs_copy(facts, needs_rewrite);
     let save_as_note = save_off.then(|| saving::UNSIGNED_COPY.to_string());
     let problem = reading_snapshot.and_then(|shown| shown.problem.clone());
@@ -3699,10 +4640,20 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     // A protected tab showing with no password given is asked about, unless the person said Cancel and hasn't gone to it again, or its tries have run out.
     let (wants, active_tab) = inner.host.session.with_session(|session| {
         let active = session.active();
-        (active.filter(|id| session.needs_password(*id)).and_then(|id| Some((id, session.path_of(id)?))), active)
+        (
+            active.filter(|id| session.needs_password(*id)).and_then(|id| Some((id, session.path_of(id)?))),
+            active,
+        )
     });
     let asked = lock(&inner.password_asks).tabs_asked();
-    let closed: Vec<TabId> = if asked.is_empty() { Vec::new() } else { inner.host.session.with_session(|session| asked.into_iter().filter(|id| session.tab(*id).is_none()).collect()) };
+    let closed: Vec<TabId> = if asked.is_empty() {
+        Vec::new()
+    } else {
+        inner
+            .host
+            .session
+            .with_session(|session| asked.into_iter().filter(|id| session.tab(*id).is_none()).collect())
+    };
     let password_prompt = {
         let mut asks = lock(&inner.password_asks);
         asks.showing_tab(active_tab, &closed);
@@ -3715,24 +4666,130 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     };
     // A password goes with its tab: one for a file no tab has open now is let go, and overwritten.
     if !inner.keys.is_empty() {
-        let open: Vec<(u64, u64)> = inner.host.session.with_session(|session| session.tabs().iter().filter_map(|tab| session.own_stamp(tab.id)).map(|stamp| (stamp.device, stamp.inode)).collect());
+        let open: Vec<(u64, u64)> = inner.host.session.with_session(|session| {
+            session
+                .tabs()
+                .iter()
+                .filter_map(|tab| session.own_stamp(tab.id))
+                .map(|stamp| (stamp.device, stamp.inode))
+                .collect()
+        });
         inner.keys.keep_only(&open);
     }
     let session_notice = lock(&inner.host.notice).as_deref().and_then(record::notices::words).map(str::to_string);
     let save_failed = inner.saver.has_failed().then(|| record::notices::SAVE_FAILED.to_string());
     let reading_engine = inner.panes.reading_engine(&inner.engine);
-    let note = lock(&inner.open_failure).clone().or(save_failed).or(problem).or(session_notice).or(compare_note).or_else(|| reading_engine.note());
+    let note = lock(&inner.open_failure)
+        .clone()
+        .or(save_failed)
+        .or(problem)
+        .or(session_notice)
+        .or(compare_note)
+        .or_else(|| reading_engine.note());
     let holding = lock(&inner.holding_tab).is_some();
     let sidebar_width = lock(&inner.app).sidebar_width;
     let highlight = paper.highlight();
-    let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), action_id: notice.offers_copy_anyway.then(|| "edit.copy_anyway".to_string()), fades: notice.fades }).or_else(|| inner.printing.selection_notice()).or_else(|| inner.tool.selection_notice()).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, action_id: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, action_id: None, fades: notice.fades }));
-    let pane_views: Vec<PaneView> = if comparing { snapshots.iter().enumerate().map(|(pane, shown)| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active, layout: shown.spread.name().to_string(), note: shown.problem.clone().or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())) }).collect() } else { Vec::new() };
-    let compare_synced = inner.host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
-    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place, paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: if save_off { SAVE_OFF_TOOLTIP.to_string() } else { inner.save_ui.tooltip() }, save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now), save_enabled: !save_off && !saving_now, print_ready: inner.printing.has_ready(), can_go_back, can_go_forward, link_prompt: lock(&inner.link_prompt).clone(), page_text, password_prompt };
+    let selection_notice = reading_engine
+        .selection_notice()
+        .map(|notice| SelectionNotice {
+            text: notice.text,
+            action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()),
+            action_id: notice.offers_copy_anyway.then(|| "edit.copy_anyway".to_string()),
+            fades: notice.fades,
+        })
+        .or_else(|| inner.printing.selection_notice())
+        .or_else(|| inner.tool.selection_notice())
+        .or_else(|| {
+            lock(&inner.action_notice).clone().map(|text| SelectionNotice {
+                text,
+                action_title: None,
+                action_id: None,
+                fades: true,
+            })
+        })
+        .or_else(|| {
+            inner.updates.notice().map(|notice| SelectionNotice {
+                text: notice.text,
+                action_title: None,
+                action_id: None,
+                fades: notice.fades,
+            })
+        });
+    let pane_views: Vec<PaneView> = if comparing {
+        snapshots
+            .iter()
+            .enumerate()
+            .map(|(pane, shown)| PaneView {
+                tab: shown.id.0,
+                title: shown.title.clone(),
+                reading: Some(shown.id) == active,
+                layout: shown.spread.name().to_string(),
+                note: shown
+                    .problem
+                    .clone()
+                    .or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let compare_synced = inner
+        .host
+        .session
+        .with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
+    let reader = ReaderView {
+        panes: pane_views,
+        compare_synced,
+        home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding,
+        note,
+        sidebar_hidden: view.sidebar_hidden,
+        layout,
+        edited,
+        can_undo,
+        can_redo,
+        edit_mode,
+        can_rotate,
+        place,
+        paper: shown.name().to_string(),
+        paper_rgb: paper.rgb(),
+        page_tint,
+        agent_icon_hidden: view.agent_icon_hidden,
+        sidebar_width,
+        highlight_dark_colour: highlight.dark_colour,
+        highlight_lighten: highlight.lighten,
+        selection_notice,
+        saving: saving_now,
+        save_tooltip: if save_off { SAVE_OFF_TOOLTIP.to_string() } else { inner.save_ui.tooltip() },
+        save_problem: inner.save_ui.problem(),
+        save_as_note,
+        shown_tab,
+        document_name,
+        document_folder,
+        save_button: shown_tab != 0 && (edited || saving_now),
+        save_enabled: !save_off && !saving_now,
+        print_ready: inner.printing.has_ready(),
+        can_go_back,
+        can_go_forward,
+        link_prompt: lock(&inner.link_prompt).clone(),
+        page_text,
+        password_prompt,
+    };
     // Open Recent is built again only when its list has moved, or the tabs have, which say which of its files are open: not at every reconcile.
     let recent_key = (inner.host.session.with_session(|session| session.recent_version()), sidebar.tabs_version);
     let recent = (lock(&inner.published).recent_key != Some(recent_key)).then(|| {
-        inner.host.session.with_session(|session| session.recent_files()).into_iter().map(|file| RecentFile { key: menus::recent_key(&file.path), name: recto_core::clean_line(&file.name), folder: file.path.parent().map(|folder| folder.display().to_string()).unwrap_or_default(), path: file.path.to_string_lossy().into_owned(), open: file.open.is_some() }).collect::<Vec<RecentFile>>()
+        inner
+            .host
+            .session
+            .with_session(|session| session.recent_files())
+            .into_iter()
+            .map(|file| RecentFile {
+                key: menus::recent_key(&file.path),
+                name: recto_core::clean_line(&file.name),
+                folder: file.path.parent().map(|folder| folder.display().to_string()).unwrap_or_default(),
+                path: file.path.to_string_lossy().into_owned(),
+                open: file.open.is_some(),
+            })
+            .collect::<Vec<RecentFile>>()
     });
     let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = snapshots.iter().map(|shown| shown.toc.clone()).collect();
     let mut published = lock(&inner.published);
@@ -3745,7 +4802,11 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
         }
         changed
     });
-    let changed = recent_changed || *published.sidebar != sidebar || published.reader != reader || published.rail_filled != rail_filled || !Arc::ptr_eq(&published.contents, &contents);
+    let changed = recent_changed
+        || *published.sidebar != sidebar
+        || published.reader != reader
+        || published.rail_filled != rail_filled
+        || !Arc::ptr_eq(&published.contents, &contents);
     if changed {
         published.tabs = tabs;
         published.sidebar = Arc::new(sidebar);
@@ -3779,7 +4840,15 @@ mod tests {
     fn save_from_refuses_a_file_it_cant_look_at() {
         use recto_core::save::SignatureFacts;
         assert!(super::save_from_signature_check(Ok(SignatureFacts::default())).is_ok());
-        assert_eq!(super::save_from_signature_check(Ok(SignatureFacts { signed: true, ..SignatureFacts::default() })).unwrap_err().code, "signed_needs_copy");
+        assert_eq!(
+            super::save_from_signature_check(Ok(SignatureFacts {
+                signed: true,
+                ..SignatureFacts::default()
+            }))
+            .unwrap_err()
+            .code,
+            "signed_needs_copy"
+        );
         let unreadable = recto_core::save::signature_facts_of(std::path::Path::new("/nowhere/at/all.pdf"));
         assert!(unreadable.is_err());
         assert_eq!(super::save_from_signature_check(unreadable).unwrap_err().code, "not_found");
@@ -3806,12 +4875,24 @@ mod tests {
     /// Failure: rows opening as the reader enters a chapter jump the list under a smooth drift, because the host wasn't told which went and which came. It must say exactly, a chapter closing and the next opening together included, and a change of nothing says nothing.
     #[test]
     fn opening_and_closing_rows_says_what_changed() {
-        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: 0, entry: 0, expandable: false, expanded: false };
+        let row = |text: &str| ContentsEntry {
+            tab: 1,
+            text: text.into(),
+            page: Some(1),
+            depth: 0,
+            entry: 0,
+            expandable: false,
+            expanded: false,
+        };
         let list = |names: &[&str]| names.iter().map(|name| row(name)).collect::<Vec<_>>();
         let before = list(&["1", "2", "3"]);
         assert_eq!(rows_changed(&before, &list(&["1", "2", "2.1", "2.2", "3"])), (2, 0, 2));
         assert_eq!(rows_changed(&list(&["1", "2", "2.1", "2.2", "3"]), &before), (2, 2, 0));
-        assert_eq!(rows_changed(&list(&["1", "2", "2.1", "3", "4"]), &list(&["1", "2", "3", "3.1", "4"])), (2, 2, 2), "2.1 and 3 go, and 3 and 3.1 come");
+        assert_eq!(
+            rows_changed(&list(&["1", "2", "2.1", "3", "4"]), &list(&["1", "2", "3", "3.1", "4"])),
+            (2, 2, 2),
+            "2.1 and 3 go, and 3 and 3.1 come"
+        );
         assert_eq!(rows_changed(&before, &before), (0, 0, 0));
         assert_eq!(rows_changed(&[], &before), (0, 0, 3));
         assert_eq!(rows_changed(&before, &[]), (0, 3, 0));
@@ -3820,7 +4901,15 @@ mod tests {
     /// Failure: a chapter closes as the reader leaves it, the place drops up the list by the rows that went, and the contents make a second move straight after the first to bring it back. How far the place was carried has to come out right wherever it starts and ends.
     #[test]
     fn a_row_change_says_how_far_it_carried_the_place() {
-        let row = |text: &str| ContentsEntry { tab: 1, text: text.into(), page: Some(1), depth: u8::try_from(text.matches('.').count()).unwrap(), entry: 0, expandable: false, expanded: false };
+        let row = |text: &str| ContentsEntry {
+            tab: 1,
+            text: text.into(),
+            page: Some(1),
+            depth: u8::try_from(text.matches('.').count()).unwrap(),
+            entry: 0,
+            expandable: false,
+            expanded: false,
+        };
         let list = |names: &[&str]| names.iter().map(|name| row(name)).collect::<Vec<_>>();
         let shift = |one: &[&str], place_before: u32, two: &[&str], place_after: u32| {
             let (before, after) = (list(one), list(two));
@@ -3830,7 +4919,11 @@ mod tests {
         let in_three = ["1", "2", "3", "3.1", "4"];
         assert_eq!(shift(&in_two, 3, &in_three, 2), -2, "forward: 3 was listed, two rows further down");
         assert_eq!(shift(&in_two, 3, &in_three, 3), -2, "forward, to a section that wasn't listed: its chapter was");
-        assert_eq!(shift(&in_three, 2, &in_two, 3), 2, "back: 2.2 wasn't listed, but 3, the row it came from, still is");
+        assert_eq!(
+            shift(&in_three, 2, &in_two, 3),
+            2,
+            "back: 2.2 wasn't listed, but 3, the row it came from, still is"
+        );
         assert_eq!(shift(&in_two, 5, &["1", "2", "2.1", "2.2", "3", "4", "4.1"], 5), 0, "everything happened below");
         assert_eq!(shift(&in_two, 5, &in_three, 4), -1, "everything happened above");
     }
@@ -3882,15 +4975,46 @@ mod tests {
     /// One of every call, and the find calls one of each, with its place in the list. `place` names every variant with no default, so a new one doesn't compile here until it has a place, and the test below fails until it's sampled.
     fn every_call() -> Vec<CoreCall> {
         let tab = TabId(1);
-        let stamp = recto_platform::FileStamp { size: 1, mtime_ns: 1, device: 1, inode: 1 };
-        let ask = passwords::Ask { id: 1, target: passwords::Target::File, path: PathBuf::from("/d/a.pdf"), wrong: 0, trying: true };
-        let read = FileRead { what: Reading::Tab(tab), loaded: Err(recto_core::OpenError::NotFound), stamp: None, status: None, history: None, unlocked: false };
-        let hit = recto_agent::find::Hit { page: 0, start: 0, end: 1, before: "".into(), matched: "".into(), after: "".into(), hidden: false };
+        let stamp = recto_platform::FileStamp {
+            size: 1,
+            mtime_ns: 1,
+            device: 1,
+            inode: 1,
+        };
+        let ask = passwords::Ask {
+            id: 1,
+            target: passwords::Target::File,
+            path: PathBuf::from("/d/a.pdf"),
+            wrong: 0,
+            trying: true,
+        };
+        let read = FileRead {
+            what: Reading::Tab(tab),
+            loaded: Err(recto_core::OpenError::NotFound),
+            stamp: None,
+            status: None,
+            history: None,
+            unlocked: false,
+        };
+        let hit = recto_agent::find::Hit {
+            page: 0,
+            start: 0,
+            end: 1,
+            before: "".into(),
+            matched: "".into(),
+            after: "".into(),
+            hidden: false,
+        };
         vec![
             CoreCall::Reconcile,
             CoreCall::Tap(tab),
             CoreCall::ClearRecent,
-            CoreCall::Unlocked(ask, Err(recto_core::OpenError::NotFound), Some(stamp), Arc::new(recto_core::Password::new("pw").unwrap())),
+            CoreCall::Unlocked(
+                ask,
+                Err(recto_core::OpenError::NotFound),
+                Some(stamp),
+                Arc::new(recto_core::Password::new("pw").unwrap()),
+            ),
             CoreCall::LookAtShown,
             CoreCall::Jump(tab, 2, 0.0),
             CoreCall::JumpTyped(tab, "3".into()),
@@ -3995,7 +5119,11 @@ mod tests {
         let calls = every_call();
         let mut places: Vec<usize> = calls.iter().map(|call| place(call).0).collect();
         places.sort_unstable();
-        assert_eq!(places, (0..place(&CoreCall::Reconcile).1).collect::<Vec<_>>(), "one sample of every call, and of every find call");
+        assert_eq!(
+            places,
+            (0..place(&CoreCall::Reconcile).1).collect::<Vec<_>>(),
+            "one sample of every call, and of every find call"
+        );
         let a_persons = |call: &CoreCall| {
             matches!(
                 call,
@@ -4020,7 +5148,14 @@ mod tests {
                     | CoreCall::ContentsAction(..)
                     | CoreCall::ToggleSection(..)
                     | CoreCall::SetEditMode(_)
-                    | CoreCall::Find(find::FindCall::Typed(_) | find::FindCall::Open | find::FindCall::Close | find::FindCall::Step(..) | find::FindCall::Choose(_) | find::FindCall::Reveal(..))
+                    | CoreCall::Find(
+                        find::FindCall::Typed(_)
+                            | find::FindCall::Open
+                            | find::FindCall::Close
+                            | find::FindCall::Step(..)
+                            | find::FindCall::Choose(_)
+                            | find::FindCall::Reveal(..)
+                    )
             )
         };
         for call in calls {
@@ -4029,7 +5164,11 @@ mod tests {
             let persons = a_persons(&call);
             let name = format!("{call:?}");
             queue.push(call);
-            assert_eq!(lock(&queue.calls).is_empty(), persons, "{name}: a person's call is held back during a hand-off, and nothing else is");
+            assert_eq!(
+                lock(&queue.calls).is_empty(),
+                persons,
+                "{name}: a person's call is held back during a hand-off, and nothing else is"
+            );
         }
     }
 
@@ -4050,9 +5189,20 @@ mod tests {
     #[test]
     fn panes_and_warm_tabs_stay_within_the_live_documents() {
         let tabs = |ids: &[u32]| ids.iter().copied().map(TabId).collect::<Vec<_>>();
-        assert_eq!(warm_beside_panes(tabs(&[5, 4, 3]).into_iter(), &tabs(&[5])), vec![4, 3], "one tab showing keeps two recent");
-        assert_eq!(warm_beside_panes(tabs(&[5, 4, 3]).into_iter(), &tabs(&[1, 2])), vec![5], "two panes leave room for one");
-        assert!(warm_beside_panes(tabs(&[5, 4, 3]).into_iter(), &tabs(&[1, 2, 3])).is_empty(), "three panes are all of them");
+        assert_eq!(
+            warm_beside_panes(tabs(&[5, 4, 3]).into_iter(), &tabs(&[5])),
+            vec![4, 3],
+            "one tab showing keeps two recent"
+        );
+        assert_eq!(
+            warm_beside_panes(tabs(&[5, 4, 3]).into_iter(), &tabs(&[1, 2])),
+            vec![5],
+            "two panes leave room for one"
+        );
+        assert!(
+            warm_beside_panes(tabs(&[5, 4, 3]).into_iter(), &tabs(&[1, 2, 3])).is_empty(),
+            "three panes are all of them"
+        );
         for panes in [tabs(&[1]), tabs(&[1, 2]), tabs(&[1, 2, 3])] {
             assert!(panes.len() + warm_beside_panes(tabs(&[9, 8, 7, 6]).into_iter(), &panes).len() <= recto_session::MAX_WARM);
         }
@@ -4069,7 +5219,22 @@ mod tests {
     /// Failure: an agent at Control quits the app out from under the person using it, with no prompt, by `recto stop`. In a normal app it's refused, and the words are for whoever's asking.
     #[test]
     fn stop_is_refused_by_a_normal_app() {
-        let host = AppHost { engine: Engine::new(EngineConfig::default(), Arc::new(TestEngineEvents)), session: SessionHost::new(DrawableLoader), core: Arc::new(CoreQueue::default()), qa: None, saver: Arc::new(Saver::new(RecordStore::open(&StatePaths::overridden(&std::env::temp_dir().join(format!("rf-{}", std::process::id()))).unwrap(), Flavor::App), Arc::new(CoreQueue::default()))), running: AtomicU32::new(0), handing_off: AtomicBool::new(false), notice: Mutex::new(None) };
+        let host = AppHost {
+            engine: Engine::new(EngineConfig::default(), Arc::new(TestEngineEvents)),
+            session: SessionHost::new(DrawableLoader),
+            core: Arc::new(CoreQueue::default()),
+            qa: None,
+            saver: Arc::new(Saver::new(
+                RecordStore::open(
+                    &StatePaths::overridden(&std::env::temp_dir().join(format!("rf-{}", std::process::id()))).unwrap(),
+                    Flavor::App,
+                ),
+                Arc::new(CoreQueue::default()),
+            )),
+            running: AtomicU32::new(0),
+            handing_off: AtomicBool::new(false),
+            notice: Mutex::new(None),
+        };
         assert_eq!(host.stop_refusal().expect("refused").code, "only_the_user_quits");
     }
 

@@ -156,7 +156,10 @@ fn what_couldnt_be_read_is_counted_and_never_called_empty() {
     assert!(found.structure_read);
     let rows: Vec<_> = found.entries.iter().map(|entry| (entry.field.as_str(), entry.state)).collect();
     assert_eq!(rows, [("ValueGone", SignatureState::Unread), ("Direct", SignatureState::Empty)]);
-    assert_eq!(found.unread, 3, "the missing field, the number in the array, and the value that's gone: {found:?}");
+    assert_eq!(
+        found.unread, 3,
+        "the missing field, the number in the array, and the value that's gone: {found:?}"
+    );
 }
 
 /// Failure: one /Kids array of a few megabytes makes a copy of the parent's name per child, about 400 MiB from a 4 MiB array and more from several, in a process with no memory limit. Measured as whole-process growth,
@@ -166,7 +169,11 @@ fn a_wide_kids_array_costs_only_itself() {
     let long_name = "N".repeat(500);
     // About 650,000 references in one array, near the reader's 4 MiB limit on one object, under a parent with the longest name there is.
     let refs = "7 0 R ".repeat(650_000);
-    let extra = vec!["<< /Fields [8 0 R] >>".to_string(), "<< /T (leaf) >>".to_string(), format!("<< /T ({long_name}) /Kids [{refs}] >>")];
+    let extra = vec![
+        "<< /Fields [8 0 R] >>".to_string(),
+        "<< /T (leaf) >>".to_string(),
+        format!("<< /T ({long_name}) /Kids [{refs}] >>"),
+    ];
     let file = TempPdf::new("wide-kids.pdf", &three_page_pdf("/AcroForm 6 0 R", &extra, ""));
     let before = recto_platform::isolate::process_memory(std::process::id()).unwrap().peak_footprint_bytes;
     let found = signatures(&file.0).unwrap();

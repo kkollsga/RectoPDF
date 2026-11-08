@@ -29,7 +29,14 @@ pub struct Watchdog(Arc<Shared>);
 
 impl Watchdog {
     pub fn new() -> Self {
-        Self(Arc::new(Shared { epoch: Instant::now(), busy_since: AtomicU64::new(0), over_note: AtomicU64::new(0), over_fail: AtomicU64::new(0), worst_ms: AtomicU64::new(0), thread: Mutex::new(None) }))
+        Self(Arc::new(Shared {
+            epoch: Instant::now(),
+            busy_since: AtomicU64::new(0),
+            over_note: AtomicU64::new(0),
+            over_fail: AtomicU64::new(0),
+            worst_ms: AtomicU64::new(0),
+            thread: Mutex::new(None),
+        }))
     }
 
     /// From the UI thread, each time it wakes. An atomic, and a wake for the watcher if that's parked.
@@ -41,7 +48,11 @@ impl Watchdog {
             Some(watcher) => watcher.unpark(),
             None => {
                 let shared = Arc::clone(&self.0);
-                if let Ok(handle) = std::thread::Builder::new().name("recto-watchdog".into()).stack_size(64 * 1024).spawn(move || watch(&shared)) {
+                if let Ok(handle) = std::thread::Builder::new()
+                    .name("recto-watchdog".into())
+                    .stack_size(64 * 1024)
+                    .spawn(move || watch(&shared))
+                {
                     *thread = Some(handle.thread().clone());
                 }
             }
@@ -58,7 +69,11 @@ impl Watchdog {
     }
 
     pub fn report(&self) -> (u64, u64, u64) {
-        (self.0.over_note.load(Ordering::Relaxed), self.0.over_fail.load(Ordering::Relaxed), self.0.worst_ms.load(Ordering::Relaxed))
+        (
+            self.0.over_note.load(Ordering::Relaxed),
+            self.0.over_fail.load(Ordering::Relaxed),
+            self.0.worst_ms.load(Ordering::Relaxed),
+        )
     }
 
     /// One look, for the thread and for a test.

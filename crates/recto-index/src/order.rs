@@ -179,13 +179,32 @@ fn read_lines(chars: &[CharRecord], boxes: &[CharBox]) -> Option<(Vec<u32>, Vec<
     let mut lines: Vec<Line> = Vec::new();
     let mut stream_lines: Vec<StreamLine> = Vec::new();
     let mut line_start = 0u32;
-    let mut current = StreamLine { start: 0, end: 0, steps: 0, back: 0, jumps: 0, lost: false };
+    let mut current = StreamLine {
+        start: 0,
+        end: 0,
+        steps: 0,
+        back: 0,
+        jumps: 0,
+        lost: false,
+    };
     let mut previous: Option<usize> = None;
     let mut in_breaks = false;
     let close_line = |geo: &Vec<u32>, lines: &mut Vec<Line>, line_start: &mut u32, stream_line: usize| {
         let end = geo.len() as u32;
         if end > *line_start {
-            lines.push(Line { geo: (*line_start, end), stream_line: stream_line as u32, baseline: 0.0, height: 0.0, left: 0.0, right: 0.0, low: 0.0, high: 0.0, usable: false, lost: false, inserted: Vec::new() });
+            lines.push(Line {
+                geo: (*line_start, end),
+                stream_line: stream_line as u32,
+                baseline: 0.0,
+                height: 0.0,
+                left: 0.0,
+                right: 0.0,
+                low: 0.0,
+                high: 0.0,
+                usable: false,
+                lost: false,
+                inserted: Vec::new(),
+            });
         }
         *line_start = end;
     };
@@ -198,7 +217,14 @@ fn read_lines(chars: &[CharRecord], boxes: &[CharBox]) -> Option<(Vec<u32>, Vec<
         }
         if in_breaks {
             current.end = index as u32;
-            let next = StreamLine { start: index as u32, end: 0, steps: 0, back: 0, jumps: 0, lost: false };
+            let next = StreamLine {
+                start: index as u32,
+                end: 0,
+                steps: 0,
+                back: 0,
+                jumps: 0,
+                lost: false,
+            };
             stream_lines.push(std::mem::replace(&mut current, next));
             in_breaks = false;
             // Lines with nothing printed on them count too, or a page of nothing but line breaks costs what a real page never does.
@@ -281,11 +307,21 @@ struct Run {
 
 fn run_of(members: &[u32], boxes: &[CharBox]) -> Run {
     let (first, last) = (members[0], members[members.len() - 1]);
-    Run { start: first, end: last + 1, left: boxes[first as usize][0], right: boxes[last as usize][2] }
+    Run {
+        start: first,
+        end: last + 1,
+        left: boxes[first as usize][0],
+        right: boxes[last as usize][2],
+    }
 }
 
 fn find_moves(chars: &[CharRecord], boxes: &[CharBox], geo: &[u32], lines: &mut [Line], stream_lines: &mut [StreamLine]) -> Vec<Move> {
-    let mut by_baseline: Vec<(f32, u32)> = lines.iter().enumerate().filter(|(_, line)| line.usable).map(|(index, line)| (line.baseline, index as u32)).collect();
+    let mut by_baseline: Vec<(f32, u32)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.usable)
+        .map(|(index, line)| (line.baseline, index as u32))
+        .collect();
     by_baseline.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     let tallest = lines.iter().map(|line| line.height).fold(0.0, f32::max);
     let mut moves = Vec::new();
@@ -306,7 +342,9 @@ fn find_moves(chars: &[CharRecord], boxes: &[CharBox], geo: &[u32], lines: &mut 
         let members = &geo[lines[k].geo.0 as usize..lines[k].geo.1 as usize];
         // A hyphen ending a line belongs at the end of a line. Its box might be empty, so what follows the last printed character is looked at too.
         let last = members[members.len() - 1] as usize;
-        if chars[members[0] as usize..=last].iter().any(|record| is_hyphen_marker(*record)) || chars.get(last + 1).is_some_and(|record| is_hyphen_marker(*record)) {
+        if chars[members[0] as usize..=last].iter().any(|record| is_hyphen_marker(*record))
+            || chars.get(last + 1).is_some_and(|record| is_hyphen_marker(*record))
+        {
             continue;
         }
         // The whole line first. Failing that, pieces of it, if every one of them has somewhere to go.
@@ -351,11 +389,17 @@ fn place_runs(chars: &[CharRecord], boxes: &[CharBox], geo: &[u32], lines: &mut 
         for &host in hosts {
             let (host_line, line) = (&lines[host as usize], &lines[k]);
             // Whichever has more characters says more about the size of the type.
-            let height = if host_line.geo.1 - host_line.geo.0 >= line.geo.1 - line.geo.0 { host_line.height } else { line.height };
+            let height = if host_line.geo.1 - host_line.geo.0 >= line.geo.1 - line.geo.0 {
+                host_line.height
+            } else {
+                line.height
+            };
             if (host_line.baseline - line.baseline).abs() > SAME_BASELINE * height || host_line.inserted.len() >= MAX_INSERTS_PER_LINE {
                 continue;
             }
-            let Some(fit) = fit_into(chars, boxes, geo, host_line, run, height) else { continue };
+            let Some(fit) = fit_into(chars, boxes, geo, host_line, run, height) else {
+                continue;
+            };
             // On the end of a line, a cell in a column reads just like a word.
             if !fit.in_a_gap && fit.on_the_right && is_a_cell_in_a_column(lines, k, run, height) {
                 continue;
@@ -376,7 +420,16 @@ fn place_runs(chars: &[CharRecord], boxes: &[CharBox], geo: &[u32], lines: &mut 
         };
         lines[host as usize].inserted.push((run.left, run.right));
         used.push(host);
-        placed.push(Move { at: fit.at, left: run.left, right: run.right, word: fit.word, start: run.start, end: run.end, space_before: fit.space_before, space_after: fit.space_after });
+        placed.push(Move {
+            at: fit.at,
+            left: run.left,
+            right: run.right,
+            word: fit.word,
+            start: run.start,
+            end: run.end,
+            space_before: fit.space_before,
+            space_after: fit.space_after,
+        });
     }
     Some(placed)
 }
@@ -490,14 +543,27 @@ fn fit_into(chars: &[CharRecord], boxes: &[CharBox], geo: &[u32], line: &Line, r
         Some(index) => {
             let next = index as usize + 1;
             // The space that followed the last word stays with it.
-            if chars.get(next).is_some_and(|record| record.ch().is_whitespace() && !is_break(record.ch())) { next as u32 + 1 } else { next as u32 }
+            if chars.get(next).is_some_and(|record| record.ch().is_whitespace() && !is_break(record.ch())) {
+                next as u32 + 1
+            } else {
+                next as u32
+            }
         }
         None => members[0],
     };
     // Nothing puts a space before a full stop or a closing bracket, however wide the gap is drawn.
     let space_before = gap_before.is_some_and(|gap| gap >= word) && !closes(chars[run.start as usize]);
     let space_after = gap_after.is_some_and(|gap| gap >= word) && !after.is_some_and(|index| closes(chars[index as usize]));
-    Some(Fit { in_a_gap, on_the_right: after.is_none(), end_gap, at, reach_from: left_edge.unwrap_or(run.left), word, space_before, space_after })
+    Some(Fit {
+        in_a_gap,
+        on_the_right: after.is_none(),
+        end_gap,
+        at,
+        reach_from: left_edge.unwrap_or(run.left),
+        word,
+        space_before,
+        space_after,
+    })
 }
 
 /// Lays the characters out again. Only whitespace is ever left out or made up.
@@ -595,7 +661,11 @@ fn rebuild(chars: &[CharRecord], mut moves: Vec<Move>, stream_lines: &[StreamLin
     for one in &moves[next_move..] {
         place(&mut out, &mut origin, &mut pending_space, one);
     }
-    RepairedOrder { chars: out, origin, runs_moved }
+    RepairedOrder {
+        chars: out,
+        origin,
+        runs_moved,
+    }
 }
 
 #[cfg(test)]
@@ -615,7 +685,10 @@ mod tests {
 
     impl Page {
         fn new() -> Self {
-            Self { chars: Vec::new(), boxes: Vec::new() }
+            Self {
+                chars: Vec::new(),
+                boxes: Vec::new(),
+            }
         }
 
         fn line(mut self, x: f32, y: f32, text: &str) -> Self {
@@ -670,14 +743,22 @@ mod tests {
     #[test]
     fn a_word_drawn_late_goes_into_the_gap_on_its_line() {
         let start = x_of_word("A recipient MUST ");
-        let page = Page::new().draw(0.0, 700.0, "A recipient ").draw(start, 700.0, "ignore this").line(0.0, 686.0, "the next line").line(x_of_word("A recipient "), 700.0, "MUST");
+        let page = Page::new()
+            .draw(0.0, 700.0, "A recipient ")
+            .draw(start, 700.0, "ignore this")
+            .line(0.0, 686.0, "the next line")
+            .line(x_of_word("A recipient "), 700.0, "MUST");
         assert_eq!(page.repaired(), "A recipient MUST ignore this\nthe next line\n");
     }
 
     /// Failure: only the word in the middle of a line is put back, so the word that starts or ends a line stays lost. RFC 9110's `2.` and `Section`.
     #[test]
     fn a_word_at_either_end_of_a_line_comes_back_to_it() {
-        let page = Page::new().line(20.0, 700.0, "field value").line(0.0, 686.0, "are defined in").line(x_of_word("are defined in "), 686.0, "Section").line(20.0 - WIDTH * 2.0 - SPACE, 700.0, "2.");
+        let page = Page::new()
+            .line(20.0, 700.0, "field value")
+            .line(0.0, 686.0, "are defined in")
+            .line(x_of_word("are defined in "), 686.0, "Section")
+            .line(20.0 - WIDTH * 2.0 - SPACE, 700.0, "2.");
         assert_eq!(page.repaired(), "2. field value\nare defined in Section\n");
     }
 
@@ -686,7 +767,12 @@ mod tests {
     fn several_late_words_on_a_line_each_find_their_place() {
         let start_may = x_of_word("he MUST go ");
         let start_end = x_of_word("he MUST go MAY ");
-        let page = Page::new().draw(0.0, 700.0, "he ").draw(x_of_word("he MUST "), 700.0, "go ").draw(start_end, 700.0, "stay").line(x_of_word("he "), 700.0, "MUST").draw(start_may, 700.0, "MAY");
+        let page = Page::new()
+            .draw(0.0, 700.0, "he ")
+            .draw(x_of_word("he MUST "), 700.0, "go ")
+            .draw(start_end, 700.0, "stay")
+            .line(x_of_word("he "), 700.0, "MUST")
+            .draw(start_may, 700.0, "MAY");
         assert_eq!(page.repaired(), "he MUST go MAY stay\n");
     }
 
@@ -713,21 +799,47 @@ mod tests {
     /// Failure: a late word in the left column goes to the right of the wrong line, or its neighbour in the right column is taken for its line.
     #[test]
     fn a_late_word_stays_in_its_own_column() {
-        let page = Page::new().draw(0.0, 700.0, "left ").draw(x_of_word("left MUST "), 700.0, "side").line(300.0, 700.0, "right ").draw(300.0 + x_of_word("right MUST "), 700.0, "side").line(x_of_word("left "), 700.0, "MUST").line(300.0 + x_of_word("right "), 700.0, "MUST");
+        let page = Page::new()
+            .draw(0.0, 700.0, "left ")
+            .draw(x_of_word("left MUST "), 700.0, "side")
+            .line(300.0, 700.0, "right ")
+            .draw(300.0 + x_of_word("right MUST "), 700.0, "side")
+            .line(x_of_word("left "), 700.0, "MUST")
+            .line(300.0 + x_of_word("right "), 700.0, "MUST");
         assert_eq!(page.repaired(), "left MUST side\nright MUST side\n");
     }
 
     /// Failure: a run going on the end of a line, or into its middle, is held to so tight a limit that the real thing is lost: `MUST` and `MUST NOT`, in the middle of a line and at its end. These are the words the repair exists for.
     #[test]
     fn must_and_must_not_come_back_anywhere_on_a_line() {
-        let middle = Page::new().draw(0.0, 700.0, "A server ").draw(x_of_word("A server MUST NOT "), 700.0, "reply").line(0.0, 686.0, "next line").line(x_of_word("A server "), 700.0, "MUST NOT");
+        let middle = Page::new()
+            .draw(0.0, 700.0, "A server ")
+            .draw(x_of_word("A server MUST NOT "), 700.0, "reply")
+            .line(0.0, 686.0, "next line")
+            .line(x_of_word("A server "), 700.0, "MUST NOT");
         assert_eq!(middle.repaired(), "A server MUST NOT reply\nnext line\n");
-        let at_end = Page::new().draw(0.0, 700.0, "and a server").line(0.0, 686.0, "next line").line(x_of_word("and a server "), 700.0, "MUST");
+        let at_end = Page::new()
+            .draw(0.0, 700.0, "and a server")
+            .line(0.0, 686.0, "next line")
+            .line(x_of_word("and a server "), 700.0, "MUST");
         assert_eq!(at_end.repaired(), "and a server MUST\nnext line\n");
-        let not_at_end = Page::new().draw(0.0, 700.0, "and a server").line(0.0, 686.0, "next line").line(x_of_word("and a server "), 700.0, "MUST NOT");
+        let not_at_end = Page::new()
+            .draw(0.0, 700.0, "and a server")
+            .line(0.0, 686.0, "next line")
+            .line(x_of_word("and a server "), 700.0, "MUST NOT");
         assert_eq!(not_at_end.repaired(), "and a server MUST NOT\nnext line\n");
-        let on_many_lines = Page::new().draw(0.0, 700.0, "A recipient ").draw(x_of_word("A recipient MUST "), 700.0, "ignore").line(0.0, 686.0, "A recipient ").draw(x_of_word("A recipient MUST "), 686.0, "ignore").line(x_of_word("A recipient "), 700.0, "MUST").line(x_of_word("A recipient "), 686.0, "MUST");
-        assert_eq!(on_many_lines.repaired(), "A recipient MUST ignore\nA recipient MUST ignore\n", "level with one another, as they are on RFC 9110, and not a table");
+        let on_many_lines = Page::new()
+            .draw(0.0, 700.0, "A recipient ")
+            .draw(x_of_word("A recipient MUST "), 700.0, "ignore")
+            .line(0.0, 686.0, "A recipient ")
+            .draw(x_of_word("A recipient MUST "), 686.0, "ignore")
+            .line(x_of_word("A recipient "), 700.0, "MUST")
+            .line(x_of_word("A recipient "), 686.0, "MUST");
+        assert_eq!(
+            on_many_lines.repaired(),
+            "A recipient MUST ignore\nA recipient MUST ignore\n",
+            "level with one another, as they are on RFC 9110, and not a table"
+        );
     }
 
     /// Failure: a table's neighbouring cell is pulled into a line, so `utilizing at least` becomes `utilizing at least utilizing at`, when the cells were whole as drawn. Real: wbD34442277 p. 11, whose gutter is the same width as its word spaces, so width alone can't tell them apart. It's the same harm as interleaving columns.
@@ -744,11 +856,22 @@ mod tests {
             }
             page
         };
-        let narrow = cells(&["utilizing at least", "80% of", "Learning Grants"], &["utilizing at", "least 80% of", "Learning"]);
+        let narrow = cells(
+            &["utilizing at least", "80% of", "Learning Grants"],
+            &["utilizing at", "least 80% of", "Learning"],
+        );
         assert!(repair_line_order(&narrow.chars, &narrow.boxes).is_none(), "{}", narrow.repaired());
         // Ending level instead, as figures do in a column ranged right.
-        let right_ranged = Page::new().line(0.0, 700.0, "Total of it").line(0.0, 688.0, "Rest of it").line(x_of_word("Total of it "), 700.0, "1234").line(x_of_word("Total of it ") + WIDTH * 2.0, 688.0, "56");
-        assert!(repair_line_order(&right_ranged.chars, &right_ranged.boxes).is_none(), "{}", right_ranged.repaired());
+        let right_ranged = Page::new()
+            .line(0.0, 700.0, "Total of it")
+            .line(0.0, 688.0, "Rest of it")
+            .line(x_of_word("Total of it "), 700.0, "1234")
+            .line(x_of_word("Total of it ") + WIDTH * 2.0, 688.0, "56");
+        assert!(
+            repair_line_order(&right_ranged.chars, &right_ranged.boxes).is_none(),
+            "{}",
+            right_ranged.repaired()
+        );
         // A cell drawn late, in the gap between its neighbours, with a gutter on each side.
         let wide = Page::new().draw(0.0, 700.0, "left").draw(200.0, 700.0, "right").line(100.0, 700.0, "middle");
         assert!(repair_line_order(&wide.chars, &wide.boxes).is_none(), "{}", wide.repaired());
@@ -760,7 +883,9 @@ mod tests {
         let mut page = Page::new().draw(0.0, 700.0, "left");
         page.chars.push(CharRecord::new('∑' as u32, 0));
         page.boxes.push([20.0, 690.0, 35.0, 720.0]);
-        let page = page.draw(35.0, 700.0, "column text").line(x_of_word("left") + 15.0 + x_of_word("column text") + 15.0, 700.0, "right");
+        let page = page
+            .draw(35.0, 700.0, "column text")
+            .line(x_of_word("left") + 15.0 + x_of_word("column text") + 15.0, 700.0, "right");
         assert!(repair_line_order(&page.chars, &page.boxes).is_none(), "{}", page.repaired());
     }
 
@@ -787,43 +912,77 @@ mod tests {
     /// Failure: a word at another height on the page lands in a line it isn't on, or something raised does.
     #[test]
     fn a_different_baseline_is_a_different_line() {
-        let page = Page::new().draw(0.0, 700.0, "see ").draw(x_of_word("see xxxx "), 700.0, "more").line(x_of_word("see "), 700.0 + TOP * 1.2, "note");
+        let page = Page::new()
+            .draw(0.0, 700.0, "see ")
+            .draw(x_of_word("see xxxx "), 700.0, "more")
+            .line(x_of_word("see "), 700.0 + TOP * 1.2, "note");
         assert!(repair_line_order(&page.chars, &page.boxes).is_none(), "{}", page.repaired());
         let wide = x_of_word("see ") + x_of_word("a long run of words here") + 10.0;
-        let long = Page::new().draw(0.0, 700.0, "see ").draw(wide, 700.0, "more").line(x_of_word("see "), 700.0 + TOP * 0.5, "a long run of words here");
+        let long = Page::new()
+            .draw(0.0, 700.0, "see ")
+            .draw(wide, 700.0, "more")
+            .line(x_of_word("see "), 700.0 + TOP * 0.5, "a long run of words here");
         assert!(repair_line_order(&long.chars, &long.boxes).is_none(), "{}", long.repaired());
-        let raised = Page::new().draw(0.0, 700.0, "see ").draw(x_of_word("see xxxx "), 700.0, "more").line(x_of_word("see "), 700.0 + TOP * 0.5, "note");
-        assert!(repair_line_order(&raised.chars, &raised.boxes).is_none(), "a superscript isn't on the line, and stays where it was drawn: {}", raised.repaired());
+        let raised = Page::new()
+            .draw(0.0, 700.0, "see ")
+            .draw(x_of_word("see xxxx "), 700.0, "more")
+            .line(x_of_word("see "), 700.0 + TOP * 0.5, "note");
+        assert!(
+            repair_line_order(&raised.chars, &raised.boxes).is_none(),
+            "a superscript isn't on the line, and stays where it was drawn: {}",
+            raised.repaired()
+        );
     }
 
     /// Failure: the rest of a line moves up and leaves its superscript behind, so `F -adapted` reads as though `F` had no prime, which is worse than the three short lines PDFium gave, in the right order. A real paper, math_AG p. 34.
     #[test]
     fn a_line_doesnt_leave_its_superscript_behind() {
-        let page = Page::new().line(0.0, 700.0, "let F").line(x_of_word("let F"), 700.0 + 3.5, "'").line(x_of_word("let F'"), 700.0, " be the pullback");
+        let page = Page::new()
+            .line(0.0, 700.0, "let F")
+            .line(x_of_word("let F"), 700.0 + 3.5, "'")
+            .line(x_of_word("let F'"), 700.0, " be the pullback");
         assert!(repair_line_order(&page.chars, &page.boxes).is_none(), "{}", page.repaired());
     }
 
     /// Failure: the rest of a line moves up past a subscript that ends before its letter does, so `LM` with `Z` under the `M` reads `LM in Eq. (13)`, with the `Z` left behind on a line of its own. A real paper, quant-ph p. 9.
     #[test]
     fn a_narrow_subscript_keeps_the_rest_of_the_line_where_it_is() {
-        let page = Page::new().line(0.0, 700.0, "bases LMMM").line(x_of_word("bases L"), 697.0, "Z").line(x_of_word("bases LMMM "), 700.0, "in Eq. (13)");
+        let page = Page::new()
+            .line(0.0, 700.0, "bases LMMM")
+            .line(x_of_word("bases L"), 697.0, "Z")
+            .line(x_of_word("bases LMMM "), 700.0, "in Eq. (13)");
         assert!(repair_line_order(&page.chars, &page.boxes).is_none(), "{}", page.repaired());
     }
 
     /// Failure: what follows a fraction jumps ahead of its numerator and denominator, leaving them after the equation. In drawing order they were in the right place, so moving made it worse.
     #[test]
     fn a_run_doesnt_jump_over_what_was_drawn_between() {
-        let page = Page::new().line(0.0, 700.0, "x =").line(20.0, 700.0 + 6.0, "numerator").line(20.0, 700.0 - 6.0, "denominator").line(x_of_word("x = denominator "), 700.0, "+ y");
+        let page = Page::new()
+            .line(0.0, 700.0, "x =")
+            .line(20.0, 700.0 + 6.0, "numerator")
+            .line(20.0, 700.0 - 6.0, "denominator")
+            .line(x_of_word("x = denominator "), 700.0, "+ y");
         assert!(repair_line_order(&page.chars, &page.boxes).is_none(), "{}", page.repaired());
     }
 
     /// Failure: half a line moves and the other half doesn't, so one sentence ends up on two lines with others between. `Since A is klt` after a wide gap, in a real paper.
     #[test]
     fn all_of_a_line_moves_or_none_of_it() {
-        let whole = Page::new().line(0.0, 700.0, "where B").line(x_of_word("where B "), 700.0, "are effective.").draw(x_of_word("where B are effective.") + 8.0, 700.0, "Since A");
-        assert_eq!(whole.repaired(), "where B are effective.Since A\n", "the page's own characters, with no space between them here");
+        let whole = Page::new()
+            .line(0.0, 700.0, "where B")
+            .line(x_of_word("where B "), 700.0, "are effective.")
+            .draw(x_of_word("where B are effective.") + 8.0, 700.0, "Since A");
+        assert_eq!(
+            whole.repaired(),
+            "where B are effective.Since A\n",
+            "the page's own characters, with no space between them here"
+        );
         // The first run has a gap to go to, and the second has nowhere.
-        let part = Page::new().draw(0.0, 700.0, "a ").draw(x_of_word("a MUST "), 700.0, "b").line(x_of_word("a "), 700.0, "MUST").draw(x_of_word("a MUST b") + 200.0, 700.0, "far");
+        let part = Page::new()
+            .draw(0.0, 700.0, "a ")
+            .draw(x_of_word("a MUST "), 700.0, "b")
+            .line(x_of_word("a "), 700.0, "MUST")
+            .draw(x_of_word("a MUST b") + 200.0, 700.0, "far");
         assert!(repair_line_order(&part.chars, &part.boxes).is_none(), "{}", part.repaired());
     }
 
@@ -835,7 +994,11 @@ mod tests {
         let full_stop = Page::new().line(x_of_word("end"), 700.0, ".").line(0.0, 700.0, "end");
         assert_eq!(full_stop.repaired(), "end.\n", "punctuation can touch");
         let apart = Page::new().line(x_of_word("end") + 3.0, 700.0, ".").line(0.0, 700.0, "end");
-        assert_eq!(apart.repaired(), "end.\n", "and gets no space before it, as RFC 9110's `[CACHING].` drawn a little apart");
+        assert_eq!(
+            apart.repaired(),
+            "end.\n",
+            "and gets no space before it, as RFC 9110's `[CACHING].` drawn a little apart"
+        );
     }
 
     /// Failure: labels on a slope, as on a chart's axis, have matching baselines by accident, and are run together: `qwen3-vl-8bqwen3-vl-235b`.
@@ -880,35 +1043,59 @@ mod tests {
         word.chars.push(CharRecord::new(0xFFFE, CharRecord::HYPHEN));
         word.boxes.push([0.0; 4]);
         let word = word.line(0.0, 686.0, "able");
-        assert!(repair_line_order(&word.chars, &word.boxes).is_none(), "the word must stay with its hyphen: {}", word.repaired());
+        assert!(
+            repair_line_order(&word.chars, &word.boxes).is_none(),
+            "the word must stay with its hyphen: {}",
+            word.repaired()
+        );
         let mut host = Page::new().draw(0.0, 700.0, "valu");
         host.chars.push(CharRecord::new(0xFFFE, CharRecord::HYPHEN));
         host.boxes.push([0.0; 4]);
         let host = host.line(x_of_word("valu") + SPACE, 700.0, "late").line(0.0, 686.0, "able");
-        assert!(repair_line_order(&host.chars, &host.boxes).is_none(), "nothing goes between them: {}", host.repaired());
+        assert!(
+            repair_line_order(&host.chars, &host.boxes).is_none(),
+            "nothing goes between them: {}",
+            host.repaired()
+        );
     }
 
     /// Failure: a style change inside a word gets a space, so `re-do` with its middle drawn late reads `re do` rather than `redo`.
     #[test]
     fn a_change_of_style_inside_a_word_adds_no_space() {
-        let page = Page::new().draw(0.0, 700.0, "un").draw(WIDTH * 4.0, 700.0, "done").line(WIDTH * 2.0, 700.0, "do");
+        let page = Page::new()
+            .draw(0.0, 700.0, "un")
+            .draw(WIDTH * 4.0, 700.0, "done")
+            .line(WIDTH * 2.0, 700.0, "do");
         assert_eq!(page.repaired(), "undodone\n");
     }
 
     /// Failure: a moved run leaves its own line behind as a blank, or a line with something still on it is thrown away.
     #[test]
     fn only_a_line_with_nothing_left_goes() {
-        let page = Page::new().draw(0.0, 700.0, "a ").draw(x_of_word("a MUST "), 700.0, "b").line(0.0, 686.0, "next").line(x_of_word("a "), 700.0, "MUST ").line(0.0, 672.0, "after");
+        let page = Page::new()
+            .draw(0.0, 700.0, "a ")
+            .draw(x_of_word("a MUST "), 700.0, "b")
+            .line(0.0, 686.0, "next")
+            .line(x_of_word("a "), 700.0, "MUST ")
+            .line(0.0, 672.0, "after");
         assert_eq!(page.repaired(), "a MUST b\nnext\nafter");
         // A line with a word that can't go anywhere keeps its other word too, and the line stays as it was.
-        let keeps = Page::new().draw(0.0, 700.0, "a ").draw(x_of_word("a MUST "), 700.0, "b").line(0.0, 500.0, "stays").draw(100.0, 500.0, "here").line(x_of_word("a "), 700.0, "MUST");
+        let keeps = Page::new()
+            .draw(0.0, 700.0, "a ")
+            .draw(x_of_word("a MUST "), 700.0, "b")
+            .line(0.0, 500.0, "stays")
+            .draw(100.0, 500.0, "here")
+            .line(x_of_word("a "), 700.0, "MUST");
         assert_eq!(keeps.repaired(), "a MUST b\nstayshere\n");
     }
 
     /// Failure: `origin` doesn't say where a character came from, so hidden text can't be marked once a run has moved.
     #[test]
     fn origin_says_where_each_character_came_from() {
-        let page = Page::new().draw(0.0, 700.0, "a ").draw(x_of_word("a MUST "), 700.0, "b").line(x_of_word("a "), 700.0, "MUST");
+        let page = Page::new()
+            .draw(0.0, 700.0, "a ")
+            .draw(x_of_word("a MUST "), 700.0, "b")
+            .line(x_of_word("a "), 700.0, "MUST");
         let order = repair_line_order(&page.chars, &page.boxes).unwrap();
         assert_eq!(order.runs_moved, 1);
         assert_eq!(order.chars.len(), order.origin.len());
@@ -931,7 +1118,9 @@ mod tests {
     /// Failure: a page of nothing but line breaks, which has no lines to count, still grows a record for each.
     #[test]
     fn a_page_of_nothing_but_breaks_is_turned_away() {
-        let chars: Vec<CharRecord> = (0..MAX_LINES * 3).map(|at| CharRecord::new(if at % 2 == 0 { ' ' } else { '\n' } as u32, 0)).collect();
+        let chars: Vec<CharRecord> = (0..MAX_LINES * 3)
+            .map(|at| CharRecord::new(if at % 2 == 0 { ' ' } else { '\n' } as u32, 0))
+            .collect();
         let boxes = vec![[0.0; 4]; chars.len()];
         assert!(read_lines(&chars, &boxes).is_none());
     }
@@ -978,7 +1167,11 @@ mod tests {
                     _ => 0,
                 };
                 chars.push(CharRecord::new(ch as u32, flags));
-                boxes.push(if dice.below(40) == 0 { [odd_values[dice.below(8) as usize], y, odd_values[dice.below(8) as usize], y + TOP] } else { [x, y, x + 4.0, y + TOP] });
+                boxes.push(if dice.below(40) == 0 {
+                    [odd_values[dice.below(8) as usize], y, odd_values[dice.below(8) as usize], y + TOP]
+                } else {
+                    [x, y, x + 4.0, y + TOP]
+                });
             }
             if let Some(order) = repair_line_order(&chars, &boxes) {
                 moved_some += 1;
@@ -1045,10 +1238,34 @@ mod tests {
             ("a line of a million going into a line of a million", Box::new(one_line_into_another)),
             ("the most lines it will look at, on one baseline, every character its own run", Box::new(crowd)),
             ("many later lines with runs that fit", Box::new(many_moves)),
-            ("one baseline, many short lines, each in a gap of the last", Box::new(move |at| if at % 2 == 1 { (line_break, [0.0; 4]) } else { (record, [at as f32 * 0.25, 700.0, at as f32 * 0.25 + 0.2, 707.0]) })),
-            ("every character a step back", Box::new(move |at| (record, [2_000_000.0 - at as f32 * 8.0, 700.0, 2_000_000.0 - at as f32 * 8.0 + 4.0, 707.0]))),
-            ("many gaps in one line", Box::new(move |at| (record, [at as f32 * 20.0, 700.0, at as f32 * 20.0 + 4.0, 707.0]))),
-            ("lines of ten at the same place", Box::new(move |at| if at % 11 == 10 { (line_break, [0.0; 4]) } else { (record, [(at % 11) as f32 * 40.0, 700.0, (at % 11) as f32 * 40.0 + 4.0, 707.0]) })),
+            (
+                "one baseline, many short lines, each in a gap of the last",
+                Box::new(move |at| {
+                    if at % 2 == 1 {
+                        (line_break, [0.0; 4])
+                    } else {
+                        (record, [at as f32 * 0.25, 700.0, at as f32 * 0.25 + 0.2, 707.0])
+                    }
+                }),
+            ),
+            (
+                "every character a step back",
+                Box::new(move |at| (record, [2_000_000.0 - at as f32 * 8.0, 700.0, 2_000_000.0 - at as f32 * 8.0 + 4.0, 707.0])),
+            ),
+            (
+                "many gaps in one line",
+                Box::new(move |at| (record, [at as f32 * 20.0, 700.0, at as f32 * 20.0 + 4.0, 707.0])),
+            ),
+            (
+                "lines of ten at the same place",
+                Box::new(move |at| {
+                    if at % 11 == 10 {
+                        (line_break, [0.0; 4])
+                    } else {
+                        (record, [(at % 11) as f32 * 40.0, 700.0, (at % 11) as f32 * 40.0 + 4.0, 707.0])
+                    }
+                }),
+            ),
         ];
         for (name, shape) in &shapes {
             let (chars, boxes): (Vec<_>, Vec<_>) = (0..count).map(shape).unzip();
@@ -1059,7 +1276,10 @@ mod tests {
             assert!(took < std::time::Duration::from_secs(60), "{name} took {took:?}");
             eprintln!("{name}: {took:?}, {} runs moved", order.as_ref().map_or(0, |order| order.runs_moved));
             if name.starts_with("many later lines") {
-                assert!(order.as_ref().is_some_and(|order| order.runs_moved > 10_000), "this shape is meant to move a lot, or it tests nothing");
+                assert!(
+                    order.as_ref().is_some_and(|order| order.runs_moved > 10_000),
+                    "this shape is meant to move a lot, or it tests nothing"
+                );
             }
             if let Some(order) = order {
                 assert_eq!(non_space(&order.chars), non_space(&chars), "{name}");

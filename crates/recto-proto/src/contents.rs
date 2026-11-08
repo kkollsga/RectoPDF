@@ -103,7 +103,14 @@ impl ContentsJob {
         }
         if self.rect != [0.0; 4] {
             let [x, y, width, height] = self.rect;
-            if !self.rect.iter().all(|value| value.is_finite()) || x < 0.0 || y < 0.0 || width <= 0.0 || height <= 0.0 || x + width > crate::MAX_PAGE_POINTS || y + height > crate::MAX_PAGE_POINTS {
+            if !self.rect.iter().all(|value| value.is_finite())
+                || x < 0.0
+                || y < 0.0
+                || width <= 0.0
+                || height <= 0.0
+                || x + width > crate::MAX_PAGE_POINTS
+                || y + height > crate::MAX_PAGE_POINTS
+            {
                 return Err(ProtoError("a rectangle that can't be on a page"));
             }
         }
@@ -165,7 +172,13 @@ pub fn finish_contents(out: &mut [u8], job_id: u32, seq: u32, done: bool) -> Res
     if len > MAX_CONTENTS_FRAME as usize {
         return Err(ProtoError("contents frame too long"));
     }
-    out[..HEADER_LEN].copy_from_slice(&Header { kind: Kind::Contents, len: len as u32 }.encode());
+    out[..HEADER_LEN].copy_from_slice(
+        &Header {
+            kind: Kind::Contents,
+            len: len as u32,
+        }
+        .encode(),
+    );
     out[HEADER_LEN..HEADER_LEN + 4].copy_from_slice(&job_id.to_le_bytes());
     out[HEADER_LEN + 4..HEADER_LEN + 8].copy_from_slice(&seq.to_le_bytes());
     out[HEADER_LEN + 8] = u8::from(done);
@@ -266,7 +279,13 @@ pub struct Items<'a>(&'a [u8]);
 
 impl Items<'_> {
     pub fn iter(&self) -> impl Iterator<Item = (u32, f32, f32)> + Clone + '_ {
-        self.0.as_chunks::<ITEM_LEN>().0.iter().map(|bytes| (u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]), f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]), f32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]])))
+        self.0.as_chunks::<ITEM_LEN>().0.iter().map(|bytes| {
+            (
+                u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+                f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+                f32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+            )
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -412,25 +431,75 @@ impl NoteCode {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Record<'a> {
     /// First, once. The document's size in points, and what takes the page's own coordinates there.
-    Page { width: f32, height: f32, matrix: Mat },
-    Path { matrix: Mat, style: PaintStyle<'a>, segs: Segs<'a> },
+    Page {
+        width: f32,
+        height: f32,
+        matrix: Mat,
+    },
+    Path {
+        matrix: Mat,
+        style: PaintStyle<'a>,
+        segs: Segs<'a>,
+    },
     /// Defines clip `id`, inside `parent`. Ids count up from 1, and 0 is no clip.
-    ClipDefine { id: u32, parent: u32, matrix: Mat, segs: Segs<'a> },
+    ClipDefine {
+        id: u32,
+        parent: u32,
+        matrix: Mat,
+        segs: Segs<'a>,
+    },
     /// What's next is clipped by this.
-    Clip { id: u32 },
-    GroupBegin { opacity: u8 },
+    Clip {
+        id: u32,
+    },
+    GroupBegin {
+        opacity: u8,
+    },
     GroupEnd,
     /// Defines glyph `id`, in ems, y up. Ids count up from 1.
-    GlyphDefine { id: u32, segs: Segs<'a> },
-    GlyphRun { matrix: Mat, fill: Option<[u8; 4]>, stroke: Option<[u8; 4]>, stroke_width: f32, items: Items<'a> },
+    GlyphDefine {
+        id: u32,
+        segs: Segs<'a>,
+    },
+    GlyphRun {
+        matrix: Mat,
+        fill: Option<[u8; 4]>,
+        stroke: Option<[u8; 4]>,
+        stroke_width: f32,
+        items: Items<'a>,
+    },
     /// Real text, in thousandths of an em along `matrix`. Each item's value is a scalar value, already checked.
-    TextRun { matrix: Mat, fill: Option<[u8; 4]>, bold: bool, italic: bool, generic: u8, family: &'a [u8], items: Items<'a> },
-    ImageBegin { coding: ImageCoding, why: Why, opacity: u8, width: u32, height: u32, total: u64, matrix: Mat },
+    TextRun {
+        matrix: Mat,
+        fill: Option<[u8; 4]>,
+        bold: bool,
+        italic: bool,
+        generic: u8,
+        family: &'a [u8],
+        items: Items<'a>,
+    },
+    ImageBegin {
+        coding: ImageCoding,
+        why: Why,
+        opacity: u8,
+        width: u32,
+        height: u32,
+        total: u64,
+        matrix: Mat,
+    },
     ImageBytes(&'a [u8]),
     ImageEnd,
-    Note { code: NoteCode, count: u32 },
+    Note {
+        code: NoteCode,
+        count: u32,
+    },
     /// Where an image is, and its own size, for a job that asked for [`IMAGES_LIST`]: none of its bytes. `jpeg` says its stream is a JPEG, which only says it may go as its own bytes.
-    ImagePlace { width: u32, height: u32, jpeg: bool, matrix: Mat },
+    ImagePlace {
+        width: u32,
+        height: u32,
+        jpeg: bool,
+        matrix: Mat,
+    },
 }
 
 const TAG_PAGE: u8 = 1;
@@ -464,7 +533,11 @@ impl<'a> Records<'a> {
 
     fn finite(&mut self) -> Result<f32, ProtoError> {
         let value = self.0.f32()?;
-        if value.is_finite() { Ok(value) } else { Err(ProtoError("a number that isn't finite")) }
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(ProtoError("a number that isn't finite"))
+        }
     }
 
     fn matrix(&mut self) -> Result<Mat, ProtoError> {
@@ -491,7 +564,10 @@ impl<'a> Records<'a> {
             if seg[0] & 0x7F > SEG_CURVE {
                 return Err(ProtoError("unknown segment kind"));
             }
-            let (x, y) = (f32::from_le_bytes([seg[1], seg[2], seg[3], seg[4]]), f32::from_le_bytes([seg[5], seg[6], seg[7], seg[8]]));
+            let (x, y) = (
+                f32::from_le_bytes([seg[1], seg[2], seg[3], seg[4]]),
+                f32::from_le_bytes([seg[5], seg[6], seg[7], seg[8]]),
+            );
             if !x.is_finite() || !y.is_finite() {
                 return Err(ProtoError("a number that isn't finite"));
             }
@@ -510,7 +586,10 @@ impl<'a> Records<'a> {
             if chars && char::from_u32(value).is_none() {
                 return Err(ProtoError("character isn't a scalar value"));
             }
-            let (x, y) = (f32::from_le_bytes([item[4], item[5], item[6], item[7]]), f32::from_le_bytes([item[8], item[9], item[10], item[11]]));
+            let (x, y) = (
+                f32::from_le_bytes([item[4], item[5], item[6], item[7]]),
+                f32::from_le_bytes([item[8], item[9], item[10], item[11]]),
+            );
             if !x.is_finite() || !y.is_finite() {
                 return Err(ProtoError("a number that isn't finite"));
             }
@@ -524,7 +603,11 @@ impl<'a> Records<'a> {
             return Ok(None);
         }
         Ok(Some(match self.0.u8()? {
-            TAG_PAGE => Record::Page { width: self.finite()?, height: self.finite()?, matrix: self.matrix()? },
+            TAG_PAGE => Record::Page {
+                width: self.finite()?,
+                height: self.finite()?,
+                matrix: self.matrix()?,
+            },
             TAG_PATH => {
                 let matrix = self.matrix()?;
                 let flags = self.0.u8()?;
@@ -541,14 +624,35 @@ impl<'a> Records<'a> {
                 if dashes.as_chunks::<4>().0.iter().any(|bytes| !f32::from_le_bytes(*bytes).is_finite()) {
                     return Err(ProtoError("a number that isn't finite"));
                 }
-                let style = PaintStyle { fill: (flags & FLAG_FILL != 0).then_some(fill), even_odd: flags & FLAG_EVEN_ODD != 0, stroke: (flags & FLAG_STROKE != 0).then_some(stroke), width, cap, join, dash_phase, dashes };
-                Record::Path { matrix, style, segs: self.segs()? }
+                let style = PaintStyle {
+                    fill: (flags & FLAG_FILL != 0).then_some(fill),
+                    even_odd: flags & FLAG_EVEN_ODD != 0,
+                    stroke: (flags & FLAG_STROKE != 0).then_some(stroke),
+                    width,
+                    cap,
+                    join,
+                    dash_phase,
+                    dashes,
+                };
+                Record::Path {
+                    matrix,
+                    style,
+                    segs: self.segs()?,
+                }
             }
-            TAG_CLIP_DEFINE => Record::ClipDefine { id: self.0.u32()?, parent: self.0.u32()?, matrix: self.matrix()?, segs: self.segs()? },
+            TAG_CLIP_DEFINE => Record::ClipDefine {
+                id: self.0.u32()?,
+                parent: self.0.u32()?,
+                matrix: self.matrix()?,
+                segs: self.segs()?,
+            },
             TAG_CLIP => Record::Clip { id: self.0.u32()? },
             TAG_GROUP_BEGIN => Record::GroupBegin { opacity: self.0.u8()? },
             TAG_GROUP_END => Record::GroupEnd,
-            TAG_GLYPH_DEFINE => Record::GlyphDefine { id: self.0.u32()?, segs: self.segs()? },
+            TAG_GLYPH_DEFINE => Record::GlyphDefine {
+                id: self.0.u32()?,
+                segs: self.segs()?,
+            },
             TAG_GLYPH_RUN => {
                 let matrix = self.matrix()?;
                 let flags = self.0.u8()?;
@@ -556,7 +660,13 @@ impl<'a> Records<'a> {
                     return Err(ProtoError("unknown run flags"));
                 }
                 let (fill, stroke, stroke_width) = (self.rgba()?, self.rgba()?, self.finite()?);
-                Record::GlyphRun { matrix, fill: (flags & FLAG_FILL != 0).then_some(fill), stroke: (flags & FLAG_STROKE != 0).then_some(stroke), stroke_width, items: self.items(false)? }
+                Record::GlyphRun {
+                    matrix,
+                    fill: (flags & FLAG_FILL != 0).then_some(fill),
+                    stroke: (flags & FLAG_STROKE != 0).then_some(stroke),
+                    stroke_width,
+                    items: self.items(false)?,
+                }
             }
             TAG_TEXT_RUN => {
                 let matrix = self.matrix()?;
@@ -574,7 +684,15 @@ impl<'a> Records<'a> {
                     return Err(ProtoError("a font name too long"));
                 }
                 let family = self.bytes(family_len)?;
-                Record::TextRun { matrix, fill: (flags & FLAG_FILL != 0).then_some(fill), bold: flags & FLAG_BOLD != 0, italic: flags & FLAG_ITALIC != 0, generic, family, items: self.items(true)? }
+                Record::TextRun {
+                    matrix,
+                    fill: (flags & FLAG_FILL != 0).then_some(fill),
+                    bold: flags & FLAG_BOLD != 0,
+                    italic: flags & FLAG_ITALIC != 0,
+                    generic,
+                    family,
+                    items: self.items(true)?,
+                }
             }
             TAG_IMAGE_BEGIN => {
                 let coding = match self.0.u8()? {
@@ -583,7 +701,15 @@ impl<'a> Records<'a> {
                     _ => return Err(ProtoError("unknown image coding")),
                 };
                 let why = Why::from_u8(self.0.u8()?)?;
-                Record::ImageBegin { coding, why, opacity: self.0.u8()?, width: self.0.u32()?, height: self.0.u32()?, total: self.0.u64()?, matrix: self.matrix()? }
+                Record::ImageBegin {
+                    coding,
+                    why,
+                    opacity: self.0.u8()?,
+                    width: self.0.u32()?,
+                    height: self.0.u32()?,
+                    total: self.0.u64()?,
+                    matrix: self.matrix()?,
+                }
             }
             TAG_IMAGE_BYTES => {
                 let len = self.0.u32()?;
@@ -593,7 +719,10 @@ impl<'a> Records<'a> {
                 Record::ImageBytes(self.bytes(len as usize)?)
             }
             TAG_IMAGE_END => Record::ImageEnd,
-            TAG_NOTE => Record::Note { code: NoteCode::from_u8(self.0.u8()?)?, count: self.0.u32()? },
+            TAG_NOTE => Record::Note {
+                code: NoteCode::from_u8(self.0.u8()?)?,
+                count: self.0.u32()?,
+            },
             TAG_IMAGE_PLACE => {
                 let (width, height) = (self.0.u32()?, self.0.u32()?);
                 let jpeg = match self.0.u8()? {
@@ -601,7 +730,12 @@ impl<'a> Records<'a> {
                     1 => true,
                     _ => return Err(ProtoError("unknown image flag")),
                 };
-                Record::ImagePlace { width, height, jpeg, matrix: self.matrix()? }
+                Record::ImagePlace {
+                    width,
+                    height,
+                    jpeg,
+                    matrix: self.matrix()?,
+                }
             }
             _ => return Err(ProtoError("unknown record")),
         }))
@@ -644,7 +778,18 @@ pub mod put {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn path_begin(out: &mut Vec<u8>, m: &Mat, fill: Option<[u8; 4]>, even_odd: bool, stroke: Option<[u8; 4]>, width: f32, cap: u8, join: u8, dash_phase: f32, dashes: &[f32]) {
+    pub fn path_begin(
+        out: &mut Vec<u8>,
+        m: &Mat,
+        fill: Option<[u8; 4]>,
+        even_odd: bool,
+        stroke: Option<[u8; 4]>,
+        width: f32,
+        cap: u8,
+        join: u8,
+        dash_phase: f32,
+        dashes: &[f32],
+    ) {
         out.push(TAG_PATH);
         matrix(out, m);
         out.push((u8::from(fill.is_some()) * FLAG_FILL) | (u8::from(even_odd) * FLAG_EVEN_ODD) | (u8::from(stroke.is_some()) * FLAG_STROKE));
@@ -864,7 +1009,11 @@ impl StreamCheck {
                 }
                 let depth = match parent {
                     0 => 1,
-                    parent => self.clip_depths.get(*parent as usize - 1).ok_or(ProtoError("a clip nobody defined"))?.saturating_add(1),
+                    parent => self
+                        .clip_depths
+                        .get(*parent as usize - 1)
+                        .ok_or(ProtoError("a clip nobody defined"))?
+                        .saturating_add(1),
                 };
                 if depth > MAX_CLIP_CHAIN {
                     return Err(ProtoError("clips stacked too deep"));
@@ -873,11 +1022,19 @@ impl StreamCheck {
                 Ok(())
             }
             Record::Clip { id } => {
-                if *id as usize > self.clip_depths.len() { Err(ProtoError("a clip nobody defined")) } else { Ok(()) }
+                if *id as usize > self.clip_depths.len() {
+                    Err(ProtoError("a clip nobody defined"))
+                } else {
+                    Ok(())
+                }
             }
             Record::GroupBegin { .. } => {
                 self.groups += 1;
-                if self.groups > MAX_GROUP_NESTING { Err(ProtoError("groups nested too deep")) } else { Ok(()) }
+                if self.groups > MAX_GROUP_NESTING {
+                    Err(ProtoError("groups nested too deep"))
+                } else {
+                    Ok(())
+                }
             }
             Record::GroupEnd => {
                 self.groups = self.groups.checked_sub(1).ok_or(ProtoError("a group that wasn't begun"))?;
@@ -890,7 +1047,14 @@ impl StreamCheck {
                 self.glyphs = *id;
                 Ok(())
             }
-            Record::ImageBegin { coding, why, width, height, total, .. } => {
+            Record::ImageBegin {
+                coding,
+                why,
+                width,
+                height,
+                total,
+                ..
+            } => {
                 // A mask is only for the JPEG straight after it, and that JPEG has to have one.
                 let wanted_a_mask = std::mem::take(&mut self.mask_waiting);
                 if wanted_a_mask != (*why == Why::JpegOverMask) {
@@ -937,7 +1101,11 @@ impl StreamCheck {
             }
             Record::ImageBytes(_) | Record::ImageEnd => Err(ProtoError("image bytes with no image")),
             Record::ImagePlace { width, height, .. } => {
-                if *width == 0 || *height == 0 { Err(ProtoError("an image with no size")) } else { Ok(()) }
+                if *width == 0 || *height == 0 {
+                    Err(ProtoError("an image with no size"))
+                } else {
+                    Ok(())
+                }
             }
         }
     }
@@ -995,7 +1163,18 @@ mod tests {
         put::seg(&mut out, SEG_LINE, true, 1.0, 1.0);
         put::segs_end(&mut out, at, 2);
         put::clip(&mut out, 1);
-        put::path_begin(&mut out, &identity(), Some([1, 2, 3, 255]), true, Some([4, 5, 6, 128]), 1.5, 1, 2, 0.5, &[1.0, 2.0]);
+        put::path_begin(
+            &mut out,
+            &identity(),
+            Some([1, 2, 3, 255]),
+            true,
+            Some([4, 5, 6, 128]),
+            1.5,
+            1,
+            2,
+            0.5,
+            &[1.0, 2.0],
+        );
         let at = put::segs_begin(&mut out);
         put::seg(&mut out, SEG_MOVE, false, 3.0, 4.0);
         put::seg(&mut out, SEG_CURVE, false, 5.0, 6.0);
@@ -1038,13 +1217,27 @@ mod tests {
         let mut path = None;
         while let Some(record) = records.next_record().unwrap() {
             if let Record::Path { style, segs, .. } = record {
-                path = Some((style.fill, style.stroke, style.width, style.dashes().collect::<Vec<_>>(), segs.iter().collect::<Vec<_>>()));
+                path = Some((
+                    style.fill,
+                    style.stroke,
+                    style.width,
+                    style.dashes().collect::<Vec<_>>(),
+                    segs.iter().collect::<Vec<_>>(),
+                ));
             }
         }
         let (fill, stroke, width, dashes, segs) = path.unwrap();
         assert_eq!((fill, stroke, width), (Some([1, 2, 3, 255]), Some([4, 5, 6, 128]), 1.5));
         assert_eq!(dashes, vec![1.0, 2.0]);
-        assert_eq!(segs[1], WireSeg { kind: SEG_CURVE, close: false, x: 5.0, y: 6.0 });
+        assert_eq!(
+            segs[1],
+            WireSeg {
+                kind: SEG_CURVE,
+                close: false,
+                x: 5.0,
+                y: 6.0
+            }
+        );
     }
 
     /// Failure: a decoder panics or reads out of bounds on a compromised worker's bytes, taking the host with it. Every cut of real bytes, and bits flipped at random, must come back as a value or an error.
@@ -1110,13 +1303,56 @@ mod tests {
         };
         assert!(chain(u32::from(MAX_CLIP_CHAIN)).is_ok());
         assert_eq!(chain(u32::from(MAX_CLIP_CHAIN) + 1), Err(ProtoError("clips stacked too deep")));
-        assert_eq!(with_page(|out| put::glyph_run(out, &identity(), None, None, 0.0, &[(1, 0.0, 0.0)])), Err(ProtoError("a glyph nobody defined")));
-        assert_eq!(with_page(|out| put::image_begin(out, ImageCoding::Pixels { channels: 3 }, Why::Image, 255, 2, 2, 1, &identity())), Err(ProtoError("an image's bytes differ from its size")));
+        assert_eq!(
+            with_page(|out| put::glyph_run(out, &identity(), None, None, 0.0, &[(1, 0.0, 0.0)])),
+            Err(ProtoError("a glyph nobody defined"))
+        );
+        assert_eq!(
+            with_page(|out| put::image_begin(out, ImageCoding::Pixels { channels: 3 }, Why::Image, 255, 2, 2, 1, &identity())),
+            Err(ProtoError("an image's bytes differ from its size"))
+        );
         // Three rows of 8 GiB in the host, filled by frames, with nothing reaching a cap on the file until a row ends. And at the largest of everything, no overflow in the checking.
         let row_limit = (MAX_IMAGE_ROW_BYTES / 4) as u32;
-        assert_eq!(with_page(|out| put::image_begin(out, ImageCoding::Pixels { channels: 4 }, Why::Image, 255, row_limit + 1, 1, u64::from(row_limit + 1) * 4, &identity())), Err(ProtoError("an image's row is too long")));
-        assert_eq!(with_page(|out| put::image_begin(out, ImageCoding::Pixels { channels: 4 }, Why::Image, 255, u32::MAX, u32::MAX, u64::MAX, &identity())), Err(ProtoError("an image's row is too long")));
-        assert!(with_page(|out| put::image_begin(out, ImageCoding::Pixels { channels: 4 }, Why::Image, 255, row_limit, 1, u64::from(row_limit) * 4, &identity())).is_err_and(|error| error == ProtoError("an image left open")), "a row at the limit is fine");
+        assert_eq!(
+            with_page(|out| put::image_begin(
+                out,
+                ImageCoding::Pixels { channels: 4 },
+                Why::Image,
+                255,
+                row_limit + 1,
+                1,
+                u64::from(row_limit + 1) * 4,
+                &identity()
+            )),
+            Err(ProtoError("an image's row is too long"))
+        );
+        assert_eq!(
+            with_page(|out| put::image_begin(
+                out,
+                ImageCoding::Pixels { channels: 4 },
+                Why::Image,
+                255,
+                u32::MAX,
+                u32::MAX,
+                u64::MAX,
+                &identity()
+            )),
+            Err(ProtoError("an image's row is too long"))
+        );
+        assert!(
+            with_page(|out| put::image_begin(
+                out,
+                ImageCoding::Pixels { channels: 4 },
+                Why::Image,
+                255,
+                row_limit,
+                1,
+                u64::from(row_limit) * 4,
+                &identity()
+            ))
+            .is_err_and(|error| error == ProtoError("an image left open")),
+            "a row at the limit is fine"
+        );
         assert_eq!(
             with_page(|out| {
                 put::image_begin(out, ImageCoding::Pixels { channels: 1 }, Why::Image, 255, 2, 2, 4, &identity());
@@ -1148,7 +1384,15 @@ mod tests {
     fn an_image_place_round_trips_and_a_bad_one_is_refused() {
         let mut out = Vec::new();
         put::image_place(&mut out, 640, 480, true, &[2.0, 0.0, 0.0, 3.0, 4.0, 5.0]);
-        assert_eq!(Records::new(&out).next_record(), Ok(Some(Record::ImagePlace { width: 640, height: 480, jpeg: true, matrix: [2.0, 0.0, 0.0, 3.0, 4.0, 5.0] })));
+        assert_eq!(
+            Records::new(&out).next_record(),
+            Ok(Some(Record::ImagePlace {
+                width: 640,
+                height: 480,
+                jpeg: true,
+                matrix: [2.0, 0.0, 0.0, 3.0, 4.0, 5.0]
+            }))
+        );
         let mut check = StreamCheck::for_images(IMAGES_LIST);
         let mut listed = Vec::new();
         put::page(&mut listed, 10.0, 10.0, &identity());
@@ -1192,25 +1436,34 @@ mod tests {
             let at = put::segs_begin(out);
             put::segs_end(out, at, 0);
         };
-        assert_eq!(run(IMAGES_LIST, &|out| {
-            place(out);
-            place(out);
-            put::note(out, NoteCode::HiddenLayer, 1);
-        }), Ok(()));
+        assert_eq!(
+            run(IMAGES_LIST, &|out| {
+                place(out);
+                place(out);
+                put::note(out, NoteCode::HiddenLayer, 1);
+            }),
+            Ok(())
+        );
         assert_eq!(run(IMAGES_LIST, &image), Err(ProtoError("something the job didn't ask for")));
         assert_eq!(run(IMAGES_LIST, &path), Err(ProtoError("something the job didn't ask for")));
         assert_eq!(run(2, &image), Ok(()));
-        assert_eq!(run(2, &|out| {
-            image(out);
-            image(out);
-        }), Err(ProtoError("more than the one image asked for")));
+        assert_eq!(
+            run(2, &|out| {
+                image(out);
+                image(out);
+            }),
+            Err(ProtoError("more than the one image asked for"))
+        );
         assert_eq!(run(2, &path), Err(ProtoError("something the job didn't ask for")));
         assert_eq!(run(IMAGES_ALL, &place), Err(ProtoError("something the job didn't ask for")));
-        assert_eq!(run(IMAGES_ALL, &|out| {
-            image(out);
-            image(out);
-            path(out);
-        }), Ok(()));
+        assert_eq!(
+            run(IMAGES_ALL, &|out| {
+                image(out);
+                image(out);
+                path(out);
+            }),
+            Ok(())
+        );
     }
 
     /// Failure: a NaN or an infinity from a compromised worker gets as far as the writer.
@@ -1233,12 +1486,42 @@ mod tests {
     /// Failure: a job with a rectangle or scale that can't be drawn gets to a worker, or a job and its reply don't round-trip.
     #[test]
     fn jobs_round_trip_and_bad_ones_are_refused() {
-        let job = ContentsJob { generation: 9, job_id: 3, page: 2, seq: 7, scale: 2.0, rect: [1.0, 2.0, 3.0, 4.0], text: TextMode::Paths, hints: hints::BLEND, images: IMAGES_ALL };
+        let job = ContentsJob {
+            generation: 9,
+            job_id: 3,
+            page: 2,
+            seq: 7,
+            scale: 2.0,
+            rect: [1.0, 2.0, 3.0, 4.0],
+            text: TextMode::Paths,
+            hints: hints::BLEND,
+            images: IMAGES_ALL,
+        };
         let bytes = job.encode();
         assert_eq!(ContentsJob::decode(&bytes[HEADER_LEN..]), Ok(job));
-        let one_image = ContentsJob { rect: [0.0; 4], images: 3, ..job };
+        let one_image = ContentsJob {
+            rect: [0.0; 4],
+            images: 3,
+            ..job
+        };
         assert_eq!(ContentsJob::decode(&one_image.encode()[HEADER_LEN..]), Ok(one_image));
-        for bad in [ContentsJob { scale: 0.0, ..job }, ContentsJob { rect: [f32::NAN, 0.0, 1.0, 1.0], ..job }, ContentsJob { rect: [0.0, 0.0, -1.0, 1.0], ..job }, ContentsJob { rect: [-1.0, 0.0, 1.0, 1.0], ..job }, ContentsJob { hints: 0xF0, ..job }, ContentsJob { images: IMAGES_LIST, ..job }] {
+        for bad in [
+            ContentsJob { scale: 0.0, ..job },
+            ContentsJob {
+                rect: [f32::NAN, 0.0, 1.0, 1.0],
+                ..job
+            },
+            ContentsJob {
+                rect: [0.0, 0.0, -1.0, 1.0],
+                ..job
+            },
+            ContentsJob {
+                rect: [-1.0, 0.0, 1.0, 1.0],
+                ..job
+            },
+            ContentsJob { hints: 0xF0, ..job },
+            ContentsJob { images: IMAGES_LIST, ..job },
+        ] {
             assert!(bad.check().is_err(), "{bad:?}");
         }
         let mut frame = Vec::new();

@@ -11,12 +11,25 @@ use std::path::PathBuf;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let target = PathBuf::from(&args[1]);
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&args[2]).expect("the folder can be read").flatten().map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|extension| extension == "pdf")).collect();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&args[2])
+        .expect("the folder can be read")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "pdf"))
+        .collect();
     files.sort();
     let (mut pages, mut flagged, mut no_ink, mut unchecked) = (0u32, 0u32, 0u64, 0u32);
     for path in &files {
-        let config = ServiceConfig { worker_exe: target.join("release/recto-render-service"), pdfium_lib: target.join("pdfium/libpdfium.dylib"), heavy_slot: HeavySlot::new(), extra_env: Vec::new(), replace_args: None };
-        let Ok(mut doc) = DocRenderer::new(path, None, config, Policy::default()) else { continue };
+        let config = ServiceConfig {
+            worker_exe: target.join("release/recto-render-service"),
+            pdfium_lib: target.join("pdfium/libpdfium.dylib"),
+            heavy_slot: HeavySlot::new(),
+            extra_env: Vec::new(),
+            replace_args: None,
+        };
+        let Ok(mut doc) = DocRenderer::new(path, None, config, Policy::default()) else {
+            continue;
+        };
         let Ok(count) = doc.page_count() else { continue };
         let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
         for page in 0..count {
@@ -32,5 +45,8 @@ fn main() {
             }
         }
     }
-    println!("# {} files, {pages} pages, {flagged} flagged, {no_ink} characters with no ink, {unchecked} not checked", files.len());
+    println!(
+        "# {} files, {pages} pages, {flagged} flagged, {no_ink} characters with no ink, {unchecked} not checked",
+        files.len()
+    );
 }

@@ -10,7 +10,10 @@ use crate::levels;
 use crate::log::{self, ActivityLog};
 use crate::state::StatePaths;
 use recto_agent::table::{EVENT_GROUPS, event_group};
-use recto_agent::{AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_SELECTOR_BYTES, MAX_WAIT_MS, VERSION, allowed, condition_topics, exit, parse, refusal, reply, table};
+use recto_agent::{
+    AgentError, Command, Condition, ConditionState, DEFAULT_WATCH_MS, Event, Level, MAX_COMMAND_BYTES, MAX_SELECTOR_BYTES, MAX_WAIT_MS, VERSION, allowed,
+    condition_topics, exit, parse, refusal, reply, table,
+};
 use recto_platform::local::{self, Listener, PollEntry, SocketFile, Stream, Token};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
@@ -93,7 +96,8 @@ pub enum BindError {
 impl From<BindError> for AgentError {
     fn from(error: BindError) -> Self {
         match error {
-            BindError::AlreadyRunning => AgentError::new("already_running", "A session is already running on this state folder.", exit::FAILED).then("`recto status` shows it, and `recto stop` ends it."),
+            BindError::AlreadyRunning => AgentError::new("already_running", "A session is already running on this state folder.", exit::FAILED)
+                .then("`recto status` shows it, and `recto stop` ends it."),
             BindError::Refused(error) => error,
         }
     }
@@ -116,8 +120,15 @@ impl Server {
     /// Takes the lock, clears a socket left by a session that died, and binds.
     pub fn bind(paths: &StatePaths) -> Result<Self, BindError> {
         paths.prepare().map_err(BindError::Refused)?;
-        let failed = |message: &str| BindError::Refused(AgentError::new("serve_failed", message.to_string(), exit::FAILED).then("Check that the state folder can be written to."));
-        let lock = OpenOptions::new().create(true).truncate(false).write(true).open(&paths.lock).map_err(|_| failed("The session's lock file couldn't be opened."))?;
+        let failed = |message: &str| {
+            BindError::Refused(AgentError::new("serve_failed", message.to_string(), exit::FAILED).then("Check that the state folder can be written to."))
+        };
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&paths.lock)
+            .map_err(|_| failed("The session's lock file couldn't be opened."))?;
         if lock.try_lock().is_err() {
             return Err(BindError::AlreadyRunning);
         }
@@ -126,7 +137,14 @@ impl Server {
             Ok(SocketFile::Nothing) => {}
             Ok(SocketFile::OwnSocket) => std::fs::remove_file(&paths.socket).map_err(|_| failed("The old socket couldn't be removed."))?,
             Ok(SocketFile::Other) | Err(_) => {
-                return Err(BindError::Refused(AgentError::new("socket_refused", "Something that isn't this session's socket is where its socket goes, so it won't be touched.", exit::PERMISSION).then("Tell the user what's there, and that it needs moving.")));
+                return Err(BindError::Refused(
+                    AgentError::new(
+                        "socket_refused",
+                        "Something that isn't this session's socket is where its socket goes, so it won't be touched.",
+                        exit::PERMISSION,
+                    )
+                    .then("Tell the user what's there, and that it needs moving."),
+                ));
             }
         }
         let listener = Listener::bind(&paths.socket).map_err(|_| failed("The session's socket couldn't be made."))?;
@@ -134,7 +152,15 @@ impl Server {
         wake_tx.set_nonblocking(true).map_err(|_| failed("The session couldn't be started."))?;
         wake_rx.set_nonblocking(true).map_err(|_| failed("The session couldn't be started."))?;
         let (done_tx, done_rx) = channel();
-        Ok(Self { paths: paths.clone(), listener, wake_tx, wake_rx, done_tx, done_rx, _lock: lock })
+        Ok(Self {
+            paths: paths.clone(),
+            listener,
+            wake_tx,
+            wake_rx,
+            done_tx,
+            done_rx,
+            _lock: lock,
+        })
     }
 
     /// Asks a running server to end, from another thread. For a host that started it on its own thread.
@@ -144,7 +170,10 @@ impl Server {
 
     /// Tells watchers and waiters what the host's own user did, from another thread. Commands' events go by themselves: this is for a tap in the app's sidebar, which no command caused.
     pub fn announcer(&self) -> std::io::Result<Announcer> {
-        Ok(Announcer { done: self.done_tx.clone(), wake: self.wake_tx.try_clone()? })
+        Ok(Announcer {
+            done: self.done_tx.clone(),
+            wake: self.wake_tx.try_clone()?,
+        })
     }
 
     /// Runs until `stop` or a [`Stopper`]. Blocks in `poll` the whole time.
@@ -229,8 +258,20 @@ enum State {
     Idle,
     /// A command is running for this client.
     Busy,
-    Waiting { what: WaitFor, tag: &'static str, deadline: Instant, generation: u64, looking: bool, look_again: bool },
-    Watching { groups: Option<Vec<String>>, deadline: Instant, remaining: Option<u32>, delivered: u64 },
+    Waiting {
+        what: WaitFor,
+        tag: &'static str,
+        deadline: Instant,
+        generation: u64,
+        looking: bool,
+        look_again: bool,
+    },
+    Watching {
+        groups: Option<Vec<String>>,
+        deadline: Instant,
+        remaining: Option<u32>,
+        delivered: u64,
+    },
 }
 
 /// One client, plus what it's in the middle of sending and being sent.
@@ -258,8 +299,17 @@ struct Conn {
 }
 
 enum Job {
-    Command { conn: u64, command: Command },
-    Look { conn: u64, generation: u64, condition: Condition, tab: String, page: Option<u32> },
+    Command {
+        conn: u64,
+        command: Command,
+    },
+    Look {
+        conn: u64,
+        generation: u64,
+        condition: Condition,
+        tab: String,
+        page: Option<u32>,
+    },
 }
 
 impl Job {
@@ -276,8 +326,22 @@ impl Job {
 
 #[derive(Debug)]
 enum Done {
-    Answered { conn: u64, line: Vec<u8>, tag: &'static str, level: Level, outcome: &'static str, details: Value, events: Vec<Event>, draws: bool, stop: bool },
-    Looked { conn: u64, generation: u64, state: ConditionState },
+    Answered {
+        conn: u64,
+        line: Vec<u8>,
+        tag: &'static str,
+        level: Level,
+        outcome: &'static str,
+        details: Value,
+        events: Vec<Event>,
+        draws: bool,
+        stop: bool,
+    },
+    Looked {
+        conn: u64,
+        generation: u64,
+        state: ConditionState,
+    },
     /// Something happened that no command caused. It takes up no job's place.
     Published(Vec<Event>),
 }
@@ -336,8 +400,16 @@ impl<H: Host> Loop<H> {
             entries.push(PollEntry::new(wake_rx.token(), true, false));
             for conn in &self.conns {
                 // A client that closed its end while its answer is being worked out would wake this for nothing, over and over, until the job ends.
-                let token = if conn.input_closed && !conn.has_output() { Token::NONE } else { conn.stream.token() };
-                entries.push(PollEntry::new(token, conn.wants_input(self.limits.max_line_bytes, self.limits.max_unsent_before_pause), conn.has_output()));
+                let token = if conn.input_closed && !conn.has_output() {
+                    Token::NONE
+                } else {
+                    conn.stream.token()
+                };
+                entries.push(PollEntry::new(
+                    token,
+                    conn.wants_input(self.limits.max_line_bytes, self.limits.max_unsent_before_pause),
+                    conn.has_output(),
+                ));
             }
             let timeout = self.next_deadline().map(|at| at.saturating_duration_since(Instant::now()));
             local::poll(&mut entries, timeout)?;
@@ -417,13 +489,31 @@ impl<H: Host> Loop<H> {
         let now = Instant::now();
         let id = self.next_conn;
         self.next_conn += 1;
-        self.conns.push(Conn { id, stream, state: State::Idle, input: Vec::new(), line_started: None, output: Vec::new(), sent: 0, output_since: now, last_activity: now, input_closed: false, closing: false, gone: false, overflow });
+        self.conns.push(Conn {
+            id,
+            stream,
+            state: State::Idle,
+            input: Vec::new(),
+            line_started: None,
+            output: Vec::new(),
+            sent: 0,
+            output_since: now,
+            last_activity: now,
+            input_closed: false,
+            closing: false,
+            gone: false,
+            overflow,
+        });
     }
 
     fn take_lines(&mut self) {
         for index in 0..self.conns.len() {
             // A client with a lot it hasn't read waits before its next command is even looked at, so it can't make the session work for answers nobody takes.
-            while matches!(self.conns[index].state, State::Idle) && !self.conns[index].gone && !self.conns[index].closing && self.conns[index].unsent() <= self.limits.max_unsent_before_pause {
+            while matches!(self.conns[index].state, State::Idle)
+                && !self.conns[index].gone
+                && !self.conns[index].closing
+                && self.conns[index].unsent() <= self.limits.max_unsent_before_pause
+            {
                 let Some(line) = self.conns[index].next_line() else {
                     if self.conns[index].input.len() > self.limits.max_line_bytes {
                         self.refuse_line(index);
@@ -448,10 +538,16 @@ impl<H: Host> Loop<H> {
         let level = self.observe_level();
         self.conns[index].last_activity = Instant::now();
         if self.stopping.is_some() {
-            self.answer(index, "unknown", &Err(AgentError::new("session_ended", "The session is stopping.", exit::NOT_RUNNING).then("Start it again with `recto serve --background`.")));
+            self.answer(
+                index,
+                "unknown",
+                &Err(AgentError::new("session_ended", "The session is stopping.", exit::NOT_RUNNING).then("Start it again with `recto serve --background`.")),
+            );
             return;
         }
-        let command = std::str::from_utf8(line).map_err(|_| AgentError::new("bad_command", "That isn't a command RectoPDF knows.", exit::FAILED)).and_then(parse);
+        let command = std::str::from_utf8(line)
+            .map_err(|_| AgentError::new("bad_command", "That isn't a command RectoPDF knows.", exit::FAILED))
+            .and_then(parse);
         let command = match command {
             Ok(command) => command,
             Err(error) => {
@@ -469,13 +565,27 @@ impl<H: Host> Loop<H> {
         }
         let tag = command.tag();
         // Past the connection cap, only what must always get through.
-        if self.conns[index].overflow && !matches!(command, Command::Status {} | Command::LevelChanged {} | Command::PermissionShow {} | Command::Stop {}) {
-            self.answer(index, tag, &Err(AgentError::new("busy", "The session has too many connections right now.", exit::BUSY)));
+        if self.conns[index].overflow
+            && !matches!(
+                command,
+                Command::Status {} | Command::LevelChanged {} | Command::PermissionShow {} | Command::Stop {}
+            )
+        {
+            self.answer(
+                index,
+                tag,
+                &Err(AgentError::new("busy", "The session has too many connections right now.", exit::BUSY)),
+            );
             self.conns[index].closing = true;
             return;
         }
         // Only the quick answers while `stop` waits: anything else could change what it's about to check.
-        if self.stop_request.is_some() && !matches!(command, Command::Status {} | Command::LevelChanged {} | Command::PermissionShow {} | Command::Log { .. }) {
+        if self.stop_request.is_some()
+            && !matches!(
+                command,
+                Command::Status {} | Command::LevelChanged {} | Command::PermissionShow {} | Command::Log { .. }
+            )
+        {
             self.answer(index, tag, &Err(stopping_now()));
             return;
         }
@@ -483,7 +593,11 @@ impl<H: Host> Loop<H> {
             Command::Stop {} => {
                 self.conns[index].state = State::Busy;
                 let conn = self.conns[index].id;
-                self.stop_request = Some(StopRequest { conn, deadline: Instant::now() + self.limits.stop_grace, checking: false });
+                self.stop_request = Some(StopRequest {
+                    conn,
+                    deadline: Instant::now() + self.limits.stop_grace,
+                    checking: false,
+                });
                 // Anything still waiting its turn could be an edit that `stop` would then lose.
                 let queued: Vec<u64> = self.queue.iter().filter(|job| matches!(job, Job::Command { .. })).map(Job::conn).collect();
                 self.queue.retain(|job| !matches!(job, Job::Command { .. }));
@@ -512,19 +626,36 @@ impl<H: Host> Loop<H> {
                 self.log.record(tag, level, "busy", &Value::Null);
                 self.answer(index, tag, &Err(too_many_waiting()));
             }
-            Command::Wait { condition, tab, page, timeout_ms } => {
+            Command::Wait {
+                condition,
+                tab,
+                page,
+                timeout_ms,
+            } => {
                 let deadline = Instant::now() + Duration::from_millis(timeout_ms.min(MAX_WAIT_MS));
                 self.log.record(tag, level, "started", &json!({ "condition": format!("{condition:?}") }));
                 let generation = self.next_generation();
-                self.conns[index].state = State::Waiting { what: WaitFor::Condition { condition, tab, page }, tag, deadline, generation, looking: false, look_again: false };
+                self.conns[index].state = State::Waiting {
+                    what: WaitFor::Condition { condition, tab, page },
+                    tag,
+                    deadline,
+                    generation,
+                    looking: false,
+                    look_again: false,
+                };
                 self.look(index);
             }
             Command::Watch { events, timeout_ms, count } => self.watch(index, level, events, timeout_ms, count),
             Command::WatchStop {} => {
-                let watching: Vec<(usize, u64)> = self.conns.iter().enumerate().filter_map(|(at, conn)| match conn.state {
-                    State::Watching { delivered, .. } => Some((at, delivered)),
-                    _ => None,
-                }).collect();
+                let watching: Vec<(usize, u64)> = self
+                    .conns
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(at, conn)| match conn.state {
+                        State::Watching { delivered, .. } => Some((at, delivered)),
+                        _ => None,
+                    })
+                    .collect();
                 for (at, delivered) in &watching {
                     self.end_watch(*at, "ended by `recto watch stop`", *delivered);
                 }
@@ -574,11 +705,17 @@ impl<H: Host> Loop<H> {
         });
         for index in 0..self.conns.len() {
             match &self.conns[index].state {
-                State::Waiting { what: WaitFor::Level(wanted), .. } if level >= *wanted => {
+                State::Waiting {
+                    what: WaitFor::Level(wanted), ..
+                } if level >= *wanted => {
                     let data = levels::request_answer(*wanted, level);
                     self.answer(index, "permission_request", &Ok(data));
                 }
-                State::Waiting { what: WaitFor::Condition { .. }, tag, .. } if level < needed => {
+                State::Waiting {
+                    what: WaitFor::Condition { .. },
+                    tag,
+                    ..
+                } if level < needed => {
                     let tag = *tag;
                     self.answer(index, tag, &Err(refusal(table::display_name(tag), level, table::Access::At(needed))));
                 }
@@ -623,7 +760,12 @@ impl<H: Host> Loop<H> {
         if self.announced.is_none_or(|said| wanted > said) && self.announcements_left > 0 {
             self.announced = Some(wanted);
             self.announcements_left -= 1;
-            let _ = writeln!(std::io::stderr(), "An agent asks for {} access. To allow it, run: recto permission set {}", wanted.label(), wanted.name());
+            let _ = writeln!(
+                std::io::stderr(),
+                "An agent asks for {} access. To allow it, run: recto permission set {}",
+                wanted.label(),
+                wanted.name()
+            );
         }
         self.pending = Some(self.pending.map_or(wanted, |pending| pending.max(wanted)));
         self.log.record(tag, level, "asked", &json!({ "level": wanted.name() }));
@@ -633,14 +775,30 @@ impl<H: Host> Loop<H> {
             Some(timeout_ms) => {
                 let deadline = Instant::now() + Duration::from_millis(timeout_ms.min(MAX_WAIT_MS));
                 let generation = self.next_generation();
-                self.conns[index].state = State::Waiting { what: WaitFor::Level(wanted), tag, deadline, generation, looking: false, look_again: false };
+                self.conns[index].state = State::Waiting {
+                    what: WaitFor::Level(wanted),
+                    tag,
+                    deadline,
+                    generation,
+                    looking: false,
+                    look_again: false,
+                };
             }
         }
     }
 
     fn watch(&mut self, index: usize, level: Level, events: Option<Vec<String>>, timeout_ms: Option<u64>, count: Option<u32>) {
         if let Some(unknown) = events.iter().flatten().find(|group| !EVENT_GROUPS.contains(&group.as_str())) {
-            let error = AgentError::new("bad_events", format!("`{}` isn't something `watch` knows. It knows: {}.", recto_core::clean_line(unknown), EVENT_GROUPS.join(", ")), exit::FAILED).then("`recto help watch` lists them.");
+            let error = AgentError::new(
+                "bad_events",
+                format!(
+                    "`{}` isn't something `watch` knows. It knows: {}.",
+                    recto_core::clean_line(unknown),
+                    EVENT_GROUPS.join(", ")
+                ),
+                exit::FAILED,
+            )
+            .then("`recto help watch` lists them.");
             self.log.record("watch", level, error.code, &Value::Null);
             self.answer(index, "watch", &Err(error));
             return;
@@ -648,7 +806,12 @@ impl<H: Host> Loop<H> {
         self.log.record("watch", level, "started", &Value::Null);
         let deadline = Instant::now() + Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_WATCH_MS).min(MAX_WAIT_MS));
         let shown = events.clone().map_or_else(|| json!(EVENT_GROUPS), |groups| json!(groups));
-        self.conns[index].state = State::Watching { groups: events, deadline, remaining: count, delivered: 0 };
+        self.conns[index].state = State::Watching {
+            groups: events,
+            deadline,
+            remaining: count,
+            delivered: 0,
+        };
         self.send_event_line(index, &json!({ "watching": true, "events": shown }));
         // Asked for none: there's nothing to wait for, and one would be more than it asked for.
         if count == Some(0) {
@@ -664,19 +827,44 @@ impl<H: Host> Loop<H> {
     /// Asks a job to look at what this client is waiting for. Only one look at a time per client: if something happens during one, there's one more after.
     fn look(&mut self, index: usize) {
         let id = self.conns[index].id;
-        let State::Waiting { what, generation, looking, look_again, .. } = &mut self.conns[index].state else { return };
+        let State::Waiting {
+            what,
+            generation,
+            looking,
+            look_again,
+            ..
+        } = &mut self.conns[index].state
+        else {
+            return;
+        };
         let WaitFor::Condition { condition, tab, page } = what else { return };
         if *looking {
             *look_again = true;
             return;
         }
         *looking = true;
-        self.queue.push_back(Job::Look { conn: id, generation: *generation, condition: *condition, tab: tab.clone(), page: *page });
+        self.queue.push_back(Job::Look {
+            conn: id,
+            generation: *generation,
+            condition: *condition,
+            tab: tab.clone(),
+            page: *page,
+        });
     }
 
     fn finish(&mut self, done: Done) {
         match done {
-            Done::Answered { conn, line, tag, level, outcome, details, events, draws, stop } => {
+            Done::Answered {
+                conn,
+                line,
+                tag,
+                level,
+                outcome,
+                details,
+                events,
+                draws,
+                stop,
+            } => {
                 self.running -= 1;
                 if draws {
                     self.running_draws -= 1;
@@ -711,7 +899,16 @@ impl<H: Host> Loop<H> {
                 }
                 let Some(index) = self.conns.iter().position(|c| c.id == conn) else { return };
                 // A look from an earlier wait on this connection says nothing about this one.
-                let State::Waiting { generation: current, looking, look_again, tag, .. } = &mut self.conns[index].state else { return };
+                let State::Waiting {
+                    generation: current,
+                    looking,
+                    look_again,
+                    tag,
+                    ..
+                } = &mut self.conns[index].state
+                else {
+                    return;
+                };
                 if *current != generation {
                     return;
                 }
@@ -741,8 +938,16 @@ impl<H: Host> Loop<H> {
                     self.look(index);
                     continue;
                 }
-                let State::Watching { groups, remaining, delivered, .. } = &mut self.conns[index].state else { continue };
-                if groups.as_ref().is_some_and(|groups| !group.is_some_and(|group| groups.iter().any(|wanted| wanted == group))) {
+                let State::Watching {
+                    groups, remaining, delivered, ..
+                } = &mut self.conns[index].state
+                else {
+                    continue;
+                };
+                if groups
+                    .as_ref()
+                    .is_some_and(|groups| !group.is_some_and(|group| groups.iter().any(|wanted| wanted == group)))
+                {
                     continue;
                 }
                 *delivered += 1;
@@ -870,7 +1075,11 @@ impl<H: Host> Loop<H> {
                 self.running_draws -= 1;
             }
             if let Some(index) = self.conns.iter().position(|c| c.id == conn) {
-                self.answer(index, "unknown", &Err(AgentError::new("busy", "The session couldn't start this right now.", exit::BUSY)));
+                self.answer(
+                    index,
+                    "unknown",
+                    &Err(AgentError::new("busy", "The session couldn't start this right now.", exit::BUSY)),
+                );
             }
         }
     }
@@ -882,28 +1091,52 @@ impl<H: Host> Loop<H> {
             let conn = &self.conns[index];
             let stalled_output = conn.has_output() && now.saturating_duration_since(conn.output_since) >= self.limits.write_deadline;
             // Only while it's its turn to speak: a client may send its next command while the last one runs.
-            let stalled_line = matches!(conn.state, State::Idle) && conn.is_halfway_through_a_line(self.limits.max_unsent_before_pause) && conn.line_started.is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline);
-            let idle_limit = if conn.overflow { self.limits.overflow_idle } else { self.limits.idle_deadline };
-            let idle = matches!(conn.state, State::Idle) && conn.input.is_empty() && !conn.has_output() && now.saturating_duration_since(conn.last_activity) >= idle_limit;
+            let stalled_line = matches!(conn.state, State::Idle)
+                && conn.is_halfway_through_a_line(self.limits.max_unsent_before_pause)
+                && conn
+                    .line_started
+                    .is_some_and(|started| now.saturating_duration_since(started) >= self.limits.line_deadline);
+            let idle_limit = if conn.overflow {
+                self.limits.overflow_idle
+            } else {
+                self.limits.idle_deadline
+            };
+            let idle = matches!(conn.state, State::Idle)
+                && conn.input.is_empty()
+                && !conn.has_output()
+                && now.saturating_duration_since(conn.last_activity) >= idle_limit;
             if stalled_output || stalled_line || idle {
                 self.conns[index].gone = true;
                 continue;
             }
             match &self.conns[index].state {
                 // Not while a look is on its way: what's already true must come back true, even with no time at all to wait.
-                State::Waiting { deadline, tag, what, looking: false, .. } if now >= *deadline => {
+                State::Waiting {
+                    deadline,
+                    tag,
+                    what,
+                    looking: false,
+                    ..
+                } if now >= *deadline => {
                     let tag = *tag;
                     let error = match what {
                         WaitFor::Level(wanted) => {
                             let command = format!("recto permission set {}", wanted.name());
-                            AgentError::new("timed_out", "The user hasn't allowed this yet.", exit::TIMED_OUT).then(format!("Tell the user to run `{command}` in their own terminal, then try again."))
+                            AgentError::new("timed_out", "The user hasn't allowed this yet.", exit::TIMED_OUT)
+                                .then(format!("Tell the user to run `{command}` in their own terminal, then try again."))
                         }
-                        WaitFor::Condition { .. } => AgentError::new("timed_out", "The time ran out before that happened.", exit::TIMED_OUT).then("Check `recto status` and `recto tabs`, or wait longer with `--timeout`."),
+                        WaitFor::Condition { .. } => AgentError::new("timed_out", "The time ran out before that happened.", exit::TIMED_OUT)
+                            .then("Check `recto status` and `recto tabs`, or wait longer with `--timeout`."),
                     };
                     self.log.record(tag, self.last_level, "timed_out", &Value::Null);
                     self.answer(index, tag, &Err(error));
                 }
-                State::Watching { deadline, remaining, delivered, .. } if now >= *deadline => {
+                State::Watching {
+                    deadline,
+                    remaining,
+                    delivered,
+                    ..
+                } if now >= *deadline => {
                     let total = *delivered;
                     if remaining.is_some() {
                         let error = AgentError::new("timed_out", "The time ran out before that many events came.", exit::TIMED_OUT);
@@ -946,7 +1179,12 @@ impl<H: Host> Loop<H> {
             match &self.conns[index].state {
                 State::Waiting { tag, .. } => {
                     let tag = *tag;
-                    self.answer(index, tag, &Err(AgentError::new("session_ended", "The session is stopping.", exit::NOT_RUNNING).then("Start it again with `recto serve --background`.")));
+                    self.answer(
+                        index,
+                        tag,
+                        &Err(AgentError::new("session_ended", "The session is stopping.", exit::NOT_RUNNING)
+                            .then("Start it again with `recto serve --background`.")),
+                    );
                 }
                 State::Watching { delivered, .. } => {
                     let total = *delivered;
@@ -965,19 +1203,26 @@ impl<H: Host> Loop<H> {
         }
         let queued_commands = self.queue.iter().any(|job| matches!(job, Job::Command { .. }));
         if self.running == 0 && !queued_commands {
-            self.queue.push_front(Job::Command { conn: request.conn, command: Command::Stop {} });
+            self.queue.push_front(Job::Command {
+                conn: request.conn,
+                command: Command::Stop {},
+            });
             self.stop_request = Some(StopRequest { checking: true, ..request });
         } else if Instant::now() >= request.deadline {
             self.stop_request = None;
             if let Some(index) = self.conns.iter().position(|c| c.id == request.conn) {
-                let error = AgentError::new("busy", "A command is still running, so the session wasn't stopped.", exit::BUSY).then("Try again when it's finished. `recto status` shows the session is alive.");
+                let error = AgentError::new("busy", "A command is still running, so the session wasn't stopped.", exit::BUSY)
+                    .then("Try again when it's finished. `recto status` shows the session is alive.");
                 self.answer(index, "stop", &Err(error));
             }
         }
     }
 
     fn subscribers(&self) -> usize {
-        self.conns.iter().filter(|conn| matches!(conn.state, State::Waiting { .. } | State::Watching { .. })).count()
+        self.conns
+            .iter()
+            .filter(|conn| matches!(conn.state, State::Waiting { .. } | State::Watching { .. }))
+            .count()
     }
 
     fn finished_stopping(&self) -> bool {
@@ -1000,11 +1245,21 @@ impl<H: Host> Loop<H> {
             }
             match &conn.state {
                 State::Idle => {
-                    if let Some(started) = conn.line_started.filter(|_| conn.is_halfway_through_a_line(self.limits.max_unsent_before_pause)) {
+                    if let Some(started) = conn
+                        .line_started
+                        .filter(|_| conn.is_halfway_through_a_line(self.limits.max_unsent_before_pause))
+                    {
                         consider(started + self.limits.line_deadline);
                     }
                     if conn.input.is_empty() && !conn.has_output() {
-                        consider(conn.last_activity + if conn.overflow { self.limits.overflow_idle } else { self.limits.idle_deadline });
+                        consider(
+                            conn.last_activity
+                                + if conn.overflow {
+                                    self.limits.overflow_idle
+                                } else {
+                                    self.limits.idle_deadline
+                                },
+                        );
                     }
                 }
                 // With a look on its way the deadline can't act yet, and counting it would spin until the look ends.
@@ -1045,7 +1300,9 @@ impl Conn {
 
     /// Everything it was owed has gone, or there's no one to send it to.
     fn finished(&self) -> bool {
-        self.gone || (self.closing && !self.has_output()) || (self.input_closed && matches!(self.state, State::Idle) && !self.has_output() && self.input.is_empty())
+        self.gone
+            || (self.closing && !self.has_output())
+            || (self.input_closed && matches!(self.state, State::Idle) && !self.has_output() && self.input.is_empty())
     }
 
     fn read_some(&mut self, max_line: usize) {
@@ -1162,7 +1419,13 @@ fn take_line(input: &mut Vec<u8>) -> Option<Vec<u8>> {
 /// Runs one job, on its own thread. A panic comes back as an error for that one client.
 fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) -> Done {
     match job {
-        Job::Look { conn, generation, condition, tab, page } => {
+        Job::Look {
+            conn,
+            generation,
+            condition,
+            tab,
+            page,
+        } => {
             // Read again: the answer can hold a tab's details, and the level may have dropped since this was asked for.
             let level = levels::current(paths);
             let needed = table::by_tag("wait").map_or(table::Access::Nobody, |spec| spec.access);
@@ -1179,7 +1442,11 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
             // Read again: it may have been lowered while this waited its turn.
             let level = levels::current(paths);
             // Before it runs, because `close` leaves nothing to ask afterwards. Only for a command that's allowed: a refusal hasn't acted on anything, and shouldn't take the session's lock to say so.
-            let acted = if allowed(level, command.access()) { catch_unwind(AssertUnwindSafe(|| host.acted_tab(&command))).unwrap_or(None) } else { None };
+            let acted = if allowed(level, command.access()) {
+                catch_unwind(AssertUnwindSafe(|| host.acted_tab(&command))).unwrap_or(None)
+            } else {
+                None
+            };
             let mut events = Vec::new();
             let result = catch_unwind(AssertUnwindSafe(|| {
                 if !allowed(level, command.access()) {
@@ -1190,7 +1457,11 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
                         return Err(refusal);
                     }
                     let unsaved = host.unsaved_tabs();
-                    return if unsaved.is_empty() { Ok(json!({ "stopping": true })) } else { Err(unsaved_refusal(&unsaved)) };
+                    return if unsaved.is_empty() {
+                        Ok(json!({ "stopping": true }))
+                    } else {
+                        Err(unsaved_refusal(&unsaved))
+                    };
                 }
                 host.run(level, &command, &mut events)
             }))
@@ -1202,13 +1473,24 @@ fn run_job<H: Host>(host: &H, paths: &StatePaths, job: Job, max_reply: usize) ->
             line.push('\n');
             // Build this here, off the socket's thread: a page's text can be large.
             let line = if line.len() > max_reply { too_large(tag) } else { line.into_bytes() };
-            Done::Answered { conn, line, tag, level, outcome, details, events, draws, stop }
+            Done::Answered {
+                conn,
+                line,
+                tag,
+                level,
+                outcome,
+                details,
+                events,
+                draws,
+                stop,
+            }
         }
     }
 }
 
 fn stopping_now() -> AgentError {
-    AgentError::new("busy", "The session is stopping, so this wasn't done.", exit::BUSY).then("If it didn't stop, try again. `recto status` shows whether it's still there.")
+    AgentError::new("busy", "The session is stopping, so this wasn't done.", exit::BUSY)
+        .then("If it didn't stop, try again. `recto status` shows whether it's still there.")
 }
 
 fn too_many_waiting() -> AgentError {
@@ -1216,7 +1498,11 @@ fn too_many_waiting() -> AgentError {
 }
 
 fn internal() -> AgentError {
-    AgentError::new("internal", "RectoPDF hit an internal error on this command. The session is still running.", exit::FAILED)
+    AgentError::new(
+        "internal",
+        "RectoPDF hit an internal error on this command. The session is still running.",
+        exit::FAILED,
+    )
 }
 
 #[cfg(test)]
@@ -1243,7 +1529,21 @@ mod tests {
         ours.set_nonblocking(true).unwrap();
         theirs.set_nonblocking(true).unwrap();
         let now = Instant::now();
-        let mut conn = Conn { id: 1, stream: ours, state: State::Idle, input: Vec::new(), line_started: None, output: vec![b'x'; 2 * 1024 * 1024], sent: 0, output_since: now, last_activity: now, input_closed: false, closing: false, gone: false, overflow: false };
+        let mut conn = Conn {
+            id: 1,
+            stream: ours,
+            state: State::Idle,
+            input: Vec::new(),
+            line_started: None,
+            output: vec![b'x'; 2 * 1024 * 1024],
+            sent: 0,
+            output_since: now,
+            last_activity: now,
+            input_closed: false,
+            closing: false,
+            gone: false,
+            overflow: false,
+        };
         let mut chunk = vec![0u8; 64 * 1024];
         let mut moved = 0;
         // It reads a bit, and never catches up, so the buffer never gets to empty.

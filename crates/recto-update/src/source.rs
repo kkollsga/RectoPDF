@@ -1,6 +1,6 @@
 //! Which server, and how far this build may go. **A release build reads no override.** The checks below all start from [`crate::RELEASE_BUILD`], which is compiled in, so nothing in the environment can point a release at another server or loosen what it accepts.
 
-use crate::{REPO, RELEASE_BUILD, TEAM_ID};
+use crate::{RELEASE_BUILD, REPO, TEAM_ID};
 
 /// Points a test or development build at a loopback server. Read only in a build that isn't a release, on a state folder set on purpose.
 pub const REPO_ENV: &str = "RECTO_UPDATE_REPO";
@@ -40,7 +40,8 @@ pub struct Source {
 
 /// A test's own server: plain HTTP to this very machine, on a port, and nothing else.
 fn is_loopback(url: &str) -> bool {
-    url.strip_prefix("http://127.0.0.1:").is_some_and(|port| !port.is_empty() && port.len() <= 5 && port.bytes().all(|byte| byte.is_ascii_digit()))
+    url.strip_prefix("http://127.0.0.1:")
+        .is_some_and(|port| !port.is_empty() && port.len() <= 5 && port.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// The rule itself, with everything it depends on given. `state_overridden`: running on a state folder set on purpose, not the user's.
@@ -48,17 +49,39 @@ fn is_loopback(url: &str) -> bool {
 pub fn resolve(release_build: bool, state_overridden: bool, env_repo: Option<String>, env_trust: Option<String>) -> Source {
     let real = Trust::DeveloperId { team: TEAM_ID };
     if release_build {
-        return Source { mode: Mode::Release, repo: REPO.to_owned(), trust: real, network: !state_overridden, test_env: Vec::new() };
+        return Source {
+            mode: Mode::Release,
+            repo: REPO.to_owned(),
+            trust: real,
+            network: !state_overridden,
+            test_env: Vec::new(),
+        };
     }
     if state_overridden && let Some(repo) = env_repo.filter(|repo| is_loopback(repo)) {
-        let trust = if env_trust.as_deref() == Some("developer-id") { real } else { Trust::AnySignature };
+        let trust = if env_trust.as_deref() == Some("developer-id") {
+            real
+        } else {
+            Trust::AnySignature
+        };
         let mut test_env = vec![(REPO_ENV.to_owned(), repo.clone())];
         if let Some(value) = env_trust {
             test_env.push((TRUST_ENV.to_owned(), value));
         }
-        return Source { mode: Mode::Test, repo, trust, network: true, test_env };
+        return Source {
+            mode: Mode::Test,
+            repo,
+            trust,
+            network: true,
+            test_env,
+        };
     }
-    Source { mode: Mode::Development, repo: REPO.to_owned(), trust: real, network: !state_overridden, test_env: Vec::new() }
+    Source {
+        mode: Mode::Development,
+        repo: REPO.to_owned(),
+        trust: real,
+        network: !state_overridden,
+        test_env: Vec::new(),
+    }
 }
 
 /// This build's source. A release build doesn't look at the environment.
@@ -116,7 +139,11 @@ impl Source {
     /// Where a version's zip is. Only ever made of a checked version.
     #[must_use]
     pub fn zip_url(&self, version: &str) -> String {
-        format!("{}/releases/download/v{version}/{}", self.repo.trim_end_matches('/'), crate::rules::zip_name(version))
+        format!(
+            "{}/releases/download/v{version}/{}",
+            self.repo.trim_end_matches('/'),
+            crate::rules::zip_name(version)
+        )
     }
 
     /// Whether a plain `http://` address may be followed. Only to a test's own server.
@@ -170,13 +197,29 @@ mod tests {
         assert!(!plain.checks_by_itself());
         assert!(!plain.may_replace_itself());
         assert!(!plain.auto_default());
-        assert_eq!(resolve(false, false, Some(LOOPBACK.into()), None).mode, Mode::Development, "on the user's real state, the override is nothing");
+        assert_eq!(
+            resolve(false, false, Some(LOOPBACK.into()), None).mode,
+            Mode::Development,
+            "on the user's real state, the override is nothing"
+        );
         let test = resolve(false, true, Some(LOOPBACK.into()), None);
         assert_eq!((test.mode, test.trust), (Mode::Test, Trust::AnySignature));
         assert!(test.checks_by_itself() && test.may_replace_itself());
         assert!(test.allows_plain_http());
-        assert_eq!(resolve(false, true, Some(LOOPBACK.into()), Some("developer-id".into())).trust, Trust::DeveloperId { team: TEAM_ID }, "a test of the refusal");
-        for elsewhere in ["https://evil.invalid", "http://evil.invalid:80", "http://127.0.0.1.evil.invalid:80", "http://127.0.0.1:80/../x", "http://127.0.0.1:", "file:///etc", "http://localhost:80"] {
+        assert_eq!(
+            resolve(false, true, Some(LOOPBACK.into()), Some("developer-id".into())).trust,
+            Trust::DeveloperId { team: TEAM_ID },
+            "a test of the refusal"
+        );
+        for elsewhere in [
+            "https://evil.invalid",
+            "http://evil.invalid:80",
+            "http://127.0.0.1.evil.invalid:80",
+            "http://127.0.0.1:80/../x",
+            "http://127.0.0.1:",
+            "file:///etc",
+            "http://localhost:80",
+        ] {
             let source = resolve(false, true, Some(elsewhere.into()), None);
             assert_eq!(source.mode, Mode::Development, "{elsewhere}");
             assert!(!source.network, "a quiet run reaches no real server");

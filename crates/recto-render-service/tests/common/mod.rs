@@ -9,8 +9,7 @@ use std::time::{Duration, Instant};
 /// it, such as the one in a built app's sandboxed helper, to run this whole suite against: `RECTO_TEST_WORKER=app/build/RectoPDF.app/Contents/Helpers/RectoRender.app/Contents/MacOS/recto-render-service`.
 pub fn real_config() -> ServiceConfig {
     let worker = std::env::var_os("RECTO_TEST_WORKER").unwrap_or_else(|| env!("CARGO_BIN_EXE_recto-render-service").into());
-    let mut config = ServiceConfig::for_worker(worker.into())
-        .unwrap_or_else(|failure| panic!("{}. Run tools/pdfium.sh", failure.message()));
+    let mut config = ServiceConfig::for_worker(worker.into()).unwrap_or_else(|failure| panic!("{}. Run tools/pdfium.sh", failure.message()));
     // Each test's heavy worker is its own, so tests running side by side in one process can't change each other's results.
     config.heavy_slot = HeavySlot::new();
     config

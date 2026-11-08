@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-const BUDGET: Budget = Budget { time: Duration::from_secs(240), memory: 1024 * 1024 * 1024 };
+const BUDGET: Budget = Budget {
+    time: Duration::from_secs(240),
+    memory: 1024 * 1024 * 1024,
+};
 
 fn use_a_record(bytes: &[u8]) {
     let Ok(read) = record::decode_record(bytes, CURRENT_VERSION) else { return };
@@ -41,7 +44,9 @@ fn use_a_journal(bytes: &[u8]) {
         Err(RecordError::Newer(_) | RecordError::Damaged(_)) => return,
     };
     assert!(parsed.good_bytes <= bytes.len() as u64);
-    let Ok((mut edits, applied)) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops) else { return };
+    let Ok((mut edits, applied)) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops) else {
+        return;
+    };
     assert!(applied <= parsed.ops.len());
     assert!(edits.slots().len() <= MAX_PAGES);
     // As good as a list made here: through a session, undone and redone all the way, and back to the same.
@@ -70,8 +75,15 @@ fn use_a_journal(bytes: &[u8]) {
         let mut main = session.to_record();
         main.tabs[0].journal = Some(record::journal_file_name(None, std::path::Path::new("/fuzz/p12.pdf"), None));
         let name = main.tabs[0].journal.clone().unwrap();
-        let list = RestoredEdits { edits, seq: applied as u64, lost_lines: parsed.lost_lines, rolled_off: false };
-        session.restore(&main, HashMap::from([(name, list)])).expect("what a session wrote it can restore");
+        let list = RestoredEdits {
+            edits,
+            seq: applied as u64,
+            lost_lines: parsed.lost_lines,
+            rolled_off: false,
+        };
+        session
+            .restore(&main, HashMap::from([(name, list)]))
+            .expect("what a session wrote it can restore");
         let _ = session.page_source(id, 0);
         let _ = session.sidebar();
         session.discard_edits(id);
@@ -80,7 +92,9 @@ fn use_a_journal(bytes: &[u8]) {
 
 /// A sleep file: refused, or one that's within every cap, and reads back as it was once it's been written again.
 fn use_a_sleep_file(bytes: &[u8]) {
-    let Ok(sleep) = recto_session::sleep::decode_sleep(bytes, CURRENT_VERSION) else { return };
+    let Ok(sleep) = recto_session::sleep::decode_sleep(bytes, CURRENT_VERSION) else {
+        return;
+    };
     assert!(sleep.pictures.len() <= recto_session::sleep::MAX_SLEEP_PICTURES);
     for picture in &sleep.pictures {
         assert!(picture.bgra.len() <= recto_session::sleep::MAX_PICTURE_BYTES);
@@ -92,7 +106,37 @@ fn use_a_sleep_file(bytes: &[u8]) {
 }
 
 fn use_a_log(bytes: &[u8]) {
-    let mut main = recto_session::record::SessionRecord { app: record::AppRecord::default(), view: record::ViewRecord::default(), find: record::FindRecord::default(), edit_mode: false, active: None, next_id: 3, tabs: vec![record::TabEntry { id: 1, path: record::PathField::Text("/fuzz/p12.pdf".into()), file: None, page: 0, page_count: 12, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new(), back: Vec::new(), forward: Vec::new(), password: false }], comparison: None, recent: Vec::new() };
+    let mut main = recto_session::record::SessionRecord {
+        app: record::AppRecord::default(),
+        view: record::ViewRecord::default(),
+        find: record::FindRecord::default(),
+        edit_mode: false,
+        active: None,
+        next_id: 3,
+        tabs: vec![record::TabEntry {
+            id: 1,
+            path: record::PathField::Text("/fuzz/p12.pdf".into()),
+            file: None,
+            page: 0,
+            page_count: 12,
+            place: None,
+            view_rotation: 0,
+            toc_open: true,
+            layout: Default::default(),
+            renderer_only: false,
+            selection: None,
+            notice: None,
+            journal: None,
+            edits: None,
+            generated_contents: false,
+            contents_folds: Vec::new(),
+            back: Vec::new(),
+            forward: Vec::new(),
+            password: false,
+        }],
+        comparison: None,
+        recent: Vec::new(),
+    };
     record::apply_places_log(&mut main, 1, bytes);
     record::validate_record(&main).expect("a log can't break a record");
 }
@@ -126,7 +170,10 @@ fn use_a_store(record_bytes: &[u8], journal_bytes: &[u8], log_bytes: &[u8]) {
         let mut session = Session::new(NamedLoader);
         session.set_journaling(true);
         if let Loaded::Restored(restored) = loaded {
-            assert!(session.restore(&restored.record, restored.journals).is_ok(), "what a load gives can be restored");
+            assert!(
+                session.restore(&restored.record, restored.journals).is_ok(),
+                "what a load gives can be restored"
+            );
             let first = session.tabs().first().map(|tab| tab.id);
             if let Some(id) = first {
                 let _ = session.edit_pages(id, |edits| edits.rotate(0, 1, 1));

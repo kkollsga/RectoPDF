@@ -86,7 +86,11 @@ fn reports_plain_reasons_for_bad_files() {
 fn a_hostile_name_tree_under_a_long_outline_ends_soon() {
     // 20,000 entries, each naming a destination that isn't in a tree with one node of 200,000 references to itself and to a leaf.
     let refs = "7 0 R ".repeat(200_000);
-    let mut extra = vec!["<< /Type /Outlines /First 9 0 R >>".to_string(), format!("<< /Kids [{refs}] >>"), "<< /Dests 7 0 R >>".to_string()];
+    let mut extra = vec![
+        "<< /Type /Outlines /First 9 0 R >>".to_string(),
+        format!("<< /Kids [{refs}] >>"),
+        "<< /Dests 7 0 R >>".to_string(),
+    ];
     let entries = 20_000;
     for i in 0..entries {
         let next = if i + 1 < entries { format!("/Next {} 0 R", 10 + i) } else { String::new() };
@@ -125,14 +129,27 @@ fn outlined_by_names(outline: impl Fn(usize) -> Vec<String>) -> Vec<u8> {
     let kids: Vec<String> = (0..pages).map(|index| format!("{} 0 R", page(index))).collect();
     let names = first_extra;
     let mut objects = vec![
-        Object::Dict(format!("<< /Type /Catalog /Pages 2 0 R /Outlines {} 0 R /Names << /Dests {names} 0 R >> >>", first_extra + 1)),
+        Object::Dict(format!(
+            "<< /Type /Catalog /Pages 2 0 R /Outlines {} 0 R /Names << /Dests {names} 0 R >> >>",
+            first_extra + 1
+        )),
         Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {pages} >>", kids.join(" "))),
     ];
     for index in 0..pages {
-        objects.push(Object::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {} 0 R >>", page(index) + 1)));
-        objects.push(Object::Stream { dict: String::new(), data: Vec::new() });
+        objects.push(Object::Dict(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {} 0 R >>",
+            page(index) + 1
+        )));
+        objects.push(Object::Stream {
+            dict: String::new(),
+            data: Vec::new(),
+        });
     }
-    objects.push(Object::Dict(format!("<< /Names [(p0) [{} 0 R /Fit] (p30) [{} 0 R /Fit]] >>", page(0), page(30))));
+    objects.push(Object::Dict(format!(
+        "<< /Names [(p0) [{} 0 R /Fit] (p30) [{} 0 R /Fit]] >>",
+        page(0),
+        page(30)
+    )));
     objects.extend(outline(first_extra + 1).into_iter().map(Object::Dict));
     build(&objects)
 }
@@ -140,18 +157,39 @@ fn outlined_by_names(outline: impl Fn(usize) -> Vec<String>) -> Vec<u8> {
 /// Failure: the EU's competitiveness report, part B, has every bookmark of its first half pointing at a named destination `p0`, which is page 1, so nearly every entry read 1 and one 227, and the owner saw numbers that "isnt logical". The numbers are the file's own, read as every reader reads them, so they're kept, and the verdict says these contents look bad, which is what offers generated ones.
 #[test]
 fn bookmarks_all_named_for_the_first_page_read_as_page_one_and_look_bad() {
-    let file = TempPdf::new("piled.pdf", &outlined_by_names(|root| {
-        let (first, children) = (root + 1, 12);
-        let mut objects = vec![format!("<< /Type /Outlines /First {first} 0 R /Last {} 0 R /Count 2 >>", first + children + 1)];
-        objects.push(format!("<< /Title (Sectoral policies) /Parent {root} 0 R /Next {} 0 R /First {} 0 R /Last {} 0 R /Count {children} /A << /S /GoTo /D (p0) >> >>", first + children + 1, first + 1, first + children));
-        for child in 0..children {
-            let at = first + 1 + child;
-            let links = format!("{}{}", if child > 0 { format!(" /Prev {} 0 R", at - 1) } else { String::new() }, if child + 1 < children { format!(" /Next {} 0 R", at + 1) } else { String::new() });
-            objects.push(format!("<< /Title ({}. Section) /Parent {first} 0 R{links} /A << /S /GoTo /D (p0) /NewWindow true >> >>", child + 1));
-        }
-        objects.push(format!("<< /Title (Horizontal policies) /Parent {root} 0 R /Prev {first} 0 R /A << /S /GoTo /D (p30) >> >>"));
-        objects
-    }));
+    let file = TempPdf::new(
+        "piled.pdf",
+        &outlined_by_names(|root| {
+            let (first, children) = (root + 1, 12);
+            let mut objects = vec![format!("<< /Type /Outlines /First {first} 0 R /Last {} 0 R /Count 2 >>", first + children + 1)];
+            objects.push(format!(
+                "<< /Title (Sectoral policies) /Parent {root} 0 R /Next {} 0 R /First {} 0 R /Last {} 0 R /Count {children} /A << /S /GoTo /D (p0) >> >>",
+                first + children + 1,
+                first + 1,
+                first + children
+            ));
+            for child in 0..children {
+                let at = first + 1 + child;
+                let links = format!(
+                    "{}{}",
+                    if child > 0 { format!(" /Prev {} 0 R", at - 1) } else { String::new() },
+                    if child + 1 < children {
+                        format!(" /Next {} 0 R", at + 1)
+                    } else {
+                        String::new()
+                    }
+                );
+                objects.push(format!(
+                    "<< /Title ({}. Section) /Parent {first} 0 R{links} /A << /S /GoTo /D (p0) /NewWindow true >> >>",
+                    child + 1
+                ));
+            }
+            objects.push(format!(
+                "<< /Title (Horizontal policies) /Parent {root} 0 R /Prev {first} 0 R /A << /S /GoTo /D (p30) >> >>"
+            ));
+            objects
+        }),
+    );
     let facts = inspect(&file.0).unwrap();
     let pages: Vec<u32> = facts.toc.entries().iter().map(|entry| entry.page).collect();
     assert_eq!(pages.len(), 14);
@@ -163,17 +201,31 @@ fn bookmarks_all_named_for_the_first_page_read_as_page_one_and_look_bad() {
 /// Failure: part A of the same report nests chapters 2 to 6 inside chapter 1. The indents are the file's own and are shown as they are, and the verdict says they look bad, which offers generated contents.
 #[test]
 fn chapters_nested_inside_chapter_one_read_as_the_file_has_them_and_look_bad() {
-    let file = TempPdf::new("misnested.pdf", &outlined_by_names(|root| {
-        let one = root + 1;
-        let mut objects = vec![format!("<< /Type /Outlines /First {one} 0 R /Last {one} 0 R /Count 1 >>")];
-        objects.push(format!("<< /Title (1. The starting point) /Parent {root} 0 R /First {} 0 R /Last {} 0 R /Count 3 /A << /S /GoTo /D (p0) >> >>", one + 1, one + 3));
-        for chapter in 0..3 {
-            let at = one + 1 + chapter;
-            let links = format!("{}{}", if chapter > 0 { format!(" /Prev {} 0 R", at - 1) } else { String::new() }, if chapter < 2 { format!(" /Next {} 0 R", at + 1) } else { String::new() });
-            objects.push(format!("<< /Title ({}. Chapter) /Parent {one} 0 R{links} /A << /S /GoTo /D (p30) >> >>", chapter + 2));
-        }
-        objects
-    }));
+    let file = TempPdf::new(
+        "misnested.pdf",
+        &outlined_by_names(|root| {
+            let one = root + 1;
+            let mut objects = vec![format!("<< /Type /Outlines /First {one} 0 R /Last {one} 0 R /Count 1 >>")];
+            objects.push(format!(
+                "<< /Title (1. The starting point) /Parent {root} 0 R /First {} 0 R /Last {} 0 R /Count 3 /A << /S /GoTo /D (p0) >> >>",
+                one + 1,
+                one + 3
+            ));
+            for chapter in 0..3 {
+                let at = one + 1 + chapter;
+                let links = format!(
+                    "{}{}",
+                    if chapter > 0 { format!(" /Prev {} 0 R", at - 1) } else { String::new() },
+                    if chapter < 2 { format!(" /Next {} 0 R", at + 1) } else { String::new() }
+                );
+                objects.push(format!(
+                    "<< /Title ({}. Chapter) /Parent {one} 0 R{links} /A << /S /GoTo /D (p30) >> >>",
+                    chapter + 2
+                ));
+            }
+            objects
+        }),
+    );
     let facts = inspect(&file.0).unwrap();
     let depths: Vec<u8> = facts.toc.entries().iter().map(|entry| entry.depth).collect();
     assert_eq!(depths, [0, 1, 1, 1], "as the file has them");
@@ -185,8 +237,21 @@ fn chapters_nested_inside_chapter_one_read_as_the_file_has_them_and_look_bad() {
 fn encrypted_with(permissions: lopdf::encryption::Permissions) -> Vec<u8> {
     use lopdf::encryption::{EncryptionState, EncryptionVersion};
     let mut document = lopdf::Document::load_mem(&three_page_pdf("", &[], "")).unwrap();
-    document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));
-    let state = EncryptionState::try_from(EncryptionVersion::V2 { document: &document, owner_password: "owner", user_password: "", key_length: 128, permissions }).unwrap();
+    document.trailer.set(
+        "ID",
+        lopdf::Object::Array(vec![
+            lopdf::Object::string_literal("0123456789abcdef"),
+            lopdf::Object::string_literal("0123456789abcdef"),
+        ]),
+    );
+    let state = EncryptionState::try_from(EncryptionVersion::V2 {
+        document: &document,
+        owner_password: "owner",
+        user_password: "",
+        key_length: 128,
+        permissions,
+    })
+    .unwrap();
     document.encrypt(&state).unwrap();
     let mut out = Vec::new();
     document.save_to(&mut out).unwrap();
@@ -205,16 +270,35 @@ fn the_copy_flag_is_read_from_the_encryption_dictionary() {
     assert!(recto_core::copy_restricted(&shut.0).unwrap());
     let no_print = TempPdf::new("no-print.pdf", &encrypted_with(Permissions::all() - Permissions::PRINTABLE));
     assert!(!recto_core::copy_restricted(&no_print.0).unwrap(), "only the copy bit counts");
-    assert!(matches!(recto_core::copy_restricted(std::path::Path::new("/nowhere/at/all.pdf")), Err(OpenError::NotFound)));
+    assert!(matches!(
+        recto_core::copy_restricted(std::path::Path::new("/nowhere/at/all.pdf")),
+        Err(OpenError::NotFound)
+    ));
 }
 
 /// A file that opens only with the user password `"open sesame"`, written by lopdf's eager writer, which alone encrypts.
 #[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts; never over a user's file.
 fn locked_pdf() -> Vec<u8> {
     use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
-    let mut document = lopdf::Document::load_mem(&recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Behind a password"]))])).unwrap();
-    document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));
-    let encryption = EncryptionState::try_from(EncryptionVersion::V2 { document: &document, owner_password: "owner", user_password: "open sesame", key_length: 128, permissions: Permissions::all() }).unwrap();
+    let mut document = lopdf::Document::load_mem(&recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&[
+        "Behind a password",
+    ]))]))
+    .unwrap();
+    document.trailer.set(
+        "ID",
+        lopdf::Object::Array(vec![
+            lopdf::Object::string_literal("0123456789abcdef"),
+            lopdf::Object::string_literal("0123456789abcdef"),
+        ]),
+    );
+    let encryption = EncryptionState::try_from(EncryptionVersion::V2 {
+        document: &document,
+        owner_password: "owner",
+        user_password: "open sesame",
+        key_length: 128,
+        permissions: Permissions::all(),
+    })
+    .unwrap();
     document.encrypt(&encryption).unwrap();
     let mut bytes = Vec::new();
     document.save_to(&mut bytes).unwrap();
@@ -233,7 +317,10 @@ fn a_user_password_pdf_reads_as_needing_its_password_not_as_not_a_pdf() {
 fn a_protected_file_opens_only_with_its_password() {
     use recto_core::{Password, inspect_with_password};
     let file = TempPdf::new("locked.pdf", &locked_pdf());
-    assert_eq!(inspect_with_password(&file.0, &Password::new("wrong").unwrap()).unwrap_err(), OpenError::PasswordNeeded);
+    assert_eq!(
+        inspect_with_password(&file.0, &Password::new("wrong").unwrap()).unwrap_err(),
+        OpenError::PasswordNeeded
+    );
     let facts = inspect_with_password(&file.0, &Password::new("open sesame").unwrap()).unwrap();
     assert_eq!((facts.page_count, facts.encrypted), (1, true));
     let password = Password::new("open sesame").unwrap();

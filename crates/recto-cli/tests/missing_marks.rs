@@ -27,10 +27,25 @@ struct Grey {
 }
 
 fn grey(image: &Embedded) -> Grey {
-    let Embedded::Png { width, height, channels, pixels } = image else { panic!("not a PNG") };
+    let Embedded::Png {
+        width,
+        height,
+        channels,
+        pixels,
+    } = image
+    else {
+        panic!("not a PNG")
+    };
     let colours = (*channels).clamp(1, 3);
-    let grey = pixels.chunks(*channels).map(|pixel| (pixel[..colours].iter().map(|value| u32::from(*value)).sum::<u32>() / colours as u32) as u8).collect();
-    Grey { width: *width as usize, height: *height as usize, pixels: grey }
+    let grey = pixels
+        .chunks(*channels)
+        .map(|pixel| (pixel[..colours].iter().map(|value| u32::from(*value)).sum::<u32>() / colours as u32) as u8)
+        .collect();
+    Grey {
+        width: *width as usize,
+        height: *height as usize,
+        pixels: grey,
+    }
 }
 
 /// The size of the largest connected mark in `page` with nothing as dark within a pixel of it in `other`, a shift of a pixel between renderers being no loss.
@@ -79,7 +94,15 @@ fn largest_lost_mark(page: &Grey, other: &Grey) -> (usize, usize, usize) {
 
 fn browser_draws(chrome: &str, svg: &Path, shot: &Path, profile: &Path, size: (f64, f64)) {
     let status = Command::new(chrome)
-        .args(["--headless=new", "--disable-gpu", "--hide-scrollbars", "--mute-audio", "--run-all-compositor-stages-before-draw", "--virtual-time-budget=10000", "--force-device-scale-factor=2"])
+        .args([
+            "--headless=new",
+            "--disable-gpu",
+            "--hide-scrollbars",
+            "--mute-audio",
+            "--run-all-compositor-stages-before-draw",
+            "--virtual-time-budget=10000",
+            "--force-device-scale-factor=2",
+        ])
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg(format!("--window-size={},{}", size.0.ceil(), size.1.ceil()))
         .arg(format!("--screenshot={}", shot.display()))
@@ -113,17 +136,38 @@ fn lost_from(chrome: &str, what: &str, pdf: &Path, page: &str) -> (usize, usize,
 /// A page with a glyph at the code for a space, as TeX's big brackets are.
 fn bracket_page() -> Vec<u8> {
     let (font, glyph) = (first_extra_object(1), first_extra_object(1) + 1);
-    let dict = format!("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 3000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /space {glyph} 0 R >> /Encoding << /Type /Encoding /Differences [32 /space] >> /FirstChar 32 /LastChar 32 /Widths [1000] >>");
-    let drawn = Object::Stream { dict: String::new(), data: b"1000 0 0 0 800 3000 d1 100 0 500 3000 re f".to_vec() };
-    pages_with(&[Page::new("BT /T3 10 Tf 100 500 Td ( ) Tj ET BT /F1 12 Tf 130 500 Td (next to it) Tj ET\n")], &format!("/Font << /T3 {font} 0 R >>"), vec![Object::Dict(dict), drawn])
+    let dict = format!(
+        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 3000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /space {glyph} 0 R >> /Encoding << /Type /Encoding /Differences [32 /space] >> /FirstChar 32 /LastChar 32 /Widths [1000] >>"
+    );
+    let drawn = Object::Stream {
+        dict: String::new(),
+        data: b"1000 0 0 0 800 3000 d1 100 0 500 3000 re f".to_vec(),
+    };
+    pages_with(
+        &[Page::new("BT /T3 10 Tf 100 500 Td ( ) Tj ET BT /F1 12 Tf 130 500 Td (next to it) Tj ET\n")],
+        &format!("/Font << /T3 {font} 0 R >>"),
+        vec![Object::Dict(dict), drawn],
+    )
 }
 
 /// A stamp's look, on a page whose last object has a clip that doesn't reach it.
 fn stamp_page() -> Vec<u8> {
     let (annot, look) = (first_extra_object(1), first_extra_object(1) + 1);
-    let appearance = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 100 100]".into(), data: b"0 0 0 rg 0 0 100 100 re f".to_vec() };
-    let stamp = Object::Dict(format!("<< /Type /Annot /Subtype /Stamp /Rect [300 300 400 400] /AP << /N {look} 0 R >> /F 4 >>"));
-    pages_with(&[Page { page_extra: format!("/Annots [{annot} 0 R]"), ..Page::new("q 10 10 m 20 10 l 15 20 l h W n 0 g 0 0 100 100 re f Q\n") }], "", vec![stamp, appearance])
+    let appearance = Object::Stream {
+        dict: "/Type /XObject /Subtype /Form /BBox [0 0 100 100]".into(),
+        data: b"0 0 0 rg 0 0 100 100 re f".to_vec(),
+    };
+    let stamp = Object::Dict(format!(
+        "<< /Type /Annot /Subtype /Stamp /Rect [300 300 400 400] /AP << /N {look} 0 R >> /F 4 >>"
+    ));
+    pages_with(
+        &[Page {
+            page_extra: format!("/Annots [{annot} 0 R]"),
+            ..Page::new("q 10 10 m 20 10 l 15 20 l h W n 0 g 0 0 100 100 re f Q\n")
+        }],
+        "",
+        vec![stamp, appearance],
+    )
 }
 
 /// Failure: this check is blind, or sees marks that aren't lost: it has to find a real gap whatever its shape, and let through a pixel's shift and a smudge. It takes no browser, so it always runs.

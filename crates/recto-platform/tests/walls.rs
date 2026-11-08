@@ -30,7 +30,12 @@ fn pdfium() -> PathBuf {
 /// Never with the owner's identity, whatever this shell has set: a test signs ad hoc, and raises no keychain prompt.
 fn run(command: &mut Command) {
     let output = command.env_remove("RECTO_SIGN_IDENTITY").output().unwrap();
-    assert!(output.status.success(), "{command:?}: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{command:?}: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// A scratch folder with a canary in it, and a listener to connect to. Removed on drop, with anything a launch left in the LaunchServices database.
@@ -41,11 +46,17 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let scratch = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-walls-{}-{name}", std::process::id()));
+        let scratch = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-walls-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch).unwrap();
         std::fs::write(scratch.join("canary.txt"), "canary").unwrap();
-        Self { scratch, listener: TcpListener::bind("127.0.0.1:0").unwrap() }
+        Self {
+            scratch,
+            listener: TcpListener::bind("127.0.0.1:0").unwrap(),
+        }
     }
 
     fn contents(&self) -> PathBuf {
@@ -85,7 +96,15 @@ impl Fixture {
         )
         .unwrap();
         let script = escape.join("MacOS/escape");
-        std::fs::write(&script, format!("#!/bin/sh\n{{ echo ran; cat '{}'; }} > '{}' 2>&1\n", self.scratch.join("canary.txt").display(), self.marker().display())).unwrap();
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n{{ echo ran; cat '{}'; }} > '{}' 2>&1\n",
+                self.scratch.join("canary.txt").display(),
+                self.marker().display()
+            ),
+        )
+        .unwrap();
         std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         run(Command::new("/usr/bin/codesign").args(["-f", "-s", "-"]).arg(self.escape_app()));
         // Signed again, as the app's build signs it, so the seal covers what was added.
@@ -100,14 +119,30 @@ impl Fixture {
         let home = std::env::var("HOME").unwrap();
         let one = |flag: &str, value: String| vec![flag.to_string(), value];
         vec![
-            (one("--read", format!("scratch={}", self.scratch.join("canary.txt").display())), vec!["read:scratch"]),
+            (
+                one("--read", format!("scratch={}", self.scratch.join("canary.txt").display())),
+                vec!["read:scratch"],
+            ),
             (one("--list", format!("home={home}")), vec!["list:home"]),
-            (one("--write", format!("scratch={}", self.scratch.join("written.txt").display())), vec!["write:scratch"]),
-            (one("--net", port.to_string()), vec!["net:connect_loopback", "net:bind_loopback", "net:connect_dns_socket"]),
+            (
+                one("--write", format!("scratch={}", self.scratch.join("written.txt").display())),
+                vec!["write:scratch"],
+            ),
+            (
+                one("--net", port.to_string()),
+                vec!["net:connect_loopback", "net:bind_loopback", "net:connect_dns_socket"],
+            ),
             (one("--spawn", "/usr/bin/true".to_string()), vec!["spawn"]),
             (
-                one("--mach", "com.apple.coreservices.launchservicesd,com.apple.windowserver.active,com.apple.pasteboard.1".to_string()),
-                vec!["mach:com.apple.coreservices.launchservicesd", "mach:com.apple.windowserver.active", "mach:com.apple.pasteboard.1"],
+                one(
+                    "--mach",
+                    "com.apple.coreservices.launchservicesd,com.apple.windowserver.active,com.apple.pasteboard.1".to_string(),
+                ),
+                vec![
+                    "mach:com.apple.coreservices.launchservicesd",
+                    "mach:com.apple.windowserver.active",
+                    "mach:com.apple.pasteboard.1",
+                ],
             ),
             (vec!["--fork".to_string()], vec!["fork"]),
             (vec!["--signal-parent".to_string()], vec!["signal:parent"]),
@@ -151,13 +186,22 @@ fn probe(executable: &Path, args: &[String]) -> BTreeMap<String, bool> {
 /// at 30 s and fails with what it had said by then.
 fn probe_text(executable: &Path, args: &[String]) -> String {
     let (status, said) = probe_run(executable, args);
-    assert!(status.is_some_and(|status| status.success()), "the probe itself failed or hung ({status:?}), having said:\n{said}");
+    assert!(
+        status.is_some_and(|status| status.success()),
+        "the probe itself failed or hung ({status:?}), having said:\n{said}"
+    );
     said
 }
 
 /// Runs the probe and returns how it ended, `None` if it hung and was killed at 30 s, and what it had said by then.
 fn probe_run(executable: &Path, args: &[String]) -> (Option<std::process::ExitStatus>, String) {
-    let mut child = Command::new(executable).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut child = Command::new(executable)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
@@ -193,7 +237,10 @@ fn attempt_alone(executable: &Path, args: &[String], names: &[&str], notes: &mut
         signal.is_some() && results.get("walls") == Some(&true) && last_tried == Some(attempt),
         "the probe ended ({status:?}) outside the attempt `{attempt}`, last trying {last_tried:?}, having said:\n{said}"
     );
-    notes.push(format!("`{attempt}` was killed by signal {} while being tried, after the walls were up: counted as stopped. It said:\n{said}", signal.unwrap_or_default()));
+    notes.push(format!(
+        "`{attempt}` was killed by signal {} while being tried, after the walls were up: counted as stopped. It said:\n{said}",
+        signal.unwrap_or_default()
+    ));
     for name in names {
         results.entry((*name).to_string()).or_insert(false);
     }
@@ -238,7 +285,11 @@ fn with_no_sandbox_every_attempt_gets_through() {
     let fixture = Fixture::new("control");
     let results = probe(Path::new(PROBE), &fixture.attempts());
     for wall in WALLS {
-        assert_eq!(results.get(wall), Some(&true), "{wall} failed with no sandbox, so it proves nothing: {results:?}");
+        assert_eq!(
+            results.get(wall),
+            Some(&true),
+            "{wall} failed with no sandbox, so it proves nothing: {results:?}"
+        );
     }
 }
 
@@ -253,16 +304,31 @@ fn the_helpers_walls_hold() {
     let mut notes = Vec::new();
     for (args, names) in fixture.attempt_list() {
         let one = attempt_alone(&executable, &args, &names, &mut notes);
-        assert_eq!(one.get("walls"), Some(&true), "the worker's walls didn't go up in the helper, before `{}`: {one:?}", args[0]);
+        assert_eq!(
+            one.get("walls"),
+            Some(&true),
+            "the worker's walls didn't go up in the helper, before `{}`: {one:?}",
+            args[0]
+        );
         results.extend(one.into_iter().filter(|(name, _)| name != "walls"));
     }
-    let launch = attempt_alone(&executable, &["--ls-open".to_string(), fixture.escape_app().display().to_string()], &["launchservices:open"], &mut notes);
+    let launch = attempt_alone(
+        &executable,
+        &["--ls-open".to_string(), fixture.escape_app().display().to_string()],
+        &["launchservices:open"],
+        &mut notes,
+    );
     results.extend(launch.into_iter().filter(|(name, _)| name != "walls"));
     for note in &notes {
         println!("{note}");
     }
     for wall in WALLS {
-        assert_eq!(results.get(wall), Some(&false), "{wall} wasn't stopped, or wasn't tried: {results:?}\n{}", notes.join("\n"));
+        assert_eq!(
+            results.get(wall),
+            Some(&false),
+            "{wall} wasn't stopped, or wasn't tried: {results:?}\n{}",
+            notes.join("\n")
+        );
     }
     assert_eq!(results.get("launchservices:open"), Some(&false), "LaunchServices took the request: {results:?}");
     assert_eq!(fixture.marker_after_launch(), None, "something was launched outside the sandbox");
@@ -274,7 +340,10 @@ fn the_helpers_walls_hold() {
 fn the_sandbox_alone_lets_launchservices_start_an_unsandboxed_app() {
     let fixture = Fixture::new("escape");
     let executable = fixture.sandboxed_probe();
-    let results = probe(&executable, &["--harden".to_string(), "--ls-open".to_string(), fixture.escape_app().display().to_string()]);
+    let results = probe(
+        &executable,
+        &["--harden".to_string(), "--ls-open".to_string(), fixture.escape_app().display().to_string()],
+    );
     assert_eq!(results.get("launchservices:open"), Some(&true), "{results:?}");
     let marker = fixture.marker_after_launch().expect("the launched app left no marker");
     assert!(marker.contains("canary"), "the launched app ran inside the sandbox: {marker}");
@@ -288,10 +357,19 @@ fn the_container_is_writable_only_without_the_file_size_limit() {
     let executable = fixture.sandboxed_probe();
     // The container exists once a sandboxed process of this identifier has run: the probe, just now, if no build had before.
     let _ = probe(&executable, &[]);
-    let target = PathBuf::from(std::env::var_os("HOME").unwrap()).join(format!("Library/Containers/{ADHOC_ID}/Data/tmp/recto-walls-{}.txt", std::process::id()));
+    let target =
+        PathBuf::from(std::env::var_os("HOME").unwrap()).join(format!("Library/Containers/{ADHOC_ID}/Data/tmp/recto-walls-{}.txt", std::process::id()));
     let args = vec!["--write".to_string(), format!("container={}", target.display())];
-    assert_eq!(probe(&executable, &args).get("write:container"), Some(&true), "the sandbox alone stopped it, so the limit isn't what's being tested");
-    assert_eq!(probe(&executable, &with_walls(args)).get("write:container"), Some(&false), "a compromised renderer can write to its container");
+    assert_eq!(
+        probe(&executable, &args).get("write:container"),
+        Some(&true),
+        "the sandbox alone stopped it, so the limit isn't what's being tested"
+    );
+    assert_eq!(
+        probe(&executable, &with_walls(args)).get("write:container"),
+        Some(&false),
+        "a compromised renderer can write to its container"
+    );
 }
 
 /// Failure: a compromised renderer fetches a right to launchd, or to some new process, from one of the places the kernel hands them out, and with it undoes the Mach drop. The property
@@ -308,15 +386,34 @@ fn no_right_to_launchd_can_be_fetched_back_after_the_drop() {
     if before.get("regain_launchd:task_special_4") == Some(&true) {
         println!("Before the walls, launchd answers through its own slot, so the lookup below is a real test.");
     } else {
-        println!("Before the walls, launchd doesn't answer through its own slot on this Mac, so there's nothing to regain; the walls are still checked.\n{before_text}");
+        println!(
+            "Before the walls, launchd doesn't answer through its own slot on this Mac, so there's nothing to regain; the walls are still checked.\n{before_text}"
+        );
     }
     let after_text = probe_text(&executable, &with_walls(vec!["--rights".to_string(), "--regain".to_string()]));
     let after = parse(&after_text);
-    assert_eq!(after.get("walls"), Some(&true), "the walls didn't go up.\nAfter:\n{after_text}\nBefore:\n{before_text}");
-    let reaching: Vec<_> = after.iter().filter(|(name, allowed)| name.starts_with("regain_launchd:") && **allowed).map(|(name, _)| name.as_str()).collect();
-    assert!(reaching.is_empty(), "these reach launchd after the walls: {reaching:?}.\nAfter:\n{after_text}\nBefore:\n{before_text}");
-    let back: Vec<_> = after.iter().filter(|(name, allowed)| name.starts_with("regain:") && **allowed).map(|(name, _)| name.as_str()).collect();
-    println!("After the walls, nothing reaches launchd. Rights that came back and aren't positively kernel objects, none of which answered a lookup: {back:?}\n{after_text}");
+    assert_eq!(
+        after.get("walls"),
+        Some(&true),
+        "the walls didn't go up.\nAfter:\n{after_text}\nBefore:\n{before_text}"
+    );
+    let reaching: Vec<_> = after
+        .iter()
+        .filter(|(name, allowed)| name.starts_with("regain_launchd:") && **allowed)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(
+        reaching.is_empty(),
+        "these reach launchd after the walls: {reaching:?}.\nAfter:\n{after_text}\nBefore:\n{before_text}"
+    );
+    let back: Vec<_> = after
+        .iter()
+        .filter(|(name, allowed)| name.starts_with("regain:") && **allowed)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    println!(
+        "After the walls, nothing reaches launchd. Rights that came back and aren't positively kernel objects, none of which answered a lookup: {back:?}\n{after_text}"
+    );
 }
 
 /// Failure: a helper signed without the sandbox, the mistake a build script could make, still has its walls reported as up. And the check the release runs doesn't catch it.
@@ -329,7 +426,11 @@ fn a_helper_signed_without_the_sandbox_puts_no_walls_up_and_fails_the_check() {
     assert_eq!(results.get("walls"), Some(&false), "{results:?}");
     let check = Command::new(helper_script()).arg("--check").arg(fixture.helper()).output().unwrap();
     assert!(!check.status.success(), "the check passed a helper with no sandbox");
-    assert!(String::from_utf8_lossy(&check.stderr).contains("entitlements"), "{}", String::from_utf8_lossy(&check.stderr));
+    assert!(
+        String::from_utf8_lossy(&check.stderr).contains("entitlements"),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
 }
 
 /// What `render-helper.sh --key` says, with a stand-in `security` on `PATH` that lists `valid` for `find-identity -v` and `all` without it.
@@ -339,12 +440,23 @@ fn key_with_keychain(name: &str, valid: &str, all: &str) -> (bool, String) {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(fixture.scratch.join("valid.txt"), valid).unwrap();
     std::fs::write(fixture.scratch.join("all.txt"), all).unwrap();
-    let script = format!("#!/bin/sh\nif [ \"$2\" = -v ]; then cat '{0}/valid.txt'; else cat '{0}/all.txt'; fi\n", fixture.scratch.display());
+    let script = format!(
+        "#!/bin/sh\nif [ \"$2\" = -v ]; then cat '{0}/valid.txt'; else cat '{0}/all.txt'; fi\n",
+        fixture.scratch.display()
+    );
     std::fs::write(bin.join("security"), script).unwrap();
     std::fs::set_permissions(bin.join("security"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let path = format!("{}:/usr/bin:/bin", bin.display());
-    let output = Command::new(helper_script()).args(["--key", name]).env("PATH", path).env_remove("RECTO_SIGN_IDENTITY").output().unwrap();
-    (output.status.success(), format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
+    let output = Command::new(helper_script())
+        .args(["--key", name])
+        .env("PATH", path)
+        .env_remove("RECTO_SIGN_IDENTITY")
+        .output()
+        .unwrap();
+    (
+        output.status.success(),
+        format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)),
+    )
 }
 
 /// Failure: two valid certificates with one name, an old and a renewed one, and signing takes whichever the keychain lists first. Or an expired certificate reads as missing, so
@@ -357,7 +469,11 @@ fn the_signing_identity_is_one_valid_certificate_matched_by_its_exact_name() {
     assert_eq!(key_with_keychain(name, &one, &one), (true, format!("{a}\n")));
     let (ok, said) = key_with_keychain(name, &format!("  1) {a} \"{name}\"\n  2) {b} \"{name}\"\n"), "");
     assert!(!ok && said.contains("2 valid certificates") && said.contains(a) && said.contains(b), "{said}");
-    let (ok, said) = key_with_keychain(name, "     0 valid identities found\n", &format!("  1) {a} \"{name}\" (CSSMERR_TP_CERT_EXPIRED)\n"));
+    let (ok, said) = key_with_keychain(
+        name,
+        "     0 valid identities found\n",
+        &format!("  1) {a} \"{name}\" (CSSMERR_TP_CERT_EXPIRED)\n"),
+    );
     assert!(!ok && said.contains("has expired"), "{said}");
     let (ok, said) = key_with_keychain(name, "     0 valid identities found\n", "");
     assert!(!ok && said.contains("isn't in the keychain"), "{said}");
@@ -373,7 +489,10 @@ fn every_dropped_right_leaves_a_dead_name_behind() {
     let fixture = Fixture::new("dead");
     let executable = fixture.sandboxed_probe();
     let said = probe_text(&executable, &with_walls(Vec::new()));
-    let line = said.lines().find(|line| line.starts_with("walls\tallowed\t")).unwrap_or_else(|| panic!("the walls didn't go up:\n{said}"));
+    let line = said
+        .lines()
+        .find(|line| line.starts_with("walls\tallowed\t"))
+        .unwrap_or_else(|| panic!("the walls didn't go up:\n{said}"));
     let numbers: Vec<u32> = line.split(|c: char| !c.is_ascii_digit()).filter_map(|word| word.parse().ok()).collect();
     let (dropped, dead) = (numbers[0], numbers[1]);
     assert!(dropped > 0, "{line}");

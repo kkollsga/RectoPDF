@@ -77,7 +77,10 @@ impl Keyring {
 
     /// The password for the file with this identity, if one was typed.
     pub fn get(&self, identity: (u64, u64)) -> Option<Arc<recto_core::Password>> {
-        lock(&self.keys).iter().find(|(known, _)| *known == identity).map(|(_, password)| Arc::clone(password))
+        lock(&self.keys)
+            .iter()
+            .find(|(known, _)| *known == identity)
+            .map(|(_, password)| Arc::clone(password))
     }
 
     /// The password for the file at this path now, if one was typed for it.
@@ -165,8 +168,25 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Engine {
     pub fn new(config: EngineConfig, events: Arc<dyn EngineEvents>) -> Self {
-        let shared = Arc::new(Shared { reader: Mutex::new(Reader::new()), settled: Condvar::new(), events, ops_signalled: AtomicBool::new(false), worker_pids: Mutex::new(Vec::new()), walled_workers: AtomicU32::new(0), workers_by_file: Mutex::new(Vec::new()), kill_idle_workers: AtomicBool::new(false), last_note: Mutex::new(None), last_notice: Mutex::new(None), config, stopping: AtomicBool::new(false), pending: Mutex::new(Pending::default()) });
-        Self { shared, thread: Arc::new(Mutex::new(None)) }
+        let shared = Arc::new(Shared {
+            reader: Mutex::new(Reader::new()),
+            settled: Condvar::new(),
+            events,
+            ops_signalled: AtomicBool::new(false),
+            worker_pids: Mutex::new(Vec::new()),
+            walled_workers: AtomicU32::new(0),
+            workers_by_file: Mutex::new(Vec::new()),
+            kill_idle_workers: AtomicBool::new(false),
+            last_note: Mutex::new(None),
+            last_notice: Mutex::new(None),
+            config,
+            stopping: AtomicBool::new(false),
+            pending: Mutex::new(Pending::default()),
+        });
+        Self {
+            shared,
+            thread: Arc::new(Mutex::new(None)),
+        }
     }
 
     /// Starts the thread the first time there's a document, and wakes it. `unpark` costs one atomic when it's already running.
@@ -180,7 +200,11 @@ impl Engine {
             None => {
                 let shared = Arc::clone(&self.shared);
                 // Small: everything it holds is on the heap.
-                if let Ok(handle) = std::thread::Builder::new().name("recto-pages".into()).stack_size(512 * 1024).spawn(move || run_guarded(&shared)) {
+                if let Ok(handle) = std::thread::Builder::new()
+                    .name("recto-pages".into())
+                    .stack_size(512 * 1024)
+                    .spawn(move || run_guarded(&shared))
+                {
                     *thread = Some(handle.thread().clone());
                 }
             }
@@ -242,26 +266,35 @@ impl Engine {
 
     /// **Synced scroll, from the UI thread, which never waits for it.** If the page view's free, the view goes there now, and anything left before is dropped, as this is newer. If its thread holds it, as it does to take a finished tile, the place is left for that thread to take as it lets go, the latest only, so a scroll step costs a look at a lock and never a wait on one. Says whether it went now.
     pub fn follow_soon(&self, page: u32, within: f64) -> bool {
-        self.now_or_soon(|pending| pending.follow = Some((page, within)), |reader, pending| {
-            pending.follow = None;
-            reader.follow(page, within);
-        })
+        self.now_or_soon(
+            |pending| pending.follow = Some((page, within)),
+            |reader, pending| {
+                pending.follow = None;
+                reader.follow(page, within);
+            },
+        )
     }
 
     /// The comparison's one zoom, from the UI thread, the same way: now if the page view's free, and otherwise left for its thread, the latest only.
     pub fn zoom_soon(&self, value: f64) -> bool {
-        self.now_or_soon(|pending| pending.zoom = Some(value), |reader, pending| {
-            pending.zoom = None;
-            reader.zoom(Zoom::To(value));
-        })
+        self.now_or_soon(
+            |pending| pending.zoom = Some(value),
+            |reader, pending| {
+                pending.zoom = None;
+                reader.zoom(Zoom::To(value));
+            },
+        )
     }
 
     /// Another pane took the selection, from the UI thread, the same way.
     pub fn clear_selection_soon(&self) -> bool {
-        self.now_or_soon(|pending| pending.clear_selection = true, |reader, pending| {
-            pending.clear_selection = false;
-            reader.clear_selection();
-        })
+        self.now_or_soon(
+            |pending| pending.clear_selection = true,
+            |reader, pending| {
+                pending.clear_selection = false;
+                reader.clear_selection();
+            },
+        )
     }
 
     /// Does something with the page view's lock if it's free, and otherwise leaves it for its own thread. Never waits for the lock: the UI thread calls this.
@@ -367,7 +400,12 @@ impl Engine {
     /// What this tab's files' workers hold now, from outside. A call to the kernel for each, of which there are few.
     pub fn worker_bytes(&self, tab: u32) -> u64 {
         let files = lock(&self.shared.reader).files_of(tab);
-        lock(&self.shared.workers_by_file).iter().filter(|(path, _)| files.contains(path)).filter_map(|(_, pid)| isolate::process_memory(*pid)).map(|memory| memory.footprint_bytes).sum()
+        lock(&self.shared.workers_by_file)
+            .iter()
+            .filter(|(path, _)| files.contains(path))
+            .filter_map(|(_, pid)| isolate::process_memory(*pid))
+            .map(|memory| memory.footprint_bytes)
+            .sum()
     }
 
     /// Exactly where each tab it holds is. A short lock.
@@ -501,7 +539,12 @@ impl Engine {
             signal_ops(&self.shared);
         }
         self.wake();
-        ViewportOutcome { ops, scrolled, magnification, anchor }
+        ViewportOutcome {
+            ops,
+            scrolled,
+            magnification,
+            anchor,
+        }
     }
 
     /// Runs what the mouse did, from the UI thread: a short lock, and at worst a look through one page already here. What comes back is for the host to apply now.
@@ -568,7 +611,10 @@ impl Engine {
     /// Puts back what was selected, from the state record.
     pub fn restore_selection(&self, from: (u32, u32), to: (u32, u32)) {
         let mut reader = lock(&self.shared.reader);
-        reader.restore_selection(recto_index::select::Range { start: recto_index::select::Place { page: from.0, at: from.1 }, end: recto_index::select::Place { page: to.0, at: to.1 } });
+        reader.restore_selection(recto_index::select::Range {
+            start: recto_index::select::Place { page: from.0, at: from.1 },
+            end: recto_index::select::Place { page: to.0, at: to.1 },
+        });
         self.after(reader);
     }
 
@@ -579,7 +625,10 @@ impl Engine {
     /// Selects Find's hit and brings it into view: characters `start..end` of a page, from 0. Off the UI thread.
     pub fn reveal(&self, page: u32, start: u32, end: u32) {
         let mut reader = lock(&self.shared.reader);
-        reader.reveal_range(recto_index::select::Range { start: recto_index::select::Place { page, at: start }, end: recto_index::select::Place { page, at: end } });
+        reader.reveal_range(recto_index::select::Range {
+            start: recto_index::select::Place { page, at: start },
+            end: recto_index::select::Place { page, at: end },
+        });
         self.after(reader);
     }
 
@@ -717,7 +766,9 @@ impl Engine {
     /// The footprint of every worker running now, from outside.
     pub fn workers_footprint(&self) -> (u64, u64) {
         let pids = lock(&self.shared.worker_pids).clone();
-        pids.iter().filter_map(|pid| isolate::process_memory(*pid)).fold((0, 0), |(now, peak), memory| (now + memory.footprint_bytes, peak + memory.peak_footprint_bytes))
+        pids.iter()
+            .filter_map(|pid| isolate::process_memory(*pid))
+            .fold((0, 0), |(now, peak), memory| (now + memory.footprint_bytes, peak + memory.peak_footprint_bytes))
     }
 }
 
@@ -761,7 +812,10 @@ struct SelectingNews {
 }
 
 fn selecting_news(reader: &mut Reader) -> SelectingNews {
-    SelectingNews { notice: reader.selection_notice(), copy_ready: reader.take_copy_signal() }
+    SelectingNews {
+        notice: reader.selection_notice(),
+        copy_ready: reader.take_copy_signal(),
+    }
 }
 
 fn tell_selecting(shared: &Shared, news: SelectingNews) {
@@ -791,7 +845,11 @@ fn run_guarded(shared: &Shared) {
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(shared))).is_ok() {
             return;
         }
-        panics_in_a_row = if last_panic.is_some_and(|last| last.elapsed() < PANICS_FORGOTTEN_AFTER) { panics_in_a_row + 1 } else { 1 };
+        panics_in_a_row = if last_panic.is_some_and(|last| last.elapsed() < PANICS_FORGOTTEN_AFTER) {
+            panics_in_a_row + 1
+        } else {
+            1
+        };
         last_panic = Some(Instant::now());
         let give_up = panics_in_a_row >= MAX_PANICS_IN_A_ROW;
         let mut reader = lock(&shared.reader);
@@ -859,7 +917,9 @@ fn run(shared: &Shared) {
                 publish_workers(shared, &mut renderers);
             }
             // With nothing to do, this thread is asleep and costs nothing. The one exception: a worker holding a heavy page's memory, which only goes when it does. It gets long enough to bridge a pause in scrolling, and then it's let go, so a heavy page at rest doesn't hold hundreds of megabytes for the 30 s of the idle rule.
-            let big = renderers.values_mut().any(|open| open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes));
+            let big = renderers
+                .values_mut()
+                .any(|open| open.doc.worker_footprint().is_some_and(|footprint| footprint > policy.retire_bytes));
             if !big {
                 std::thread::park();
                 resting_since = None;
@@ -884,7 +944,17 @@ fn run(shared: &Shared) {
         if matches!(job.kind, JobKind::Links) {
             // Read from the file's structure, here and with no worker. Only a file a worker already has open and answering, so a disk gone to sleep holds this thread no longer than a draw would: a page that isn't drawn yet has its links read when it is.
             // Through the renderer's own open file and its password, so the links are of the version being drawn, a protected file's too. A file seen replaced and not taken up yet offers none: they'd be the new version's over the old pages.
-            let links = renderers.get(&job.file).filter(|open| !open.replaced && !open.doc.file_seen_changed()).and_then(|open| open.doc.read_structure(|file, password| recto_core::nav::page_links_in(file, password, &[job.source_page]).ok().and_then(|read| read.into_iter().next()).map(|(_, links)| Arc::new(links))));
+            let links = renderers
+                .get(&job.file)
+                .filter(|open| !open.replaced && !open.doc.file_seen_changed())
+                .and_then(|open| {
+                    open.doc.read_structure(|file, password| {
+                        recto_core::nav::page_links_in(file, password, &[job.source_page])
+                            .ok()
+                            .and_then(|read| read.into_iter().next())
+                            .map(|(_, links)| Arc::new(links))
+                    })
+                });
             let mut reader = lock(&shared.reader);
             let outcome = match links {
                 Some(found) => Outcome::Links(found),
@@ -898,43 +968,58 @@ fn run(shared: &Shared) {
         let mut file_changed = false;
         // **An added PDF that's changed isn't drawn from** (the saved point's review): a stat, before each job, since drawing goes by path.
         let expected = lock(&shared.reader).expected_stamp(job.tab, &job.file);
-        let added_changed = expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
+        let added_changed =
+            expected.is_some_and(|expected| !recto_platform::file_stamp(&job.file).is_ok_and(|now| now.same_contents(expected) && now.inode == expected.inode));
         let outcome = if added_changed {
             match job.kind {
                 JobKind::Text { .. } => Outcome::TextFailed,
-                _ => Outcome::PageFailed { message: ADDED_FILE_CHANGED.to_string(), may_pass: false },
+                _ => Outcome::PageFailed {
+                    message: ADDED_FILE_CHANGED.to_string(),
+                    may_pass: false,
+                },
             }
-        } else { match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
-            Ok(open) => {
-                lock(&shared.reader).set_cancel(open.doc.cancel_handle());
-                let outcome = do_job(open, &job);
-                file_changed = seen_replaced(open) | std::mem::take(&mut open.replaced);
-                if file_changed {
-                    open.looks.clear();
-                    open.length_told = false;
-                    shared.events.file_replaced(job.tab);
-                }
-                // Which version a worker has, before what it drew is kept, so that's what it's kept as.
-                if let Some(version) = open.doc.known_version() {
-                    lock(&shared.reader).note_version(&job.file, version);
-                }
-                if !open.length_told
-                    && let (Some(pages), Some(version)) = (open.doc.known_page_count(), open.doc.known_version())
-                {
-                    open.length_told = true;
-                    if lock(&shared.reader).is_own_file(job.tab, &job.file) {
-                        shared.events.file_length(job.tab, pages, version);
+        } else {
+            match renderer_for(shared, &mut renderers, &mut openings, &job.file, &service, &policy) {
+                Ok(open) => {
+                    lock(&shared.reader).set_cancel(open.doc.cancel_handle());
+                    let outcome = do_job(open, &job);
+                    file_changed = seen_replaced(open) | std::mem::take(&mut open.replaced);
+                    if file_changed {
+                        open.looks.clear();
+                        open.length_told = false;
+                        shared.events.file_replaced(job.tab);
                     }
+                    // Which version a worker has, before what it drew is kept, so that's what it's kept as.
+                    if let Some(version) = open.doc.known_version() {
+                        lock(&shared.reader).note_version(&job.file, version);
+                    }
+                    if !open.length_told
+                        && let (Some(pages), Some(version)) = (open.doc.known_page_count(), open.doc.known_version())
+                    {
+                        open.length_told = true;
+                        if lock(&shared.reader).is_own_file(job.tab, &job.file) {
+                            shared.events.file_length(job.tab, pages, version);
+                        }
+                    }
+                    outcome
                 }
-                outcome
+                Err(Unopened::Failed(failure)) => document_failed(failure),
+                Err(Unopened::NotWanted) => Outcome::Cancelled,
+                Err(Unopened::NotAnswering) => Outcome::PageFailed {
+                    message: NOT_ANSWERING.to_string(),
+                    may_pass: true,
+                },
             }
-            Err(Unopened::Failed(failure)) => document_failed(failure),
-            Err(Unopened::NotWanted) => Outcome::Cancelled,
-            Err(Unopened::NotAnswering) => Outcome::PageFailed { message: NOT_ANSWERING.to_string(), may_pass: true },
-        } };
+        };
         publish_workers(shared, &mut renderers);
         let drawn = match (&job.kind, &outcome) {
-            (JobKind::Draw { what: DrawKind::Tile | DrawKind::Region, .. }, Outcome::Drawn { .. }) => Some(None),
+            (
+                JobKind::Draw {
+                    what: DrawKind::Tile | DrawKind::Region,
+                    ..
+                },
+                Outcome::Drawn { .. },
+            ) => Some(None),
             (JobKind::Draw { .. }, Outcome::PageFailed { .. }) => Some(Some("page_failed")),
             _ => None,
         };
@@ -944,7 +1029,11 @@ fn run(shared: &Shared) {
             reader.file_changed(tab);
         }
         // What a text job read isn't about what's selected now, if that's gone with the file.
-        let outcome = if file_changed && matches!(job.kind, JobKind::Text { .. }) { Outcome::Cancelled } else { outcome };
+        let outcome = if file_changed && matches!(job.kind, JobKind::Text { .. }) {
+            Outcome::Cancelled
+        } else {
+            outcome
+        };
         reader.finish(job, outcome);
         take_pending_follow(shared, &mut reader);
         let has_ops = reader.has_ops();
@@ -1021,21 +1110,43 @@ fn page_look(open: &mut OpenDoc, page: u32, generation: u64, whole: Option<(&Pix
         PageLook::text()
     } else if let Some((surface, rect)) = whole {
         let stride = surface.stride() as usize;
-        surface.with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, rect.width, rect.height)).unwrap_or_else(|_| PageLook::unknown())
+        surface
+            .with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, rect.width, rect.height))
+            .unwrap_or_else(|_| PageLook::unknown())
     } else {
         let doc = &mut open.doc;
         let picture = doc.page_size(page).ok().and_then(|(width, height)| {
             let scale = (LOOK_PICTURE_EDGE / width.max(height).max(1.0)).clamp(recto_proto::MIN_SCALE, recto_proto::MAX_SCALE);
             let (pixel_width, pixel_height) = recto_proto::device_size(width, height, scale).ok()?;
             let surface = PixelSurface::create(pixel_width, pixel_height).ok()?;
-            Some((scale, TileRect { x: 0, y: 0, width: pixel_width, height: pixel_height }, surface))
+            Some((
+                scale,
+                TileRect {
+                    x: 0,
+                    y: 0,
+                    width: pixel_width,
+                    height: pixel_height,
+                },
+                surface,
+            ))
         });
         match picture {
-            Some((scale, rect, surface)) => match doc.render_tile(&TileRequest { page, rect, scale, stride: surface.stride(), generation }, &surface) {
+            Some((scale, rect, surface)) => match doc.render_tile(
+                &TileRequest {
+                    page,
+                    rect,
+                    scale,
+                    stride: surface.stride(),
+                    generation,
+                },
+                &surface,
+            ) {
                 Ok(TileResult::Done(tile)) => {
                     let drawn = tile.low_res.map_or(rect, |low| low.rect);
                     let stride = surface.stride() as usize;
-                    surface.with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, drawn.width, drawn.height)).unwrap_or_else(|_| PageLook::unknown())
+                    surface
+                        .with_pixels(|pixels| PageLook::decide(boxes.as_deref(), pixels, stride, drawn.width, drawn.height))
+                        .unwrap_or_else(|_| PageLook::unknown())
                 }
                 Ok(TileResult::Cancelled { .. }) => return None,
                 Err(_) => PageLook::unknown(),
@@ -1061,7 +1172,14 @@ enum Unopened {
 }
 
 /// Opens a file's renderer on a thread of its own, the one part of this that a dead volume can hold up for ever, and waits for it only while the job's still wanted. One file not answering is no reason for a healthy tab to get no tiles. The wait is a look every [`OPEN_LOOK`], and only while a file's being opened.
-fn renderer_for<'a>(shared: &Shared, renderers: &'a mut HashMap<PathBuf, OpenDoc>, openings: &mut HashMap<PathBuf, Receiver<Result<File, RenderFailure>>>, path: &Path, service: &Result<ServiceConfig, RenderFailure>, policy: &Policy) -> Result<&'a mut OpenDoc, Unopened> {
+fn renderer_for<'a>(
+    shared: &Shared,
+    renderers: &'a mut HashMap<PathBuf, OpenDoc>,
+    openings: &mut HashMap<PathBuf, Receiver<Result<File, RenderFailure>>>,
+    path: &Path,
+    service: &Result<ServiceConfig, RenderFailure>,
+    policy: &Policy,
+) -> Result<&'a mut OpenDoc, Unopened> {
     if !renderers.contains_key(path) {
         let config = service.as_ref().map_err(|failure| Unopened::Failed(*failure))?.clone();
         if !openings.contains_key(path) {
@@ -1097,16 +1215,32 @@ fn renderer_for<'a>(shared: &Shared, renderers: &'a mut HashMap<PathBuf, OpenDoc
         openings.remove(path);
         let file = opened.map_err(Unopened::Failed)?;
         // By the file that was opened, not whatever's at its path now.
-        let key = shared.config.keys.as_ref().filter(|keys| !keys.is_empty()).and_then(|keys| keys.get(recto_platform::secret::open_file_identity(&file)?));
+        let key = shared
+            .config
+            .keys
+            .as_ref()
+            .filter(|keys| !keys.is_empty())
+            .and_then(|keys| keys.get(recto_platform::secret::open_file_identity(&file)?));
         let doc = DocRenderer::with_file(file, path, key, config, policy.clone()).map_err(Unopened::Failed)?;
-        renderers.insert(path.to_path_buf(), OpenDoc { length_told: false, doc, looks: HashMap::new(), replaced: false });
+        renderers.insert(
+            path.to_path_buf(),
+            OpenDoc {
+                length_told: false,
+                doc,
+                looks: HashMap::new(),
+                replaced: false,
+            },
+        );
     }
     renderers.get_mut(path).ok_or(Unopened::Failed(RenderFailure::Unavailable))
 }
 
 /// A failure that's about the whole file, saying when it's for want of a password, which the app can ask for again.
 fn document_failed(failure: RenderFailure) -> Outcome {
-    Outcome::DocumentFailed { message: failure.message(), needs_key: matches!(failure, RenderFailure::NeedsPassword) }
+    Outcome::DocumentFailed {
+        message: failure.message(),
+        needs_key: matches!(failure, RenderFailure::NeedsPassword),
+    }
 }
 
 fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
@@ -1115,7 +1249,10 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
         // Told to stop, a check that didn't finish says nothing about the page, so it's as though it was never tried. What was read on the way is good, and a read that went with its worker isn't a failure of the page's.
         let stopped = open.doc.is_stale(job.generation);
         return match read {
-            Ok(page) => Outcome::Text { text: Arc::new(PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)), checked: check && !stopped },
+            Ok(page) => Outcome::Text {
+                text: Arc::new(PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)),
+                checked: check && !stopped,
+            },
             Err(_) if stopped => Outcome::Cancelled,
             Err(_) => Outcome::TextFailed,
         };
@@ -1128,7 +1265,10 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
         JobKind::Size => match doc.page_size(job.source_page) {
             Ok((width, height)) => Outcome::Size(PageBox { width, height }),
             Err(failure) if whole_file(failure) => document_failed(failure),
-            Err(failure) => Outcome::PageFailed { message: failure.message(), may_pass: false },
+            Err(failure) => Outcome::PageFailed {
+                message: failure.message(),
+                may_pass: false,
+            },
         },
         JobKind::Traits => match doc.largest_image_pixels(job.source_page, job.generation) {
             // A stale question answers zero, which isn't an answer about the page. Remembering it would draw a heavy page a tile at a time.
@@ -1137,8 +1277,20 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
             Err(failure) if whole_file(failure) => document_failed(failure),
             Err(_) => Outcome::Heavy(false),
         },
-        JobKind::Draw { scale, rect, surface, what, paper } => {
-            let request = TileRequest { page: job.source_page, rect: *rect, scale: *scale, stride: surface.stride(), generation: job.generation };
+        JobKind::Draw {
+            scale,
+            rect,
+            surface,
+            what,
+            paper,
+        } => {
+            let request = TileRequest {
+                page: job.source_page,
+                rect: *rect,
+                scale: *scale,
+                stride: surface.stride(),
+                generation: job.generation,
+            };
             let result = match what {
                 DrawKind::Region => doc.render_region(&request, recto_proto::TILE_EDGE, surface),
                 DrawKind::Tile | DrawKind::Preview => doc.render_tile(&request, surface),
@@ -1156,7 +1308,10 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                         // Replaced as this was drawn, so it's of the new file, and no look of the old one's may go for it.
                         seen_replaced(open);
                         let look = page_look(open, job.source_page, job.generation, whole.map(|rect| (surface, rect)));
-                        let page = look.as_ref().and_then(|_| open.doc.page_size(job.source_page).ok()).and_then(|(width, height)| recto_proto::device_size(width, height, drawn_scale).ok());
+                        let page = look
+                            .as_ref()
+                            .and_then(|_| open.doc.page_size(job.source_page).ok())
+                            .and_then(|(width, height)| recto_proto::device_size(width, height, drawn_scale).ok());
                         // Replaced after it was drawn, while its look or size was being asked: the tile's of the old file, and the look may be of either, or of a draw that failed for it. Neither is kept, and the tile's drawn again.
                         if seen_replaced(open) {
                             return Outcome::Cancelled;
@@ -1171,8 +1326,14 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
                 }
                 Ok(TileResult::Cancelled { .. }) => Outcome::Cancelled,
                 Err(failure) if whole_file(failure) => document_failed(failure),
-                Err(failure @ RenderFailure::NotDrawableNow { .. }) => Outcome::PageFailed { message: failure.message(), may_pass: true },
-                Err(failure) => Outcome::PageFailed { message: failure.message(), may_pass: false },
+                Err(failure @ RenderFailure::NotDrawableNow { .. }) => Outcome::PageFailed {
+                    message: failure.message(),
+                    may_pass: true,
+                },
+                Err(failure) => Outcome::PageFailed {
+                    message: failure.message(),
+                    may_pass: false,
+                },
             }
         }
     }
@@ -1182,7 +1343,9 @@ fn do_job(open: &mut OpenDoc, job: &Job) -> Outcome {
 fn onto_dark_paper(pixels: &mut [u8], drawn: recto_proto::TileRect, stride: u32, kind: TileKind, dark: DarkTile, colour_only: bool) -> TileKind {
     match (dark, kind) {
         (DarkTile::Dim, TileKind::Blank { rgb }) if colour_only => TileKind::Blank { rgb: dim_rgb(rgb) },
-        (DarkTile::TurnOver(keeps, whiten), TileKind::Blank { rgb }) if keeps.is_empty() && whiten.is_empty() && colour_only => TileKind::Blank { rgb: dark_rgb(rgb) },
+        (DarkTile::TurnOver(keeps, whiten), TileKind::Blank { rgb }) if keeps.is_empty() && whiten.is_empty() && colour_only => {
+            TileKind::Blank { rgb: dark_rgb(rgb) }
+        }
         (DarkTile::Dim, _) => {
             dim_page(pixels, drawn.width, drawn.height, stride);
             if matches!(kind, TileKind::Blank { .. }) { TileKind::Colour } else { kind }
@@ -1197,7 +1360,16 @@ fn onto_dark_paper(pixels: &mut [u8], drawn: recto_proto::TileRect, stride: u32,
 
 /// Failures about the file or the renderer rather than one page.
 fn whole_file(failure: RenderFailure) -> bool {
-    !matches!(failure, RenderFailure::BadPage | RenderFailure::BadRequest | RenderFailure::TooLargeAtThisScale | RenderFailure::PageFailed { .. } | RenderFailure::PageReadFailed { .. } | RenderFailure::NotDrawableNow { .. } | RenderFailure::ExportRefused { .. })
+    !matches!(
+        failure,
+        RenderFailure::BadPage
+            | RenderFailure::BadRequest
+            | RenderFailure::TooLargeAtThisScale
+            | RenderFailure::PageFailed { .. }
+            | RenderFailure::PageReadFailed { .. }
+            | RenderFailure::NotDrawableNow { .. }
+            | RenderFailure::ExportRefused { .. }
+    )
 }
 
 #[cfg(test)]
@@ -1216,8 +1388,29 @@ mod tests {
     #[test]
     fn synced_scroll_never_waits_for_a_busy_pane() {
         let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
-        engine.activate(1, 100, 0, PageMap { files: vec![PathBuf::from("/nowhere/a.pdf")], ..PageMap::default() }, &[], None, crate::layout::Spread::Single);
-        engine.set_viewport(crate::tiles::Viewport { x: 0.0, y: 0.0, width: 800.0, height: 900.0, frame_width: 800.0, magnification: 1.0, backing: 2.0, live: false, scrolled_to: 0 });
+        engine.activate(
+            1,
+            100,
+            0,
+            PageMap {
+                files: vec![PathBuf::from("/nowhere/a.pdf")],
+                ..PageMap::default()
+            },
+            &[],
+            None,
+            crate::layout::Spread::Single,
+        );
+        engine.set_viewport(crate::tiles::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 900.0,
+            frame_width: 800.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to: 0,
+        });
         assert!(engine.follow_soon(10, 0.5), "free: it goes now");
         assert_eq!(engine.reading_anchor(), Some((10, 0.5)));
         let held = engine.shared.reader.lock().unwrap();
@@ -1228,7 +1421,11 @@ mod tests {
         drop(held);
         let began = Instant::now();
         while engine.reading_anchor() != Some((30, 0.75)) {
-            assert!(began.elapsed() < Duration::from_secs(5), "its own thread takes it: {:?}", engine.reading_anchor());
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "its own thread takes it: {:?}",
+                engine.reading_anchor()
+            );
             engine.wake();
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -1239,8 +1436,29 @@ mod tests {
     fn without_its_thread() -> Engine {
         let engine = Engine::new(EngineConfig::default(), Arc::new(Quiet));
         engine.shut_down();
-        engine.activate(1, 100, 0, PageMap { files: vec![PathBuf::from("/nowhere/a.pdf")], ..PageMap::default() }, &[], None, crate::layout::Spread::Single);
-        let view = |y: f64, scrolled_to: u64| crate::tiles::Viewport { x: 0.0, y, width: 800.0, height: 900.0, frame_width: 800.0, magnification: 1.0, backing: 2.0, live: false, scrolled_to };
+        engine.activate(
+            1,
+            100,
+            0,
+            PageMap {
+                files: vec![PathBuf::from("/nowhere/a.pdf")],
+                ..PageMap::default()
+            },
+            &[],
+            None,
+            crate::layout::Spread::Single,
+        );
+        let view = |y: f64, scrolled_to: u64| crate::tiles::Viewport {
+            x: 0.0,
+            y,
+            width: 800.0,
+            height: 900.0,
+            frame_width: 800.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to,
+        };
         let mut seq = 0;
         let mut y = 0.0;
         for _ in 0..3 {
@@ -1275,7 +1493,17 @@ mod tests {
         assert!(!engine.follow_soon(60, 0.0));
         drop(held);
         let seq = lock(&engine.shared.reader).viewport_scrolled_to();
-        let outcome = engine.set_viewport_scrolled(crate::tiles::Viewport { x: 0.0, y: 3000.0, width: 800.0, height: 900.0, frame_width: 800.0, magnification: 1.0, backing: 2.0, live: false, scrolled_to: seq });
+        let outcome = engine.set_viewport_scrolled(crate::tiles::Viewport {
+            x: 0.0,
+            y: 3000.0,
+            width: 800.0,
+            height: 900.0,
+            frame_width: 800.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to: seq,
+        });
         assert!(outcome.scrolled);
         assert!(lock(&engine.shared.pending).follow.is_none());
     }
@@ -1288,7 +1516,18 @@ mod tests {
         assert!(!engine.follow_soon(70, 0.5));
         assert!(!engine.zoom_soon(1.5));
         drop(held);
-        engine.activate(2, 40, 3, PageMap { files: vec![PathBuf::from("/nowhere/b.pdf")], ..PageMap::default() }, &[], None, crate::layout::Spread::Single);
+        engine.activate(
+            2,
+            40,
+            3,
+            PageMap {
+                files: vec![PathBuf::from("/nowhere/b.pdf")],
+                ..PageMap::default()
+            },
+            &[],
+            None,
+            crate::layout::Spread::Single,
+        );
         let pending = lock(&engine.shared.pending);
         assert!(pending.follow.is_none(), "the old tab's place is gone");
         assert_eq!(pending.zoom, Some(1.5), "the comparison's one zoom still holds");
@@ -1320,14 +1559,26 @@ mod tests {
     /// Failure: a blank tile of a lower-resolution page keeps its surface, but only its colour number is dimmed, so a tile at full white sits beside dimmed ones. Its pixels are what's shown, so they're what's changed.
     #[test]
     fn a_blank_tile_that_keeps_its_surface_has_its_pixels_changed() {
-        let rect = TileRect { x: 0, y: 0, width: 2, height: 1 };
+        let rect = TileRect {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 1,
+        };
         let white = || [0xFFu8; 8];
         let mut pixels = white();
         let kind = onto_dark_paper(&mut pixels, rect, 8, TileKind::Blank { rgb: 0xFF_FF_FF }, DarkTile::Dim, false);
         assert_eq!(u32::from(pixels[0]), dim_rgb(0xFF_FF_FF) & 0xFF, "dimmed");
         assert!(matches!(kind, TileKind::Colour), "{kind:?}");
         let mut pixels = white();
-        let kind = onto_dark_paper(&mut pixels, rect, 8, TileKind::Blank { rgb: 0xFF_FF_FF }, DarkTile::TurnOver(Vec::new(), Vec::new()), false);
+        let kind = onto_dark_paper(
+            &mut pixels,
+            rect,
+            8,
+            TileKind::Blank { rgb: 0xFF_FF_FF },
+            DarkTile::TurnOver(Vec::new(), Vec::new()),
+            false,
+        );
         assert_eq!(u32::from(pixels[0]), dark_rgb(0xFF_FF_FF) & 0xFF, "turned over");
         assert!(matches!(kind, TileKind::Colour), "{kind:?}");
         let mut pixels = white();

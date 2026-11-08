@@ -420,7 +420,10 @@ impl PdfiumBackend {
             api,
             document,
             form: std::ptr::null_mut(),
-            form_info: Box::new(FPDF_FORMFILLINFO { version: 2, callbacks: [std::ptr::null_mut(); 64] }),
+            form_info: Box::new(FPDF_FORMFILLINFO {
+                version: 2,
+                callbacks: [std::ptr::null_mut(); 64],
+            }),
             open_page: None,
             page_count,
             version,
@@ -462,7 +465,12 @@ impl PdfiumBackend {
         if page.is_null() {
             return Err(FailCode::BadPage);
         }
-        self.open_page = Some(OpenPage { index, page, text: std::ptr::null_mut(), form_loaded: false });
+        self.open_page = Some(OpenPage {
+            index,
+            page,
+            text: std::ptr::null_mut(),
+            form_loaded: false,
+        });
         Ok(())
     }
 
@@ -534,13 +542,24 @@ impl PdfiumBackend {
 
     /// Draws into `out` at the given whole-page size and offset. Returns false if cancelled. Page load has no pause, so a slow one only
     /// notices cancelling here.
-    fn draw(&mut self, out: &mut [u8], width: c_int, height: c_int, stride: c_int, at: (c_int, c_int), full: (c_int, c_int), cancel: &dyn Cancel) -> Result<bool, RenderError> {
+    fn draw(
+        &mut self,
+        out: &mut [u8],
+        width: c_int,
+        height: c_int,
+        stride: c_int,
+        at: (c_int, c_int),
+        full: (c_int, c_int),
+        cancel: &dyn Cancel,
+    ) -> Result<bool, RenderError> {
         let needed = i64::from(stride) * i64::from(height);
         if needed > out.len() as i64 || stride < width.saturating_mul(4) {
             return Err(FailCode::BadSurface);
         }
         self.ensure_form();
-        let Some(page) = self.open_page_handle() else { return Err(FailCode::Internal) };
+        let Some(page) = self.open_page_handle() else {
+            return Err(FailCode::Internal);
+        };
         let api = self.api;
         // SAFETY: `page` is live and `form` came from this document. `FORM_OnAfterLoadPage` runs once per open page.
         if let Some(open) = self.open_page.as_mut().filter(|open| !open.form_loaded && !self.form.is_null()) {
@@ -553,7 +572,11 @@ impl PdfiumBackend {
             return Err(FailCode::Internal);
         }
         let mut pause = PauseState {
-            base: IFSDK_PAUSE { version: 1, NeedToPauseNow: need_to_pause, user: std::ptr::null_mut() },
+            base: IFSDK_PAUSE {
+                version: 1,
+                NeedToPauseNow: need_to_pause,
+                user: std::ptr::null_mut(),
+            },
             cancel,
             cancelled: Cell::new(false),
         };
@@ -598,7 +621,10 @@ impl RenderBackend for PdfiumBackend {
         if ok == 0 {
             return Err(FailCode::BadPage);
         }
-        Ok(PagePoints { width: width as c_float, height: height as c_float })
+        Ok(PagePoints {
+            width: width as c_float,
+            height: height as c_float,
+        })
     }
 
     fn render_tile(&mut self, page: u32, rect: TileRect, scale: f32, out: &mut [u8], stride: u32, cancel: &dyn Cancel) -> Result<TileOutcome, RenderError> {
@@ -640,7 +666,9 @@ impl RenderBackend for PdfiumBackend {
 
     fn largest_image_pixels(&mut self, page: u32) -> Result<u64, RenderError> {
         self.load_page(page)?;
-        let Some(handle) = self.open_page_handle() else { return Err(FailCode::Internal) };
+        let Some(handle) = self.open_page_handle() else {
+            return Err(FailCode::Internal);
+        };
         let api = self.api;
         let mut largest = 0u64;
         let mut looked_at = 0usize;
@@ -677,7 +705,9 @@ impl RenderBackend for PdfiumBackend {
 
     fn image_boxes(&mut self, page: u32) -> Result<Vec<[u16; 4]>, RenderError> {
         self.load_page(page)?;
-        let Some(handle) = self.open_page_handle() else { return Err(FailCode::Internal) };
+        let Some(handle) = self.open_page_handle() else {
+            return Err(FailCode::Internal);
+        };
         let api = self.api;
         let mut boxes: Vec<[u16; 4]> = Vec::new();
         let mut looked_at = 0usize;
@@ -725,7 +755,9 @@ impl RenderBackend for PdfiumBackend {
             }
         }
         if boxes.len() > recto_proto::MAX_IMAGE_BOXES {
-            let all = boxes.iter().fold([u16::MAX, u16::MAX, 0, 0], |all, found| [all[0].min(found[0]), all[1].min(found[1]), all[2].max(found[2]), all[3].max(found[3])]);
+            let all = boxes.iter().fold([u16::MAX, u16::MAX, 0, 0], |all, found| {
+                [all[0].min(found[0]), all[1].min(found[1]), all[2].max(found[2]), all[3].max(found[3])]
+            });
             boxes = vec![all];
         }
         Ok(boxes)
@@ -757,7 +789,11 @@ impl RenderBackend for PdfiumBackend {
         while index < count {
             // SAFETY: `text` is live and `index` is below its character count.
             let (mut code, hyphen, generated) = unsafe {
-                ((api.FPDFText_GetUnicode)(text, index), (api.FPDFText_IsHyphen)(text, index), (api.FPDFText_IsGenerated)(text, index))
+                (
+                    (api.FPDFText_GetUnicode)(text, index),
+                    (api.FPDFText_IsHyphen)(text, index),
+                    (api.FPDFText_IsGenerated)(text, index),
+                )
             };
             // A character past the 16-bit range comes from a font's ToUnicode as two halves, each its own "character" here. Put back together, or an emoji is lost and a tag character, the plainest
             // hidden instruction there is, is never seen as one.
@@ -799,7 +835,13 @@ impl RenderBackend for PdfiumBackend {
         let frame = if options.boxes { self.page_frame() } else { PageFrame::default() };
         // SAFETY: the document is live. A file with no encryption answers all ones.
         let permissions = unsafe { (api.FPDF_GetDocPermissions)(self.document) };
-        Ok(PageChars { chars, boxes, hidden_checked, frame, copy_restricted: permissions & PERMISSION_COPY == 0 })
+        Ok(PageChars {
+            chars,
+            boxes,
+            hidden_checked,
+            frame,
+            copy_restricted: permissions & PERMISSION_COPY == 0,
+        })
     }
 }
 
@@ -807,7 +849,12 @@ impl PdfiumBackend {
     /// The area of the open page that's shown, and how far it's turned. All zero if PDFium can't say, which leaves the page with nowhere to select.
     fn page_frame(&self) -> PageFrame {
         let Some(open) = self.open_page.as_ref() else { return PageFrame::default() };
-        let mut area = FS_RECTF { left: 0.0, top: 0.0, right: 0.0, bottom: 0.0 };
+        let mut area = FS_RECTF {
+            left: 0.0,
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+        };
         // SAFETY: the page is live, and the out-pointer is live for the call.
         let known = unsafe { (self.api.FPDF_GetPageBoundingBox)(open.page, &raw mut area) };
         if known == 0 {
@@ -815,7 +862,13 @@ impl PdfiumBackend {
         }
         // SAFETY: the page is live.
         let turns = unsafe { (self.api.FPDFPage_GetRotation)(open.page) };
-        PageFrame { turns: (turns & 3) as u8, left: area.left.min(area.right), bottom: area.bottom.min(area.top), right: area.left.max(area.right), top: area.bottom.max(area.top) }
+        PageFrame {
+            turns: (turns & 3) as u8,
+            left: area.left.min(area.right),
+            bottom: area.bottom.min(area.top),
+            right: area.left.max(area.right),
+            top: area.bottom.max(area.top),
+        }
     }
 }
 
@@ -826,12 +879,25 @@ const INK_MAX_BYTES: f32 = 64.0 * 1024.0 * 1024.0;
 impl PdfiumBackend {
     /// Draws the page and sets `NO_INK` on each visible-looking character whose box has no ink. Nothing is removed. From the spike's
     /// prototype, §10.4. Whitespace, control characters and characters PDFium generated have no ink to find, so they're skipped.
-    fn mark_no_ink(&mut self, page: u32, chars: &mut [CharRecord], boxes: &[CharBox], (text, sources): (FPDF_TEXTPAGE, &[c_int]), cancel: &dyn Cancel) -> Result<(), RenderError> {
+    fn mark_no_ink(
+        &mut self,
+        page: u32,
+        chars: &mut [CharRecord],
+        boxes: &[CharBox],
+        (text, sources): (FPDF_TEXTPAGE, &[c_int]),
+        cancel: &dyn Cancel,
+    ) -> Result<(), RenderError> {
         let size = self.page_size(page)?;
         let area_at_ink_scale = size.width * INK_SCALE * size.height * INK_SCALE * 4.0;
-        let scale = if area_at_ink_scale > INK_MAX_BYTES { INK_SCALE * (INK_MAX_BYTES / area_at_ink_scale).sqrt() } else { INK_SCALE };
+        let scale = if area_at_ink_scale > INK_MAX_BYTES {
+            INK_SCALE * (INK_MAX_BYTES / area_at_ink_scale).sqrt()
+        } else {
+            INK_SCALE
+        };
         let (width, height) = device_size(size.width, size.height, scale).map_err(|_| FailCode::TooLarge)?;
-        let (Ok(width), Ok(height)) = (c_int::try_from(width), c_int::try_from(height)) else { return Err(FailCode::TooLarge) };
+        let (Ok(width), Ok(height)) = (c_int::try_from(width), c_int::try_from(height)) else {
+            return Err(FailCode::TooLarge);
+        };
         let stride = width.checked_mul(4).ok_or(FailCode::TooLarge)?;
         let bytes = usize::try_from(i64::from(stride) * i64::from(height)).map_err(|_| FailCode::TooLarge)?;
         let mut pixels = vec![0u8; bytes];
@@ -839,12 +905,27 @@ impl PdfiumBackend {
         if !self.draw(&mut pixels, width, height, stride, (0, 0), (width, height), cancel)? {
             return Err(FailCode::Internal);
         }
-        let Some(page_handle) = self.open_page_handle() else { return Err(FailCode::Internal) };
+        let Some(page_handle) = self.open_page_handle() else {
+            return Err(FailCode::Internal);
+        };
         let api = self.api;
         let to_device = |x: f32, y: f32| {
             let (mut device_x, mut device_y) = (0, 0);
             // SAFETY: the page is live and the out-pointers are live for the call.
-            unsafe { (api.FPDF_PageToDevice)(page_handle, 0, 0, width, height, 0, f64::from(x), f64::from(y), &raw mut device_x, &raw mut device_y) };
+            unsafe {
+                (api.FPDF_PageToDevice)(
+                    page_handle,
+                    0,
+                    0,
+                    width,
+                    height,
+                    0,
+                    f64::from(x),
+                    f64::from(y),
+                    &raw mut device_x,
+                    &raw mut device_y,
+                )
+            };
             (device_x, device_y)
         };
         // Characters the colour test proposes as hidden, by their text object, which drawing again without decides.
@@ -878,15 +959,22 @@ impl PdfiumBackend {
         let drawn_twice = |at: usize| {
             chars.get(at).zip(boxes.get(at)).is_some_and(|(record, char_box)| {
                 let (code, x, y) = copy_cell(record.ch(), char_box);
-                let around: u32 = (-1..=1).flat_map(|dx| (-1..=1).map(move |dy| (dx, dy))).map(|(dx, dy)| copies.get(&(code, x + dx, y + dy)).copied().unwrap_or(0)).sum();
+                let around: u32 = (-1..=1)
+                    .flat_map(|dx| (-1..=1).map(move |dy| (dx, dy)))
+                    .map(|(dx, dy)| copies.get(&(code, x + dx, y + dy)).copied().unwrap_or(0))
+                    .sum();
                 around > 1
             })
         };
         let too_many = chars.len() > MAX_COPY_CHECK_CHARS;
-        let proposed: Vec<_> = proposed.into_iter().filter(|_| !too_many).filter_map(|(object, list)| {
-            let list: Vec<_> = list.into_iter().filter(|(at, _)| !drawn_twice(*at)).collect();
-            (!list.is_empty()).then_some((object, list))
-        }).collect();
+        let proposed: Vec<_> = proposed
+            .into_iter()
+            .filter(|_| !too_many)
+            .filter_map(|(object, list)| {
+                let list: Vec<_> = list.into_iter().filter(|(at, _)| !drawn_twice(*at)).collect();
+                (!list.is_empty()).then_some((object, list))
+            })
+            .collect();
         // The same text drawn twice as two objects, a light fill over a stroked outline as a map's labels are, comes through PDFium's text as one character, so the look above can't see it. Another text object in the same place says the words are drawn there to be seen.
         let twins = if proposed.is_empty() { Vec::new() } else { self.text_object_bounds() };
         let proposed: Vec<_> = proposed.into_iter().filter(|(object, _)| !has_a_twin(api, *object, &twins)).collect();
@@ -932,7 +1020,14 @@ impl PdfiumBackend {
     }
 
     /// Draws the page once more with every proposed character's text object turned off, and marks those whose drawing adds nothing anyone could see. One drawing for the page, however many are proposed, of at most [`MAX_CONFIRM_OBJECTS`] objects: past that, nothing is marked, as before this check was widened. A drawing that fails or is stopped marks nothing.
-    fn confirm_hidden(&mut self, chars: &mut [CharRecord], proposed: &[Proposed], pixels: &[u8], (width, height, stride): (c_int, c_int, c_int), cancel: &dyn Cancel) {
+    fn confirm_hidden(
+        &mut self,
+        chars: &mut [CharRecord],
+        proposed: &[Proposed],
+        pixels: &[u8],
+        (width, height, stride): (c_int, c_int, c_int),
+        cancel: &dyn Cancel,
+    ) {
         // A second drawing of a page past this size would double what the check holds, which a map at its limit can't take: such a page keeps what the box test found, as before this check was widened.
         if proposed.is_empty() || proposed.len() > MAX_CONFIRM_OBJECTS || pixels.len() > MAX_CONFIRM_BYTES {
             return;
@@ -943,8 +1038,12 @@ impl PdfiumBackend {
         let devices = proposed.iter().flat_map(|(_, list)| list.iter().map(|(_, device)| *device));
         let Some((x0, y0, x1, y1)) = devices.fold(None, |region: Option<(c_int, c_int, c_int, c_int)>, (a, b, c, d)| {
             let (left, right, top, bottom) = (a.min(c), a.max(c), b.min(d), b.max(d));
-            Some(region.map_or((left, top, right, bottom), |(rx0, ry0, rx1, ry1)| (rx0.min(left), ry0.min(top), rx1.max(right), ry1.max(bottom))))
-        }) else { return };
+            Some(region.map_or((left, top, right, bottom), |(rx0, ry0, rx1, ry1)| {
+                (rx0.min(left), ry0.min(top), rx1.max(right), ry1.max(bottom))
+            }))
+        }) else {
+            return;
+        };
         let (x0, y0, x1, y1) = ((x0 - pad).max(0), (y0 - pad).max(0), (x1 + pad).min(width), (y1 + pad).min(height));
         let (region_width, region_height) = (x1 - x0, y1 - y0);
         if region_width <= 0 || region_height <= 0 {
@@ -1007,7 +1106,13 @@ fn has_a_twin(api: &'static Api, object: FPDF_PAGEOBJECT, objects: &[(FPDF_PAGEO
 
 /// Where a character's centre is, to a 2-point cell, with what it is: for finding text drawn twice in one place.
 fn copy_cell(ch: char, [left, bottom, right, top]: &CharBox) -> (u32, i32, i32) {
-    let cell = |value: f32| if value.is_finite() { (value / 2.0).round().clamp(-1e9, 1e9) as i32 } else { 0 };
+    let cell = |value: f32| {
+        if value.is_finite() {
+            (value / 2.0).round().clamp(-1e9, 1e9) as i32
+        } else {
+            0
+        }
+    };
     (ch as u32, cell((left + right) / 2.0), cell((bottom + top) / 2.0))
 }
 
@@ -1017,7 +1122,14 @@ const MAX_CONFIRM_BYTES: usize = 24 * 1024 * 1024;
 const MAX_COPY_CHECK_CHARS: usize = 200_000;
 
 /// The character's text object, if it's drawn in the colour of what's under it, so that its box's ink may be someone else's: white text over a paragraph. Only a proposal: bold text covers most of its box and its colour is the box's main one too, so [`PdfiumBackend::confirm_hidden`] decides. Only for text that's filled or stroked: render mode 3 draws nothing, which the box test has already said if there's nothing under it, and an OCR layer over a scan is just that, and stays.
-fn drawn_in_its_grounds_colour(api: &'static Api, text: FPDF_TEXTPAGE, index: c_int, pixels: &[u8], (width, height, stride): (c_int, c_int, usize), device: (c_int, c_int, c_int, c_int)) -> Option<FPDF_PAGEOBJECT> {
+fn drawn_in_its_grounds_colour(
+    api: &'static Api,
+    text: FPDF_TEXTPAGE,
+    index: c_int,
+    pixels: &[u8],
+    (width, height, stride): (c_int, c_int, usize),
+    device: (c_int, c_int, c_int, c_int),
+) -> Option<FPDF_PAGEOBJECT> {
     // SAFETY: the text page is live for the caller's walk and `index` is one of its characters. The object it returns belongs to the page, which outlives this call.
     let object = unsafe { (api.FPDFText_GetTextObject)(text, index) };
     if object.is_null() {
@@ -1038,7 +1150,20 @@ fn drawn_in_its_grounds_colour(api: &'static Api, text: FPDF_TEXTPAGE, index: c_
 
 /// Draws one page onto a caller's memory, in one go: the host's watch holds it from outside, and nothing here pauses. `form` draws form fields too, when `annots` is set.
 #[allow(clippy::too_many_arguments)]
-fn draw_plain(api: &'static Api, page: FPDF_PAGE, form: FPDF_FORMHANDLE, out: &mut [u8], width: c_int, height: c_int, stride: c_int, at: (c_int, c_int), full: (c_int, c_int), format: c_int, paper: c_ulong, annots: bool) -> bool {
+fn draw_plain(
+    api: &'static Api,
+    page: FPDF_PAGE,
+    form: FPDF_FORMHANDLE,
+    out: &mut [u8],
+    width: c_int,
+    height: c_int,
+    stride: c_int,
+    at: (c_int, c_int),
+    full: (c_int, c_int),
+    format: c_int,
+    paper: c_ulong,
+    annots: bool,
+) -> bool {
     let needed = i64::from(stride) * i64::from(height);
     if needed > out.len() as i64 || stride < width.saturating_mul(4) {
         return false;
@@ -1051,7 +1176,15 @@ fn draw_plain(api: &'static Api, page: FPDF_PAGE, form: FPDF_FORMHANDLE, out: &m
             return false;
         }
         (api.FPDFBitmap_FillRect)(bitmap, 0, 0, width, height, paper);
-        let mut pause = PauseState { base: IFSDK_PAUSE { version: 1, NeedToPauseNow: need_to_pause, user: std::ptr::null_mut() }, cancel: &crate::NeverCancel, cancelled: Cell::new(false) };
+        let mut pause = PauseState {
+            base: IFSDK_PAUSE {
+                version: 1,
+                NeedToPauseNow: need_to_pause,
+                user: std::ptr::null_mut(),
+            },
+            cancel: &crate::NeverCancel,
+            cancelled: Cell::new(false),
+        };
         let pause_ptr = (&raw mut pause).cast::<IFSDK_PAUSE>();
         let mut status = (api.FPDF_RenderPageBitmap_Start)(bitmap, page, at.0, at.1, full.0, full.1, 0, flags, pause_ptr);
         while status == FPDF_RENDER_TOBECONTINUED {

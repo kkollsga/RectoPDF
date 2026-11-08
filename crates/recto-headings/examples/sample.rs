@@ -95,7 +95,11 @@ fn run(file: &Path, scan: &str, brief: bool, background: bool) {
     if let Some(facts) = &own {
         println!("-- own");
         for entry in facts.toc.entries().iter().take(40) {
-            let page = if entry.page == recto_core::NONE { "-".to_string() } else { (entry.page + 1).to_string() };
+            let page = if entry.page == recto_core::NONE {
+                "-".to_string()
+            } else {
+                (entry.page + 1).to_string()
+            };
             println!("{}{} .. {}", "  ".repeat(usize::from(entry.depth)), facts.toc.title(entry), page);
         }
     }

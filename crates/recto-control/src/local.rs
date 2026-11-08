@@ -13,7 +13,11 @@ pub fn run_here<L: DocLoader + Clone>(session: &mut Session<L>, paths: &StatePat
     let acted = acted_tab(session, command);
     // What's been built gets read. Nothing lives long enough here to build one.
     let corpus = ReadOnlyCorpus(paths.corpus.clone());
-    let result = if allowed(level, command.access()) { run_indexed(session, level, command, Some(&corpus)) } else { Err(refusal(table::display_name(command.tag()), level, command.access())) };
+    let result = if allowed(level, command.access()) {
+        run_indexed(session, level, command, Some(&corpus))
+    } else {
+        Err(refusal(table::display_name(command.tag()), level, command.access()))
+    };
     let outcome = result.as_ref().map_or_else(|error| error.code, |_| "ok");
     log.record(command.tag(), level, outcome, &with_acted_tab(command.log_details(), acted, &result, command));
     result

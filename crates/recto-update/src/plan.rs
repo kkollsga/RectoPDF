@@ -27,7 +27,12 @@ pub struct Files {
 impl Files {
     #[must_use]
     pub fn in_state(root: &Path) -> Self {
-        Self { root: root.to_path_buf(), saved: root.join("updates.json"), log: root.join("update.log"), work: root.join("update") }
+        Self {
+            root: root.to_path_buf(),
+            saved: root.join("updates.json"),
+            log: root.join("update.log"),
+            work: root.join("update"),
+        }
     }
 
     #[must_use]
@@ -126,7 +131,14 @@ impl Plan {
         let bytes = local::read_private_file(file, MAX_PLAN_BYTES).ok()??;
         let plan: Self = serde_json::from_slice(&bytes).ok()?;
         let cdhash_fine = plan.cdhash.is_empty() || (plan.cdhash.len() == 40 && plan.cdhash.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        (!plan.id.is_empty() && cdhash_fine && parse_version(&plan.from).is_some() && parse_version(&plan.to).is_some() && plan.app.is_absolute() && plan.beside.is_absolute() && plan.root.is_absolute()).then_some(plan)
+        (!plan.id.is_empty()
+            && cdhash_fine
+            && parse_version(&plan.from).is_some()
+            && parse_version(&plan.to).is_some()
+            && plan.app.is_absolute()
+            && plan.beside.is_absolute()
+            && plan.root.is_absolute())
+        .then_some(plan)
     }
 
     pub fn write(&self, file: &Path) -> std::io::Result<()> {
@@ -221,8 +233,12 @@ pub fn log(file: &Path, line: &str) {
 /// The installer's own process, if it's still running. Going by the program too, as a number comes round again.
 #[must_use]
 pub fn helper_alive(files: &Files) -> bool {
-    let Ok(Some(bytes)) = local::read_private_file(&files.helper_pid(), 32) else { return false };
-    let Some(pid) = std::str::from_utf8(&bytes).ok().and_then(|text| text.trim().parse::<u32>().ok()) else { return false };
+    let Ok(Some(bytes)) = local::read_private_file(&files.helper_pid(), 32) else {
+        return false;
+    };
+    let Some(pid) = std::str::from_utf8(&bytes).ok().and_then(|text| text.trim().parse::<u32>().ok()) else {
+        return false;
+    };
     local::process_path(pid).is_some_and(|path| path.file_name().is_some_and(|name| name == "recto-updater"))
 }
 
@@ -238,10 +254,46 @@ mod tests {
         local::ensure_private_dir(&dir).unwrap();
         let file = dir.join("plan.json");
         assert_eq!(Plan::read(&file), None);
-        let plan = Plan { id: "7-1".into(), cdhash: "a".repeat(40), team_required: false, from: "0.1.0".into(), to: "0.2.0".into(), pid: 7, app: "/a/RectoPDF.app".into(), beside: "/a/.RectoPDF-update".into(), root: "/s".into(), quit_at_ms: 1, background: false, quit_limit_ms: 1, start_limit_ms: 1, test: None };
+        let plan = Plan {
+            id: "7-1".into(),
+            cdhash: "a".repeat(40),
+            team_required: false,
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            pid: 7,
+            app: "/a/RectoPDF.app".into(),
+            beside: "/a/.RectoPDF-update".into(),
+            root: "/s".into(),
+            quit_at_ms: 1,
+            background: false,
+            quit_limit_ms: 1,
+            start_limit_ms: 1,
+            test: None,
+        };
         plan.write(&file).unwrap();
         assert_eq!(Plan::read(&file), Some(plan.clone()));
-        for wrong in [Plan { to: "2".into(), ..plan.clone() }, Plan { from: "x".into(), ..plan.clone() }, Plan { app: "relative".into(), ..plan.clone() }, Plan { id: String::new(), ..plan.clone() }, Plan { cdhash: "\"or anything".into(), ..plan.clone() }] {
+        for wrong in [
+            Plan {
+                to: "2".into(),
+                ..plan.clone()
+            },
+            Plan {
+                from: "x".into(),
+                ..plan.clone()
+            },
+            Plan {
+                app: "relative".into(),
+                ..plan.clone()
+            },
+            Plan {
+                id: String::new(),
+                ..plan.clone()
+            },
+            Plan {
+                cdhash: "\"or anything".into(),
+                ..plan.clone()
+            },
+        ] {
             wrong.write(&file).unwrap();
             assert_eq!(Plan::read(&file), None);
         }

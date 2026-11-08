@@ -4,13 +4,16 @@
 mod common;
 
 use common::wait_until;
-use std::sync::atomic::Ordering;
 use recto_platform::isolate::{self, Channel, Handle, SharedMemory};
-use recto_proto::{self as proto, CharRecord, FailCode, HEADER_LEN, Header, Kind, PageSize, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus};
+use recto_proto::{
+    self as proto, CharRecord, FailCode, HEADER_LEN, Header, Kind, PageSize, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply,
+    TileStatus,
+};
 use recto_render_service::transport::{FrameReader, send_all};
 use recto_render_service::{DocRenderer, KillReason, Policy, RenderFailure, ServiceConfig, TileRequest, TileResult, control};
 use recto_testpdf::TempPdf;
 use std::ffi::OsString;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 const ALLOC_STEP: usize = 8 * 1024 * 1024;
@@ -47,11 +50,29 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
     let good = good_tile(job);
     mark_job_in_hand();
     let tiles = proto::region_tiles(job.rect, job.tile_edge.max(1)).count();
-    let region = RegionReply { tile: good, kinds: vec![TileKind::Grey; tiles] };
+    let region = RegionReply {
+        tile: good,
+        kinds: vec![TileKind::Grey; tiles],
+    };
     let reply = match mode {
-        "region_short" => RegionReply { kinds: vec![TileKind::Grey; tiles - 1], ..region }.encode(),
-        "region_long" => RegionReply { kinds: vec![TileKind::Grey; tiles + 1], ..region }.encode(),
-        "region_wrong_size" => RegionReply { tile: TileReply { width: job.rect.width + 1, ..good }, ..region }.encode(),
+        "region_short" => RegionReply {
+            kinds: vec![TileKind::Grey; tiles - 1],
+            ..region
+        }
+        .encode(),
+        "region_long" => RegionReply {
+            kinds: vec![TileKind::Grey; tiles + 1],
+            ..region
+        }
+        .encode(),
+        "region_wrong_size" => RegionReply {
+            tile: TileReply {
+                width: job.rect.width + 1,
+                ..good
+            },
+            ..region
+        }
+        .encode(),
         "region_answered_as_a_tile" => good.encode(),
         "region_garbled" => {
             let mut bytes = region.encode();
@@ -60,7 +81,11 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
             bytes
         }
         "good" if job.tile_edge != 0 => region.encode(),
-        "cancels_uncalled" => TileReply { status: TileStatus::Cancelled, ..good }.encode(),
+        "cancels_uncalled" => TileReply {
+            status: TileStatus::Cancelled,
+            ..good
+        }
+        .encode(),
         "done_after_cancel" => {
             // Sees the cancel arrive, and finishes anyway, as a page in its last object would.
             let word = cancel_word.unwrap().atomic_u64(control::CANCEL_BEFORE_OFFSET).unwrap();
@@ -70,19 +95,46 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
             if job.tile_edge != 0 { region.encode() } else { good.encode() }
         }
         "failed_for_another_job" => proto::encode_failed(job.job_id + 1, FailCode::BadPage),
-        "wrong_width" => TileReply { width: job.rect.width + 1, ..good }.encode(),
+        "wrong_width" => TileReply {
+            width: job.rect.width + 1,
+            ..good
+        }
+        .encode(),
         "wrong_stride" => TileReply { stride: 4, ..good }.encode(),
-        "wrong_job" => TileReply { job_id: job.job_id + 1, ..good }.encode(),
-        "wrong_generation" => TileReply { generation: job.generation + 1, ..good }.encode(),
-        "huge_tile" => TileReply { width: u32::MAX, height: u32::MAX, stride: u32::MAX, ..good }.encode(),
+        "wrong_job" => TileReply {
+            job_id: job.job_id + 1,
+            ..good
+        }
+        .encode(),
+        "wrong_generation" => TileReply {
+            generation: job.generation + 1,
+            ..good
+        }
+        .encode(),
+        "huge_tile" => TileReply {
+            width: u32::MAX,
+            height: u32::MAX,
+            stride: u32::MAX,
+            ..good
+        }
+        .encode(),
         "garbage" => vec![0xEE; 64],
-        "oversized_header" => Header { kind: Kind::Tile, len: 1 << 20 }.encode().to_vec(),
+        "oversized_header" => Header {
+            kind: Kind::Tile,
+            len: 1 << 20,
+        }
+        .encode()
+        .to_vec(),
         "bad_kind" => proto::encode_opened(1, 1),
         "silent" | "ignore_cancel" => loop {
             std::thread::sleep(Duration::from_secs(60));
         },
         "huge_text_claim" => {
-            let header = Header { kind: Kind::Text, len: proto::MAX_FRAME }.encode();
+            let header = Header {
+                kind: Kind::Text,
+                len: proto::MAX_FRAME,
+            }
+            .encode();
             let _ = send_all(channel, &header, &[]);
             loop {
                 std::thread::sleep(Duration::from_secs(60));
@@ -110,11 +162,28 @@ fn answer_render(mode: &str, job: &RenderJob, channel: &Channel, retained: &mut 
 }
 
 fn answer_text(mode: &str, job: &TextJob) -> Vec<u8> {
-    let good = TextReply { job_id: job.job_id, page: job.page, hidden_checked: job.hidden_check, chars: vec![CharRecord::new('a' as u32, 0)], boxes: Vec::new(), ..TextReply::default() };
+    let good = TextReply {
+        job_id: job.job_id,
+        page: job.page,
+        hidden_checked: job.hidden_check,
+        chars: vec![CharRecord::new('a' as u32, 0)],
+        boxes: Vec::new(),
+        ..TextReply::default()
+    };
     match mode {
         "text_wrong_page" => TextReply { page: job.page + 1, ..good }.encode().unwrap(),
-        "text_nan_box" => TextReply { boxes: vec![[f32::NAN; 4]], ..good }.encode().unwrap(),
-        "text_lies_about_check" => TextReply { hidden_checked: !job.hidden_check, ..good }.encode().unwrap(),
+        "text_nan_box" => TextReply {
+            boxes: vec![[f32::NAN; 4]],
+            ..good
+        }
+        .encode()
+        .unwrap(),
+        "text_lies_about_check" => TextReply {
+            hidden_checked: !job.hidden_check,
+            ..good
+        }
+        .encode()
+        .unwrap(),
         "text_short_frame" => {
             let mut bytes = good.encode().unwrap();
             bytes.pop();
@@ -144,7 +213,15 @@ fn fake_worker() {
     if mode == "hang_before_hello" {
         std::thread::sleep(Duration::from_secs(600));
     }
-    send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled: false }), &[]).unwrap();
+    send_all(
+        &channel,
+        &proto::encode_hello(proto::Hello {
+            pid: std::process::id(),
+            walled: false,
+        }),
+        &[],
+    )
+    .unwrap();
     let mut reader = FrameReader::default();
     let mut retained = Vec::new();
     let mut cancel_word = None;
@@ -157,8 +234,10 @@ fn fake_worker() {
                 }
                 if mode == "spin_on_open" {
                     for _ in 0..8 {
-                        std::thread::spawn(|| loop {
-                            std::hint::spin_loop();
+                        std::thread::spawn(|| {
+                            loop {
+                                std::hint::spin_loop();
+                            }
                         });
                     }
                     loop {
@@ -183,14 +262,36 @@ fn fake_worker() {
                 };
                 let _ = send_all(&channel, &reply, &[]);
             }
-            Kind::Render => answer_render(&mode, &RenderJob::decode(&frame.payload).unwrap(), &channel, &mut retained, cancel_word.as_ref()),
+            Kind::Render => answer_render(
+                &mode,
+                &RenderJob::decode(&frame.payload).unwrap(),
+                &channel,
+                &mut retained,
+                cancel_word.as_ref(),
+            ),
             Kind::SizeRequest => {
                 let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
                 let size = match mode.as_str() {
-                    "size_nan" => PageSize { job_id, width: f32::NAN, height: 792.0 },
-                    "size_huge" => PageSize { job_id, width: 1e30, height: 792.0 },
-                    "size_wrong_job" => PageSize { job_id: job_id + 1, width: 612.0, height: 792.0 },
-                    _ => PageSize { job_id, width: 612.0, height: 792.0 },
+                    "size_nan" => PageSize {
+                        job_id,
+                        width: f32::NAN,
+                        height: 792.0,
+                    },
+                    "size_huge" => PageSize {
+                        job_id,
+                        width: 1e30,
+                        height: 792.0,
+                    },
+                    "size_wrong_job" => PageSize {
+                        job_id: job_id + 1,
+                        width: 612.0,
+                        height: 792.0,
+                    },
+                    _ => PageSize {
+                        job_id,
+                        width: 612.0,
+                        height: 792.0,
+                    },
                 };
                 let _ = send_all(&channel, &size.encode(), &[]);
             }
@@ -214,12 +315,20 @@ fn config(mode: &str) -> ServiceConfig {
         pdfium_lib: "/nonexistent".into(),
         heavy_slot: recto_render_service::HeavySlot::new(),
         extra_env: vec![("RECTO_FAKE".into(), mode.into())],
-        replace_args: Some(["--exact", "fake_worker", "--nocapture", "--test-threads=1"].into_iter().map(OsString::from).collect()),
+        replace_args: Some(
+            ["--exact", "fake_worker", "--nocapture", "--test-threads=1"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        ),
     }
 }
 
 fn policy() -> Policy {
-    Policy { page_deadline: Duration::from_secs(10), ..Policy::default() }
+    Policy {
+        page_deadline: Duration::from_secs(10),
+        ..Policy::default()
+    }
 }
 
 /// A small document for `DocRenderer` to open a descriptor on. The stand-in never reads it.
@@ -229,7 +338,18 @@ fn doc(mode: &str, policy: Policy) -> (DocRenderer, TempPdf) {
 }
 
 fn request() -> TileRequest {
-    TileRequest { page: 0, rect: TileRect { x: 0, y: 0, width: 512, height: 512 }, scale: 2.0, stride: 2048, generation: 1 }
+    TileRequest {
+        page: 0,
+        rect: TileRect {
+            x: 0,
+            y: 0,
+            width: 512,
+            height: 512,
+        },
+        scale: 2.0,
+        stride: 2048,
+        generation: 1,
+    }
 }
 
 fn surface() -> SharedMemory {
@@ -242,7 +362,16 @@ fn tile_failure(mode: &str) -> RenderFailure {
 }
 
 fn is_rejected(failure: RenderFailure) -> bool {
-    matches!(failure, RenderFailure::PageFailed { reason: KillReason::Rejected(_), .. } | RenderFailure::PageReadFailed { reason: KillReason::Rejected(_), .. })
+    matches!(
+        failure,
+        RenderFailure::PageFailed {
+            reason: KillReason::Rejected(_),
+            ..
+        } | RenderFailure::PageReadFailed {
+            reason: KillReason::Rejected(_),
+            ..
+        }
+    )
 }
 
 /// Failure: the stand-in itself is broken, so every rejection below proves nothing. A well-behaved fake must pass.
@@ -290,7 +419,13 @@ fn bad_page_sizes_are_rejected() {
 /// Failure: a text reply with bad lengths or values reaches the normaliser, or claims a hidden-text check that didn't run.
 #[test]
 fn bad_text_is_rejected() {
-    for mode in ["text_wrong_page", "text_nan_box", "text_lies_about_check", "text_short_frame", "text_bad_scalar"] {
+    for mode in [
+        "text_wrong_page",
+        "text_nan_box",
+        "text_lies_about_check",
+        "text_short_frame",
+        "text_bad_scalar",
+    ] {
         let (mut doc, _file) = doc(mode, policy());
         let failure = doc.page_characters(0, false, false).unwrap_err();
         assert!(is_rejected(failure), "{mode}: {failure:?}");
@@ -301,10 +436,22 @@ fn bad_text_is_rejected() {
 /// the deadline ends it.
 #[test]
 fn a_claimed_frame_costs_nothing_until_it_arrives() {
-    let (mut doc, _file) = doc("huge_text_claim", Policy { page_deadline: Duration::from_millis(300), ..Policy::default() });
+    let (mut doc, _file) = doc(
+        "huge_text_claim",
+        Policy {
+            page_deadline: Duration::from_millis(300),
+            ..Policy::default()
+        },
+    );
     let before = recto_platform::footprint_bytes().unwrap_or(0);
     let failure = doc.render_tile(&request(), &surface()).unwrap_err();
-    assert_eq!(failure, RenderFailure::PageFailed { page: 0, reason: KillReason::Deadline });
+    assert_eq!(
+        failure,
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::Deadline
+        }
+    );
     let after = recto_platform::footprint_bytes().unwrap_or(0);
     assert!(after.saturating_sub(before) < 32 * 1024 * 1024, "grew from {before} to {after}");
 }
@@ -312,8 +459,20 @@ fn a_claimed_frame_costs_nothing_until_it_arrives() {
 /// Failure: a worker stuck in a page holds the document for ever. Past the deadline it's killed, and the page is marked.
 #[test]
 fn a_page_that_never_finishes_is_killed_at_the_deadline() {
-    let (mut doc, _file) = doc("silent", Policy { page_deadline: Duration::from_millis(100), ..Policy::default() });
-    assert_eq!(doc.render_tile(&request(), &surface()).unwrap_err(), RenderFailure::PageFailed { page: 0, reason: KillReason::Deadline });
+    let (mut doc, _file) = doc(
+        "silent",
+        Policy {
+            page_deadline: Duration::from_millis(100),
+            ..Policy::default()
+        },
+    );
+    assert_eq!(
+        doc.render_tile(&request(), &surface()).unwrap_err(),
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::Deadline
+        }
+    );
     assert_eq!(doc.stats().deadline_kills, 1);
     assert!(!doc.has_worker());
 }
@@ -331,7 +490,11 @@ fn with_mark(mode: &str, file: &TempPdf) -> (ServiceConfig, std::path::PathBuf) 
 fn a_worker_that_ignores_cancel_is_killed_after_the_grace() {
     let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
     let (config, mark) = with_mark("ignore_cancel", &file);
-    let policy = Policy { page_deadline: Duration::from_secs(300), cancel_grace: Duration::from_millis(50), ..Policy::default() };
+    let policy = Policy {
+        page_deadline: Duration::from_secs(300),
+        cancel_grace: Duration::from_millis(50),
+        ..Policy::default()
+    };
     let mut doc = DocRenderer::new(&file.0, None, config, policy).unwrap();
     let cancel = doc.cancel_handle();
     let watched = mark.clone();
@@ -352,7 +515,16 @@ fn a_worker_that_ignores_cancel_is_killed_after_the_grace() {
 fn a_tile_cancelled_while_finishing_never_reads_as_done() {
     let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
     let (config, mark) = with_mark("done_after_cancel", &file);
-    let mut doc = DocRenderer::new(&file.0, None, config, Policy { cancel_grace: Duration::from_secs(60), ..policy() }).unwrap();
+    let mut doc = DocRenderer::new(
+        &file.0,
+        None,
+        config,
+        Policy {
+            cancel_grace: Duration::from_secs(60),
+            ..policy()
+        },
+    )
+    .unwrap();
     let cancel = doc.cancel_handle();
     let watched = mark.clone();
     let canceller = std::thread::spawn(move || {
@@ -381,7 +553,18 @@ fn a_failure_for_another_job_is_rejected() {
 }
 
 fn region_request() -> TileRequest {
-    TileRequest { page: 0, rect: TileRect { x: 0, y: 512, width: 1024, height: 1024 }, scale: 2.0, stride: 4096, generation: 1 }
+    TileRequest {
+        page: 0,
+        rect: TileRect {
+            x: 0,
+            y: 512,
+            width: 1024,
+            height: 1024,
+        },
+        scale: 2.0,
+        stride: 4096,
+        generation: 1,
+    }
 }
 
 fn region_surface() -> SharedMemory {
@@ -391,7 +574,13 @@ fn region_surface() -> SharedMemory {
 /// Failure: the host believes a region reply with the wrong number of tiles or the wrong shape, and hands tiles out of the wrong place or runs off the list of kinds.
 #[test]
 fn bad_region_replies_are_rejected_and_the_worker_is_killed() {
-    for mode in ["region_short", "region_long", "region_wrong_size", "region_answered_as_a_tile", "region_garbled"] {
+    for mode in [
+        "region_short",
+        "region_long",
+        "region_wrong_size",
+        "region_answered_as_a_tile",
+        "region_garbled",
+    ] {
         let (mut doc, _file) = doc(mode, policy());
         let failure = doc.render_region(&region_request(), 512, &region_surface()).unwrap_err();
         assert!(is_rejected(failure), "{mode}: {failure:?}");
@@ -403,7 +592,9 @@ fn bad_region_replies_are_rejected_and_the_worker_is_killed() {
 #[test]
 fn a_good_region_reply_is_accepted() {
     let (mut doc, _file) = doc("good", policy());
-    let TileResult::Done(tile) = doc.render_region(&region_request(), 512, &region_surface()).unwrap() else { panic!() };
+    let TileResult::Done(tile) = doc.render_region(&region_request(), 512, &region_surface()).unwrap() else {
+        panic!()
+    };
     assert_eq!(tile.region_kinds, vec![TileKind::Grey; 4]);
 }
 
@@ -412,7 +603,11 @@ fn a_good_region_reply_is_accepted() {
 fn a_region_that_ignores_cancel_is_killed_after_the_grace() {
     let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
     let (config, mark) = with_mark("ignore_cancel", &file);
-    let policy = Policy { page_deadline: Duration::from_secs(300), cancel_grace: Duration::from_millis(50), ..Policy::default() };
+    let policy = Policy {
+        page_deadline: Duration::from_secs(300),
+        cancel_grace: Duration::from_millis(50),
+        ..Policy::default()
+    };
     let mut doc = DocRenderer::new(&file.0, None, config, policy).unwrap();
     let cancel = doc.cancel_handle();
     let watched = mark.clone();
@@ -431,7 +626,16 @@ fn a_region_that_ignores_cancel_is_killed_after_the_grace() {
 fn a_region_cancelled_while_finishing_never_reads_as_done() {
     let file = TempPdf::new("stand-in.pdf", b"%PDF-1.7\n");
     let (config, mark) = with_mark("done_after_cancel", &file);
-    let mut doc = DocRenderer::new(&file.0, None, config, Policy { cancel_grace: Duration::from_secs(60), ..policy() }).unwrap();
+    let mut doc = DocRenderer::new(
+        &file.0,
+        None,
+        config,
+        Policy {
+            cancel_grace: Duration::from_secs(60),
+            ..policy()
+        },
+    )
+    .unwrap();
     let cancel = doc.cancel_handle();
     let watched = mark.clone();
     let canceller = std::thread::spawn(move || {
@@ -447,7 +651,14 @@ fn a_region_cancelled_while_finishing_never_reads_as_done() {
 /// Failure: a compromised worker ignores its idle time and keeps its memory for ever, since nobody looks between jobs. Nothing calls the document here.
 #[test]
 fn a_worker_that_outstays_its_idle_time_is_killed_with_nobody_asking() {
-    let (mut doc, _file) = doc("good", Policy { idle_exit: Duration::from_millis(50), idle_grace: Duration::from_millis(50), ..policy() });
+    let (mut doc, _file) = doc(
+        "good",
+        Policy {
+            idle_exit: Duration::from_millis(50),
+            idle_grace: Duration::from_millis(50),
+            ..policy()
+        },
+    );
     assert!(matches!(doc.render_tile(&request(), &surface()).unwrap(), TileResult::Done(_)));
     let pid = doc.worker_pid().unwrap();
     wait_until("the reaper to end it", || isolate::process_memory(pid).is_none());
@@ -466,7 +677,10 @@ fn text_comes_back_unchecked_when_the_check_stops_the_worker() {
     assert!(!again.hidden_checked);
     assert_eq!(doc.stats().crashes, 1, "the check was retried on a page known to stop it");
     assert_eq!(doc.stats().spawns, spawns);
-    assert!(matches!(doc.render_tile(&request(), &surface()), Ok(TileResult::Done(_))), "a check that failed doesn't stop the page being drawn");
+    assert!(
+        matches!(doc.render_tile(&request(), &surface()), Ok(TileResult::Done(_))),
+        "a check that failed doesn't stop the page being drawn"
+    );
 }
 
 /// Failure: a file that stops every worker while opening starts a new one on every call, and the error blames "page 1", which isn't what happened.
@@ -475,7 +689,15 @@ fn a_failure_at_open_is_remembered_and_doesnt_blame_a_page() {
     for mode in ["open_lies", "open_failed_for_a_job", "open_too_many_pages"] {
         let (mut doc, _file) = doc(mode, policy());
         let first = doc.page_count().unwrap_err();
-        assert!(matches!(first, RenderFailure::OpenFailed { reason: KillReason::Rejected(_) }), "{mode}: {first:?}");
+        assert!(
+            matches!(
+                first,
+                RenderFailure::OpenFailed {
+                    reason: KillReason::Rejected(_)
+                }
+            ),
+            "{mode}: {first:?}"
+        );
         assert!(!first.message().contains("Page"), "{mode}: {}", first.message());
         assert_eq!(doc.stats().rejections, 1, "{mode}");
         assert_eq!(doc.render_tile(&request(), &surface()).unwrap_err(), first, "{mode}");
@@ -490,9 +712,20 @@ fn a_failure_at_open_is_remembered_and_doesnt_blame_a_page() {
 /// Failure: a file that eats memory while opening reads as a bad page, and is opened again on every call.
 #[test]
 fn a_memory_kill_at_open_says_so_and_stays_remembered() {
-    let (mut doc, _file) = doc("open_leak", Policy { memory_limit_bytes: 32 * 1024 * 1024, ..policy() });
+    let (mut doc, _file) = doc(
+        "open_leak",
+        Policy {
+            memory_limit_bytes: 32 * 1024 * 1024,
+            ..policy()
+        },
+    );
     let failure = doc.page_count().unwrap_err();
-    assert_eq!(failure, RenderFailure::OpenFailed { reason: KillReason::MemoryLimit });
+    assert_eq!(
+        failure,
+        RenderFailure::OpenFailed {
+            reason: KillReason::MemoryLimit
+        }
+    );
     assert_eq!(failure.code(), "file_too_large_to_open");
     assert_eq!(doc.stats().memory_kills, 1);
     assert_eq!(doc.page_count().unwrap_err(), failure);
@@ -514,19 +747,48 @@ fn a_refusal_at_open_is_remembered_too() {
 fn a_worker_that_grows_is_killed_at_the_limit_from_outside() {
     let (limit, heavy) = (32 * 1024 * 1024, 64 * 1024 * 1024);
     // A long deadline, so only memory can stop it, however slow this machine is.
-    let (mut doc, _file) = doc("leak", Policy { memory_limit_bytes: limit, heavy_limit_bytes: heavy, heavy_min_free_percent: 0, page_deadline: Duration::from_secs(300), ..policy() });
-    assert_eq!(doc.render_tile(&request(), &surface()).unwrap_err(), RenderFailure::PageFailed { page: 0, reason: KillReason::MemoryLimit });
+    let (mut doc, _file) = doc(
+        "leak",
+        Policy {
+            memory_limit_bytes: limit,
+            heavy_limit_bytes: heavy,
+            heavy_min_free_percent: 0,
+            page_deadline: Duration::from_secs(300),
+            ..policy()
+        },
+    );
+    assert_eq!(
+        doc.render_tile(&request(), &surface()).unwrap_err(),
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::MemoryLimit
+        }
+    );
     let stats = doc.stats();
     assert_eq!(stats.memory_kills, 3, "the normal limit, the larger one, and the lower-resolution try");
-    assert!(stats.peak_footprint_bytes > heavy, "killed before it reached the limit: {}", stats.peak_footprint_bytes);
+    assert!(
+        stats.peak_footprint_bytes > heavy,
+        "killed before it reached the limit: {}",
+        stats.peak_footprint_bytes
+    );
     // How far past depends on this machine's speed and load, so this only says it was stopped at all, not by how much.
-    assert!(stats.peak_footprint_bytes < 4 * 1024 * 1024 * 1024, "nothing stopped it: {}", stats.peak_footprint_bytes);
+    assert!(
+        stats.peak_footprint_bytes < 4 * 1024 * 1024 * 1024,
+        "nothing stopped it: {}",
+        stats.peak_footprint_bytes
+    );
 }
 
 /// Failure: retirement depends on the worker reporting its own size, so a compromised one never retires. It's measured from outside.
 #[test]
 fn retirement_is_measured_from_outside() {
-    let (mut doc, _file) = doc("bloat_then_answer", Policy { retire_bytes: 16 * 1024 * 1024, ..policy() });
+    let (mut doc, _file) = doc(
+        "bloat_then_answer",
+        Policy {
+            retire_bytes: 16 * 1024 * 1024,
+            ..policy()
+        },
+    );
     assert!(matches!(doc.render_tile(&request(), &surface()).unwrap(), TileResult::Done(_)));
     let bloated = doc.worker_pid();
     let next_page = TileRequest { page: 1, ..request() };
@@ -543,12 +805,24 @@ fn a_crash_gets_one_retry_in_a_fresh_worker_only_if_the_worker_had_history() {
     assert!(matches!(doc.render_tile(&request(), &surface()).unwrap(), TileResult::Done(_)));
     let spawns = doc.stats().spawns;
     let page_one = TileRequest { page: 1, ..request() };
-    assert_eq!(doc.render_tile(&page_one, &surface()).unwrap_err(), RenderFailure::PageFailed { page: 1, reason: KillReason::Crashed });
+    assert_eq!(
+        doc.render_tile(&page_one, &surface()).unwrap_err(),
+        RenderFailure::PageFailed {
+            page: 1,
+            reason: KillReason::Crashed
+        }
+    );
     assert_eq!(doc.stats().crashes, 2, "the old worker, then the fresh one");
     assert_eq!(doc.stats().spawns, spawns + 1);
     // A crash in a fresh worker isn't retried.
     let (mut fresh, _file) = self::doc("crash", policy());
-    assert_eq!(fresh.render_tile(&request(), &surface()).unwrap_err(), RenderFailure::PageFailed { page: 0, reason: KillReason::Crashed });
+    assert_eq!(
+        fresh.render_tile(&request(), &surface()).unwrap_err(),
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::Crashed
+        }
+    );
     assert_eq!(fresh.stats().crashes, 1);
 }
 
@@ -556,7 +830,13 @@ fn a_crash_gets_one_retry_in_a_fresh_worker_only_if_the_worker_had_history() {
 #[test]
 fn claiming_to_be_idle_cant_loop_for_ever() {
     let failure = tile_failure("exit_zero");
-    assert_eq!(failure, RenderFailure::PageFailed { page: 0, reason: KillReason::Crashed });
+    assert_eq!(
+        failure,
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::Crashed
+        }
+    );
 }
 
 /// Failure: a reply arriving a byte at a time is treated as a bad frame, though it's only slow.
@@ -577,7 +857,13 @@ fn a_worker_that_wont_start_properly_is_refused() {
 /// Failure: a worker that never says hello hangs its caller for ever.
 #[test]
 fn a_worker_that_never_says_hello_is_given_up_on() {
-    let (mut doc, _file) = doc("hang_before_hello", Policy { start_timeout: Duration::from_millis(100), ..policy() });
+    let (mut doc, _file) = doc(
+        "hang_before_hello",
+        Policy {
+            start_timeout: Duration::from_millis(100),
+            ..policy()
+        },
+    );
     assert_eq!(doc.page_count().unwrap_err(), RenderFailure::Unavailable);
     assert!(!doc.has_worker());
     assert_eq!(doc.stats().too_busy, 1, "no file has reached it, so that's the Mac being busy");
@@ -587,11 +873,23 @@ fn a_worker_that_never_says_hello_is_given_up_on() {
 #[test]
 fn a_worker_too_busy_to_open_is_told_from_a_file_too_slow_to_open() {
     // Long enough that what it used getting this far, which a loaded Mac makes more of, stays well under half.
-    let (mut asleep, _file) = doc("sleep_on_open", Policy { page_deadline: Duration::from_secs(1), ..policy() });
+    let (mut asleep, _file) = doc(
+        "sleep_on_open",
+        Policy {
+            page_deadline: Duration::from_secs(1),
+            ..policy()
+        },
+    );
     assert_eq!(asleep.page_count().unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
     assert_eq!(asleep.stats().too_busy, 1);
     // On every thread it can: between them they have over half of this in processor time, even on a Mac with a share of a core for each.
-    let (mut spins, _file) = doc("spin_on_open", Policy { page_deadline: Duration::from_millis(400), ..policy() });
+    let (mut spins, _file) = doc(
+        "spin_on_open",
+        Policy {
+            page_deadline: Duration::from_millis(400),
+            ..policy()
+        },
+    );
     assert_eq!(spins.page_count().unwrap_err(), RenderFailure::OpenFailed { reason: KillReason::Deadline });
     assert_eq!(spins.stats().too_busy, 0, "it had the processor, so that's the file");
 }

@@ -73,7 +73,12 @@ impl Run<'_> {
     }
 
     fn finish_with(&self, kind: OutcomeKind, why: &str) {
-        let outcome = Outcome { kind, from: self.plan.from.clone(), to: self.plan.to.clone(), why: why.to_owned() };
+        let outcome = Outcome {
+            kind,
+            from: self.plan.from.clone(),
+            to: self.plan.to.clone(),
+            why: why.to_owned(),
+        };
         if outcome.write(&self.files.outcome()).is_err() {
             self.say("installer: the outcome couldn't be written");
         }
@@ -181,7 +186,9 @@ impl Run<'_> {
 
     /// Where the old app is, if it's anywhere: where it's kept, or still in the swap's other half if keeping it didn't work. Only ever the version this plan came from.
     fn old_app(&self) -> Option<PathBuf> {
-        [self.plan.previous_app(), self.plan.new_app()].into_iter().find(|path| crate::stage::app_version(path).as_deref() == Some(self.plan.from.as_str()))
+        [self.plan.previous_app(), self.plan.new_app()]
+            .into_iter()
+            .find(|path| crate::stage::app_version(path).as_deref() == Some(self.plan.from.as_str()))
     }
 
     /// Puts things back as they were: the old record, the old app, and opens it. With no old app it can only say so, and whatever's there stays, as it's all there is.
@@ -269,7 +276,10 @@ pub fn open_arguments(plan: &Plan, test: Option<&crate::plan::TestLaunch>) -> Ve
 /// Runs an install. Takes the plan, as the app left it. Nothing's touched, not even what this run's files are called, without the lock and a plan that's its own.
 #[must_use]
 pub fn run(plan: &Plan) -> Ended {
-    let run = Run { plan, files: Files::in_state(&plan.root) };
+    let run = Run {
+        plan,
+        files: Files::in_state(&plan.root),
+    };
     let files = &run.files;
     if !crate::rules::is_newer(&plan.to, &plan.from) {
         run.say("installer: that isn't a newer version, so nothing was replaced");
@@ -288,7 +298,13 @@ pub fn run(plan: &Plan) -> Ended {
         return Ended::NotInstalled;
     }
     let _ = std::fs::write(files.helper_pid(), std::process::id().to_string());
-    run.say(&format!("installer: {} to {}, waiting for process {}, to reopen {}", plan.from, plan.to, plan.pid, if plan.background { "in the background" } else { "in front" }));
+    run.say(&format!(
+        "installer: {} to {}, waiting for process {}, to reopen {}",
+        plan.from,
+        plan.to,
+        plan.pid,
+        if plan.background { "in the background" } else { "in front" }
+    ));
     match run.wait_for_old_app() {
         OldApp::Gone => {}
         OldApp::Stayed => {
@@ -360,7 +376,14 @@ pub fn run(plan: &Plan) -> Ended {
     if let Err(why) = run.new_app_started() {
         return run.go_back(why);
     }
-    run.say(&format!("installer: {} started. Old app gone {} ms after the quit, the record's copy and the last look {} ms, swapped {} ms after that, up {} ms after that", plan.to, old_gone.saturating_sub(plan.quit_at_ms), verified.saturating_sub(old_gone), swapped.saturating_sub(verified), crate::wall_ms().saturating_sub(swapped)));
+    run.say(&format!(
+        "installer: {} started. Old app gone {} ms after the quit, the record's copy and the last look {} ms, swapped {} ms after that, up {} ms after that",
+        plan.to,
+        old_gone.saturating_sub(plan.quit_at_ms),
+        verified.saturating_sub(old_gone),
+        swapped.saturating_sub(verified),
+        crate::wall_ms().saturating_sub(swapped)
+    ));
     run.step("started");
     if !new_app_holds_the_old_one(plan) {
         let _ = std::fs::remove_dir_all(plan.beside.join("new"));
@@ -378,7 +401,10 @@ fn new_app_holds_the_old_one(plan: &Plan) -> bool {
 /// Goes back to the kept app with no install before it: what a launch does when the new version keeps failing with no installer around to see it.
 #[must_use]
 pub fn run_back(plan: &Plan) -> Ended {
-    let run = Run { plan, files: Files::in_state(&plan.root) };
+    let run = Run {
+        plan,
+        files: Files::in_state(&plan.root),
+    };
     let Some(_lock) = run.take_lock() else {
         run.say("installer: another installer's at work, so this one stands down");
         return Ended::NotInstalled;
@@ -437,10 +463,11 @@ pub fn copy_record(session: &Path, before: &Path, after_each: &mut dyn FnMut(&st
     let mut copied = 0u64;
     for (from, to) in files {
         let made = to.parent().is_some_and(|folder| std::fs::create_dir_all(folder).is_ok());
-        let fine = made && (local::clone_file(&from, &to).is_ok() || {
-            copied = copied.saturating_add(std::fs::metadata(&from).map_or(u64::MAX, |meta| meta.len()));
-            copied <= MAX_REAL_COPY_BYTES && std::fs::copy(&from, &to).is_ok()
-        });
+        let fine = made
+            && (local::clone_file(&from, &to).is_ok() || {
+                copied = copied.saturating_add(std::fs::metadata(&from).map_or(u64::MAX, |meta| meta.len()));
+                copied <= MAX_REAL_COPY_BYTES && std::fs::copy(&from, &to).is_ok()
+            });
         if !fine {
             let _ = std::fs::remove_dir_all(before);
             return false;
@@ -504,22 +531,53 @@ mod tests {
     use super::*;
 
     fn plan() -> Plan {
-        Plan { id: "1-1".into(), cdhash: String::new(), team_required: false, from: "0.1.0".into(), to: "0.2.0".into(), pid: 1, app: "/Apps/a b/RectoPDF.app".into(), beside: "/Apps/a b/.RectoPDF-update".into(), root: "/s".into(), quit_at_ms: 0, background: false, quit_limit_ms: 1, start_limit_ms: 1, test: None }
+        Plan {
+            id: "1-1".into(),
+            cdhash: String::new(),
+            team_required: false,
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            pid: 1,
+            app: "/Apps/a b/RectoPDF.app".into(),
+            beside: "/Apps/a b/.RectoPDF-update".into(),
+            root: "/s".into(),
+            quit_at_ms: 0,
+            background: false,
+            quit_limit_ms: 1,
+            start_limit_ms: 1,
+            test: None,
+        }
     }
 
     /// Failure: an app in the background comes back taking the focus from whatever the user's doing, or a frontmost one comes back behind it. The owner's rule: "an app in the background reopens without taking focus". And a path with spaces and quotes stays one argument.
     #[test]
     fn the_app_comes_back_as_it_was_frontmost_or_not() {
         assert_eq!(open_arguments(&plan(), None), vec!["/Apps/a b/RectoPDF.app".to_string()], "frontmost");
-        assert_eq!(open_arguments(&Plan { background: true, ..plan() }, None), vec!["-g".to_string(), "/Apps/a b/RectoPDF.app".to_string()], "in the background");
-        let test = crate::plan::TestLaunch { args: vec!["--qa".into()], env: vec![("A".into(), "b c".into())], direct: false };
-        assert_eq!(open_arguments(&Plan { background: true, ..plan() }, Some(&test)), ["-g", "--env", "A=b c", "/Apps/a b/RectoPDF.app", "--args", "--qa"].map(str::to_string).to_vec());
+        assert_eq!(
+            open_arguments(&Plan { background: true, ..plan() }, None),
+            vec!["-g".to_string(), "/Apps/a b/RectoPDF.app".to_string()],
+            "in the background"
+        );
+        let test = crate::plan::TestLaunch {
+            args: vec!["--qa".into()],
+            env: vec![("A".into(), "b c".into())],
+            direct: false,
+        };
+        assert_eq!(
+            open_arguments(&Plan { background: true, ..plan() }, Some(&test)),
+            ["-g", "--env", "A=b c", "/Apps/a b/RectoPDF.app", "--args", "--qa"]
+                .map(str::to_string)
+                .to_vec()
+        );
     }
 
     /// Failure: the copy of the record misses part of it, brings back a history of a closed PDF it never took, or leaves behind what a broken new version added.
     #[test]
     fn a_record_comes_back_as_it_was() {
-        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-install-{}-record", std::process::id()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-install-{}-record", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (session, before) = (dir.join("session"), dir.join("before"));
         std::fs::create_dir_all(session.join("journals")).unwrap();
@@ -537,7 +595,11 @@ mod tests {
         assert_eq!(std::fs::read_to_string(session.join("record.a.json")).unwrap(), "good a");
         assert_eq!(std::fs::read_to_string(session.join("journals/journal-1.log")).unwrap(), "good journal");
         assert!(!session.join("journals/journal-2.log").exists());
-        assert_eq!(std::fs::read_to_string(session.join("journals/closed-1.log")).unwrap(), "a closed one", "not taken, and not touched");
+        assert_eq!(
+            std::fs::read_to_string(session.join("journals/closed-1.log")).unwrap(),
+            "a closed one",
+            "not taken, and not touched"
+        );
         // A copy that isn't whole changes nothing.
         std::fs::remove_file(before.join(".whole")).unwrap();
         std::fs::write(session.join("record.a.json"), "newer").unwrap();

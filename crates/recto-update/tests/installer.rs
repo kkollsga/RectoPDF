@@ -28,14 +28,23 @@ fn bundle(at: &Path, version: &str) -> PathBuf {
 }
 
 fn sign(app: &Path) {
-    let output = Command::new("/usr/bin/codesign").args(["--force", "--deep", "--sign", "-"]).arg(app).output().unwrap();
+    let output = Command::new("/usr/bin/codesign")
+        .args(["--force", "--deep", "--sign", "-"])
+        .arg(app)
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
 /// What the app would have put in the plan, having verified this bundle.
 fn cdhash_of(app: &Path) -> String {
     let output = Command::new("/usr/bin/codesign").args(["-d", "-vvv"]).arg(app).output().unwrap();
-    String::from_utf8_lossy(&output.stderr).lines().find_map(|line| line.strip_prefix("CDHash=")).expect("signed").trim().to_owned()
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .find_map(|line| line.strip_prefix("CDHash="))
+        .expect("signed")
+        .trim()
+        .to_owned()
 }
 
 /// An installed old version, a staged new one, a record, and a stand-in for the running process.
@@ -48,7 +57,10 @@ struct Bed {
 
 impl Bed {
     fn new(name: &str, new_app_does: &str) -> Self {
-        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-installer-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-installer-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let root = dir.join("state");
         local::ensure_private_dir(&root).unwrap();
@@ -64,8 +76,33 @@ impl Bed {
         std::fs::create_dir_all(new_app_in(&beside).parent().unwrap()).unwrap();
         bundle(new_app_in(&beside).parent().unwrap(), "0.2.0");
         let cdhash = cdhash_of(&new_app_in(&beside));
-        let test = TestLaunch { args: vec!["test-app".into(), "0.2.0".into(), new_app_does.into(), files.work.display().to_string(), files.session().display().to_string()], env: Vec::new(), direct: true };
-        let plan = Plan { id: "first".into(), cdhash, team_required: false, from: "0.1.0".into(), to: "0.2.0".into(), pid: 0, app: app.clone(), beside, root, quit_at_ms: recto_update::wall_ms(), background: true, quit_limit_ms: 30_000, start_limit_ms: 60_000, test: Some(test) };
+        let test = TestLaunch {
+            args: vec![
+                "test-app".into(),
+                "0.2.0".into(),
+                new_app_does.into(),
+                files.work.display().to_string(),
+                files.session().display().to_string(),
+            ],
+            env: Vec::new(),
+            direct: true,
+        };
+        let plan = Plan {
+            id: "first".into(),
+            cdhash,
+            team_required: false,
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            pid: 0,
+            app: app.clone(),
+            beside,
+            root,
+            quit_at_ms: recto_update::wall_ms(),
+            background: true,
+            quit_limit_ms: 30_000,
+            start_limit_ms: 60_000,
+            test: Some(test),
+        };
         Self { dir, files, app, plan }
     }
 
@@ -112,8 +149,16 @@ impl Bed {
 
     /// A launch of whichever version's in place, as it would say what became of things.
     fn launch(&self) -> (Status, AtLaunch) {
-        let updater = Updater::new(&self.files.root, resolve(false, true, Some("http://127.0.0.1:9".into()), None), Arc::new(NoHost));
-        let at = updater.launched(Facts { version: self.installed(), app: self.app.clone(), system: "15.0".into() });
+        let updater = Updater::new(
+            &self.files.root,
+            resolve(false, true, Some("http://127.0.0.1:9".into()), None),
+            Arc::new(NoHost),
+        );
+        let at = updater.launched(Facts {
+            version: self.installed(),
+            app: self.app.clone(),
+            system: "15.0".into(),
+        });
         let code = updater.report()["status"].as_str().unwrap().to_owned();
         (status_named(&code, &updater), at)
     }
@@ -122,8 +167,14 @@ impl Bed {
 fn status_named(code: &str, updater: &Updater) -> Status {
     match code {
         "updated" => Status::Updated(updater.report()["version"].as_str().unwrap().to_owned()),
-        "went_back" => Status::WentBack { version: String::new(), back_on: String::new() },
-        "failed" => Status::Failed { version: String::new(), why: String::new() },
+        "went_back" => Status::WentBack {
+            version: String::new(),
+            back_on: String::new(),
+        },
+        "failed" => Status::Failed {
+            version: String::new(),
+            why: String::new(),
+        },
         _ => Status::Idle,
     }
 }
@@ -185,9 +236,15 @@ fn it_waits_for_the_old_process_then_swaps_and_keeps_the_old_app() {
     assert_eq!(bed.kept().as_deref(), Some("0.1.0"), "the previous app is kept");
     assert!(bed.ran("0.2.0"));
     assert_eq!(bed.record(), "the state");
-    assert!(!bed.files.plan().exists() && !new_app_in(&bed.plan.beside).exists(), "it tidies up after itself");
+    assert!(
+        !bed.files.plan().exists() && !new_app_in(&bed.plan.beside).exists(),
+        "it tidies up after itself"
+    );
     assert!(bed.files.before().join(".whole").exists(), "and keeps the record from before, for a while");
-    assert!(std::fs::read_to_string(&bed.files.log).unwrap().contains("0.2.0 started"), "it says how it went");
+    assert!(
+        std::fs::read_to_string(&bed.files.log).unwrap().contains("0.2.0 started"),
+        "it says how it went"
+    );
 }
 
 /// Failure: a new version that won't start leaves the user with nothing, or with its damage to the record. It goes back to the previous app with the same state, and says so at the next launch. Each of ending at once and hanging.
@@ -203,7 +260,10 @@ fn a_new_app_that_wont_start_goes_back_with_the_state_intact() {
         assert_eq!(bed.installed(), "0.1.0", "the previous app is back at the app's path");
         assert_eq!(bed.kept(), None, "and the one that failed isn't kept");
         assert_eq!(bed.record(), "the state", "what the new version did to the record is undone");
-        assert_eq!(std::fs::read_to_string(bed.files.session().join("journals/journal-1.log")).unwrap(), "the edits");
+        assert_eq!(
+            std::fs::read_to_string(bed.files.session().join("journals/journal-1.log")).unwrap(),
+            "the edits"
+        );
         assert_eq!(Outcome::read(&bed.files.outcome()).unwrap().kind, OutcomeKind::WentBack);
         wait_until("the old app to be opened", Duration::from_secs(20), || bed.ran("0.1.0"));
         let (status, at) = bed.launch();
@@ -215,7 +275,15 @@ fn a_new_app_that_wont_start_goes_back_with_the_state_intact() {
 /// Failure: an installer killed at some step leaves half an app, no app, or a damaged record, or the next launch can't make sense of what it left. **Every step of the way through, and of the way back:** after each, there's a whole app at the app's path, the record is whole, and a launch settles it.
 #[test]
 fn killed_at_any_step_it_leaves_a_whole_app_and_the_whole_state() {
-    for (step, expected, kept) in [("old_app_gone", "0.1.0", None), ("copying_record", "0.1.0", None), ("record_copied", "0.1.0", None), ("still_verified", "0.1.0", None), ("swapped", "0.2.0", None), ("old_app_kept", "0.2.0", Some("0.1.0")), ("opened", "0.2.0", Some("0.1.0"))] {
+    for (step, expected, kept) in [
+        ("old_app_gone", "0.1.0", None),
+        ("copying_record", "0.1.0", None),
+        ("record_copied", "0.1.0", None),
+        ("still_verified", "0.1.0", None),
+        ("swapped", "0.2.0", None),
+        ("old_app_kept", "0.2.0", Some("0.1.0")),
+        ("opened", "0.2.0", Some("0.1.0")),
+    ] {
         let mut bed = Bed::new(&format!("kill-{step}"), "ok");
         let ended = bed.run(Some(step));
         assert!(!ended.success(), "{step}: it was to die there");
@@ -226,7 +294,11 @@ fn killed_at_any_step_it_leaves_a_whole_app_and_the_whole_state() {
         assert_eq!(at, AtLaunch::GoOn, "{step}");
         if expected == "0.2.0" {
             assert_eq!(status, Status::Updated("0.2.0".into()), "{step}");
-            assert_eq!(bed.kept().as_deref(), Some("0.1.0"), "{step}: the launch keeps the old app, if the installer didn't get to");
+            assert_eq!(
+                bed.kept().as_deref(),
+                Some("0.1.0"),
+                "{step}: the launch keeps the old app, if the installer didn't get to"
+            );
             assert!(!new_app_in(&bed.plan.beside).exists(), "{step}");
         } else {
             assert!(matches!(status, Status::Failed { .. }), "{step}: {status:?}");
@@ -235,7 +307,13 @@ fn killed_at_any_step_it_leaves_a_whole_app_and_the_whole_state() {
         assert!(!bed.files.plan().exists(), "{step}: nothing's left to confuse the next one");
     }
     // The way back: the new version's failed, and the installer's killed putting things right.
-    for (step, expected, record) in [("going_back", "0.2.0", "damaged by the new version"), ("new_app_stopped", "0.2.0", "damaged by the new version"), ("record_restored", "0.2.0", "the state"), ("swapped_back", "0.1.0", "the state"), ("outcome_written", "0.1.0", "the state")] {
+    for (step, expected, record) in [
+        ("going_back", "0.2.0", "damaged by the new version"),
+        ("new_app_stopped", "0.2.0", "damaged by the new version"),
+        ("record_restored", "0.2.0", "the state"),
+        ("swapped_back", "0.1.0", "the state"),
+        ("outcome_written", "0.1.0", "the state"),
+    ] {
         let mut bed = Bed::new(&format!("back-{step}"), "exits");
         let ended = bed.run(Some(step));
         assert!(!ended.success(), "{step}");
@@ -254,7 +332,10 @@ fn killed_at_any_step_it_leaves_a_whole_app_and_the_whole_state() {
             // That one's still here, not having come up. It's said as the version it is, and going back's still there for the launch guard, from the record's copy too.
             assert_eq!(status, Status::Updated("0.2.0".into()), "{step}");
             assert_eq!(bed.kept().as_deref(), Some("0.1.0"), "{step}");
-            assert!(bed.files.before().join(".whole").exists(), "{step}: not cleared by a launch that hasn't come up");
+            assert!(
+                bed.files.before().join(".whole").exists(),
+                "{step}: not cleared by a launch that hasn't come up"
+            );
         }
     }
 }
@@ -274,12 +355,21 @@ fn killed_while_putting_the_record_back_it_can_still_finish() {
     plan.id = "second".into();
     plan.pid = gone.id();
     plan.write(&bed.files.plan()).unwrap();
-    let ended = Command::new(HELPER).arg("back").arg(bed.files.plan()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
+    let ended = Command::new(HELPER)
+        .arg("back")
+        .arg(bed.files.plan())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
     assert!(!ended.success());
     assert_eq!(bed.installed(), "0.1.0");
     assert_eq!(bed.record(), "the state");
     assert_eq!(std::fs::read_to_string(bed.files.session().join("record.b.json")).unwrap(), "the other slot");
-    assert_eq!(std::fs::read_to_string(bed.files.session().join("journals/journal-1.log")).unwrap(), "the edits");
+    assert_eq!(
+        std::fs::read_to_string(bed.files.session().join("journals/journal-1.log")).unwrap(),
+        "the edits"
+    );
 }
 
 /// Failure: **two installers at once destroy the record and an app,** which the review proved in 3 runs of 4: `session/` left empty, and one version deleted. Started together on one plan, a second just waits and finds there's nothing left to do. Run a few times, as what it depends on is timing.
@@ -289,16 +379,30 @@ fn two_installers_on_one_plan_do_it_once() {
         let mut bed = Bed::new(&format!("two-{attempt}"), "ok");
         let mut old = bed.old_process();
         let mut first = bed.start(old.id(), None);
-        let mut second = Command::new(HELPER).arg("install").arg(bed.files.plan()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let mut second = Command::new(HELPER)
+            .arg("install")
+            .arg(bed.files.plan())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
         std::thread::sleep(Duration::from_millis(200));
         old.kill().unwrap();
         old.wait().unwrap();
         let (one, two) = (first.wait().unwrap(), second.wait().unwrap());
-        assert!(one.success() != two.success(), "{attempt}: one did it, and one stood down: {one:?} {two:?}\n{}", std::fs::read_to_string(&bed.files.log).unwrap());
+        assert!(
+            one.success() != two.success(),
+            "{attempt}: one did it, and one stood down: {one:?} {two:?}\n{}",
+            std::fs::read_to_string(&bed.files.log).unwrap()
+        );
         assert_eq!(bed.installed(), "0.2.0", "{attempt}");
         assert_eq!(bed.kept().as_deref(), Some("0.1.0"), "{attempt}");
         assert_eq!(bed.record(), "the state", "{attempt}");
-        assert_eq!(std::fs::read_to_string(bed.files.session().join("journals/journal-1.log")).unwrap(), "the edits", "{attempt}");
+        assert_eq!(
+            std::fs::read_to_string(bed.files.session().join("journals/journal-1.log")).unwrap(),
+            "the edits",
+            "{attempt}"
+        );
     }
 }
 
@@ -306,7 +410,12 @@ fn two_installers_on_one_plan_do_it_once() {
 #[test]
 fn an_installer_waits_its_turn() {
     let mut bed = Bed::new("turn", "ok");
-    let holder = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(bed.files.installer_lock()).unwrap();
+    let holder = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(bed.files.installer_lock())
+        .unwrap();
     holder.try_lock().unwrap();
     let mut gone = Command::new("/usr/bin/true").spawn().unwrap();
     gone.wait().unwrap();
@@ -322,7 +431,12 @@ fn an_installer_waits_its_turn() {
 
     let mut bed = Bed::new("turn-never", "ok");
     bed.plan.quit_limit_ms = 200;
-    let holder = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(bed.files.installer_lock()).unwrap();
+    let holder = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(bed.files.installer_lock())
+        .unwrap();
     holder.try_lock().unwrap();
     assert!(!bed.run(None).success());
     assert_eq!(bed.installed(), "0.1.0");
@@ -344,7 +458,13 @@ fn an_installer_whose_plan_was_replaced_stands_down() {
     assert!(!first.wait().unwrap().success());
     assert_eq!(bed.installed(), "0.1.0", "and it touched nothing");
     assert_eq!(bed.record(), "the state");
-    let mut second = Command::new(HELPER).arg("install").arg(bed.files.plan()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let mut second = Command::new(HELPER)
+        .arg("install")
+        .arg(bed.files.plan())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(bed.installed(), "0.1.0", "the old app's still running");
     old.kill().unwrap();
@@ -362,7 +482,14 @@ fn what_it_swaps_in_is_what_was_verified() {
         std::fs::remove_dir_all(new_app_in(&bed.plan.beside)).unwrap();
         // Unsigned, says 9.9.9, and runs.
         let app = bundle(new_app_in(&bed.plan.beside).parent().unwrap(), "9.9.9");
-        assert!(Command::new("/usr/bin/codesign").arg("--remove-signature").arg(app.join("Contents/MacOS/RectoPDF")).status().unwrap().success());
+        assert!(
+            Command::new("/usr/bin/codesign")
+                .arg("--remove-signature")
+                .arg(app.join("Contents/MacOS/RectoPDF"))
+                .status()
+                .unwrap()
+                .success()
+        );
     };
     let changed_a_file = |bed: &Bed| {
         std::fs::write(new_app_in(&bed.plan.beside).join("Contents/MacOS/recto-updater"), "changed").unwrap();
@@ -374,7 +501,11 @@ fn what_it_swaps_in_is_what_was_verified() {
         sign(&app);
     };
     type Change<'a> = &'a dyn Fn(&Bed);
-    let cases: [(&str, Change<'_>); 3] = [("another", &swapped_for_another), ("changed", &changed_a_file), ("rebuilt", &another_good_build)];
+    let cases: [(&str, Change<'_>); 3] = [
+        ("another", &swapped_for_another),
+        ("changed", &changed_a_file),
+        ("rebuilt", &another_good_build),
+    ];
     for (name, change) in cases {
         let mut bed = Bed::new(&format!("pin-{name}"), "ok");
         change(&bed);
@@ -404,11 +535,27 @@ fn the_last_look_is_the_last_thing_before_the_swap() {
     gone.wait().unwrap();
     bed.plan.pid = gone.id();
     bed.plan.write(&bed.files.plan()).unwrap();
-    let mut installer = Command::new(HELPER).arg("install").arg(bed.files.plan()).env(recto_update::install::PAUSE_AT_ENV, "record_copied").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
-    wait_until("the installer to reach the copy of the record", Duration::from_secs(20), || bed.files.work.join("paused").exists());
+    let mut installer = Command::new(HELPER)
+        .arg("install")
+        .arg(bed.files.plan())
+        .env(recto_update::install::PAUSE_AT_ENV, "record_copied")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until("the installer to reach the copy of the record", Duration::from_secs(20), || {
+        bed.files.work.join("paused").exists()
+    });
     std::fs::remove_dir_all(new_app_in(&bed.plan.beside)).unwrap();
     let app = bundle(new_app_in(&bed.plan.beside).parent().unwrap(), "9.9.9");
-    assert!(Command::new("/usr/bin/codesign").arg("--remove-signature").arg(app.join("Contents/MacOS/RectoPDF")).status().unwrap().success());
+    assert!(
+        Command::new("/usr/bin/codesign")
+            .arg("--remove-signature")
+            .arg(app.join("Contents/MacOS/RectoPDF"))
+            .status()
+            .unwrap()
+            .success()
+    );
     std::fs::write(bed.files.work.join("go-on"), "").unwrap();
     assert!(!installer.wait().unwrap().success());
     assert_eq!(bed.installed(), "0.1.0", "{}", std::fs::read_to_string(&bed.files.log).unwrap());
@@ -455,7 +602,11 @@ fn a_swap_that_fails_says_so_and_stops() {
     wait_until("it to reopen", Duration::from_secs(20), || bed.ran("0.1.0"));
     assert_eq!(Outcome::read(&bed.files.outcome()).unwrap().why, "swap_failed");
     let updater = Updater::new(&bed.files.root, resolve(false, true, Some("http://127.0.0.1:9".into()), None), Arc::new(NoHost));
-    updater.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+    updater.launched(Facts {
+        version: "0.1.0".into(),
+        app: bed.app.clone(),
+        system: "15.0".into(),
+    });
     let report = updater.report();
     assert_eq!(report["status"], "failed");
     assert_eq!(report["failed_versions"][0], "0.2.0", "{report}");
@@ -485,7 +636,11 @@ fn when_keeping_it_failed_it_comes_back_from_where_it_is() {
     assert!(Command::new("/usr/bin/chflags").arg("nouchg").arg(&folder).status().unwrap().success());
     assert!(ended.success());
     assert_eq!(bed.installed(), "0.2.0");
-    assert_eq!(app_version(&new_app_in(&bed.plan.beside)).as_deref(), Some("0.1.0"), "the only way back isn't thrown away");
+    assert_eq!(
+        app_version(&new_app_in(&bed.plan.beside)).as_deref(),
+        Some("0.1.0"),
+        "the only way back isn't thrown away"
+    );
     bed.launch();
     assert_eq!(bed.kept().as_deref(), Some("0.1.0"), "the next launch keeps it");
 }
@@ -504,13 +659,23 @@ fn with_nothing_to_go_back_to_it_says_so() {
     plan.id = "back".into();
     plan.pid = gone.id();
     plan.write(&bed.files.plan()).unwrap();
-    let ended = Command::new(HELPER).arg("back").arg(bed.files.plan()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
+    let ended = Command::new(HELPER)
+        .arg("back")
+        .arg(bed.files.plan())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
     assert!(!ended.success());
     assert_eq!(bed.installed(), "0.2.0", "what's there is all there is");
     let outcome = Outcome::read(&bed.files.outcome()).unwrap();
     assert_eq!(outcome.kind, OutcomeKind::CouldntGoBack);
     let updater = Updater::new(&bed.files.root, resolve(false, true, Some("http://127.0.0.1:9".into()), None), Arc::new(NoHost));
-    updater.launched(Facts { version: "0.2.0".into(), app: bed.app.clone(), system: "15.0".into() });
+    updater.launched(Facts {
+        version: "0.2.0".into(),
+        app: bed.app.clone(),
+        system: "15.0".into(),
+    });
     let notice = updater.notice().unwrap().text;
     assert!(notice.contains("no earlier version") && !notice.contains("came back"), "{notice}");
 }
@@ -522,10 +687,23 @@ fn an_app_reopened_during_an_install_goes_on_as_normal() {
     let plan = Plan { pid: 1, ..bed.plan.clone() };
     plan.write(&bed.files.plan()).unwrap();
     // A real process of the installer's name, for the launch to find alive.
-    let mut helper = Command::new(HELPER).args(["test-app", "0.0.0", "hangs", bed.files.work.to_str().unwrap(), bed.dir.join("nowhere").to_str().unwrap()]).spawn().unwrap();
+    let mut helper = Command::new(HELPER)
+        .args([
+            "test-app",
+            "0.0.0",
+            "hangs",
+            bed.files.work.to_str().unwrap(),
+            bed.dir.join("nowhere").to_str().unwrap(),
+        ])
+        .spawn()
+        .unwrap();
     std::fs::write(bed.files.helper_pid(), helper.id().to_string()).unwrap();
     let updater = Updater::new(&bed.files.root, resolve(false, true, Some("http://127.0.0.1:9".into()), None), Arc::new(NoHost));
-    updater.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+    updater.launched(Facts {
+        version: "0.1.0".into(),
+        app: bed.app.clone(),
+        system: "15.0".into(),
+    });
     assert!(updater.menu_item().enabled);
     assert!(updater.next_wake().is_some(), "it still has a timer");
     assert_ne!(updater.report()["status"], "installing");
@@ -537,20 +715,48 @@ fn an_app_reopened_during_an_install_goes_on_as_normal() {
 /// Failure: a release with a zip the updater's reader won't take gets published, and nobody can update to it. `release-zip.sh` checks with this.
 #[test]
 fn the_reader_can_be_asked_about_a_zip() {
-    let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-installer-{}-checkzip", std::process::id()));
+    let dir = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("recto-installer-{}-checkzip", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let app = bundle(&dir, "0.2.0");
     let zip = dir.join("r.zip");
-    assert!(Command::new("/usr/bin/ditto").args(["-c", "-k", "--sequesterRsrc", "--keepParent"]).arg(&app).arg(&zip).status().unwrap().success());
+    assert!(
+        Command::new("/usr/bin/ditto")
+            .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
+            .arg(&app)
+            .arg(&zip)
+            .status()
+            .unwrap()
+            .success()
+    );
     let into = dir.join("out");
     std::fs::create_dir_all(&into).unwrap();
     assert!(Command::new(HELPER).arg("check-zip").arg(&zip).arg(&into).status().unwrap().success());
     assert_eq!(app_version(&into.join("RectoPDF.app")).as_deref(), Some("0.2.0"));
-    assert!(Command::new("/usr/bin/codesign").args(["--verify", "--deep", "--strict"]).arg(into.join("RectoPDF.app")).status().unwrap().success(), "and what comes out still verifies");
+    assert!(
+        Command::new("/usr/bin/codesign")
+            .args(["--verify", "--deep", "--strict"])
+            .arg(into.join("RectoPDF.app"))
+            .status()
+            .unwrap()
+            .success(),
+        "and what comes out still verifies"
+    );
     let junk = dir.join("junk.zip");
     std::fs::write(&junk, "not a zip").unwrap();
-    assert!(!Command::new(HELPER).arg("check-zip").arg(&junk).arg(&into).stderr(std::process::Stdio::null()).status().unwrap().success());
+    assert!(
+        !Command::new(HELPER)
+            .arg("check-zip")
+            .arg(&junk)
+            .arg(&into)
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -568,7 +774,13 @@ fn going_back_with_no_install_before_it_works() {
     plan.id = "guard".into();
     plan.pid = gone.id();
     plan.write(&bed.files.plan()).unwrap();
-    let ended = Command::new(HELPER).arg("back").arg(bed.files.plan()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap();
+    let ended = Command::new(HELPER)
+        .arg("back")
+        .arg(bed.files.plan())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
     assert!(!ended.success(), "it ends saying it went back");
     assert_eq!(bed.installed(), "0.1.0");
     assert_eq!(bed.record(), "the state");
@@ -610,8 +822,19 @@ fn a_plan_taken_back_stands_the_installer_down() {
 #[test]
 fn an_app_opened_again_in_the_gap_is_left_alone() {
     let mut bed = Bed::new("reopened", "ok");
-    let mut second = Command::new(bed.plan.executable()).args(["test-app", "0.1.0", "hangs", bed.files.work.to_str().unwrap(), bed.dir.join("nowhere").to_str().unwrap()]).spawn().unwrap();
-    wait_until("the second app", Duration::from_secs(5), || !local::processes_running(&bed.plan.executable()).is_empty());
+    let mut second = Command::new(bed.plan.executable())
+        .args([
+            "test-app",
+            "0.1.0",
+            "hangs",
+            bed.files.work.to_str().unwrap(),
+            bed.dir.join("nowhere").to_str().unwrap(),
+        ])
+        .spawn()
+        .unwrap();
+    wait_until("the second app", Duration::from_secs(5), || {
+        !local::processes_running(&bed.plan.executable()).is_empty()
+    });
     let ended = bed.run(None);
     assert!(!ended.success());
     assert_eq!(bed.installed(), "0.1.0");
@@ -626,12 +849,22 @@ fn an_app_opened_again_in_the_gap_is_left_alone() {
 fn a_damaged_plan_moves_nothing() {
     let bed = Bed::new("damaged", "ok");
     local::write_private_file(&bed.files.plan(), b"{\"from\":\"nonsense\"").unwrap();
-    let ended = Command::new(HELPER).arg("install").arg(bed.files.plan()).stderr(std::process::Stdio::null()).status().unwrap();
+    let ended = Command::new(HELPER)
+        .arg("install")
+        .arg(bed.files.plan())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
     assert_eq!(ended.code(), Some(2));
     assert_eq!(bed.installed(), "0.1.0");
     assert!(new_app_in(&bed.plan.beside).exists());
     // One that makes sense and is a downgrade doesn't get to move anything either.
-    let mut backwards = Plan { id: "backwards".into(), from: "0.2.0".into(), to: "0.1.0".into(), ..bed.plan.clone() };
+    let mut backwards = Plan {
+        id: "backwards".into(),
+        from: "0.2.0".into(),
+        to: "0.1.0".into(),
+        ..bed.plan.clone()
+    };
     backwards.pid = 1;
     backwards.write(&bed.files.plan()).unwrap();
     assert!(!Command::new(HELPER).arg("install").arg(bed.files.plan()).status().unwrap().success());

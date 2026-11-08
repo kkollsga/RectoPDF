@@ -1,0 +1,5 @@
+# One layout for every file, so two branches that each add a field to a struct literal or an argument to a long signature merge without
+# a conflict (guide §2.8, review V1). Wide enough that a diff still reads and prose comments stay as written: rustfmt leaves comments
+# alone unless the nightly-only `wrap_comments` is on, and it isn't. `use_small_heuristics` stays at its default, which scales the
+# widths at which a call, a struct literal or a chain goes one item per line from `max_width`.
+max_width = 160

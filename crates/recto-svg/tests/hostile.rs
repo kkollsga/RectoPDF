@@ -4,7 +4,22 @@ use recto_svg::verify::check_document;
 use recto_svg::{GenericFamily, GradientStop, ImageData, Matrix, Paint, PathStyle, PngChannels, Rgb, Seg, SegKind, Stroke, SvgWriter, TextStyle};
 
 /// Numbers that hostile input can reach us with, all finite or not.
-const AWKWARD: &[f32] = &[0.0, 1.0, -1.0, 0.5, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX, f32::MIN, f32::MIN_POSITIVE, 1e-30, 1e30, 3.25, -7.125];
+const AWKWARD: &[f32] = &[
+    0.0,
+    1.0,
+    -1.0,
+    0.5,
+    f32::NAN,
+    f32::INFINITY,
+    f32::NEG_INFINITY,
+    f32::MAX,
+    f32::MIN,
+    f32::MIN_POSITIVE,
+    1e-30,
+    1e30,
+    3.25,
+    -7.125,
+];
 
 fn next(seed: &mut u64) -> u64 {
     *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
@@ -36,9 +51,22 @@ fn hostile_strings_cannot_break_out_anywhere() {
         let mut out = Vec::new();
         let mut svg = SvgWriter::begin(&mut out, 100.0, 100.0, &Matrix::IDENTITY, Some(hostile)).unwrap();
         let chars: Vec<(char, f32, f32)> = hostile.chars().enumerate().map(|(i, ch)| (ch, i as f32 * 500.0, 0.0)).collect();
-        let style = TextStyle { fill: Some((Rgb(0, 0, 0), 255)), family: hostile.as_bytes(), generic: GenericFamily::Serif, bold: true, italic: true };
-        svg.text_run(&Matrix::new(0.01, 0.0, 0.0, 0.01, 10.0, 10.0), &style, chars.iter().copied()).unwrap();
-        let hidden = TextStyle { fill: None, family: b"ABCDEF+Real'\"><script>Name", generic: GenericFamily::Monospace, bold: false, italic: false };
+        let style = TextStyle {
+            fill: Some((Rgb(0, 0, 0), 255)),
+            family: hostile.as_bytes(),
+            generic: GenericFamily::Serif,
+            bold: true,
+            italic: true,
+        };
+        svg.text_run(&Matrix::new(0.01, 0.0, 0.0, 0.01, 10.0, 10.0), &style, chars.iter().copied())
+            .unwrap();
+        let hidden = TextStyle {
+            fill: None,
+            family: b"ABCDEF+Real'\"><script>Name",
+            generic: GenericFamily::Monospace,
+            bold: false,
+            italic: false,
+        };
         svg.text_run(&Matrix::IDENTITY, &hidden, chars.iter().copied()).unwrap();
         svg.finish().unwrap();
         check_document(&out);
@@ -52,10 +80,22 @@ fn hostile_strings_cannot_break_out_anywhere() {
 /// Failure: the positions and characters of a run fall out of step once some characters are dropped, so the rest of a line is drawn in the wrong places.
 #[test]
 fn dropped_characters_take_their_positions_with_them() {
-    let chars = [('a', 10.0, 0.0), ('\u{202E}', 20.0, 0.0), ('b', 30.0, 0.0), ('\u{1}', 40.0, 0.0), ('c', 50.0, 0.0)];
+    let chars = [
+        ('a', 10.0, 0.0),
+        ('\u{202E}', 20.0, 0.0),
+        ('b', 30.0, 0.0),
+        ('\u{1}', 40.0, 0.0),
+        ('c', 50.0, 0.0),
+    ];
     let mut out = Vec::new();
     let mut svg = SvgWriter::begin(&mut out, 10.0, 10.0, &Matrix::IDENTITY, None).unwrap();
-    let style = TextStyle { fill: None, family: b"F", generic: GenericFamily::Serif, bold: false, italic: false };
+    let style = TextStyle {
+        fill: None,
+        family: b"F",
+        generic: GenericFamily::Serif,
+        bold: false,
+        italic: false,
+    };
     svg.text_run(&Matrix::IDENTITY, &style, chars.into_iter()).unwrap();
     assert_eq!(svg.stats().chars_dropped, 2);
     svg.finish().unwrap();
@@ -69,7 +109,16 @@ fn hostile_numbers_stay_numbers_on_every_call() {
     let mut seed = 42;
     for _ in 0..400 {
         let mut out = Vec::new();
-        let m = |seed: &mut u64| Matrix::new(f64::from(awkward(seed)), f64::from(awkward(seed)), f64::from(awkward(seed)), f64::from(awkward(seed)), f64::from(awkward(seed)), f64::from(awkward(seed)));
+        let m = |seed: &mut u64| {
+            Matrix::new(
+                f64::from(awkward(seed)),
+                f64::from(awkward(seed)),
+                f64::from(awkward(seed)),
+                f64::from(awkward(seed)),
+                f64::from(awkward(seed)),
+                f64::from(awkward(seed)),
+            )
+        };
         let root = m(&mut seed);
         let mut svg = SvgWriter::begin(&mut out, f64::from(awkward(&mut seed)), f64::from(awkward(&mut seed)), &root, None).unwrap();
         for _ in 0..8 {
@@ -81,17 +130,62 @@ fn hostile_numbers_stay_numbers_on_every_call() {
                     y: awkward(&mut seed),
                 })
                 .collect();
-            let stroke = Stroke { paint: Paint::Solid(Rgb(1, 2, 3), 128), width: f64::from(awkward(&mut seed)), cap: next(&mut seed) as u8, join: next(&mut seed) as u8, dashes: vec![awkward(&mut seed), awkward(&mut seed)], dash_phase: f64::from(awkward(&mut seed)) };
-            let style = PathStyle { fill: Paint::Solid(Rgb(9, 9, 9), next(&mut seed) as u8), even_odd: next(&mut seed).is_multiple_of(2), stroke: next(&mut seed).is_multiple_of(2).then_some(stroke) };
+            let stroke = Stroke {
+                paint: Paint::Solid(Rgb(1, 2, 3), 128),
+                width: f64::from(awkward(&mut seed)),
+                cap: next(&mut seed) as u8,
+                join: next(&mut seed) as u8,
+                dashes: vec![awkward(&mut seed), awkward(&mut seed)],
+                dash_phase: f64::from(awkward(&mut seed)),
+            };
+            let style = PathStyle {
+                fill: Paint::Solid(Rgb(9, 9, 9), next(&mut seed) as u8),
+                even_odd: next(&mut seed).is_multiple_of(2),
+                stroke: next(&mut seed).is_multiple_of(2).then_some(stroke),
+            };
             svg.path(&style, &m(&mut seed), segs.iter().copied()).unwrap();
-            svg.clip_define(1 + next(&mut seed) as u32 % 100, next(&mut seed) as u32 % 100, &m(&mut seed), segs.iter().copied()).unwrap();
+            svg.clip_define(
+                1 + next(&mut seed) as u32 % 100,
+                next(&mut seed) as u32 % 100,
+                &m(&mut seed),
+                segs.iter().copied(),
+            )
+            .unwrap();
             svg.set_clip(next(&mut seed) as u32 % 100).unwrap();
             svg.glyph(next(&mut seed) as u32, segs.iter().copied()).unwrap();
-            svg.glyph_run(&m(&mut seed), Paint::Solid(Rgb(0, 0, 0), 255), Some((Paint::Solid(Rgb(0, 0, 0), 255), f64::from(awkward(&mut seed)))), [(1, awkward(&mut seed), awkward(&mut seed))]).unwrap();
-            let style = TextStyle { fill: None, family: b"Font", generic: GenericFamily::SansSerif, bold: false, italic: false };
-            svg.text_run(&m(&mut seed), &style, [('x', awkward(&mut seed), awkward(&mut seed)), ('y', awkward(&mut seed), awkward(&mut seed))].into_iter()).unwrap();
-            svg.linear_gradient(1, (f64::from(awkward(&mut seed)), 0.0), (0.0, f64::from(awkward(&mut seed))), &[GradientStop { offset: f64::from(awkward(&mut seed)), color: Rgb(1, 1, 1), opacity: 7 }]).unwrap();
-            svg.radial_gradient(2, (f64::from(awkward(&mut seed)), 0.0), f64::from(awkward(&mut seed)), &[]).unwrap();
+            svg.glyph_run(
+                &m(&mut seed),
+                Paint::Solid(Rgb(0, 0, 0), 255),
+                Some((Paint::Solid(Rgb(0, 0, 0), 255), f64::from(awkward(&mut seed)))),
+                [(1, awkward(&mut seed), awkward(&mut seed))],
+            )
+            .unwrap();
+            let style = TextStyle {
+                fill: None,
+                family: b"Font",
+                generic: GenericFamily::SansSerif,
+                bold: false,
+                italic: false,
+            };
+            svg.text_run(
+                &m(&mut seed),
+                &style,
+                [('x', awkward(&mut seed), awkward(&mut seed)), ('y', awkward(&mut seed), awkward(&mut seed))].into_iter(),
+            )
+            .unwrap();
+            svg.linear_gradient(
+                1,
+                (f64::from(awkward(&mut seed)), 0.0),
+                (0.0, f64::from(awkward(&mut seed))),
+                &[GradientStop {
+                    offset: f64::from(awkward(&mut seed)),
+                    color: Rgb(1, 1, 1),
+                    opacity: 7,
+                }],
+            )
+            .unwrap();
+            svg.radial_gradient(2, (f64::from(awkward(&mut seed)), 0.0), f64::from(awkward(&mut seed)), &[])
+                .unwrap();
             svg.group_begin(next(&mut seed) as u8).unwrap();
             svg.image_begin(ImageData::Jpeg, &m(&mut seed), 200, true).unwrap();
             svg.image_bytes(&[0xFF, 0xD8, 0xFF]).unwrap();
@@ -115,7 +209,10 @@ fn groups_nest_only_so_far_and_every_way_out_closes_them() {
     assert!(svg.group_begin(128).is_err(), "past the depth");
     svg.finish().unwrap();
     check_document(&out);
-    assert!(SvgWriter::begin(Vec::new(), 1.0, 1.0, &Matrix::IDENTITY, None).unwrap().group_end().is_err(), "nothing to close");
+    assert!(
+        SvgWriter::begin(Vec::new(), 1.0, 1.0, &Matrix::IDENTITY, None).unwrap().group_end().is_err(),
+        "nothing to close"
+    );
 }
 
 fn recto_svg_depth() -> usize {
@@ -128,7 +225,17 @@ fn an_image_short_of_rows_is_refused_and_bytes_outside_an_image_too() {
     let mut svg = SvgWriter::begin(Vec::new(), 10.0, 10.0, &Matrix::IDENTITY, None).unwrap();
     assert!(svg.image_bytes(b"x").is_err(), "no image is open");
     assert!(svg.image_end().is_err(), "no image is open");
-    svg.image_begin(ImageData::Pixels { width: 2, height: 2, channels: PngChannels::Rgb }, &Matrix::IDENTITY, 255, false).unwrap();
+    svg.image_begin(
+        ImageData::Pixels {
+            width: 2,
+            height: 2,
+            channels: PngChannels::Rgb,
+        },
+        &Matrix::IDENTITY,
+        255,
+        false,
+    )
+    .unwrap();
     svg.image_bytes(&[0; 6]).unwrap();
     assert!(svg.image_end().is_err(), "a row short");
 }
@@ -156,8 +263,19 @@ impl std::io::Write for Counting {
 fn what_goes_in_goes_out_as_it_goes() {
     let gone = Counting::default();
     let mut svg = SvgWriter::begin(gone.clone(), 100.0, 100.0, &Matrix::IDENTITY, None).unwrap();
-    let style = PathStyle { fill: Paint::Solid(Rgb(0, 0, 0), 255), even_odd: false, stroke: None };
-    let segs: Vec<Seg> = (0..2000).map(|i| Seg { kind: if i == 0 { SegKind::Move } else { SegKind::Line }, close: false, x: i as f32, y: (i % 17) as f32 }).collect();
+    let style = PathStyle {
+        fill: Paint::Solid(Rgb(0, 0, 0), 255),
+        even_odd: false,
+        stroke: None,
+    };
+    let segs: Vec<Seg> = (0..2000)
+        .map(|i| Seg {
+            kind: if i == 0 { SegKind::Move } else { SegKind::Line },
+            close: false,
+            x: i as f32,
+            y: (i % 17) as f32,
+        })
+        .collect();
     let mut alone = Vec::new();
     let mut one = SvgWriter::begin(&mut alone, 100.0, 100.0, &Matrix::IDENTITY, None).unwrap();
     one.path(&style, &Matrix::IDENTITY, segs.iter().copied()).unwrap();
@@ -165,7 +283,12 @@ fn what_goes_in_goes_out_as_it_goes() {
     let one_path = alone.len() as u64 - 200;
     for round in 1..=200u64 {
         svg.path(&style, &Matrix::IDENTITY, segs.iter().copied()).unwrap();
-        assert!(gone.total.get() + 2 * 64 * 1024 >= one_path * round, "only {} of about {} has gone out", gone.total.get(), one_path * round);
+        assert!(
+            gone.total.get() + 2 * 64 * 1024 >= one_path * round,
+            "only {} of about {} has gone out",
+            gone.total.get(),
+            one_path * round
+        );
     }
     svg.finish().unwrap();
     assert!(gone.total.get() > 1_000_000, "{}", gone.total.get());
@@ -177,9 +300,25 @@ fn what_goes_in_goes_out_as_it_goes() {
 fn a_long_path_does_not_drift() {
     let mut out = Vec::new();
     let mut svg = SvgWriter::begin(&mut out, 10.0, 10.0, &Matrix::IDENTITY, None).unwrap();
-    let points: Vec<(f32, f32)> = (0..20_000).map(|i| (i as f32 * 0.0137 + 0.0004, ((i * 7) % 113) as f32 * 0.0091 + 0.0003)).collect();
-    let segs = points.iter().enumerate().map(|(i, &(x, y))| Seg { kind: if i == 0 { SegKind::Move } else { SegKind::Line }, close: false, x, y });
-    svg.path(&PathStyle { fill: Paint::None, even_odd: false, stroke: None }, &Matrix::IDENTITY, segs).unwrap();
+    let points: Vec<(f32, f32)> = (0..20_000)
+        .map(|i| (i as f32 * 0.0137 + 0.0004, ((i * 7) % 113) as f32 * 0.0091 + 0.0003))
+        .collect();
+    let segs = points.iter().enumerate().map(|(i, &(x, y))| Seg {
+        kind: if i == 0 { SegKind::Move } else { SegKind::Line },
+        close: false,
+        x,
+        y,
+    });
+    svg.path(
+        &PathStyle {
+            fill: Paint::None,
+            even_odd: false,
+            stroke: None,
+        },
+        &Matrix::IDENTITY,
+        segs,
+    )
+    .unwrap();
     svg.finish().unwrap();
     let written = String::from_utf8(out).unwrap();
     let start = written.find(" d=\"").unwrap() + 4;
@@ -187,7 +326,10 @@ fn a_long_path_does_not_drift() {
     let walked = read_d(d);
     assert_eq!(walked.len(), points.len());
     for (read, want) in walked.iter().zip(&points) {
-        assert!((read.0 - f64::from(want.0)).abs() < 0.002 && (read.1 - f64::from(want.1)).abs() < 0.002, "{read:?} against {want:?}");
+        assert!(
+            (read.0 - f64::from(want.0)).abs() < 0.002 && (read.1 - f64::from(want.1)).abs() < 0.002,
+            "{read:?} against {want:?}"
+        );
     }
 }
 
@@ -197,9 +339,38 @@ fn a_stroke_too_thin_to_write_is_a_hairline() {
     let stroked = |width: f64, matrix: &Matrix| {
         let mut out = Vec::new();
         let mut svg = SvgWriter::begin(&mut out, 10.0, 10.0, &Matrix::IDENTITY, None).unwrap();
-        let stroke = Stroke { paint: Paint::Solid(Rgb(0, 0, 0), 255), width, cap: 0, join: 0, dashes: Vec::new(), dash_phase: 0.0 };
-        let segs = [Seg { kind: SegKind::Move, close: false, x: 0.0, y: 0.0 }, Seg { kind: SegKind::Line, close: false, x: 5.0, y: 5.0 }];
-        svg.path(&PathStyle { fill: Paint::None, even_odd: false, stroke: Some(stroke) }, matrix, segs).unwrap();
+        let stroke = Stroke {
+            paint: Paint::Solid(Rgb(0, 0, 0), 255),
+            width,
+            cap: 0,
+            join: 0,
+            dashes: Vec::new(),
+            dash_phase: 0.0,
+        };
+        let segs = [
+            Seg {
+                kind: SegKind::Move,
+                close: false,
+                x: 0.0,
+                y: 0.0,
+            },
+            Seg {
+                kind: SegKind::Line,
+                close: false,
+                x: 5.0,
+                y: 5.0,
+            },
+        ];
+        svg.path(
+            &PathStyle {
+                fill: Paint::None,
+                even_odd: false,
+                stroke: Some(stroke),
+            },
+            matrix,
+            segs,
+        )
+        .unwrap();
         svg.finish().unwrap();
         check_document(&out);
         String::from_utf8(out).unwrap()
@@ -234,16 +405,39 @@ fn every_kind_of_segment_reads_back_as_itself() {
         seg(SegKind::Move, 7.0, 7.0, false),
         seg(SegKind::Line, 8.0, 8.0, true),
     ];
-    svg.path(&PathStyle { fill: Paint::Solid(Rgb(0, 0, 0), 255), even_odd: true, stroke: None }, &Matrix::IDENTITY, segs).unwrap();
+    svg.path(
+        &PathStyle {
+            fill: Paint::Solid(Rgb(0, 0, 0), 255),
+            even_odd: true,
+            stroke: None,
+        },
+        &Matrix::IDENTITY,
+        segs,
+    )
+    .unwrap();
     svg.finish().unwrap();
     let written = String::from_utf8(out).unwrap();
     let start = written.find(" d=\"").unwrap() + 4;
     let d = &written[start..start + written[start..].find('"').unwrap()];
-    let want = [(1.0, 2.0), (5.0, 2.0), (5.0, 9.0), (-3.5, -2.25), (1.0, 1.0), (2.0, 2.0), (3.0, 1.5), (4.0, 4.0), (7.0, 7.0), (8.0, 8.0)];
+    let want = [
+        (1.0, 2.0),
+        (5.0, 2.0),
+        (5.0, 9.0),
+        (-3.5, -2.25),
+        (1.0, 1.0),
+        (2.0, 2.0),
+        (3.0, 1.5),
+        (4.0, 4.0),
+        (7.0, 7.0),
+        (8.0, 8.0),
+    ];
     let walked = read_d(d);
     assert_eq!(walked.len(), want.len(), "{d}");
     for (read, want) in walked.iter().zip(&want) {
-        assert!((read.0 - want.0).abs() < 1e-3 && (read.1 - want.1).abs() < 1e-3, "{read:?} against {want:?} in {d}");
+        assert!(
+            (read.0 - want.0).abs() < 1e-3 && (read.1 - want.1).abs() < 1e-3,
+            "{read:?} against {want:?} in {d}"
+        );
     }
     assert_eq!(d.matches('z').count(), 2, "{d}");
 }

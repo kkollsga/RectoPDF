@@ -40,10 +40,14 @@ pub(crate) struct ImageList {
 impl ImageList {
     /// The image a click lands on: the last drawn, so the one on top, of those whose box holds the point. `x` and `y` are on the page as it's shown.
     pub(crate) fn at(&self, x: f32, y: f32) -> Option<PlacedImage> {
-        self.images.iter().rev().find(|image| {
-            let [left, top, width, height] = image.rect;
-            x >= left && x <= left + width && y >= top && y <= top + height
-        }).copied()
+        self.images
+            .iter()
+            .rev()
+            .find(|image| {
+                let [left, top, width, height] = image.rect;
+                x >= left && x <= left + width && y >= top && y <= top + height
+            })
+            .copied()
     }
 }
 
@@ -67,7 +71,16 @@ pub(crate) fn shown_box(image: &[f32; 6], page: &[f32; 6], (width, height): (f32
 
 /// Lists a page's images. A page whose drawing needs the larger limit waits for it, as any export does, so never on a UI thread. `page` is from 0.
 pub(crate) fn list(doc: &mut DocRenderer, path: &Path, page: u32, caps: &OutputCaps) -> Result<ImageList, AgentError> {
-    let request = ContentsRequest { page, generation: 0, scale: 1.0, rect: None, text: TextMode::Paths, hints: super::svg::hints_for(path, page), images: IMAGES_LIST, max_time: caps.max_time };
+    let request = ContentsRequest {
+        page,
+        generation: 0,
+        scale: 1.0,
+        rect: None,
+        text: TextMode::Paths,
+        hints: super::svg::hints_for(path, page),
+        images: IMAGES_LIST,
+        max_time: caps.max_time,
+    };
     let mut list = ImageList::default();
     let mut root = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     doc.read_contents(&request, |event| {
@@ -83,7 +96,13 @@ pub(crate) fn list(doc: &mut DocRenderer, path: &Path, page: u32, caps: &OutputC
                 if list.images.len() < MAX_LISTED
                     && let Some(rect) = shown_box(&matrix, &root, list.page_size)
                 {
-                    list.images.push(PlacedImage { number: list.total, rect, width, height, jpeg });
+                    list.images.push(PlacedImage {
+                        number: list.total,
+                        rect,
+                        width,
+                        height,
+                        jpeg,
+                    });
                 }
             }
             ContentsEvent::Record(_) => {}
@@ -170,16 +189,34 @@ enum Writing<'a, O: Output> {
 
 /// A JPEG asked for, of an image that can't go as its own JPEG bytes.
 pub(crate) fn not_a_jpeg(page: u32, number: u32) -> AgentError {
-    AgentError::new("not_a_jpeg", format!("Image {number} on page {} can't go as its own JPEG bytes, so a .jpg would be re-encoded, which loses something.", page + 1), exit::FAILED).then("Use a name ending in .png: that's lossless.")
+    AgentError::new(
+        "not_a_jpeg",
+        format!(
+            "Image {number} on page {} can't go as its own JPEG bytes, so a .jpg would be re-encoded, which loses something.",
+            page + 1
+        ),
+        exit::FAILED,
+    )
+    .then("Use a name ending in .png: that's lossless.")
 }
 
 fn no_such_image(page: u32, number: u32) -> AgentError {
-    AgentError::new("no_such_image", format!("Page {} has no image {number}.", page + 1), exit::NOT_FOUND).then(format!("`recto images {}` lists them.", page + 1))
+    AgentError::new("no_such_image", format!("Page {} has no image {number}.", page + 1), exit::NOT_FOUND)
+        .then(format!("`recto images {}` lists them.", page + 1))
 }
 
 /// Writes image `number` of a page into `out`, whole or failing. `scale` is only for an image that has to be drawn. Can sleep waiting for the larger limit, so never on a UI thread. `page` is from 0.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn copy_into<O: Output>(doc: &mut DocRenderer, path: &Path, page: u32, number: u32, want: Want, scale: f32, caps: &OutputCaps, out: &RefCell<O>) -> Result<CopiedImage, AgentError> {
+pub(crate) fn copy_into<O: Output>(
+    doc: &mut DocRenderer,
+    path: &Path,
+    page: u32,
+    number: u32,
+    want: Want,
+    scale: f32,
+    caps: &OutputCaps,
+    out: &RefCell<O>,
+) -> Result<CopiedImage, AgentError> {
     if number == 0 || number == IMAGES_LIST {
         return Err(no_such_image(page, number));
     }
@@ -188,7 +225,16 @@ pub(crate) fn copy_into<O: Output>(doc: &mut DocRenderer, path: &Path, page: u32
     if want == Want::Png {
         wanted_hints |= hints::JPEG_READ_DIFFERENTLY;
     }
-    let request = ContentsRequest { page, generation: 0, scale, rect: None, text: TextMode::Paths, hints: wanted_hints, images: number, max_time: caps.max_time };
+    let request = ContentsRequest {
+        page,
+        generation: 0,
+        scale,
+        rect: None,
+        text: TextMode::Paths,
+        hints: wanted_hints,
+        images: number,
+        max_time: caps.max_time,
+    };
     let mut writing: Writing<'_, O> = Writing::Nothing;
     let mut copied: Option<CopiedImage> = None;
     let mut sink_error: Option<io::Error> = None;
@@ -200,7 +246,9 @@ pub(crate) fn copy_into<O: Output>(doc: &mut DocRenderer, path: &Path, page: u32
                     copied = None;
                     out.try_borrow_mut().map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?.start_over()?;
                 }
-                ContentsEvent::Record(Record::ImageBegin { coding, why, width, height, .. }) => {
+                ContentsEvent::Record(Record::ImageBegin {
+                    coding, why, width, height, ..
+                }) => {
                     if why == Why::JpegMask {
                         writing = Writing::Mask;
                         return Ok(());
@@ -234,15 +282,13 @@ pub(crate) fn copy_into<O: Output>(doc: &mut DocRenderer, path: &Path, page: u32
                     Writing::Mask => {}
                     Writing::Nothing | Writing::Done => return Err(io::ErrorKind::InvalidData.into()),
                 },
-                ContentsEvent::Record(Record::ImageEnd) => {
-                    match std::mem::replace(&mut writing, Writing::Done) {
-                        Writing::Png(png) => {
-                            png.finish()?;
-                        }
-                        Writing::Mask => writing = Writing::Nothing,
-                        _ => {}
+                ContentsEvent::Record(Record::ImageEnd) => match std::mem::replace(&mut writing, Writing::Done) {
+                    Writing::Png(png) => {
+                        png.finish()?;
                     }
-                }
+                    Writing::Mask => writing = Writing::Nothing,
+                    _ => {}
+                },
                 ContentsEvent::Record(_) => {}
             }
             Ok(())
@@ -255,7 +301,9 @@ pub(crate) fn copy_into<O: Output>(doc: &mut DocRenderer, path: &Path, page: u32
     if let Err(failure) = read {
         return Err(match sink_error {
             Some(error) if error.kind() == io::ErrorKind::Unsupported => not_a_jpeg(page, number),
-            Some(error) if error.kind() == io::ErrorKind::FileTooLarge => AgentError::new("output_too_large", "This image would be larger than RectoPDF will hand over.", exit::FAILED),
+            Some(error) if error.kind() == io::ErrorKind::FileTooLarge => {
+                AgentError::new("output_too_large", "This image would be larger than RectoPDF will hand over.", exit::FAILED)
+            }
             Some(_) => AgentError::new("write_failed", "The image couldn't be written.", exit::FAILED),
             None => failure.into(),
         });
@@ -276,7 +324,9 @@ pub(crate) fn list_command(path: &Path, page: u32) -> Result<serde_json::Value, 
         .iter()
         .map(|image| serde_json::json!({ "number": image.number, "rect": image.rect.map(round_points), "width": image.width, "height": image.height, "jpeg": image.jpeg, "suggested_ending": if image.jpeg { "jpg" } else { "png" } }))
         .collect();
-    Ok(serde_json::json!({ "worker_peak_bytes": doc.stats().peak_footprint_bytes, "page": page, "count": list.total, "listed": images.len(), "width_pt": round_points(list.page_size.0), "height_pt": round_points(list.page_size.1), "images": images }))
+    Ok(
+        serde_json::json!({ "worker_peak_bytes": doc.stats().peak_footprint_bytes, "page": page, "count": list.total, "listed": images.len(), "width_pt": round_points(list.page_size.0), "height_pt": round_points(list.page_size.1), "images": images }),
+    )
 }
 
 /// Points to a hundredth, so a list reads as numbers a person would write.
@@ -298,15 +348,29 @@ mod tests {
         // Turned a quarter, and past the page's right edge: held to it.
         let turned = [0.0, 50.0, -80.0, 0.0, 600.0, 100.0];
         assert_eq!(shown_box(&turned, &page, (612.0, 792.0)), Some([520.0, 642.0, 80.0, 50.0]));
-        assert_eq!(shown_box(&[10.0, 0.0, 0.0, 10.0, 700.0, 10.0], &page, (612.0, 792.0)), None, "wholly off the page");
+        assert_eq!(
+            shown_box(&[10.0, 0.0, 0.0, 10.0, 700.0, 10.0], &page, (612.0, 792.0)),
+            None,
+            "wholly off the page"
+        );
         assert_eq!(shown_box(&[f32::NAN, 0.0, 0.0, 1.0, 0.0, 0.0], &page, (612.0, 792.0)), None);
     }
 
     /// Failure: a click where two images overlap copies the one underneath, which isn't what the reader sees.
     #[test]
     fn a_click_takes_the_image_on_top() {
-        let image = |number, rect| PlacedImage { number, rect, width: 1, height: 1, jpeg: false };
-        let list = ImageList { images: vec![image(1, [0.0, 0.0, 100.0, 100.0]), image(2, [50.0, 50.0, 100.0, 100.0])], total: 2, page_size: (612.0, 792.0) };
+        let image = |number, rect| PlacedImage {
+            number,
+            rect,
+            width: 1,
+            height: 1,
+            jpeg: false,
+        };
+        let list = ImageList {
+            images: vec![image(1, [0.0, 0.0, 100.0, 100.0]), image(2, [50.0, 50.0, 100.0, 100.0])],
+            total: 2,
+            page_size: (612.0, 792.0),
+        };
         assert_eq!(list.at(75.0, 75.0).map(|image| image.number), Some(2));
         assert_eq!(list.at(10.0, 10.0).map(|image| image.number), Some(1));
         assert_eq!(list.at(300.0, 300.0), None);

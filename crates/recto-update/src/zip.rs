@@ -81,7 +81,10 @@ pub fn read_directory<R: Read + Seek>(file: &mut R, app_folder: &str) -> Result<
     file.seek(SeekFrom::Start(length - tail_len))?;
     let mut tail = vec![0u8; usize::try_from(tail_len).map_err(|_| BAD_END)?];
     file.read_exact(&mut tail)?;
-    let end_at = (0..=tail.len().saturating_sub(END_LEN)).rev().find(|&at| u32_at(&tail, at) == Some(0x0605_4b50) && u16_at(&tail, at + 20).is_some_and(|comment| at + END_LEN + usize::from(comment) == tail.len())).ok_or(BAD_END)?;
+    let end_at = (0..=tail.len().saturating_sub(END_LEN))
+        .rev()
+        .find(|&at| u32_at(&tail, at) == Some(0x0605_4b50) && u16_at(&tail, at + 20).is_some_and(|comment| at + END_LEN + usize::from(comment) == tail.len()))
+        .ok_or(BAD_END)?;
     let field = |at: usize| u16_at(&tail, end_at + at).ok_or(BAD_END);
     let word = |at: usize| u32_at(&tail, end_at + at).ok_or(BAD_END);
     if field(4)? != 0 || field(6)? != 0 || field(8)? != field(10)? {
@@ -164,7 +167,16 @@ pub fn read_directory<R: Read + Seek>(file: &mut R, app_folder: &str) -> Result<
             file_names.insert(trimmed.to_ascii_lowercase());
         }
         places.push((local, entries.len(), flags & 0x0008 != 0));
-        entries.push(Entry { name: name.to_owned(), is_folder: says_folder, executable: unix && mode & 0o111 != 0, stored: method == 0, crc, compressed, size, data_at: 0 });
+        entries.push(Entry {
+            name: name.to_owned(),
+            is_folder: says_folder,
+            executable: unix && mode & 0o111 != 0,
+            stored: method == 0,
+            crc,
+            compressed,
+            size,
+            data_at: 0,
+        });
     }
     if at != list.len() {
         return Err(BAD_LIST);
@@ -203,7 +215,11 @@ pub fn read_directory<R: Read + Seek>(file: &mut R, app_folder: &str) -> Result<
             return Err(bad_header);
         }
         // With a descriptor these come after the data and the header's are zero. Without one they're here, and have to be the same.
-        if !descriptor && (u32_at(&header, 14) != Some(entry.crc) || u32_at(&header, 18).map(u64::from) != Some(entry.compressed) || u32_at(&header, 22).map(u64::from) != Some(entry.size)) {
+        if !descriptor
+            && (u32_at(&header, 14) != Some(entry.crc)
+                || u32_at(&header, 18).map(u64::from) != Some(entry.compressed)
+                || u32_at(&header, 22).map(u64::from) != Some(entry.size))
+        {
             return Err(bad_header);
         }
         let name_len = usize::from(u16_at(&header, 26).unwrap_or(u16::MAX));
@@ -266,7 +282,11 @@ pub fn unpack_entries<R: Read + Seek>(file: &mut R, entries: &[Entry], into: &Pa
         let mut out = options.open(&path)?;
         file.seek(SeekFrom::Start(entry.data_at))?;
         let raw = (&mut *file).take(entry.compressed);
-        let mut reader: Box<dyn Read> = if entry.stored { Box::new(raw) } else { Box::new(flate2::read::DeflateDecoder::new(raw)) };
+        let mut reader: Box<dyn Read> = if entry.stored {
+            Box::new(raw)
+        } else {
+            Box::new(flate2::read::DeflateDecoder::new(raw))
+        };
         let mut crc = crc32fast::Hasher::new();
         let mut out_bytes = 0u64;
         loop {
@@ -276,7 +296,14 @@ pub fn unpack_entries<R: Read + Seek>(file: &mut R, entries: &[Entry], into: &Pa
             let count = match reader.read(&mut buffer) {
                 Ok(count) => count,
                 // The reader of a zip that's been read whole failing is the data, not the disk.
-                Err(error) if matches!(error.kind(), io::ErrorKind::InvalidData | io::ErrorKind::InvalidInput | io::ErrorKind::UnexpectedEof) => return Err(WRONG),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::InvalidData | io::ErrorKind::InvalidInput | io::ErrorKind::UnexpectedEof
+                    ) =>
+                {
+                    return Err(WRONG);
+                }
                 Err(error) => return Err(ZipError::Io(error)),
             };
             if count == 0 {
@@ -340,7 +367,15 @@ pub(crate) mod tests {
 
     impl Made {
         pub(crate) fn file(name: &str, data: &[u8]) -> Self {
-            Self { central_name: name.as_bytes().to_vec(), local_name: name.as_bytes().to_vec(), data: data.to_vec(), deflate: false, mode: 0o100_644, claimed_size: None, unlisted: false }
+            Self {
+                central_name: name.as_bytes().to_vec(),
+                local_name: name.as_bytes().to_vec(),
+                data: data.to_vec(),
+                deflate: false,
+                mode: 0o100_644,
+                claimed_size: None,
+                unlisted: false,
+            }
         }
 
         fn with_mode(self, mode: u32) -> Self {
@@ -414,7 +449,10 @@ pub(crate) mod tests {
     }
 
     fn folder(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-zip-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-zip-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -434,11 +472,32 @@ pub(crate) mod tests {
     /// Failure: a name that leaves the folder, or isn't part of the app, is taken. Plain-text rules, ahead of anything being unpacked.
     #[test]
     fn a_zips_names_have_to_be_the_apps() {
-        for fine in ["RectoPDF.app/", "RectoPDF.app/Contents/MacOS/RectoPDF", "__MACOSX/RectoPDF.app/._x", "RectoPDF.app/Contents/a..b"] {
+        for fine in [
+            "RectoPDF.app/",
+            "RectoPDF.app/Contents/MacOS/RectoPDF",
+            "__MACOSX/RectoPDF.app/._x",
+            "RectoPDF.app/Contents/a..b",
+        ] {
             assert!(name_is_ours(fine, APP), "{fine}");
         }
         let deep = format!("RectoPDF.app/{}", "a/".repeat(40));
-        for wrong in ["", "/etc/passwd", "../x", "RectoPDF.app/../../x", "RectoPDF.app/./x", "Other.app/x", "RectoPDF.app.evil/x", "RectoPDF.app\\..\\x", "RectoPDF.app/a\u{1}b", "RectoPDF.app/nl\nRectoPDF.app/second", "x", "RectoPDF.app//x", "RectoPDF.app/é", "RectoPDF.app/a:b", deep.as_str()] {
+        for wrong in [
+            "",
+            "/etc/passwd",
+            "../x",
+            "RectoPDF.app/../../x",
+            "RectoPDF.app/./x",
+            "Other.app/x",
+            "RectoPDF.app.evil/x",
+            "RectoPDF.app\\..\\x",
+            "RectoPDF.app/a\u{1}b",
+            "RectoPDF.app/nl\nRectoPDF.app/second",
+            "x",
+            "RectoPDF.app//x",
+            "RectoPDF.app/é",
+            "RectoPDF.app/a:b",
+            deep.as_str(),
+        ] {
             assert!(!name_is_ours(wrong, APP), "{wrong}");
         }
     }
@@ -455,15 +514,31 @@ pub(crate) mod tests {
         let mut same_length = good.clone();
         same_length.local_name = b"RectoPDF.app/y".to_vec();
         refused(&make_zip(&[same_length]), "a header naming another file");
-        let hidden = Made { unlisted: true, ..Made::file("RectoPDF.app/unlisted", b"y") };
+        let hidden = Made {
+            unlisted: true,
+            ..Made::file("RectoPDF.app/unlisted", b"y")
+        };
         refused(&make_zip(&[good.clone(), hidden.clone()]), "a file the list doesn't mention");
         refused(&make_zip(&[hidden, good.clone()]), "and before the first it does");
         refused(&make_zip(&[good.clone(), good.clone()]), "one name twice");
-        refused(&make_zip(&[good.clone(), Made::file("rectopdf.APP/X", b"z")]), "the same name, as this disk reads it");
+        refused(
+            &make_zip(&[good.clone(), Made::file("rectopdf.APP/X", b"z")]),
+            "the same name, as this disk reads it",
+        );
         refused(&make_zip(&[Made::file("RectoPDF.app/l", b"../../outside").with_mode(0o120_777)]), "a link");
         refused(&make_zip(&[Made::file("RectoPDF.app", b"/etc").with_mode(0o120_777)]), "the app itself a link");
-        refused(&make_zip(&[Made::folder("RectoPDF.app/link/"), Made::file("RectoPDF.app/link", b"/etc").with_mode(0o120_777), Made::file("RectoPDF.app/link/pwned", b"p")]), "a link over a folder");
-        refused(&make_zip(&[Made::file("RectoPDF.app/f", b"x"), Made::file("RectoPDF.app/f/g", b"y")]), "a file that's also a folder");
+        refused(
+            &make_zip(&[
+                Made::folder("RectoPDF.app/link/"),
+                Made::file("RectoPDF.app/link", b"/etc").with_mode(0o120_777),
+                Made::file("RectoPDF.app/link/pwned", b"p"),
+            ]),
+            "a link over a folder",
+        );
+        refused(
+            &make_zip(&[Made::file("RectoPDF.app/f", b"x"), Made::file("RectoPDF.app/f/g", b"y")]),
+            "a file that's also a folder",
+        );
         refused(&make_zip(&[Made::file("RectoPDF.app/s", b"x").with_mode(0o060_777)]), "a device");
         refused(&make_zip(&[Made::file("/tmp/abs", b"x")]), "an absolute name");
         refused(&make_zip(&[Made::file("Evil.app/x", b"x")]), "another app");
@@ -481,7 +556,11 @@ pub(crate) mod tests {
     #[test]
     fn a_zip_that_lies_about_its_size_stops_where_it_said() {
         let dir = folder("liar");
-        let liar = Made { deflate: true, claimed_size: Some(1024), ..Made::file("RectoPDF.app/bomb", &vec![0u8; 50 * 1024 * 1024]) };
+        let liar = Made {
+            deflate: true,
+            claimed_size: Some(1024),
+            ..Made::file("RectoPDF.app/bomb", &vec![0u8; 50 * 1024 * 1024])
+        };
         let zip = make_zip(&[liar]);
         assert!(zip.len() < 200 * 1024, "it's small as it comes: {}", zip.len());
         let entries = check(&zip).expect("its sizes alone don't show it");
@@ -491,19 +570,29 @@ pub(crate) mod tests {
         let written = std::fs::metadata(dir.join("RectoPDF.app/bomb")).map_or(0, |meta| meta.len());
         assert!(written < 256 * 1024, "stopped soon after what it said: {written}");
         // And one that comes out smaller than it says, or with the wrong sum, isn't the file either.
-        let short = Made { deflate: true, claimed_size: Some(100), ..Made::file("RectoPDF.app/s", b"short") };
+        let short = Made {
+            deflate: true,
+            claimed_size: Some(100),
+            ..Made::file("RectoPDF.app/s", b"short")
+        };
         let bytes = make_zip(&[short]);
         let entries = check(&bytes).expect("it says the same twice");
         let elsewhere = dir.join("short");
         std::fs::create_dir_all(&elsewhere).unwrap();
-        assert!(matches!(unpack_entries(&mut Cursor::new(&bytes), &entries, &elsewhere, far), Err(ZipError::Bad(_))));
+        assert!(matches!(
+            unpack_entries(&mut Cursor::new(&bytes), &entries, &elsewhere, far),
+            Err(ZipError::Bad(_))
+        ));
         let mut flipped = make_zip(&[Made::file("RectoPDF.app/f", b"data")]);
         let data_at = 30 + "RectoPDF.app/f".len();
         flipped[data_at] ^= 0xFF;
         let entries = check(&flipped).unwrap();
         let third = dir.join("flipped");
         std::fs::create_dir_all(&third).unwrap();
-        assert!(matches!(unpack_entries(&mut Cursor::new(&flipped), &entries, &third, far), Err(ZipError::Bad(_))), "the wrong sum");
+        assert!(
+            matches!(unpack_entries(&mut Cursor::new(&flipped), &entries, &third, far), Err(ZipError::Bad(_))),
+            "the wrong sum"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -511,7 +600,12 @@ pub(crate) mod tests {
     #[test]
     fn a_zip_doesnt_choose_its_modes() {
         let dir = folder("modes");
-        let zip = make_zip(&[Made::folder("RectoPDF.app/d/").with_mode(0o040_777), Made::file("RectoPDF.app/d/open", b"#!/bin/sh\n").with_mode(0o106_777), Made::file("RectoPDF.app/d/plain", b"x").with_mode(0o100_666), Made::file("__MACOSX/RectoPDF.app/._x", b"not unpacked")]);
+        let zip = make_zip(&[
+            Made::folder("RectoPDF.app/d/").with_mode(0o040_777),
+            Made::file("RectoPDF.app/d/open", b"#!/bin/sh\n").with_mode(0o106_777),
+            Made::file("RectoPDF.app/d/plain", b"x").with_mode(0o100_666),
+            Made::file("__MACOSX/RectoPDF.app/._x", b"not unpacked"),
+        ]);
         let entries = check(&zip).unwrap();
         unpack_entries(&mut Cursor::new(&zip), &entries, &dir, Instant::now() + Duration::from_secs(10)).unwrap();
         let mode = |name: &str| std::fs::metadata(dir.join(name)).unwrap().permissions().mode() & 0o7777;
@@ -529,7 +623,14 @@ pub(crate) mod tests {
     /// Failure: a damaged zip brings down the app or writes outside its folder. Every single-byte change and a good many cuts to a small real zip, through the whole of it.
     #[test]
     fn no_damage_to_a_zip_does_anything_but_refuse_it() {
-        let good = make_zip(&[Made::folder("RectoPDF.app/"), Made { deflate: true, ..Made::file("RectoPDF.app/a", &[7u8; 2048]) }, Made::file("RectoPDF.app/b", b"plain")]);
+        let good = make_zip(&[
+            Made::folder("RectoPDF.app/"),
+            Made {
+                deflate: true,
+                ..Made::file("RectoPDF.app/a", &[7u8; 2048])
+            },
+            Made::file("RectoPDF.app/b", b"plain"),
+        ]);
         let far = Instant::now() + Duration::from_secs(120);
         let dir = folder("damage");
         let mut unpacked = 0;
@@ -564,12 +665,27 @@ pub(crate) mod tests {
         std::fs::write(app.join("Contents/MacOS/RectoPDF"), vec![9u8; 300_000]).unwrap();
         std::fs::set_permissions(app.join("Contents/MacOS/RectoPDF"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let zip = dir.join("r.zip");
-        assert!(std::process::Command::new("/usr/bin/ditto").args(["-c", "-k", "--sequesterRsrc", "--keepParent"]).arg(&app).arg(&zip).status().unwrap().success());
+        assert!(
+            std::process::Command::new("/usr/bin/ditto")
+                .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
+                .arg(&app)
+                .arg(&zip)
+                .status()
+                .unwrap()
+                .success()
+        );
         let into = dir.join("out");
         std::fs::create_dir_all(&into).unwrap();
         unpack(&zip, APP, &into, Instant::now() + Duration::from_secs(30)).unwrap();
         assert_eq!(std::fs::read(into.join("RectoPDF.app/Contents/MacOS/RectoPDF")).unwrap().len(), 300_000);
-        assert_eq!(std::fs::metadata(into.join("RectoPDF.app/Contents/MacOS/RectoPDF")).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(
+            std::fs::metadata(into.join("RectoPDF.app/Contents/MacOS/RectoPDF"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
         assert_eq!(std::fs::read_to_string(into.join("RectoPDF.app/Contents/Info.plist")).unwrap(), "plist");
         std::fs::remove_dir_all(&dir).unwrap();
     }

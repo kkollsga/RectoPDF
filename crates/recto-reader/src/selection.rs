@@ -9,7 +9,9 @@
 //! **Hidden text takes a second look.** The first read of a page is quick and has no hidden-text check, since that draws the page. Once a page is in a selection and showing, or being copied, it's read again with the check when everything visible is drawn. No character moves. What changes is what's on them: an end that was on a hidden word goes to the nearest thing that shows. A page known to be heavy isn't drawn for this, since one more draw of a USGS map is hundreds of MiB, and a copy says it wasn't checked.
 
 use recto_index::chrome::EdgeLine;
-use recto_index::select::{CopiedText, MAX_COPY_BYTES, MAX_COPY_PAGES, MAX_COPY_TIME, PAGE_END, PagePoint, PageText, Range, Rect, Selection, Texts, chrome_for, neighbour_pages};
+use recto_index::select::{
+    CopiedText, MAX_COPY_BYTES, MAX_COPY_PAGES, MAX_COPY_TIME, PAGE_END, PagePoint, PageText, Range, Rect, Selection, Texts, chrome_for, neighbour_pages,
+};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -111,7 +113,12 @@ pub struct Selecting {
 impl Selecting {
     /// Everything goes, as when another tab or other pages come on screen. Whether "Copy anyway" was said goes too: it's about a file.
     pub fn reset(&mut self) {
-        *self = Self { reads: self.reads, clock: self.clock, on_layers: std::mem::take(&mut self.on_layers), ..Self::default() };
+        *self = Self {
+            reads: self.reads,
+            clock: self.clock,
+            on_layers: std::mem::take(&mut self.on_layers),
+            ..Self::default()
+        };
     }
 
     /// The file isn't the one any of this was about. A copy on its way says so, as the reader's waiting for it.
@@ -119,7 +126,11 @@ impl Selecting {
         let was_copying = self.copy.is_some();
         self.reset();
         if was_copying {
-            self.notice = Some(Notice { text: "This file changed on disk, so the copy stopped.".to_string(), offers_copy_anyway: false, fades: true });
+            self.notice = Some(Notice {
+                text: "This file changed on disk, so the copy stopped.".to_string(),
+                offers_copy_anyway: false,
+                fades: true,
+            });
         }
     }
 
@@ -237,14 +248,21 @@ impl Selecting {
 
     /// What a copy of `range` leaves out of this page as chrome, with what's known of its neighbours.
     fn leave_out(&self, page: u32, text: &PageText, pages: u32) -> Vec<(u32, u32)> {
-        chrome_for(page, text, pages, |other| self.edges_of(other).or_else(|| self.held(other).map(|held| held.text.edge_lines())))
+        chrome_for(page, text, pages, |other| {
+            self.edges_of(other).or_else(|| self.held(other).map(|held| held.text.edge_lines()))
+        })
     }
 
     /// Keeps a page's edge lines, letting go of the ones furthest from where a copy or the selection is, past the cap.
     fn keep_edges(&mut self, page: u32, lines: Vec<EdgeLine>) {
         self.edges.retain(|(seen, _)| *seen != page);
         if self.edges.len() >= MAX_EDGE_PAGES {
-            let near = self.copy.as_ref().map(|copy| copy.next).or(self.range.map(|range| range.start.page)).unwrap_or(page);
+            let near = self
+                .copy
+                .as_ref()
+                .map(|copy| copy.next)
+                .or(self.range.map(|range| range.start.page))
+                .unwrap_or(page);
             if let Some(at) = self.edges.iter().enumerate().max_by_key(|(_, (seen, _))| seen.abs_diff(near)).map(|(at, _)| at) {
                 self.edges.swap_remove(at);
             }
@@ -271,7 +289,12 @@ impl Selecting {
                 if self.held_bytes() >= MOST_TEXT_BYTES {
                     return None;
                 }
-                visible.iter().filter(|page| range.on_page(**page).is_some()).take(MAX_SELECTED_VISIBLE).find(|page| self.held(**page).is_none()).map(|page| WantedText { page: *page, check: false })
+                visible
+                    .iter()
+                    .filter(|page| range.on_page(**page).is_some())
+                    .take(MAX_SELECTED_VISIBLE)
+                    .find(|page| self.held(**page).is_none())
+                    .map(|page| WantedText { page: *page, check: false })
             }
             Urgency::WhenIdle => {
                 if let Some(copy) = self.copy.as_ref() {
@@ -283,12 +306,19 @@ impl Selecting {
                     // Then the pages around it, for its chrome: one the copy reaches next is read as it will be then.
                     if let Some(other) = self.missing_neighbour(page, pages) {
                         let reaches = other > page && copy.range.on_page(other).is_some();
-                        return Some(WantedText { page: other, check: reaches && !is_heavy(other) });
+                        return Some(WantedText {
+                            page: other,
+                            check: reaches && !is_heavy(other),
+                        });
                     }
                 }
                 // What's selected and showing, checked for hidden text, once it's all drawn.
                 if let Some(range) = self.range.filter(|range| !range.is_empty())
-                    && let Some(page) = visible.iter().filter(|page| range.on_page(**page).is_some()).take(MAX_SELECTED_VISIBLE).find(|page| self.held(**page).is_some() && self.page_wants_check(**page, is_heavy(**page)))
+                    && let Some(page) = visible
+                        .iter()
+                        .filter(|page| range.on_page(**page).is_some())
+                        .take(MAX_SELECTED_VISIBLE)
+                        .find(|page| self.held(**page).is_some() && self.page_wants_check(**page, is_heavy(**page)))
                 {
                     return Some(WantedText { page: *page, check: true });
                 }
@@ -298,14 +328,19 @@ impl Selecting {
                 {
                     return Some(WantedText { page: other, check: false });
                 }
-                self.hover.filter(|page| self.held(*page).is_none()).map(|page| WantedText { page, check: false })
+                self.hover
+                    .filter(|page| self.held(*page).is_none())
+                    .map(|page| WantedText { page, check: false })
             }
         }
     }
 
     /// Whether anything's left to do, for QA to wait on.
     pub fn is_settled(&self, visible: &[u32], pages: u32, is_heavy: impl Fn(u32) -> bool) -> bool {
-        self.copy.is_none() && self.copied.is_none() && self.wanted(Urgency::Now, visible, pages, &is_heavy).is_none() && self.wanted(Urgency::WhenIdle, visible, pages, &is_heavy).is_none()
+        self.copy.is_none()
+            && self.copied.is_none()
+            && self.wanted(Urgency::Now, visible, pages, &is_heavy).is_none()
+            && self.wanted(Urgency::WhenIdle, visible, pages, &is_heavy).is_none()
     }
 
     /// A page's text has arrived. `checked` says the hidden-text check was asked for, so it's been tried, however it went.
@@ -318,7 +353,13 @@ impl Selecting {
         }
         self.texts.retain(|held| held.page != page);
         self.keep_edges(page, text.edge_lines().to_vec());
-        self.texts.push(Held { page, text, check_tried: checked, failed: false, last_used });
+        self.texts.push(Held {
+            page,
+            text,
+            check_tried: checked,
+            failed: false,
+            last_used,
+        });
         self.evict(visible);
         self.changed();
     }
@@ -333,7 +374,13 @@ impl Selecting {
         }
         self.texts.retain(|held| held.page != page);
         self.keep_edges(page, Vec::new());
-        self.texts.push(Held { page, text: Arc::new(PageText::default()), check_tried: true, failed: true, last_used });
+        self.texts.push(Held {
+            page,
+            text: Arc::new(PageText::default()),
+            check_tried: true,
+            failed: true,
+            last_used,
+        });
         self.evict(visible);
         self.changed();
     }
@@ -347,8 +394,16 @@ impl Selecting {
             if self.texts.len() <= MAX_TEXT_PAGES && self.held_bytes() <= MAX_TEXT_BYTES {
                 return;
             }
-            let in_use = |page: u32| ends.contains(&Some(page)) || copy_next == Some(page) || (visible.contains(&page) && range.is_some_and(|range| range.on_page(page).is_some()));
-            let oldest = self.texts.iter().enumerate().filter(|(_, held)| !in_use(held.page)).min_by_key(|(_, held)| held.last_used).map(|(at, _)| at);
+            let in_use = |page: u32| {
+                ends.contains(&Some(page)) || copy_next == Some(page) || (visible.contains(&page) && range.is_some_and(|range| range.on_page(page).is_some()))
+            };
+            let oldest = self
+                .texts
+                .iter()
+                .enumerate()
+                .filter(|(_, held)| !in_use(held.page))
+                .min_by_key(|(_, held)| held.last_used)
+                .map(|(at, _)| at);
             let Some(at) = oldest else { return };
             self.texts.swap_remove(at);
         }
@@ -361,7 +416,12 @@ impl Selecting {
         Some(rects.into_iter().reduce(|one, other| {
             let (x0, y0) = (one.x.min(other.x), one.y.min(other.y));
             let (x1, y1) = ((one.x + one.width).max(other.x + other.width), (one.y + one.height).max(other.y + other.height));
-            Rect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+            Rect {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            }
         }))
     }
 
@@ -371,7 +431,10 @@ impl Selecting {
             return None;
         }
         self.looked_at.insert(page);
-        let rects = match (self.range.filter(|range| !range.is_empty()).and_then(|range| range.on_page(page)), HeldTexts(&self.texts).page_text(page)) {
+        let rects = match (
+            self.range.filter(|range| !range.is_empty()).and_then(|range| range.on_page(page)),
+            HeldTexts(&self.texts).page_text(page),
+        ) {
             (Some((start, end)), Some(text)) => text.rects(start, end),
             _ => Vec::new(),
         };
@@ -396,7 +459,12 @@ impl Selecting {
         self.notice = None;
         self.copied = None;
         self.copied_told = false;
-        self.copy = Some(CopyRun { out: CopiedText::default(), range, next: range.start.page, started: Instant::now() });
+        self.copy = Some(CopyRun {
+            out: CopiedText::default(),
+            range,
+            next: range.start.page,
+            started: Instant::now(),
+        });
         self.advance_copy(pages, is_heavy);
     }
 
@@ -421,7 +489,11 @@ impl Selecting {
             let restricted = self.held(page).is_some_and(|held| !wants_check && held.text.copy_restricted()) && !self.copy_allowed;
             if restricted {
                 run.out.restricted = true;
-                self.notice = Some(Notice { text: "This file's permissions ask that its text isn't copied.".to_string(), offers_copy_anyway: true, fades: false });
+                self.notice = Some(Notice {
+                    text: "This file's permissions ask that its text isn't copied.".to_string(),
+                    offers_copy_anyway: true,
+                    fades: false,
+                });
                 return;
             }
             let Some(held) = self.held(page).filter(|_| !wants_check && self.missing_neighbour(page, pages).is_none()) else {
@@ -437,7 +509,11 @@ impl Selecting {
                 run.out.add_page(page, &held.text, &range, MAX_COPY_BYTES, &leave_out)
             };
             if run.out.restricted && !self.copy_allowed {
-                self.notice = Some(Notice { text: "This file's permissions ask that its text isn't copied.".to_string(), offers_copy_anyway: true, fades: false });
+                self.notice = Some(Notice {
+                    text: "This file's permissions ask that its text isn't copied.".to_string(),
+                    offers_copy_anyway: true,
+                    fades: false,
+                });
                 return;
             }
             if !room {
@@ -469,7 +545,9 @@ impl Selecting {
 
     /// Whether [`Self::text_now`] has something to give, with none of it built: every page is here and a check has looked at it, and the file hasn't asked not to be copied. Services ask this on each event of a menu's life, on the UI thread. A check that couldn't be done doesn't count, as a copy can say a page wasn't checked and Services can't.
     pub fn can_offer(&self, pages: u32) -> bool {
-        let Some(range) = self.range.filter(|range| !range.is_empty()) else { return false };
+        let Some(range) = self.range.filter(|range| !range.is_empty()) else {
+            return false;
+        };
         let last = range.end.page.min(pages.saturating_sub(1));
         if last < range.start.page || last - range.start.page >= MAX_TEXT_PAGES as u32 {
             return false;
@@ -534,7 +612,11 @@ impl Selecting {
 
 fn progress(run: &CopyRun, last: u32) -> Option<Notice> {
     let start = run.range.start.page;
-    (run.started.elapsed().as_secs_f64() >= SAY_PROGRESS_AFTER).then(|| Notice { text: format!("Copying… {} of {} pages.", run.next - start, last - start + 1), offers_copy_anyway: false, fades: false })
+    (run.started.elapsed().as_secs_f64() >= SAY_PROGRESS_AFTER).then(|| Notice {
+        text: format!("Copying… {} of {} pages.", run.next - start, last - start + 1),
+        offers_copy_anyway: false,
+        fades: false,
+    })
 }
 
 /// What's worth saying about a copy, or nothing if it went as asked. The clipboard holding what it does is the news, and this is only what the reader wouldn't otherwise know.
@@ -547,7 +629,10 @@ fn how_it_went(out: &CopiedText) -> Option<Notice> {
         said.push(format!("Copied up to page {}: that's as much as one copy holds.", page + 1));
     }
     if out.hidden_left_out > 0 {
-        said.push(format!("{} of text that looks hidden left out.", plural(out.hidden_left_out, "character", "characters")));
+        said.push(format!(
+            "{} of text that looks hidden left out.",
+            plural(out.hidden_left_out, "character", "characters")
+        ));
     }
     if out.pages_failed > 0 {
         said.push(format!("{} couldn't be read.", plural(u64::from(out.pages_failed), "page", "pages")));
@@ -556,9 +641,16 @@ fn how_it_went(out: &CopiedText) -> Option<Notice> {
         said.push(format!("{} too long to copy.", plural(u64::from(out.pages_too_long), "page was", "pages were")));
     }
     if out.pages_unchecked > 0 {
-        said.push(format!("{} couldn't be checked for hidden text.", plural(u64::from(out.pages_unchecked), "page", "pages")));
+        said.push(format!(
+            "{} couldn't be checked for hidden text.",
+            plural(u64::from(out.pages_unchecked), "page", "pages")
+        ));
     }
-    (!said.is_empty()).then(|| Notice { text: said.join(" "), offers_copy_anyway: false, fades: true })
+    (!said.is_empty()).then(|| Notice {
+        text: said.join(" "),
+        offers_copy_anyway: false,
+        fades: true,
+    })
 }
 
 fn plural(count: u64, one: &str, many: &str) -> String {
@@ -582,17 +674,35 @@ mod tests {
     use recto_proto::{CharBox, CharRecord, PageFrame};
 
     fn text(line: &str) -> Arc<PageText> {
-        let frame = PageFrame { turns: 0, left: 0.0, bottom: 0.0, right: 612.0, top: 792.0 };
+        let frame = PageFrame {
+            turns: 0,
+            left: 0.0,
+            bottom: 0.0,
+            right: 612.0,
+            top: 792.0,
+        };
         let chars: Vec<CharRecord> = line.chars().map(|ch| CharRecord::new(ch as u32, 0)).collect();
-        let boxes: Vec<CharBox> = (0..chars.len()).map(|at| [72.0 + at as f32 * 6.0, 700.0, 77.0 + at as f32 * 6.0, 710.0]).collect();
+        let boxes: Vec<CharBox> = (0..chars.len())
+            .map(|at| [72.0 + at as f32 * 6.0, 700.0, 77.0 + at as f32 * 6.0, 710.0])
+            .collect();
         Arc::new(PageText::build(&chars, &boxes, frame, true, false))
     }
 
     /// A report's page: its running head, a line of body and its number, each a line of its own.
     fn report_page(page: u32) -> Arc<PageText> {
-        let frame = PageFrame { turns: 0, left: 0.0, bottom: 0.0, right: 612.0, top: 792.0 };
+        let frame = PageFrame {
+            turns: 0,
+            left: 0.0,
+            bottom: 0.0,
+            right: 612.0,
+            top: 792.0,
+        };
         let (mut chars, mut boxes) = (Vec::new(), Vec::new());
-        for (line, x, y) in [("Annual report 2024".to_string(), 72.0, 750.0), (format!("Body of page {page}"), 72.0, 700.0), (format!("{}", page + 1), 540.0, 30.0)] {
+        for (line, x, y) in [
+            ("Annual report 2024".to_string(), 72.0, 750.0),
+            (format!("Body of page {page}"), 72.0, 700.0),
+            (format!("{}", page + 1), 540.0, 30.0),
+        ] {
             for (at, ch) in line.chars().enumerate() {
                 chars.push(CharRecord::new(ch as u32, 0));
                 boxes.push([x + at as f32 * 6.0, y, x + at as f32 * 6.0 + 5.0, y + 10.0]);
@@ -612,14 +722,19 @@ mod tests {
         selecting.start_copy(false, pages, NOT_HEAVY);
         let mut read = Vec::new();
         while selecting.is_copying() {
-            let wanted = selecting.wanted(Urgency::WhenIdle, &[], pages, NOT_HEAVY).expect("a copy waits for something it asks for");
+            let wanted = selecting
+                .wanted(Urgency::WhenIdle, &[], pages, NOT_HEAVY)
+                .expect("a copy waits for something it asks for");
             read.push((wanted.page, wanted.check));
             selecting.page_read(wanted.page, report_page(wanted.page), wanted.check, &[]);
             selecting.advance_copy(pages, NOT_HEAVY);
             assert!(read.len() < 10, "it keeps asking: {read:?}");
         }
         assert_eq!(selecting.take_copied().unwrap().text, "Body of page 1\nBody of page 2");
-        assert!(read.contains(&(0, false)) && read.contains(&(3, false)), "the pages past the pick are read with no drawing: {read:?}");
+        assert!(
+            read.contains(&(0, false)) && read.contains(&(3, false)),
+            "the pages past the pick are read with no drawing: {read:?}"
+        );
 
         let mut services = Selecting::default();
         services.set_range(Range::pages(1, 1));
@@ -634,9 +749,17 @@ mod tests {
     }
 
     fn restricted(line: &str) -> Arc<PageText> {
-        let frame = PageFrame { turns: 0, left: 0.0, bottom: 0.0, right: 612.0, top: 792.0 };
+        let frame = PageFrame {
+            turns: 0,
+            left: 0.0,
+            bottom: 0.0,
+            right: 612.0,
+            top: 792.0,
+        };
         let chars: Vec<CharRecord> = line.chars().map(|ch| CharRecord::new(ch as u32, 0)).collect();
-        let boxes: Vec<CharBox> = (0..chars.len()).map(|at| [72.0 + at as f32 * 6.0, 700.0, 77.0 + at as f32 * 6.0, 710.0]).collect();
+        let boxes: Vec<CharBox> = (0..chars.len())
+            .map(|at| [72.0 + at as f32 * 6.0, 700.0, 77.0 + at as f32 * 6.0, 710.0])
+            .collect();
         Arc::new(PageText::build(&chars, &boxes, frame, true, true))
     }
 
@@ -652,17 +775,36 @@ mod tests {
     #[test]
     fn a_press_asks_for_its_page_and_nothing_else() {
         let mut selecting = Selecting::default();
-        assert_eq!(selecting.wanted(Urgency::Now, &[0, 1, 2], NO_NEIGHBOURS, NOT_HEAVY), None, "nothing's read for an idle page");
+        assert_eq!(
+            selecting.wanted(Urgency::Now, &[0, 1, 2], NO_NEIGHBOURS, NOT_HEAVY),
+            None,
+            "nothing's read for an idle page"
+        );
         assert_eq!(selecting.wanted(Urgency::WhenIdle, &[0, 1, 2], NO_NEIGHBOURS, NOT_HEAVY), None);
         selecting.press(at(1, 80.0), 1, false);
-        assert_eq!(selecting.wanted(Urgency::Now, &[0, 1, 2], NO_NEIGHBOURS, NOT_HEAVY), Some(WantedText { page: 1, check: false }));
+        assert_eq!(
+            selecting.wanted(Urgency::Now, &[0, 1, 2], NO_NEIGHBOURS, NOT_HEAVY),
+            Some(WantedText { page: 1, check: false })
+        );
         assert!(!selecting.has_selection());
         selecting.page_read(1, text("abcdefghij"), false, &[0, 1, 2]);
-        assert_eq!(selecting.wanted(Urgency::Now, &[0, 1, 2], NO_NEIGHBOURS, NOT_HEAVY), None, "a click selects nothing, so no second look");
+        assert_eq!(
+            selecting.wanted(Urgency::Now, &[0, 1, 2], NO_NEIGHBOURS, NOT_HEAVY),
+            None,
+            "a click selects nothing, so no second look"
+        );
         selecting.drag(at(1, 110.0));
         assert!(selecting.has_selection());
-        assert_eq!(selecting.wanted(Urgency::Now, &[0, 1, 2], NO_NEIGHBOURS, NOT_HEAVY), None, "it can highlight with what it has, and tiles don't wait for a draw");
-        assert_eq!(selecting.wanted(Urgency::WhenIdle, &[0, 1, 2], NO_NEIGHBOURS, NOT_HEAVY), Some(WantedText { page: 1, check: true }), "selected and showing, so it's checked for hidden text");
+        assert_eq!(
+            selecting.wanted(Urgency::Now, &[0, 1, 2], NO_NEIGHBOURS, NOT_HEAVY),
+            None,
+            "it can highlight with what it has, and tiles don't wait for a draw"
+        );
+        assert_eq!(
+            selecting.wanted(Urgency::WhenIdle, &[0, 1, 2], NO_NEIGHBOURS, NOT_HEAVY),
+            Some(WantedText { page: 1, check: true }),
+            "selected and showing, so it's checked for hidden text"
+        );
         selecting.page_read(1, text("abcdefghij"), true, &[0, 1, 2]);
         assert_eq!(selecting.wanted(Urgency::WhenIdle, &[0, 1, 2], NO_NEIGHBOURS, NOT_HEAVY), None);
     }
@@ -672,15 +814,26 @@ mod tests {
     fn only_a_selection_checks_and_a_heavy_page_never_does() {
         let mut selecting = Selecting::default();
         assert!(!selecting.is_over_text(at(4, 80.0)));
-        assert_eq!(selecting.wanted(Urgency::WhenIdle, &[4], NO_NEIGHBOURS, NOT_HEAVY), Some(WantedText { page: 4, check: false }));
+        assert_eq!(
+            selecting.wanted(Urgency::WhenIdle, &[4], NO_NEIGHBOURS, NOT_HEAVY),
+            Some(WantedText { page: 4, check: false })
+        );
         assert_eq!(selecting.wanted(Urgency::Now, &[4], NO_NEIGHBOURS, NOT_HEAVY), None, "after what's being drawn");
         selecting.page_read(4, text("abcdefghij"), false, &[4]);
         assert!(selecting.is_over_text(at(4, 80.0)));
         assert!(!selecting.is_over_text(at(4, 500.0)));
         selecting.press(at(4, 72.0), 1, false);
         selecting.drag(at(4, 110.0));
-        assert_eq!(selecting.wanted(Urgency::WhenIdle, &[4], NO_NEIGHBOURS, |_| true), None, "heavy: it's kept as it is");
-        assert_eq!(selecting.wanted(Urgency::WhenIdle, &[4], NO_NEIGHBOURS, NOT_HEAVY), Some(WantedText { page: 4, check: true }), "any other page is checked");
+        assert_eq!(
+            selecting.wanted(Urgency::WhenIdle, &[4], NO_NEIGHBOURS, |_| true),
+            None,
+            "heavy: it's kept as it is"
+        );
+        assert_eq!(
+            selecting.wanted(Urgency::WhenIdle, &[4], NO_NEIGHBOURS, NOT_HEAVY),
+            Some(WantedText { page: 4, check: true }),
+            "any other page is checked"
+        );
     }
 
     /// Failure: selecting a whole long document reads every page, or holds their text.
@@ -691,7 +844,10 @@ mod tests {
         assert!(selecting.has_selection());
         let mut read = 0;
         let visible = [500, 501];
-        while let Some(wanted) = selecting.wanted(Urgency::Now, &visible, NO_NEIGHBOURS, NOT_HEAVY).or_else(|| selecting.wanted(Urgency::WhenIdle, &visible, NO_NEIGHBOURS, NOT_HEAVY)) {
+        while let Some(wanted) = selecting
+            .wanted(Urgency::Now, &visible, NO_NEIGHBOURS, NOT_HEAVY)
+            .or_else(|| selecting.wanted(Urgency::WhenIdle, &visible, NO_NEIGHBOURS, NOT_HEAVY))
+        {
             selecting.page_read(wanted.page, text("words"), wanted.check, &visible);
             read += 1;
             assert!(read < 8, "it keeps asking");
@@ -732,7 +888,10 @@ mod tests {
         selecting.set_range(Range::pages(0, 2));
         selecting.start_copy(false, 3, NOT_HEAVY);
         assert!(selecting.is_copying());
-        assert_eq!(selecting.wanted(Urgency::WhenIdle, &[], NO_NEIGHBOURS, NOT_HEAVY), Some(WantedText { page: 0, check: true }));
+        assert_eq!(
+            selecting.wanted(Urgency::WhenIdle, &[], NO_NEIGHBOURS, NOT_HEAVY),
+            Some(WantedText { page: 0, check: true })
+        );
         for page in 0..3 {
             selecting.page_read(page, text(&format!("page {page}")), true, &[]);
             selecting.advance_copy(3, NOT_HEAVY);
@@ -844,9 +1003,17 @@ mod tests {
 
     /// A page as it comes back when its check was asked for and couldn't be done: tried, and not checked.
     fn not_checked(line: &str) -> Arc<PageText> {
-        let frame = PageFrame { turns: 0, left: 0.0, bottom: 0.0, right: 612.0, top: 792.0 };
+        let frame = PageFrame {
+            turns: 0,
+            left: 0.0,
+            bottom: 0.0,
+            right: 612.0,
+            top: 792.0,
+        };
         let chars: Vec<CharRecord> = line.chars().map(|ch| CharRecord::new(ch as u32, 0)).collect();
-        let boxes: Vec<CharBox> = (0..chars.len()).map(|at| [72.0 + at as f32 * 6.0, 700.0, 77.0 + at as f32 * 6.0, 710.0]).collect();
+        let boxes: Vec<CharBox> = (0..chars.len())
+            .map(|at| [72.0 + at as f32 * 6.0, 700.0, 77.0 + at as f32 * 6.0, 710.0])
+            .collect();
         Arc::new(PageText::build(&chars, &boxes, frame, false, false))
     }
 
@@ -872,7 +1039,11 @@ mod tests {
         selecting.copy.as_mut().unwrap().next = MAX_COPY_PAGES;
         selecting.advance_copy(MAX_COPY_PAGES + 50, NOT_HEAVY);
         assert!(!selecting.is_copying());
-        assert!(selecting.notice().unwrap().text.contains(&format!("page {}", MAX_COPY_PAGES + 1)), "{:?}", selecting.notice());
+        assert!(
+            selecting.notice().unwrap().text.contains(&format!("page {}", MAX_COPY_PAGES + 1)),
+            "{:?}",
+            selecting.notice()
+        );
     }
 
     /// Failure: a file whose pages are each slow to read keeps a copy going past its time, with the reader waiting on nothing they can see.
@@ -890,14 +1061,33 @@ mod tests {
         selecting.page_read(3, text("words"), true, &[]);
         selecting.advance_copy(10, NOT_HEAVY);
         assert!(!selecting.is_copying());
-        assert_eq!(selecting.take_copied().unwrap().stopped_at, Some(1), "the page it was on, the first with the pages around it read");
+        assert_eq!(
+            selecting.take_copied().unwrap().stopped_at,
+            Some(1),
+            "the page it was on, the first with the pages around it read"
+        );
     }
 
     /// A page as large as can be selected: about 2.6 MiB held.
     fn huge_page() -> Arc<PageText> {
-        let frame = PageFrame { turns: 0, left: 0.0, bottom: 0.0, right: 612.0, top: 792.0 };
+        let frame = PageFrame {
+            turns: 0,
+            left: 0.0,
+            bottom: 0.0,
+            right: 612.0,
+            top: 792.0,
+        };
         let chars = vec![CharRecord::new('a' as u32, 0); recto_index::select::MAX_SELECTABLE_CHARS];
-        let boxes: Vec<CharBox> = (0..chars.len()).map(|at| [(at % 500) as f32, (at / 500 % 700) as f32, (at % 500) as f32 + 1.0, (at / 500 % 700) as f32 + 1.0]).collect();
+        let boxes: Vec<CharBox> = (0..chars.len())
+            .map(|at| {
+                [
+                    (at % 500) as f32,
+                    (at / 500 % 700) as f32,
+                    (at % 500) as f32 + 1.0,
+                    (at / 500 % 700) as f32 + 1.0,
+                ]
+            })
+            .collect();
         Arc::new(PageText::build(&chars, &boxes, frame, true, false))
     }
 
@@ -918,7 +1108,11 @@ mod tests {
         }
         let copied = selecting.take_copied().unwrap();
         assert!(copied.text.len() <= MAX_COPY_BYTES, "{}", copied.text.len());
-        assert_eq!(copied.stopped_at, Some(page - 1 - recto_index::chrome::NEIGHBOURS), "the page it was on, which is behind what's read by the pages it compares with");
+        assert_eq!(
+            copied.stopped_at,
+            Some(page - 1 - recto_index::chrome::NEIGHBOURS),
+            "the page it was on, which is behind what's read by the pages it compares with"
+        );
         assert!(selecting.notice().unwrap().text.contains("as much as one copy holds"));
     }
 
@@ -941,7 +1135,11 @@ mod tests {
             assert!(read <= visible.len(), "it keeps asking");
         }
         assert!(read < visible.len(), "it stopped reading: {read}");
-        assert!(showing.held_bytes() >= MOST_TEXT_BYTES && showing.held_bytes() < MOST_TEXT_BYTES + huge.bytes(), "{}", showing.held_bytes());
+        assert!(
+            showing.held_bytes() >= MOST_TEXT_BYTES && showing.held_bytes() < MOST_TEXT_BYTES + huge.bytes(),
+            "{}",
+            showing.held_bytes()
+        );
     }
 
     /// Failure: a whole-page selection reads as ending at character 4,294,967,294, in what QA and the budgets look at.

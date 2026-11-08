@@ -28,7 +28,14 @@ unsafe extern "C" {
     static kCFTypeDictionaryKeyCallBacks: CfDictionaryKeyCallBacks;
     static kCFTypeDictionaryValueCallBacks: CfDictionaryValueCallBacks;
     fn CFNumberCreate(allocator: CfRef, kind: isize, value: *const c_void) -> CfRef;
-    fn CFDictionaryCreate(allocator: CfRef, keys: *const CfRef, values: *const CfRef, count: isize, key_callbacks: *const CfDictionaryKeyCallBacks, value_callbacks: *const CfDictionaryValueCallBacks) -> CfRef;
+    fn CFDictionaryCreate(
+        allocator: CfRef,
+        keys: *const CfRef,
+        values: *const CfRef,
+        count: isize,
+        key_callbacks: *const CfDictionaryKeyCallBacks,
+        value_callbacks: *const CfDictionaryValueCallBacks,
+    ) -> CfRef;
     fn CFStringCreateWithCString(allocator: CfRef, text: *const c_char, encoding: u32) -> CfRef;
     fn CFRelease(value: CfRef);
     fn CFGetRetainCount(value: CfRef) -> isize;
@@ -88,7 +95,9 @@ pub enum Purge {
 impl PixelSurface {
     /// A new surface, tagged sRGB. Costs almost nothing until written: 16 to 40 µs, and no footprint.
     pub fn create(width: u32, height: u32) -> io::Result<Self> {
-        let (Ok(w), Ok(h)) = (i32::try_from(width), i32::try_from(height)) else { return Err(io::ErrorKind::InvalidInput.into()) };
+        let (Ok(w), Ok(h)) = (i32::try_from(width), i32::try_from(height)) else {
+            return Err(io::ErrorKind::InvalidInput.into());
+        };
         if w <= 0 || h <= 0 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
@@ -103,7 +112,14 @@ impl PixelSurface {
                 CFNumberCreate(std::ptr::null(), K_CF_NUMBER_INT32, (&raw const format).cast()),
             ];
             let keys = [kIOSurfaceWidth, kIOSurfaceHeight, kIOSurfaceBytesPerElement, kIOSurfacePixelFormat];
-            let properties = CFDictionaryCreate(std::ptr::null(), keys.as_ptr(), values.as_ptr(), 4, &raw const kCFTypeDictionaryKeyCallBacks, &raw const kCFTypeDictionaryValueCallBacks);
+            let properties = CFDictionaryCreate(
+                std::ptr::null(),
+                keys.as_ptr(),
+                values.as_ptr(),
+                4,
+                &raw const kCFTypeDictionaryKeyCallBacks,
+                &raw const kCFTypeDictionaryValueCallBacks,
+            );
             let raw = IOSurfaceCreate(properties);
             CFRelease(properties);
             for value in values {
@@ -193,7 +209,11 @@ impl PixelSurface {
                 return Err(io::Error::other("the surface couldn't be locked"));
             }
             let base = IOSurfaceGetBaseAddress(raw).cast::<u8>();
-            let result = if base.is_null() { Err(io::Error::other("the surface has no memory")) } else { Ok(step(std::slice::from_raw_parts_mut(base, IOSurfaceGetAllocSize(raw)))) };
+            let result = if base.is_null() {
+                Err(io::Error::other("the surface has no memory"))
+            } else {
+                Ok(step(std::slice::from_raw_parts_mut(base, IOSurfaceGetAllocSize(raw))))
+            };
             IOSurfaceUnlock(raw, 0, std::ptr::null_mut());
             result
         }
@@ -298,15 +318,38 @@ unsafe extern "C" {
     fn mach_port_insert_right(task: MachPort, name: MachPort, right: MachPort, disposition: u32) -> KernReturn;
     fn mach_port_deallocate(task: MachPort, name: MachPort) -> KernReturn;
     fn mach_port_mod_refs(task: MachPort, name: MachPort, right: u32, delta: c_int) -> KernReturn;
-    fn mach_msg(message: *mut MsgHeader, option: c_int, send_size: u32, receive_limit: u32, receive_name: MachPort, timeout: u32, notify: MachPort) -> KernReturn;
-    fn task_get_exception_ports(task: MachPort, mask: u32, masks: *mut u32, count: *mut u32, ports: *mut MachPort, behaviors: *mut c_int, flavors: *mut c_int) -> KernReturn;
+    fn mach_msg(
+        message: *mut MsgHeader,
+        option: c_int,
+        send_size: u32,
+        receive_limit: u32,
+        receive_name: MachPort,
+        timeout: u32,
+        notify: MachPort,
+    ) -> KernReturn;
+    fn task_get_exception_ports(
+        task: MachPort,
+        mask: u32,
+        masks: *mut u32,
+        count: *mut u32,
+        ports: *mut MachPort,
+        behaviors: *mut c_int,
+        flavors: *mut c_int,
+    ) -> KernReturn;
     fn task_set_exception_ports(task: MachPort, mask: u32, port: MachPort, behavior: c_int, flavor: c_int) -> KernReturn;
     pub(crate) fn posix_spawnattr_setexceptionports_np(attr: *mut libc::posix_spawnattr_t, mask: u32, port: MachPort, behavior: c_int, flavor: c_int) -> c_int;
 }
 
 fn port_message(remote: MachPort, name: MachPort, disposition: u32, id: i32) -> PortMessage {
     PortMessage {
-        header: MsgHeader { bits: MACH_MSG_TYPE_COPY_SEND | MACH_MSGH_BITS_COMPLEX, size: size_of::<PortMessage>() as u32, remote, local: 0, voucher: 0, id },
+        header: MsgHeader {
+            bits: MACH_MSG_TYPE_COPY_SEND | MACH_MSGH_BITS_COMPLEX,
+            size: size_of::<PortMessage>() as u32,
+            remote,
+            local: 0,
+            voucher: 0,
+            id,
+        },
         descriptors: 1,
         name,
         pad: 0,
@@ -353,15 +396,29 @@ impl LinkInvite {
 
     /// Takes the link from what the child sent, if it has. A child that sent something else, or hasn't got that far, gives no link. It's read once and only for its shape, since the child may be hostile.
     pub fn accept(self, wait: Duration) -> Option<SurfaceSender> {
-        let mut buffer = PortReceived { message: port_message(0, 0, 0, 0), trailer: [0; 68] };
+        let mut buffer = PortReceived {
+            message: port_message(0, 0, 0, 0),
+            trailer: [0; 68],
+        };
         // SAFETY: the buffer's size is given as the receive limit, and the port is ours.
-        let rc = unsafe { mach_msg(&raw mut buffer.message.header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, size_of::<PortReceived>() as u32, self.port, millis(wait), 0) };
+        let rc = unsafe {
+            mach_msg(
+                &raw mut buffer.message.header,
+                MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                0,
+                size_of::<PortReceived>() as u32,
+                self.port,
+                millis(wait),
+                0,
+            )
+        };
         if rc != 0 {
             return None;
         }
         let message = buffer.message;
         let complex = message.header.bits & MACH_MSGH_BITS_COMPLEX != 0;
-        if !complex || message.descriptors != 1 || message.header.id != MSG_LINK || message.header.size != size_of::<PortMessage>() as u32 || message.name == 0 {
+        if !complex || message.descriptors != 1 || message.header.id != MSG_LINK || message.header.size != size_of::<PortMessage>() as u32 || message.name == 0
+        {
             // A message that isn't the link. Whatever rights it brought are left to this process's exit: a worker that does this is killed by whoever notices it has no link.
             return None;
         }
@@ -402,7 +459,15 @@ impl SurfaceSender {
                 return Err(io::Error::other("the surface has no port"));
             }
             let mut message = port_message(self.port, right, MACH_MSG_TYPE_MOVE_SEND, MSG_SURFACE);
-            let rc = mach_msg(&raw mut message.header, MACH_SEND_MSG | MACH_SEND_TIMEOUT, size_of::<PortMessage>() as u32, 0, 0, 0, 0);
+            let rc = mach_msg(
+                &raw mut message.header,
+                MACH_SEND_MSG | MACH_SEND_TIMEOUT,
+                size_of::<PortMessage>() as u32,
+                0,
+                0,
+                0,
+                0,
+            );
             if rc != 0 {
                 mach_port_deallocate(mach_task_self(), right);
                 return Err(io::Error::other(format!("sending a surface: {rc:#x}")));
@@ -432,7 +497,15 @@ impl SurfaceReceiver {
         // SAFETY: the arrays hold the 32 entries `count` says, and every right received here is this process's to use.
         unsafe {
             let task = mach_task_self();
-            let rc = task_get_exception_ports(task, LINK_SLOT_MASK, masks.as_mut_ptr(), &raw mut count, ports.as_mut_ptr(), behaviors.as_mut_ptr(), flavors.as_mut_ptr());
+            let rc = task_get_exception_ports(
+                task,
+                LINK_SLOT_MASK,
+                masks.as_mut_ptr(),
+                &raw mut count,
+                ports.as_mut_ptr(),
+                behaviors.as_mut_ptr(),
+                flavors.as_mut_ptr(),
+            );
             task_set_exception_ports(task, LINK_SLOT_MASK, 0, EXCEPTION_DEFAULT, 0);
             if rc != 0 || count == 0 || ports[0] == 0 || ports[0] == u32::MAX {
                 return None;
@@ -442,7 +515,15 @@ impl SurfaceReceiver {
                 return None;
             }
             let mut message = port_message(ports[0], port, MACH_MSG_TYPE_MAKE_SEND, MSG_LINK);
-            let sent = mach_msg(&raw mut message.header, MACH_SEND_MSG | MACH_SEND_TIMEOUT, size_of::<PortMessage>() as u32, 0, 0, 1000, 0);
+            let sent = mach_msg(
+                &raw mut message.header,
+                MACH_SEND_MSG | MACH_SEND_TIMEOUT,
+                size_of::<PortMessage>() as u32,
+                0,
+                0,
+                1000,
+                0,
+            );
             mach_port_deallocate(task, ports[0]);
             (sent == 0).then_some(Self { port })
         }
@@ -450,10 +531,22 @@ impl SurfaceReceiver {
 
     /// The next surface, or `None` if none comes in time. The host sends it before the frame that needs it, so this doesn't wait in practice.
     pub fn next(&self, wait: Duration) -> Option<PixelSurface> {
-        let mut buffer = PortReceived { message: port_message(0, 0, 0, 0), trailer: [0; 68] };
+        let mut buffer = PortReceived {
+            message: port_message(0, 0, 0, 0),
+            trailer: [0; 68],
+        };
         // SAFETY: the buffer's size is given as the receive limit, the port is ours, and the right received is released once it's been looked up.
         unsafe {
-            if mach_msg(&raw mut buffer.message.header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, size_of::<PortReceived>() as u32, self.port, millis(wait), 0) != 0 {
+            if mach_msg(
+                &raw mut buffer.message.header,
+                MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+                0,
+                size_of::<PortReceived>() as u32,
+                self.port,
+                millis(wait),
+                0,
+            ) != 0
+            {
                 return None;
             }
             let message = buffer.message;

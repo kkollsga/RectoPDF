@@ -37,7 +37,13 @@ fn measure(label: &str, worker: &Path, step: impl FnOnce() -> String) {
     stop.store(true, Ordering::SeqCst);
     handle.join().unwrap();
     let host_peak = process_memory(std::process::id()).map_or(0, |memory| memory.peak_footprint_bytes);
-    println!("{label}: {:.2} s, host peak {:.1} MiB, largest worker {:.0} MiB, tree peak {:.0} MiB; {said}", took.as_secs_f64(), host_peak as f64 / MIB, largest.load(Ordering::SeqCst) as f64 / MIB, tree.load(Ordering::SeqCst) as f64 / MIB);
+    println!(
+        "{label}: {:.2} s, host peak {:.1} MiB, largest worker {:.0} MiB, tree peak {:.0} MiB; {said}",
+        took.as_secs_f64(),
+        host_peak as f64 / MIB,
+        largest.load(Ordering::SeqCst) as f64 / MIB,
+        tree.load(Ordering::SeqCst) as f64 / MIB
+    );
 }
 
 fn main() {
@@ -47,12 +53,26 @@ fn main() {
     let rect: Vec<f32> = args.next().expect("x,y,w,h").split(',').map(|part| part.parse().unwrap()).collect();
     let rect = [rect[0], rect[1], rect[2], rect[3]];
     let paste = args.next().as_deref() == Some("svg");
-    let worker = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("recto-render-service");
-    measure("copy", &worker, || match extract::snapshot_clip(&file, page - 1, rect, false, &ClipStop::default()) {
-        ClipOutcome::Ready(clip) => format!("{:?}, {} bytes made", clip.types(), clip.items.iter().filter_map(|item| item.bytes()).map(<[u8]>::len).sum::<usize>()),
-        other => format!("{other:?}"),
+    let worker = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("recto-render-service");
+    measure("copy", &worker, || {
+        match extract::snapshot_clip(&file, page - 1, rect, false, &ClipStop::default()) {
+            ClipOutcome::Ready(clip) => format!(
+                "{:?}, {} bytes made",
+                clip.types(),
+                clip.items.iter().filter_map(|item| item.bytes()).map(<[u8]>::len).sum::<usize>()
+            ),
+            other => format!("{other:?}"),
+        }
     });
     if paste {
-        measure("paste svg", &worker, || extract::snapshot_svg(&file, page - 1, rect, extract::MAX_CLIP_ITEM).map_or_else(|error| error.message, |svg| format!("{} bytes", svg.len())));
+        measure("paste svg", &worker, || {
+            extract::snapshot_svg(&file, page - 1, rect, extract::MAX_CLIP_ITEM).map_or_else(|error| error.message, |svg| format!("{} bytes", svg.len()))
+        });
     }
 }

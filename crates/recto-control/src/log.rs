@@ -37,7 +37,12 @@ struct Rotating {
 
 impl Rotating {
     fn new(path: PathBuf, old_path: PathBuf) -> Self {
-        Self { path, old_path, file: None, size: 0 }
+        Self {
+            path,
+            old_path,
+            file: None,
+            size: 0,
+        }
     }
 
     fn append(&mut self, paths: &StatePaths, line: &[u8]) -> std::io::Result<()> {
@@ -91,7 +96,29 @@ pub struct ActivityLog {
 
 /// What changed something: a command of that kind that worked. A failed one changed nothing, whatever it was stopped by, and a flood of those can't push the changes out. A list of refusals would miss the next one added, as `would_discard_user_edits` was. **Limit:** an agent's own working commands can still push out older ones, since each is a change to record.
 fn is_change(cmd: &str, outcome: &str) -> bool {
-    outcome == "ok" && matches!(cmd, "open" | "close" | "page_move" | "page_rotate" | "page_delete" | "page_insert" | "undo" | "redo" | "discard" | "clear_history" | "render" | "export_svg" | "image" | "snapshot" | "print" | "index_clear" | "stop" | "permission_set" | "update_install")
+    outcome == "ok"
+        && matches!(
+            cmd,
+            "open"
+                | "close"
+                | "page_move"
+                | "page_rotate"
+                | "page_delete"
+                | "page_insert"
+                | "undo"
+                | "redo"
+                | "discard"
+                | "clear_history"
+                | "render"
+                | "export_svg"
+                | "image"
+                | "snapshot"
+                | "print"
+                | "index_clear"
+                | "stop"
+                | "permission_set"
+                | "update_install"
+        )
 }
 
 /// Text, a picture or an export given past what a file's permissions ask. Only an answer that worked gave anything. Exports ask the same step as Copy (owner, 2026-11-08).
@@ -101,7 +128,11 @@ fn is_override(cmd: &str, outcome: &str, details: &Value) -> bool {
 
 /// What an agent can repeat for nothing, so it's counted rather than written each time.
 fn collapses(cmd: &str, outcome: &str) -> bool {
-    matches!(cmd, "status" | "unknown" | "connect" | "permission_show" | "permission_request") || matches!(outcome, "permission_denied" | "needs_terminal" | "would_clear_redo" | "would_discard_user_edits" | "sign_refused" | "busy")
+    matches!(cmd, "status" | "unknown" | "connect" | "permission_show" | "permission_request")
+        || matches!(
+            outcome,
+            "permission_denied" | "needs_terminal" | "would_clear_redo" | "would_discard_user_edits" | "sign_refused" | "busy"
+        )
 }
 
 impl ActivityLog {
@@ -140,14 +171,25 @@ impl ActivityLog {
 
     /// Whether this is a repeat of something already written. The first of a kind is written straight away, so a crash can't lose that it happened at all.
     fn note_repeat(&mut self, cmd: &str, level: Level, outcome: &str) -> bool {
-        if let Some(found) = self.collapsing.iter_mut().find(|found| found.cmd == cmd && found.level == level && found.outcome == outcome) {
+        if let Some(found) = self
+            .collapsing
+            .iter_mut()
+            .find(|found| found.cmd == cmd && found.level == level && found.outcome == outcome)
+        {
             found.count += 1;
             return true;
         }
         if self.collapsing.len() >= MAX_COLLAPSING {
             self.flush_due(true);
         }
-        self.collapsing.push(Collapsing { cmd: cmd.to_string(), level, outcome: outcome.to_string(), count: 0, since_ms: now_ms(), written: Instant::now() });
+        self.collapsing.push(Collapsing {
+            cmd: cmd.to_string(),
+            level,
+            outcome: outcome.to_string(),
+            count: 0,
+            since_ms: now_ms(),
+            written: Instant::now(),
+        });
         false
     }
 
@@ -191,7 +233,14 @@ pub fn recent(paths: &StatePaths, last: Option<u32>) -> Value {
     let wanted = last.map_or(DEFAULT_LAST, |last| last as usize).max(1);
     let mut lines = Vec::new();
     let mut kept_bytes = 0u64;
-    for path in [&paths.old_log, &paths.log, &paths.old_other_log, &paths.other_log, &paths.old_overrides_log, &paths.overrides_log] {
+    for path in [
+        &paths.old_log,
+        &paths.log,
+        &paths.old_other_log,
+        &paths.other_log,
+        &paths.old_overrides_log,
+        &paths.overrides_log,
+    ] {
         if let Ok(Some(bytes)) = local::read_private_file(path, MAX_LOG_BYTES * 2) {
             kept_bytes += bytes.len() as u64;
             for line in String::from_utf8_lossy(&bytes).lines() {
@@ -278,7 +327,17 @@ mod tests {
         let mut log = ActivityLog::new(&paths);
         log.record("page_delete", Level::Control, "ok", &json!({ "pages": "2" }));
         let size = std::fs::metadata(&paths.log).unwrap().len();
-        for (cmd, outcome) in [("discard", "would_discard_user_edits"), ("undo", "nothing_to_undo"), ("redo", "nothing_to_redo"), ("page_rotate", "page_out_of_range"), ("close", "unsaved_changes"), ("open", "not_found"), ("render", "too_large_at_this_scale"), ("stop", "busy"), ("page_move", "some_code_nobody_has_thought_of_yet")] {
+        for (cmd, outcome) in [
+            ("discard", "would_discard_user_edits"),
+            ("undo", "nothing_to_undo"),
+            ("redo", "nothing_to_redo"),
+            ("page_rotate", "page_out_of_range"),
+            ("close", "unsaved_changes"),
+            ("open", "not_found"),
+            ("render", "too_large_at_this_scale"),
+            ("stop", "busy"),
+            ("page_move", "some_code_nobody_has_thought_of_yet"),
+        ] {
             for _ in 0..3 {
                 log.record(cmd, Level::Control, outcome, &Value::Null);
             }
@@ -288,7 +347,10 @@ mod tests {
         log.flush();
         let shown = recent(&paths, Some(1000));
         let entries = shown["entries"].as_array().unwrap();
-        assert!(entries.iter().any(|entry| entry["cmd"] == "undo" && entry["outcome"] == "nothing_to_undo"), "{shown}");
+        assert!(
+            entries.iter().any(|entry| entry["cmd"] == "undo" && entry["outcome"] == "nothing_to_undo"),
+            "{shown}"
+        );
         let refused: Vec<&Value> = entries.iter().filter(|entry| entry["outcome"] == "would_discard_user_edits").collect();
         assert_eq!(refused.len(), 2, "one written, and one for the rest: {refused:?}");
         std::fs::remove_dir_all(&paths.root).unwrap();
@@ -316,7 +378,10 @@ mod tests {
         assert!(entries.iter().any(|entry| entry["cmd"] == "page_delete"), "the edit is gone");
         // The first of each was written at once, and pushed out by the reads. The count of the rest is there, in one line each.
         for (cmd, outcome) in [("status", "ok"), ("unknown", "bad_command"), ("text", "permission_denied")] {
-            let rows: Vec<&Value> = entries.iter().filter(|entry| entry["cmd"] == cmd && entry["outcome"] == outcome && entry["count"].is_u64()).collect();
+            let rows: Vec<&Value> = entries
+                .iter()
+                .filter(|entry| entry["cmd"] == cmd && entry["outcome"] == outcome && entry["count"].is_u64())
+                .collect();
             assert_eq!(rows.len(), 1, "{cmd}: {rows:?}");
             assert_eq!(rows[0]["count"], 59_999, "{cmd}");
         }
@@ -404,7 +469,12 @@ mod tests {
         let paths = StatePaths::overridden(&dir).unwrap();
         let mut log = ActivityLog::new(&paths);
         log.record("image", Level::Full, "ok", &json!({ "tab": "#1", "page": 1, "number": 2, "anyway": true }));
-        log.record("snapshot", Level::ReadOnly, "ok", &json!({ "tab": "#1", "page": 1, "as": "text", "anyway": true }));
+        log.record(
+            "snapshot",
+            Level::ReadOnly,
+            "ok",
+            &json!({ "tab": "#1", "page": 1, "as": "text", "anyway": true }),
+        );
         log.record("image", Level::Full, "ok", &json!({ "tab": "#1", "page": 1, "number": 2, "anyway": false }));
         let lines = |path: &PathBuf| std::fs::read_to_string(path).unwrap_or_default().lines().count();
         assert_eq!(lines(&paths.overrides_log), 2);
@@ -425,7 +495,11 @@ mod tests {
         log.record("render", Level::Full, "copy_restricted", &json!({ "tab": "#1", "anyway": false }));
         let lines = |path: &PathBuf| std::fs::read_to_string(path).unwrap_or_default().lines().count();
         assert_eq!(lines(&paths.overrides_log), 3);
-        assert_eq!(lines(&paths.log), 1, "a print to a PDF is a change, as `render` and `export svg` are, and a refused one changed nothing");
+        assert_eq!(
+            lines(&paths.log),
+            1,
+            "a print to a PDF is a change, as `render` and `export svg` are, and a refused one changed nothing"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

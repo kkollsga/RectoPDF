@@ -60,14 +60,20 @@ impl FrameReader {
         if self.payload.len() < target {
             self.payload.resize(target, 0);
         }
-        let Some(got) = recv(channel, &mut self.payload[self.filled..target], &mut self.handles)? else { return Ok(None) };
+        let Some(got) = recv(channel, &mut self.payload[self.filled..target], &mut self.handles)? else {
+            return Ok(None);
+        };
         self.filled += got;
         if self.filled == len { Ok(Some(self.finish(header))) } else { Ok(None) }
     }
 
     fn finish(&mut self, header: Header) -> Frame {
         self.expecting = None;
-        Frame { kind: header.kind, payload: std::mem::take(&mut self.payload), handles: std::mem::take(&mut self.handles) }
+        Frame {
+            kind: header.kind,
+            payload: std::mem::take(&mut self.payload),
+            handles: std::mem::take(&mut self.handles),
+        }
     }
 
     /// Whether any handles have arrived with the frame in progress. The host expects none from a worker, ever.

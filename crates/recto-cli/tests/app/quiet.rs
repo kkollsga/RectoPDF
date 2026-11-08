@@ -29,7 +29,11 @@ impl ScreenWatch {
                 let shown = windows_on_screen().unwrap_or_default();
                 anything |= !shown.is_empty();
                 for window in shown {
-                    let is_ours = *ours.entry(window.pid).or_insert_with(|| recto_platform::local::process_path(window.pid).and_then(|path| path.canonicalize().ok()).is_some_and(|path| path == executable));
+                    let is_ours = *ours.entry(window.pid).or_insert_with(|| {
+                        recto_platform::local::process_path(window.pid)
+                            .and_then(|path| path.canonicalize().ok())
+                            .is_some_and(|path| path == executable)
+                    });
                     if is_ours && seen.len() < 100 {
                         seen.push(window);
                     }
@@ -103,7 +107,12 @@ fn a_quiet_run_never_puts_a_window_on_screen() {
         return;
     }
     assert!(samples > 50, "it looked often enough to see a flash: {samples} looks");
-    assert!(seen.is_empty(), "a quiet run's windows were on screen, {} times in {samples} looks: {:?}", seen.len(), &seen[..seen.len().min(8)]);
+    assert!(
+        seen.is_empty(),
+        "a quiet run's windows were on screen, {} times in {samples} looks: {:?}",
+        seen.len(),
+        &seen[..seen.len().min(8)]
+    );
     assert!(actives.iter().all(|active| active == false), "the app was never the active one: {actives:?}");
 }
 
@@ -116,13 +125,24 @@ fn a_quiet_run_stays_quiet_when_the_system_opens_it_again() {
     let watch = ScreenWatch::start(app.canonicalize().unwrap());
     let run = Run::start().unwrap();
     // On this run's own state and quiet, should it start a copy rather than reach the one running.
-    let opened = std::process::Command::new("/usr/bin/open").arg("-g").arg("--env").arg(format!("{}={}", recto_control::state::STATE_ENV, run.state.root.display())).arg(&bundle).args(["--args", "--qa"]).output().unwrap();
+    let opened = std::process::Command::new("/usr/bin/open")
+        .arg("-g")
+        .arg("--env")
+        .arg(format!("{}={}", recto_control::state::STATE_ENV, run.state.root.display()))
+        .arg(&bundle)
+        .args(["--args", "--qa"])
+        .output()
+        .unwrap();
     assert!(opened.status.success(), "{opened:?}");
     let began = std::time::Instant::now();
     let mut looks = 0;
     while began.elapsed() < Duration::from_secs(2) {
         let app = run.report()["app"].clone();
-        assert_eq!((app["activation"].clone(), app["is_active"].clone(), app["window"]["is_visible"].clone()), (serde_json::json!("prohibited"), serde_json::json!(false), serde_json::json!(false)), "opened again, it stays quiet: {app}");
+        assert_eq!(
+            (app["activation"].clone(), app["is_active"].clone(), app["window"]["is_visible"].clone()),
+            (serde_json::json!("prohibited"), serde_json::json!(false), serde_json::json!(false)),
+            "opened again, it stays quiet: {app}"
+        );
         looks += 1;
         std::thread::sleep(Duration::from_millis(50));
     }

@@ -14,7 +14,11 @@ fn counters() -> (u64, u64, u64) {
     let pid = std::process::id();
     let written = recto_platform::local::process_counters(pid).map_or(0, |counters| counters.disk_bytes_written);
     let memory = recto_platform::isolate::process_memory(pid);
-    (written, memory.as_ref().map_or(0, |memory| memory.footprint_bytes), memory.map_or(0, |memory| memory.peak_footprint_bytes))
+    (
+        written,
+        memory.as_ref().map_or(0, |memory| memory.footprint_bytes),
+        memory.map_or(0, |memory| memory.peak_footprint_bytes),
+    )
 }
 
 fn mib(bytes: u64) -> f64 {
@@ -24,7 +28,11 @@ fn mib(bytes: u64) -> f64 {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (source, work, delete) = match args.as_slice() {
-        [flag, count, work, delete] if flag == "--pages" => (Err(count.parse::<usize>().expect("a page count")), PathBuf::from(work), delete.parse::<u32>().expect("a page")),
+        [flag, count, work, delete] if flag == "--pages" => (
+            Err(count.parse::<usize>().expect("a page count")),
+            PathBuf::from(work),
+            delete.parse::<u32>().expect("a page"),
+        ),
         [file, work, delete] => (Ok(PathBuf::from(file)), PathBuf::from(work), delete.parse::<u32>().expect("a page")),
         _ => {
             eprintln!("usage: save_delete <file.pdf | --pages N> <work folder> <page to delete, 1-based>");
@@ -39,7 +47,14 @@ fn main() {
             std::fs::copy(file, &copy).unwrap();
         }
         Err(count) => {
-            let pages: Vec<recto_testpdf::Page> = (0..*count).map(|at| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Page {at} of a long document"), "With a second line of ordinary words on it."]))).collect();
+            let pages: Vec<recto_testpdf::Page> = (0..*count)
+                .map(|at| {
+                    recto_testpdf::Page::new(recto_testpdf::text_lines(&[
+                        &format!("Page {at} of a long document"),
+                        "With a second line of ordinary words on it.",
+                    ]))
+                })
+                .collect();
             std::fs::write(&copy, recto_testpdf::pages(&pages)).unwrap();
         }
     }
@@ -47,16 +62,54 @@ fn main() {
     if pages == 1 {
         // Something to delete beside the one page, added by an append, which isn't what's measured.
         let small = work.join("small.pdf");
-        std::fs::write(&small, recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["A small page to delete"]))])).unwrap();
-        let added = [AddedFile { path: &small, page_count: 1, stamp: recto_platform::file_stamp(&small).ok() }];
-        let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
-        let request = SaveRequest { path: &copy, stamp: recto_platform::file_stamp(&copy).ok(), file_pages: 1, pages: &order, added: &added };
+        std::fs::write(
+            &small,
+            recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["A small page to delete"]))]),
+        )
+        .unwrap();
+        let added = [AddedFile {
+            path: &small,
+            page_count: 1,
+            stamp: recto_platform::file_stamp(&small).ok(),
+        }];
+        let order = [
+            PageRef {
+                source: 0,
+                page: 0,
+                quarter_turns: 0,
+            },
+            PageRef {
+                source: 1,
+                page: 0,
+                quarter_turns: 0,
+            },
+        ];
+        let request = SaveRequest {
+            path: &copy,
+            stamp: recto_platform::file_stamp(&copy).ok(),
+            file_pages: 1,
+            pages: &order,
+            added: &added,
+        };
         recto_core::save::save(&request, Target::Same, None, &mut recto_core::save::NoHooks).expect("the page is added");
         pages = 2;
     }
     assert!(delete >= 1 && delete <= pages, "page {delete} of {pages}");
-    let order: Vec<PageRef> = (0..pages).filter(|page| *page != delete - 1).map(|page| PageRef { source: 0, page, quarter_turns: 0 }).collect();
-    let request = SaveRequest { path: &copy, stamp: recto_platform::file_stamp(&copy).ok(), file_pages: pages, pages: &order, added: &[] };
+    let order: Vec<PageRef> = (0..pages)
+        .filter(|page| *page != delete - 1)
+        .map(|page| PageRef {
+            source: 0,
+            page,
+            quarter_turns: 0,
+        })
+        .collect();
+    let request = SaveRequest {
+        path: &copy,
+        stamp: recto_platform::file_stamp(&copy).ok(),
+        file_pages: pages,
+        pages: &order,
+        added: &[],
+    };
     let (written_before, footprint_before, peak_before) = counters();
     let started = Instant::now();
     let outcome = recto_core::save::save(&request, Target::Same, None, &mut recto_core::save::NoHooks).expect("the delete saves");

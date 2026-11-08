@@ -11,7 +11,10 @@ use recto_session::{Session, TabId};
 use std::path::Path;
 use std::time::Duration;
 
-const BUDGET: Budget = Budget { time: Duration::from_secs(120), memory: 256 * 1024 * 1024 };
+const BUDGET: Budget = Budget {
+    time: Duration::from_secs(120),
+    memory: 256 * 1024 * 1024,
+};
 /// What one sequence may do, where a step costs 1 and more on a long document. Enough for a small document to go well past the undo cap, or for dozens of steps at the longest a document can be.
 const MAX_COST: usize = 8192;
 
@@ -26,7 +29,11 @@ fn fingerprint(slots: &[PageSlot]) -> u64 {
 }
 
 fn is_the_file(slots: &[PageSlot], file_pages: u32) -> bool {
-    slots.len() == file_pages as usize && slots.iter().enumerate().all(|(place, slot)| slot.source == 0 && slot.quarter_turns == 0 && slot.page as usize == place)
+    slots.len() == file_pages as usize
+        && slots
+            .iter()
+            .enumerate()
+            .all(|(place, slot)| slot.source == 0 && slot.quarter_turns == 0 && slot.page as usize == place)
 }
 
 /// Whose step, and what the document was before it.
@@ -48,7 +55,20 @@ struct Model {
 
 impl Model {
     fn new(id: TabId, file_pages: u32) -> Self {
-        Self { id, file_pages, slots: (0..file_pages).map(|page| PageSlot { source: 0, page, quarter_turns: 0 }).collect(), undo: Vec::new(), redo: Vec::new(), sources: Vec::new() }
+        Self {
+            id,
+            file_pages,
+            slots: (0..file_pages)
+                .map(|page| PageSlot {
+                    source: 0,
+                    page,
+                    quarter_turns: 0,
+                })
+                .collect(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            sources: Vec::new(),
+        }
     }
 
     fn commit(&mut self, before: u64, by: Author) {
@@ -75,22 +95,52 @@ enum Op {
     Close,
 }
 
-const FILES: &[(&str, u32)] = &[("/fuzz/p1.pdf", 1), ("/fuzz/p2.pdf", 2), ("/fuzz/p7.pdf", 7), ("/fuzz/p300.pdf", 300), ("/fuzz/p4999.pdf", 4_999), ("/fuzz/p190000.pdf", 190_000), ("/fuzz/p200000.pdf", 200_000)];
+const FILES: &[(&str, u32)] = &[
+    ("/fuzz/p1.pdf", 1),
+    ("/fuzz/p2.pdf", 2),
+    ("/fuzz/p7.pdf", 7),
+    ("/fuzz/p300.pdf", 300),
+    ("/fuzz/p4999.pdf", 4_999),
+    ("/fuzz/p190000.pdf", 190_000),
+    ("/fuzz/p200000.pdf", 200_000),
+];
 
 fn read_op(take: &mut Take<'_>, pages: u32) -> Op {
     let pages = pages.max(1);
     let which = take.u8() % 16;
     // Mostly in range, since a refused step tests only the refusal.
-    let place = |take: &mut Take<'_>, limit: u32| if take.u8() < 240 { u32::from(take.u16()) % limit.max(1) } else { take.pick(&[0, 1, limit, limit + 1, u32::MAX - 1, u32::MAX]) };
+    let place = |take: &mut Take<'_>, limit: u32| {
+        if take.u8() < 240 {
+            u32::from(take.u16()) % limit.max(1)
+        } else {
+            take.pick(&[0, 1, limit, limit + 1, u32::MAX - 1, u32::MAX])
+        }
+    };
     let start = place(take, pages);
-    let len = if take.u8() < 200 { 1 + u32::from(take.u8() % 3) } else { place(take, pages).saturating_add(1) };
+    let len = if take.u8() < 200 {
+        1 + u32::from(take.u8() % 3)
+    } else {
+        place(take, pages).saturating_add(1)
+    };
     match which {
-        0..=2 => Op::Move { start, len, to: place(take, pages) },
-        3..=5 => Op::Rotate { start, len, turns: take.pick(&[1, 2, 3, -1, -2, 4, 0, 5, i32::MIN, i32::MAX]) },
+        0..=2 => Op::Move {
+            start,
+            len,
+            to: place(take, pages),
+        },
+        3..=5 => Op::Rotate {
+            start,
+            len,
+            turns: take.pick(&[1, 2, 3, -1, -2, 4, 0, 5, i32::MIN, i32::MAX]),
+        },
         6 | 7 => Op::Delete { start, len },
         8 | 9 => {
             let (file, pages_in_it) = FILES[usize::from(take.u8()) % if take.u8() < 240 { 4 } else { FILES.len() }];
-            Op::Insert { at: place(take, pages + 1), file, pages: pages_in_it }
+            Op::Insert {
+                at: place(take, pages + 1),
+                file,
+                pages: pages_in_it,
+            }
         }
         10..=12 => Op::Undo,
         13 | 14 => Op::Redo,
@@ -108,7 +158,11 @@ fn sequence(data: &[u8]) {
     let mut take = Take(data);
     let file_pages = take.pick(&[1u32, 1, 2, 3, 5, 8, 20, 100, 5_000]);
     let mut session = Session::new(NamedLoader);
-    let open = |session: &mut Session<NamedLoader>| session.open_with_facts(Path::new("/fuzz/doc.pdf"), facts_of(file_pages), None, None).expect("a stand-in document opens");
+    let open = |session: &mut Session<NamedLoader>| {
+        session
+            .open_with_facts(Path::new("/fuzz/doc.pdf"), facts_of(file_pages), None, None)
+            .expect("a stand-in document opens")
+    };
     let id = open(&mut session);
     let mut model = Model::new(id, file_pages);
     let mut cost = 0;
@@ -189,8 +243,16 @@ fn agent_step(session: &mut Session<NamedLoader>, model: &mut Model, op: Op) {
     let tab = format!("#{}", model.id.0);
     let before = fingerprint(&model.slots);
     let line = match op {
-        Op::Move { start, len, to } => format!(r#"{{"cmd":"page_move","tab":"{tab}","pages":"{}","to":{}}}"#, span(start, len), to.saturating_add(1)),
-        Op::Rotate { start, len, turns } => format!(r#"{{"cmd":"page_rotate","tab":"{tab}","pages":"{}","degrees":{}}}"#, span(start, len), turns.saturating_mul(90)),
+        Op::Move { start, len, to } => format!(
+            r#"{{"cmd":"page_move","tab":"{tab}","pages":"{}","to":{}}}"#,
+            span(start, len),
+            to.saturating_add(1)
+        ),
+        Op::Rotate { start, len, turns } => format!(
+            r#"{{"cmd":"page_rotate","tab":"{tab}","pages":"{}","degrees":{}}}"#,
+            span(start, len),
+            turns.saturating_mul(90)
+        ),
         Op::Delete { start, len } => format!(r#"{{"cmd":"page_delete","tab":"{tab}","pages":"{}"}}"#, span(start, len)),
         Op::Insert { at, file, .. } => format!(r#"{{"cmd":"page_insert","tab":"{tab}","path":"{file}","at":{}}}"#, at.saturating_add(1)),
         Op::Undo => format!(r#"{{"cmd":"undo","tab":"{tab}"}}"#),
@@ -275,7 +337,14 @@ fn mirror(model: &mut Model, taken: bool, before: u64, by: Author, op: Op) {
                     model.sources.len()
                 }
             } as u16;
-            slots.splice(at as usize..at as usize, (0..pages).map(|page| PageSlot { source, page, quarter_turns: 0 }));
+            slots.splice(
+                at as usize..at as usize,
+                (0..pages).map(|page| PageSlot {
+                    source,
+                    page,
+                    quarter_turns: 0,
+                }),
+            );
         }
         Op::Undo | Op::Redo | Op::Discard | Op::Close => unreachable!("not edits"),
     }
@@ -289,40 +358,74 @@ fn mirror_undo(session: &Session<NamedLoader>, model: &mut Model, undone: bool) 
         return;
     }
     let past = model.undo.pop().expect("the session undid a step the model never saw");
-    let now = session.page_edits(model.id).map_or_else(|| fingerprint(&identity(model.file_pages)), |edits| fingerprint(edits.slots()));
+    let now = session
+        .page_edits(model.id)
+        .map_or_else(|| fingerprint(&identity(model.file_pages)), |edits| fingerprint(edits.slots()));
     assert_eq!(now, past.before, "undo didn't give back what was there before the step");
-    model.redo.push(Past { before: fingerprint(&model.slots), by: past.by });
-    model.slots = session.page_edits(model.id).map_or_else(|| identity(model.file_pages), |edits| edits.slots().to_vec());
+    model.redo.push(Past {
+        before: fingerprint(&model.slots),
+        by: past.by,
+    });
+    model.slots = session
+        .page_edits(model.id)
+        .map_or_else(|| identity(model.file_pages), |edits| edits.slots().to_vec());
 }
 
 fn mirror_redo(session: &Session<NamedLoader>, model: &mut Model, redone: bool) {
     if !redone {
         // Only agents' steps may have gone from under an undone step: an owner's must never be dropped.
-        assert!(model.redo.iter().all(|past| past.by == Author::Agent), "an undone step of the owner's was dropped");
+        assert!(
+            model.redo.iter().all(|past| past.by == Author::Agent),
+            "an undone step of the owner's was dropped"
+        );
         model.redo.clear();
         return;
     }
     let past = model.redo.pop().expect("the session redid a step the model never saw");
-    let now = session.page_edits(model.id).map_or_else(|| fingerprint(&identity(model.file_pages)), |edits| fingerprint(edits.slots()));
+    let now = session
+        .page_edits(model.id)
+        .map_or_else(|| fingerprint(&identity(model.file_pages)), |edits| fingerprint(edits.slots()));
     assert_eq!(now, past.before, "redo didn't give back what was undone");
-    model.undo.push(Past { before: fingerprint(&model.slots), by: past.by });
-    model.slots = session.page_edits(model.id).map_or_else(|| identity(model.file_pages), |edits| edits.slots().to_vec());
+    model.undo.push(Past {
+        before: fingerprint(&model.slots),
+        by: past.by,
+    });
+    model.slots = session
+        .page_edits(model.id)
+        .map_or_else(|| identity(model.file_pages), |edits| edits.slots().to_vec());
 }
 
 fn identity(pages: u32) -> Vec<PageSlot> {
-    (0..pages).map(|page| PageSlot { source: 0, page, quarter_turns: 0 }).collect()
+    (0..pages)
+        .map(|page| PageSlot {
+            source: 0,
+            page,
+            quarter_turns: 0,
+        })
+        .collect()
 }
 
 fn assert_state_holds(session: &Session<NamedLoader>, model: &Model) {
     let Some(tab) = session.tab(model.id) else { return };
     assert_eq!(session.pages_in(model.id) as usize, model.slots.len(), "the page count isn't the model's");
-    assert!(tab.page < session.pages_in(model.id).max(1), "the reader's place is off the end of the document");
+    assert!(
+        tab.page < session.pages_in(model.id).max(1),
+        "the reader's place is off the end of the document"
+    );
     let edits = session.page_edits(model.id);
     match edits {
         Some(edits) => {
             assert_eq!(edits.slots(), model.slots, "the page order isn't the model's");
-            assert!(edits.history_bytes() <= MAX_HISTORY_BYTES + MAX_PAGES * size_of::<PageSlot>(), "history holds {}", edits.history_bytes());
-            assert_eq!(edits.is_edited(), !is_the_file(&model.slots, model.file_pages), "`is_edited` isn't whether it differs from the file");
+            assert!(
+                edits.history_bytes() <= MAX_HISTORY_BYTES + MAX_PAGES * size_of::<PageSlot>(),
+                "history holds {}",
+                edits.history_bytes()
+            );
+            assert_eq!(
+                edits.is_edited(),
+                !is_the_file(&model.slots, model.file_pages),
+                "`is_edited` isn't whether it differs from the file"
+            );
             assert!(!edits.can_undo() || !model.undo.is_empty(), "the session has undo steps the model doesn't");
             assert!(!edits.can_redo() || !model.redo.is_empty(), "the session has redo steps the model doesn't");
             // Anything undone of the owner's is a reason not to discard, whoever undid it.
@@ -350,13 +453,19 @@ fn end_game(session: &mut Session<NamedLoader>, model: &mut Model) {
     assert!(undone <= MAX_UNDO, "{undone} steps undone");
     // With nothing left to undo, anything still differing is what fell off the list, and it has to say so.
     if session.is_edited(id) {
-        assert!(session.page_edits(id).is_some_and(|edits| edits.history_dropped()), "nothing left to undo, it still differs, and nothing says why");
+        assert!(
+            session.page_edits(id).is_some_and(|edits| edits.history_dropped()),
+            "nothing left to undo, it still differs, and nothing says why"
+        );
     }
     while session.redo_edit(id) {
         mirror_redo(session, model, true);
         assert_state_holds(session, model);
     }
-    assert!(model.redo.iter().all(|past| past.by == Author::Agent), "an undone step of the owner's was dropped");
+    assert!(
+        model.redo.iter().all(|past| past.by == Author::Agent),
+        "an undone step of the owner's was dropped"
+    );
     session.discard_edits(id);
     assert!(session.page_edits(id).is_none(), "discarding keeps nothing");
     assert!(!session.is_edited(id));

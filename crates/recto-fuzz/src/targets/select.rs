@@ -5,15 +5,49 @@
 use super::index::page;
 use crate::guard::{Budget, within};
 use crate::input::Take;
-use recto_index::select::{CopiedText, MAX_LINES, MAX_RECTS_PER_PAGE, MAX_SELECTABLE_CHARS, PAGE_END, PagePoint, PageText, Place, Range, Selection, Texts, Unit, chrome_for};
+use recto_index::select::{
+    CopiedText, MAX_LINES, MAX_RECTS_PER_PAGE, MAX_SELECTABLE_CHARS, PAGE_END, PagePoint, PageText, Place, Range, Selection, Texts, Unit, chrome_for,
+};
 use recto_proto::PageFrame;
 use recto_reader::selection::{Selecting, Urgency};
 use std::sync::Arc;
 use std::time::Duration;
 
-const BUDGET: Budget = Budget { time: Duration::from_secs(60), memory: 512 * 1024 * 1024 };
-const EDGES: &[f32] = &[0.0, 0.0, 612.0, 792.0, 72.0, -100.0, 1e-30, 1e30, f32::MAX, f32::MIN, f32::INFINITY, f32::NEG_INFINITY, f32::NAN];
-const POINTS: &[f32] = &[0.0, 72.0, 100.0, 300.0, 700.0, 792.0, -5.0, 1e9, -1e9, f32::MAX, f32::MIN, f32::INFINITY, f32::NEG_INFINITY, f32::NAN];
+const BUDGET: Budget = Budget {
+    time: Duration::from_secs(60),
+    memory: 512 * 1024 * 1024,
+};
+const EDGES: &[f32] = &[
+    0.0,
+    0.0,
+    612.0,
+    792.0,
+    72.0,
+    -100.0,
+    1e-30,
+    1e30,
+    f32::MAX,
+    f32::MIN,
+    f32::INFINITY,
+    f32::NEG_INFINITY,
+    f32::NAN,
+];
+const POINTS: &[f32] = &[
+    0.0,
+    72.0,
+    100.0,
+    300.0,
+    700.0,
+    792.0,
+    -5.0,
+    1e9,
+    -1e9,
+    f32::MAX,
+    f32::MIN,
+    f32::INFINITY,
+    f32::NEG_INFINITY,
+    f32::NAN,
+];
 /// Clicks and drags tried per page, so a long page's time is its lines' and not this many passes over them.
 const POINTERS: usize = 32;
 
@@ -34,7 +68,13 @@ pub fn check(data: &[u8]) {
     // What says how the page sits and where the pointer goes comes first, up to a third of the input, and the rest is the page, as in `index`. Running out reads as zeros, which is one op over and over, so it needs a real share.
     let (head, rest) = data.split_at((data.len() / 3).clamp(data.len().min(64), 2048));
     let mut take = Take(head);
-    let frame = PageFrame { turns: take.u8() & 3, left: take.pick(EDGES), bottom: take.pick(EDGES), right: take.pick(EDGES), top: take.pick(EDGES) };
+    let frame = PageFrame {
+        turns: take.u8() & 3,
+        left: take.pick(EDGES),
+        bottom: take.pick(EDGES),
+        right: take.pick(EDGES),
+        top: take.pick(EDGES),
+    };
     let (chars, boxes) = page(rest);
     within("selecting on a hostile page", BUDGET, || {
         let text = PageText::build(&chars, &boxes, frame, take.u8() & 1 == 1, take.u8() & 1 == 1);
@@ -56,7 +96,10 @@ fn check_page(text: &PageText, take: &mut Take) {
     for rect in text.rects(0, PAGE_END) {
         assert!([rect.x, rect.y, rect.width, rect.height].iter().all(|edge| edge.is_finite()), "{rect:?}");
         assert!(rect.width > 0.0 && rect.height > 0.0, "{rect:?}");
-        assert!(rect.x >= 0.0 && rect.y >= 0.0 && rect.x + rect.width <= width * 1.0001 && rect.y + rect.height <= height * 1.0001, "{rect:?} is off a page {width} by {height}");
+        assert!(
+            rect.x >= 0.0 && rect.y >= 0.0 && rect.x + rect.width <= width * 1.0001 && rect.y + rect.height <= height * 1.0001,
+            "{rect:?} is off a page {width} by {height}"
+        );
     }
     for _ in 0..POINTERS {
         let (x, y) = (take.pick(POINTS), take.pick(POINTS));
@@ -100,13 +143,23 @@ fn check_page_view(text: &Arc<PageText>, other: &Arc<PageText>, take: &mut Take)
     }
     for _ in 0..POINTERS * 4 {
         let page = u32::from(take.u8()) % (PAGES + 2);
-        let point = PagePoint { page, x: take.pick(POINTS), y: take.pick(POINTS) };
+        let point = PagePoint {
+            page,
+            x: take.pick(POINTS),
+            y: take.pick(POINTS),
+        };
         let heavy = take.u8() & 7 == 0;
         match take.u8() % 14 {
             0 => selecting.press(point, u32::from(take.u8()), take.u8() & 1 == 1),
             1..=3 => selecting.drag(point),
             4 => selecting.release(),
-            5 => selecting.set_range(Range { start: Place { page, at: take.u32() }, end: Place { page: page.saturating_add(u32::from(take.u8())), at: take.u32() } }),
+            5 => selecting.set_range(Range {
+                start: Place { page, at: take.u32() },
+                end: Place {
+                    page: page.saturating_add(u32::from(take.u8())),
+                    at: take.u32(),
+                },
+            }),
             6 => selecting.clear(),
             7 => selecting.start_copy(take.u8() & 1 == 1, PAGES, |_| heavy),
             8 => selecting.advance_copy(PAGES, |_| heavy),
@@ -139,7 +192,12 @@ fn check_page_view(text: &Arc<PageText>, other: &Arc<PageText>, take: &mut Take)
     // Left to itself, with every page it asks for given to it, a copy comes to an end.
     selecting.release();
     for _ in 0..u32::from(u8::MAX) * 4 {
-        let Some(wanted) = selecting.wanted(Urgency::Now, &visible, PAGES, |_| false).or_else(|| selecting.wanted(Urgency::WhenIdle, &visible, PAGES, |_| false)) else { break };
+        let Some(wanted) = selecting
+            .wanted(Urgency::Now, &visible, PAGES, |_| false)
+            .or_else(|| selecting.wanted(Urgency::WhenIdle, &visible, PAGES, |_| false))
+        else {
+            break;
+        };
         selecting.page_read(wanted.page, Arc::clone(text), true, &visible);
         selecting.advance_copy(PAGES, |_| false);
     }
@@ -149,12 +207,25 @@ fn check_page_view(text: &Arc<PageText>, other: &Arc<PageText>, take: &mut Take)
 fn check_pointer(texts: &One, take: &mut Take) {
     let mut selection = Selection::default();
     for _ in 0..POINTERS {
-        let point = PagePoint { page: u32::from(take.u8() % 3), x: take.pick(POINTS), y: take.pick(POINTS) };
+        let point = PagePoint {
+            page: u32::from(take.u8() % 3),
+            x: take.pick(POINTS),
+            y: take.pick(POINTS),
+        };
         match take.u8() % 5 {
             0 => selection.press(point, u32::from(take.u8()), take.u8() & 1 == 1),
             1 => selection.drag(point),
             2 => selection.release(),
-            3 => selection.set_range(Range { start: Place { page: point.page, at: take.u32() }, end: Place { page: point.page.saturating_add(1), at: take.u32() } }),
+            3 => selection.set_range(Range {
+                start: Place {
+                    page: point.page,
+                    at: take.u32(),
+                },
+                end: Place {
+                    page: point.page.saturating_add(1),
+                    at: take.u32(),
+                },
+            }),
             _ => selection.clear(),
         }
         if let Some(range) = selection.range(texts) {
@@ -163,7 +234,13 @@ fn check_pointer(texts: &One, take: &mut Take) {
                 if let (Some((start, end)), Some(text)) = (range.on_page(page), texts.page_text(page)) {
                     let _ = text.rects(start, end);
                     let mut copied = CopiedText::default();
-                    copied.add_page(page, text, &range, 256, &chrome_for(page, text, 3, |other| texts.page_text(other).map(PageText::edge_lines)));
+                    copied.add_page(
+                        page,
+                        text,
+                        &range,
+                        256,
+                        &chrome_for(page, text, 3, |other| texts.page_text(other).map(PageText::edge_lines)),
+                    );
                     copied.finish();
                     assert!(copied.text.len() <= 256);
                 }

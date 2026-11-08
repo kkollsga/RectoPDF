@@ -3,9 +3,9 @@
 use crate::fetch::{self, FetchError, MAX_ZIP_BYTES};
 use crate::plan::{Files, beside_app, new_app_in};
 use crate::process::tool;
-use crate::zip::{self, ZipError};
 use crate::rules::Latest;
 use crate::source::{Source, Trust};
+use crate::zip::{self, ZipError};
 use crate::{APP_BUNDLE, APP_EXECUTABLE, BUNDLE_ID, HELPER};
 use recto_platform::local;
 use std::path::{Path, PathBuf};
@@ -31,11 +31,19 @@ pub struct StageError {
 
 impl StageError {
     fn now(code: &'static str, why: impl Into<String>) -> Self {
-        Self { code, why: why.into(), lasting: false }
+        Self {
+            code,
+            why: why.into(),
+            lasting: false,
+        }
     }
 
     fn lasting(code: &'static str, why: impl Into<String>) -> Self {
-        Self { code, why: why.into(), lasting: true }
+        Self {
+            code,
+            why: why.into(),
+            lasting: true,
+        }
     }
 }
 
@@ -100,7 +108,11 @@ pub fn prepare(stage: &Stage<'_>, say: &mut dyn FnMut(&str)) -> Result<Staged, S
     let beside = check_place(stage.app)?;
     let new_app = new_app_in(&beside);
     // A test's copy has a bundle id of its own, so nothing of the system's confuses it with the real app. Anything else has this one, whatever it's told.
-    let own_id = if stage.source.mode == crate::source::Mode::Test { plist_value(stage.app, "CFBundleIdentifier").ok().flatten().unwrap_or_default() } else { BUNDLE_ID.to_owned() };
+    let own_id = if stage.source.mode == crate::source::Mode::Test {
+        plist_value(stage.app, "CFBundleIdentifier").ok().flatten().unwrap_or_default()
+    } else {
+        BUNDLE_ID.to_owned()
+    };
     let marker = beside.join("staged.json");
     let wanted = format!("{version} {}", stage.latest.sha256);
     if std::fs::read_to_string(&marker).is_ok_and(|text| text == wanted) && new_app.is_dir() {
@@ -113,7 +125,15 @@ pub fn prepare(stage: &Stage<'_>, say: &mut dyn FnMut(&str)) -> Result<Staged, S
     local::ensure_private_dir(&stage.files.work).map_err(|_| StageError::now("no_state", "the state folder can't be written"))?;
     let zip = stage.files.zip(version);
     say("downloading");
-    let got = fetch::download(stage.source, &stage.source.zip_url(version), stage.user_agent, &zip, MAX_ZIP_BYTES, fetch::DOWNLOAD_LIMIT).map_err(|error| match error {
+    let got = fetch::download(
+        stage.source,
+        &stage.source.zip_url(version),
+        stage.user_agent,
+        &zip,
+        MAX_ZIP_BYTES,
+        fetch::DOWNLOAD_LIMIT,
+    )
+    .map_err(|error| match error {
         FetchError::TooLarge => StageError::lasting("zip_too_large", "the release is larger than it could be"),
         // One 404 can be GitHub still catching up with a release just published. It's looked at again, by the back-off.
         FetchError::NotFound => StageError::now("zip_missing", "the release has no such file yet"),
@@ -191,7 +211,9 @@ pub fn app_version(app: &Path) -> Option<String> {
 
 /// The Developer ID rule: an Apple-issued certificate, of this team.
 fn developer_id_requirement(team: &str) -> String {
-    format!("anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"{team}\"")
+    format!(
+        "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"{team}\""
+    )
 }
 
 /// What the signature's hash of an app is, as `codesign` says it.
@@ -201,13 +223,19 @@ fn cdhash_of(app: &str) -> Result<String, StageError> {
         return Err(StageError::now("tool_slow", "a system tool took too long"));
     }
     let text = String::from_utf8_lossy(&ran.stderr);
-    text.lines().find_map(|line| line.strip_prefix("CDHash=")).map(str::trim).filter(|hash| hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())).map(str::to_owned).ok_or_else(|| StageError::lasting("signature", "the app's signature doesn't verify"))
+    text.lines()
+        .find_map(|line| line.strip_prefix("CDHash="))
+        .map(str::trim)
+        .filter(|hash| hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_owned)
+        .ok_or_else(|| StageError::lasting("signature", "the app's signature doesn't verify"))
 }
 
 /// That this is this app, this version, signed, by this team, and that Gatekeeper takes it, and what its signature's hash is. An app that isn't never gets as far as the running app quitting. A tool that takes too long says nothing about the release.
 pub fn verify_app(app: &Path, trust: Trust, version: &str, bundle_id: &str) -> Result<String, StageError> {
     let path = app.to_str().ok_or_else(|| StageError::lasting("zip_bad", "the app's path can't be read"))?;
-    if !std::fs::symlink_metadata(app).is_ok_and(|meta| meta.is_dir()) || !std::fs::symlink_metadata(app.join(APP_EXECUTABLE)).is_ok_and(|meta| meta.is_file()) {
+    if !std::fs::symlink_metadata(app).is_ok_and(|meta| meta.is_dir()) || !std::fs::symlink_metadata(app.join(APP_EXECUTABLE)).is_ok_and(|meta| meta.is_file())
+    {
         return Err(StageError::lasting("zip_bad", "the release's zip doesn't hold the app"));
     }
     if plist_value(app, "CFBundleIdentifier")?.as_deref() != Some(bundle_id) {
@@ -221,8 +249,14 @@ pub fn verify_app(app: &Path, trust: Trust, version: &str, bundle_id: &str) -> R
     }
     if let Trust::DeveloperId { team } = trust {
         let requirement = format!("={}", developer_id_requirement(team));
-        if matches!(ask_tool(CODESIGN, &["--verify", "--deep", "--strict", "-R", &requirement, path], TOOL_LIMIT)?, Answer::No) {
-            return Err(StageError::lasting("team", format!("the app isn't signed by RectoPDF's developer (team {team})")));
+        if matches!(
+            ask_tool(CODESIGN, &["--verify", "--deep", "--strict", "-R", &requirement, path], TOOL_LIMIT)?,
+            Answer::No
+        ) {
+            return Err(StageError::lasting(
+                "team",
+                format!("the app isn't signed by RectoPDF's developer (team {team})"),
+            ));
         }
         if matches!(ask_tool(SPCTL, &["--assess", "--type", "execute", path], TOOL_LIMIT)?, Answer::No) {
             return Err(StageError::lasting("gatekeeper", "macOS's Gatekeeper doesn't accept the app"));
@@ -260,16 +294,19 @@ pub fn clear_staged(app: &Path) {
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) mod tests {
     use super::*;
+    use crate::TEAM_ID;
     use crate::fetch::tests::{Answer, Server};
     use crate::rules::parse_latest;
     use crate::source::resolve;
-    use crate::TEAM_ID;
     use crate::zip::tests::{Made, make_zip};
     use sha2::Digest as _;
     use std::process::Command;
 
     pub(crate) fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-stage-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-stage-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -284,12 +321,27 @@ pub(crate) mod tests {
         // Real programs, whose signatures live in the program as a release's do: a script's would be in file attributes, which a zip doesn't carry.
         std::fs::copy("/usr/bin/true", macos.join("RectoPDF")).unwrap();
         std::fs::copy("/usr/bin/true", macos.join("recto-updater")).unwrap();
-        assert!(Command::new(CODESIGN).args(["--force", "--deep", "--sign", "-"]).arg(&app).status().unwrap().success());
+        assert!(
+            Command::new(CODESIGN)
+                .args(["--force", "--deep", "--sign", "-"])
+                .arg(&app)
+                .status()
+                .unwrap()
+                .success()
+        );
         app
     }
 
     pub(crate) fn zip_of(app: &Path, to: &Path) -> (Vec<u8>, String) {
-        assert!(Command::new("/usr/bin/ditto").args(["-c", "-k", "--keepParent"]).arg(app).arg(to).status().unwrap().success());
+        assert!(
+            Command::new("/usr/bin/ditto")
+                .args(["-c", "-k", "--keepParent"])
+                .arg(app)
+                .arg(to)
+                .status()
+                .unwrap()
+                .success()
+        );
         let bytes = std::fs::read(to).unwrap();
         let sha = sha2::Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect();
         (bytes, sha)
@@ -318,7 +370,13 @@ pub(crate) mod tests {
             let app = fake_app(&install, "0.1.0");
             let server = Server::start();
             let source = server.source();
-            Self { server, source, files: Files::in_state(&root), app, dir }
+            Self {
+                server,
+                source,
+                files: Files::in_state(&root),
+                app,
+                dir,
+            }
         }
 
         fn release(&self, version: &str, inner: &str) -> Latest {
@@ -326,12 +384,20 @@ pub(crate) mod tests {
             std::fs::create_dir_all(&built).unwrap();
             let app = fake_app(&built, inner);
             let (bytes, sha) = zip_of(&app, &built.join("r.zip"));
-            self.server.set(&format!("/releases/download/v{version}/RectoPDF-{version}.zip"), Answer::Body(bytes));
+            self.server
+                .set(&format!("/releases/download/v{version}/RectoPDF-{version}.zip"), Answer::Body(bytes));
             parse_latest(&latest_json(version, &sha)).unwrap()
         }
 
         fn stage(&self, latest: &Latest, source: &Source) -> Result<Staged, StageError> {
-            let stage = Stage { source, latest, current: "0.1.0", app: &self.app, files: &self.files, user_agent: "RectoPDF/0.1.0" };
+            let stage = Stage {
+                source,
+                latest,
+                current: "0.1.0",
+                app: &self.app,
+                files: &self.files,
+                user_agent: "RectoPDF/0.1.0",
+            };
             prepare(&stage, &mut |_| {})
         }
 
@@ -360,7 +426,10 @@ pub(crate) mod tests {
         // Nobody else can get at what's waiting, or at what's about to be the app.
         use std::os::unix::fs::MetadataExt as _;
         assert_eq!(std::fs::metadata(beside_app(&bed.app).unwrap()).unwrap().mode() & 0o777, 0o700);
-        assert!(still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None), "what was checked is what's there");
+        assert!(
+            still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None),
+            "what was checked is what's there"
+        );
         assert_eq!(app_version(&bed.app).as_deref(), Some("0.1.0"), "the running app isn't touched");
         assert!(!bed.files.zip("0.2.0").exists(), "the zip goes once it's unpacked");
         let asked = bed.server.requests.lock().unwrap().len();
@@ -421,7 +490,14 @@ pub(crate) mod tests {
         let plist = app.join("Contents/Info.plist");
         let text = std::fs::read_to_string(&plist).unwrap().replace(BUNDLE_ID, "com.evil.App");
         std::fs::write(&plist, text).unwrap();
-        assert!(Command::new(CODESIGN).args(["--force", "--deep", "--sign", "-"]).arg(&app).status().unwrap().success());
+        assert!(
+            Command::new(CODESIGN)
+                .args(["--force", "--deep", "--sign", "-"])
+                .arg(&app)
+                .status()
+                .unwrap()
+                .success()
+        );
         let (bytes, sha) = zip_of(&app, &built.join("o.zip"));
         bed.server.set("/releases/download/v0.2.0/RectoPDF-0.2.0.zip", Answer::Body(bytes));
         let latest = parse_latest(&latest_json("0.2.0", &sha)).unwrap();
@@ -438,11 +514,22 @@ pub(crate) mod tests {
         let app = fake_app(&built, "0.2.0");
         std::fs::create_dir_all(app.join("Contents/Resources")).unwrap();
         std::os::unix::fs::symlink("/etc/passwd", app.join("Contents/Resources/evil")).unwrap();
-        assert!(Command::new(CODESIGN).args(["--force", "--deep", "--sign", "-"]).arg(&app).status().unwrap().success());
+        assert!(
+            Command::new(CODESIGN)
+                .args(["--force", "--deep", "--sign", "-"])
+                .arg(&app)
+                .status()
+                .unwrap()
+                .success()
+        );
         let (bytes, sha) = zip_of(&app, &built.join("l.zip"));
         bed.server.set("/releases/download/v0.2.0/RectoPDF-0.2.0.zip", Answer::Body(bytes));
         let latest = parse_latest(&latest_json("0.2.0", &sha)).unwrap();
-        assert_eq!(bed.stage(&latest, &bed.source).unwrap_err().code, "zip_bad", "the reader doesn't take a link at all");
+        assert_eq!(
+            bed.stage(&latest, &bed.source).unwrap_err().code,
+            "zip_bad",
+            "the reader doesn't take a link at all"
+        );
         bed.nothing_changed();
     }
 
@@ -465,7 +552,11 @@ pub(crate) mod tests {
         let (bytes, sha) = zip_of(&app, &unsigned.join("u.zip"));
         bed.server.set("/releases/download/v0.3.0/RectoPDF-0.3.0.zip", Answer::Body(bytes));
         let latest = parse_latest(&latest_json("0.3.0", &sha)).unwrap();
-        assert_eq!(bed.stage(&latest, &bed.source).unwrap_err().code, "signature", "not even a test's rule takes one");
+        assert_eq!(
+            bed.stage(&latest, &bed.source).unwrap_err().code,
+            "signature",
+            "not even a test's rule takes one"
+        );
         assert_eq!(bed.stage(&latest, &real).unwrap_err().code, "signature");
         bed.nothing_changed();
 
@@ -491,18 +582,27 @@ pub(crate) mod tests {
         let latest = bed.release("0.2.0", "0.2.0");
         let staged = bed.stage(&latest, &bed.source).unwrap();
         assert!(still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None));
-        assert!(!still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", Some(TEAM_ID)), "an ad-hoc build isn't this team's");
+        assert!(
+            !still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", Some(TEAM_ID)),
+            "an ad-hoc build isn't this team's"
+        );
         assert!(!still_what_was_verified(&staged.app, &"0".repeat(40), "0.2.0", None), "another hash");
         let executable = staged.app.join("Contents/MacOS/RectoPDF");
         let original = std::fs::read(&executable).unwrap();
         std::fs::write(&executable, b"changed").unwrap();
         assert!(!still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None), "a changed executable");
         std::fs::write(&executable, &original).unwrap();
-        assert!(still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None), "put back, it's the same bytes");
+        assert!(
+            still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None),
+            "put back, it's the same bytes"
+        );
         let plist = staged.app.join("Contents/Info.plist");
         let text = std::fs::read_to_string(&plist).unwrap();
         std::fs::write(&plist, text.replace("0.2.0", "9.9.9")).unwrap();
-        assert!(!still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None), "another version in the same bundle");
+        assert!(
+            !still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None),
+            "another version in the same bundle"
+        );
         std::fs::write(&plist, &text).unwrap();
         std::fs::write(staged.app.join("Contents/extra"), "x").unwrap();
         assert!(!still_what_was_verified(&staged.app, &staged.cdhash, "0.2.0", None), "something added");
@@ -510,8 +610,18 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&swapped_in).unwrap();
         let other = fake_app(&swapped_in, "0.2.0");
         std::fs::write(other.join("Contents/Resources-extra"), "not what was verified").unwrap();
-        assert!(Command::new(CODESIGN).args(["--force", "--deep", "--sign", "-"]).arg(&other).status().unwrap().success());
-        assert!(!still_what_was_verified(&other, &staged.cdhash, "0.2.0", None), "a build that's good in itself and isn't the one");
+        assert!(
+            Command::new(CODESIGN)
+                .args(["--force", "--deep", "--sign", "-"])
+                .arg(&other)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            !still_what_was_verified(&other, &staged.cdhash, "0.2.0", None),
+            "a build that's good in itself and isn't the one"
+        );
         assert!(Command::new(CODESIGN).args(["--remove-signature"]).arg(&other).status().unwrap().success());
         assert!(!still_what_was_verified(&other, &staged.cdhash, "0.2.0", None), "no signature");
     }
@@ -531,9 +641,25 @@ pub(crate) mod tests {
         leaving.local_name = format!("{}/escape", outside.display()).into_bytes();
         let cases: Vec<Vec<u8>> = vec![
             make_zip(&[leaving]),
-            make_zip(&[Made { mode: 0o120_777, ..Made::file("RectoPDF.app/link", outside.to_str().unwrap().as_bytes()) }, Made::file("RectoPDF.app/link/pwned", b"p")]),
-            make_zip(&[Made::file("RectoPDF.app/x", b"x"), Made { unlisted: true, ..Made::file("RectoPDF.app/unlisted", b"y") }]),
-            make_zip(&[Made { deflate: true, claimed_size: Some(1024), ..Made::file("RectoPDF.app/bomb", &vec![0u8; 20 * 1024 * 1024]) }]),
+            make_zip(&[
+                Made {
+                    mode: 0o120_777,
+                    ..Made::file("RectoPDF.app/link", outside.to_str().unwrap().as_bytes())
+                },
+                Made::file("RectoPDF.app/link/pwned", b"p"),
+            ]),
+            make_zip(&[
+                Made::file("RectoPDF.app/x", b"x"),
+                Made {
+                    unlisted: true,
+                    ..Made::file("RectoPDF.app/unlisted", b"y")
+                },
+            ]),
+            make_zip(&[Made {
+                deflate: true,
+                claimed_size: Some(1024),
+                ..Made::file("RectoPDF.app/bomb", &vec![0u8; 20 * 1024 * 1024])
+            }]),
         ];
         for zip in cases {
             let error = bed.stage(&release(zip), &bed.source).unwrap_err();
@@ -583,16 +709,30 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&beside).unwrap();
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0o500)).unwrap();
-        let error = unpack(&{
-            let zip = bed.dir.join("z.zip");
-            std::fs::write(&zip, make_zip(&[Made::file("RectoPDF.app/x", b"x")])).unwrap();
-            zip
-        }, &beside);
+        let error = unpack(
+            &{
+                let zip = bed.dir.join("z.zip");
+                std::fs::write(&zip, make_zip(&[Made::file("RectoPDF.app/x", b"x")])).unwrap();
+                zip
+            },
+            &beside,
+        );
         std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(error.is_err_and(|error| !error.lasting), "a folder it can't write to");
         // A tool that won't answer in time.
-        assert!(matches!(ask_tool("/bin/sleep", &["30"], Duration::from_millis(50)), Err(StageError { code: "tool_slow", lasting: false, .. })));
-        assert_eq!(bed.stage(&latest, &bed.source).map(|staged| app_version(&staged.app)).unwrap(), Some("0.2.0".to_owned()), "and it goes through when it can");
+        assert!(matches!(
+            ask_tool("/bin/sleep", &["30"], Duration::from_millis(50)),
+            Err(StageError {
+                code: "tool_slow",
+                lasting: false,
+                ..
+            })
+        ));
+        assert_eq!(
+            bed.stage(&latest, &bed.source).map(|staged| app_version(&staged.app)).unwrap(),
+            Some("0.2.0".to_owned()),
+            "and it goes through when it can"
+        );
     }
 
     /// Failure: an app with no way to replace itself downloads anything before saying so, or the check itself leaves anything lying about.
@@ -601,7 +741,12 @@ pub(crate) mod tests {
         let dir = temp_dir("place");
         assert_eq!(check_place(Path::new("relative/RectoPDF.app")).unwrap_err().code, "not_an_app");
         assert_eq!(check_place(&dir.join("Other.app")).unwrap_err().code, "not_an_app");
-        assert_eq!(check_place(Path::new("/private/var/folders/x/AppTranslocation/y/d/RectoPDF.app")).unwrap_err().code, "translocated");
+        assert_eq!(
+            check_place(Path::new("/private/var/folders/x/AppTranslocation/y/d/RectoPDF.app"))
+                .unwrap_err()
+                .code,
+            "translocated"
+        );
         assert_eq!(check_place(&dir.join("RectoPDF.app")).unwrap_err().code, "no_installer");
         let app = fake_app(&dir, "0.1.0");
         let beside = check_place(&app).unwrap();

@@ -8,12 +8,14 @@
 mod common;
 
 use common::{kill_process, wait_until};
-use recto_platform::isolate::process_memory;
-use recto_proto::CharRecord;
 use recto_platform::isolate::Channel;
+use recto_platform::isolate::process_memory;
 use recto_platform::surface::PixelSurface;
+use recto_proto::CharRecord;
 use recto_render_service::transport::send_all;
-use recto_render_service::{DocRenderer, HeavySlot, KillReason, Policy, RenderFailure, ServiceConfig, Surface, TILE_EDGE, TileKind, TileRect, TileRequest, TileResult, WallsDown};
+use recto_render_service::{
+    DocRenderer, HeavySlot, KillReason, Policy, RenderFailure, ServiceConfig, Surface, TILE_EDGE, TileKind, TileRect, TileRequest, TileResult, WallsDown,
+};
 use recto_testpdf::{Object, Page, TempPdf, build, form_bomb, hidden_text_page, pages, text_lines};
 use std::ffi::{CString, c_char, c_int};
 use std::io::Read as _;
@@ -52,8 +54,17 @@ fn pdfium() -> PathBuf {
 
 /// Never with the owner's identity, whatever this shell has set: a test signs ad hoc, and raises no keychain prompt.
 fn helper(args: &[&std::ffi::OsStr]) {
-    let output = Command::new(Path::new(REPO).join("app/render-helper.sh")).args(args).env_remove("RECTO_SIGN_IDENTITY").output().unwrap();
-    assert!(output.status.success(), "render-helper.sh {args:?}: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    let output = Command::new(Path::new(REPO).join("app/render-helper.sh"))
+        .args(args)
+        .env_remove("RECTO_SIGN_IDENTITY")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "render-helper.sh {args:?}: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// This build's worker in a helper of its own, in a temp folder that goes with it.
@@ -63,7 +74,10 @@ struct Bundle {
 
 impl Bundle {
     fn new(name: &str) -> Self {
-        let scratch = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-sandbox-{}-{name}", std::process::id()));
+        let scratch = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-sandbox-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch).unwrap();
         let bundle = Self { scratch };
@@ -87,7 +101,11 @@ impl Bundle {
 
     fn config(&self) -> ServiceConfig {
         let mut config = ServiceConfig::for_worker(self.worker()).unwrap();
-        assert_eq!(config.pdfium_lib, self.helper().join("Contents/Frameworks/libpdfium.dylib"), "PDFium must come from the helper, which is all the sandbox lets it read");
+        assert_eq!(
+            config.pdfium_lib,
+            self.helper().join("Contents/Frameworks/libpdfium.dylib"),
+            "PDFium must come from the helper, which is all the sandbox lets it read"
+        );
         config.heavy_slot = HeavySlot::new();
         config
     }
@@ -108,7 +126,18 @@ fn plain_config() -> ServiceConfig {
 const EDGE: u32 = 512;
 
 fn request(page: u32) -> TileRequest {
-    TileRequest { page, rect: TileRect { x: 0, y: 0, width: EDGE, height: EDGE }, scale: 1.0, stride: EDGE * 4, generation: 0 }
+    TileRequest {
+        page,
+        rect: TileRect {
+            x: 0,
+            y: 0,
+            width: EDGE,
+            height: EDGE,
+        },
+        scale: 1.0,
+        stride: EDGE * 4,
+        generation: 0,
+    }
 }
 
 /// Draws a tile of a page and returns its pixels.
@@ -148,12 +177,24 @@ fn the_bundled_worker_runs_sandboxed_and_cant_read_by_path() {
     assert_eq!(sandboxed(pid), 1, "the bundled worker isn't sandboxed");
     assert_eq!(may_read(me, &canary), 0);
     assert_eq!(may_read(pid, &canary), 1, "the worker may read a file it wasn't given");
-    assert_eq!(may_read(pid, &file.0), 1, "the worker may read the document by its path, when it only ever needs the descriptor it was given");
-    assert_eq!(may_read(pid, &bundle.helper().join("Contents/Frameworks/libpdfium.dylib")), 0, "the check can't tell allowed from denied");
+    assert_eq!(
+        may_read(pid, &file.0),
+        1,
+        "the worker may read the document by its path, when it only ever needs the descriptor it was given"
+    );
+    assert_eq!(
+        may_read(pid, &bundle.helper().join("Contents/Frameworks/libpdfium.dylib")),
+        0,
+        "the check can't tell allowed from denied"
+    );
     let plain = DocRenderer::new(&file.0, None, plain_config(), Policy::default());
     let mut plain = plain.unwrap();
     draw(&mut plain, 0);
-    assert_eq!(sandboxed(plain.worker_pid().unwrap()), 0, "a bare development worker isn't sandboxed, so the sandbox comes from the helper's signing");
+    assert_eq!(
+        sandboxed(plain.worker_pid().unwrap()),
+        0,
+        "a bare development worker isn't sandboxed, so the sandbox comes from the helper's signing"
+    );
     assert_eq!(plain.worker_walled(), Some(false), "a bare worker said it was walled");
 }
 
@@ -175,7 +216,13 @@ fn a_bundled_worker_with_no_sandbox_refuses_to_read_anything() {
 #[test]
 fn drawing_text_and_the_hidden_check_are_the_same_in_the_sandbox() {
     let bundle = Bundle::new("same");
-    let file = TempPdf::new("same.pdf", &pages(&[Page::new(text_lines(&["Words in a font this file doesn't carry", "AVA Wax fi fl"])), Page::new(hidden_text_page())]));
+    let file = TempPdf::new(
+        "same.pdf",
+        &pages(&[
+            Page::new(text_lines(&["Words in a font this file doesn't carry", "AVA Wax fi fl"])),
+            Page::new(hidden_text_page()),
+        ]),
+    );
     let mut ours = DocRenderer::new(&file.0, None, bundle.config(), Policy::default()).unwrap();
     let mut theirs = DocRenderer::new(&file.0, None, plain_config(), Policy::default()).unwrap();
     let (kind, pixels) = draw(&mut ours, 0);
@@ -186,7 +233,11 @@ fn drawing_text_and_the_hidden_check_are_the_same_in_the_sandbox() {
     assert!(checked, "the hidden-text check didn't run in the sandbox");
     assert!(text.contains("VISIBLE-SENTINEL") && text.contains("HIDDEN-WHITE"), "{text:?}");
     assert!(flags.iter().any(|flag| *flag), "nothing was flagged as hidden");
-    assert_eq!((text, flags, checked), text_of(&mut theirs, 1), "the sandbox changed the text or the hidden-text check");
+    assert_eq!(
+        (text, flags, checked),
+        text_of(&mut theirs, 1),
+        "the sandbox changed the text or the hidden-text check"
+    );
 }
 
 /// Failure: a sandboxed worker that crashes or is killed, mid-page or between pages, leaves its document broken, or its replacement starts outside the sandbox.
@@ -194,26 +245,44 @@ fn drawing_text_and_the_hidden_check_are_the_same_in_the_sandbox() {
 fn a_crash_or_kill_in_the_sandbox_is_recovered() {
     let bundle = Bundle::new("kill");
     let file = TempPdf::new("kill.pdf", &form_bomb());
-    let policy = Policy { memory_limit_bytes: 2 << 30, page_deadline: Duration::from_secs(60), ..Policy::default() };
+    let policy = Policy {
+        memory_limit_bytes: 2 << 30,
+        page_deadline: Duration::from_secs(60),
+        ..Policy::default()
+    };
     let mut doc = DocRenderer::new(&file.0, None, bundle.config(), policy).unwrap();
     assert_eq!(doc.page_count().unwrap(), 2);
     let first = doc.worker_pid().unwrap();
     // The bomb runs until something stops it, so this kill lands inside the page whenever it arrives.
     let killer = std::thread::spawn(move || {
-        wait_until("the bomb to start growing", || process_memory(first).is_some_and(|memory| memory.footprint_bytes > 32 * 1024 * 1024));
+        wait_until("the bomb to start growing", || {
+            process_memory(first).is_some_and(|memory| memory.footprint_bytes > 32 * 1024 * 1024)
+        });
         kill_process(first);
     });
     let surface = Surface::create((EDGE * EDGE * 4) as usize).unwrap();
     let failure = doc.render_tile(&request(0), &surface).unwrap_err();
     killer.join().unwrap();
-    assert_eq!(failure, RenderFailure::PageFailed { page: 0, reason: KillReason::Crashed });
-    assert!(matches!(draw(&mut doc, 1).0, TileKind::Grey | TileKind::Colour), "the next page draws in a new worker");
+    assert_eq!(
+        failure,
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::Crashed
+        }
+    );
+    assert!(
+        matches!(draw(&mut doc, 1).0, TileKind::Grey | TileKind::Colour),
+        "the next page draws in a new worker"
+    );
     let second = doc.worker_pid().unwrap();
     assert_ne!(second, first);
     assert_eq!(sandboxed(second), 1, "the replacement isn't sandboxed");
     kill_process(second);
     wait_until("the killed worker to be gone", || process_memory(second).is_none());
-    assert!(matches!(draw(&mut doc, 1).0, TileKind::Grey | TileKind::Colour), "a page draws after a kill between pages");
+    assert!(
+        matches!(draw(&mut doc, 1).0, TileKind::Grey | TileKind::Colour),
+        "a page draws after a kill between pages"
+    );
     assert_eq!(sandboxed(doc.worker_pid().unwrap()), 1);
 }
 
@@ -262,7 +331,10 @@ fn a_hostile_pdf_cant_reach_a_file_or_the_network_from_the_sandbox() {
     let count = doc.page_count().unwrap();
     assert_eq!(count, 2);
     let (first_page, _, _) = text_of(&mut doc, 0);
-    assert!(first_page.contains("The page that reaches out"), "the hostile page wasn't read at all, so this proves nothing: {first_page:?}");
+    assert!(
+        first_page.contains("The page that reaches out"),
+        "the hostile page wasn't read at all, so this proves nothing: {first_page:?}"
+    );
     for page in 0..count {
         let _ = doc.render_tile(&request(page), &Surface::create((EDGE * EDGE * 4) as usize).unwrap());
         if let Ok(characters) = doc.page_characters(page, true, true) {
@@ -271,7 +343,10 @@ fn a_hostile_pdf_cant_reach_a_file_or_the_network_from_the_sandbox() {
         }
         let _ = doc.image_boxes(page, 0);
     }
-    assert!(doc.worker_pid().is_some_and(|pid| sandboxed(pid) == 1), "the worker that read it isn't sandboxed");
+    assert!(
+        doc.worker_pid().is_some_and(|pid| sandboxed(pid) == 1),
+        "the worker that read it isn't sandboxed"
+    );
     match listener.accept() {
         Ok((mut stream, _)) => {
             let mut seen = Vec::new();
@@ -287,13 +362,29 @@ fn a_hostile_pdf_cant_reach_a_file_or_the_network_from_the_sandbox() {
 #[test]
 fn a_surface_tile_arrives_from_the_sandboxed_worker_after_the_mach_drop() {
     let bundle = Bundle::new("surface");
-    let file = TempPdf::new("surface.pdf", &pages(&[Page::new(text_lines(&["Words drawn into a surface from inside the sandbox"]))]));
+    let file = TempPdf::new(
+        "surface.pdf",
+        &pages(&[Page::new(text_lines(&["Words drawn into a surface from inside the sandbox"]))]),
+    );
     let mut doc = DocRenderer::new(&file.0, None, bundle.config(), Policy::default()).unwrap();
     let surface = PixelSurface::create(TILE_EDGE, TILE_EDGE).unwrap();
-    let request = TileRequest { page: 0, rect: TileRect { x: 0, y: 0, width: TILE_EDGE, height: TILE_EDGE }, scale: 2.0, stride: surface.stride(), generation: 1 };
+    let request = TileRequest {
+        page: 0,
+        rect: TileRect {
+            x: 0,
+            y: 0,
+            width: TILE_EDGE,
+            height: TILE_EDGE,
+        },
+        scale: 2.0,
+        stride: surface.stride(),
+        generation: 1,
+    };
     assert!(matches!(doc.render_tile(&request, &surface).unwrap(), TileResult::Done(_)));
     assert_eq!(doc.worker_walled(), Some(true), "the worker that drew it hadn't put its walls up");
-    let drawn: Vec<u8> = surface.with_pixels(|pixels| pixels[..(surface.stride() * TILE_EDGE) as usize].to_vec()).unwrap();
+    let drawn: Vec<u8> = surface
+        .with_pixels(|pixels| pixels[..(surface.stride() * TILE_EDGE) as usize].to_vec())
+        .unwrap();
     assert!(drawn.chunks(4).any(|pixel| pixel[0] < 200), "nothing arrived in the surface");
 }
 
@@ -306,7 +397,15 @@ fn stand_in_worker() {
         return;
     }
     let channel = Channel::inherited().unwrap();
-    send_all(&channel, &recto_proto::encode_hello(recto_proto::Hello { pid: std::process::id(), walled: false }), &[]).unwrap();
+    send_all(
+        &channel,
+        &recto_proto::encode_hello(recto_proto::Hello {
+            pid: std::process::id(),
+            walled: false,
+        }),
+        &[],
+    )
+    .unwrap();
     std::thread::sleep(Duration::from_secs(30));
 }
 
@@ -322,7 +421,12 @@ fn a_worker_from_a_helper_that_says_it_isnt_walled_is_refused() {
     let mut config = ServiceConfig::for_worker(fake).unwrap();
     config.heavy_slot = HeavySlot::new();
     config.extra_env = vec![(STAND_IN.into(), "1".into())];
-    config.replace_args = Some(["--exact", "stand_in_worker", "--nocapture", "--test-threads=1"].into_iter().map(Into::into).collect());
+    config.replace_args = Some(
+        ["--exact", "stand_in_worker", "--nocapture", "--test-threads=1"]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+    );
     let file = TempPdf::new("refused.pdf", &pages(&[Page::new(text_lines(&["Never sent"]))]));
     let mut doc = DocRenderer::new(&file.0, None, config, Policy::default()).unwrap();
     assert_eq!(doc.page_count().unwrap_err(), RenderFailure::WallsDown(WallsDown::NotSandboxed));
@@ -345,7 +449,11 @@ fn inside_another_sandbox_the_renderer_says_so() {
         let mut doc = DocRenderer::new(&file.0, None, config, Policy::default()).unwrap();
         let failure = doc.page_count().unwrap_err();
         assert_eq!(failure, RenderFailure::WallsDown(WallsDown::InsideAnotherSandbox));
-        assert!(failure.message().contains("from inside another sandbox") && !failure.message().contains("signed wrong"), "{}", failure.message());
+        assert!(
+            failure.message().contains("from inside another sandbox") && !failure.message().contains("signed wrong"),
+            "{}",
+            failure.message()
+        );
         return;
     }
     let bundle = Bundle::new("inside");

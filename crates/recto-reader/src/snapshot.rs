@@ -73,7 +73,15 @@ impl SnapshotTool {
         let (width, height) = self.page_size;
         let (left, right) = (press.x.min(now.x).max(0.0), press.x.max(now.x).min(width));
         let (top, bottom) = (press.y.min(now.y).max(0.0), press.y.max(now.y).min(height));
-        (right > left && bottom > top && [left, right, top, bottom].iter().all(|edge| edge.is_finite())).then_some((press.page, Rect { x: left, y: top, width: right - left, height: bottom - top }))
+        (right > left && bottom > top && [left, right, top, bottom].iter().all(|edge| edge.is_finite())).then_some((
+            press.page,
+            Rect {
+                x: left,
+                y: top,
+                width: right - left,
+                height: bottom - top,
+            },
+        ))
     }
 
     fn is_click(&self, press: PagePoint, now: PagePoint) -> bool {
@@ -85,7 +93,11 @@ impl SnapshotTool {
         let taken = match (self.press, self.now) {
             (Some(press), Some(now)) if self.is_click(press, now) => {
                 let (width, height) = self.page_size;
-                if press.x >= 0.0 && press.y >= 0.0 && press.x <= width && press.y <= height { Taken::Click(press) } else { Taken::Nothing }
+                if press.x >= 0.0 && press.y >= 0.0 && press.x <= width && press.y <= height {
+                    Taken::Click(press)
+                } else {
+                    Taken::Nothing
+                }
             }
             (Some(_), Some(_)) => self.shown_box().map_or(Taken::Nothing, |(page, rect)| Taken::Box { page, rect }),
             _ => Taken::Nothing,
@@ -118,8 +130,31 @@ mod tests {
         tool.drag(at(2, 301.0, 402.0));
         assert_eq!(tool.shown_box(), None, "still a click");
         tool.drag(at(2, 100.0, 900.0));
-        assert_eq!(tool.shown_box(), Some((2, Rect { x: 100.0, y: 400.0, width: 200.0, height: 392.0 })), "backwards, and held to the page");
-        assert_eq!(tool.release(), Taken::Box { page: 2, rect: Rect { x: 100.0, y: 400.0, width: 200.0, height: 392.0 } });
+        assert_eq!(
+            tool.shown_box(),
+            Some((
+                2,
+                Rect {
+                    x: 100.0,
+                    y: 400.0,
+                    width: 200.0,
+                    height: 392.0
+                }
+            )),
+            "backwards, and held to the page"
+        );
+        assert_eq!(
+            tool.release(),
+            Taken::Box {
+                page: 2,
+                rect: Rect {
+                    x: 100.0,
+                    y: 400.0,
+                    width: 200.0,
+                    height: 392.0
+                }
+            }
+        );
         assert_eq!(tool.shown_box(), None, "the box goes on release");
         tool.press(at(0, 50.0, 60.0), (612.0, 792.0));
         tool.drag(at(0, 52.0, 58.0));

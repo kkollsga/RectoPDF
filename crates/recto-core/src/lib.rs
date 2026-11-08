@@ -4,21 +4,23 @@
 //! here comes from an untrusted file: walks are bounded, cycles are refused, and text is cleaned before anyone sees it.
 
 use lopdf::{BytesSource, Dictionary, FileSource, IndexedReader, Object, ObjectId};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
-use std::cell::Cell;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-mod signatures;
 mod effects;
 pub mod nav;
 pub mod save;
+mod signatures;
 pub mod verdict;
 pub use effects::{PageEffects, page_effects};
 
-pub use signatures::{MAX_FIELD_VISITS, MAX_SIGNATURES, SignatureEntry, SignatureInventory, SignatureState, signatures, signatures_in_bytes, signatures_within};
+pub use signatures::{
+    MAX_FIELD_VISITS, MAX_SIGNATURES, SignatureEntry, SignatureInventory, SignatureState, signatures, signatures_in_bytes, signatures_within,
+};
 
 /// Most contents entries kept for one document. A hostile file can't make the contents grow past this.
 pub const MAX_TOC_ENTRIES: usize = 100_000;
@@ -107,9 +109,20 @@ impl Toc {
             let start = u32::try_from(titles.len()).unwrap_or(u32::MAX);
             titles.push_str(&clean_line(line.title));
             let end = u32::try_from(titles.len()).unwrap_or(u32::MAX);
-            entries.push(TocEntry { title_start: start, title_len: end - start, page: line.page, parent: line.parent, depth: line.depth });
+            entries.push(TocEntry {
+                title_start: start,
+                title_len: end - start,
+                page: line.page,
+                parent: line.parent,
+                depth: line.depth,
+            });
         }
-        Self { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated, labels: nav::PageLabels::default() }
+        Self {
+            titles: titles.into_boxed_str(),
+            entries: entries.into_boxed_slice(),
+            truncated,
+            labels: nav::PageLabels::default(),
+        }
     }
 
     pub fn entries(&self) -> &[TocEntry] {
@@ -171,7 +184,11 @@ pub(crate) fn open_reader_cached(path: &Path) -> Result<IndexedReader, OpenError
         return Err(OpenError::NotPdf);
     }
     let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
-    checked_reader(IndexedReader::open_cached(source, lopdf::IndexedReaderOptions::default(), lopdf::IndexedReaderCacheOptions::new(READ_CACHE_BYTES, READ_CACHE_ENTRIES)))
+    checked_reader(IndexedReader::open_cached(
+        source,
+        lopdf::IndexedReaderOptions::default(),
+        lopdf::IndexedReaderCacheOptions::new(READ_CACHE_BYTES, READ_CACHE_ENTRIES),
+    ))
 }
 
 /// What [`open_reader_cached`] may keep: enough for a page's annotations and their streams, and gone with the read.
@@ -210,7 +227,10 @@ pub fn inspect_with_password(path: &Path, password: &Password) -> Result<DocFact
     }
     let source = FileSource::open(path).map_err(|_| OpenError::NotAllowed)?;
     // lopdf takes this copy out of the options and drops it once it's derived the file's key, without overwriting it: a copy that remains, listed in ENGINEERING. The options are moved in, so there's nothing left here to clear.
-    let options = lopdf::IndexedReaderOptions { password: Some(password.bytes().to_vec()), ..lopdf::IndexedReaderOptions::default() };
+    let options = lopdf::IndexedReaderOptions {
+        password: Some(password.bytes().to_vec()),
+        ..lopdf::IndexedReaderOptions::default()
+    };
     read_facts(&checked_reader(IndexedReader::open_with_options(source, options))?)
 }
 
@@ -254,7 +274,12 @@ fn restricted_by(reader: &IndexedReader) -> bool {
         return false;
     }
     // `/P` is a plain integer, never encrypted. One that can't be read is taken as allowing everything, as PDFium does with a dictionary it can't read: the file still opened.
-    let permissions = reader.trailer_entry_owned(b"Encrypt").ok().flatten().and_then(|encrypt| encrypt.as_dict().ok().and_then(|dict| dict.get(b"P").ok().and_then(|value| value.as_i64().ok())));
+    let permissions = reader.trailer_entry_owned(b"Encrypt").ok().flatten().and_then(|encrypt| {
+        encrypt
+            .as_dict()
+            .ok()
+            .and_then(|dict| dict.get(b"P").ok().and_then(|value| value.as_i64().ok()))
+    });
     permissions.is_some_and(|permissions| permissions & PERMISSION_COPY == 0)
 }
 
@@ -291,7 +316,11 @@ fn read_toc(reader: &IndexedReader) -> Option<Toc> {
 
 fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
     let deadline = Instant::now() + limit;
-    let walk = NameWalk { visits_left: Cell::new(MAX_NAME_TREE_VISITS), cut_short: Cell::new(false), deadline };
+    let walk = NameWalk {
+        visits_left: Cell::new(MAX_NAME_TREE_VISITS),
+        cut_short: Cell::new(false),
+        deadline,
+    };
     let root = reader.trailer_entry_owned(b"Root").ok()??;
     let root = root.as_dict().ok()?;
     let outlines = deref(reader, root.get(b"Outlines").ok()?)?;
@@ -328,7 +357,9 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
             .and_then(|t| deref(reader, t))
             .and_then(|t| t.as_str().ok().map(clean_text))
             .unwrap_or_default();
-        let (Ok(title_start), Ok(title_len)) = (u32::try_from(titles.len()), u32::try_from(title.len())) else { break };
+        let (Ok(title_start), Ok(title_len)) = (u32::try_from(titles.len()), u32::try_from(title.len())) else {
+            break;
+        };
         titles.push_str(&title);
         let index = u32::try_from(entries.len()).ok()?;
         entries.push(TocEntry {
@@ -347,7 +378,12 @@ fn read_toc_within(reader: &IndexedReader, limit: Duration) -> Option<Toc> {
             stack.push((child, index, depth + 1));
         }
     }
-    Some(Toc { titles: titles.into_boxed_str(), entries: entries.into_boxed_slice(), truncated: truncated || walk.visits_left.get() == 0 || walk.cut_short.get(), labels: nav::PageLabels::default() })
+    Some(Toc {
+        titles: titles.into_boxed_str(),
+        entries: entries.into_boxed_slice(),
+        truncated: truncated || walk.visits_left.get() == 0 || walk.cut_short.get(),
+        labels: nav::PageLabels::default(),
+    })
 }
 
 /// What's left for following named destinations, shared across the whole outline.
@@ -504,8 +540,8 @@ pub fn is_invisible_format(c: char) -> bool {
 
 fn pdf_doc_char(b: u8) -> char {
     const HIGH: [char; 32] = [
-        '•', '†', '‡', '…', '—', '–', 'ƒ', '⁄', '‹', '›', '−', '‰', '„', '“', '”', '‘', '’', '‚', '™', 'ﬁ', 'ﬂ', 'Ł', 'Œ', 'Š', 'Ÿ', 'Ž',
-        'ı', 'ł', 'œ', 'š', 'ž', '\u{FFFD}',
+        '•', '†', '‡', '…', '—', '–', 'ƒ', '⁄', '‹', '›', '−', '‰', '„', '“', '”', '‘', '’', '‚', '™', 'ﬁ', 'ﬂ', 'Ł', 'Œ', 'Š', 'Ÿ', 'Ž', 'ı', 'ł', 'œ', 'š',
+        'ž', '\u{FFFD}',
     ];
     match b {
         0x80..=0x9F => HIGH[usize::from(b - 0x80)],
@@ -527,10 +563,18 @@ mod tests {
     /// Failure: reading contents has no bound on time, so a slow file holds `open` for as long as it likes. It must stop, keep what it has, and say so.
     #[test]
     fn contents_stop_at_their_time_limit_and_say_so() {
-        let walk = NameWalk { visits_left: Cell::new(3), cut_short: Cell::new(false), deadline: Instant::now() + Duration::from_secs(60) };
+        let walk = NameWalk {
+            visits_left: Cell::new(3),
+            cut_short: Cell::new(false),
+            deadline: Instant::now() + Duration::from_secs(60),
+        };
         assert!(walk.may_visit() && walk.may_visit() && walk.may_visit());
         assert!(!walk.may_visit(), "out of visits");
-        let late = NameWalk { visits_left: Cell::new(3), cut_short: Cell::new(false), deadline: Instant::now() };
+        let late = NameWalk {
+            visits_left: Cell::new(3),
+            cut_short: Cell::new(false),
+            deadline: Instant::now(),
+        };
         assert!(!late.may_visit(), "out of time");
     }
 
@@ -549,8 +593,27 @@ mod tests {
     #[test]
     fn the_one_rule_covers_every_kind_of_invisible_character() {
         let invisible = [
-            '\u{61C}', '\u{3164}', '\u{115F}', '\u{FFF9}', '\u{FFFB}', '\u{180B}', '\u{180E}', '\u{1D173}', '\u{1D17A}', '\u{2800}', '\u{1D159}', '\u{E0041}', '\u{FE0F}', '\u{2064}',
-            '\u{FDD0}', '\u{FFFE}', '\u{1FFFF}', '\u{10FFFE}', '\u{AD}', '\u{200B}', '\u{202E}',
+            '\u{61C}',
+            '\u{3164}',
+            '\u{115F}',
+            '\u{FFF9}',
+            '\u{FFFB}',
+            '\u{180B}',
+            '\u{180E}',
+            '\u{1D173}',
+            '\u{1D17A}',
+            '\u{2800}',
+            '\u{1D159}',
+            '\u{E0041}',
+            '\u{FE0F}',
+            '\u{2064}',
+            '\u{FDD0}',
+            '\u{FFFE}',
+            '\u{1FFFF}',
+            '\u{10FFFE}',
+            '\u{AD}',
+            '\u{200B}',
+            '\u{202E}',
         ];
         for c in invisible {
             assert!(is_invisible_format(c), "U+{:04X}", c as u32);

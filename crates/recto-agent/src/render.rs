@@ -7,7 +7,8 @@ use recto_index::select::{PageText, neighbour_pages};
 use recto_index::{hidden_report, read_page};
 use recto_proto::{BYTES_PER_PIXEL, TileKind};
 use recto_render_service::{
-    BUDGET_MAX_TIME, BudgetOptions, DocRenderer, DrawStrategy, ExportRefusal, OutputCaps, PageDrawn, PageEvent, Policy, RenderFailure, ServiceConfig, ViewportOptions, draw_whole_page, largest_scale_that_fits, measure_budget, measure_viewport,
+    BUDGET_MAX_TIME, BudgetOptions, DocRenderer, DrawStrategy, ExportRefusal, OutputCaps, PageDrawn, PageEvent, Policy, RenderFailure, ServiceConfig,
+    ViewportOptions, draw_whole_page, largest_scale_that_fits, measure_budget, measure_viewport,
 };
 use serde_json::{Value, json};
 use std::fs::{File, OpenOptions};
@@ -22,13 +23,36 @@ mod png;
 pub(crate) mod snapshot;
 mod svg;
 
-pub(crate) use svg::{SvgArgs, export_svg};
 pub(crate) use svg::check_args as check_scale_and_box;
+pub(crate) use svg::{SvgArgs, export_svg};
 
 /// A box on a page as SVG, into `out`: a snapshot's SVG. `text` is `Both` for a file, with text as outlines and real characters, as `export svg` writes it by default, and `Paths` for the clipboard, whose text is the text item's, hidden text left out: outlines only carry what's drawn.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn write_svg_box<O: Output>(doc: &mut DocRenderer, path: &Path, page: u32, rect: [f32; 4], scale: f32, text: recto_proto::contents::TextMode, caps: &OutputCaps, out: &std::cell::RefCell<O>, started: Instant) -> Result<svg::SvgWritten, AgentError> {
-    svg::write_svg(doc, &svg::SvgJob { path, page, rect: Some(rect), text, scale, strip_metadata: false }, caps, out, started)
+pub(crate) fn write_svg_box<O: Output>(
+    doc: &mut DocRenderer,
+    path: &Path,
+    page: u32,
+    rect: [f32; 4],
+    scale: f32,
+    text: recto_proto::contents::TextMode,
+    caps: &OutputCaps,
+    out: &std::cell::RefCell<O>,
+    started: Instant,
+) -> Result<svg::SvgWritten, AgentError> {
+    svg::write_svg(
+        doc,
+        &svg::SvgJob {
+            path,
+            page,
+            rect: Some(rect),
+            text,
+            scale,
+            strip_metadata: false,
+        },
+        caps,
+        out,
+        started,
+    )
 }
 
 pub const DEFAULT_SCALE: f32 = 2.0;
@@ -44,7 +68,11 @@ pub(crate) const LARGEST_THAT_FITS: f32 = f32::INFINITY;
 pub(crate) fn scale_or_max<'de, D: serde::Deserializer<'de>>(from: D) -> Result<f32, D::Error> {
     match <Value as serde::Deserialize>::deserialize(from)? {
         Value::String(word) if word == "max" => Ok(LARGEST_THAT_FITS),
-        Value::Number(number) => number.as_f64().map(|scale| scale as f32).filter(|scale| scale.is_finite()).ok_or_else(|| serde::de::Error::custom("that scale is out of range")),
+        Value::Number(number) => number
+            .as_f64()
+            .map(|scale| scale as f32)
+            .filter(|scale| scale.is_finite())
+            .ok_or_else(|| serde::de::Error::custom("that scale is out of range")),
         _ => Err(serde::de::Error::custom("a scale is a number, or max")),
     }
 }
@@ -57,7 +85,11 @@ impl From<RenderFailure> for AgentError {
         let exit = match failure {
             RenderFailure::NotFound | RenderFailure::BadPage => exit::NOT_FOUND,
             RenderFailure::NeedsPassword => exit::PROTECTED,
-            RenderFailure::ExportRefused { why: ExportRefusal::WaitTimedOut, .. } | RenderFailure::TookTooLong => exit::TIMED_OUT,
+            RenderFailure::ExportRefused {
+                why: ExportRefusal::WaitTimedOut,
+                ..
+            }
+            | RenderFailure::TookTooLong => exit::TIMED_OUT,
             _ => exit::FAILED,
         };
         Self::new(failure.code(), failure.message(), exit)
@@ -70,7 +102,8 @@ fn open(path: &Path, policy: Policy) -> Result<DocRenderer, AgentError> {
 
 /// One-based pages for people and agents, zero-based inside.
 fn page_index(page: u32) -> Result<u32, AgentError> {
-    page.checked_sub(1).ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))
+    page.checked_sub(1)
+        .ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))
 }
 
 pub(crate) fn render(path: &Path, page: u32, scale: f32, out: &Path) -> Result<Value, AgentError> {
@@ -103,7 +136,9 @@ fn sweep_stale_temps(folder: &Path, alive: impl Fn(u32) -> bool) -> usize {
     let Ok(entries) = std::fs::read_dir(folder) else { return 0 };
     let mut removed = 0;
     for entry in entries.take(MAX_SWEPT_ENTRIES).flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(temp_maker) else { continue };
+        let Some(pid) = entry.file_name().to_str().and_then(temp_maker) else {
+            continue;
+        };
         // `file_type` doesn't follow a link, so a link with this name stays.
         if pid != std::process::id() && entry.file_type().is_ok_and(|kind| kind.is_file()) && !alive(pid) && std::fs::remove_file(entry.path()).is_ok() {
             removed += 1;
@@ -302,7 +337,11 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     crate::saving::check_export_path(out, &["png"], "picture")?;
     let largest = scale == LARGEST_THAT_FITS;
     if !largest && !(recto_proto::MIN_SCALE..=recto_proto::MAX_SCALE).contains(&scale) {
-        return Err(AgentError::new("bad_scale", format!("Scale must be between {} and {}.", recto_proto::MIN_SCALE, recto_proto::MAX_SCALE), exit::FAILED));
+        return Err(AgentError::new(
+            "bad_scale",
+            format!("Scale must be between {} and {}.", recto_proto::MIN_SCALE, recto_proto::MAX_SCALE),
+            exit::FAILED,
+        ));
     }
     // `symlink_metadata`, so a dangling link counts as being there. Early, to save the drawing. The link below is what actually holds.
     if std::fs::symlink_metadata(out).is_ok() {
@@ -314,7 +353,11 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
     let mut doc = DocRenderer::new(path, None, config, policy)?;
     let scale = if largest { largest_scale(&mut doc, page, caps)? } else { scale };
     let (temp, drawn, kind) = write_page(&mut doc, page, scale, out, caps, limit).map_err(|error| {
-        let error = if error.code == "too_large_at_this_scale" { naming_the_largest_scale(error, &mut doc, page, scale, caps) } else { error };
+        let error = if error.code == "too_large_at_this_scale" {
+            naming_the_largest_scale(error, &mut doc, page, scale, caps)
+        } else {
+            error
+        };
         with_time_taken(error, started)
     })?;
     publish(&temp.path, out, |from, to| std::fs::hard_link(from, to))?;
@@ -335,7 +378,18 @@ fn render_with(config: ServiceConfig, path: &Path, page: u32, scale: f32, out: &
 /// The largest scale this page can be drawn at, or a plain refusal if there's none. An export still goes down the same limits from here: a page whose content is too heavy at this scale is refused for that, sharp or not at all.
 fn largest_scale(doc: &mut DocRenderer, page: u32, caps: &OutputCaps) -> Result<f32, AgentError> {
     let (width, height) = doc.page_size(page)?;
-    largest_scale_that_fits(width, height, caps).ok_or_else(|| AgentError::new("too_large_at_this_scale", format!("Page {} is {width} x {height} points, and no scale fits: a picture is at most {} Mpx.", page + 1, caps.max_pixels / 1_000_000), exit::FAILED).then("Tell the user this page can't be drawn."))
+    largest_scale_that_fits(width, height, caps).ok_or_else(|| {
+        AgentError::new(
+            "too_large_at_this_scale",
+            format!(
+                "Page {} is {width} x {height} points, and no scale fits: a picture is at most {} Mpx.",
+                page + 1,
+                caps.max_pixels / 1_000_000
+            ),
+            exit::FAILED,
+        )
+        .then("Tell the user this page can't be drawn.")
+    })
 }
 
 /// A scale as it was written. A float widened as it stands reads 4.71 as 4.71000003814697, in JSON and in plain words.
@@ -346,7 +400,11 @@ fn as_written(scale: f32) -> f64 {
 /// Says the largest scale that fits this page, from its size and the caps, so an agent doesn't try 8, 4, 2 and 1 by hand. It's about size alone, and a heavy page can still be refused for memory, in words of its own.
 fn naming_the_largest_scale(mut error: AgentError, doc: &mut DocRenderer, page: u32, scale: f32, caps: &OutputCaps) -> AgentError {
     let Ok((width, height)) = doc.page_size(page) else { return error };
-    error.message = format!("Page {} is {width} x {height} points, too large to draw at {scale}x: a picture is at most {} Mpx.", page + 1, caps.max_pixels / 1_000_000);
+    error.message = format!(
+        "Page {} is {width} x {height} points, too large to draw at {scale}x: a picture is at most {} Mpx.",
+        page + 1,
+        caps.max_pixels / 1_000_000
+    );
     match largest_scale_that_fits(width, height, caps) {
         Some(most) => {
             error.message.push_str(&format!(" The largest scale that fits is {most}."));
@@ -363,7 +421,14 @@ fn naming_the_largest_scale(mut error: AgentError, doc: &mut DocRenderer, page: 
 
 /// Writes the page to a new temp file, as an export: sharp or not at all, and any failure takes the temp file with it. Returns the file, ready to publish. Can sleep waiting for the larger
 /// limit, which is fine: this runs on a command's thread, never a UI thread.
-fn write_page(doc: &mut DocRenderer, page: u32, scale: f32, out: &Path, caps: &OutputCaps, limit: u64) -> Result<(OwnTemp, PageDrawn, &'static str), AgentError> {
+fn write_page(
+    doc: &mut DocRenderer,
+    page: u32,
+    scale: f32,
+    out: &Path,
+    caps: &OutputCaps,
+    limit: u64,
+) -> Result<(OwnTemp, PageDrawn, &'static str), AgentError> {
     let write_failed = || AgentError::new("write_failed", "The picture couldn't be saved there.", exit::FAILED);
     let mut size = None;
     let mut surface = None;
@@ -388,9 +453,16 @@ fn write_page(doc: &mut DocRenderer, page: u32, scale: f32, out: &Path, caps: &O
                 }
             }
         }
-        PageEvent::Rows { memory, rect, stride, kind: strip_kind } => {
+        PageEvent::Rows {
+            memory,
+            rect,
+            stride,
+            kind: strip_kind,
+        } => {
             kind = Some(merge_kinds(kind, strip_kind));
-            let Some((_, writer, row)) = picture.as_mut() else { return Err(RenderFailure::Unavailable) };
+            let Some((_, writer, row)) = picture.as_mut() else {
+                return Err(RenderFailure::Unavailable);
+            };
             for y in 0..rect.height as usize {
                 // A copy out, never a look in place: the worker still holds this memory, and it isn't trusted.
                 if !memory.copy_out(y * stride as usize, row) {
@@ -406,7 +478,12 @@ fn write_page(doc: &mut DocRenderer, page: u32, scale: f32, out: &Path, caps: &O
     })
     .map_err(|failure| {
         sink_error.take().unwrap_or_else(|| match (failure, size) {
-            (RenderFailure::ExportRefused { why: ExportRefusal::TooHeavy, .. }, Some(size)) => too_heavy_to_export(failure, page, scale, size, limit),
+            (
+                RenderFailure::ExportRefused {
+                    why: ExportRefusal::TooHeavy, ..
+                },
+                Some(size),
+            ) => too_heavy_to_export(failure, page, scale, size, limit),
             _ => failure.into(),
         })
     })?;
@@ -422,16 +499,28 @@ const SCALE_MATTERS_SHARE: u64 = 8;
 fn too_heavy_to_export(failure: RenderFailure, page: u32, scale: f32, (width, height): (u32, u32), limit: u64) -> AgentError {
     let picture = u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL);
     let mut error = AgentError::from(failure);
-    error.message = format!("Page {} wasn't exported, and no file was written: drawing it needs more than the {} one page may use.", page + 1, crate::human::bytes(limit));
+    error.message = format!(
+        "Page {} wasn't exported, and no file was written: drawing it needs more than the {} one page may use.",
+        page + 1,
+        crate::human::bytes(limit)
+    );
     let large = picture.saturating_mul(SCALE_MATTERS_SHARE) >= limit;
     if large && scale > recto_proto::MIN_SCALE {
-        error.message.push_str(&format!(" The picture alone is {} at {scale}x.", crate::human::bytes(picture)));
+        error
+            .message
+            .push_str(&format!(" The picture alone is {} at {scale}x.", crate::human::bytes(picture)));
         error.next = "A smaller `--scale` may fit.".to_string();
     } else if large {
-        error.message.push_str(&format!(" The picture alone is {} at {scale}x, the smallest scale there is.", crate::human::bytes(picture)));
+        error.message.push_str(&format!(
+            " The picture alone is {} at {scale}x, the smallest scale there is.",
+            crate::human::bytes(picture)
+        ));
         error.next = "Tell the user this page can't be drawn.".to_string();
     } else {
-        error.message.push_str(&format!(" The picture is only {} at {scale}x, so it's what's on the page that uses the memory.", crate::human::bytes(picture)));
+        error.message.push_str(&format!(
+            " The picture is only {} at {scale}x, so it's what's on the page that uses the memory.",
+            crate::human::bytes(picture)
+        ));
         error.next = "A smaller scale won't help. Tell the user this page can't be drawn.".to_string();
     }
     error
@@ -441,7 +530,10 @@ fn too_heavy_to_export(failure: RenderFailure, page: u32, scale: f32, (width, he
 fn with_time_taken(mut error: AgentError, started: Instant) -> AgentError {
     let elapsed = started.elapsed();
     if elapsed.as_millis() >= 100 {
-        error.message.push_str(&format!(" That took {}.", crate::human::duration(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))));
+        error.message.push_str(&format!(
+            " That took {}.",
+            crate::human::duration(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        ));
     }
     error
 }
@@ -511,12 +603,28 @@ pub(crate) fn text(path: &Path, page: u32) -> Result<Value, AgentError> {
 
 /// Where a page's running heads, footers and page numbers are in its text, in characters, by `recto_index::chrome`: its edge lines against those of the pages either side, read with no drawing. A page whose neighbours can't be read is judged with what's known. The text a copy goes by is the text `read_page` gives, so the places are the same.
 fn chrome_of(doc: &mut DocRenderer, page: u32, characters: &recto_render_service::PageCharacters) -> Vec<(u32, u32)> {
-    let own = PageText::build(&characters.chars, &characters.boxes, characters.frame, characters.hidden_checked, characters.copy_restricted);
+    let own = PageText::build(
+        &characters.chars,
+        &characters.boxes,
+        characters.frame,
+        characters.hidden_checked,
+        characters.copy_restricted,
+    );
     if own.edge_lines().is_empty() {
         return Vec::new();
     }
     let pages = doc.page_count().unwrap_or(page + 1);
-    let neighbours: Vec<(i64, Vec<EdgeLine>)> = neighbour_pages(page, pages).filter_map(|other| Some((i64::from(other) - i64::from(page), doc.page_characters(other, true, false).ok()?))).map(|(away, read)| (away, PageText::build(&read.chars, &read.boxes, read.frame, false, read.copy_restricted).edge_lines().to_vec())).collect();
+    let neighbours: Vec<(i64, Vec<EdgeLine>)> = neighbour_pages(page, pages)
+        .filter_map(|other| Some((i64::from(other) - i64::from(page), doc.page_characters(other, true, false).ok()?)))
+        .map(|(away, read)| {
+            (
+                away,
+                PageText::build(&read.chars, &read.boxes, read.frame, false, read.copy_restricted)
+                    .edge_lines()
+                    .to_vec(),
+            )
+        })
+        .collect();
     let borrowed: Vec<(i64, &[EdgeLine])> = neighbours.iter().map(|(away, lines)| (*away, lines.as_slice())).collect();
     let mut spans = own.chrome_spans(&borrowed);
     spans.sort_unstable();
@@ -556,11 +664,28 @@ pub(crate) fn budget_viewport(path: &Path, viewport: &str, first: Option<u32>, s
         None => (DrawStrategy::Auto, "auto"),
         Some("per_tile") => (DrawStrategy::PerTile, "per_tile"),
         Some("region") => (DrawStrategy::Region, "region"),
-        Some(_) => return Err(AgentError::new("bad_strategy", "The strategy is per_tile or region, or left out to pick by page.", exit::FAILED)),
+        Some(_) => {
+            return Err(AgentError::new(
+                "bad_strategy",
+                "The strategy is per_tile or region, or left out to pick by page.",
+                exit::FAILED,
+            ));
+        }
     };
     let largest_image_pixels = doc.largest_image_pixels(first_page, 0).unwrap_or(0);
     doc.kill_worker();
-    let steps = measure_viewport(&mut doc, ViewportOptions { first_page, scale, width, height, margin_tiles: VIEWPORT_MARGIN_TILES, strategy, max_time: BUDGET_MAX_TIME })?;
+    let steps = measure_viewport(
+        &mut doc,
+        ViewportOptions {
+            first_page,
+            scale,
+            width,
+            height,
+            margin_tiles: VIEWPORT_MARGIN_TILES,
+            strategy,
+            max_time: BUDGET_MAX_TIME,
+        },
+    )?;
     let steps: Vec<Value> = steps
         .iter()
         .map(|step| {
@@ -606,7 +731,14 @@ pub(crate) fn budget(path: &Path, args: &BudgetArgs) -> Result<Value, AgentError
     let (limit, retire) = (policy.memory_limit_bytes, policy.retire_bytes);
     let mut doc = open(path, policy)?;
     let first_page = args.first.map_or(Ok(0), page_index)?;
-    let options = BudgetOptions { first_page, pages: args.pages, scale: args.scale, fresh_worker_per_page: args.fresh, tiles: args.tiles, max_time: BUDGET_MAX_TIME };
+    let options = BudgetOptions {
+        first_page,
+        pages: args.pages,
+        scale: args.scale,
+        fresh_worker_per_page: args.fresh,
+        tiles: args.tiles,
+        max_time: BUDGET_MAX_TIME,
+    };
     let report = measure_budget(&mut doc, options)?;
     let mut round_trip: Vec<u64> = report.samples.iter().filter(|s| s.failure.is_none()).map(|s| s.micros).collect();
     let mut inside: Vec<u64> = report.samples.iter().filter(|s| s.failure.is_none()).map(|s| s.render_us).collect();
@@ -676,7 +808,10 @@ mod tests {
     }
 
     fn folder_entries(file: &TempPdf) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(file.0.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let mut names: Vec<String> = std::fs::read_dir(file.0.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
         names.sort();
         names
     }
@@ -794,7 +929,10 @@ mod tests {
         let out = file.0.with_file_name("a.png");
         render(&file.0, 1, 1.0, &out).unwrap();
         std::fs::remove_file(&out).unwrap();
-        let tiny = OutputCaps { max_bytes: 10, ..OutputCaps::default() };
+        let tiny = OutputCaps {
+            max_bytes: 10,
+            ..OutputCaps::default()
+        };
         assert_eq!(render_with_caps(&file.0, 1, 1.0, &out, &tiny).unwrap_err().code, "output_too_large");
         assert_eq!(folder_entries(&file), before);
     }
@@ -804,11 +942,20 @@ mod tests {
     fn caps_on_pixels_bytes_and_time_refuse_plainly() {
         let file = TempPdf::new("busy.pdf", &pages(&[Page::new(busy_page())]));
         let out = file.0.with_file_name("capped.png");
-        let pixels = OutputCaps { max_pixels: 1000, ..OutputCaps::default() };
+        let pixels = OutputCaps {
+            max_pixels: 1000,
+            ..OutputCaps::default()
+        };
         assert_eq!(render_with_caps(&file.0, 1, 1.0, &out, &pixels).unwrap_err().code, "too_large_at_this_scale");
-        let bytes = OutputCaps { max_bytes: 100, ..OutputCaps::default() };
+        let bytes = OutputCaps {
+            max_bytes: 100,
+            ..OutputCaps::default()
+        };
         assert_eq!(render_with_caps(&file.0, 1, 1.0, &out, &bytes).unwrap_err().code, "output_too_large");
-        let time = OutputCaps { max_time: Duration::ZERO, ..OutputCaps::default() };
+        let time = OutputCaps {
+            max_time: Duration::ZERO,
+            ..OutputCaps::default()
+        };
         assert_eq!(render_with_caps(&file.0, 1, 1.0, &out, &time).unwrap_err().code, "render_took_too_long");
         assert!(!out.exists());
     }
@@ -820,7 +967,11 @@ mod tests {
         let out = file.0.with_file_name("huge.png");
         let started = Instant::now();
         assert_eq!(render(&file.0, 1, 16.0, &out).unwrap_err().code, "too_large_at_this_scale");
-        assert_eq!(render(&file.0, 1, 64.0, &out).unwrap_err().code, "too_large_at_this_scale", "wider than a strip can be");
+        assert_eq!(
+            render(&file.0, 1, 64.0, &out).unwrap_err().code,
+            "too_large_at_this_scale",
+            "wider than a strip can be"
+        );
         assert!(started.elapsed() < Duration::from_secs(30), "it should refuse from the size alone");
         assert!(!out.exists());
     }
@@ -828,16 +979,34 @@ mod tests {
     /// Failure: "too large at this zoom" leaves an agent trying 8, 4, 2, 1 by hand. It names the largest scale that fits, and that scale really draws, on a page the size of the USGS map that an agent did this on, under a cap that makes it quick to check.
     #[test]
     fn too_large_names_the_largest_scale_that_draws() {
-        let file = TempPdf::new("map.pdf", &pages(&[Page { content: text_lines(&["A map"]), page_extra: String::new(), media: (2232.0, 2016.0) }]));
+        let file = TempPdf::new(
+            "map.pdf",
+            &pages(&[Page {
+                content: text_lines(&["A map"]),
+                page_extra: String::new(),
+                media: (2232.0, 2016.0),
+            }]),
+        );
         let out = file.0.with_file_name("map.png");
-        let caps = OutputCaps { max_pixels: 400_000, ..OutputCaps::default() };
+        let caps = OutputCaps {
+            max_pixels: 400_000,
+            ..OutputCaps::default()
+        };
         let refused = render_with_caps(&file.0, 1, 8.0, &out, &caps).unwrap_err();
         assert_eq!(refused.code, "too_large_at_this_scale");
         assert!(refused.message.contains("2232 x 2016"), "it says why: {}", refused.message);
         let named: f32 = refused.candidates[0].strip_prefix("--scale ").unwrap().parse().unwrap();
-        assert!(refused.message.contains(&named.to_string()) && refused.next.contains(&format!("--scale {named}")), "{} {}", refused.message, refused.next);
+        assert!(
+            refused.message.contains(&named.to_string()) && refused.next.contains(&format!("--scale {named}")),
+            "{} {}",
+            refused.message,
+            refused.next
+        );
         let drawn = render_with_caps(&file.0, 1, named, &out, &caps).unwrap();
-        assert!(drawn["width"].as_u64().unwrap() * drawn["height"].as_u64().unwrap() <= caps.max_pixels, "{drawn}");
+        assert!(
+            drawn["width"].as_u64().unwrap() * drawn["height"].as_u64().unwrap() <= caps.max_pixels,
+            "{drawn}"
+        );
         std::fs::remove_file(&out).unwrap();
         let next_up = render_with_caps(&file.0, 1, named + 0.02, &out, &caps).unwrap_err();
         assert_eq!(next_up.code, "too_large_at_this_scale", "it's the edge, not somewhere well under it");
@@ -849,10 +1018,17 @@ mod tests {
     /// Failure: a refusal tells an agent to try a smaller scale on a page where that can't work, so it tries each one in turn: `form_bomb` fails the same at 0.25. The suggestion needs a picture that's a real share of the limit, and a scale with somewhere to go.
     #[test]
     fn a_smaller_scale_is_suggested_only_when_it_can_help() {
-        let refused = RenderFailure::ExportRefused { page: 0, why: ExportRefusal::TooHeavy };
+        let refused = RenderFailure::ExportRefused {
+            page: 0,
+            why: ExportRefusal::TooHeavy,
+        };
         let gib = 1024 * 1024 * 1024;
         let small = too_heavy_to_export(refused, 0, 2.0, (1224, 1584), gib);
-        assert!(small.next.contains("won't help") && !small.next.contains("may fit") && !small.next.contains("recto text"), "and no step that may fail just the same: {}", small.next);
+        assert!(
+            small.next.contains("won't help") && !small.next.contains("may fit") && !small.next.contains("recto text"),
+            "and no step that may fail just the same: {}",
+            small.next
+        );
         assert!(small.message.contains("1.00 GiB"), "it should say the limit: {}", small.message);
         assert!(small.message.contains("no file was written"), "{}", small.message);
         let large = too_heavy_to_export(refused, 0, 8.0, (8000, 8000), gib);
@@ -879,14 +1055,27 @@ mod tests {
     /// Failure: `--scale max` draws at something other than the largest that fits, or doesn't say which, and so leaves an agent where it was: trying numbers. It must be the same edge the refusal names, and be drawn.
     #[test]
     fn the_largest_scale_is_drawn_and_named() {
-        let file = TempPdf::new("map.pdf", &pages(&[Page { content: text_lines(&["A map"]), page_extra: String::new(), media: (2232.0, 2016.0) }]));
+        let file = TempPdf::new(
+            "map.pdf",
+            &pages(&[Page {
+                content: text_lines(&["A map"]),
+                page_extra: String::new(),
+                media: (2232.0, 2016.0),
+            }]),
+        );
         let out = file.0.with_file_name("max.png");
-        let caps = OutputCaps { max_pixels: 400_000, ..OutputCaps::default() };
+        let caps = OutputCaps {
+            max_pixels: 400_000,
+            ..OutputCaps::default()
+        };
         let drawn = render_with_caps(&file.0, 1, LARGEST_THAT_FITS, &out, &caps).unwrap();
         let named = drawn["scale"].as_f64().unwrap() as f32;
         assert_eq!(drawn["largest_that_fits"], true, "{drawn}");
         assert_eq!(Some(named), largest_scale_that_fits(2232.0, 2016.0, &caps), "{drawn}");
-        assert!(drawn["width"].as_u64().unwrap() * drawn["height"].as_u64().unwrap() <= caps.max_pixels, "{drawn}");
+        assert!(
+            drawn["width"].as_u64().unwrap() * drawn["height"].as_u64().unwrap() <= caps.max_pixels,
+            "{drawn}"
+        );
         let said = crate::human::render("render", &drawn);
         assert!(said.contains(&format!("at {named}x")) && said.contains("largest"), "{said}");
         std::fs::remove_file(&out).unwrap();
@@ -954,7 +1143,15 @@ mod tests {
             return;
         }
         let channel = Channel::inherited().unwrap();
-        send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled: false }), &[]).unwrap();
+        send_all(
+            &channel,
+            &proto::encode_hello(proto::Hello {
+                pid: std::process::id(),
+                walled: false,
+            }),
+            &[],
+        )
+        .unwrap();
         let mut reader = FrameReader::default();
         let mut kept = Vec::new();
         loop {
@@ -963,11 +1160,20 @@ mod tests {
                 Kind::Open => proto::encode_opened(1, 1),
                 Kind::SizeRequest => {
                     let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
-                    PageSize { job_id, width: 612.0, height: 792.0 }.encode()
+                    PageSize {
+                        job_id,
+                        width: 612.0,
+                        height: 792.0,
+                    }
+                    .encode()
                 }
                 Kind::TraitsRequest => {
                     let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
-                    proto::PageTraits { job_id, largest_image_pixels: 0 }.encode()
+                    proto::PageTraits {
+                        job_id,
+                        largest_image_pixels: 0,
+                    }
+                    .encode()
                 }
                 _ => {
                     let job = RenderJob::decode(&frame.payload).unwrap();
@@ -978,7 +1184,16 @@ mod tests {
                         }
                     }
                     let status = TileStatus::Done(TileKind::Colour);
-                    TileReply { generation: job.generation, job_id: job.job_id, width: job.rect.width, height: job.rect.height, stride: job.stride, status, render_us: 1 }.encode()
+                    TileReply {
+                        generation: job.generation,
+                        job_id: job.job_id,
+                        width: job.rect.width,
+                        height: job.rect.height,
+                        stride: job.stride,
+                        status,
+                        render_us: 1,
+                    }
+                    .encode()
                 }
             };
             send_all(&channel, &reply, &[]).unwrap();
@@ -991,7 +1206,12 @@ mod tests {
             pdfium_lib: "/nonexistent".into(),
             heavy_slot: recto_render_service::HeavySlot::new(),
             extra_env: vec![("RECTO_FAKE".into(), "1".into())],
-            replace_args: Some(["--exact", "render::tests::fake_worker", "--nocapture", "--test-threads=1"].into_iter().map(Into::into).collect()),
+            replace_args: Some(
+                ["--exact", "render::tests::fake_worker", "--nocapture", "--test-threads=1"]
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+            ),
         }
     }
 
@@ -1012,7 +1232,11 @@ mod tests {
     /// Failure: a page with a red blank strip and a white one reports `grey`, telling an agent there's no colour on a page that has some.
     #[test]
     fn whole_page_kinds_tell_the_truth() {
-        let (white, black, red) = (TileKind::Blank { rgb: 0xFF_FFFF }, TileKind::Blank { rgb: 0 }, TileKind::Blank { rgb: 0xFF_0000 });
+        let (white, black, red) = (
+            TileKind::Blank { rgb: 0xFF_FFFF },
+            TileKind::Blank { rgb: 0 },
+            TileKind::Blank { rgb: 0xFF_0000 },
+        );
         assert_eq!(merge_kinds(None, white), white);
         assert_eq!(merge_kinds(Some(white), white), white);
         assert_eq!(merge_kinds(Some(white), black), TileKind::Grey, "two blanks of different greys");

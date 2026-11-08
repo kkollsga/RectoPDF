@@ -75,15 +75,7 @@ pub trait RenderBackend {
 
     /// Draws `rect` of `page` at `scale` into `out`, which holds rows `stride` bytes apart. `rect` is in device pixels at that scale,
     /// from the page's top left. Reports what the tile holds, so the host can skip a surface for a blank one.
-    fn render_tile(
-        &mut self,
-        page: u32,
-        rect: TileRect,
-        scale: f32,
-        out: &mut [u8],
-        stride: u32,
-        cancel: &dyn Cancel,
-    ) -> Result<TileOutcome, RenderError>;
+    fn render_tile(&mut self, page: u32, rect: TileRect, scale: f32, out: &mut [u8], stride: u32, cancel: &dyn Cancel) -> Result<TileOutcome, RenderError>;
 
     /// Draws a region of a page in one pass, for when several tiles are needed: most of a heavy page's cost is per pass, not per pixel. `rect` lies on a grid of `tile_edge`
     /// from the page's origin. On finishing, `kinds` holds what each tile holds, in [`recto_proto::region_tiles`] order.

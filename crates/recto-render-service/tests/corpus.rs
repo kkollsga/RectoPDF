@@ -33,11 +33,27 @@ fn real_files_draw_and_read_without_a_rejection() {
         documents += 1;
         for page in 0..count.min(3) {
             let (width, height) = doc.page_size(page).unwrap();
-            let rect = TileRect { x: 0, y: 0, width: 512, height: 512 };
+            let rect = TileRect {
+                x: 0,
+                y: 0,
+                width: 512,
+                height: 512,
+            };
             let scale = (1024.0 / width.max(height)).min(2.0);
-            let result = doc.render_tile(&TileRequest { page, rect, scale, stride: 2048, generation: 0 }, &surface);
+            let result = doc.render_tile(
+                &TileRequest {
+                    page,
+                    rect,
+                    scale,
+                    stride: 2048,
+                    generation: 0,
+                },
+                &surface,
+            );
             assert!(matches!(result, Ok(TileResult::Done(_))), "{} p{page}: {result:?}", path.display());
-            let text = doc.page_characters(page, true, false).unwrap_or_else(|failure| panic!("{} p{page}: {failure:?}", path.display()));
+            let text = doc
+                .page_characters(page, true, false)
+                .unwrap_or_else(|failure| panic!("{} p{page}: {failure:?}", path.display()));
             pages += 1;
             chars += text.chars.len();
         }
@@ -57,6 +73,12 @@ fn a_real_encrypted_file_asks_for_its_password() {
     let path = PathBuf::from(path);
     let mut without = renderer(&path, Policy::default());
     assert_eq!(without.page_count().unwrap_err(), RenderFailure::NeedsPassword);
-    let mut with = recto_render_service::DocRenderer::new(&path, recto_platform::Password::take(password).map(std::sync::Arc::new), common::real_config(), Policy::default()).unwrap();
+    let mut with = recto_render_service::DocRenderer::new(
+        &path,
+        recto_platform::Password::take(password).map(std::sync::Arc::new),
+        common::real_config(),
+        Policy::default(),
+    )
+    .unwrap();
     assert!(with.page_count().unwrap() > 0);
 }

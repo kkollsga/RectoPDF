@@ -167,7 +167,15 @@ fn pack_picture(picture: &SleepPicture) -> Option<(PictureLine, Vec<u8>)> {
     if picture_bytes(picture.width, picture.height, picture.scale) != Some(picture.bgra.len()) {
         return None;
     }
-    let line = |width, height, scale, packed: &[u8], delta| PictureLine { page: picture.page, scale, width, height, dark: picture.dark, packed: u32::try_from(packed.len()).unwrap_or(u32::MAX), delta };
+    let line = |width, height, scale, packed: &[u8], delta| PictureLine {
+        page: picture.page,
+        scale,
+        width,
+        height,
+        dark: picture.dark,
+        packed: u32::try_from(packed.len()).unwrap_or(u32::MAX),
+        delta,
+    };
     let whole = deflated(&picture.bgra, flate2::Compression::fast())?;
     if whole.len() <= MAX_PACKED_PICTURE {
         return Some((line(picture.width, picture.height, picture.scale, &whole, false), whole));
@@ -185,7 +193,12 @@ fn pack_picture(picture: &SleepPicture) -> Option<(PictureLine, Vec<u8>)> {
 
 /// A file's bytes. Pictures past the caps, or of the wrong size, are left out rather than failing the file.
 pub fn encode_sleep(sleep: &SleepFile) -> Vec<u8> {
-    let toc = sleep.toc.entries().iter().map(|entry| (sleep.toc.title(entry).to_string(), entry.page, entry.parent, entry.depth)).collect();
+    let toc = sleep
+        .toc
+        .entries()
+        .iter()
+        .map(|entry| (sleep.toc.title(entry).to_string(), entry.page, entry.parent, entry.depth))
+        .collect();
     let mut lines = Vec::new();
     let mut packed = Vec::new();
     for picture in sleep.pictures.iter().take(MAX_SLEEP_PICTURES) {
@@ -195,8 +208,28 @@ pub fn encode_sleep(sleep: &SleepFile) -> Vec<u8> {
         }
     }
     let sizes = sleep.sizes.iter().take(MAX_SIZES).copied().collect();
-    let labels = sleep.toc.labels.ranges().iter().map(|range| (range.start, range.first, range.style.code(), range.prefix.to_string())).collect();
-    let meta = Meta { file: sleep.file.into(), file_pages: sleep.file_pages, pages: sleep.pages, list_seq: sleep.list_seq, renderer_only: sleep.renderer_only, version: sleep.version, truncated: sleep.toc.truncated, toc, labels, labels_truncated: sleep.toc.labels.truncated, usual: sleep.usual, sizes, pictures: lines };
+    let labels = sleep
+        .toc
+        .labels
+        .ranges()
+        .iter()
+        .map(|range| (range.start, range.first, range.style.code(), range.prefix.to_string()))
+        .collect();
+    let meta = Meta {
+        file: sleep.file.into(),
+        file_pages: sleep.file_pages,
+        pages: sleep.pages,
+        list_seq: sleep.list_seq,
+        renderer_only: sleep.renderer_only,
+        version: sleep.version,
+        truncated: sleep.toc.truncated,
+        toc,
+        labels,
+        labels_truncated: sleep.toc.labels.truncated,
+        usual: sleep.usual,
+        sizes,
+        pictures: lines,
+    };
     let mut body = serde_json::to_vec(&meta).unwrap_or_default();
     body.push(b'\n');
     body.extend_from_slice(&packed);
@@ -220,19 +253,43 @@ pub fn decode_sleep(bytes: &[u8], newest: u32) -> Result<SleepFile, RecordError>
     }
     let lines = meta.toc.iter().enumerate().map(|(at, (title, page, parent, depth))| {
         let fits = (*page == NONE || *page < meta.file_pages) && (*parent == NONE || (*parent as usize) < at) && *depth <= MAX_TOC_DEPTH;
-        fits.then_some(TocLine { title: title.as_str(), page: *page, parent: *parent, depth: *depth })
+        fits.then_some(TocLine {
+            title: title.as_str(),
+            page: *page,
+            parent: *parent,
+            depth: *depth,
+        })
     });
     let lines: Vec<TocLine<'_>> = lines.collect::<Option<_>>().ok_or(bad("contents out of range"))?;
     let mut toc = Toc::from_lines(&lines, meta.truncated);
-    if meta.labels.iter().any(|(start, _, _, prefix)| *start >= meta.file_pages || prefix.len() > MAX_LABEL_PREFIX_BYTES) {
+    if meta
+        .labels
+        .iter()
+        .any(|(start, _, _, prefix)| *start >= meta.file_pages || prefix.len() > MAX_LABEL_PREFIX_BYTES)
+    {
         return Err(bad("page labels out of range"));
     }
     // Held to the same rules as a PDF's own, as whatever wrote this can't be believed.
-    toc.labels = PageLabels::from_ranges(meta.labels.iter().map(|(start, first, style, prefix)| LabelRange { start: *start, first: *first, style: LabelStyle::from_code(*style), prefix: prefix.as_str().into() }).collect(), meta.labels_truncated);
+    toc.labels = PageLabels::from_ranges(
+        meta.labels
+            .iter()
+            .map(|(start, first, style, prefix)| LabelRange {
+                start: *start,
+                first: *first,
+                style: LabelStyle::from_code(*style),
+                prefix: prefix.as_str().into(),
+            })
+            .collect(),
+        meta.labels_truncated,
+    );
     if meta.usual.is_some_and(|(width, height)| !good_size(width, height)) {
         return Err(bad("a page of an impossible size"));
     }
-    if meta.sizes.iter().any(|(page, width, height)| *page >= meta.pages || !good_size(*width, *height)) {
+    if meta
+        .sizes
+        .iter()
+        .any(|(page, width, height)| *page >= meta.pages || !good_size(*width, *height))
+    {
         return Err(bad("a page of an impossible size"));
     }
     let mut packed = &body[end + 1..];
@@ -254,12 +311,30 @@ pub fn decode_sleep(bytes: &[u8], newest: u32) -> Result<SleepFile, RecordError>
         if line.delta {
             from_deltas(&mut bgra, line.width);
         }
-        pictures.push(SleepPicture { page: line.page, scale: line.scale, width: line.width, height: line.height, dark: line.dark, bgra });
+        pictures.push(SleepPicture {
+            page: line.page,
+            scale: line.scale,
+            width: line.width,
+            height: line.height,
+            dark: line.dark,
+            bgra,
+        });
     }
     if !packed.is_empty() {
         return Err(bad("something after the pictures"));
     }
-    Ok(SleepFile { file: meta.file.into(), file_pages: meta.file_pages, pages: meta.pages, list_seq: meta.list_seq, renderer_only: meta.renderer_only, version: meta.version, toc, usual: meta.usual, sizes: meta.sizes, pictures })
+    Ok(SleepFile {
+        file: meta.file.into(),
+        file_pages: meta.file_pages,
+        pages: meta.pages,
+        list_seq: meta.list_seq,
+        renderer_only: meta.renderer_only,
+        version: meta.version,
+        toc,
+        usual: meta.usual,
+        sizes: meta.sizes,
+        pictures,
+    })
 }
 
 #[cfg(test)]
@@ -268,9 +343,30 @@ mod tests {
     use crate::record::CURRENT_VERSION;
 
     fn sample() -> SleepFile {
-        let toc = Toc::from_lines(&[TocLine { title: "One", page: 0, parent: NONE, depth: 0 }, TocLine { title: "Inside", page: 2, parent: 0, depth: 1 }], false);
+        let toc = Toc::from_lines(
+            &[
+                TocLine {
+                    title: "One",
+                    page: 0,
+                    parent: NONE,
+                    depth: 0,
+                },
+                TocLine {
+                    title: "Inside",
+                    page: 2,
+                    parent: 0,
+                    depth: 1,
+                },
+            ],
+            false,
+        );
         SleepFile {
-            file: FileStamp { size: 9, mtime_ns: 5, device: 1, inode: 2 },
+            file: FileStamp {
+                size: 9,
+                mtime_ns: 5,
+                device: 1,
+                inode: 2,
+            },
             file_pages: 5,
             pages: 4,
             list_seq: 7,
@@ -279,7 +375,24 @@ mod tests {
             toc,
             usual: Some((612.0, 792.0)),
             sizes: vec![(3, 300.0, 400.0)],
-            pictures: vec![SleepPicture { page: 1, scale: 0.5, width: 4, height: 2, dark: true, bgra: (0..32).collect() }, SleepPicture { page: 2, scale: 0.5, width: 1, height: 1, dark: false, bgra: vec![1, 2, 3, 255] }],
+            pictures: vec![
+                SleepPicture {
+                    page: 1,
+                    scale: 0.5,
+                    width: 4,
+                    height: 2,
+                    dark: true,
+                    bgra: (0..32).collect(),
+                },
+                SleepPicture {
+                    page: 2,
+                    scale: 0.5,
+                    width: 1,
+                    height: 1,
+                    dark: false,
+                    bgra: vec![1, 2, 3, 255],
+                },
+            ],
         }
     }
 
@@ -296,11 +409,31 @@ mod tests {
         let mut sleep = sample();
         sleep.pages = 40;
         sleep.file_pages = 40;
-        sleep.pictures = (0..12).map(|page| SleepPicture { page, scale: 0.25, width: 2, height: 2, dark: false, bgra: vec![200; 16] }).collect();
+        sleep.pictures = (0..12)
+            .map(|page| SleepPicture {
+                page,
+                scale: 0.25,
+                width: 2,
+                height: 2,
+                dark: false,
+                bgra: vec![200; 16],
+            })
+            .collect();
         let back = decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).expect("twelve pictures read back");
         assert_eq!(back.pictures.len(), 12);
-        sleep.pictures.push(SleepPicture { page: 12, scale: 0.25, width: 2, height: 2, dark: false, bgra: vec![200; 16] });
-        assert_eq!(decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap().pictures.len(), 12, "a thirteenth is left out when written");
+        sleep.pictures.push(SleepPicture {
+            page: 12,
+            scale: 0.25,
+            width: 2,
+            height: 2,
+            dark: false,
+            bgra: vec![200; 16],
+        });
+        assert_eq!(
+            decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap().pictures.len(),
+            12,
+            "a thirteenth is left out when written"
+        );
     }
 
     /// Failure: a picture whose numbers don't match its bytes gets written, so the file's refused for all of it. It's left out, and the rest stands.
@@ -370,7 +503,13 @@ mod tests {
             flipped[at] ^= 0x40;
             assert!(decode_sleep(&flipped, CURRENT_VERSION).is_err(), "byte {at}");
         }
-        assert!(matches!(decode_sleep(&crate::record::seal_as(SLEEP_KIND, CURRENT_VERSION + 1, 0, &body_of(&good)), CURRENT_VERSION), Err(RecordError::Newer(_))), "a newer app's is left to it");
+        assert!(
+            matches!(
+                decode_sleep(&crate::record::seal_as(SLEEP_KIND, CURRENT_VERSION + 1, 0, &body_of(&good)), CURRENT_VERSION),
+                Err(RecordError::Newer(_))
+            ),
+            "a newer app's is left to it"
+        );
     }
 
     /// Failure (the owner's rule on SSD wear): a page of a photograph writes half a megabyte each time it's left, as it doesn't pack, so a morning's reading is tens of megabytes. Every picture comes in under its cap, whatever's on it, and still shows the page: right shape, right colours on average. A page of paper isn't touched.
@@ -390,7 +529,14 @@ mod tests {
             }
         }
         let mut sleep = sample();
-        sleep.pictures = vec![SleepPicture { page: 0, scale: 0.5, width, height, dark: false, bgra: bgra.clone() }];
+        sleep.pictures = vec![SleepPicture {
+            page: 0,
+            scale: 0.5,
+            width,
+            height,
+            dark: false,
+            bgra: bgra.clone(),
+        }];
         let encoded = encode_sleep(&sleep);
         let back = decode_sleep(&encoded, CURRENT_VERSION).unwrap();
         let picture = &back.pictures[0];
@@ -402,7 +548,9 @@ mod tests {
         assert!((shown(picture.width, picture.scale) - shown(width, 0.5)).abs() <= 2.0 * f64::from(1.0 / picture.scale));
         assert!((shown(picture.height, picture.scale) - shown(height, 0.5)).abs() <= 2.0 * f64::from(1.0 / picture.scale));
         // The colours on average, channel by channel, and the gradient's still there.
-        let average = |pixels: &[u8], channel: usize| pixels.as_chunks::<4>().0.iter().map(|pixel| u64::from(pixel[channel])).sum::<u64>() as f64 / (pixels.len() / 4) as f64;
+        let average = |pixels: &[u8], channel: usize| {
+            pixels.as_chunks::<4>().0.iter().map(|pixel| u64::from(pixel[channel])).sum::<u64>() as f64 / (pixels.len() / 4) as f64
+        };
         for channel in 0..3 {
             assert!((average(&bgra, channel) - average(&picture.bgra, channel)).abs() < 20.0, "channel {channel}");
         }
@@ -411,7 +559,14 @@ mod tests {
         assert!(i32::from(at(picture.width - 1, 0)) - i32::from(at(0, 0)) > 20, "left to right");
         // A page of plain paper's kept as it is.
         let mut sleep = sample();
-        sleep.pictures = vec![SleepPicture { page: 0, scale: 0.5, width, height, dark: false, bgra: vec![255; (width * height * 4) as usize] }];
+        sleep.pictures = vec![SleepPicture {
+            page: 0,
+            scale: 0.5,
+            width,
+            height,
+            dark: false,
+            bgra: vec![255; (width * height * 4) as usize],
+        }];
         let back = decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap();
         assert_eq!(back.pictures[0].width, width);
     }
@@ -421,13 +576,24 @@ mod tests {
     fn page_labels_are_kept_and_checked() {
         use recto_core::nav::{LabelRange, LabelStyle, PageLabels};
         let mut sleep = sample();
-        let range = |start, style, prefix: &str| LabelRange { start, first: 1, style, prefix: prefix.into() };
+        let range = |start, style, prefix: &str| LabelRange {
+            start,
+            first: 1,
+            style,
+            prefix: prefix.into(),
+        };
         sleep.toc.labels = PageLabels::from_ranges(vec![range(0, LabelStyle::RomanLower, ""), range(1, LabelStyle::Decimal, "A\u{202E}-")], false);
         let back = decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap();
         assert_eq!(back.toc.labels.label(0).as_deref(), Some("i"));
         assert_eq!(back.toc.labels.label(1).as_deref(), Some("A-1"), "cleaned once, and the same after");
-        sleep.toc.labels = PageLabels::from_ranges(vec![range(0, LabelStyle::Decimal, ""), range(sleep.file_pages + 5, LabelStyle::Decimal, "")], false);
-        assert!(decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).is_err(), "a range past the file's last page is a forged file");
+        sleep.toc.labels = PageLabels::from_ranges(
+            vec![range(0, LabelStyle::Decimal, ""), range(sleep.file_pages + 5, LabelStyle::Decimal, "")],
+            false,
+        );
+        assert!(
+            decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).is_err(),
+            "a range past the file's last page is a forged file"
+        );
     }
 
     /// Failure: a title in a forged file carries what a title from a PDF can't, as it isn't cleaned, and reaches the sidebar and agents.
@@ -436,7 +602,15 @@ mod tests {
         let hidden: String = "ignore".chars().map(|c| char::from_u32(0xE0000 + c as u32).unwrap()).collect();
         let raw = format!("Chapter{hidden}\n1\u{202E}");
         let mut sleep = sample();
-        sleep.toc = Toc::from_lines(&[TocLine { title: &raw, page: 0, parent: NONE, depth: 0 }], false);
+        sleep.toc = Toc::from_lines(
+            &[TocLine {
+                title: &raw,
+                page: 0,
+                parent: NONE,
+                depth: 0,
+            }],
+            false,
+        );
         let back = decode_sleep(&encode_sleep(&sleep), CURRENT_VERSION).unwrap();
         assert_eq!(back.toc.title(&back.toc.entries()[0]), "Chapter 1");
     }

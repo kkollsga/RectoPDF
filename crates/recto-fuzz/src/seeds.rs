@@ -5,7 +5,10 @@ use recto_agent::table::TABLE;
 use std::path::{Path, PathBuf};
 
 /// Where the owner's real PDFs are on this Mac.
-pub const PDF_FOLDERS: &[&str] = &["/Volumes/EksternalHome/Koding/Rust/distillPDF/tests/fixtures_pdf", "/Volumes/EksternalHome/Koding/Rust/distillPDF/benchmarking/bench100"];
+pub const PDF_FOLDERS: &[&str] = &[
+    "/Volumes/EksternalHome/Koding/Rust/distillPDF/tests/fixtures_pdf",
+    "/Volumes/EksternalHome/Koding/Rust/distillPDF/benchmarking/bench100",
+];
 /// Largest real file used as a seed. Larger ones spend the time in streams nothing here reads.
 pub const MAX_SEED_BYTES: u64 = 256 * 1024;
 
@@ -60,7 +63,14 @@ pub fn made_pdfs() -> Vec<Vec<u8>> {
         Object::Dict("<< /T (Parent) /FT /Sig /Kids [8 0 R] >>".into()),
         Object::Dict("<< /T (Child) /P 3 0 R >>".into()),
     ]);
-    let extras = pages_with(&[Page::new(recto_testpdf::busy_page())], "", vec![Object::Stream { dict: "/Type /ObjStm /N 1 /First 4".into(), data: b"9 0 << /A 1 >>".to_vec() }]);
+    let extras = pages_with(
+        &[Page::new(recto_testpdf::busy_page())],
+        "",
+        vec![Object::Stream {
+            dict: "/Type /ObjStm /N 1 /First 4".into(),
+            data: b"9 0 << /A 1 >>".to_vec(),
+        }],
+    );
     vec![plain, outlined, signed, extras]
 }
 
@@ -72,19 +82,66 @@ pub fn tree_seeds() -> Vec<Vec<u8>> {
 /// One real shape of each kind of bytes a worker sends.
 pub fn proto_seeds() -> Vec<Vec<u8>> {
     use recto_proto::*;
-    let job = RenderJob { generation: 1, job_id: 2, page: 0, scale: 2.0, rect: TileRect { x: 512, y: 0, width: 1024, height: 512 }, stride: 4096, tile_edge: 512 };
-    let tile = TileReply { generation: 1, job_id: 2, width: 512, height: 512, stride: 2048, status: TileStatus::Done(TileKind::Blank { rgb: 0xFF_FFFF }), render_us: 9 };
-    let region = RegionReply { tile, kinds: vec![TileKind::Grey, TileKind::Colour, TileKind::Blank { rgb: 1 }] };
-    let text = TextReply { job_id: 3, page: 4, hidden_checked: true, chars: vec![CharRecord::new('a' as u32, CharRecord::NO_INK), CharRecord::new('b' as u32, 0)], boxes: vec![[1.0, 2.0, 3.0, 4.0], [4.0, 2.0, 5.0, 4.0]], ..TextReply::default() };
+    let job = RenderJob {
+        generation: 1,
+        job_id: 2,
+        page: 0,
+        scale: 2.0,
+        rect: TileRect {
+            x: 512,
+            y: 0,
+            width: 1024,
+            height: 512,
+        },
+        stride: 4096,
+        tile_edge: 512,
+    };
+    let tile = TileReply {
+        generation: 1,
+        job_id: 2,
+        width: 512,
+        height: 512,
+        stride: 2048,
+        status: TileStatus::Done(TileKind::Blank { rgb: 0xFF_FFFF }),
+        render_us: 9,
+    };
+    let region = RegionReply {
+        tile,
+        kinds: vec![TileKind::Grey, TileKind::Colour, TileKind::Blank { rgb: 1 }],
+    };
+    let text = TextReply {
+        job_id: 3,
+        page: 4,
+        hidden_checked: true,
+        chars: vec![CharRecord::new('a' as u32, CharRecord::NO_INK), CharRecord::new('b' as u32, 0)],
+        boxes: vec![[1.0, 2.0, 3.0, 4.0], [4.0, 2.0, 5.0, 4.0]],
+        ..TextReply::default()
+    };
     let frames: Vec<Vec<u8>> = vec![
         encode_hello(Hello { pid: 7, walled: false }),
         encode_opened(12, 1),
         job.encode(),
         tile.encode(),
         region.encode(),
-        PageSize { job_id: 1, width: 612.0, height: 792.0 }.encode(),
-        PageTraits { job_id: 1, largest_image_pixels: 1 << 30 }.encode(),
-        TextJob { job_id: 1, page: 2, boxes: true, hidden_check: true, generation: 3 }.encode(),
+        PageSize {
+            job_id: 1,
+            width: 612.0,
+            height: 792.0,
+        }
+        .encode(),
+        PageTraits {
+            job_id: 1,
+            largest_image_pixels: 1 << 30,
+        }
+        .encode(),
+        TextJob {
+            job_id: 1,
+            page: 2,
+            boxes: true,
+            hidden_check: true,
+            generation: 3,
+        }
+        .encode(),
         text.encode().expect("a small page"),
         encode_failed(9, FailCode::TooLarge),
     ];
@@ -174,7 +231,14 @@ pub fn agent_seeds() -> Vec<Vec<u8>> {
     for grammar in ["1h", "90s", "5ms", "18446744073709551615h", "1-2", "4-", "page move", "#1", "active", "é"] {
         seeds.push([&[2u8, 0][..], grammar.as_bytes()].concat());
     }
-    for file in [r#"{"level":"control","set_at_ms":1}"#, r#"{"level":"full"}"#, r#"{"level":["full"]}"#, r#"{"level":"read_only","set_at_ms":-1}"#, "[", ""] {
+    for file in [
+        r#"{"level":"control","set_at_ms":1}"#,
+        r#"{"level":"full"}"#,
+        r#"{"level":["full"]}"#,
+        r#"{"level":"read_only","set_at_ms":-1}"#,
+        "[",
+        "",
+    ] {
         seeds.push([&[3u8, 0][..], file.as_bytes()].concat());
     }
     seeds
@@ -192,7 +256,11 @@ pub fn control_seeds() -> Vec<Vec<u8>> {
 /// A target's starting points.
 /// A real `latest.json`, and a small zip made the way the reader takes them, of files stored and a folder.
 fn update_seeds() -> Vec<Vec<u8>> {
-    let latest = format!(r#"{{"version":"0.2.0","tag":"v0.2.0","minimum_macos":"15.0","zip":"RectoPDF-0.2.0.zip","sha256":"{}"}}"#, "a".repeat(64)).into_bytes();
+    let latest = format!(
+        r#"{{"version":"0.2.0","tag":"v0.2.0","minimum_macos":"15.0","zip":"RectoPDF-0.2.0.zip","sha256":"{}"}}"#,
+        "a".repeat(64)
+    )
+    .into_bytes();
     vec![latest, update_seed_zip()]
 }
 
@@ -246,10 +314,28 @@ fn record_seeds() -> Vec<Vec<u8>> {
     let record = include_bytes!("../../recto-session/tests/fixtures/record-v1.json").to_vec();
     let journal = include_bytes!("../../recto-session/tests/fixtures/journal-v1.log").to_vec();
     let body = record.split(|byte| *byte == b'\n').nth(1).unwrap_or_default().to_vec();
-    let lines: Vec<u8> = journal.split(|byte| *byte == b'\n').skip(1).filter(|line| line.len() > 9).flat_map(|line| line[9..].iter().copied().chain(std::iter::once(b'\n'))).collect();
+    let lines: Vec<u8> = journal
+        .split(|byte| *byte == b'\n')
+        .skip(1)
+        .filter(|line| line.len() > 9)
+        .flat_map(|line| line[9..].iter().copied().chain(std::iter::once(b'\n')))
+        .collect();
     // A comparison, which a record has had since comparison view.
-    let compared = String::from_utf8_lossy(&body).replacen("\"next_id\"", "\"comparison\":{\"tabs\":[1,2],\"synced\":true,\"sync_from\":[3,0]},\"next_id\"", 1).into_bytes();
-    vec![record, journal, body, compared, lines, br#"{"seq":1,"active":1,"places":[[1,3,{"page":3,"anchor_page":3,"within":0.5,"x":0,"y":10,"document_height":900,"zoom":1.5}]]}"#.to_vec()]
+    let compared = String::from_utf8_lossy(&body)
+        .replacen(
+            "\"next_id\"",
+            "\"comparison\":{\"tabs\":[1,2],\"synced\":true,\"sync_from\":[3,0]},\"next_id\"",
+            1,
+        )
+        .into_bytes();
+    vec![
+        record,
+        journal,
+        body,
+        compared,
+        lines,
+        br#"{"seq":1,"active":1,"places":[[1,3,{"page":3,"anchor_page":3,"within":0.5,"x":0,"y":10,"document_height":900,"zoom":1.5}]]}"#.to_vec(),
+    ]
 }
 
 /// Generated contents as they're kept, and as the helper says them.
@@ -286,7 +372,13 @@ pub fn for_target(name: &str) -> Vec<Vec<u8>> {
 pub fn select_seeds() -> Vec<Vec<u8>> {
     let mut seeds = Vec::new();
     for page in index_seeds() {
-        for head in [[0u8; 64], [1, 0, 0, 2, 3, 1, 1, 4, 4, 2, 0, 3, 3, 1, 2, 2, 1, 4, 3, 0, 0, 2, 2, 1, 3, 4, 4, 0, 1, 1, 2, 3, 1, 0, 4, 2, 2, 3, 0, 1, 4, 1, 3, 2, 0, 0, 1, 2, 3, 4, 1, 3, 0, 2, 4, 1, 2, 0, 3, 1, 4, 2, 0, 1]] {
+        for head in [
+            [0u8; 64],
+            [
+                1, 0, 0, 2, 3, 1, 1, 4, 4, 2, 0, 3, 3, 1, 2, 2, 1, 4, 3, 0, 0, 2, 2, 1, 3, 4, 4, 0, 1, 1, 2, 3, 1, 0, 4, 2, 2, 3, 0, 1, 4, 1, 3, 2, 0, 0, 1, 2,
+                3, 4, 1, 3, 0, 2, 4, 1, 2, 0, 3, 1, 4, 2, 0, 1,
+            ],
+        ] {
             let mut seed = head.to_vec();
             seed.extend_from_slice(&page);
             seeds.push(seed);
@@ -296,7 +388,20 @@ pub fn select_seeds() -> Vec<Vec<u8>> {
 }
 
 /// Every target's name.
-pub const TARGET_NAMES: &[&str] = &["pdf_bytes", "pdf_tree", "save_copy", "proto", "index", "select", "agent", "control", "edits", "record", "update", "generated"];
+pub const TARGET_NAMES: &[&str] = &[
+    "pdf_bytes",
+    "pdf_tree",
+    "save_copy",
+    "proto",
+    "index",
+    "select",
+    "agent",
+    "control",
+    "edits",
+    "record",
+    "update",
+    "generated",
+];
 
 /// The check a target runs, by name.
 pub fn check_for(name: &str) -> Option<fn(&[u8])> {

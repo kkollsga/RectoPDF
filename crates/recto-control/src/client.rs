@@ -29,7 +29,14 @@ pub fn not_running() -> AgentError {
 impl Client {
     /// Connects. "Not running" covers no socket, a stale socket, and no folder at all. A socket that's there but isn't this user's is a refusal, because something may be pretending.
     pub fn connect(paths: &StatePaths) -> Result<Self, AgentError> {
-        let refused = || AgentError::new("socket_refused", "The session's socket isn't private to this user, so it won't be used.", exit::PERMISSION).then("Tell the user: something else may have made that socket or its folder.");
+        let refused = || {
+            AgentError::new(
+                "socket_refused",
+                "The session's socket isn't private to this user, so it won't be used.",
+                exit::PERMISSION,
+            )
+            .then("Tell the user: something else may have made that socket or its folder.")
+        };
         match local::socket_file(&paths.socket) {
             Ok(SocketFile::OwnSocket) => {}
             Ok(SocketFile::Nothing) => return Err(not_running()),
@@ -44,7 +51,12 @@ impl Client {
         if stream.peer_uid().map_or(true, |uid| uid != local::current_uid()) {
             return Err(refused());
         }
-        Ok(Self { stream, buffer: Vec::new(), searched: 0, socket: Some(paths.socket.clone()) })
+        Ok(Self {
+            stream,
+            buffer: Vec::new(),
+            searched: 0,
+            socket: Some(paths.socket.clone()),
+        })
     }
 
     /// Sends one command, as the line the socket reads.
@@ -54,7 +66,13 @@ impl Client {
         let mut framed = String::with_capacity(line.len() + 1);
         framed.push_str(line);
         framed.push('\n');
-        (&self.stream).write_all(framed.as_bytes()).map_err(|error| if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) { no_answer(wait) } else { self.ended() })
+        (&self.stream).write_all(framed.as_bytes()).map_err(|error| {
+            if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
+                no_answer(wait)
+            } else {
+                self.ended()
+            }
+        })
     }
 
     /// Reads one line of answer, and checks it speaks this version.
@@ -66,7 +84,11 @@ impl Client {
                 let value: Value = serde_json::from_slice(&self.buffer[..at]).map_err(|_| bad_answer())?;
                 self.buffer.drain(..=at);
                 if value["v"] != VERSION {
-                    return Err(AgentError::new("wrong_version", "The running session speaks a different version of this interface.", exit::FAILED));
+                    return Err(AgentError::new(
+                        "wrong_version",
+                        "The running session speaks a different version of this interface.",
+                        exit::FAILED,
+                    ));
                 }
                 return Ok(value);
             }
@@ -86,7 +108,11 @@ impl Client {
 
     /// The connection ended with no answer. Whether the session ended too is asked of its socket: one that's gone takes no connection, and one that closed only this connection still does. Out of descriptors it drops a client as it arrives, and it lets go of the oldest of too many, and neither has lost anything.
     fn ended(&self) -> AgentError {
-        if self.socket.as_deref().is_some_and(|socket| Stream::connect(socket).is_ok()) { dropped() } else { ended() }
+        if self.socket.as_deref().is_some_and(|socket| Stream::connect(socket).is_ok()) {
+            dropped()
+        } else {
+            ended()
+        }
     }
 
     /// Sends a command and waits for its one answer.
@@ -104,7 +130,8 @@ fn line_end(buffer: &[u8], searched: &mut usize) -> Option<usize> {
 }
 
 fn ended() -> AgentError {
-    AgentError::new("session_ended", "The session ended before it answered.", exit::NOT_RUNNING).then("Start it again with `recto serve --background`. Its tabs and unsaved edits are gone, and `recto status` will say what's there.")
+    AgentError::new("session_ended", "The session ended before it answered.", exit::NOT_RUNNING)
+        .then("Start it again with `recto serve --background`. Its tabs and unsaved edits are gone, and `recto status` will say what's there.")
 }
 
 fn dropped() -> AgentError {
@@ -113,7 +140,12 @@ fn dropped() -> AgentError {
 }
 
 fn no_answer(wait: Duration) -> AgentError {
-    AgentError::new("no_answer", format!("The session didn't answer within {} s.", wait.as_secs_f32().round()), exit::TIMED_OUT).then("It may be busy with a slow file. `recto status` shows whether it's alive.")
+    AgentError::new(
+        "no_answer",
+        format!("The session didn't answer within {} s.", wait.as_secs_f32().round()),
+        exit::TIMED_OUT,
+    )
+    .then("It may be busy with a slow file. `recto status` shows whether it's alive.")
 }
 
 fn bad_answer() -> AgentError {
@@ -131,11 +163,24 @@ mod tests {
         let answer = format!("{}\n", serde_json::json!({ "v": VERSION, "ok": true }));
         (&theirs).write_all(answer.as_bytes()).unwrap();
         drop(theirs);
-        let mut client = Client { stream: ours, buffer: Vec::new(), searched: 0, socket: None };
+        let mut client = Client {
+            stream: ours,
+            buffer: Vec::new(),
+            searched: 0,
+            socket: None,
+        };
         let read = client.read(Duration::from_secs(5)).unwrap();
         assert_eq!(read["ok"], true);
-        assert_eq!(client.read(Duration::from_secs(5)).unwrap_err().code, "session_ended", "and after it, the truth");
-        assert_eq!(client.send("{}", Duration::from_secs(5)).unwrap_err().code, "session_ended", "a closed socket doesn't take a command");
+        assert_eq!(
+            client.read(Duration::from_secs(5)).unwrap_err().code,
+            "session_ended",
+            "and after it, the truth"
+        );
+        assert_eq!(
+            client.send("{}", Duration::from_secs(5)).unwrap_err().code,
+            "session_ended",
+            "a closed socket doesn't take a command"
+        );
     }
 
     /// Failure: a session that only closed this connection, out of descriptors or letting go of the oldest of too many clients, is reported as ended, with "its tabs and
@@ -145,7 +190,12 @@ mod tests {
         let socket = std::env::temp_dir().join(format!("recto-drop-{}", std::process::id()));
         let _ = std::fs::remove_file(&socket);
         let listener = local::Listener::bind(&socket).unwrap();
-        let connect = || Client { stream: Stream::connect(&socket).unwrap(), buffer: Vec::new(), searched: 0, socket: Some(socket.clone()) };
+        let connect = || Client {
+            stream: Stream::connect(&socket).unwrap(),
+            buffer: Vec::new(),
+            searched: 0,
+            socket: Some(socket.clone()),
+        };
         // The client's own look at the socket leaves a connection behind it, already closed, which macOS can refuse to finish accepting. None is waiting before each client connects.
         let clear = || while !matches!(listener.accept(), Ok(None)) {};
         let drop_next = || {
@@ -170,7 +220,11 @@ mod tests {
         let mut last = connect();
         drop_next();
         drop(listener);
-        assert_eq!(last.read(Duration::from_secs(5)).unwrap_err().code, "session_ended", "nothing takes a connection there now");
+        assert_eq!(
+            last.read(Duration::from_secs(5)).unwrap_err().code,
+            "session_ended",
+            "nothing takes a connection there now"
+        );
         let _ = std::fs::remove_file(&socket);
     }
 

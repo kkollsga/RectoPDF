@@ -162,7 +162,11 @@ fn to_view(frame: PageFrame, char_box: &CharBox) -> [f32; 4] {
         2 => [width - u1, v0, width - u0, v1],
         _ => [height - v1, width - u1, height - v0, width - u0],
     };
-    if view.iter().all(|edge| edge.is_finite()) && view[2] >= view[0] && view[3] > view[1] { view } else { NO_BOX }
+    if view.iter().all(|edge| edge.is_finite()) && view[2] >= view[0] && view[3] > view[1] {
+        view
+    } else {
+        NO_BOX
+    }
 }
 
 /// A page's size as it's shown, and nothing if the frame says it has none.
@@ -178,13 +182,22 @@ impl PageText {
     /// Reads a page's characters. `boxes` is what the worker gave, one per character or none, and nothing about it is trusted: a page with no usable boxes has text that can be copied in a whole-page selection, and nothing that can be hit.
     pub fn build(chars: &[CharRecord], boxes: &[CharBox], frame: PageFrame, hidden_checked: bool, copy_restricted: bool) -> Self {
         if chars.len() > MAX_SELECTABLE_CHARS {
-            return Self { too_long: true, hidden_checked, copy_restricted, ..Self::default() };
+            return Self {
+                too_long: true,
+                hidden_checked,
+                copy_restricted,
+                ..Self::default()
+            };
         }
         let repaired = order::repair_line_order(chars, boxes);
         let reading = repaired.as_ref().map_or(chars, |repaired| &repaired.chars);
         let normalized = normalize(reading, true);
         let flagged = hidden_in_either_order(chars, repaired.as_ref());
-        let original = |at: u32| repaired.as_ref().map_or(Some(at), |repaired| repaired.origin.get(at as usize).copied().filter(|from| *from != order::GENERATED));
+        let original = |at: u32| {
+            repaired.as_ref().map_or(Some(at), |repaired| {
+                repaired.origin.get(at as usize).copied().filter(|from| *from != order::GENERATED)
+            })
+        };
         let (width, height) = frame_size(frame).unwrap_or((0.0, 0.0));
         let known_size = width > 0.0;
         let text: Vec<char> = normalized.text.chars().collect();
@@ -206,7 +219,18 @@ impl PageText {
             }
             views.push(view);
         }
-        let mut page = Self { text, boxes: views, hidden, lines: Vec::new(), width, height, hidden_checked, copy_restricted, too_long: false, edges: Vec::new() };
+        let mut page = Self {
+            text,
+            boxes: views,
+            hidden,
+            lines: Vec::new(),
+            width,
+            height,
+            hidden_checked,
+            copy_restricted,
+            too_long: false,
+            edges: Vec::new(),
+        };
         page.find_lines(frame.turns & 3 == 2);
         page.find_edges();
         page
@@ -233,11 +257,21 @@ impl PageText {
             }
         }
         // A real page's lines are alike, and the middle one is what "the usual line" means.
-        let tallest = |(from, to): (u32, u32), page: &Self| -> f32 { (from..to).filter(|at| page.shows(*at as usize)).map(|at| page.boxes[at as usize]).map(|view| view[3] - view[1]).fold(0.0, f32::max) };
+        let tallest = |(from, to): (u32, u32), page: &Self| -> f32 {
+            (from..to)
+                .filter(|at| page.shows(*at as usize))
+                .map(|at| page.boxes[at as usize])
+                .map(|view| view[3] - view[1])
+                .fold(0.0, f32::max)
+        };
         let mut heights: Vec<f32> = spans.iter().map(|span| tallest(*span, self)).filter(|height| *height > 0.0).collect();
         heights.sort_by(f32::total_cmp);
         let usual = heights.get(heights.len() / 2).copied().unwrap_or(0.0);
-        let lines: Vec<Line> = spans.iter().filter(|span| span.0 < span.1).map(|span| self.measure(*span, usual, upside_down)).collect();
+        let lines: Vec<Line> = spans
+            .iter()
+            .filter(|span| span.0 < span.1)
+            .map(|span| self.measure(*span, usual, upside_down))
+            .collect();
         self.lines = lines;
     }
 
@@ -269,12 +303,30 @@ impl PageText {
                 let view = self.boxes[index];
                 let size = view[3] - view[1];
                 // A wide gap after the last letter, going forward along the line, starts a new piece.
-                let new_piece = current.as_ref().is_some_and(|(piece, _, _, right)| !line.backward && view[0] - right > chrome::PIECE_GAP * piece.size.max(size).max(1.0));
+                let new_piece = current
+                    .as_ref()
+                    .is_some_and(|(piece, _, _, right)| !line.backward && view[0] - right > chrome::PIECE_GAP * piece.size.max(size).max(1.0));
                 if new_piece {
                     finish(current.take(), at, &mut pieces);
                 }
-                let (piece, bottoms, sampled, right) = current.get_or_insert_with(|| (Piece { start: at, end: at, x0: view[0], top: view[1], bottom: view[3], baseline: 0.0, size: 0.0 }, [0f32; SAMPLE], 0, view[2]));
-                (piece.top, piece.bottom, piece.size, piece.x0) = (piece.top.min(view[1]), piece.bottom.max(view[3]), piece.size.max(size), piece.x0.min(view[0]));
+                let (piece, bottoms, sampled, right) = current.get_or_insert_with(|| {
+                    (
+                        Piece {
+                            start: at,
+                            end: at,
+                            x0: view[0],
+                            top: view[1],
+                            bottom: view[3],
+                            baseline: 0.0,
+                            size: 0.0,
+                        },
+                        [0f32; SAMPLE],
+                        0,
+                        view[2],
+                    )
+                });
+                (piece.top, piece.bottom, piece.size, piece.x0) =
+                    (piece.top.min(view[1]), piece.bottom.max(view[3]), piece.size.max(size), piece.x0.min(view[0]));
                 *right = right.max(view[2]);
                 if *sampled < SAMPLE {
                     bottoms[*sampled] = view[3];
@@ -298,7 +350,17 @@ impl PageText {
         }
         // The usual line's size, over lines and not pieces, so a table of small figures cut into many pieces doesn't pull it down.
         let usual = {
-            let mut sizes: Vec<f32> = self.lines.iter().filter(|line| line.seen() && !line.sideways).filter_map(|line| (line.start..line.end).filter(|at| self.shows(*at as usize) && !self.text[*at as usize].is_whitespace()).map(|at| self.boxes[at as usize][3] - self.boxes[at as usize][1]).reduce(f32::max)).collect();
+            let mut sizes: Vec<f32> = self
+                .lines
+                .iter()
+                .filter(|line| line.seen() && !line.sideways)
+                .filter_map(|line| {
+                    (line.start..line.end)
+                        .filter(|at| self.shows(*at as usize) && !self.text[*at as usize].is_whitespace())
+                        .map(|at| self.boxes[at as usize][3] - self.boxes[at as usize][1])
+                        .reduce(f32::max)
+                })
+                .collect();
             sizes.sort_by(f32::total_cmp);
             sizes.get(sizes.len() / 2).copied().unwrap_or(1.0).max(1.0)
         };
@@ -326,7 +388,12 @@ impl PageText {
                     break;
                 }
             }
-            let block_rows: &[&std::ops::Range<usize>] = if isolated && order[..block].iter().all(|row| pieces[(*row).clone()].iter().all(|piece| in_band(piece, top))) { &order[..block] } else { &[] };
+            let block_rows: &[&std::ops::Range<usize>] =
+                if isolated && order[..block].iter().all(|row| pieces[(*row).clone()].iter().all(|piece| in_band(piece, top))) {
+                    &order[..block]
+                } else {
+                    &[]
+                };
             for row in block_rows {
                 let mut members: Vec<&Piece> = pieces[(*row).clone()].iter().collect();
                 members.sort_by(|one, two| one.x0.total_cmp(&two.x0));
@@ -334,10 +401,18 @@ impl PageText {
                 if edges.len() + members.len() > chrome::MAX_EDGE_LINES {
                     break;
                 }
-                let row_key = chrome::key(members.iter().flat_map(|piece| self.visible_chars(piece.start, piece.end).chain(std::iter::once(' '))));
+                let row_key = chrome::key(
+                    members
+                        .iter()
+                        .flat_map(|piece| self.visible_chars(piece.start, piece.end).chain(std::iter::once(' '))),
+                );
                 let count = members.len();
                 for (at, piece) in members.into_iter().enumerate() {
-                    let place = chrome::InRow { row: row_id, alone: count == 1, last: at + 1 == count };
+                    let place = chrome::InRow {
+                        row: row_id,
+                        alone: count == 1,
+                        last: at + 1 == count,
+                    };
                     edges.push(self.edge_line(top, piece, usual, row_key, true, place));
                     taken.push(piece.start);
                 }
@@ -355,7 +430,18 @@ impl PageText {
                     let text: String = self.visible_chars(piece.start, piece.end).collect();
                     if chrome::page_number(&text).is_some() {
                         let key = chrome::key(text.chars());
-                        edges.push(self.edge_line(top, piece, usual, key, false, chrome::InRow { row: row_id, alone: count == 1, last: at + 1 == count }));
+                        edges.push(self.edge_line(
+                            top,
+                            piece,
+                            usual,
+                            key,
+                            false,
+                            chrome::InRow {
+                                row: row_id,
+                                alone: count == 1,
+                                last: at + 1 == count,
+                            },
+                        ));
                         taken.push(piece.start);
                     }
                 }
@@ -370,7 +456,12 @@ impl PageText {
         let (start, end, size) = (piece.start, piece.end, piece.size);
         let from_edge = if top { piece.top } else { self.height - piece.bottom };
         let text: String = self.visible_chars(start, end).collect();
-        let (left, right) = (start..end).filter(|at| self.shows(*at as usize)).map(|at| self.boxes[at as usize]).fold((f32::INFINITY, f32::NEG_INFINITY), |(left, right), view| (left.min(view[0]), right.max(view[2])));
+        let (left, right) = (start..end)
+            .filter(|at| self.shows(*at as usize))
+            .map(|at| self.boxes[at as usize])
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(left, right), view| {
+                (left.min(view[0]), right.max(view[2]))
+            });
         let middle = if left <= right { (left + right) / 2.0 } else { 0.0 };
         EdgeLine {
             top,
@@ -386,7 +477,9 @@ impl PageText {
             digits_only: text.chars().any(|ch| ch.is_ascii_digit()) && !text.chars().any(char::is_alphabetic),
             isolated,
             // A date or a time: `3/14/2019`, `4.5.2016`, `12:30`, and not a decimal or a section's number, `3.2`, which a figure's scale or a heading repeats.
-            dated: !text.trim().contains(char::is_whitespace) && text.chars().filter(|ch| ch.is_ascii_digit()).count() >= 2 && (text.contains(['/', ':']) || text.matches(['.', '-']).count() >= 2),
+            dated: !text.trim().contains(char::is_whitespace)
+                && text.chars().filter(|ch| ch.is_ascii_digit()).count() >= 2
+                && (text.contains(['/', ':']) || text.matches(['.', '-']).count() >= 2),
             substantial: text.split_whitespace().count() >= 2 && text.chars().filter(|ch| ch.is_alphabetic()).count() >= 10,
             from_left: middle,
             from_right: self.width - middle,
@@ -396,7 +489,9 @@ impl PageText {
 
     /// The characters of `[start, end)` that aren't hidden.
     fn visible_chars(&self, start: u32, end: u32) -> impl Iterator<Item = char> + '_ {
-        (start as usize..(end as usize).min(self.text.len())).filter(|at| !self.is_hidden(*at)).map(|at| self.text[at])
+        (start as usize..(end as usize).min(self.text.len()))
+            .filter(|at| !self.is_hidden(*at))
+            .map(|at| self.text[at])
     }
 
     /// The lines at its edges that may be chrome, for its neighbours to be compared with.
@@ -481,21 +576,52 @@ impl PageText {
             }
         }
         let (Some(first), Some(last)) = (first, last) else {
-            return Line { start, end, x0: 0.0, y0: 0.0, x1: -1.0, y1: -1.0, sideways: false, backward: false };
+            return Line {
+                start,
+                end,
+                x0: 0.0,
+                y0: 0.0,
+                x1: -1.0,
+                y1: -1.0,
+                sideways: false,
+                backward: false,
+            };
         };
         let (dx, dy) = ((last[0] + last[2] - first[0] - first[2]) / 2.0, (last[1] + last[3] - first[1] - first[3]) / 2.0);
         let sideways = self.runs_sideways(start as usize, end as usize);
         let backward = if sideways { dy < 0.0 } else { dx < 0.0 };
         if sideways {
             let margin = (x1 - x0) * SIDEWAYS_MARGIN;
-            return Line { start, end, x0: x0 - margin, y0, x1: x1 + margin, y1, sideways, backward };
+            return Line {
+                start,
+                end,
+                x0: x0 - margin,
+                y0,
+                x1: x1 + margin,
+                y1,
+                sideways,
+                backward,
+            };
         }
         let edges = &mut edges[..sampled];
         edges.sort_by(f32::total_cmp);
         let baseline = edges[edges.len() / 2];
         let size = if tallest < usual && tallest >= usual * SAME_SIZE { usual } else { tallest };
-        let (above, below) = if upside_down { (BELOW_BASELINE, ABOVE_BASELINE) } else { (ABOVE_BASELINE, BELOW_BASELINE) };
-        Line { start, end, x0, y0: y0.min(baseline - size * above), x1, y1: y1.max(baseline + size * below), sideways, backward }
+        let (above, below) = if upside_down {
+            (BELOW_BASELINE, ABOVE_BASELINE)
+        } else {
+            (ABOVE_BASELINE, BELOW_BASELINE)
+        };
+        Line {
+            start,
+            end,
+            x0,
+            y0: y0.min(baseline - size * above),
+            x1,
+            y1: y1.max(baseline + size * below),
+            sideways,
+            backward,
+        }
     }
 
     /// How many lines it's cut into.
@@ -533,14 +659,22 @@ impl PageText {
 
     /// About what this holds.
     pub fn bytes(&self) -> usize {
-        size_of::<Self>() + self.text.capacity() * size_of::<char>() + self.boxes.capacity() * size_of::<[f32; 4]>() + self.hidden.capacity() + self.lines.capacity() * size_of::<Line>() + self.edges.capacity() * size_of::<EdgeLine>()
+        size_of::<Self>()
+            + self.text.capacity() * size_of::<char>()
+            + self.boxes.capacity() * size_of::<[f32; 4]>()
+            + self.hidden.capacity()
+            + self.lines.capacity() * size_of::<Line>()
+            + self.edges.capacity() * size_of::<EdgeLine>()
     }
 
     fn line_at(&self, x: f32, y: f32) -> Option<&Line> {
         if !x.is_finite() || !y.is_finite() {
             return None;
         }
-        self.lines.iter().filter(|line| line.seen()).min_by(|one, two| one.distance(x, y).total_cmp(&two.distance(x, y)))
+        self.lines
+            .iter()
+            .filter(|line| line.seen())
+            .min_by(|one, two| one.distance(x, y).total_cmp(&two.distance(x, y)))
     }
 
     /// Whether the point is on a line of text that shows, which is where the I-beam goes.
@@ -548,7 +682,9 @@ impl PageText {
         if !x.is_finite() || !y.is_finite() {
             return false;
         }
-        self.lines.iter().any(|line| line.seen() && x >= line.x0 - POINTER_REACH && x <= line.x1 + POINTER_REACH && y >= line.y0 && y <= line.y1)
+        self.lines
+            .iter()
+            .any(|line| line.seen() && x >= line.x0 - POINTER_REACH && x <= line.x1 + POINTER_REACH && y >= line.y0 && y <= line.y1)
     }
 
     /// The character nearest a point on the nearest line, and the place it comes to: before that character or after it, by which half the point is in, however the line runs.
@@ -569,7 +705,11 @@ impl PageText {
         }
         let (_, at) = best?;
         let view = &self.boxes[at as usize];
-        let middle = if line.sideways { (view[1] + view[3]) / 2.0 } else { (view[0] + view[2]) / 2.0 };
+        let middle = if line.sideways {
+            (view[1] + view[3]) / 2.0
+        } else {
+            (view[0] + view[2]) / 2.0
+        };
         let past = if line.backward { along < middle } else { along > middle };
         Some((at, if past { at + 1 } else { at }, line))
     }
@@ -601,7 +741,9 @@ impl PageText {
             return (start as u32, end as u32);
         }
         let joins = |index: usize| -> bool {
-            let (Some(before), Some(after)) = (index.checked_sub(1).and_then(|at| self.text.get(at)), self.text.get(index + 1)) else { return false };
+            let (Some(before), Some(after)) = (index.checked_sub(1).and_then(|at| self.text.get(at)), self.text.get(index + 1)) else {
+                return false;
+            };
             match self.text[index] {
                 '\'' | '\u{2019}' => before.is_alphabetic() && after.is_alphabetic(),
                 '.' | ',' => before.is_numeric() && after.is_numeric(),
@@ -664,11 +806,20 @@ impl PageText {
         if out.len() >= MAX_RECTS_PER_PAGE {
             return;
         }
-        let (x0, y0, x1, y1) = if line.sideways { (line.x0, low, line.x1, high) } else { (low, line.y0, high, line.y1) };
+        let (x0, y0, x1, y1) = if line.sideways {
+            (line.x0, low, line.x1, high)
+        } else {
+            (low, line.y0, high, line.y1)
+        };
         let (x0, x1) = (x0.max(0.0), x1.min(self.width));
         let (y0, y1) = (y0.max(0.0), y1.min(self.height));
         if x1 > x0 && y1 > y0 {
-            out.push(Rect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 });
+            out.push(Rect {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            });
         }
     }
 
@@ -684,7 +835,11 @@ impl PageText {
             let ch = self.text[at];
             if self.is_hidden(at) || left_out {
                 let printed = u64::from(!ch.is_whitespace());
-                if self.is_hidden(at) { hidden_out += printed } else { chrome_out += printed }
+                if self.is_hidden(at) {
+                    hidden_out += printed
+                } else {
+                    chrome_out += printed
+                }
                 after_gap = true;
                 continue;
             }
@@ -815,12 +970,24 @@ pub struct Range {
 impl Range {
     /// A whole document.
     pub fn all(pages: u32) -> Self {
-        Self { start: Place { page: 0, at: 0 }, end: Place { page: pages.saturating_sub(1), at: PAGE_END } }
+        Self {
+            start: Place { page: 0, at: 0 },
+            end: Place {
+                page: pages.saturating_sub(1),
+                at: PAGE_END,
+            },
+        }
     }
 
     /// Whole pages.
     pub fn pages(first: u32, last: u32) -> Self {
-        Self { start: Place { page: first, at: 0 }, end: Place { page: last.max(first), at: PAGE_END } }
+        Self {
+            start: Place { page: first, at: 0 },
+            end: Place {
+                page: last.max(first),
+                at: PAGE_END,
+            },
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -832,7 +999,10 @@ impl Range {
         if page < self.start.page || page > self.end.page {
             return None;
         }
-        Some((if page == self.start.page { self.start.at } else { 0 }, if page == self.end.page { self.end.at } else { PAGE_END }))
+        Some((
+            if page == self.start.page { self.start.at } else { 0 },
+            if page == self.end.page { self.end.at } else { PAGE_END },
+        ))
     }
 
     pub fn page_count(&self) -> u32 {
@@ -907,7 +1077,12 @@ impl Selection {
     }
 
     pub fn set_range(&mut self, range: Range) {
-        *self = Self { anchor: Some(End::Place(range.start)), focus: Some(End::Place(range.end)), unit: Unit::Char, dragging: false };
+        *self = Self {
+            anchor: Some(End::Place(range.start)),
+            focus: Some(End::Place(range.end)),
+            unit: Unit::Char,
+            dragging: false,
+        };
     }
 
     pub fn is_dragging(&self) -> bool {
@@ -946,7 +1121,10 @@ impl Selection {
         let (anchor, focus) = (self.anchor?, self.focus?);
         let (from_start, from_end) = self.resolve(anchor, texts)?;
         let (to_start, to_end) = self.resolve(focus, texts)?;
-        Some(Range { start: from_start.min(to_start), end: from_end.max(to_end) })
+        Some(Range {
+            start: from_start.min(to_start),
+            end: from_end.max(to_end),
+        })
     }
 
     /// The most a selection reaches, by pages, with nothing read. For deciding what might need reading.
@@ -958,7 +1136,9 @@ impl Selection {
 
 /// What a copy leaves out of `page` as chrome, given a way to the edge lines of the pages around it that could be read: see [`crate::chrome`]. Whether the pick was only chrome is the copy's to decide, over all of it: see [`CopiedText::finish`].
 pub fn chrome_for<'a>(page: u32, text: &PageText, pages: u32, edges_of: impl Fn(u32) -> Option<&'a [EdgeLine]>) -> Vec<(u32, u32)> {
-    let neighbours: Vec<(i64, &[EdgeLine])> = neighbour_pages(page, pages).filter_map(|other| Some((i64::from(other) - i64::from(page), edges_of(other)?))).collect();
+    let neighbours: Vec<(i64, &[EdgeLine])> = neighbour_pages(page, pages)
+        .filter_map(|other| Some((i64::from(other) - i64::from(page), edges_of(other)?)))
+        .collect();
     text.chrome_spans(&neighbours)
 }
 
@@ -1057,13 +1237,23 @@ impl CopiedText {
 mod tests {
     use super::*;
 
-    const FRAME: PageFrame = PageFrame { turns: 0, left: 0.0, bottom: 0.0, right: 612.0, top: 792.0 };
+    const FRAME: PageFrame = PageFrame {
+        turns: 0,
+        left: 0.0,
+        bottom: 0.0,
+        right: 612.0,
+        top: 792.0,
+    };
 
     fn add_line(chars: &mut Vec<CharRecord>, boxes: &mut Vec<CharBox>, text: &str, x: f32, y: f32) {
         for (index, ch) in text.chars().enumerate() {
             let left = x + index as f32 * 6.0;
             chars.push(CharRecord::new(ch as u32, 0));
-            boxes.push(if ch == ' ' { [left, y, left + 6.0, y] } else { [left, y, left + 5.0, y + 10.0] });
+            boxes.push(if ch == ' ' {
+                [left, y, left + 6.0, y]
+            } else {
+                [left, y, left + 5.0, y + 10.0]
+            });
         }
         chars.push(CharRecord::new('\r' as u32, CharRecord::GENERATED));
         boxes.push([0.0; 4]);
@@ -1086,22 +1276,63 @@ mod tests {
     /// Failure: a snapshot's box takes words from outside it, as the rest of a line or the column beside it, or loses the line breaks between lines, or keeps a running head inside it when there's body text too. Each line keeps what's inside, in reading order.
     #[test]
     fn a_box_takes_the_text_inside_it_a_line_at_a_time() {
-        let page = page_of(&[("Left column words", 72.0, 700.0), ("Right column", 300.0, 700.0), ("Second left line", 72.0, 680.0), ("Far away", 72.0, 100.0)]);
+        let page = page_of(&[
+            ("Left column words", 72.0, 700.0),
+            ("Right column", 300.0, 700.0),
+            ("Second left line", 72.0, 680.0),
+            ("Far away", 72.0, 100.0),
+        ]);
         // Shown y runs down: the first line's band is about 82 to 92 points down.
-        let rect = Rect { x: 60.0, y: 80.0, width: 150.0, height: 40.0 };
+        let rect = Rect {
+            x: 60.0,
+            y: 80.0,
+            width: 150.0,
+            height: 40.0,
+        };
         let kept = page.text_in_box(rect, &[], usize::MAX);
         assert_eq!(kept.text, "Left column words\nSecond left line");
         assert!(!kept.text.contains("Right") && !kept.text.contains("Far"), "{}", kept.text);
         // Only part of a word's letters: the ones whose middle is inside.
-        let part = page.text_in_box(Rect { x: 60.0, y: 80.0, width: 35.0, height: 15.0 }, &[], usize::MAX);
+        let part = page.text_in_box(
+            Rect {
+                x: 60.0,
+                y: 80.0,
+                width: 35.0,
+                height: 15.0,
+            },
+            &[],
+            usize::MAX,
+        );
         assert_eq!(part.text, "Left");
-        assert!(page.text_in_box(Rect { x: 0.0, y: 0.0, width: 0.0, height: 10.0 }, &[], usize::MAX).text.is_empty());
+        assert!(
+            page.text_in_box(
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.0,
+                    height: 10.0
+                },
+                &[],
+                usize::MAX
+            )
+            .text
+            .is_empty()
+        );
         // Chrome inside the box goes when there's body too, and stays when it's all there is.
         let left = page.text_of(0, 4).chars().count() as u32;
         let chrome = [(0, left)];
         let with_body = page.text_in_box(rect, &chrome, usize::MAX);
         assert!(!with_body.text.starts_with("Left") && with_body.chrome_left_out == 4, "{with_body:?}");
-        let only = page.text_in_box(Rect { x: 60.0, y: 80.0, width: 35.0, height: 15.0 }, &chrome, usize::MAX);
+        let only = page.text_in_box(
+            Rect {
+                x: 60.0,
+                y: 80.0,
+                width: 35.0,
+                height: 15.0,
+            },
+            &chrome,
+            usize::MAX,
+        );
         assert_eq!((only.text.as_str(), only.chrome_left_out), ("Left", 0));
     }
 
@@ -1130,8 +1361,17 @@ mod tests {
     fn report(pages: u32) -> Vec<PageText> {
         (0..pages)
             .map(|page| {
-                let (one, two, number) = (format!("Body line one of page {page}"), format!("Body line two of page {page}"), format!("{}", page + 1));
-                page_of(&[("Annual report 2024", 72.0, 750.0), (&one, 72.0, 700.0), (&two, 72.0, 685.0), (&number, 540.0, 30.0)])
+                let (one, two, number) = (
+                    format!("Body line one of page {page}"),
+                    format!("Body line two of page {page}"),
+                    format!("{}", page + 1),
+                );
+                page_of(&[
+                    ("Annual report 2024", 72.0, 750.0),
+                    (&one, 72.0, 700.0),
+                    (&two, 72.0, 685.0),
+                    (&number, 540.0, 30.0),
+                ])
             })
             .collect()
     }
@@ -1140,7 +1380,9 @@ mod tests {
     fn copy_of(pages: &[PageText], range: Range) -> CopiedText {
         let mut copied = CopiedText::default();
         for page in range.start.page..=range.end.page {
-            let leave_out = chrome_for(page, &pages[page as usize], pages.len() as u32, |other| pages.get(other as usize).map(PageText::edge_lines));
+            let leave_out = chrome_for(page, &pages[page as usize], pages.len() as u32, |other| {
+                pages.get(other as usize).map(PageText::edge_lines)
+            });
             copied.add_page(page, &pages[page as usize], &range, usize::MAX, &leave_out);
         }
         copied.finish();
@@ -1152,14 +1394,31 @@ mod tests {
     fn a_copy_of_body_text_leaves_out_running_heads_and_page_numbers() {
         let pages = report(3);
         let at = |page: &PageText, needle: &str| page.text.iter().collect::<String>().find(needle).unwrap() as u32;
-        let range = Range { start: Place { page: 0, at: at(&pages[0], "two") }, end: Place { page: 1, at: at(&pages[1], "two") } };
+        let range = Range {
+            start: Place {
+                page: 0,
+                at: at(&pages[0], "two"),
+            },
+            end: Place {
+                page: 1,
+                at: at(&pages[1], "two"),
+            },
+        };
         let copied = copy_of(&pages, range);
         assert_eq!(copied.text, "two of page 0\nBody line one of page 1\nBody line ", "{:?}", copied.text);
         assert!(copied.chrome_left_out > 0);
         let whole = copy_of(&pages, Range::pages(1, 1));
-        assert_eq!(whole.text, "Body line one of page 1\nBody line two of page 1", "a whole page, picked with its chrome: {:?}", whole.text);
+        assert_eq!(
+            whole.text, "Body line one of page 1\nBody line two of page 1",
+            "a whole page, picked with its chrome: {:?}",
+            whole.text
+        );
         let everything = copy_of(&pages, Range::all(3));
-        assert!(!everything.text.contains("Annual") && !everything.text.lines().any(|line| line.trim().parse::<u32>().is_ok()), "{:?}", everything.text);
+        assert!(
+            !everything.text.contains("Annual") && !everything.text.lines().any(|line| line.trim().parse::<u32>().is_ok()),
+            "{:?}",
+            everything.text
+        );
     }
 
     /// Failure: a pick of only chrome that runs over a page break, from one page's number to the next page's running head, copies nothing, and a note calls it a scan (review of e3fc6e0). Whether the pick was only chrome is decided over all of it.
@@ -1169,7 +1428,13 @@ mod tests {
         let text = |page: usize| pages[page].text.iter().collect::<String>();
         let number = text(1).rfind('2').unwrap() as u32;
         let head_end = text(2).find("2024").unwrap() as u32 + 4;
-        let copied = copy_of(&pages, Range { start: Place { page: 1, at: number }, end: Place { page: 2, at: head_end } });
+        let copied = copy_of(
+            &pages,
+            Range {
+                start: Place { page: 1, at: number },
+                end: Place { page: 2, at: head_end },
+            },
+        );
         assert_eq!(copied.text, "2\nAnnual report 2024", "{:?}", copied.text);
         assert_eq!(copied.chrome_left_out, 0, "nothing was left out of what's copied");
     }
@@ -1179,18 +1444,28 @@ mod tests {
     fn a_page_number_by_the_last_line_is_left_out() {
         // A page of body text down to its foot, lines 15 points apart, its number at `number_y`.
         let page = |page: u32, number_y: f32| {
-            let lines: Vec<(String, f32, f32)> = (0..37).map(|line| (format!("Body line {line} of page {page}"), 72.0, 600.0 - line as f32 * 15.0)).chain(std::iter::once((format!("{}", page + 1), 540.0, number_y))).collect();
+            let lines: Vec<(String, f32, f32)> = (0..37)
+                .map(|line| (format!("Body line {line} of page {page}"), 72.0, 600.0 - line as f32 * 15.0))
+                .chain(std::iter::once((format!("{}", page + 1), 540.0, number_y)))
+                .collect();
             let borrowed: Vec<(&str, f32, f32)> = lines.iter().map(|(text, x, y)| (text.as_str(), *x, *y)).collect();
             page_of(&borrowed)
         };
         for (number_y, place) in [(60.0, "on the last line's row"), (49.0, "just under it")] {
             let pages: Vec<PageText> = (0..4).map(|at| page(at, number_y)).collect();
             let copied = copy_of(&pages, Range::pages(1, 2));
-            assert!(!copied.text.lines().any(|line| line.trim().parse::<u32>().is_ok()), "{place}: {:?}", copied.text);
-            assert!(copied.text.contains("Body line 36 of page 1\nBody line 0 of page 2"), "{place}: {:?}", copied.text);
+            assert!(
+                !copied.text.lines().any(|line| line.trim().parse::<u32>().is_ok()),
+                "{place}: {:?}",
+                copied.text
+            );
+            assert!(
+                copied.text.contains("Body line 36 of page 1\nBody line 0 of page 2"),
+                "{place}: {:?}",
+                copied.text
+            );
         }
     }
-
 
     /// A page of lines at their own sizes: each `(text, x, y, size)`, a character 0.6 of the size wide and the size tall.
     fn page_sized(lines: &[(&str, f32, f32, f32)]) -> PageText {
@@ -1199,7 +1474,11 @@ mod tests {
             for (index, ch) in text.chars().enumerate() {
                 let left = x + index as f32 * size * 0.6;
                 chars.push(CharRecord::new(ch as u32, 0));
-                boxes.push(if ch == ' ' { [left, *y, left + size * 0.6, *y] } else { [left, *y, left + size * 0.5, y + size] });
+                boxes.push(if ch == ' ' {
+                    [left, *y, left + size * 0.6, *y]
+                } else {
+                    [left, *y, left + size * 0.5, y + size]
+                });
             }
             chars.push(CharRecord::new('\r' as u32, CharRecord::GENERATED));
             boxes.push([0.0; 4]);
@@ -1211,7 +1490,9 @@ mod tests {
 
     /// Body lines down a page, 14 points apart, so its edges have something to be set apart from.
     fn body(page: u32, from: f32, count: u32) -> Vec<(String, f32, f32, f32)> {
-        (0..count).map(|line| (format!("Body line {line} of page {page} with words"), 72.0, from - line as f32 * 14.0, 10.0)).collect()
+        (0..count)
+            .map(|line| (format!("Body line {line} of page {page} with words"), 72.0, from - line as f32 * 14.0, 10.0))
+            .collect()
     }
 
     fn sized(lines: &[(String, f32, f32, f32)]) -> PageText {
@@ -1224,7 +1505,13 @@ mod tests {
     fn a_repeated_row_goes_whole() {
         let pages: Vec<PageText> = (0..4)
             .map(|page| {
-                let mut lines = vec![("RFC 9420".to_string(), 72.0, 750.0, 10.0), ("MLS".to_string(), 290.0, 750.0, 10.0), ("July 2023".to_string(), 480.0, 750.0, 10.0), ("Annual report".to_string(), 72.0, 735.0, 9.0), ("2024".to_string(), 520.0, 735.0, 9.0)];
+                let mut lines = vec![
+                    ("RFC 9420".to_string(), 72.0, 750.0, 10.0),
+                    ("MLS".to_string(), 290.0, 750.0, 10.0),
+                    ("July 2023".to_string(), 480.0, 750.0, 10.0),
+                    ("Annual report".to_string(), 72.0, 735.0, 9.0),
+                    ("2024".to_string(), 520.0, 735.0, 9.0),
+                ];
                 lines.extend(body(page, 600.0, 30));
                 // A table of small figures, each a piece of its own: the usual line is still the body's.
                 for row in 0..10 {
@@ -1243,24 +1530,83 @@ mod tests {
     /// Failure: numbers that count with the pages but aren't page numbers leave a copy (review of 880cfb2): a question's number starting its row, a slide's 24 pt section number before its title, a timeline's 20 pt year. Only a number alone in its row, ending it or centred, about the size page numbers are, is counted with its neighbours; the footer's "- 2 -" and a centred number beside its section's name still go.
     #[test]
     fn numbers_that_count_with_the_pages_but_start_a_row_or_are_large_stay() {
-        let questions: Vec<PageText> = (0..4).map(|page| sized(&[(format!("{}", page + 1), 72.0, 720.0, 11.0), (["Explain photosynthesis briefly.", "Name two noble gases.", "Describe the water cycle.", "Define inertia in your words."][page as usize].to_string(), 100.0, 720.0, 11.0), ("Answer:".to_string(), 72.0, 600.0, 11.0), ("Student wrote some answer text here.".to_string(), 72.0, 586.0, 11.0), (format!("- {} -", page + 1), 290.0, 30.0, 9.0)])).collect();
+        let questions: Vec<PageText> = (0..4)
+            .map(|page| {
+                sized(&[
+                    (format!("{}", page + 1), 72.0, 720.0, 11.0),
+                    (
+                        [
+                            "Explain photosynthesis briefly.",
+                            "Name two noble gases.",
+                            "Describe the water cycle.",
+                            "Define inertia in your words.",
+                        ][page as usize]
+                            .to_string(),
+                        100.0,
+                        720.0,
+                        11.0,
+                    ),
+                    ("Answer:".to_string(), 72.0, 600.0, 11.0),
+                    ("Student wrote some answer text here.".to_string(), 72.0, 586.0, 11.0),
+                    (format!("- {} -", page + 1), 290.0, 30.0, 9.0),
+                ])
+            })
+            .collect();
         let copied = copy_of(&questions, Range::pages(1, 1));
-        assert!(copied.text.starts_with("2\nName") || copied.text.starts_with("2 Name"), "the question's number: {:?}", copied.text);
+        assert!(
+            copied.text.starts_with("2\nName") || copied.text.starts_with("2 Name"),
+            "the question's number: {:?}",
+            copied.text
+        );
         assert!(!copied.text.contains("- 2 -"), "the page number: {:?}", copied.text);
-        let slides: Vec<PageText> = (0..4).map(|page| sized(&[(format!("{}", page + 1), 40.0, 740.0, 24.0), (["Introduction", "Background", "Method", "Results"][page as usize].to_string(), 80.0, 740.0, 24.0), ("Some bullet text for this slide.".to_string(), 80.0, 600.0, 14.0), ("Another bullet with more words.".to_string(), 80.0, 580.0, 14.0)])).collect();
+        let slides: Vec<PageText> = (0..4)
+            .map(|page| {
+                sized(&[
+                    (format!("{}", page + 1), 40.0, 740.0, 24.0),
+                    (
+                        ["Introduction", "Background", "Method", "Results"][page as usize].to_string(),
+                        80.0,
+                        740.0,
+                        24.0,
+                    ),
+                    ("Some bullet text for this slide.".to_string(), 80.0, 600.0, 14.0),
+                    ("Another bullet with more words.".to_string(), 80.0, 580.0, 14.0),
+                ])
+            })
+            .collect();
         let copied = copy_of(&slides, Range::pages(1, 1));
         assert!(copied.text.starts_with('2'), "the slide's section number: {:?}", copied.text);
         // A page number centred, with its section's name at the far right, as UN reports have them, still goes.
         let centred: Vec<PageText> = (0..4)
             .map(|page| {
                 let mut lines = body(page, 700.0, 40);
-                lines.extend([(format!("{}", page + 1), 303.0, 30.0, 6.0), (["Introduction", "Foreword", "Promise in peril", "Methods"][page as usize].to_string(), 500.0, 30.0, 6.0)]);
+                lines.extend([
+                    (format!("{}", page + 1), 303.0, 30.0, 6.0),
+                    (
+                        ["Introduction", "Foreword", "Promise in peril", "Methods"][page as usize].to_string(),
+                        500.0,
+                        30.0,
+                        6.0,
+                    ),
+                ]);
                 sized(&lines)
             })
             .collect();
         let copied = copy_of(&centred, Range::pages(1, 1));
-        assert!(!copied.text.lines().any(|line| line.trim() == "2"), "the centred page number: {:?}", copied.text);
-        let timeline: Vec<PageText> = (0..4).map(|page| sized(&[(format!("{}", 1914 + page), 72.0, 730.0, 20.0), (format!("Events of the year {} are described here.", 1914 + page), 72.0, 690.0, 11.0), ("More text about that year follows on this line.".to_string(), 72.0, 676.0, 11.0)])).collect();
+        assert!(
+            !copied.text.lines().any(|line| line.trim() == "2"),
+            "the centred page number: {:?}",
+            copied.text
+        );
+        let timeline: Vec<PageText> = (0..4)
+            .map(|page| {
+                sized(&[
+                    (format!("{}", 1914 + page), 72.0, 730.0, 20.0),
+                    (format!("Events of the year {} are described here.", 1914 + page), 72.0, 690.0, 11.0),
+                    ("More text about that year follows on this line.".to_string(), 72.0, 676.0, 11.0),
+                ])
+            })
+            .collect();
         let copied = copy_of(&timeline, Range::pages(1, 1));
         assert!(copied.text.starts_with("1915"), "the year: {:?}", copied.text);
     }
@@ -1270,14 +1616,35 @@ mod tests {
     fn chrome_picked_by_itself_is_copied_and_body_at_the_edge_is_kept() {
         let pages = report(3);
         let head = pages[1].text.iter().collect::<String>().find("Annual").unwrap() as u32;
-        let only_head = copy_of(&pages, Range { start: Place { page: 1, at: head }, end: Place { page: 1, at: head + 18 } });
+        let only_head = copy_of(
+            &pages,
+            Range {
+                start: Place { page: 1, at: head },
+                end: Place { page: 1, at: head + 18 },
+            },
+        );
         assert_eq!(only_head.text, "Annual report 2024");
-        let tables: Vec<PageText> = (0..3).map(|page| page_of(&[("Year Revenue Cost", 72.0, 750.0), (&format!("{} 12 4", 2000 + page), 72.0, 735.0), ("2010 13 5", 72.0, 720.0), ("2011 14 5", 72.0, 705.0), ("2012 15 6", 72.0, 690.0), ("words of the body here", 72.0, 500.0)])).collect();
+        let tables: Vec<PageText> = (0..3)
+            .map(|page| {
+                page_of(&[
+                    ("Year Revenue Cost", 72.0, 750.0),
+                    (&format!("{} 12 4", 2000 + page), 72.0, 735.0),
+                    ("2010 13 5", 72.0, 720.0),
+                    ("2011 14 5", 72.0, 705.0),
+                    ("2012 15 6", 72.0, 690.0),
+                    ("words of the body here", 72.0, 500.0),
+                ])
+            })
+            .collect();
         let copied = copy_of(&tables, Range::pages(1, 1));
         assert!(copied.text.starts_with("Year Revenue Cost"), "{:?}", copied.text);
         let alone = report(1);
         let copied = copy_of(&alone, Range::pages(0, 0));
-        assert!(copied.text.starts_with("Annual report 2024") && !copied.text.ends_with('1'), "one page alone: its head can't be told from a title, and its number can: {:?}", copied.text);
+        assert!(
+            copied.text.starts_with("Annual report 2024") && !copied.text.ends_with('1'),
+            "one page alone: its head can't be told from a title, and its number can: {:?}",
+            copied.text
+        );
     }
 
     /// Failure: a line grows with the page, so a page held for selection costs far more than the budget says.
@@ -1342,7 +1709,10 @@ mod tests {
         assert_eq!(page.text_of(start, end), "two\nleft three\nright one\nright two");
         let rects = page.rects(start, end);
         assert_eq!(rects.len(), 4, "one a line: {rects:?}");
-        assert!(rects.iter().all(|rect| rect.x + rect.width <= 300.0 || rect.x >= 330.0), "nothing bridges the gutter: {rects:?}");
+        assert!(
+            rects.iter().all(|rect| rect.x + rect.width <= 300.0 || rect.x >= 330.0),
+            "nothing bridges the gutter: {rects:?}"
+        );
     }
 
     /// Failure: dragging up the page selects nothing or the wrong stretch, since the end comes before the start.
@@ -1396,7 +1766,11 @@ mod tests {
         assert!(selection.range(&late).unwrap().is_empty(), "a click elsewhere leaves nothing selected");
         selection.press(point(72.0 + 5.0 * 6.0), 1, true);
         selection.release();
-        assert_eq!(selection.range(&late).map(|range| (range.start.at, range.end.at)), Some((2, 5)), "and shift goes on from the click");
+        assert_eq!(
+            selection.range(&late).map(|range| (range.start.at, range.end.at)),
+            Some((2, 5)),
+            "and shift goes on from the click"
+        );
         let mut fresh = Selection::default();
         fresh.drag(point(80.0));
         assert_eq!(fresh.range(&late), None, "a drag with no press is nothing");
@@ -1439,7 +1813,12 @@ mod tests {
     fn a_turned_page_has_its_boxes_where_they_show() {
         let lines = [("rotated", 100.0, 700.0)];
         // Page space: x 100 to 142, y 700 to 710, on a page 612 by 792.
-        for (turns, x, y, wide) in [(0, 100.0, 82.0, true), (1, 700.0, 100.0, false), (2, 470.0, 700.0, true), (3, 82.0, 470.0, false)] {
+        for (turns, x, y, wide) in [
+            (0, 100.0, 82.0, true),
+            (1, 700.0, 100.0, false),
+            (2, 470.0, 700.0, true),
+            (3, 82.0, 470.0, false),
+        ] {
             let page = page_in(PageFrame { turns, ..FRAME }, &lines);
             let rects = page.rects(0, PAGE_END);
             assert_eq!(rects.len(), 1, "turn {turns}: {rects:?}");
@@ -1573,7 +1952,11 @@ mod tests {
         // Off the hidden word, a click lands where it did.
         assert_eq!(first.unit_at(80.0, shown(680.0), Unit::Line), checked.unit_at(80.0, shown(680.0), Unit::Line));
         assert_eq!(first.unit_at(400.0, shown(700.0), Unit::Char), checked.unit_at(400.0, shown(700.0), Unit::Char));
-        assert_eq!(first.unit_at(72.0 + 16.0 * 6.0, shown(700.0), Unit::Word), checked.unit_at(72.0 + 16.0 * 6.0, shown(700.0), Unit::Word), "`words`, after it");
+        assert_eq!(
+            first.unit_at(72.0 + 16.0 * 6.0, shown(700.0), Unit::Word),
+            checked.unit_at(72.0 + 16.0 * 6.0, shown(700.0), Unit::Word),
+            "`words`, after it"
+        );
         // On it: the first read takes it, and the check takes it away, to what's next to it.
         let on_secret = 72.0 + 10.0 * 6.0;
         let (start, end) = first.unit_at(on_secret, shown(700.0), Unit::Word).unwrap();
@@ -1585,7 +1968,10 @@ mod tests {
         assert_eq!(checked.text_of(4, 20), "the words");
         let (whole, without) = (first.rects(4, 20), checked.rects(4, 20));
         assert_eq!(whole.len(), 1);
-        assert!(!without.is_empty() && without.iter().all(|rect| rect.y == whole[0].y && rect.height == whole[0].height), "{without:?}");
+        assert!(
+            !without.is_empty() && without.iter().all(|rect| rect.y == whole[0].y && rect.height == whole[0].height),
+            "{without:?}"
+        );
     }
 
     /// Failure: copying a long selection grows without end, or stops without saying where, or runs pages together with no line between.
@@ -1645,7 +2031,11 @@ mod tests {
         assert!(page.rects(u32::MAX - 1, u32::MAX).is_empty());
         assert_eq!(page.text_of(100, 200), "");
         let no_frame = page_in(PageFrame::default(), &[("text", 72.0, 700.0)]);
-        assert_eq!(no_frame.unit_at(72.0, 700.0, Unit::Word), None, "nowhere to hit, with the text still there to copy");
+        assert_eq!(
+            no_frame.unit_at(72.0, 700.0, Unit::Word),
+            None,
+            "nowhere to hit, with the text still there to copy"
+        );
         assert_eq!(no_frame.text_of(0, PAGE_END), "text\n");
     }
 }

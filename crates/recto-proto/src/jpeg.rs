@@ -83,7 +83,20 @@ const BAD: ProtoError = ProtoError("a JPEG without a JPEG's structure");
 impl JpegScan {
     /// With `strip`, [`Self::feed`] writes out the JPEG without what doesn't affect the picture: see [`Self::keeps`].
     pub fn new(strip: bool) -> Self {
-        Self { state: State::Soi0, code: 0, high: 0, left: 0, held: Vec::new(), strip, changed: false, seen_frame: false, seen_scan: false, profile_next: 1, profile_parts: 0, facts: JpegFacts::default() }
+        Self {
+            state: State::Soi0,
+            code: 0,
+            high: 0,
+            left: 0,
+            held: Vec::new(),
+            strip,
+            changed: false,
+            seen_frame: false,
+            seen_scan: false,
+            profile_next: 1,
+            profile_parts: 0,
+            facts: JpegFacts::default(),
+        }
     }
 
     pub fn facts(&self) -> JpegFacts {
@@ -110,7 +123,11 @@ impl JpegScan {
                 }
                 State::MarkerStart => {
                     if byte != 0xFF {
-                        return Err(if self.seen_frame { BAD } else { ProtoError("a JPEG that doesn't start as one") });
+                        return Err(if self.seen_frame {
+                            BAD
+                        } else {
+                            ProtoError("a JPEG that doesn't start as one")
+                        });
                     }
                     self.state = State::MarkerCode;
                     bytes = &bytes[1..];
@@ -193,7 +210,11 @@ impl JpegScan {
 
     /// Checks that it all came.
     pub fn finish(&self) -> Result<(), ProtoError> {
-        if self.state == State::Trailing { Ok(()) } else { Err(ProtoError("a JPEG with no end")) }
+        if self.state == State::Trailing {
+            Ok(())
+        } else {
+            Err(ProtoError("a JPEG with no end"))
+        }
     }
 
     fn put(&self, out: &mut Vec<u8>, bytes: &[u8]) {
@@ -324,7 +345,9 @@ impl JpegScan {
 impl JpegScan {
     /// Whether this is the next part of a colour profile that holds together: numbered in order from 1 out of one total, starting with a profile's own signature. Anything else is left out when stripping, as a label on who knows what.
     fn profile_part(&mut self, body: &[u8]) -> bool {
-        let (Some(&part), Some(&parts)) = (body.get(12), body.get(13)) else { return false };
+        let (Some(&part), Some(&parts)) = (body.get(12), body.get(13)) else {
+            return false;
+        };
         let data = &body[14..];
         let first = part == 1;
         if part == 0 || part > parts || part != self.profile_next || (!first && parts != self.profile_parts) || (first && data.get(36..40) != Some(b"acsp")) {
@@ -458,7 +481,9 @@ pub fn fix_header(jpeg: &[u8], fix: &HeaderFix<'_>) -> Option<Vec<u8>> {
     check.feed(&out, &mut Vec::new()).ok()?;
     check.finish().ok()?;
     let facts = check.facts();
-    let as_asked = (!fix.upright || !facts.is_turned()) && (!fix.drop_profile || fix.add_profile.is_some() || facts.color_profiles == 0) && (fix.add_profile.is_none() || facts.color_profiles == 1);
+    let as_asked = (!fix.upright || !facts.is_turned())
+        && (!fix.drop_profile || fix.add_profile.is_some() || facts.color_profiles == 0)
+        && (fix.add_profile.is_none() || facts.color_profiles == 1);
     as_asked.then_some(out)
 }
 
@@ -469,7 +494,15 @@ fn set_upright(tiff: &mut [u8]) {
         Some(b"MM") => false,
         _ => return,
     };
-    let word = |tiff: &[u8], at: usize| tiff.get(at..at.checked_add(2)?).map(|bytes| if little { u16::from_le_bytes([bytes[0], bytes[1]]) } else { u16::from_be_bytes([bytes[0], bytes[1]]) });
+    let word = |tiff: &[u8], at: usize| {
+        tiff.get(at..at.checked_add(2)?).map(|bytes| {
+            if little {
+                u16::from_le_bytes([bytes[0], bytes[1]])
+            } else {
+                u16::from_be_bytes([bytes[0], bytes[1]])
+            }
+        })
+    };
     let Some(first) = tiff.get(4..8).map(|bytes| if little { u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) } else { u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) } as usize) else { return };
     let Some(count) = word(tiff, first) else { return };
     for entry in 0..usize::from(count) {
@@ -487,14 +520,20 @@ const ADOBE_LEN: usize = 12;
 
 /// Whether an ICC profile's description says sRGB.
 pub fn profile_says_srgb(profile: &[u8]) -> bool {
-    let word = |at: usize| profile.get(at..at + 4).map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize);
+    let word = |at: usize| {
+        profile
+            .get(at..at + 4)
+            .map(|bytes| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize)
+    };
     let Some(tags) = word(128) else { return false };
     for tag in 0..tags.min(256) {
         let entry = 132 + tag * 12;
         if profile.get(entry..entry + 4) != Some(b"desc") {
             continue;
         }
-        let (Some(at), Some(len)) = (word(entry + 4), word(entry + 8)) else { return false };
+        let (Some(at), Some(len)) = (word(entry + 4), word(entry + 8)) else {
+            return false;
+        };
         let Some(text) = profile.get(at..at.saturating_add(len)) else { return false };
         // A plain string in older profiles, and UTF-16 in newer ones.
         return text.windows(4).any(|bytes| bytes == b"sRGB") || text.windows(8).any(|bytes| bytes == b"\0s\0R\0G\0B");
@@ -505,7 +544,9 @@ pub fn profile_says_srgb(profile: &[u8]) -> bool {
 /// Whether Photoshop's resource blocks hold a thumbnail. Lengths that lie just end the look.
 fn photoshop_has_thumbnail(mut blocks: &[u8]) -> bool {
     while let Some(rest) = blocks.strip_prefix(b"8BIM") {
-        let Some(&[high, low, name_len]) = rest.first_chunk::<3>() else { return false };
+        let Some(&[high, low, name_len]) = rest.first_chunk::<3>() else {
+            return false;
+        };
         // The name is padded so that it and its length are even.
         let name_end = 2 + (1 + usize::from(name_len)).next_multiple_of(2);
         let Some(size) = rest.get(name_end..name_end + 4) else { return false };
@@ -513,7 +554,9 @@ fn photoshop_has_thumbnail(mut blocks: &[u8]) -> bool {
         if matches!(u16::from_be_bytes([high, low]), 0x0409 | 0x040C) {
             return true;
         }
-        let Some(next) = (name_end + 4).checked_add(size.next_multiple_of(2)) else { return false };
+        let Some(next) = (name_end + 4).checked_add(size.next_multiple_of(2)) else {
+            return false;
+        };
         let Some(after) = rest.get(next..) else { return false };
         blocks = after;
     }
@@ -539,8 +582,18 @@ fn read_exif(tiff: &[u8]) -> ExifFacts {
         Some(b"MM") => false,
         _ => return facts,
     };
-    let word = |at: usize| tiff.get(at..at.checked_add(2)?).map(|bytes| if little { u16::from_le_bytes([bytes[0], bytes[1]]) } else { u16::from_be_bytes([bytes[0], bytes[1]]) });
-    let long = |at: usize| tiff.get(at..at.checked_add(4)?).map(|bytes| if little { u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) } else { u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) } as usize);
+    let word = |at: usize| {
+        tiff.get(at..at.checked_add(2)?).map(|bytes| {
+            if little {
+                u16::from_le_bytes([bytes[0], bytes[1]])
+            } else {
+                u16::from_be_bytes([bytes[0], bytes[1]])
+            }
+        })
+    };
+    let long = |at: usize| {
+        tiff.get(at..at.checked_add(4)?).map(|bytes| if little { u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) } else { u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) } as usize)
+    };
     if word(2) != Some(42) {
         return facts;
     }
@@ -635,13 +688,23 @@ mod tests {
     /// Failure: stripping changes the picture, or leaves what it's for, or a segment a decoder needs goes with the rest. Everything but metadata stays byte for byte, in order.
     #[test]
     fn stripping_takes_only_whats_not_the_picture() {
-        for (code, body) in [(0xE1u8, &b"Exif\0\0II*\0\x08\0\0\0\0\0\0\0\0\0"[..]), (0xE1, b"http://ns.adobe.com/xap/1.0/\0x"), (0xFE, b"a comment"), (0xE5, b"anything"), (0xE0, b"JFXX\0thumb")] {
+        for (code, body) in [
+            (0xE1u8, &b"Exif\0\0II*\0\x08\0\0\0\0\0\0\0\0\0"[..]),
+            (0xE1, b"http://ns.adobe.com/xap/1.0/\0x"),
+            (0xFE, b"a comment"),
+            (0xE5, b"anything"),
+            (0xE0, b"JFXX\0thumb"),
+        ] {
             let (jpeg, out) = scan(&with((code, body), b"after"), true).unwrap();
             assert_eq!(out, plain(), "{code:x}");
             assert!(jpeg.changed());
         }
         let profile = profile_segment(1, 1, b"Adobe RGB (1998)");
-        for (code, body) in [(0xEEu8, &b"Adobe\0\0\0\0\0\0\x01"[..]), (0xE2, &profile), (0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0")] {
+        for (code, body) in [
+            (0xEEu8, &b"Adobe\0\0\0\0\0\0\x01"[..]),
+            (0xE2, &profile),
+            (0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"),
+        ] {
             let bytes = with((code, body), b"");
             let (jpeg, out) = scan(&bytes, true).unwrap();
             assert_eq!(out, bytes, "{code:x}: kept whole");
@@ -778,26 +841,59 @@ mod tests {
     #[test]
     fn a_fix_leaves_the_compressed_picture_as_it_was() {
         let turned = with((0xE1, &orientation_block(6)), b"after");
-        let fixed = fix_header(&turned, &HeaderFix { upright: true, ..HeaderFix::default() }).unwrap();
-        assert_eq!(fixed[scan_start(&fixed).unwrap()..], turned[scan_start(&turned).unwrap()..], "what follows the header");
+        let fixed = fix_header(
+            &turned,
+            &HeaderFix {
+                upright: true,
+                ..HeaderFix::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fixed[scan_start(&fixed).unwrap()..],
+            turned[scan_start(&turned).unwrap()..],
+            "what follows the header"
+        );
         let mut read = JpegScan::new(false);
         read.feed(&fixed, &mut Vec::new()).unwrap();
         assert_eq!(read.facts().orientation, 1, "it says upright");
         assert_eq!(fixed.len(), turned.len(), "by changing the value and nothing else");
 
         let foreign = with((0xE2, &profile_segment(1, 1, b"Adobe RGB (1998)")), b"");
-        let gone = fix_header(&foreign, &HeaderFix { drop_profile: true, ..HeaderFix::default() }).unwrap();
+        let gone = fix_header(
+            &foreign,
+            &HeaderFix {
+                drop_profile: true,
+                ..HeaderFix::default()
+            },
+        )
+        .unwrap();
         assert_eq!(gone, plain(), "taken out, and nothing else");
 
         let profile = profile_segment(1, 1, b"Adobe RGB (1998)")[14..].to_vec();
         let jfif = with((0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"), b"");
-        let added = fix_header(&jfif, &HeaderFix { add_profile: Some(&profile), ..HeaderFix::default() }).unwrap();
+        let added = fix_header(
+            &jfif,
+            &HeaderFix {
+                add_profile: Some(&profile),
+                ..HeaderFix::default()
+            },
+        )
+        .unwrap();
         assert!(added[2..].starts_with(&[0xFF, 0xE0]), "JFIF stays first");
         assert_eq!(added[scan_start(&added).unwrap()..], jfif[scan_start(&jfif).unwrap()..]);
         let mut read = JpegScan::new(false);
         read.feed(&added, &mut Vec::new()).unwrap();
         assert_eq!(read.facts().color_profiles, 1);
-        let replaced = fix_header(&foreign, &HeaderFix { drop_profile: true, add_profile: Some(&profile), ..HeaderFix::default() }).unwrap();
+        let replaced = fix_header(
+            &foreign,
+            &HeaderFix {
+                drop_profile: true,
+                add_profile: Some(&profile),
+                ..HeaderFix::default()
+            },
+        )
+        .unwrap();
         let mut read = JpegScan::new(false);
         read.feed(&replaced, &mut Vec::new()).unwrap();
         assert_eq!(read.facts().color_profiles, 1, "one, not two");
@@ -808,7 +904,14 @@ mod tests {
     fn a_large_profile_is_split_and_past_the_cap_refused() {
         let mut profile = profile_segment(1, 1, b"Adobe RGB (1998)")[14..].to_vec();
         profile.resize(200_000, 7);
-        let fixed = fix_header(&plain(), &HeaderFix { add_profile: Some(&profile), ..HeaderFix::default() }).unwrap();
+        let fixed = fix_header(
+            &plain(),
+            &HeaderFix {
+                add_profile: Some(&profile),
+                ..HeaderFix::default()
+            },
+        )
+        .unwrap();
         let mut read = JpegScan::new(true);
         let mut kept = Vec::new();
         read.feed(&fixed, &mut kept).unwrap();
@@ -817,14 +920,27 @@ mod tests {
         assert_eq!(read.facts().color_profiles, 1);
         assert!(fixed.len() < plain().len() + profile.len() + 100, "it doesn't grow past what was asked");
         profile.resize(MAX_ADDED_PROFILE + 1, 7);
-        assert!(fix_header(&plain(), &HeaderFix { add_profile: Some(&profile), ..HeaderFix::default() }).is_none());
+        assert!(
+            fix_header(
+                &plain(),
+                &HeaderFix {
+                    add_profile: Some(&profile),
+                    ..HeaderFix::default()
+                }
+            )
+            .is_none()
+        );
     }
 
     /// Failure: what isn't a JPEG gets through the rewrite, or it panics on it. Every cut and change of a real structure ends in a sound JPEG or nothing.
     #[test]
     fn a_fix_of_a_broken_jpeg_is_nothing_or_sound() {
         let good = with((0xE1, &orientation_block(6)), b"");
-        let fix = HeaderFix { upright: true, drop_profile: true, add_profile: None };
+        let fix = HeaderFix {
+            upright: true,
+            drop_profile: true,
+            add_profile: None,
+        };
         for cut in 0..good.len() {
             assert!(fix_header(&good[..cut], &fix).is_none(), "cut at {cut}");
         }

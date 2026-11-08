@@ -4,11 +4,11 @@
 //! before it says hello: `recto_platform::wall`.
 
 use recto_platform::isolate::{self, Channel, Handle, SharedMemory, Wait};
-use recto_proto::contents::ContentsJob;
 use recto_platform::surface::SurfaceReceiver;
+use recto_platform::wall;
+use recto_proto::contents::ContentsJob;
 use recto_proto::{self as proto, FailCode, Kind, PageSize, RegionReply, RenderJob, TextJob, TextReply, TileReply, TileStatus};
 use recto_render::{Cancel, Pdfium, PdfiumBackend, RenderBackend, TextOptions, TileOutcome};
-use recto_platform::wall;
 use recto_render_service::{bundle, control, exit_code, transport};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,16 +36,27 @@ fn parse_args() -> Option<Args> {
             _ => return None,
         }
     }
-    Some(Args { pdfium: pdfium?, idle_exit: Duration::from_millis(idle_ms?), memory_limit: memory?, deadline: Duration::from_millis(deadline_ms?) })
+    Some(Args {
+        pdfium: pdfium?,
+        idle_exit: Duration::from_millis(idle_ms?),
+        memory_limit: memory?,
+        deadline: Duration::from_millis(deadline_ms?),
+    })
 }
 
 fn main() {
-    let Some(args) = parse_args() else { std::process::exit(exit_code::BAD_ARGUMENTS) };
+    let Some(args) = parse_args() else {
+        std::process::exit(exit_code::BAD_ARGUMENTS)
+    };
     isolate::harden_this_process();
-    let Ok(channel) = Channel::inherited() else { std::process::exit(exit_code::BAD_ARGUMENTS) };
+    let Ok(channel) = Channel::inherited() else {
+        std::process::exit(exit_code::BAD_ARGUMENTS)
+    };
     // Before the hello, so the host finds it waiting. The host may have sent no invitation: then there's no link, and shared memory does.
     let surfaces = SurfaceReceiver::from_invite();
-    let Ok(pdfium) = Pdfium::load(&args.pdfium) else { std::process::exit(exit_code::NO_LIBRARY) };
+    let Ok(pdfium) = Pdfium::load(&args.pdfium) else {
+        std::process::exit(exit_code::NO_LIBRARY)
+    };
     // After loading, which asks system services for things, and before the hello, so no document can reach a worker whose walls aren't up. The hello says whether they are.
     let walled = bundle::walls_required(std::env::current_exe().ok().as_deref(), bundle::RELEASE);
     if walled {
@@ -56,7 +67,16 @@ fn main() {
             Err(wall::NoWall::LaunchdReachable) => std::process::exit(exit_code::LAUNCHD_REACHABLE),
         }
     }
-    if send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled }), &[]).is_err() {
+    if send_all(
+        &channel,
+        &proto::encode_hello(proto::Hello {
+            pid: std::process::id(),
+            walled,
+        }),
+        &[],
+    )
+    .is_err()
+    {
         std::process::exit(exit_code::ORPHANED);
     }
     let code = serve(channel, &pdfium, &args, surfaces.as_ref());
@@ -109,7 +129,13 @@ fn serve(channel: Channel, pdfium: &Pdfium, args: &Args, surfaces: Option<&Surfa
 }
 
 /// Answers one frame. `None` means the host broke the protocol, and this process has no reason to go on.
-fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumBackend>, control_page: &mut Option<SharedMemory>, surfaces: Option<&SurfaceReceiver>) -> Option<Vec<u8>> {
+fn handle(
+    frame: transport::Frame,
+    pdfium: &Pdfium,
+    backend: &mut Option<PdfiumBackend>,
+    control_page: &mut Option<SharedMemory>,
+    surfaces: Option<&SurfaceReceiver>,
+) -> Option<Vec<u8>> {
     let mut handles = frame.handles;
     match frame.kind {
         Kind::Open => {
@@ -136,15 +162,24 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
         }
         Kind::SizeRequest => {
             let (job_id, page) = proto::decode_size_request(&frame.payload).ok()?;
-            let Some(backend) = backend else { return Some(proto::encode_failed(job_id, FailCode::NoDocument)) };
+            let Some(backend) = backend else {
+                return Some(proto::encode_failed(job_id, FailCode::NoDocument));
+            };
             Some(match backend.page_size(page) {
-                Ok(size) => PageSize { job_id, width: size.width, height: size.height }.encode(),
+                Ok(size) => PageSize {
+                    job_id,
+                    width: size.width,
+                    height: size.height,
+                }
+                .encode(),
                 Err(code) => proto::encode_failed(job_id, code),
             })
         }
         Kind::TraitsRequest => {
             let (job_id, page) = proto::decode_size_request(&frame.payload).ok()?;
-            let Some(backend) = backend else { return Some(proto::encode_failed(job_id, FailCode::NoDocument)) };
+            let Some(backend) = backend else {
+                return Some(proto::encode_failed(job_id, FailCode::NoDocument));
+            };
             Some(match backend.largest_image_pixels(page) {
                 Ok(largest_image_pixels) => proto::PageTraits { job_id, largest_image_pixels }.encode(),
                 Err(code) => proto::encode_failed(job_id, code),
@@ -152,8 +187,13 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
         }
         Kind::ContentsRequest => {
             let job = ContentsJob::decode(&frame.payload).ok()?;
-            let Some(backend) = backend else { return Some(proto::encode_failed(job.job_id, FailCode::NoDocument)) };
-            let cancel = Generation { word: control_page.as_ref().and_then(|page| page.atomic_u64(control::CANCEL_BEFORE_OFFSET)), job: job.generation };
+            let Some(backend) = backend else {
+                return Some(proto::encode_failed(job.job_id, FailCode::NoDocument));
+            };
+            let cancel = Generation {
+                word: control_page.as_ref().and_then(|page| page.atomic_u64(control::CANCEL_BEFORE_OFFSET)),
+                job: job.generation,
+            };
             let mut out = Vec::new();
             Some(match backend.contents_frame(&job, &mut out, &cancel) {
                 Ok(()) => out,
@@ -162,7 +202,9 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
         }
         Kind::ImagesRequest => {
             let (job_id, page) = proto::decode_size_request(&frame.payload).ok()?;
-            let Some(backend) = backend else { return Some(proto::encode_failed(job_id, FailCode::NoDocument)) };
+            let Some(backend) = backend else {
+                return Some(proto::encode_failed(job_id, FailCode::NoDocument));
+            };
             Some(match backend.image_boxes(page) {
                 Ok(boxes) => proto::PageImages { job_id, boxes }.encode(),
                 Err(code) => proto::encode_failed(job_id, code),
@@ -170,15 +212,37 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
         }
         Kind::TextRequest => {
             let job = TextJob::decode(&frame.payload).ok()?;
-            let Some(backend) = backend else { return Some(proto::encode_failed(job.job_id, FailCode::NoDocument)) };
-            let cancel = Generation { word: control_page.as_ref().and_then(|page| page.atomic_u64(control::CANCEL_BEFORE_OFFSET)), job: job.generation };
-            Some(match backend.page_text_until(job.page, TextOptions { boxes: job.boxes, hidden_check: job.hidden_check }, &cancel) {
-                Ok(page) => {
-                    let reply = TextReply { job_id: job.job_id, page: job.page, hidden_checked: page.hidden_checked, chars: page.chars, boxes: page.boxes, frame: page.frame, copy_restricted: page.copy_restricted };
-                    reply.encode().unwrap_or_else(|_| proto::encode_failed(job.job_id, FailCode::TooLarge))
-                }
-                Err(code) => proto::encode_failed(job.job_id, code),
-            })
+            let Some(backend) = backend else {
+                return Some(proto::encode_failed(job.job_id, FailCode::NoDocument));
+            };
+            let cancel = Generation {
+                word: control_page.as_ref().and_then(|page| page.atomic_u64(control::CANCEL_BEFORE_OFFSET)),
+                job: job.generation,
+            };
+            Some(
+                match backend.page_text_until(
+                    job.page,
+                    TextOptions {
+                        boxes: job.boxes,
+                        hidden_check: job.hidden_check,
+                    },
+                    &cancel,
+                ) {
+                    Ok(page) => {
+                        let reply = TextReply {
+                            job_id: job.job_id,
+                            page: job.page,
+                            hidden_checked: page.hidden_checked,
+                            chars: page.chars,
+                            boxes: page.boxes,
+                            frame: page.frame,
+                            copy_restricted: page.copy_restricted,
+                        };
+                        reply.encode().unwrap_or_else(|_| proto::encode_failed(job.job_id, FailCode::TooLarge))
+                    }
+                    Err(code) => proto::encode_failed(job.job_id, code),
+                },
+            )
         }
         _ => None,
     }
@@ -187,20 +251,37 @@ fn handle(frame: transport::Frame, pdfium: &Pdfium, backend: &mut Option<PdfiumB
 /// How long a job's surface may lag behind its frame. The host sends it first, so this only ever runs out on a host that's broken.
 const SURFACE_WAIT: Duration = Duration::from_secs(1);
 
-fn render(job: &RenderJob, surface: Option<Handle>, surfaces: Option<&SurfaceReceiver>, backend: &mut Option<PdfiumBackend>, control_page: Option<&SharedMemory>) -> Vec<u8> {
+fn render(
+    job: &RenderJob,
+    surface: Option<Handle>,
+    surfaces: Option<&SurfaceReceiver>,
+    backend: &mut Option<PdfiumBackend>,
+    control_page: Option<&SharedMemory>,
+) -> Vec<u8> {
     let started = Instant::now();
-    let Some(backend) = backend else { return proto::encode_failed(job.job_id, FailCode::NoDocument) };
-    let Ok(needed) = usize::try_from(job.bytes_needed()) else { return proto::encode_failed(job.job_id, FailCode::BadSurface) };
-    let cancel = Generation { word: control_page.and_then(|page| page.atomic_u64(control::CANCEL_BEFORE_OFFSET)), job: job.generation };
+    let Some(backend) = backend else {
+        return proto::encode_failed(job.job_id, FailCode::NoDocument);
+    };
+    let Ok(needed) = usize::try_from(job.bytes_needed()) else {
+        return proto::encode_failed(job.job_id, FailCode::BadSurface);
+    };
+    let cancel = Generation {
+        word: control_page.and_then(|page| page.atomic_u64(control::CANCEL_BEFORE_OFFSET)),
+        job: job.generation,
+    };
     let mut kinds = Vec::new();
     // Either way a worker holds a surface only while drawing into it. Platform report, §2.7.
     let outcome = match (surface, surfaces) {
         (Some(handle), _) => {
-            let Ok(mut mapping) = SharedMemory::map(handle, needed) else { return proto::encode_failed(job.job_id, FailCode::BadSurface) };
+            let Ok(mut mapping) = SharedMemory::map(handle, needed) else {
+                return proto::encode_failed(job.job_id, FailCode::BadSurface);
+            };
             draw(job, backend, mapping.as_mut_slice(), &cancel, &mut kinds)
         }
         (None, Some(link)) => {
-            let Some(target) = link.next(SURFACE_WAIT) else { return proto::encode_failed(job.job_id, FailCode::BadSurface) };
+            let Some(target) = link.next(SURFACE_WAIT) else {
+                return proto::encode_failed(job.job_id, FailCode::BadSurface);
+            };
             if target.len() < needed || target.stride() < job.stride {
                 return proto::encode_failed(job.job_id, FailCode::BadSurface);
             }
@@ -225,10 +306,20 @@ fn render(job: &RenderJob, surface: Option<Handle>, surfaces: Option<&SurfaceRec
         status,
         render_us: u32::try_from(started.elapsed().as_micros()).unwrap_or(u32::MAX),
     };
-    if job.tile_edge == 0 { tile.encode() } else { RegionReply { tile, kinds }.encode() }
+    if job.tile_edge == 0 {
+        tile.encode()
+    } else {
+        RegionReply { tile, kinds }.encode()
+    }
 }
 
-fn draw(job: &RenderJob, backend: &mut PdfiumBackend, out: &mut [u8], cancel: &Generation<'_>, kinds: &mut Vec<recto_render::TileKind>) -> Result<TileOutcome, FailCode> {
+fn draw(
+    job: &RenderJob,
+    backend: &mut PdfiumBackend,
+    out: &mut [u8],
+    cancel: &Generation<'_>,
+    kinds: &mut Vec<recto_render::TileKind>,
+) -> Result<TileOutcome, FailCode> {
     if job.tile_edge == 0 {
         backend.render_tile(job.page, job.rect, job.scale, out, job.stride, cancel)
     } else {
@@ -260,7 +351,10 @@ const WATCH_STEP: Duration = Duration::from_millis(50);
 impl Watchdog {
     fn new(channel: Arc<Channel>, args: &Args) -> Self {
         Self {
-            state: Arc::new(WatchState { armed_at: AtomicU64::new(0), epoch: Instant::now() }),
+            state: Arc::new(WatchState {
+                armed_at: AtomicU64::new(0),
+                epoch: Instant::now(),
+            }),
             channel,
             limit: args.memory_limit.saturating_add(SELF_LIMIT_SLACK),
             // Twice the host's deadline: the host decides, as long as it's alive.
@@ -274,7 +368,9 @@ impl Watchdog {
         if self.thread.is_none() {
             let (state, channel, limit, deadline) = (self.state.clone(), self.channel.clone(), self.limit, self.deadline);
             // Without this thread the host still holds every limit, so failing to start it isn't fatal.
-            let spawned = std::thread::Builder::new().stack_size(64 * 1024).spawn(move || watch(&state, &channel, limit, deadline));
+            let spawned = std::thread::Builder::new()
+                .stack_size(64 * 1024)
+                .spawn(move || watch(&state, &channel, limit, deadline));
             self.thread = spawned.ok().map(|handle| handle.thread().clone());
         } else if let Some(thread) = &self.thread {
             thread.unpark();

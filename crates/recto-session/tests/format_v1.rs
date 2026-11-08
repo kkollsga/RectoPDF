@@ -17,7 +17,10 @@ fn a_version_1_record_still_reads() {
     assert_eq!(saved.active, Some(2));
     assert_eq!(saved.next_id, 3);
     assert!(saved.edit_mode);
-    assert_eq!((saved.find.open, saved.find.query.as_str(), saved.find.draft.as_str()), (true, "ran this", "typed but not run"));
+    assert_eq!(
+        (saved.find.open, saved.find.query.as_str(), saved.find.draft.as_str()),
+        (true, "ran this", "typed but not run")
+    );
     assert_eq!(saved.view.paper, Some(record::PaperName::Warm));
     assert!(saved.view.agent_icon_hidden);
     let app = &saved.app;
@@ -40,7 +43,12 @@ fn a_version_1_record_still_reads() {
     assert_eq!(tab.selection.unwrap().to_char, 20);
     assert_eq!(tab.journal.as_deref(), Some("journal-00112233445566ff.log"));
     assert!(tab.edits.unwrap().owner_steps_undone);
-    assert_eq!(saved.tabs[1].notice, Some(FileNotice::Moved { from: PathField::Text("/old/moved.pdf".into()) }));
+    assert_eq!(
+        saved.tabs[1].notice,
+        Some(FileNotice::Moved {
+            from: PathField::Text("/old/moved.pdf".into())
+        })
+    );
     assert!(saved.tabs[1].renderer_only);
 }
 
@@ -64,7 +72,10 @@ fn a_version_1_journal_still_replays() {
 #[test]
 fn a_later_version_is_only_recognised() {
     let later = record::seal_as(record::MAIN_KIND, CURRENT_VERSION + 1, 1, RECORD);
-    assert_eq!(record::decode_record(&later, CURRENT_VERSION).unwrap_err(), RecordError::Newer(CURRENT_VERSION + 1));
+    assert_eq!(
+        record::decode_record(&later, CURRENT_VERSION).unwrap_err(),
+        RecordError::Newer(CURRENT_VERSION + 1)
+    );
     let mut journal = String::from_utf8(JOURNAL.to_vec()).unwrap();
     let first_end = journal.find('\n').unwrap();
     let header = journal[9..first_end].replace("\"version\":1", &format!("\"version\":{}", CURRENT_VERSION + 1));

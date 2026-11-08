@@ -10,7 +10,10 @@ use recto_session::Session;
 use std::path::Path;
 use std::time::Duration;
 
-const BUDGET: Budget = Budget { time: Duration::from_secs(30), memory: 256 * 1024 * 1024 };
+const BUDGET: Budget = Budget {
+    time: Duration::from_secs(30),
+    memory: 256 * 1024 * 1024,
+};
 /// No answer to a command on a small session comes near this. The server's own cap is 32 MiB.
 const MAX_ANSWER: usize = 4 * 1024 * 1024;
 /// A file's name that mustn't reach an agent at Off, whatever it asks for.
@@ -54,7 +57,11 @@ fn json_line(level: Level, bytes: &[u8]) {
 fn run_on_a_session(level: Level, command: &Command) {
     let mut session = Session::new(NamedLoader);
     let mut last = None;
-    for (name, pages) in [(format!("/fuzz/{CANARY}.pdf"), 5), ("/fuzz/other.pdf".to_string(), 200), ("/fuzz/third.pdf".to_string(), 1)] {
+    for (name, pages) in [
+        (format!("/fuzz/{CANARY}.pdf"), 5),
+        ("/fuzz/other.pdf".to_string(), 200),
+        ("/fuzz/third.pdf".to_string(), 1),
+    ] {
         last = session.open_with_facts(Path::new(&name), facts_of(pages), None, None).ok();
     }
     let result = run(&mut session, level, command);
@@ -106,7 +113,11 @@ fn small_grammars(bytes: &[u8]) {
     let _ = family_help(&words);
     // Page specs and selectors through a real command, since that's where they're read.
     let quoted = serde_json::to_string(&*text).unwrap_or_default();
-    for line in [format!(r#"{{"cmd":"page_delete","pages":{quoted}}}"#), format!(r#"{{"cmd":"where","tab":{quoted}}}"#), format!(r#"{{"cmd":"page_move","pages":{quoted},"to":1}}"#)] {
+    for line in [
+        format!(r#"{{"cmd":"page_delete","pages":{quoted}}}"#),
+        format!(r#"{{"cmd":"where","tab":{quoted}}}"#),
+        format!(r#"{{"cmd":"page_move","pages":{quoted},"to":1}}"#),
+    ] {
         if let Ok(command) = parse(&line) {
             run_on_a_session(Level::Control, &command);
         }

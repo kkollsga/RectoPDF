@@ -1,7 +1,7 @@
 //! The updater, joined to the app (SPEC decision 24). All the rules and words are `recto-update`'s and this one's: the host sets one timer for when it's told, draws a menu item and a small window, and passes on what's chosen.
 
-use crate::{CoreCall, Inner, lock};
 use crate::ScreenInfo;
+use crate::{CoreCall, Inner, lock};
 use recto_agent::{AgentError, Command, exit};
 use recto_platform::isolate::SharedMemory;
 use recto_render_service::{DocRenderer, Policy, ServiceConfig, TileKind, TileRect, TileRequest, TileResult};
@@ -66,9 +66,17 @@ impl Hooks {
 
 impl Host for Hooks {
     fn look(&self) -> Look {
-        let Some(inner) = self.inner() else { return Look { busy: vec!["The app is starting.".to_owned()], since_input_ms: 0 } };
+        let Some(inner) = self.inner() else {
+            return Look {
+                busy: vec!["The app is starting.".to_owned()],
+                since_input_ms: 0,
+            };
+        };
         let check = inner.hand_off_check();
-        Look { busy: check.busy.into_iter().map(|item| item.message).collect(), since_input_ms: (check.seconds_since_input * 1000.0) as u64 }
+        Look {
+            busy: check.busy.into_iter().map(|item| item.message).collect(),
+            since_input_ms: (check.seconds_since_input * 1000.0) as u64,
+        }
     }
 
     fn hand_off(&self, limit: Duration) -> Result<(), HandOffRefused> {
@@ -105,7 +113,11 @@ impl Host for Hooks {
         let Some(inner) = self.inner() else { return TestLaunch::default() };
         let root = inner.paths.as_ref().map(|paths| paths.root.display().to_string()).unwrap_or_default();
         let args = if inner.qa.is_some() { vec!["--qa".to_owned()] } else { Vec::new() };
-        TestLaunch { args, env: vec![("RECTO_STATE_DIR".to_owned(), root)], direct: false }
+        TestLaunch {
+            args,
+            env: vec![("RECTO_STATE_DIR".to_owned(), root)],
+            direct: false,
+        }
     }
 
     /// Asked on the thread that reads the state, before it does: so it waits for the lock as long as reading would, as an app that's just quit can still be letting go of it, and a quick quit and reopen isn't a second copy.
@@ -130,11 +142,24 @@ impl Inner {
                 Ok(self.updates.report())
             }
             Command::UpdateInstall {} => match self.updates.install(Asked::ByHand) {
-                Ok(version) => Ok(json!({ "started": true, "version": version, "words": format!("Updating to {version}. RectoPDF downloads and checks it first, then quits and reopens as it was. `recto update status` says how it's going.") })),
-                Err(InstallRefused::NotInThisBuild) => Err(AgentError::new("development_build", "A development build doesn't replace itself.", exit::FAILED).then("`recto update check` still says whether there's a new version.")),
-                Err(InstallRefused::NothingOnOffer) => Err(AgentError::new("nothing_on_offer", "There's no new version on offer.", exit::FAILED).then("`recto update check` looks for one.")),
-                Err(InstallRefused::Underway) => Err(AgentError::new("update_under_way", "An update or a check is already under way.", exit::BUSY).then("`recto update status` says how it's going.")),
-                Err(InstallRefused::AnotherCopy) => Err(AgentError::new("another_copy", "Another copy of RectoPDF is keeping the state, and it's the one that can update.", exit::FAILED).then("Quit this copy, and use that one.")),
+                Ok(version) => Ok(
+                    json!({ "started": true, "version": version, "words": format!("Updating to {version}. RectoPDF downloads and checks it first, then quits and reopens as it was. `recto update status` says how it's going.") }),
+                ),
+                Err(InstallRefused::NotInThisBuild) => Err(
+                    AgentError::new("development_build", "A development build doesn't replace itself.", exit::FAILED)
+                        .then("`recto update check` still says whether there's a new version."),
+                ),
+                Err(InstallRefused::NothingOnOffer) => {
+                    Err(AgentError::new("nothing_on_offer", "There's no new version on offer.", exit::FAILED).then("`recto update check` looks for one."))
+                }
+                Err(InstallRefused::Underway) => Err(AgentError::new("update_under_way", "An update or a check is already under way.", exit::BUSY)
+                    .then("`recto update status` says how it's going.")),
+                Err(InstallRefused::AnotherCopy) => Err(AgentError::new(
+                    "another_copy",
+                    "Another copy of RectoPDF is keeping the state, and it's the one that can update.",
+                    exit::FAILED,
+                )
+                .then("Quit this copy, and use that one.")),
             },
             Command::Settings { auto_update } => {
                 if let Some(word) = auto_update {
@@ -154,7 +179,10 @@ impl Inner {
     fn settings_answer(&self) -> Value {
         let on = self.updates.switch_on();
         let words = if self.updates.source().mode == Mode::Development {
-            format!("Update automatically: {}. A development build checks only when asked, and doesn't replace itself.", if on { "on" } else { "off" })
+            format!(
+                "Update automatically: {}. A development build checks only when asked, and doesn't replace itself.",
+                if on { "on" } else { "off" }
+            )
         } else {
             format!("Update automatically: {}.", if on { "on" } else { "off" })
         };
@@ -185,8 +213,22 @@ impl Inner {
 
     pub(crate) fn settings_model(&self) -> SettingsModel {
         let development = self.updates.source().mode == Mode::Development;
-        let hint = if development { "A development build checks only when you ask, and doesn't replace itself." } else { "RectoPDF updates itself once you haven't touched it for 30 minutes, and comes back just as you left it." };
-        SettingsModel { title: "Settings".to_owned(), rows: vec![SettingRow { id: AUTO_UPDATE_ROW.to_owned(), title: "Update automatically".to_owned(), hint: hint.to_owned(), on: self.updates.switch_on(), enabled: !development }], status: self.updates.status_line() }
+        let hint = if development {
+            "A development build checks only when you ask, and doesn't replace itself."
+        } else {
+            "RectoPDF updates itself once you haven't touched it for 30 minutes, and comes back just as you left it."
+        };
+        SettingsModel {
+            title: "Settings".to_owned(),
+            rows: vec![SettingRow {
+                id: AUTO_UPDATE_ROW.to_owned(),
+                title: "Update automatically".to_owned(),
+                hint: hint.to_owned(),
+                on: self.updates.switch_on(),
+                enabled: !development,
+            }],
+            status: self.updates.status_line(),
+        }
     }
 
     pub(crate) fn setting_chosen(&self, id: &str, on: bool) {
@@ -213,16 +255,25 @@ impl Inner {
 
     pub(crate) fn note_update_facts(&self, version: String, bundle_path: String, system_version: String) {
         // Resolved where the rest of what's asked of the disk is, on the thread that reads the state.
-        *lock(&self.update_facts) = Some(Facts { version, app: PathBuf::from(bundle_path), system: system_version });
+        *lock(&self.update_facts) = Some(Facts {
+            version,
+            app: PathBuf::from(bundle_path),
+            system: system_version,
+        });
     }
 }
 
 /// A page of one colour, as small as a PDF gets. Ours, so it says something about this version and nothing about whatever the user had open.
 fn probe_pdf() -> Vec<u8> {
-    let objects = ["<< /Type /Catalog /Pages 2 0 R >>".to_owned(), "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(), "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 64 64] /Contents 4 0 R >>".to_owned(), {
-        let content = "1 0 0 rg 0 0 64 64 re f";
-        format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len())
-    }];
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 64 64] /Contents 4 0 R >>".to_owned(),
+        {
+            let content = "1 0 0 rg 0 0 64 64 re f";
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len())
+        },
+    ];
     let mut pdf = b"%PDF-1.4\n".to_vec();
     let mut places = Vec::new();
     for (index, object) in objects.iter().enumerate() {
@@ -248,7 +299,18 @@ pub(crate) fn draws_a_page(folder: &Path) -> bool {
         let config = ServiceConfig::discover().ok()?;
         let mut document = DocRenderer::new(&file, None, config, Policy::default()).ok()?;
         let surface = SharedMemory::create(64 * 64 * 4).ok()?;
-        let request = TileRequest { page: 0, rect: TileRect { x: 0, y: 0, width: 64, height: 64 }, scale: 1.0, stride: 64 * 4, generation: 0 };
+        let request = TileRequest {
+            page: 0,
+            rect: TileRect {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            },
+            scale: 1.0,
+            stride: 64 * 4,
+            generation: 0,
+        };
         match document.render_tile(&request, &surface).ok()? {
             TileResult::Done(tile) => Some(matches!(tile.kind, TileKind::Blank { rgb } if (rgb >> 16) & 0xFF > 0xC0 && rgb & 0xFFFF < 0x4040)),
             TileResult::Cancelled { .. } => None,
@@ -271,12 +333,23 @@ pub(crate) fn full_screen_on_showing(was_full_screen: bool, in_background: bool)
 /// Where the Settings window goes: where it was, if that's on a screen there is now.
 pub(crate) fn settings_place(saved: Option<SettingsWindow>, screens: &[ScreenInfo]) -> Option<Vec<f64>> {
     let saved = saved?;
-    screens.iter().any(|screen| saved.x >= screen.visible_x && saved.x < screen.visible_x + screen.visible_width && saved.y >= screen.visible_y && saved.y < screen.visible_y + screen.visible_height).then(|| vec![saved.x, saved.y])
+    screens
+        .iter()
+        .any(|screen| {
+            saved.x >= screen.visible_x
+                && saved.x < screen.visible_x + screen.visible_width
+                && saved.y >= screen.visible_y
+                && saved.y < screen.visible_y + screen.visible_height
+        })
+        .then(|| vec![saved.x, saved.y])
 }
 
 /// What the host's one timer should do. No timer at all if there's nothing to wake for, and never less than a second, so a time already past can't make it spin.
 pub(crate) fn timer_for(next_wake: Option<u64>, now_ms: u64) -> Option<UpdateTimer> {
-    next_wake.map(|at_ms| UpdateTimer { at_ms, in_seconds: (at_ms.saturating_sub(now_ms) as f64 / 1000.0).max(1.0) })
+    next_wake.map(|at_ms| UpdateTimer {
+        at_ms,
+        in_seconds: (at_ms.saturating_sub(now_ms) as f64 / 1000.0).max(1.0),
+    })
 }
 
 #[cfg(test)]
@@ -288,7 +361,10 @@ mod tests {
     fn a_background_update_stays_behind_and_out_of_full_screen() {
         assert!(opens_in_background(true, false));
         assert!(!opens_in_background(true, true), "it was frontmost, so it comes back frontmost");
-        assert!(!opens_in_background(false, false), "a launch someone asked for comes forward, whatever it was before");
+        assert!(
+            !opens_in_background(false, false),
+            "a launch someone asked for comes forward, whatever it was before"
+        );
         assert_eq!(full_screen_on_showing(true, true), (false, true), "not yet");
         assert_eq!(full_screen_on_showing(true, false), (true, false), "at once, as normal");
         assert_eq!(full_screen_on_showing(false, true), (false, false));
@@ -297,10 +373,24 @@ mod tests {
     /// Failure: Settings comes back where there's no screen any more, and can't be reached.
     #[test]
     fn settings_comes_back_only_on_a_screen_there_is() {
-        let screen = ScreenInfo { id: 1, name: "a".into(), x: 0.0, y: 0.0, width: 1000.0, height: 800.0, visible_x: 0.0, visible_y: 0.0, visible_width: 1000.0, visible_height: 780.0 };
+        let screen = ScreenInfo {
+            id: 1,
+            name: "a".into(),
+            x: 0.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 800.0,
+            visible_x: 0.0,
+            visible_y: 0.0,
+            visible_width: 1000.0,
+            visible_height: 780.0,
+        };
         let on = SettingsWindow { x: 100.0, y: 100.0 };
         assert_eq!(settings_place(Some(on), std::slice::from_ref(&screen)), Some(vec![100.0, 100.0]));
-        assert_eq!(settings_place(Some(SettingsWindow { x: 2000.0, y: 100.0 }), std::slice::from_ref(&screen)), None);
+        assert_eq!(
+            settings_place(Some(SettingsWindow { x: 2000.0, y: 100.0 }), std::slice::from_ref(&screen)),
+            None
+        );
         assert_eq!(settings_place(Some(on), &[]), None);
         assert_eq!(settings_place(None, &[screen]), None);
     }

@@ -12,9 +12,11 @@ use crate::render::{FileOut, Output, OwnTemp, output_exists, publish_picture};
 use crate::{AgentError, Direct, DocLoader, Session, SessionAccess, exit, no_such_page, parse_pages, select, source_changed};
 use flate2::{Compression, write::ZlibEncoder};
 use recto_proto::BYTES_PER_PIXEL;
-use recto_render_service::{DocRenderer, ExportRefusal, OutputCaps, PageEvent, Policy, RenderFailure, ServiceConfig, draw_whole_page_sized, fits_at, largest_scale_that_fits};
-use std::cell::RefCell;
+use recto_render_service::{
+    DocRenderer, ExportRefusal, OutputCaps, PageEvent, Policy, RenderFailure, ServiceConfig, draw_whole_page_sized, fits_at, largest_scale_that_fits,
+};
 use serde_json::{Value, json};
+use std::cell::RefCell;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -56,8 +58,14 @@ impl Printed {
     pub fn scaled_down_note(&self) -> Option<String> {
         match self.scaled_down.as_slice() {
             [] => None,
-            [(page, dpi)] => Some(format!("Page {page} is too large to print at full resolution, so it printed at {dpi} dots per inch.")),
-            pages => Some(format!("{} pages are too large to print at full resolution, so they printed at the most they can be, down to {} dots per inch.", pages.len(), pages.iter().map(|(_, dpi)| *dpi).min().unwrap_or(0))),
+            [(page, dpi)] => Some(format!(
+                "Page {page} is too large to print at full resolution, so it printed at {dpi} dots per inch."
+            )),
+            pages => Some(format!(
+                "{} pages are too large to print at full resolution, so they printed at the most they can be, down to {} dots per inch.",
+                pages.len(),
+                pages.iter().map(|(_, dpi)| *dpi).min().unwrap_or(0)
+            )),
         }
     }
 }
@@ -84,9 +92,14 @@ pub fn print_pages<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>)
         }
         let end = start.saturating_add(len).min(total);
         if end - start > MAX_PAGES {
-            return Err(AgentError::new("too_many_pages", format!("A print is at most {MAX_PAGES} pages."), exit::FAILED).then("Print a range of pages at a time, with `--pages`."));
+            return Err(
+                AgentError::new("too_many_pages", format!("A print is at most {MAX_PAGES} pages."), exit::FAILED)
+                    .then("Print a range of pages at a time, with `--pages`."),
+            );
         }
-        (start..end).map(|position| s.page_source(id, position).ok_or_else(no_such_page)).collect::<Result<Vec<_>, _>>()
+        (start..end)
+            .map(|position| s.page_source(id, position).ok_or_else(no_such_page))
+            .collect::<Result<Vec<_>, _>>()
     })?;
     sources
         .into_iter()
@@ -94,7 +107,11 @@ pub fn print_pages<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>)
             if !source.is_current() {
                 return Err(source_changed(&source.path));
             }
-            Ok(PrintPage { path: source.path, page: source.page, quarter_turns: source.quarter_turns })
+            Ok(PrintPage {
+                path: source.path,
+                page: source.page,
+                quarter_turns: source.quarter_turns,
+            })
         })
         .collect()
 }
@@ -141,7 +158,11 @@ struct PdfOut<'a, O: Output> {
 
 impl<'a, O: Output> PdfOut<'a, O> {
     fn begin(out: &'a mut O, cap: u64) -> io::Result<Self> {
-        let mut pdf = Self { out: Counted { out, written: 0, cap }, offsets: vec![0, 0], pages: Vec::new() };
+        let mut pdf = Self {
+            out: Counted { out, written: 0, cap },
+            offsets: vec![0, 0],
+            pages: Vec::new(),
+        };
         // The binary comment says to anything reading it that this isn't plain text.
         pdf.out.write_all(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n")?;
         Ok(pdf)
@@ -156,7 +177,17 @@ impl<'a, O: Output> PdfOut<'a, O> {
     }
 
     fn finish(mut self) -> io::Result<u64> {
-        for (index, body) in [(0usize, "<< /Type /Catalog /Pages 2 0 R >>".to_string()), (1, format!("<< /Type /Pages /Count {} /Kids [{}] >>", self.pages.len(), self.pages.iter().map(|page| format!("{page} 0 R")).collect::<Vec<_>>().join(" ")))] {
+        for (index, body) in [
+            (0usize, "<< /Type /Catalog /Pages 2 0 R >>".to_string()),
+            (
+                1,
+                format!(
+                    "<< /Type /Pages /Count {} /Kids [{}] >>",
+                    self.pages.len(),
+                    self.pages.iter().map(|page| format!("{page} 0 R")).collect::<Vec<_>>().join(" ")
+                ),
+            ),
+        ] {
             self.offsets[index] = self.out.written;
             write!(self.out, "{} 0 obj\n{body}\nendobj\n", index + 1)?;
         }
@@ -165,7 +196,11 @@ impl<'a, O: Output> PdfOut<'a, O> {
         for offset in &self.offsets {
             writeln!(self.out, "{offset:010} 00000 n ")?;
         }
-        write!(self.out, "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", self.offsets.len() + 1)?;
+        write!(
+            self.out,
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            self.offsets.len() + 1
+        )?;
         self.out.flush()?;
         Ok(self.out.written)
     }
@@ -176,7 +211,11 @@ fn write_failed() -> AgentError {
 }
 
 fn from_io(error: &io::Error) -> AgentError {
-    if error.kind() == io::ErrorKind::FileTooLarge { AgentError::new("output_too_large", "This print would be larger than RectoPDF will write.", exit::FAILED) } else { write_failed() }
+    if error.kind() == io::ErrorKind::FileTooLarge {
+        AgentError::new("output_too_large", "This print would be larger than RectoPDF will write.", exit::FAILED)
+    } else {
+        write_failed()
+    }
 }
 
 /// The scale a resolution is, for the renderer: points are 1/72 inch.
@@ -185,20 +224,39 @@ pub fn scale_for(dpi: u32) -> f32 {
 }
 
 /// Prints `pages` into `out` as a PDF, whole or failing. `config` finds the worker; `progress` hears each page as it's done, and returning false stops the print. Can sleep waiting for the larger limit, so never on a UI thread.
-pub(crate) fn print_into<O: Output>(config: &ServiceConfig, pages: &[PrintPage], dpi: u32, out: &mut O, progress: impl FnMut(u32, u32) -> bool) -> Result<Printed, AgentError> {
+pub(crate) fn print_into<O: Output>(
+    config: &ServiceConfig,
+    pages: &[PrintPage],
+    dpi: u32,
+    out: &mut O,
+    progress: impl FnMut(u32, u32) -> bool,
+) -> Result<Printed, AgentError> {
     print_with_caps(config, pages, dpi, &OutputCaps::default(), out, progress)
 }
 
 /// [`print_into`] under these caps, which a test makes small to reach a page too large without drawing 100 Mpx.
-fn print_with_caps<O: Output>(config: &ServiceConfig, pages: &[PrintPage], dpi: u32, caps: &OutputCaps, out: &mut O, mut progress: impl FnMut(u32, u32) -> bool) -> Result<Printed, AgentError> {
+fn print_with_caps<O: Output>(
+    config: &ServiceConfig,
+    pages: &[PrintPage],
+    dpi: u32,
+    caps: &OutputCaps,
+    out: &mut O,
+    mut progress: impl FnMut(u32, u32) -> bool,
+) -> Result<Printed, AgentError> {
     if !(MIN_DPI..=MAX_DPI).contains(&dpi) {
-        return Err(AgentError::new("bad_dpi", format!("A print is from {MIN_DPI} to {MAX_DPI} dots per inch."), exit::USAGE));
+        return Err(AgentError::new(
+            "bad_dpi",
+            format!("A print is from {MIN_DPI} to {MAX_DPI} dots per inch."),
+            exit::USAGE,
+        ));
     }
     if pages.is_empty() {
         return Err(AgentError::new("no_pages", "There are no pages to print.", exit::FAILED));
     }
     if pages.len() > MAX_PAGES as usize {
-        return Err(AgentError::new("too_many_pages", format!("A print is at most {MAX_PAGES} pages."), exit::FAILED).then("Print a range of pages at a time."));
+        return Err(
+            AgentError::new("too_many_pages", format!("A print is at most {MAX_PAGES} pages."), exit::FAILED).then("Print a range of pages at a time."),
+        );
     }
     let scale = scale_for(dpi);
     let limit = Policy::default().heavy_limit_bytes;
@@ -227,7 +285,16 @@ fn print_with_caps<O: Output>(config: &ServiceConfig, pages: &[PrintPage], dpi: 
         let page_scale = if fits_at(width_points, height_points, scale, caps) {
             scale
         } else {
-            let most = largest_scale_that_fits(width_points, height_points, caps).ok_or_else(|| AgentError::new("too_large_at_this_scale", format!("Page {} is {width_points} x {height_points} points, too large to print at any resolution.", index + 1), exit::FAILED))?;
+            let most = largest_scale_that_fits(width_points, height_points, caps).ok_or_else(|| {
+                AgentError::new(
+                    "too_large_at_this_scale",
+                    format!(
+                        "Page {} is {width_points} x {height_points} points, too large to print at any resolution.",
+                        index + 1
+                    ),
+                    exit::FAILED,
+                )
+            })?;
             printed.scaled_down.push((index as u32 + 1, (most * 72.0).floor() as u32));
             most
         };
@@ -250,7 +317,10 @@ fn print_with_caps<O: Output>(config: &ServiceConfig, pages: &[PrintPage], dpi: 
                         size = Some((width, height));
                         row = vec![0u8; width as usize * BYTES_PER_PIXEL as usize];
                         rgb = vec![0u8; width as usize * 3];
-                        write!(counted, "<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length {length} 0 R >>\nstream\n")?;
+                        write!(
+                            counted,
+                            "<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length {length} 0 R >>\nstream\n"
+                        )?;
                         stream_start = counted.written;
                     }
                     PageEvent::Rows { memory, rect, stride, .. } => {
@@ -277,9 +347,18 @@ fn print_with_caps<O: Output>(config: &ServiceConfig, pages: &[PrintPage], dpi: 
         });
         let drawn = drawn.map_err(|failure| {
             sink_error.take().unwrap_or_else(|| match (failure, size) {
-                (RenderFailure::ExportRefused { why: ExportRefusal::TooHeavy, .. }, Some(_)) => {
+                (
+                    RenderFailure::ExportRefused {
+                        why: ExportRefusal::TooHeavy, ..
+                    },
+                    Some(_),
+                ) => {
                     let mut error = AgentError::from(failure);
-                    error.message = format!("Page {} wasn't printed, and nothing was written: drawing it needs more than the {} one page may use.", index + 1, crate::human::bytes(limit));
+                    error.message = format!(
+                        "Page {} wasn't printed, and nothing was written: drawing it needs more than the {} one page may use.",
+                        index + 1,
+                        crate::human::bytes(limit)
+                    );
                     error
                 }
                 _ => failure.into(),
@@ -327,7 +406,10 @@ pub(crate) fn print_to_file(pages: &[PrintPage], dpi: u32, out: &Path, anyway: b
     crate::saving::check_export_path(out, &["pdf"], "PDF")?;
     // An export, so a file that asks not to be copied asks "anyway", as Copy does (owner, 2026-11-08).
     if !anyway && any_copy_restricted(pages) {
-        return Err(AgentError::new("copy_restricted", "This file's permissions ask that it isn't copied.", exit::PROTECTED).then("Tell the user. `--anyway` prints it to a PDF, once they've said to. Each use goes in the activity log. Print to paper never asks."));
+        return Err(
+            AgentError::new("copy_restricted", "This file's permissions ask that it isn't copied.", exit::PROTECTED)
+                .then("Tell the user. `--anyway` prints it to a PDF, once they've said to. Each use goes in the activity log. Print to paper never asks."),
+        );
     }
     // Never over anything, least of all the PDF being printed: only the lopdf writers change a PDF's bytes.
     if std::fs::symlink_metadata(out).is_ok() {
@@ -363,8 +445,25 @@ mod tests {
     /// Failure: the PDF a print writes isn't one a reader takes: a wrong offset in its table, a length that isn't its stream's, or a turn that doesn't reach the page. Read back by the lazy reader the app opens files with.
     #[test]
     fn a_print_is_a_pdf_with_a_page_for_each_and_their_turns() {
-        let file = recto_testpdf::TempPdf::new("print.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["One"])), recto_testpdf::Page::new(recto_testpdf::text_lines(&["Two"]))]));
-        let pages = [PrintPage { path: file.0.clone(), page: 1, quarter_turns: 0 }, PrintPage { path: file.0.clone(), page: 0, quarter_turns: 1 }];
+        let file = recto_testpdf::TempPdf::new(
+            "print.pdf",
+            &recto_testpdf::pages(&[
+                recto_testpdf::Page::new(recto_testpdf::text_lines(&["One"])),
+                recto_testpdf::Page::new(recto_testpdf::text_lines(&["Two"])),
+            ]),
+        );
+        let pages = [
+            PrintPage {
+                path: file.0.clone(),
+                page: 1,
+                quarter_turns: 0,
+            },
+            PrintPage {
+                path: file.0.clone(),
+                page: 0,
+                quarter_turns: 1,
+            },
+        ];
         let mut out = MemoryOut::new(64 * 1024 * 1024);
         let mut heard = Vec::new();
         let printed = print_into(&ServiceConfig::discover().unwrap(), &pages, 72, &mut out, |done, of| {
@@ -400,7 +499,11 @@ mod tests {
             let entry = lines.next().unwrap();
             assert_eq!(entry.len(), 19, "each entry is 20 bytes with its end of line: {entry:?}");
             let offset: usize = entry[..10].parse().unwrap();
-            assert!(at(offset, &format!("{number} 0 obj\n")), "object {number}'s offset {offset} lands on {:?}", String::from_utf8_lossy(&bytes[offset..(offset + 12).min(bytes.len())]));
+            assert!(
+                at(offset, &format!("{number} 0 obj\n")),
+                "object {number}'s offset {offset} lands on {:?}",
+                String::from_utf8_lossy(&bytes[offset..(offset + 12).min(bytes.len())])
+            );
         }
         assert!(lines.next().unwrap().starts_with("trailer"), "the table has as many entries as it says");
     }
@@ -408,10 +511,30 @@ mod tests {
     /// Failure: a page too large to draw whole at the resolution asked, as a map at A0 is at 300 dpi, fails the whole print; it must print at the most it can be, and say which page and at what.
     #[test]
     fn a_page_too_large_prints_smaller_and_says_so() {
-        let file = recto_testpdf::TempPdf::new("print.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Large"])), recto_testpdf::Page::new(recto_testpdf::text_lines(&["Also"]))]));
-        let pages = [PrintPage { path: file.0.clone(), page: 0, quarter_turns: 0 }, PrintPage { path: file.0.clone(), page: 1, quarter_turns: 0 }];
+        let file = recto_testpdf::TempPdf::new(
+            "print.pdf",
+            &recto_testpdf::pages(&[
+                recto_testpdf::Page::new(recto_testpdf::text_lines(&["Large"])),
+                recto_testpdf::Page::new(recto_testpdf::text_lines(&["Also"])),
+            ]),
+        );
+        let pages = [
+            PrintPage {
+                path: file.0.clone(),
+                page: 0,
+                quarter_turns: 0,
+            },
+            PrintPage {
+                path: file.0.clone(),
+                page: 1,
+                quarter_turns: 0,
+            },
+        ];
         // Letter at 72 dpi is 484 kpx, so a cap of 200 kpx makes every page too large.
-        let caps = OutputCaps { max_pixels: 200_000, ..OutputCaps::default() };
+        let caps = OutputCaps {
+            max_pixels: 200_000,
+            ..OutputCaps::default()
+        };
         let mut out = MemoryOut::new(64 * 1024 * 1024);
         let printed = print_with_caps(&ServiceConfig::discover().unwrap(), &pages, 72, &caps, &mut out, |_, _| true).unwrap();
         assert_eq!(printed.pages, 2);
@@ -419,21 +542,40 @@ mod tests {
         assert!(printed.scaled_down.iter().all(|(_, dpi)| (40..72).contains(dpi)), "{:?}", printed.scaled_down);
         assert!(printed.scaled_down_note().unwrap().contains("2 pages"));
         let text = String::from_utf8_lossy(&out.bytes);
-        assert!(text.contains("/MediaBox [0 0 612 792]"), "each page keeps its own size in points, only its picture is smaller");
+        assert!(
+            text.contains("/MediaBox [0 0 612 792]"),
+            "each page keeps its own size in points, only its picture is smaller"
+        );
         assert_xref_is_exact(&out.bytes);
     }
 
     /// Failure: a print can be asked for at a resolution that costs gigabytes a page, or of nothing, or stopped and still look finished.
     #[test]
     fn a_print_refuses_what_it_shouldnt_do() {
-        let file = recto_testpdf::TempPdf::new("print.pdf", &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["One"]))]));
-        let page = PrintPage { path: file.0.clone(), page: 0, quarter_turns: 0 };
+        let file = recto_testpdf::TempPdf::new(
+            "print.pdf",
+            &recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["One"]))]),
+        );
+        let page = PrintPage {
+            path: file.0.clone(),
+            page: 0,
+            quarter_turns: 0,
+        };
         let config = ServiceConfig::discover().unwrap();
         let mut out = MemoryOut::new(1024 * 1024);
-        assert_eq!(print_into(&config, std::slice::from_ref(&page), 2400, &mut out, |_, _| true).unwrap_err().code, "bad_dpi");
+        assert_eq!(
+            print_into(&config, std::slice::from_ref(&page), 2400, &mut out, |_, _| true).unwrap_err().code,
+            "bad_dpi"
+        );
         assert_eq!(print_into(&config, &[], 300, &mut out, |_, _| true).unwrap_err().code, "no_pages");
-        assert_eq!(print_into(&config, std::slice::from_ref(&page), 300, &mut out, |_, _| false).unwrap_err().code, "cancelled");
+        assert_eq!(
+            print_into(&config, std::slice::from_ref(&page), 300, &mut out, |_, _| false).unwrap_err().code,
+            "cancelled"
+        );
         let mut tiny = MemoryOut::new(100);
-        assert_eq!(print_into(&config, std::slice::from_ref(&page), 72, &mut tiny, |_, _| true).unwrap_err().code, "output_too_large");
+        assert_eq!(
+            print_into(&config, std::slice::from_ref(&page), 72, &mut tiny, |_, _| true).unwrap_err().code,
+            "output_too_large"
+        );
     }
 }

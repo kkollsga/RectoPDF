@@ -1,12 +1,12 @@
 //! The server with a stand-in host and short limits, on a real socket: what a real session is too well-behaved, or too slow, to show.
 
 use recto_agent::{AgentError, Command, Condition, ConditionState, Event, Level, exit};
-use recto_platform::local::process_counters;
 use recto_control::StatePaths;
 use recto_control::client::Client;
 use recto_control::host::Host;
 use recto_control::levels;
 use recto_control::server::{BindError, Limits, Server};
+use recto_platform::local::process_counters;
 use recto_session::TabId;
 use serde_json::{Value, json};
 use std::io::{Read, Write};
@@ -101,7 +101,9 @@ impl Host for Stand {
     }
 
     fn stop_refusal(&self) -> Option<AgentError> {
-        self.stop_refused.load(Ordering::SeqCst).then(|| AgentError::new("only_the_user_quits", "Not over the socket.", exit::FAILED))
+        self.stop_refused
+            .load(Ordering::SeqCst)
+            .then(|| AgentError::new("only_the_user_quits", "Not over the socket.", exit::FAILED))
     }
 }
 
@@ -114,7 +116,10 @@ struct Running {
 
 impl Running {
     fn start(limits: Limits) -> Self {
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!("rs{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("rs{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         let paths = StatePaths::overridden(&root).unwrap();
         paths.prepare().unwrap();
         levels::store(&paths, Level::Full).unwrap();
@@ -123,7 +128,12 @@ impl Running {
         let host = Arc::new(Stand::default());
         let hosted = Arc::clone(&host);
         let thread = std::thread::spawn(move || server.run(hosted, limits));
-        Self { paths, host, thread: Some(thread), stopper }
+        Self {
+            paths,
+            host,
+            thread: Some(thread),
+            stopper,
+        }
     }
 
     fn connect(&self) -> UnixStream {
@@ -167,7 +177,10 @@ fn read_line(stream: &mut UnixStream) -> Option<Value> {
 /// Failure: a client of another user gets in, because the socket's mode was the only check. Set up as "expects someone else": every connection must be dropped before it can say anything.
 #[test]
 fn a_peer_of_another_user_is_turned_away() {
-    let limits = Limits { expected_uid: recto_platform::local::current_uid() + 1, ..Limits::default() };
+    let limits = Limits {
+        expected_uid: recto_platform::local::current_uid() + 1,
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut stream = running.connect();
     let _ = stream.write_all(b"{\"cmd\":\"status\"}\n");
@@ -185,7 +198,9 @@ fn a_panic_is_one_clients_error() {
     assert!(reply["error"]["message"].as_str().unwrap().contains("still running"));
     assert_eq!(running.call(&json!({ "cmd": "budget" }))["ok"], true, "it must still answer");
     let mut stream = running.connect();
-    stream.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"panics\",\"timeout_ms\":5000}\n").unwrap();
+    stream
+        .write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"panics\",\"timeout_ms\":5000}\n")
+        .unwrap();
     assert_eq!(read_line(&mut stream).unwrap()["error"]["code"], "internal");
     let log = std::fs::read_to_string(&running.paths.other_log).unwrap();
     assert!(log.contains("\"outcome\":\"internal\""), "{log}");
@@ -210,7 +225,10 @@ fn a_stuck_command_doesnt_stop_status() {
 /// Failure: page drawing runs without limit, each worth hundreds of megabytes, or one client's drawing starves another's plain command. At most the cap draw at once, and the rest still run.
 #[test]
 fn drawing_is_capped_and_other_work_goes_around_it() {
-    let limits = Limits { max_draw_jobs: 2, ..Limits::default() };
+    let limits = Limits {
+        max_draw_jobs: 2,
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut streams: Vec<UnixStream> = (0..6).map(|_| running.connect()).collect();
     for stream in &mut streams {
@@ -220,13 +238,21 @@ fn drawing_is_capped_and_other_work_goes_around_it() {
     for stream in &mut streams {
         assert_eq!(read_line(stream).unwrap()["data"]["read"], true);
     }
-    assert!(running.host.most_draws.load(Ordering::SeqCst) <= 2, "{} drew at once", running.host.most_draws.load(Ordering::SeqCst));
+    assert!(
+        running.host.most_draws.load(Ordering::SeqCst) <= 2,
+        "{} drew at once",
+        running.host.most_draws.load(Ordering::SeqCst)
+    );
 }
 
 /// Failure: half a line holds a slot for ever, or a silent connection never goes. Each has its own deadline, and neither needs anything to happen.
 #[test]
 fn half_a_line_and_silence_each_run_out() {
-    let limits = Limits { line_deadline: Duration::from_millis(100), idle_deadline: Duration::from_millis(200), ..Limits::default() };
+    let limits = Limits {
+        line_deadline: Duration::from_millis(100),
+        idle_deadline: Duration::from_millis(200),
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut half = running.connect();
     half.write_all(b"{\"cmd\":").unwrap();
@@ -240,7 +266,10 @@ fn half_a_line_and_silence_each_run_out() {
 /// Failure: a command's huge answer is sent regardless, or a client that doesn't read costs the server without limit. An answer past the cap is replaced by one that says so.
 #[test]
 fn an_answer_past_the_cap_says_so() {
-    let limits = Limits { max_reply_bytes: 1024 * 1024, ..Limits::default() };
+    let limits = Limits {
+        max_reply_bytes: 1024 * 1024,
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let reply = running.call(&json!({ "cmd": "where" }));
     assert_eq!(reply["error"]["code"], "reply_too_large", "{}", reply.to_string().len());
@@ -250,7 +279,10 @@ fn an_answer_past_the_cap_says_so() {
 /// Failure: a client that asks for a huge answer and stops reading holds that memory for ever. It's dropped at the write deadline, and the room comes back.
 #[test]
 fn a_client_that_stops_reading_is_dropped() {
-    let limits = Limits { write_deadline: Duration::from_millis(100), ..Limits::default() };
+    let limits = Limits {
+        write_deadline: Duration::from_millis(100),
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut lazy = running.connect();
     lazy.write_all(b"{\"cmd\":\"where\"}\n").unwrap();
@@ -271,10 +303,15 @@ fn a_client_that_stops_reading_is_dropped() {
 /// Failure: a client's next command, sent while the last one runs, is lost or times out. One after another on one connection must work, in order, and blank lines don't count.
 #[test]
 fn commands_on_one_connection_run_in_order() {
-    let limits = Limits { line_deadline: Duration::from_millis(50), ..Limits::default() };
+    let limits = Limits {
+        line_deadline: Duration::from_millis(50),
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut stream = running.connect();
-    stream.write_all(b"{\"cmd\":\"text\",\"page\":1}\n\n\r\n{\"cmd\":\"goto\",\"page\":2}\r\n{\"cmd\":\"goto\",\"page\":3}\n").unwrap();
+    stream
+        .write_all(b"{\"cmd\":\"text\",\"page\":1}\n\n\r\n{\"cmd\":\"goto\",\"page\":2}\r\n{\"cmd\":\"goto\",\"page\":3}\n")
+        .unwrap();
     assert_eq!(read_line(&mut stream).unwrap()["data"]["read"], true, "the slow one goes first");
     assert_eq!(read_line(&mut stream).unwrap()["data"]["page"], 2);
     assert_eq!(read_line(&mut stream).unwrap()["data"]["page"], 3);
@@ -299,7 +336,11 @@ fn a_host_can_refuse_to_be_stopped() {
     let refused = running.call(&json!({ "cmd": "stop" }));
     assert_eq!(refused["error"]["code"], "only_the_user_quits", "{refused}");
     assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
-    assert_eq!(running.call(&json!({ "cmd": "goto", "page": 1 }))["ok"], true, "commands aren't refused as if it were stopping");
+    assert_eq!(
+        running.call(&json!({ "cmd": "goto", "page": 1 }))["ok"],
+        true,
+        "commands aren't refused as if it were stopping"
+    );
 }
 
 /// Failure: `stop` drops unsaved edits, or a host can't end the server it's carrying. A host's stopper and `stop` must both end `run`, and both remove the socket.
@@ -310,7 +351,10 @@ fn stop_keeps_unsaved_edits_and_a_host_can_end_it() {
     let refused = running.call(&json!({ "cmd": "stop" }));
     assert_eq!(refused["error"]["code"], "unsaved_changes", "{refused}");
     assert_eq!(refused["error"]["candidates"][0], "#1");
-    assert_eq!(refused["error"]["untrusted"]["candidates"][0]["name"], "report", "a file's name goes only under `untrusted`");
+    assert_eq!(
+        refused["error"]["untrusted"]["candidates"][0]["name"], "report",
+        "a file's name goes only under `untrusted`"
+    );
     assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
     running.host.unsaved.lock().unwrap().clear();
     let mut watcher = running.connect();
@@ -318,7 +362,11 @@ fn stop_keeps_unsaved_edits_and_a_host_can_end_it() {
     assert_eq!(read_line(&mut watcher).unwrap()["data"]["watching"], true);
     assert_eq!(running.call(&json!({ "cmd": "stop" }))["data"]["stopping"], true);
     let ended = read_line(&mut watcher).unwrap();
-    assert_eq!((&ended["data"]["done"], &ended["data"]["reason"]), (&json!(true), &json!("session stopping")), "{ended}");
+    assert_eq!(
+        (&ended["data"]["done"], &ended["data"]["reason"]),
+        (&json!(true), &json!("session stopping")),
+        "{ended}"
+    );
 
     let hosted = Running::start(Limits::default());
     hosted.stopper.stop();
@@ -360,11 +408,19 @@ fn the_client_checks_the_folder_and_reports_a_dead_server() {
     assert_eq!(client.read(Duration::from_secs(5)).unwrap()["ok"], true);
     client.send("{\"cmd\":\"tabs\"}", Duration::from_secs(5)).unwrap();
     let error = client.read(Duration::from_millis(50)).unwrap_err();
-    assert_eq!((error.code, error.exit), ("no_answer", exit::TIMED_OUT), "the stuck command means no answer in time");
+    assert_eq!(
+        (error.code, error.exit),
+        ("no_answer", exit::TIMED_OUT),
+        "the stuck command means no answer in time"
+    );
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&running.paths.run_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     let refused = Client::connect(&running.paths).unwrap_err();
-    assert_eq!((refused.code, refused.exit), ("socket_refused", exit::PERMISSION), "a folder others can reach isn't to be trusted");
+    assert_eq!(
+        (refused.code, refused.exit),
+        ("socket_refused", exit::PERMISSION),
+        "a folder others can reach isn't to be trusted"
+    );
     std::fs::set_permissions(&running.paths.run_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
 }
 
@@ -373,7 +429,9 @@ fn the_client_checks_the_folder_and_reports_a_dead_server() {
 fn watchers_hear_events_and_a_finished_wait_cant_answer_the_next() {
     let running = Running::start(Limits::default());
     let mut watcher = running.connect();
-    watcher.write_all(b"{\"cmd\":\"watch\",\"events\":[\"pages\"],\"count\":2,\"timeout_ms\":20000}\n").unwrap();
+    watcher
+        .write_all(b"{\"cmd\":\"watch\",\"events\":[\"pages\"],\"count\":2,\"timeout_ms\":20000}\n")
+        .unwrap();
     assert_eq!(read_line(&mut watcher).unwrap()["data"]["watching"], true);
     running.call(&json!({ "cmd": "goto", "page": 2 }));
     running.call(&json!({ "cmd": "goto", "page": 3 }));
@@ -382,14 +440,19 @@ fn watchers_hear_events_and_a_finished_wait_cant_answer_the_next() {
     let done = read_line(&mut watcher).unwrap();
     assert_eq!(done["data"]["reason"], "count reached", "{done}");
     // The connection's free again, and a wait that runs out says so.
-    watcher.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"x\",\"timeout_ms\":10}\n").unwrap();
+    watcher
+        .write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"x\",\"timeout_ms\":10}\n")
+        .unwrap();
     assert_eq!(read_line(&mut watcher).unwrap()["error"]["code"], "timed_out");
 }
 
 /// Failure: a queued `page rotate` answers ok and is then lost, because `stop` only looked for unsaved edits once. Whatever's waiting when `stop` arrives is refused, and `stop` looks after what's running has finished: that edit stops it.
 #[test]
 fn stop_checks_after_whats_running_has_finished() {
-    let limits = Limits { stop_grace: Duration::from_secs(5), ..Limits::default() };
+    let limits = Limits {
+        stop_grace: Duration::from_secs(5),
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut slow = running.connect();
     // A stuck command, which on being let go leaves a tab unsaved.
@@ -415,7 +478,10 @@ fn stop_checks_after_whats_running_has_finished() {
 /// Failure: `stop` with something stuck hangs for ever, or kills it anyway. It says it couldn't, and the session carries on.
 #[test]
 fn stop_gives_up_on_a_stuck_command_and_says_so() {
-    let limits = Limits { stop_grace: Duration::from_millis(100), ..Limits::default() };
+    let limits = Limits {
+        stop_grace: Duration::from_millis(100),
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut slow = running.connect();
     slow.write_all(b"{\"cmd\":\"tabs\"}\n").unwrap();
@@ -428,7 +494,10 @@ fn stop_gives_up_on_a_stuck_command_and_says_so() {
 /// Failure: a client that sends commands and doesn't read makes the session work without end, and its answers fill the shared allowance, so every other client gets `reply_too_large` for up to 30 s. Past 1 MiB unread, its commands wait.
 #[test]
 fn a_client_that_doesnt_read_isnt_worked_for() {
-    let limits = Limits { max_unsent_before_pause: 1024 * 1024, ..Limits::default() };
+    let limits = Limits {
+        max_unsent_before_pause: 1024 * 1024,
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut greedy = running.connect();
     // Each answer is 5 MiB, so the first is already past the line.
@@ -436,7 +505,11 @@ fn a_client_that_doesnt_read_isnt_worked_for() {
     greedy.write_all(many.as_bytes()).unwrap();
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
-    assert!(running.host.wheres.load(Ordering::SeqCst) <= 2, "{} answers made for a client that read none", running.host.wheres.load(Ordering::SeqCst));
+    assert!(
+        running.host.wheres.load(Ordering::SeqCst) <= 2,
+        "{} answers made for a client that read none",
+        running.host.wheres.load(Ordering::SeqCst)
+    );
     // When it starts reading, it gets the next ones.
     let mut reader = BufLine::default();
     assert!(reader.next(&mut greedy).unwrap()["data"]["huge"].is_string());
@@ -447,7 +520,10 @@ fn a_client_that_doesnt_read_isnt_worked_for() {
 /// Failure: a client that sends two commands and reads slowly loses its connection, because the second, whole and waiting behind an answer not yet read, was timed as half a line. It failed the full run on a busy Mac, and every time with 24 clients at once. A client gets all its answers however slowly it reads, up to the write deadline.
 #[test]
 fn a_whole_line_waiting_behind_an_unread_answer_isnt_half_a_line() {
-    let limits = Limits { line_deadline: Duration::from_millis(100), ..Limits::default() };
+    let limits = Limits {
+        line_deadline: Duration::from_millis(100),
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut slow = running.connect();
     slow.write_all(b"{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n").unwrap();
@@ -461,7 +537,10 @@ fn a_whole_line_waiting_behind_an_unread_answer_isnt_half_a_line() {
 /// Failure: with a whole line held back behind an unread answer, the session's next wake-up is a line deadline that nothing acts on, so `poll` returns at once, for ever, and the session's one thread spins at 100%. Measured as the process's CPU time and wake-ups while nothing is happening.
 #[test]
 fn a_line_held_back_behind_an_unread_answer_doesnt_spin_the_session() {
-    let limits = Limits { line_deadline: Duration::from_millis(50), ..Limits::default() };
+    let limits = Limits {
+        line_deadline: Duration::from_millis(50),
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut slow = running.connect();
     slow.write_all(b"{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n").unwrap();
@@ -481,10 +560,15 @@ fn a_line_held_back_behind_an_unread_answer_doesnt_spin_the_session() {
 /// Failure: a client that sent several commands and is slowly reading the first huge answer is cut off for sending "half a line", though its lines are whole and only waiting for it to catch up. It showed as this file's other test failing when the Mac was busy, as reading took past the 5 s.
 #[test]
 fn whole_lines_waiting_arent_a_stalled_line() {
-    let limits = Limits { line_deadline: Duration::from_millis(100), ..Limits::default() };
+    let limits = Limits {
+        line_deadline: Duration::from_millis(100),
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut greedy = running.connect();
-    greedy.write_all("{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n".as_bytes()).unwrap();
+    greedy
+        .write_all("{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n{\"cmd\":\"where\"}\n".as_bytes())
+        .unwrap();
     // Long past the deadline, with its answer unread and two commands waiting.
     std::thread::sleep(Duration::from_millis(400));
     let mut reader = BufLine::default();
@@ -502,12 +586,22 @@ fn whole_lines_waiting_arent_a_stalled_line() {
 #[test]
 fn a_wait_outlasts_every_deadline_a_connection_has() {
     let short = Duration::from_millis(50);
-    let limits = Limits { line_deadline: short, idle_deadline: short, write_deadline: short, overflow_idle: short, ..Limits::default() };
+    let limits = Limits {
+        line_deadline: short,
+        idle_deadline: short,
+        write_deadline: short,
+        overflow_idle: short,
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut hears = running.connect();
-    hears.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"secret\",\"timeout_ms\":20000}\n").unwrap();
+    hears
+        .write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"secret\",\"timeout_ms\":20000}\n")
+        .unwrap();
     let mut runs_out = running.connect();
-    runs_out.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"never\",\"timeout_ms\":500}\n").unwrap();
+    runs_out
+        .write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"never\",\"timeout_ms\":500}\n")
+        .unwrap();
     // It's told it ran out of time, at ten times any deadline, on its own connection.
     let ran_out = read_line(&mut runs_out).expect("a wait was dropped before its time was up");
     assert_eq!(ran_out["error"]["code"], "timed_out", "{ran_out}");
@@ -522,7 +616,11 @@ fn a_wait_outlasts_every_deadline_a_connection_has() {
 /// Failure: a client with commands waiting while it catches up on a large answer is dropped, as though it had stalled halfway through a line, if it takes longer than half a line is given. Those commands are whole, and waiting is the session's doing. Found by `a_client_that_doesnt_read_isnt_worked_for` failing on a Mac under load.
 #[test]
 fn a_client_catching_up_isnt_dropped_for_the_commands_it_has_waiting() {
-    let limits = Limits { max_unsent_before_pause: 1024 * 1024, line_deadline: Duration::from_millis(100), ..Limits::default() };
+    let limits = Limits {
+        max_unsent_before_pause: 1024 * 1024,
+        line_deadline: Duration::from_millis(100),
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut greedy = running.connect();
     greedy.write_all("{\"cmd\":\"where\"}\n".repeat(20).as_bytes()).unwrap();
@@ -538,7 +636,9 @@ fn a_client_catching_up_isnt_dropped_for_the_commands_it_has_waiting() {
 fn a_look_finishing_after_access_goes_off_stops_indexing_again() {
     let running = Running::start(Limits::default());
     let mut waiting = running.connect();
-    waiting.write_all(b"{\"cmd\":\"wait\",\"condition\":\"indexing_done\",\"tab\":\"holds\",\"timeout_ms\":60000}\n").unwrap();
+    waiting
+        .write_all(b"{\"cmd\":\"wait\",\"condition\":\"indexing_done\",\"tab\":\"holds\",\"timeout_ms\":60000}\n")
+        .unwrap();
     std::thread::sleep(Duration::from_millis(100));
     levels::store(&running.paths, Level::Off).unwrap();
     assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
@@ -595,7 +695,11 @@ impl BufLine {
 /// It waits until both answers have started arriving, which is after the cap has decided about each, before reading either. It used to sleep 300 ms and assume that: under load the second was still being made when the first was read, so the first drained, the second fitted, and neither was refused (seen on a full run, 2026-11-08).
 #[test]
 fn the_cap_on_unread_answers_is_hard_and_small_ones_still_get_through() {
-    let limits = Limits { max_queued_bytes: 6 * 1024 * 1024, max_queued_hard_bytes: 7 * 1024 * 1024, ..Limits::default() };
+    let limits = Limits {
+        max_queued_bytes: 6 * 1024 * 1024,
+        max_queued_hard_bytes: 7 * 1024 * 1024,
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     let mut one = running.connect();
     one.write_all(b"{\"cmd\":\"where\"}\n").unwrap();
@@ -616,14 +720,19 @@ fn the_cap_on_unread_answers_is_hard_and_small_ones_still_get_through() {
 /// Failure: a wait's look runs after the level dropped and hands over a tab's details, because only the asking was checked. Here the look waits behind a stuck job, and the level drops with no message to the server, so only the look itself can notice.
 #[test]
 fn a_look_rechecks_the_level() {
-    let limits = Limits { max_jobs: 1, ..Limits::default() };
+    let limits = Limits {
+        max_jobs: 1,
+        ..Limits::default()
+    };
     let running = Running::start(limits);
     running.host.looks_answer.store(true, Ordering::SeqCst);
     let mut slow = running.connect();
     slow.write_all(b"{\"cmd\":\"tabs\"}\n").unwrap();
     let mut waiter = running.connect();
     assert_eq!(running.call(&json!({ "cmd": "status" }))["ok"], true);
-    waiter.write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"secret\",\"timeout_ms\":20000}\n").unwrap();
+    waiter
+        .write_all(b"{\"cmd\":\"wait\",\"condition\":\"tab_open\",\"tab\":\"secret\",\"timeout_ms\":20000}\n")
+        .unwrap();
     std::thread::sleep(Duration::from_millis(100));
     levels::store(&running.paths, Level::Off).unwrap();
     running.host.release();
@@ -636,7 +745,10 @@ fn a_look_rechecks_the_level() {
 #[test]
 fn a_killed_watch_frees_its_place() {
     use std::io::Write;
-    let running = Running::start(Limits { max_subscribers: 1, ..Limits::default() });
+    let running = Running::start(Limits {
+        max_subscribers: 1,
+        ..Limits::default()
+    });
     let watch = json!({ "cmd": "watch", "timeout_ms": 60_000 }).to_string() + "\n";
     let mut first = running.connect();
     first.write_all(watch.as_bytes()).unwrap();

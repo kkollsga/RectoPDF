@@ -67,10 +67,23 @@ mod tests {
     /// Failure: a number comes out in scientific notation, or as `NaN` or `inf`, which SVG readers refuse or misread, and hostile input decides where that goes.
     #[test]
     fn no_number_is_ever_scientific_or_not_a_number() {
-        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e300, -1e300, 1e-300, 1.5e-7, f64::MIN_POSITIVE, 123_456_789.125] {
+        for value in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e300,
+            -1e300,
+            1e-300,
+            1.5e-7,
+            f64::MIN_POSITIVE,
+            123_456_789.125,
+        ] {
             for digits in [0, 3, 8] {
                 let written = text(value, digits);
-                assert!(written.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b'-'), "{value} became {written}");
+                assert!(
+                    written.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b'-'),
+                    "{value} became {written}"
+                );
                 assert!(written.parse::<f64>().is_ok(), "{written}");
             }
         }
@@ -79,7 +92,19 @@ mod tests {
     /// Failure: a number reads back as something else, so a shape is drawn in the wrong place.
     #[test]
     fn numbers_read_back_within_their_grid_and_as_short_as_they_can_be() {
-        for (value, digits, want) in [(0.0, 3, "0"), (1.0, 3, "1"), (-0.5, 3, "-.5"), (0.5, 3, ".5"), (12.345, 3, "12.345"), (12.3, 3, "12.3"), (100.0, 3, "100"), (0.001, 3, ".001"), (-0.04, 3, "-.04"), (5.0, 0, "5"), (1234.0, 0, "1234")] {
+        for (value, digits, want) in [
+            (0.0, 3, "0"),
+            (1.0, 3, "1"),
+            (-0.5, 3, "-.5"),
+            (0.5, 3, ".5"),
+            (12.345, 3, "12.345"),
+            (12.3, 3, "12.3"),
+            (100.0, 3, "100"),
+            (0.001, 3, ".001"),
+            (-0.04, 3, "-.04"),
+            (5.0, 0, "5"),
+            (1234.0, 0, "1234"),
+        ] {
             assert_eq!(text(value, digits), want);
         }
         let mut seed = 0x1234_5678_9abc_def0u64;

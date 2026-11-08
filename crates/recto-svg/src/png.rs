@@ -15,7 +15,11 @@ const MAX_ROW: u64 = 64 * 1024 * 1024;
 const LEVEL: u32 = 3;
 
 fn write_chunk(out: &mut impl Write, kind: &[u8; 4], data: &[u8]) -> io::Result<()> {
-    out.write_all(&u32::try_from(data.len()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?.to_be_bytes())?;
+    out.write_all(
+        &u32::try_from(data.len())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?
+            .to_be_bytes(),
+    )?;
     out.write_all(kind)?;
     out.write_all(data)?;
     let mut crc = Crc::new();
@@ -76,7 +80,13 @@ impl<W: Write> PngWriter<W> {
         let channels = channels as usize;
         let row_len = width as usize * channels;
         Ok(Self {
-            encoder: ZlibEncoder::new(Idat { out, pending: Vec::with_capacity(CHUNK + 8192) }, Compression::new(LEVEL)),
+            encoder: ZlibEncoder::new(
+                Idat {
+                    out,
+                    pending: Vec::with_capacity(CHUNK + 8192),
+                },
+                Compression::new(LEVEL),
+            ),
             channels,
             width,
             rows_left: u64::from(height),
@@ -158,12 +168,22 @@ pub(crate) struct Base64<W: Write> {
 
 impl<W: Write> Base64<W> {
     pub(crate) fn new(out: W) -> Self {
-        Self { out, held: [0; 2], held_len: 0, text: Vec::with_capacity(8192) }
+        Self {
+            out,
+            held: [0; 2],
+            held_len: 0,
+            text: Vec::with_capacity(8192),
+        }
     }
 
     fn encode_group(text: &mut Vec<u8>, group: [u8; 3]) {
         let [a, b, c] = group;
-        text.extend_from_slice(&[ALPHABET[usize::from(a >> 2)], ALPHABET[usize::from((a & 3) << 4 | b >> 4)], ALPHABET[usize::from((b & 15) << 2 | c >> 6)], ALPHABET[usize::from(c & 63)]]);
+        text.extend_from_slice(&[
+            ALPHABET[usize::from(a >> 2)],
+            ALPHABET[usize::from((a & 3) << 4 | b >> 4)],
+            ALPHABET[usize::from((b & 15) << 2 | c >> 6)],
+            ALPHABET[usize::from(c & 63)],
+        ]);
     }
 
     /// Writes what's left, with its padding, and hands back where it was going.
@@ -171,11 +191,17 @@ impl<W: Write> Base64<W> {
         match self.held_len {
             1 => {
                 let a = self.held[0];
-                self.text.extend_from_slice(&[ALPHABET[usize::from(a >> 2)], ALPHABET[usize::from((a & 3) << 4)], b'=', b'=']);
+                self.text
+                    .extend_from_slice(&[ALPHABET[usize::from(a >> 2)], ALPHABET[usize::from((a & 3) << 4)], b'=', b'=']);
             }
             2 => {
                 let (a, b) = (self.held[0], self.held[1]);
-                self.text.extend_from_slice(&[ALPHABET[usize::from(a >> 2)], ALPHABET[usize::from((a & 3) << 4 | b >> 4)], ALPHABET[usize::from((b & 15) << 2)], b'=']);
+                self.text.extend_from_slice(&[
+                    ALPHABET[usize::from(a >> 2)],
+                    ALPHABET[usize::from((a & 3) << 4 | b >> 4)],
+                    ALPHABET[usize::from((b & 15) << 2)],
+                    b'=',
+                ]);
             }
             _ => {}
         }
@@ -286,7 +312,10 @@ mod tests {
         }
         assert!(ended, "the file must end with IEND");
         let header = header.unwrap();
-        let (width, height) = (u32::from_be_bytes(header[..4].try_into().unwrap()), u32::from_be_bytes(header[4..8].try_into().unwrap()));
+        let (width, height) = (
+            u32::from_be_bytes(header[..4].try_into().unwrap()),
+            u32::from_be_bytes(header[4..8].try_into().unwrap()),
+        );
         let channels: usize = match header[9] {
             0 => 1,
             2 => 3,
@@ -338,6 +367,9 @@ mod tests {
         let mut long = PngWriter::new(Vec::new(), 2, 2, PngChannels::Grey).unwrap();
         assert!(long.write_all(&[0; 5]).is_err(), "a byte over");
         assert!(PngWriter::new(Vec::new(), 0, 2, PngChannels::Grey).is_err(), "no picture has no width");
-        assert!(PngWriter::new(Vec::new(), i32::MAX as u32, 1, PngChannels::Rgba).is_err(), "rows it would have to hold 8 GiB of");
+        assert!(
+            PngWriter::new(Vec::new(), i32::MAX as u32, 1, PngChannels::Rgba).is_err(),
+            "rows it would have to hold 8 GiB of"
+        );
     }
 }

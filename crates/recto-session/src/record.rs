@@ -56,7 +56,11 @@ pub struct Rect {
 
 impl Rect {
     fn is_sane(self) -> bool {
-        [self.x, self.y, self.width, self.height].iter().all(|value| value.is_finite() && value.abs() <= 1e7) && self.width >= 0.0 && self.height >= 0.0
+        [self.x, self.y, self.width, self.height]
+            .iter()
+            .all(|value| value.is_finite() && value.abs() <= 1e7)
+            && self.width >= 0.0
+            && self.height >= 0.0
     }
 }
 
@@ -96,7 +100,11 @@ pub const SIDEBAR_WIDTH: f64 = 272.0;
 
 /// A width for the sidebar, from a drag or a record.
 pub fn sidebar_width(asked: f64) -> f64 {
-    if asked.is_finite() { asked.clamp(SIDEBAR_WIDTHS.0, SIDEBAR_WIDTHS.1).round() } else { SIDEBAR_WIDTH }
+    if asked.is_finite() {
+        asked.clamp(SIDEBAR_WIDTHS.0, SIDEBAR_WIDTHS.1).round()
+    } else {
+        SIDEBAR_WIDTH
+    }
 }
 
 /// The smallest a window goes, as the host has it, and what a new one is. A record can't make a window nobody can reach.
@@ -119,12 +127,20 @@ pub fn place_window(saved: &WindowRecord, screens: &[ScreenNow]) -> WindowPlace 
     frame.width = frame.width.max(WINDOW_MIN.0);
     frame.height = frame.height.max(WINDOW_MIN.1);
     // Not bigger than the biggest screen there is, however much of its top is on one.
-    let (widest, tallest) = screens.iter().fold((0.0f64, 0.0f64), |(wide, tall), screen| (wide.max(screen.frame.width), tall.max(screen.frame.height)));
+    let (widest, tallest) = screens.iter().fold((0.0f64, 0.0f64), |(wide, tall), screen| {
+        (wide.max(screen.frame.width), tall.max(screen.frame.height))
+    });
     if widest > 0.0 && tallest > 0.0 {
         frame.width = frame.width.min(widest);
         frame.height = frame.height.min(tallest);
     }
-    let same = saved.screen.as_ref().and_then(|was| screens.iter().find(|screen| screen.id == was.id && screen.name == was.name).or_else(|| screens.iter().find(|screen| screen.name == was.name)).map(|screen| (was, screen)));
+    let same = saved.screen.as_ref().and_then(|was| {
+        screens
+            .iter()
+            .find(|screen| screen.id == was.id && screen.name == was.name)
+            .or_else(|| screens.iter().find(|screen| screen.name == was.name))
+            .map(|screen| (was, screen))
+    });
     if let Some((was, screen)) = same {
         frame.x += screen.frame.x - was.frame.x;
         frame.y += screen.frame.y - was.frame.y;
@@ -145,7 +161,10 @@ pub fn place_window(saved: &WindowRecord, screens: &[ScreenNow]) -> WindowPlace 
         frame.x = visible.x + (visible.width - frame.width) / 2.0;
         frame.y = visible.y + (visible.height - frame.height) / 2.0;
     }
-    WindowPlace { frame, full_screen: saved.full_screen }
+    WindowPlace {
+        frame,
+        full_screen: saved.full_screen,
+    }
 }
 
 /// What has the keyboard.
@@ -183,7 +202,11 @@ pub struct FocusRecord {
 
 impl Default for FocusRecord {
     fn default() -> Self {
-        Self { view: FocusView::Page, app_frontmost: true, window_key: true }
+        Self {
+            view: FocusView::Page,
+            app_frontmost: true,
+            window_key: true,
+        }
     }
 }
 
@@ -226,7 +249,17 @@ pub struct AppRecord {
 
 impl Default for AppRecord {
     fn default() -> Self {
-        Self { window: None, appearance: Appearance::System, sidebar_width: None, panel_open: false, contents_scroll: None, focus: FocusRecord::default(), notice: None, settings_window: None, window_closed: false }
+        Self {
+            window: None,
+            appearance: Appearance::System,
+            sidebar_width: None,
+            panel_open: false,
+            contents_scroll: None,
+            focus: FocusRecord::default(),
+            notice: None,
+            settings_window: None,
+            window_closed: false,
+        }
     }
 }
 
@@ -344,13 +377,23 @@ pub struct FileRecord {
 
 impl From<FileStamp> for FileRecord {
     fn from(stamp: FileStamp) -> Self {
-        Self { size: stamp.size, mtime_ns: stamp.mtime_ns, device: stamp.device, inode: stamp.inode }
+        Self {
+            size: stamp.size,
+            mtime_ns: stamp.mtime_ns,
+            device: stamp.device,
+            inode: stamp.inode,
+        }
     }
 }
 
 impl From<FileRecord> for FileStamp {
     fn from(file: FileRecord) -> Self {
-        Self { size: file.size, mtime_ns: file.mtime_ns, device: file.device, inode: file.inode }
+        Self {
+            size: file.size,
+            mtime_ns: file.mtime_ns,
+            device: file.device,
+            inode: file.inode,
+        }
     }
 }
 
@@ -366,7 +409,9 @@ impl PathField {
     pub fn from_path(path: &Path) -> Self {
         match path.to_str() {
             Some(text) => Self::Text(text.to_string()),
-            None => Self::Bytes { hex: path.as_os_str().as_encoded_bytes().iter().map(|byte| format!("{byte:02x}")).collect() },
+            None => Self::Bytes {
+                hex: path.as_os_str().as_encoded_bytes().iter().map(|byte| format!("{byte:02x}")).collect(),
+            },
         }
     }
 
@@ -425,7 +470,15 @@ pub struct PlaceRecord {
 
 impl PlaceRecord {
     fn is_sane(self) -> bool {
-        [self.within, self.x, self.y, self.document_height].iter().all(|value| value.is_finite() && value.abs() <= 1e12) && self.zoom.is_finite() && self.zoom > 0.0 && self.page_width.is_finite() && self.page_height.is_finite() && self.page_width >= 0.0 && self.page_height >= 0.0
+        [self.within, self.x, self.y, self.document_height]
+            .iter()
+            .all(|value| value.is_finite() && value.abs() <= 1e12)
+            && self.zoom.is_finite()
+            && self.zoom > 0.0
+            && self.page_width.is_finite()
+            && self.page_height.is_finite()
+            && self.page_width >= 0.0
+            && self.page_height >= 0.0
     }
 }
 
@@ -475,16 +528,28 @@ impl FileNotice {
     /// A plain sentence for the reader. A tab's name and path come from outside, so there's none of either in here.
     pub fn message(&self, has_edits: bool) -> &'static str {
         match (self, has_edits) {
-            (Self::Moved { .. }, true) => "This file was moved, and the tab followed it. Your unsaved edits are still here, and nothing has been written to the file.",
+            (Self::Moved { .. }, true) => {
+                "This file was moved, and the tab followed it. Your unsaved edits are still here, and nothing has been written to the file."
+            }
             (Self::Moved { .. }, false) => "This file was moved, and the tab followed it.",
-            (Self::Changed, true) => "This file changed on disk since it was last read here. Your unsaved edits are still here, but they were made on the old version, so pages may not line up. Nothing has been written to the file.",
+            (Self::Changed, true) => {
+                "This file changed on disk since it was last read here. Your unsaved edits are still here, but they were made on the old version, so pages may not line up. Nothing has been written to the file."
+            }
             (Self::Changed, false) => "This file changed on disk since it was last read here, so this is the new version.",
-            (Self::Missing, true) => "This file can't be found: it may have been moved or deleted, or its disk may not be connected. Your unsaved edits are still here, and this tab keeps them until you discard them.",
+            (Self::Missing, true) => {
+                "This file can't be found: it may have been moved or deleted, or its disk may not be connected. Your unsaved edits are still here, and this tab keeps them until you discard them."
+            }
             (Self::Missing, false) => "This file can't be found: it may have been moved or deleted, or its disk may not be connected.",
             (Self::NeedsPassword, _) => "This PDF needs its password again. Passwords aren't kept between launches.",
-            (Self::HistoryRolledOff, _) => "Undo can't go back as far as it could: pages it would need couldn't be kept within the history's limits, or aren't there now. Nothing in this document has changed.",
-            (Self::EditsNotMerged, _) => "This PDF was open in two tabs with different unsaved edits, which can't be merged. These are one tab's, and the other's have been kept in the state folder. Nothing has been written to the file.",
-            (Self::EditsUnreadable, _) => "Some of this tab's unsaved edits couldn't be read back, so it shows what could be. What couldn't has been kept in the state folder, and nothing has been written to the file.",
+            (Self::HistoryRolledOff, _) => {
+                "Undo can't go back as far as it could: pages it would need couldn't be kept within the history's limits, or aren't there now. Nothing in this document has changed."
+            }
+            (Self::EditsNotMerged, _) => {
+                "This PDF was open in two tabs with different unsaved edits, which can't be merged. These are one tab's, and the other's have been kept in the state folder. Nothing has been written to the file."
+            }
+            (Self::EditsUnreadable, _) => {
+                "Some of this tab's unsaved edits couldn't be read back, so it shows what could be. What couldn't has been kept in the state folder, and nothing has been written to the file."
+            }
         }
     }
 }
@@ -509,7 +574,10 @@ pub fn journal_file_name(stamp: Option<FileStamp>, path: &Path, taken: Option<u3
     let start = 0xcbf2_9ce4_8422_2325;
     let key = match stamp {
         // Not the device: a volume can come back under another number.
-        Some(stamp) => fold(fold(fold(start, &stamp.inode.to_le_bytes()), &stamp.size.to_le_bytes()), &stamp.mtime_ns.to_le_bytes()),
+        Some(stamp) => fold(
+            fold(fold(start, &stamp.inode.to_le_bytes()), &stamp.size.to_le_bytes()),
+            &stamp.mtime_ns.to_le_bytes(),
+        ),
         None => fold(start, path.as_os_str().as_encoded_bytes()),
     };
     match taken {
@@ -520,9 +588,13 @@ pub fn journal_file_name(stamp: Option<FileStamp>, path: &Path, taken: Option<u3
 
 /// Whether a name is one this code would write. Nothing else is opened or removed, so a record can't reach out of its folder.
 pub fn is_journal_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix("journal-").and_then(|rest| rest.strip_suffix(".log")) else { return false };
+    let Some(rest) = name.strip_prefix("journal-").and_then(|rest| rest.strip_suffix(".log")) else {
+        return false;
+    };
     let (key, tab) = rest.split_once('-').map_or((rest, None), |(key, tab)| (key, Some(tab)));
-    key.len() == 16 && key.bytes().all(|byte| byte.is_ascii_hexdigit()) && tab.is_none_or(|tab| !tab.is_empty() && tab.len() <= 10 && tab.bytes().all(|byte| byte.is_ascii_digit()))
+    key.len() == 16
+        && key.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && tab.is_none_or(|tab| !tab.is_empty() && tab.len() <= 10 && tab.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// What a journal is called once its PDF has been closed. **A launch reads only `journal-` files,** which are all about open tabs or a crash, and never `closed-` ones, which wait unread for their PDF to be opened.
@@ -540,7 +612,11 @@ pub fn is_closed_journal_name(name: &str) -> bool {
 pub fn kept_file_name(target: FileStamp, taken: u32) -> String {
     let key = journal_file_name(Some(target), Path::new(""), None);
     let key = key.strip_prefix("journal-").and_then(|rest| rest.strip_suffix(".log")).unwrap_or_default();
-    if taken == 0 { format!("kept-{key}.{KEPT_EXTENSION}") } else { format!("kept-{key}-{taken}.{KEPT_EXTENSION}") }
+    if taken == 0 {
+        format!("kept-{key}.{KEPT_EXTENSION}")
+    } else {
+        format!("kept-{key}-{taken}.{KEPT_EXTENSION}")
+    }
 }
 
 /// The extension of a kept copy's name.
@@ -548,18 +624,25 @@ pub const KEPT_EXTENSION: &str = "keptpages";
 
 /// Whether a name is that of a copy kept for a history: this build's, or an earlier one's, which ended in `.pdf`. Nothing else is removed as one, so a journal naming a file can't reach out of its folder.
 pub fn is_kept_name(name: &str) -> bool {
-    name.strip_prefix("kept-").and_then(|rest| rest.strip_suffix(".pdf").or_else(|| rest.strip_suffix(&format!(".{KEPT_EXTENSION}")))).is_some_and(|rest| is_journal_name(&format!("journal-{rest}.log")))
+    name.strip_prefix("kept-")
+        .and_then(|rest| rest.strip_suffix(".pdf").or_else(|| rest.strip_suffix(&format!(".{KEPT_EXTENSION}"))))
+        .is_some_and(|rest| is_journal_name(&format!("journal-{rest}.log")))
 }
 
 /// What a tab's sleep file is called: its file's identity, as a journal goes by.
 pub fn sleep_file_name(stamp: FileStamp, path: &Path) -> String {
     let name = journal_file_name(Some(stamp), path, None);
-    format!("sleep-{}.bin", name.strip_prefix("journal-").and_then(|rest| rest.strip_suffix(".log")).unwrap_or_default())
+    format!(
+        "sleep-{}.bin",
+        name.strip_prefix("journal-").and_then(|rest| rest.strip_suffix(".log")).unwrap_or_default()
+    )
 }
 
 /// Whether a name is that of a sleep file.
 pub fn is_sleep_name(name: &str) -> bool {
-    name.strip_prefix("sleep-").and_then(|rest| rest.strip_suffix(".bin")).is_some_and(|rest| is_journal_name(&format!("journal-{rest}.log")))
+    name.strip_prefix("sleep-")
+        .and_then(|rest| rest.strip_suffix(".bin"))
+        .is_some_and(|rest| is_journal_name(&format!("journal-{rest}.log")))
 }
 
 /// Whether a journal with nothing to say it's this tab's is about this tab's file. **The same file, by its path or by its number,** with the same contents. Size and time alone are what `cp -p` keeps, so another number at another path is another file, whose edits must not land here. The device isn't compared, as a volume can come back under another. With nothing to compare, the path says.
@@ -581,7 +664,9 @@ pub fn journal_named_is_for(header: &JournalHeader, file: Option<FileStamp>, pat
 
 /// **One tab per file** (SPEC decision 26), in a record: a forged one, or one written before the rule. The tab with edits wins, then the first. Says which journals lost out, and the winner says it couldn't merge them.
 pub fn one_tab_per_file(record: &mut SessionRecord) -> Vec<String> {
-    let same = |one: &TabEntry, two: &TabEntry| one.path == two.path || matches!((one.file, two.file), (Some(a), Some(b)) if a.inode != 0 && a.inode == b.inode && a.device == b.device);
+    let same = |one: &TabEntry, two: &TabEntry| {
+        one.path == two.path || matches!((one.file, two.file), (Some(a), Some(b)) if a.inode != 0 && a.inode == b.inode && a.device == b.device)
+    };
     let mut kept: Vec<TabEntry> = Vec::with_capacity(record.tabs.len());
     let mut dropped = Vec::new();
     // By inode and path, so a thousand tabs aren't each compared with a thousand.
@@ -597,7 +682,9 @@ pub fn one_tab_per_file(record: &mut SessionRecord) -> Vec<String> {
             kept.push(tab);
             continue;
         }
-        let Some(winner) = kept.iter_mut().find(|other| same(other, &tab)) else { continue };
+        let Some(winner) = kept.iter_mut().find(|other| same(other, &tab)) else {
+            continue;
+        };
         if record.active == Some(tab.id) {
             record.active = Some(winner.id);
         }
@@ -735,9 +822,20 @@ pub struct AddedRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepRecord {
-    Rotate { start: u32, len: u32, quarter_turns: u8 },
-    Move { start: u32, len: u32, to: u32 },
-    Remove { start: u32, len: u32 },
+    Rotate {
+        start: u32,
+        len: u32,
+        quarter_turns: u8,
+    },
+    Move {
+        start: u32,
+        len: u32,
+        to: u32,
+    },
+    Remove {
+        start: u32,
+        len: u32,
+    },
     Restore {
         start: u32,
         #[serde(deserialize_with = "capped::<_, _, MAX_RUNS>")]
@@ -847,7 +945,17 @@ pub struct JournalHeader {
 
 impl JournalHeader {
     pub fn new(tab: u32, path: &Path, file: Option<FileStamp>, file_pages: u32, base_seq: u64) -> Self {
-        Self { format: JOURNAL_KIND.to_string(), version: CURRENT_VERSION, tab, path: PathField::from_path(path), file: file.map(FileRecord::from), file_pages, base_seq, saving: None, keeping: None }
+        Self {
+            format: JOURNAL_KIND.to_string(),
+            version: CURRENT_VERSION,
+            tab,
+            path: PathField::from_path(path),
+            file: file.map(FileRecord::from),
+            file_pages,
+            base_seq,
+            saving: None,
+            keeping: None,
+        }
     }
 }
 
@@ -922,7 +1030,13 @@ pub fn parse_journal(bytes: &[u8], newest: u32) -> Result<ParsedJournal, RecordE
     if !header.path.fits() || header.tab == 0 || header.file_pages as usize > MAX_PAGES || header.base_seq > u64::MAX / 2 {
         return Err(RecordError::Damaged("a header that breaks a rule"));
     }
-    let mut parsed = ParsedJournal { header, base: None, ops: Vec::new(), good_bytes: at as u64, lost_lines: false };
+    let mut parsed = ParsedJournal {
+        header,
+        base: None,
+        ops: Vec::new(),
+        good_bytes: at as u64,
+        lost_lines: false,
+    };
     while at < bytes.len() {
         let Some((json, used)) = read_line(&bytes[at..]) else {
             // A torn last line has nothing after it but itself. Anything more means it wasn't the last.
@@ -981,7 +1095,9 @@ pub fn apply_places_log(record: &mut SessionRecord, seq: u64, bytes: &[u8]) -> u
     }
     let mut at = 0;
     while let Some((json, used)) = read_line(&bytes[at..]) {
-        let Ok(delta) = serde_json::from_slice::<PlaceDelta>(json) else { return at as u64 };
+        let Ok(delta) = serde_json::from_slice::<PlaceDelta>(json) else {
+            return at as u64;
+        };
         at += used;
         if delta.seq != seq {
             continue;
@@ -1097,7 +1213,13 @@ fn sealed_crc(seq: u64, body: &[u8]) -> u32 {
 
 /// The same, saying which version it is. For tests of what another version does.
 pub fn seal_as(kind: &str, version: u32, seq: u64, body: &[u8]) -> Vec<u8> {
-    let header = Header { format: kind, version, seq, bytes: body.len() as u64, crc32: sealed_crc(seq, body) };
+    let header = Header {
+        format: kind,
+        version,
+        seq,
+        bytes: body.len() as u64,
+        crc32: sealed_crc(seq, body),
+    };
     let mut out = serde_json::to_vec(&header).unwrap_or_default();
     out.push(b'\n');
     out.extend_from_slice(body);
@@ -1105,7 +1227,11 @@ pub fn seal_as(kind: &str, version: u32, seq: u64, body: &[u8]) -> Vec<u8> {
 }
 
 fn header_of<'a>(kind: &str, bytes: &'a [u8]) -> Result<(Header<'a>, usize), RecordError> {
-    let end = bytes.iter().take(256).position(|byte| *byte == b'\n').ok_or(RecordError::Damaged("no header"))?;
+    let end = bytes
+        .iter()
+        .take(256)
+        .position(|byte| *byte == b'\n')
+        .ok_or(RecordError::Damaged("no header"))?;
     let header: Header<'_> = serde_json::from_slice(&bytes[..end]).map_err(|_| RecordError::Damaged("a header that doesn't read"))?;
     if header.format != kind {
         return Err(RecordError::Damaged("another kind of file"));
@@ -1182,7 +1308,11 @@ pub fn validate_record(record: &SessionRecord) -> Result<(), RecordError> {
     }
     if let Some(comparison) = &record.comparison {
         let tabs: Vec<crate::TabId> = comparison.tabs.iter().copied().map(crate::TabId).collect();
-        if crate::compare::Comparison::check(&tabs).is_err() || comparison.tabs.iter().any(|id| !ids.contains(id)) || !(comparison.sync_from.is_empty() || comparison.sync_from.len() == comparison.tabs.len()) || comparison.sync_from.iter().any(|page| *page as usize > MAX_PAGES) {
+        if crate::compare::Comparison::check(&tabs).is_err()
+            || comparison.tabs.iter().any(|id| !ids.contains(id))
+            || !(comparison.sync_from.is_empty() || comparison.sync_from.len() == comparison.tabs.len())
+            || comparison.sync_from.iter().any(|page| *page as usize > MAX_PAGES)
+        {
             return Err(bad("a comparison"));
         }
     }
@@ -1241,7 +1371,11 @@ fn runs_slots(runs: &[SlotRun]) -> u64 {
 /// Whether every run is a real range of a real file: as many pages as it says that file has, not just as many as fit in a number.
 fn runs_fit(runs: &[SlotRun], file_pages: u32, added: &[AddedRecord]) -> bool {
     runs.iter().all(|run| {
-        let length = if run.0 == 0 { Some(file_pages) } else { added.get(usize::from(run.0) - 1).map(|source| source.page_count) };
+        let length = if run.0 == 0 {
+            Some(file_pages)
+        } else {
+            added.get(usize::from(run.0) - 1).map(|source| source.page_count)
+        };
         run.2 > 0 && run.3 < 4 && length.is_some_and(|length| u64::from(run.1) + u64::from(run.2) <= u64::from(length))
     })
 }
@@ -1317,7 +1451,13 @@ pub fn validate_edits(edits: &EditsRecord) -> Result<(), RecordError> {
 
 /// Whether an added file's a possible one: a path that fits, a length that does, and a kept one named as those are.
 pub fn added_fits(added: &AddedRecord) -> bool {
-    added.path.fits() && added.page_count as usize <= MAX_PAGES && (!added.kept || added.path.to_path().is_some_and(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(is_kept_name)))
+    added.path.fits()
+        && added.page_count as usize <= MAX_PAGES
+        && (!added.kept
+            || added
+                .path
+                .to_path()
+                .is_some_and(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(is_kept_name)))
 }
 
 /// What a look at a file found.
@@ -1369,7 +1509,11 @@ pub fn look_at_file(path: &Path, saved: Option<FileStamp>) -> FileStatus {
     let moved = if is_it {
         None
     } else {
-        saved.filter(|stamp| stamp.inode != 0).and_then(|stamp| recto_platform::local::path_of_file_number(stamp.device, stamp.inode)).filter(|found| found != path).and_then(|found| recto_platform::file_stamp(&found).ok().map(|stamp| (found, stamp)))
+        saved
+            .filter(|stamp| stamp.inode != 0)
+            .and_then(|stamp| recto_platform::local::path_of_file_number(stamp.device, stamp.inode))
+            .filter(|found| found != path)
+            .and_then(|found| recto_platform::file_stamp(&found).ok().map(|stamp| (found, stamp)))
     };
     classify_file(saved, Some(at_path), moved)
 }
@@ -1386,12 +1530,20 @@ pub mod notices {
     /// The words for a code. `None` for one this build doesn't know, which is all a forged one can come to.
     pub fn words(code: &str) -> Option<&'static str> {
         Some(match code {
-            DAMAGED => "Your last session's state couldn't be read. Any unsaved edits that could be found have been brought back, and the damaged state has been kept in the state folder. None of your PDFs were touched.",
+            DAMAGED => {
+                "Your last session's state couldn't be read. Any unsaved edits that could be found have been brought back, and the damaged state has been kept in the state folder. None of your PDFs were touched."
+            }
             NEWER => "Your last session was saved by a newer version of RectoPDF, so it's been left as it is, ready for that version. RectoPDF started empty.",
-            NEWER_KEPT => "Your last session was saved by a newer version of RectoPDF, so it's been left as it is. This is your session from before that update.",
+            NEWER_KEPT => {
+                "Your last session was saved by a newer version of RectoPDF, so it's been left as it is. This is your session from before that update."
+            }
             OTHER_INSTANCE => "Another RectoPDF is keeping your session's state, so what you do in this window won't be remembered.",
-            OLDER_RECORD => "The latest save of your session's state couldn't be read, so this is the one before it, and the last moments before you closed may be missing. Any unsaved edits are still here, as those are kept apart.",
-            UNREADABLE => "Your last session's state couldn't be read just now, so it's been left as it is, and what you do in this window won't be remembered. Quit and open RectoPDF again to try again.",
+            OLDER_RECORD => {
+                "The latest save of your session's state couldn't be read, so this is the one before it, and the last moments before you closed may be missing. Any unsaved edits are still here, as those are kept apart."
+            }
+            UNREADABLE => {
+                "Your last session's state couldn't be read just now, so it's been left as it is, and what you do in this window won't be remembered. Quit and open RectoPDF again to try again."
+            }
             _ => return None,
         })
     }
@@ -1405,15 +1557,50 @@ mod tests {
     use super::*;
 
     fn stamp(size: u64, mtime_ns: i64, inode: u64) -> FileStamp {
-        FileStamp { size, mtime_ns, device: 7, inode }
+        FileStamp {
+            size,
+            mtime_ns,
+            device: 7,
+            inode,
+        }
     }
 
     fn entry(id: u32) -> TabEntry {
-        TabEntry { id, path: PathField::Text(format!("/d/{id}.pdf")), file: None, page: 0, page_count: 5, place: None, view_rotation: 0, toc_open: true, layout: Default::default(), renderer_only: false, selection: None, notice: None, journal: None, edits: None, generated_contents: false, contents_folds: Vec::new(), back: Vec::new(), forward: Vec::new(), password: false }
+        TabEntry {
+            id,
+            path: PathField::Text(format!("/d/{id}.pdf")),
+            file: None,
+            page: 0,
+            page_count: 5,
+            place: None,
+            view_rotation: 0,
+            toc_open: true,
+            layout: Default::default(),
+            renderer_only: false,
+            selection: None,
+            notice: None,
+            journal: None,
+            edits: None,
+            generated_contents: false,
+            contents_folds: Vec::new(),
+            back: Vec::new(),
+            forward: Vec::new(),
+            password: false,
+        }
     }
 
     fn record(tabs: Vec<TabEntry>) -> SessionRecord {
-        SessionRecord { app: AppRecord::default(), view: ViewRecord::default(), find: FindRecord::default(), edit_mode: false, active: tabs.first().map(|tab| tab.id), next_id: 1000, tabs, comparison: None, recent: Vec::new() }
+        SessionRecord {
+            app: AppRecord::default(),
+            view: ViewRecord::default(),
+            find: FindRecord::default(),
+            edit_mode: false,
+            active: tabs.first().map(|tab| tab.id),
+            next_id: 1000,
+            tabs,
+            comparison: None,
+            recent: Vec::new(),
+        }
     }
 
     fn found(path: &str, stamp: FileStamp) -> Option<(PathBuf, FileStamp)> {
@@ -1430,15 +1617,33 @@ mod tests {
         let was = stamp(100, 5, 42);
         assert_eq!(classify_file(Some(was), Some(Ok(was)), None), FileStatus::Same(was));
         let restored = stamp(100, 5, 99);
-        assert_eq!(classify_file(Some(was), Some(Ok(restored)), None), FileStatus::Same(restored), "same contents, another number");
+        assert_eq!(
+            classify_file(Some(was), Some(Ok(restored)), None),
+            FileStatus::Same(restored),
+            "same contents, another number"
+        );
         let other = stamp(200, 6, 42);
         assert_eq!(classify_file(Some(was), Some(Ok(other)), None), FileStatus::Changed(other), "edited in place");
-        assert_eq!(classify_file(Some(was), Some(missing()), found("/e/a.pdf", was)), FileStatus::Moved(PathBuf::from("/e/a.pdf"), was));
+        assert_eq!(
+            classify_file(Some(was), Some(missing()), found("/e/a.pdf", was)),
+            FileStatus::Moved(PathBuf::from("/e/a.pdf"), was)
+        );
         let new_download = stamp(300, 9, 77);
-        assert_eq!(classify_file(Some(was), Some(Ok(new_download)), found("/e/a.pdf", was)), FileStatus::Moved(PathBuf::from("/e/a.pdf"), was), "the original's elsewhere and something new took its name");
-        assert_eq!(classify_file(Some(was), Some(missing()), found("/e/other.txt", other)), FileStatus::Missing, "the number was reused");
+        assert_eq!(
+            classify_file(Some(was), Some(Ok(new_download)), found("/e/a.pdf", was)),
+            FileStatus::Moved(PathBuf::from("/e/a.pdf"), was),
+            "the original's elsewhere and something new took its name"
+        );
+        assert_eq!(
+            classify_file(Some(was), Some(missing()), found("/e/other.txt", other)),
+            FileStatus::Missing,
+            "the number was reused"
+        );
         assert_eq!(classify_file(Some(was), Some(missing()), None), FileStatus::Missing);
-        assert_eq!(classify_file(Some(was), Some(Err(std::io::ErrorKind::PermissionDenied.into())), None), FileStatus::NotLooked);
+        assert_eq!(
+            classify_file(Some(was), Some(Err(std::io::ErrorKind::PermissionDenied.into())), None),
+            FileStatus::NotLooked
+        );
         assert_eq!(classify_file(Some(was), None, None), FileStatus::NotLooked);
         assert_eq!(classify_file(None, Some(Ok(was)), None), FileStatus::Same(was), "nothing to compare it with");
     }
@@ -1446,20 +1651,41 @@ mod tests {
     /// Failure: a name that isn't one of ours is opened or removed from a journals' folder, or a record's path climbs out of it. Or a PDF moved or a device number changed gets a new journal, so its history isn't picked up again. Or a PDF that's changed picks up a history whose page numbers are about the old one.
     #[test]
     fn a_journal_is_named_for_its_pdf() {
-        let stamp = FileStamp { size: 10, mtime_ns: 20, device: 1, inode: 30 };
+        let stamp = FileStamp {
+            size: 10,
+            mtime_ns: 20,
+            device: 1,
+            inode: 30,
+        };
         let path = Path::new("/d/a.pdf");
         let name = journal_file_name(Some(stamp), path, None);
         assert!(is_journal_name(&name), "{name}");
-        assert_eq!(journal_file_name(Some(FileStamp { device: 2, ..stamp }), Path::new("/e/moved.pdf"), None), name, "moved, on a volume back under another number");
+        assert_eq!(
+            journal_file_name(Some(FileStamp { device: 2, ..stamp }), Path::new("/e/moved.pdf"), None),
+            name,
+            "moved, on a volume back under another number"
+        );
         assert_ne!(journal_file_name(Some(FileStamp { mtime_ns: 21, ..stamp }), path, None), name, "changed");
         assert_ne!(journal_file_name(Some(FileStamp { inode: 31, ..stamp }), path, None), name, "another file");
         assert!(is_journal_name(&journal_file_name(None, path, None)));
         assert!(is_journal_name(&journal_file_name(Some(stamp), path, Some(77))));
-        for bad in ["../journal-0123456789abcdef.log", "journal-0123456789abcdef.log.tmp", "journal-.log", "journal-0123456789abcdez.log", "journal-0123456789abcdef-.log", "journal-0123456789abcdef-1/2.log", "/etc/passwd", ""] {
+        for bad in [
+            "../journal-0123456789abcdef.log",
+            "journal-0123456789abcdef.log.tmp",
+            "journal-.log",
+            "journal-0123456789abcdez.log",
+            "journal-0123456789abcdef-.log",
+            "journal-0123456789abcdef-1/2.log",
+            "/etc/passwd",
+            "",
+        ] {
             assert!(!is_journal_name(bad), "{bad}");
         }
         let closed = closed_journal_name(&name).unwrap();
-        assert!(is_closed_journal_name(&closed) && !is_journal_name(&closed), "a launch reads only the open ones");
+        assert!(
+            is_closed_journal_name(&closed) && !is_journal_name(&closed),
+            "a launch reads only the open ones"
+        );
         assert_eq!(closed_journal_name("../x"), None);
         let mut tab = entry(1);
         tab.journal = Some("../../x.log".into());
@@ -1473,7 +1699,12 @@ mod tests {
     /// Failure: a crash mid-write tears the last line, and the journal reads as damaged, losing the edits before it, or the torn line is believed, or a line torn in the middle reads as a normal end with what's after it silently gone. A cut at every byte gives exactly the whole lines before it, and says nothing's lost: a torn tail is what a crash does.
     #[test]
     fn a_torn_journal_tail_costs_only_that_line() {
-        let ops = vec![JournalOp::Rotate(0, 1, 1, AuthorName::Owner), JournalOp::Delete(2, 1, AuthorName::Agent), JournalOp::Undo, JournalOp::Move(0, 1, 2, AuthorName::Owner)];
+        let ops = vec![
+            JournalOp::Rotate(0, 1, 1, AuthorName::Owner),
+            JournalOp::Delete(2, 1, AuthorName::Agent),
+            JournalOp::Undo,
+            JournalOp::Move(0, 1, 2, AuthorName::Owner),
+        ];
         let start = journal_start(&header(), None);
         let mut bytes = start.clone();
         let mut ends = vec![bytes.len()];
@@ -1507,10 +1738,35 @@ mod tests {
     #[test]
     fn a_log_of_places_cant_break_a_record() {
         let mut main = record(vec![entry(1), entry(2)]);
-        let place = PlaceRecord { page: 3, anchor_page: 3, within: 0.5, x: 0.0, y: 100.0, document_height: 900.0, zoom: 2.0, page_width: 612.0, page_height: 792.0 };
-        let mut log = places_line(&PlaceDelta { seq: 4, active: Some(2), places: vec![(2, 3, Some(place))], ..PlaceDelta::default() });
-        log.extend_from_slice(&places_line(&PlaceDelta { seq: 3, active: Some(1), places: vec![(1, 9, None)], ..PlaceDelta::default() }));
-        log.extend_from_slice(&places_line(&PlaceDelta { seq: 4, active: Some(77), places: vec![(77, 1, None), (1, 2, Some(PlaceRecord { zoom: -1.0, ..place }))], ..PlaceDelta::default() }));
+        let place = PlaceRecord {
+            page: 3,
+            anchor_page: 3,
+            within: 0.5,
+            x: 0.0,
+            y: 100.0,
+            document_height: 900.0,
+            zoom: 2.0,
+            page_width: 612.0,
+            page_height: 792.0,
+        };
+        let mut log = places_line(&PlaceDelta {
+            seq: 4,
+            active: Some(2),
+            places: vec![(2, 3, Some(place))],
+            ..PlaceDelta::default()
+        });
+        log.extend_from_slice(&places_line(&PlaceDelta {
+            seq: 3,
+            active: Some(1),
+            places: vec![(1, 9, None)],
+            ..PlaceDelta::default()
+        }));
+        log.extend_from_slice(&places_line(&PlaceDelta {
+            seq: 4,
+            active: Some(77),
+            places: vec![(77, 1, None), (1, 2, Some(PlaceRecord { zoom: -1.0, ..place }))],
+            ..PlaceDelta::default()
+        }));
         let whole = log.len() as u64;
         log.extend_from_slice(b"00000000 torn");
         assert_eq!(apply_places_log(&mut main, 4, &log), whole, "what's whole, for cutting the rest");
@@ -1533,7 +1789,10 @@ mod tests {
             flipped[at] ^= 0x40;
             let result = decode_record(&flipped, CURRENT_VERSION);
             // Review T21: the sequence is under the checksum too, so nothing that reads is any different.
-            assert!(result.is_err() || matches!(result, Ok(ref same) if same.record.tabs.len() == 2 && same.seq == 1), "flip at {at}");
+            assert!(
+                result.is_err() || matches!(result, Ok(ref same) if same.record.tabs.len() == 2 && same.seq == 1),
+                "flip at {at}"
+            );
         }
         assert!(parse_journal(&bytes, CURRENT_VERSION).is_err(), "another kind of file");
         assert!(decode_record(b"", CURRENT_VERSION).is_err());
@@ -1562,8 +1821,32 @@ mod tests {
             Box::new(|r| r.tabs[0].path = PathField::Text(format!("/{}", "x".repeat(MAX_PATH_BYTES + 1)))),
             Box::new(|r| r.tabs[0].path = PathField::Bytes { hex: "zz".into() }),
             Box::new(|r| r.tabs[0].view_rotation = 4),
-            Box::new(|r| r.tabs[0].place = Some(PlaceRecord { page: 0, anchor_page: 0, within: f64::NAN, x: 0.0, y: 0.0, document_height: 0.0, zoom: 1.0, page_width: 0.0, page_height: 0.0 })),
-            Box::new(|r| r.tabs[0].place = Some(PlaceRecord { page: 0, anchor_page: 0, within: 0.0, x: 0.0, y: 0.0, document_height: 0.0, zoom: -1.0, page_width: 0.0, page_height: 0.0 })),
+            Box::new(|r| {
+                r.tabs[0].place = Some(PlaceRecord {
+                    page: 0,
+                    anchor_page: 0,
+                    within: f64::NAN,
+                    x: 0.0,
+                    y: 0.0,
+                    document_height: 0.0,
+                    zoom: 1.0,
+                    page_width: 0.0,
+                    page_height: 0.0,
+                })
+            }),
+            Box::new(|r| {
+                r.tabs[0].place = Some(PlaceRecord {
+                    page: 0,
+                    anchor_page: 0,
+                    within: 0.0,
+                    x: 0.0,
+                    y: 0.0,
+                    document_height: 0.0,
+                    zoom: -1.0,
+                    page_width: 0.0,
+                    page_height: 0.0,
+                })
+            }),
             Box::new(|r| r.find.query = "x".repeat(MAX_FIND_BYTES + 1)),
             Box::new(|r| r.app.notice = Some("x".repeat(MAX_NOTICE_BYTES + 1))),
             // Review B9: a forged length becomes a list of that many pages at the first edit.
@@ -1571,7 +1854,18 @@ mod tests {
             // Review T17: adding to the next number would wrap.
             Box::new(|r| r.next_id = MAX_TAB_ID + 1),
             Box::new(|r| r.app.sidebar_width = Some(f64::INFINITY)),
-            Box::new(|r| r.app.window = Some(WindowRecord { frame: Rect { x: f64::NAN, y: 0.0, width: 1.0, height: 1.0 }, screen: None, full_screen: false })),
+            Box::new(|r| {
+                r.app.window = Some(WindowRecord {
+                    frame: Rect {
+                        x: f64::NAN,
+                        y: 0.0,
+                        width: 1.0,
+                        height: 1.0,
+                    },
+                    screen: None,
+                    full_screen: false,
+                })
+            }),
         ];
         for (at, change) in cases.iter().enumerate() {
             let mut bad = record(vec![entry(1), entry(2)]);
@@ -1584,34 +1878,141 @@ mod tests {
     /// Failure: too many tabs in a small file are parsed before they're counted: it's the list's own cap that has to stop them, with nothing allocated past it.
     #[test]
     fn a_list_stops_being_read_at_its_cap() {
-        let tabs: String = (1..=MAX_TABS + 1).map(|id| format!(r#"{{"id":{id},"path":"/a.pdf","page":0,"page_count":1}}"#)).collect::<Vec<_>>().join(",");
+        let tabs: String = (1..=MAX_TABS + 1)
+            .map(|id| format!(r#"{{"id":{id},"path":"/a.pdf","page":0,"page_count":1}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
         let body = format!(r#"{{"next_id":99999,"tabs":[{tabs}]}}"#);
-        assert!(matches!(decode_record(&seal(MAIN_KIND, 1, body.as_bytes()), CURRENT_VERSION), Err(RecordError::Damaged(_))));
+        assert!(matches!(
+            decode_record(&seal(MAIN_KIND, 1, body.as_bytes()), CURRENT_VERSION),
+            Err(RecordError::Damaged(_))
+        ));
     }
 
     /// Failure: a run of a few bytes claims billions of pages, and they're expanded before they're counted. Or a step of a hostile list is out of range, which would panic in `PageEdits::apply`, whose ranges are taken to have been checked.
     #[test]
     fn edits_are_checked_before_anything_is_expanded() {
-        let good = EditsRecord { file_pages: 3, pages: vec![SlotRun(0, 0, 3, 0)], added: Vec::new(), undo: Vec::new(), redo: Vec::new(), history_dropped: false, owner_step_dropped: false };
+        let good = EditsRecord {
+            file_pages: 3,
+            pages: vec![SlotRun(0, 0, 3, 0)],
+            added: Vec::new(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            history_dropped: false,
+            owner_step_dropped: false,
+        };
         assert!(validate_edits(&good).is_ok());
         let by = AuthorName::Owner;
         let cases: Vec<EditsRecord> = vec![
-            EditsRecord { pages: vec![SlotRun(0, 0, u32::MAX, 0)], ..good.clone() },
-            EditsRecord { pages: vec![SlotRun(0, 0, 3, 4)], ..good.clone() },
-            EditsRecord { pages: vec![SlotRun(9, 0, 3, 0)], ..good.clone() },
-            EditsRecord { pages: vec![SlotRun(0, 0, 0, 0)], ..good.clone() },
-            EditsRecord { undo: vec![EntryRecord { by, step: StepRecord::Rotate { start: 2, len: 2, quarter_turns: 1 } }], ..good.clone() },
-            EditsRecord { undo: vec![EntryRecord { by, step: StepRecord::Rotate { start: 0, len: 1, quarter_turns: 9 } }], ..good.clone() },
-            EditsRecord { undo: vec![EntryRecord { by, step: StepRecord::Move { start: 0, len: 1, to: 3 } }], ..good.clone() },
-            EditsRecord { redo: vec![EntryRecord { by, step: StepRecord::Remove { start: 0, len: 4 } }], ..good.clone() },
-            EditsRecord { undo: vec![EntryRecord { by, step: StepRecord::Restore { start: 9, runs: vec![SlotRun(0, 0, 1, 0)] } }], ..good.clone() },
-            EditsRecord { undo: vec![EntryRecord { by, step: StepRecord::Restore { start: 0, runs: vec![SlotRun(0, 0, u32::MAX, 0)] } }], ..good.clone() },
+            EditsRecord {
+                pages: vec![SlotRun(0, 0, u32::MAX, 0)],
+                ..good.clone()
+            },
+            EditsRecord {
+                pages: vec![SlotRun(0, 0, 3, 4)],
+                ..good.clone()
+            },
+            EditsRecord {
+                pages: vec![SlotRun(9, 0, 3, 0)],
+                ..good.clone()
+            },
+            EditsRecord {
+                pages: vec![SlotRun(0, 0, 0, 0)],
+                ..good.clone()
+            },
+            EditsRecord {
+                undo: vec![EntryRecord {
+                    by,
+                    step: StepRecord::Rotate {
+                        start: 2,
+                        len: 2,
+                        quarter_turns: 1,
+                    },
+                }],
+                ..good.clone()
+            },
+            EditsRecord {
+                undo: vec![EntryRecord {
+                    by,
+                    step: StepRecord::Rotate {
+                        start: 0,
+                        len: 1,
+                        quarter_turns: 9,
+                    },
+                }],
+                ..good.clone()
+            },
+            EditsRecord {
+                undo: vec![EntryRecord {
+                    by,
+                    step: StepRecord::Move { start: 0, len: 1, to: 3 },
+                }],
+                ..good.clone()
+            },
+            EditsRecord {
+                redo: vec![EntryRecord {
+                    by,
+                    step: StepRecord::Remove { start: 0, len: 4 },
+                }],
+                ..good.clone()
+            },
+            EditsRecord {
+                undo: vec![EntryRecord {
+                    by,
+                    step: StepRecord::Restore {
+                        start: 9,
+                        runs: vec![SlotRun(0, 0, 1, 0)],
+                    },
+                }],
+                ..good.clone()
+            },
+            EditsRecord {
+                undo: vec![EntryRecord {
+                    by,
+                    step: StepRecord::Restore {
+                        start: 0,
+                        runs: vec![SlotRun(0, 0, u32::MAX, 0)],
+                    },
+                }],
+                ..good.clone()
+            },
             // Review T9: pages the file doesn't have, whatever fits in a number, and no pages at all.
-            EditsRecord { pages: vec![SlotRun(0, 99_999, 3, 0)], ..good.clone() },
-            EditsRecord { pages: Vec::new(), ..good.clone() },
-            EditsRecord { undo: vec![EntryRecord { by, step: StepRecord::Restore { start: 0, runs: vec![SlotRun(0, 99_999, 1, 0)] } }], ..good.clone() },
+            EditsRecord {
+                pages: vec![SlotRun(0, 99_999, 3, 0)],
+                ..good.clone()
+            },
+            EditsRecord {
+                pages: Vec::new(),
+                ..good.clone()
+            },
+            EditsRecord {
+                undo: vec![EntryRecord {
+                    by,
+                    step: StepRecord::Restore {
+                        start: 0,
+                        runs: vec![SlotRun(0, 99_999, 1, 0)],
+                    },
+                }],
+                ..good.clone()
+            },
             // In range one at a time, and out of range in turn: the newer step shortens the document the older one is about.
-            EditsRecord { undo: vec![EntryRecord { by, step: StepRecord::Rotate { start: 2, len: 1, quarter_turns: 1 } }, EntryRecord { by, step: StepRecord::Remove { start: 0, len: 2 } }], ..good.clone() },
+            EditsRecord {
+                undo: vec![
+                    EntryRecord {
+                        by,
+                        step: StepRecord::Rotate {
+                            start: 2,
+                            len: 1,
+                            quarter_turns: 1,
+                        },
+                    },
+                    EntryRecord {
+                        by,
+                        step: StepRecord::Remove { start: 0, len: 2 },
+                    },
+                ],
+                ..good.clone()
+            },
         ];
         for (at, bad) in cases.iter().enumerate() {
             assert!(matches!(validate_edits(bad), Err(RecordError::Damaged(_))), "case {at}: {bad:?}");
@@ -1621,33 +2022,114 @@ mod tests {
     /// Failure: a window comes back where nobody can reach it: its screen unplugged, or a record saying it's a thousand screens away. Or it's moved when it needn't be: its screen is there, somewhere else on the desktop, or it's on a screen that's still here.
     #[test]
     fn a_window_always_comes_back_where_it_can_be_reached() {
-        let main = ScreenNow { id: 1, name: "Built-in".into(), frame: Rect { x: 0.0, y: 0.0, width: 1512.0, height: 982.0 }, visible: Rect { x: 0.0, y: 0.0, width: 1512.0, height: 950.0 } };
-        let side = ScreenNow { id: 2, name: "Studio".into(), frame: Rect { x: 1512.0, y: 0.0, width: 2560.0, height: 1440.0 }, visible: Rect { x: 1512.0, y: 0.0, width: 2560.0, height: 1410.0 } };
-        let on_side = Rect { x: 1700.0, y: 200.0, width: 1400.0, height: 900.0 };
-        let window = |screen: Option<ScreenRecord>, frame: Rect| WindowRecord { frame, screen, full_screen: false };
-        let was_side = ScreenRecord { id: 2, name: "Studio".into(), frame: side.frame };
+        let main = ScreenNow {
+            id: 1,
+            name: "Built-in".into(),
+            frame: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1512.0,
+                height: 982.0,
+            },
+            visible: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1512.0,
+                height: 950.0,
+            },
+        };
+        let side = ScreenNow {
+            id: 2,
+            name: "Studio".into(),
+            frame: Rect {
+                x: 1512.0,
+                y: 0.0,
+                width: 2560.0,
+                height: 1440.0,
+            },
+            visible: Rect {
+                x: 1512.0,
+                y: 0.0,
+                width: 2560.0,
+                height: 1410.0,
+            },
+        };
+        let on_side = Rect {
+            x: 1700.0,
+            y: 200.0,
+            width: 1400.0,
+            height: 900.0,
+        };
+        let window = |screen: Option<ScreenRecord>, frame: Rect| WindowRecord {
+            frame,
+            screen,
+            full_screen: false,
+        };
+        let was_side = ScreenRecord {
+            id: 2,
+            name: "Studio".into(),
+            frame: side.frame,
+        };
         // Still there: stays exactly.
-        assert_eq!(place_window(&window(Some(was_side.clone()), on_side), &[main.clone(), side.clone()]).frame, on_side);
+        assert_eq!(
+            place_window(&window(Some(was_side.clone()), on_side), &[main.clone(), side.clone()]).frame,
+            on_side
+        );
         // Its screen has moved on the desktop: it goes with it.
-        let moved = ScreenNow { frame: Rect { x: -2560.0, ..side.frame }, visible: Rect { x: -2560.0, ..side.visible }, ..side.clone() };
+        let moved = ScreenNow {
+            frame: Rect { x: -2560.0, ..side.frame },
+            visible: Rect { x: -2560.0, ..side.visible },
+            ..side.clone()
+        };
         let there = place_window(&window(Some(was_side.clone()), on_side), &[main.clone(), moved]).frame;
         assert_eq!(there.x, on_side.x - 1512.0 - 2560.0);
         // Its screen is gone: on the first, whole and in the middle.
         let back = place_window(&window(Some(was_side), on_side), std::slice::from_ref(&main)).frame;
-        assert!(back.x >= 0.0 && back.x + back.width <= 1512.0 && back.y >= 0.0 && back.y + back.height <= 950.0, "{back:?}");
+        assert!(
+            back.x >= 0.0 && back.x + back.width <= 1512.0 && back.y >= 0.0 && back.y + back.height <= 950.0,
+            "{back:?}"
+        );
         // A record saying anything at all.
-        for far in [Rect { x: 1e6, y: 1e6, width: 1e6, height: 1e6 }, Rect { x: -9000.0, y: -9000.0, width: 10.0, height: 10.0 }] {
+        for far in [
+            Rect {
+                x: 1e6,
+                y: 1e6,
+                width: 1e6,
+                height: 1e6,
+            },
+            Rect {
+                x: -9000.0,
+                y: -9000.0,
+                width: 10.0,
+                height: 10.0,
+            },
+        ] {
             let placed = place_window(&window(None, far), std::slice::from_ref(&main)).frame;
             assert!(placed.width >= WINDOW_MIN.0 && placed.height >= WINDOW_MIN.1, "{placed:?}");
             assert!(placed.x >= 0.0 && placed.x + placed.width <= 1512.0, "{placed:?}");
         }
-        assert!(place_window(&WindowRecord { full_screen: true, ..window(None, on_side) }, std::slice::from_ref(&main)).full_screen);
+        assert!(
+            place_window(
+                &WindowRecord {
+                    full_screen: true,
+                    ..window(None, on_side)
+                },
+                std::slice::from_ref(&main)
+            )
+            .full_screen
+        );
     }
 
     /// Failure: a tab's words name its file, which comes from outside, or say anything is lost when it isn't. Every notice is plain text with no name in it, and says edits are kept where there are some.
     #[test]
     fn every_notice_says_what_happened_to_the_edits() {
-        for notice in [FileNotice::Moved { from: PathField::Text("/d/a.pdf".into()) }, FileNotice::Changed, FileNotice::Missing] {
+        for notice in [
+            FileNotice::Moved {
+                from: PathField::Text("/d/a.pdf".into()),
+            },
+            FileNotice::Changed,
+            FileNotice::Missing,
+        ] {
             assert!(notice.message(true).contains("edits"), "{notice:?}");
             assert!(!notice.message(false).contains("edits"), "{notice:?}");
             assert!(!notice.message(true).contains("/d/"));
@@ -1658,7 +2140,14 @@ mod tests {
     /// Failure (review T13): free text in a forged record reaches the reader and agents, in a field documented as Rust's own words. Only a code is kept, and one this build doesn't know has no words at all.
     #[test]
     fn a_notice_is_a_code_and_a_forged_one_says_nothing() {
-        for code in [notices::DAMAGED, notices::NEWER, notices::NEWER_KEPT, notices::OTHER_INSTANCE, notices::UNREADABLE, notices::OLDER_RECORD] {
+        for code in [
+            notices::DAMAGED,
+            notices::NEWER,
+            notices::NEWER_KEPT,
+            notices::OTHER_INSTANCE,
+            notices::UNREADABLE,
+            notices::OLDER_RECORD,
+        ] {
             assert!(notices::words(code).is_some_and(|words| words.len() > 20), "{code}");
             assert!(code.len() <= MAX_NOTICE_BYTES);
         }
@@ -1668,16 +2157,37 @@ mod tests {
     /// Failure (decision 26): a record with two tabs on one file brings back two tabs. One wins, the one with edits if only one has them, and a tab pointing at a file by another name or a link counts as the same. If both have edits they can't be merged, so it says so and the other's journal is named for keeping.
     #[test]
     fn a_record_with_two_tabs_on_one_file_comes_back_as_one() {
-        let file = FileRecord { size: 1, mtime_ns: 2, device: 3, inode: 4 };
-        let tab = |id: u32, path: &str, journal: Option<&str>| TabEntry { id, path: PathField::Text(path.into()), file: Some(file), journal: journal.map(str::to_string), ..entry(id) };
-        let mut one = record(vec![tab(1, "/d/a.pdf", None), tab(2, "/d/link.pdf", Some("journal-0123456789abcdef.log")), TabEntry { file: Some(FileRecord { inode: 9, ..file }), ..entry(3) }]);
+        let file = FileRecord {
+            size: 1,
+            mtime_ns: 2,
+            device: 3,
+            inode: 4,
+        };
+        let tab = |id: u32, path: &str, journal: Option<&str>| TabEntry {
+            id,
+            path: PathField::Text(path.into()),
+            file: Some(file),
+            journal: journal.map(str::to_string),
+            ..entry(id)
+        };
+        let mut one = record(vec![
+            tab(1, "/d/a.pdf", None),
+            tab(2, "/d/link.pdf", Some("journal-0123456789abcdef.log")),
+            TabEntry {
+                file: Some(FileRecord { inode: 9, ..file }),
+                ..entry(3)
+            },
+        ]);
         one.active = Some(2);
         assert_eq!(one_tab_per_file(&mut one), Vec::<String>::new());
         assert_eq!(one.tabs.len(), 2);
         assert_eq!(one.tabs[0].journal.as_deref(), Some("journal-0123456789abcdef.log"), "the edits came with it");
         assert_eq!(one.active, Some(1));
         assert_eq!(one.tabs[0].notice, None);
-        let mut both = record(vec![tab(1, "/d/a.pdf", Some("journal-0123456789abcdef.log")), tab(2, "/d/link.pdf", Some("journal-0123456789abcde0.log"))]);
+        let mut both = record(vec![
+            tab(1, "/d/a.pdf", Some("journal-0123456789abcdef.log")),
+            tab(2, "/d/link.pdf", Some("journal-0123456789abcde0.log")),
+        ]);
         assert_eq!(one_tab_per_file(&mut both), vec!["journal-0123456789abcde0.log".to_string()]);
         assert_eq!(both.tabs.len(), 1);
         assert_eq!(both.tabs[0].notice, Some(FileNotice::EditsNotMerged));
@@ -1690,18 +2200,39 @@ mod tests {
     /// Failure (review T8): a tab applies a journal about another file: its page numbers mean nothing here. Only the same contents, or with nothing to compare, the same path.
     #[test]
     fn a_journal_is_only_for_its_own_file() {
-        let was = FileStamp { size: 10, mtime_ns: 20, device: 1, inode: 30 };
+        let was = FileStamp {
+            size: 10,
+            mtime_ns: 20,
+            device: 1,
+            inode: 30,
+        };
         let path = Path::new("/d/a.pdf");
         let header = JournalHeader::new(1, path, Some(was), 5, 0);
         assert!(journal_is_for(&header, Some(was), path));
-        assert!(journal_is_for(&header, Some(FileStamp { device: 7, ..was }), Path::new("/e/moved.pdf")), "the same file, moved, on a volume back under another number");
+        assert!(
+            journal_is_for(&header, Some(FileStamp { device: 7, ..was }), Path::new("/e/moved.pdf")),
+            "the same file, moved, on a volume back under another number"
+        );
         // Final review N1: size and time alone are what `cp -p` keeps, so another inode at another path is another file.
-        assert!(!journal_is_for(&header, Some(FileStamp { inode: 99, ..was }), Path::new("/e/acopy.pdf")), "a copy, with its size and time");
-        assert!(journal_is_for(&header, Some(FileStamp { inode: 99, device: 7, ..was }), path), "at its own path, with a new inode: put back from a backup");
-        assert!(!journal_is_for(&header, Some(FileStamp { size: 11, ..was }), path), "another version at the same path");
+        assert!(
+            !journal_is_for(&header, Some(FileStamp { inode: 99, ..was }), Path::new("/e/acopy.pdf")),
+            "a copy, with its size and time"
+        );
+        assert!(
+            journal_is_for(&header, Some(FileStamp { inode: 99, device: 7, ..was }), path),
+            "at its own path, with a new inode: put back from a backup"
+        );
+        assert!(
+            !journal_is_for(&header, Some(FileStamp { size: 11, ..was }), path),
+            "another version at the same path"
+        );
         assert!(journal_is_for(&header, None, path), "nothing to compare: the path says");
         // Named by the record, the contents are enough, and only they: a tab can't name a journal about something else.
-        assert!(journal_named_is_for(&header, Some(FileStamp { inode: 99, device: 7, ..was }), Path::new("/e/moved.pdf")));
+        assert!(journal_named_is_for(
+            &header,
+            Some(FileStamp { inode: 99, device: 7, ..was }),
+            Path::new("/e/moved.pdf")
+        ));
         assert!(!journal_named_is_for(&header, Some(FileStamp { size: 11, ..was }), path));
         assert!(!journal_named_is_for(&header, None, Path::new("/etc/hosts")));
         assert!(!journal_is_for(&header, None, Path::new("/etc/hosts")));
@@ -1711,8 +2242,32 @@ mod tests {
     /// Failure (review T21): a window from a record stays as wide as it says, as long as its top is on a screen.
     #[test]
     fn a_window_is_no_bigger_than_a_screen() {
-        let screen = ScreenNow { id: 1, name: "Built-in".into(), frame: Rect { x: 0.0, y: 0.0, width: 1512.0, height: 982.0 }, visible: Rect { x: 0.0, y: 0.0, width: 1512.0, height: 950.0 } };
-        let saved = WindowRecord { frame: Rect { x: 0.0, y: 0.0, width: 900_000.0, height: 900.0 }, screen: None, full_screen: false };
+        let screen = ScreenNow {
+            id: 1,
+            name: "Built-in".into(),
+            frame: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1512.0,
+                height: 982.0,
+            },
+            visible: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1512.0,
+                height: 950.0,
+            },
+        };
+        let saved = WindowRecord {
+            frame: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 900_000.0,
+                height: 900.0,
+            },
+            screen: None,
+            full_screen: false,
+        };
         let placed = place_window(&saved, std::slice::from_ref(&screen)).frame;
         assert!(placed.width <= 1512.0, "{placed:?}");
     }

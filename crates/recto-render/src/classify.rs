@@ -80,7 +80,11 @@ mod tests {
     fn only_pixels_count_not_the_unused_byte_or_padding() {
         let mut pixels = tile(8, 8, 64, [200, 200, 200, 0]);
         pixels[3] = 77;
-        assert_eq!(classify_bgrx(&pixels, 8, 8, 64), TileKind::Blank { rgb: 0xC8_C8C8 }, "padding bytes are 0xAB and must be ignored");
+        assert_eq!(
+            classify_bgrx(&pixels, 8, 8, 64),
+            TileKind::Blank { rgb: 0xC8_C8C8 },
+            "padding bytes are 0xAB and must be ignored"
+        );
     }
 
     /// Failure: an empty or short buffer panics inside the worker.

@@ -155,7 +155,12 @@ impl Tool {
 
     /// The notice as the window shows it, its button naming this notice.
     pub(crate) fn selection_notice(&self) -> Option<SelectionNotice> {
-        self.notice().map(|notice| SelectionNotice { action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), action_id: notice.offers_copy_anyway.then(|| format!("{ANYWAY_PREFIX}{}", notice.serial)), fades: !notice.offers_copy_anyway, text: notice.text })
+        self.notice().map(|notice| SelectionNotice {
+            action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()),
+            action_id: notice.offers_copy_anyway.then(|| format!("{ANYWAY_PREFIX}{}", notice.serial)),
+            fades: !notice.offers_copy_anyway,
+            text: notice.text,
+        })
     }
 
     pub(crate) fn dismiss_notice(&self) {
@@ -166,7 +171,11 @@ impl Tool {
     /// Says something by the page, under a new number.
     fn say(&self, text: impl Into<String>, offers_copy_anyway: bool) -> u64 {
         let serial = self.serial.fetch_add(1, Ordering::SeqCst) + 1;
-        *lock(&self.notice) = Some(ToolNotice { serial, text: text.into(), offers_copy_anyway });
+        *lock(&self.notice) = Some(ToolNotice {
+            serial,
+            text: text.into(),
+            offers_copy_anyway,
+        });
         serial
     }
 
@@ -190,7 +199,15 @@ impl Tool {
             *drawn = None;
         }
         if let Some((page, rect)) = shown {
-            ops.push(ReaderOp::SnapshotBox { page, rect: Some(HighlightRect { x: f64::from(rect.x), y: f64::from(rect.y), width: f64::from(rect.width), height: f64::from(rect.height) }) });
+            ops.push(ReaderOp::SnapshotBox {
+                page,
+                rect: Some(HighlightRect {
+                    x: f64::from(rect.x),
+                    y: f64::from(rect.y),
+                    width: f64::from(rect.width),
+                    height: f64::from(rect.height),
+                }),
+            });
             *drawn = Some((pane, page));
         }
         ops
@@ -225,8 +242,20 @@ impl Tool {
         let ops = self.box_ops(pane, None);
         let Some(tab) = engine.hot_tab() else { return ops };
         let job = match taken {
-            Taken::Click(point) => Job { tab, position: point.page, wanted: Wanted::Image { x: point.x, y: point.y }, anyway: false },
-            Taken::Box { page, rect } => Job { tab, position: page, wanted: Wanted::Box { rect: [rect.x, rect.y, rect.width, rect.height] }, anyway: false },
+            Taken::Click(point) => Job {
+                tab,
+                position: point.page,
+                wanted: Wanted::Image { x: point.x, y: point.y },
+                anyway: false,
+            },
+            Taken::Box { page, rect } => Job {
+                tab,
+                position: page,
+                wanted: Wanted::Box {
+                    rect: [rect.x, rect.y, rect.width, rect.height],
+                },
+                anyway: false,
+            },
             Taken::Nothing => return ops,
         };
         start(inner, job);
@@ -262,18 +291,45 @@ impl Tool {
 
     /// A text copy, as one offer like any other.
     fn offer_text(&self, text: String) -> Offered {
-        Offered { serial: 0, items: vec![ClipItem::Ready { uti: extract::UTI_TEXT, bytes: text.into_bytes() }], promise: None }
+        Offered {
+            serial: 0,
+            items: vec![ClipItem::Ready {
+                uti: extract::UTI_TEXT,
+                bytes: text.into_bytes(),
+            }],
+            promise: None,
+        }
     }
 }
 
 /// The tool's place in the menu bar: Tools, with Snapshot ticked while it's on. ⇧⌘A, as a key nothing else here takes, and the screenshot keys are the system's.
 pub(crate) fn tools_menu(snapshot_on: bool) -> MenuModel {
-    MenuModel { title: "Tools".into(), entries: vec![MenuEntry { id: TOGGLE_ID.into(), title: SNAPSHOT_TITLE.into(), key: "A".into(), with_control: false, checked: snapshot_on, hidden: false, system_action: String::new(), parent: String::new() }] }
+    MenuModel {
+        title: "Tools".into(),
+        entries: vec![MenuEntry {
+            id: TOGGLE_ID.into(),
+            title: SNAPSHOT_TITLE.into(),
+            key: "A".into(),
+            with_control: false,
+            checked: snapshot_on,
+            hidden: false,
+            system_action: String::new(),
+            parent: String::new(),
+        }],
+    }
 }
 
 /// The panel's tools, above its view options. The panel holds tools while reading (owner, 2026-11-07: "The sidebar menu is more for tools, like edit mode etc."), and commands are in the menu bar too (decision 17).
 pub(crate) fn tools_section(snapshot_on: bool) -> PanelSection {
-    PanelSection { title: "Tools".into(), items: vec![PanelItem { id: TOGGLE_ID.into(), title: SNAPSHOT_TITLE.into(), selected: snapshot_on, enabled: true }] }
+    PanelSection {
+        title: "Tools".into(),
+        items: vec![PanelItem {
+            id: TOGGLE_ID.into(),
+            title: SNAPSHOT_TITLE.into(),
+            selected: snapshot_on,
+            enabled: true,
+        }],
+    }
 }
 
 /// The tools go first in an open panel, except in edit mode, whose Done leads the panel and the tools come after it.
@@ -367,7 +423,11 @@ fn publish(inner: &Inner, job: Job, outcome: ClipOutcome, source: Option<(PathBu
             Wanted::Box { rect } => source.map(|(path, page)| Promise { path, page, rect }),
             Wanted::Image { .. } => None,
         };
-        let items = clip.items.into_iter().filter(|item| matches!(item, ClipItem::Ready { .. }) || promise.is_some()).collect();
+        let items = clip
+            .items
+            .into_iter()
+            .filter(|item| matches!(item, ClipItem::Ready { .. }) || promise.is_some())
+            .collect();
         *lock(&tool.ready) = Some(Offered { serial: 0, items, promise });
         inner.listener.copy_ready();
     }
@@ -382,7 +442,14 @@ fn source_of(inner: &Inner, job: Job) -> Option<(PathBuf, u32)> {
 /// What goes on the clipboard for a job, from the page as it is in its file.
 fn take(inner: &Inner, job: Job, stop: &ClipStop) -> (ClipOutcome, Option<(PathBuf, u32)>) {
     let Some((path, page)) = source_of(inner, job) else {
-        return (ClipOutcome::Failed(recto_agent::AgentError::new("source_changed", "That page can't be read now: its file has changed or gone.", recto_agent::exit::FAILED)), None);
+        return (
+            ClipOutcome::Failed(recto_agent::AgentError::new(
+                "source_changed",
+                "That page can't be read now: its file has changed or gone.",
+                recto_agent::exit::FAILED,
+            )),
+            None,
+        );
     };
     let outcome = match job.wanted {
         Wanted::Image { x, y } => extract::image_clip(&path, page, x, y, job.anyway, stop),
@@ -403,11 +470,27 @@ impl AppCore {
     /// What a copy has for the clipboard, a snapshot's or the selection's text, as one offer: the types in order, and which are made only when a paste asks. `copy_ready` says when. The bytes come one type at a time from `clipboard_data`, so no more than one is copied across at once.
     pub fn take_clipboard(&self) -> Option<ClipboardOffer> {
         let tool = &self.inner.tool;
-        let mut offered = lock(&tool.ready).take().or_else(|| self.inner.panes.engines(&self.inner.engine).iter().find_map(Engine::take_copied).map(|copied| tool.offer_text(copied.text)))?;
+        let mut offered = lock(&tool.ready).take().or_else(|| {
+            self.inner
+                .panes
+                .engines(&self.inner.engine)
+                .iter()
+                .find_map(Engine::take_copied)
+                .map(|copied| tool.offer_text(copied.text))
+        })?;
         offered.serial = tool.serial.fetch_add(1, Ordering::SeqCst) + 1;
         let types = offered.items.iter().map(|item| item.uti().to_string()).collect();
-        let promised = offered.items.iter().filter(|item| matches!(item, ClipItem::Promised { .. })).map(|item| item.uti().to_string()).collect();
-        let offer = ClipboardOffer { serial: offered.serial, types, promised };
+        let promised = offered
+            .items
+            .iter()
+            .filter(|item| matches!(item, ClipItem::Promised { .. }))
+            .map(|item| item.uti().to_string())
+            .collect();
+        let offer = ClipboardOffer {
+            serial: offered.serial,
+            types,
+            promised,
+        };
         // Whatever was offered before is gone from the clipboard now, its promise with it.
         *lock(&tool.offered) = Some(offered);
         Some(offer)
@@ -435,7 +518,12 @@ mod tests {
     use super::*;
 
     fn job(x: f32) -> Job {
-        Job { tab: 1, position: 0, wanted: Wanted::Image { x, y: 0.0 }, anyway: false }
+        Job {
+            tab: 1,
+            position: 0,
+            wanted: Wanted::Image { x, y: 0.0 },
+            anyway: false,
+        }
     }
 
     /// Failure: a refusal for permissions has no "Copy anyway", or a plain answer offers one, or the reader isn't told why nothing was copied by a click off any image.
@@ -444,7 +532,10 @@ mod tests {
         assert!(words_for(&ClipOutcome::Restricted).1);
         let (text, offers) = words_for(&ClipOutcome::NoImage);
         assert!(!offers && text.contains("no image"));
-        let ready = words_for(&ClipOutcome::Ready(extract::Clip { items: Vec::new(), note: "Copied.".into() }));
+        let ready = words_for(&ClipOutcome::Ready(extract::Clip {
+            items: Vec::new(),
+            note: "Copied.".into(),
+        }));
         assert_eq!(ready, ("Copied.".to_string(), false));
     }
 
@@ -452,8 +543,24 @@ mod tests {
     #[test]
     fn the_box_moves_with_the_drag_and_leaves_no_trace() {
         let tool = Tool::default();
-        let rect = recto_index::select::Rect { x: 1.0, y: 2.0, width: 3.0, height: 4.0 };
-        assert_eq!(tool.box_ops(0, Some((5, rect))), vec![ReaderOp::SnapshotBox { page: 5, rect: Some(HighlightRect { x: 1.0, y: 2.0, width: 3.0, height: 4.0 }) }]);
+        let rect = recto_index::select::Rect {
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+        };
+        assert_eq!(
+            tool.box_ops(0, Some((5, rect))),
+            vec![ReaderOp::SnapshotBox {
+                page: 5,
+                rect: Some(HighlightRect {
+                    x: 1.0,
+                    y: 2.0,
+                    width: 3.0,
+                    height: 4.0
+                })
+            }]
+        );
         let moved = tool.box_ops(0, Some((6, rect)));
         assert_eq!(moved[0], ReaderOp::SnapshotBox { page: 5, rect: None }, "off the page it left");
         assert_eq!(tool.box_ops(0, None), vec![ReaderOp::SnapshotBox { page: 6, rect: None }]);
@@ -483,14 +590,21 @@ mod tests {
         let tool = Tool::default();
         let serial = tool.say("This file's permissions ask that it isn't copied.", true);
         *lock(&tool.refused) = Some((serial, job(1.0)));
-        assert_eq!(tool.selection_notice().and_then(|notice| notice.action_id), Some(format!("{ANYWAY_PREFIX}{serial}")));
+        assert_eq!(
+            tool.selection_notice().and_then(|notice| notice.action_id),
+            Some(format!("{ANYWAY_PREFIX}{serial}"))
+        );
         assert_eq!(tool.take_refused(serial + 1), None, "another notice's button");
         assert_eq!(tool.take_refused(serial), Some(job(1.0)));
         assert_eq!(tool.take_refused(serial), None, "once");
         let serial = tool.say("This file's permissions ask that it isn't copied.", true);
         *lock(&tool.refused) = Some((serial, job(2.0)));
         tool.toggle();
-        assert_eq!((tool.take_refused(serial), tool.notice()), (None, None), "turning the tool takes the offer away");
+        assert_eq!(
+            (tool.take_refused(serial), tool.notice()),
+            (None, None),
+            "turning the tool takes the offer away"
+        );
         let serial = tool.say("This file's permissions ask that it isn't copied.", true);
         *lock(&tool.refused) = Some((serial, job(3.0)));
         tool.dismiss_notice();
@@ -501,10 +615,17 @@ mod tests {
     #[test]
     fn the_snapshot_tool_is_in_the_tools_menu_and_the_panel() {
         let menu = tools_menu(true);
-        assert_eq!((menu.entries[0].id.as_str(), menu.entries[0].checked, menu.entries[0].key.as_str()), (TOGGLE_ID, true, "A"));
+        assert_eq!(
+            (menu.entries[0].id.as_str(), menu.entries[0].checked, menu.entries[0].key.as_str()),
+            (TOGGLE_ID, true, "A")
+        );
         assert!(!tools_menu(false).entries[0].checked);
         assert!(tools_section(true).items[0].selected && !tools_section(false).items[0].selected);
-        let taken: Vec<(String, bool)> = crate::menus::menu_bar(recto_session::ViewSettings::default(), None, "").iter().flat_map(|menu| &menu.entries).map(|item| (item.key.clone(), item.with_control)).collect();
+        let taken: Vec<(String, bool)> = crate::menus::menu_bar(recto_session::ViewSettings::default(), None, "")
+            .iter()
+            .flat_map(|menu| &menu.entries)
+            .map(|item| (item.key.clone(), item.with_control))
+            .collect();
         assert!(!taken.contains(&("A".to_string(), false)), "⇧⌘A is free");
     }
 
@@ -516,7 +637,10 @@ mod tests {
         assert_eq!(reading.sections[0].items[0].id, TOGGLE_ID);
         let mut editing = crate::menus::panel(true, true, true);
         add_to_panel(&mut editing, false, true);
-        assert_eq!((editing.sections[0].items[0].id.as_str(), editing.sections[1].items[0].id.as_str()), ("edit_mode.done", TOGGLE_ID));
+        assert_eq!(
+            (editing.sections[0].items[0].id.as_str(), editing.sections[1].items[0].id.as_str()),
+            ("edit_mode.done", TOGGLE_ID)
+        );
         let mut closed = crate::menus::panel(false, false, true);
         add_to_panel(&mut closed, true, false);
         assert!(closed.sections.iter().all(|section| section.items.iter().all(|item| item.id != TOGGLE_ID)));
@@ -526,15 +650,39 @@ mod tests {
     #[test]
     fn an_offers_bytes_go_once_to_that_offer() {
         let tool = Tool::default();
-        let promise = Promise { path: "/a.pdf".into(), page: 0, rect: [0.0, 0.0, 1.0, 1.0] };
-        *lock(&tool.offered) = Some(Offered { serial: 7, items: vec![ClipItem::Ready { uti: extract::UTI_PNG, bytes: vec![1] }, ClipItem::Promised { uti: extract::UTI_SVG, cap: 9 }], promise: Some(promise.clone()) });
+        let promise = Promise {
+            path: "/a.pdf".into(),
+            page: 0,
+            rect: [0.0, 0.0, 1.0, 1.0],
+        };
+        *lock(&tool.offered) = Some(Offered {
+            serial: 7,
+            items: vec![
+                ClipItem::Ready {
+                    uti: extract::UTI_PNG,
+                    bytes: vec![1],
+                },
+                ClipItem::Promised { uti: extract::UTI_SVG, cap: 9 },
+            ],
+            promise: Some(promise.clone()),
+        });
         assert_eq!(tool.data(6, extract::UTI_PNG), None, "an older offer");
         assert_eq!(tool.data(7, extract::UTI_PNG), Some(Data::Ready(vec![1])));
         assert_eq!(tool.data(7, extract::UTI_PNG), None, "once");
-        assert_eq!(tool.data(7, extract::UTI_SVG), Some(Data::Make(promise.clone(), 9)), "a promise, as often as a paste asks");
+        assert_eq!(
+            tool.data(7, extract::UTI_SVG),
+            Some(Data::Make(promise.clone(), 9)),
+            "a promise, as often as a paste asks"
+        );
         assert_eq!(tool.data(7, extract::UTI_SVG), Some(Data::Make(promise, 9)));
         tool.quitting();
         assert_eq!(tool.data(7, extract::UTI_SVG), None, "nothing made on the way out");
-        assert_eq!(tool.offer_text("words".into()).items, vec![ClipItem::Ready { uti: extract::UTI_TEXT, bytes: b"words".to_vec() }]);
+        assert_eq!(
+            tool.offer_text("words".into()).items,
+            vec![ClipItem::Ready {
+                uti: extract::UTI_TEXT,
+                bytes: b"words".to_vec()
+            }]
+        );
     }
 }

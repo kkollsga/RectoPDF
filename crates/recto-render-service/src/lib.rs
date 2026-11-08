@@ -29,12 +29,16 @@ mod host;
 pub mod transport;
 
 pub use budget::{
-    BUDGET_MAX_TIME, BudgetOptions, BudgetReport, DrawStrategy, OutputCaps, PageDrawn, PageEvent, PageSample, REGION_MIN_IMAGE_PIXELS, STRIP_MAX_BYTES, ViewportOptions, ViewportStep, box_pixels, draw_page_box, draw_whole_page, draw_whole_page_sized, fits_at, largest_scale_that_fits, measure_budget,
+    BUDGET_MAX_TIME, BudgetOptions, BudgetReport, DrawStrategy, OutputCaps, PageDrawn, PageEvent, PageSample, REGION_MIN_IMAGE_PIXELS, STRIP_MAX_BYTES,
+    ViewportOptions, ViewportStep, box_pixels, draw_page_box, draw_whole_page, draw_whole_page_sized, fits_at, largest_scale_that_fits, measure_budget,
     measure_viewport, page_device_size, plan_regions,
 };
-pub use host::{CancelHandle, DocRenderer, DrawPurpose, ExportRefusal, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy, RenderFailure, RenderStats, ServiceConfig, Surface, Target, Tile, TileRequest, TileResult, WallsDown};
 pub use host::contents::{ContentsDone, ContentsEvent, ContentsRequest};
-pub use recto_proto::{CharRecord, TileKind, TileRect, TILE_EDGE};
+pub use host::{
+    CancelHandle, DocRenderer, DrawPurpose, ExportRefusal, HeavySlot, KillReason, LowRes, LowResWhy, PageCharacters, PageDrawState, Policy, RenderFailure,
+    RenderStats, ServiceConfig, Surface, Target, Tile, TileRequest, TileResult, WallsDown,
+};
+pub use recto_proto::{CharRecord, TILE_EDGE, TileKind, TileRect};
 
 /// Exit codes the worker uses to say why it left. Anything else, or a signal, reads as a crash.
 pub mod exit_code {
@@ -73,7 +77,14 @@ pub mod bundle {
 
     /// The helper's worker for a program in an app's `Contents/MacOS`: the app itself, `recto` and the other helpers there.
     pub fn helper_worker(macos_dir: &Path) -> Option<PathBuf> {
-        Some(macos_dir.parent()?.join("Helpers").join(HELPER_APP).join("Contents/MacOS").join(format!("{WORKER}{}", std::env::consts::EXE_SUFFIX)))
+        Some(
+            macos_dir
+                .parent()?
+                .join("Helpers")
+                .join(HELPER_APP)
+                .join("Contents/MacOS")
+                .join(format!("{WORKER}{}", std::env::consts::EXE_SUFFIX)),
+        )
     }
 
     /// Whether a worker at this path has to put its walls up before it reads a document: in any app bundle, or always in a release. Run from a bundle, it was put there to be sandboxed,
@@ -83,7 +94,12 @@ pub mod bundle {
             return true;
         }
         let Some(exe) = exe else { return true };
-        let folders: Vec<_> = exe.ancestors().skip(1).take(3).map(|dir| dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+        let folders: Vec<_> = exe
+            .ancestors()
+            .skip(1)
+            .take(3)
+            .map(|dir| dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default())
+            .collect();
         matches!(folders.as_slice(), [macos, contents, app] if macos == "MacOS" && contents == "Contents" && app.ends_with(".app"))
     }
 
@@ -98,9 +114,18 @@ pub mod bundle {
             assert!(walls_required(Some(bundled), false));
             assert!(walls_required(Some(Path::new("/tmp/Any.app/Contents/MacOS/recto-render-service")), false));
             assert!(!walls_required(Some(Path::new("/repo/target/debug/recto-render-service")), false));
-            assert!(!walls_required(Some(Path::new("/repo/Contents/MacOS/recto-render-service")), false), "not in an app");
-            assert!(!walls_required(Some(Path::new("/A.app/Contents/recto-render-service")), false), "not in an app's MacOS");
-            assert!(walls_required(Some(Path::new("/repo/target/release/recto-render-service")), true), "a release always");
+            assert!(
+                !walls_required(Some(Path::new("/repo/Contents/MacOS/recto-render-service")), false),
+                "not in an app"
+            );
+            assert!(
+                !walls_required(Some(Path::new("/A.app/Contents/recto-render-service")), false),
+                "not in an app's MacOS"
+            );
+            assert!(
+                walls_required(Some(Path::new("/repo/target/release/recto-render-service")), true),
+                "a release always"
+            );
             assert!(walls_required(None, false), "not knowing where it is fails closed");
             assert_eq!(helper_worker(Path::new("/A.app/Contents/MacOS")).unwrap(), bundled_in("/A.app"));
         }

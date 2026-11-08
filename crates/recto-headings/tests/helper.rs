@@ -10,9 +10,21 @@ use std::time::{Duration, Instant};
 
 fn run(path: &std::path::Path, key: CorpusKey, close_stdin: bool) -> (Value, Option<Generated>, Duration) {
     let started = Instant::now();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_recto-headings")).env_clear().env("MallocLargeCache", "0").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_recto-headings"))
+        .env_clear()
+        .env("MallocLargeCache", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    writeln!(stdin, "{}", json!({ "file": path, "key": key.hex(), "background": false, "memory_limit": 512u64 << 20 })).unwrap();
+    writeln!(
+        stdin,
+        "{}",
+        json!({ "file": path, "key": key.hex(), "background": false, "memory_limit": 512u64 << 20 })
+    )
+    .unwrap();
     if close_stdin {
         drop(stdin);
     } else {
@@ -37,12 +49,23 @@ fn hidden_headings_never_reach_the_contents_and_visible_ones_do() {
     let generated = generated.expect("contents");
     let titles: Vec<(&str, u32)> = generated.entries.iter().map(|entry| (entry.title.as_str(), entry.page)).collect();
     assert!(titles.iter().all(|(title, _)| !title.contains("HIDDEN")), "{titles:?}");
-    for (page, title) in ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"].iter().enumerate() {
+    for (page, title) in ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"]
+        .iter()
+        .enumerate()
+    {
         assert!(titles.contains(&(title, page as u32)), "{title} missing from {titles:?}");
     }
     // distillPDF 0.1.7 takes both hidden lines for headings, so they're found and then left out here. Should it stop finding them, nothing's left out, and this still holds.
-    assert_eq!(report["found"].as_u64(), Some(titles.len() as u64 + u64::from(generated.hidden_dropped)), "{report}");
-    assert!(generated.entries.iter().all(|entry| entry.place < 200), "headings are near the top of their pages: {:?}", generated.entries);
+    assert_eq!(
+        report["found"].as_u64(),
+        Some(titles.len() as u64 + u64::from(generated.hidden_dropped)),
+        "{report}"
+    );
+    assert!(
+        generated.entries.iter().all(|entry| entry.place < 200),
+        "headings are near the top of their pages: {:?}",
+        generated.entries
+    );
 }
 
 /// Failure: a file replaced after it was asked for gets the old version's headings, or the new one's under the old key.
@@ -93,13 +116,20 @@ fn it_goes_when_its_stdin_closes() {
 #[test]
 fn no_way_of_hiding_a_heading_gets_it_into_the_contents() {
     for (name, hidden) in recto_testpdf::HIDDEN_HEADINGS {
-        let pdf = TempPdf::new(&format!("{name}.pdf"), &recto_testpdf::headings_document_with(hidden, [0.0, 0.0, 612.0, 792.0], ""));
+        let pdf = TempPdf::new(
+            &format!("{name}.pdf"),
+            &recto_testpdf::headings_document_with(hidden, [0.0, 0.0, 612.0, 792.0], ""),
+        );
         let key = CorpusKey::of_file(&pdf.0).unwrap();
         let (report, generated, _) = run(&pdf.0, key, false);
         assert_eq!(report["state"], "ready", "{name}: {report}");
         let titles: Vec<String> = generated.expect("contents").entries.iter().map(|entry| entry.title.clone()).collect();
         assert!(titles.iter().all(|title| !title.contains("HIDDEN")), "{name}: {titles:?}");
-        assert_eq!(titles, ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"], "{name}");
+        assert_eq!(
+            titles,
+            ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"],
+            "{name}"
+        );
     }
 }
 
@@ -112,7 +142,11 @@ fn place_is_right_on_a_media_box_that_doesnt_start_at_zero() {
     let generated = generated.unwrap_or_else(|| panic!("{report}"));
     assert_eq!(generated.entries.len(), 6, "{generated:?}");
     // The headings' baseline is 72 points from the top of 792.
-    assert!(generated.entries.iter().all(|entry| (60..140).contains(&entry.place)), "{:?}", generated.entries);
+    assert!(
+        generated.entries.iter().all(|entry| (60..140).contains(&entry.place)),
+        "{:?}",
+        generated.entries
+    );
 }
 
 /// Failure: headings in heavy type, which cover more than half of each glyph's box, are taken for hidden text and left out, as a review's crafted file lost all six. Drawn with and without them, they add what anyone can see.
@@ -121,6 +155,15 @@ fn headings_in_heavy_type_stay() {
     let pdf = TempPdf::new("bold.pdf", &recto_testpdf::bold_headings_document());
     let key = CorpusKey::of_file(&pdf.0).unwrap();
     let (report, generated, _) = run(&pdf.0, key, false);
-    let titles: Vec<String> = generated.unwrap_or_else(|| panic!("{report}")).entries.iter().map(|entry| entry.title.clone()).collect();
-    assert_eq!(titles, ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"], "{report}");
+    let titles: Vec<String> = generated
+        .unwrap_or_else(|| panic!("{report}"))
+        .entries
+        .iter()
+        .map(|entry| entry.title.clone())
+        .collect();
+    assert_eq!(
+        titles,
+        ["1 Introduction", "2 Background", "3 Method", "4 Results", "5 Discussion", "6 Conclusion"],
+        "{report}"
+    );
 }

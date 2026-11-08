@@ -48,9 +48,15 @@ impl Trail {
     pub fn from_record(back: &[Stop], forward: &[Stop], pages: u32) -> Self {
         let keep = |stops: &[Stop]| -> Vec<Stop> {
             let start = stops.len().saturating_sub(MAX_TRAIL);
-            stops[start..].iter().map(|stop| Stop::new(stop.page.min(pages.saturating_sub(1)), f64::from(stop.within)).by(stop.by_agent)).collect()
+            stops[start..]
+                .iter()
+                .map(|stop| Stop::new(stop.page.min(pages.saturating_sub(1)), f64::from(stop.within)).by(stop.by_agent))
+                .collect()
         };
-        Self { back: keep(back), forward: keep(forward) }
+        Self {
+            back: keep(back),
+            forward: keep(forward),
+        }
     }
 
     pub fn back(&self) -> &[Stop] {
@@ -160,7 +166,13 @@ mod tests {
         }
         assert_eq!(trail.back().len(), MAX_TRAIL);
         assert_eq!(trail.back()[0].page, MAX_TRAIL as u32 * 2, "the oldest went first");
-        let many: Vec<Stop> = (0..500).map(|page| Stop { page, within: f32::NAN, by_agent: false }).collect();
+        let many: Vec<Stop> = (0..500)
+            .map(|page| Stop {
+                page,
+                within: f32::NAN,
+                by_agent: false,
+            })
+            .collect();
         let kept = Trail::from_record(&many, &many, 10);
         assert_eq!(kept.back().len(), MAX_TRAIL);
         assert!(kept.back().iter().chain(kept.forward()).all(|stop| stop.page < 10 && stop.within == 0.0));
@@ -173,7 +185,10 @@ mod tests {
         for page in 0..(MAX_TRAIL as u32) {
             trail.jumped(Stop::new(page, 0.0), Stop::new(page + 1, 0.0), false);
         }
-        assert_eq!(trail.go_back(Stop::new(MAX_TRAIL as u32, 0.0), false).map(|stop| stop.page), Some(MAX_TRAIL as u32 - 1));
+        assert_eq!(
+            trail.go_back(Stop::new(MAX_TRAIL as u32, 0.0), false).map(|stop| stop.page),
+            Some(MAX_TRAIL as u32 - 1)
+        );
         trail.jumped(Stop::new(MAX_TRAIL as u32 - 1, 0.0), Stop::new(900, 0.0), false);
         assert_eq!(trail.forward().len(), 0);
         trail.go_back(Stop::new(900, 0.0), false);
@@ -182,7 +197,10 @@ mod tests {
             trail.jumped(Stop::new(page, 0.0), Stop::new(page + 1, 0.0), true);
         }
         assert_eq!(trail.back().len(), MAX_TRAIL);
-        assert!(persons.iter().all(|stop| trail.back().contains(stop)), "every stop of the person's is still there");
+        assert!(
+            persons.iter().all(|stop| trail.back().contains(stop)),
+            "every stop of the person's is still there"
+        );
         assert_eq!(trail.forward().iter().filter(|stop| !stop.by_agent).count(), 1, "and their way forward");
         // The person's own jump goes on as before: theirs can push out anything.
         trail.jumped(Stop::new(5, 0.0), Stop::new(6, 0.0), false);
@@ -195,7 +213,11 @@ mod tests {
         let mut trail = Trail::default();
         trail.jumped(Stop::new(2, 0.5), Stop::new(9, 0.0), false);
         trail.jumped(Stop::new(9, 0.0), Stop::new(4, 0.0), false);
-        trail.follow_pages(|page| match page { 2 => Some(0), 9 => None, other => Some(other) });
+        trail.follow_pages(|page| match page {
+            2 => Some(0),
+            9 => None,
+            other => Some(other),
+        });
         assert_eq!(trail.back(), [Stop::new(0, 0.5)]);
     }
 }

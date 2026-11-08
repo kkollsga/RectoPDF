@@ -51,7 +51,10 @@ impl Saved {
     /// Reads it, keeping only what's well-formed. Nothing from this file reaches the screen or a command without passing here. There not being one is a first launch. One that's there and can't be read says nothing of what the user chose, so nothing's installed by itself until they say: a failing that errs towards not replacing the app under them.
     #[must_use]
     pub fn read(file: &Path) -> Self {
-        let unreadable = Self { auto_update: Some(false), ..Self::default() };
+        let unreadable = Self {
+            auto_update: Some(false),
+            ..Self::default()
+        };
         let bytes = match local::read_private_file(file, MAX_BYTES) {
             Ok(Some(bytes)) => bytes,
             Ok(None) => return Self::default(),
@@ -61,11 +64,15 @@ impl Saved {
         if serde_json::from_slice::<serde_json::Value>(&bytes).map_or(true, |value| !value.is_object()) {
             return unreadable;
         }
-        let Ok(mut saved) = serde_json::from_slice::<Self>(&bytes) else { return unreadable };
+        let Ok(mut saved) = serde_json::from_slice::<Self>(&bytes) else {
+            return unreadable;
+        };
         saved.offered = saved.offered.filter(|version| parse_version(version).is_some());
         saved.proven = saved.proven.filter(|version| parse_version(version).is_some());
         saved.failed.retain(|version| parse_version(version).is_some());
-        saved.last_update = saved.last_update.filter(|update| parse_version(&update.from).is_some() && parse_version(&update.to).is_some());
+        saved.last_update = saved
+            .last_update
+            .filter(|update| parse_version(&update.from).is_some() && parse_version(&update.to).is_some());
         saved
     }
 
@@ -112,10 +119,19 @@ mod tests {
         let dir = folder("damaged");
         let file = dir.join("updates.json");
         assert_eq!(Saved::read(&file), Saved::default());
-        let saved = Saved { last_check_ms: Some(5), offered: Some("0.2.0".into()), failed: vec!["0.1.5".into()], ..Saved::default() };
+        let saved = Saved {
+            last_check_ms: Some(5),
+            offered: Some("0.2.0".into()),
+            failed: vec!["0.1.5".into()],
+            ..Saved::default()
+        };
         saved.write(&file);
         assert_eq!(Saved::read(&file), saved);
-        local::write_private_file(&file, br#"{"offered":"Update to <evil>","failed":["x","0.1.1"],"proven":"$(rm)","last_check_ms":7}"#).unwrap();
+        local::write_private_file(
+            &file,
+            br#"{"offered":"Update to <evil>","failed":["x","0.1.1"],"proven":"$(rm)","last_check_ms":7}"#,
+        )
+        .unwrap();
         let read = Saved::read(&file);
         assert_eq!(read.offered, None);
         assert_eq!(read.proven, None);
@@ -125,7 +141,11 @@ mod tests {
             local::write_private_file(&file, junk).unwrap();
             let read = Saved::read(&file);
             assert_eq!((read.last_check_ms, read.offered), (None, None));
-            assert_eq!(read.auto_update, Some(false), "what the user chose is unknown, so nothing's installed by itself");
+            assert_eq!(
+                read.auto_update,
+                Some(false),
+                "what the user chose is unknown, so nothing's installed by itself"
+            );
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

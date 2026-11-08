@@ -21,7 +21,12 @@ const NONE: i32 = i32::MIN / 4;
 ///
 /// **Its cost is bounded:** one pass to see the letters are there at all, and then the best placing of them by dynamic programming, [`MAX_QUERY_CHARS`] by [`MAX_TEXT_CHARS`] steps, 4,096 at most, whatever the item says.
 pub fn score(query: &str, text: &str) -> Option<i32> {
-    let wanted: Vec<char> = query.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).take(MAX_QUERY_CHARS).collect();
+    let wanted: Vec<char> = query
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .take(MAX_QUERY_CHARS)
+        .collect();
     if wanted.is_empty() {
         return Some(0);
     }
@@ -40,7 +45,11 @@ pub fn score(query: &str, text: &str) -> Option<i32> {
     let starts_word = |at: usize| at == 0 || !letters[at - 1].is_alphanumeric() || (letters[at].is_uppercase() && letters[at - 1].is_lowercase());
     let bonus = |at: usize| MATCHED + if starts_word(at) { WORD_START } else { 0 };
     // best[i]: the best score with the query's letters so far placed, the last at text position i.
-    let mut best: Vec<i32> = lower.iter().enumerate().map(|(at, c)| if *c == wanted[0] { bonus(at) + if at == 0 { FIRST } else { 0 } } else { NONE }).collect();
+    let mut best: Vec<i32> = lower
+        .iter()
+        .enumerate()
+        .map(|(at, c)| if *c == wanted[0] { bonus(at) + if at == 0 { FIRST } else { 0 } } else { NONE })
+        .collect();
     let mut next = vec![NONE; lower.len()];
     for want in &wanted[1..] {
         // The best earlier placing, less a point for each letter skipped since, carried along.
@@ -64,7 +73,11 @@ pub fn score(query: &str, text: &str) -> Option<i32> {
 
 /// The items a query finds, best first, as indexes into `items` with their scores, at most [`MAX_RESULTS`]. An item is its words to match. Equal scores keep the items' own order, so an empty query lists them as given.
 pub fn rank<'a>(query: &str, items: impl IntoIterator<Item = &'a str>) -> Vec<(usize, i32)> {
-    let mut scored: Vec<(i32, usize)> = items.into_iter().enumerate().filter_map(|(at, text)| score(query, text).map(|score| (score, at))).collect();
+    let mut scored: Vec<(i32, usize)> = items
+        .into_iter()
+        .enumerate()
+        .filter_map(|(at, text)| score(query, text).map(|score| (score, at)))
+        .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     scored.into_iter().take(MAX_RESULTS).map(|(score, at)| (at, score)).collect()
 }
@@ -92,7 +105,11 @@ mod tests {
         assert_eq!(items[rank("cw", items)[0].0], "Close Window");
         assert_eq!(items[rank("save", items)[0].0], "Save As…");
         assert_eq!(items[rank("zo", items)[0].0], "Zoom Out");
-        assert_eq!(rank("", items).into_iter().map(|(at, _)| at).collect::<Vec<_>>(), (0..items.len()).collect::<Vec<_>>(), "nothing typed keeps the given order");
+        assert_eq!(
+            rank("", items).into_iter().map(|(at, _)| at).collect::<Vec<_>>(),
+            (0..items.len()).collect::<Vec<_>>(),
+            "nothing typed keeps the given order"
+        );
     }
 
     /// Failure: a hostile tab name, very long or full of the query's letters, makes ranking slow on the UI thread (review: 0.53 ms an item with a 256-letter name and a 64-letter query, so seconds over 10,000 tabs), or a list holds every item there is.

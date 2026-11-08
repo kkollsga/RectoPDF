@@ -24,11 +24,20 @@ fn main() {
     let size_limit = args.first().and_then(|arg| arg.parse().ok()).unwrap_or(1024 * 1024);
     let page_bytes: usize = args.get(1).and_then(|arg| arg.parse().ok()).unwrap_or(512 * 1024);
     let deadline_ms = args.get(2).and_then(|arg| arg.parse().ok()).unwrap_or(100);
-    let chosen: Vec<&str> = if args.len() > 3 { args[3..].iter().map(String::as_str).collect() } else { PATTERNS.to_vec() };
+    let chosen: Vec<&str> = if args.len() > 3 {
+        args[3..].iter().map(String::as_str).collect()
+    } else {
+        PATTERNS.to_vec()
+    };
     let pages = [("a", page_bytes), ("ab ", page_bytes / 3), ("word\n", page_bytes / 5), ("é", page_bytes / 2)];
     for pattern in chosen {
         let mut builder = RegexMatcherBuilder::new();
-        builder.case_insensitive(true).multi_line(true).size_limit(size_limit).dfa_size_limit(2 * 1024 * 1024).nest_limit(64);
+        builder
+            .case_insensitive(true)
+            .multi_line(true)
+            .size_limit(size_limit)
+            .dfa_size_limit(2 * 1024 * 1024)
+            .nest_limit(64);
         let started = Instant::now();
         let matcher = match builder.build(pattern) {
             Ok(matcher) => matcher,
@@ -51,7 +60,11 @@ fn main() {
                 }
                 true
             });
-            println!("    {piece:?} x {times}: {:?}, {hits} hits{}", started.elapsed(), if cut { ", stopped at the deadline" } else { "" });
+            println!(
+                "    {piece:?} x {times}: {:?}, {hits} hits{}",
+                started.elapsed(),
+                if cut { ", stopped at the deadline" } else { "" }
+            );
         }
     }
 }

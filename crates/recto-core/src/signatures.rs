@@ -112,8 +112,16 @@ struct Frame {
 }
 
 fn read_inventory(reader: &IndexedReader, deadline: Instant) -> SignatureInventory {
-    let mut inventory = SignatureInventory { entries: Vec::new(), structure_read: false, truncated: false, unread: 0, certified: false };
-    let Ok(Some(root)) = reader.trailer_entry_owned(b"Root") else { return inventory };
+    let mut inventory = SignatureInventory {
+        entries: Vec::new(),
+        structure_read: false,
+        truncated: false,
+        unread: 0,
+        certified: false,
+    };
+    let Ok(Some(root)) = reader.trailer_entry_owned(b"Root") else {
+        return inventory;
+    };
     let Ok(root) = root.as_dict() else { return inventory };
     match lookup(reader, root, b"Perms") {
         Found::Absent => {}
@@ -149,7 +157,13 @@ fn read_inventory(reader: &IndexedReader, deadline: Instant) -> SignatureInvento
     let file_bytes = reader.source_len();
     let mut seen = HashSet::new();
     let mut visits = 0;
-    let mut stack = vec![Frame { kids: fields, next: 0, depth: 0, name: Arc::from(""), signature_type: false }];
+    let mut stack = vec![Frame {
+        kids: fields,
+        next: 0,
+        depth: 0,
+        name: Arc::from(""),
+        signature_type: false,
+    }];
     // An explicit stack, so a deep file can't overflow the thread's. Children are left in place and taken one at a time, so a wide array costs itself and nothing per child.
     while let Some(frame) = stack.last_mut() {
         let Some(kid) = frame.kids.get_mut(frame.next) else {
@@ -217,7 +231,9 @@ fn read_inventory(reader: &IndexedReader, deadline: Instant) -> SignatureInvento
         let holds_value = !matches!(value, Found::Absent);
         if signature_type && (holds_value || kids.as_ref().is_none_or(Vec::is_empty)) {
             let pages = pages.get_or_init(|| page_numbers(reader));
-            inventory.entries.push(entry(reader, &node, &value, kids.as_deref().unwrap_or(&[]), &name, pages, file_bytes));
+            inventory
+                .entries
+                .push(entry(reader, &node, &value, kids.as_deref().unwrap_or(&[]), &name, pages, file_bytes));
             if matches!(inventory.entries.last(), Some(found) if found.state == SignatureState::Unread) {
                 inventory.unread += 1;
             }
@@ -234,13 +250,24 @@ fn read_inventory(reader: &IndexedReader, deadline: Instant) -> SignatureInvento
             kids.truncate(left);
             inventory.truncated = true;
         }
-        stack.push(Frame { kids, next: 0, depth: depth + 1, name, signature_type });
+        stack.push(Frame {
+            kids,
+            next: 0,
+            depth: depth + 1,
+            name,
+            signature_type,
+        });
     }
     inventory
 }
 
 fn page_numbers(reader: &IndexedReader) -> HashMap<ObjectId, u32> {
-    reader.page_map().ok().map_or_else(HashMap::new, |map| map.iter().enumerate().filter_map(|(index, page)| Some((page.id(), u32::try_from(index).ok()?))).collect())
+    reader.page_map().ok().map_or_else(HashMap::new, |map| {
+        map.iter()
+            .enumerate()
+            .filter_map(|(index, page)| Some((page.id(), u32::try_from(index).ok()?)))
+            .collect()
+    })
 }
 
 fn joined_name(reader: &IndexedReader, parent: &str, node: &Dictionary) -> Arc<str> {
@@ -255,8 +282,21 @@ fn joined_name(reader: &IndexedReader, parent: &str, node: &Dictionary) -> Arc<s
     }
 }
 
-fn entry(reader: &IndexedReader, node: &Dictionary, value: &Found, kids: &[Object], field: &str, pages: &HashMap<ObjectId, u32>, file_bytes: u64) -> SignatureEntry {
-    let page_of = |dict: &Dictionary| dict.get(b"P").ok().and_then(|page| page.as_reference().ok()).and_then(|id| pages.get(&id).copied());
+fn entry(
+    reader: &IndexedReader,
+    node: &Dictionary,
+    value: &Found,
+    kids: &[Object],
+    field: &str,
+    pages: &HashMap<ObjectId, u32>,
+    file_bytes: u64,
+) -> SignatureEntry {
+    let page_of = |dict: &Dictionary| {
+        dict.get(b"P")
+            .ok()
+            .and_then(|page| page.as_reference().ok())
+            .and_then(|id| pages.get(&id).copied())
+    };
     let page = page_of(node).or_else(|| {
         kids.iter().take(8).find_map(|kid| match kid {
             Object::Reference(id) => match reader.resolve_object(*id) {
@@ -273,7 +313,19 @@ fn entry(reader: &IndexedReader, node: &Dictionary, value: &Found, kids: &[Objec
         // A value that's gone, or isn't what a signature's value is, can't be called signed or empty.
         Found::Unread | Found::Value(_) => SignatureState::Unread,
     };
-    let mut out = SignatureEntry { field: field.to_string(), page, state, filter: None, sub_filter: None, stated_name: None, stated_reason: None, stated_location: None, stated_time: None, byte_range: None, bytes_after_range: None };
+    let mut out = SignatureEntry {
+        field: field.to_string(),
+        page,
+        state,
+        filter: None,
+        sub_filter: None,
+        stated_name: None,
+        stated_reason: None,
+        stated_location: None,
+        stated_time: None,
+        byte_range: None,
+        bytes_after_range: None,
+    };
     let Found::Value(Object::Dictionary(value)) = value else { return out };
     out.filter = name_of(reader, value, b"Filter");
     out.sub_filter = name_of(reader, value, b"SubFilter");
@@ -282,7 +334,10 @@ fn entry(reader: &IndexedReader, node: &Dictionary, value: &Found, kids: &[Objec
     out.stated_location = text_of(reader, value, b"Location");
     out.stated_time = text_of(reader, value, b"M");
     out.byte_range = byte_range(reader, value);
-    out.bytes_after_range = out.byte_range.and_then(|range| range[2].checked_add(range[3])).map(|end| file_bytes.saturating_sub(end));
+    out.bytes_after_range = out
+        .byte_range
+        .and_then(|range| range[2].checked_add(range[3]))
+        .map(|end| file_bytes.saturating_sub(end));
     out
 }
 
@@ -297,8 +352,12 @@ fn text_of(reader: &IndexedReader, dict: &Dictionary, key: &[u8]) -> Option<Stri
 }
 
 fn byte_range(reader: &IndexedReader, dict: &Dictionary) -> Option<[u64; 4]> {
-    let Found::Value(value) = lookup(reader, dict, b"ByteRange") else { return None };
-    let [first, second, third, fourth] = value.as_array().ok()?.as_slice() else { return None };
+    let Found::Value(value) = lookup(reader, dict, b"ByteRange") else {
+        return None;
+    };
+    let [first, second, third, fourth] = value.as_array().ok()?.as_slice() else {
+        return None;
+    };
     let number = |object: &Object| object.as_i64().ok().and_then(|number| u64::try_from(number).ok());
     Some([number(first)?, number(second)?, number(third)?, number(fourth)?])
 }

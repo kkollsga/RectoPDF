@@ -138,7 +138,12 @@ pub struct Collection {
 
 /// One page's score. `counts` and `pages_with` have one place per term: its count here, and how many pages have it. BM25, with its logarithm kept above zero so a word on most pages still counts for a little, as in Lucene.
 pub fn score(collection: Collection, length: u32, counts: &[u32], pages_with: &[u32]) -> f64 {
-    let average = if collection.pages == 0 { 1.0 } else { collection.words as f64 / collection.pages as f64 }.max(1.0);
+    let average = if collection.pages == 0 {
+        1.0
+    } else {
+        collection.words as f64 / collection.pages as f64
+    }
+    .max(1.0);
     counts
         .iter()
         .zip(pages_with)
@@ -166,7 +171,10 @@ mod tests {
     /// Failure: words are cut differently for ASCII and everything else, or at their edges, so a word at a page's end or next to punctuation isn't counted, and a page ranks low for words it has.
     #[test]
     fn words_are_runs_of_letters_and_digits() {
-        assert_eq!(words("The quick-brown fox, don't 1.5\nend"), ["The", "quick", "brown", "fox", "don", "t", "1", "5", "end"]);
+        assert_eq!(
+            words("The quick-brown fox, don't 1.5\nend"),
+            ["The", "quick", "brown", "fox", "don", "t", "1", "5", "end"]
+        );
         assert_eq!(words("Ærlig caffè ÉCOLE. naïve-word"), ["Ærlig", "caffè", "ÉCOLE", "naïve", "word"]);
         assert_eq!(words(""), Vec::<&str>::new());
         assert_eq!(words("   ,,, "), Vec::<&str>::new());
@@ -179,7 +187,11 @@ mod tests {
     fn writing_with_no_spaces_comes_apart_by_character() {
         assert_eq!(words("数学の基礎"), ["数", "学", "の", "基", "礎"]);
         assert_eq!(words("カタカナ"), ["カ", "タ", "カ", "ナ"]);
-        assert_eq!(words("abc数def 한국어 단어"), ["abc", "数", "def", "한국어", "단어"], "Hangul goes by its spaces");
+        assert_eq!(
+            words("abc数def 한국어 단어"),
+            ["abc", "数", "def", "한국어", "단어"],
+            "Hangul goes by its spaces"
+        );
         assert_eq!(terms_of("数学").terms, ["数", "学"]);
     }
 
@@ -214,8 +226,15 @@ mod tests {
         let common = score(collection, 1000, &[3], &[90]);
         assert!(rare > common, "{rare} {common}");
         assert!(common > 0.0, "a word on most pages still counts for a little");
-        assert!(score(collection, 200, &[3], &[10]) > score(collection, 5000, &[3], &[10]), "a short page is marked up");
-        let (once, twice, a_thousand) = (score(collection, 1000, &[1], &[10]), score(collection, 1000, &[2], &[10]), score(collection, 1000, &[1000], &[10]));
+        assert!(
+            score(collection, 200, &[3], &[10]) > score(collection, 5000, &[3], &[10]),
+            "a short page is marked up"
+        );
+        let (once, twice, a_thousand) = (
+            score(collection, 1000, &[1], &[10]),
+            score(collection, 1000, &[2], &[10]),
+            score(collection, 1000, &[1000], &[10]),
+        );
         assert!(once < twice && twice < a_thousand);
         assert!(a_thousand < once * 4.0, "{once} {a_thousand}: stuffing is bounded, not free");
         assert_eq!(score(collection, 1000, &[0, 0], &[1, 1]), 0.0);
@@ -225,8 +244,16 @@ mod tests {
     /// Failure: a page with no words, a collection with none, or a count at its largest makes a score NaN or infinite, which sorts anywhere, or panics on a hostile page.
     #[test]
     fn a_score_is_always_a_number() {
-        for (pages, words, length, count, with) in [(0, 0, 0, 0, 0), (1, 0, 0, 1, 1), (u64::MAX, u64::MAX, u32::MAX, u32::MAX, u32::MAX), (1, 1, 0, u32::MAX, 1)] {
-            assert!(score(Collection { pages, words }, length, &[count], &[with]).is_finite(), "{pages} {words} {length} {count} {with}");
+        for (pages, words, length, count, with) in [
+            (0, 0, 0, 0, 0),
+            (1, 0, 0, 1, 1),
+            (u64::MAX, u64::MAX, u32::MAX, u32::MAX, u32::MAX),
+            (1, 1, 0, u32::MAX, 1),
+        ] {
+            assert!(
+                score(Collection { pages, words }, length, &[count], &[with]).is_finite(),
+                "{pages} {words} {length} {count} {with}"
+            );
         }
     }
 
@@ -239,7 +266,15 @@ mod tests {
             count_terms(page, &terms, &mut counts);
             counts[0]
         };
-        for (query, page) in [("ΟΔΟΣ", "ΟΔΟΣ"), ("ΟΔΟΣ", "οδος"), ("οδος", "ΟΔΟΣ"), ("οδοσ", "Οδος"), ("İstanbul", "İSTANBUL"), ("istanbul", "İstanbul"), ("İSTANBUL", "istanbul")] {
+        for (query, page) in [
+            ("ΟΔΟΣ", "ΟΔΟΣ"),
+            ("ΟΔΟΣ", "οδος"),
+            ("οδος", "ΟΔΟΣ"),
+            ("οδοσ", "Οδος"),
+            ("İstanbul", "İSTANBUL"),
+            ("istanbul", "İstanbul"),
+            ("İSTANBUL", "istanbul"),
+        ] {
             assert_eq!(found(query, page), 1, "{query} on {page}");
         }
         assert_eq!(lower('Σ').collect::<String>(), "σ");

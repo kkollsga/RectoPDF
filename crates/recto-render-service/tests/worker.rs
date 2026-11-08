@@ -9,7 +9,18 @@ use recto_testpdf::{Page, TempPdf, busy_page, form_bomb, pages, slow_page, text_
 use std::time::Duration;
 
 fn tile_request(page: u32, generation: u64) -> TileRequest {
-    TileRequest { page, rect: TileRect { x: 0, y: 0, width: 512, height: 512 }, scale: 2.0, stride: 2048, generation }
+    TileRequest {
+        page,
+        rect: TileRect {
+            x: 0,
+            y: 0,
+            width: 512,
+            height: 512,
+        },
+        scale: 2.0,
+        stride: 2048,
+        generation,
+    }
 }
 
 fn plain_doc() -> TempPdf {
@@ -55,7 +66,10 @@ fn a_replaced_file_is_drawn_as_it_is_now() {
     // With a file ID, as anything that writes PDFs gives one: it's what tells two versions of the same length apart.
     let colour = |rgb: &str| {
         let mut document = lopdf::Document::load_mem(&pages(&[Page::new(format!("{rgb} rg 0 0 612 792 re f").into_bytes())])).unwrap();
-        document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal(rgb), lopdf::Object::string_literal(rgb)]));
+        document.trailer.set(
+            "ID",
+            lopdf::Object::Array(vec![lopdf::Object::string_literal(rgb), lopdf::Object::string_literal(rgb)]),
+        );
         let mut out = Vec::new();
         document.save_to(&mut out).unwrap();
         out
@@ -118,19 +132,31 @@ fn nothing_starts_until_a_page_is_asked_for() {
 #[test]
 fn a_worker_killed_mid_page_is_replaced() {
     let file = TempPdf::new("kill.pdf", &form_bomb());
-    let policy = Policy { memory_limit_bytes: 2 << 30, page_deadline: Duration::from_secs(60), ..Policy::default() };
+    let policy = Policy {
+        memory_limit_bytes: 2 << 30,
+        page_deadline: Duration::from_secs(60),
+        ..Policy::default()
+    };
     let mut doc = renderer(&file.0, policy);
     assert_eq!(doc.page_count().unwrap(), 2);
     let first_worker = doc.worker_pid().unwrap();
     // The bomb runs until something stops it, so this kill lands inside the page whenever it arrives.
     let killer = std::thread::spawn(move || {
-        wait_until("the bomb to start growing", || process_memory(first_worker).is_some_and(|memory| memory.footprint_bytes > 32 * 1024 * 1024));
+        wait_until("the bomb to start growing", || {
+            process_memory(first_worker).is_some_and(|memory| memory.footprint_bytes > 32 * 1024 * 1024)
+        });
         kill_process(first_worker);
     });
     let surface = tile_surface();
     let failure = doc.render_tile(&tile_request(0, 0), &surface).unwrap_err();
     killer.join().unwrap();
-    assert_eq!(failure, RenderFailure::PageFailed { page: 0, reason: KillReason::Crashed });
+    assert_eq!(
+        failure,
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::Crashed
+        }
+    );
     assert_eq!(draws(&mut doc, 1), TileKind::Grey, "the next page draws in a new worker");
     assert_ne!(doc.worker_pid(), Some(first_worker));
     assert_eq!(doc.stats().crashes, 1);
@@ -140,11 +166,22 @@ fn a_worker_killed_mid_page_is_replaced() {
 #[test]
 fn a_page_that_fails_all_the_way_down_isnt_retried_until_asked() {
     let file = TempPdf::new("again.pdf", &form_bomb());
-    let policy = Policy { memory_limit_bytes: 64 * 1024 * 1024, heavy_limit_bytes: 128 * 1024 * 1024, heavy_min_free_percent: 0, ..Policy::default() };
+    let policy = Policy {
+        memory_limit_bytes: 64 * 1024 * 1024,
+        heavy_limit_bytes: 128 * 1024 * 1024,
+        heavy_min_free_percent: 0,
+        ..Policy::default()
+    };
     let mut doc = renderer(&file.0, policy);
     let surface = tile_surface();
     let first = doc.render_tile(&tile_request(0, 0), &surface).unwrap_err();
-    assert_eq!(first, RenderFailure::PageFailed { page: 0, reason: KillReason::MemoryLimit });
+    assert_eq!(
+        first,
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::MemoryLimit
+        }
+    );
     let spawns = doc.stats().spawns;
     assert_eq!(doc.render_tile(&tile_request(0, 0), &surface).unwrap_err(), first, "remembered");
     assert_eq!(doc.stats().spawns, spawns, "remembering it must not start a worker");
@@ -165,7 +202,10 @@ fn a_stale_job_doesnt_draw() {
     let mut pixels = vec![1u8; 512 * 512 * 4];
     assert!(surface.copy_out(0, &mut pixels));
     assert!(pixels.iter().all(|&byte| byte == 0), "a stale job wrote pixels");
-    assert!(matches!(doc.render_tile(&tile_request(0, 5), &surface).unwrap(), TileResult::Done(_)), "the current generation still draws");
+    assert!(
+        matches!(doc.render_tile(&tile_request(0, 5), &surface).unwrap(), TileResult::Done(_)),
+        "the current generation still draws"
+    );
 }
 
 /// Failure: cancelling a slow page neither returns nor kills, so a stale page holds the worker and the page you've scrolled to waits for it.
@@ -173,7 +213,10 @@ fn a_stale_job_doesnt_draw() {
 #[test]
 fn cancelling_a_slow_page_returns_or_kill_covers_it() {
     let file = TempPdf::new("slow.pdf", &pages(&[Page::new(slow_page(400_000)), Page::new(text_lines(&["Next"]))]));
-    let policy = Policy { page_deadline: Duration::from_secs(120), ..Policy::default() };
+    let policy = Policy {
+        page_deadline: Duration::from_secs(120),
+        ..Policy::default()
+    };
     let mut doc = renderer(&file.0, policy);
     assert_eq!(doc.page_count().unwrap(), 2);
     let cancel = doc.cancel_handle();
@@ -181,14 +224,22 @@ fn cancelling_a_slow_page_returns_or_kill_covers_it() {
     let opened = doc.stats().opened_footprint_bytes;
     let canceller = std::thread::spawn(move || {
         // Parsing this page's 400,000 objects grows the worker, so growth means the job is in hand. The page takes far longer than this.
-        wait_until("the page to start loading", || process_memory(pid).is_some_and(|memory| memory.footprint_bytes > opened + 1024 * 1024));
+        wait_until("the page to start loading", || {
+            process_memory(pid).is_some_and(|memory| memory.footprint_bytes > opened + 1024 * 1024)
+        });
         cancel.cancel_before(2);
     });
     let surface = tile_surface();
     let result = doc.render_tile(&tile_request(0, 1), &surface).unwrap();
     canceller.join().unwrap();
-    assert!(matches!(result, TileResult::Cancelled { .. }), "a page this slow should still be drawing: {result:?}");
-    assert!(matches!(doc.render_tile(&tile_request(1, 2), &surface).unwrap(), TileResult::Done(_)), "the next job runs at once");
+    assert!(
+        matches!(result, TileResult::Cancelled { .. }),
+        "a page this slow should still be drawing: {result:?}"
+    );
+    assert!(
+        matches!(doc.render_tile(&tile_request(1, 2), &surface).unwrap(), TileResult::Done(_)),
+        "the next job runs at once"
+    );
 }
 
 /// Failure: the worker reads the file by path, so it needs file-system reach and sees a replaced file. It must use only the descriptor it
@@ -205,7 +256,10 @@ fn the_worker_reads_through_the_passed_descriptor() {
 #[test]
 fn an_idle_worker_leaves_and_the_next_job_starts_another() {
     let file = plain_doc();
-    let policy = Policy { idle_exit: Duration::from_millis(100), ..Policy::default() };
+    let policy = Policy {
+        idle_exit: Duration::from_millis(100),
+        ..Policy::default()
+    };
     let mut doc = renderer(&file.0, policy);
     draws(&mut doc, 0);
     let pid = doc.worker_pid().unwrap();
@@ -221,7 +275,10 @@ fn an_idle_worker_leaves_and_the_next_job_starts_another() {
 #[test]
 fn a_worker_past_the_footprint_is_retired_before_the_next_page() {
     let file = plain_doc();
-    let policy = Policy { retire_bytes: 1024, ..Policy::default() };
+    let policy = Policy {
+        retire_bytes: 1024,
+        ..Policy::default()
+    };
     let mut doc = renderer(&file.0, policy);
     draws(&mut doc, 0);
     let first = doc.worker_pid();
@@ -237,11 +294,22 @@ fn a_worker_past_the_footprint_is_retired_before_the_next_page() {
 #[test]
 fn tiles_of_one_page_share_a_worker_even_past_the_footprint() {
     let file = plain_doc();
-    let policy = Policy { retire_bytes: 1024, ..Policy::default() };
+    let policy = Policy {
+        retire_bytes: 1024,
+        ..Policy::default()
+    };
     let mut doc = renderer(&file.0, policy);
     let surface = tile_surface();
     for x in 0..3 {
-        let request = TileRequest { rect: TileRect { x: x * 300, y: 0, width: 300, height: 300 }, ..tile_request(0, 0) };
+        let request = TileRequest {
+            rect: TileRect {
+                x: x * 300,
+                y: 0,
+                width: 300,
+                height: 300,
+            },
+            ..tile_request(0, 0)
+        };
         assert!(matches!(doc.render_tile(&request, &surface).unwrap(), TileResult::Done(_)));
     }
     assert_eq!(doc.stats().spawns, 1);
@@ -259,7 +327,15 @@ fn a_refused_job_leaves_the_worker_running() {
     let surface = tile_surface();
     assert_eq!(doc.render_tile(&tile_request(99, 0), &surface).unwrap_err(), RenderFailure::BadPage);
     assert_eq!(doc.page_size(99).unwrap_err(), RenderFailure::BadPage);
-    let off_page = TileRequest { rect: TileRect { x: 100_000, y: 0, width: 512, height: 512 }, ..tile_request(0, 0) };
+    let off_page = TileRequest {
+        rect: TileRect {
+            x: 100_000,
+            y: 0,
+            width: 512,
+            height: 512,
+        },
+        ..tile_request(0, 0)
+    };
     assert_eq!(doc.render_tile(&off_page, &surface).unwrap_err(), RenderFailure::BadRequest);
     assert_eq!(doc.worker_pid(), pid);
 }
@@ -272,9 +348,20 @@ fn a_job_larger_than_its_surface_never_leaves_the_host() {
     let small = recto_render_service::Surface::create(1024).unwrap();
     assert_eq!(doc.render_tile(&tile_request(0, 0), &small).unwrap_err(), RenderFailure::BadRequest);
     assert!(!doc.has_worker(), "no process for a request that can't be met");
-    let zero = TileRequest { rect: TileRect { x: 0, y: 0, width: 0, height: 512 }, ..tile_request(0, 0) };
+    let zero = TileRequest {
+        rect: TileRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 512,
+        },
+        ..tile_request(0, 0)
+    };
     assert_eq!(doc.render_tile(&zero, &tile_surface()).unwrap_err(), RenderFailure::BadRequest);
-    let nan = TileRequest { scale: f32::NAN, ..tile_request(0, 0) };
+    let nan = TileRequest {
+        scale: f32::NAN,
+        ..tile_request(0, 0)
+    };
     assert_eq!(doc.render_tile(&nan, &tile_surface()).unwrap_err(), RenderFailure::BadRequest);
 }
 
@@ -284,7 +371,10 @@ fn files_that_arent_pdfs_say_so() {
     let junk = TempPdf::new("junk.pdf", b"not a pdf at all");
     let mut doc = renderer(&junk.0, Policy::default());
     assert_eq!(doc.page_count().unwrap_err(), RenderFailure::NotPdf);
-    assert_eq!(DocRenderer::new(std::path::Path::new("/no/such/file.pdf"), None, real_config(), Policy::default()).err(), Some(RenderFailure::NotFound));
+    assert_eq!(
+        DocRenderer::new(std::path::Path::new("/no/such/file.pdf"), None, real_config(), Policy::default()).err(),
+        Some(RenderFailure::NotFound)
+    );
 }
 
 /// Failure: page text doesn't come through, or asks for a pixel check nobody can vouch for, so a false all-clear reaches the agent.
@@ -307,18 +397,29 @@ fn page_characters_come_through_with_the_check_stated() {
 #[test]
 fn a_page_that_cant_even_load_is_refused_once_and_remembered() {
     let file = TempPdf::new("bomb.pdf", &form_bomb());
-    let policy = Policy { memory_limit_bytes: 64 * 1024 * 1024, heavy_limit_bytes: 128 * 1024 * 1024, heavy_min_free_percent: 0, ..Policy::default() };
+    let policy = Policy {
+        memory_limit_bytes: 64 * 1024 * 1024,
+        heavy_limit_bytes: 128 * 1024 * 1024,
+        heavy_min_free_percent: 0,
+        ..Policy::default()
+    };
     let mut doc = renderer(&file.0, policy);
     // The ordinary page: checked.
     assert!(doc.page_characters(1, false, true).unwrap().hidden_checked);
-    let expected = RenderFailure::PageReadFailed { page: 0, reason: KillReason::MemoryLimit };
+    let expected = RenderFailure::PageReadFailed {
+        page: 0,
+        reason: KillReason::MemoryLimit,
+    };
     assert_eq!(doc.page_characters(0, false, true).unwrap_err(), expected);
     let spawns = doc.stats().spawns;
     assert_eq!(doc.page_characters(0, false, true).unwrap_err(), expected);
     assert_eq!(doc.page_characters(0, false, false).unwrap_err(), expected);
     assert_eq!(doc.stats().spawns, spawns, "each of those should have been answered from memory");
     // Drawing has its own steps, and once they've failed they're remembered too.
-    let drawn = RenderFailure::PageFailed { page: 0, reason: KillReason::MemoryLimit };
+    let drawn = RenderFailure::PageFailed {
+        page: 0,
+        reason: KillReason::MemoryLimit,
+    };
     assert_eq!(doc.render_tile(&tile_request(0, 0), &tile_surface()).unwrap_err(), drawn);
     let spawns = doc.stats().spawns;
     assert_eq!(doc.render_tile(&tile_request(0, 0), &tile_surface()).unwrap_err(), drawn);
@@ -329,7 +430,10 @@ fn a_page_that_cant_even_load_is_refused_once_and_remembered() {
 #[test]
 fn a_worker_that_left_is_collected_with_nobody_asking() {
     let file = plain_doc();
-    let policy = Policy { idle_exit: Duration::from_millis(50), ..Policy::default() };
+    let policy = Policy {
+        idle_exit: Duration::from_millis(50),
+        ..Policy::default()
+    };
     let mut doc = renderer(&file.0, policy);
     draws(&mut doc, 0);
     let pid = doc.worker_pid().unwrap();
@@ -355,13 +459,32 @@ fn a_region_through_the_worker_reports_each_tile() {
     let file = TempPdf::new("region.pdf", &pages(&[Page::new(text_lines(&["Only at the top"]))]));
     let mut doc = renderer(&file.0, Policy::default());
     let surface = recto_render_service::Surface::create(1024 * 1024 * 4).unwrap();
-    let request = TileRequest { page: 0, rect: TileRect { x: 0, y: 0, width: 1024, height: 1024 }, scale: 2.0, stride: 4096, generation: 0 };
-    let TileResult::Done(tile) = doc.render_region(&request, 512, &surface).unwrap() else { panic!() };
+    let request = TileRequest {
+        page: 0,
+        rect: TileRect {
+            x: 0,
+            y: 0,
+            width: 1024,
+            height: 1024,
+        },
+        scale: 2.0,
+        stride: 4096,
+        generation: 0,
+    };
+    let TileResult::Done(tile) = doc.render_region(&request, 512, &surface).unwrap() else {
+        panic!()
+    };
     assert_eq!(tile.region_kinds.len(), 4);
     let single = tile_surface();
     for (place, kind) in recto_proto::region_tiles(request.rect, 512).zip(&tile.region_kinds) {
-        let alone = TileRequest { rect: place, stride: 2048, ..request };
-        let TileResult::Done(one) = doc.render_tile(&alone, &single).unwrap() else { panic!() };
+        let alone = TileRequest {
+            rect: place,
+            stride: 2048,
+            ..request
+        };
+        let TileResult::Done(one) = doc.render_tile(&alone, &single).unwrap() else {
+            panic!()
+        };
         assert_eq!(one.kind, *kind, "{place:?}");
     }
     let mut pixels = vec![0u8; 1024 * 1024 * 4];
@@ -375,9 +498,29 @@ fn a_region_past_the_cap_or_off_the_grid_never_leaves_the_host() {
     let file = plain_doc();
     let mut doc = renderer(&file.0, Policy::default());
     let surface = recto_render_service::Surface::create(64 * 1024 * 1024).unwrap();
-    let past_cap = TileRequest { page: 0, rect: TileRect { x: 0, y: 0, width: 4096, height: 4096 }, scale: 2.0, stride: 16384, generation: 0 };
+    let past_cap = TileRequest {
+        page: 0,
+        rect: TileRect {
+            x: 0,
+            y: 0,
+            width: 4096,
+            height: 4096,
+        },
+        scale: 2.0,
+        stride: 16384,
+        generation: 0,
+    };
     assert_eq!(doc.render_region(&past_cap, 512, &surface).unwrap_err(), RenderFailure::BadRequest);
-    let off_grid = TileRequest { rect: TileRect { x: 100, y: 0, width: 512, height: 512 }, stride: 2048, ..past_cap };
+    let off_grid = TileRequest {
+        rect: TileRect {
+            x: 100,
+            y: 0,
+            width: 512,
+            height: 512,
+        },
+        stride: 2048,
+        ..past_cap
+    };
     assert_eq!(doc.render_region(&off_grid, 512, &surface).unwrap_err(), RenderFailure::BadRequest);
     assert_eq!(doc.render_region(&off_grid, 0, &surface).unwrap_err(), RenderFailure::BadRequest);
     assert!(!doc.has_worker());
@@ -387,22 +530,44 @@ fn a_region_past_the_cap_or_off_the_grid_never_leaves_the_host() {
 #[test]
 fn cancelling_a_slow_region_returns_or_kill_covers_it() {
     let file = TempPdf::new("slow.pdf", &pages(&[Page::new(slow_page(400_000)), Page::new(text_lines(&["Next"]))]));
-    let policy = Policy { page_deadline: Duration::from_secs(120), ..Policy::default() };
+    let policy = Policy {
+        page_deadline: Duration::from_secs(120),
+        ..Policy::default()
+    };
     let mut doc = renderer(&file.0, policy);
     assert_eq!(doc.page_count().unwrap(), 2);
     let cancel = doc.cancel_handle();
     let pid = doc.worker_pid().unwrap();
     let opened = doc.stats().opened_footprint_bytes;
     let canceller = std::thread::spawn(move || {
-        wait_until("the page to start loading", || process_memory(pid).is_some_and(|memory| memory.footprint_bytes > opened + 1024 * 1024));
+        wait_until("the page to start loading", || {
+            process_memory(pid).is_some_and(|memory| memory.footprint_bytes > opened + 1024 * 1024)
+        });
         cancel.cancel_before(2);
     });
     let surface = recto_render_service::Surface::create(1024 * 1024 * 4).unwrap();
-    let request = TileRequest { page: 0, rect: TileRect { x: 0, y: 0, width: 1024, height: 1024 }, scale: 2.0, stride: 4096, generation: 1 };
+    let request = TileRequest {
+        page: 0,
+        rect: TileRect {
+            x: 0,
+            y: 0,
+            width: 1024,
+            height: 1024,
+        },
+        scale: 2.0,
+        stride: 4096,
+        generation: 1,
+    };
     let result = doc.render_region(&request, 512, &surface).unwrap();
     canceller.join().unwrap();
-    assert!(matches!(result, TileResult::Cancelled { .. }), "a page this slow should still be drawing: {result:?}");
-    assert!(matches!(doc.render_tile(&tile_request(1, 2), &tile_surface()).unwrap(), TileResult::Done(_)), "the next job runs at once");
+    assert!(
+        matches!(result, TileResult::Cancelled { .. }),
+        "a page this slow should still be drawing: {result:?}"
+    );
+    assert!(
+        matches!(doc.render_tile(&tile_request(1, 2), &tile_surface()).unwrap(), TileResult::Done(_)),
+        "the next job runs at once"
+    );
 }
 
 /// Failure: the largest-image hint misreads a page, so the choice of how to draw it is wrong: an image page must report its image's pixels, a text page none, and a page's
@@ -462,7 +627,13 @@ fn slow_to_check() -> TempPdf {
 #[test]
 fn a_check_past_its_deadline_says_not_checked_and_leaves_drawing_alone() {
     let file = slow_to_check();
-    let mut doc = renderer(&file.0, Policy { page_deadline: Duration::from_millis(250), ..Policy::default() });
+    let mut doc = renderer(
+        &file.0,
+        Policy {
+            page_deadline: Duration::from_millis(250),
+            ..Policy::default()
+        },
+    );
     let read = doc.page_characters(1, true, true).expect("the text still comes back");
     assert!(!read.hidden_checked, "not checked");
     assert!(read.chars.iter().any(|record| record.ch() == 'W'));
@@ -482,9 +653,18 @@ fn checks_past_their_deadline_cant_stop_a_document_drawing() {
     let list: Vec<Page> = (0..6).map(|_| Page::new(content.clone())).collect();
     let file = TempPdf::new("slows.pdf", &pages(&list));
     // A check of one of these pages draws for over 2 s here, and reading its text takes 20 to 45 ms on a fresh worker, unloaded and at load 58. A deadline of 500 ms is far past a read and far short of a check, where 100 ms was within a few times of a read that a loaded run could take past it (the full check of 2026-11-08 at load 11).
-    let mut doc = renderer(&file.0, Policy { page_deadline: Duration::from_millis(500), max_kills_per_document: 2, ..Policy::default() });
+    let mut doc = renderer(
+        &file.0,
+        Policy {
+            page_deadline: Duration::from_millis(500),
+            max_kills_per_document: 2,
+            ..Policy::default()
+        },
+    );
     for page in 0..6 {
-        let read = doc.page_characters(page, true, true).unwrap_or_else(|failure| panic!("page {page}: {failure:?}, {:?}", doc.stats()));
+        let read = doc
+            .page_characters(page, true, true)
+            .unwrap_or_else(|failure| panic!("page {page}: {failure:?}, {:?}", doc.stats()));
         assert!(!read.hidden_checked);
     }
     assert!(doc.stats().deadline_kills >= 2, "{:?}", doc.stats());
@@ -496,14 +676,38 @@ fn checks_past_their_deadline_cant_stop_a_document_drawing() {
 #[test]
 fn a_read_the_mac_was_too_busy_for_is_tried_again() {
     let file = TempPdf::new("busy-read.pdf", &pages(&[Page::new(text_lines(&["one"])), Page::new(text_lines(&["two"]))]));
-    let mut doc = renderer(&file.0, Policy { page_deadline: Duration::from_millis(400), ..Policy::default() });
+    let mut doc = renderer(
+        &file.0,
+        Policy {
+            page_deadline: Duration::from_millis(400),
+            ..Policy::default()
+        },
+    );
     doc.page_size(0).unwrap();
     let pid = doc.worker_pid().expect("a worker with the file open");
-    assert!(std::process::Command::new("/bin/kill").arg("-STOP").arg(pid.to_string()).status().unwrap().success());
+    assert!(
+        std::process::Command::new("/bin/kill")
+            .arg("-STOP")
+            .arg(pid.to_string())
+            .status()
+            .unwrap()
+            .success()
+    );
     let stopped = doc.page_characters(1, true, false);
-    assert!(matches!(stopped, Err(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Deadline })), "{stopped:?}");
+    assert!(
+        matches!(
+            stopped,
+            Err(RenderFailure::PageReadFailed {
+                page: 1,
+                reason: KillReason::Deadline
+            })
+        ),
+        "{stopped:?}"
+    );
     assert!(doc.stats().too_busy >= 1, "counted as the Mac being busy: {:?}", doc.stats());
-    let again = doc.page_characters(1, true, false).unwrap_or_else(|failure| panic!("read again, on a worker that has the processor: {failure:?}"));
+    let again = doc
+        .page_characters(1, true, false)
+        .unwrap_or_else(|failure| panic!("read again, on a worker that has the processor: {failure:?}"));
     assert!(!again.chars.is_empty());
 }
 
@@ -512,18 +716,55 @@ fn a_read_the_mac_was_too_busy_for_is_tried_again() {
 fn busy_reads_dont_stop_a_document_and_three_in_a_row_are_remembered() {
     let list: Vec<Page> = (0..6).map(|at| Page::new(text_lines(&[&format!("page {at}")]))).collect();
     let file = TempPdf::new("busy-reads.pdf", &pages(&list));
-    let mut doc = renderer(&file.0, Policy { page_deadline: Duration::from_millis(400), max_kills_per_document: 2, ..Policy::default() });
+    let mut doc = renderer(
+        &file.0,
+        Policy {
+            page_deadline: Duration::from_millis(400),
+            max_kills_per_document: 2,
+            ..Policy::default()
+        },
+    );
     for (round, other) in [2u32, 3, 4].into_iter().enumerate() {
-        doc.page_characters(other, false, false).unwrap_or_else(|failure| panic!("round {round}: {failure:?}"));
+        doc.page_characters(other, false, false)
+            .unwrap_or_else(|failure| panic!("round {round}: {failure:?}"));
         let pid = doc.worker_pid().expect("a worker");
-        assert!(std::process::Command::new("/bin/kill").arg("-STOP").arg(pid.to_string()).status().unwrap().success());
+        assert!(
+            std::process::Command::new("/bin/kill")
+                .arg("-STOP")
+                .arg(pid.to_string())
+                .status()
+                .unwrap()
+                .success()
+        );
         let busy = doc.page_characters(1, false, false);
-        assert!(matches!(busy, Err(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Deadline })), "round {round}: {busy:?}");
+        assert!(
+            matches!(
+                busy,
+                Err(RenderFailure::PageReadFailed {
+                    page: 1,
+                    reason: KillReason::Deadline
+                })
+            ),
+            "round {round}: {busy:?}"
+        );
     }
     assert!(doc.stats().too_busy >= 3, "{:?}", doc.stats());
-    assert!(doc.page_size(5).is_ok() && doc.page_characters(5, false, false).is_ok(), "three kills past an allowance of two, and the document still reads: {:?}", doc.stats());
+    assert!(
+        doc.page_size(5).is_ok() && doc.page_characters(5, false, false).is_ok(),
+        "three kills past an allowance of two, and the document still reads: {:?}",
+        doc.stats()
+    );
     let spawns = doc.stats().spawns;
-    assert!(matches!(doc.page_characters(1, false, false), Err(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Deadline })), "remembered");
+    assert!(
+        matches!(
+            doc.page_characters(1, false, false),
+            Err(RenderFailure::PageReadFailed {
+                page: 1,
+                reason: KillReason::Deadline
+            })
+        ),
+        "remembered"
+    );
     assert_eq!(doc.stats().spawns, spawns, "with no worker started to learn it again");
 }
 
@@ -531,7 +772,13 @@ fn busy_reads_dont_stop_a_document_and_three_in_a_row_are_remembered() {
 #[test]
 fn a_check_stops_when_it_is_cancelled() {
     let file = TempPdf::new("cancel.pdf", &pages(&[Page::new(full_page_fills(200_000))]));
-    let mut doc = renderer(&file.0, Policy { page_deadline: Duration::from_secs(60), ..Policy::default() });
+    let mut doc = renderer(
+        &file.0,
+        Policy {
+            page_deadline: Duration::from_secs(60),
+            ..Policy::default()
+        },
+    );
     let cancel = doc.cancel_handle();
     let stopping = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(100));
