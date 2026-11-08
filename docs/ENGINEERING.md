@@ -337,6 +337,23 @@ The 30 MiB in the largest rows is the strip of shared memory the host copies row
 
 **Not tested.** A real paste into another app: a quiet run has a clipboard of its own, and what's on it is checked by type, size and SHA-256 (`qa copied`). A JPEG in CMYK or with a profile as the clipboard's JPEG: it goes as PNG, as `.jpg` refuses it. Right-to-left and vertical text in a box.
 
+## Printing
+
+`recto_agent::print` is the one drawing a print goes through: `recto print --to-pdf` writes its result where it's told, and File > Print… writes it to a file of the app's own that the system's printing then takes. Each page is drawn by `draw_whole_page` at the dpi asked (300 by default, 72 to 600), the export path, so it's sharp or refused, waits for the heavy slot as any export does, and knows nothing of paper colour. Its rows go straight through a zlib compressor into a PDF of one picture a page, written by a small streaming writer of ours (`/FlateDecode` RGB, an indirect `/Length`, the page tree and the table last). So the host holds one strip, one row and the compressor's buffer, whatever the length, and the PDF it makes is new: it never writes over anything, least of all the file being printed, and the lopdf writers stay the only thing that changes a PDF. A page's unsaved quarter turns go on its page as `/Rotate`; its picture stays as drawn. An edited tab's pages each come from their own file, with at most two workers open. Caps: 10,000 pages, 4 GiB, and a page past the 1 GiB limit is refused with nothing written.
+
+**In the window**, the system's `NSPrintPanel` asks which printer, how many and which pages, with Selection offered when something's selected (`AppCore::print_model`). Its answer goes to Rust (`print_chosen`, `printing::chosen_range`), which prepares those pages on one `recto-print` thread, saying "Preparing pages for printing: 3 of 20." by the page, and sets `print_ready`. The host then hands the file to an `NSPrintOperation` of a view that draws its pages with Core Graphics, fitted to the paper, with no panel since it's been answered, on a thread of its own (`canSpawnSeparateThread`). The file goes when the operation's done (`print_finished`, which removes only a print file of this process's). An update waits for a print being prepared and one being handed over, and so does `qa wait-settled`. At rest there's nothing. `qa print-to-pdf OUT[|FIRST|LAST]` drives the same path with the job saved to a file, on paper the first page's size with no margins, so the result lays page for page over the source; the test compares 8 px blocks, as text edges move a little when a page's picture is drawn again, and dark paper on screen or a wrong page would change most of them.
+
+**Measured** 2026-11-08, release `recto print --to-pdf`, this Mac, other agents' builds running (load 12 to 16), whole process by `/usr/bin/time -l`, worker by its own peak:
+
+| | Took | Bytes | `recto` peak | Worker peak |
+|---|---:|---:|---:|---:|
+| USGS map, 1 page at 300 dpi | 2.7 s | 50.6 MB | 47.9 MiB | 506 MiB |
+| NASA `ntrs20240002628` pages 1 to 100 at 300 dpi | 4.1 s | 151 MB | 29.9 MiB | 86 MiB |
+| The same at 150 dpi | 2.0 s | 64 MB | 24.4 MiB | 88 MiB |
+| A made 600 dpi scan, 1 page at 600 dpi | 0.08 s | 1.8 MB | 37.0 MiB | 79 MiB |
+
+The host's peak is the strip of shared memory it copies rows out of, up to 32 MiB on a page with a huge image, as `render` has, and doesn't grow with the length. In the app, a three-page print to PDF through the quiet run's `qa print-to-pdf` took under a second, with no stall over 1 s. **Not tested:** the real panel and its preview, a real printer, and a print of a page drawn turned on paper, as a quiet run shows no sheet and has no printer.
+
 ## The app
 
 `app/` is a Swift package with AppKit and no SwiftUI. `app/build.sh` makes `app/build/RectoPDF.app`: Rust, then the bindings, then Swift, then an ad-hoc signature, with `recto`, the worker and PDFium beside the app's executable for now (at release they move into the nested helper: `docs/research/2026-11-07-sandbox-spike.md`). `--quick` needs no Xcode. `--full` builds the app and drives it. Where a worker comes from is in one place, `Worker::start`.

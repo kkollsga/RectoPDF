@@ -311,6 +311,21 @@ impl QaBridge {
                 return self.ask("state", "");
             }
             "mouse_up" | "notice_button" | "zoom_escape" | "page_escape" => {}
+            // Where the print goes is held to the rules every export keeps, and a file that's there isn't replaced.
+            "print_to_pdf" => {
+                let (out, range) = value.split_once('|').map_or((value, None), |(out, range)| (out, Some(range)));
+                let out = Path::new(out);
+                recto_agent::saving::check_export_path(out, &["pdf"], "PDF")?;
+                if !out.is_absolute() || std::fs::symlink_metadata(out).is_ok() {
+                    return Err(bad("A print goes to a new file, by its whole path."));
+                }
+                if let Some(range) = range {
+                    let (first, last) = range.split_once('|').ok_or_else(|| bad("A range is FIRST|LAST."))?;
+                    if first.parse::<u32>().is_err() || last.parse::<u32>().is_err() {
+                        return Err(bad("A range is two page numbers."));
+                    }
+                }
+            }
             "scroll" => {
                 number(-1e9, 1e9)?;
             }
@@ -366,6 +381,7 @@ impl QaBridge {
                 "open_handles": recto_platform::open_handle_count(),
             },
             "hangs": { "over_1s": over_note, "over_2s": over_fail, "worst_ms": worst, "note_ms": NOTE_MS, "fail_ms": FAIL_MS },
+            "printing": self.inner().map_or(Value::Null, |inner| json!({ "busy": inner.printing.busy(), "notice": inner.printing.notice() })),
             "snapshot": self.inner().map_or(Value::Null, |inner| json!({ "on": inner.tool.is_on(), "drawing": inner.tool.is_drawing(), "busy": inner.tool.busy(), "notice": inner.tool.notice().map(|notice| notice.text) })),
         }))
     }
@@ -382,7 +398,8 @@ impl QaBridge {
             }
             let running = self.ask("animations", "")?;
             // A snapshot on its way to the clipboard is about to change what `qa copied` and the notice say.
-            let snapshot_busy = self.inner().is_some_and(|inner| inner.tool.busy());
+            // A snapshot on its way to the clipboard, or a print's pages being drawn or handed to the system, is about to change what's shown.
+            let snapshot_busy = self.inner().is_some_and(|inner| inner.tool.busy() || inner.printing.busy());
             if running.as_array().is_none_or(Vec::is_empty) && !snapshot_busy {
                 return Ok(json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64, "animations_waited_ms": animations_waited.as_millis() as u64 }));
             }

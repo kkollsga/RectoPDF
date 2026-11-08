@@ -2043,3 +2043,55 @@ fn a_snapshot_of_a_copy_restricted_file_offers_copy_anyway() {
     assert_eq!(clipboard_types(&run)[0], "public.png");
     assert_eq!(copied(&run), "Words that ask not to be copied");
 }
+
+/// How many 8 px blocks of two pictures of one size differ in mean by more than 24 of 255, of how many: what a print is held to against its source, as text edges move a little when a page's picture is drawn again and nothing missing or wrong passes.
+fn blocks_differing(one: &[u8], two: &[u8], width: usize, height: usize) -> (usize, usize) {
+    let (mut bad, mut all) = (0, 0);
+    for top in (0..height.saturating_sub(8)).step_by(8) {
+        for left in (0..width.saturating_sub(8)).step_by(8) {
+            let sum = |pixels: &[u8]| -> i64 { (top..top + 8).map(|y| pixels[(y * width + left) * 3..(y * width + left + 8) * 3].iter().map(|&value| i64::from(value)).sum::<i64>()).sum() };
+            all += 1;
+            bad += usize::from((sum(one) - sum(two)).abs() > 24 * 192);
+        }
+    }
+    (bad, all)
+}
+
+/// Failure: the app's print isn't the document's pages: drawn from the screen's tiles, with dark paper in it, missing pages or out of order, or the UI thread waits on it. Through File > Print's own path to a PDF, page by page against the source.
+#[test]
+fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
+    use recto_svg::verify::{Embedded, read_png};
+    let Some(run) = Run::start() else { return };
+    let page = |n: usize, colour: &str| Page::new([text_lines(&[&format!("Page {n} printed")]), format!("{colour} rg {} 300 120 80 re f\n", 60 + n * 100).into_bytes()].concat());
+    let file = TempPdf::new("print-me.pdf", &pages(&[page(1, "1 0 0"), page(2, "0 0.6 0"), page(3, "0 0 1")]));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    run.ok(&["view", "--paper", "dark"]);
+    run.settled();
+    assert_eq!(menu_item(&run.report(), "file.print")["enabled"], true);
+    let out = file.0.with_file_name(format!("printed-{}.pdf", std::process::id()));
+    run.ok(&["qa", "print-to-pdf", &format!("{}|2|3", out.display())]);
+    run.settled();
+    let state = run.report();
+    assert_eq!(state["printing"]["busy"], false, "{state}");
+    assert!(state["hangs"]["over_1s"].as_u64() == Some(0), "the UI thread never waited: {state}");
+    let local = State::at(Level::Full);
+    let facts = local.json(&["local", out.to_str().unwrap(), "facts", "--json"]).0;
+    assert_eq!(facts["data"]["pages"], 2, "{facts}");
+    let draw = |pdf: &std::path::Path, page: u32| {
+        let png = pdf.with_file_name(format!("drawn-{}-{page}.png", std::process::id()));
+        let (reply, code) = local.json(&["local", pdf.to_str().unwrap(), "render", &page.to_string(), "--scale", "1", "--out", png.to_str().unwrap()]);
+        assert_eq!(code, 0, "{reply}");
+        let Embedded::Png { width, height, pixels, .. } = read_png(&std::fs::read(&png).unwrap()) else { panic!() };
+        std::fs::remove_file(&png).unwrap();
+        (width as usize, height as usize, pixels)
+    };
+    for (printed, source) in [(1, 2), (2, 3)] {
+        let (width, height, print) = draw(&out, printed);
+        let (source_width, source_height, original) = draw(&file.0, source);
+        assert_eq!((width, height), (source_width, source_height));
+        let (bad, all) = blocks_differing(&print, &original, width, height);
+        assert!(bad * 200 < all, "printed page {printed} against source page {source}: {bad} of {all} blocks differ, as dark paper or the wrong page would");
+    }
+    std::fs::remove_file(&out).unwrap();
+}

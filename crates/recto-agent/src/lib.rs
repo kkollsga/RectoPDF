@@ -1413,6 +1413,11 @@ fn locate<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<(TabId, 
     Ok((id, position, source))
 }
 
+/// [`print_pages`] on a session in hand, for the app's print.
+pub fn print_pages_in<L: DocLoader + Clone>(session: &mut Session<L>, tab: &str, pages: Option<&str>) -> Result<Vec<print::PrintPage>, AgentError> {
+    print_pages(&Direct(RefCell::new(session), None), tab, pages)
+}
+
 fn print_dpi() -> u32 {
     print::DEFAULT_DPI
 }

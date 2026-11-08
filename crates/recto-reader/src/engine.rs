@@ -539,6 +539,11 @@ impl Engine {
         Some((point, reader.page_size_shown(point.page)?))
     }
 
+    /// A page's size as it's shown, in its own coordinates. A short lock.
+    pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)> {
+        lock(&self.shared.reader).page_size_shown(page)
+    }
+
     /// Where a point on a page is in the document.
     pub fn document_point(&self, page: u32, x: f64, y: f64) -> Option<(f64, f64)> {
         lock(&self.shared.reader).document_point(page, x, y)

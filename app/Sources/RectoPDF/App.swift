@@ -75,6 +75,10 @@ final class Bridge: AppListener, @unchecked Sendable {
     let isQuiet: Bool
     /// What the sheet over the window says, for `qa state`: its kind and words. Nothing with none.
     var sheetShowing: [String: Any]?
+    /// The print panel's answer, kept while Rust prepares the pages.
+    var pendingPrintInfo: NSPrintInfo?
+    /// The file the system's printing has now, which goes when it's done.
+    var printingPath: String?
     let strings: AppStrings
     let limits: ReaderLimits
     private let bridge: Bridge
@@ -274,6 +278,7 @@ final class Bridge: AppListener, @unchecked Sendable {
 
     func modelChanged() {
         windowController?.refreshModel()
+        if core.reader().printReady { runReadyPrint() }
         settings?.refresh()
         installMenu()
         armUpdateTimer()
@@ -411,6 +416,7 @@ final class Bridge: AppListener, @unchecked Sendable {
         case .closeWindow: windowController?.window.performClose(nil)
         case .showSavePanel: showSavePanel()
         case .confirmClose: confirmClose()
+        case .showPrintPanel: showPrintPanel()
         case .showGoTo: windowController?.startPageEditing()
         }
     }

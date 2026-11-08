@@ -111,6 +111,11 @@ import QuartzCore
             case "mouse_drag": pane.pointerDragged(atWindow: inWindow)
             default: pane.pointerMoved(atWindow: inWindow)
             }
+        case "print_to_pdf":
+            // `OUT` for every page, or `OUT|FIRST|LAST`, as Rust checked it.
+            let parts = value.split(separator: "|").map(String.init)
+            let (first, last) = parts.count == 3 ? (UInt32(parts[1]) ?? 0, UInt32(parts[2]) ?? 0) : (0, 0)
+            guard delegate.printToPDFForQA(out: parts[0], first: first, last: last) else { return fail(id, "There's nothing to print.") }
         case "mouse_up":
             controller?.readingPane.pointerUp()
         case "notice_button":

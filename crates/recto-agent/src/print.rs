@@ -85,7 +85,7 @@ impl<'a, O: Output> PdfOut<'a, O> {
     fn object(&mut self) -> io::Result<u32> {
         self.offsets.push(self.out.written);
         let number = self.offsets.len() as u32;
-        write!(self.out, "{number} 0 obj\n")?;
+        writeln!(self.out, "{number} 0 obj")?;
         Ok(number)
     }
 
@@ -97,7 +97,7 @@ impl<'a, O: Output> PdfOut<'a, O> {
         let xref = self.out.written;
         write!(self.out, "xref\n0 {}\n0000000000 65535 f \n", self.offsets.len() + 1)?;
         for offset in &self.offsets {
-            write!(self.out, "{offset:010} 00000 n \n")?;
+            writeln!(self.out, "{offset:010} 00000 n ")?;
         }
         write!(self.out, "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", self.offsets.len() + 1)?;
         self.out.flush()?;
@@ -215,7 +215,7 @@ pub(crate) fn print_into<O: Output>(config: &ServiceConfig, pages: &[PrintPage],
         if pdf.object().map_err(|error| from_io(&error))? != length {
             return Err(write_failed());
         }
-        write!(pdf.out, "{stream_length}\nendobj\n").map_err(|error| from_io(&error))?;
+        writeln!(pdf.out, "{stream_length}\nendobj").map_err(|error| from_io(&error))?;
         let content = format!("q {width_points} 0 0 {height_points} 0 0 cm /Im Do Q");
         let contents = pdf.object().map_err(|error| from_io(&error))?;
         write!(pdf.out, "<< /Length {} >>\nstream\n{content}\nendstream\nendobj\n", content.len()).map_err(|error| from_io(&error))?;

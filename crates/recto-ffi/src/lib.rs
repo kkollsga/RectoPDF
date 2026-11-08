@@ -9,6 +9,7 @@ mod generated_contents;
 pub mod linking;
 mod menus;
 mod panes;
+mod printing;
 mod qa;
 mod saver;
 mod saving;
@@ -397,6 +398,8 @@ pub struct ReaderView {
     pub document_folder: String,
     /// Whether the Save icon is beside the window's controls: with unsaved edits, or while saving.
     pub save_button: bool,
+    /// A print's pages are ready: call `take_print`, and hand the file to the system's printing.
+    pub print_ready: bool,
     /// Back and Forward can go somewhere in the tab being read: Go > Back and Forward, ⌘[ and ⌘], and a swipe.
     pub can_go_back: bool,
     pub can_go_forward: bool,
@@ -969,6 +972,8 @@ struct Inner {
     save_ui: saving::SaveUi,
     /// The snapshot tool: on or off, the box being drawn, and what's on its way to the clipboard.
     tool: snapshot_tool::Tool,
+    /// A print being prepared, or waiting for the host to hand to the system.
+    printing: printing::Printing,
 }
 
 /// What the host tells Rust about the window, kept for the record. A short lock: the UI thread sets these and a writer copies them.
@@ -1372,7 +1377,7 @@ impl AppCore {
             sheets: AtomicU32::new(0),
             last_input_ms: AtomicU64::new(0),
             first_shown: Mutex::new(None),
-            published: Mutex::new(Published { pane_tocs: Vec::new(), contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false, can_go_back: false, can_go_forward: false, link_prompt: None, page_text: String::new() } }),
+            published: Mutex::new(Published { pane_tocs: Vec::new(), contents: Arc::new(Vec::new()), rail_filled: 0, tabs: Arc::new(Vec::new()), sidebar: Arc::new(SidebarView { tabs_version: 0, tab_count: 0, active_index: None, contents_version: 0, contents_count: 0, contents_changed_from: 0, contents_removed: 0, contents_inserted: 0, contents_place_shift: 0, contents_current: None, toc_open: false, place: String::new(), edited: false, undone_owner_steps: false, contents_note: None }), reader: ReaderView { panes: Vec::new(), compare_synced: false, home: true, note: None, sidebar_hidden: false, layout: String::new(), edited: false, can_undo: false, can_redo: false, edit_mode: false, can_rotate: false, place: String::new(), paper: Paper::White.name().to_string(), paper_rgb: PaperKind::White.rgb(), page_tint: None, agent_icon_hidden: false, sidebar_width: record::SIDEBAR_WIDTH, highlight_dark_colour: false, highlight_lighten: false, selection_notice: None, saving: false, save_tooltip: String::new(), save_problem: None, save_as_note: None, shown_tab: 0, document_name: String::new(), document_folder: String::new(), save_button: false, print_ready: false, can_go_back: false, can_go_forward: false, link_prompt: None, page_text: String::new() } }),
             watchdog,
             stopper: Mutex::new(stopper),
             announcer: Mutex::new(announcer),
@@ -1383,6 +1388,7 @@ impl AppCore {
             open_failure: Mutex::new(None),
             action_notice: Mutex::new(None),
             tool: snapshot_tool::Tool::default(),
+            printing: printing::Printing::default(),
             link_prompt: Mutex::new(None),
             link_prompts_made: AtomicU64::new(0),
             save_ui: saving::SaveUi::new(Arc::clone(&save_step)),
@@ -1707,6 +1713,10 @@ impl AppCore {
         if id == "file.save" {
             return self.can_save();
         }
+        if id == "file.print" {
+            let reader = lock(&self.inner.published).reader.clone();
+            return !reader.home && reader.shown_tab != 0 && !self.inner.printing.busy();
+        }
         if id == "file.save_as" || id == "file.close" {
             let reader = lock(&self.inner.published).reader.clone();
             return !reader.home && !reader.saving;
@@ -1893,6 +1903,44 @@ impl AppCore {
         recto_reader::selection::autoscroll_step(beyond)
     }
 
+    /// What the print panel needs to know before it opens: the tab showing, its pages, whether something's selected, and its first page's size. Never waits: what's published, and a short lock on the page view.
+    pub fn print_model(&self) -> printing::PrintModel {
+        let reader = lock(&self.inner.published).reader.clone();
+        let engine = self.inner.panes.reading_engine(&self.inner.engine);
+        let pages = engine.report().0["pages"].as_u64().unwrap_or(0) as u32;
+        let (width_pt, height_pt) = engine.page_size_shown(0).map_or((612.0, 792.0), |(width, height)| (f64::from(width), f64::from(height)));
+        printing::PrintModel { tab: reader.shown_tab, pages, has_selection: engine.has_selection(), job_title: reader.document_name, width_pt, height_pt }
+    }
+
+    /// The print panel was answered with Print: these pages, from 1, or all of them, or the selection's. Rust draws them off the UI thread, and `print_ready` says when the file's there. False if nothing was started, with a notice saying why.
+    pub fn print_chosen(&self, tab: u32, all: bool, first: u32, last: u32, selection_only: bool) -> bool {
+        if tab == 0 || self.inner.core.frozen.load(Ordering::SeqCst) {
+            return false;
+        }
+        let model = self.print_model();
+        let selection = selection_only.then(|| self.inner.panes.reading_engine(&self.inner.engine).hot_selection()).flatten().and_then(|(_, range)| range).map(|range| (range.start.page, range.end.page));
+        let Some(range) = printing::chosen_range(model.pages, all, first, last, selection) else { return false };
+        printing::start(&self.inner, TabId(tab), range, recto_agent::print::DEFAULT_DPI)
+    }
+
+    /// The file a print's pages are in, once, for the host to hand to the system's printing.
+    pub fn take_print(&self) -> Option<String> {
+        let path = self.inner.printing.take_ready().map(|path| path.to_string_lossy().into_owned());
+        self.inner.core.push(CoreCall::Reconcile);
+        path
+    }
+
+    /// The system's printing is done with a file, however it went: it goes.
+    pub fn print_finished(&self, path: String) {
+        self.inner.printing.finished(&path);
+        self.inner.core.push(CoreCall::Reconcile);
+    }
+
+    /// Stops a print being prepared, at the next page.
+    pub fn print_cancel(&self) {
+        self.inner.printing.cancel();
+    }
+
     /// What the snapshot tool has for the clipboard, in the order to offer it, each by its type. `copy_ready` says when, and this comes before `take_copied`.
     pub fn take_clipboard(&self) -> Option<Vec<snapshot_tool::ClipboardItem>> {
         self.inner.tool.take_ready()
@@ -1920,6 +1968,7 @@ impl AppCore {
         }
         lock(&self.inner.action_notice).take();
         self.inner.tool.dismiss_notice();
+        self.inner.printing.dismiss_notice();
         self.inner.updates.dismiss_notice();
         self.inner.core.push(CoreCall::Reconcile);
     }
@@ -3256,10 +3305,10 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let holding = lock(&inner.holding_tab).is_some();
     let sidebar_width = lock(&inner.app).sidebar_width;
     let highlight = paper.highlight();
-    let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| inner.tool.notice().map(|notice| SelectionNotice { action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: !notice.offers_copy_anyway, text: notice.text })).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
+    let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| inner.printing.notice().map(|text| SelectionNotice { text, action_title: None, fades: !inner.printing.busy() })).or_else(|| inner.tool.notice().map(|notice| SelectionNotice { action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: !notice.offers_copy_anyway, text: notice.text })).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
     let pane_views: Vec<PaneView> = if comparing { snapshots.iter().enumerate().map(|(pane, shown)| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active, layout: shown.spread.name().to_string(), note: shown.problem.clone().or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())) }).collect() } else { Vec::new() };
     let compare_synced = inner.host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
-    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: inner.save_ui.tooltip(), save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now), can_go_back, can_go_forward, link_prompt: lock(&inner.link_prompt).clone(), page_text };
+    let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: inner.save_ui.tooltip(), save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now), print_ready: inner.printing.has_ready(), can_go_back, can_go_forward, link_prompt: lock(&inner.link_prompt).clone(), page_text };
     let pane_tocs: Vec<Option<Arc<recto_core::Toc>>> = snapshots.iter().map(|shown| shown.toc.clone()).collect();
     let mut published = lock(&inner.published);
     published.pane_tocs = pane_tocs;
