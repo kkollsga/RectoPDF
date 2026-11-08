@@ -3684,8 +3684,11 @@ fn a_step_kept_for_the_querys_end_is_done_without_a_hang() {
     wait_for(&run, |state| state["app"]["find"]["open"] == false);
     // Opens Find with what was typed, finds it again from the start, and goes back round to the last hit once the end is known.
     run.ok(&["qa", "menu", "find.previous"]);
-    let went = wait_for(&run, |state| state["app"]["place"] == "300 of 300");
-    assert_eq!(went["app"]["find"]["status"], "300 matches on 300 pages", "{}", went["app"]["find"]);
+    wait_for(&run, |state| state["app"]["place"] == "300 of 300");
+    // The status is published on its own beat, so it can say a few pages less for a moment after the step has gone to the last hit (seen in a full run: "291 matches on 291 pages, searching…" with the place already at 300). Once the query's done, it says all of them, and the place is still the last hit.
+    let done = wait_for(&run, |state| state["app"]["find"]["running"] == false);
+    assert_eq!(done["app"]["place"], "300 of 300", "{}", done["app"]);
+    assert_eq!(done["app"]["find"]["status"], "300 matches on 300 pages", "{}", done["app"]["find"]);
 }
 
 /// Failure: the person's own Find in a document they opened with its password finds nothing, or says nothing about why, because it reads pages with no password; or it gets there by writing the decrypted text to a corpus or index; or an agent's `recto find` gets its hits, at any level, as status or with a query.
