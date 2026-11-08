@@ -323,7 +323,8 @@ fn signed_fields(reader: &IndexedReader, root: &Dictionary) -> (bool, bool) {
             Ok(Object::Name(kind)) => kind == b"Sig",
             _ => parent_is_sig,
         };
-        let signed = is_sig && field.has(b"V");
+        // A value with a byte range is a signature whatever the field says it is (review round 2).
+        let signed = (is_sig && field.has(b"V")) || value_is_signature(reader, &field);
         any_signed |= signed;
         if signed && field.get(b"Lock").ok().cloned().and_then(|lock| dict_value(reader, &lock)).is_some_and(|lock| lock.has(b"P")) {
             return (true, true);
@@ -339,6 +340,15 @@ fn signed_fields(reader: &IndexedReader, root: &Dictionary) -> (bool, bool) {
         }
     }
     (any_signed, false)
+}
+
+/// **Whether a field's own `/V` is a signature's value:** a dictionary with a `/ByteRange`, written in place or named. One object resolved at most.
+fn value_is_signature(reader: &IndexedReader, field: &Dictionary) -> bool {
+    match field.get(b"V") {
+        Ok(Object::Dictionary(value)) => value.has(b"ByteRange"),
+        Ok(Object::Reference(id)) => matches!(reader.resolve_object(*id), Ok(Object::Dictionary(value)) if value.has(b"ByteRange")),
+        _ => false,
+    }
 }
 
 /// [`signature_facts`] of a file on disk, for deciding what's on offer before anyone saves, with the fork's own look through the file's bytes for a signature,
@@ -966,7 +976,7 @@ struct FormFields {
     renamed: HashMap<u32, Vec<u8>>,
     /// The source form's default resources' fonts, which fields' `/DA` names.
     fonts: Option<Dictionary>,
-    /// Signature widgets on added pages, which don't come along.
+    /// Signed signature widgets on added pages, which don't come along. A blank one, a place to sign, comes as any field does.
     signature_widgets: HashSet<u32>,
 }
 
@@ -993,21 +1003,37 @@ struct FormAdditions {
     fonts: Dictionary,
 }
 
+/// One field node, as [`form_fields`] needs it.
+#[derive(Clone, Copy)]
+struct Node {
+    parent: Option<ObjectId>,
+    /// `/FT /Sig`.
+    sig: bool,
+    /// It has `/T` or `/FT`.
+    field: bool,
+    /// It has a `/V`.
+    valued: bool,
+    /// Its `/V` is a dictionary with a `/ByteRange`.
+    signature_value: bool,
+}
+
 /// Fields walked up from one widget, and nodes in all. Real forms have a few levels and hundreds of fields.
 const MAX_FIELD_DEPTH: usize = 64;
 const MAX_FIELD_NODES: usize = 100_000;
 
-/// The fields the widgets on these pages belong to. A widget that's a field of its own with no parent is a top field itself. **A signature widget goes:** a
+/// The fields the widgets on these pages belong to. A widget that's a field of its own with no parent is a top field itself. **A signed signature widget goes:** a
 /// signature from another document would only be a broken one here, and outside the form, where nothing that decides about signatures looks, it would still make
-/// the file read as signed by its bytes. The page's own drawn content stays. Bounded by the bytes looked at, every node resolved once, and what can't be read is
+/// the file read as signed by its bytes. A field whose value has a `/ByteRange` counts as signed, whatever its `/FT`. A blank signature field, with no value, is
+/// a place to sign and comes as any other field does, as the fork keeps blank ones through a rewrite (review round 2). The page's own drawn content stays. Bounded by the bytes looked at, every node resolved once, and what can't be read is
 /// passed over, leaving that widget as it was: drawn, and not fillable.
 fn form_fields(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], work: &mut u64) -> Result<FormFields, SaveError> {
     let mut fields = FormFields::default();
     let mut tops: HashSet<u32> = HashSet::new();
     let mut seen_kids: HashSet<(u32, u32)> = HashSet::new();
-    // Each node looked at once: its parent, whether it says it's a signature field, and whether it says it's a field at all.
-    let mut nodes: HashMap<u32, Option<(Option<ObjectId>, bool, bool)>> = HashMap::new();
-    let mut node = |id: ObjectId, work: &mut u64| -> Result<Option<(Option<ObjectId>, bool, bool)>, SaveError> {
+    // Each node looked at once: its parent, whether it says it's a signature field, whether it says it's a field at all, whether it has a value, and whether
+    // that value is a signature's.
+    let mut nodes: HashMap<u32, Option<Node>> = HashMap::new();
+    let mut node = |id: ObjectId, work: &mut u64| -> Result<Option<Node>, SaveError> {
         if let Some(known) = nodes.get(&id.0) {
             return Ok(*known);
         }
@@ -1020,7 +1046,10 @@ fn form_fields(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], wor
                 let Object::Dictionary(dict) = object else { unreachable!() };
                 let parent = dict.get(b"Parent").ok().and_then(|parent| parent.as_reference().ok());
                 let sig = matches!(dict.get(b"FT"), Ok(Object::Name(kind)) if kind == b"Sig");
-                Some((parent, sig, dict.has(b"T") || dict.has(b"FT")))
+                if matches!(dict.get(b"V"), Ok(Object::Reference(_))) {
+                    charge(work, 1)?;
+                }
+                Some(Node { parent, sig, field: dict.has(b"T") || dict.has(b"FT"), valued: dict.has(b"V"), signature_value: value_is_signature(source, &dict) })
             }
             _ => None,
         };
@@ -1050,15 +1079,19 @@ fn form_fields(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], wor
             // Up the chain, each node once.
             let mut chain: Vec<ObjectId> = vec![widget];
             let mut signature = false;
+            let mut valued = false;
+            let mut signed = false;
             let mut a_field = false;
             let mut readable_to_top = true;
             let mut at = widget;
             loop {
-                let Some((parent, sig, field)) = node(at, work)? else {
+                let Some(Node { parent, sig, field, valued: has_value, signature_value }) = node(at, work)? else {
                     readable_to_top = false;
                     break;
                 };
                 signature |= sig;
+                valued |= has_value;
+                signed |= signature_value;
                 a_field |= field;
                 match parent {
                     Some(parent) if chain.len() <= MAX_FIELD_DEPTH && !chain.contains(&parent) => {
@@ -1072,7 +1105,8 @@ fn form_fields(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], wor
                     None => break,
                 }
             }
-            if signature {
+            // `/FT` and `/V` are both inherited, so a signature field with a value anywhere up its chain is signed.
+            if signed || (signature && valued) {
                 fields.signature_widgets.insert(widget.0);
                 continue;
             }
@@ -1103,10 +1137,19 @@ fn form_fields(source: &IndexedReader, map: &lopdf::PageMap, wanted: &[u32], wor
 /// Most renames tried for one field's name.
 const MAX_RENAMES: u32 = 1_000;
 
-/// `name`, or `name_2`, `name_3`… if that's taken, in the name's own encoding: a UTF-16 name stays UTF-16. `None` past [`MAX_RENAMES`], as settling on a taken
-/// name would merge the added field into the document's own and change its value.
+/// **A field name as a reader compares it:** decoded, so `(Name)` in PDFDocEncoding and the same name in UTF-16 are one name (review round 2). A name that won't
+/// decode is kept as its bytes, behind a byte UTF-8 never has, so it can't meet a decoded one.
+fn name_key(name: &[u8]) -> Vec<u8> {
+    match lopdf::decode_text_string(&Object::String(name.to_vec(), lopdf::StringFormat::Literal)) {
+        Ok(text) => text.into_bytes(),
+        Err(_) => [&[0xFF], name].concat(),
+    }
+}
+
+/// `name`, or `name_2`, `name_3`… if that's taken, in the name's own encoding: a UTF-16 name stays UTF-16. `taken` holds names as [`name_key`] gives them.
+/// `None` past [`MAX_RENAMES`], as settling on a taken name would merge the added field into the document's own and change its value.
 fn free_name(name: &[u8], taken: &HashSet<Vec<u8>>) -> Option<Vec<u8>> {
-    if !taken.contains(name) {
+    if !taken.contains(&name_key(name)) {
         return Some(name.to_vec());
     }
     let utf16 = name.starts_with(&[0xFE, 0xFF]);
@@ -1114,10 +1157,10 @@ fn free_name(name: &[u8], taken: &HashSet<Vec<u8>>) -> Option<Vec<u8>> {
         let suffix = format!("_{n}");
         let tail: Vec<u8> = if utf16 { suffix.encode_utf16().flat_map(u16::to_be_bytes).collect() } else { suffix.into_bytes() };
         [name, tail.as_slice()].concat()
-    }).find(|candidate| !taken.contains(candidate))
+    }).find(|candidate| !taken.contains(&name_key(candidate)))
 }
 
-/// The names of a form's top fields, as written, each field looked at once, within the bound on fields. `None` if the form or its list can't be read, so nothing's
+/// The names of a form's top fields, as [`name_key`] gives them, each field looked at once, within the bound on fields. `None` if the form or its list can't be read, so nothing's
 /// said to be free that isn't.
 fn top_field_names(reader: &IndexedReader, work: &mut u64) -> Result<Option<HashSet<Vec<u8>>>, SaveError> {
     let Some(form_value) = catalog(reader).and_then(|root| root.get(b"AcroForm").ok().cloned()) else { return Ok(Some(HashSet::new())) };
@@ -1142,7 +1185,7 @@ fn top_field_names(reader: &IndexedReader, work: &mut u64) -> Result<Option<Hash
         let Some(dict) = dict_value(reader, field) else { continue };
         charge(work, held_size(&Object::Dictionary(dict.clone()), 0) / 32)?;
         if let Some(name) = dict.get(b"T").ok().and_then(|name| name.as_str().ok()) {
-            names.insert(name.to_vec());
+            names.insert(name_key(name));
         }
     }
     Ok(Some(names))
@@ -1205,7 +1248,7 @@ impl Plan {
                             if chosen != name {
                                 copy.fields.renamed.insert(top.0, chosen.clone());
                             }
-                            taken.insert(chosen);
+                            taken.insert(name_key(&chosen));
                         }
                     }
                 }
@@ -1905,6 +1948,37 @@ pub fn prune_backups(folder: &Path, now: SystemTime) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Failure (review round 2 of stage 2): a form listing more top fields than a save looks at is walked anyway, holding them all. Through a save, the signature
+    /// look's own bound of 16,384 field visits refuses it first (such a form counts as signed and locked), so this asks the name look itself: past 100,000 it's
+    /// refused as too much, before any field is read.
+    #[test]
+    fn a_form_past_the_field_bound_is_refused_by_the_name_look() {
+        let many: String = (0..=MAX_FIELD_NODES).map(|_| "4 0 R ").collect();
+        let bytes = recto_testpdf::build(&[
+            recto_testpdf::Object::Dict(format!("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [{many}] >> >>")),
+            recto_testpdf::Object::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+            recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>".into()),
+            recto_testpdf::Object::Dict("<< /T (X) >>".into()),
+        ]);
+        let path = std::env::temp_dir().join(format!("recto-fields-{}.pdf", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let reader = crate::open_reader(&path).unwrap();
+        let mut work = 0;
+        assert!(matches!(top_field_names(&reader, &mut work), Err(SaveError::TooLarge)));
+        assert_eq!(work, 0, "refused before a field was read");
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Failure (review round 2 of stage 2): `(Name)` in PDFDocEncoding and `Name` in UTF-16 are one name to a reader, but two to the collision check. As text they're one, and one that won't decode can't meet a decoded one.
+    #[test]
+    fn field_names_meet_as_text() {
+        assert_eq!(name_key(b"Name"), name_key(&[0xFE, 0xFF, 0, b'N', 0, b'a', 0, b'm', 0, b'e']));
+        let taken: HashSet<Vec<u8>> = [name_key(b"Name")].into();
+        assert_eq!(free_name(&[0xFE, 0xFF, 0, b'N', 0, b'a', 0, b'm', 0, b'e'], &taken), Some(vec![0xFE, 0xFF, 0, b'N', 0, b'a', 0, b'm', 0, b'e', 0, b'_', 0, b'2']));
+        assert_ne!(name_key(&[0xFE, 0xFF, 0xD8, 0x00]), name_key(b"x"), "an unpaired surrogate is kept as bytes");
+    }
     /// Failure: someone calls one of lopdf's writers that take any `Write`, such as an eager save, and an original is truncated before it's written. `clippy.toml` refuses them by name: this checks the list is there and names each, so it can't be emptied quietly.
     #[test]
     fn the_writers_that_take_any_write_are_refused_by_name() {

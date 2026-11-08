@@ -866,8 +866,9 @@ fn hostile_forms_are_bounded() {
         Raw::Dict("<< /T (X) >>".into()),
     ]);
     let huge_path = dir.write("huge.pdf", &huge);
-    // Refused before it's walked: as too much, or, by the signature look's own bound, as possibly locked, on the side of refusing.
-    assert!(matches!(save::save(&request(&huge_path, 1, &order, &added), Target::Same, None, &mut save::NoHooks), Err(SaveError::TooLarge | SaveError::LockedBySignature)));
+    // Refused before it's walked: through a save the signature look's own bound (16,384 field visits) refuses it first, as possibly locked, on the side of
+    // refusing. The name look's own refusal past 100,000 is `save::tests::a_form_past_the_field_bound_is_refused_by_the_name_look`.
+    assert_eq!(save::save(&request(&huge_path, 1, &order, &added), Target::Same, None, &mut save::NoHooks), Err(SaveError::LockedBySignature));
 }
 
 /// Failure (review round 1 of stage 2): a page object the tree lists twice is one page to the rewrite, so a copy kept for "pages 0 and 1" holds one page, and undo past the save puts the wrong pages back. A copy with fewer pages than asked for isn't used, and one estimated past the limit isn't written.
@@ -909,4 +910,81 @@ fn a_blank_signature_field_stays_through_a_rewrite() {
     assert!(outcome.usage_rights_removed);
     let after = std::fs::read(&path).unwrap();
     assert!(contains(&after, "SIGNHERE") && contains(&after, "/SigFlags 1") && !contains(&after, "/UR3"), "the blank field stays");
+}
+
+/// The names of the top fields in a saved file's form, as written.
+fn form_field_names(path: &Path) -> Vec<Vec<u8>> {
+    let reader = IndexedReader::open(FileSource::open(path).unwrap()).unwrap();
+    let Some(Object::Dictionary(catalog)) = reader.trailer_entry_owned(b"Root").unwrap() else { panic!("no catalog") };
+    let form = match catalog.get(b"AcroForm") {
+        Ok(Object::Dictionary(form)) => form.clone(),
+        Ok(Object::Reference(id)) => reader.resolve_object(*id).unwrap().as_dict().unwrap().clone(),
+        _ => return Vec::new(),
+    };
+    form.get(b"Fields").unwrap().as_array().unwrap().iter().map(|field| reader.resolve_object(field.as_reference().unwrap()).unwrap().as_dict().unwrap().get(b"T").unwrap().as_str().unwrap().to_vec()).collect()
+}
+
+/// A one-page PDF whose page has the one widget `widget`, object 5, which is its form's one field, and object 6, `extra`.
+fn one_widget(widget: &str, extra: &str) -> Vec<u8> {
+    build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R] >>".into()),
+        Raw::Stream { dict: String::new(), data: text_lines(&["WIDGETPAGE"]) },
+        Raw::Dict(widget.into()),
+        Raw::Dict(extra.into()),
+    ])
+}
+
+/// Failure (review round 2 of stage 2): a blank signature field on an added page, the place a person is to sign, is dropped, though nobody signed it and the fork keeps blank ones through a rewrite. It comes along, joins the form, and leaves the document unsigned: a later delete saves over it as for any unsigned file.
+#[test]
+fn an_added_pages_blank_signature_field_comes_along() {
+    let dir = Dir::new();
+    let path = dir.write("doc.pdf", &marked(&["MINE", "ALSO"]));
+    let other = dir.write("blank.pdf", &one_widget("<< /Type /Annot /Subtype /Widget /FT /Sig /T (SIGNHERE) /Rect [0 0 90 20] /P 3 0 R >>", "<< /Unused true >>"));
+    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 1, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    save::save(&request(&path, 2, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    assert_eq!(form_field_names(&path), [b"SIGNHERE".to_vec()], "the place to sign joins the form");
+    assert!(!save::signature_facts_of(&path).unwrap().has_persons_signature(), "and nobody has signed it");
+    let delete = own(&[(0, 0), (2, 0)]);
+    assert_eq!(save::save(&request(&path, 3, &delete, &[]), Target::Same, None, &mut save::NoHooks).unwrap().writer, Writer::Rewrite);
+    assert!(contains(&std::fs::read(&path).unwrap(), "SIGNHERE"), "and it stays through the rewrite");
+}
+
+/// Failure (review round 2 of stage 2): a field whose value is a signature, a dictionary with a `/ByteRange`, isn't taken for one because its `/FT` says something else, so a page added from that document brings the value along outside the form, and the document's own form doesn't read as signed. It counts as signed, whatever its `/FT`.
+#[test]
+fn a_value_with_a_byte_range_is_a_signature_whatever_the_field_says() {
+    let dir = Dir::new();
+    let disguised = one_widget("<< /Type /Annot /Subtype /Widget /FT /Tx /T (NOTASIG) /V 6 0 R /Rect [0 0 90 20] /P 3 0 R >>", "<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 10 20 30] /Contents <00> >>");
+    let other = dir.write("disguised.pdf", &disguised);
+    let reader = IndexedReader::open(FileSource::open(&other).unwrap()).unwrap();
+    assert!(save::signature_facts(&reader).signed, "its own form reads as signed");
+    let path = dir.write("doc.pdf", &marked(&["MINE"]));
+    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(!contains(&bytes, "/ByteRange") && !contains(&bytes, "NOTASIG"), "the value stays behind");
+    assert!(contains(&bytes, "WIDGETPAGE"), "the page comes");
+}
+
+/// Failure (review round 2 of stage 2): field names are compared as raw bytes, so an added field named `Name` in UTF-16 isn't seen to collide with the document's `(Name)` in PDFDocEncoding, and a reader, which compares them decoded, mixes their values. Decoded, it's taken, and the added one is renamed in its own encoding.
+#[test]
+fn field_names_are_compared_as_text() {
+    let dir = Dir::new();
+    let target = build(&[
+        Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] >> >>".into()),
+        Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+        Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>".into()),
+        Raw::Dict("<< /T (Name) /FT /Tx >>".into()),
+    ]);
+    let path = dir.write("target.pdf", &target);
+    let other = dir.write("utf16.pdf", &one_widget("<< /Type /Annot /Subtype /Widget /FT /Tx /T <FEFF004E0061006D0065> /Rect [0 0 90 20] /P 3 0 R >>", "<< /Unused true >>"));
+    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
+    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
+    let names: Vec<String> = form_field_names(&path).iter().map(|name| lopdf::decode_text_string(&Object::String(name.clone(), lopdf::StringFormat::Literal)).unwrap()).collect();
+    assert_eq!(names, ["Name", "Name_2"], "renamed, so the two values stay apart");
+    assert!(form_field_names(&path)[1].starts_with(&[0xFE, 0xFF]), "in its own encoding");
 }
