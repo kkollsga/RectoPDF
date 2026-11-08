@@ -386,6 +386,7 @@ const KNOWN_PATHS: &[&str] = &[
     "app.pages.snapshot_box",
     "printing.busy",
     "printing.notice",
+    "printing.pid",
     "snapshot.busy",
     "snapshot.drawing",
     "snapshot.notice",

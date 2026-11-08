@@ -236,6 +236,9 @@ pub enum Command {
         #[serde(default = "render::default_scale", deserialize_with = "render::scale_or_max")]
         scale: f32,
         out: PathBuf,
+        /// Draws a page of a file that asks not to be copied. Only once the user has said to; logged.
+        #[serde(default)]
+        anyway: bool,
     },
     /// Writes a page, or a box on it, to a new SVG file.
     ExportSvg {
@@ -255,6 +258,9 @@ pub enum Command {
         /// Takes out of JPEGs what isn't the picture, and the document's title.
         #[serde(default)]
         strip_metadata: bool,
+        /// Exports a page of a file that asks not to be copied. Only once the user has said to; logged.
+        #[serde(default)]
+        anyway: bool,
     },
     /// Where a page's images are, and what each is.
     Images {
@@ -297,9 +303,12 @@ pub enum Command {
         /// `4`, `4-6` or `4-`: all of them if left out.
         #[serde(default)]
         pages: Option<String>,
-        #[serde(default = "print_dpi")]
+        #[serde(default = "print::default_dpi")]
         dpi: u32,
         to_pdf: PathBuf,
+        /// Prints a file that asks not to be copied to a PDF. Only once the user has said to; logged. Print to paper never asks.
+        #[serde(default)]
+        anyway: bool,
     },
     /// A page's text, normalised for search, with the hidden-text flag.
     Text {
@@ -692,7 +701,7 @@ impl Command {
             Self::Open { path, page } => json!({ "page": page, "untrusted": file(path) }),
             Self::PageInsert { tab, path, at } => json!({ "tab": tab_of(tab), "at": at, "untrusted": file(path) }),
             Self::Save { tab, out: Some(out), replace } => json!({ "tab": tab_of(tab), "replace": replace, "untrusted": file(out) }),
-            Self::Render { tab, page, out, .. } | Self::ExportSvg { tab, page, out, .. } => json!({ "tab": tab_of(tab), "page": page, "untrusted": file(out) }),
+            Self::Render { tab, page, out, anyway, .. } | Self::ExportSvg { tab, page, out, anyway, .. } => json!({ "tab": tab_of(tab), "page": page, "anyway": anyway, "untrusted": file(out) }),
             Self::Text { tab, page } | Self::Links { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
             // A label is from the file, so it isn't kept: only that one was asked for.
             Self::Goto { tab, page, label } => json!({ "tab": tab_of(tab), "page": page, "by_label": label.is_some() }),
@@ -701,7 +710,7 @@ impl Command {
             Self::Images { tab, page } => json!({ "tab": tab_of(tab), "page": page }),
             Self::Image { tab, page, number, out, anyway } => json!({ "tab": tab_of(tab), "page": page, "number": number, "anyway": anyway, "untrusted": file(out) }),
             // Which page and format, and not where on it.
-            Self::Print { tab, pages, dpi, to_pdf } => json!({ "tab": tab_of(tab), "pages": pages.as_deref().map(clean_range), "dpi": dpi, "untrusted": file(to_pdf) }),
+            Self::Print { tab, pages, dpi, to_pdf, anyway } => json!({ "tab": tab_of(tab), "pages": pages.as_deref().map(clean_range), "dpi": dpi, "anyway": anyway, "untrusted": file(to_pdf) }),
             Self::Snapshot { tab, page, format, out, anyway, .. } => json!({ "tab": tab_of(tab), "page": page, "as": recto_core::clean_line(format), "anyway": anyway, "untrusted": out.as_deref().map(file) }),
             // Which pages, and not where on them or what's there.
             Self::Select { tab, page, to_page, all, anyway, .. } | Self::Copy { tab, page, to_page, all, anyway, .. } => json!({ "tab": tab_of(tab), "page": page, "to_page": to_page, "all": all, "anyway": anyway }),
@@ -1182,9 +1191,10 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             let id = select(s, tab)?;
             Ok(edits_json(s, id))
         }),
-        Command::Render { tab, page, scale, out } => {
+        Command::Render { tab, page, scale, out, anyway } => {
             require_absolute(out)?;
             let (id, position, source) = locate(access, tab, *page)?;
+            extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let drawn = render::render(&source.path, source.page + 1, *scale, out);
             if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
                 note_draw(access, id, position, drawn.as_ref().err().map(|error| error.code), events);
@@ -1193,9 +1203,10 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             describe_source(&mut data, *page, &source);
             Ok(data)
         }
-        Command::ExportSvg { tab, page, out, rect, text, scale, strip_metadata } => {
+        Command::ExportSvg { tab, page, out, rect, text, scale, strip_metadata, anyway } => {
             require_absolute(out)?;
             let (id, position, source) = locate(access, tab, *page)?;
+            extract::refuse_if_restricted(&source.path, source.page, *anyway)?;
             let args = render::SvgArgs { path: &source.path, page: source.page + 1, out, rect: *rect, text: text.as_deref(), scale: *scale, strip_metadata: *strip_metadata };
             let drawn = render::export_svg(&args);
             if !is_about_the_output(drawn.as_ref().err().map(|error| error.code)) {
@@ -1227,10 +1238,10 @@ fn execute_held<A: SessionAccess>(access: &A, level: Level, command: &Command, e
             describe_source(&mut data, *page, &source);
             Ok(data)
         }
-        Command::Print { tab, pages, dpi, to_pdf } => {
+        Command::Print { tab, pages, dpi, to_pdf, anyway } => {
             require_absolute(to_pdf)?;
-            let list = print_pages(access, tab, pages.as_deref())?;
-            print::print_to_file(&list, *dpi, to_pdf)
+            let list = print::print_pages(access, tab, pages.as_deref())?;
+            print::print_to_file(&list, *dpi, to_pdf, *anyway)
         }
         Command::Text { tab, page } => {
             let (id, position, source) = locate(access, tab, *page)?;
@@ -1411,42 +1422,6 @@ fn locate<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<(TabId, 
         return Err(source_changed(&source.path));
     }
     Ok((id, position, source))
-}
-
-/// [`print_pages`] on a session in hand, for the app's print.
-pub fn print_pages_in<L: DocLoader + Clone>(session: &mut Session<L>, tab: &str, pages: Option<&str>) -> Result<Vec<print::PrintPage>, AgentError> {
-    print_pages(&Direct(RefCell::new(session), None), tab, pages)
-}
-
-fn print_dpi() -> u32 {
-    print::DEFAULT_DPI
-}
-
-/// The pages a print takes, as the tab has them, edits and all: each one's file and page there, and its unsaved turn. `pages` is `4`, `4-6` or `4-`, and all of them if left out.
-pub fn print_pages<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<Vec<print::PrintPage>, AgentError> {
-    let range = pages.map(|pages| parse_pages(pages, true)).transpose()?;
-    let sources = access.with(|s| {
-        let id = select(s, tab)?;
-        let total = s.pages_in(id);
-        let (start, len) = range.unwrap_or((0, total));
-        if start >= total {
-            return Err(no_such_page());
-        }
-        let end = start.saturating_add(len).min(total);
-        if end - start > print::MAX_PAGES {
-            return Err(AgentError::new("too_many_pages", format!("A print is at most {} pages.", print::MAX_PAGES), exit::FAILED).then("Print a range of pages at a time, with `--pages`."));
-        }
-        (start..end).map(|position| s.page_source(id, position).ok_or_else(no_such_page)).collect::<Result<Vec<_>, _>>()
-    })?;
-    sources
-        .into_iter()
-        .map(|source| {
-            if !source.is_current() {
-                return Err(source_changed(&source.path));
-            }
-            Ok(print::PrintPage { path: source.path, page: source.page, quarter_turns: source.quarter_turns })
-        })
-        .collect()
 }
 
 fn no_such_page() -> AgentError {
@@ -2093,7 +2068,7 @@ mod tests {
         let mut session = with_tabs(&["a"]);
         let refused = run(&mut session, Level::Off, &text).unwrap_err();
         assert_eq!((refused.code, refused.exit), ("permission_denied", exit::PERMISSION));
-        let render = Command::Render { tab: "#1".into(), page: 1, scale: 2.0, out: "/tmp/x.png".into() };
+        let render = Command::Render { tab: "#1".into(), page: 1, scale: 2.0, out: "/tmp/x.png".into(), anyway: false };
         assert_eq!(run(&mut session, Level::Control, &render).unwrap_err().code, "permission_denied", "it writes to disk, so it needs Full");
     }
 
@@ -2178,12 +2153,12 @@ mod tests {
             Command::Budget {},
             Command::Compare { tabs: None, sync: None, off: false },
             Command::Compare { tabs: None, sync: None, off: true },
-            Command::Render { tab: tab(), page: 1, scale: 2.0, out: "/d/x.png".into() },
-            Command::ExportSvg { tab: tab(), page: 1, out: "/d/x.svg".into(), rect: None, text: None, scale: 2.0, strip_metadata: false },
+            Command::Render { tab: tab(), page: 1, scale: 2.0, out: "/d/x.png".into(), anyway: false },
+            Command::ExportSvg { tab: tab(), page: 1, out: "/d/x.svg".into(), rect: None, text: None, scale: 2.0, strip_metadata: false, anyway: false },
             Command::Images { tab: tab(), page: 1 },
             Command::Image { tab: tab(), page: 1, number: 1, out: "/d/x.png".into(), anyway: false },
             Command::Snapshot { tab: tab(), page: 1, rect: [0.0, 0.0, 10.0, 10.0], format: "png".into(), out: Some("/d/x.png".into()), scale: 2.0, anyway: false },
-            Command::Print { tab: tab(), pages: None, dpi: 300, to_pdf: "/d/x.pdf".into() },
+            Command::Print { tab: tab(), pages: None, dpi: 300, to_pdf: "/d/x.pdf".into(), anyway: false },
             Command::Text { tab: tab(), page: 1 },
             Command::Select { tab: tab(), page: Some(1), to_page: None, chars: None, at: None, to: None, unit: None, all: false, anyway: false },
             Command::Copy { tab: tab(), page: Some(1), to_page: None, chars: None, at: None, to: None, unit: None, all: false, anyway: false },

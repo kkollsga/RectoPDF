@@ -541,6 +541,16 @@ impl Engine {
         Some((point, reader.page_size_shown(point.page)?))
     }
 
+    /// Where a point in the document is on `page`, whichever page it's over, past its edges if it must: a snapshot's box stays on the page it was pressed on. A short lock and some sums.
+    pub fn point_on_given_page(&self, page: u32, x: f64, y: f64) -> Option<recto_index::select::PagePoint> {
+        lock(&self.shared.reader).point_on_given_page(page, x, y)
+    }
+
+    /// How many pages the tab shown has, edits and all. A short lock, for what can't wait, as the print panel can't.
+    pub fn page_count(&self) -> u32 {
+        lock(&self.shared.reader).page_count()
+    }
+
     /// A page's size as it's shown, in its own coordinates. A short lock.
     pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)> {
         lock(&self.shared.reader).page_size_shown(page)

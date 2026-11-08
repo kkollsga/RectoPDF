@@ -218,6 +218,24 @@ fn read_facts(reader: &IndexedReader) -> Result<DocFacts, OpenError> {
     })
 }
 
+/// The bit of an encryption dictionary's `/P` that allows copying text and graphics out (PDF 32000-1, table 22, bit 5): what PDFium's `FPDF_GetDocPermissions` reads.
+const PERMISSION_COPY: i64 = 1 << 4;
+
+/// **Whether a file asks that it isn't copied**, read straight from its encryption dictionary's `/P`, a document-wide flag: no page is read, so no worker and no characters. A file with no encryption asks nothing. The flag is advice the file gives, which RectoPDF honours with a notice and "anyway" (owner, 2026-11-08). An error means the structure reader couldn't open the file; the caller then asks the renderer.
+pub fn copy_restricted(path: &Path) -> Result<bool, OpenError> {
+    let reader = open_reader(path)?;
+    Ok(restricted_by(&reader))
+}
+
+fn restricted_by(reader: &IndexedReader) -> bool {
+    if !reader.is_encrypted() {
+        return false;
+    }
+    // `/P` is a plain integer, never encrypted. One that can't be read is taken as allowing everything, as PDFium does with a dictionary it can't read: the file still opened.
+    let permissions = reader.trailer_entry_owned(b"Encrypt").ok().flatten().and_then(|encrypt| encrypt.as_dict().ok().and_then(|dict| dict.get(b"P").ok().and_then(|value| value.as_i64().ok())));
+    permissions.is_some_and(|permissions| permissions & PERMISSION_COPY == 0)
+}
+
 /// A document's title, as it says, cleaned. `None` if it has none or can't be read.
 pub fn document_title(path: &Path) -> Option<Box<str>> {
     read_title(&open_reader(path).ok()?)

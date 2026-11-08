@@ -82,9 +82,12 @@ import QuartzCore
             plainShot(of: row, id: id, path: value)
             return
         case "copied":
+            // A type still promised is listed as such, and made only when the value names it, as a paste of it would. Which are promised is read first: reading any type in this process makes the system resolve the rest of the item's promises, which another app's paste doesn't (a second process reading the PNG and the JPEG left the SVG unmade, 2026-11-08), so it holds only for the first look after a copy.
+            let promised = delegate.clipboardPromised
             let text = delegate.pasteboard.string(forType: .string)
             // Each type in the clipboard's order, with its size and a digest, so a test can say a JPEG went as its own bytes without the bytes crossing.
             let types = (delegate.pasteboard.types ?? []).map { type -> [String: Any] in
+                if promised.contains(type.rawValue) && value != type.rawValue { return ["type": type.rawValue, "promised": true] }
                 let data = delegate.pasteboard.data(forType: type) ?? Data()
                 return ["type": type.rawValue, "bytes": data.count, "sha256": SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()]
             }

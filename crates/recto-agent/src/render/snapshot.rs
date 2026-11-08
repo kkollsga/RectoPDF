@@ -11,6 +11,7 @@ use recto_proto::BYTES_PER_PIXEL;
 use recto_render_service::{DocRenderer, ExportRefusal, OutputCaps, PageEvent, Policy, RenderFailure, draw_page_box};
 use recto_svg::{PngChannels, PngWriter};
 use std::cell::RefCell;
+use std::path::Path;
 use std::time::Instant;
 
 /// The formats a snapshot comes in.
@@ -58,16 +59,26 @@ pub(crate) const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Draws the box at `scale` into `out` as PNG or JPG. Returns the picture's size in pixels. `page` is from 0. Can sleep waiting for the larger limit, so never on a UI thread.
 pub(crate) fn picture_into<O: Output>(doc: &mut DocRenderer, page: u32, rect: [f32; 4], scale: f32, format: Format, caps: &OutputCaps, out: &RefCell<O>) -> Result<(u32, u32), AgentError> {
+    pictures_into(doc, page, rect, scale, format, caps, out, None, 0).map(|(size, _)| size)
+}
+
+/// [`picture_into`], and a JPG of the same rows into `jpg` as it goes, if given: one drawing for both, as the clipboard has them. The JPG is an extra, so one that fails, as by passing its buffer's cap, is dropped and the rest goes on; the second value says whether it came. `generation` is what a [`recto_render_service::CancelHandle`] stops.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pictures_into<O: Output>(doc: &mut DocRenderer, page: u32, rect: [f32; 4], scale: f32, format: Format, caps: &OutputCaps, out: &RefCell<O>, jpg: Option<&RefCell<O>>, generation: u64) -> Result<((u32, u32), bool), AgentError> {
     let started = Instant::now();
     let mut writer: Option<Writer<'_, O>> = None;
+    let mut extra: Option<Box<JpegWriter<Shared<'_, O>>>> = None;
     let mut row = Vec::new();
+    let mut rgb = Vec::new();
     let mut size = None;
     let mut sink_error = None;
     let mut surface = None;
-    let drawn = draw_page_box(doc, page, scale, rect, 0, caps, &mut surface, |event| match event {
+    let drawn = draw_page_box(doc, page, scale, rect, generation, caps, &mut surface, |event| match event {
         PageEvent::Begin { width, height } => {
             size = Some((width, height));
             row = vec![0u8; width as usize * BYTES_PER_PIXEL as usize];
+            rgb = vec![0u8; width as usize * 3];
+            extra = jpg.and_then(|jpg| JpegWriter::new(Shared(jpg), width, height, QUALITY).ok().map(Box::new));
             let made = match format {
                 Format::Jpg => JpegWriter::new(Shared(out), width, height, QUALITY).map(|jpeg| Writer::Jpeg(Box::new(jpeg))),
                 _ => PngWriter::new(Shared(out), width, height, PngChannels::Rgb).map(Writer::Png),
@@ -85,7 +96,6 @@ pub(crate) fn picture_into<O: Output>(doc: &mut DocRenderer, page: u32, rect: [f
         }
         PageEvent::Rows { memory, rect, stride, .. } => {
             let Some(writer) = writer.as_mut() else { return Err(RenderFailure::Unavailable) };
-            let mut rgb = vec![0u8; rect.width as usize * 3];
             for y in 0..rect.height as usize {
                 // A copy out, never a look in place: the worker still holds this memory, and it isn't trusted.
                 if !memory.copy_out(y * stride as usize, &mut row) {
@@ -101,6 +111,9 @@ pub(crate) fn picture_into<O: Output>(doc: &mut DocRenderer, page: u32, rect: [f
                 if let Err(error) = written {
                     sink_error = Some(write_error_to_agent(&error));
                     return Err(RenderFailure::Unavailable);
+                }
+                if extra.as_mut().is_some_and(|jpeg| jpeg.write_rgb_row(&rgb).is_err()) {
+                    extra = None;
                 }
             }
             Ok(())
@@ -120,7 +133,8 @@ pub(crate) fn picture_into<O: Output>(doc: &mut DocRenderer, page: u32, rect: [f
         None => return Err(RenderFailure::Unavailable.into()),
     };
     finished.map_err(|error| write_error_to_agent(&error))?;
-    Ok((drawn.width, drawn.height))
+    let jpg_came = extra.is_some_and(|jpeg| jpeg.finish().is_ok());
+    Ok(((drawn.width, drawn.height), jpg_came))
 }
 
 enum Writer<'a, O: Output> {
@@ -144,7 +158,18 @@ pub(crate) fn text(doc: &mut DocRenderer, page: u32, rect: [f32; 4]) -> Result<B
     Ok(own.text_in_box(Rect { x, y, width, height }, &chrome, MAX_TEXT_BYTES))
 }
 
-/// Whether the file asks that it isn't copied. A read of the page's characters, which carries the file's permissions, with no drawing.
-pub(crate) fn copy_restricted(doc: &mut DocRenderer, page: u32) -> Result<bool, AgentError> {
-    Ok(doc.page_characters(page, false, false)?.copy_restricted)
+/// **Whether the file asks that it isn't copied**: the document-wide flag, read straight from the file by the structure reader, with no page and no worker (`recto_core::copy_restricted`). Only a file the structure reader can't open asks the renderer, through `doc` if one's open and a worker of its own if not, and a file neither can say is taken as not asking: the flag is advice, and an image copy mustn't fail because a page's characters can't be read. `page` is from 0.
+pub(crate) fn copy_restricted(path: &Path, doc: Option<&mut DocRenderer>, page: u32) -> bool {
+    if let Ok(flag) = recto_core::copy_restricted(path) {
+        return flag;
+    }
+    let mut opened = None;
+    let doc = match doc {
+        Some(doc) => doc,
+        None => match super::open_for_text(path) {
+            Ok(made) => opened.insert(made),
+            Err(_) => return false,
+        },
+    };
+    doc.page_characters(page, false, false).is_ok_and(|read| read.copy_restricted)
 }

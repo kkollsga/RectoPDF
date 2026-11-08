@@ -79,6 +79,9 @@ final class Bridge: AppListener, @unchecked Sendable {
     var pendingPrintInfo: NSPrintInfo?
     /// The file the system's printing has now, which goes when it's done.
     var printingPath: String?
+    /// The clipboard offer whose promised types this app still owes, and which they are.
+    var clipboardOffer: UInt64?
+    var clipboardPromised: Set<String> = []
     let strings: AppStrings
     let limits: ReaderLimits
     private let bridge: Bridge
@@ -297,6 +300,8 @@ final class Bridge: AppListener, @unchecked Sendable {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // A promise isn't kept on the way out: making a map's SVG would hold the quit up for a worker.
+        if let serial = clipboardOffer { core.clipboardReleased(serial: serial) }
         if isQuiet { pasteboard.releaseGlobally() }
         core.shutdown()
     }
@@ -373,18 +378,15 @@ final class Bridge: AppListener, @unchecked Sendable {
     /// The clipboard: the system's, or a quiet run's own, which nothing else can see.
     lazy var pasteboard: NSPasteboard = isQuiet ? NSPasteboard(name: NSPasteboard.Name("com.rectopdf.qa.\(ProcessInfo.processInfo.processIdentifier)")) : .general
 
-    /// A copy has come back from the thread that read it.
+    /// A copy has come back from the thread that read it: one offer from Rust, a snapshot's or a selection's text, in the types and order Rust gave. What's made now goes on the clipboard a type at a time; what's promised is declared, and made only when a paste asks for it.
     func copyReady() {
-        // The snapshot tool's, in the types and order Rust gave, comes first.
-        if let items = core.takeClipboard(), !items.isEmpty {
-            pasteboard.clearContents()
-            pasteboard.declareTypes(items.map { NSPasteboard.PasteboardType($0.uti) }, owner: nil)
-            for item in items { pasteboard.setData(item.data, forType: NSPasteboard.PasteboardType(item.uti)) }
-            return
+        guard let offer = core.takeClipboard(), !offer.types.isEmpty else { return }
+        clipboardOffer = offer.promised.isEmpty ? nil : offer.serial
+        clipboardPromised = Set(offer.promised)
+        pasteboard.declareTypes(offer.types.map { NSPasteboard.PasteboardType($0) }, owner: offer.promised.isEmpty ? nil : self)
+        for type in offer.types where !offer.promised.contains(type) {
+            if let bytes = core.clipboardData(serial: offer.serial, uti: type) { pasteboard.setData(bytes, forType: NSPasteboard.PasteboardType(type)) }
         }
-        guard let text = core.takeCopied() else { return }
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
     }
 
     // Services: the selection as text, to anything that takes it. It has to answer now, and it can if the text's all here, as it is for a selection that's on screen.
@@ -492,5 +494,21 @@ final class Bridge: AppListener, @unchecked Sendable {
             guard response == .OK else { return }
             for url in panel.urls { core.openFile(path: url.path) }
         }
+    }
+}
+
+/// A promised clipboard type, made when a paste asks for it, by Rust. The system asks on this thread and waits for the answer.
+extension AppDelegate: @preconcurrency NSPasteboardTypeOwner {
+    func pasteboard(_ sender: NSPasteboard, provideDataForType type: NSPasteboard.PasteboardType) {
+        guard let serial = clipboardOffer, let bytes = core.clipboardData(serial: serial, uti: type.rawValue) else { return }
+        sender.setData(bytes, forType: type)
+        clipboardPromised.remove(type.rawValue)
+    }
+
+    func pasteboardChangedOwner(_ sender: NSPasteboard) {
+        guard let serial = clipboardOffer else { return }
+        clipboardOffer = nil
+        clipboardPromised = []
+        core.clipboardReleased(serial: serial)
     }
 }

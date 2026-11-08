@@ -738,8 +738,10 @@ final class BookMark: NSView {
         }
     }
 
+    /// The notice's button does what Rust says it does: Copy anyway, a snapshot's own naming its notice, Stop or Print anyway.
     @objc private func copyAnyway() {
-        delegate.perform("edit.copy_anyway")
+        guard let action = reader.selectionNotice?.actionId else { return }
+        delegate.perform(action)
     }
 
     /// A notice that goes by itself goes after a moment, with a timer that's there only while it does.

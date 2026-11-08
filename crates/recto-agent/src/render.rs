@@ -25,10 +25,10 @@ mod svg;
 pub(crate) use svg::{SvgArgs, export_svg};
 pub(crate) use svg::check_args as check_scale_and_box;
 
-/// A box on a page as SVG, into `out`: a snapshot's SVG, with text as outlines and real characters, as `export svg` writes it by default.
+/// A box on a page as SVG, into `out`: a snapshot's SVG. `text` is `Both` for a file, with text as outlines and real characters, as `export svg` writes it by default, and `Paths` for the clipboard, whose text is the text item's, hidden text left out: outlines only carry what's drawn.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn write_svg_box<O: Output>(doc: &mut DocRenderer, path: &Path, page: u32, rect: [f32; 4], scale: f32, caps: &OutputCaps, out: &std::cell::RefCell<O>, started: Instant) -> Result<svg::SvgWritten, AgentError> {
-    svg::write_svg(doc, &svg::SvgJob { path, page, rect: Some(rect), text: recto_proto::contents::TextMode::Both, scale, strip_metadata: false }, caps, out, started)
+pub(crate) fn write_svg_box<O: Output>(doc: &mut DocRenderer, path: &Path, page: u32, rect: [f32; 4], scale: f32, text: recto_proto::contents::TextMode, caps: &OutputCaps, out: &std::cell::RefCell<O>, started: Instant) -> Result<svg::SvgWritten, AgentError> {
+    svg::write_svg(doc, &svg::SvgJob { path, page, rect: Some(rect), text, scale, strip_metadata: false }, caps, out, started)
 }
 
 pub const DEFAULT_SCALE: f32 = 2.0;
@@ -133,6 +133,40 @@ impl Output for FileOut {
         use std::io::Seek;
         self.0.set_len(0)?;
         self.0.rewind().map(|_| ())
+    }
+}
+
+/// Any output held to a number of bytes, past which a write fails as a file too large would: an image written to a file is held to `OutputCaps::max_bytes`, as `render` is.
+pub(crate) struct LimitedOut<O: Output> {
+    pub inner: O,
+    written: u64,
+    cap: u64,
+}
+
+impl<O: Output> LimitedOut<O> {
+    pub(crate) fn new(inner: O, cap: u64) -> Self {
+        Self { inner, written: 0, cap }
+    }
+}
+
+impl<O: Output> io::Write for LimitedOut<O> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if self.written.saturating_add(data.len() as u64) > self.cap {
+            return Err(io::ErrorKind::FileTooLarge.into());
+        }
+        let wrote = self.inner.write(data)?;
+        self.written += wrote as u64;
+        Ok(wrote)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<O: Output> Output for LimitedOut<O> {
+    fn start_over(&mut self) -> io::Result<()> {
+        self.written = 0;
+        self.inner.start_over()
     }
 }
 
@@ -582,6 +616,18 @@ mod tests {
 
     fn doc() -> TempPdf {
         TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["Words"]))]))
+    }
+
+    /// Failure: `image --out` writes an image's own bytes with no cap, as `render` has one, so a file whose image is gigabytes writes gigabytes (review, 2026-11-08); or a worker's start over counts what it threw away against the cap.
+    #[test]
+    fn an_output_held_to_a_cap_refuses_past_it() {
+        use std::io::Write as _;
+        let mut out = LimitedOut::new(MemoryOut::new(usize::MAX), 10);
+        out.write_all(&[1; 10]).unwrap();
+        assert_eq!(out.write_all(&[1]).unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+        out.start_over().unwrap();
+        out.write_all(&[2; 10]).unwrap();
+        assert_eq!(out.inner.bytes, vec![2; 10]);
     }
 
     fn folder_entries(file: &TempPdf) -> Vec<String> {

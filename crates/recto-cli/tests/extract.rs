@@ -5,7 +5,7 @@ mod common;
 use common::State;
 use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
 use recto_agent::Level;
-use recto_agent::extract::{ClipOutcome, UTI_JPEG, UTI_PNG, UTI_SVG, UTI_TEXT, image_clip, snapshot_clip};
+use recto_agent::extract::{ClipItem, ClipOutcome, ClipStop, MAX_CLIP_ITEM, UTI_JPEG, UTI_PNG, UTI_SVG, UTI_TEXT, image_clip, snapshot_clip, snapshot_svg};
 use recto_svg::verify::{Embedded, check_document, read_png};
 use recto_testpdf::{Object, Page, TempPdf, first_extra_object, pages, pages_with, text_lines};
 use serde_json::Value;
@@ -212,44 +212,130 @@ fn restricted() -> Vec<u8> {
     out
 }
 
-/// Failure: an image or a snapshot gets round a file's ask not to be copied, though the owner decided on 2026-11-08 they get the same notice as text; or `--anyway` doesn't get past it. Exit 8 without it, for every format.
+/// Failure: an image or a snapshot gets round a file's ask not to be copied, though the owner decided on 2026-11-08 they get the same notice as text; or `--anyway` doesn't get past it. Exit 8 without it, for every format, PNG, JPG, SVG and text, with nothing written.
 #[test]
 fn a_file_that_asks_not_to_be_copied_refuses_images_and_snapshots_unless_anyway() {
     let file = TempPdf::new("restricted.pdf", &restricted());
     let png = out_path(&file, "r.png");
     let (reply, code) = run(&file, &["image", "1", "--number", "1", "--out", png.to_str().unwrap()]);
     assert_eq!((code, reply["error"]["code"].as_str()), (recto_agent::exit::PROTECTED, Some("copy_restricted")), "{reply}");
-    for format in ["png", "text"] {
+    for format in ["png", "jpg", "svg", "text"] {
+        let out = out_path(&file, &format!("r.{format}"));
         let mut args = vec!["snapshot", "1", "--rect", "0,0,300,300", "--as", format];
-        if format == "png" {
-            args.extend(["--out", png.to_str().unwrap()]);
+        if format != "text" {
+            args.extend(["--out", out.to_str().unwrap()]);
         }
         let (reply, code) = run(&file, &args);
         assert_eq!((code, reply["error"]["code"].as_str()), (recto_agent::exit::PROTECTED, Some("copy_restricted")), "{format}: {reply}");
+        assert!(!out.exists(), "{format}: nothing written");
+        args.push("--anyway");
+        let data = ok(&file, &args);
+        assert_eq!(data["anyway"], true, "{format}: {data}");
+        let _ = std::fs::remove_file(&out);
     }
-    assert!(!png.exists());
     let data = ok(&file, &["image", "1", "--number", "1", "--out", png.to_str().unwrap(), "--anyway"]);
     assert_eq!(data["anyway"], true);
     std::fs::remove_file(&png).unwrap();
-    assert!(matches!(snapshot_clip(&file.0, 0, [0.0, 0.0, 300.0, 300.0], false), ClipOutcome::Restricted));
-    assert!(matches!(image_clip(&file.0, 0, 150.0, 260.0, false), ClipOutcome::Restricted));
-    assert!(matches!(image_clip(&file.0, 0, 150.0, 260.0, true), ClipOutcome::Ready(_)));
+    let stop = ClipStop::default();
+    assert!(matches!(snapshot_clip(&file.0, 0, [0.0, 0.0, 300.0, 300.0], false, &stop), ClipOutcome::Restricted));
+    assert!(matches!(image_clip(&file.0, 0, 150.0, 260.0, false, &stop), ClipOutcome::Restricted));
+    assert!(matches!(image_clip(&file.0, 0, 150.0, 260.0, true, &stop), ClipOutcome::Ready(_)));
+    assert!(matches!(snapshot_clip(&file.0, 0, [0.0, 0.0, 300.0, 300.0], true, &stop), ClipOutcome::Ready(_)));
 }
 
-/// Failure: the clipboard gets the wrong types, or in an order that hands a JPEG's paste a re-encoded copy: a click on a JPEG must give its own bytes first, with a PNG beside it for what can't take a JPEG; on another image, a lossless PNG alone; and a snapshot PNG, text, SVG and JPG, all at once. A click off any image gives nothing.
+/// The lines of the overrides log for this state.
+fn overrides(state: &State) -> Vec<Value> {
+    std::fs::read_to_string(&state.paths.overrides_log).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+}
+
+/// Failure: an export of a file that asks not to be copied gets round it, though the owner decided on 2026-11-08 that SVG export, PNG render and print to PDF get the same step as Copy ("Yes, same step"); or `--anyway` doesn't get past it; or a use of it leaves no line in `activity-overrides.jsonl`, end to end through the real `recto`, which is what the owner was promised: each use is logged.
+#[test]
+fn exports_of_a_copy_restricted_file_ask_anyway_and_each_use_is_logged() {
+    let file = TempPdf::new("restricted.pdf", &restricted());
+    let state = State::at(Level::Full);
+    let local = |args: &[&str]| {
+        let mut all = vec!["local", file.0.to_str().unwrap()];
+        all.extend_from_slice(args);
+        state.json(&all)
+    };
+    let png = out_path(&file, "export.png");
+    let svg = out_path(&file, "export.svg");
+    let boxed = out_path(&file, "box.svg");
+    let pdf = out_path(&file, "printed.pdf");
+    let exports: [Vec<&str>; 4] = [
+        vec!["render", "1", "--scale", "1", "--out", png.to_str().unwrap()],
+        vec!["export", "svg", "1", "--out", svg.to_str().unwrap()],
+        vec!["export", "svg", "1", "--rect", "50,50,300,300", "--out", boxed.to_str().unwrap()],
+        vec!["print", "--dpi", "72", "--to-pdf", pdf.to_str().unwrap()],
+    ];
+    for args in &exports {
+        let (reply, code) = local(args);
+        assert_eq!((code, reply["error"]["code"].as_str()), (recto_agent::exit::PROTECTED, Some("copy_restricted")), "{args:?}: {reply}");
+    }
+    for path in [&png, &svg, &boxed, &pdf] {
+        assert!(!path.exists(), "nothing written: {}", path.display());
+    }
+    assert!(overrides(&state).is_empty(), "a refusal gave nothing, so nothing's an override");
+    for args in &exports {
+        let mut with = args.clone();
+        with.push("--anyway");
+        let (reply, code) = local(&with);
+        assert_eq!(code, 0, "{with:?}: {reply}");
+    }
+    let logged = overrides(&state);
+    let commands: Vec<&str> = logged.iter().map(|line| line["cmd"].as_str().unwrap_or("")).collect();
+    assert_eq!(commands, ["render", "export_svg", "export_svg", "print"], "{logged:?}");
+    assert!(logged.iter().all(|line| line["details"]["anyway"] == true), "{logged:?}");
+    // A file that doesn't ask is exported with no step and no override.
+    let (plain_bytes, _) = doc_with_images();
+    let plain = TempPdf::new("plain.pdf", &plain_bytes);
+    let plain_png = out_path(&plain, "plain.png");
+    let (reply, code) = state.json(&["local", plain.0.to_str().unwrap(), "render", "1", "--scale", "1", "--out", plain_png.to_str().unwrap()]);
+    assert_eq!(code, 0, "{reply}");
+    assert_eq!(overrides(&state).len(), 4);
+    for path in [&png, &svg, &boxed, &pdf, &plain_png] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Failure: the clipboard gets the wrong types, or in an order that hands a JPEG's paste a re-encoded copy: a click on a JPEG must give its own bytes first, with a PNG beside it for what can't take a JPEG; on another image, a lossless PNG alone; and a snapshot PNG, text, SVG and JPG, all at once, the SVG promised and made only when a paste asks, with hidden text left out of it as from the text. A click off any image gives nothing.
 #[test]
 fn the_clipboard_gets_the_right_types_in_the_right_order() {
     let (bytes, pixels) = doc_with_images();
     let file = TempPdf::new("doc.pdf", &bytes);
-    let ClipOutcome::Ready(jpeg) = image_clip(&file.0, 0, 320.0, 270.0, false) else { panic!("the JPEG") };
-    assert_eq!(jpeg.items.iter().map(|item| item.uti).collect::<Vec<_>>(), vec![UTI_JPEG, UTI_PNG], "{}", jpeg.note);
-    assert_eq!(jpeg.items[0].bytes, jpeg_bytes());
-    let ClipOutcome::Ready(raw) = image_clip(&file.0, 0, 150.0, 260.0, false) else { panic!("the raw image") };
-    assert_eq!(raw.items.iter().map(|item| item.uti).collect::<Vec<_>>(), vec![UTI_PNG]);
-    assert_eq!(read_png(&raw.items[0].bytes), Embedded::Png { width: 37, height: 23, channels: 3, pixels });
-    assert!(matches!(image_clip(&file.0, 0, 500.0, 700.0, false), ClipOutcome::NoImage));
-    let ClipOutcome::Ready(snap) = snapshot_clip(&file.0, 0, [60.0, 50.0, 400.0, 270.0], false) else { panic!("the snapshot") };
-    assert_eq!(snap.items.iter().map(|item| item.uti).collect::<Vec<_>>(), vec![UTI_PNG, UTI_TEXT, UTI_SVG, UTI_JPEG], "{}", snap.note);
-    assert_eq!(String::from_utf8(snap.items[1].bytes.clone()).unwrap(), "Words beside the pictures");
-    check_document(&snap.items[2].bytes);
+    let stop = ClipStop::default();
+    let ClipOutcome::Ready(jpeg) = image_clip(&file.0, 0, 320.0, 270.0, false, &stop) else { panic!("the JPEG") };
+    assert_eq!(jpeg.types(), vec![UTI_JPEG, UTI_PNG], "{}", jpeg.note);
+    assert_eq!(jpeg.items[0].bytes(), Some(jpeg_bytes().as_slice()));
+    let ClipOutcome::Ready(raw) = image_clip(&file.0, 0, 150.0, 260.0, false, &stop) else { panic!("the raw image") };
+    assert_eq!(raw.types(), vec![UTI_PNG]);
+    assert_eq!(read_png(raw.items[0].bytes().unwrap()), Embedded::Png { width: 37, height: 23, channels: 3, pixels });
+    assert!(matches!(image_clip(&file.0, 0, 500.0, 700.0, false, &stop), ClipOutcome::NoImage));
+    let ClipOutcome::Ready(snap) = snapshot_clip(&file.0, 0, [60.0, 50.0, 400.0, 270.0], false, &stop) else { panic!("the snapshot") };
+    assert_eq!(snap.types(), vec![UTI_PNG, UTI_TEXT, UTI_SVG, UTI_JPEG], "{}", snap.note);
+    assert_eq!(snap.items[1].bytes(), Some("Words beside the pictures".as_bytes()));
+    assert!(matches!(snap.items[2], ClipItem::Promised { .. }), "the SVG is made when a paste asks for it");
+    let jpg = snap.items[3].bytes().unwrap();
+    assert_eq!(&jpg[..2], [0xFF, 0xD8], "a JPEG, from the same drawing as the PNG");
+    let svg = snapshot_svg(&file.0, 0, [60.0, 50.0, 400.0, 270.0], MAX_CLIP_ITEM).unwrap();
+    check_document(&svg);
+    assert!(snapshot_svg(&file.0, 0, [60.0, 50.0, 400.0, 270.0], 64).is_err(), "held to its cap");
+}
+
+/// Failure: the clipboard's SVG carries text the page hides, as white on white or invisible OCR text, though the text item leaves it out by a copy's rules (review, 2026-11-08); a paste of the SVG would hand it over.
+#[test]
+fn the_clipboards_svg_leaves_hidden_text_out() {
+    // Visible words, and words drawn invisibly (render mode 3), as an OCR layer is.
+    let content = "BT /F1 12 Tf 72 700 Td (SHOWN WORDS) Tj ET BT 3 Tr /F1 12 Tf 72 680 Td (HIDDEN WORDS) Tj ET\n";
+    let file = TempPdf::new("doc.pdf", &pages(&[Page::new(content)]));
+    let svg = String::from_utf8(snapshot_svg(&file.0, 0, [60.0, 80.0, 300.0, 50.0], MAX_CLIP_ITEM).unwrap()).unwrap();
+    assert!(!svg.contains("HIDDEN"), "{svg}");
+    // Where the hidden words would be if it didn't: a file's SVG keeps real text, as `export svg` does by default.
+    let file_svg = out_path(&file, "hidden.svg");
+    ok(&file, &["snapshot", "1", "--rect", "60,80,300,50", "--as", "svg", "--out", file_svg.to_str().unwrap()]);
+    assert!(std::fs::read_to_string(&file_svg).unwrap().contains("HIDDEN"), "the page does hide words that real text would carry");
+    std::fs::remove_file(&file_svg).unwrap();
+    let ClipOutcome::Ready(snap) = snapshot_clip(&file.0, 0, [60.0, 80.0, 300.0, 50.0], false, &ClipStop::default()) else { panic!() };
+    let text = String::from_utf8(snap.items[1].bytes().unwrap().to_vec()).unwrap();
+    assert!(text.contains("SHOWN") && !text.contains("HIDDEN"), "{text}");
 }

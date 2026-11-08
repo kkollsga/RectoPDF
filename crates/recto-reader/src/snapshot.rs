@@ -52,9 +52,14 @@ impl SnapshotTool {
         self.page_size = page_size;
     }
 
-    /// The mouse moved with the button down. A point on another page counts where it is on the pressed one, so a box stays on one page.
+    /// The page the button went down on, which a drag's points are given on: the host converts a point over another page onto this one (`Engine::point_on_given_page`), so a box stays on one page.
+    pub fn pressed_page(&self) -> Option<u32> {
+        self.press.map(|press| press.page)
+    }
+
+    /// The mouse moved with the button down, to a point given on the pressed page, past its edges if it's off it, and held to them here. A point on any other page is a mistake of the caller's and is ignored, rather than read in the wrong page's coordinates.
     pub fn drag(&mut self, point: PagePoint) {
-        if self.on && self.press.is_some() {
+        if self.on && self.press.is_some_and(|press| press.page == point.page) {
             self.now = Some(point);
         }
     }

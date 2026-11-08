@@ -433,8 +433,10 @@ fn save_from_signature_check(facts: Result<recto_core::save::SignatureFacts, rec
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct SelectionNotice {
     pub text: String,
-    /// The button, if there's one: it's `edit.copy_anyway`.
+    /// The button, if there's one.
     pub action_title: Option<String>,
+    /// What the button does, for `perform`: `edit.copy_anyway` for a selection's, or an id naming the notice that offered it, so a button from a notice that's gone does nothing.
+    pub action_id: Option<String>,
     pub fades: bool,
 }
 
@@ -1016,7 +1018,7 @@ struct AppState {
 }
 
 /// What's in flight, for an update to wait for. A save from the window counts here, and an agent's save or an export is a command.
-fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, saves: u32) -> Vec<BusyItem> {
+fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, saves: u32, printing: bool) -> Vec<BusyItem> {
     let item = |code: &str, message: &str| BusyItem { code: code.to_string(), message: message.to_string() };
     let mut busy = Vec::new();
     if sheets > 0 {
@@ -1032,6 +1034,10 @@ fn hand_off_check_parts(inner_reads: u32, sheets: u32, commands: u32, saves: u32
     if saves > 0 {
         busy.push(item("saving", "A document is being saved."));
     }
+    // A print's pages are drawn by a command-like thread, but once they're ready the system's printing has them, which no thread here counts.
+    if printing {
+        busy.push(item("printing", "A print is being prepared or printed."));
+    }
     busy
 }
 
@@ -1042,7 +1048,7 @@ fn hand_off_check(host: &AppHost) -> HandOffCheck {
 
 impl Inner {
     fn hand_off_check(&self) -> HandOffCheck {
-        let busy = hand_off_check_parts(self.reads_running.load(Ordering::SeqCst), self.sheets.load(Ordering::SeqCst), self.host.running.load(Ordering::SeqCst), self.save_ui.running.load(Ordering::SeqCst));
+        let busy = hand_off_check_parts(self.reads_running.load(Ordering::SeqCst), self.sheets.load(Ordering::SeqCst), self.host.running.load(Ordering::SeqCst), self.save_ui.running.load(Ordering::SeqCst), self.printing.busy());
         let last = self.last_input_ms.load(Ordering::Relaxed);
         let now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         HandOffCheck { safe: busy.is_empty(), busy, seconds_since_input: now.saturating_sub(last) as f64 / 1000.0 }
@@ -1449,6 +1455,7 @@ impl AppCore {
 
     /// The window is up. In a QA run this tells whoever's waiting, on one line, and any files named at launch start opening.
     pub fn ready(&self) {
+        printing::sweep_at_launch();
         for path in &self.start_with {
             self.inner.core.push(CoreCall::Open(path.clone()));
         }
@@ -1658,7 +1665,7 @@ impl AppCore {
     pub fn menu_bar(&self) -> Vec<MenuModel> {
         let reader = lock(&self.inner.published).reader.clone();
         let mut bar = menus::menu_bar(ViewSettings { sidebar_hidden: reader.sidebar_hidden, agent_icon_hidden: reader.agent_icon_hidden, ..ViewSettings::default() }, record::Spread::from_name(&reader.layout), &self.inner.updates.menu_item().title);
-        bar.push(menus::tools_menu(self.inner.tool.is_on()));
+        bar.push(snapshot_tool::tools_menu(self.inner.tool.is_on()));
         bar
     }
 
@@ -1668,31 +1675,25 @@ impl AppCore {
         let shown = Paper::from_name(&reader.paper).unwrap_or(Paper::White);
         let mut panel = menus::panel(self.inner.panel_open.load(Ordering::SeqCst), shown, reader.edit_mode, reader.can_rotate);
         if panel.open {
-            panel.sections.insert(0, menus::tools_section(self.inner.tool.is_on()));
+            panel.sections.insert(0, snapshot_tool::tools_section(self.inner.tool.is_on()));
         }
         panel
     }
 
     /// Does what a menu item, a panel button or a key does, and says what's left for the host. The same methods as `recto view`.
     pub fn perform(&self, id: String) -> HostAction {
-        let Some(action) = menus::action(&id) else { return HostAction::None };
         // Past a hand-off's last look, what's done here wouldn't come back.
         if self.inner.core.frozen.load(Ordering::SeqCst) {
             return HostAction::None;
         }
+        // Features that answer ids of their own: the snapshot tool, and printing.
+        if snapshot_tool::perform(&self.inner, &id) || printing::perform(&self.inner, &id) {
+            return HostAction::None;
+        }
+        let Some(action) = menus::action(&id) else { return HostAction::None };
         match action {
             menus::Action::Host(host) => return host,
-            // "Copy anyway" on a snapshot's notice takes the snapshot again. Otherwise it's the selection's.
-            menus::Action::Copy { anyway } => {
-                if !(anyway && self.inner.tool.copy_anyway(&self.inner)) {
-                    self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway);
-                }
-            }
-            menus::Action::ToggleSnapshot => {
-                self.inner.tool.toggle();
-                self.inner.core.push(CoreCall::Reconcile);
-                self.inner.listener.model_changed();
-            }
+            menus::Action::Copy { anyway } => self.inner.panes.reading_engine(&self.inner.engine).copy_selection(anyway),
             menus::Action::SelectAll => self.inner.panes.reading_engine(&self.inner.engine).select_all(),
             menus::Action::SetSynced(on) => self.inner.core.push(CoreCall::SetSynced(on)),
             menus::Action::Step(back) => self.inner.core.push(CoreCall::Step(back)),
@@ -1940,54 +1941,6 @@ impl AppCore {
     /// How far to scroll per step of a drag this far past the view's edge.
     pub fn autoscroll_step(&self, beyond: f64) -> f64 {
         recto_reader::selection::autoscroll_step(beyond)
-    }
-
-    /// What the print panel needs to know before it opens: the tab showing, its pages, whether something's selected, and its first page's size. Never waits: what's published, and a short lock on the page view.
-    pub fn print_model(&self) -> printing::PrintModel {
-        let reader = lock(&self.inner.published).reader.clone();
-        let engine = self.inner.panes.reading_engine(&self.inner.engine);
-        let pages = engine.report().0["pages"].as_u64().unwrap_or(0) as u32;
-        let (width_pt, height_pt) = engine.page_size_shown(0).map_or((612.0, 792.0), |(width, height)| (f64::from(width), f64::from(height)));
-        printing::PrintModel { tab: reader.shown_tab, pages, has_selection: engine.has_selection(), job_title: reader.document_name, width_pt, height_pt }
-    }
-
-    /// The print panel was answered with Print: these pages, from 1, or all of them, or the selection's. Rust draws them off the UI thread, and `print_ready` says when the file's there. False if nothing was started, with a notice saying why.
-    pub fn print_chosen(&self, tab: u32, all: bool, first: u32, last: u32, selection_only: bool) -> bool {
-        if tab == 0 || self.inner.core.frozen.load(Ordering::SeqCst) {
-            return false;
-        }
-        let model = self.print_model();
-        let selection = selection_only.then(|| self.inner.panes.reading_engine(&self.inner.engine).hot_selection()).flatten().and_then(|(_, range)| range).map(|range| (range.start.page, range.end.page));
-        let Some(range) = printing::chosen_range(model.pages, all, first, last, selection) else { return false };
-        printing::start(&self.inner, TabId(tab), range, recto_agent::print::DEFAULT_DPI)
-    }
-
-    /// The file a print's pages are in, once, for the host to hand to the system's printing.
-    pub fn take_print(&self) -> Option<String> {
-        let path = self.inner.printing.take_ready().map(|path| path.to_string_lossy().into_owned());
-        self.inner.core.push(CoreCall::Reconcile);
-        path
-    }
-
-    /// The system's printing is done with a file, however it went: it goes.
-    pub fn print_finished(&self, path: String) {
-        self.inner.printing.finished(&path);
-        self.inner.core.push(CoreCall::Reconcile);
-    }
-
-    /// Stops a print being prepared, at the next page.
-    pub fn print_cancel(&self) {
-        self.inner.printing.cancel();
-    }
-
-    /// What the snapshot tool has for the clipboard, in the order to offer it, each by its type. `copy_ready` says when, and this comes before `take_copied`.
-    pub fn take_clipboard(&self) -> Option<Vec<snapshot_tool::ClipboardItem>> {
-        self.inner.tool.take_ready()
-    }
-
-    /// What a copy has for the clipboard. `copy_ready` says when.
-    pub fn take_copied(&self) -> Option<String> {
-        self.inner.panes.engines(&self.inner.engine).iter().find_map(Engine::take_copied).map(|copied| copied.text)
     }
 
     /// The selection's text if it's all here, for what can't wait, as the Services menu can't. Nothing if not.
@@ -2327,6 +2280,8 @@ impl AppCore {
         // What's done from here wouldn't come back. If it turns out it isn't quitting, it's taken again.
         inner.set_frozen(true);
         inner.updates.stop();
+        inner.tool.quitting();
+        inner.printing.quitting();
         let _ = std::thread::Builder::new().name("recto-quit".into()).stack_size(256 * 1024).spawn(move || {
             let (sender, receiver) = std::sync::mpsc::channel();
             let flushing = Arc::clone(&inner);
@@ -3356,7 +3311,7 @@ fn reconcile(inner: &Inner, synced: &mut Synced, events: &mut Vec<Event>) {
     let holding = lock(&inner.holding_tab).is_some();
     let sidebar_width = lock(&inner.app).sidebar_width;
     let highlight = paper.highlight();
-    let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: notice.fades }).or_else(|| inner.printing.notice().map(|text| SelectionNotice { text, action_title: None, fades: !inner.printing.busy() })).or_else(|| inner.tool.notice().map(|notice| SelectionNotice { action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), fades: !notice.offers_copy_anyway, text: notice.text })).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, fades: notice.fades }));
+    let selection_notice = reading_engine.selection_notice().map(|notice| SelectionNotice { text: notice.text, action_title: notice.offers_copy_anyway.then(|| "Copy anyway".to_string()), action_id: notice.offers_copy_anyway.then(|| "edit.copy_anyway".to_string()), fades: notice.fades }).or_else(|| inner.printing.selection_notice()).or_else(|| inner.tool.selection_notice()).or_else(|| lock(&inner.action_notice).clone().map(|text| SelectionNotice { text, action_title: None, action_id: None, fades: true })).or_else(|| inner.updates.notice().map(|notice| SelectionNotice { text: notice.text, action_title: None, action_id: None, fades: notice.fades }));
     let pane_views: Vec<PaneView> = if comparing { snapshots.iter().enumerate().map(|(pane, shown)| PaneView { tab: shown.id.0, title: shown.title.clone(), reading: Some(shown.id) == active, layout: shown.spread.name().to_string(), note: shown.problem.clone().or_else(|| inner.panes.engine(&inner.engine, pane).and_then(|engine| engine.note())) }).collect() } else { Vec::new() };
     let compare_synced = inner.host.session.with_session(|session| session.comparison().is_some_and(|comparison| comparison.synced));
     let reader = ReaderView { panes: pane_views, compare_synced, home: synced.panes.first().is_none_or(|pane| pane.tab.is_none()) && !holding, note, sidebar_hidden: view.sidebar_hidden, layout, edited, can_undo, can_redo, edit_mode, can_rotate, place: sidebar.place.clone(), paper: shown.name().to_string(), paper_rgb: paper.rgb(), page_tint, agent_icon_hidden: view.agent_icon_hidden, sidebar_width, highlight_dark_colour: highlight.dark_colour, highlight_lighten: highlight.lighten, selection_notice, saving: saving_now, save_tooltip: if save_off { SAVE_OFF_TOOLTIP.to_string() } else { inner.save_ui.tooltip() }, save_problem: inner.save_ui.problem(), save_as_note, shown_tab, document_name, document_folder, save_button: shown_tab != 0 && (edited || saving_now), save_enabled: !save_off && !saving_now, print_ready: inner.printing.has_ready(), can_go_back, can_go_forward, link_prompt: lock(&inner.link_prompt).clone(), page_text };
@@ -3408,10 +3363,17 @@ mod tests {
     /// Failure: an update goes ahead while a document is being saved from the window, so the app quits under the save (SPEC decision 24: a running save finishes first). Each thing in flight is named, and a save is one of them.
     #[test]
     fn a_hand_off_waits_for_a_save() {
-        assert!(hand_off_check_parts(0, 0, 0, 0).is_empty());
-        let busy = hand_off_check_parts(0, 0, 0, 1);
+        assert!(hand_off_check_parts(0, 0, 0, 0, false).is_empty());
+        let busy = hand_off_check_parts(0, 0, 0, 1, false);
         assert_eq!(busy.iter().map(|item| item.code.as_str()).collect::<Vec<_>>(), ["saving"]);
-        assert_eq!(hand_off_check_parts(1, 1, 1, 1).len(), 4);
+        assert_eq!(hand_off_check_parts(1, 1, 1, 1, true).len(), 5);
+    }
+
+    /// Failure: an update quits the app mid-print, because the check only counted running commands, and a print's thread is done before the system's printing has its file (review, 2026-11-08).
+    #[test]
+    fn a_hand_off_waits_for_a_print() {
+        let busy = hand_off_check_parts(0, 0, 0, 0, true);
+        assert_eq!(busy.iter().map(|item| item.code.as_str()).collect::<Vec<_>>(), ["printing"]);
     }
 
     /// Failure: rows opening as the reader enters a chapter jump the list under a smooth drift, because the host wasn't told which went and which came. It must say exactly, a chapter closing and the next opening together included, and a change of nothing says nothing.

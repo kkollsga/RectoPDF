@@ -179,3 +179,31 @@ fn chapters_nested_inside_chapter_one_read_as_the_file_has_them_and_look_bad() {
     assert_eq!(depths, [0, 1, 1, 1], "as the file has them");
     assert_eq!(recto_core::verdict::judge(&facts.toc, facts.page_count).code(), "misnested");
 }
+
+/// A three-page file anyone can open, encrypted with these permissions.
+#[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts; never over a user's file.
+fn encrypted_with(permissions: lopdf::encryption::Permissions) -> Vec<u8> {
+    use lopdf::encryption::{EncryptionState, EncryptionVersion};
+    let mut document = lopdf::Document::load_mem(&three_page_pdf("", &[], "")).unwrap();
+    document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));
+    let state = EncryptionState::try_from(EncryptionVersion::V2 { document: &document, owner_password: "owner", user_password: "", key_length: 128, permissions }).unwrap();
+    document.encrypt(&state).unwrap();
+    let mut out = Vec::new();
+    document.save_to(&mut out).unwrap();
+    out
+}
+
+/// Failure: the copy flag is read from the wrong bit, or a file with no encryption reads as asking not to be copied, so an image copy or an export asks "anyway" of every file; or one that does ask isn't seen. The flag is the whole document's, read with no page.
+#[test]
+fn the_copy_flag_is_read_from_the_encryption_dictionary() {
+    use lopdf::encryption::Permissions;
+    let plain = TempPdf::new("plain.pdf", &three_page_pdf("", &[], ""));
+    assert!(!recto_core::copy_restricted(&plain.0).unwrap());
+    let open = TempPdf::new("open.pdf", &encrypted_with(Permissions::all()));
+    assert!(!recto_core::copy_restricted(&open.0).unwrap());
+    let shut = TempPdf::new("shut.pdf", &encrypted_with(Permissions::all() - Permissions::COPYABLE));
+    assert!(recto_core::copy_restricted(&shut.0).unwrap());
+    let no_print = TempPdf::new("no-print.pdf", &encrypted_with(Permissions::all() - Permissions::PRINTABLE));
+    assert!(!recto_core::copy_restricted(&no_print.0).unwrap(), "only the copy bit counts");
+    assert!(matches!(recto_core::copy_restricted(std::path::Path::new("/nowhere/at/all.pdf")), Err(OpenError::NotFound)));
+}

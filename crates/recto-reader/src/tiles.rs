@@ -2035,6 +2035,24 @@ impl Reader {
         Some(PagePoint { page, x: u as f32, y: v as f32 })
     }
 
+    /// Where a point in the document is in the coordinates of `page`, whichever page it's over: past the page's edges if it's off it, for the caller to hold to them. A snapshot's box dragged across a page break stays on the page it was pressed on this way.
+    pub fn point_on_given_page(&self, page: u32, x: f64, y: f64) -> Option<PagePoint> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let doc = self.doc()?;
+        if page >= doc.layout.count() {
+            return None;
+        }
+        let (u, v) = doc.layout.to_page(page, x, y);
+        Some(PagePoint { page, x: u as f32, y: v as f32 })
+    }
+
+    /// How many pages the tab shown has, edits and all: 0 with none shown.
+    pub fn page_count(&self) -> u32 {
+        self.doc().map_or(0, |doc| doc.layout.count())
+    }
+
     /// A page's size as it's shown, in its own coordinates, before any unsaved turn: what a point from [`Self::point_on_page`] is held to.
     pub fn page_size_shown(&self, page: u32) -> Option<(f32, f32)> {
         let doc = self.doc()?;

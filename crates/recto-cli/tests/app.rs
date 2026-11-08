@@ -2115,8 +2115,14 @@ fn the_snapshot_tool_takes_a_box_and_an_image_to_the_clipboard() {
     run.settled();
     let after = run.report();
     assert!(after["app"]["pages"]["snapshot_box"].is_null(), "the box goes on release: {after}");
-    assert_eq!(clipboard_types(&run), ["public.png", "public.utf8-plain-text", "public.svg-image", "public.jpeg"]);
+    // The SVG is promised, and made only when a paste asks for it: seen on the first look, as a look in this process makes the system resolve it.
+    let first = clipboard_items(&run);
+    assert_eq!(first.iter().map(|item| item["type"].as_str().unwrap()).collect::<Vec<_>>(), ["public.png", "public.utf8-plain-text", "public.svg-image", "public.jpeg"]);
+    assert_eq!(first[2]["promised"], true, "{first:?}");
     assert_eq!(copied(&run), "Words to take in a box");
+    let pasted = run.ok(&["qa", "paste", "public.svg-image"]);
+    let made = pasted["types"].as_array().unwrap().iter().find(|item| item["type"] == "public.svg-image").unwrap().clone();
+    assert!(made["bytes"].as_u64().unwrap() > 100, "made on the paste: {pasted}");
     // A click on the image: its own JPEG, then a PNG for what can't take one.
     run.ok(&["qa", "mouse-down", "1:120,270"]);
     run.ok(&["qa", "mouse-up"]);
@@ -2209,4 +2215,46 @@ fn a_print_from_the_app_is_the_documents_pages_whatever_the_paper() {
         assert!(bad * 200 < all, "printed page {printed} against source page {source}: {bad} of {all} blocks differ, as dark paper or the wrong page would");
     }
     std::fs::remove_file(&out).unwrap();
+}
+
+/// Failure: a print to a PDF of a file that asks not to be copied gets round it, though the owner decided on 2026-11-08 that print to PDF gets the same step as Copy; or it's refused with no "Print anyway"; or the button prints nothing. Through File > Print's own path to a file, as the panel's Save as PDF takes it.
+#[test]
+fn a_print_to_a_file_of_a_copy_restricted_pdf_offers_print_anyway() {
+    let Some(run) = Run::start() else { return };
+    let file = restricted_pdf();
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let out = file.0.with_file_name(format!("restricted-printed-{}.pdf", std::process::id()));
+    run.ok(&["qa", "print-to-pdf", out.to_str().unwrap()]);
+    run.settled();
+    let asked = wait_for(&run, |state| state["app"]["copy_notice"]["button"] == "Print anyway");
+    assert!(asked["app"]["copy_notice"]["text"].as_str().unwrap().contains("permissions"), "{asked}");
+    assert!(!out.exists(), "nothing printed yet");
+    run.ok(&["qa", "notice-button"]);
+    run.settled();
+    let done = wait_for(&run, |state| state["printing"]["busy"] == false);
+    assert!(out.exists(), "printed once asked: {done}");
+    std::fs::remove_file(&out).unwrap();
+}
+
+/// Failure: a long print can't be stopped, or Stop leaves its file in the temp folder, or the print goes on to the system anyway. The progress line has Stop beside it, through the button itself.
+#[test]
+fn a_print_being_prepared_stops_with_its_stop_button() {
+    let Some(run) = Run::start() else { return };
+    let list: Vec<Page> = (0..120).map(|n| Page::new(text_lines(&[&format!("Page {n} of a long print")]))).collect();
+    let file = TempPdf::new("long-print.pdf", &pages(&list));
+    run.ok(&["open", file.0.to_str().unwrap()]);
+    run.settled();
+    let out = file.0.with_file_name(format!("stopped-{}.pdf", std::process::id()));
+    run.ok(&["qa", "print-to-pdf", out.to_str().unwrap()]);
+    let preparing = wait_for(&run, |state| state["app"]["copy_notice"]["button"] == "Stop");
+    assert!(preparing["app"]["copy_notice"]["text"].as_str().unwrap().contains("Preparing"), "{preparing}");
+    run.ok(&["qa", "notice-button"]);
+    run.settled();
+    let stopped = wait_for(&run, |state| state["printing"]["busy"] == false);
+    assert!(stopped["app"]["copy_notice"]["button"].is_null(), "{stopped}");
+    assert!(!out.exists(), "nothing printed");
+    let pid = stopped["printing"]["pid"].as_u64().unwrap();
+    let left: Vec<String> = std::fs::read_dir(std::env::temp_dir()).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.starts_with(&format!("recto-print-{pid}-"))).collect();
+    assert!(left.is_empty(), "its file goes: {left:?}");
 }

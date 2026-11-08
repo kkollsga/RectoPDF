@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Real screenshots of printing, drawn inside the app in a quiet run, light and dark: the File menu with Print…, and the line by the page while a long print's pages are prepared. A quiet run shows no sheet, so the system's print panel isn't in them.
+# Real screenshots of printing, drawn inside the app in a quiet run, light and dark: the File menu with Print…, the line by the page with Stop while a long print's pages are prepared, and the notice a print to a PDF of a file that asks not to be copied gets. A quiet run shows no sheet, so the system's print panel isn't in them.
 #
-#   app/qa/print-shots.sh OUT_DIR LONG.pdf [LAST_PAGE]
+#   app/qa/print-shots.sh OUT_DIR LONG.pdf [LAST_PAGE] [RESTRICTED.pdf]
 #
-# OUT_DIR gets menus-*, every menu side by side, and preparing-*, taken while pages 1 to LAST_PAGE (200 if left out) are being prepared, which takes longer than a shot waits.
+# OUT_DIR gets menus-*, every menu side by side, preparing-*, taken while pages 1 to LAST_PAGE (200 if left out) are being prepared, which takes longer than a shot waits, and, given RESTRICTED.pdf, restricted-*, its "Print anyway".
 set -euo pipefail
-out="$1"; pdf="$2"; last="${3:-200}"
+out="$1"; pdf="$2"; last="${3:-200}"; restricted="${4:-}"
 here="$(cd "$(dirname "$0")/../.." && pwd)"
 recto="${RECTO_BIN:-$here/target/debug/recto}"
 app="${RECTO_APP:-$here/app/build/RectoPDF.app/Contents/MacOS/RectoPDF}"
@@ -29,6 +29,20 @@ for look in light dark; do
     r qa print-to-pdf "$root/printed-$look.pdf|1|$last"
     # The shot waits up to 10 s for settled, and preparing these pages takes longer, so it shows how far it's got.
     rm -f "$out/preparing-$look.png"; r qa shot --out "$out/preparing-$look.png"
+    # Stop, through its own button: nothing goes to the system.
+    r qa notice-button
     settle
 done
+if [ -n "$restricted" ]; then
+    r open "$restricted"
+    settle
+    for look in light dark; do
+        r qa appearance "$look"
+        settle
+        rm -f "$root/restricted-$look.pdf"
+        r qa print-to-pdf "$root/restricted-$look.pdf"
+        settle
+        rm -f "$out/restricted-$look.png"; r qa shot --out "$out/restricted-$look.png"
+    done
+fi
 echo "shots in $out"

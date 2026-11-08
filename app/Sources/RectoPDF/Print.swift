@@ -76,7 +76,9 @@ extension AppDelegate {
         let first = (settings[NSPrintInfo.AttributeKey.firstPage] as? Int) ?? 1
         let last = (settings[NSPrintInfo.AttributeKey.lastPage] as? Int) ?? Int(model.pages)
         pendingPrintInfo = info
-        if !core.printChosen(tab: model.tab, all: all, first: UInt32(max(first, 1)), last: UInt32(max(last, 1)), selectionOnly: info.isSelectionOnly) {
+        // Saving or previewing a PDF from the panel is a print to a file, which Rust treats as an export; on paper it never asks.
+        let toFile = info.jobDisposition != .spool
+        if !core.printChosen(tab: model.tab, all: all, first: UInt32(max(first, 1)), last: UInt32(max(last, 1)), selectionOnly: info.isSelectionOnly, toFile: toFile) {
             pendingPrintInfo = nil
         }
     }
@@ -108,13 +110,13 @@ extension AppDelegate {
         printingPath = nil
     }
 
-    /// For QA: the same path a print takes, to a PDF file through the system's own printing, with no panel shown. The paper is the first page's size with no margins, so the result can be laid page for page against the source.
+    /// For QA: the same path a print takes, to a PDF file through the system's own printing, with no panel shown. The paper is the first page's size with no margins, so the result can be laid page for page against the source. The system writes to a new name of Rust's, which Rust puts at `out` when it's done, never over anything.
     func printToPDFForQA(out: String, first: UInt32, last: UInt32) -> Bool {
         let model = core.printModel()
-        guard model.tab != 0 else { return false }
+        guard model.tab != 0, let target = core.printQaTarget(out: out) else { return false }
         let info = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo.shared
         info.jobDisposition = .save
-        info.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = URL(fileURLWithPath: out)
+        info.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = URL(fileURLWithPath: target)
         info.paperSize = NSSize(width: model.widthPt, height: model.heightPt)
         info.leftMargin = 0
         info.rightMargin = 0
@@ -122,7 +124,7 @@ extension AppDelegate {
         info.bottomMargin = 0
         pendingPrintInfo = info
         let all = first == 0
-        let started = core.printChosen(tab: model.tab, all: all, first: max(first, 1), last: max(last, first), selectionOnly: false)
+        let started = core.printChosen(tab: model.tab, all: all, first: max(first, 1), last: max(last, first), selectionOnly: false, toFile: true)
         if !started { pendingPrintInfo = nil }
         return started
     }

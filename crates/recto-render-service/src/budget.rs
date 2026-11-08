@@ -126,13 +126,34 @@ pub fn draw_whole_page(
     generation: u64,
     caps: &OutputCaps,
     surface: &mut Option<SharedMemory>,
+    sink: impl FnMut(PageEvent<'_>) -> Result<(), RenderFailure>,
+) -> Result<PageDrawn, RenderFailure> {
+    let size = doc.page_size(page)?;
+    draw_whole_page_sized(doc, page, size, scale, generation, caps, surface, sink)
+}
+
+/// [`draw_whole_page`] for a page whose size in points the caller has already asked for, once: a print needs it for the page it writes, and a hostile worker's second answer needn't match its first.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_whole_page_sized(
+    doc: &mut DocRenderer,
+    page: u32,
+    (width_points, height_points): (f32, f32),
+    scale: f32,
+    generation: u64,
+    caps: &OutputCaps,
+    surface: &mut Option<SharedMemory>,
     mut sink: impl FnMut(PageEvent<'_>) -> Result<(), RenderFailure>,
 ) -> Result<PageDrawn, RenderFailure> {
     let started = Instant::now();
-    let (width, height) = page_device_size(doc, page, scale, caps)?;
+    let (width, height) = fitted_size(width_points, height_points, scale, caps).ok_or(RenderFailure::TooLargeAtThisScale)?;
     sink(PageEvent::Begin { width, height })?;
     let render_us = strips(doc, page, scale, generation, TileRect { x: 0, y: 0, width, height }, started, caps, surface, &mut sink)?;
     Ok(PageDrawn { width, height, render_us })
+}
+
+/// Whether a page of this size can be drawn whole at `scale` within the caps: what [`draw_whole_page_sized`] goes by, asked before drawing.
+pub fn fits_at(width_points: f32, height_points: f32, scale: f32, caps: &OutputCaps) -> bool {
+    fitted_size(width_points, height_points, scale, caps).is_some()
 }
 
 /// Draws a box on a page, as [`draw_whole_page`] draws all of it and under the same rules: a snapshot. `rect` is in points from the page's top left, as it's shown, and the part of it that's on the page is drawn, to whole pixels at `scale`. The page itself must be drawable whole at that scale, so a box can't be a way past the caps.
