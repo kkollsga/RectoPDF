@@ -119,9 +119,14 @@ pub fn heights(room: f64, open: bool, rows: u32) -> Heights {
     if !open || !room.is_finite() || room <= 0.0 {
         return Heights { block: 0.0, list: 0.0 };
     }
-    let list = (f64::from(rows) * ROW_HEIGHT).min((room * MOST_OF_ROOM / ROW_HEIGHT).floor() * ROW_HEIGHT).max(0.0);
+    let list = (f64::from(rows) * ROW_HEIGHT)
+        .min((room * MOST_OF_ROOM / ROW_HEIGHT).floor() * ROW_HEIGHT)
+        .max(0.0);
     let block = (FIELD_HEIGHT + STATUS_HEIGHT + list + GAP).min(room);
-    Heights { block, list: list.min((block - FIELD_HEIGHT - STATUS_HEIGHT - GAP).max(0.0)) }
+    Heights {
+        block,
+        list: list.min((block - FIELD_HEIGHT - STATUS_HEIGHT - GAP).max(0.0)),
+    }
 }
 
 /// What the host draws now. A short lock on the field and one on the hits.
@@ -129,7 +134,17 @@ pub(crate) fn view(inner: &Inner) -> FindView {
     let field = lock(&inner.find_field);
     let (open, text, note) = (field.open, field.text.clone(), field.note.clone());
     drop(field);
-    let mut out = FindView { open, text, placeholder: "Find in this document".into(), status: String::new(), version: 0, row_count: 0, current_row: None, running: false, close_tooltip: "Close Find (Esc)".into() };
+    let mut out = FindView {
+        open,
+        text,
+        placeholder: "Find in this document".into(),
+        status: String::new(),
+        version: 0,
+        row_count: 0,
+        current_row: None,
+        running: false,
+        close_tooltip: "Close Find (Esc)".into(),
+    };
     inner.host.session.finder().with_results(&mut |results| {
         out.status = match (&note, open) {
             (Some(note), true) => note.clone(),
@@ -141,7 +156,10 @@ pub(crate) fn view(inner: &Inner) -> FindView {
         if open {
             let rows = results.rows();
             out.row_count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
-            out.current_row = results.current.and_then(|current| rows.iter().position(|row| *row == Row::Hit(current))).and_then(|at| u32::try_from(at).ok());
+            out.current_row = results
+                .current
+                .and_then(|current| rows.iter().position(|row| *row == Row::Hit(current)))
+                .and_then(|at| u32::try_from(at).ok());
         }
     });
     out
@@ -153,13 +171,32 @@ pub(crate) fn rows(inner: &Inner, first: u32, count: u32) -> Vec<FindRow> {
     inner.host.session.finder().with_results(&mut |results| {
         let rows = results.rows();
         let end = (first as usize).saturating_add(count.min(MAX_ROWS_FETCH) as usize).min(rows.len());
-        out = rows.get(first as usize..end).unwrap_or(&[]).iter().map(|row| match *row {
-            Row::Page(page) => FindRow { kind: FindRowKind::Page, label: find::page_label(page), matched: String::new(), after: String::new(), current: false, note: String::new() },
-            Row::Hit(index) => {
-                let hit = &results.hits[index];
-                FindRow { kind: FindRowKind::Hit, label: hit.before.to_string(), matched: hit.matched.to_string(), after: hit.after.to_string(), current: results.current == Some(index), note: if hit.hidden { HIDDEN_NOTE.to_string() } else { String::new() } }
-            }
-        }).collect();
+        out = rows
+            .get(first as usize..end)
+            .unwrap_or(&[])
+            .iter()
+            .map(|row| match *row {
+                Row::Page(page) => FindRow {
+                    kind: FindRowKind::Page,
+                    label: find::page_label(page),
+                    matched: String::new(),
+                    after: String::new(),
+                    current: false,
+                    note: String::new(),
+                },
+                Row::Hit(index) => {
+                    let hit = &results.hits[index];
+                    FindRow {
+                        kind: FindRowKind::Hit,
+                        label: hit.before.to_string(),
+                        matched: hit.matched.to_string(),
+                        after: hit.after.to_string(),
+                        current: results.current == Some(index),
+                        note: if hit.hidden { HIDDEN_NOTE.to_string() } else { String::new() },
+                    }
+                }
+            })
+            .collect();
     });
     out
 }
@@ -297,7 +334,12 @@ fn reveal(inner: &Inner, tab: u32, hit: &find::Hit, events: &mut Vec<Event>) {
         engine.reveal(hit.page, hit.start, hit.end);
     }
     // What watchers hear: no page for a document opened with a password.
-    events.push(inner.host.session.with_session(|session| recto_agent::page_changed(session, recto_session::TabId(tab), hit.page + 1)));
+    events.push(
+        inner
+            .host
+            .session
+            .with_session(|session| recto_agent::page_changed(session, recto_session::TabId(tab), hit.page + 1)),
+    );
 }
 
 /// Keeps Find with the document being read, and the field's mirror with the session. Called on the session thread after every change. A query in the field is found again when its hits are about something else: another document being read (after a tap, a move into another pane or a restart), pages moved, added or taken away, the file replaced, or the page count learnt.

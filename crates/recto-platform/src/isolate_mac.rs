@@ -74,7 +74,13 @@ impl Channel {
             let on: c_int = 1;
             // SAFETY: the option value is a live `c_int` and the length says so.
             check(unsafe {
-                libc::setsockopt(fd.as_raw_fd(), libc::SOL_SOCKET, libc::SO_NOSIGPIPE, (&raw const on).cast(), size_of::<c_int>() as u32)
+                libc::setsockopt(
+                    fd.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_NOSIGPIPE,
+                    (&raw const on).cast(),
+                    size_of::<c_int>() as u32,
+                )
             })?;
         }
         Ok((Self(a), Self(b)))
@@ -104,7 +110,10 @@ impl Channel {
         if handles.len() > MAX_HANDLES {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let mut iov = libc::iovec { iov_base: bytes.as_ptr().cast_mut().cast(), iov_len: bytes.len() };
+        let mut iov = libc::iovec {
+            iov_base: bytes.as_ptr().cast_mut().cast(),
+            iov_len: bytes.len(),
+        };
         // Room for `MAX_HANDLES` and a header, aligned for it.
         let mut control = [0u64; 8];
         // SAFETY: a zeroed `msghdr` is valid: null pointers and zero lengths.
@@ -150,7 +159,10 @@ impl Channel {
     }
 
     fn recv_into(&self, buf: &mut [u8], handles: &mut Vec<Handle>, control: &mut [u8]) -> io::Result<usize> {
-        let mut iov = libc::iovec { iov_base: buf.as_mut_ptr().cast(), iov_len: buf.len() };
+        let mut iov = libc::iovec {
+            iov_base: buf.as_mut_ptr().cast(),
+            iov_len: buf.len(),
+        };
         // SAFETY: a zeroed `msghdr` is valid: null pointers and zero lengths.
         let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
         msg.msg_iov = &raw mut iov;
@@ -195,13 +207,21 @@ impl Channel {
 
     fn wait(&self, events: i16, timeout: Option<Duration>) -> io::Result<Wait> {
         let ms = timeout.map_or(-1, |t| c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(c_int::MAX));
-        let mut poll = libc::pollfd { fd: self.0.as_raw_fd(), events, revents: 0 };
+        let mut poll = libc::pollfd {
+            fd: self.0.as_raw_fd(),
+            events,
+            revents: 0,
+        };
         // SAFETY: one live `pollfd`, and the count says one.
         match unsafe { libc::poll(&raw mut poll, 1, ms) } {
             0 => Ok(Wait::TimedOut),
             -1 => {
                 let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted { Ok(Wait::TimedOut) } else { Err(error) }
+                if error.kind() == io::ErrorKind::Interrupted {
+                    Ok(Wait::TimedOut)
+                } else {
+                    Err(error)
+                }
             }
             _ => Ok(Wait::Ready),
         }
@@ -385,7 +405,11 @@ pub enum ChildExit {
 }
 
 fn decode_wait_status(status: c_int) -> ChildExit {
-    if libc::WIFEXITED(status) { ChildExit::Code(libc::WEXITSTATUS(status)) } else { ChildExit::Signal(libc::WTERMSIG(status)) }
+    if libc::WIFEXITED(status) {
+        ChildExit::Code(libc::WEXITSTATUS(status))
+    } else {
+        ChildExit::Signal(libc::WTERMSIG(status))
+    }
 }
 
 /// What a watched child may do between jobs, with nobody else looking. Checked once, when `after` has passed since it was last active, so a
@@ -515,7 +539,14 @@ impl ChildProcess {
     }
 
     /// As [`Self::spawn`], with an invitation for the child to make a surface link, as `surface` describes.
-    pub fn spawn_linked(exe: &Path, args: &[&OsStr], env: &[(&str, &str)], channel: Channel, rule: Option<IdleRule>, invite: Option<&crate::surface::LinkInvite>) -> io::Result<Self> {
+    pub fn spawn_linked(
+        exe: &Path,
+        args: &[&OsStr],
+        env: &[(&str, &str)],
+        channel: Channel,
+        rule: Option<IdleRule>,
+        invite: Option<&crate::surface::LinkInvite>,
+    ) -> io::Result<Self> {
         let cstring = |bytes: &[u8]| CString::new(bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
         let path = cstring(exe.as_os_str().as_bytes())?;
         let mut owned_args = vec![path.clone()];
@@ -524,7 +555,10 @@ impl ChildProcess {
         }
         let mut argv: Vec<*mut libc::c_char> = owned_args.iter().map(|a| a.as_ptr().cast_mut()).collect();
         argv.push(std::ptr::null_mut());
-        let owned_env = env.iter().map(|(k, v)| cstring(format!("{k}={v}").as_bytes())).collect::<io::Result<Vec<_>>>()?;
+        let owned_env = env
+            .iter()
+            .map(|(k, v)| cstring(format!("{k}={v}").as_bytes()))
+            .collect::<io::Result<Vec<_>>>()?;
         let mut envp: Vec<*mut libc::c_char> = owned_env.iter().map(|e| e.as_ptr().cast_mut()).collect();
         envp.push(std::ptr::null_mut());
         let dev_null = c"/dev/null";
@@ -543,7 +577,10 @@ impl ChildProcess {
             }
             let prepared = (|| {
                 // Nothing is inherited unless named below, whatever else in this process forgot to mark close-on-exec.
-                check_spawn(libc::posix_spawnattr_setflags(&raw mut attr, libc::POSIX_SPAWN_CLOEXEC_DEFAULT as libc::c_short))?;
+                check_spawn(libc::posix_spawnattr_setflags(
+                    &raw mut attr,
+                    libc::POSIX_SPAWN_CLOEXEC_DEFAULT as libc::c_short,
+                ))?;
                 if let Some(invite) = invite {
                     check_spawn(invite.apply(&raw mut attr))?;
                 }
@@ -555,7 +592,14 @@ impl ChildProcess {
                 for (fd, flags) in [(0, libc::O_RDONLY), (1, libc::O_WRONLY), (2, libc::O_WRONLY)] {
                     check_spawn(libc::posix_spawn_file_actions_addopen(&raw mut actions, fd, dev_null.as_ptr(), flags, 0))?;
                 }
-                check_spawn(libc::posix_spawn(&raw mut pid, path.as_ptr(), &raw const actions, &raw const attr, argv.as_ptr(), envp.as_ptr()))
+                check_spawn(libc::posix_spawn(
+                    &raw mut pid,
+                    path.as_ptr(),
+                    &raw const actions,
+                    &raw const attr,
+                    argv.as_ptr(),
+                    envp.as_ptr(),
+                ))
             })();
             libc::posix_spawn_file_actions_destroy(&raw mut actions);
             libc::posix_spawnattr_destroy(&raw mut attr);
@@ -662,7 +706,14 @@ mod reaper {
     }
 
     fn change(queue: RawFd, ident: libc::pid_t, filter: i16, flags: u16, fflags: u32, data: isize) -> std::io::Result<()> {
-        let event = libc::kevent { ident: ident as usize, filter, flags, fflags, data, udata: std::ptr::null_mut() };
+        let event = libc::kevent {
+            ident: ident as usize,
+            filter,
+            flags,
+            fflags,
+            data,
+            udata: std::ptr::null_mut(),
+        };
         // SAFETY: one live change, no events asked for, and a zero timeout pointer isn't read because there's nothing to wait for.
         check(unsafe { libc::kevent(queue, &raw const event, 1, std::ptr::null_mut(), 0, std::ptr::null()) })?;
         Ok(())
@@ -679,7 +730,10 @@ mod reaper {
         if guard.is_none() {
             let Some(queue) = new_queue() else { return };
             let for_thread = queue.clone();
-            let thread = std::thread::Builder::new().name("recto-reaper".into()).stack_size(64 * 1024).spawn(move || run(&for_thread));
+            let thread = std::thread::Builder::new()
+                .name("recto-reaper".into())
+                .stack_size(64 * 1024)
+                .spawn(move || run(&for_thread));
             if thread.is_err() {
                 return;
             }
@@ -712,7 +766,16 @@ mod reaper {
             // SAFETY: a zeroed `kevent` is a valid buffer for the call to fill.
             let mut events: [libc::kevent; 8] = unsafe { std::mem::zeroed() };
             // SAFETY: the buffer and its length match, no changes are passed, and a null timeout waits until something happens.
-            let count = unsafe { libc::kevent(queue.as_raw_fd(), std::ptr::null(), 0, events.as_mut_ptr(), events.len() as i32, std::ptr::null()) };
+            let count = unsafe {
+                libc::kevent(
+                    queue.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    events.as_mut_ptr(),
+                    events.len() as i32,
+                    std::ptr::null(),
+                )
+            };
             if count < 0 {
                 if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                     continue;
@@ -736,7 +799,9 @@ mod reaper {
     fn handle(queue: RawFd, pid: libc::pid_t, filter: i16) {
         let found = {
             let guard = state();
-            guard.as_ref().and_then(|state| state.children.iter().find(|w| w.child.pid == pid).map(|w| (w.child.clone(), w.rule)))
+            guard
+                .as_ref()
+                .and_then(|state| state.children.iter().find(|w| w.child.pid == pid).map(|w| (w.child.clone(), w.rule)))
         };
         let Some((child, rule)) = found else { return };
         let exited = filter == libc::EVFILT_PROC;
@@ -813,7 +878,11 @@ pub fn process_memory(pid: u32) -> Option<ProcessMemory> {
         }
         info.assume_init()
     };
-    Some(ProcessMemory { footprint_bytes: info.ri_phys_footprint, peak_footprint_bytes: info.ri_lifetime_max_phys_footprint, cpu_ns: crate::local::ticks_to_ns(info.ri_user_time.saturating_add(info.ri_system_time)) })
+    Some(ProcessMemory {
+        footprint_bytes: info.ri_phys_footprint,
+        peak_footprint_bytes: info.ri_lifetime_max_phys_footprint,
+        cpu_ns: crate::local::ticks_to_ns(info.ri_user_time.saturating_add(info.ri_system_time)),
+    })
 }
 
 /// The start of the kernel's `task_vm_info`, as far as `phys_footprint`: its layout's been fixed since it was extended with that, and the kernel fills as much as it's asked for.
@@ -860,7 +929,11 @@ pub(crate) fn own_memory() -> Option<crate::OwnMemory> {
         libc::malloc_zone_statistics(std::ptr::null_mut(), heap.as_mut_ptr());
         heap.assume_init()
     };
-    Some(crate::OwnMemory { footprint: info.phys_footprint, compressed: info.compressed, heap: heap.size_in_use as u64 })
+    Some(crate::OwnMemory {
+        footprint: info.phys_footprint,
+        compressed: info.compressed,
+        heap: heap.size_in_use as u64,
+    })
 }
 
 /// See [`crate::memory_free_percent`].
@@ -868,8 +941,20 @@ pub(crate) fn memory_free_percent() -> Option<u32> {
     let mut level: c_int = 0;
     let mut len = size_of::<c_int>();
     // SAFETY: the name is NUL-terminated, the buffer is a live `c_int`, and `len` says so. The call writes back no more than `len`.
-    let rc = unsafe { libc::sysctlbyname(c"kern.memorystatus_level".as_ptr(), (&raw mut level).cast(), &raw mut len, std::ptr::null_mut(), 0) };
-    if rc == 0 && len == size_of::<c_int>() { u32::try_from(level).ok() } else { None }
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"kern.memorystatus_level".as_ptr(),
+            (&raw mut level).cast(),
+            &raw mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc == 0 && len == size_of::<c_int>() {
+        u32::try_from(level).ok()
+    } else {
+        None
+    }
 }
 
 /// Takes away what a renderer process never needs, before it touches a hostile file. Lowered for good: hard and soft together.
@@ -877,7 +962,10 @@ pub(crate) fn memory_free_percent() -> Option<u32> {
 /// `EINVAL` (measured on macOS 27), so the host polls from outside instead.
 pub fn harden_this_process() {
     for (resource, value) in [(libc::RLIMIT_CORE, 0), (libc::RLIMIT_FSIZE, 0), (libc::RLIMIT_NPROC, 0)] {
-        let limit = libc::rlimit { rlim_cur: value, rlim_max: value };
+        let limit = libc::rlimit {
+            rlim_cur: value,
+            rlim_max: value,
+        };
         // SAFETY: `limit` is live for the call. A refusal changes nothing, and each of these is a second line only.
         unsafe { libc::setrlimit(resource, &raw const limit) };
     }
@@ -909,7 +997,9 @@ impl Library {
         // SAFETY: `path` is NUL-terminated and outlives the call. Loading runs the library's initialisers, which is why this is called
         // only on the digest-checked file the caller names.
         let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-        NonNull::new(handle).map(Self).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the library couldn't be loaded"))
+        NonNull::new(handle)
+            .map(Self)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the library couldn't be loaded"))
     }
 
     /// A symbol's address, for the one seam that casts it to its known signature.
@@ -1021,7 +1111,10 @@ mod tests {
         assert_eq!(child.wait_bounded(Duration::from_secs(30)), Some(ChildExit::Signal(libc::SIGKILL)));
         let memory = child.memory().expect("the record was read before it was collected");
         assert!(memory.peak_footprint_bytes > 0);
-        assert!(!child.kill_now(), "a collected child's number may be someone else's by now, so it's never signalled");
+        assert!(
+            !child.kill_now(),
+            "a collected child's number may be someone else's by now, so it's never signalled"
+        );
     }
 
     /// Failure: a child's exit code is lost or read as a crash, so a clean idle exit looks like a failure.
@@ -1044,7 +1137,11 @@ mod tests {
         let (ours, theirs) = Channel::pair().unwrap();
         let script = format!("[ -e /dev/fd/{leaky} ] && exit 9; exit 0");
         let child = ChildProcess::spawn(Path::new("/bin/sh"), &[OsStr::new("-c"), OsStr::new(&script)], &[], theirs, None).unwrap();
-        assert_eq!(child.wait_bounded(Duration::from_secs(30)), Some(ChildExit::Code(0)), "the child could see a file it wasn't given");
+        assert_eq!(
+            child.wait_bounded(Duration::from_secs(30)),
+            Some(ChildExit::Code(0)),
+            "the child could see a file it wasn't given"
+        );
         drop(ours);
     }
 
@@ -1052,7 +1149,10 @@ mod tests {
     fn send_raw_handles(channel: &Channel, fd: RawFd, count: usize) -> io::Result<()> {
         let mut control = vec![0u64; (count * size_of::<RawFd>() + 64).div_ceil(8)];
         let byte = 1u8;
-        let mut iov = libc::iovec { iov_base: (&raw const byte).cast_mut().cast(), iov_len: 1 };
+        let mut iov = libc::iovec {
+            iov_base: (&raw const byte).cast_mut().cast(),
+            iov_len: 1,
+        };
         // SAFETY: a zeroed `msghdr` is valid: null pointers and zero lengths.
         let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
         msg.msg_iov = &raw mut iov;
@@ -1073,7 +1173,11 @@ mod tests {
             }
         }
         // SAFETY: `msg` and everything it points at outlive the call.
-        if unsafe { libc::sendmsg(channel.0.as_raw_fd(), &raw const msg, 0) } < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+        if unsafe { libc::sendmsg(channel.0.as_raw_fd(), &raw const msg, 0) } < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 
     /// Failure: a worker sends ~200 handles, more than the host's control buffer held. The old walk trusted `cmsg_len`, read past the buffer and wrapped
@@ -1096,7 +1200,10 @@ mod tests {
         let (a, _b) = Channel::pair().unwrap();
         let file = File::open("/etc/hosts").unwrap();
         let too_many = size_of::<ControlBuffer>() / size_of::<RawFd>();
-        assert!(send_raw_handles(&a, file.as_raw_fd(), too_many).is_err(), "the kernel accepted a message that can't fit the buffer");
+        assert!(
+            send_raw_handles(&a, file.as_raw_fd(), too_many).is_err(),
+            "the kernel accepted a message that can't fit the buffer"
+        );
     }
 
     /// Failure: a truncated message reads as a normal one, so whoever is misbehaving goes unnoticed, or the walk runs past the bytes written.
@@ -1111,7 +1218,10 @@ mod tests {
         let small = unsafe { std::slice::from_raw_parts_mut(small.as_mut_ptr().cast::<u8>(), size_of::<[u64; 8]>()) };
         let error = b.recv_into(&mut buf, &mut handles, small).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(handles.len() <= size_of::<[u64; 8]>() / size_of::<RawFd>(), "more handles than the bytes that were written could hold");
+        assert!(
+            handles.len() <= size_of::<[u64; 8]>() / size_of::<RawFd>(),
+            "more handles than the bytes that were written could hold"
+        );
     }
 
     fn cmsg(claimed: u32, level: i32, kind: i32, fds: &[i32]) -> Vec<u8> {
@@ -1137,7 +1247,11 @@ mod tests {
         let rights = (libc::SOL_SOCKET, libc::SCM_RIGHTS);
         assert_eq!(found(&cmsg(20, rights.0, rights.1, &[7, 8])), vec![7, 8]);
         assert_eq!(found(&cmsg(1000, rights.0, rights.1, &[7, 8])), vec![7, 8], "a claim past the end");
-        assert_eq!(found(&cmsg(0, rights.0, rights.1, &[7, 8])), Vec::<i32>::new(), "a zero length mustn't loop for ever");
+        assert_eq!(
+            found(&cmsg(0, rights.0, rights.1, &[7, 8])),
+            Vec::<i32>::new(),
+            "a zero length mustn't loop for ever"
+        );
         assert_eq!(found(&cmsg(11, rights.0, rights.1, &[7])), Vec::<i32>::new(), "shorter than a header");
         assert_eq!(found(&cmsg(u32::MAX, rights.0, rights.1, &[7])), vec![7], "a length that would overflow");
         assert_eq!(found(&cmsg(16, rights.0, rights.1 + 1, &[7])), Vec::<i32>::new(), "another kind of message");
@@ -1173,7 +1287,10 @@ mod tests {
     #[test]
     fn an_idle_rule_kills_a_child_that_outstays_it() {
         let (_ours, theirs) = Channel::pair().unwrap();
-        let rule = IdleRule { after: Duration::from_millis(50), memory_limit_bytes: u64::MAX };
+        let rule = IdleRule {
+            after: Duration::from_millis(50),
+            memory_limit_bytes: u64::MAX,
+        };
         let child = ChildProcess::spawn(Path::new("/bin/sleep"), &[OsStr::new("600")], &[], theirs, Some(rule)).unwrap();
         child.note_activity(false);
         assert_eq!(child.wait_bounded(Duration::from_secs(30)), Some(ChildExit::Signal(libc::SIGKILL)));
@@ -1183,12 +1300,19 @@ mod tests {
     #[test]
     fn a_busy_child_isnt_idle() {
         let (_ours, theirs) = Channel::pair().unwrap();
-        let rule = IdleRule { after: Duration::from_millis(20), memory_limit_bytes: u64::MAX };
+        let rule = IdleRule {
+            after: Duration::from_millis(20),
+            memory_limit_bytes: u64::MAX,
+        };
         let child = ChildProcess::spawn(Path::new("/bin/sleep"), &[OsStr::new("600")], &[], theirs, Some(rule)).unwrap();
         child.note_activity(true);
         assert_eq!(child.wait_bounded(Duration::from_millis(200)), None, "killed during a job");
         child.note_activity(false);
-        assert_eq!(child.wait_bounded(Duration::from_secs(30)), Some(ChildExit::Signal(libc::SIGKILL)), "and killed once the job is over");
+        assert_eq!(
+            child.wait_bounded(Duration::from_secs(30)),
+            Some(ChildExit::Signal(libc::SIGKILL)),
+            "and killed once the job is over"
+        );
     }
 
     /// Failure: the reading of free memory silently fails, so the heavier retry is never allowed on any Mac, or reads a number that isn't a percentage.
@@ -1213,7 +1337,9 @@ mod tests {
         assert!(already.wait_bounded(Duration::from_secs(30)).is_some());
         let (sender, receiver) = std::sync::mpsc::channel();
         already.on_end(Box::new(move || sender.send(()).unwrap()));
-        receiver.recv_timeout(Duration::from_secs(30)).expect("a child already gone should run it at once");
+        receiver
+            .recv_timeout(Duration::from_secs(30))
+            .expect("a child already gone should run it at once");
     }
 
     /// Failure: a killed worker stuck on a dead volume wakes the reaper about 1,000 times a second for as long as it's stuck, past the budget of one a second for an idle app.
@@ -1221,7 +1347,11 @@ mod tests {
     fn a_stuck_child_is_looked_at_once_a_second_at_most() {
         assert!(reaper::next_check_ms(100, 5000, false, true) >= 1000, "just killed, and long past its time");
         assert!(reaper::next_check_ms(100, 100, false, true) >= 1000);
-        assert_eq!(reaper::next_check_ms(35_000, 5_000, false, false), 30_000, "alive and idle: when its time is up");
+        assert_eq!(
+            reaper::next_check_ms(35_000, 5_000, false, false),
+            30_000,
+            "alive and idle: when its time is up"
+        );
         assert_eq!(reaper::next_check_ms(35_000, 5_000, true, false), 35_000, "alive and busy: a whole period on");
     }
 }

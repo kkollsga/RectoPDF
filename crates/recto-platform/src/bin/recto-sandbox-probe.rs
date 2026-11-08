@@ -33,8 +33,24 @@ mod mac {
         fn mach_host_self() -> u32;
         fn mach_thread_self() -> u32;
         fn sandbox_check(pid: c_int, operation: *const c_char, filter: c_int, ...) -> c_int;
-        fn task_get_exception_ports(task: u32, mask: u32, masks: *mut u32, count: *mut u32, handlers: *mut u32, behaviors: *mut i32, flavors: *mut i32) -> c_int;
-        fn thread_get_exception_ports(thread: u32, mask: u32, masks: *mut u32, count: *mut u32, handlers: *mut u32, behaviors: *mut i32, flavors: *mut i32) -> c_int;
+        fn task_get_exception_ports(
+            task: u32,
+            mask: u32,
+            masks: *mut u32,
+            count: *mut u32,
+            handlers: *mut u32,
+            behaviors: *mut i32,
+            flavors: *mut i32,
+        ) -> c_int;
+        fn thread_get_exception_ports(
+            thread: u32,
+            mask: u32,
+            masks: *mut u32,
+            count: *mut u32,
+            handlers: *mut u32,
+            behaviors: *mut i32,
+            flavors: *mut i32,
+        ) -> c_int;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -200,7 +216,14 @@ mod mac {
     fn walls() {
         recto_platform::isolate::harden_this_process();
         match wall::put_up() {
-            Ok(dropped) => report("walls", true, format!("{} send rights dropped, {} left as dead names, {} kept", dropped.dropped, dropped.dead_names, dropped.kept)),
+            Ok(dropped) => report(
+                "walls",
+                true,
+                format!(
+                    "{} send rights dropped, {} left as dead names, {} kept",
+                    dropped.dropped, dropped.dead_names, dropped.kept
+                ),
+            ),
             Err(why) => report("walls", false, format!("{why:?}")),
         }
     }
@@ -210,7 +233,12 @@ mod mac {
     fn described(task: u32, port: u32) -> ((c_int, u32), (c_int, u32)) {
         let (mut first, mut second, mut address) = (0u32, 0u32, 0u64);
         // SAFETY: all out-pointers are live, and these only read about a name this process holds.
-        let rcs = unsafe { (mach_port_kobject(task, port, &raw mut first, &raw mut address), mach_port_kernel_object(task, port, &raw mut second, &raw mut address)) };
+        let rcs = unsafe {
+            (
+                mach_port_kobject(task, port, &raw mut first, &raw mut address),
+                mach_port_kernel_object(task, port, &raw mut second, &raw mut address),
+            )
+        };
         ((rcs.0, first), (rcs.1, second))
     }
 
@@ -237,11 +265,20 @@ mod mac {
             return;
         }
         // SAFETY: the kernel returned that many of each.
-        let (names, types) = unsafe { (std::slice::from_raw_parts(names, name_count as usize), std::slice::from_raw_parts(types, type_count as usize)) };
+        let (names, types) = unsafe {
+            (
+                std::slice::from_raw_parts(names, name_count as usize),
+                std::slice::from_raw_parts(types, type_count as usize),
+            )
+        };
         for (name, kind) in names.iter().zip(types) {
             if kind & (1 << 16) != 0 {
                 let description = described(task, *name);
-                report(&format!("right:{name:#x}"), !is_kernel_object(description), description_text(*name, description));
+                report(
+                    &format!("right:{name:#x}"),
+                    !is_kernel_object(description),
+                    description_text(*name, description),
+                );
             }
         }
     }
@@ -264,7 +301,11 @@ mod mac {
             let mut service = 0u32;
             // SAFETY: the name is NUL-terminated and `service` is live. Asks for a port, and sends the service nothing.
             let rc = unsafe { bootstrap_look_up(port, c"com.apple.coreservices.launchservicesd".as_ptr(), &raw mut service) };
-            report(&format!("regain_launchd:{what}"), rc == 0, format!("a bootstrap lookup through it returned {rc}"));
+            report(
+                &format!("regain_launchd:{what}"),
+                rc == 0,
+                format!("a bootstrap lookup through it returned {rc}"),
+            );
         };
         let describe = |what: String, port: u32| look_through(&what, port);
         for which in 0..16 {
@@ -289,7 +330,11 @@ mod mac {
             // The host's slots name system daemons, which may never answer a stray lookup: described, not looked through.
             if unsafe { host_get_special_port(host, -1, which, &raw mut port) } == 0 && port != 0 {
                 let description = described(task, port);
-                report(&format!("regain:host_special_{which}"), !is_kernel_object(description), description_text(port, description));
+                report(
+                    &format!("regain:host_special_{which}"),
+                    !is_kernel_object(description),
+                    description_text(port, description),
+                );
             }
         }
         let mut ports: *mut u32 = std::ptr::null_mut();
@@ -312,16 +357,36 @@ mod mac {
             // SAFETY: the arrays hold the 32 entries `count` says, and the calls only read.
             let rc = unsafe {
                 if what == "task" {
-                    task_get_exception_ports(target, 0x3ffe, masks.as_mut_ptr(), &raw mut count, handlers.as_mut_ptr(), behaviors.as_mut_ptr(), flavors.as_mut_ptr())
+                    task_get_exception_ports(
+                        target,
+                        0x3ffe,
+                        masks.as_mut_ptr(),
+                        &raw mut count,
+                        handlers.as_mut_ptr(),
+                        behaviors.as_mut_ptr(),
+                        flavors.as_mut_ptr(),
+                    )
                 } else {
-                    thread_get_exception_ports(target, 0x3ffe, masks.as_mut_ptr(), &raw mut count, handlers.as_mut_ptr(), behaviors.as_mut_ptr(), flavors.as_mut_ptr())
+                    thread_get_exception_ports(
+                        target,
+                        0x3ffe,
+                        masks.as_mut_ptr(),
+                        &raw mut count,
+                        handlers.as_mut_ptr(),
+                        behaviors.as_mut_ptr(),
+                        flavors.as_mut_ptr(),
+                    )
                 }
             };
             if rc == 0 {
                 for (i, handler) in handlers.iter().take(count as usize).enumerate() {
                     if *handler != 0 {
                         let description = described(task, *handler);
-                        report(&format!("regain:{what}_exception_{i}"), !is_kernel_object(description), description_text(*handler, description));
+                        report(
+                            &format!("regain:{what}_exception_{i}"),
+                            !is_kernel_object(description),
+                            description_text(*handler, description),
+                        );
                     }
                 }
             }

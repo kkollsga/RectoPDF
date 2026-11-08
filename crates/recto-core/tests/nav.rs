@@ -15,7 +15,11 @@ fn each_kind_of_link_is_judged_as_it_should_be() {
     assert_eq!(*page, 0);
     assert_eq!(links.links.len(), LINKS_ON_PAGE_ONE.len());
     let targets: Vec<&LinkTarget> = links.links.iter().map(|link| &link.target).collect();
-    assert!(matches!(targets[0], LinkTarget::Page { page: 8, within: Some(within) } if (within - 1.0 / 3.0).abs() < 0.01), "{:?}", targets[0]);
+    assert!(
+        matches!(targets[0], LinkTarget::Page { page: 8, within: Some(within) } if (within - 1.0 / 3.0).abs() < 0.01),
+        "{:?}",
+        targets[0]
+    );
     assert_eq!(targets[1], &LinkTarget::Page { page: 6, within: Some(0.0) });
     assert_eq!(targets[2], &LinkTarget::Web("https://example.com/report?id=7".into()));
     assert_eq!(targets[3], &LinkTarget::Refused(Refused::Script));
@@ -30,10 +34,16 @@ fn each_kind_of_link_is_judged_as_it_should_be() {
     }
     let middle = |rect: &[f32; 4]| ((rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0);
     let (x, y) = middle(&LINKS_ON_PAGE_ONE[2].0);
-    assert_eq!(links.at(x, y).map(|link| &link.target), Some(&LinkTarget::Web("https://example.com/report?id=7".into())));
+    assert_eq!(
+        links.at(x, y).map(|link| &link.target),
+        Some(&LinkTarget::Web("https://example.com/report?id=7".into()))
+    );
     assert!(links.at(10.0, 10.0).is_none());
     assert!(read[1].1.links.is_empty(), "page 4 has none");
-    assert!(page_links(&file.0, &[99]).unwrap()[0].1.links.is_empty(), "a page that isn't there has none, and doesn't fail");
+    assert!(
+        page_links(&file.0, &[99]).unwrap()[0].1.links.is_empty(),
+        "a page that isn't there has none, and doesn't fail"
+    );
 }
 
 /// Failure: page labels aren't read from the file, so roman front matter shows as plain numbers.
@@ -50,9 +60,15 @@ fn page_labels_come_from_the_file() {
 /// A page tree of `pages` pages, the first with `annots`, and the catalog with `catalog_extra`.
 fn document(pages: usize, annots: &str, catalog_extra: &str, extra: Vec<Object>) -> Vec<u8> {
     let kids: Vec<String> = (0..pages).map(|index| format!("{} 0 R", 3 + index)).collect();
-    let mut objects = vec![Object::Dict(format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>")), Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {pages} >>", kids.join(" ")))];
+    let mut objects = vec![
+        Object::Dict(format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>")),
+        Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {pages} >>", kids.join(" "))),
+    ];
     for index in 0..pages {
-        objects.push(Object::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] {} >>", if index == 0 { annots } else { "" })));
+        objects.push(Object::Dict(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] {} >>",
+            if index == 0 { annots } else { "" }
+        )));
     }
     objects.extend(extra);
     build(&objects)
@@ -61,13 +77,19 @@ fn document(pages: usize, annots: &str, catalog_extra: &str, extra: Vec<Object>)
 /// Failure: a page with a hundred thousand links, or a label tree of a million ranges, is read in full, so a hostile file holds the page view's thread and its memory.
 #[test]
 fn hostile_links_and_labels_are_capped() {
-    let many = (0..MAX_PAGE_LINKS * 3).map(|at| format!("<< /Subtype /Link /Rect [{at} 0 {} 10] /Dest [3 0 R /Fit] >>", at + 1)).collect::<Vec<_>>().join(" ");
+    let many = (0..MAX_PAGE_LINKS * 3)
+        .map(|at| format!("<< /Subtype /Link /Rect [{at} 0 {} 10] /Dest [3 0 R /Fit] >>", at + 1))
+        .collect::<Vec<_>>()
+        .join(" ");
     let bytes = document(1, &format!("/Annots [{many}]"), "", Vec::new());
     let read = page_links_bytes(Arc::from(bytes), &[0]).unwrap();
     // At most the cap, and said to be cut short. Under load the time cap can come first, which is the other limit doing its job: the exact count is held in `nav.rs`'s own test, with the time given room.
     assert!(read[0].1.links.len() <= MAX_PAGE_LINKS, "{}", read[0].1.links.len());
     assert!(read[0].1.truncated);
-    let nums = (0..MAX_LABEL_RANGES * 4).map(|at| format!("{at} << /S /D /P (p{at}-) >>")).collect::<Vec<_>>().join(" ");
+    let nums = (0..MAX_LABEL_RANGES * 4)
+        .map(|at| format!("{at} << /S /D /P (p{at}-) >>"))
+        .collect::<Vec<_>>()
+        .join(" ");
     let bytes = document(MAX_LABEL_RANGES * 5, "", &format!("/PageLabels << /Nums [{nums}] >>"), Vec::new());
     let facts = inspect_bytes(Arc::from(bytes)).unwrap();
     assert!(facts.toc.labels.ranges().len() <= MAX_LABEL_RANGES, "{}", facts.toc.labels.ranges().len());
@@ -81,7 +103,12 @@ fn trees_that_loop_end() {
     let bytes = document(1, "", "/PageLabels 4 0 R", looped);
     let facts = inspect_bytes(Arc::from(bytes)).unwrap();
     assert_eq!(facts.toc.labels.label(0).as_deref(), Some("i"));
-    let bytes = document(1, "/Annots [<< /Subtype /Link /Rect [0 0 10 10] /Dest /a >>]", "/Dests << /a /b /b /a >>", Vec::new());
+    let bytes = document(
+        1,
+        "/Annots [<< /Subtype /Link /Rect [0 0 10 10] /Dest /a >>]",
+        "/Dests << /a /b /b /a >>",
+        Vec::new(),
+    );
     let read = page_links_bytes(Arc::from(bytes), &[0]).unwrap();
     assert_eq!(read[0].1.links[0].target, LinkTarget::Nowhere);
 }
@@ -97,5 +124,9 @@ fn links_through_an_open_file_are_that_files() {
     std::fs::rename(&other, &file.0).unwrap();
     assert!(page_links(&file.0, &[0]).unwrap()[0].1.links.is_empty(), "the path is the new file");
     let read = recto_core::nav::page_links_in(held, None, &[0]).unwrap();
-    assert_eq!(read[0].1.links.len(), LINKS_ON_PAGE_ONE.len(), "the open file is the old one, whose pages are showing");
+    assert_eq!(
+        read[0].1.links.len(),
+        LINKS_ON_PAGE_ONE.len(),
+        "the open file is the old one, whose pages are showing"
+    );
 }

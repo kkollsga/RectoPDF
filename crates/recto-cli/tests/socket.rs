@@ -14,7 +14,10 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 fn doc() -> TempPdf {
-    TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["Words on page one"])), Page::new(text_lines(&["Words on page two"]))]))
+    TempPdf::new(
+        "doc.pdf",
+        &pages(&[Page::new(text_lines(&["Words on page one"])), Page::new(text_lines(&["Words on page two"]))]),
+    )
 }
 
 /// Failure: nothing's running and it reads as a hang or a vague failure, rather than saying so, with its own exit code and the command to start it.
@@ -40,10 +43,24 @@ fn the_socket_is_private_and_there_is_no_network_listener() {
     assert_eq!(meta.permissions().mode() & 0o777, 0o600);
     assert_eq!(std::fs::metadata(&state.paths.run_dir).unwrap().permissions().mode() & 0o777, 0o700);
     assert_eq!(std::fs::metadata(&state.root).unwrap().permissions().mode() & 0o777, 0o700);
-    let lsof = std::process::Command::new("/usr/sbin/lsof").args(["-nP", "-a", "-p", &serving.pid().to_string(), "-i"]).output().unwrap();
-    assert!(String::from_utf8_lossy(&lsof.stdout).trim().is_empty(), "a network socket: {}", String::from_utf8_lossy(&lsof.stdout));
-    for source in [include_str!("../../recto-control/src/server.rs"), include_str!("../../recto-control/src/client.rs"), include_str!("../../recto-platform/src/local_mac.rs")] {
-        assert!(!source.contains("TcpListener") && !source.contains("TcpStream") && !source.contains("std::net::"), "a route to the network in the source");
+    let lsof = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-nP", "-a", "-p", &serving.pid().to_string(), "-i"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&lsof.stdout).trim().is_empty(),
+        "a network socket: {}",
+        String::from_utf8_lossy(&lsof.stdout)
+    );
+    for source in [
+        include_str!("../../recto-control/src/server.rs"),
+        include_str!("../../recto-control/src/client.rs"),
+        include_str!("../../recto-platform/src/local_mac.rs"),
+    ] {
+        assert!(
+            !source.contains("TcpListener") && !source.contains("TcpStream") && !source.contains("std::net::"),
+            "a route to the network in the source"
+        );
     }
 }
 
@@ -73,7 +90,13 @@ fn a_server_killed_mid_command_recovers_on_restart() {
     let state = State::at(Level::Full);
     let mut serving = state.serve();
     let content = busy_page();
-    let many: Vec<Page> = (0..30).map(|_| Page { content: content.clone(), page_extra: String::new(), media: (1400.0, 1800.0) }).collect();
+    let many: Vec<Page> = (0..30)
+        .map(|_| Page {
+            content: content.clone(),
+            page_extra: String::new(),
+            media: (1400.0, 1800.0),
+        })
+        .collect();
     let file = TempPdf::new("heavy.pdf", &pages(&many));
     state.json(&["open", file.0.to_str().unwrap()]);
     let out = file.0.with_file_name("killed.png");
@@ -87,7 +110,12 @@ fn a_server_killed_mid_command_recovers_on_restart() {
     waiting.send(&json!({ "cmd": "wait", "condition": "tab_open", "tab": "never opened", "timeout_ms": 3_600_000 }).to_string());
     // The render's temp file is made as its first strip begins, and a 5,600 x 7,200 picture of a busy page takes far longer to draw than this takes to notice it.
     let dir = file.0.parent().unwrap();
-    let drawing = || std::fs::read_dir(dir).unwrap().filter_map(Result::ok).any(|entry| entry.file_name().to_string_lossy().ends_with(".partial"));
+    let drawing = || {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".partial"))
+    };
     let started = Instant::now();
     while !drawing() {
         if out.exists() || started.elapsed() > Duration::from_secs(10) {
@@ -102,7 +130,11 @@ fn a_server_killed_mid_command_recovers_on_restart() {
     // Under the real name there's nothing, or the whole picture, which is put there in one step once it's finished.
     if out.exists() {
         let bytes = std::fs::read(&out).unwrap();
-        assert!(bytes.ends_with(b"IEND\xaeB`\x82"), "a half-written picture under the real name, {} bytes, and the render said {drawn:?}", bytes.len());
+        assert!(
+            bytes.ends_with(b"IEND\xaeB`\x82"),
+            "a half-written picture under the real name, {} bytes, and the render said {drawn:?}",
+            bytes.len()
+        );
         std::fs::remove_file(&out).unwrap();
     }
     let _again = state.serve();
@@ -120,7 +152,12 @@ fn a_server_killed_mid_command_recovers_on_restart() {
     let again = file.0.with_file_name("again.png");
     let (drawn, code) = state.json(&["render", "--page", "1", "--out", again.to_str().unwrap()]);
     assert_eq!(code, 0, "{drawn}");
-    let left: Vec<String> = std::fs::read_dir(dir).unwrap().filter_map(Result::ok).map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.ends_with(".partial")).collect();
+    let left: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".partial"))
+        .collect();
     assert!(left.is_empty(), "the killed server's temp file is still there: {left:?}");
     std::fs::remove_file(&again).unwrap();
     for entry in std::fs::read_dir(file.0.parent().unwrap()).unwrap() {
@@ -135,7 +172,10 @@ fn a_server_killed_mid_command_recovers_on_restart() {
 fn hears_the_end(client: &mut Raw, what: &str) -> Option<Value> {
     let answer = client.read();
     if let Some(answer) = &answer {
-        assert!(client.read().is_none(), "{what}: after its answer, a client on a dead session must see it end, not hang: {answer}");
+        assert!(
+            client.read().is_none(),
+            "{what}: after its answer, a client on a dead session must see it end, not hang: {answer}"
+        );
     }
     answer
 }
@@ -151,7 +191,11 @@ fn what_isnt_our_socket_is_left_alone() {
     assert_eq!(reply["error"]["code"], "socket_refused", "{reply}");
     assert_eq!(std::fs::read(state.socket()).unwrap(), b"someone's file");
     let (status, code) = state.json(&["status"]);
-    assert_eq!((status["error"]["code"].as_str(), code), (Some("socket_refused"), exit::PERMISSION), "a client must not trust it: {status}");
+    assert_eq!(
+        (status["error"]["code"].as_str(), code),
+        (Some("socket_refused"), exit::PERMISSION),
+        "a client must not trust it: {status}"
+    );
     std::fs::remove_file(state.socket()).unwrap();
     let target = state.root.join("target");
     std::os::unix::fs::symlink(&target, state.socket()).unwrap();
@@ -209,11 +253,13 @@ fn many_clients_at_once_each_get_their_own_answer() {
     let _serving = state.serve();
     let file = doc();
     let dir = file.0.parent().unwrap();
-    let links: Vec<_> = (0..12).map(|i| {
-        let link = dir.join(format!("link{i}.pdf"));
-        std::fs::copy(&file.0, &link).unwrap();
-        link
-    }).collect();
+    let links: Vec<_> = (0..12)
+        .map(|i| {
+            let link = dir.join(format!("link{i}.pdf"));
+            std::fs::copy(&file.0, &link).unwrap();
+            link
+        })
+        .collect();
     std::thread::scope(|scope| {
         for (index, link) in links.iter().enumerate() {
             let state = &state;
@@ -310,7 +356,9 @@ fn hostile_messages_are_refused_and_nothing_falls_over() {
         let mut framed = line.clone();
         framed.push(b'\n');
         raw.stream.write_all(&framed).unwrap();
-        let reply = raw.read().unwrap_or_else(|| panic!("the connection closed on {:?}", String::from_utf8_lossy(&line)));
+        let reply = raw
+            .read()
+            .unwrap_or_else(|| panic!("the connection closed on {:?}", String::from_utf8_lossy(&line)));
         assert_eq!(reply["error"]["code"], "bad_command", "{:?}: {reply}", String::from_utf8_lossy(&line));
     }
     // Numbers that are in range but absurd: the session must refuse them, not panic on arithmetic.
@@ -320,7 +368,10 @@ fn hostile_messages_are_refused_and_nothing_falls_over() {
         (json!({ "cmd": "text", "page": 0 }), "no_such_page"),
         (json!({ "cmd": "text", "page": u32::MAX }), "no_such_page"),
         (json!({ "cmd": "goto", "page": u32::MAX }), "no_such_page"),
-        (json!({ "cmd": "page_move", "pages": "4294967295-4294967295", "to": u32::MAX }), "page_out_of_range"),
+        (
+            json!({ "cmd": "page_move", "pages": "4294967295-4294967295", "to": u32::MAX }),
+            "page_out_of_range",
+        ),
         (json!({ "cmd": "page_delete", "pages": "1-4294967295" }), "page_out_of_range"),
         (json!({ "cmd": "page_rotate", "pages": "1", "degrees": i32::MAX }), "bad_rotation"),
         (json!({ "cmd": "page_rotate", "pages": "1", "degrees": i32::MIN }), "bad_rotation"),
@@ -329,7 +380,10 @@ fn hostile_messages_are_refused_and_nothing_falls_over() {
         (json!({ "cmd": "render", "page": 1, "out": "relative.png" }), "bad_path"),
         (json!({ "cmd": "budget_viewport", "viewport": "99999999x99999999" }), "bad_viewport"),
         (json!({ "cmd": "wait", "condition": "page_drawn", "timeout_ms": 1 }), "no_such_page"),
-        (json!({ "cmd": "wait", "condition": "indexing_done", "tab": "#99", "timeout_ms": 1 }), "timed_out"),
+        (
+            json!({ "cmd": "wait", "condition": "indexing_done", "tab": "#99", "timeout_ms": 1 }),
+            "timed_out",
+        ),
         (json!({ "cmd": "watch", "events": ["nonsense"] }), "bad_events"),
         (json!({ "cmd": "search", "query": "x".repeat(5000) }), "bad_query"),
         (json!({ "cmd": "contents", "from": u32::MAX, "limit": u32::MAX, "depth": 255 }), ""),
@@ -422,13 +476,20 @@ fn waiting_clients_cant_take_every_slot() {
         }
         refused = Raw::connect(&state).call(&json!({ "cmd": "permission_request", "level": "full", "timeout_ms": 86_400_000 }));
     }
-    assert_eq!((refused["error"]["code"].as_str(), refused["error"]["exit"].as_i64()), (Some("busy"), Some(i64::from(exit::BUSY))), "{refused}");
+    assert_eq!(
+        (refused["error"]["code"].as_str(), refused["error"]["exit"].as_i64()),
+        (Some("busy"), Some(i64::from(exit::BUSY))),
+        "{refused}"
+    );
     let (status, code) = state.json(&["status"]);
     assert_eq!(code, 0, "{status}");
     state.set_level(Level::ReadOnly);
     let mut watcher = Raw::connect(&state);
     assert_eq!(watcher.call(&json!({ "cmd": "watch", "count": 1 }))["error"]["code"], "busy");
-    assert_eq!(watcher.call(&json!({ "cmd": "wait", "condition": "tab_open", "tab": "x", "timeout_ms": 10_000 }))["error"]["code"], "busy");
+    assert_eq!(
+        watcher.call(&json!({ "cmd": "wait", "condition": "tab_open", "tab": "x", "timeout_ms": 10_000 }))["error"]["code"],
+        "busy"
+    );
     let (tabs, code) = state.json(&["tabs"]);
     assert_eq!(code, 0, "plain work still goes on: {tabs}");
 }
@@ -472,7 +533,11 @@ fn a_watch_for_no_events_ends_at_once() {
     let _serving = state.serve();
     let (lines, code) = lines_of(watch_process(&state, &["watch", "--count", "0", "--timeout", "30s", "--json"]));
     assert_eq!(code, 0, "{lines:?}");
-    assert_eq!((&lines.last().unwrap()["data"]["delivered"], &lines.last().unwrap()["data"]["reason"]), (&json!(0), &json!("count reached")), "{lines:?}");
+    assert_eq!(
+        (&lines.last().unwrap()["data"]["delivered"], &lines.last().unwrap()["data"]["reason"]),
+        (&json!(0), &json!("count reached")),
+        "{lines:?}"
+    );
 }
 
 /// Failure: an agent at Off alternating asks writes a line each time, to a file with no cap. The user hears once per level, higher only, and a full or closed stderr can't take the session down with its edits.
@@ -494,7 +559,13 @@ fn asking_in_a_loop_cant_fill_the_messages_file_or_end_the_session() {
 
     // A stderr nobody's reading: the first ask writes to a closed pipe, and the session must still be there.
     let state = State::new();
-    let child = state.command().args(["serve", "--json"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let child = state
+        .command()
+        .args(["serve", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut serving = Serving { child };
     let stdout = serving.child.stdout.take().unwrap();
     let mut line = String::new();
@@ -551,7 +622,10 @@ fn a_watcher_that_stops_reading_is_dropped_rather_than_buffered_for() {
         }
     }
     assert!(ended, "the session must have dropped it, after {bytes} bytes");
-    assert!(bytes < 1024 * 1024 + 512 * 1024, "it should have been dropped at about 1 MiB, and {bytes} bytes came");
+    assert!(
+        bytes < 1024 * 1024 + 512 * 1024,
+        "it should have been dropped at about 1 MiB, and {bytes} bytes came"
+    );
 }
 
 /// Failure: a client that gives up waiting says the server closed the connection, which sends whoever reads it looking for a server deadline that isn't there. And a test that expects a close passes on a read that only timed out.
@@ -574,8 +648,21 @@ fn the_state_override_refuses_the_real_home_and_home_cant_fool_it() {
     let inside = home.join(format!("recto-should-never-exist-{}", std::process::id()));
     let real_state = home.join("Library/Application Support/RectoPDF/agent");
     for target in [&home, &inside, &real_state] {
-        for command in [&["serve", "--json"][..], &["serve", "--background", "--json"][..], &["status", "--json"][..], &["permission", "set", "full", "--json"][..], &["skill", "install", "--path", "/tmp/nope", "--json"][..]] {
-            let output = std::process::Command::new(common::bin()).env(STATE_ENV, target).env("HOME", &fake_home).env("TMPDIR", &home).args(command).stdin(Stdio::null()).output().unwrap();
+        for command in [
+            &["serve", "--json"][..],
+            &["serve", "--background", "--json"][..],
+            &["status", "--json"][..],
+            &["permission", "set", "full", "--json"][..],
+            &["skill", "install", "--path", "/tmp/nope", "--json"][..],
+        ] {
+            let output = std::process::Command::new(common::bin())
+                .env(STATE_ENV, target)
+                .env("HOME", &fake_home)
+                .env("TMPDIR", &home)
+                .args(command)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
             let reply: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{command:?}: {}", String::from_utf8_lossy(&output.stdout)));
             assert_eq!(reply["error"]["code"], "state_refused", "{target:?} {command:?}: {reply}");
         }
@@ -642,7 +729,11 @@ fn a_page_that_fails_to_draw_ends_the_wait_and_says_so() {
     let (drawn, code) = state.json(&["render", "--page", "1", "--out", out.to_str().unwrap()]);
     assert_ne!(code, 0, "this fixture must be one PDFium refuses: {drawn}");
     let (reply, code) = state.json(&["wait", "page-drawn", "--page", "1", "--timeout", "30s"]);
-    assert_eq!((reply["error"]["code"].as_str(), code), (Some("page_failed"), exit::FAILED), "it must say so at once: {reply}");
+    assert_eq!(
+        (reply["error"]["code"].as_str(), code),
+        (Some("page_failed"), exit::FAILED),
+        "it must say so at once: {reply}"
+    );
     assert!(reply["error"]["message"].as_str().unwrap().contains("couldn't be drawn"), "{reply}");
     assert!(!out.exists());
 }
@@ -681,7 +772,11 @@ fn a_wait_ends_with_a_fixed_exit_or_a_plain_reason() {
     assert_eq!((reply["error"]["code"].as_str(), code), (Some("timed_out"), exit::TIMED_OUT), "{reply}");
     assert!(started.elapsed() < Duration::from_secs(30));
     let (reply, code) = state.json(&["wait", "indexing-done", "--tab", "#99", "--timeout", "50ms"]);
-    assert_eq!((reply["error"]["code"].as_str(), code), (Some("timed_out"), exit::TIMED_OUT), "a tab that isn't there may yet be: {reply}");
+    assert_eq!(
+        (reply["error"]["code"].as_str(), code),
+        (Some("timed_out"), exit::TIMED_OUT),
+        "a tab that isn't there may yet be: {reply}"
+    );
     let file = doc();
     let dir = file.0.parent().unwrap();
     let other = dir.join("other-doc.pdf");
@@ -689,7 +784,11 @@ fn a_wait_ends_with_a_fixed_exit_or_a_plain_reason() {
     state.json(&["open", file.0.to_str().unwrap()]);
     state.json(&["open", other.to_str().unwrap()]);
     let (reply, code) = state.json(&["wait", "tab-open", "doc", "--timeout", "5s"]);
-    assert_eq!((reply["error"]["code"].as_str(), code), (Some("ambiguous"), exit::AMBIGUOUS), "a wait must not guess either: {reply}");
+    assert_eq!(
+        (reply["error"]["code"].as_str(), code),
+        (Some("ambiguous"), exit::AMBIGUOUS),
+        "a wait must not guess either: {reply}"
+    );
     std::fs::remove_file(&other).unwrap();
     let (reply, code) = state.json(&["wait", "page-drawn", "--timeout", "10ms"]);
     assert_eq!((reply["error"]["code"].as_str(), code), (Some("usage"), exit::USAGE), "{reply}");
@@ -714,11 +813,17 @@ fn watch_streams_events_and_ends_when_told() {
     let file = doc();
     let mut raw = Raw::connect(&state);
     raw.send(&json!({ "cmd": "watch", "events": ["tabs", "pages"], "count": 2, "timeout_ms": 30_000 }).to_string());
-    assert_eq!(raw.read().unwrap()["data"]["watching"], true, "the welcome says it's listening, so nothing's missed");
+    assert_eq!(
+        raw.read().unwrap()["data"]["watching"],
+        true,
+        "the welcome says it's listening, so nothing's missed"
+    );
     state.json(&["open", file.0.to_str().unwrap()]);
     state.json(&["page", "rotate", "1", "--by", "90"]);
     state.json(&["goto", "2"]);
-    let names: Vec<String> = (0..2).map(|_| raw.read().unwrap()["data"]["event"].as_str().unwrap_or("").to_string()).collect();
+    let names: Vec<String> = (0..2)
+        .map(|_| raw.read().unwrap()["data"]["event"].as_str().unwrap_or("").to_string())
+        .collect();
     assert_eq!(names, ["tab_opened", "page_changed"], "edits weren't asked for");
     assert_eq!(raw.read().unwrap()["data"]["reason"], "count reached");
     // Through the real client: JSON lines, a clean end, and exit 7 only when a count wasn't met.
@@ -756,7 +861,13 @@ fn watch_stop_ends_every_watch_on_this_session() {
     let mut poke = Raw::connect(&state);
     for _ in 0..2000 {
         assert_eq!(poke.call(&json!({ "cmd": "budget" }))["ok"], true);
-        if state.log_text().lines().filter(|line| line.contains("\"watch\"") && line.contains("started")).count() >= 3 {
+        if state
+            .log_text()
+            .lines()
+            .filter(|line| line.contains("\"watch\"") && line.contains("started"))
+            .count()
+            >= 3
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -765,17 +876,32 @@ fn watch_stop_ends_every_watch_on_this_session() {
     assert_eq!((code, &stopped["data"]["stopped"]), (0, &json!(3)), "{stopped}");
     for watcher in [&mut first, &mut second] {
         let last = watcher.read().unwrap();
-        assert_eq!((&last["data"]["done"], &last["data"]["reason"]), (&json!(true), &json!("ended by `recto watch stop`")), "{last}");
+        assert_eq!(
+            (&last["data"]["done"], &last["data"]["reason"]),
+            (&json!(true), &json!("ended by `recto watch stop`")),
+            "{last}"
+        );
     }
     let (lines, code) = lines_of(process);
     assert_eq!((code, &lines.last().unwrap()["data"]["done"]), (0, &json!(true)), "{lines:?}");
     assert_eq!(first.call(&json!({ "cmd": "tabs" }))["ok"], true, "the connection goes on, as after any watch");
     let (none_left, _) = state.json(&["watch", "stop"]);
     assert_eq!(none_left["data"]["stopped"], 0, "{none_left}");
-    assert!(state.log_text().lines().any(|line| line.contains("watch_stop") && line.contains("\"stopped\":3")), "{}", state.log_text());
+    assert!(
+        state
+            .log_text()
+            .lines()
+            .any(|line| line.contains("watch_stop") && line.contains("\"stopped\":3")),
+        "{}",
+        state.log_text()
+    );
     state.set_level(Level::Off);
     let (refused, code) = state.json(&["watch", "stop"]);
-    assert_eq!((refused["error"]["code"].as_str(), code), (Some("permission_denied"), exit::PERMISSION), "the level `watch` needs: {refused}");
+    assert_eq!(
+        (refused["error"]["code"].as_str(), code),
+        (Some("permission_denied"), exit::PERMISSION),
+        "the level `watch` needs: {refused}"
+    );
 }
 
 /// Failure: a watcher keeps getting events after the user took its access away. A lowered level must end it, and the end must say why.
@@ -815,7 +941,10 @@ fn the_log_records_every_action_and_never_document_text() {
     assert_eq!(opened["data"]["untrusted"]["name"], "repo rt", "the tab's name is clean too");
     let (read, code) = state.json(&["text", "--page", "1"]);
     assert_eq!(code, 0);
-    assert!(read["data"]["untrusted"]["text"].as_str().unwrap().contains(canary), "the canary must really have been read");
+    assert!(
+        read["data"]["untrusted"]["text"].as_str().unwrap().contains(canary),
+        "the canary must really have been read"
+    );
     state.json(&["search", canary]);
     state.json(&["where", "--tab", "repo"]);
     state.json(&["no-such-command"]);
@@ -829,20 +958,29 @@ fn the_log_records_every_action_and_never_document_text() {
     assert!(!text.contains(canary), "document text in the log");
     assert!(!text.contains("secret") && !text.contains(&hidden), "a hidden name in the log");
     assert!(!text.contains('\u{E0073}'), "a tag character in the log");
-    assert!(text.contains("\"untrusted\":{\"file\":\"repo rt.pdf\"}"), "the cleaned name, under `untrusted`: {text}");
+    assert!(
+        text.contains("\"untrusted\":{\"file\":\"repo rt.pdf\"}"),
+        "the cleaned name, under `untrusted`: {text}"
+    );
 
     let (log, code) = state.json(&["log", "--last", "100"]);
     assert_eq!(code, 0, "{log}");
     let entries = log["data"]["entries"].as_array().unwrap();
     for entry in entries {
         assert!(entry["t_ms"].as_u64().unwrap() > 0 && entry["time"].as_str().unwrap().ends_with('Z'), "{entry}");
-        assert!(entry["cmd"].is_string() && entry["level"].is_string() && entry["outcome"].is_string(), "{entry}");
+        assert!(
+            entry["cmd"].is_string() && entry["level"].is_string() && entry["outcome"].is_string(),
+            "{entry}"
+        );
     }
     let found = |cmd: &str, outcome: &str| entries.iter().any(|entry| entry["cmd"] == cmd && entry["outcome"] == outcome);
     assert!(found("open", "ok") && found("text", "ok") && found("search", "ok"), "{entries:?}");
     assert!(found("text", "permission_denied"), "a refusal must be logged: {entries:?}");
     assert!(found("unknown", "bad_command"), "{entries:?}");
-    assert!(entries.iter().any(|entry| entry["cmd"] == "text" && entry["level"] == "off"), "with the level at that moment");
+    assert!(
+        entries.iter().any(|entry| entry["cmd"] == "text" && entry["level"] == "off"),
+        "with the level at that moment"
+    );
     let (shown, _, code) = state.text(&["log", "--last", "3"]);
     assert_eq!(code, 0);
     assert_eq!(shown.lines().count(), 3, "{shown}");
@@ -876,8 +1014,17 @@ fn a_flood_at_off_cant_erase_an_earlier_edit() {
     let (log, code) = state.json(&["log", "--last", "5000"]);
     assert_eq!(code, 0, "{log}");
     let entries = log["data"]["entries"].as_array().unwrap();
-    assert!(entries.iter().any(|entry| entry["cmd"] == "page_rotate" && entry["outcome"] == "ok"), "the edit is gone: {log}");
-    let total = |cmd: &str| entries.iter().filter(|entry| entry["cmd"] == cmd).map(|entry| entry["count"].as_u64().unwrap_or(1)).sum::<u64>();
+    assert!(
+        entries.iter().any(|entry| entry["cmd"] == "page_rotate" && entry["outcome"] == "ok"),
+        "the edit is gone: {log}"
+    );
+    let total = |cmd: &str| {
+        entries
+            .iter()
+            .filter(|entry| entry["cmd"] == cmd)
+            .map(|entry| entry["count"].as_u64().unwrap_or(1))
+            .sum::<u64>()
+    };
     assert!(total("status") >= 20_000, "{}", total("status"));
     assert!(total("unknown") >= 20_000, "{}", total("unknown"));
     assert!(total("text") >= 20_000, "{}", total("text"));
@@ -903,9 +1050,17 @@ fn the_log_reads_with_no_session_at_the_same_level() {
 fn skill_install_needs_a_real_terminal_and_show_doesnt() {
     let state = State::new();
     let folder = state.root.with_extension("skill-pipe");
-    for args in [&["skill", "install", "--path", folder.to_str().unwrap()][..], &["skill", "install", "--path", folder.to_str().unwrap(), "--dry-run"][..], &["skill", "install", "--path", folder.to_str().unwrap(), "--replace"][..]] {
+    for args in [
+        &["skill", "install", "--path", folder.to_str().unwrap()][..],
+        &["skill", "install", "--path", folder.to_str().unwrap(), "--dry-run"][..],
+        &["skill", "install", "--path", folder.to_str().unwrap(), "--replace"][..],
+    ] {
         let (reply, code) = state.json(args);
-        assert_eq!((reply["error"]["code"].as_str(), code), (Some("needs_terminal"), exit::PERMISSION), "{args:?}: {reply}");
+        assert_eq!(
+            (reply["error"]["code"].as_str(), code),
+            (Some("needs_terminal"), exit::PERMISSION),
+            "{args:?}: {reply}"
+        );
         assert!(reply["error"]["next"].as_str().unwrap().contains("recto skill show"), "{reply}");
     }
     assert!(!folder.exists(), "something was written without a terminal");
@@ -920,7 +1075,11 @@ fn skill_install_needs_a_real_terminal_and_show_doesnt() {
     let through_link = link.join("recto-should-never-exist");
     for path in [climbing.as_str(), through_link.to_str().unwrap()] {
         let (reply, code) = state.json(&["skill", "install", "--path", path]);
-        assert_eq!((reply["error"]["code"].as_str(), code), (Some("state_refused"), exit::PERMISSION), "{path}: {reply}");
+        assert_eq!(
+            (reply["error"]["code"].as_str(), code),
+            (Some("state_refused"), exit::PERMISSION),
+            "{path}: {reply}"
+        );
     }
     std::fs::remove_file(&link).unwrap();
     let (shown, _, code) = state.text(&["skill", "show"]);
@@ -962,11 +1121,24 @@ fn skill_install_at_a_terminal_writes_only_where_asked() {
     assert_ne!(std::fs::read_to_string(folder.join("REFERENCE.md")).unwrap(), "edited by someone");
 
     // Claude Code's own place, resolved from a home that's a temp folder here.
-    let (code, shown) = in_a_terminal(&state, &["skill", "install", "--target", "claude-code", "--dry-run", "--json"], Some(&fake_home), Word::Right);
+    let (code, shown) = in_a_terminal(
+        &state,
+        &["skill", "install", "--target", "claude-code", "--dry-run", "--json"],
+        Some(&fake_home),
+        Word::Right,
+    );
     assert_eq!(code, 0, "{shown}");
-    assert!(common::last_json(&shown)["data"]["folder"].as_str().unwrap().ends_with(".claude/skills/recto"), "{shown}");
+    assert!(
+        common::last_json(&shown)["data"]["folder"].as_str().unwrap().ends_with(".claude/skills/recto"),
+        "{shown}"
+    );
     assert!(!fake_home.join(".claude").exists(), "a dry run wrote something");
-    let (code, shown) = in_a_terminal(&state, &["skill", "install", "--target", "claude-code", "--json"], Some(&fake_home), Word::Right);
+    let (code, shown) = in_a_terminal(
+        &state,
+        &["skill", "install", "--target", "claude-code", "--json"],
+        Some(&fake_home),
+        Word::Right,
+    );
     assert_eq!(code, 0, "{shown}");
     assert!(fake_home.join(".claude/skills/recto/SKILL.md").exists());
     let (neither, code) = state.json(&["skill", "install"]);

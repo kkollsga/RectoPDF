@@ -133,7 +133,11 @@ mod tests {
     #[test]
     fn placeholder_refuses_and_never_touches_the_key() {
         let key = CountingKey(std::cell::Cell::new(0));
-        let request = SignRequest { level: Level::BaselineT, field_name: "Tenant".into(), reason: None };
+        let request = SignRequest {
+            level: Level::BaselineT,
+            field_name: "Tenant".into(),
+            reason: None,
+        };
         assert_eq!(PlaceholderSigner.sign(&request, &key), Err(SignError::NotBuilt));
         assert_eq!(key.0.get(), 0);
     }
@@ -141,7 +145,10 @@ mod tests {
     /// Failure: wording claims a check that never happened.
     #[test]
     fn a_found_signature_is_never_described_as_valid() {
-        let facts = SignatureFacts { certificate_name: Some("Tor Haugen".into()), status: Status::NotChecked };
+        let facts = SignatureFacts {
+            certificate_name: Some("Tor Haugen".into()),
+            status: Status::NotChecked,
+        };
         let text = facts.summary().to_lowercase();
         assert!(text.contains("not checked"));
         assert!(!text.contains("valid") && !text.contains("verified") && !text.contains("trusted"));

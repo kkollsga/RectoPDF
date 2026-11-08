@@ -3,14 +3,106 @@
 use crate::input::Rng;
 
 /// Numbers that find overflows and bad assumptions.
-pub const HOSTILE_NUMBERS: &[&str] = &["0", "-1", "1", "2", "255", "256", "65535", "65536", "2147483647", "2147483648", "-2147483648", "4294967295", "4294967296", "9223372036854775807", "9223372036854775808", "99999999999999999999999", "1e308", "0.0000001", "-0.0"];
+pub const HOSTILE_NUMBERS: &[&str] = &[
+    "0",
+    "-1",
+    "1",
+    "2",
+    "255",
+    "256",
+    "65535",
+    "65536",
+    "2147483647",
+    "2147483648",
+    "-2147483648",
+    "4294967295",
+    "4294967296",
+    "9223372036854775807",
+    "9223372036854775808",
+    "99999999999999999999999",
+    "1e308",
+    "0.0000001",
+    "-0.0",
+];
 
 /// What the walks in `recto_core` look for, and the tokens the reader is built around. `fuzz/dict/pdf.dict` is the same list for libFuzzer.
 pub const TOKENS: &[&str] = &[
-    "/Kids", "/Parent", "/Count", "/Pages", "/Page", "/Type", "/Catalog", "/Outlines", "/First", "/Last", "/Next", "/Prev", "/Title", "/Dest", "/Dests", "/A", "/S", "/D", "/GoTo", "/Names", "/Limits", "/AcroForm", "/Fields", "/FT",
-    "/Sig", "/T", "/V", "/P", "/ByteRange", "/Filter", "/SubFilter", "/Perms", "/DocMDP", "/Reason", "/Location", "/M", "/Name", "/Info", "/Root", "/Encrypt", "/Size", "/Length", "/ObjStm", "/XRef", "/N", "/W", "/Index", "/FlateDecode",
-    "/DecodeParms", "/Predictor", "/Columns", "/MediaBox", "/Rotate", "/UserUnit", "null", "true", "<<", ">>", "[", "]", "(", ")", "<", ">", "R", "obj", "endobj", "stream", "endstream", "xref", "trailer", "startxref", "%%EOF", "%PDF-1.7",
-    "<FEFF", "\u{feff}",
+    "/Kids",
+    "/Parent",
+    "/Count",
+    "/Pages",
+    "/Page",
+    "/Type",
+    "/Catalog",
+    "/Outlines",
+    "/First",
+    "/Last",
+    "/Next",
+    "/Prev",
+    "/Title",
+    "/Dest",
+    "/Dests",
+    "/A",
+    "/S",
+    "/D",
+    "/GoTo",
+    "/Names",
+    "/Limits",
+    "/AcroForm",
+    "/Fields",
+    "/FT",
+    "/Sig",
+    "/T",
+    "/V",
+    "/P",
+    "/ByteRange",
+    "/Filter",
+    "/SubFilter",
+    "/Perms",
+    "/DocMDP",
+    "/Reason",
+    "/Location",
+    "/M",
+    "/Name",
+    "/Info",
+    "/Root",
+    "/Encrypt",
+    "/Size",
+    "/Length",
+    "/ObjStm",
+    "/XRef",
+    "/N",
+    "/W",
+    "/Index",
+    "/FlateDecode",
+    "/DecodeParms",
+    "/Predictor",
+    "/Columns",
+    "/MediaBox",
+    "/Rotate",
+    "/UserUnit",
+    "null",
+    "true",
+    "<<",
+    ">>",
+    "[",
+    "]",
+    "(",
+    ")",
+    "<",
+    ">",
+    "R",
+    "obj",
+    "endobj",
+    "stream",
+    "endstream",
+    "xref",
+    "trailer",
+    "startxref",
+    "%%EOF",
+    "%PDF-1.7",
+    "<FEFF",
+    "\u{feff}",
 ];
 
 /// Where a piece of ASCII digits starts and ends, at or after a place.
@@ -24,7 +116,10 @@ fn number_at(bytes: &[u8], from: usize) -> Option<(usize, usize)> {
 fn references(bytes: &[u8]) -> Vec<(usize, usize)> {
     let mut found = Vec::new();
     let mut at = 0;
-    while let Some(offset) = bytes[at..].windows(3).position(|window| window == b" R ".as_slice() || window == b" R/".as_slice() || window == b" R]".as_slice() || window == b" R>".as_slice()) {
+    while let Some(offset) = bytes[at..]
+        .windows(3)
+        .position(|window| window == b" R ".as_slice() || window == b" R/".as_slice() || window == b" R]".as_slice() || window == b" R>".as_slice())
+    {
         let end = at + offset;
         // Back over the generation, then the number.
         let before = &bytes[..end];
@@ -57,7 +152,11 @@ pub fn pdf(bytes: &mut Vec<u8>, rng: &mut Rng, max_len: usize) {
                 if !found.is_empty() {
                     let target = rng.pick(&found);
                     let source = rng.pick(&found);
-                    let with = if rng.below(4) == 0 { rng.pick(HOSTILE_NUMBERS).as_bytes().to_vec() } else { bytes[source.0..source.1].to_vec() };
+                    let with = if rng.below(4) == 0 {
+                        rng.pick(HOSTILE_NUMBERS).as_bytes().to_vec()
+                    } else {
+                        bytes[source.0..source.1].to_vec()
+                    };
                     splice(bytes, target, &with);
                 }
             }
@@ -92,7 +191,11 @@ pub fn pdf(bytes: &mut Vec<u8>, rng: &mut Rng, max_len: usize) {
             _ => {
                 if !bytes.is_empty() {
                     let at = rng.below(bytes.len());
-                    bytes[at] = if rng.below(2) == 0 { rng.next_u64() as u8 } else { bytes[at] ^ (1 << rng.below(8)) };
+                    bytes[at] = if rng.below(2) == 0 {
+                        rng.next_u64() as u8
+                    } else {
+                        bytes[at] ^ (1 << rng.below(8))
+                    };
                 }
             }
         }
@@ -162,7 +265,12 @@ pub fn fresh_xref(bytes: &mut Vec<u8>) {
         }
         let number_end = generation_start - 1;
         let number_start = before[..number_end].iter().rposition(|b| !b.is_ascii_digit()).map_or(0, |last| last + 1);
-        let Some(number) = std::str::from_utf8(&before[number_start..number_end]).ok().and_then(|text| text.parse::<u32>().ok()) else { continue };
+        let Some(number) = std::str::from_utf8(&before[number_start..number_end])
+            .ok()
+            .and_then(|text| text.parse::<u32>().ok())
+        else {
+            continue;
+        };
         if number == 0 || number > 1_000_000 {
             continue;
         }

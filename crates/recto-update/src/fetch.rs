@@ -43,7 +43,24 @@ impl FetchError {
 
 fn arguments(source: &Source, url: &str, user_agent: &str, limit: Duration) -> Vec<String> {
     let protocol = if source.allows_plain_http() { "=http,https" } else { "=https" };
-    let mut args: Vec<String> = ["-q", "--silent", "--show-error", "--location", "--max-redirs", "5", "--proto", protocol, "--proto-redir", protocol, "--connect-timeout", "10", "--write-out", "%{stderr}\nstatus=%{http_code}\n"].map(str::to_owned).to_vec();
+    let mut args: Vec<String> = [
+        "-q",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-redirs",
+        "5",
+        "--proto",
+        protocol,
+        "--proto-redir",
+        protocol,
+        "--connect-timeout",
+        "10",
+        "--write-out",
+        "%{stderr}\nstatus=%{http_code}\n",
+    ]
+    .map(str::to_owned)
+    .to_vec();
     args.extend(["--user-agent".to_owned(), user_agent.to_owned()]);
     args.extend(["--max-time".to_owned(), format!("{:.3}", limit.as_secs_f64())]);
     args.extend(["--speed-limit".to_owned(), "1".to_owned(), "--speed-time".to_owned(), "60".to_owned()]);
@@ -78,7 +95,10 @@ fn curl_failure(code: Option<i32>) -> FetchError {
 /// The status it wrote last, after whatever else it said.
 fn status_from(stderr: &[u8]) -> Option<u16> {
     let text = String::from_utf8_lossy(stderr);
-    text.lines().rev().find_map(|line| line.strip_prefix("status=")).and_then(|status| status.trim().parse().ok())
+    text.lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("status="))
+        .and_then(|status| status.trim().parse().ok())
 }
 
 /// A small GET: a checked status, and what came, up to `max_bytes`.
@@ -284,7 +304,11 @@ pub(crate) mod tests {
         for private in ["cookie", "authorization", "referer", ".pdf"] {
             assert!(!request.contains(private), "{request}");
         }
-        assert_eq!(request.lines().filter(|line| !line.is_empty()).count(), 4, "get, host, user agent, accept: {request}");
+        assert_eq!(
+            request.lines().filter(|line| !line.is_empty()).count(),
+            4,
+            "get, host, user agent, accept: {request}"
+        );
     }
 
     /// Failure: a server that takes the request and never answers holds a thread past the limit.
@@ -293,7 +317,10 @@ pub(crate) mod tests {
         let server = Server::start();
         server.set("/a", Answer::Hang);
         let started = std::time::Instant::now();
-        assert_eq!(get_small(&server.source(), &format!("{}/a", server.url), "x", 1024, Duration::from_millis(1500)), Err(FetchError::TimedOut));
+        assert_eq!(
+            get_small(&server.source(), &format!("{}/a", server.url), "x", 1024, Duration::from_millis(1500)),
+            Err(FetchError::TimedOut)
+        );
         // Far short of the server's own two minutes.
         assert!(started.elapsed() < Duration::from_secs(60), "{:?}", started.elapsed());
     }
@@ -307,7 +334,10 @@ pub(crate) mod tests {
         let url = format!("{}/a", server.url);
         assert_eq!(get_small(&source, &url, "x", 64 * 1024, Duration::from_secs(20)), Err(FetchError::TooLarge));
         let file = std::env::temp_dir().join(format!("recto-fetch-{}-forever", std::process::id()));
-        assert_eq!(download(&source, &url, "x", &file, 1024 * 1024, Duration::from_secs(20)), Err(FetchError::TooLarge));
+        assert_eq!(
+            download(&source, &url, "x", &file, 1024 * 1024, Duration::from_secs(20)),
+            Err(FetchError::TooLarge)
+        );
         assert!(!file.exists(), "nothing's left behind");
     }
 
@@ -325,7 +355,10 @@ pub(crate) mod tests {
         assert!(download(&source, &format!("{}/cut", server.url), "x", &file, 1024 * 1024, LIMIT).is_err());
         assert!(!file.exists());
         server.set("/err", Answer::Status(503));
-        assert_eq!(download(&source, &format!("{}/err", server.url), "x", &file, 1024, LIMIT), Err(FetchError::Status(503)));
+        assert_eq!(
+            download(&source, &format!("{}/err", server.url), "x", &file, 1024, LIMIT),
+            Err(FetchError::Status(503))
+        );
         assert!(!file.exists());
     }
 

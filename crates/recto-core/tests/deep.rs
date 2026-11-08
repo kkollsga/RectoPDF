@@ -28,16 +28,37 @@ fn read_all_of(name: &str, bytes: &[u8]) {
 fn deep_nesting_in_any_object_returns() {
     for (kind, deep) in [("array", nested_array()), ("dict", nested_dict())] {
         read_all_of(&format!("{kind}-catalog.pdf"), &three_page_pdf(&format!("/X {deep}"), &[], ""));
-        read_all_of(&format!("{kind}-form.pdf"), &three_page_pdf("/AcroForm 6 0 R", &[format!("<< /Fields [7 0 R] /X {deep} >>"), format!("<< /FT /Sig /T (F) /V {deep} >>")], ""));
-        read_all_of(&format!("{kind}-outline.pdf"), &three_page_pdf("/Outlines 6 0 R", &["<< /First 7 0 R >>".to_string(), format!("<< /Title {deep} /Dest {deep} >>")], ""));
-        read_all_of(&format!("{kind}-info.pdf"), &three_page_pdf("", &[format!("<< /Title {deep} >>")], "/Info 6 0 R"));
+        read_all_of(
+            &format!("{kind}-form.pdf"),
+            &three_page_pdf(
+                "/AcroForm 6 0 R",
+                &[format!("<< /Fields [7 0 R] /X {deep} >>"), format!("<< /FT /Sig /T (F) /V {deep} >>")],
+                "",
+            ),
+        );
+        read_all_of(
+            &format!("{kind}-outline.pdf"),
+            &three_page_pdf(
+                "/Outlines 6 0 R",
+                &["<< /First 7 0 R >>".to_string(), format!("<< /Title {deep} /Dest {deep} >>")],
+                "",
+            ),
+        );
+        read_all_of(
+            &format!("{kind}-info.pdf"),
+            &three_page_pdf("", &[format!("<< /Title {deep} >>")], "/Info 6 0 R"),
+        );
     }
 }
 
 /// Failure: a page tree a hundred thousand levels deep overflows the stack. The reader's own limit is 256 levels.
 #[test]
 fn a_deep_page_tree_returns() {
-    let mut objects = vec!["<< /Type /Catalog /Pages 2 0 R >>".to_string(), "<< /Type /Pages /Kids [4 0 R] /Count 1 >>".to_string(), "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".to_string()];
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [4 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".to_string(),
+    ];
     for i in 0..DEEP {
         let kid = if i + 1 < DEEP { 5 + i } else { 3 };
         objects.push(format!("<< /Type /Pages /Kids [{kid} 0 R] /Count 1 >>"));
@@ -65,15 +86,27 @@ fn a_deep_outline_returns_and_is_capped() {
 fn deep_kids_and_a_deep_name_tree_return() {
     let mut extra = vec!["<< /Fields [7 0 R] >>".to_string()];
     for i in 0..DEEP {
-        let next = if i + 1 < DEEP { format!("/Kids [{} 0 R]", 8 + i) } else { "/FT /Sig".to_string() };
+        let next = if i + 1 < DEEP {
+            format!("/Kids [{} 0 R]", 8 + i)
+        } else {
+            "/FT /Sig".to_string()
+        };
         extra.push(format!("<< /T (n) {next} >>"));
     }
     let file = TempPdf::new("kids.pdf", &three_page_pdf("/AcroForm 6 0 R", &extra, ""));
     assert!(signatures(&file.0).unwrap().truncated, "past its depth limit, it must say so");
 
-    let mut extra = vec!["<< /First 7 0 R >>".to_string(), "<< /Title (t) /Dest (x) >>".to_string(), "<< /Dests 9 0 R >>".to_string()];
+    let mut extra = vec![
+        "<< /First 7 0 R >>".to_string(),
+        "<< /Title (t) /Dest (x) >>".to_string(),
+        "<< /Dests 9 0 R >>".to_string(),
+    ];
     for i in 0..DEEP {
-        let next = if i + 1 < DEEP { format!("/Kids [{} 0 R]", 10 + i) } else { "/Names [(x) [3 0 R /Fit]]".to_string() };
+        let next = if i + 1 < DEEP {
+            format!("/Kids [{} 0 R]", 10 + i)
+        } else {
+            "/Names [(x) [3 0 R /Fit]]".to_string()
+        };
         extra.push(format!("<< {next} >>"));
     }
     read_all_of("names.pdf", &three_page_pdf("/Outlines 6 0 R /Names 8 0 R", &extra, ""));

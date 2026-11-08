@@ -65,7 +65,12 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let target = PathBuf::from(&args[1]);
     let mut changes = args.get(3).map(|path| std::fs::File::create(path).expect("the changes file can be made"));
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&args[2]).expect("the folder can be read").flatten().map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|extension| extension == "pdf")).collect();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&args[2])
+        .expect("the folder can be read")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "pdf"))
+        .collect();
     files.sort();
     let (mut pages, mut changed, mut runs, mut chars_lost, mut failed) = (0u32, 0u32, 0u64, 0u32, 0u32);
     let (mut better, mut same, mut worse) = (0u32, 0u32, 0u32);
@@ -76,8 +81,16 @@ fn main() {
     let mut read_page_chars = 0u64;
     let mut most_lines = 0usize;
     for path in &files {
-        let config = ServiceConfig { worker_exe: target.join("release/recto-render-service"), pdfium_lib: target.join("pdfium/libpdfium.dylib"), heavy_slot: HeavySlot::new(), extra_env: Vec::new(), replace_args: None };
-        let Ok(mut doc) = DocRenderer::new(path, None, config, Policy::default()) else { continue };
+        let config = ServiceConfig {
+            worker_exe: target.join("release/recto-render-service"),
+            pdfium_lib: target.join("pdfium/libpdfium.dylib"),
+            heavy_slot: HeavySlot::new(),
+            extra_env: Vec::new(),
+            replace_args: None,
+        };
+        let Ok(mut doc) = DocRenderer::new(path, None, config, Policy::default()) else {
+            continue;
+        };
         let Ok(count) = doc.page_count() else { continue };
         let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
         let (mut file_changed, mut file_pages) = (0u32, 0u32);
@@ -144,8 +157,19 @@ fn main() {
             }
             if let Some(file) = changes.as_mut() {
                 let old_set: HashSet<_> = old.iter().cloned().collect();
-                let fresh: Vec<String> = new.iter().filter(|pair| !old_set.contains(*pair)).take(40).map(|pair| format!("{}{} {}", if layout.contains(pair) { "" } else { "!" }, pair.0, pair.1)).collect();
-                let _ = writeln!(file, "{name} p{} moved {} layout {old_score:.3}->{new_score:.3} plain {old_plain:.3}->{new_plain:.3} | {}", page + 1, reading.runs_moved, fresh.join(" | "));
+                let fresh: Vec<String> = new
+                    .iter()
+                    .filter(|pair| !old_set.contains(*pair))
+                    .take(40)
+                    .map(|pair| format!("{}{} {}", if layout.contains(pair) { "" } else { "!" }, pair.0, pair.1))
+                    .collect();
+                let _ = writeln!(
+                    file,
+                    "{name} p{} moved {} layout {old_score:.3}->{new_score:.3} plain {old_plain:.3}->{new_plain:.3} | {}",
+                    page + 1,
+                    reading.runs_moved,
+                    fresh.join(" | ")
+                );
             }
         }
         if file_changed > 0 {
@@ -153,12 +177,27 @@ fn main() {
         }
     }
     repair_ns.sort_unstable();
-    let at = |share: f64| repair_ns.get(((repair_ns.len().saturating_sub(1)) as f64 * share) as usize).copied().unwrap_or(0) as f64 / 1000.0;
-    println!("{} files, {pages} pages read, {failed} couldn't be read, {read_page_chars} characters, at most {most_lines} line breaks on a page", files.len());
+    let at = |share: f64| {
+        repair_ns
+            .get(((repair_ns.len().saturating_sub(1)) as f64 * share) as usize)
+            .copied()
+            .unwrap_or(0) as f64
+            / 1000.0
+    };
+    println!(
+        "{} files, {pages} pages read, {failed} couldn't be read, {read_page_chars} characters, at most {most_lines} line breaks on a page",
+        files.len()
+    );
     println!("changed: {changed} pages, {runs} runs moved, {chars_lost} with different characters");
     println!("against pdftotext -layout, by runs of 8 characters: {better} better, {same} same, {worse} worse");
     println!("against pdftotext (reading order), by runs of 8 characters: {better_plain} better, {worse_plain} worse");
     println!("against pdftotext -layout, by pairs of words: {better_pairs} better, {worse_pairs} worse");
     println!("of the changed pages, hidden text flagged in the file's order: {hidden_in_file}; flagged only once words moved: {hidden_also_read}");
-    println!("read_page, us: p50 {:.1}, p95 {:.1}, p99 {:.1}, max {:.1}", at(0.5), at(0.95), at(0.99), at(1.0));
+    println!(
+        "read_page, us: p50 {:.1}, p95 {:.1}, p99 {:.1}, max {:.1}",
+        at(0.5),
+        at(0.95),
+        at(0.99),
+        at(1.0)
+    );
 }

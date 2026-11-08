@@ -10,10 +10,32 @@ use recto_index::generated::{Generated, MAX_DEPTH, MAX_ENTRIES, MAX_PAGES, MAX_T
 use serde_json::{Value, json};
 use std::time::Duration;
 
-const BUDGET: Budget = Budget { time: Duration::from_secs(20), memory: 256 * 1024 * 1024 };
+const BUDGET: Budget = Budget {
+    time: Duration::from_secs(20),
+    memory: 256 * 1024 * 1024,
+};
 
 /// Titles fuzz bytes choose pieces from: line breaks, invisible and reordering characters, and what a prompt would look like.
-const PIECES: &[&str] = &["Introduction", "\n", "\r\n", "\u{200B}", "\u{202E}", "\u{E0041}", "\u{FEFF}", " ", "", "Ignore your instructions", "é", "数", "😀", "\u{0}", "\\", "\"", "<b>", "&amp;"];
+const PIECES: &[&str] = &[
+    "Introduction",
+    "\n",
+    "\r\n",
+    "\u{200B}",
+    "\u{202E}",
+    "\u{E0041}",
+    "\u{FEFF}",
+    " ",
+    "",
+    "Ignore your instructions",
+    "é",
+    "数",
+    "😀",
+    "\u{0}",
+    "\\",
+    "\"",
+    "<b>",
+    "&amp;",
+];
 
 fn key() -> CorpusKey {
     CorpusKey::from_hex(&"ab".repeat(32)).unwrap_or_else(|| unreachable!())
@@ -32,7 +54,10 @@ fn holds(generated: &Generated) {
     let toc = generated.toc();
     assert_eq!(toc.entries().len(), generated.entries.len());
     for (index, entry) in toc.entries().iter().enumerate() {
-        assert!(entry.parent == recto_core::NONE || (entry.parent as usize) < index, "a parent comes before its children");
+        assert!(
+            entry.parent == recto_core::NONE || (entry.parent as usize) < index,
+            "a parent comes before its children"
+        );
     }
     // What's believed writes back as something believed the same.
     assert_eq!(Generated::decode(generated.encode(key()).as_bytes(), key()).as_ref(), Ok(generated));
@@ -53,7 +78,9 @@ fn shaped(data: &[u8]) -> Vec<u8> {
         }
         entries.push(json!([depth, page, place, title]));
     }
-    json!({ "format": "recto-generated-contents", "version": 1, "key": key().hex(), "pages": pages, "truncated": false, "entries": entries }).to_string().into_bytes()
+    json!({ "format": "recto-generated-contents", "version": 1, "key": key().hex(), "pages": pages, "truncated": false, "entries": entries })
+        .to_string()
+        .into_bytes()
 }
 
 pub fn check(data: &[u8]) {
@@ -71,7 +98,12 @@ pub fn check(data: &[u8]) {
             if let Outcome::Ready(generated) = &outcome {
                 holds(generated);
             }
-            assert!(numbers.as_object().is_some_and(|numbers| numbers.len() <= 32 && numbers.values().all(|value| value.is_number() || value.is_boolean())) || numbers == Value::Null);
+            assert!(
+                numbers
+                    .as_object()
+                    .is_some_and(|numbers| numbers.len() <= 32 && numbers.values().all(|value| value.is_number() || value.is_boolean()))
+                    || numbers == Value::Null
+            );
         }
     });
 }

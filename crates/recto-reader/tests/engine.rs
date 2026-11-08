@@ -2,9 +2,9 @@
 
 use recto_platform::local::process_counters;
 use recto_reader::engine::EngineEvents;
+use recto_reader::paper::dim_rgb;
 use recto_reader::tiles::{Op, PageMap, Viewport};
 use recto_reader::{Engine, EngineConfig, PaperKind};
-use recto_reader::paper::dim_rgb;
 use recto_testpdf::{Object, Page, TempPdf, first_extra_object, pages, pages_with, slow_page, text_lines};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -39,7 +39,17 @@ impl EngineEvents for Events {
 }
 
 fn view(y: f64) -> Viewport {
-    Viewport { x: 0.0, y, width: 1168.0, height: 900.0, frame_width: 1168.0, magnification: 1.0, backing: 2.0, live: false, scrolled_to: u64::MAX }
+    Viewport {
+        x: 0.0,
+        y,
+        width: 1168.0,
+        height: 900.0,
+        frame_width: 1168.0,
+        magnification: 1.0,
+        backing: 2.0,
+        live: false,
+        scrolled_to: u64::MAX,
+    }
 }
 
 /// Stands in for the host: drains what's there, applies it to nothing, and says so.
@@ -60,7 +70,9 @@ fn pump(engine: &Engine, limit: Duration) -> Vec<Op> {
 }
 
 fn document(pages_of_text: usize) -> TempPdf {
-    let list: Vec<Page> = (0..pages_of_text).map(|index| Page::new(text_lines(&[&format!("Page number {index}"), "Some words on it, so it isn't blank"]))).collect();
+    let list: Vec<Page> = (0..pages_of_text)
+        .map(|index| Page::new(text_lines(&[&format!("Page number {index}"), "Some words on it, so it isn't blank"])))
+        .collect();
     TempPdf::new("engine.pdf", &pages(&list))
 }
 
@@ -68,7 +80,22 @@ fn started(file: &TempPdf, count: u32) -> (Engine, Arc<Events>) {
     let events = Arc::new(Events::default());
     let engine = Engine::new(EngineConfig::default(), events.clone());
     engine.set_viewport(view(0.0));
-    engine.activate(1, count, 0, PageMap { files: vec![file.0.clone()], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[], None, recto_reader::layout::Spread::Single);
+    engine.activate(
+        1,
+        count,
+        0,
+        PageMap {
+            files: vec![file.0.clone()],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        },
+        &[],
+        None,
+        recto_reader::layout::Spread::Single,
+    );
     engine.set_viewport(view(0.0));
     (engine, events)
 }
@@ -114,7 +141,11 @@ fn the_engine_is_silent_at_rest() {
 /// Failure: scrolling away from a page that's slow to draw leaves the worker drawing it, so the next page waits. `cancel_before` must end it, by return or kill, well inside the time it would have taken.
 #[test]
 fn a_slow_page_scrolled_away_from_is_cancelled() {
-    let list = vec![Page::new(slow_page(4_000_000)), Page::new(text_lines(&["A quick page"])), Page::new(text_lines(&["Another"]))];
+    let list = vec![
+        Page::new(slow_page(4_000_000)),
+        Page::new(text_lines(&["A quick page"])),
+        Page::new(text_lines(&["Another"])),
+    ];
     let file = TempPdf::new("slow.pdf", &pages(&list));
     let (engine, _events) = started(&file, 3);
     // Let the sizes arrive, and the slow draw begin.
@@ -138,7 +169,10 @@ fn a_slow_page_scrolled_away_from_is_cancelled() {
     assert!(report["visible_pages"].as_array().unwrap().iter().any(|page| page == 3), "{report}");
     // The slow draw being cancelled is the property: it ended by return or kill instead of running to its end. A fixed time for the last page to
     // arrive was a machine's timing, not the property: a loaded Mac took 4.3 s against a 4 s limit (2026-11-08). The settle above is bounded.
-    assert!(report["counts"]["cancelled"].as_u64().unwrap() >= 1, "the slow draw wasn't what ended, after {took:?}: {report}");
+    assert!(
+        report["counts"]["cancelled"].as_u64().unwrap() >= 1,
+        "the slow draw wasn't what ended, after {took:?}: {report}"
+    );
 }
 
 /// What's at a surface's top left, red, green and blue, for each surface attached in these ops.
@@ -178,7 +212,10 @@ fn a_page_that_is_a_picture_keeps_its_colours_on_dark_paper() {
     let red = [0xFF, 0x00, 0x00].repeat(64);
     let image = first_extra_object(1);
     let page = Page::new(b"q 612 0 0 792 0 0 cm /Im0 Do Q".to_vec());
-    let extra = vec![Object::Stream { dict: "/Type /XObject /Subtype /Image /Width 8 /Height 8 /BitsPerComponent 8 /ColorSpace /DeviceRGB".into(), data: red }];
+    let extra = vec![Object::Stream {
+        dict: "/Type /XObject /Subtype /Image /Width 8 /Height 8 /BitsPerComponent 8 /ColorSpace /DeviceRGB".into(),
+        data: red,
+    }];
     let file = TempPdf::new("picture.pdf", &pages_with(&[page], &format!("/XObject << /Im0 {image} 0 R >>"), extra));
     let (engine, _events) = started(&file, 1);
     pump(&engine, Duration::from_secs(20));
@@ -187,7 +224,10 @@ fn a_page_that_is_a_picture_keeps_its_colours_on_dark_paper() {
     assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
     let dimmed = dim_rgb(0xFF_00_00);
     let want = [(dimmed >> 16) as u8, 0, 0];
-    let colours: Vec<u32> = ops.iter().filter_map(|op| if let Op::Attach { rgb, surface: 0, .. } = op { *rgb } else { None }).collect();
+    let colours: Vec<u32> = ops
+        .iter()
+        .filter_map(|op| if let Op::Attach { rgb, surface: 0, .. } = op { *rgb } else { None })
+        .collect();
     assert!(colours.iter().all(|rgb| *rgb == dimmed), "{colours:06x?} against {dimmed:06x}");
     let surfaces = corners(&ops);
     assert!(surfaces.iter().all(|corner| *corner == want), "{surfaces:?} against {want:?}");
@@ -213,7 +253,10 @@ fn a_chart_on_white_turns_over_on_dark_paper() {
     }
     let image = first_extra_object(1);
     let page = Page::new(b"q 612 0 0 792 0 0 cm /Im0 Do Q".to_vec());
-    let extra = vec![Object::Stream { dict: "/Type /XObject /Subtype /Image /Width 40 /Height 40 /BitsPerComponent 8 /ColorSpace /DeviceRGB".into(), data: chart }];
+    let extra = vec![Object::Stream {
+        dict: "/Type /XObject /Subtype /Image /Width 40 /Height 40 /BitsPerComponent 8 /ColorSpace /DeviceRGB".into(),
+        data: chart,
+    }];
     let file = TempPdf::new("chart.pdf", &pages_with(&[page], &format!("/XObject << /Im0 {image} 0 R >>"), extra));
     let (engine, _events) = started(&file, 1);
     pump(&engine, Duration::from_secs(20));
@@ -227,7 +270,10 @@ fn a_chart_on_white_turns_over_on_dark_paper() {
     // A tile's corner falls on the chart's white or on a bar, turned over.
     let dimmed = dim_rgb(0xFF_FF_FF);
     let dimmed = [(dimmed >> 16) as u8, (dimmed >> 8) as u8, dimmed as u8];
-    assert!(surfaces.contains(&paper) && !surfaces.contains(&dimmed), "the chart's white is the paper's tone: {surfaces:?} against {paper:?}, and dimmed white is {dimmed:?}");
+    assert!(
+        surfaces.contains(&paper) && !surfaces.contains(&dimmed),
+        "the chart's white is the paper's tone: {surfaces:?} against {paper:?}, and dimmed white is {dimmed:?}"
+    );
 }
 
 /// Failure: another app, or a save, puts a new file in the open one's place, and the first tile drawn of the new file on dark paper goes by the old file's look of that page, kept from before. That tile is of the new version, so nothing ever draws it again: a part of the page where the old file had a picture stays paper as drawn for white, only dimmed, never turned over. The replacement is a rename of a changed copy, as editors and saves do, and the old page had a picture at its top left that the new one hasn't. Every tile of the new page is on the paper's tone.
@@ -237,7 +283,10 @@ fn a_replaced_file_gets_its_pages_looked_at_again_on_dark_paper() {
     let image = first_extra_object(1);
     // The top left quarter is a picture, kept as it is on dark paper, and the rest is paper, turned over.
     let page = Page::new(b"q 306 0 0 396 0 396 cm /Im0 Do Q".to_vec());
-    let extra = vec![Object::Stream { dict: "/Type /XObject /Subtype /Image /Width 8 /Height 8 /BitsPerComponent 8 /ColorSpace /DeviceRGB".into(), data: red }];
+    let extra = vec![Object::Stream {
+        dict: "/Type /XObject /Subtype /Image /Width 8 /Height 8 /BitsPerComponent 8 /ColorSpace /DeviceRGB".into(),
+        data: red,
+    }];
     let file = TempPdf::new("replaced.pdf", &pages_with(&[page], &format!("/XObject << /Im0 {image} 0 R >>"), extra));
     let (engine, _events) = started(&file, 1);
     engine.set_paper(PaperKind::Dark);
@@ -248,17 +297,29 @@ fn a_replaced_file_gets_its_pages_looked_at_again_on_dark_paper() {
     std::fs::write(&copy, pages(&[Page::new(text_lines(&["Only words now"]))])).unwrap();
     std::fs::rename(&copy, &file.0).unwrap();
     // Anything that draws again does: here a zoom.
-    engine.set_viewport(Viewport { magnification: 1.5, ..view(0.0) });
+    engine.set_viewport(Viewport {
+        magnification: 1.5,
+        ..view(0.0)
+    });
     let ops = pump(&engine, Duration::from_secs(20));
     assert!(engine.wait_settled(Duration::from_secs(5)), "{}", engine.report().0);
     let rgb = PaperKind::Dark.rgb();
     let paper = [(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8];
-    let colours: Vec<u32> = ops.iter().filter_map(|op| if let Op::Attach { rgb, surface: 0, .. } = op { *rgb } else { None }).collect();
+    let colours: Vec<u32> = ops
+        .iter()
+        .filter_map(|op| if let Op::Attach { rgb, surface: 0, .. } = op { *rgb } else { None })
+        .collect();
     let surfaces = corners(&ops);
     assert!(!colours.is_empty() || !surfaces.is_empty(), "something was drawn: {ops:?}");
-    assert!(colours.iter().all(|colour| *colour == rgb), "every blank tile is the paper's tone: {colours:06x?} against {rgb:06x}");
+    assert!(
+        colours.iter().all(|colour| *colour == rgb),
+        "every blank tile is the paper's tone: {colours:06x?} against {rgb:06x}"
+    );
     // The one line of words is near the top, between the tiles' corners, so every corner is paper, the old picture's quarter included.
-    assert!(surfaces.iter().all(|corner| *corner == paper), "every tile is on the paper's tone: {surfaces:?} against {paper:?}");
+    assert!(
+        surfaces.iter().all(|corner| *corner == paper),
+        "every tile is on the paper's tone: {surfaces:?} against {paper:?}"
+    );
 }
 
 /// Failure: a tab's file doesn't answer, on a dead volume, and the page view's one thread sits in `File::open` for it, so a healthy tab gets no tiles. A FIFO with no writer is a file whose open never returns, as a dead volume's does. The reader moving on is all it takes, and that tab's page says what's wrong.
@@ -272,20 +333,69 @@ fn a_file_that_doesnt_answer_holds_up_no_other_tab() {
     let events = Arc::new(Events::default());
     let engine = Engine::new(EngineConfig::default(), events);
     engine.set_viewport(view(0.0));
-    engine.activate(1, 1, 0, PageMap { files: vec![dead.clone()], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[], None, recto_reader::layout::Spread::Single);
+    engine.activate(
+        1,
+        1,
+        0,
+        PageMap {
+            files: vec![dead.clone()],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        },
+        &[],
+        None,
+        recto_reader::layout::Spread::Single,
+    );
     engine.set_viewport(view(0.0));
     // Its open is under way and stuck. A healthy tab comes up.
     std::thread::sleep(Duration::from_millis(100));
     let file = document(1);
-    engine.activate(2, 1, 0, PageMap { files: vec![file.0.clone()], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[1], None, recto_reader::layout::Spread::Single);
+    engine.activate(
+        2,
+        1,
+        0,
+        PageMap {
+            files: vec![file.0.clone()],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        },
+        &[1],
+        None,
+        recto_reader::layout::Spread::Single,
+    );
     engine.set_viewport(view(0.0));
     let began = Instant::now();
     pump(&engine, Duration::from_secs(10));
-    assert!(engine.wait_settled(Duration::from_secs(5)), "the healthy tab never settled: {}", engine.report().0);
+    assert!(
+        engine.wait_settled(Duration::from_secs(5)),
+        "the healthy tab never settled: {}",
+        engine.report().0
+    );
     assert!(began.elapsed() < Duration::from_secs(8), "{:?}", began.elapsed());
     assert!(engine.report().0["tiles"]["attached"].as_u64().unwrap() >= 1);
     // And back on it, it says so rather than waiting for ever.
-    engine.activate(1, 1, 0, PageMap { files: vec![dead.clone()], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[2], None, recto_reader::layout::Spread::Single);
+    engine.activate(
+        1,
+        1,
+        0,
+        PageMap {
+            files: vec![dead.clone()],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        },
+        &[2],
+        None,
+        recto_reader::layout::Spread::Single,
+    );
     engine.set_viewport(view(0.0));
     let deadline = Instant::now() + Duration::from_secs(8);
     while engine.note().is_none() && Instant::now() < deadline {
@@ -347,10 +457,35 @@ fn a_closed_window_lets_the_worker_go() {
 fn a_worker_holding_a_lot_is_let_go_at_rest() {
     let file = document(1);
     let events = Arc::new(Events::default());
-    let policy = recto_render_service::Policy { retire_bytes: 1, ..recto_render_service::Policy::default() };
-    let engine = Engine::new(EngineConfig { service: None, policy: Some(policy), keys: None }, events);
+    let policy = recto_render_service::Policy {
+        retire_bytes: 1,
+        ..recto_render_service::Policy::default()
+    };
+    let engine = Engine::new(
+        EngineConfig {
+            service: None,
+            policy: Some(policy),
+            keys: None,
+        },
+        events,
+    );
     engine.set_viewport(view(0.0));
-    engine.activate(1, 1, 0, PageMap { files: vec![file.0.clone()], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[], None, recto_reader::layout::Spread::Single);
+    engine.activate(
+        1,
+        1,
+        0,
+        PageMap {
+            files: vec![file.0.clone()],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        },
+        &[],
+        None,
+        recto_reader::layout::Spread::Single,
+    );
     engine.set_viewport(view(0.0));
     pump(&engine, Duration::from_secs(20));
     assert!(engine.wait_settled(Duration::from_secs(5)));
@@ -385,7 +520,13 @@ fn settled_on_page(engine: &Engine, page: u32) -> (f64, f64, f64) {
 /// Failure: selection blocks on the worker on the UI thread, a press on a page not read is lost, or nothing tells the host when the text arrives, so a highlight comes only on the next move. The host applies what it's told and hears nothing else, as the real one does.
 #[test]
 fn a_press_returns_at_once_and_the_highlight_comes_when_the_text_does() {
-    let file = TempPdf::new("select.pdf", &pages(&[Page::new(text_lines(&["Alpha beta gamma delta"])), Page::new(text_lines(&["Second page words"]))]));
+    let file = TempPdf::new(
+        "select.pdf",
+        &pages(&[
+            Page::new(text_lines(&["Alpha beta gamma delta"])),
+            Page::new(text_lines(&["Second page words"])),
+        ]),
+    );
     let (engine, _events) = started(&file, 2);
     let (x, y, fit) = settled_on_page(&engine, 0);
     let at = |page_x: f64, page_y: f64| (x + page_x * fit, y + page_y * fit);
@@ -411,12 +552,20 @@ fn a_press_returns_at_once_and_the_highlight_comes_when_the_text_does() {
 /// Failure: what's selected is drawn in document points, so it's wrong at any zoom, or a click at a zoom hits a different word. The host's points are the document's whatever the magnification, so the same point must take the same word.
 #[test]
 fn a_click_takes_the_same_word_at_any_zoom() {
-    let file = TempPdf::new("zoom.pdf", &pages(&[Page::new(text_lines(&["Alpha beta gamma delta", "Second line of words"]))]));
+    let file = TempPdf::new(
+        "zoom.pdf",
+        &pages(&[Page::new(text_lines(&["Alpha beta gamma delta", "Second line of words"]))]),
+    );
     let (engine, _events) = started(&file, 1);
     let (x, y, fit) = settled_on_page(&engine, 0);
     let (press_x, press_y) = (x + 100.0 * fit, y + (792.0 - 720.0 - 4.0) * fit);
     let word_at = |magnification: f64| {
-        engine.set_viewport(Viewport { magnification, width: 1168.0 / magnification, height: 900.0 / magnification, ..view(0.0) });
+        engine.set_viewport(Viewport {
+            magnification,
+            width: 1168.0 / magnification,
+            height: 900.0 / magnification,
+            ..view(0.0)
+        });
         engine.applied();
         pump(&engine, Duration::from_secs(20));
         let mut ops = engine.selection_press(press_x, press_y, 2, false);
@@ -461,7 +610,10 @@ fn select_all_reads_what_shows_and_a_copy_stays_bounded() {
     let copied = engine.take_copied().expect("the copy is ready");
     assert_eq!(copied.pages_read, COUNT);
     assert_eq!(copied.text.matches("Page number").count(), COUNT as usize);
-    assert!(copied.text.find("Page number 0").unwrap() < copied.text.find("Page number 59").unwrap(), "in page order");
+    assert!(
+        copied.text.find("Page number 0").unwrap() < copied.text.find("Page number 59").unwrap(),
+        "in page order"
+    );
     assert!(pump(&engine, Duration::from_secs(5)).iter().all(|op| !matches!(op, Op::Attach { .. })) || engine.wait_settled(Duration::from_secs(5)));
 }
 
@@ -506,7 +658,10 @@ fn the_thread_that_draws_comes_back_after_a_panic() {
     engine.jump_to(10);
     engine.applied();
     let view_at = engine.report().0["document_height"].as_f64().unwrap() / 30.0 * 10.0;
-    engine.set_viewport(Viewport { scrolled_to: u64::MAX, ..view(view_at) });
+    engine.set_viewport(Viewport {
+        scrolled_to: u64::MAX,
+        ..view(view_at)
+    });
     engine.applied();
     let ops = pump(&engine, Duration::from_secs(20));
     assert_eq!(events.panics.load(Ordering::SeqCst), 0, "it did panic");
@@ -558,7 +713,11 @@ fn a_worker_dying_in_a_copy_leaves_a_copy_that_says_what_happened() {
     assert!(killed > 0, "the worker never got killed, so this tested nothing");
     let copied = engine.take_copied().expect("the copy is ready");
     assert_eq!(copied.pages_read, COUNT);
-    assert_eq!(copied.text.matches("Page words").count() as u32 + copied.pages_failed, COUNT, "every page is in it, or counted as not");
+    assert_eq!(
+        copied.text.matches("Page words").count() as u32 + copied.pages_failed,
+        COUNT,
+        "every page is in it, or counted as not"
+    );
     pump(&engine, Duration::from_secs(20));
     assert!(engine.wait_settled(Duration::from_secs(1)), "{}", engine.report().0);
     assert_eq!(engine.report().0["selection"]["copying"], false);
@@ -567,7 +726,14 @@ fn a_worker_dying_in_a_copy_leaves_a_copy_that_says_what_happened() {
 /// Failure: the file changes on disk, and a selection and a copy go on with places and pages that were about the old one. A copy stopped this way says why.
 #[test]
 fn a_file_changing_ends_a_selection_and_says_so_to_a_copy() {
-    let file = TempPdf::new("changing.pdf", &pages(&[Page::new(text_lines(&["First"])), Page::new(text_lines(&["Second"])), Page::new(text_lines(&["Third"]))]));
+    let file = TempPdf::new(
+        "changing.pdf",
+        &pages(&[
+            Page::new(text_lines(&["First"])),
+            Page::new(text_lines(&["Second"])),
+            Page::new(text_lines(&["Third"])),
+        ]),
+    );
     let (engine, _events) = started(&file, 3);
     settled_on_page(&engine, 0);
     engine.select_all();
@@ -585,7 +751,11 @@ fn a_file_changing_ends_a_selection_and_says_so_to_a_copy() {
         pump(&engine, Duration::from_millis(50));
     }
     assert!(engine.take_copied().is_none(), "none of it is about this file");
-    assert!(engine.selection_notice().is_some_and(|notice| notice.text.contains("changed")), "{:?}", engine.selection_notice());
+    assert!(
+        engine.selection_notice().is_some_and(|notice| notice.text.contains("changed")),
+        "{:?}",
+        engine.selection_notice()
+    );
 }
 
 /// Failure (the saved point's review): a page added from another PDF is drawn by path, so once that PDF is rewritten, by another app or a save of its own, the page shows whatever is at its page number now. Drawing checks the file is still what it was when its pages were added, and says why it isn't drawn when it's not, while the tab's own pages draw.
@@ -600,20 +770,46 @@ fn a_page_from_an_added_pdf_that_changed_isnt_drawn() {
     let events = Arc::new(Events::default());
     let engine = Engine::new(EngineConfig::default(), events);
     engine.set_viewport(view(0.0));
-    let map = PageMap { files: vec![own.0.clone(), added.0.clone()], slots: Some(vec![(1, 0), (0, 0)]), own: None, turns: None, expected: vec![None, Some(was)], follows: None };
+    let map = PageMap {
+        files: vec![own.0.clone(), added.0.clone()],
+        slots: Some(vec![(1, 0), (0, 0)]),
+        own: None,
+        turns: None,
+        expected: vec![None, Some(was)],
+        follows: None,
+    };
     engine.activate(1, 2, 0, map, &[], None, recto_reader::layout::Spread::Single);
     engine.set_viewport(view(0.0));
     let deadline = Instant::now() + Duration::from_secs(10);
     while engine.note().is_none() && Instant::now() < deadline {
         pump(&engine, Duration::from_millis(200));
     }
-    assert!(engine.note().is_some_and(|note| note.contains("changed or moved since it was added")), "{:?}", engine.note());
+    assert!(
+        engine.note().is_some_and(|note| note.contains("changed or moved since it was added")),
+        "{:?}",
+        engine.note()
+    );
     // With the file as it was, it draws.
     let fresh = TempPdf::new("added2.pdf", &pages(&[Page::new(text_lines(&["Added page as it was"]))]));
     let stamp = recto_platform::file_stamp(&fresh.0).unwrap();
     let engine = Engine::new(EngineConfig::default(), Arc::new(Events::default()));
     engine.set_viewport(view(0.0));
-    engine.activate(1, 2, 0, PageMap { files: vec![own.0.clone(), fresh.0.clone()], slots: Some(vec![(1, 0), (0, 0)]), own: None, turns: None, expected: vec![None, Some(stamp)], follows: None }, &[], None, recto_reader::layout::Spread::Single);
+    engine.activate(
+        1,
+        2,
+        0,
+        PageMap {
+            files: vec![own.0.clone(), fresh.0.clone()],
+            slots: Some(vec![(1, 0), (0, 0)]),
+            own: None,
+            turns: None,
+            expected: vec![None, Some(stamp)],
+            follows: None,
+        },
+        &[],
+        None,
+        recto_reader::layout::Spread::Single,
+    );
     engine.set_viewport(view(0.0));
     pump(&engine, Duration::from_secs(10));
     assert!(engine.wait_settled(Duration::from_secs(5)));
@@ -630,7 +826,11 @@ fn a_snapshot_box_dragged_across_a_page_break_stays_on_its_page() {
     settled_on_page(&engine, 0);
     let (press_x, press_y) = engine.document_point(0, 100.0, 700.0).unwrap();
     let (drag_x, drag_y) = engine.document_point(1, 300.0, 50.0).unwrap();
-    assert_eq!(engine.point_on_page(drag_x, drag_y).map(|(point, _)| point.page), Some(1), "the drag really is over the next page");
+    assert_eq!(
+        engine.point_on_page(drag_x, drag_y).map(|(point, _)| point.page),
+        Some(1),
+        "the drag really is over the next page"
+    );
     let mut tool = SnapshotTool::default();
     tool.set_on(true);
     let (pressed, size) = engine.point_on_page(press_x, press_y).unwrap();
@@ -640,6 +840,9 @@ fn a_snapshot_box_dragged_across_a_page_break_stays_on_its_page() {
     tool.drag(point);
     let Taken::Box { page, rect } = tool.release() else { panic!("a box") };
     assert_eq!(page, 0);
-    assert!((rect.y - 700.0).abs() < 0.5 && (rect.y + rect.height - size.1).abs() < 0.5, "from the press down to the page's edge: {rect:?}");
+    assert!(
+        (rect.y - 700.0).abs() < 0.5 && (rect.y + rect.height - size.1).abs() < 0.5,
+        "from the press down to the page's edge: {rect:?}"
+    );
     assert!((rect.x - 100.0).abs() < 0.5 && (rect.width - 200.0).abs() < 0.5, "{rect:?}");
 }

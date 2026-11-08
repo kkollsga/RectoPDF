@@ -7,9 +7,9 @@
 //! **What's in memory.** Only tiles on layers count. Anything off-screen is marked discardable the moment the host says it's off the layer: it leaves the footprint at once, and is usually still there on the way back.
 
 use crate::layout::{PageBox, PageLayout, Spread};
+use crate::paper::PaperKind;
 use crate::selection::{Notice, Selecting, Urgency};
 use recto_index::select::{PagePoint, Range};
-use crate::paper::PaperKind;
 use recto_platform::FileStamp;
 use recto_platform::surface::{PixelSurface, Purge};
 use recto_proto::{BYTES_PER_PIXEL, MAX_REGION_BYTES, MAX_SCALE, MIN_SCALE, TILE_EDGE, TileRect, device_size};
@@ -77,7 +77,11 @@ pub fn typed_zoom(text: &str, decimal: char) -> Option<Zoom> {
     }
     let decimal = if decimal == ',' { ',' } else { '.' };
     let grouping = if decimal == ',' { '.' } else { ',' };
-    let plain: String = number.chars().filter(|c| !matches!(c, ' ' | '\u{a0}' | '\u{202f}' | '\'') && *c != grouping).map(|c| if c == decimal { '.' } else { c }).collect();
+    let plain: String = number
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\u{a0}' | '\u{202f}' | '\'') && *c != grouping)
+        .map(|c| if c == decimal { '.' } else { c })
+        .collect();
     if plain.is_empty() || plain.len() > 12 || !plain.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
         return None;
     }
@@ -120,19 +124,57 @@ pub struct Viewport {
 pub enum Op {
     /// Everything comes off: another tab, or pages that changed.
     Clear,
-    Document { width: f64, height: f64 },
-    Magnify { value: f64 },
-    ScrollTo { y: f64, seq: u64 },
+    Document {
+        width: f64,
+        height: f64,
+    },
+    Magnify {
+        value: f64,
+    },
+    ScrollTo {
+        y: f64,
+        seq: u64,
+    },
     /// Across, when zoomed in. With no jump of its own: a view going across isn't a place to wait for.
-    ScrollAcross { x: f64 },
+    ScrollAcross {
+        x: f64,
+    },
     /// A page's layer, placed or moved. Its own coordinates are PDF points from its top left, as the page is before it's turned, and `fit` scales them to the document's. `turns` quarter turns clockwise turn it, and `x` and `y` are where its turned top left lands.
-    ShowPage { page: u32, x: f64, y: f64, width: f64, height: f64, fit: f64, paper_rgb: u32, turns: u8 },
-    HidePage { page: u32 },
+    ShowPage {
+        page: u32,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        fit: f64,
+        paper_rgb: u32,
+        turns: u8,
+    },
+    HidePage {
+        page: u32,
+    },
     /// A tile on a page. `surface` is an extra reference that's now the host's, and zero if `rgb` says the colour. `crop_*` is how much of the surface it uses.
-    Attach { id: u64, page: u32, x: f64, y: f64, width: f64, height: f64, surface: u64, rgb: Option<u32>, crop_width: f64, crop_height: f64, below: bool },
-    Detach { id: u64 },
+    Attach {
+        id: u64,
+        page: u32,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        surface: u64,
+        rgb: Option<u32>,
+        crop_width: f64,
+        crop_height: f64,
+        below: bool,
+    },
+    Detach {
+        id: u64,
+    },
     /// What's selected on a page, in its own coordinates, all of it. Nothing clears it. It's a layer of the page's, so it scrolls and zooms with it and no tile knows.
-    Highlight { page: u32, rects: Vec<recto_index::select::Rect> },
+    Highlight {
+        page: u32,
+        rects: Vec<recto_index::select::Rect>,
+    },
 }
 
 /// Which pages a tab's positions are, once it has been edited.
@@ -340,7 +382,13 @@ pub enum JobKind {
     Size,
     /// Ask whether a page is heavy.
     Traits,
-    Draw { scale: f32, rect: TileRect, surface: PixelSurface, what: DrawKind, paper: PaperKind },
+    Draw {
+        scale: f32,
+        rect: TileRect,
+        surface: PixelSurface,
+        what: DrawKind,
+        paper: PaperKind,
+    },
     /// Read a page's text for selecting. `check` also draws it, for the hidden-text check.
     Text { check: bool },
     /// Read a page's links, from the file's structure, with no worker.
@@ -370,15 +418,29 @@ pub struct JobPlan {
 enum PlanKind {
     Size,
     Traits,
-    Draw { scale: f32, rect: TileRect, what: DrawKind, paper: PaperKind },
-    Text { check: bool },
+    Draw {
+        scale: f32,
+        rect: TileRect,
+        what: DrawKind,
+        paper: PaperKind,
+    },
+    Text {
+        check: bool,
+    },
     Links,
 }
 
 impl JobPlan {
     /// Makes its surface. A new one for each job: see [`Self::take_surface`]. `None` if it can't be made, which leaves things as if there'd been nothing to do.
     pub fn ready(self) -> Option<Job> {
-        let Self { tab, position, file, source_page, generation, kind } = self;
+        let Self {
+            tab,
+            position,
+            file,
+            source_page,
+            generation,
+            kind,
+        } = self;
         let kind = match kind {
             PlanKind::Size => JobKind::Size,
             PlanKind::Traits => JobKind::Traits,
@@ -397,10 +459,23 @@ impl JobPlan {
                         rect.height -= TILE_EDGE;
                     },
                 };
-                JobKind::Draw { scale, rect, surface, what, paper }
+                JobKind::Draw {
+                    scale,
+                    rect,
+                    surface,
+                    what,
+                    paper,
+                }
             }
         };
-        Some(Job { tab, position, file, source_page, generation, kind })
+        Some(Job {
+            tab,
+            position,
+            file,
+            source_page,
+            generation,
+            kind,
+        })
     }
 
     /// A new surface for each job, never one that's been used. A worker can read and write a surface it was sent for as long as it lives, whatever it's told, so a surface used twice is a way from one file's worker to another file's pixels. It costs 51 µs more a tile than reusing one, nearly all of it the first touch of its pages: 67 against 16, p50.
@@ -447,14 +522,26 @@ fn shrink_into(source: &[u8], stride: usize, used_width: u32, used_height: u32, 
 pub enum Outcome {
     Size(PageBox),
     Heavy(bool),
-    Drawn { kind: TileKind, low_res: Option<(TileRect, LowResWhy)> },
+    Drawn {
+        kind: TileKind,
+        low_res: Option<(TileRect, LowResWhy)>,
+    },
     Cancelled,
     /// The page can't be drawn now or ever, in these words.
-    PageFailed { message: String, may_pass: bool },
+    PageFailed {
+        message: String,
+        may_pass: bool,
+    },
     /// The file can't be drawn, in these words. `needs_key`: because it needs a password the renderer wasn't given.
-    DocumentFailed { message: String, needs_key: bool },
+    DocumentFailed {
+        message: String,
+        needs_key: bool,
+    },
     /// A page's text, for selecting. `checked` says a hidden-text check was asked for and has been tried, however it came out, and not stopped because nobody wanted it.
-    Text { text: Arc<recto_index::select::PageText>, checked: bool },
+    Text {
+        text: Arc<recto_index::select::PageText>,
+        checked: bool,
+    },
     /// A page's text can't be read. That's the page's text, and nothing about drawing it.
     TextFailed,
     /// A page's links, or none if they couldn't be read.
@@ -586,7 +673,11 @@ impl Reader {
         Self {
             docs: HashMap::new(),
             hot: None,
-            viewport: Viewport { magnification: 1.0, backing: 2.0, ..Viewport::default() },
+            viewport: Viewport {
+                magnification: 1.0,
+                backing: 2.0,
+                ..Viewport::default()
+            },
             paper: PaperKind::White,
             window_open: true,
             entries: HashMap::new(),
@@ -641,7 +732,9 @@ impl Reader {
     /// The least room either side of the pages, as a comparison's pane has it. The place is kept.
     pub fn set_margins(&mut self, left: f64, right: f64) {
         self.margins = (left, right);
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else { return };
+        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
+            return;
+        };
         if doc.layout.set_margins(left, right) {
             doc.exact_y = None;
             self.lay_out();
@@ -700,7 +793,14 @@ impl Reader {
     pub fn note_wake(&mut self, tab: u32, began: Instant) {
         // Said when it was asked for, and said again on its way to the screen: the first is when it began.
         if self.hot != Some(tab) && !self.waking.is_some_and(|(_, report)| report.tab == tab) {
-            self.waking = Some((began, WakeReport { tab, from_sleep: false, ..WakeReport::default() }));
+            self.waking = Some((
+                began,
+                WakeReport {
+                    tab,
+                    from_sleep: false,
+                    ..WakeReport::default()
+                },
+            ));
         }
     }
 
@@ -731,7 +831,12 @@ impl Reader {
 
     /// **A worker's said which version of a file it has.** If that's another than was said before, everything drawn of the old one goes from every tab of it, on screen and off, and is drawn again. What came from a sleep file with no version said goes too, as there's no knowing.
     pub fn note_version(&mut self, file: &std::path::Path, version: u64) {
-        let tabs: Vec<u32> = self.docs.values().filter(|doc| doc.map.files.iter().any(|known| known == file)).map(|doc| doc.tab).collect();
+        let tabs: Vec<u32> = self
+            .docs
+            .values()
+            .filter(|doc| doc.map.files.iter().any(|known| known == file))
+            .map(|doc| doc.tab)
+            .collect();
         for tab in tabs {
             let Some(doc) = self.docs.get_mut(&tab) else { continue };
             let was = doc.versions.insert(file.to_path_buf(), version);
@@ -740,7 +845,17 @@ impl Reader {
             }
             // Of the version it was left with.
             doc.left_pictures = None;
-            let stale: Vec<u64> = self.entries.values().filter(|entry| entry.tab == tab && !matches!((entry.version, was), (Some(drawn), _) if drawn == version)).filter(|entry| was.is_some() || entry.version.is_some_and(|drawn| drawn != version) || entry.version.is_none() && entry.preview && self.from_sleep.contains(&entry.id)).map(|entry| entry.id).collect();
+            let stale: Vec<u64> = self
+                .entries
+                .values()
+                .filter(|entry| entry.tab == tab && !matches!((entry.version, was), (Some(drawn), _) if drawn == version))
+                .filter(|entry| {
+                    was.is_some()
+                        || entry.version.is_some_and(|drawn| drawn != version)
+                        || entry.version.is_none() && entry.preview && self.from_sleep.contains(&entry.id)
+                })
+                .map(|entry| entry.id)
+                .collect();
             if stale.is_empty() {
                 continue;
             }
@@ -792,7 +907,12 @@ impl Reader {
     /// What a file was when its pages were added to this tab, if they were. Only this tab's: the same file can be another tab's own, which goes by its version, and saving that tab mustn't stop its own pages drawing.
     pub fn expected_stamp(&self, tab: u32, file: &std::path::Path) -> Option<FileStamp> {
         let doc = self.docs.get(&tab)?;
-        doc.map.files.iter().position(|known| known == file).filter(|at| *at > 0).and_then(|at| doc.map.expected.get(at).copied().flatten())
+        doc.map
+            .files
+            .iter()
+            .position(|known| known == file)
+            .filter(|at| *at > 0)
+            .and_then(|at| doc.map.expected.get(at).copied().flatten())
     }
 
     /// Whether this file is the tab's own, as its length is what a sleep file spoke for.
@@ -879,11 +999,17 @@ impl Reader {
         let pages: Vec<u32> = if self.hot == Some(tab) {
             self.visible_pages(doc).collect()
         } else {
-            let y = doc.exact_y.map_or_else(|| doc.left_at.map_or(0.0, |(_, anchor)| doc.layout.anchor_y(anchor)), |(y, _)| y);
+            let y = doc
+                .exact_y
+                .map_or_else(|| doc.left_at.map_or(0.0, |(_, anchor)| doc.layout.anchor_y(anchor)), |(y, _)| y);
             // Its own view: the window's height at the zoom it was left at, which the tab showing's view, at the tab showing's zoom, isn't.
             let window_height = self.viewport.height * self.viewport.magnification.max(f64::MIN_POSITIVE);
             let height = (window_height / doc.magnification.clamp(MIN_ZOOM, MAX_ZOOM)).max(1.0);
-            if doc.layout.count() == 0 { Vec::new() } else { doc.layout.pages_between(y.max(0.0), y.max(0.0) + height).collect() }
+            if doc.layout.count() == 0 {
+                Vec::new()
+            } else {
+                doc.layout.pages_between(y.max(0.0), y.max(0.0) + height).collect()
+            }
         };
         // What it was left with first, page by page: what's here now may have been taken by the system since.
         let mut left = doc.left_pictures.clone().unwrap_or_default();
@@ -898,7 +1024,12 @@ impl Reader {
                 pictures.push(picture);
             }
         }
-        Some(SleepMaterial { version, usual, sizes, pictures })
+        Some(SleepMaterial {
+            version,
+            usual,
+            sizes,
+            pictures,
+        })
     }
 
     /// A picture of each page of the tab showing that's in view, while it's on the screen. Nothing if no worker's said which version it's of, as there'd be no saying what they're of.
@@ -928,14 +1059,32 @@ impl Reader {
         let size = doc.layout.raw_size(page);
         let paper_rgb = paper.rgb();
         // A preview as it is, if there's one.
-        let preview = self.cover.get(&self.preview_key(doc, page)).copied().filter(|id| self.entries.get(id).is_some_and(|entry| entry.version.is_some() && self.is_current(entry)));
+        let preview = self
+            .cover
+            .get(&self.preview_key(doc, page))
+            .copied()
+            .filter(|id| self.entries.get(id).is_some_and(|entry| entry.version.is_some() && self.is_current(entry)));
         if let Some(id) = preview
             && let Some(picture) = self.copy_preview(id)
         {
             return Some(picture);
         }
         // Otherwise the sharpest tiles there are of this page, at whole steps down.
-        let ids: Vec<u64> = self.entries.values().filter(|entry| entry.tab == tab && entry.page == page && !entry.preview && entry.paper == paper && entry.surface.is_some() && entry.low_res.is_none() && entry.version.is_some() && self.is_current(entry)).map(|entry| entry.id).collect();
+        let ids: Vec<u64> = self
+            .entries
+            .values()
+            .filter(|entry| {
+                entry.tab == tab
+                    && entry.page == page
+                    && !entry.preview
+                    && entry.paper == paper
+                    && entry.surface.is_some()
+                    && entry.low_res.is_none()
+                    && entry.version.is_some()
+                    && self.is_current(entry)
+            })
+            .map(|entry| entry.id)
+            .collect();
         let finest = ids.iter().filter_map(|id| self.entries.get(id)).map(|entry| entry.scale).fold(0.0f32, f32::max);
         if finest <= 0.0 {
             return None;
@@ -949,7 +1098,12 @@ impl Reader {
         }
         let mut bgra = vec![0u8; bytes as usize];
         for pixel in bgra.as_chunks_mut::<4>().0 {
-            *pixel = [(paper_rgb & 0xFF) as u8, ((paper_rgb >> 8) & 0xFF) as u8, ((paper_rgb >> 16) & 0xFF) as u8, 0xFF];
+            *pixel = [
+                (paper_rgb & 0xFF) as u8,
+                ((paper_rgb >> 8) & 0xFF) as u8,
+                ((paper_rgb >> 16) & 0xFF) as u8,
+                0xFF,
+            ];
         }
         let mut any = false;
         for id in ids {
@@ -972,7 +1126,19 @@ impl Reader {
                 let (surface_width, surface_height) = (surface.width(), surface.height());
                 let used_width = ((f64::from(surface_width) * crop_width) as u32).min(rect.width);
                 let used_height = ((f64::from(surface_height) * crop_height) as u32).min(rect.height);
-                let copied = surface.with_pixels(|source| shrink_into(source, stride, used_width, used_height, step, (rect.x / step, rect.y / step), &mut bgra, width, height));
+                let copied = surface.with_pixels(|source| {
+                    shrink_into(
+                        source,
+                        stride,
+                        used_width,
+                        used_height,
+                        step,
+                        (rect.x / step, rect.y / step),
+                        &mut bgra,
+                        width,
+                        height,
+                    )
+                });
                 any |= copied.is_ok();
                 if was_discardable {
                     surface.set_discardable();
@@ -980,7 +1146,14 @@ impl Reader {
                 }
             }
         }
-        any.then_some(RawPicture { page, scale, width, height, paper, bgra })
+        any.then_some(RawPicture {
+            page,
+            scale,
+            width,
+            height,
+            paper,
+            bgra,
+        })
     }
 
     fn copy_preview(&mut self, id: u64) -> Option<RawPicture> {
@@ -999,18 +1172,32 @@ impl Reader {
         let surface = entry.surface.as_ref()?;
         let stride = surface.stride() as usize;
         let row = rect.width as usize * 4;
-        let copied = usable.then(|| surface.with_pixels(|source| {
-            let mut bgra = Vec::with_capacity(row * rect.height as usize);
-            for line in source.chunks_exact(stride).take(rect.height as usize) {
-                bgra.extend_from_slice(line.get(..row)?);
-            }
-            (bgra.len() == row * rect.height as usize).then_some(bgra)
-        }).ok().flatten()).flatten();
+        let copied = usable
+            .then(|| {
+                surface
+                    .with_pixels(|source| {
+                        let mut bgra = Vec::with_capacity(row * rect.height as usize);
+                        for line in source.chunks_exact(stride).take(rect.height as usize) {
+                            bgra.extend_from_slice(line.get(..row)?);
+                        }
+                        (bgra.len() == row * rect.height as usize).then_some(bgra)
+                    })
+                    .ok()
+                    .flatten()
+            })
+            .flatten();
         if was_discardable {
             surface.set_discardable();
             entry.discardable = true;
         }
-        Some(RawPicture { page, scale, width: rect.width, height: rect.height, paper, bgra: copied? })
+        Some(RawPicture {
+            page,
+            scale,
+            width: rect.width,
+            height: rect.height,
+            paper,
+            bgra: copied?,
+        })
     }
 
     /// Everything that can go without the page on screen going blank: what's off the layers, and at the worst, every picture too. Those that are discardable may have gone anyway, so this is what the system's asked of us, with nothing kept for later.
@@ -1021,7 +1208,12 @@ impl Reader {
                 doc.left_pictures = None;
             }
         }
-        let ids: Vec<u64> = self.entries.values().filter(|entry| !entry.attached && (critical || !entry.preview)).map(|entry| entry.id).collect();
+        let ids: Vec<u64> = self
+            .entries
+            .values()
+            .filter(|entry| !entry.attached && (critical || !entry.preview))
+            .map(|entry| entry.id)
+            .collect();
         for id in ids {
             self.forget_entry(id);
         }
@@ -1119,18 +1311,48 @@ impl Reader {
             if let Some(size) = saved.and_then(|saved| saved.page_size) {
                 layout.seed_usual(size);
             }
-            let magnification = saved.map_or(1.0, |saved| if saved.magnification.is_finite() { saved.magnification.clamp(MIN_ZOOM, MAX_ZOOM) } else { 1.0 });
+            let magnification = saved.map_or(1.0, |saved| {
+                if saved.magnification.is_finite() {
+                    saved.magnification.clamp(MIN_ZOOM, MAX_ZOOM)
+                } else {
+                    1.0
+                }
+            });
             let within = |value: f64| if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 };
             let left_at = saved.map(|saved| (saved.page, (saved.anchor.0.min(pages.saturating_sub(1)), within(saved.anchor.1))));
             let scroll_x = saved.map_or(0.0, |saved| if saved.x.is_finite() { saved.x.max(0.0) } else { 0.0 });
-            let exact_y = saved.filter(|saved| saved.y.is_finite() && saved.y >= 0.0 && saved.document_height.is_finite()).map(|saved| (saved.y, saved.document_height));
-            DocView { tab, layout, map: map.clone(), magnification, anchor: (page, 0.0), tile_scale: 0.0, issues: HashMap::new(), heavy: HashMap::new(), problem: None, seen: HashSet::new(), left_at, scroll_x, exact_y, floor, size_on_trust: false, versions: HashMap::new(), left_pictures: None }
+            let exact_y = saved
+                .filter(|saved| saved.y.is_finite() && saved.y >= 0.0 && saved.document_height.is_finite())
+                .map(|saved| (saved.y, saved.document_height));
+            DocView {
+                tab,
+                layout,
+                map: map.clone(),
+                magnification,
+                anchor: (page, 0.0),
+                tile_scale: 0.0,
+                issues: HashMap::new(),
+                heavy: HashMap::new(),
+                problem: None,
+                seen: HashSet::new(),
+                left_at,
+                scroll_x,
+                exact_y,
+                floor,
+                size_on_trust: false,
+                versions: HashMap::new(),
+                left_pictures: None,
+            }
         });
         // A save wrote the pages that were shown, each as it was shown: another version of the file, with nothing on the screen to move.
         let carried = !doc.map.same_pages(&map) && map.follows.is_some() && doc.map.own == map.follows && doc.layout.count() == pages;
         // Back on the page it was left on, and it's back at the same place in that page. A tall page's reader isn't sent to its top.
         let same_pages = (doc.map.same_pages(&map) || carried) && doc.layout.count() == pages;
-        let back_at = if staying && same_pages { Some(doc.anchor) } else { doc.left_at.take().filter(|(left, _)| *left == page && same_pages).map(|(_, anchor)| anchor) };
+        let back_at = if staying && same_pages {
+            Some(doc.anchor)
+        } else {
+            doc.left_at.take().filter(|(left, _)| *left == page && same_pages).map(|(_, anchor)| anchor)
+        };
         if back_at.is_none() {
             doc.scroll_x = 0.0;
             doc.exact_y = None;
@@ -1222,8 +1444,23 @@ impl Reader {
                 let size = doc.layout.raw_size(shot.page);
                 doc.layout.set_page_size(shot.page, size);
             }
-            let rect = TileRect { x: 0, y: 0, width: shot.surface.width(), height: shot.surface.height() };
-            let id = self.keep_drawn(tab, shot.page, shot.scale, rect, shot.surface, DrawKind::Preview, shot.paper, TileKind::Colour, None);
+            let rect = TileRect {
+                x: 0,
+                y: 0,
+                width: shot.surface.width(),
+                height: shot.surface.height(),
+            };
+            let id = self.keep_drawn(
+                tab,
+                shot.page,
+                shot.scale,
+                rect,
+                shot.surface,
+                DrawKind::Preview,
+                shot.paper,
+                TileKind::Colour,
+                None,
+            );
             // Of the version its sleep file says, if it says. Either way, a worker's word goes over it.
             if let Some(entry) = self.entries.get_mut(&id) {
                 entry.version = view.version;
@@ -1272,7 +1509,11 @@ impl Reader {
             Zoom::To(value) => value,
             Zoom::Percent(percent) => percent / 100.0 / doc.layout.fit().max(f64::MIN_POSITIVE),
         };
-        let value = if value.is_finite() { value.clamp(MIN_ZOOM, MAX_ZOOM) } else { doc.magnification };
+        let value = if value.is_finite() {
+            value.clamp(MIN_ZOOM, MAX_ZOOM)
+        } else {
+            doc.magnification
+        };
         doc.magnification = value;
         self.ops.push_back(Op::Magnify { value });
         Some(value)
@@ -1292,12 +1533,38 @@ impl Reader {
                 if self.hot == Some(doc.tab) {
                     let page = self.last_view_page?;
                     // Not yet arrived where it's been sent: what the view says is about somewhere else.
-                    let (x, y) = if self.jump.is_some() { (doc.scroll_x, doc.exact_y.map_or_else(|| doc.layout.anchor_y(doc.anchor), |(y, _)| y)) } else { (self.viewport.x, self.viewport.y) };
-                    Some((doc.tab, SavedPlace { page, anchor: doc.anchor, x, y, document_height: doc.layout.document_height(), magnification: doc.magnification, page_size }))
+                    let (x, y) = if self.jump.is_some() {
+                        (doc.scroll_x, doc.exact_y.map_or_else(|| doc.layout.anchor_y(doc.anchor), |(y, _)| y))
+                    } else {
+                        (self.viewport.x, self.viewport.y)
+                    };
+                    Some((
+                        doc.tab,
+                        SavedPlace {
+                            page,
+                            anchor: doc.anchor,
+                            x,
+                            y,
+                            document_height: doc.layout.document_height(),
+                            magnification: doc.magnification,
+                            page_size,
+                        },
+                    ))
                 } else {
                     let (page, anchor) = doc.left_at?;
                     let y = doc.exact_y.map_or_else(|| doc.layout.anchor_y(anchor), |(y, _)| y);
-                    Some((doc.tab, SavedPlace { page, anchor, x: doc.scroll_x, y, document_height: doc.layout.document_height(), magnification: doc.magnification, page_size }))
+                    Some((
+                        doc.tab,
+                        SavedPlace {
+                            page,
+                            anchor,
+                            x: doc.scroll_x,
+                            y,
+                            document_height: doc.layout.document_height(),
+                            magnification: doc.magnification,
+                            page_size,
+                        },
+                    ))
                 }
             })
             .collect()
@@ -1354,7 +1621,9 @@ impl Reader {
 
     /// Lays the tab showing out another way: a page to a row, or two side by side. The reader stays on the page they were on, as far down it, and the zoom stays.
     pub fn set_spread(&mut self, spread: Spread) {
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else { return };
+        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
+            return;
+        };
         if !doc.layout.set_spread(spread) {
             return;
         }
@@ -1373,7 +1642,9 @@ impl Reader {
     pub fn jump_to(&mut self, page: u32) {
         // A wake's over once someone's gone somewhere else: what's bare from here is pages being reached, not the wake.
         self.finish_wake();
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else { return };
+        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
+            return;
+        };
         let page = page.min(doc.layout.count().saturating_sub(1));
         doc.anchor = (page, 0.0);
         let y = doc.layout.jump_y(page);
@@ -1407,10 +1678,15 @@ impl Reader {
 
     /// The document's size, then the place in it. Called when the fit or a page's size has changed.
     fn lay_out(&mut self) {
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else { return };
+        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
+            return;
+        };
         doc.layout.set_margins(self.margins.0, self.margins.1);
         doc.layout.set_frame(self.viewport.frame_width);
-        self.ops.push_back(Op::Document { width: doc.layout.document_width(), height: doc.layout.document_height() });
+        self.ops.push_back(Op::Document {
+            width: doc.layout.document_width(),
+            height: doc.layout.document_height(),
+        });
         let y = Self::place_y(doc);
         let seq = self.next_seq;
         self.next_seq += 1;
@@ -1431,7 +1707,13 @@ impl Reader {
             return self.take_ops();
         }
         // The reader's own scroll: the view moved down or up, with nothing the host was sent arriving, no change of zoom or room, and no pinch or resize under way.
-        self.user_scrolled = !viewport.live && self.jump.is_none() && viewport.y != was.y && viewport.scrolled_to == was.scrolled_to && viewport.magnification == was.magnification && viewport.frame_width == was.frame_width && viewport.height == was.height;
+        self.user_scrolled = !viewport.live
+            && self.jump.is_none()
+            && viewport.y != was.y
+            && viewport.scrolled_to == was.scrolled_to
+            && viewport.magnification == was.magnification
+            && viewport.frame_width == was.frame_width
+            && viewport.height == was.height;
         let mut moved_layout = false;
         if let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) {
             if doc.layout.set_frame(viewport.frame_width) && was.frame_width != viewport.frame_width {
@@ -1457,9 +1739,15 @@ impl Reader {
     /// Follows the reader's place. Only a change the reader made is the session's business: arriving where a jump sent them isn't.
     fn track_place(&mut self) {
         let viewport = self.viewport;
-        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else { return };
+        let Some(doc) = self.hot.and_then(|tab| self.docs.get_mut(&tab)) else {
+            return;
+        };
         let bottom = doc.layout.document_height() - viewport.height;
-        let page = if viewport.y >= bottom - 1.0 && viewport.y > 0.0 { doc.layout.count().saturating_sub(1) } else { doc.layout.page_at(viewport.y + viewport.height / 3.0) };
+        let page = if viewport.y >= bottom - 1.0 && viewport.y > 0.0 {
+            doc.layout.count().saturating_sub(1)
+        } else {
+            doc.layout.page_at(viewport.y + viewport.height / 3.0)
+        };
         // Side by side, the reader's page stays whichever of its row they were on: a jump to a right-hand page, or reading on in a row, isn't a move to the left one.
         let page = match self.last_view_page {
             Some(was) if doc.layout.same_row(was, page) => was,
@@ -1500,7 +1788,10 @@ impl Reader {
             && self.window_open
             && self.doc().is_some_and(|doc| {
                 self.visible_pages(doc).contains(&running.position)
-                    && (running.preview || running.rect.is_none_or(|rect| running.scale == doc.tile_scale && self.touches_view(doc, running.position, rect, running.scale)))
+                    && (running.preview
+                        || running
+                            .rect
+                            .is_none_or(|rect| running.scale == doc.tile_scale && self.touches_view(doc, running.position, rect, running.scale)))
             })
     }
 
@@ -1512,7 +1803,13 @@ impl Reader {
             return false;
         }
         let visible: Vec<u32> = self.visible_pages(doc).collect();
-        if self.selecting.wanted(Urgency::Now, &visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false)).is_some() {
+        if self
+            .selecting
+            .wanted(Urgency::Now, &visible, doc.layout.count(), |page| {
+                doc.heavy.get(&page).copied().unwrap_or(false)
+            })
+            .is_some()
+        {
             return true;
         }
         visible.iter().any(|&page| {
@@ -1546,7 +1843,8 @@ impl Reader {
             #[allow(clippy::reversed_empty_ranges)]
             return 1..=0;
         }
-        doc.layout.pages_between(self.viewport.y.max(0.0), self.viewport.y.max(0.0) + self.viewport.height)
+        doc.layout
+            .pages_between(self.viewport.y.max(0.0), self.viewport.y.max(0.0) + self.viewport.height)
     }
 
     /// Whether a device rectangle of a page at a scale shows in the viewport, however the page is turned.
@@ -1555,8 +1853,12 @@ impl Reader {
         let (left, top) = (f64::from(rect.x) * per_point, f64::from(rect.y) * per_point);
         let (right, bottom) = (left + f64::from(rect.width) * per_point, top + f64::from(rect.height) * per_point);
         let corners = [(left, top), (right, top), (left, bottom), (right, bottom)].map(|(u, v)| doc.layout.from_page(page, u, v));
-        let (x0, x1) = corners.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), (x, _)| (low.min(*x), high.max(*x)));
-        let (y0, y1) = corners.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), (_, y)| (low.min(*y), high.max(*y)));
+        let (x0, x1) = corners
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), (x, _)| (low.min(*x), high.max(*x)));
+        let (y0, y1) = corners
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), (_, y)| (low.min(*y), high.max(*y)));
         x1 > self.viewport.x && x0 < self.viewport.x + self.viewport.width && y1 > self.viewport.y && y0 < self.viewport.y + self.viewport.height
     }
 
@@ -1572,10 +1874,20 @@ impl Reader {
         let (width, height) = device_size(size.width, size.height, scale).map_err(|_| ())?;
         // The view's corners on the page as it is before it's turned, in device pixels at this scale.
         let (view_x, view_y, view_w, view_h) = (self.viewport.x, self.viewport.y, self.viewport.width, self.viewport.height);
-        let corners = [(view_x, view_y), (view_x + view_w, view_y), (view_x, view_y + view_h), (view_x + view_w, view_y + view_h)].map(|(x, y)| doc.layout.to_page(page, x, y));
+        let corners = [
+            (view_x, view_y),
+            (view_x + view_w, view_y),
+            (view_x, view_y + view_h),
+            (view_x + view_w, view_y + view_h),
+        ]
+        .map(|(x, y)| doc.layout.to_page(page, x, y));
         let per_point = f64::from(scale);
-        let (low_u, high_u) = corners.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), (u, _)| (low.min(*u), high.max(*u)));
-        let (low_v, high_v) = corners.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), (_, v)| (low.min(*v), high.max(*v)));
+        let (low_u, high_u) = corners
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), (u, _)| (low.min(*u), high.max(*u)));
+        let (low_v, high_v) = corners
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), (_, v)| (low.min(*v), high.max(*v)));
         let left = (low_u * per_point).max(0.0);
         let top = (low_v * per_point).max(0.0);
         let right = (high_u * per_point).min(f64::from(width));
@@ -1603,11 +1915,27 @@ impl Reader {
     }
 
     fn key(&self, doc: &DocView, page: u32, scale: f32, (column, row): (u16, u16)) -> TileKey {
-        TileKey { tab: doc.tab, page, scale_bits: scale.to_bits(), column, row, paper: self.paper, preview: false }
+        TileKey {
+            tab: doc.tab,
+            page,
+            scale_bits: scale.to_bits(),
+            column,
+            row,
+            paper: self.paper,
+            preview: false,
+        }
     }
 
     fn preview_key(&self, doc: &DocView, page: u32) -> TileKey {
-        TileKey { tab: doc.tab, page, scale_bits: 0, column: 0, row: 0, paper: self.paper, preview: true }
+        TileKey {
+            tab: doc.tab,
+            page,
+            scale_bits: 0,
+            column: 0,
+            row: 0,
+            paper: self.paper,
+            preview: true,
+        }
     }
 
     /// Brings the screen into line with what's wanted, attaching at most `budget` tiles. The rest wait for the next turn.
@@ -1629,7 +1957,11 @@ impl Reader {
         let scale = doc.tile_scale;
         let visible: Vec<u32> = self.visible_pages(doc).filter(|page| doc.layout.is_known(*page)).collect();
         // A tab that's come from a sleep file knows what size its pages are likely to be, so with or without a picture its place is there on the paper from the first frame, and real sizes follow.
-        let on_paper: Vec<u32> = if doc.size_on_trust { self.visible_pages(doc).collect() } else { visible.clone() };
+        let on_paper: Vec<u32> = if doc.size_on_trust {
+            self.visible_pages(doc).collect()
+        } else {
+            visible.clone()
+        };
 
         let stale: Vec<u32> = self.shown.keys().copied().filter(|page| !on_paper.contains(page)).collect();
         for page in stale {
@@ -1644,12 +1976,32 @@ impl Reader {
             let size = doc.layout.raw_size(page);
             // On whole device pixels, so a tile's pixels land on the screen's.
             let snap = |value: f64| if device > 0.0 { (value * device).round() / device } else { value };
-            placements.push((page, Placement { x: snap(rect.x), y: snap(rect.y), width: f64::from(size.width), height: f64::from(size.height), fit: doc.layout.fit(), paper_rgb, turns: doc.layout.turns_of(page) }));
+            placements.push((
+                page,
+                Placement {
+                    x: snap(rect.x),
+                    y: snap(rect.y),
+                    width: f64::from(size.width),
+                    height: f64::from(size.height),
+                    fit: doc.layout.fit(),
+                    paper_rgb,
+                    turns: doc.layout.turns_of(page),
+                },
+            ));
         }
         for (page, placement) in placements {
             if self.shown.get(&page) != Some(&placement) {
                 self.shown.insert(page, placement);
-                self.ops.push_back(Op::ShowPage { page, x: placement.x, y: placement.y, width: placement.width, height: placement.height, fit: placement.fit, paper_rgb: placement.paper_rgb, turns: placement.turns });
+                self.ops.push_back(Op::ShowPage {
+                    page,
+                    x: placement.x,
+                    y: placement.y,
+                    width: placement.width,
+                    height: placement.height,
+                    fit: placement.fit,
+                    paper_rgb: placement.paper_rgb,
+                    turns: placement.turns,
+                });
             }
         }
         self.highlight_ops();
@@ -1704,7 +2056,14 @@ impl Reader {
                     }
                 }
             } else {
-                let done: Vec<u64> = self.attached.get(&page).into_iter().flatten().copied().filter(|id| !wanted.contains(id)).collect();
+                let done: Vec<u64> = self
+                    .attached
+                    .get(&page)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|id| !wanted.contains(id))
+                    .collect();
                 for id in done {
                     self.detach(id, page);
                 }
@@ -1714,7 +2073,18 @@ impl Reader {
                 continue;
             }
             let Some(doc) = self.docs.get(&tab) else { return };
-            let out: Vec<u64> = self.attached.get(&page).into_iter().flatten().copied().filter(|id| self.entries.get(id).is_some_and(|entry| !entry.preview && entry.scale == scale && entry.paper == self.paper && !self.touches_view(doc, page, entry.rect, scale))).collect();
+            let out: Vec<u64> = self
+                .attached
+                .get(&page)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|id| {
+                    self.entries.get(id).is_some_and(|entry| {
+                        !entry.preview && entry.scale == scale && entry.paper == self.paper && !self.touches_view(doc, page, entry.rect, scale)
+                    })
+                })
+                .collect();
             for id in out {
                 self.detach(id, page);
             }
@@ -1731,7 +2101,13 @@ impl Reader {
                 if let Some(issue) = doc.issues.get(&page) {
                     return Some(issue.message.clone());
                 }
-                let low = self.attached.get(&page).into_iter().flatten().filter_map(|id| self.entries.get(id)).find_map(|entry| entry.low_res.as_ref());
+                let low = self
+                    .attached
+                    .get(&page)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|id| self.entries.get(id))
+                    .find_map(|entry| entry.low_res.as_ref());
                 if let Some(low) = low {
                     return Some(low.message.to_string());
                 }
@@ -1839,11 +2215,27 @@ impl Reader {
 
     fn keys_of(entry: &Entry) -> Vec<TileKey> {
         if entry.preview {
-            return vec![TileKey { tab: entry.tab, page: entry.page, scale_bits: 0, column: 0, row: 0, paper: entry.paper, preview: true }];
+            return vec![TileKey {
+                tab: entry.tab,
+                page: entry.page,
+                scale_bits: 0,
+                column: 0,
+                row: 0,
+                paper: entry.paper,
+                preview: true,
+            }];
         }
         let mut keys = Vec::new();
         for place in recto_proto::region_tiles(entry.rect, TILE_EDGE) {
-            keys.push(TileKey { tab: entry.tab, page: entry.page, scale_bits: entry.scale.to_bits(), column: (place.x / TILE_EDGE) as u16, row: (place.y / TILE_EDGE) as u16, paper: entry.paper, preview: false });
+            keys.push(TileKey {
+                tab: entry.tab,
+                page: entry.page,
+                scale_bits: entry.scale.to_bits(),
+                column: (place.x / TILE_EDGE) as u16,
+                row: (place.y / TILE_EDGE) as u16,
+                paper: entry.paper,
+                preview: false,
+            });
         }
         keys
     }
@@ -1918,7 +2310,13 @@ impl Reader {
             }
             let share = self.share.max(1);
             let too_many_tiles = tile_bytes > MAX_KEPT_BYTES / share || tile_surfaces > MAX_KEPT_SURFACES / share || self.entries.len() > MAX_ENTRIES / share;
-            let victim = if previews > MAX_KEPT_PREVIEWS / share { oldest_preview } else if too_many_tiles { oldest_tile.or(oldest_preview) } else { None };
+            let victim = if previews > MAX_KEPT_PREVIEWS / share {
+                oldest_preview
+            } else if too_many_tiles {
+                oldest_tile.or(oldest_preview)
+            } else {
+                None
+            };
             let Some((_, id)) = victim else { return };
             self.forget_entry(id);
         }
@@ -2000,11 +2398,26 @@ impl Reader {
         }
         let around = first.saturating_sub(SIZES_AROUND)..=(last + SIZES_AROUND).min(doc.layout.count().saturating_sub(1));
         // A page whose size couldn't be read has its reason on it, and isn't asked again: nothing about it will be different straight away.
-        let waiting_on_issue = |page: &u32| doc.issues.get(page).is_some_and(|issue| !issue.try_again_at.is_some_and(|at| Instant::now() >= at));
-        if let Some(page) = visible.clone().chain(around).find(|page| !doc.layout.is_known(*page) && !waiting_on_issue(page)) {
+        let waiting_on_issue = |page: &u32| {
+            doc.issues
+                .get(page)
+                .is_some_and(|issue| !issue.try_again_at.is_some_and(|at| Instant::now() >= at))
+        };
+        if let Some(page) = visible
+            .clone()
+            .chain(around)
+            .find(|page| !doc.layout.is_known(*page) && !waiting_on_issue(page))
+        {
             let (file, source_page) = doc.map.source(page)?;
             let generation = self.fresh_generation();
-            return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Size });
+            return Some(JobPlan {
+                tab,
+                position: page,
+                file,
+                source_page,
+                generation,
+                kind: PlanKind::Size,
+            });
         }
         let now = Instant::now();
         let scale = doc.tile_scale;
@@ -2018,7 +2431,14 @@ impl Reader {
             && let Some((file, source_page)) = doc.map.source(page)
         {
             let generation = self.fresh_generation();
-            return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Links });
+            return Some(JobPlan {
+                tab,
+                position: page,
+                file,
+                source_page,
+                generation,
+                kind: PlanKind::Links,
+            });
         }
         // A selection the reader is making comes before tiles: it answers their hand.
         if let Some(plan) = self.text_plan(tab, Urgency::Now) {
@@ -2035,7 +2455,17 @@ impl Reader {
             }
             let Ok(cells) = self.visible_cells(doc, page, scale) else {
                 let size = doc.layout.raw_size(page);
-                self.note_issue(tab, page, format!("Page {} is too large to draw at this zoom ({} by {} points).", page + 1, size.width, size.height), false);
+                self.note_issue(
+                    tab,
+                    page,
+                    format!(
+                        "Page {} is too large to draw at this zoom ({} by {} points).",
+                        page + 1,
+                        size.width,
+                        size.height
+                    ),
+                    false,
+                );
                 continue;
             };
             let missing: Vec<(u16, u16)> = cells
@@ -2045,7 +2475,10 @@ impl Reader {
                     let key = self.key(doc, page, scale, *cell);
                     match self.cover.get(&key).and_then(|id| self.entries.get(id)) {
                         None => true,
-                        Some(entry) => entry.low_res.as_ref().is_some_and(|low| low.may_clear && now.duration_since(low.at) >= TRY_AGAIN_AFTER),
+                        Some(entry) => entry
+                            .low_res
+                            .as_ref()
+                            .is_some_and(|low| low.may_clear && now.duration_since(low.at) >= TRY_AGAIN_AFTER),
                     }
                 })
                 .collect();
@@ -2056,7 +2489,14 @@ impl Reader {
             // Asked once, and it loads the page, which drawing would do anyway.
             if !doc.heavy.contains_key(&page) {
                 let generation = self.fresh_generation();
-                return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Traits });
+                return Some(JobPlan {
+                    tab,
+                    position: page,
+                    file,
+                    source_page,
+                    generation,
+                    kind: PlanKind::Traits,
+                });
             }
             let heavy = doc.heavy.get(&page).copied().unwrap_or(false);
             // A heavy page's cost is per pass, so a preview would cost it as much again. Any other page gets one however little of it shows: a page first seen as a sliver at the bottom of the window, with no preview, goes blank when that sliver's tile scrolls off.
@@ -2064,7 +2504,19 @@ impl Reader {
             if preview_wanted && let Some((preview_scale, rect)) = self.preview_rect(doc, page, scale) {
                 let paper = self.paper;
                 let generation = self.fresh_generation();
-                return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Draw { scale: preview_scale, rect, what: DrawKind::Preview, paper } });
+                return Some(JobPlan {
+                    tab,
+                    position: page,
+                    file,
+                    source_page,
+                    generation,
+                    kind: PlanKind::Draw {
+                        scale: preview_scale,
+                        rect,
+                        what: DrawKind::Preview,
+                        paper,
+                    },
+                });
             }
             let size = doc.layout.raw_size(page);
             let (width, height) = device_size(size.width, size.height, scale).ok()?;
@@ -2075,14 +2527,43 @@ impl Reader {
                 let rect = plan_regions(&sorted, (width, height)).into_iter().next()?;
                 let paper = self.paper;
                 let generation = self.fresh_generation();
-                return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Draw { scale, rect, what: DrawKind::Region, paper } });
+                return Some(JobPlan {
+                    tab,
+                    position: page,
+                    file,
+                    source_page,
+                    generation,
+                    kind: PlanKind::Draw {
+                        scale,
+                        rect,
+                        what: DrawKind::Region,
+                        paper,
+                    },
+                });
             }
             let (column, row) = missing[0];
             let (x, y) = (u32::from(column) * TILE_EDGE, u32::from(row) * TILE_EDGE);
-            let rect = TileRect { x, y, width: TILE_EDGE.min(width - x), height: TILE_EDGE.min(height - y) };
+            let rect = TileRect {
+                x,
+                y,
+                width: TILE_EDGE.min(width - x),
+                height: TILE_EDGE.min(height - y),
+            };
             let paper = self.paper;
             let generation = self.fresh_generation();
-            return Some(JobPlan { tab, position: page, file, source_page, generation, kind: PlanKind::Draw { scale, rect, what: DrawKind::Tile, paper } });
+            return Some(JobPlan {
+                tab,
+                position: page,
+                file,
+                source_page,
+                generation,
+                kind: PlanKind::Draw {
+                    scale,
+                    rect,
+                    what: DrawKind::Tile,
+                    paper,
+                },
+            });
         }
         self.text_plan(tab, Urgency::WhenIdle)
     }
@@ -2091,10 +2572,19 @@ impl Reader {
     fn text_plan(&mut self, tab: u32, urgency: Urgency) -> Option<JobPlan> {
         let doc = self.docs.get(&tab)?;
         let visible: Vec<u32> = self.visible_pages(doc).collect();
-        let wanted = self.selecting.wanted(urgency, &visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false))?;
+        let wanted = self
+            .selecting
+            .wanted(urgency, &visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false))?;
         let (file, source_page) = doc.map.source(wanted.page)?;
         let generation = self.fresh_generation();
-        Some(JobPlan { tab, position: wanted.page, file, source_page, generation, kind: PlanKind::Text { check: wanted.check } })
+        Some(JobPlan {
+            tab,
+            position: wanted.page,
+            file,
+            source_page,
+            generation,
+            kind: PlanKind::Text { check: wanted.check },
+        })
     }
 
     /// Tells the host what's changed about highlights. A short look at nothing, with nothing selected.
@@ -2121,7 +2611,11 @@ impl Reader {
         }
         let page = doc.layout.page_at_point(x, y);
         let (u, v) = doc.layout.to_page(page, x, y);
-        Some(PagePoint { page, x: u as f32, y: v as f32 })
+        Some(PagePoint {
+            page,
+            x: u as f32,
+            y: v as f32,
+        })
     }
 
     /// Where a point in the document is in the coordinates of `page`, whichever page it's over: past the page's edges if it's off it, for the caller to hold to them. A snapshot's box dragged across a page break stays on the page it was pressed on this way.
@@ -2134,7 +2628,11 @@ impl Reader {
             return None;
         }
         let (u, v) = doc.layout.to_page(page, x, y);
-        Some(PagePoint { page, x: u as f32, y: v as f32 })
+        Some(PagePoint {
+            page,
+            x: u as f32,
+            y: v as f32,
+        })
     }
 
     /// How many pages the tab shown has, edits and all: 0 with none shown.
@@ -2211,7 +2709,10 @@ impl Reader {
             None => (file_page < doc.layout.count()).then_some(file_page),
             Some(slots) => {
                 let (file, _) = *slots.get(from as usize)?;
-                slots.iter().position(|(other, page)| *other == file && *page == file_page).and_then(|at| u32::try_from(at).ok())
+                slots
+                    .iter()
+                    .position(|(other, page)| *other == file && *page == file_page)
+                    .and_then(|at| u32::try_from(at).ok())
             }
         }
     }
@@ -2244,7 +2745,9 @@ impl Reader {
 
     /// The whole document, as a Mac PDF reader takes ⌘A. It reads nothing until something's showing.
     pub fn select_all(&mut self) {
-        let Some(pages) = self.doc().map(|doc| doc.layout.count()).filter(|pages| *pages > 0) else { return };
+        let Some(pages) = self.doc().map(|doc| doc.layout.count()).filter(|pages| *pages > 0) else {
+            return;
+        };
         self.selecting.set_range(Range::all(pages));
         self.highlight_ops();
     }
@@ -2296,7 +2799,9 @@ impl Reader {
             return true;
         }
         let end = if range.end.page == range.start.page { range.end.at } else { u32::MAX };
-        let Some(bounds) = self.selecting.bounds_of(range.start.page, range.start.at, end) else { return false };
+        let Some(bounds) = self.selecting.bounds_of(range.start.page, range.start.at, end) else {
+            return false;
+        };
         self.revealing = None;
         let Some(bounds) = bounds else { return true };
         let Some(doc) = self.doc() else { return true };
@@ -2405,7 +2910,8 @@ impl Reader {
             return None;
         }
         let (width, height) = device_size(size.width, size.height, preview_scale).ok()?;
-        (u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL) <= MAX_PREVIEW_BYTES).then_some((preview_scale, TileRect { x: 0, y: 0, width, height }))
+        (u64::from(width) * u64::from(height) * u64::from(BYTES_PER_PIXEL) <= MAX_PREVIEW_BYTES)
+            .then_some((preview_scale, TileRect { x: 0, y: 0, width, height }))
     }
 
     fn fresh_generation(&mut self) -> u64 {
@@ -2424,7 +2930,18 @@ impl Reader {
             JobKind::Text { check } => (true, check),
             _ => (false, false),
         };
-        self.running = Some(Running { tab: job.tab, position: job.position, rect, scale, preview, generation: job.generation, cancel, cancel_asked: false, text, check });
+        self.running = Some(Running {
+            tab: job.tab,
+            position: job.position,
+            rect,
+            scale,
+            preview,
+            generation: job.generation,
+            cancel,
+            cancel_asked: false,
+            text,
+            check,
+        });
     }
 
     /// What can stop the job now running, once there's something that can.
@@ -2436,7 +2953,13 @@ impl Reader {
 
     fn note_issue(&mut self, tab: u32, page: u32, message: String, may_pass: bool) {
         if let Some(doc) = self.docs.get_mut(&tab) {
-            doc.issues.insert(page, Issue { message, try_again_at: may_pass.then(|| Instant::now() + TRY_AGAIN_AFTER) });
+            doc.issues.insert(
+                page,
+                Issue {
+                    message,
+                    try_again_at: may_pass.then(|| Instant::now() + TRY_AGAIN_AFTER),
+                },
+            );
         }
     }
 
@@ -2445,11 +2968,20 @@ impl Reader {
         self.running = None;
         self.counts.jobs += 1;
         let mut kept = None;
-        let Job { tab, position, kind, generation, file, .. } = job;
+        let Job {
+            tab,
+            position,
+            kind,
+            generation,
+            file,
+            ..
+        } = job;
         if matches!(kind, JobKind::Links) {
             // About the tab showing, as it is, or about nothing.
             match outcome {
-                Outcome::Links(links) if self.hot == Some(tab) && !self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) => self.linking.take(position, links),
+                Outcome::Links(links) if self.hot == Some(tab) && !self.docs.get(&tab).is_some_and(|doc| generation < doc.floor) => {
+                    self.linking.take(position, links)
+                }
                 _ => self.linking.cancelled(position),
             }
             return;
@@ -2480,7 +3012,16 @@ impl Reader {
                     doc.heavy.insert(position, heavy);
                 }
             }
-            (JobKind::Draw { scale, rect, surface, what, paper }, Outcome::Drawn { kind, low_res }) => {
+            (
+                JobKind::Draw {
+                    scale,
+                    rect,
+                    surface,
+                    what,
+                    paper,
+                },
+                Outcome::Drawn { kind, low_res },
+            ) => {
                 self.counts.drawn += 1;
                 if self.docs.contains_key(&tab) && self.window_open {
                     kept = Some(self.keep_drawn(tab, position, scale, rect, surface, what, paper, kind, low_res));
@@ -2520,21 +3061,55 @@ impl Reader {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn keep_drawn(&mut self, tab: u32, page: u32, scale: f32, rect: TileRect, surface: PixelSurface, what: DrawKind, paper: PaperKind, kind: TileKind, low_res: Option<(TileRect, LowResWhy)>) -> u64 {
+    fn keep_drawn(
+        &mut self,
+        tab: u32,
+        page: u32,
+        scale: f32,
+        rect: TileRect,
+        surface: PixelSurface,
+        what: DrawKind,
+        paper: PaperKind,
+        kind: TileKind,
+        low_res: Option<(TileRect, LowResWhy)>,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let preview = what == DrawKind::Preview;
         let drawn_rect = low_res.map_or(rect, |(drawn, _)| drawn);
-        let crop = (f64::from(drawn_rect.width) / f64::from(surface.width().max(1)), f64::from(drawn_rect.height) / f64::from(surface.height().max(1)));
+        let crop = (
+            f64::from(drawn_rect.width) / f64::from(surface.width().max(1)),
+            f64::from(drawn_rect.height) / f64::from(surface.height().max(1)),
+        );
         // A tile of one colour needs no surface, unless it's a whole region's or the only sign of a page.
         let (rgb, surface) = match (kind, what) {
             (TileKind::Blank { rgb }, DrawKind::Tile) if low_res.is_none() => (Some(rgb), None),
             _ => (None, Some(surface)),
         };
-        let note = low_res.map(|(_, why)| LowResNote { message: why.message(), may_clear: why.may_clear(), at: Instant::now() });
+        let note = low_res.map(|(_, why)| LowResNote {
+            message: why.message(),
+            may_clear: why.may_clear(),
+            at: Instant::now(),
+        });
         self.clock += 1;
         let version = self.version_of_page(tab, page);
-        let entry = Entry { id, tab, page, scale, paper, preview, rect, surface, rgb, crop, low_res: note, version, attached: false, discardable: false, last_used: self.clock };
+        let entry = Entry {
+            id,
+            tab,
+            page,
+            scale,
+            paper,
+            preview,
+            rect,
+            surface,
+            rgb,
+            crop,
+            low_res: note,
+            version,
+            attached: false,
+            discardable: false,
+            last_used: self.clock,
+        };
         for key in Self::keys_of(&entry) {
             if let Some(old) = self.cover.insert(key, id)
                 && old != id
@@ -2589,7 +3164,10 @@ impl Reader {
             return false;
         }
         let visible: Vec<u32> = self.visible_pages(doc).collect();
-        if !self.selecting.is_settled(&visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false)) {
+        if !self
+            .selecting
+            .is_settled(&visible, doc.layout.count(), |page| doc.heavy.get(&page).copied().unwrap_or(false))
+        {
             return false;
         }
         for page in self.visible_pages(doc) {
@@ -2614,9 +3192,27 @@ impl Reader {
     pub fn report(&self) -> ReaderReport {
         let doc = self.doc();
         let attached = self.attached.values().map(Vec::len).sum::<usize>();
-        let attached_bytes: usize = self.attached.values().flatten().filter_map(|id| self.entries.get(id)).filter_map(|entry| entry.surface.as_ref()).map(PixelSurface::len).sum();
-        let previews_attached = self.attached.values().flatten().filter_map(|id| self.entries.get(id)).filter(|entry| entry.preview).count();
-        let low_res_pages: HashSet<u32> = self.attached.iter().filter(|(_, ids)| ids.iter().filter_map(|id| self.entries.get(id)).any(|entry| entry.low_res.is_some())).map(|(page, _)| *page).collect();
+        let attached_bytes: usize = self
+            .attached
+            .values()
+            .flatten()
+            .filter_map(|id| self.entries.get(id))
+            .filter_map(|entry| entry.surface.as_ref())
+            .map(PixelSurface::len)
+            .sum();
+        let previews_attached = self
+            .attached
+            .values()
+            .flatten()
+            .filter_map(|id| self.entries.get(id))
+            .filter(|entry| entry.preview)
+            .count();
+        let low_res_pages: HashSet<u32> = self
+            .attached
+            .iter()
+            .filter(|(_, ids)| ids.iter().filter_map(|id| self.entries.get(id)).any(|entry| entry.low_res.is_some()))
+            .map(|(page, _)| *page)
+            .collect();
         let mut low_res_pages: Vec<u32> = low_res_pages.into_iter().map(|page| page + 1).collect();
         low_res_pages.sort_unstable();
         let visible: Vec<u32> = doc.map(|doc| self.visible_pages(doc).map(|page| page + 1).collect()).unwrap_or_default();
@@ -2669,11 +3265,18 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
     use crate::layout::PageBox;
+    use std::path::Path;
 
     fn map() -> PageMap {
-        PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }
+        PageMap {
+            files: vec![PathBuf::from("/d/a.pdf")],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        }
     }
 
     impl Reader {
@@ -2684,7 +3287,17 @@ mod tests {
     }
 
     fn view(y: f64) -> Viewport {
-        Viewport { x: 0.0, y, width: 1168.0, height: 900.0, frame_width: 1168.0, magnification: 1.0, backing: 2.0, live: false, scrolled_to: u64::MAX }
+        Viewport {
+            x: 0.0,
+            y,
+            width: 1168.0,
+            height: 900.0,
+            frame_width: 1168.0,
+            magnification: 1.0,
+            backing: 2.0,
+            live: false,
+            scrolled_to: u64::MAX,
+        }
     }
 
     fn letter() -> PageBox {
@@ -2703,9 +3316,37 @@ mod tests {
                 JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
-                JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
+                JobKind::Draw { .. } => Outcome::Drawn {
+                    kind: TileKind::Colour,
+                    low_res: None,
+                },
             };
-            drawn.push(Job { tab: job.tab, position: job.position, file: job.file.clone(), source_page: job.source_page, generation: job.generation, kind: match &job.kind { JobKind::Size => JobKind::Size, JobKind::Traits => JobKind::Traits, JobKind::Text { check } => JobKind::Text { check: *check }, JobKind::Links => JobKind::Links, JobKind::Draw { scale, rect, surface, what, paper } => JobKind::Draw { scale: *scale, rect: *rect, surface: surface.clone(), what: *what, paper: *paper } } });
+            drawn.push(Job {
+                tab: job.tab,
+                position: job.position,
+                file: job.file.clone(),
+                source_page: job.source_page,
+                generation: job.generation,
+                kind: match &job.kind {
+                    JobKind::Size => JobKind::Size,
+                    JobKind::Traits => JobKind::Traits,
+                    JobKind::Text { check } => JobKind::Text { check: *check },
+                    JobKind::Links => JobKind::Links,
+                    JobKind::Draw {
+                        scale,
+                        rect,
+                        surface,
+                        what,
+                        paper,
+                    } => JobKind::Draw {
+                        scale: *scale,
+                        rect: *rect,
+                        surface: surface.clone(),
+                        what: *what,
+                        paper: *paper,
+                    },
+                },
+            });
             reader.finish(job, outcome);
             let more = reader.drain(MAX_ATTACH_PER_TURN);
             drop(more);
@@ -2731,9 +3372,17 @@ mod tests {
 
     /// A page with one line of text near its foot, in PDF points from the bottom.
     fn page_with_line_at(pdf_y: f32) -> Arc<recto_index::select::PageText> {
-        let frame = recto_proto::PageFrame { turns: 0, left: 0.0, bottom: 0.0, right: 612.0, top: 792.0 };
+        let frame = recto_proto::PageFrame {
+            turns: 0,
+            left: 0.0,
+            bottom: 0.0,
+            right: 612.0,
+            top: 792.0,
+        };
         let chars: Vec<recto_proto::CharRecord> = "find me here".chars().map(|ch| recto_proto::CharRecord::new(ch as u32, 0)).collect();
-        let boxes: Vec<recto_proto::CharBox> = (0..chars.len()).map(|at| [72.0 + at as f32 * 6.0, pdf_y, 77.0 + at as f32 * 6.0, pdf_y + 10.0]).collect();
+        let boxes: Vec<recto_proto::CharBox> = (0..chars.len())
+            .map(|at| [72.0 + at as f32 * 6.0, pdf_y, 77.0 + at as f32 * 6.0, pdf_y + 10.0])
+            .collect();
         Arc::new(recto_index::select::PageText::build(&chars, &boxes, frame, true, false))
     }
 
@@ -2742,21 +3391,40 @@ mod tests {
     fn finds_hit_is_selected_and_brought_a_third_down_the_view() {
         let mut reader = reader_on(10);
         settle(&mut reader);
-        let range = recto_index::select::Range { start: recto_index::select::Place { page: 6, at: 0 }, end: recto_index::select::Place { page: 6, at: 4 } };
+        let range = recto_index::select::Range {
+            start: recto_index::select::Place { page: 6, at: 0 },
+            end: recto_index::select::Place { page: 6, at: 4 },
+        };
         reader.reveal_range(range);
         assert_eq!(reader.selection_range(), Some(range), "selected");
-        let to_page = reader.take_ops().into_iter().rev().find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None }).expect("its page, at once");
+        let to_page = reader
+            .take_ops()
+            .into_iter()
+            .rev()
+            .find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None })
+            .expect("its page, at once");
         reader.set_viewport(view(to_page));
         reader.take_text(1, 6, Some((page_with_line_at(40.0), true)));
-        let placed = reader.take_ops().into_iter().rev().find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None }).expect("then the hit, once its place is known");
+        let placed = reader
+            .take_ops()
+            .into_iter()
+            .rev()
+            .find_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None })
+            .expect("then the hit, once its place is known");
         let doc = reader.doc().unwrap();
         let top = doc.layout.rect(6).y + (792.0 - 50.0) * doc.layout.fit();
         let height = view(0.0).height;
-        assert!(top >= placed + height * 0.25 && top <= placed + height * 0.4, "a third down: hit at {top}, view from {placed}");
+        assert!(
+            top >= placed + height * 0.25 && top <= placed + height * 0.4,
+            "a third down: hit at {top}, view from {placed}"
+        );
         // Another hit on what's showing, away from the edges, moves nothing.
         reader.set_viewport(view(placed));
         reader.take_ops();
-        let near = recto_index::select::Range { start: recto_index::select::Place { page: 6, at: 5 }, end: recto_index::select::Place { page: 6, at: 7 } };
+        let near = recto_index::select::Range {
+            start: recto_index::select::Place { page: 6, at: 5 },
+            end: recto_index::select::Place { page: 6, at: 7 },
+        };
         reader.reveal_range(near);
         assert!(!reader.take_ops().iter().any(|op| matches!(op, Op::ScrollTo { .. })), "it's in view already");
     }
@@ -2813,7 +3481,10 @@ mod tests {
         reader.set_viewport(tall(30_000.0));
         settle(&mut reader);
         let ops = reader.set_viewport(tall(0.0));
-        let pages: HashSet<u32> = ops.iter().filter_map(|op| if let Op::Attach { page, .. } = op { Some(*page) } else { None }).collect();
+        let pages: HashSet<u32> = ops
+            .iter()
+            .filter_map(|op| if let Op::Attach { page, .. } = op { Some(*page) } else { None })
+            .collect();
         let visible = reader.report().0["visible_pages"].as_array().unwrap().len();
         assert!(visible >= 2, "this needs two pages in view");
         assert_eq!(pages.len(), visible, "{ops:?}");
@@ -2832,7 +3503,10 @@ mod tests {
             settle(&mut reader);
         }
         let report = reader.report().0;
-        assert!(report["tiles"]["kept_bytes"].as_u64().unwrap() <= (MAX_KEPT_BYTES + MAX_KEPT_PREVIEWS * 1024 * 1024) as u64, "{report}");
+        assert!(
+            report["tiles"]["kept_bytes"].as_u64().unwrap() <= (MAX_KEPT_BYTES + MAX_KEPT_PREVIEWS * 1024 * 1024) as u64,
+            "{report}"
+        );
         let doc = reader.doc().unwrap();
         let key = reader.preview_key(doc, 0);
         assert!(reader.cover.contains_key(&key), "the first page's preview is still here");
@@ -2845,7 +3519,12 @@ mod tests {
     #[test]
     fn at_most_eight_tiles_are_attached_in_a_turn_and_the_rest_follow() {
         let mut reader = reader_on(100);
-        let big = Viewport { width: 4000.0, height: 3000.0, frame_width: 1168.0, ..view(0.0) };
+        let big = Viewport {
+            width: 4000.0,
+            height: 3000.0,
+            frame_width: 1168.0,
+            ..view(0.0)
+        };
         reader.set_viewport(big);
         settle(&mut reader);
         reader.set_viewport(view(40_000.0));
@@ -2873,15 +3552,27 @@ mod tests {
         let mut reader = reader_on(10);
         settle(&mut reader);
         let before = reader.report().0["tile_scale"].as_f64().unwrap();
-        let ops = reader.set_viewport(Viewport { magnification: 1.5, ..view(0.0) });
-        assert!(!ops.iter().any(|op| matches!(op, Op::Detach { .. } | Op::HidePage { .. })), "nothing comes off yet: {ops:?}");
+        let ops = reader.set_viewport(Viewport {
+            magnification: 1.5,
+            ..view(0.0)
+        });
+        assert!(
+            !ops.iter().any(|op| matches!(op, Op::Detach { .. } | Op::HidePage { .. })),
+            "nothing comes off yet: {ops:?}"
+        );
         settle(&mut reader);
         let after = reader.report().0;
         assert!(after["tile_scale"].as_f64().unwrap() > before);
         assert!(reader.is_settled());
         let attached = after["tiles"]["attached"].as_u64().unwrap();
         let scale = after["tile_scale"].as_f64().unwrap() as f32;
-        let exact = reader.attached.values().flatten().filter_map(|id| reader.entries.get(id)).filter(|entry| entry.scale == scale).count() as u64;
+        let exact = reader
+            .attached
+            .values()
+            .flatten()
+            .filter_map(|id| reader.entries.get(id))
+            .filter(|entry| entry.scale == scale)
+            .count() as u64;
         assert_eq!(attached, exact, "only exact tiles left");
     }
 
@@ -2891,7 +3582,11 @@ mod tests {
         let mut reader = reader_on(10);
         settle(&mut reader);
         let scale = reader.report().0["tile_scale"].clone();
-        reader.set_viewport(Viewport { magnification: 1.7, live: true, ..view(0.0) });
+        reader.set_viewport(Viewport {
+            magnification: 1.7,
+            live: true,
+            ..view(0.0)
+        });
         assert_eq!(reader.report().0["tile_scale"], scale);
         assert!(reader.next_job().is_none());
     }
@@ -2905,7 +3600,13 @@ mod tests {
                 JobKind::Links => reader.finish(job, Outcome::Links(None)),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
                 JobKind::Draw { what: kind, .. } if *kind == what => return job,
-                JobKind::Draw { .. } => reader.finish(job, Outcome::Drawn { kind: TileKind::Colour, low_res: None }),
+                JobKind::Draw { .. } => reader.finish(
+                    job,
+                    Outcome::Drawn {
+                        kind: TileKind::Colour,
+                        low_res: None,
+                    },
+                ),
             }
         }
     }
@@ -2931,14 +3632,20 @@ mod tests {
         let mut reader = reader_on(100);
         let job = a_draw_job(&mut reader, DrawKind::Tile);
         reader.note_started(&job, None);
-        reader.set_viewport(Viewport { magnification: 1.5, ..view(0.0) });
+        reader.set_viewport(Viewport {
+            magnification: 1.5,
+            ..view(0.0)
+        });
         assert_eq!(reader.counts().cancels_asked, 1, "the zoom moved on");
         reader.finish(job, Outcome::Cancelled);
 
         let mut reader = reader_on(100);
         let job = a_draw_job(&mut reader, DrawKind::Preview);
         reader.note_started(&job, None);
-        reader.set_viewport(Viewport { magnification: 1.5, ..view(0.0) });
+        reader.set_viewport(Viewport {
+            magnification: 1.5,
+            ..view(0.0)
+        });
         assert_eq!(reader.counts().cancels_asked, 0, "its page is still in view");
         reader.finish(job, Outcome::Cancelled);
     }
@@ -2949,11 +3656,41 @@ mod tests {
         let mut reader = reader_on(10);
         settle(&mut reader);
         assert!(!reader.entries.is_empty());
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[], None, Spread::Single);
+        reader.activate(
+            2,
+            10,
+            0,
+            PageMap {
+                files: vec![PathBuf::from("/d/b.pdf")],
+                slots: None,
+                own: None,
+                turns: None,
+                expected: Vec::new(),
+                follows: None,
+            },
+            &[],
+            None,
+            Spread::Single,
+        );
         assert!(reader.entries.values().all(|entry| entry.tab != 1), "tab 1 isn't warm");
         assert!(!reader.docs.contains_key(&1));
         assert_eq!(*reader.wanted_files(), vec![PathBuf::from("/d/b.pdf")]);
-        reader.activate(3, 10, 0, PageMap { files: vec![PathBuf::from("/d/c.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[2], None, Spread::Single);
+        reader.activate(
+            3,
+            10,
+            0,
+            PageMap {
+                files: vec![PathBuf::from("/d/c.pdf")],
+                slots: None,
+                own: None,
+                turns: None,
+                expected: Vec::new(),
+                follows: None,
+            },
+            &[2],
+            None,
+            Spread::Single,
+        );
         assert_eq!(reader.wanted_files().len(), 2, "a warm tab's file is kept");
     }
 
@@ -3000,7 +3737,9 @@ mod tests {
         reader.set_viewport(base);
         reader.take_moved_page();
         reader.jump_to(50);
-        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().find(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("no scroll") };
+        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().find(|op| matches!(op, Op::ScrollTo { .. })) else {
+            panic!("no scroll")
+        };
         let mut there = view(y);
         there.scrolled_to = seq - 1;
         reader.set_viewport(there);
@@ -3030,7 +3769,9 @@ mod tests {
         assert!(!reader.take_user_scrolled(), "asking clears it");
         let page = reader.follow(40, 0.25).expect("a tab is showing");
         assert_eq!(page, 40);
-        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("no scroll") };
+        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
+            panic!("no scroll")
+        };
         let mut there = scrolled;
         there.y = y;
         there.scrolled_to = seq;
@@ -3059,7 +3800,9 @@ mod tests {
         reader.take_moved_page();
         assert_eq!(reader.follow(40, 0.9), Some(40));
         assert_eq!(reader.take_moved_page(), Some(40), "sent there");
-        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("no scroll") };
+        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
+            panic!("no scroll")
+        };
         let mut there = view(y);
         there.scrolled_to = seq;
         reader.set_viewport(there);
@@ -3096,7 +3839,9 @@ mod tests {
         settle(&mut reader);
         reader.take_moved_page();
         reader.jump_to(51);
-        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("no scroll") };
+        let Some(Op::ScrollTo { y, seq }) = reader.take_ops().into_iter().rfind(|op| matches!(op, Op::ScrollTo { .. })) else {
+            panic!("no scroll")
+        };
         let mut there = view(y);
         there.scrolled_to = seq;
         reader.set_viewport(there);
@@ -3151,7 +3896,18 @@ mod tests {
         let shown: Vec<u32> = reader.visible_pages(reader.doc().unwrap()).take(12).collect();
         assert!(shown.len() > 6, "the low zoom shows {} pages", shown.len());
         // Another tab comes to the screen at its own zoom, and the first is held, off screen.
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], ..map() }, &[1], None, Spread::Single);
+        reader.activate(
+            2,
+            10,
+            0,
+            PageMap {
+                files: vec![PathBuf::from("/d/b.pdf")],
+                ..map()
+            },
+            &[1],
+            None,
+            Spread::Single,
+        );
         reader.set_viewport(view(0.0));
         settle(&mut reader);
         let pictures: Vec<u32> = reader.sleep_material(1, None).unwrap().pictures.iter().map(|picture| picture.page).collect();
@@ -3165,12 +3921,36 @@ mod tests {
         reader.note_version(Path::new("/d/a.pdf"), 1);
         settle(&mut reader);
         let shown: Vec<u32> = reader.visible_pages(reader.doc().unwrap()).take(MAX_SLEEP_SHOTS).collect();
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], ..map() }, &[1], None, Spread::Single);
+        reader.activate(
+            2,
+            10,
+            0,
+            PageMap {
+                files: vec![PathBuf::from("/d/b.pdf")],
+                ..map()
+            },
+            &[1],
+            None,
+            Spread::Single,
+        );
         settle(&mut reader);
-        assert!(reader.entries.values().any(|entry| entry.tab == 1 && entry.discardable && entry.surface.is_some()), "what the tab left showed is discardable now");
+        assert!(
+            reader
+                .entries
+                .values()
+                .any(|entry| entry.tab == 1 && entry.discardable && entry.surface.is_some()),
+            "what the tab left showed is discardable now"
+        );
         // What the kernel does to discardable memory when it needs pages.
         assert!(reader.empty_discardable() > 0);
-        assert!(reader.entries.values().filter(|entry| entry.tab == 1 && entry.discardable).filter_map(|entry| entry.surface.as_ref()).all(PixelSurface::was_emptied));
+        assert!(
+            reader
+                .entries
+                .values()
+                .filter(|entry| entry.tab == 1 && entry.discardable)
+                .filter_map(|entry| entry.surface.as_ref())
+                .all(PixelSurface::was_emptied)
+        );
         let pictures: Vec<u32> = reader.sleep_material(1, None).unwrap().pictures.iter().map(|picture| picture.page).collect();
         assert_eq!(pictures, shown, "a picture for each page it showed when it was left");
         // Shown again, it's drawn again, and what was kept for its sleep file goes.
@@ -3185,13 +3965,30 @@ mod tests {
         let mut reader = reader_on(10);
         reader.note_version(Path::new("/d/a.pdf"), 1);
         settle(&mut reader);
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], ..map() }, &[1], None, Spread::Single);
+        reader.activate(
+            2,
+            10,
+            0,
+            PageMap {
+                files: vec![PathBuf::from("/d/b.pdf")],
+                ..map()
+            },
+            &[1],
+            None,
+            Spread::Single,
+        );
         settle(&mut reader);
         let kept = reader.report().0["left_picture_bytes"].as_u64().unwrap();
-        assert!(kept > 0 && kept <= MAX_LEFT_PICTURE_BYTES as u64, "kept as it was left, within its limit: {kept}");
+        assert!(
+            kept > 0 && kept <= MAX_LEFT_PICTURE_BYTES as u64,
+            "kept as it was left, within its limit: {kept}"
+        );
         reader.note_version(Path::new("/d/a.pdf"), 2);
         assert!(reader.docs[&1].left_pictures.is_none());
-        assert!(reader.sleep_material(1, None).unwrap().pictures.is_empty(), "nothing of version 1 is left to give");
+        assert!(
+            reader.sleep_material(1, None).unwrap().pictures.is_empty(),
+            "nothing of version 1 is left to give"
+        );
     }
 
     /// Failure (review of f05c998, finding 1): Rotate, Undo or Redo of a turn sends the reader to the top of their page and back to the left edge, as the tab showing was taken up again as if it had just been come to.
@@ -3207,12 +4004,20 @@ mod tests {
         reader.set_viewport(at);
         reader.take_moved_page();
         let before = reader.places()[0].1;
-        let turned = PageMap { turns: Some(Arc::from(vec![1u8; 10])), ..map() };
+        let turned = PageMap {
+            turns: Some(Arc::from(vec![1u8; 10])),
+            ..map()
+        };
         reader.activate(1, 10, 3, turned, &[], None, Spread::Single);
         follow_host(&mut reader, at);
         let after = reader.places()[0].1;
         assert_eq!(after.page, 3);
-        assert!((after.anchor.1 - before.anchor.1).abs() < 0.02, "as far down the page: {:?} then {:?}", before.anchor, after.anchor);
+        assert!(
+            (after.anchor.1 - before.anchor.1).abs() < 0.02,
+            "as far down the page: {:?} then {:?}",
+            before.anchor,
+            after.anchor
+        );
         assert_eq!(reader.docs[&1].scroll_x, 30.0, "and as far across");
     }
 
@@ -3227,7 +4032,10 @@ mod tests {
                 JobKind::Text { .. } => Outcome::TextFailed,
                 JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
-                JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
+                JobKind::Draw { .. } => Outcome::Drawn {
+                    kind: TileKind::Colour,
+                    low_res: None,
+                },
             };
             reader.finish(job, outcome);
             drop(reader.drain(MAX_ATTACH_PER_TURN));
@@ -3237,10 +4045,39 @@ mod tests {
     /// Failure (review round 1 of stage 2): an added file's stamp is looked up by path across every tab, so B.pdf added into tab A and open as tab B's own: saving B makes tab B's own pages fail as "a PDF that has changed since it was added". Only the tab the file was added to checks it, and never for its own file.
     #[test]
     fn an_added_files_stamp_is_the_tabs_it_was_added_to() {
-        let stamp = Some(FileStamp { size: 1, mtime_ns: 1, device: 0, inode: 3 });
+        let stamp = Some(FileStamp {
+            size: 1,
+            mtime_ns: 1,
+            device: 0,
+            inode: 3,
+        });
         let mut reader = Reader::new();
-        reader.activate(1, 2, 0, PageMap { files: vec![PathBuf::from("/d/a.pdf"), PathBuf::from("/d/b.pdf")], slots: Some(vec![(0, 0), (1, 0)]), expected: vec![None, stamp], ..map() }, &[], None, Spread::Single);
-        reader.activate(2, 1, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], ..map() }, &[1], None, Spread::Single);
+        reader.activate(
+            1,
+            2,
+            0,
+            PageMap {
+                files: vec![PathBuf::from("/d/a.pdf"), PathBuf::from("/d/b.pdf")],
+                slots: Some(vec![(0, 0), (1, 0)]),
+                expected: vec![None, stamp],
+                ..map()
+            },
+            &[],
+            None,
+            Spread::Single,
+        );
+        reader.activate(
+            2,
+            1,
+            0,
+            PageMap {
+                files: vec![PathBuf::from("/d/b.pdf")],
+                ..map()
+            },
+            &[1],
+            None,
+            Spread::Single,
+        );
         assert_eq!(reader.expected_stamp(1, Path::new("/d/b.pdf")), stamp, "tab 1 added it");
         assert_eq!(reader.expected_stamp(2, Path::new("/d/b.pdf")), None, "it's tab 2's own file");
         assert_eq!(reader.expected_stamp(1, Path::new("/d/a.pdf")), None, "and tab 1's own isn't checked so");
@@ -3249,10 +4086,22 @@ mod tests {
     /// Failure (the owner's bench file, 2026-11-08): a save after turning page 1 changes the view. The saved file's page 1 is landscape, the reopened layout fits that page instead of the portrait ones, and the zoom shown drops from 128% to 97% with every page shrinking; the place within the page and the selection go too. A save writes what was shown, so the fit, zoom, place across and down, layout and selection stay exactly, whichever page the reader's on and whether a renderer saw the file replaced first.
     #[test]
     fn a_save_leaves_zoom_place_layout_and_selection_as_they_were() {
-        let stamp = |size: u64| Some(FileStamp { size, mtime_ns: 1, device: 0, inode: 7 });
+        let stamp = |size: u64| {
+            Some(FileStamp {
+                size,
+                mtime_ns: 1,
+                device: 0,
+                inode: 7,
+            })
+        };
         let landscape = PageBox { width: 792.0, height: 612.0 };
         // On the turned page itself, as on the bench file, the first page the new layout learns is the landscape one.
-        for (spread, renderer_saw_it_first, on) in [(Spread::Single, false, 0), (Spread::Single, false, 3), (Spread::Single, true, 3), (Spread::TwoUpCover, false, 3)] {
+        for (spread, renderer_saw_it_first, on) in [
+            (Spread::Single, false, 0),
+            (Spread::Single, false, 3),
+            (Spread::Single, true, 3),
+            (Spread::TwoUpCover, false, 3),
+        ] {
             let mut reader = Reader::new();
             reader.set_viewport(view(0.0));
             let own = PageMap { own: stamp(1), ..map() };
@@ -3260,7 +4109,10 @@ mod tests {
             reader.scrolled_to = 0;
             let mut turns = vec![0u8; 10];
             turns[0] = 1;
-            let turned = PageMap { turns: Some(Arc::from(turns)), ..own.clone() };
+            let turned = PageMap {
+                turns: Some(Arc::from(turns)),
+                ..own.clone()
+            };
             reader.activate(1, 10, 0, turned, &[], None, spread);
             follow_host(&mut reader, view(0.0));
             settle_sized(&mut reader, letter());
@@ -3271,16 +4123,29 @@ mod tests {
             at.magnification = 1.28;
             reader.set_viewport(at);
             reader.take_moved_page();
-            let selected = Range { start: recto_index::select::Place { page: 2, at: 5 }, end: recto_index::select::Place { page: 4, at: 9 } };
+            let selected = Range {
+                start: recto_index::select::Place { page: 2, at: 5 },
+                end: recto_index::select::Place { page: 4, at: 9 },
+            };
             reader.restore_selection(selected);
-            let (fit, height, width, zoom) = { let doc = reader.doc().unwrap(); (doc.layout.fit(), doc.layout.document_height(), doc.layout.document_width(), doc.magnification) };
+            let (fit, height, width, zoom) = {
+                let doc = reader.doc().unwrap();
+                (doc.layout.fit(), doc.layout.document_height(), doc.layout.document_width(), doc.magnification)
+            };
             let rects: Vec<crate::layout::PageRect> = (0..10).map(|page| reader.doc().unwrap().layout.rect(page)).collect();
             let before = reader.places()[0].1;
             if renderer_saw_it_first {
                 reader.file_changed(1);
             }
             // Saved: the file is another version, with page 0 turned in it, and no edits left.
-            let saved = PageMap { files: own.files.clone(), slots: None, own: stamp(2), turns: None, expected: Vec::new(), follows: stamp(1) };
+            let saved = PageMap {
+                files: own.files.clone(),
+                slots: None,
+                own: stamp(2),
+                turns: None,
+                expected: Vec::new(),
+                follows: stamp(1),
+            };
             reader.activate(1, 10, on, saved, &[], None, spread);
             follow_host(&mut reader, at);
             settle_sized(&mut reader, landscape);
@@ -3288,11 +4153,22 @@ mod tests {
             let label = format!("{spread:?}, renderer first: {renderer_saw_it_first}, on page {on}");
             assert_eq!(doc.layout.fit(), fit, "{label}: the fit, and so the zoom shown");
             assert_eq!(doc.magnification, zoom, "{label}: the magnification");
-            assert_eq!((doc.layout.document_height(), doc.layout.document_width()), (height, width), "{label}: the document's size");
-            assert_eq!((0..10).map(|page| doc.layout.rect(page)).collect::<Vec<_>>(), rects, "{label}: every page where it was");
+            assert_eq!(
+                (doc.layout.document_height(), doc.layout.document_width()),
+                (height, width),
+                "{label}: the document's size"
+            );
+            assert_eq!(
+                (0..10).map(|page| doc.layout.rect(page)).collect::<Vec<_>>(),
+                rects,
+                "{label}: every page where it was"
+            );
             let after = reader.places()[0].1;
             assert_eq!(after.page, before.page, "{label}: {before:?} then {after:?}");
-            assert!((after.anchor.1 - before.anchor.1).abs() < 1e-9 && (after.y - before.y).abs() < 1e-6, "{label}: as far down: {before:?} then {after:?}");
+            assert!(
+                (after.anchor.1 - before.anchor.1).abs() < 1e-9 && (after.y - before.y).abs() < 1e-6,
+                "{label}: as far down: {before:?} then {after:?}"
+            );
             assert_eq!(after.x, before.x, "{label}: as far across");
             assert_eq!(reader.selection_range(), Some(selected), "{label}: what was selected");
         }
@@ -3300,14 +4176,30 @@ mod tests {
         let mut reader = reader_on(10);
         settle_sized(&mut reader, letter());
         reader.restore_selection(Range::pages(1, 2));
-        reader.activate(1, 10, 0, PageMap { own: stamp(9), follows: stamp(8), ..map() }, &[], None, Spread::Single);
+        reader.activate(
+            1,
+            10,
+            0,
+            PageMap {
+                own: stamp(9),
+                follows: stamp(8),
+                ..map()
+            },
+            &[],
+            None,
+            Spread::Single,
+        );
         assert_eq!(reader.selection_range(), None, "a save from another version than the one shown carries nothing");
     }
 
     /// Failure (review of f05c998, B2): side by side, after any scroll, a change of layout moves the reader off the page they were on: the place was kept on the first page of its row, so the right-hand page's reader lands on the left one, or two pages back going to the cover layout. Fed the host's next view, as the app is.
     #[test]
     fn a_change_of_layout_after_a_scroll_keeps_the_page() {
-        for (from, to) in [(Spread::TwoUp, Spread::Single), (Spread::TwoUp, Spread::TwoUpCover), (Spread::TwoUpCover, Spread::TwoUp)] {
+        for (from, to) in [
+            (Spread::TwoUp, Spread::Single),
+            (Spread::TwoUp, Spread::TwoUpCover),
+            (Spread::TwoUpCover, Spread::TwoUp),
+        ] {
             let mut reader = reader_on(100);
             reader.scrolled_to = 0;
             reader.set_spread(from);
@@ -3325,7 +4217,12 @@ mod tests {
             let place = reader.places()[0].1;
             assert_eq!(place.page, 51, "{from:?} to {to:?}");
             let rect = reader.doc().unwrap().layout.rect(51);
-            assert!((reader.viewport.y - (rect.y + down * rect.height)).abs() < 1.0, "{from:?} to {to:?}: as far down the page: {} against {}", reader.viewport.y, rect.y + down * rect.height);
+            assert!(
+                (reader.viewport.y - (rect.y + down * rect.height)).abs() < 1.0,
+                "{from:?} to {to:?}: as far down the page: {} against {}",
+                reader.viewport.y,
+                rect.y + down * rect.height
+            );
         }
     }
 
@@ -3340,8 +4237,14 @@ mod tests {
                 JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
-                JobKind::Draw { .. } if job.position == 0 => Outcome::PageFailed { message: "This page couldn't be drawn.".into(), may_pass: false },
-                JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
+                JobKind::Draw { .. } if job.position == 0 => Outcome::PageFailed {
+                    message: "This page couldn't be drawn.".into(),
+                    may_pass: false,
+                },
+                JobKind::Draw { .. } => Outcome::Drawn {
+                    kind: TileKind::Colour,
+                    low_res: None,
+                },
             };
             reader.finish(job, outcome);
         }
@@ -3354,7 +4257,12 @@ mod tests {
     #[test]
     fn a_lower_resolution_page_is_labelled() {
         let mut reader = reader_on(1);
-        let rect = TileRect { x: 0, y: 0, width: 100, height: 100 };
+        let rect = TileRect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
         let mut low_done = false;
         for _ in 0..64 {
             let Some(job) = reader.next_job() else { break };
@@ -3365,7 +4273,10 @@ mod tests {
                 JobKind::Traits => Outcome::Heavy(true),
                 JobKind::Draw { .. } => {
                     low_done = true;
-                    Outcome::Drawn { kind: TileKind::Colour, low_res: Some((rect, LowResWhy::TooHeavy)) }
+                    Outcome::Drawn {
+                        kind: TileKind::Colour,
+                        low_res: Some((rect, LowResWhy::TooHeavy)),
+                    }
                 }
             };
             reader.finish(job, outcome);
@@ -3392,7 +4303,10 @@ mod tests {
                 JobKind::Traits => Outcome::Heavy(true),
                 JobKind::Draw { what, .. } => {
                     kinds.push(*what);
-                    Outcome::Drawn { kind: TileKind::Colour, low_res: None }
+                    Outcome::Drawn {
+                        kind: TileKind::Colour,
+                        low_res: None,
+                    }
                 }
             };
             reader.finish(job, outcome);
@@ -3409,7 +4323,14 @@ mod tests {
     fn a_change_to_the_page_order_clears_what_was_drawn() {
         let mut reader = reader_on(5);
         settle(&mut reader);
-        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 0)]), own: None, turns: None, expected: Vec::new(), follows: None };
+        let edited = PageMap {
+            files: vec![PathBuf::from("/d/a.pdf")],
+            slots: Some(vec![(0, 1), (0, 0)]),
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        };
         reader.activate(1, 2, 0, edited.clone(), &[], None, Spread::Single);
         assert!(reader.entries.is_empty());
         assert_eq!(reader.doc().unwrap().layout.count(), 2);
@@ -3429,13 +4350,19 @@ mod tests {
             let outcome = match &job.kind {
                 JobKind::Size if job.position == 0 => {
                     asked += 1;
-                    Outcome::PageFailed { message: "This page couldn't be read.".into(), may_pass: false }
+                    Outcome::PageFailed {
+                        message: "This page couldn't be read.".into(),
+                        may_pass: false,
+                    }
                 }
                 JobKind::Size => Outcome::Size(letter()),
                 JobKind::Text { .. } => panic!("no text was asked for"),
                 JobKind::Links => Outcome::Links(None),
                 JobKind::Traits => Outcome::Heavy(false),
-                JobKind::Draw { .. } => Outcome::Drawn { kind: TileKind::Colour, low_res: None },
+                JobKind::Draw { .. } => Outcome::Drawn {
+                    kind: TileKind::Colour,
+                    low_res: None,
+                },
             };
             reader.finish(job, outcome);
             reader.drain(64);
@@ -3449,7 +4376,14 @@ mod tests {
     /// Failure: a page is deleted while a job on it is running, and when the job ends its old picture goes in the place of the page now there, reading as settled. The same for a size or a heavy answer about what used to be there.
     #[test]
     fn what_a_job_found_before_an_edit_is_thrown_away() {
-        let edited = PageMap { files: vec![PathBuf::from("/d/a.pdf")], slots: Some(vec![(0, 1), (0, 2)]), own: None, turns: None, expected: Vec::new(), follows: None };
+        let edited = PageMap {
+            files: vec![PathBuf::from("/d/a.pdf")],
+            slots: Some(vec![(0, 1), (0, 2)]),
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        };
         // A job of each kind, caught running.
         let mut reader = reader_on(3);
         let size = reader.next_job().expect("a size");
@@ -3487,7 +4421,13 @@ mod tests {
         };
         reader.note_started(&draw, None);
         reader.activate(1, 2, 0, edited, &[], None, Spread::Single);
-        reader.finish(draw, Outcome::Drawn { kind: TileKind::Colour, low_res: None });
+        reader.finish(
+            draw,
+            Outcome::Drawn {
+                kind: TileKind::Colour,
+                low_res: None,
+            },
+        );
         assert!(reader.entries.is_empty(), "the old page's picture stays out");
         assert!(reader.cover.is_empty());
     }
@@ -3516,7 +4456,14 @@ mod tests {
             }
             seen
         }
-        let other = |name: &str| PageMap { files: vec![PathBuf::from(name)], slots: None, own: None, turns: None, expected: Vec::new(), follows: None };
+        let other = |name: &str| PageMap {
+            files: vec![PathBuf::from(name)],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        };
         for answer in [TileKind::Colour, TileKind::Blank { rgb: 0xFF_FF_FF }] {
             let mut held = Vec::new();
             let mut reader = reader_on(3);
@@ -3557,7 +4504,13 @@ mod tests {
                 JobKind::Links => reader.finish(job, Outcome::Links(None)),
                 JobKind::Size => reader.finish(job, Outcome::Size(letter())),
                 JobKind::Traits => reader.finish(job, Outcome::Heavy(false)),
-                JobKind::Draw { .. } => reader.finish(job, Outcome::Drawn { kind: TileKind::Colour, low_res: None }),
+                JobKind::Draw { .. } => reader.finish(
+                    job,
+                    Outcome::Drawn {
+                        kind: TileKind::Colour,
+                        low_res: None,
+                    },
+                ),
             }
         }
     }
@@ -3601,7 +4554,13 @@ mod tests {
         let again = settle_to_text(&mut reader).expect("it's still wanted");
         assert_eq!(again.position, page);
         assert!(matches!(again.kind, JobKind::Text { check: false }));
-        reader.finish(again, Outcome::Text { text: Arc::new(recto_index::select::PageText::default()), checked: false });
+        reader.finish(
+            again,
+            Outcome::Text {
+                text: Arc::new(recto_index::select::PageText::default()),
+                checked: false,
+            },
+        );
         let check = settle_to_text(&mut reader).expect("not tried, so asked for");
         assert!(matches!(check.kind, JobKind::Text { check: true }));
     }
@@ -3621,7 +4580,13 @@ mod tests {
             }
         };
         reader.set_viewport(view(40_000.0));
-        reader.finish(draw, Outcome::Drawn { kind: TileKind::Colour, low_res: None });
+        reader.finish(
+            draw,
+            Outcome::Drawn {
+                kind: TileKind::Colour,
+                low_res: None,
+            },
+        );
         let entry = reader.entries.values().next().expect("kept");
         assert!(!entry.attached && entry.discardable, "{entry:?}");
     }
@@ -3636,19 +4601,37 @@ mod tests {
         reader.set_viewport(view(inside));
         let page = reader.take_moved_page().expect("the reader moved");
         settle(&mut reader);
-        let other = PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None };
+        let other = PageMap {
+            files: vec![PathBuf::from("/d/b.pdf")],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        };
         reader.activate(2, 10, 0, other.clone(), &[1], None, Spread::Single);
         reader.take_ops();
         reader.activate(1, 100, page, map(), &[2], None, Spread::Single);
-        let scrolled: Vec<f64> = reader.take_ops().into_iter().filter_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None }).collect();
+        let scrolled: Vec<f64> = reader
+            .take_ops()
+            .into_iter()
+            .filter_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None })
+            .collect();
         assert!((scrolled.last().unwrap() - inside).abs() < 1.0, "{scrolled:?} against {inside}");
 
         reader.activate(2, 10, 0, other, &[1], None, Spread::Single);
         reader.take_ops();
         reader.activate(1, 100, page + 3, map(), &[2], None, Spread::Single);
-        let scrolled: Vec<f64> = reader.take_ops().into_iter().filter_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None }).collect();
+        let scrolled: Vec<f64> = reader
+            .take_ops()
+            .into_iter()
+            .filter_map(|op| if let Op::ScrollTo { y, .. } = op { Some(y) } else { None })
+            .collect();
         let top = tops(&reader, page + 3);
-        assert!((scrolled.last().unwrap() - top).abs() < 1.0, "sent somewhere else, it starts at the top: {scrolled:?} against {top}");
+        assert!(
+            (scrolled.last().unwrap() - top).abs() < 1.0,
+            "sent somewhere else, it starts at the top: {scrolled:?} against {top}"
+        );
     }
 
     /// Failure: closing a warm tab leaves its layout, tiles, worker and open file until the next switch of tab, which may never come.
@@ -3656,7 +4639,22 @@ mod tests {
     fn a_warm_tab_that_goes_holds_nothing_at_once() {
         let mut reader = reader_on(10);
         settle(&mut reader);
-        reader.activate(2, 10, 0, PageMap { files: vec![PathBuf::from("/d/b.pdf")], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[1], None, Spread::Single);
+        reader.activate(
+            2,
+            10,
+            0,
+            PageMap {
+                files: vec![PathBuf::from("/d/b.pdf")],
+                slots: None,
+                own: None,
+                turns: None,
+                expected: Vec::new(),
+                follows: None,
+            },
+            &[1],
+            None,
+            Spread::Single,
+        );
         assert!(reader.entries.values().any(|entry| entry.tab == 1), "still warm");
         assert_eq!(reader.wanted_files().len(), 2);
         reader.set_warm(&[]);
@@ -3670,9 +4668,15 @@ mod tests {
     fn reopening_the_window_keeps_the_place_and_the_zoom() {
         let mut reader = reader_on(100);
         settle(&mut reader);
-        reader.set_viewport(Viewport { magnification: 2.0, ..view(0.0) });
+        reader.set_viewport(Viewport {
+            magnification: 2.0,
+            ..view(0.0)
+        });
         let inside = reader.doc().unwrap().layout.top(40) + 300.0;
-        reader.set_viewport(Viewport { magnification: 2.0, ..view(inside) });
+        reader.set_viewport(Viewport {
+            magnification: 2.0,
+            ..view(inside)
+        });
         reader.take_moved_page();
         settle(&mut reader);
         // As the old window got to, with its own count of scrolls.
@@ -3685,9 +4689,15 @@ mod tests {
         let ops = reader.set_viewport(new_window);
         assert_eq!(reader.take_moved_page(), None, "nor is it before it has got there");
         assert!(ops.iter().any(|op| matches!(op, Op::Magnify { value } if *value == 2.0)), "{ops:?}");
-        let Some(Op::ScrollTo { y, seq }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("{ops:?}") };
+        let Some(Op::ScrollTo { y, seq }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else {
+            panic!("{ops:?}")
+        };
         assert!((y - inside).abs() < 1.0, "{y} against {inside}");
-        reader.set_viewport(Viewport { magnification: 2.0, scrolled_to: *seq, ..view(*y) });
+        reader.set_viewport(Viewport {
+            magnification: 2.0,
+            scrolled_to: *seq,
+            ..view(*y)
+        });
         assert_eq!(reader.take_moved_page(), None, "arriving isn't a move");
         assert_eq!(reader.doc().unwrap().magnification, 2.0);
     }
@@ -3698,12 +4708,41 @@ mod tests {
         let mut reader = Reader::new();
         reader.set_viewport(view(0.0));
         let surface = PixelSurface::create(153, 198).unwrap();
-        let shot = |page: u32, surface: PixelSurface| SleepShot { page, scale: 0.25, paper: PaperKind::White, surface };
-        let saved = SavedPlace { page: 0, anchor: (0, 0.0), x: 0.0, y: 0.0, document_height: 0.0, magnification: 1.0, page_size: Some(letter()) };
+        let shot = |page: u32, surface: PixelSurface| SleepShot {
+            page,
+            scale: 0.25,
+            paper: PaperKind::White,
+            surface,
+        };
+        let saved = SavedPlace {
+            page: 0,
+            anchor: (0, 0.0),
+            x: 0.0,
+            y: 0.0,
+            document_height: 0.0,
+            magnification: 1.0,
+            page_size: Some(letter()),
+        };
         // For another tab: not used.
-        reader.give_sleep(9, SleepView { version: None, usual: Some(letter()), sizes: Vec::new(), pictures: vec![shot(0, PixelSurface::create(153, 198).unwrap())] });
+        reader.give_sleep(
+            9,
+            SleepView {
+                version: None,
+                usual: Some(letter()),
+                sizes: Vec::new(),
+                pictures: vec![shot(0, PixelSurface::create(153, 198).unwrap())],
+            },
+        );
         reader.note_wake(1, Instant::now());
-        reader.give_sleep(1, SleepView { version: None, usual: Some(letter()), sizes: vec![(3, PageBox { width: 300.0, height: 400.0 })], pictures: vec![shot(0, surface), shot(500, PixelSurface::create(153, 198).unwrap())] });
+        reader.give_sleep(
+            1,
+            SleepView {
+                version: None,
+                usual: Some(letter()),
+                sizes: vec![(3, PageBox { width: 300.0, height: 400.0 })],
+                pictures: vec![shot(0, surface), shot(500, PixelSurface::create(153, 198).unwrap())],
+            },
+        );
         reader.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
         let doc = reader.doc().unwrap();
         assert!(doc.layout.is_known(0));
@@ -3711,7 +4750,10 @@ mod tests {
         assert_eq!(doc.layout.size(3), PageBox { width: 300.0, height: 400.0 });
         assert_eq!(reader.entries.len(), 1, "the one for a page that's there");
         let scrolled = reader.jump.unwrap_or(0);
-        let ops = reader.set_viewport(Viewport { scrolled_to: scrolled, ..view(0.0) });
+        let ops = reader.set_viewport(Viewport {
+            scrolled_to: scrolled,
+            ..view(0.0)
+        });
         let attached = reader.attached.get(&0).is_some_and(|ids| !ids.is_empty());
         assert!(attached, "it's up with nothing drawn: {ops:?}");
         assert!(ops.iter().any(|op| matches!(op, Op::Attach { below: true, .. })));
@@ -3731,25 +4773,48 @@ mod tests {
         bare.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
         bare.take_ops();
         let scrolled = bare.jump.unwrap_or(0);
-        bare.set_viewport(Viewport { scrolled_to: scrolled, ..view(0.0) });
+        bare.set_viewport(Viewport {
+            scrolled_to: scrolled,
+            ..view(0.0)
+        });
         bare.take_ops();
         bare.unapplied = true;
         bare.applied();
         assert_eq!(bare.last_wake().unwrap().blank_frames, 1);
         // A worker's asked for what's sharp, as if there'd been none of this, and no preview as it's got one.
         let jobs = settle(&mut reader);
-        assert!(!jobs.iter().any(|job| matches!(job.kind, JobKind::Draw { what: DrawKind::Preview, .. }) && job.position == 0));
+        assert!(
+            !jobs
+                .iter()
+                .any(|job| matches!(job.kind, JobKind::Draw { what: DrawKind::Preview, .. }) && job.position == 0)
+        );
     }
 
     /// Failure: a sleep file has no picture of a heavy page, which has no preview, so it wakes bare; or what's put together of its tiles is the wrong size or in the wrong place; or a page's picture comes from a preview the system's taken. It's a real picture of the page at a smaller scale, and pixels of a tile land where they should.
     #[test]
     fn a_picture_for_sleep_comes_from_a_preview_or_the_tiles() {
         let mut reader = reader_on(5);
-        assert!(reader.sleep_material(1, None).unwrap().pictures.is_empty(), "no worker's said what version this is, so no picture can say");
+        assert!(
+            reader.sleep_material(1, None).unwrap().pictures.is_empty(),
+            "no worker's said what version this is, so no picture can say"
+        );
         reader.note_version(Path::new("/d/a.pdf"), 1);
         settle(&mut reader);
         let material = reader.sleep_material(1, None).expect("a tab it holds");
-        assert!(reader.sleep_material(1, Some(FileStamp { size: 1, mtime_ns: 1, device: 0, inode: 1 })).is_none(), "what's here is of another version of the file than that");
+        assert!(
+            reader
+                .sleep_material(
+                    1,
+                    Some(FileStamp {
+                        size: 1,
+                        mtime_ns: 1,
+                        device: 0,
+                        inode: 1
+                    })
+                )
+                .is_none(),
+            "what's here is of another version of the file than that"
+        );
         assert_eq!(material.usual, Some(letter()));
         assert!(!material.pictures.is_empty());
         let picture = &material.pictures[0];
@@ -3779,16 +4844,34 @@ mod tests {
     fn a_file_the_renderer_has_no_password_for_is_told_to_the_app() {
         let mut reader = reader_on(3);
         let job = reader.next_job().expect("a job");
-        reader.finish(job, Outcome::DocumentFailed { message: "This PDF needs a password.".into(), needs_key: true });
+        reader.finish(
+            job,
+            Outcome::DocumentFailed {
+                message: "This PDF needs a password.".into(),
+                needs_key: true,
+            },
+        );
         assert_eq!(reader.take_keyless(), [PathBuf::from("/d/a.pdf")]);
         assert!(reader.take_keyless().is_empty(), "told once");
         let mut other = reader_on(3);
         let job = other.next_job().expect("a job");
-        other.finish(job, Outcome::DocumentFailed { message: "Not a PDF.".into(), needs_key: false });
+        other.finish(
+            job,
+            Outcome::DocumentFailed {
+                message: "Not a PDF.".into(),
+                needs_key: false,
+            },
+        );
         assert!(other.take_keyless().is_empty(), "only for want of a password");
         let job = reader.next_job();
         if let Some(job) = job {
-            reader.finish(job, Outcome::DocumentFailed { message: "This PDF needs a password.".into(), needs_key: true });
+            reader.finish(
+                job,
+                Outcome::DocumentFailed {
+                    message: "This PDF needs a password.".into(),
+                    needs_key: true,
+                },
+            );
         }
         reader.key_given(Path::new("/d/a.pdf"));
         assert!(reader.take_keyless().is_empty(), "a password given takes it off the list");
@@ -3797,7 +4880,14 @@ mod tests {
     /// Failure (review): a tab's file turns out to be another, by a change outside or a save, and its previews stay, so its next sleep file has the old file's pictures under the new file's name, for good, and with a redaction that picture's what was removed. Another version of the file is a change of what's on the pages, and everything of it goes, on screen and off.
     #[test]
     fn another_version_of_the_file_takes_every_picture_of_the_old_one() {
-        let version = |size: u64| Some(FileStamp { size, mtime_ns: 1, device: 0, inode: 7 });
+        let version = |size: u64| {
+            Some(FileStamp {
+                size,
+                mtime_ns: 1,
+                device: 0,
+                inode: 7,
+            })
+        };
         let on = |own: Option<FileStamp>| PageMap { own, ..map() };
         let mut reader = Reader::new();
         reader.set_viewport(view(0.0));
@@ -3813,7 +4903,11 @@ mod tests {
         assert!(reader.entries.is_empty(), "every picture and tile of it goes");
         assert!(reader.sleep_material(1, version(2)).unwrap().pictures.is_empty());
         assert!(reader.take_ops().contains(&Op::Clear), "and off the screen");
-        assert_eq!(reader.take_reopen_files(), [PathBuf::from("/d/a.pdf")], "and a worker that has the old one open goes, or it goes on drawing that");
+        assert_eq!(
+            reader.take_reopen_files(),
+            [PathBuf::from("/d/a.pdf")],
+            "and a worker that has the old one open goes, or it goes on drawing that"
+        );
     }
 
     /// Failure (review, the red frames): a tab's file is replaced while its tiles and previews are held, and they go on being shown, or written in its sleep file, as nothing that drew them says which version they're of. Each says, and as soon as a worker says the file's another version, whatever's of the old one goes, from the screen too, and nothing of it can be put back on a layer or into a sleep file.
@@ -3832,8 +4926,14 @@ mod tests {
         assert!(drawn.iter().all(|id| !reader.entries.contains_key(id)), "everything of version 1 is gone");
         reader.set_viewport(view(0.0));
         let ops = reader.take_ops();
-        assert!(!ops.iter().any(|op| matches!(op, Op::Attach { id, .. } if drawn.contains(id))), "nothing of it goes back on a layer");
-        assert!(reader.sleep_material(1, None).unwrap().pictures.is_empty(), "and nothing's offered for a sleep file till it's drawn again");
+        assert!(
+            !ops.iter().any(|op| matches!(op, Op::Attach { id, .. } if drawn.contains(id))),
+            "nothing of it goes back on a layer"
+        );
+        assert!(
+            reader.sleep_material(1, None).unwrap().pictures.is_empty(),
+            "and nothing's offered for a sleep file till it's drawn again"
+        );
         settle(&mut reader);
         assert!(reader.entries.values().all(|entry| entry.version == Some(2)));
         assert!(!reader.sleep_material(1, None).unwrap().pictures.is_empty());
@@ -3848,8 +4948,21 @@ mod tests {
         // A picture from a sleep file, of a version a worker then says isn't this one, goes too.
         let mut woken = Reader::new();
         woken.set_viewport(view(0.0));
-        let shot = SleepShot { page: 0, scale: 0.25, paper: PaperKind::White, surface: PixelSurface::create(153, 198).unwrap() };
-        woken.give_sleep(1, SleepView { version: Some(7), usual: Some(letter()), sizes: Vec::new(), pictures: vec![shot] });
+        let shot = SleepShot {
+            page: 0,
+            scale: 0.25,
+            paper: PaperKind::White,
+            surface: PixelSurface::create(153, 198).unwrap(),
+        };
+        woken.give_sleep(
+            1,
+            SleepView {
+                version: Some(7),
+                usual: Some(letter()),
+                sizes: Vec::new(),
+                pictures: vec![shot],
+            },
+        );
         woken.activate(1, 5, 0, map(), &[], None, Spread::Single);
         assert_eq!(woken.entries.len(), 1);
         woken.note_version(file, 8);
@@ -3867,7 +4980,10 @@ mod tests {
         assert!(reader.entries.len() > attached, "there's something off screen to go");
         reader.memory_pressure(false);
         let previews = reader.entries.values().filter(|entry| !entry.attached && entry.preview).count();
-        assert!(reader.entries.values().all(|entry| entry.attached || entry.preview), "only what's showing, and previews");
+        assert!(
+            reader.entries.values().all(|entry| entry.attached || entry.preview),
+            "only what's showing, and previews"
+        );
         assert!(previews > 0);
         reader.memory_pressure(true);
         assert_eq!(reader.entries.len(), attached);
@@ -3879,22 +4995,57 @@ mod tests {
     fn a_window_can_go_up_with_a_picture_on_every_page() {
         let mut reader = Reader::new();
         reader.set_viewport(view(0.0));
-        let saved = SavedPlace { page: 0, anchor: (0, 0.0), x: 0.0, y: 0.0, document_height: 0.0, magnification: 1.0, page_size: Some(letter()) };
-        reader.give_sleep(1, SleepView { version: None, usual: Some(letter()), sizes: Vec::new(), pictures: Vec::new() });
+        let saved = SavedPlace {
+            page: 0,
+            anchor: (0, 0.0),
+            x: 0.0,
+            y: 0.0,
+            document_height: 0.0,
+            magnification: 1.0,
+            page_size: Some(letter()),
+        };
+        reader.give_sleep(
+            1,
+            SleepView {
+                version: None,
+                usual: Some(letter()),
+                sizes: Vec::new(),
+                pictures: Vec::new(),
+            },
+        );
         reader.activate(1, 5, 0, map(), &[], Some(saved), Spread::Single);
         reader.take_ops();
         assert!(!reader.is_showable(), "still being sent to its place, with nothing on it");
         let scrolled = reader.jump.unwrap_or(0);
-        reader.set_viewport(Viewport { scrolled_to: scrolled, ..view(0.0) });
+        reader.set_viewport(Viewport {
+            scrolled_to: scrolled,
+            ..view(0.0)
+        });
         reader.take_ops();
         reader.unapplied = false;
         assert!(!reader.is_showable(), "a bare page isn't what goes up");
-        let shot = SleepShot { page: 0, scale: 0.25, paper: PaperKind::White, surface: PixelSurface::create(153, 198).unwrap() };
-        reader.give_sleep(2, SleepView { version: None, usual: Some(letter()), sizes: Vec::new(), pictures: vec![shot] });
+        let shot = SleepShot {
+            page: 0,
+            scale: 0.25,
+            paper: PaperKind::White,
+            surface: PixelSurface::create(153, 198).unwrap(),
+        };
+        reader.give_sleep(
+            2,
+            SleepView {
+                version: None,
+                usual: Some(letter()),
+                sizes: Vec::new(),
+                pictures: vec![shot],
+            },
+        );
         reader.activate(2, 1, 0, map(), &[], Some(saved), Spread::Single);
         reader.take_ops();
         let scrolled = reader.jump.unwrap_or(0);
-        reader.set_viewport(Viewport { scrolled_to: scrolled, ..view(0.0) });
+        reader.set_viewport(Viewport {
+            scrolled_to: scrolled,
+            ..view(0.0)
+        });
         reader.take_ops();
         reader.unapplied = false;
         assert!(reader.is_showable());
@@ -3913,20 +5064,39 @@ mod tests {
         layout.set_frame(frame_view.frame_width);
         let height = layout.document_height();
         let y = layout.top(40) + 123.456_789;
-        let saved = SavedPlace { page: 40, anchor: layout.anchor_at(y), x: 33.5, y, document_height: height, magnification: 1.75, page_size: Some(letter()) };
+        let saved = SavedPlace {
+            page: 40,
+            anchor: layout.anchor_at(y),
+            x: 33.5,
+            y,
+            document_height: height,
+            magnification: 1.75,
+            page_size: Some(letter()),
+        };
         reader.activate(1, 100, 40, map(), &[], Some(saved), Spread::Single);
         let ops = reader.take_ops();
         assert!(ops.iter().any(|op| matches!(op, Op::Magnify { value } if *value == 1.75)), "{ops:?}");
         assert!(ops.iter().any(|op| matches!(op, Op::ScrollAcross { x } if *x == 33.5)), "{ops:?}");
-        let Some(Op::ScrollTo { y: went, seq }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("{ops:?}") };
+        let Some(Op::ScrollTo { y: went, seq }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else {
+            panic!("{ops:?}")
+        };
         assert_eq!(*went, y, "exactly");
         // Not there yet: where the view says it is, isn't the place.
         reader.scrolled_to = 0;
-        reader.set_viewport(Viewport { magnification: 1.75, scrolled_to: 0, ..view(0.0) });
+        reader.set_viewport(Viewport {
+            magnification: 1.75,
+            scrolled_to: 0,
+            ..view(0.0)
+        });
         assert_eq!(reader.places()[0].1.y, y);
         assert_eq!(reader.places()[0].1.anchor, saved.anchor);
         // Arrived.
-        reader.set_viewport(Viewport { magnification: 1.75, x: 33.5, scrolled_to: *seq, ..view(y) });
+        reader.set_viewport(Viewport {
+            magnification: 1.75,
+            x: 33.5,
+            scrolled_to: *seq,
+            ..view(y)
+        });
         let (_, place) = reader.places()[0];
         assert_eq!((place.page, place.y, place.x, place.magnification), (40, y, 33.5, 1.75));
         assert_eq!(place.anchor, saved.anchor);
@@ -3935,7 +5105,9 @@ mod tests {
         reader.activate(2, 10, 0, map(), &[1], None, Spread::Single);
         reader.activate(1, 100, 40, map(), &[2], None, Spread::Single);
         let ops = reader.take_ops();
-        let Some(Op::ScrollTo { y: went, .. }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("{ops:?}") };
+        let Some(Op::ScrollTo { y: went, .. }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else {
+            panic!("{ops:?}")
+        };
         assert_eq!(*went, y);
         // Another page since: its top, and no zoom it shouldn't have kept is the place's business.
         let mut fresh = Reader::new();
@@ -3943,13 +5115,30 @@ mod tests {
         fresh.set_viewport(view(0.0));
         fresh.activate(1, 100, 7, map(), &[], Some(saved), Spread::Single);
         let ops = fresh.take_ops();
-        let Some(Op::ScrollTo { y: went, .. }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("{ops:?}") };
+        let Some(Op::ScrollTo { y: went, .. }) = ops.iter().rev().find(|op| matches!(op, Op::ScrollTo { .. })) else {
+            panic!("{ops:?}")
+        };
         assert_eq!(*went, fresh.doc().unwrap().layout.top(7));
         // What a record can say that isn't a place doesn't get as far as a host.
         let mut hostile = Reader::new();
         hostile.window_opened();
         hostile.set_viewport(view(0.0));
-        hostile.activate(1, 100, 40, map(), &[], Some(SavedPlace { anchor: (9_000_000, f64::NAN), x: f64::NAN, y: f64::NAN, document_height: f64::INFINITY, magnification: f64::NAN, ..saved }), Spread::Single);
+        hostile.activate(
+            1,
+            100,
+            40,
+            map(),
+            &[],
+            Some(SavedPlace {
+                anchor: (9_000_000, f64::NAN),
+                x: f64::NAN,
+                y: f64::NAN,
+                document_height: f64::INFINITY,
+                magnification: f64::NAN,
+                ..saved
+            }),
+            Spread::Single,
+        );
         for op in hostile.take_ops() {
             match op {
                 Op::ScrollTo { y, .. } => assert!(y.is_finite(), "{y}"),
@@ -3967,13 +5156,27 @@ mod tests {
         let draw = a_draw_job(&mut reader, DrawKind::Preview);
         let JobKind::Draw { surface, .. } = &draw.kind else { panic!() };
         let held = surface.clone();
-        reader.finish(draw, Outcome::Drawn { kind: TileKind::Colour, low_res: None });
+        reader.finish(
+            draw,
+            Outcome::Drawn {
+                kind: TileKind::Colour,
+                low_res: None,
+            },
+        );
         // Attached in Rust, and waiting for a host that hasn't come for it.
-        assert!(reader.ops.iter().any(|op| matches!(op, Op::Attach { surface, .. } if *surface != 0)), "{:?}", reader.ops);
+        assert!(
+            reader.ops.iter().any(|op| matches!(op, Op::Attach { surface, .. } if *surface != 0)),
+            "{:?}",
+            reader.ops
+        );
         let before = held.reference_count();
         reader.window_closed();
         assert!(reader.ops.is_empty(), "{:?}", reader.ops);
-        assert!(held.reference_count() < before - 1, "the entry's and the waiting op's both gone: {} from {before}", held.reference_count());
+        assert!(
+            held.reference_count() < before - 1,
+            "the entry's and the waiting op's both gone: {} from {before}",
+            held.reference_count()
+        );
         assert!(reader.is_settled(), "{}", reader.report().0);
     }
 
@@ -3989,7 +5192,11 @@ mod tests {
                 assert!(matches!(job.kind, JobKind::Draw { .. }));
                 break;
             }
-            let outcome = if matches!(job.kind, JobKind::Size) { Outcome::Size(letter()) } else { Outcome::Heavy(false) };
+            let outcome = if matches!(job.kind, JobKind::Size) {
+                Outcome::Size(letter())
+            } else {
+                Outcome::Heavy(false)
+            };
             reader.finish(job, outcome);
         }
     }
@@ -4007,7 +5214,10 @@ mod tests {
         assert_eq!(reader.zoom(Zoom::To(f64::NAN)), Some(MIN_ZOOM), "a nonsense number changes nothing");
         assert_eq!(reader.zoom(Zoom::Fit), Some(1.0));
         let actual = reader.zoom(Zoom::Actual).unwrap();
-        assert!((actual * reader.doc().unwrap().layout.fit() - 1.0).abs() < 1e-9 || actual == MIN_ZOOM || actual == MAX_ZOOM, "{actual}");
+        assert!(
+            (actual * reader.doc().unwrap().layout.fit() - 1.0).abs() < 1e-9 || actual == MIN_ZOOM || actual == MAX_ZOOM,
+            "{actual}"
+        );
         assert!(zoom_after_scroll(1.0, 100.0) > 1.0 && zoom_after_scroll(1.0, -100.0) < 1.0, "upwards is in");
         assert_eq!(zoom_after_scroll(1.0, 1e9), MAX_ZOOM);
         assert_eq!(zoom_after_scroll(1.0, -1e9), MIN_ZOOM);
@@ -4026,7 +5236,16 @@ mod tests {
         assert!((zoom_percent(1.0, fit) - fit * 100.0).abs() < 1e-9, "the fitted width says what it is");
         assert_eq!(reader.zoom(Zoom::Percent(1e6)), Some(MAX_ZOOM));
         assert_eq!(reader.zoom(Zoom::Percent(0.001)), Some(MIN_ZOOM));
-        for (typed, decimal, wanted) in [("150", '.', 150.0), ("150%", '.', 150.0), (" 87.5 % ", '.', 87.5), ("1,000", '.', 1000.0), ("1 000", '.', 1000.0), ("80,5", ',', 80.5), ("1.000", ',', 1000.0), ("1.250,5 %", ',', 1250.5)] {
+        for (typed, decimal, wanted) in [
+            ("150", '.', 150.0),
+            ("150%", '.', 150.0),
+            (" 87.5 % ", '.', 87.5),
+            ("1,000", '.', 1000.0),
+            ("1 000", '.', 1000.0),
+            ("80,5", ',', 80.5),
+            ("1.000", ',', 1000.0),
+            ("1.250,5 %", ',', 1250.5),
+        ] {
             assert_eq!(typed_zoom(typed, decimal), Some(Zoom::Percent(wanted)), "{typed} with {decimal}");
         }
         for nonsense in ["", "%", "abc", "-50", "0", "NaN", "inf", "1e400", "9999999999999", "1%%"] {
@@ -4042,8 +5261,14 @@ mod tests {
         let y = reader.doc().unwrap().layout.top(40);
         reader.set_viewport(view(y));
         settle(&mut reader);
-        let ops = reader.set_viewport(Viewport { frame_width: 900.0, width: 900.0, ..view(y) });
-        let Some(Op::ScrollTo { y: new_y, .. }) = ops.iter().find(|op| matches!(op, Op::ScrollTo { .. })) else { panic!("{ops:?}") };
+        let ops = reader.set_viewport(Viewport {
+            frame_width: 900.0,
+            width: 900.0,
+            ..view(y)
+        });
+        let Some(Op::ScrollTo { y: new_y, .. }) = ops.iter().find(|op| matches!(op, Op::ScrollTo { .. })) else {
+            panic!("{ops:?}")
+        };
         let top = reader.doc().unwrap().layout.top(40);
         assert!((*new_y - top).abs() < 1.0, "{new_y} against {top}");
     }
@@ -4058,7 +5283,13 @@ mod tests {
         assert_eq!(reader.pointer_link(x, y), None, "not read yet");
         let job = reader.next_job().expect("its links are asked for first");
         assert!(matches!(job.kind, JobKind::Links) && job.position == 0, "{job:?}");
-        let links = PageLinks { links: vec![Link { rect: [10.0, 10.0, 100.0, 30.0], target: LinkTarget::Page { page: 4, within: None } }], ..PageLinks::default() };
+        let links = PageLinks {
+            links: vec![Link {
+                rect: [10.0, 10.0, 100.0, 30.0],
+                target: LinkTarget::Page { page: 4, within: None },
+            }],
+            ..PageLinks::default()
+        };
         reader.finish(job, Outcome::Links(Some(Arc::new(links))));
         let hit = reader.pointer_link(x, y).expect("now it's known");
         assert_eq!(hit.target, LinkTarget::Page { page: 4, within: None });

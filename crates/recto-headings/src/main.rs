@@ -42,7 +42,12 @@ impl InkSource for WorkerInk {
             return None;
         }
         if self.renderer.is_none() {
-            let policy = Policy { memory_limit_bytes: WORKER_MEMORY_LIMIT, heavy_limit_bytes: WORKER_MEMORY_LIMIT, page_deadline: WORKER_PAGE_DEADLINE, ..Policy::default() };
+            let policy = Policy {
+                memory_limit_bytes: WORKER_MEMORY_LIMIT,
+                heavy_limit_bytes: WORKER_MEMORY_LIMIT,
+                page_deadline: WORKER_PAGE_DEADLINE,
+                ..Policy::default()
+            };
             match ServiceConfig::discover().and_then(|config| DocRenderer::new(&self.path, None, config, policy)) {
                 Ok(renderer) => self.renderer = Some(renderer),
                 Err(_) => {
@@ -52,7 +57,12 @@ impl InkSource for WorkerInk {
             }
         }
         let characters = self.renderer.as_mut()?.page_characters(page, true, true).ok()?;
-        Some(PageInk { chars: characters.chars, boxes: characters.boxes, frame: characters.frame, checked: characters.hidden_checked })
+        Some(PageInk {
+            chars: characters.chars,
+            boxes: characters.boxes,
+            frame: characters.frame,
+            checked: characters.hidden_checked,
+        })
     }
 }
 
@@ -80,7 +90,9 @@ fn peak() -> Option<u64> {
 
 fn main() {
     let Some(job) = job() else { return failed("bad_job") };
-    let (Some(file), Some(key)) = (job["file"].as_str().map(PathBuf::from), job["key"].as_str().and_then(CorpusKey::from_hex)) else { return failed("bad_job") };
+    let (Some(file), Some(key)) = (job["file"].as_str().map(PathBuf::from), job["key"].as_str().and_then(CorpusKey::from_hex)) else {
+        return failed("bad_job");
+    };
     if job["background"] != false {
         recto_platform::run_in_background();
     }
@@ -120,7 +132,11 @@ fn report(file: &Path, key: CorpusKey, scan: Scan, started: Instant) {
     };
     let distilled_ms = started.elapsed().as_millis() as u64;
     let found = headings.found.len();
-    let mut ink = WorkerInk { path: file.to_path_buf(), renderer: None, unavailable: false };
+    let mut ink = WorkerInk {
+        path: file.to_path_buf(),
+        renderer: None,
+        unavailable: false,
+    };
     let generated = keep_visible(headings, &mut ink);
     // Read to the end on another version of the file, it's about neither.
     if !same_file(file, key) {

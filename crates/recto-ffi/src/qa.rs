@@ -82,7 +82,13 @@ fn contents_moves(steps: &[(f64, f64)]) -> Value {
         }
         let speed = (to - steps[back].1).abs() / (now - steps[back].0).max(SPEED_OVER);
         current = match current {
-            Some(motion) if then - motion.end <= SAME_MOVE_GAP => Some(Motion { end: now, to, peak: motion.peak.max(speed), largest: motion.largest.max((to - from).abs()), ..motion }),
+            Some(motion) if then - motion.end <= SAME_MOVE_GAP => Some(Motion {
+                end: now,
+                to,
+                peak: motion.peak.max(speed),
+                largest: motion.largest.max((to - from).abs()),
+                ..motion
+            }),
             finished => {
                 if let Some(motion) = finished {
                     rests.push(then - motion.end);
@@ -90,7 +96,14 @@ fn contents_moves(steps: &[(f64, f64)]) -> Value {
                 } else {
                     rests.push(then - last_moved_at);
                 }
-                Some(Motion { start: then, end: now, from, to, peak: speed, largest: (to - from).abs() })
+                Some(Motion {
+                    start: then,
+                    end: now,
+                    from,
+                    to,
+                    peak: speed,
+                    largest: (to - from).abs(),
+                })
             }
         };
         last_moved_at = now;
@@ -131,7 +144,18 @@ pub(crate) struct QaBridge {
 
 impl QaBridge {
     pub(crate) fn new(listener: Arc<dyn AppListener>, engine: Engine, watchdog: Watchdog, core: Arc<CoreQueue>) -> Self {
-        Self { listener, engine, watchdog, core, next_id: AtomicU64::new(1), answers: Mutex::new(HashMap::new()), answered: Condvar::new(), steps: Mutex::new(Vec::new()), step_waiting: AtomicBool::new(false), inner: OnceLock::new() }
+        Self {
+            listener,
+            engine,
+            watchdog,
+            core,
+            next_id: AtomicU64::new(1),
+            answers: Mutex::new(HashMap::new()),
+            answered: Condvar::new(),
+            steps: Mutex::new(Vec::new()),
+            step_waiting: AtomicBool::new(false),
+            inner: OnceLock::new(),
+        }
     }
 
     pub(crate) fn attach(&self, inner: Weak<Inner>) {
@@ -144,12 +168,14 @@ impl QaBridge {
 
     /// Every page view: one, or a comparison's panes.
     fn engines(&self) -> Vec<Engine> {
-        self.inner().map_or_else(|| vec![self.engine.clone()], |inner| inner.panes.engines(&inner.engine))
+        self.inner()
+            .map_or_else(|| vec![self.engine.clone()], |inner| inner.panes.engines(&inner.engine))
     }
 
     /// The page view of the pane being read, which QA's pointer goes to, as the reader's would.
     fn reading_engine(&self) -> Engine {
-        self.inner().map_or_else(|| self.engine.clone(), |inner| inner.panes.reading_engine(&inner.engine))
+        self.inner()
+            .map_or_else(|| self.engine.clone(), |inner| inner.panes.reading_engine(&inner.engine))
     }
 
     /// Live workers that said their walls were up.
@@ -178,7 +204,13 @@ impl QaBridge {
         let mut steps = lock(&self.steps);
         // A minute at 120 Hz at most, and each is 4 bytes.
         if steps.len() < 16_384 {
-            steps.push(Step { micros: u32::try_from(micros).unwrap_or(u32::MAX), cpu_micros: u32::try_from(cpu_micros).unwrap_or(u32::MAX), at: Instant::now(), contents_y, current_visible });
+            steps.push(Step {
+                micros: u32::try_from(micros).unwrap_or(u32::MAX),
+                cpu_micros: u32::try_from(cpu_micros).unwrap_or(u32::MAX),
+                at: Instant::now(),
+                contents_y,
+                current_visible,
+            });
         }
     }
 
@@ -245,7 +277,11 @@ impl QaBridge {
 
     fn drive(&self, verb: &str, value: &str, timeout_ms: Option<u64>) -> Result<Value, AgentError> {
         let number = |low: f64, high: f64| -> Result<f64, AgentError> {
-            value.parse::<f64>().ok().filter(|number| number.is_finite() && *number >= low && *number <= high).ok_or_else(|| bad(format!("`{}` isn't a number from {low} to {high}.", cleaned(value))))
+            value
+                .parse::<f64>()
+                .ok()
+                .filter(|number| number.is_finite() && *number >= low && *number <= high)
+                .ok_or_else(|| bad(format!("`{}` isn't a number from {low} to {high}.", cleaned(value))))
         };
         if let Some(inner) = self.inner()
             && let Some(result) = inner.qa_session_verb(verb, value)
@@ -259,14 +295,18 @@ impl QaBridge {
             "quit" => return self.ask(verb, value),
             "handoff" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                let report = inner.hand_off(ANSWER_AFTER_CLICK).map_err(|error| AgentError::new("hand_off_refused", error.to_string(), exit::FAILED))?;
+                let report = inner
+                    .hand_off(ANSWER_AFTER_CLICK)
+                    .map_err(|error| AgentError::new("hand_off_refused", error.to_string(), exit::FAILED))?;
                 // The answer gets out first. An updater has no one to answer, and doesn't wait.
                 let quitting = Arc::clone(&inner);
                 let _ = std::thread::Builder::new().name("recto-qa-quit".into()).stack_size(64 * 1024).spawn(move || {
                     std::thread::sleep(HANDOFF_ANSWER_WAIT);
                     quitting.hand_off_quit_now();
                 });
-                return Ok(json!({ "handed_off": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_us": report.total_us, "force_us": report.force_us }));
+                return Ok(
+                    json!({ "handed_off": true, "tabs": report.tabs, "edited_tabs": report.edited_tabs, "record_bytes": report.record_bytes, "journal_bytes": report.journal_bytes, "wrote_bytes": report.wrote_bytes, "total_us": report.total_us, "force_us": report.force_us }),
+                );
             }
             "hand_off_quit" => {
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
@@ -300,7 +340,10 @@ impl QaBridge {
                 // It takes a moment, and may never answer: `qa wait-settled` is for waiting on it. Answering is the point.
                 return self.ask(verb, value);
             }
-            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize" | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type" | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost" | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
+            "appearance" | "window" | "hover" | "click_row" | "compare_click" | "pane_focus" | "pane_scroll" | "pane_context_menu" | "resize"
+            | "contents_scroll" | "contents_pointer" | "reduce_motion" | "reveal" | "scroller_style" | "menu" | "panel" | "button" | "zoom_type"
+            | "page_type" | "find_type" | "find_key" | "find_click" | "swipe" | "context_menu" | "key_action" | "full_screen" | "focus" | "frontmost"
+            | "sheet" | "sheet_answer" | "sidebar_width" => check_drive_value(verb, value)?,
             "palette_type" | "palette_key" => {
                 check_drive_value(verb, value)?;
                 if !self.inner().is_some_and(|inner| inner.palette_open()) {
@@ -311,9 +354,14 @@ impl QaBridge {
             "password" => {
                 check_drive_value(verb, value)?;
                 let inner = self.inner().ok_or_else(|| bad("The app is going away."))?;
-                let path = lock(&inner.password_asks).showing().map(|ask| ask.path.clone()).ok_or_else(|| bad("No password sheet is open."))?;
+                let path = lock(&inner.password_asks)
+                    .showing()
+                    .map(|ask| ask.path.clone())
+                    .ok_or_else(|| bad("No password sheet is open."))?;
                 if !is_a_tests_file(&path, inner.paths.as_ref().map(|paths| paths.root.as_path())) {
-                    return Err(bad("`qa password` types only into the sheet for a test's own file, in the quiet run's state folder or a temp folder."));
+                    return Err(bad(
+                        "`qa password` types only into the sheet for a test's own file, in the quiet run's state folder or a temp folder.",
+                    ));
                 }
             }
             "entry_points" | "services" => return self.ask(verb, value),
@@ -327,7 +375,10 @@ impl QaBridge {
             // A place is said as an agent has it, on a page, and goes in by the document's coordinates, on the way to the window's, so it goes through what a real pointer's position does.
             "mouse_down" | "mouse_drag" | "pointer" => {
                 let place = parse_page_place(value)?;
-                let (x, y) = self.reading_engine().document_point(place.page, place.x, place.y).ok_or_else(|| bad("That page isn't in this document."))?;
+                let (x, y) = self
+                    .reading_engine()
+                    .document_point(place.page, place.x, place.y)
+                    .ok_or_else(|| bad("That page isn't in this document."))?;
                 self.ask(verb, &format!("{x},{y},{},{}", place.clicks, u8::from(place.shift)))?;
                 self.core.flush(ANSWER_AFTER_CLICK);
                 return self.ask("state", "");
@@ -416,17 +467,23 @@ impl QaBridge {
         loop {
             // What's been asked of the session thread comes first: an `open` it hasn't reached yet isn't settled, it's not started.
             if !(self.core.flush(left()) && self.engines().iter().all(|engine| engine.wait_settled(left()))) {
-                return Err(AgentError::new("timed_out", "The page view didn't settle in time.", exit::TIMED_OUT).then("`recto qa state` shows what it's still waiting for."));
+                return Err(AgentError::new("timed_out", "The page view didn't settle in time.", exit::TIMED_OUT)
+                    .then("`recto qa state` shows what it's still waiting for."));
             }
             let running = self.ask("animations", "")?;
             // A snapshot on its way to the clipboard is about to change what `qa copied` and the notice say.
             // A snapshot on its way to the clipboard, or a print's pages being drawn or handed to the system, is about to change what's shown.
             let snapshot_busy = self.inner().is_some_and(|inner| inner.tool.busy() || inner.printing.busy());
             if running.as_array().is_none_or(Vec::is_empty) && !snapshot_busy {
-                return Ok(json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64, "animations_waited_ms": animations_waited.as_millis() as u64 }));
+                return Ok(
+                    json!({ "settled": true, "waited_ms": started.elapsed().as_millis() as u64, "animations_waited_ms": animations_waited.as_millis() as u64 }),
+                );
             }
             if left().is_zero() {
-                return Err(AgentError::new("timed_out", format!("Something in the window was still moving: {running}."), exit::TIMED_OUT).then("`recto qa state` shows what's running under `app.animations`."));
+                return Err(
+                    AgentError::new("timed_out", format!("Something in the window was still moving: {running}."), exit::TIMED_OUT)
+                        .then("`recto qa state` shows what's running under `app.animations`."),
+                );
             }
             let pause = ANIMATION_POLL.min(left());
             std::thread::sleep(pause);
@@ -484,7 +541,10 @@ impl QaBridge {
         slowest.truncate(5);
         // What the contents did, step by step, while the page scrolled.
         let began = recorded.first().map_or_else(Instant::now, |step| step.at);
-        let positions: Vec<(f64, f64)> = recorded.iter().map(|step| (step.at.duration_since(began).as_secs_f64(), step.contents_y)).collect();
+        let positions: Vec<(f64, f64)> = recorded
+            .iter()
+            .map(|step| (step.at.duration_since(began).as_secs_f64(), step.contents_y))
+            .collect();
         let mut contents = contents_moves(&positions);
         contents["steps_with_place_in_view"] = json!(recorded.iter().filter(|step| step.current_visible).count());
         let at = |share: f64| -> u32 { steps.get(((steps.len() as f64 - 1.0) * share).round() as usize).copied().unwrap_or(0) };
@@ -511,7 +571,8 @@ impl QaBridge {
 }
 
 fn stuck() -> AgentError {
-    AgentError::new("ui_not_answering", "The app's UI thread didn't answer in 30 s.", exit::TIMED_OUT).then("That's a hang, and a bug. `recto qa state` may show it once it's back.")
+    AgentError::new("ui_not_answering", "The app's UI thread didn't answer in 30 s.", exit::TIMED_OUT)
+        .then("That's a hang, and a bug. `recto qa state` may show it once it's back.")
 }
 
 /// Where a QA mouse verb goes: `PAGE:X,Y`, with `:CLICKS` and `:shift` after it for a press. The page is as `recto` counts them.
@@ -525,9 +586,18 @@ struct PagePlace {
 }
 
 fn parse_page_place(value: &str) -> Result<PagePlace, AgentError> {
-    let wrong = || bad(format!("`{}` isn't a place. It's `PAGE:X,Y`, with `:CLICKS` and `:shift` after it for a press, such as `3:120,88:2`.", cleaned(value)));
+    let wrong = || {
+        bad(format!(
+            "`{}` isn't a place. It's `PAGE:X,Y`, with `:CLICKS` and `:shift` after it for a press, such as `3:120,88:2`.",
+            cleaned(value)
+        ))
+    };
     let mut parts = value.split(':');
-    let page = parts.next().and_then(|word| word.parse::<u32>().ok()).and_then(|page| page.checked_sub(1)).ok_or_else(wrong)?;
+    let page = parts
+        .next()
+        .and_then(|word| word.parse::<u32>().ok())
+        .and_then(|page| page.checked_sub(1))
+        .ok_or_else(wrong)?;
     let (x, y) = parts.next().and_then(|word| word.split_once(',')).ok_or_else(wrong)?;
     let (x, y) = (x.parse::<f64>().map_err(|_| wrong())?, y.parse::<f64>().map_err(|_| wrong())?);
     if !x.is_finite() || !y.is_finite() {
@@ -547,8 +617,16 @@ fn parse_page_place(value: &str) -> Result<PagePlace, AgentError> {
 /// Whether a file is one a quiet run's test made: in its state folder, or a temp folder. Compared by the folders the paths really are, so a link out of one doesn't count.
 fn is_a_tests_file(path: &std::path::Path, state: Option<&std::path::Path>) -> bool {
     let Ok(file) = path.canonicalize() else { return false };
-    let roots = [state.map(std::path::Path::to_path_buf), Some(std::env::temp_dir()), Some(std::path::PathBuf::from("/private/tmp"))];
-    roots.into_iter().flatten().filter_map(|root| root.canonicalize().ok()).any(|root| file.starts_with(root))
+    let roots = [
+        state.map(std::path::Path::to_path_buf),
+        Some(std::env::temp_dir()),
+        Some(std::path::PathBuf::from("/private/tmp")),
+    ];
+    roots
+        .into_iter()
+        .flatten()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| file.starts_with(root))
 }
 
 fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
@@ -566,12 +644,16 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "sidebar_width" => value.parse::<f64>().is_ok_and(f64::is_finite),
         // What shows a window is left out: a quiet run shows none.
         // Save As's sheet is a sheet on the window, as the close prompt is, so a quiet run can show it and answer it.
-        "menu" => !matches!(value, "file.open" | "app.about" | "app.quit") && (crate::menus::action(value).is_some() || crate::snapshot_tool::is_menu_id(value)),
+        "menu" => {
+            !matches!(value, "file.open" | "app.about" | "app.quit") && (crate::menus::action(value).is_some() || crate::snapshot_tool::is_menu_id(value))
+        }
         "panel" => value == "toggle" || value == "edit_mode.done" || value.starts_with("paper.") || value.starts_with("view.") || value.starts_with("rotate."),
         "button" => one_of(&["sidebar", "zoom", "zoom_reset", "save", "page"]),
         "sheet_answer" => one_of(&["first", "second", "third", "cancel"]),
         "key_action" => one_of(&["undo", "redo"]),
-        "context_menu" => crate::menus::context_menu(None, Some(false)).iter().any(|item| !item.id.is_empty() && item.id == value),
+        "context_menu" => crate::menus::context_menu(None, Some(false))
+            .iter()
+            .any(|item| !item.id.is_empty() && item.id == value),
         // What a person can type in a short field, and no more. Whether it's a level is the field's to find out, as it is for a person.
         "zoom_type" => value.chars().count() <= 32,
         // A test's password, typed as a person would: the app takes it once and keeps it only for the open tab.
@@ -585,10 +667,21 @@ fn check_drive_value(verb: &str, value: &str) -> Result<(), AgentError> {
         "palette_key" => one_of(&["up", "down", "return", "escape"]),
         "find_type" => value.len() <= recto_session::record::MAX_FIND_BYTES,
         "find_key" => one_of(&["return", "shift_return", "escape"]),
-        "pane_context_menu" => value.split_once(':').is_some_and(|(pane, item)| pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES) && crate::menus::context_menu(None, Some(false)).iter().any(|entry| !entry.id.is_empty() && entry.id == item)),
+        "pane_context_menu" => value.split_once(':').is_some_and(|(pane, item)| {
+            pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES)
+                && crate::menus::context_menu(None, Some(false))
+                    .iter()
+                    .any(|entry| !entry.id.is_empty() && entry.id == item)
+        }),
         "pane_focus" => value.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES),
-        "pane_scroll" => value.split_once(':').is_some_and(|(pane, points)| pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES) && points.parse::<f64>().is_ok_and(|points| points.is_finite() && points.abs() <= 1e9)),
-        "resize" => value.split_once('x').and_then(|(width, height)| Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?))).is_some_and(|(width, height)| (400.0..=8000.0).contains(&width) && (300.0..=8000.0).contains(&height)),
+        "pane_scroll" => value.split_once(':').is_some_and(|(pane, points)| {
+            pane.parse::<usize>().is_ok_and(|pane| pane < recto_session::compare::MAX_PANES)
+                && points.parse::<f64>().is_ok_and(|points| points.is_finite() && points.abs() <= 1e9)
+        }),
+        "resize" => value
+            .split_once('x')
+            .and_then(|(width, height)| Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?)))
+            .is_some_and(|(width, height)| (400.0..=8000.0).contains(&width) && (300.0..=8000.0).contains(&height)),
         _ => false,
     };
     if fits {
@@ -606,7 +699,11 @@ fn refuse_shot_path(out: &Path, in_real_home: impl Fn(&Path) -> bool) -> Result<
         return Err(bad("A shot is a new `.png` file."));
     }
     if in_real_home(out) {
-        return Err(AgentError::new("path_refused", "A shot goes outside your home folder, somewhere temporary.", exit::FAILED));
+        return Err(AgentError::new(
+            "path_refused",
+            "A shot goes outside your home folder, somewhere temporary.",
+            exit::FAILED,
+        ));
     }
     // `symlink_metadata`, so a link is something being there, wherever it points or if it points nowhere.
     if std::fs::symlink_metadata(out).is_ok() {
@@ -677,8 +774,26 @@ mod tests {
     /// Failure: a QA click lands somewhere other than what it says, or a page counted from 0 slips through, or a NaN reaches the host.
     #[test]
     fn a_mouse_verb_says_a_place_or_is_refused() {
-        assert_eq!(parse_page_place("3:120.5,88").unwrap(), PagePlace { page: 2, x: 120.5, y: 88.0, clicks: 1, shift: false });
-        assert_eq!(parse_page_place("1:0,0:2:shift").unwrap(), PagePlace { page: 0, x: 0.0, y: 0.0, clicks: 2, shift: true });
+        assert_eq!(
+            parse_page_place("3:120.5,88").unwrap(),
+            PagePlace {
+                page: 2,
+                x: 120.5,
+                y: 88.0,
+                clicks: 1,
+                shift: false
+            }
+        );
+        assert_eq!(
+            parse_page_place("1:0,0:2:shift").unwrap(),
+            PagePlace {
+                page: 0,
+                x: 0.0,
+                y: 0.0,
+                clicks: 2,
+                shift: true
+            }
+        );
         for wrong in ["", "3", "0:1,1", "3:1", "3:x,1", "3:NaN,1", "3:1,inf", "3:1,1:0", "3:1,1:9", "3:1,1:zzz"] {
             assert_eq!(parse_page_place(wrong).unwrap_err().code, "usage", "{wrong}");
         }
@@ -687,7 +802,17 @@ mod tests {
     /// Failure: a word the host can't do reports success: `qa appearance zzz` said it was done and went light, since the rule was the host's. They're checked here and every one is refused.
     #[test]
     fn a_verb_only_takes_what_it_can_do() {
-        for (verb, good, wrong) in [("appearance", "dark", "zzz"), ("window", "close", "zzz"), ("contents_pointer", "in", "zzz"), ("reduce_motion", "on", "yes"), ("hover", "none", "-1"), ("reveal", "3", "x"), ("click_row", "0", "none"), ("contents_scroll", "9", "1.5"), ("resize", "800x600", "10x10")] {
+        for (verb, good, wrong) in [
+            ("appearance", "dark", "zzz"),
+            ("window", "close", "zzz"),
+            ("contents_pointer", "in", "zzz"),
+            ("reduce_motion", "on", "yes"),
+            ("hover", "none", "-1"),
+            ("reveal", "3", "x"),
+            ("click_row", "0", "none"),
+            ("contents_scroll", "9", "1.5"),
+            ("resize", "800x600", "10x10"),
+        ] {
             assert!(check_drive_value(verb, good).is_ok(), "{verb} {good}");
             assert_eq!(check_drive_value(verb, wrong).unwrap_err().code, "usage", "{verb} {wrong}");
         }

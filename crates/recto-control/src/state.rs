@@ -79,8 +79,19 @@ impl StatePaths {
             overrides_log: root.join("activity-overrides.jsonl"),
             old_overrides_log: root.join("activity-overrides.1.jsonl"),
             server_messages: root.join("server-messages.txt"),
-            corpus: if overridden { root.join("corpus.noindex") } else { local::real_home().map_or_else(|| root.join("corpus.noindex"), |home| default_corpus_in(&home)) },
-            generated: if overridden { root.join("contents.noindex") } else { local::real_home().map_or_else(|| root.join("contents.noindex"), |home| default_corpus_in(&home).with_file_name("contents.noindex")) },
+            corpus: if overridden {
+                root.join("corpus.noindex")
+            } else {
+                local::real_home().map_or_else(|| root.join("corpus.noindex"), |home| default_corpus_in(&home))
+            },
+            generated: if overridden {
+                root.join("contents.noindex")
+            } else {
+                local::real_home().map_or_else(
+                    || root.join("contents.noindex"),
+                    |home| default_corpus_in(&home).with_file_name("contents.noindex"),
+                )
+            },
             root,
             run_dir,
             socket,
@@ -90,7 +101,14 @@ impl StatePaths {
 
     /// Makes the folders, private to this user. A folder that's already there and isn't private is refused, never fixed: it may be a trap.
     pub fn prepare(&self) -> Result<(), AgentError> {
-        let failed = |path: &Path| AgentError::new("state_refused", format!("The state folder {} isn't private to this user, or can't be made.", display(path)), exit::FAILED).then("Choose another folder, or check who owns this one.");
+        let failed = |path: &Path| {
+            AgentError::new(
+                "state_refused",
+                format!("The state folder {} isn't private to this user, or can't be made.", display(path)),
+                exit::FAILED,
+            )
+            .then("Choose another folder, or check who owns this one.")
+        };
         local::ensure_private_dir(&self.root).map_err(|_| failed(&self.root))?;
         local::ensure_private_dir(&self.root.join("run")).map_err(|_| failed(&self.root))?;
         local::ensure_private_dir(&self.run_dir).map_err(|_| failed(&self.run_dir))?;
@@ -103,12 +121,19 @@ fn display(path: &Path) -> String {
 }
 
 fn refused(path: &Path) -> AgentError {
-    AgentError::new("state_refused", format!("{STATE_ENV} can't be {}: it's the real home, or inside it.", display(path)), exit::PERMISSION).then("Point it at a new folder in a temp folder.")
+    AgentError::new(
+        "state_refused",
+        format!("{STATE_ENV} can't be {}: it's the real home, or inside it.", display(path)),
+        exit::PERMISSION,
+    )
+    .then("Point it at a new folder in a temp folder.")
 }
 
 /// The user's own folder. Under the real home, whatever `$HOME` says.
 fn default_root() -> Result<PathBuf, AgentError> {
-    local::real_home().map(|home| default_root_in(&home)).ok_or_else(|| AgentError::new("state_refused", "This user's home folder couldn't be found.", exit::FAILED))
+    local::real_home()
+        .map(|home| default_root_in(&home))
+        .ok_or_else(|| AgentError::new("state_refused", "This user's home folder couldn't be found.", exit::FAILED))
 }
 
 fn default_corpus_in(home: &Path) -> PathBuf {
@@ -135,7 +160,9 @@ pub fn refuses_real_home(wanted: &Path, home: &Path, temp: Option<&Path>) -> boo
 
 /// Whether a path, wherever links and `..` really take it, is in this user's real home.
 pub fn is_in_real_home(path: &Path) -> bool {
-    let Some(home) = local::real_home().and_then(|home| home.canonicalize().ok()) else { return true };
+    let Some(home) = local::real_home().and_then(|home| home.canonicalize().ok()) else {
+        return true;
+    };
     resolved(path).is_none_or(|real| real.starts_with(&home) || is_inside(&real, &home))
 }
 
@@ -144,7 +171,9 @@ pub fn is_in_real_home(path: &Path) -> bool {
 fn is_inside(path: &Path, folder: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     let Ok(wanted) = std::fs::metadata(folder) else { return true };
-    path.ancestors().filter_map(|up| std::fs::metadata(up).ok()).any(|found| found.dev() == wanted.dev() && found.ino() == wanted.ino())
+    path.ancestors()
+        .filter_map(|up| std::fs::metadata(up).ok())
+        .any(|found| found.dev() == wanted.dev() && found.ino() == wanted.ino())
 }
 
 #[cfg(not(unix))]
@@ -179,7 +208,9 @@ fn resolved(path: &Path) -> Option<PathBuf> {
 }
 
 fn fingerprint(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3))
+    bytes
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3))
 }
 
 #[cfg(test)]
@@ -220,7 +251,10 @@ mod tests {
     #[test]
     fn a_link_to_the_home_is_seen_through() {
         let home = local::real_home().unwrap().canonicalize().unwrap();
-        let link = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-home-link-{}", std::process::id()));
+        let link = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-home-link-{}", std::process::id()));
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(&home, &link).unwrap();
         let error = StatePaths::overridden(&link).unwrap_err();
@@ -247,7 +281,10 @@ mod tests {
         assert!(is_in_real_home(&home.join("no-such-folder-recto/skill")));
         let climbing = PathBuf::from(format!("/usr/..{}/no-such-folder-recto", home.display()));
         assert!(is_in_real_home(&climbing), "{climbing:?}");
-        let link = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-in-home-{}", std::process::id()));
+        let link = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-in-home-{}", std::process::id()));
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(&home, &link).unwrap();
         assert!(is_in_real_home(&link.join("no-such-folder-recto")));

@@ -25,7 +25,12 @@ fn the_helper_and_the_app_pin_the_same_lopdf() {
     let (helper, main) = (lopdf_source(&helper), lopdf_source(&main));
     assert_eq!(helper.len(), 1, "one lopdf in the helper: {helper:?}");
     // The commit, after `#`: the helper reaches it by another spelling of the same repository, since Cargo won't patch a source to itself.
-    let commit = |sources: &[String]| sources.iter().map(|source| source.rsplit('#').next().unwrap_or_default().trim_end_matches('"').to_string()).collect::<Vec<_>>();
+    let commit = |sources: &[String]| {
+        sources
+            .iter()
+            .map(|source| source.rsplit('#').next().unwrap_or_default().trim_end_matches('"').to_string())
+            .collect::<Vec<_>>()
+    };
     assert_eq!(commit(&helper), commit(&main), "the helper's lopdf isn't the app's commit");
     assert!(helper[0].contains("github.com/kkollsga/lopdf.git"), "and it's the owner's fork: {helper:?}");
 }

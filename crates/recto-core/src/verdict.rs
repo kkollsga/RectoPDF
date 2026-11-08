@@ -119,8 +119,14 @@ fn misnested(toc: &Toc) -> usize {
     for (index, entry) in entries.iter().enumerate() {
         let Some((number, parts)) = numbers[index] else { continue };
         let parent = numbers.get(entry.parent as usize).copied().flatten();
-        let under_its_sibling = !restarts.get(&entry.parent).copied().unwrap_or(false) && parent.is_some_and(|(above, above_parts)| above_parts == parts && number[..parts - 1] == above[..parts - 1] && number[parts - 1] > above[parts - 1]);
-        let beside_its_parent = parts > 1 && latest.get(&(entry.parent, parts - 1)).and_then(|at| numbers[*at]).is_some_and(|(before, _)| number[..parts - 1] == before[..parts - 1]);
+        let under_its_sibling = !restarts.get(&entry.parent).copied().unwrap_or(false)
+            && parent
+                .is_some_and(|(above, above_parts)| above_parts == parts && number[..parts - 1] == above[..parts - 1] && number[parts - 1] > above[parts - 1]);
+        let beside_its_parent = parts > 1
+            && latest
+                .get(&(entry.parent, parts - 1))
+                .and_then(|at| numbers[*at])
+                .is_some_and(|(before, _)| number[..parts - 1] == before[..parts - 1]);
         if under_its_sibling || beside_its_parent {
             wrong += 1;
         }
@@ -191,7 +197,15 @@ mod tests {
     use crate::TocLine;
 
     fn toc(entries: &[(u32, u8)]) -> Toc {
-        let lines: Vec<TocLine<'_>> = entries.iter().map(|&(page, depth)| TocLine { title: "Section", page, parent: NONE, depth }).collect();
+        let lines: Vec<TocLine<'_>> = entries
+            .iter()
+            .map(|&(page, depth)| TocLine {
+                title: "Section",
+                page,
+                parent: NONE,
+                depth,
+            })
+            .collect();
         Toc::from_lines(&lines, false)
     }
 
@@ -206,18 +220,30 @@ mod tests {
     /// Failure: contents that can't be used to get anywhere, which real files have, are taken as good, so nothing better is offered.
     #[test]
     fn unusable_contents_look_bad() {
-        assert_eq!(judge(&toc(&[(NONE, 0), (NONE, 0), (3, 0)]), 40), ContentsVerdict::LooksBad(BadReason::GoNowhere));
+        assert_eq!(
+            judge(&toc(&[(NONE, 0), (NONE, 0), (3, 0)]), 40),
+            ContentsVerdict::LooksBad(BadReason::GoNowhere)
+        );
         assert_eq!(judge(&toc(&[(0, 0), (0, 1), (0, 1)]), 40), ContentsVerdict::LooksBad(BadReason::OnePage));
         assert_eq!(judge(&toc(&[(0, 0), (5, 0)]), 40), ContentsVerdict::LooksBad(BadReason::TooFew));
-        assert_eq!(judge(&toc(&[(0, 0), (2, 0), (5, 0), (9, 0)]), 100), ContentsVerdict::LooksBad(BadReason::StopsEarly));
+        assert_eq!(
+            judge(&toc(&[(0, 0), (2, 0), (5, 0), (9, 0)]), 100),
+            ContentsVerdict::LooksBad(BadReason::StopsEarly)
+        );
         // The EU's AI Act: its title on page 1, then its annexes from page 124 of 144.
-        assert_eq!(judge(&toc(&[(0, 0), (123, 1), (125, 1), (126, 1), (129, 1), (143, 1)]), 144), ContentsVerdict::LooksBad(BadReason::SkipsMost));
+        assert_eq!(
+            judge(&toc(&[(0, 0), (123, 1), (125, 1), (126, 1), (129, 1), (143, 1)]), 144),
+            ContentsVerdict::LooksBad(BadReason::SkipsMost)
+        );
         // A page past the end leads nowhere.
         assert_eq!(judge(&toc(&[(500, 0), (600, 0), (1, 0)]), 40), ContentsVerdict::LooksBad(BadReason::GoNowhere));
     }
 
     fn titled(entries: &[(&str, u32, u32, u8)]) -> Toc {
-        let lines: Vec<TocLine<'_>> = entries.iter().map(|&(title, page, parent, depth)| TocLine { title, page, parent, depth }).collect();
+        let lines: Vec<TocLine<'_>> = entries
+            .iter()
+            .map(|&(title, page, parent, depth)| TocLine { title, page, parent, depth })
+            .collect();
         Toc::from_lines(&lines, false)
     }
 
@@ -229,21 +255,53 @@ mod tests {
         entries.extend([(226, 0), (227, 1), (256, 1), (279, 1), (297, 1), (306, 1), (309, 2), (314, 2), (316, 2)]);
         assert_eq!(judge(&toc(&entries), 328), ContentsVerdict::LooksBad(BadReason::PiledOnOnePage));
         // A title page with a few entries on it is ordinary.
-        assert_eq!(judge(&toc(&[(0, 0), (0, 1), (0, 1), (3, 0), (9, 0), (20, 0), (31, 0), (40, 0)]), 48), ContentsVerdict::Fine);
+        assert_eq!(
+            judge(&toc(&[(0, 0), (0, 1), (0, 1), (3, 0), (9, 0), (20, 0), (31, 0), (40, 0)]), 48),
+            ContentsVerdict::Fine
+        );
     }
 
     /// Failure: contents whose own numbering says they're nested wrongly read as fine: part A of the competitiveness report has chapters 2 to 6 inside chapter 1, and part B puts 3.1 to 3.3 beside 3 rather than under it. The owner, 2026-11-07, called the indents wrong.
     #[test]
     fn contents_nested_against_their_numbering_look_bad() {
-        let part_a = titled(&[("1. The starting point", 12, NONE, 0), ("Three transformations", 15, 0, 1), ("2. Closing the innovation gap", 24, 0, 1), ("3. A joint plan", 40, 0, 1), ("4. Security", 55, 0, 1)]);
+        let part_a = titled(&[
+            ("1. The starting point", 12, NONE, 0),
+            ("Three transformations", 15, 0, 1),
+            ("2. Closing the innovation gap", 24, 0, 1),
+            ("3. A joint plan", 40, 0, 1),
+            ("4. Security", 55, 0, 1),
+        ]);
         assert_eq!(judge(&part_a, 73), ContentsVerdict::LooksBad(BadReason::Misnested));
-        let part_b = titled(&[("Sectoral policies", 1, NONE, 0), ("3. Digitalisation", 10, 0, 1), ("3.1 Broadband", 12, 0, 1), ("3.2 Computing and AI", 20, 0, 1), ("3.3 Semiconductors", 30, 0, 1), ("4. Energy-intensive industries", 40, 0, 1)]);
+        let part_b = titled(&[
+            ("Sectoral policies", 1, NONE, 0),
+            ("3. Digitalisation", 10, 0, 1),
+            ("3.1 Broadband", 12, 0, 1),
+            ("3.2 Computing and AI", 20, 0, 1),
+            ("3.3 Semiconductors", 30, 0, 1),
+            ("4. Energy-intensive industries", 40, 0, 1),
+        ]);
         assert_eq!(judge(&part_b, 60), ContentsVerdict::LooksBad(BadReason::Misnested));
         // Numbered as they're nested, or numbers that aren't section numbers.
-        let good = titled(&[("1. Introduction", 0, NONE, 0), ("1.1 Scope", 1, 0, 1), ("1.2 Terms", 2, 0, 1), ("2. Method", 4, NONE, 0), ("2.1 Data", 5, 3, 1), ("2024 in review", 8, NONE, 0), ("3D printing", 9, NONE, 0), ("3. Results", 10, NONE, 0)]);
+        let good = titled(&[
+            ("1. Introduction", 0, NONE, 0),
+            ("1.1 Scope", 1, 0, 1),
+            ("1.2 Terms", 2, 0, 1),
+            ("2. Method", 4, NONE, 0),
+            ("2.1 Data", 5, 3, 1),
+            ("2024 in review", 8, NONE, 0),
+            ("3D printing", 9, NONE, 0),
+            ("3. Results", 10, NONE, 0),
+        ]);
         assert_eq!(judge(&good, 12), ContentsVerdict::Fine);
         // A chapter whose own sections are numbered from 1 again, "3. Results" holding "1. Data" to "4. Limits": nested as its numbering says.
-        let restarting = titled(&[("3. Results", 0, NONE, 0), ("1. Data", 1, 0, 1), ("2. Method", 2, 0, 1), ("3. Findings", 3, 0, 1), ("4. Limits", 4, 0, 1), ("4. Discussion", 6, NONE, 0)]);
+        let restarting = titled(&[
+            ("3. Results", 0, NONE, 0),
+            ("1. Data", 1, 0, 1),
+            ("2. Method", 2, 0, 1),
+            ("3. Findings", 3, 0, 1),
+            ("4. Limits", 4, 0, 1),
+            ("4. Discussion", 6, NONE, 0),
+        ]);
         assert_eq!(judge(&restarting, 12), ContentsVerdict::Fine);
         assert_eq!(section_number("3.1 Computing"), Some(([3, 1, 0, 0], 2)));
         assert_eq!(section_number("3.1. Computing").map(|(_, parts)| parts), Some(2));
@@ -261,7 +319,10 @@ mod tests {
         // A paper whose sections end at page 19 of 51, with references and appendices after: the main text is all there.
         assert_eq!(judge(&toc(&[(0, 0), (3, 1), (9, 1), (14, 1), (18, 1)]), 51), ContentsVerdict::Fine);
         // NASA's technology report lists its index, on page 115, before its chapters, and a blank page 2 last.
-        assert_eq!(judge(&toc(&[(4, 0), (6, 0), (114, 0), (10, 0), (26, 0), (52, 0), (80, 0), (110, 0), (1, 0)]), 120), ContentsVerdict::Fine);
+        assert_eq!(
+            judge(&toc(&[(4, 0), (6, 0), (114, 0), (10, 0), (26, 0), (52, 0), (80, 0), (110, 0), (1, 0)]), 120),
+            ContentsVerdict::Fine
+        );
         assert_eq!(judge(&toc(&[(0, 0), (3, 0), (6, 0)]), 19), ContentsVerdict::Fine);
     }
 }

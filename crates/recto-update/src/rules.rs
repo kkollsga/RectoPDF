@@ -32,7 +32,16 @@ pub fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
 /// A system version: `15`, `15.4`, `15.4.1`.
 #[must_use]
 pub fn parse_system_version(text: &str) -> Option<(u32, u32, u32)> {
-    let numbers = text.split('.').map(|part| if !part.is_empty() && part.len() <= 9 && part.bytes().all(|byte| byte.is_ascii_digit()) { part.parse().ok() } else { None }).collect::<Option<Vec<u32>>>()?;
+    let numbers = text
+        .split('.')
+        .map(|part| {
+            if !part.is_empty() && part.len() <= 9 && part.bytes().all(|byte| byte.is_ascii_digit()) {
+                part.parse().ok()
+            } else {
+                None
+            }
+        })
+        .collect::<Option<Vec<u32>>>()?;
     match numbers.as_slice() {
         [major] => Some((*major, 0, 0)),
         [major, minor] => Some((*major, *minor, 0)),
@@ -78,7 +87,11 @@ pub fn parse_latest(data: &[u8]) -> Option<Latest> {
         return None;
     }
     let minimum_macos = parse_system_version(top.get("minimum_macos")?.as_str()?)?;
-    Some(Latest { version: version.to_owned(), sha256: sha256.to_ascii_lowercase(), minimum_macos })
+    Some(Latest {
+        version: version.to_owned(),
+        sha256: sha256.to_ascii_lowercase(),
+        minimum_macos,
+    })
 }
 
 impl Latest {
@@ -108,7 +121,8 @@ pub fn next_check_at(saved: &Saved, launched_ms: u64, now_ms: u64) -> u64 {
     } else {
         last_check.map_or(0, |at| at.saturating_add(CHECK_EVERY_MS))
     };
-    due.max(launched_ms.saturating_add(MIN_GAP_MS)).max(last_attempt.map_or(0, |at| at.saturating_add(MIN_GAP_MS)))
+    due.max(launched_ms.saturating_add(MIN_GAP_MS))
+        .max(last_attempt.map_or(0, |at| at.saturating_add(MIN_GAP_MS)))
 }
 
 /// What an automatic install does now.
@@ -160,7 +174,9 @@ mod tests {
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     fn good(version: &str) -> String {
-        format!(r#"{{"version":"{version}","tag":"v{version}","minimum_macos":"15.0","zip":"RectoPDF-{version}.zip","sha256":"{SHA}","notes_url":"https://example.invalid"}}"#)
+        format!(
+            r#"{{"version":"{version}","tag":"v{version}","minimum_macos":"15.0","zip":"RectoPDF-{version}.zip","sha256":"{SHA}","notes_url":"https://example.invalid"}}"#
+        )
     }
 
     /// Failure: a version that isn't plain gets on offer, as a pre-release or a four-part build would, or one this reader can't order.
@@ -168,7 +184,25 @@ mod tests {
     fn only_a_plain_version_is_a_version() {
         assert_eq!(parse_version("0.1.0"), Some((0, 1, 0)));
         assert_eq!(parse_version("10.20.30"), Some((10, 20, 30)));
-        for bad in ["", "1", "1.2", "1.2.3.4", "v1.2.3", "1.2.3-beta", "1.2.x", "01.2.3", "1.02.3", " 1.2.3", "1.2.3 ", "1..3", "1.2.", "9999999999.0.0", "+1.2.3", "-1.2.3", "١.٢.٣"] {
+        for bad in [
+            "",
+            "1",
+            "1.2",
+            "1.2.3.4",
+            "v1.2.3",
+            "1.2.3-beta",
+            "1.2.x",
+            "01.2.3",
+            "1.02.3",
+            " 1.2.3",
+            "1.2.3 ",
+            "1..3",
+            "1.2.",
+            "9999999999.0.0",
+            "+1.2.3",
+            "-1.2.3",
+            "١.٢.٣",
+        ] {
             assert_eq!(parse_version(bad), None, "{bad}");
         }
         assert!(is_newer("0.1.10", "0.1.9"), "numbers, not text");
@@ -233,31 +267,87 @@ mod tests {
     fn the_schedule_is_once_a_day_and_backs_off() {
         let launched = 1_000_000_000_000;
         let fresh = Saved::default();
-        assert_eq!(next_check_at(&fresh, launched, launched), launched + MIN_GAP_MS, "a minute after launch, at the soonest");
-        let checked = Saved { last_check_ms: Some(launched), last_attempt_ms: Some(launched), ..Saved::default() };
+        assert_eq!(
+            next_check_at(&fresh, launched, launched),
+            launched + MIN_GAP_MS,
+            "a minute after launch, at the soonest"
+        );
+        let checked = Saved {
+            last_check_ms: Some(launched),
+            last_attempt_ms: Some(launched),
+            ..Saved::default()
+        };
         assert_eq!(next_check_at(&checked, launched, launched), launched + CHECK_EVERY_MS, "a day after the last");
-        let old = Saved { last_check_ms: Some(launched - 3 * CHECK_EVERY_MS), last_attempt_ms: Some(launched - 3 * CHECK_EVERY_MS), ..Saved::default() };
-        assert_eq!(next_check_at(&old, launched, launched), launched + MIN_GAP_MS, "overdue still waits for the minute");
-        let failed = |failures| Saved { last_attempt_ms: Some(launched), last_check_ms: Some(launched - CHECK_EVERY_MS), failures, ..Saved::default() };
+        let old = Saved {
+            last_check_ms: Some(launched - 3 * CHECK_EVERY_MS),
+            last_attempt_ms: Some(launched - 3 * CHECK_EVERY_MS),
+            ..Saved::default()
+        };
+        assert_eq!(
+            next_check_at(&old, launched, launched),
+            launched + MIN_GAP_MS,
+            "overdue still waits for the minute"
+        );
+        let failed = |failures| Saved {
+            last_attempt_ms: Some(launched),
+            last_check_ms: Some(launched - CHECK_EVERY_MS),
+            failures,
+            ..Saved::default()
+        };
         assert_eq!(next_check_at(&failed(1), launched, launched), launched + 3600 * 1000);
         assert_eq!(next_check_at(&failed(2), launched, launched), launched + 2 * 3600 * 1000);
         assert_eq!(next_check_at(&failed(50), launched, launched), launched + CHECK_EVERY_MS, "up to a day");
-        let future = Saved { last_check_ms: Some(u64::MAX), last_attempt_ms: Some(u64::MAX), ..Saved::default() };
+        let future = Saved {
+            last_check_ms: Some(u64::MAX),
+            last_attempt_ms: Some(u64::MAX),
+            ..Saved::default()
+        };
         assert!(next_check_at(&future, launched, launched) <= launched + CHECK_EVERY_MS, "a clock moved back");
     }
 
     /// Failure: an automatic install goes while the user is using the app, or never goes, or goes with the switch off, in a development build, or over something in flight. The owner's 30-minute rule, frontmost or not: no sleeping, as the time is what's given.
     #[test]
     fn an_automatic_install_waits_for_thirty_quiet_minutes() {
-        let look = AutoLook { build_may: true, switch_on: true, offered: true, version_failed: false, since_input_ms: IDLE_BEFORE_INSTALL_MS, busy: false, back_off_ms: 0 };
+        let look = AutoLook {
+            build_may: true,
+            switch_on: true,
+            offered: true,
+            version_failed: false,
+            since_input_ms: IDLE_BEFORE_INSTALL_MS,
+            busy: false,
+            back_off_ms: 0,
+        };
         assert_eq!(auto_step(look), AutoStep::Go, "thirty minutes exactly");
-        assert_eq!(auto_step(AutoLook { since_input_ms: IDLE_BEFORE_INSTALL_MS - 1, ..look }), AutoStep::Wait(1), "a moment short");
-        assert_eq!(auto_step(AutoLook { since_input_ms: 0, ..look }), AutoStep::Wait(IDLE_BEFORE_INSTALL_MS), "just touched");
-        assert_eq!(auto_step(AutoLook { busy: true, ..look }), AutoStep::Wait(BUSY_RETRY_MS), "something in flight finishes first");
+        assert_eq!(
+            auto_step(AutoLook {
+                since_input_ms: IDLE_BEFORE_INSTALL_MS - 1,
+                ..look
+            }),
+            AutoStep::Wait(1),
+            "a moment short"
+        );
+        assert_eq!(
+            auto_step(AutoLook { since_input_ms: 0, ..look }),
+            AutoStep::Wait(IDLE_BEFORE_INSTALL_MS),
+            "just touched"
+        );
+        assert_eq!(
+            auto_step(AutoLook { busy: true, ..look }),
+            AutoStep::Wait(BUSY_RETRY_MS),
+            "something in flight finishes first"
+        );
         assert_eq!(auto_step(AutoLook { switch_on: false, ..look }), AutoStep::Never);
-        assert_eq!(auto_step(AutoLook { build_may: false, ..look }), AutoStep::Never, "a development build never replaces itself");
+        assert_eq!(
+            auto_step(AutoLook { build_may: false, ..look }),
+            AutoStep::Never,
+            "a development build never replaces itself"
+        );
         assert_eq!(auto_step(AutoLook { offered: false, ..look }), AutoStep::Never);
-        assert_eq!(auto_step(AutoLook { version_failed: true, ..look }), AutoStep::Never, "one that failed isn't tried again by itself");
+        assert_eq!(
+            auto_step(AutoLook { version_failed: true, ..look }),
+            AutoStep::Never,
+            "one that failed isn't tried again by itself"
+        );
         assert_eq!(auto_step(AutoLook { back_off_ms: 5, ..look }), AutoStep::Wait(5));
     }
 }

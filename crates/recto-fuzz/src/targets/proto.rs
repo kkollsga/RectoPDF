@@ -7,14 +7,25 @@ use recto_proto::*;
 use recto_render_service::transport::{FrameReader, ReadError, send_all};
 use std::time::Duration;
 
-const BUDGET: Budget = Budget { time: Duration::from_secs(10), memory: 256 * 1024 * 1024 };
+const BUDGET: Budget = Budget {
+    time: Duration::from_secs(10),
+    memory: 256 * 1024 * 1024,
+};
 
 /// A job the host could really have sent, chosen by the bytes.
 fn job_from(take: &mut Take<'_>) -> RenderJob {
     let width = 1 + u32::from(take.u16()) % 2048;
     let height = 1 + u32::from(take.u16()) % 2048;
     let edge = take.pick(&[0, 0, 256, 512]);
-    RenderJob { generation: u64::from(take.u8()), job_id: u32::from(take.u8()), page: 0, scale: 1.0, rect: TileRect { x: 0, y: 0, width, height }, stride: width * BYTES_PER_PIXEL + u32::from(take.u8()), tile_edge: edge }
+    RenderJob {
+        generation: u64::from(take.u8()),
+        job_id: u32::from(take.u8()),
+        page: 0,
+        scale: 1.0,
+        rect: TileRect { x: 0, y: 0, width, height },
+        stride: width * BYTES_PER_PIXEL + u32::from(take.u8()),
+        tile_edge: edge,
+    }
 }
 
 /// Catches: a decoder that panics, reads out of bounds, or allocates what a claimed length says rather than what arrived; a reply that decodes differently once re-encoded; a validator that lets through a reply that doesn't match its job.
@@ -50,7 +61,10 @@ fn every_decoder(payload: &[u8]) {
             // What `validate_region` and the worker walk. A job that passes its own check can't make them overflow, or walk far.
             let mut tiles = 0;
             for tile in region_tiles(job.rect, job.tile_edge) {
-                assert!(tile.width >= 1 && tile.height >= 1 && tile.width <= job.tile_edge && tile.height <= job.tile_edge, "{tile:?}");
+                assert!(
+                    tile.width >= 1 && tile.height >= 1 && tile.width <= job.tile_edge && tile.height <= job.tile_edge,
+                    "{tile:?}"
+                );
                 tiles += 1;
             }
             assert!(tiles <= MAX_REGION_TILES, "{tiles} tiles");
@@ -107,7 +121,13 @@ fn every_decoder(payload: &[u8]) {
         assert!(reply.boxes.iter().flatten().all(|edge| edge.is_finite()), "the decoder lets no NaN through");
         let wire = reply.encode().expect("what was decoded fits");
         assert_eq!(TextReply::decode(&wire[HEADER_LEN..]).as_ref(), Ok(&reply));
-        let job = TextJob { job_id: reply.job_id, page: reply.page, boxes: !reply.boxes.is_empty(), hidden_check: reply.hidden_checked, generation: 0 };
+        let job = TextJob {
+            job_id: reply.job_id,
+            page: reply.page,
+            boxes: !reply.boxes.is_empty(),
+            hidden_check: reply.hidden_checked,
+            generation: 0,
+        };
         let _ = validate_text(&job, &reply);
         // A reply that says it holds what wasn't asked for is refused.
         assert!(reply.boxes.is_empty() || validate_text(&TextJob { boxes: false, ..job }, &reply).is_err());
@@ -130,7 +150,10 @@ fn replies_against_a_job(job: &RenderJob, payload: &[u8]) {
                 assert!(u64::from(reply.stride) * u64::from(reply.height) <= surface, "a tile past its surface");
             }
         }
-        assert!(validate_tile(job, &reply, 0).is_err() || reply.status == TileStatus::Cancelled, "no surface can hold a tile");
+        assert!(
+            validate_tile(job, &reply, 0).is_err() || reply.status == TileStatus::Cancelled,
+            "no surface can hold a tile"
+        );
     }
     if let Ok(reply) = RegionReply::decode(payload)
         && validate_region(job, &reply, surface).is_ok()
@@ -142,7 +165,15 @@ fn replies_against_a_job(job: &RenderJob, payload: &[u8]) {
     }
     // A reply that's right in every way, with one field chosen by the bytes.
     let mut take = Take(payload);
-    let mut reply = TileReply { generation: job.generation, job_id: job.job_id, width: job.rect.width, height: job.rect.height, stride: job.stride, status: TileStatus::Done(TileKind::Colour), render_us: 0 };
+    let mut reply = TileReply {
+        generation: job.generation,
+        job_id: job.job_id,
+        width: job.rect.width,
+        height: job.rect.height,
+        stride: job.stride,
+        status: TileStatus::Done(TileKind::Colour),
+        render_us: 0,
+    };
     assert!(validate_tile(job, &reply, surface).is_ok(), "a true reply must pass");
     let hostile = take.pick(&[0u32, 1, 4096, 32_767, 32_768, 65_536, 0x7FFF_FFFF, u32::MAX]);
     match take.u8() % 3 {
@@ -151,7 +182,10 @@ fn replies_against_a_job(job: &RenderJob, payload: &[u8]) {
         _ => reply.stride = hostile,
     }
     let changed = reply.width != job.rect.width || reply.height != job.rect.height || reply.stride != job.stride;
-    assert!(!changed || validate_tile(job, &reply, surface).is_err(), "a reply differing from its job passed: {reply:?} for {job:?}");
+    assert!(
+        !changed || validate_tile(job, &reply, surface).is_err(),
+        "a reply differing from its job passed: {reply:?} for {job:?}"
+    );
 }
 
 /// Sizes and scales from the worker, and a page's size at any scale.

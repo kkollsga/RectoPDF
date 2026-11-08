@@ -12,13 +12,13 @@
 pub mod fetch;
 pub mod install;
 pub mod plan;
+mod process;
 pub mod rules;
 pub mod saved;
 pub mod source;
 pub mod stage;
 pub mod updater;
 pub mod zip;
-mod process;
 
 /// The project on GitHub. A release build's one and only source.
 pub const REPO: &str = "https://github.com/kkollsga/RectoPDF";
@@ -40,5 +40,7 @@ pub const RELEASE_BUILD: bool = option_env!("RECTO_RELEASE").is_some();
 /// Now, on the wall clock.
 #[must_use]
 pub fn wall_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
 }

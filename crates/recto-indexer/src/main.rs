@@ -86,11 +86,23 @@ fn whole_file(failure: RenderFailure) -> FeedError {
 fn read_failure(failure: RenderFailure) -> FeedError {
     match failure {
         RenderFailure::Unavailable => FeedError::Cant("render_unavailable"),
-        RenderFailure::PageReadFailed { reason: KillReason::Deadline, .. } => FeedError::Page(FailReason::Deadline),
-        RenderFailure::PageReadFailed { reason: KillReason::Crashed, .. } => FeedError::Page(FailReason::Crashed),
+        RenderFailure::PageReadFailed {
+            reason: KillReason::Deadline, ..
+        } => FeedError::Page(FailReason::Deadline),
+        RenderFailure::PageReadFailed {
+            reason: KillReason::Crashed, ..
+        } => FeedError::Page(FailReason::Crashed),
         RenderFailure::DocumentStopped => FeedError::Page(FailReason::DocumentStopped),
         RenderFailure::SourceChanged => FeedError::FileChanged,
-        RenderFailure::NeedsPassword | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::WallsDown(_) | RenderFailure::StartRefused | RenderFailure::NotFound | RenderFailure::OpenFailed { .. } => whole_file(failure),
+        RenderFailure::NeedsPassword
+        | RenderFailure::NotPdf
+        | RenderFailure::Security
+        | RenderFailure::WorkerMissing
+        | RenderFailure::LibraryMissing
+        | RenderFailure::WallsDown(_)
+        | RenderFailure::StartRefused
+        | RenderFailure::NotFound
+        | RenderFailure::OpenFailed { .. } => whole_file(failure),
         _ => FeedError::Page(FailReason::Stopped),
     }
 }
@@ -112,7 +124,11 @@ impl PageFeed for WorkerFeed {
                     self.hidden_check_failures += 1;
                     self.check_hidden = self.hidden_check_failures < MAX_HIDDEN_CHECK_FAILURES;
                 }
-                Ok(FedPage { chars: characters.chars, boxes: characters.boxes, hidden_checked: characters.hidden_checked })
+                Ok(FedPage {
+                    chars: characters.chars,
+                    boxes: characters.boxes,
+                    hidden_checked: characters.hidden_checked,
+                })
             }
             Err(failure) => Err(self.unless_too_busy(busy, read_failure(failure))),
         }
@@ -134,11 +150,31 @@ fn doc_meta(path: &Path) -> Result<DocMeta, OpenError> {
     let file_bytes = std::fs::metadata(path).map_or(0, |meta| meta.len());
     match recto_core::inspect(path) {
         Ok(facts) => {
-            let outline = facts.toc.entries().iter().map(|entry| (entry.depth, (entry.page != recto_core::NONE).then_some(entry.page), facts.toc.title(entry).to_string())).collect();
-            Ok(DocMeta { title: facts.title.map(String::from), outline, renderer_only: facts.renderer_only, file_bytes })
+            let outline = facts
+                .toc
+                .entries()
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.depth,
+                        (entry.page != recto_core::NONE).then_some(entry.page),
+                        facts.toc.title(entry).to_string(),
+                    )
+                })
+                .collect();
+            Ok(DocMeta {
+                title: facts.title.map(String::from),
+                outline,
+                renderer_only: facts.renderer_only,
+                file_bytes,
+            })
         }
         // Whether it can be read is the worker's to say, in a moment.
-        Err(OpenError::NotPdf) => Ok(DocMeta { renderer_only: true, file_bytes, ..DocMeta::default() }),
+        Err(OpenError::NotPdf) => Ok(DocMeta {
+            renderer_only: true,
+            file_bytes,
+            ..DocMeta::default()
+        }),
         Err(error) => Err(error),
     }
 }
@@ -157,8 +193,12 @@ fn say(value: &Value) {
 
 fn outcome_json(outcome: &BuildOutcome) -> Value {
     match outcome {
-        BuildOutcome::Ready { summary, stats } => json!({ "state": "ready", "pages": summary.pages, "pages_built": stats.pages_built, "pages_resumed": stats.pages_resumed, "elapsed_ms": stats.elapsed_ms, "corpus_bytes": summary.corpus_bytes, "pack_bytes": summary.pack_bytes, "failed_pages": summary.failed_pages, "no_text_pages": summary.no_text_pages, "hidden_flagged_pages": summary.hidden_flagged_pages, "hidden_unchecked_pages": summary.hidden_unchecked_pages }),
-        BuildOutcome::AlreadyReady(summary) => json!({ "state": "ready", "pages": summary.pages, "pages_built": 0, "corpus_bytes": summary.corpus_bytes, "pack_bytes": summary.pack_bytes }),
+        BuildOutcome::Ready { summary, stats } => {
+            json!({ "state": "ready", "pages": summary.pages, "pages_built": stats.pages_built, "pages_resumed": stats.pages_resumed, "elapsed_ms": stats.elapsed_ms, "corpus_bytes": summary.corpus_bytes, "pack_bytes": summary.pack_bytes, "failed_pages": summary.failed_pages, "no_text_pages": summary.no_text_pages, "hidden_flagged_pages": summary.hidden_flagged_pages, "hidden_unchecked_pages": summary.hidden_unchecked_pages })
+        }
+        BuildOutcome::AlreadyReady(summary) => {
+            json!({ "state": "ready", "pages": summary.pages, "pages_built": 0, "corpus_bytes": summary.corpus_bytes, "pack_bytes": summary.pack_bytes })
+        }
         BuildOutcome::Refused(code) => json!({ "state": "refused", "code": code }),
         BuildOutcome::Busy => json!({ "state": "failed", "code": "building_elsewhere" }),
         BuildOutcome::FileChanged => json!({ "state": "changed" }),
@@ -172,7 +212,11 @@ fn main() {
         say(&json!({ "state": "failed", "code": "bad_job" }));
         return;
     };
-    let (Some(file), Some(root), Some(key)) = (job["file"].as_str().map(PathBuf::from), job["root"].as_str().map(PathBuf::from), job["key"].as_str().and_then(CorpusKey::from_hex)) else {
+    let (Some(file), Some(root), Some(key)) = (
+        job["file"].as_str().map(PathBuf::from),
+        job["root"].as_str().map(PathBuf::from),
+        job["key"].as_str().and_then(CorpusKey::from_hex),
+    ) else {
         say(&json!({ "state": "failed", "code": "bad_job" }));
         return;
     };
@@ -197,12 +241,22 @@ fn main() {
         Ok(meta) => meta,
         Err(OpenError::PasswordNeeded) => {
             let mut feed = RefusedFeed("needs_password");
-            report(corpus::build_for_file(&file, &root, key, &mut feed, &DocMeta::default(), &limits), RenderStats::default(), 0);
+            report(
+                corpus::build_for_file(&file, &root, key, &mut feed, &DocMeta::default(), &limits),
+                RenderStats::default(),
+                0,
+            );
             return;
         }
         Err(_) => DocMeta::default(),
     };
-    let mut feed = WorkerFeed { path: file.clone(), key, renderer: None, check_hidden: true, hidden_check_failures: 0 };
+    let mut feed = WorkerFeed {
+        path: file.clone(),
+        key,
+        renderer: None,
+        check_hidden: true,
+        hidden_check_failures: 0,
+    };
     let built = corpus::build_for_file(&file, &root, key, &mut feed, &meta, &limits);
     report(built, feed.stats(), feed.hidden_check_failures);
 }
@@ -257,10 +311,16 @@ mod tests {
     fn a_failure_of_the_moment_writes_no_page_down_as_failed() {
         assert_eq!(read_failure(RenderFailure::Unavailable), FeedError::Cant("render_unavailable"));
         // These go down as failed, and are read again, because they may say more about the moment than the page.
-        assert!(matches!(read_failure(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Deadline }), FeedError::Page(reason) if reason.is_temporary()));
-        assert!(matches!(read_failure(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Crashed }), FeedError::Page(reason) if reason.is_temporary()));
+        assert!(
+            matches!(read_failure(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Deadline }), FeedError::Page(reason) if reason.is_temporary())
+        );
+        assert!(
+            matches!(read_failure(RenderFailure::PageReadFailed { page: 1, reason: KillReason::Crashed }), FeedError::Page(reason) if reason.is_temporary())
+        );
         assert!(matches!(read_failure(RenderFailure::DocumentStopped), FeedError::Page(reason) if reason.is_temporary()));
         // This is the page's own doing, and stays.
-        assert!(matches!(read_failure(RenderFailure::PageReadFailed { page: 1, reason: KillReason::MemoryLimit }), FeedError::Page(reason) if !reason.is_temporary()));
+        assert!(
+            matches!(read_failure(RenderFailure::PageReadFailed { page: 1, reason: KillReason::MemoryLimit }), FeedError::Page(reason) if !reason.is_temporary())
+        );
     }
 }

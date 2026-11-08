@@ -57,7 +57,8 @@ pub fn reason_words(code: &str) -> &'static str {
 }
 
 pub(crate) fn no_generating() -> AgentError {
-    AgentError::new("no_generated_contents", "Generated contents aren't available in this session.", exit::FAILED).then("Run it against the app's session, or `recto serve`.")
+    AgentError::new("no_generated_contents", "Generated contents aren't available in this session.", exit::FAILED)
+        .then("Run it against the app's session, or `recto serve`.")
 }
 
 /// The file a tab shows, and its key now, looked at with the session free.
@@ -67,7 +68,13 @@ pub(crate) struct Keyed {
 }
 
 pub(crate) fn key_of(path: &Path) -> Result<CorpusKey, AgentError> {
-    CorpusKey::of_file(path).map_err(|_| AgentError::new("file_unreadable", "The tab's file can't be looked at just now, so it has no generated contents.", exit::FAILED))
+    CorpusKey::of_file(path).map_err(|_| {
+        AgentError::new(
+            "file_unreadable",
+            "The tab's file can't be looked at just now, so it has no generated contents.",
+            exit::FAILED,
+        )
+    })
 }
 
 /// Where a file's generated contents stand, for an answer that isn't the contents: `None` once they're ready.
@@ -76,21 +83,40 @@ pub(crate) fn not_ready(generating: &dyn Generating, keyed: &Keyed, pages: u32, 
         return None;
     }
     Some(match generating.state(keyed.key) {
-        GenState::Refused(code) => Err(AgentError::new("not_generated", format!("This file won't have generated contents: {}.", reason_words(&code)), if code == "needs_password" { exit::PROTECTED } else { exit::FAILED }).then("`recto contents` gives the file's own, if it has any.")),
-        GenState::Failed(code) => Err(AgentError::new("generating_failed", format!("Generated contents couldn't be made: {}.", reason_words(&code)), exit::FAILED).then("Ask again in a minute.")),
+        GenState::Refused(code) => Err(AgentError::new(
+            "not_generated",
+            format!("This file won't have generated contents: {}.", reason_words(&code)),
+            if code == "needs_password" { exit::PROTECTED } else { exit::FAILED },
+        )
+        .then("`recto contents` gives the file's own, if it has any.")),
+        GenState::Failed(code) => Err(AgentError::new(
+            "generating_failed",
+            format!("Generated contents couldn't be made: {}.", reason_words(&code)),
+            exit::FAILED,
+        )
+        .then("Ask again in a minute.")),
         state => {
             if ask && state == GenState::Idle {
                 generating.want(&keyed.path, keyed.key, pages);
             }
-            let word = if generating.state(keyed.key) == GenState::Running { "running" } else { "queued" };
-            Ok((word, "They're being made in the background, from the headings distillPDF finds. `recto wait contents-generated` waits for them.".to_string()))
+            let word = if generating.state(keyed.key) == GenState::Running {
+                "running"
+            } else {
+                "queued"
+            };
+            Ok((
+                word,
+                "They're being made in the background, from the headings distillPDF finds. `recto wait contents-generated` waits for them.".to_string(),
+            ))
         }
     })
 }
 
 /// `recto wait contents-generated`: asking counts as wanting them, or a wait could run out its time on something nobody started.
 pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
-    let Some(generating) = access.generating() else { return ConditionState::Failed(no_generating()) };
+    let Some(generating) = access.generating() else {
+        return ConditionState::Failed(no_generating());
+    };
     let (file, keyed) = match crate::reading::tab_file_keyed(access, tab) {
         Ok(found) => found,
         // A tab that isn't open yet may be; a file that's changed under its edits or can't be looked at won't be, so the wait ends now rather than at its time.

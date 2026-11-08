@@ -5,7 +5,9 @@
 use crate::render::open_for_text;
 use crate::{AgentError, SessionAccess, exit, no_such_page, select as select_tab, source_changed};
 use recto_index::chrome::{self, EdgeLine};
-use recto_index::select::{CopiedText, MAX_COPY_BYTES, MAX_COPY_PAGES, MAX_COPY_TIME, PagePoint, PageText, Place, Range, Selection, Texts, Unit, chrome_for, neighbour_pages};
+use recto_index::select::{
+    CopiedText, MAX_COPY_BYTES, MAX_COPY_PAGES, MAX_COPY_TIME, PagePoint, PageText, Place, Range, Selection, Texts, Unit, chrome_for, neighbour_pages,
+};
 use recto_render_service::DocRenderer;
 use recto_session::TabId;
 use serde_json::{Value, json};
@@ -38,14 +40,21 @@ fn bad(words: impl Into<String>) -> AgentError {
 }
 
 fn point(word: &str, page: u32) -> Result<PagePoint, AgentError> {
-    let parsed = word.split_once(',').and_then(|(x, y)| Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))).filter(|(x, y)| x.is_finite() && y.is_finite());
+    let parsed = word
+        .split_once(',')
+        .and_then(|(x, y)| Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?)))
+        .filter(|(x, y)| x.is_finite() && y.is_finite());
     let (x, y) = parsed.ok_or_else(|| bad("A place on a page is `X,Y`, in points from its top left, as `select` gives its rectangles."))?;
     Ok(PagePoint { page, x, y })
 }
 
 fn char_range(word: &str) -> Result<(u32, u32), AgentError> {
-    let parsed = word.split_once('-').and_then(|(from, to)| Some((from.parse::<u32>().ok()?, to.parse::<u32>().ok()?)));
-    parsed.filter(|(from, to)| from <= to).ok_or_else(|| bad("`--chars` is `START-END`, counted in characters of `recto text`, with the end not included."))
+    let parsed = word
+        .split_once('-')
+        .and_then(|(from, to)| Some((from.parse::<u32>().ok()?, to.parse::<u32>().ok()?)));
+    parsed
+        .filter(|(from, to)| from <= to)
+        .ok_or_else(|| bad("`--chars` is `START-END`, counted in characters of `recto text`, with the end not included."))
 }
 
 /// Pages as they're read, one worker to a file.
@@ -85,7 +94,10 @@ impl<A: SessionAccess> Pages<'_, A> {
             }
         }
         let Some((_, doc)) = self.docs.last_mut() else { return Ok(None) };
-        Ok(doc.page_characters(source.page, true, hidden_check).ok().map(|page| PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)))
+        Ok(doc
+            .page_characters(source.page, true, hidden_check)
+            .ok()
+            .map(|page| PageText::build(&page.chars, &page.boxes, page.frame, page.hidden_checked, page.copy_restricted)))
     }
 }
 
@@ -112,7 +124,9 @@ fn range_of<A: SessionAccess>(pick: &Pick, pages: u32, reading: &mut Pages<A>) -
     let first = page.checked_sub(1).filter(|first| *first < pages).ok_or_else(no_such_page)?;
     let to_page = pick.to_page.unwrap_or(page);
     if to_page < page {
-        return Err(bad("`--to-page` comes after `--page`. A drag that goes back up says where it starts with `--page` and where it ends with `--to-page`, the earlier page first, and comes out the same."));
+        return Err(bad(
+            "`--to-page` comes after `--page`. A drag that goes back up says where it starts with `--page` and where it ends with `--to-page`, the earlier page first, and comes out the same.",
+        ));
     }
     let last = to_page.checked_sub(1).filter(|last| *last < pages).ok_or_else(no_such_page)?;
     if pick.chars.is_some() && pick.at.is_some() {
@@ -123,7 +137,10 @@ fn range_of<A: SessionAccess>(pick: &Pick, pages: u32, reading: &mut Pages<A>) -
     }
     if let Some(word) = pick.chars {
         let (from, to) = char_range(word)?;
-        return Ok(Range { start: Place { page: first, at: from }, end: Place { page: last, at: to } });
+        return Ok(Range {
+            start: Place { page: first, at: from },
+            end: Place { page: last, at: to },
+        });
     }
     let Some(at) = pick.at else { return Ok(Range::pages(first, last)) };
     let unit = match pick.unit {
@@ -174,9 +191,19 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
         let id = select_tab(s, pick.tab)?;
         Ok::<_, AgentError>((id, s.pages_in(id)))
     })?;
-    let mut reading = Pages { access, id, docs: Vec::new(), ends: HashMap::new(), failed_ends: HashSet::new() };
+    let mut reading = Pages {
+        access,
+        id,
+        docs: Vec::new(),
+        ends: HashMap::new(),
+        failed_ends: HashSet::new(),
+    };
     let range = range_of(pick, pages, &mut reading)?;
-    let (page_cap, room, time) = if rects { (MAX_SELECT_PAGES, MAX_SELECT_BYTES, Duration::from_secs(60)) } else { (MAX_COPY_PAGES, MAX_COPY_BYTES, MAX_COPY_TIME) };
+    let (page_cap, room, time) = if rects {
+        (MAX_SELECT_PAGES, MAX_SELECT_BYTES, Duration::from_secs(60))
+    } else {
+        (MAX_COPY_PAGES, MAX_COPY_BYTES, MAX_COPY_TIME)
+    };
     let started = Instant::now();
     let last_page = range.end.page.min(pages.saturating_sub(1));
     let mut copied = CopiedText::default();
@@ -212,7 +239,10 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
         };
         // Its first page already says so, and the same goes for the rest: the permissions are the file's. Before anything else is read.
         if text.copy_restricted() && !pick.anyway && !rects {
-            return Err(AgentError::new("copy_restricted", "This file's permissions ask that its text isn't copied.", exit::PROTECTED).then("Tell the user. `--anyway` copies it, once they've said to. Each use goes in the activity log."));
+            return Err(
+                AgentError::new("copy_restricted", "This file's permissions ask that its text isn't copied.", exit::PROTECTED)
+                    .then("Tell the user. `--anyway` copies it, once they've said to. Each use goes in the activity log."),
+            );
         }
         edges.insert(page, text.edge_lines().to_vec());
         for other in neighbour_pages(page, pages) {
@@ -221,13 +251,24 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
             }
             // An end page already read, with the check, goes by that read.
             if let Some(end) = reading.ends.get(&other) {
-                edges.insert(other, if reading.failed_ends.contains(&other) { Vec::new() } else { end.edge_lines().to_vec() });
+                edges.insert(
+                    other,
+                    if reading.failed_ends.contains(&other) {
+                        Vec::new()
+                    } else {
+                        end.edge_lines().to_vec()
+                    },
+                );
                 continue;
             }
             // One the copy reaches is read as it would be then, and kept. One past the pick is read only for its edges, and a failure there is only less to compare with.
             let reaches = other > page && other <= last_page;
             counted.reads += 1;
-            let read = if reaches { reading.read(other)? } else { reading.read_checked(other, false).ok().flatten() };
+            let read = if reaches {
+                reading.read(other)?
+            } else {
+                reading.read_checked(other, false).ok().flatten()
+            };
             counted.most_workers = counted.most_workers.max(reading.docs.len());
             edges.insert(other, read.as_ref().map(|text| text.edge_lines().to_vec()).unwrap_or_default());
             if reaches && let Some(text) = read {
@@ -238,9 +279,15 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
         let leave_out = chrome_for(page, &text, pages, |other| edges.get(&other).map(Vec::as_slice));
         if rects {
             let (start, end) = range.on_page(page).unwrap_or((0, 0));
-            let shapes: Vec<[f64; 4]> = text.rects(start, end).iter().map(|rect| [round(rect.x), round(rect.y), round(rect.width), round(rect.height)]).collect();
+            let shapes: Vec<[f64; 4]> = text
+                .rects(start, end)
+                .iter()
+                .map(|rect| [round(rect.x), round(rect.y), round(rect.width), round(rect.height)])
+                .collect();
             let (width, height) = text.size();
-            listed.push(json!({ "page": page + 1, "start": start.min(text.len()), "end": end.min(text.len()), "width": width, "height": height, "rects": shapes }));
+            listed.push(
+                json!({ "page": page + 1, "start": start.min(text.len()), "end": end.min(text.len()), "width": width, "height": height, "rects": shapes }),
+            );
         }
         if page == range.start.page {
             start_at = Some(range.start.at.min(text.len()));
@@ -259,13 +306,18 @@ fn run_counted<A: SessionAccess>(access: &A, pick: &Pick, rects: bool, counted: 
     let stopped_at = copied.stopped_at.or(ran_out);
     let mut note = Vec::new();
     if withheld {
-        note.push("This file's permissions ask that its text isn't copied, so the text is left out. `--anyway` includes it, once the user has said to.".to_string());
+        note.push(
+            "This file's permissions ask that its text isn't copied, so the text is left out. `--anyway` includes it, once the user has said to.".to_string(),
+        );
     }
     if copied.hidden_left_out > 0 {
         note.push(format!("{} characters of text that looks hidden are left out.", copied.hidden_left_out));
     }
     if copied.chrome_left_out > 0 {
-        note.push(format!("{} characters of running heads, footers and page numbers are left out of the body text. Pick only them to copy them.", copied.chrome_left_out));
+        note.push(format!(
+            "{} characters of running heads, footers and page numbers are left out of the body text. Pick only them to copy them.",
+            copied.chrome_left_out
+        ));
     }
     if copied.text.is_empty() && !withheld && !range.is_empty() && copied.pages_failed == 0 && copied.pages_too_long == 0 {
         note.push("There's no text there to select. It may be a scan.".to_string());
@@ -311,20 +363,51 @@ mod tests {
 
     fn opened(file: &TempPdf) -> Session<crate::DrawableLoader> {
         let mut session = Session::new(crate::DrawableLoader);
-        run_command(&mut session, Level::Control, &Command::Open { path: file.0.clone(), page: None }).unwrap();
+        run_command(
+            &mut session,
+            Level::Control,
+            &Command::Open {
+                path: file.0.clone(),
+                page: None,
+            },
+        )
+        .unwrap();
         session
     }
 
     fn whole<'a>() -> Pick<'a> {
-        Pick { tab: "active", page: None, to_page: None, chars: None, at: None, to: None, unit: None, all: true, anyway: false }
+        Pick {
+            tab: "active",
+            page: None,
+            to_page: None,
+            chars: None,
+            at: None,
+            to: None,
+            unit: None,
+            all: true,
+            anyway: false,
+        }
     }
 
     // An encrypted test file, built into memory: lopdf's eager writer is the only one that encrypts, and nothing here goes near a user's file.
     #[allow(clippy::disallowed_methods)]
     fn restricted(count: usize) -> Vec<u8> {
         let mut document = lopdf::Document::load_mem(&words("Words that ask not to be copied", count)).unwrap();
-        document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));
-        let state = EncryptionState::try_from(EncryptionVersion::V2 { document: &document, owner_password: "owner", user_password: "", key_length: 128, permissions: Permissions::all() - Permissions::COPYABLE }).unwrap();
+        document.trailer.set(
+            "ID",
+            lopdf::Object::Array(vec![
+                lopdf::Object::string_literal("0123456789abcdef"),
+                lopdf::Object::string_literal("0123456789abcdef"),
+            ]),
+        );
+        let state = EncryptionState::try_from(EncryptionVersion::V2 {
+            document: &document,
+            owner_password: "owner",
+            user_password: "",
+            key_length: 128,
+            permissions: Permissions::all() - Permissions::COPYABLE,
+        })
+        .unwrap();
         document.encrypt(&state).unwrap();
         let mut out = Vec::new();
         document.save_to(&mut out).unwrap();
@@ -350,7 +433,16 @@ mod tests {
         let added: Vec<TempPdf> = (0..6).map(|at| TempPdf::new("added.pdf", &words(&format!("Added file {at}"), 1))).collect();
         let mut session = opened(&file);
         for one in &added {
-            run_command(&mut session, Level::Control, &Command::PageInsert { tab: "active".into(), path: one.0.clone(), at: 1 }).unwrap();
+            run_command(
+                &mut session,
+                Level::Control,
+                &Command::PageInsert {
+                    tab: "active".into(),
+                    path: one.0.clone(),
+                    at: 1,
+                },
+            )
+            .unwrap();
         }
         let mut counted = Counted::default();
         let access = Direct(RefCell::new(&mut session), None);
@@ -370,7 +462,14 @@ mod tests {
         let mut session = opened(&file);
         let mut counted = Counted::default();
         let access = Direct(RefCell::new(&mut session), None);
-        let pick = Pick { page: Some(2), at: Some("80,80"), to_page: Some(3), to: Some("200,80"), all: false, ..whole() };
+        let pick = Pick {
+            page: Some(2),
+            at: Some("80,80"),
+            to_page: Some(3),
+            to: Some("200,80"),
+            all: false,
+            ..whole()
+        };
         run_counted(&access, &pick, false, &mut counted).unwrap();
         assert_eq!(counted.reads, 3, "pages 1, 4 and 5, past the two ends already read");
     }
@@ -382,7 +481,17 @@ mod tests {
         let mut session = opened(&file);
         std::fs::write(&file.0, words("Some words", 1)).unwrap();
         let access = Direct(RefCell::new(&mut session), None);
-        let answer = run(&access, &Pick { page: Some(3), at: Some("100,100"), all: false, ..whole() }, true).unwrap();
+        let answer = run(
+            &access,
+            &Pick {
+                page: Some(3),
+                at: Some("100,100"),
+                all: false,
+                ..whole()
+            },
+            true,
+        )
+        .unwrap();
         assert_eq!(answer["pages_failed"], 1, "{answer}");
         assert!(answer["note"].is_null() || !answer["note"].as_str().unwrap().contains("scan"), "{answer}");
     }

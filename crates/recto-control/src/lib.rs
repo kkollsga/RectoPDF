@@ -24,7 +24,11 @@ pub(crate) fn program_beside(this: &std::path::Path, stem: &str) -> Option<std::
     let name = format!("{stem}{}", std::env::consts::EXE_SUFFIX);
     let this = std::fs::canonicalize(this).unwrap_or_else(|_| this.to_path_buf());
     let here = this.parent()?;
-    [Some(here), here.parent()].into_iter().flatten().map(|dir| dir.join(&name)).find(|path| path.is_file())
+    [Some(here), here.parent()]
+        .into_iter()
+        .flatten()
+        .map(|dir| dir.join(&name))
+        .find(|path| path.is_file())
 }
 
 #[cfg(all(test, unix))]
@@ -35,7 +39,10 @@ mod tests {
     /// `indexer_missing`, while the app beside the real `recto` works.
     #[test]
     fn a_program_reached_through_a_link_finds_the_helpers_beside_the_real_one() {
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-beside-{}", std::process::id()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-beside-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (real, linked) = (root.join("App/MacOS"), root.join("bin"));
         std::fs::create_dir_all(&real).unwrap();

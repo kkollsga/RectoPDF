@@ -73,7 +73,9 @@ impl EditError {
             Self::TooManyPages => "That would make this document too long.",
             Self::TooManySources => "Too many PDFs have been added to this document.",
             Self::SourceChanged => "That PDF has changed since it was added, so it can't be added again.",
-            Self::HistoryFull => "The undo history is full, and this edit would push the user's own steps out of it, so it wasn't made. Ask them to save or to undo, which makes room.",
+            Self::HistoryFull => {
+                "The undo history is full, and this edit would push the user's own steps out of it, so it wasn't made. Ask them to save or to undo, which makes room."
+            }
         }
     }
 }
@@ -90,20 +92,42 @@ enum Step {
 impl Step {
     fn to_record(&self) -> StepRecord {
         match self {
-            Self::Rotate { start, len, quarter_turns } => StepRecord::Rotate { start: *start, len: *len, quarter_turns: *quarter_turns },
-            Self::Move { start, len, to } => StepRecord::Move { start: *start, len: *len, to: *to },
+            Self::Rotate { start, len, quarter_turns } => StepRecord::Rotate {
+                start: *start,
+                len: *len,
+                quarter_turns: *quarter_turns,
+            },
+            Self::Move { start, len, to } => StepRecord::Move {
+                start: *start,
+                len: *len,
+                to: *to,
+            },
             Self::Remove { start, len } => StepRecord::Remove { start: *start, len: *len },
-            Self::Restore { start, slots } => StepRecord::Restore { start: *start, runs: runs_of(slots) },
+            Self::Restore { start, slots } => StepRecord::Restore {
+                start: *start,
+                runs: runs_of(slots),
+            },
         }
     }
 
     /// From a record already checked by `validate_edits`, whose runs have been counted.
     fn from_record(record: &StepRecord) -> Self {
         match record {
-            StepRecord::Rotate { start, len, quarter_turns } => Self::Rotate { start: *start, len: *len, quarter_turns: *quarter_turns },
-            StepRecord::Move { start, len, to } => Self::Move { start: *start, len: *len, to: *to },
+            StepRecord::Rotate { start, len, quarter_turns } => Self::Rotate {
+                start: *start,
+                len: *len,
+                quarter_turns: *quarter_turns,
+            },
+            StepRecord::Move { start, len, to } => Self::Move {
+                start: *start,
+                len: *len,
+                to: *to,
+            },
             StepRecord::Remove { start, len } => Self::Remove { start: *start, len: *len },
-            StepRecord::Restore { start, runs } => Self::Restore { start: *start, slots: slots_of(runs).into_boxed_slice() },
+            StepRecord::Restore { start, runs } => Self::Restore {
+                start: *start,
+                slots: slots_of(runs).into_boxed_slice(),
+            },
         }
     }
 
@@ -142,7 +166,15 @@ fn runs_of(slots: &[PageSlot]) -> Vec<SlotRun> {
 
 /// The pages of runs that have been counted.
 fn slots_of(runs: &[SlotRun]) -> Vec<PageSlot> {
-    runs.iter().flat_map(|run| (0..run.2).map(move |at| PageSlot { source: run.0, page: run.1 + at, quarter_turns: run.3 })).collect()
+    runs.iter()
+        .flat_map(|run| {
+            (0..run.2).map(move |at| PageSlot {
+                source: run.0,
+                page: run.1 + at,
+                quarter_turns: run.3,
+            })
+        })
+        .collect()
 }
 
 /// A step and who made it. The inverse of a step keeps its author, so an undone step is still whoever's it was.
@@ -223,24 +255,64 @@ struct Outbox {
 
 impl AddedSource {
     pub fn to_record(&self) -> AddedRecord {
-        AddedRecord { path: PathField::from_path(&self.path), page_count: self.page_count, file: self.stamp.map(FileRecord::from), kept: self.kept, protected: self.protected, holds: self.holds.as_ref().map(|holds| holds.to_vec()) }
+        AddedRecord {
+            path: PathField::from_path(&self.path),
+            page_count: self.page_count,
+            file: self.stamp.map(FileRecord::from),
+            kept: self.kept,
+            protected: self.protected,
+            holds: self.holds.as_ref().map(|holds| holds.to_vec()),
+        }
     }
 
     pub fn from_record(record: &AddedRecord) -> Option<Self> {
         // A record can say anything: what it holds is ascending, within limits, and as long as the copy.
         let holds = match &record.holds {
             None => None,
-            Some(holds) if holds.len() == record.page_count as usize && holds.len() <= MAX_PAGES && holds.windows(2).all(|pair| pair[0] < pair[1]) => Some(holds.clone().into_boxed_slice()),
+            Some(holds) if holds.len() == record.page_count as usize && holds.len() <= MAX_PAGES && holds.windows(2).all(|pair| pair[0] < pair[1]) => {
+                Some(holds.clone().into_boxed_slice())
+            }
             Some(_) => return None,
         };
-        Some(Self { path: record.path.to_path()?.into_boxed_path(), page_count: record.page_count, stamp: record.file.map(FileStamp::from), kept: record.kept, protected: record.protected, holds })
+        Some(Self {
+            path: record.path.to_path()?.into_boxed_path(),
+            page_count: record.page_count,
+            stamp: record.file.map(FileStamp::from),
+            kept: record.kept,
+            protected: record.protected,
+            holds,
+        })
     }
 }
 
 impl PageEdits {
     pub fn new(page_count: u32) -> Self {
-        let slots = (0..page_count).map(|page| PageSlot { source: 0, page, quarter_turns: 0 }).collect();
-        Self { file_pages: page_count as usize, slots, added: Vec::new(), undo: Vec::new(), redo: Vec::new(), history_dropped: false, owner_step_dropped: false, differs: false, acting: Author::Owner, history_bytes: 0, journal: None, may_push_owner: false, saving: None, keeping: None, rewrites: false, changes: 0, replaying: false }
+        let slots = (0..page_count)
+            .map(|page| PageSlot {
+                source: 0,
+                page,
+                quarter_turns: 0,
+            })
+            .collect();
+        Self {
+            file_pages: page_count as usize,
+            slots,
+            added: Vec::new(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            history_dropped: false,
+            owner_step_dropped: false,
+            differs: false,
+            acting: Author::Owner,
+            history_bytes: 0,
+            journal: None,
+            may_push_owner: false,
+            saving: None,
+            keeping: None,
+            rewrites: false,
+            changes: 0,
+            replaying: false,
+        }
     }
 
     /// Keeps this list's operations for a journal, from now on.
@@ -282,13 +354,32 @@ impl PageEdits {
 
     /// What a list comes to, without opening it.
     pub fn summary(&self) -> EditsSummary {
-        EditsSummary { pages: self.len(), edited: self.is_edited(), holds_owner_edits: self.holds_owner_edits(), owner_steps_undone: self.owner_steps_undone(), undo: u32::try_from(self.undo.len()).unwrap_or(u32::MAX), redo: u32::try_from(self.redo.len()).unwrap_or(u32::MAX), rewrites: self.rewrites() }
+        EditsSummary {
+            pages: self.len(),
+            edited: self.is_edited(),
+            holds_owner_edits: self.holds_owner_edits(),
+            owner_steps_undone: self.owner_steps_undone(),
+            undo: u32::try_from(self.undo.len()).unwrap_or(u32::MAX),
+            redo: u32::try_from(self.redo.len()).unwrap_or(u32::MAX),
+            rewrites: self.rewrites(),
+        }
     }
 
     /// The list as a whole, for a journal's base and for QA.
     pub fn to_record(&self) -> EditsRecord {
-        let entry = |entry: &Entry| EntryRecord { by: entry.by.into(), step: entry.step.to_record() };
-        EditsRecord { file_pages: u32::try_from(self.file_pages).unwrap_or(u32::MAX), pages: runs_of(&self.slots), added: self.added.iter().map(AddedSource::to_record).collect(), undo: self.undo.iter().map(entry).collect(), redo: self.redo.iter().map(entry).collect(), history_dropped: self.history_dropped, owner_step_dropped: self.owner_step_dropped }
+        let entry = |entry: &Entry| EntryRecord {
+            by: entry.by.into(),
+            step: entry.step.to_record(),
+        };
+        EditsRecord {
+            file_pages: u32::try_from(self.file_pages).unwrap_or(u32::MAX),
+            pages: runs_of(&self.slots),
+            added: self.added.iter().map(AddedSource::to_record).collect(),
+            undo: self.undo.iter().map(entry).collect(),
+            redo: self.redo.iter().map(entry).collect(),
+            history_dropped: self.history_dropped,
+            owner_step_dropped: self.owner_step_dropped,
+        }
     }
 
     /// A list from a record that's been through [`crate::record::validate_edits`], which is what makes this safe: every step in it is in range. Refuses one that isn't, however it got here.
@@ -308,7 +399,25 @@ impl PageEdits {
         };
         let undo = entries(&record.undo, &mut history_bytes);
         let redo = entries(&record.redo, &mut history_bytes);
-        let mut edits = Self { file_pages: record.file_pages as usize, slots: slots_of(&record.pages), added, undo, redo, history_dropped: record.history_dropped, owner_step_dropped: record.owner_step_dropped, differs: false, acting: Author::Owner, history_bytes, journal: None, may_push_owner: false, saving: None, keeping: None, rewrites: false, changes: 0, replaying: false };
+        let mut edits = Self {
+            file_pages: record.file_pages as usize,
+            slots: slots_of(&record.pages),
+            added,
+            undo,
+            redo,
+            history_dropped: record.history_dropped,
+            owner_step_dropped: record.owner_step_dropped,
+            differs: false,
+            acting: Author::Owner,
+            history_bytes,
+            journal: None,
+            may_push_owner: false,
+            saving: None,
+            keeping: None,
+            rewrites: false,
+            changes: 0,
+            replaying: false,
+        };
         edits.differs = edits.differs_from_the_file();
         edits.rewrites = edits.rewrites_the_file();
         Ok(edits)
@@ -321,7 +430,9 @@ impl PageEdits {
 
     /// Whether the document has a page from a protected file.
     pub fn has_protected_pages(&self) -> bool {
-        self.slots.iter().any(|slot| slot.source != 0 && self.added.get(usize::from(slot.source) - 1).is_some_and(|added| added.protected))
+        self.slots
+            .iter()
+            .any(|slot| slot.source != 0 && self.added.get(usize::from(slot.source) - 1).is_some_and(|added| added.protected))
     }
 
     /// What's on each page of the document, as a number: pictures of it are about this order of these files, and no other. Zero when it's the file as it is, however it got back there, so a discard and a new edit can't come to match by counting.
@@ -462,7 +573,13 @@ impl PageEdits {
         if source == 0 || usize::from(source) > self.added.len() {
             return Err(EditError::OutOfRange);
         }
-        let slots: Box<[PageSlot]> = (0..count).map(|page| PageSlot { source, page, quarter_turns: 0 }).collect();
+        let slots: Box<[PageSlot]> = (0..count)
+            .map(|page| PageSlot {
+                source,
+                page,
+                quarter_turns: 0,
+            })
+            .collect();
         self.commit(Step::Restore { start: at, slots })
     }
 
@@ -527,7 +644,11 @@ impl PageEdits {
         #[cfg(test)]
         tests::count_look();
         // Every page in its own place, from its own file, with no turn.
-        self.slots.iter().enumerate().any(|(position, slot)| slot.source != 0 || slot.quarter_turns != 0 || slot.page as usize != position) || self.slots.len() != self.file_pages
+        self.slots
+            .iter()
+            .enumerate()
+            .any(|(position, slot)| slot.source != 0 || slot.quarter_turns != 0 || slot.page as usize != position)
+            || self.slots.len() != self.file_pages
     }
 
     /// Whether there's a step to undo.
@@ -611,7 +732,12 @@ impl PageEdits {
             None => None,
         };
         // Copies kept are held to the limit a PDF's history has, oldest out.
-        let mut kept_bytes: u64 = self.added.iter().filter(|added| added.kept).map(|added| added.stamp.map_or(0, |stamp| stamp.size)).sum();
+        let mut kept_bytes: u64 = self
+            .added
+            .iter()
+            .filter(|added| added.kept)
+            .map(|added| added.stamp.map_or(0, |stamp| stamp.size))
+            .sum();
         for at in 0..self.added.len() {
             if kept_bytes <= MAX_HISTORY_BYTES as u64 {
                 break;
@@ -648,7 +774,13 @@ impl PageEdits {
         }
         self.file_pages = pages as usize;
         self.changes += 1;
-        self.slots = (0..pages).map(|page| PageSlot { source: 0, page, quarter_turns: 0 }).collect();
+        self.slots = (0..pages)
+            .map(|page| PageSlot {
+                source: 0,
+                page,
+                quarter_turns: 0,
+            })
+            .collect();
         out.let_go.extend(self.drop_unused_sources());
         // What fell off before this is in the file, so nothing's lost with it.
         self.history_dropped = false;
@@ -704,7 +836,11 @@ impl PageEdits {
 
     /// Kept files this list names, for checking they're still what they were.
     pub fn kept_sources(&self) -> impl Iterator<Item = (u16, &AddedSource)> {
-        self.added.iter().enumerate().filter(|(_, added)| added.kept).map(|(at, added)| (u16::try_from(at + 1).unwrap_or(u16::MAX), added))
+        self.added
+            .iter()
+            .enumerate()
+            .filter(|(_, added)| added.kept)
+            .map(|(at, added)| (u16::try_from(at + 1).unwrap_or(u16::MAX), added))
     }
 
     /// A kept file isn't what it was, so the steps that need it can't be undone. Says how many went.
@@ -785,7 +921,11 @@ impl PageEdits {
         if turns == 0 {
             return Ok(());
         }
-        self.commit(Step::Rotate { start, len, quarter_turns: turns })
+        self.commit(Step::Rotate {
+            start,
+            len,
+            quarter_turns: turns,
+        })
     }
 
     /// Moves a run of pages so its first page ends up at position `to` in the resulting order.
@@ -833,7 +973,13 @@ impl PageEdits {
             return Ok(());
         }
         let source = self.source_for(path, page_count, stamp, protected)?;
-        let slots: Box<[PageSlot]> = (0..page_count).map(|page| PageSlot { source, page, quarter_turns: 0 }).collect();
+        let slots: Box<[PageSlot]> = (0..page_count)
+            .map(|page| PageSlot {
+                source,
+                page,
+                quarter_turns: 0,
+            })
+            .collect();
         self.commit(Step::Restore { start: at, slots })
     }
 
@@ -920,7 +1066,10 @@ impl PageEdits {
         }
         let inverse = self.apply(step);
         self.history_bytes += inverse.held_bytes();
-        self.undo.push(Entry { step: inverse, by: self.acting });
+        self.undo.push(Entry {
+            step: inverse,
+            by: self.acting,
+        });
         for dropped in self.redo.drain(..) {
             self.history_bytes -= dropped.step.held_bytes();
         }
@@ -959,7 +1108,13 @@ impl PageEdits {
     /// The position of a page, from `source`, nearest to `near`. Nearest, because the same page can appear twice once a PDF has been added twice.
     pub fn nearest_position(&self, source: u16, page: u32, near: u32) -> Option<u32> {
         let near = near as usize;
-        let found = self.slots.iter().enumerate().filter(|(_, slot)| slot.source == source && slot.page == page).map(|(position, _)| position).min_by_key(|position| position.abs_diff(near))?;
+        let found = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.source == source && slot.page == page)
+            .map(|(position, _)| position)
+            .min_by_key(|position| position.abs_diff(near))?;
         u32::try_from(found).ok()
     }
 
@@ -971,7 +1126,11 @@ impl PageEdits {
                 for slot in &mut self.slots[start as usize..(start + len) as usize] {
                     slot.quarter_turns = (slot.quarter_turns + quarter_turns) % 4;
                 }
-                Step::Rotate { start, len, quarter_turns: (4 - quarter_turns) % 4 }
+                Step::Rotate {
+                    start,
+                    len,
+                    quarter_turns: (4 - quarter_turns) % 4,
+                }
             }
             Step::Move { start, len, to } => {
                 let (s, n, t) = (start as usize, len as usize, to as usize);
@@ -1014,7 +1173,14 @@ impl PageEdits {
         if self.added.len() >= MAX_SOURCES {
             return Err(EditError::TooManySources);
         }
-        let added = AddedSource { path: PathBuf::from(path).into_boxed_path(), page_count, stamp, kept: false, protected, holds: None };
+        let added = AddedSource {
+            path: PathBuf::from(path).into_boxed_path(),
+            page_count,
+            stamp,
+            kept: false,
+            protected,
+            holds: None,
+        };
         self.note(|| JournalOp::AddSource(added.to_record()));
         self.added.push(added);
         u16::try_from(self.added.len()).map_err(|_| EditError::TooManySources)
@@ -1207,7 +1373,11 @@ mod tests {
         for round in 0..96 {
             heavy.delete(0, pages - 1).unwrap();
             heavy.insert_pdf(0, Path::new("/d/full.pdf"), pages - 1).unwrap();
-            assert!(heavy.history_bytes() <= MAX_HISTORY_BYTES + MAX_PAGES * 8, "round {round}: {}", heavy.history_bytes());
+            assert!(
+                heavy.history_bytes() <= MAX_HISTORY_BYTES + MAX_PAGES * 8,
+                "round {round}: {}",
+                heavy.history_bytes()
+            );
         }
         assert!(heavy.is_edited());
         while heavy.undo() {}
@@ -1242,7 +1412,10 @@ mod tests {
         as_agent(&mut edits, |edits| {
             edits.redo();
         });
-        assert!(!edits.owner_steps_undone(), "whoever redoes it, it's still the owner's: it's just not undone now");
+        assert!(
+            !edits.owner_steps_undone(),
+            "whoever redoes it, it's still the owner's: it's just not undone now"
+        );
         assert!(edits.holds_owner_edits());
         let mut only_agent = PageEdits::new(5);
         as_agent(&mut only_agent, |edits| edits.rotate(0, 1, 1).unwrap());
@@ -1269,7 +1442,10 @@ mod tests {
                 edits.move_pages(1, 1, 2).unwrap();
             }
         });
-        assert!(agents.history_dropped() && !agents.holds_owner_edits(), "the cap dropping an agent's step is nothing of the owner's");
+        assert!(
+            agents.history_dropped() && !agents.holds_owner_edits(),
+            "the cap dropping an agent's step is nothing of the owner's"
+        );
     }
 
     /// Failure: a run of heavy agent steps under an owner's undone step pushes the redo list over its byte cap, so undoing them all drops the owner's step for good, with no edit that says so: an agent erases the owner's edit by undoing. The list may pass the cap by one document, and no further.
@@ -1435,7 +1611,19 @@ mod tests {
     fn sample_ops(edits: &mut PageEdits) {
         edits.rotate(1, 2, 1).unwrap();
         as_agent(edits, |edits| edits.delete(0, 1).unwrap());
-        edits.insert_pdf_stamped(1, Path::new("/d/added.pdf"), 3, Some(FileStamp { size: 9, mtime_ns: 8, device: 7, inode: 6 })).unwrap();
+        edits
+            .insert_pdf_stamped(
+                1,
+                Path::new("/d/added.pdf"),
+                3,
+                Some(FileStamp {
+                    size: 9,
+                    mtime_ns: 8,
+                    device: 7,
+                    inode: 6,
+                }),
+            )
+            .unwrap();
         edits.move_pages(0, 2, 3).unwrap();
         as_agent(edits, |edits| edits.rotate(0, 1, 3).unwrap());
         edits.undo();
@@ -1481,7 +1669,10 @@ mod tests {
         let record = live.to_record();
         let mut back = PageEdits::from_record(&record).unwrap();
         assert_eq!(back.to_record(), record);
-        assert_eq!((back.is_edited(), back.history_bytes(), back.holds_owner_edits()), (live.is_edited(), live.history_bytes(), live.holds_owner_edits()));
+        assert_eq!(
+            (back.is_edited(), back.history_bytes(), back.holds_owner_edits()),
+            (live.is_edited(), live.history_bytes(), live.holds_owner_edits())
+        );
         while live.undo() {
             assert!(back.undo());
             assert_eq!(back.slots(), live.slots());
@@ -1493,14 +1684,25 @@ mod tests {
     fn a_long_list_comes_to_a_few_runs() {
         let mut edits = PageEdits::new(MAX_PAGES as u32);
         edits.rotate(1000, 1, 1).unwrap();
-        assert_eq!(edits.to_record().pages, vec![SlotRun(0, 0, 1000, 0), SlotRun(0, 1000, 1, 1), SlotRun(0, 1001, MAX_PAGES as u32 - 1001, 0)]);
+        assert_eq!(
+            edits.to_record().pages,
+            vec![SlotRun(0, 0, 1000, 0), SlotRun(0, 1000, 1, 1), SlotRun(0, 1001, MAX_PAGES as u32 - 1001, 0)]
+        );
     }
 
     /// Failure: replaying a journal panics on an operation that's out of range, or on an undo with nothing to undo. Those are what a hostile journal holds. It stops there, says how far it got, and what's left is the good part.
     #[test]
     fn a_bad_operation_ends_a_replay() {
         let by = AuthorName::Owner;
-        for bad in [JournalOp::Rotate(9, 1, 1, by), JournalOp::Move(0, 1, 9, by), JournalOp::Delete(0, 99, by), JournalOp::Insert(99, 1, 1, by), JournalOp::Insert(0, 0, 1, by), JournalOp::Insert(0, 9, 1, by), JournalOp::Redo] {
+        for bad in [
+            JournalOp::Rotate(9, 1, 1, by),
+            JournalOp::Move(0, 1, 9, by),
+            JournalOp::Delete(0, 99, by),
+            JournalOp::Insert(99, 1, 1, by),
+            JournalOp::Insert(0, 0, 1, by),
+            JournalOp::Insert(0, 9, 1, by),
+            JournalOp::Redo,
+        ] {
             let ops = vec![JournalOp::Rotate(0, 1, 1, by), bad.clone(), JournalOp::Rotate(1, 1, 1, by)];
             let (edits, applied) = PageEdits::replay(3, None, &ops).unwrap();
             assert_eq!(applied, 1, "{bad:?}");

@@ -30,7 +30,14 @@ pub struct Matrix {
 }
 
 impl Matrix {
-    pub const IDENTITY: Self = Self { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 };
+    pub const IDENTITY: Self = Self {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
 
     pub fn new(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64) -> Self {
         Self { a, b, c, d, e, f }
@@ -236,7 +243,19 @@ fn err_state() -> io::Error {
 impl<W: Write> SvgWriter<W> {
     /// Starts a document `width` by `height` units, with a title from a file if it has one, escaped. `root` takes the coordinates every later call uses to the document's, top left, y down.
     pub fn begin(out: W, width: f64, height: f64, root: &Matrix, title: Option<&str>) -> io::Result<Self> {
-        let mut writer = Self { sink: Some(Sink { out, buffer: Vec::with_capacity(BUFFER) }), image: OpenImage::None, defs_open: false, clip_open: false, depth: 0, stats: WriteStats::default(), masks: 0, in_mask: false };
+        let mut writer = Self {
+            sink: Some(Sink {
+                out,
+                buffer: Vec::with_capacity(BUFFER),
+            }),
+            image: OpenImage::None,
+            defs_open: false,
+            clip_open: false,
+            depth: 0,
+            stats: WriteStats::default(),
+            masks: 0,
+            in_mask: false,
+        };
         writer.push(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" version=\"1.1\" width=\"")?;
         writer.number(width, COORD_DIGITS)?;
         writer.push(b"\" height=\"")?;
@@ -513,7 +532,13 @@ impl<W: Write> SvgWriter<W> {
     }
 
     /// Glyphs along a run. `matrix` takes the run's local coordinates to the document's, and each glyph sits at its `(id, x, y)` there, in the same thousandths of an em.
-    pub fn glyph_run(&mut self, matrix: &Matrix, fill: Paint, stroke: Option<(Paint, f64)>, glyphs: impl IntoIterator<Item = (u32, f32, f32)>) -> io::Result<()> {
+    pub fn glyph_run(
+        &mut self,
+        matrix: &Matrix,
+        fill: Paint,
+        stroke: Option<(Paint, f64)>,
+        glyphs: impl IntoIterator<Item = (u32, f32, f32)>,
+    ) -> io::Result<()> {
         self.close_defs()?;
         self.push(b"<g transform=\"")?;
         self.matrix(matrix)?;
@@ -569,7 +594,10 @@ impl<W: Write> SvgWriter<W> {
         }
         self.push(b"\" y=\"")?;
         let mut first = None;
-        let same_line = chars.clone().filter(kept).all(|(_, _, y)| fixed_grid(f64::from(y), 0) == *first.get_or_insert(fixed_grid(f64::from(y), 0)));
+        let same_line = chars
+            .clone()
+            .filter(kept)
+            .all(|(_, _, y)| fixed_grid(f64::from(y), 0) == *first.get_or_insert(fixed_grid(f64::from(y), 0)));
         if same_line {
             self.number(-f64::from(chars.clone().filter(kept).map_or_zero()), 0)?;
         } else {
@@ -798,7 +826,12 @@ pub fn clean_family(family: &[u8]) -> Vec<u8> {
         Some(6) if family[..6].iter().all(u8::is_ascii_uppercase) => &family[7..],
         _ => family,
     };
-    let mut cleaned: Vec<u8> = name.iter().copied().filter(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'-' | b'_' | b'.')).take(64).collect();
+    let mut cleaned: Vec<u8> = name
+        .iter()
+        .copied()
+        .filter(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'-' | b'_' | b'.'))
+        .take(64)
+        .collect();
     while cleaned.last() == Some(&b' ') {
         cleaned.pop();
     }
@@ -819,7 +852,15 @@ struct PathPen {
 
 impl PathPen {
     fn new(digits: u32) -> Self {
-        Self { digits, at: (0, 0), start: (0, 0), started: false, last_command: 0, last_was_number: false, text: [0; fixed::MAX_LEN] }
+        Self {
+            digits,
+            at: (0, 0),
+            start: (0, 0),
+            started: false,
+            last_command: 0,
+            last_was_number: false,
+            text: [0; fixed::MAX_LEN],
+        }
     }
 
     fn grid(&self, point: (f64, f64)) -> (i64, i64) {
@@ -895,7 +936,14 @@ impl PathPen {
         self.ensure_started(one, out)?;
         let (one, two, end) = (self.grid(one), self.grid(two), self.grid(end));
         self.command(b'c', out)?;
-        for value in [one.0 - self.at.0, one.1 - self.at.1, two.0 - self.at.0, two.1 - self.at.1, end.0 - self.at.0, end.1 - self.at.1] {
+        for value in [
+            one.0 - self.at.0,
+            one.1 - self.at.1,
+            two.0 - self.at.0,
+            two.1 - self.at.1,
+            end.0 - self.at.0,
+            end.1 - self.at.1,
+        ] {
             self.number(value, out)?;
         }
         self.at = end;

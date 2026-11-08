@@ -7,7 +7,10 @@ use crate::{control, exit_code};
 use recto_platform::isolate::{self, Channel, ChildExit, ChildProcess, Handle, IdleRule, SharedMemory, Wait};
 use recto_platform::surface::{LinkInvite, PixelSurface, SurfaceSender};
 use recto_platform::{FileStamp, file_stamp};
-use recto_proto::{self as proto, CharBox, CharRecord, FailCode, Kind, PageFrame, PageSize, ProtoError, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus, device_size};
+use recto_proto::{
+    self as proto, CharBox, CharRecord, FailCode, Kind, PageFrame, PageSize, ProtoError, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect,
+    TileReply, TileStatus, device_size,
+};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -285,11 +288,15 @@ impl ServiceConfig {
                 let here = this.parent().ok_or(RenderFailure::WorkerMissing)?;
                 // A release starts only the sandboxed helper's worker: nothing beside it could stand in.
                 let development = !crate::bundle::RELEASE;
-                [crate::bundle::helper_worker(here), development.then(|| here.join(&exe_name)), here.parent().filter(|_| development).map(|up| up.join(&exe_name))]
-                    .into_iter()
-                    .flatten()
-                    .find(|path| path.is_file())
-                    .ok_or(RenderFailure::WorkerMissing)?
+                [
+                    crate::bundle::helper_worker(here),
+                    development.then(|| here.join(&exe_name)),
+                    here.parent().filter(|_| development).map(|up| up.join(&exe_name)),
+                ]
+                .into_iter()
+                .flatten()
+                .find(|path| path.is_file())
+                .ok_or(RenderFailure::WorkerMissing)?
             }
         };
         Self::for_worker(worker_exe)
@@ -309,10 +316,20 @@ impl ServiceConfig {
                 let up = dir.parent();
                 let frameworks = up.map(|parent| parent.join("Frameworks").join(&library));
                 let fetched = up.map(|parent| parent.join("pdfium").join(&library));
-                [Some(beside), frameworks, fetched].into_iter().flatten().find(|path| path.is_file()).ok_or(RenderFailure::LibraryMissing)?
+                [Some(beside), frameworks, fetched]
+                    .into_iter()
+                    .flatten()
+                    .find(|path| path.is_file())
+                    .ok_or(RenderFailure::LibraryMissing)?
             }
         };
-        Ok(Self { worker_exe, pdfium_lib, heavy_slot: HeavySlot::session(), extra_env: Vec::new(), replace_args: None })
+        Ok(Self {
+            worker_exe,
+            pdfium_lib,
+            heavy_slot: HeavySlot::session(),
+            extra_env: Vec::new(),
+            replace_args: None,
+        })
     }
 }
 
@@ -358,17 +375,31 @@ pub enum RenderFailure {
     /// The page can't be drawn at this scale within the caps on the wire.
     TooLargeAtThisScale,
     /// This page stopped its worker, in a worker with nothing else in it. It won't be tried again until [`DocRenderer::forget_failures`].
-    PageFailed { page: u32, reason: KillReason },
+    PageFailed {
+        page: u32,
+        reason: KillReason,
+    },
     /// Opening the file stopped its worker, before any page was involved. Not tried again until [`DocRenderer::forget_failures`].
-    OpenFailed { reason: KillReason },
+    OpenFailed {
+        reason: KillReason,
+    },
     /// Reading this page's size or text stopped its worker. Not tried again until [`DocRenderer::forget_failures`].
-    PageReadFailed { page: u32, reason: KillReason },
+    PageReadFailed {
+        page: u32,
+        reason: KillReason,
+    },
     /// An export of this page was refused, and nothing should be written.
-    ExportRefused { page: u32, why: ExportRefusal },
+    ExportRefused {
+        page: u32,
+        why: ExportRefusal,
+    },
     /// The job's generation went stale. For an export, nothing should be written.
     Cancelled,
     /// This page can't be drawn right now: it needs the larger limit, and its smaller version doesn't fit either. Asking again when the reason has cleared may work.
-    NotDrawableNow { page: u32, why: LowResWhy },
+    NotDrawableNow {
+        page: u32,
+        why: LowResWhy,
+    },
     /// This document has had too many workers killed. It draws nothing more until [`DocRenderer::forget_failures`].
     DocumentStopped,
     /// Drawing the whole page ran past its time cap. No worker was at fault.
@@ -465,19 +496,48 @@ impl RenderFailure {
             Self::BadPage => "no_such_page",
             Self::BadRequest => "bad_request",
             Self::TooLargeAtThisScale => "too_large_at_this_scale",
-            Self::PageFailed { reason: KillReason::MemoryLimit, .. } => "page_too_large",
-            Self::PageFailed { reason: KillReason::Deadline, .. } => "page_too_slow",
-            Self::PageFailed { reason: KillReason::Crashed, .. } => "page_crashed_renderer",
-            Self::PageFailed { reason: KillReason::Rejected(_), .. } | Self::OpenFailed { reason: KillReason::Rejected(_) } => "renderer_misbehaved",
-            Self::OpenFailed { reason: KillReason::MemoryLimit } => "file_too_large_to_open",
+            Self::PageFailed {
+                reason: KillReason::MemoryLimit,
+                ..
+            } => "page_too_large",
+            Self::PageFailed {
+                reason: KillReason::Deadline, ..
+            } => "page_too_slow",
+            Self::PageFailed {
+                reason: KillReason::Crashed, ..
+            } => "page_crashed_renderer",
+            Self::PageFailed {
+                reason: KillReason::Rejected(_),
+                ..
+            }
+            | Self::OpenFailed {
+                reason: KillReason::Rejected(_),
+            } => "renderer_misbehaved",
+            Self::OpenFailed {
+                reason: KillReason::MemoryLimit,
+            } => "file_too_large_to_open",
             Self::OpenFailed { reason: KillReason::Deadline } => "file_too_slow_to_open",
             Self::OpenFailed { reason: KillReason::Crashed } => "file_crashed_renderer",
-            Self::PageReadFailed { reason: KillReason::Rejected(_), .. } => "renderer_misbehaved",
-            Self::PageReadFailed { reason: KillReason::MemoryLimit, .. } => "page_too_large_to_read",
+            Self::PageReadFailed {
+                reason: KillReason::Rejected(_),
+                ..
+            } => "renderer_misbehaved",
+            Self::PageReadFailed {
+                reason: KillReason::MemoryLimit,
+                ..
+            } => "page_too_large_to_read",
             Self::PageReadFailed { .. } => "page_unreadable",
-            Self::ExportRefused { why: ExportRefusal::MemoryTight, .. } => "export_memory_tight",
-            Self::ExportRefused { why: ExportRefusal::WaitTimedOut, .. } => "export_wait_timed_out",
-            Self::ExportRefused { why: ExportRefusal::TooHeavy, .. } => "export_page_too_heavy",
+            Self::ExportRefused {
+                why: ExportRefusal::MemoryTight,
+                ..
+            } => "export_memory_tight",
+            Self::ExportRefused {
+                why: ExportRefusal::WaitTimedOut,
+                ..
+            } => "export_wait_timed_out",
+            Self::ExportRefused {
+                why: ExportRefusal::TooHeavy, ..
+            } => "export_page_too_heavy",
             Self::Cancelled => "cancelled",
             Self::NotDrawableNow { .. } => "page_not_drawable_now",
             Self::DocumentStopped => "document_stopped",
@@ -677,7 +737,9 @@ pub struct Tile {
 pub enum TileResult {
     Done(Tile),
     /// The generation went stale. The surface holds nothing useful.
-    Cancelled { worker_killed: bool },
+    Cancelled {
+        worker_killed: bool,
+    },
 }
 
 /// A page's characters, validated. One record per character, plus a box each if asked for.
@@ -811,7 +873,13 @@ impl DocRenderer {
     }
 
     /// The rest of [`Self::new`], with the file open.
-    pub fn with_file(file: File, path: &Path, password: Option<Arc<recto_platform::Password>>, config: ServiceConfig, policy: Policy) -> Result<Self, RenderFailure> {
+    pub fn with_file(
+        file: File,
+        path: &Path,
+        password: Option<Arc<recto_platform::Password>>,
+        config: ServiceConfig,
+        policy: Policy,
+    ) -> Result<Self, RenderFailure> {
         let shared = SharedMemory::create(control::LEN).map_err(|_| RenderFailure::Unavailable)?;
         let slot = config.heavy_slot.clone();
         Ok(Self {
@@ -822,7 +890,11 @@ impl DocRenderer {
             version: None,
             file,
             password,
-            control: Arc::new(CancelWord { shared, cutoff: AtomicU64::new(0), slot }),
+            control: Arc::new(CancelWord {
+                shared,
+                cutoff: AtomicU64::new(0),
+                slot,
+            }),
             worker: None,
             page_count: None,
             next_job: 0,
@@ -905,7 +977,10 @@ impl DocRenderer {
     /// The current worker's footprint, from outside.
     pub fn worker_footprint(&mut self) -> Option<u64> {
         self.reap_if_gone();
-        self.worker.as_ref().and_then(|worker| worker.child.memory()).map(|memory| memory.footprint_bytes)
+        self.worker
+            .as_ref()
+            .and_then(|worker| worker.child.memory())
+            .map(|memory| memory.footprint_bytes)
     }
 
     /// Kills the worker now, for a window closing or a test. The next job starts a new one. Never blocks, so it's safe from any thread: the worker is
@@ -950,9 +1025,14 @@ impl DocRenderer {
         let Some(memory) = self.remembered(page) else { return PageDrawState::Sharp };
         let reaches = |from: f32| scale >= from * LOWER_ZOOM_RATIO;
         match memory {
-            PageMemory { failed_from: Some((from, reason)), .. } if reaches(*from) => PageDrawState::Failed(*reason),
+            PageMemory {
+                failed_from: Some((from, reason)),
+                ..
+            } if reaches(*from) => PageDrawState::Failed(*reason),
             PageMemory { low_res_from: Some(from), .. } if reaches(*from) => PageDrawState::LowResOnly,
-            PageMemory { needs_heavy_from: Some(from), .. } if reaches(*from) => PageDrawState::NeedsHeavy,
+            PageMemory {
+                needs_heavy_from: Some(from), ..
+            } if reaches(*from) => PageDrawState::NeedsHeavy,
             _ => PageDrawState::Sharp,
         }
     }
@@ -1017,12 +1097,18 @@ impl DocRenderer {
         let job_id = self.next_job_id();
         let frame = proto::encode_traits_request(job_id, page);
         // Loads this page, which is what the next job for it needs anyway, so it leaves nothing that could explain that job failing.
-        let reply = self.run_job(job_id, page, false, WorkerClass::Normal, Some(generation), &[], &frame, |reply| match reply.kind {
-            Kind::Traits => {
-                let traits = proto::PageTraits::decode(&reply.payload)?;
-                if traits.job_id == job_id { Ok(traits.largest_image_pixels) } else { Err(ProtoError("traits answer a different job")) }
+        let reply = self.run_job(job_id, page, false, WorkerClass::Normal, Some(generation), &[], &frame, |reply| {
+            match reply.kind {
+                Kind::Traits => {
+                    let traits = proto::PageTraits::decode(&reply.payload)?;
+                    if traits.job_id == job_id {
+                        Ok(traits.largest_image_pixels)
+                    } else {
+                        Err(ProtoError("traits answer a different job"))
+                    }
+                }
+                _ => Err(ProtoError("the wrong kind of reply to a traits request")),
             }
-            _ => Err(ProtoError("the wrong kind of reply to a traits request")),
         });
         let pixels = match reply {
             Ok(pixels) => pixels,
@@ -1057,13 +1143,21 @@ impl DocRenderer {
             None
         } else {
             // The worker that's there, which has just drawn it. With none, one that can hold the page.
-            let class = if self.worker.is_none() && state == PageDrawState::NeedsHeavy { WorkerClass::Heavy } else { WorkerClass::Normal };
+            let class = if self.worker.is_none() && state == PageDrawState::NeedsHeavy {
+                WorkerClass::Heavy
+            } else {
+                WorkerClass::Normal
+            };
             let job_id = self.next_job_id();
             let frame = proto::encode_images_request(job_id, page);
             let reply = self.run_job(job_id, page, false, class, Some(generation), &[], &frame, |reply| match reply.kind {
                 Kind::Images => {
                     let images = proto::PageImages::decode(&reply.payload)?;
-                    if images.job_id == job_id { Ok(images.boxes) } else { Err(ProtoError("image boxes answer a different job")) }
+                    if images.job_id == job_id {
+                        Ok(images.boxes)
+                    } else {
+                        Err(ProtoError("image boxes answer a different job"))
+                    }
                 }
                 _ => Err(ProtoError("the wrong kind of reply to an images request")),
             });
@@ -1106,7 +1200,15 @@ impl DocRenderer {
     fn draw_with(&mut self, request: &TileRequest, surface: Target<'_>, purpose: DrawPurpose, tile_edge: u32) -> Result<TileResult, RenderFailure> {
         let page = request.page;
         // Checked before anything else, so a request that can't be met starts no process.
-        let check = RenderJob { generation: request.generation, job_id: 0, page, scale: request.scale, rect: request.rect, stride: request.stride, tile_edge };
+        let check = RenderJob {
+            generation: request.generation,
+            job_id: 0,
+            page,
+            scale: request.scale,
+            rect: request.rect,
+            stride: request.stride,
+            tile_edge,
+        };
         check.check().map_err(|_| RenderFailure::BadRequest)?;
         if check.bytes_needed() > surface.len() as u64 {
             return Err(RenderFailure::BadRequest);
@@ -1134,7 +1236,12 @@ impl DocRenderer {
                         return Err(self.give_up_drawing(page, scale / LOW_RES_DIVISOR as f32, KillReason::MemoryLimit));
                     }
                     DrawPurpose::OnScreen => return self.low_res(request, surface, LowResWhy::TooHeavy),
-                    DrawPurpose::Export => return Err(RenderFailure::ExportRefused { page, why: ExportRefusal::TooHeavy }),
+                    DrawPurpose::Export => {
+                        return Err(RenderFailure::ExportRefused {
+                            page,
+                            why: ExportRefusal::TooHeavy,
+                        });
+                    }
                 },
                 PageDrawState::Sharp => match self.draw_once(request, surface, WorkerClass::Normal, tile_edge) {
                     Err(JobFailure::Stopped(KillReason::MemoryLimit)) => self.set_draw(page, scale, PageDrawState::NeedsHeavy),
@@ -1145,14 +1252,19 @@ impl DocRenderer {
                     let retries = self.stats.heavy_pages - self.heavy_retries_counted_from;
                     let counted = self.remembered(page).is_some_and(|memory| memory.counted_as_heavy);
                     let already_heavy = self.worker.as_ref().is_some_and(|worker| worker.heavy);
-                    if self.policy.heavy_limit_bytes <= self.policy.memory_limit_bytes || (!already_heavy && !counted && retries >= self.policy.max_heavy_retries) {
+                    if self.policy.heavy_limit_bytes <= self.policy.memory_limit_bytes
+                        || (!already_heavy && !counted && retries >= self.policy.max_heavy_retries)
+                    {
                         self.set_draw(page, scale, PageDrawState::LowResOnly);
                         continue;
                     }
                     if !already_heavy && !self.memory_to_spare() {
                         return match purpose {
                             DrawPurpose::OnScreen => self.low_res_for_now(request, surface, LowResWhy::MemoryTight),
-                            DrawPurpose::Export => Err(RenderFailure::ExportRefused { page, why: ExportRefusal::MemoryTight }),
+                            DrawPurpose::Export => Err(RenderFailure::ExportRefused {
+                                page,
+                                why: ExportRefusal::MemoryTight,
+                            }),
                         };
                     }
                     if !counted {
@@ -1163,12 +1275,20 @@ impl DocRenderer {
                         match self.wait_for_slot(request.generation) {
                             Ok(ticket) => self.waited_ticket = Some(ticket),
                             Err(SlotWaitEnd::Cancelled) => return Ok(TileResult::Cancelled { worker_killed: false }),
-                            Err(SlotWaitEnd::TimedOut) => return Err(RenderFailure::ExportRefused { page, why: ExportRefusal::WaitTimedOut }),
+                            Err(SlotWaitEnd::TimedOut) => {
+                                return Err(RenderFailure::ExportRefused {
+                                    page,
+                                    why: ExportRefusal::WaitTimedOut,
+                                });
+                            }
                         }
                         // A long wait may have changed that. Dropping the ticket frees the slot for whoever's next.
                         if !self.memory_to_spare() {
                             self.waited_ticket = None;
-                            return Err(RenderFailure::ExportRefused { page, why: ExportRefusal::MemoryTight });
+                            return Err(RenderFailure::ExportRefused {
+                                page,
+                                why: ExportRefusal::MemoryTight,
+                            });
                         }
                     }
                     let drawn = self.draw_once(request, surface, WorkerClass::Heavy, tile_edge);
@@ -1191,7 +1311,10 @@ impl DocRenderer {
 
     /// Whether this document has had too many workers killed.
     fn stopped(&self) -> bool {
-        (self.kills() - self.kills_counted_from).saturating_sub(self.check_kills).saturating_sub(self.busy_kills) >= self.policy.max_kills_per_document
+        (self.kills() - self.kills_counted_from)
+            .saturating_sub(self.check_kills)
+            .saturating_sub(self.busy_kills)
+            >= self.policy.max_kills_per_document
     }
 
     fn kills(&self) -> u32 {
@@ -1232,14 +1355,26 @@ impl DocRenderer {
         let (full_width, full_height) = device_size(width, height, scale).map_err(|_| RenderFailure::TooLargeAtThisScale)?;
         let x = (request.rect.x / LOW_RES_DIVISOR).min(full_width - 1);
         let y = (request.rect.y / LOW_RES_DIVISOR).min(full_height - 1);
-        let right = (request.rect.x.saturating_add(request.rect.width)).div_ceil(LOW_RES_DIVISOR).clamp(x + 1, full_width);
-        let bottom = (request.rect.y.saturating_add(request.rect.height)).div_ceil(LOW_RES_DIVISOR).clamp(y + 1, full_height);
-        let rect = TileRect { x, y, width: right - x, height: bottom - y };
+        let right = (request.rect.x.saturating_add(request.rect.width))
+            .div_ceil(LOW_RES_DIVISOR)
+            .clamp(x + 1, full_width);
+        let bottom = (request.rect.y.saturating_add(request.rect.height))
+            .div_ceil(LOW_RES_DIVISOR)
+            .clamp(y + 1, full_height);
+        let rect = TileRect {
+            x,
+            y,
+            width: right - x,
+            height: bottom - y,
+        };
         let smaller = TileRequest { rect, scale, ..*request };
         match self.draw_once(&smaller, surface, WorkerClass::Normal, 0) {
             Ok(TileResult::Done(tile)) => {
                 self.stats.low_res_tiles += 1;
-                Ok(TileResult::Done(Tile { low_res: Some(LowRes { scale, rect, why }), ..tile }))
+                Ok(TileResult::Done(Tile {
+                    low_res: Some(LowRes { scale, rect, why }),
+                    ..tile
+                }))
             }
             Err(JobFailure::Stopped(KillReason::MemoryLimit)) if why.may_clear() => {
                 self.remember(page).low_res_stopped = true;
@@ -1271,31 +1406,46 @@ impl DocRenderer {
         let control = self.control.clone();
         let handles = surface.handles();
         let sends = surface.pixels();
-        let reply = self.run_job_with(job.job_id, request.page, true, class, Some(request.generation), &handles, sends.as_ref(), &frame, |reply| {
-            let (tile, kinds) = match (reply.kind, tile_edge) {
-                (Kind::Tile, 0) => {
-                    let tile = TileReply::decode(&reply.payload)?;
-                    proto::validate_tile(&job, &tile, surface_len)?;
-                    (tile, Vec::new())
+        let reply = self.run_job_with(
+            job.job_id,
+            request.page,
+            true,
+            class,
+            Some(request.generation),
+            &handles,
+            sends.as_ref(),
+            &frame,
+            |reply| {
+                let (tile, kinds) = match (reply.kind, tile_edge) {
+                    (Kind::Tile, 0) => {
+                        let tile = TileReply::decode(&reply.payload)?;
+                        proto::validate_tile(&job, &tile, surface_len)?;
+                        (tile, Vec::new())
+                    }
+                    (Kind::Region, 1..) => {
+                        let region = RegionReply::decode(&reply.payload)?;
+                        proto::validate_region(&job, &region, surface_len)?;
+                        (region.tile, region.kinds)
+                    }
+                    _ => return Err(ProtoError("the wrong kind of reply to a tile")),
+                };
+                // The host's word moves first, so a worker can't honestly see a cancel the host hasn't made.
+                if tile.status == TileStatus::Cancelled && !control.is_stale(job.generation) {
+                    return Err(ProtoError("a job cancelled that nobody cancelled"));
                 }
-                (Kind::Region, 1..) => {
-                    let region = RegionReply::decode(&reply.payload)?;
-                    proto::validate_region(&job, &region, surface_len)?;
-                    (region.tile, region.kinds)
-                }
-                _ => return Err(ProtoError("the wrong kind of reply to a tile")),
-            };
-            // The host's word moves first, so a worker can't honestly see a cancel the host hasn't made.
-            if tile.status == TileStatus::Cancelled && !control.is_stale(job.generation) {
-                return Err(ProtoError("a job cancelled that nobody cancelled"));
-            }
-            Ok((tile, kinds))
-        });
+                Ok((tile, kinds))
+            },
+        );
         match reply {
             Ok((tile, region_kinds)) => Ok(match tile.status {
                 // Cancelled while it was finishing. The caller moved on, so this tile must never reach the screen.
                 TileStatus::Done(_) if self.control.is_stale(request.generation) => TileResult::Cancelled { worker_killed: false },
-                TileStatus::Done(kind) => TileResult::Done(Tile { kind, render_us: tile.render_us, low_res: None, region_kinds }),
+                TileStatus::Done(kind) => TileResult::Done(Tile {
+                    kind,
+                    render_us: tile.render_us,
+                    low_res: None,
+                    region_kinds,
+                }),
                 TileStatus::Cancelled => TileResult::Cancelled { worker_killed: false },
             }),
             Err(JobFailure::StaleKilled) => Ok(TileResult::Cancelled { worker_killed: true }),
@@ -1326,7 +1476,10 @@ impl DocRenderer {
         if self.stopped() {
             return Err(RenderFailure::DocumentStopped);
         }
-        let may_check = hidden_check && self.check_kills < MAX_CHECK_KILLS && !self.remembered(page).is_some_and(|memory| memory.check_stopped) && self.page_draw_state_at(page, 2.0) == PageDrawState::Sharp;
+        let may_check = hidden_check
+            && self.check_kills < MAX_CHECK_KILLS
+            && !self.remembered(page).is_some_and(|memory| memory.check_stopped)
+            && self.page_draw_state_at(page, 2.0) == PageDrawState::Sharp;
         if may_check {
             let kills = self.kills();
             let busy_before = self.busy_kills;
@@ -1371,7 +1524,13 @@ impl DocRenderer {
     }
 
     fn text_job(&mut self, page: u32, boxes: bool, hidden_check: bool, generation: Option<u64>) -> Result<PageCharacters, JobFailure> {
-        let job = TextJob { job_id: self.next_job_id(), page, boxes, hidden_check, generation: generation.unwrap_or(proto::NEVER_STALE) };
+        let job = TextJob {
+            job_id: self.next_job_id(),
+            page,
+            boxes,
+            hidden_check,
+            generation: generation.unwrap_or(proto::NEVER_STALE),
+        };
         let frame = job.encode();
         let reply = self.run_job(job.job_id, page, true, WorkerClass::Normal, generation, &[], &frame, |reply| match reply.kind {
             Kind::Text => {
@@ -1381,7 +1540,13 @@ impl DocRenderer {
             }
             _ => Err(ProtoError("the wrong kind of reply to a text request")),
         })?;
-        Ok(PageCharacters { chars: reply.chars, boxes: reply.boxes, hidden_checked: reply.hidden_checked, frame: reply.frame, copy_restricted: reply.copy_restricted })
+        Ok(PageCharacters {
+            chars: reply.chars,
+            boxes: reply.boxes,
+            hidden_checked: reply.hidden_checked,
+            frame: reply.frame,
+            copy_restricted: reply.copy_restricted,
+        })
     }
 
     fn remembered(&self, page: u32) -> Option<&PageMemory> {
@@ -1396,7 +1561,18 @@ impl DocRenderer {
                 if self.remembered.len() >= MAX_FAILED_PAGES {
                     self.remembered.remove(0);
                 }
-                self.remembered.push(PageMemory { page, counted_as_heavy: false, needs_heavy_from: None, low_res_from: None, failed_from: None, low_res_stopped: false, text: None, size: None, check_stopped: false, busy_reads: 0 });
+                self.remembered.push(PageMemory {
+                    page,
+                    counted_as_heavy: false,
+                    needs_heavy_from: None,
+                    low_res_from: None,
+                    failed_from: None,
+                    low_res_stopped: false,
+                    text: None,
+                    size: None,
+                    check_stopped: false,
+                    busy_reads: 0,
+                });
                 self.remembered.len() - 1
             }
         };
@@ -1450,7 +1626,11 @@ impl DocRenderer {
     ) -> Result<T, JobFailure> {
         self.retire_if_other_page(page);
         // Past twice the cap it goes whatever page it's on: a one-page file would otherwise never get to its retirement.
-        if self.worker.as_ref().is_some_and(|worker| worker.surface_bytes_sent > self.policy.surface_bytes_cap.saturating_mul(2)) {
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.surface_bytes_sent > self.policy.surface_bytes_cap.saturating_mul(2))
+        {
             self.stats.retirements += 1;
             self.bury_worker();
         }
@@ -1458,13 +1638,22 @@ impl DocRenderer {
         let mut idle_retries = 0;
         loop {
             self.ensure_worker(class, generation)?;
-            let Some(worker) = self.worker.as_mut() else { return Err(RenderFailure::Unavailable.into()) };
+            let Some(worker) = self.worker.as_mut() else {
+                return Err(RenderFailure::Unavailable.into());
+            };
             let fresh = worker.jobs_done == 0;
             let is_heavy = worker.heavy;
-            let watch = Watch { limit: worker.limit, policy: &self.policy, control: &self.control, generation };
+            let watch = Watch {
+                limit: worker.limit,
+                policy: &self.policy,
+                control: &self.control,
+                generation,
+            };
             // A worker with no link can't take this. That's only a stand-in, so it's a plain failure rather than a kill.
             if let Some(surface) = surface {
-                let Some(link) = &worker.surfaces else { return Err(RenderFailure::Unavailable.into()) };
+                let Some(link) = &worker.surfaces else {
+                    return Err(RenderFailure::Unavailable.into());
+                };
                 // The send failing means the worker's gone, likely by its own idle rule since it was last looked at. The same as finding that out from its reply: it's nothing about the document.
                 if link.send(surface).is_err() {
                     self.bury_worker();
@@ -1607,11 +1796,24 @@ impl DocRenderer {
             return Ok(());
         }
         // Taken before anything else: if another page has it, the normal worker stays, and the caller draws its lower-resolution version in it. An export has waited for it already.
-        let ticket = if needs_heavy { Some(self.waited_ticket.take().or_else(|| self.config.heavy_slot.try_take()).ok_or(JobFailure::HeavyBusy)?) } else { None };
+        let ticket = if needs_heavy {
+            Some(
+                self.waited_ticket
+                    .take()
+                    .or_else(|| self.config.heavy_slot.try_take())
+                    .ok_or(JobFailure::HeavyBusy)?,
+            )
+        } else {
+            None
+        };
         if needs_heavy {
             self.bury_worker();
         }
-        let (limit, idle_exit) = if ticket.is_some() { (self.policy.heavy_limit_bytes, self.policy.heavy_idle_exit) } else { (self.policy.memory_limit_bytes, self.policy.idle_exit) };
+        let (limit, idle_exit) = if ticket.is_some() {
+            (self.policy.heavy_limit_bytes, self.policy.heavy_idle_exit)
+        } else {
+            (self.policy.memory_limit_bytes, self.policy.idle_exit)
+        };
         let started = Worker::start(&self.config, &self.policy, limit, idle_exit);
         // No file has reached it yet, so whatever kept it from saying hello isn't the file's doing.
         if matches!(started, Err(StartFailure::TimedOut)) {
@@ -1634,15 +1836,14 @@ impl DocRenderer {
         self.stats.spawns += 1;
         self.stats.ready_footprint_bytes = ready;
         self.stats.peak_footprint_bytes = self.stats.peak_footprint_bytes.max(ready);
-        self.open_in(worker, generation)
-            .inspect_err(|failure| {
-                // `Unavailable` here means it never got to ask, which trying again may mend. What the worker itself said was noted where it was heard.
-                if let JobFailure::Failed(failure) = failure
-                    && !matches!(failure, RenderFailure::Unavailable)
-                {
-                    self.note_open_failure(*failure);
-                }
-            })
+        self.open_in(worker, generation).inspect_err(|failure| {
+            // `Unavailable` here means it never got to ask, which trying again may mend. What the worker itself said was noted where it was heard.
+            if let JobFailure::Failed(failure) = failure
+                && !matches!(failure, RenderFailure::Unavailable)
+            {
+                self.note_open_failure(*failure);
+            }
+        })
     }
 
     /// Remembers a failed open. "Not a PDF", a password, a worker the file stopped: those are about the file's bytes, and hold while it's the same file. `Unavailable` covers a failed read of its size and errors PDFium gives no reason for, so it holds only for a moment.
@@ -1672,7 +1873,11 @@ impl DocRenderer {
             }
             Err(error) => {
                 self.opened_stamp = None;
-                self.note_open_failure(if error.kind() == io::ErrorKind::NotFound { RenderFailure::NotFound } else { RenderFailure::Unavailable });
+                self.note_open_failure(if error.kind() == io::ErrorKind::NotFound {
+                    RenderFailure::NotFound
+                } else {
+                    RenderFailure::Unavailable
+                });
             }
         }
     }
@@ -1700,7 +1905,11 @@ impl DocRenderer {
                 // It's not there to open, or not now. That holds in the same way, and this renderer's old file isn't what anyone's asking about.
                 Err(error) => {
                     self.opened_stamp = None;
-                    let failure = if error.kind() == io::ErrorKind::NotFound { RenderFailure::NotFound } else { RenderFailure::Unavailable };
+                    let failure = if error.kind() == io::ErrorKind::NotFound {
+                        RenderFailure::NotFound
+                    } else {
+                        RenderFailure::Unavailable
+                    };
                     self.note_open_failure(failure);
                     Some(failure)
                 }
@@ -1716,7 +1925,12 @@ impl DocRenderer {
     fn open_in(&mut self, mut worker: Worker, generation: Option<u64>) -> Result<(), JobFailure> {
         let file = Handle::from_file(&self.file).map_err(|_| RenderFailure::Unavailable)?;
         let frame = proto::encode_open(self.password.as_deref().map_or(&[][..], recto_platform::Password::bytes)).map_err(|_| RenderFailure::NeedsPassword)?;
-        let watch = Watch { limit: worker.limit, policy: &self.policy, control: &self.control, generation };
+        let watch = Watch {
+            limit: worker.limit,
+            policy: &self.policy,
+            control: &self.control,
+            generation,
+        };
         let reply = worker.exchange(&frame, &[&file, self.control.shared.handle()], &watch);
         // The frame holds the password, and it's been sent: overwritten before it goes back.
         recto_platform::secret::wipe(frame);
@@ -1735,7 +1949,12 @@ impl DocRenderer {
                 worker.child.kill_now();
                 worker.child.wait_bounded(FINAL_NUMBERS_WAIT);
                 self.note_peak(&worker);
-                if matches!(reason, KillReason::Deadline) && worker.child.memory().is_some_and(|memory| was_starved(memory.cpu_ns, self.policy.page_deadline)) {
+                if matches!(reason, KillReason::Deadline)
+                    && worker
+                        .child
+                        .memory()
+                        .is_some_and(|memory| was_starved(memory.cpu_ns, self.policy.page_deadline))
+                {
                     self.stats.too_busy += 1;
                 }
                 return Err(killed(&mut self.stats, reason).into());
@@ -1898,14 +2117,34 @@ impl Worker {
         if config.replace_args.is_some() {
             env_refs.push(("RECTO_WORKER_LIMIT", &limit_text));
         }
-        let rule = IdleRule { after: idle_exit.saturating_add(policy.idle_grace), memory_limit_bytes: limit };
+        let rule = IdleRule {
+            after: idle_exit.saturating_add(policy.idle_grace),
+            memory_limit_bytes: limit,
+        };
         // The one seam that says how a worker comes to exist. With no invitation it still runs: it just can't draw into surfaces.
         let invite = LinkInvite::new().ok();
-        let child = ChildProcess::spawn_linked(&config.worker_exe, &arg_refs, &env_refs, theirs, Some(rule), invite.as_ref()).map_err(|error| if error.kind() == io::ErrorKind::PermissionDenied { StartFailure::Refused } else { StartFailure::Other })?;
+        let child = ChildProcess::spawn_linked(&config.worker_exe, &arg_refs, &env_refs, theirs, Some(rule), invite.as_ref()).map_err(|error| {
+            if error.kind() == io::ErrorKind::PermissionDenied {
+                StartFailure::Refused
+            } else {
+                StartFailure::Other
+            }
+        })?;
         // Busy until the document is open, whose exchange ends that: a start isn't idleness, and `start_timeout` and the open's own watch decide how long it may take. Marked idle here, a start slower than the idle rule was killed half way.
         child.note_activity(true);
         ours.set_nonblocking(true).map_err(|_| StartFailure::Other)?;
-        let mut worker = Self { child, channel: ours, reader: FrameReader::default(), surfaces: None, jobs_done: 0, surface_bytes_sent: 0, limit, heavy: false, walled: false, unread_footprints: 0 };
+        let mut worker = Self {
+            child,
+            channel: ours,
+            reader: FrameReader::default(),
+            surfaces: None,
+            jobs_done: 0,
+            surface_bytes_sent: 0,
+            limit,
+            heavy: false,
+            walled: false,
+            unread_footprints: 0,
+        };
         let started = Instant::now();
         let limit = policy.start_timeout;
         let hello = loop {
@@ -1920,7 +2159,9 @@ impl Worker {
                         Some(ChildExit::Code(exit_code::NO_RIGHTS_TO_DROP)) => StartFailure::Walls(WallsDown::NothingToDrop),
                         Some(ChildExit::Code(exit_code::LAUNCHD_REACHABLE)) => StartFailure::Walls(WallsDown::LaunchdReachable),
                         // An app's sandbox can't start inside another: the system ends the helper before its first line. Measured: SIGTRAP under `sandbox-exec`.
-                        _ if crate::bundle::walls_required(Some(&config.worker_exe), crate::bundle::RELEASE) && recto_platform::wall::in_a_sandbox() => StartFailure::Walls(WallsDown::InsideAnotherSandbox),
+                        _ if crate::bundle::walls_required(Some(&config.worker_exe), crate::bundle::RELEASE) && recto_platform::wall::in_a_sandbox() => {
+                            StartFailure::Walls(WallsDown::InsideAnotherSandbox)
+                        }
                         _ => StartFailure::Other,
                     });
                 }
@@ -1930,7 +2171,10 @@ impl Worker {
             }
             worker.channel.wait_readable(Some(policy.watch_step)).map_err(|_| StartFailure::Other)?;
         };
-        let said = (hello.kind == Kind::Hello && hello.handles.is_empty()).then(|| proto::decode_hello(&hello.payload).ok()).flatten().ok_or(StartFailure::Other)?;
+        let said = (hello.kind == Kind::Hello && hello.handles.is_empty())
+            .then(|| proto::decode_hello(&hello.payload).ok())
+            .flatten()
+            .ok_or(StartFailure::Other)?;
         // A release, or a worker from a helper, has to have its walls up, and says so. One that doesn't is killed before it sees a document.
         if !said.walled && (crate::bundle::RELEASE || crate::bundle::walls_required(Some(&config.worker_exe), false)) {
             worker.child.kill_now();
@@ -1992,7 +2236,11 @@ impl Worker {
                 }
             }
             let step = watch.policy.watch_step.min(deadline.saturating_duration_since(now));
-            let waited = if sent < frame.len() { self.channel.wait_writable(Some(step)) } else { self.channel.wait_readable(Some(step)) };
+            let waited = if sent < frame.len() {
+                self.channel.wait_writable(Some(step))
+            } else {
+                self.channel.wait_readable(Some(step))
+            };
             match waited {
                 Ok(Wait::Ready | Wait::TimedOut) => {}
                 Err(_) => return Err(self.departed()),

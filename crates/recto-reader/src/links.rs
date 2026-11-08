@@ -49,7 +49,11 @@ impl Linking {
     /// The link at a point, if the page's links are here. `None` either way if they're not, and then the page is wanted.
     pub fn at(&mut self, point: PagePoint) -> Option<LinkHit> {
         match self.held.iter().find(|(page, _)| *page == point.page) {
-            Some((page, links)) => links.at(point.x, point.y).map(|link| LinkHit { page: *page, rect: link.rect, target: link.target.clone() }),
+            Some((page, links)) => links.at(point.x, point.y).map(|link| LinkHit {
+                page: *page,
+                rect: link.rect,
+                target: link.target.clone(),
+            }),
             None => {
                 if self.asked != Some(point.page) {
                     self.wanted = Some(point.page);
@@ -102,7 +106,9 @@ impl Linking {
     /// The mouse moved with the button down.
     pub fn drag(&mut self, point: Option<PagePoint>) {
         if let Some(press) = &mut self.press {
-            let far = point.is_none_or(|point| point.page != press.point.page || (point.x - press.point.x).abs() > CLICK_SLOP || (point.y - press.point.y).abs() > CLICK_SLOP);
+            let far = point.is_none_or(|point| {
+                point.page != press.point.page || (point.x - press.point.x).abs() > CLICK_SLOP || (point.y - press.point.y).abs() > CLICK_SLOP
+            });
             press.moved |= far;
         }
     }
@@ -113,7 +119,13 @@ impl Linking {
         if press.clicks != 1 || press.moved {
             return;
         }
-        self.clicked = self.held.iter().find(|(page, _)| *page == press.point.page).and_then(|(page, links)| links.at(press.point.x, press.point.y).map(|link| LinkHit { page: *page, rect: link.rect, target: link.target.clone() }));
+        self.clicked = self.held.iter().find(|(page, _)| *page == press.point.page).and_then(|(page, links)| {
+            links.at(press.point.x, press.point.y).map(|link| LinkHit {
+                page: *page,
+                rect: link.rect,
+                target: link.target.clone(),
+            })
+        });
     }
 
     pub fn take_clicked(&mut self) -> Option<LinkHit> {
@@ -132,7 +144,13 @@ mod tests {
     use recto_core::nav::Link;
 
     fn page_with_link() -> Arc<PageLinks> {
-        Arc::new(PageLinks { links: vec![Link { rect: [10.0, 10.0, 100.0, 30.0], target: LinkTarget::Page { page: 4, within: None } }], ..PageLinks::default() })
+        Arc::new(PageLinks {
+            links: vec![Link {
+                rect: [10.0, 10.0, 100.0, 30.0],
+                target: LinkTarget::Page { page: 4, within: None },
+            }],
+            ..PageLinks::default()
+        })
     }
 
     fn at(page: u32, x: f32, y: f32) -> PagePoint {

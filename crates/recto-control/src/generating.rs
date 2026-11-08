@@ -93,7 +93,12 @@ impl Generator {
     }
 
     pub fn with_runner(root: &Path, runner: Box<dyn Runner>) -> Self {
-        Self(Arc::new(Shared { root: root.to_path_buf(), runner, inner: Mutex::new(Inner::default()), notify: OnceLock::new() }))
+        Self(Arc::new(Shared {
+            root: root.to_path_buf(),
+            runner,
+            inner: Mutex::new(Inner::default()),
+            notify: OnceLock::new(),
+        }))
     }
 
     pub fn attach(&self, notify: Notifier) {
@@ -115,7 +120,10 @@ impl Generator {
             return;
         }
         let shared = Arc::clone(&self.0);
-        let spawned = std::thread::Builder::new().name("recto-headings".into()).stack_size(256 * 1024).spawn(move || shared.work());
+        let spawned = std::thread::Builder::new()
+            .name("recto-headings".into())
+            .stack_size(256 * 1024)
+            .spawn(move || shared.work());
         match spawned {
             Ok(_) => inner.working = true,
             Err(_) => inner.waiting.clear(),
@@ -148,7 +156,8 @@ impl Shared {
                 (job, stop)
             };
             self.tell(Event::new("contents_generating", json!({ "file": job.key.short() })));
-            let (outcome, report) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.runner.run(&job, &stop))).unwrap_or_else(|_| (Outcome::Failed("helper_stopped".into()), Value::Null));
+            let (outcome, report) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.runner.run(&job, &stop)))
+                .unwrap_or_else(|_| (Outcome::Failed("helper_stopped".into()), Value::Null));
             let cancelled = stop.load(Ordering::SeqCst);
             // Kept on disk where its key can be believed. Held here for this session where it can't be, or where it couldn't be written.
             let held = match &outcome {
@@ -217,11 +226,19 @@ impl Generating for Generator {
 
     fn want(&self, path: &Path, key: CorpusKey, pages: u32) {
         let mut inner = self.0.lock();
-        if inner.stopped || inner.running.as_ref().is_some_and(|(running, ..)| *running == key) || inner.refused.iter().any(|(refused, _)| *refused == key) || failure(&mut inner, key).is_some() {
+        if inner.stopped
+            || inner.running.as_ref().is_some_and(|(running, ..)| *running == key)
+            || inner.refused.iter().any(|(refused, _)| *refused == key)
+            || failure(&mut inner, key).is_some()
+        {
             return;
         }
         inner.waiting.retain(|waiting| waiting.key != key);
-        inner.waiting.push_front(GenJob { path: path.to_path_buf(), key, pages });
+        inner.waiting.push_front(GenJob {
+            path: path.to_path_buf(),
+            key,
+            pages,
+        });
         inner.waiting.truncate(MAX_WAITING);
         self.start_working(&mut inner);
     }
@@ -293,10 +310,17 @@ impl Runner for HelperProcess {
     fn run(&self, job: &GenJob, stop: &AtomicBool) -> (Outcome, Value) {
         let failed = |code: &str| (Outcome::Failed(code.to_string()), Value::Null);
         let Some(exe) = helper_exe() else { return failed("helper_missing") };
-        let Some(file) = job.path.to_str() else { return (Outcome::Refused("couldnt_read".into()), Value::Null) };
+        let Some(file) = job.path.to_str() else {
+            return (Outcome::Refused("couldnt_read".into()), Value::Null);
+        };
         let mut command = Command::new(exe);
         // Nothing inherited but what it needs. `MallocLargeCache=0` must be there from the start, as the allocator reads it once: without it, freed large blocks stay in the footprint.
-        command.env_clear().env("MallocLargeCache", "0").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        command
+            .env_clear()
+            .env("MallocLargeCache", "0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
         for name in ["RECTO_RENDER_SERVICE", "RECTO_PDFIUM_LIB"] {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
@@ -316,11 +340,14 @@ impl Runner for HelperProcess {
             let _ = child.wait();
             return failed("helper_stopped");
         }
-        let reader = std::thread::Builder::new().name("recto-headings-out".into()).stack_size(64 * 1024).spawn(move || {
-            let mut said = Vec::new();
-            let _ = stdout.take(MAX_REPORT_BYTES).read_to_end(&mut said);
-            said
-        });
+        let reader = std::thread::Builder::new()
+            .name("recto-headings-out".into())
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let mut said = Vec::new();
+                let _ = stdout.take(MAX_REPORT_BYTES).read_to_end(&mut said);
+                said
+            });
         let started = Instant::now();
         let limit = time_limit(job.pages);
         let mut peak = 0u64;
@@ -371,15 +398,27 @@ impl Runner for HelperProcess {
 /// What the helper said, believing nothing it hasn't checked: a report line, and for a finished job the contents, read as the kept file is read.
 pub fn read_answer(said: &[u8], key: CorpusKey) -> (Outcome, Value) {
     let mut lines = said.splitn(2, |byte| *byte == b'\n');
-    let Some(report) = lines.next().and_then(|line| serde_json::from_slice::<Value>(line).ok()).filter(Value::is_object) else {
+    let Some(report) = lines
+        .next()
+        .and_then(|line| serde_json::from_slice::<Value>(line).ok())
+        .filter(Value::is_object)
+    else {
         return (Outcome::Failed("helper_stopped".into()), Value::Null);
     };
     let code = || {
         let code = report["code"].as_str().unwrap_or("");
-        ["needs_password", "couldnt_read", "no_pages"].into_iter().find(|known| *known == code).unwrap_or("couldnt_read").to_string()
+        ["needs_password", "couldnt_read", "no_pages"]
+            .into_iter()
+            .find(|known| *known == code)
+            .unwrap_or("couldnt_read")
+            .to_string()
     };
     let outcome = match report["state"].as_str() {
-        Some("ready") => match lines.next().map(|line| line.strip_suffix(b"\n").unwrap_or(line)).map(|line| Generated::decode(line, key)) {
+        Some("ready") => match lines
+            .next()
+            .map(|line| line.strip_suffix(b"\n").unwrap_or(line))
+            .map(|line| Generated::decode(line, key))
+        {
             Some(Ok(made)) => Outcome::Ready(Box::new(made)),
             _ => Outcome::Failed("bad_answer".into()),
         },
@@ -388,7 +427,17 @@ pub fn read_answer(said: &[u8], key: CorpusKey) -> (Outcome, Value) {
         _ => Outcome::Failed("helper_stopped".into()),
     };
     // Only numbers go on, for measuring. Nothing the helper wrote is repeated as words.
-    let numbers: serde_json::Map<String, Value> = report.as_object().map(|object| object.iter().filter(|(_, value)| value.is_number() || value.is_boolean()).take(32).map(|(name, value)| (recto_core::clean_line(name).chars().take(40).collect(), value.clone())).collect()).unwrap_or_default();
+    let numbers: serde_json::Map<String, Value> = report
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .filter(|(_, value)| value.is_number() || value.is_boolean())
+                .take(32)
+                .map(|(name, value)| (recto_core::clean_line(name).chars().take(40).collect(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
     (outcome, Value::Object(numbers))
 }
 
@@ -404,7 +453,16 @@ mod tests {
     }
 
     fn sample() -> Generated {
-        Generated { pages: 3, entries: vec![GeneratedEntry { depth: 0, page: 1, place: 10, title: "One".into() }], ..Generated::default() }
+        Generated {
+            pages: 3,
+            entries: vec![GeneratedEntry {
+                depth: 0,
+                page: 1,
+                place: 10,
+                title: "One".into(),
+            }],
+            ..Generated::default()
+        }
     }
 
     /// Holds each job until told, notes how many ran at once, and ends at once when stopped.
@@ -466,10 +524,20 @@ mod tests {
         struct Says(&'static str);
         impl Runner for Says {
             fn run(&self, _job: &GenJob, _stop: &AtomicBool) -> (Outcome, Value) {
-                (if self.0 == "refused" { Outcome::Refused("couldnt_read".into()) } else { Outcome::Failed("over_memory".into()) }, Value::Null)
+                (
+                    if self.0 == "refused" {
+                        Outcome::Refused("couldnt_read".into())
+                    } else {
+                        Outcome::Failed("over_memory".into())
+                    },
+                    Value::Null,
+                )
             }
         }
-        for (says, expected) in [("refused", GenState::Refused("couldnt_read".into())), ("failed", GenState::Refused("over_memory".into()))] {
+        for (says, expected) in [
+            ("refused", GenState::Refused("couldnt_read".into())),
+            ("failed", GenState::Refused("over_memory".into())),
+        ] {
             let generator = Generator::with_runner(Path::new("/nowhere"), Box::new(Says(says)));
             generator.want(Path::new("/nowhere/a.pdf"), key(1), 10);
             settle(&generator);

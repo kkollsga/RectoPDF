@@ -24,7 +24,9 @@ fn ok(file: &Path, args: &[&str]) -> Value {
 
 fn drawn(file: &Path, page: u32, out: &Path) -> (u32, u32, Vec<u8>) {
     ok(file, &["render", &page.to_string(), "--scale", "1", "--out", out.to_str().unwrap()]);
-    let Embedded::Png { width, height, pixels, .. } = read_png(&std::fs::read(out).unwrap()) else { panic!() };
+    let Embedded::Png { width, height, pixels, .. } = read_png(&std::fs::read(out).unwrap()) else {
+        panic!()
+    };
     std::fs::remove_file(out).unwrap();
     (width, height, pixels)
 }
@@ -35,7 +37,15 @@ fn out_path(file: &TempPdf, name: &str) -> PathBuf {
 
 /// Three pages, each with its own words and a coloured box in its own place, so a page out of order or drawn wrong shows.
 fn source() -> TempPdf {
-    let page = |n: usize, colour: &str| Page::new([text_lines(&[&format!("Page {n} of the source")]), format!("{colour} rg {} 300 120 80 re f\n", 60 + n * 100).into_bytes()].concat());
+    let page = |n: usize, colour: &str| {
+        Page::new(
+            [
+                text_lines(&[&format!("Page {n} of the source")]),
+                format!("{colour} rg {} 300 120 80 re f\n", 60 + n * 100).into_bytes(),
+            ]
+            .concat(),
+        )
+    };
     TempPdf::new("source.pdf", &pages(&[page(1, "1 0 0"), page(2, "0 0.6 0"), page(3, "0 0 1")]))
 }
 
@@ -53,7 +63,11 @@ fn a_print_matches_its_source_page_by_page() {
         let (pw, ph, print) = drawn(&out, page, &png);
         assert_eq!((pw, ph), (sw, sh), "page {page} is its own size");
         let differing = source.iter().zip(&print).filter(|(a, b)| a.abs_diff(**b) > 48).count();
-        assert!(differing * 200 < source.len(), "page {page}: {differing} of {} channels differ by more than 48", source.len());
+        assert!(
+            differing * 200 < source.len(),
+            "page {page}: {differing} of {} channels differ by more than 48",
+            source.len()
+        );
     }
     std::fs::remove_file(&out).unwrap();
     // A range takes those pages, in order.

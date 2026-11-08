@@ -1,8 +1,8 @@
 //! A page's contents, from the host's side: asks for a frame at a time, checks what comes, and hands it on. Goes down the same limits as an export, so a page comes out whole or is refused, and nothing is written.
 
 use super::{DocRenderer, ExportRefusal, JobFailure, KillReason, PageDrawState, RenderFailure, SlotWaitEnd, WorkerClass};
-use recto_proto::jpeg::JpegFacts;
 use recto_proto::contents::{ContentsJob, Record, Records, StreamCheck, TextMode, decode_contents, validate_contents};
+use recto_proto::jpeg::JpegFacts;
 use recto_proto::{Kind, ProtoError};
 use std::time::{Duration, Instant};
 
@@ -54,7 +54,11 @@ enum TryEnd {
 
 impl DocRenderer {
     /// Reads a page's contents, a frame at a time, as an export: sharp or refused, and never a lower resolution, since a picture standing in is drawn at the scale asked for. `sink` hands the records on, and a failure from it ends things there. A failure here means nothing should be published. Can block for a long time, so never on a UI thread.
-    pub fn read_contents(&mut self, request: &ContentsRequest, mut sink: impl FnMut(ContentsEvent<'_>) -> Result<(), RenderFailure>) -> Result<ContentsDone, RenderFailure> {
+    pub fn read_contents(
+        &mut self,
+        request: &ContentsRequest,
+        mut sink: impl FnMut(ContentsEvent<'_>) -> Result<(), RenderFailure>,
+    ) -> Result<ContentsDone, RenderFailure> {
         let page = request.page;
         let check = job_of(request, 0, 0);
         check.check().map_err(|_| RenderFailure::BadRequest)?;
@@ -75,7 +79,12 @@ impl DocRenderer {
             }
             let class = match state {
                 PageDrawState::Failed(reason) => return Err(RenderFailure::PageFailed { page, reason }),
-                PageDrawState::LowResOnly => return Err(RenderFailure::ExportRefused { page, why: ExportRefusal::TooHeavy }),
+                PageDrawState::LowResOnly => {
+                    return Err(RenderFailure::ExportRefused {
+                        page,
+                        why: ExportRefusal::TooHeavy,
+                    });
+                }
                 PageDrawState::Sharp => WorkerClass::Normal,
                 PageDrawState::NeedsHeavy => {
                     let retries = self.stats.heavy_retries - self.heavy_retries_counted_from;
@@ -85,17 +94,28 @@ impl DocRenderer {
                         continue;
                     }
                     if !already_heavy && !self.memory_to_spare() {
-                        return Err(RenderFailure::ExportRefused { page, why: ExportRefusal::MemoryTight });
+                        return Err(RenderFailure::ExportRefused {
+                            page,
+                            why: ExportRefusal::MemoryTight,
+                        });
                     }
                     if !already_heavy && self.waited_ticket.is_none() {
                         match self.wait_for_slot(request.generation) {
                             Ok(ticket) => self.waited_ticket = Some(ticket),
                             Err(SlotWaitEnd::Cancelled) => return Err(RenderFailure::Cancelled),
-                            Err(SlotWaitEnd::TimedOut) => return Err(RenderFailure::ExportRefused { page, why: ExportRefusal::WaitTimedOut }),
+                            Err(SlotWaitEnd::TimedOut) => {
+                                return Err(RenderFailure::ExportRefused {
+                                    page,
+                                    why: ExportRefusal::WaitTimedOut,
+                                });
+                            }
                         }
                         if !self.memory_to_spare() {
                             self.waited_ticket = None;
-                            return Err(RenderFailure::ExportRefused { page, why: ExportRefusal::MemoryTight });
+                            return Err(RenderFailure::ExportRefused {
+                                page,
+                                why: ExportRefusal::MemoryTight,
+                            });
                         }
                     }
                     WorkerClass::Heavy
@@ -117,14 +137,22 @@ impl DocRenderer {
                     }
                 }
                 Ok(TryEnd::Stopped(KillReason::MemoryLimit)) => {
-                    let next = if class == WorkerClass::Heavy { PageDrawState::LowResOnly } else { PageDrawState::NeedsHeavy };
+                    let next = if class == WorkerClass::Heavy {
+                        PageDrawState::LowResOnly
+                    } else {
+                        PageDrawState::NeedsHeavy
+                    };
                     self.set_draw(page, scale, next);
                 }
                 Ok(TryEnd::Stopped(reason)) => return Err(self.give_up_drawing(page, 0.0, reason)),
                 Err(JobFailure::Failed(failure)) => return Err(failure),
                 Err(JobFailure::StaleKilled) => return Err(RenderFailure::Cancelled),
                 Err(JobFailure::Stopped(KillReason::MemoryLimit)) => {
-                    let next = if class == WorkerClass::Heavy { PageDrawState::LowResOnly } else { PageDrawState::NeedsHeavy };
+                    let next = if class == WorkerClass::Heavy {
+                        PageDrawState::LowResOnly
+                    } else {
+                        PageDrawState::NeedsHeavy
+                    };
                     self.set_draw(page, scale, next);
                 }
                 Err(JobFailure::Stopped(reason)) => return Err(self.give_up_drawing(page, 0.0, reason)),
@@ -156,14 +184,16 @@ impl DocRenderer {
             let job = job_of(request, self.next_job_id(), seq);
             let frame = job.encode();
             // A stream's own frames don't count as jobs done: they're all this one page, so a kill on one of them isn't what earlier pages left behind, and it isn't worth another try at the same size. A worker with real history gets that retry, from the top.
-            let reply = self.run_job(job.job_id, page, false, class, Some(request.generation), &[], &frame, |reply| match reply.kind {
-                Kind::Contents => {
-                    let (header, _) = decode_contents(&reply.payload)?;
-                    validate_contents(&job, &header)?;
-                    // Taken, not copied: a frame can be 16 MiB.
-                    Ok(std::mem::take(&mut reply.payload))
+            let reply = self.run_job(job.job_id, page, false, class, Some(request.generation), &[], &frame, |reply| {
+                match reply.kind {
+                    Kind::Contents => {
+                        let (header, _) = decode_contents(&reply.payload)?;
+                        validate_contents(&job, &header)?;
+                        // Taken, not copied: a frame can be 16 MiB.
+                        Ok(std::mem::take(&mut reply.payload))
+                    }
+                    _ => Err(ProtoError("the wrong kind of reply to a request for contents")),
                 }
-                _ => Err(ProtoError("the wrong kind of reply to a request for contents")),
             });
             let payload = match reply {
                 Ok(payload) => payload,
@@ -172,7 +202,9 @@ impl DocRenderer {
                 Err(JobFailure::Stopped(reason)) => return Ok(TryEnd::Stopped(reason)),
                 Err(failure) => return Err(failure),
             };
-            let Ok((header, records)) = decode_contents(&payload) else { return Err(RenderFailure::Unavailable.into()) };
+            let Ok((header, records)) = decode_contents(&payload) else {
+                return Err(RenderFailure::Unavailable.into());
+            };
             let mut reader = Records::new(records);
             loop {
                 let record = match reader.next_record() {
@@ -206,5 +238,15 @@ impl DocRenderer {
 }
 
 fn job_of(request: &ContentsRequest, job_id: u32, seq: u32) -> ContentsJob {
-    ContentsJob { generation: request.generation, job_id, page: request.page, seq, scale: request.scale, rect: request.rect.unwrap_or([0.0; 4]), text: request.text, hints: request.hints, images: request.images }
+    ContentsJob {
+        generation: request.generation,
+        job_id,
+        page: request.page,
+        seq,
+        scale: request.scale,
+        rect: request.rect.unwrap_or([0.0; 4]),
+        text: request.text,
+        hints: request.hints,
+        images: request.images,
+    }
 }

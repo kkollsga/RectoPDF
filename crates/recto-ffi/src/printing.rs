@@ -87,10 +87,24 @@ impl Printing {
     pub(crate) fn selection_notice(&self) -> Option<SelectionNotice> {
         if self.running.load(Ordering::SeqCst) {
             let (done, of) = (self.done.load(Ordering::SeqCst), self.of.load(Ordering::SeqCst));
-            let text = if of > 1 { format!("Preparing pages for printing: {} of {of}.", (done + 1).min(of)) } else { "Preparing the page for printing.".to_string() };
-            return Some(SelectionNotice { text, action_title: Some("Stop".into()), action_id: Some(STOP_ID.into()), fades: false });
+            let text = if of > 1 {
+                format!("Preparing pages for printing: {} of {of}.", (done + 1).min(of))
+            } else {
+                "Preparing the page for printing.".to_string()
+            };
+            return Some(SelectionNotice {
+                text,
+                action_title: Some("Stop".into()),
+                action_id: Some(STOP_ID.into()),
+                fades: false,
+            });
         }
-        lock(&self.notice).clone().map(|said| SelectionNotice { action_title: said.anyway.then(|| "Print anyway".to_string()), action_id: said.anyway.then(|| format!("{ANYWAY_PREFIX}{}", said.serial)), fades: !said.anyway, text: said.text })
+        lock(&self.notice).clone().map(|said| SelectionNotice {
+            action_title: said.anyway.then(|| "Print anyway".to_string()),
+            action_id: said.anyway.then(|| format!("{ANYWAY_PREFIX}{}", said.serial)),
+            fades: !said.anyway,
+            text: said.text,
+        })
     }
 
     pub(crate) fn dismiss_notice(&self) {
@@ -100,7 +114,11 @@ impl Printing {
 
     fn say(&self, text: impl Into<String>, anyway: bool) -> u64 {
         let serial = self.serial.fetch_add(1, Ordering::SeqCst) + 1;
-        *lock(&self.notice) = Some(Said { serial, text: text.into(), anyway });
+        *lock(&self.notice) = Some(Said {
+            serial,
+            text: text.into(),
+            anyway,
+        });
         serial
     }
 
@@ -244,11 +262,18 @@ fn start(inner: &Arc<Inner>, request: Request) -> bool {
         let printing = &runner.printing;
         let pages = format!("{first}-{last}");
         let tab = request.tab;
-        let listed = runner.host.session.with_session(|session| print::print_pages_in(session, &format!("#{}", tab.0), Some(&pages)));
+        let listed = runner
+            .host
+            .session
+            .with_session(|session| print::print_pages_in(session, &format!("#{}", tab.0), Some(&pages)));
         let path = temp_path(generation);
         let outcome = listed.and_then(|listed| {
             if request.to_file && !request.anyway && print::any_copy_restricted(&listed) {
-                return Err(recto_agent::AgentError::new("copy_restricted", "This file's permissions ask that it isn't copied.", recto_agent::exit::PROTECTED));
+                return Err(recto_agent::AgentError::new(
+                    "copy_restricted",
+                    "This file's permissions ask that it isn't copied.",
+                    recto_agent::exit::PROTECTED,
+                ));
             }
             print::print_to_path(&listed, request.dpi, &path, |done, of| {
                 printing.done.store(done, Ordering::SeqCst);
@@ -298,8 +323,17 @@ impl AppCore {
     pub fn print_model(&self) -> PrintModel {
         let reader = lock(&self.inner.published).reader.clone();
         let engine = self.inner.panes.reading_engine(&self.inner.engine);
-        let (width_pt, height_pt) = engine.page_size_shown(0).map_or((612.0, 792.0), |(width, height)| (f64::from(width), f64::from(height)));
-        PrintModel { tab: reader.shown_tab, pages: engine.page_count(), has_selection: engine.has_selection(), job_title: reader.document_name, width_pt, height_pt }
+        let (width_pt, height_pt) = engine
+            .page_size_shown(0)
+            .map_or((612.0, 792.0), |(width, height)| (f64::from(width), f64::from(height)));
+        PrintModel {
+            tab: reader.shown_tab,
+            pages: engine.page_count(),
+            has_selection: engine.has_selection(),
+            job_title: reader.document_name,
+            width_pt,
+            height_pt,
+        }
     }
 
     /// The print panel was answered with Print: these pages, from 1, or all of them, or the selection's, to paper or, with `to_file`, to a PDF the system's printing saves or previews, which is an export. Rust draws them off the UI thread, and `print_ready` says when the file's there. False if nothing was started, with a notice saying why.
@@ -308,9 +342,24 @@ impl AppCore {
             return false;
         }
         let model = self.print_model();
-        let selection = selection_only.then(|| self.inner.panes.reading_engine(&self.inner.engine).hot_selection()).flatten().and_then(|(_, range)| range).map(|range| (range.start.page, range.end.page));
-        let Some(range) = chosen_range(model.pages, all, first, last, selection) else { return false };
-        start(&self.inner, Request { tab: TabId(tab), range, dpi: print::DEFAULT_DPI, to_file, anyway: false })
+        let selection = selection_only
+            .then(|| self.inner.panes.reading_engine(&self.inner.engine).hot_selection())
+            .flatten()
+            .and_then(|(_, range)| range)
+            .map(|range| (range.start.page, range.end.page));
+        let Some(range) = chosen_range(model.pages, all, first, last, selection) else {
+            return false;
+        };
+        start(
+            &self.inner,
+            Request {
+                tab: TabId(tab),
+                range,
+                dpi: print::DEFAULT_DPI,
+                to_file,
+                anyway: false,
+            },
+        )
     }
 
     /// For QA's print to a PDF through the system's printing: where it should write, a new name of ours beside `out`, which is published at `out` when it's done, never over anything. None if `out` can't be written to.
@@ -320,7 +369,11 @@ impl AppCore {
         if !out.is_absolute() || std::fs::symlink_metadata(&out).is_ok() {
             return None;
         }
-        let written = folder.join(format!(".recto-print-{}-{}.pdf", std::process::id(), self.inner.printing.generation.load(Ordering::SeqCst) + 1));
+        let written = folder.join(format!(
+            ".recto-print-{}-{}.pdf",
+            std::process::id(),
+            self.inner.printing.generation.load(Ordering::SeqCst) + 1
+        ));
         if std::fs::symlink_metadata(&written).is_ok() {
             return None;
         }
@@ -417,7 +470,13 @@ mod tests {
         assert_eq!((preparing.action_id.as_deref(), preparing.fades), (Some(STOP_ID), false));
         assert!(preparing.text.contains("3 of 10"), "{}", preparing.text);
         printing.running.store(false, Ordering::SeqCst);
-        let request = Request { tab: TabId(1), range: (1, 2), dpi: 300, to_file: true, anyway: false };
+        let request = Request {
+            tab: TabId(1),
+            range: (1, 2),
+            dpi: 300,
+            to_file: true,
+            anyway: false,
+        };
         let serial = printing.say("This file's permissions ask that it isn't copied.", true);
         *lock(&printing.refused) = Some((serial, request));
         let refused = printing.selection_notice().unwrap();

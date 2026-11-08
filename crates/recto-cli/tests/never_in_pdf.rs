@@ -38,7 +38,10 @@ impl SaveHooks for Keeping<'_> {
 /// Failure: text from a removed page, a PDF added and undone, or the journal itself reaches a saved file. They're all in the history first, as this checks, so it's the saving that keeps them out, and undo past the save still has them.
 #[test]
 fn a_saved_pdf_has_nothing_of_the_history_in_it() {
-    let root = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-never-in-pdf-{}", std::process::id()));
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("recto-never-in-pdf-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let state = root.join("state");
@@ -64,16 +67,48 @@ fn a_saved_pdf_has_nothing_of_the_history_in_it() {
     assert!(failed.is_none());
     session.journal_outcome(outcome);
     assert!(found(&journal(&name), UNDONE_FILE_NAME), "the mark is in the history");
-    assert!(std::fs::read(&file).is_ok_and(|bytes| found(&bytes, DELETED_TEXT)), "the mark is in the file as it was");
+    assert!(
+        std::fs::read(&file).is_ok_and(|bytes| found(&bytes, DELETED_TEXT)),
+        "the mark is in the file as it was"
+    );
 
     // The save, on the real path.
     let snapshot = session.begin_save(tab, false).unwrap().expect("there's something to save");
-    let order: Vec<PageRef> = snapshot.slots.iter().map(|slot| PageRef { source: slot.source, page: slot.page, quarter_turns: slot.quarter_turns }).collect();
-    let added_files: Vec<AddedFile<'_>> = snapshot.added.iter().map(|added| AddedFile { path: &added.path, page_count: added.page_count, stamp: added.stamp }).collect();
-    let request = SaveRequest { path: &snapshot.path, stamp: snapshot.stamp, file_pages: snapshot.file_pages, pages: &order, added: &added_files };
+    let order: Vec<PageRef> = snapshot
+        .slots
+        .iter()
+        .map(|slot| PageRef {
+            source: slot.source,
+            page: slot.page,
+            quarter_turns: slot.quarter_turns,
+        })
+        .collect();
+    let added_files: Vec<AddedFile<'_>> = snapshot
+        .added
+        .iter()
+        .map(|added| AddedFile {
+            path: &added.path,
+            page_count: added.page_count,
+            stamp: added.stamp,
+        })
+        .collect();
+    let request = SaveRequest {
+        path: &snapshot.path,
+        stamp: snapshot.stamp,
+        file_pages: snapshot.file_pages,
+        pages: &order,
+        added: &added_files,
+    };
     let needed = session.own_pages_needed(tab);
     assert_eq!(needed, [1], "the history can put back the deleted page, and only that");
-    let mut hooks = Keeping { session: &mut session, store: &store, tab, file: &file, needed, kept: None };
+    let mut hooks = Keeping {
+        session: &mut session,
+        store: &store,
+        tab,
+        file: &file,
+        needed,
+        kept: None,
+    };
     let outcome = save::save(&request, Target::Same, None, &mut hooks).unwrap();
     let kept = hooks.kept.take().expect("a small page fits");
     assert_eq!(outcome.writer, Writer::Rewrite);
@@ -85,7 +120,15 @@ fn a_saved_pdf_has_nothing_of_the_history_in_it() {
     session.journal_outcome(outcome);
 
     let saved = std::fs::read(&file).unwrap();
-    for mark in [DELETED_TEXT, UNDONE_FILE_TEXT, UNDONE_FILE_NAME, "kept-", "journal-", "recto-journal", "history"] {
+    for mark in [
+        DELETED_TEXT,
+        UNDONE_FILE_TEXT,
+        UNDONE_FILE_NAME,
+        "kept-",
+        "journal-",
+        "recto-journal",
+        "history",
+    ] {
         assert!(!found(&saved, mark), "{mark} reached the saved PDF");
     }
     assert!(found(&saved, "first page") && found(&saved, "third page"), "and it's the document");
@@ -93,11 +136,18 @@ fn a_saved_pdf_has_nothing_of_the_history_in_it() {
     // And it's all still in the history, not lost: the file kept holds the page, and only that page, and undo past the save brings it back from there.
     let kept_bytes = std::fs::read(&kept.path).unwrap();
     assert!(found(&kept_bytes, DELETED_TEXT));
-    assert!(!found(&kept_bytes, "first page") && !found(&kept_bytes, "third page"), "only the page that was removed is kept");
+    assert!(
+        !found(&kept_bytes, "first page") && !found(&kept_bytes, "third page"),
+        "only the page that was removed is kept"
+    );
     assert!(!session.is_edited(tab));
     assert!(session.undo_edit(tab), "the delete");
     assert!(session.is_edited(tab));
     let back = session.page_source(tab, 1).unwrap();
-    assert_eq!((back.path, back.page), (kept.path.to_path_buf(), 0), "page 1 of the kept copy, which is the page that was removed");
+    assert_eq!(
+        (back.path, back.page),
+        (kept.path.to_path_buf(), 0),
+        "page 1 of the kept copy, which is the page that was removed"
+    );
     std::fs::remove_dir_all(&root).unwrap();
 }

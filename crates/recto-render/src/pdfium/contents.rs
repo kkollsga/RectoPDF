@@ -10,8 +10,11 @@
 //! PDFium gives for the real character, and text whose outlines don't match, or that has none, as in a Type 3 font, goes as a picture. The real characters stay over it, selectable.
 
 use super::*;
+use recto_proto::contents::{
+    CONTENTS_CHUNK, ContentsJob, IMAGES_ALL, IMAGES_LIST, ImageCoding, MAX_CLIP_CHAIN, MAX_CLIPS, MAX_GLYPHS, MAX_GROUP_NESTING, MAX_IMAGE_ROW_BYTES,
+    MAX_PATH_SEGMENTS, MAX_RUN_ITEMS, NoteCode, SEG_CURVE, SEG_LINE, SEG_MOVE, TextMode, Why, begin_contents, finish_contents, hints, put,
+};
 use recto_proto::jpeg::{HeaderFix, JpegScan, MAX_ADDED_PROFILE, fix_header, frame_components, profile_says_srgb};
-use recto_proto::contents::{CONTENTS_CHUNK, ContentsJob, ImageCoding, MAX_CLIP_CHAIN, MAX_CLIPS, MAX_GLYPHS, MAX_GROUP_NESTING, MAX_IMAGE_ROW_BYTES, MAX_PATH_SEGMENTS, MAX_RUN_ITEMS, IMAGES_ALL, IMAGES_LIST, NoteCode, SEG_CURVE, SEG_LINE, SEG_MOVE, TextMode, Why, begin_contents, finish_contents, hints, put};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -107,7 +110,14 @@ fn inverse(m: &M) -> Option<M> {
     if det == 0.0 || !det.is_finite() {
         return None;
     }
-    Some([m[3] / det, -m[1] / det, -m[2] / det, m[0] / det, (m[2] * m[5] - m[3] * m[4]) / det, (m[1] * m[4] - m[0] * m[5]) / det])
+    Some([
+        m[3] / det,
+        -m[1] / det,
+        -m[2] / det,
+        m[0] / det,
+        (m[2] * m[5] - m[3] * m[4]) / det,
+        (m[1] * m[4] - m[0] * m[5]) / det,
+    ])
 }
 
 fn to_f32(m: &M) -> Option<Mat> {
@@ -126,8 +136,18 @@ struct Area {
 
 impl Area {
     fn through(self, m: &M) -> Self {
-        let corners = [apply(m, self.left, self.bottom), apply(m, self.right, self.bottom), apply(m, self.left, self.top), apply(m, self.right, self.top)];
-        let mut out = Self { left: f64::INFINITY, bottom: f64::INFINITY, right: f64::NEG_INFINITY, top: f64::NEG_INFINITY };
+        let corners = [
+            apply(m, self.left, self.bottom),
+            apply(m, self.right, self.bottom),
+            apply(m, self.left, self.top),
+            apply(m, self.right, self.top),
+        ];
+        let mut out = Self {
+            left: f64::INFINITY,
+            bottom: f64::INFINITY,
+            right: f64::NEG_INFINITY,
+            top: f64::NEG_INFINITY,
+        };
         for (x, y) in corners {
             out.left = out.left.min(x);
             out.right = out.right.max(x);
@@ -205,11 +225,31 @@ struct MaskedJpeg {
 
 enum Pending {
     /// A bitmap PDFium gave, freed when it's sent.
-    Bitmap { bitmap: FPDF_BITMAP, format: c_int, stride: usize, crop: (u32, u32, u32, u32), channels: u8, y: u32 },
+    Bitmap {
+        bitmap: FPDF_BITMAP,
+        format: c_int,
+        stride: usize,
+        crop: (u32, u32, u32, u32),
+        channels: u8,
+        y: u32,
+    },
     /// A file's original bytes.
     Bytes { data: Vec<u8>, at: usize },
     /// A picture being drawn, strip by strip.
-    Patch { kind: PatchKind, why: Why, rect: TileRect, full: (c_int, c_int), channels: u8, y: u32, strip: Vec<u8>, strip_top: u32, strip_rows: u32, stride: usize, object: FPDF_PAGEOBJECT, begun: bool },
+    Patch {
+        kind: PatchKind,
+        why: Why,
+        rect: TileRect,
+        full: (c_int, c_int),
+        channels: u8,
+        y: u32,
+        strip: Vec<u8>,
+        strip_top: u32,
+        strip_rows: u32,
+        stride: usize,
+        object: FPDF_PAGEOBJECT,
+        begun: bool,
+    },
 }
 
 /// Left, bottom, right, top, in ems.
@@ -351,17 +391,31 @@ impl PdfiumBackend {
         let size = self.page_size(job.page)?;
         let open = self.open_page.as_ref().ok_or(FailCode::Internal)?;
         let (page, api) = (open.page, self.api);
-        let mut bbox = FS_RECTF { left: 0.0, top: 0.0, right: 0.0, bottom: 0.0 };
+        let mut bbox = FS_RECTF {
+            left: 0.0,
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+        };
         // SAFETY: the page is live, and `bbox` is live for the call.
         let (has_box, rotation) = unsafe { ((api.FPDF_GetPageBoundingBox)(page, &raw mut bbox), (api.FPDFPage_GetRotation)(page)) };
         if has_box == 0 {
             return Err(FailCode::BadPage);
         }
         let (page_w, page_h) = (f64::from(size.width), f64::from(size.height));
-        let display = display_matrix((f64::from(bbox.left), f64::from(bbox.bottom), f64::from(bbox.right), f64::from(bbox.top)), rotation, page_w, page_h).ok_or(FailCode::BadPage)?;
+        let display = display_matrix(
+            (f64::from(bbox.left), f64::from(bbox.bottom), f64::from(bbox.right), f64::from(bbox.top)),
+            rotation,
+            page_w,
+            page_h,
+        )
+        .ok_or(FailCode::BadPage)?;
         let undisplay = inverse(&display).ok_or(FailCode::BadPage)?;
         let (full_w, full_h) = device_size(size.width, size.height, job.scale).map_err(|_| FailCode::TooLarge)?;
-        let full_px = (c_int::try_from(full_w).map_err(|_| FailCode::TooLarge)?, c_int::try_from(full_h).map_err(|_| FailCode::TooLarge)?);
+        let full_px = (
+            c_int::try_from(full_w).map_err(|_| FailCode::TooLarge)?,
+            c_int::try_from(full_h).map_err(|_| FailCode::TooLarge)?,
+        );
         let (rx, ry, rw, rh) = if job.rect == [0.0; 4] {
             (0.0, 0.0, page_w, page_h)
         } else {
@@ -379,7 +433,13 @@ impl PdfiumBackend {
         let px_top = (ry * scale_y).floor() as u32;
         let px_right = (((rx + rw) * scale_x).ceil() as u32).clamp(px_left + 1, full_w);
         let px_bottom = (((ry + rh) * scale_y).ceil() as u32).clamp(px_top + 1, full_h);
-        let view = Area { left: rx, bottom: ry, right: rx + rw, top: ry + rh }.through(&undisplay);
+        let view = Area {
+            left: rx,
+            bottom: ry,
+            right: rx + rw,
+            top: ry + rh,
+        }
+        .through(&undisplay);
         let mut walk = Walk {
             api,
             document: self.document,
@@ -390,7 +450,12 @@ impl PdfiumBackend {
             display,
             undisplay,
             view,
-            view_px: TileRect { x: px_left, y: px_top, width: px_right - px_left, height: px_bottom - px_top },
+            view_px: TileRect {
+                x: px_left,
+                y: px_top,
+                width: px_right - px_left,
+                height: px_bottom - px_top,
+            },
             partial: job.rect != [0.0; 4],
             full_px,
             page_w,
@@ -428,7 +493,17 @@ impl PdfiumBackend {
         };
         // SAFETY: the page is live.
         let count = unsafe { (api.FPDFPage_CountObjects)(page) }.max(0);
-        walk.levels.push(Level { form: std::ptr::null_mut(), next: 0, count, matrix: IDENTITY, clip: 0, clip_depth: 0, group: false, text_clip: false, text_only: false });
+        walk.levels.push(Level {
+            form: std::ptr::null_mut(),
+            next: 0,
+            count,
+            matrix: IDENTITY,
+            clip: 0,
+            clip_depth: 0,
+            group: false,
+            text_clip: false,
+            text_only: false,
+        });
         // Made now, so this job's first deadline covers it. Hardly any page has no text, and every text mode needs it.
         walk.text_page = self.text_page_now()?;
         walk.job.rect = [rx as f32, ry as f32, rw as f32, rh as f32];
@@ -567,7 +642,23 @@ impl Walk {
     }
 
     fn write_notes(&mut self, out: &mut Vec<u8>) {
-        for (code, index) in [NoteCode::NotFinite, NoteCode::HiddenLayer, NoteCode::InvisibleText, NoteCode::Unknown, NoteCode::LayersUnchecked, NoteCode::ObjectsSkipped, NoteCode::JpegTurned, NoteCode::JpegUnsound, NoteCode::JpegProfileRemoved, NoteCode::JpegProfileAdded, NoteCode::JpegMeaningAsPng, NoteCode::JpegCutAsPng].into_iter().map(|code| (code, code as usize)) {
+        for (code, index) in [
+            NoteCode::NotFinite,
+            NoteCode::HiddenLayer,
+            NoteCode::InvisibleText,
+            NoteCode::Unknown,
+            NoteCode::LayersUnchecked,
+            NoteCode::ObjectsSkipped,
+            NoteCode::JpegTurned,
+            NoteCode::JpegUnsound,
+            NoteCode::JpegProfileRemoved,
+            NoteCode::JpegProfileAdded,
+            NoteCode::JpegMeaningAsPng,
+            NoteCode::JpegCutAsPng,
+        ]
+        .into_iter()
+        .map(|code| (code, code as usize))
+        {
             if self.notes[index] > 0 {
                 put::note(out, code, self.notes[index]);
             }
@@ -639,7 +730,13 @@ impl Walk {
         if ok == 0 {
             return None;
         }
-        let area = Area { left: f64::from(left), bottom: f64::from(bottom), right: f64::from(right), top: f64::from(top) }.through(&self.level().matrix);
+        let area = Area {
+            left: f64::from(left),
+            bottom: f64::from(bottom),
+            right: f64::from(right),
+            top: f64::from(top),
+        }
+        .through(&self.level().matrix);
         area.is_finite().then_some(area)
     }
 
@@ -676,7 +773,11 @@ impl Walk {
     fn is_tiling(&self, object: FPDF_PAGEOBJECT, stroke: bool) -> bool {
         // SAFETY: as above, and a bitmap handed back is ours to free, here.
         unsafe {
-            let bitmap = if stroke { (self.api.FPDFPageObj_GetRenderedStrokePattern)(self.document, object) } else { (self.api.FPDFPageObj_GetRenderedFillPattern)(self.document, object) };
+            let bitmap = if stroke {
+                (self.api.FPDFPageObj_GetRenderedStrokePattern)(self.document, object)
+            } else {
+                (self.api.FPDFPageObj_GetRenderedFillPattern)(self.document, object)
+            };
             if bitmap.is_null() {
                 false
             } else {
@@ -709,7 +810,9 @@ impl Walk {
             let source = SegSource::Clip(clip, path);
             let mut points = Vec::with_capacity(segments as usize);
             for index in 0..segments {
-                let Some((kind, close, x, y)) = self.segment(source, index) else { return Clipped::NotFinite };
+                let Some((kind, close, x, y)) = self.segment(source, index) else {
+                    return Clipped::NotFinite;
+                };
                 hash.bytes(&[kind, u8::from(close)]);
                 hash.bytes(&x.to_le_bytes());
                 hash.bytes(&y.to_le_bytes());
@@ -724,8 +827,15 @@ impl Walk {
             if self.partial && !points.is_empty() {
                 let area = points_area(&points, &matrix);
                 if !area.inside(self.view) {
-                    let Some(rect) = upright_rectangle(&points, &matrix) else { return Clipped::CrossesBox };
-                    let kept = Area { left: rect.left.max(self.view.left), bottom: rect.bottom.max(self.view.bottom), right: rect.right.min(self.view.right), top: rect.top.min(self.view.top) };
+                    let Some(rect) = upright_rectangle(&points, &matrix) else {
+                        return Clipped::CrossesBox;
+                    };
+                    let kept = Area {
+                        left: rect.left.max(self.view.left),
+                        bottom: rect.bottom.max(self.view.bottom),
+                        right: rect.right.min(self.view.right),
+                        top: rect.top.min(self.view.top),
+                    };
                     // All of the box is in it, so it clips nothing in the file.
                     if rect.left <= self.view.left && rect.bottom <= self.view.bottom && rect.right >= self.view.right && rect.top >= self.view.top {
                         continue;
@@ -937,7 +1047,12 @@ impl Walk {
     fn path(&mut self, object: FPDF_PAGEOBJECT, area: Area, out: &mut Vec<u8>) -> Result<(), RenderError> {
         let (mut fill_mode, mut stroke_on): (c_int, FPDF_BOOL) = (0, 0);
         // SAFETY: as above.
-        let (segments, has_mode) = unsafe { ((self.api.FPDFPath_CountSegments)(object), (self.api.FPDFPath_GetDrawMode)(object, &raw mut fill_mode, &raw mut stroke_on)) };
+        let (segments, has_mode) = unsafe {
+            (
+                (self.api.FPDFPath_CountSegments)(object),
+                (self.api.FPDFPath_GetDrawMode)(object, &raw mut fill_mode, &raw mut stroke_on),
+            )
+        };
         let (fill_on, stroke_on) = (has_mode != 0 && fill_mode != FPDF_FILLMODE_NONE, has_mode != 0 && stroke_on != 0);
         if segments <= 0 || (!fill_on && !stroke_on) {
             return Ok(());
@@ -999,7 +1114,18 @@ impl Walk {
         let clean = |value: f32| if value.is_finite() { value } else { 0.0 };
         let dashes: Vec<f32> = dashes[..dash_len].iter().copied().map(clean).collect();
         let start = out.len();
-        put::path_begin(out, &matrix, fill, fill_mode == FPDF_FILLMODE_ALTERNATE, stroke, clean(width), cap.clamp(0, 2) as u8, join.clamp(0, 2) as u8, clean(dash_phase), &dashes);
+        put::path_begin(
+            out,
+            &matrix,
+            fill,
+            fill_mode == FPDF_FILLMODE_ALTERNATE,
+            stroke,
+            clean(width),
+            cap.clamp(0, 2) as u8,
+            join.clamp(0, 2) as u8,
+            clean(dash_phase),
+            &dashes,
+        );
         if self.write_segments(SegSource::Path(object), segments, out).is_none() {
             out.truncate(start);
             self.note(NoteCode::NotFinite);
@@ -1065,7 +1191,17 @@ impl Walk {
         // SAFETY: as above.
         let count = unsafe { (self.api.FPDFFormObj_CountObjects)(object) }.max(0);
         let text_only = text_only || self.level().text_only;
-        self.levels.push(Level { form: object, next: 0, count, matrix, clip, clip_depth, group: group.is_some(), text_clip: false, text_only });
+        self.levels.push(Level {
+            form: object,
+            next: 0,
+            count,
+            matrix,
+            clip,
+            clip_depth,
+            group: group.is_some(),
+            text_clip: false,
+            text_only,
+        });
         Ok(())
     }
 
@@ -1105,7 +1241,11 @@ impl Walk {
             if font.is_null() {
                 (0, 0, 0)
             } else {
-                ((self.api.FPDFFont_GetFamilyName)(font, name.as_mut_ptr().cast(), name.len()), (self.api.FPDFFont_GetFlags)(font), (self.api.FPDFFont_GetWeight)(font))
+                (
+                    (self.api.FPDFFont_GetFamilyName)(font, name.as_mut_ptr().cast(), name.len()),
+                    (self.api.FPDFFont_GetFlags)(font),
+                    (self.api.FPDFFont_GetWeight)(font),
+                )
             }
         };
         let name = if len > 0 && len <= name.len() { &name[..len - 1] } else { &[][..] };
@@ -1118,7 +1258,12 @@ impl Walk {
         } else {
             1
         };
-        let facts = FontFacts { family, bold: flags & FONT_FORCE_BOLD != 0 || weight >= 600, italic: flags & FONT_ITALIC != 0, generic };
+        let facts = FontFacts {
+            family,
+            bold: flags & FONT_FORCE_BOLD != 0 || weight >= 600,
+            italic: flags & FONT_ITALIC != 0,
+            generic,
+        };
         if self.fonts.len() < 4096 {
             self.fonts.insert(font as usize, facts.clone());
         }
@@ -1134,7 +1279,14 @@ impl Walk {
         // SAFETY: the font is live with its page, and the glyph path it hands back stays its own.
         let (glyph, count) = unsafe {
             let glyph = (self.api.FPDFFont_GetGlyphPath)(font, code, size);
-            (glyph, if glyph.is_null() { -1 } else { (self.api.FPDFGlyphPath_CountGlyphSegments)(glyph) })
+            (
+                glyph,
+                if glyph.is_null() {
+                    -1
+                } else {
+                    (self.api.FPDFGlyphPath_CountGlyphSegments)(glyph)
+                },
+            )
         };
         if count >= 0 && count as u32 <= MAX_PATH_SEGMENTS && self.next_glyph <= MAX_GLYPHS {
             let start = out.len();
@@ -1168,7 +1320,14 @@ impl Walk {
         // SAFETY: as above.
         let (glyph, count) = unsafe {
             let glyph = (self.api.FPDFFont_GetGlyphPath)(font, code, size);
-            (glyph, if glyph.is_null() { 0 } else { (self.api.FPDFGlyphPath_CountGlyphSegments)(glyph) })
+            (
+                glyph,
+                if glyph.is_null() {
+                    0
+                } else {
+                    (self.api.FPDFGlyphPath_CountGlyphSegments)(glyph)
+                },
+            )
         };
         let mut bounds: Option<GlyphBounds> = None;
         for index in 0..count.max(0) {
@@ -1213,7 +1372,14 @@ impl Walk {
             at += 1;
             let (mut x, mut y) = (0.0f64, 0.0f64);
             // SAFETY: the text page is live, and the index came from its count.
-            let (mut code, generated, hyphen, has_origin) = unsafe { ((self.api.FPDFText_GetUnicode)(self.text_page, index), (self.api.FPDFText_IsGenerated)(self.text_page, index), (self.api.FPDFText_IsHyphen)(self.text_page, index), (self.api.FPDFText_GetCharOrigin)(self.text_page, index, &raw mut x, &raw mut y)) };
+            let (mut code, generated, hyphen, has_origin) = unsafe {
+                (
+                    (self.api.FPDFText_GetUnicode)(self.text_page, index),
+                    (self.api.FPDFText_IsGenerated)(self.text_page, index),
+                    (self.api.FPDFText_IsHyphen)(self.text_page, index),
+                    (self.api.FPDFText_GetCharOrigin)(self.text_page, index, &raw mut x, &raw mut y),
+                )
+            };
             if generated == 1 {
                 // PDFium makes these up where a gap in the text reads as a word break, as a TeX line has between all its words. Nothing draws them, and without them selected text runs together. A line break isn't kept: a run's end is one already.
                 if code == 0x20
@@ -1369,7 +1535,14 @@ impl Walk {
     }
 
     /// Text as text, in a color you can see, with the file's clip and no outlines at all.
-    fn selectable_only(&mut self, object: FPDF_PAGEOBJECT, area: Area, chars: &[(u32, f64, f64, u32)], shown: [u8; 4], out: &mut Vec<u8>) -> Result<(), RenderError> {
+    fn selectable_only(
+        &mut self,
+        object: FPDF_PAGEOBJECT,
+        area: Area,
+        chars: &[(u32, f64, f64, u32)],
+        shown: [u8; 4],
+        out: &mut Vec<u8>,
+    ) -> Result<(), RenderError> {
         if !self.apply_clip_or_patch(object, area, out) {
             return self.text_overlay_only_with(object, chars, out);
         }
@@ -1402,21 +1575,44 @@ impl Walk {
             let bounds = self.glyph_bounds(font, glyph, size);
             let (mut left, mut right, mut bottom, mut top) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
             // SAFETY: the text page is live, the index came from its count, and the out-pointers are live for the call.
-            let has_box = unsafe { (self.api.FPDFText_GetCharBox)(self.text_page, index as c_int, &raw mut left, &raw mut right, &raw mut bottom, &raw mut top) } != 0;
+            let has_box =
+                unsafe { (self.api.FPDFText_GetCharBox)(self.text_page, index as c_int, &raw mut left, &raw mut right, &raw mut bottom, &raw mut top) } != 0;
             let box_has_area = has_box && right - left > 0.0 && top - bottom > 0.0;
             match bounds {
                 Some((em_left, em_bottom, em_right, em_top)) => {
                     if axis_aligned && box_has_area {
-                        let unit = Area { left: em_left * 1000.0 + local_x, bottom: em_bottom * 1000.0 + local_y, right: em_right * 1000.0 + local_x, top: em_top * 1000.0 + local_y }.through(&run.0);
+                        let unit = Area {
+                            left: em_left * 1000.0 + local_x,
+                            bottom: em_bottom * 1000.0 + local_y,
+                            right: em_right * 1000.0 + local_x,
+                            top: em_top * 1000.0 + local_y,
+                        }
+                        .through(&run.0);
                         let tolerance = BOX_TOLERANCE_EM * em;
-                        if (unit.left - left).abs() > tolerance || (unit.right - right).abs() > tolerance || (unit.bottom - bottom).abs() > tolerance || (unit.top - top).abs() > tolerance {
+                        if (unit.left - left).abs() > tolerance
+                            || (unit.right - right).abs() > tolerance
+                            || (unit.bottom - bottom).abs() > tolerance
+                            || (unit.top - top).abs() > tolerance
+                        {
                             return None;
                         }
                     }
                     plan.push((glyph, local_x as f32, local_y as f32));
                 }
                 // Something with a real box and no outline would be lost. A space has neither, but a code that reads as a space may not be one: TeX's big brackets are at 0x20 and its bars at 0x0C.
-                None if box_has_area && (!char::from_u32(code).is_some_and(char::is_whitespace) || marks_the_page(right - left, top - bottom, em, (run.0[0], run.0[1]), axis_aligned, self.advance_of(font, glyph, size, em))) => return None,
+                None if box_has_area
+                    && (!char::from_u32(code).is_some_and(char::is_whitespace)
+                        || marks_the_page(
+                            right - left,
+                            top - bottom,
+                            em,
+                            (run.0[0], run.0[1]),
+                            axis_aligned,
+                            self.advance_of(font, glyph, size, em),
+                        )) =>
+                {
+                    return None;
+                }
                 None => {}
             }
             at += used;
@@ -1438,14 +1634,27 @@ impl Walk {
         let Some(rect) = self.device_rect(area) else { return (false, false) };
         let long = f64::from(rect.width.max(rect.height));
         let shrink = (PROBE_EDGE / long).min(1.0);
-        let (full_w, full_h) = ((f64::from(self.full_px.0) * shrink).ceil().max(1.0), (f64::from(self.full_px.1) * shrink).ceil().max(1.0));
+        let (full_w, full_h) = (
+            (f64::from(self.full_px.0) * shrink).ceil().max(1.0),
+            (f64::from(self.full_px.1) * shrink).ceil().max(1.0),
+        );
         let (x, y) = ((f64::from(rect.x) * shrink).floor(), (f64::from(rect.y) * shrink).floor());
         let width = (f64::from(rect.width) * shrink).ceil().max(1.0) as c_int + 1;
         let height = (f64::from(rect.height) * shrink).ceil().max(1.0) as c_int + 1;
         let stride = width * 4;
         let mut pixels = vec![0u8; stride as usize * height as usize];
         self.isolate(object);
-        let drawn = self.draw_into(&mut pixels, width, height, stride, (-(x as c_int), -(y as c_int)), (full_w as c_int, full_h as c_int), FORMAT_BGRA, 0, false);
+        let drawn = self.draw_into(
+            &mut pixels,
+            width,
+            height,
+            stride,
+            (-(x as c_int), -(y as c_int)),
+            (full_w as c_int, full_h as c_int),
+            FORMAT_BGRA,
+            0,
+            false,
+        );
         self.release(object);
         if !drawn {
             // It didn't draw, so nothing's known. Taking it as drawing plain keeps it as it is.
@@ -1468,7 +1677,9 @@ impl Walk {
 
     /// Whether an object is in layers that are on. PDFium has no call that says, so each layer's mark is put on a plain box that always draws, and the box is drawn alone: PDFium itself decides. Nothing about the object can sway that, so an OCR layer's invisible text doesn't condemn its layer. A layer is known by its name where the document's names are all different, and otherwise by its mark, which is never wrong and only takes more looks.
     fn layer_shows(&mut self, object: FPDF_PAGEOBJECT, area: Area, kind: c_int) -> Shows {
-        let Some(marks) = self.layer_marks_of(object) else { return Shows::NotLookedUp };
+        let Some(marks) = self.layer_marks_of(object) else {
+            return Shows::NotLookedUp;
+        };
         for (mark, key) in marks {
             let on = match self.layers.get(&key) {
                 Some(on) => Some(*on),
@@ -1509,11 +1720,22 @@ impl Walk {
     fn mark_draws(&mut self, mark: FPDF_PAGEOBJECTMARK) -> Option<bool> {
         self.probes += 1;
         self.isolate_nothing();
-        let whole = Area { left: 0.0, bottom: 0.0, right: self.page_w, top: self.page_h }.through(&self.undisplay);
+        let whole = Area {
+            left: 0.0,
+            bottom: 0.0,
+            right: self.page_w,
+            top: self.page_h,
+        }
+        .through(&self.undisplay);
         let mut pixels = [0u8; 16 * 16 * 4];
         // SAFETY: the page and mark are live, the new box is ours until `InsertObject` hands it to the page and `RemoveObject` hands it back, and then it's destroyed here.
         unsafe {
-            let probe = (self.api.FPDFPageObj_CreateNewRect)(whole.left as f32, whole.bottom as f32, (whole.right - whole.left) as f32, (whole.top - whole.bottom) as f32);
+            let probe = (self.api.FPDFPageObj_CreateNewRect)(
+                whole.left as f32,
+                whole.bottom as f32,
+                (whole.right - whole.left) as f32,
+                (whole.top - whole.bottom) as f32,
+            );
             if probe.is_null() {
                 return None;
             }
@@ -1559,8 +1781,23 @@ impl Walk {
                 }
                 let mut layer = [0u16; 128];
                 let mut layer_len: c_ulong = 0;
-                let named = names_are_unique && (self.api.FPDFPageObjMark_GetParamStringValue)(mark, c"Name".as_ptr(), layer.as_mut_ptr(), (layer.len() * 2) as c_ulong, &raw mut layer_len) != 0 && layer_len as usize <= layer.len() * 2;
-                found.push((mark, if named { LayerKey::Name(layer[..layer_len as usize / 2].into()) } else { LayerKey::Mark(mark as usize) }));
+                let named = names_are_unique
+                    && (self.api.FPDFPageObjMark_GetParamStringValue)(
+                        mark,
+                        c"Name".as_ptr(),
+                        layer.as_mut_ptr(),
+                        (layer.len() * 2) as c_ulong,
+                        &raw mut layer_len,
+                    ) != 0
+                    && layer_len as usize <= layer.len() * 2;
+                found.push((
+                    mark,
+                    if named {
+                        LayerKey::Name(layer[..layer_len as usize / 2].into())
+                    } else {
+                        LayerKey::Mark(mark as usize)
+                    },
+                ));
             }
         }
         Some(found)
@@ -1626,7 +1863,8 @@ impl Walk {
         // A whole page keeps a whole image, even past the page's edge, as a bleed goes. Only a box asks for less.
         let inside = !self.partial || area.inside(self.view);
         let mut said_why = false;
-        let mask_comes_apart = !masked || (!stencil && self.job.hints & hints::MASK_NOT_SEPARABLE == 0 && u64::from(width) * u64::from(height) * 4 <= MAX_MASKED_BYTES);
+        let mask_comes_apart =
+            !masked || (!stencil && self.job.hints & hints::MASK_NOT_SEPARABLE == 0 && u64::from(width) * u64::from(height) * 4 <= MAX_MASKED_BYTES);
         if mask_comes_apart
             && inside
             && let Some(meaning) = self.jpeg_meaning(object, &metadata)
@@ -1645,8 +1883,16 @@ impl Walk {
                 let facts = scan.facts();
                 let has_own = facts.color_profiles > 0 || facts.foreign_profile;
                 let fix = match &meaning {
-                    PageColour::Plain => HeaderFix { upright: facts.is_turned(), drop_profile: facts.foreign_profile, add_profile: None },
-                    PageColour::Profile(profile) => HeaderFix { upright: facts.is_turned(), drop_profile: has_own, add_profile: Some(profile) },
+                    PageColour::Plain => HeaderFix {
+                        upright: facts.is_turned(),
+                        drop_profile: facts.foreign_profile,
+                        add_profile: None,
+                    },
+                    PageColour::Profile(profile) => HeaderFix {
+                        upright: facts.is_turned(),
+                        drop_profile: has_own,
+                        add_profile: Some(profile),
+                    },
                 };
                 let fits = !matches!(meaning, PageColour::Profile(_)) || frame_components(&data) == Some(3);
                 let is_changing = fix.upright || fix.drop_profile || fix.add_profile.is_some();
@@ -1662,7 +1908,16 @@ impl Walk {
                     if masked {
                         if let Some(mask) = self.alpha_of(object, &own, width, height) {
                             self.say_fix(&fix, has_own, is_changing);
-                            put::image_begin(out, ImageCoding::Pixels { channels: 1 }, Why::JpegMask, 255, width, height, mask.len() as u64, &wire);
+                            put::image_begin(
+                                out,
+                                ImageCoding::Pixels { channels: 1 },
+                                Why::JpegMask,
+                                255,
+                                width,
+                                height,
+                                mask.len() as u64,
+                                &wire,
+                            );
                             self.pending = Some(Pending::Bytes { data: mask, at: 0 });
                             // A mask is drawn with the image's opacity in it, which must count once.
                             self.after_mask = Some(MaskedJpeg { data, width, height, wire });
@@ -1670,7 +1925,16 @@ impl Walk {
                         }
                     } else {
                         self.say_fix(&fix, has_own, is_changing);
-                        put::image_begin(out, ImageCoding::Jpeg, if is_changing { Why::JpegHeaderFixed } else { Why::Image }, alpha, width, height, data.len() as u64, &wire);
+                        put::image_begin(
+                            out,
+                            ImageCoding::Jpeg,
+                            if is_changing { Why::JpegHeaderFixed } else { Why::Image },
+                            alpha,
+                            width,
+                            height,
+                            data.len() as u64,
+                            &wire,
+                        );
                         self.pending = Some(Pending::Bytes { data, at: 0 });
                         return Ok(());
                     }
@@ -1698,7 +1962,14 @@ impl Walk {
             return Ok(());
         }
         // SAFETY: the bitmap was just checked to be live.
-        let (format, real_w, real_h, stride) = unsafe { ((self.api.FPDFBitmap_GetFormat)(bitmap), (self.api.FPDFBitmap_GetWidth)(bitmap), (self.api.FPDFBitmap_GetHeight)(bitmap), (self.api.FPDFBitmap_GetStride)(bitmap)) };
+        let (format, real_w, real_h, stride) = unsafe {
+            (
+                (self.api.FPDFBitmap_GetFormat)(bitmap),
+                (self.api.FPDFBitmap_GetWidth)(bitmap),
+                (self.api.FPDFBitmap_GetHeight)(bitmap),
+                (self.api.FPDFBitmap_GetStride)(bitmap),
+            )
+        };
         let channels = match format {
             FORMAT_GRAY => 1,
             FORMAT_BGR | FORMAT_BGRX => 3,
@@ -1716,7 +1987,11 @@ impl Walk {
             self.patch(object, area, Why::ImageUnreadable, PatchKind::Alone, out);
             return Ok(());
         }
-        let (crop, placed) = if self.partial { crop_to(real_w, real_h, &matrix, self.view) } else { ((0, 0, real_w, real_h), matrix) };
+        let (crop, placed) = if self.partial {
+            crop_to(real_w, real_h, &matrix, self.view)
+        } else {
+            ((0, 0, real_w, real_h), matrix)
+        };
         let Some(wire) = to_f32(&placed) else {
             // SAFETY: as above.
             unsafe { (self.api.FPDFBitmap_Destroy)(bitmap) };
@@ -1726,8 +2001,24 @@ impl Walk {
         let opacity = if masked { 255 } else { alpha };
         // Drawn to apply its mask, it's not byte for byte, and a mask finer than the image is resampled, so it's told apart.
         let why = if masked { Why::ImageWithMask } else { Why::Image };
-        put::image_begin(out, ImageCoding::Pixels { channels }, why, opacity, crop.2, crop.3, u64::from(crop.2) * u64::from(crop.3) * u64::from(channels), &wire);
-        self.pending = Some(Pending::Bitmap { bitmap, format, stride, crop, channels, y: 0 });
+        put::image_begin(
+            out,
+            ImageCoding::Pixels { channels },
+            why,
+            opacity,
+            crop.2,
+            crop.3,
+            u64::from(crop.2) * u64::from(crop.3) * u64::from(channels),
+            &wire,
+        );
+        self.pending = Some(Pending::Bitmap {
+            bitmap,
+            format,
+            stride,
+            crop,
+            channels,
+            y: 0,
+        });
         Ok(())
     }
 
@@ -1755,7 +2046,12 @@ impl Walk {
         }
         // SAFETY: the bitmap was just checked to be live, its buffer holds its stride times its height, and it's freed here.
         unsafe {
-            let (w, h, stride, format) = ((self.api.FPDFBitmap_GetWidth)(bitmap), (self.api.FPDFBitmap_GetHeight)(bitmap), (self.api.FPDFBitmap_GetStride)(bitmap), (self.api.FPDFBitmap_GetFormat)(bitmap));
+            let (w, h, stride, format) = (
+                (self.api.FPDFBitmap_GetWidth)(bitmap),
+                (self.api.FPDFBitmap_GetHeight)(bitmap),
+                (self.api.FPDFBitmap_GetStride)(bitmap),
+                (self.api.FPDFBitmap_GetFormat)(bitmap),
+            );
             let buffer = (self.api.FPDFBitmap_GetBuffer)(bitmap).cast::<u8>();
             let mut alpha = None;
             if format == FORMAT_BGRA && !buffer.is_null() && i64::from(w) == i64::from(width) && i64::from(h) == i64::from(height) && stride >= w * 4 {
@@ -1780,7 +2076,12 @@ impl Walk {
         }
         // SAFETY: the bitmap was just checked to be live, its buffer holds its stride times its height, and it's freed here.
         unsafe {
-            let (w, h, stride, format) = ((self.api.FPDFBitmap_GetWidth)(bitmap), (self.api.FPDFBitmap_GetHeight)(bitmap), (self.api.FPDFBitmap_GetStride)(bitmap), (self.api.FPDFBitmap_GetFormat)(bitmap));
+            let (w, h, stride, format) = (
+                (self.api.FPDFBitmap_GetWidth)(bitmap),
+                (self.api.FPDFBitmap_GetHeight)(bitmap),
+                (self.api.FPDFBitmap_GetStride)(bitmap),
+                (self.api.FPDFBitmap_GetFormat)(bitmap),
+            );
             let buffer = (self.api.FPDFBitmap_GetBuffer)(bitmap).cast::<u8>();
             let mut masked = false;
             if format == FORMAT_BGRA && !buffer.is_null() && w > 0 && h > 0 && stride >= w * 4 {
@@ -1803,8 +2104,22 @@ impl Walk {
     ///
     /// `FPDFImageObj_GetRenderedBitmap` also obeys the object's clip, in coordinates that mean nothing once the image is laid flat, and there's no call that takes a clip off. So the clip is blown up around a point inside it, until it covers the flat image, and put back after. A clip with no point that can be found inside it gives no bitmap, and the caller uses a picture.
     fn rendered_image(&mut self, object: FPDF_PAGEOBJECT, own: &M, width: u32, height: u32) -> FPDF_BITMAP {
-        let flat = FS_MATRIX { a: width as f32, b: 0.0, c: 0.0, d: height as f32, e: 0.0, f: 0.0 };
-        let back = FS_MATRIX { a: own[0] as f32, b: own[1] as f32, c: own[2] as f32, d: own[3] as f32, e: own[4] as f32, f: own[5] as f32 };
+        let flat = FS_MATRIX {
+            a: width as f32,
+            b: 0.0,
+            c: 0.0,
+            d: height as f32,
+            e: 0.0,
+            f: 0.0,
+        };
+        let back = FS_MATRIX {
+            a: own[0] as f32,
+            b: own[1] as f32,
+            c: own[2] as f32,
+            d: own[3] as f32,
+            e: own[4] as f32,
+            f: own[5] as f32,
+        };
         // SAFETY: the object is live with its page, and so is its clip.
         let clip = unsafe { (self.api.FPDFPageObj_GetClipPath)(object) };
         let paths = if clip.is_null() {
@@ -1814,14 +2129,27 @@ impl Walk {
             unsafe { (self.api.FPDFClipPath_CountPaths)(clip) }.max(0)
         };
         let moved = if paths > 0 {
-            let Some((x, y, margin, reach)) = self.point_inside_clip(clip, paths) else { return std::ptr::null_mut() };
+            let Some((x, y, margin, reach)) = self.point_inside_clip(clip, paths) else {
+                return std::ptr::null_mut();
+            };
             // PDFium takes the clip through where the file placed the image, whatever matrix it has now, so that's what it has to cover. Pixels then stand this far apart.
             let (mid_x, mid_y) = apply(own, 0.5, 0.5);
-            let corner = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].iter().map(|&(u, v)| { let (px, py) = apply(own, u, v); (px - mid_x).hypot(py - mid_y) }).fold(0.0, f64::max);
+            let corner = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+                .iter()
+                .map(|&(u, v)| {
+                    let (px, py) = apply(own, u, v);
+                    (px - mid_x).hypot(py - mid_y)
+                })
+                .fold(0.0, f64::max);
             let side = own[0].hypot(own[1]).min(own[2].hypot(own[3]));
             let pixels = f64::from(width.max(height)) / side;
-            let Some(scale) = clip_blow_up(margin, reach, corner, pixels) else { return std::ptr::null_mut() };
-            Some(([scale, 0.0, 0.0, scale, mid_x - scale * x, mid_y - scale * y], [1.0 / scale, 0.0, 0.0, 1.0 / scale, x - mid_x / scale, y - mid_y / scale]))
+            let Some(scale) = clip_blow_up(margin, reach, corner, pixels) else {
+                return std::ptr::null_mut();
+            };
+            Some((
+                [scale, 0.0, 0.0, scale, mid_x - scale * x, mid_y - scale * y],
+                [1.0 / scale, 0.0, 0.0, 1.0 / scale, x - mid_x / scale, y - mid_y / scale],
+            ))
         } else {
             None
         };
@@ -1911,7 +2239,12 @@ impl Walk {
     fn is_dct(&self, object: FPDF_PAGEOBJECT) -> bool {
         let mut name = [0u8; 16];
         // SAFETY: the object is live with its page, and `name` holds as many as is passed.
-        let (count, len) = unsafe { ((self.api.FPDFImageObj_GetImageFilterCount)(object), (self.api.FPDFImageObj_GetImageFilter)(object, 0, name.as_mut_ptr().cast(), name.len() as c_ulong)) };
+        let (count, len) = unsafe {
+            (
+                (self.api.FPDFImageObj_GetImageFilterCount)(object),
+                (self.api.FPDFImageObj_GetImageFilter)(object, 0, name.as_mut_ptr().cast(), name.len() as c_ulong),
+            )
+        };
         count == 1 && len as usize <= name.len() && name.starts_with(b"DCTDecode\0")
     }
 
@@ -1919,12 +2252,14 @@ impl Walk {
         let mut len = 0usize;
         // SAFETY: the object and page are live, and the second call's buffer holds what the first said, up to a limit no real profile comes near.
         unsafe {
-            if (self.api.FPDFImageObj_GetIccProfileDataDecoded)(object, self.page_handle, std::ptr::null_mut(), 0, &raw mut len) == 0 || len > MAX_PROFILE_BYTES {
+            if (self.api.FPDFImageObj_GetIccProfileDataDecoded)(object, self.page_handle, std::ptr::null_mut(), 0, &raw mut len) == 0 || len > MAX_PROFILE_BYTES
+            {
                 return None;
             }
             let mut profile = vec![0u8; len];
             let mut got = 0usize;
-            ((self.api.FPDFImageObj_GetIccProfileDataDecoded)(object, self.page_handle, profile.as_mut_ptr(), len, &raw mut got) != 0 && got == len).then_some(profile)
+            ((self.api.FPDFImageObj_GetIccProfileDataDecoded)(object, self.page_handle, profile.as_mut_ptr(), len, &raw mut got) != 0 && got == len)
+                .then_some(profile)
         }
     }
 
@@ -2001,7 +2336,11 @@ impl Walk {
         unsafe {
             for level in &self.levels {
                 for index in level.next..level.count {
-                    let later = if level.form.is_null() { (self.api.FPDFPage_GetObject)(self.page_handle, index) } else { (self.api.FPDFFormObj_GetObject)(level.form, index as c_ulong) };
+                    let later = if level.form.is_null() {
+                        (self.api.FPDFPage_GetObject)(self.page_handle, index)
+                    } else {
+                        (self.api.FPDFFormObj_GetObject)(level.form, index as c_ulong)
+                    };
                     (self.api.FPDFPageObj_SetIsActive)(later, 0);
                 }
             }
@@ -2022,7 +2361,12 @@ impl Walk {
         if !(right > left && bottom > top) {
             return None;
         }
-        Some(TileRect { x: left as u32, y: top as u32, width: (right - left) as u32, height: (bottom - top) as u32 })
+        Some(TileRect {
+            x: left as u32,
+            y: top as u32,
+            width: (right - left) as u32,
+            height: (bottom - top) as u32,
+        })
     }
 
     /// Where pixels of the job's scale sit, as an image's matrix in page coordinates.
@@ -2114,13 +2458,50 @@ impl Walk {
     /// Sets a picture on its way. It's only said once its first strip is drawn, because what turns out to draw nothing isn't said at all.
     fn begin_patch(&mut self, kind: PatchKind, why: Why, rect: TileRect, object: FPDF_PAGEOBJECT) {
         let channels: u8 = if matches!(kind, PatchKind::Whole | PatchKind::OverBackdrop) { 3 } else { 4 };
-        self.pending = Some(Pending::Patch { kind, why, rect, full: self.full_px, channels, y: 0, strip: Vec::new(), strip_top: 0, strip_rows: 0, stride: rect.width as usize * 4, object, begun: false });
+        self.pending = Some(Pending::Patch {
+            kind,
+            why,
+            rect,
+            full: self.full_px,
+            channels,
+            y: 0,
+            strip: Vec::new(),
+            strip_top: 0,
+            strip_rows: 0,
+            stride: rect.width as usize * 4,
+            object,
+            begun: false,
+        });
     }
 
     /// Draws onto `pixels`.
     #[allow(clippy::too_many_arguments)]
-    fn draw_into(&self, pixels: &mut [u8], width: c_int, height: c_int, stride: c_int, at: (c_int, c_int), full: (c_int, c_int), format: c_int, paper: c_ulong, annots: bool) -> bool {
-        draw_plain(self.api, self.page_handle, std::ptr::null_mut(), pixels, width, height, stride, at, full, format, paper, annots)
+    fn draw_into(
+        &self,
+        pixels: &mut [u8],
+        width: c_int,
+        height: c_int,
+        stride: c_int,
+        at: (c_int, c_int),
+        full: (c_int, c_int),
+        format: c_int,
+        paper: c_ulong,
+        annots: bool,
+    ) -> bool {
+        draw_plain(
+            self.api,
+            self.page_handle,
+            std::ptr::null_mut(),
+            pixels,
+            width,
+            height,
+            stride,
+            at,
+            full,
+            format,
+            paper,
+            annots,
+        )
     }
 
     /// Sends what's pending, as much as fits. On finishing, it ends the image.
@@ -2136,7 +2517,14 @@ impl Walk {
                 *at += take;
                 *at == data.len()
             }
-            Pending::Bitmap { bitmap, format, stride, crop, channels, y } => {
+            Pending::Bitmap {
+                bitmap,
+                format,
+                stride,
+                crop,
+                channels,
+                y,
+            } => {
                 let (x0, y0, width, height) = *crop;
                 let row_len = width as usize * usize::from(*channels);
                 let rows = (room / row_len).max(1) as u32;
@@ -2185,7 +2573,20 @@ impl Walk {
                 }
                 done
             }
-            Pending::Patch { kind, why, rect, full, channels, y, strip, strip_top, strip_rows, stride, object, begun } => {
+            Pending::Patch {
+                kind,
+                why,
+                rect,
+                full,
+                channels,
+                y,
+                strip,
+                strip_top,
+                strip_rows,
+                stride,
+                object,
+                begun,
+            } => {
                 let in_strip = *y >= *strip_top && *y < *strip_top + *strip_rows;
                 if !in_strip {
                     let rows = (STRIP_BYTES / *stride as u64).clamp(1, u64::from(rect.height)) as u32;
@@ -2208,14 +2609,29 @@ impl Walk {
                         self.pending = Some(pending);
                         return Ok(());
                     }
-                    let drawn = draw_plain(self.api, self.page_handle, form_handle, strip, width, rows as c_int, *stride as c_int, at, *full, format, paper, annots);
+                    let drawn = draw_plain(
+                        self.api,
+                        self.page_handle,
+                        form_handle,
+                        strip,
+                        width,
+                        rows as c_int,
+                        *stride as c_int,
+                        at,
+                        *full,
+                        format,
+                        paper,
+                        annots,
+                    );
                     if !drawn {
                         return Err(FailCode::Internal);
                     }
                     *strip_top = *y;
                     *strip_rows = rows;
                     if !*begun {
-                        let blank = rows == rect.height && matches!(kind, PatchKind::Alone | PatchKind::Annotations) && strip.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 0);
+                        let blank = rows == rect.height
+                            && matches!(kind, PatchKind::Alone | PatchKind::Annotations)
+                            && strip.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 0);
                         let placed = self.placement(*rect);
                         let (Some(matrix), false) = (placed, blank) else {
                             if *kind == PatchKind::Alone {
@@ -2224,7 +2640,16 @@ impl Walk {
                             }
                             return Ok(());
                         };
-                        put::image_begin(out, ImageCoding::Pixels { channels: *channels }, *why, 255, rect.width, rect.height, u64::from(rect.width) * u64::from(rect.height) * u64::from(*channels), &matrix);
+                        put::image_begin(
+                            out,
+                            ImageCoding::Pixels { channels: *channels },
+                            *why,
+                            255,
+                            rect.width,
+                            rect.height,
+                            u64::from(rect.width) * u64::from(rect.height) * u64::from(*channels),
+                            &matrix,
+                        );
                         *begun = true;
                     }
                 }
@@ -2233,7 +2658,9 @@ impl Walk {
                 let mark = put::image_bytes_begin(out);
                 for row in 0..rows {
                     let start = (*y + row - *strip_top) as usize * *stride;
-                    let Some(line) = strip.get(start..start + *stride) else { return Err(FailCode::Internal) };
+                    let Some(line) = strip.get(start..start + *stride) else {
+                        return Err(FailCode::Internal);
+                    };
                     for pixel in line.as_chunks::<4>().0 {
                         out.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
                         if *channels == 4 {
@@ -2258,9 +2685,7 @@ impl Walk {
         }
         Ok(())
     }
-
 }
-
 
 /// Whether a character with no outline and a space's code draws anything anyway, going by its box on the page. A real space's box is a line along the text, as long as the space is wide. Across or up the page that's plain to see. At an angle the box holds that line corner to corner, so it has to fit the line's own shape and be no longer than the space.
 fn marks_the_page(width: f64, height: f64, em: f64, along: (f64, f64), axis_aligned: bool, advance: Option<f64>) -> bool {
@@ -2297,7 +2722,12 @@ fn clip_blow_up(margin: f64, reach: f64, corner: f64, pixels: f64) -> Option<f64
 
 /// The area of some points on the page.
 fn points_area(points: &[(u8, f32, f32)], matrix: &M) -> Area {
-    let mut area = Area { left: f64::INFINITY, bottom: f64::INFINITY, right: f64::NEG_INFINITY, top: f64::NEG_INFINITY };
+    let mut area = Area {
+        left: f64::INFINITY,
+        bottom: f64::INFINITY,
+        right: f64::NEG_INFINITY,
+        top: f64::NEG_INFINITY,
+    };
     for &(_, x, y) in points {
         let (x, y) = apply(matrix, f64::from(x), f64::from(y));
         area.left = area.left.min(x);
@@ -2387,7 +2817,11 @@ fn distance_to_outline(outline: &[(f64, f64)], x: f64, y: f64) -> f64 {
     for &point in outline {
         let (dx, dy) = (point.0 - previous.0, point.1 - previous.1);
         let length = dx * dx + dy * dy;
-        let t = if length > 0.0 { (((x - previous.0) * dx + (y - previous.1) * dy) / length).clamp(0.0, 1.0) } else { 0.0 };
+        let t = if length > 0.0 {
+            (((x - previous.0) * dx + (y - previous.1) * dy) / length).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         nearest = nearest.min((x - previous.0 - t * dx).hypot(y - previous.1 - t * dy));
         previous = point;
     }
@@ -2417,8 +2851,14 @@ fn crop_to(width: u32, height: u32, matrix: &M, view: Area) -> ((u32, u32, u32, 
     }
     let to_x = |x: f64| (x - matrix[4]) / matrix[0];
     let to_y = |y: f64| (y - matrix[5]) / matrix[3];
-    let (u0, u1) = (to_x(view.left).min(to_x(view.right)).clamp(0.0, 1.0), to_x(view.left).max(to_x(view.right)).clamp(0.0, 1.0));
-    let (v0, v1) = (to_y(view.bottom).min(to_y(view.top)).clamp(0.0, 1.0), to_y(view.bottom).max(to_y(view.top)).clamp(0.0, 1.0));
+    let (u0, u1) = (
+        to_x(view.left).min(to_x(view.right)).clamp(0.0, 1.0),
+        to_x(view.left).max(to_x(view.right)).clamp(0.0, 1.0),
+    );
+    let (v0, v1) = (
+        to_y(view.bottom).min(to_y(view.top)).clamp(0.0, 1.0),
+        to_y(view.bottom).max(to_y(view.top)).clamp(0.0, 1.0),
+    );
     // At least one pixel, whichever edge of the image the box only touches.
     let left = ((u0 * f64::from(width)).floor() as u32).min(width - 1);
     let right = ((u1 * f64::from(width)).ceil() as u32).clamp(left + 1, width);
@@ -2432,7 +2872,14 @@ fn crop_to(width: u32, height: u32, matrix: &M, view: Area) -> ((u32, u32, u32, 
     let (u_low, u_step) = (f64::from(left) / f64::from(width), f64::from(cut_w) / f64::from(width));
     let v_low = 1.0 - f64::from(bottom) / f64::from(height);
     let v_step = f64::from(cut_h) / f64::from(height);
-    let placed = [matrix[0] * u_step, 0.0, 0.0, matrix[3] * v_step, matrix[4] + matrix[0] * u_low, matrix[5] + matrix[3] * v_low];
+    let placed = [
+        matrix[0] * u_step,
+        0.0,
+        0.0,
+        matrix[3] * v_step,
+        matrix[4] + matrix[0] * u_low,
+        matrix[5] + matrix[3] * v_low,
+    ];
     ((left, top, cut_w, cut_h), placed)
 }
 
@@ -2445,14 +2892,33 @@ mod tests {
     fn a_cut_image_stands_where_that_part_was() {
         // 100 by 200 pixels, over 10 by 20 points at (5, 7): a pixel is a tenth of a point.
         let matrix = [10.0, 0.0, 0.0, 20.0, 5.0, 7.0];
-        let view = Area { left: 7.0, bottom: 10.0, right: 9.0, top: 20.0 };
+        let view = Area {
+            left: 7.0,
+            bottom: 10.0,
+            right: 9.0,
+            top: 20.0,
+        };
         let ((x, y, w, h), placed) = crop_to(100, 200, &matrix, view);
         assert_eq!((x, w), (20, 20));
         assert_eq!((y, h), (70, 100));
         assert!((placed[0] - 2.0).abs() < 1e-9 && (placed[4] - 7.0).abs() < 1e-9, "{placed:?}");
         assert!((placed[3] - 10.0).abs() < 1e-9 && (placed[5] - 10.0).abs() < 1e-9, "{placed:?}");
         // All of it, or a turned one: nothing's cut.
-        assert_eq!(crop_to(100, 200, &matrix, Area { left: 0.0, bottom: 0.0, right: 100.0, top: 100.0 }).0, (0, 0, 100, 200));
+        assert_eq!(
+            crop_to(
+                100,
+                200,
+                &matrix,
+                Area {
+                    left: 0.0,
+                    bottom: 0.0,
+                    right: 100.0,
+                    top: 100.0
+                }
+            )
+            .0,
+            (0, 0, 100, 200)
+        );
         assert_eq!(crop_to(100, 200, &[0.0, 10.0, -20.0, 0.0, 5.0, 7.0], view).0, (0, 0, 100, 200));
     }
 
@@ -2461,11 +2927,36 @@ mod tests {
     fn a_box_touching_any_edge_of_an_image_cuts_something_real() {
         let matrix = [10.0, 0.0, 0.0, 20.0, 5.0, 7.0];
         for view in [
-            Area { left: 15.0, bottom: 10.0, right: 20.0, top: 20.0 },
-            Area { left: 0.0, bottom: 10.0, right: 5.0, top: 20.0 },
-            Area { left: 7.0, bottom: 27.0, right: 9.0, top: 30.0 },
-            Area { left: 7.0, bottom: 0.0, right: 9.0, top: 7.0 },
-            Area { left: 15.0, bottom: 27.0, right: 20.0, top: 30.0 },
+            Area {
+                left: 15.0,
+                bottom: 10.0,
+                right: 20.0,
+                top: 20.0,
+            },
+            Area {
+                left: 0.0,
+                bottom: 10.0,
+                right: 5.0,
+                top: 20.0,
+            },
+            Area {
+                left: 7.0,
+                bottom: 27.0,
+                right: 9.0,
+                top: 30.0,
+            },
+            Area {
+                left: 7.0,
+                bottom: 0.0,
+                right: 9.0,
+                top: 7.0,
+            },
+            Area {
+                left: 15.0,
+                bottom: 27.0,
+                right: 20.0,
+                top: 30.0,
+            },
         ] {
             let ((x, y, w, h), _) = crop_to(100, 200, &matrix, view);
             assert!(w >= 1 && h >= 1 && x + w <= 100 && y + h <= 200, "{view:?}: {x} {y} {w} {h}");
@@ -2476,12 +2967,26 @@ mod tests {
     #[test]
     fn each_rotation_takes_the_page_box_onto_the_document() {
         let bbox = (10.0, 20.0, 110.0, 220.0);
-        for (rotation, page_w, page_h, corner) in [(0, 100.0, 200.0, (10.0, 220.0)), (1, 200.0, 100.0, (10.0, 20.0)), (2, 100.0, 200.0, (110.0, 20.0)), (3, 200.0, 100.0, (110.0, 220.0))] {
+        for (rotation, page_w, page_h, corner) in [
+            (0, 100.0, 200.0, (10.0, 220.0)),
+            (1, 200.0, 100.0, (10.0, 20.0)),
+            (2, 100.0, 200.0, (110.0, 20.0)),
+            (3, 200.0, 100.0, (110.0, 220.0)),
+        ] {
             let m = display_matrix(bbox, rotation, page_w, page_h).unwrap();
             let top_left = apply(&m, corner.0, corner.1);
             assert!(top_left.0.abs() < 1e-9 && top_left.1.abs() < 1e-9, "rotation {rotation}: {top_left:?}");
-            let area = Area { left: 10.0, bottom: 20.0, right: 110.0, top: 220.0 }.through(&m);
-            assert!(area.left.abs() < 1e-9 && (area.right - page_w).abs() < 1e-9 && area.bottom.abs() < 1e-9 && (area.top - page_h).abs() < 1e-9, "rotation {rotation}: {area:?}");
+            let area = Area {
+                left: 10.0,
+                bottom: 20.0,
+                right: 110.0,
+                top: 220.0,
+            }
+            .through(&m);
+            assert!(
+                area.left.abs() < 1e-9 && (area.right - page_w).abs() < 1e-9 && area.bottom.abs() < 1e-9 && (area.top - page_h).abs() < 1e-9,
+                "rotation {rotation}: {area:?}"
+            );
         }
         assert!(display_matrix((0.0, 0.0, 0.0, 10.0), 0, 1.0, 1.0).is_none(), "a box with no area");
     }
@@ -2490,7 +2995,13 @@ mod tests {
     #[test]
     fn only_a_plain_shape_passes_as_plain() {
         let shape = |points: &[(u8, f32, f32)]| is_one_plain_shape(points);
-        let square = [(SEG_MOVE, 0.0, 0.0), (SEG_LINE, 10.0, 0.0), (SEG_LINE, 10.0, 10.0), (SEG_LINE, 0.0, 10.0), (SEG_LINE, 0.0, 0.0)];
+        let square = [
+            (SEG_MOVE, 0.0, 0.0),
+            (SEG_LINE, 10.0, 0.0),
+            (SEG_LINE, 10.0, 10.0),
+            (SEG_LINE, 0.0, 10.0),
+            (SEG_LINE, 0.0, 0.0),
+        ];
         assert!(shape(&square));
         assert!(shape(&[]), "an empty clip covers nothing, by either rule");
         let mut trailing = square.to_vec();
@@ -2499,7 +3010,13 @@ mod tests {
         let mut hole = square.to_vec();
         hole.extend([(SEG_MOVE, 2.0, 2.0), (SEG_LINE, 8.0, 2.0), (SEG_LINE, 8.0, 8.0)]);
         assert!(!shape(&hole), "a second shape");
-        let star = [(SEG_MOVE, 0.0, 0.0), (SEG_LINE, 10.0, 10.0), (SEG_LINE, 10.0, 0.0), (SEG_LINE, 0.0, 10.0), (SEG_LINE, 0.0, 0.0)];
+        let star = [
+            (SEG_MOVE, 0.0, 0.0),
+            (SEG_LINE, 10.0, 10.0),
+            (SEG_LINE, 10.0, 0.0),
+            (SEG_LINE, 0.0, 10.0),
+            (SEG_LINE, 0.0, 0.0),
+        ];
         assert!(!shape(&star), "a shape crossing itself");
     }
 
@@ -2519,7 +3036,10 @@ mod tests {
         assert!(300.0 * scale < MAX_CLIP_REACH, "and stays where it isn't bent");
         assert_eq!(clip_blow_up(500.0, 600.0, 10.0, 1.0), Some(1.0), "a clip already past the image stays as it is");
         assert!(clip_blow_up(0.001, 800.0, 5000.0, 1.0).is_none(), "a sliver over a large image can't");
-        assert!(clip_blow_up(70.0, 300.0, 144.0, 1000.0).is_none(), "nor one that a fine image's pixels would take too far");
+        assert!(
+            clip_blow_up(70.0, 300.0, 144.0, 1000.0).is_none(),
+            "nor one that a fine image's pixels would take too far"
+        );
         assert!(clip_blow_up(0.0, 800.0, 10.0, 1.0).is_none());
         assert!(clip_blow_up(70.0, 300.0, 144.0, f64::INFINITY).is_none(), "an image with no size");
     }
@@ -2541,7 +3061,10 @@ mod tests {
         assert!(!marks_the_page(long, short, em, (0.866, 0.5), false, Some(2.5)), "a space at 30 degrees");
         let fat = (5.2 + 29.9) * std::f64::consts::FRAC_1_SQRT_2;
         assert!(marks_the_page(fat, fat, em, (1.0, 1.0), false, Some(7.9)), "a big bracket at 45 degrees");
-        assert!(marks_the_page(side, side, em, (1.0, 1.0), false, None), "and with no width to go by it isn't taken for a space");
+        assert!(
+            marks_the_page(side, side, em, (1.0, 1.0), false, None),
+            "and with no width to go by it isn't taken for a space"
+        );
     }
 
     /// Failure: a wide-gamut photo reads as sRGB and passes through, so its colours come out wrong, or a real sRGB profile doesn't and every such photo loses its original bytes. Hostile lengths in a profile mustn't panic.

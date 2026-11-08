@@ -101,7 +101,9 @@ pub fn windows_on_screen() -> Option<Vec<ShownWindow>> {
     for index in 0..unsafe { CFArrayGetCount(list) } {
         // SAFETY: as above, with the index in range.
         let dict = unsafe { CFArrayGetValueAtIndex(list, index) };
-        let Some(pid) = number(dict, graphics.owner_pid).and_then(|pid| u32::try_from(pid).ok()) else { continue };
+        let Some(pid) = number(dict, graphics.owner_pid).and_then(|pid| u32::try_from(pid).ok()) else {
+            continue;
+        };
         let mut rect = CgRect::default();
         // SAFETY: a dictionary of the window's, borrowed, or null.
         let bounds = unsafe { CFDictionaryGetValue(dict, graphics.bounds) };
@@ -109,7 +111,11 @@ pub fn windows_on_screen() -> Option<Vec<ShownWindow>> {
             // SAFETY: `bounds` is the window's bounds dictionary, and `rect` is written by the call.
             unsafe { (graphics.rect)(bounds, &raw mut rect) };
         }
-        shown.push(ShownWindow { pid, number: number(dict, graphics.number).unwrap_or(0), frame: [rect.x, rect.y, rect.width, rect.height] });
+        shown.push(ShownWindow {
+            pid,
+            number: number(dict, graphics.number).unwrap_or(0),
+            frame: [rect.x, rect.y, rect.width, rect.height],
+        });
     }
     // SAFETY: copied above, released once.
     unsafe { CFRelease(list) };
@@ -131,6 +137,9 @@ mod tests {
             eprintln!("skipped: nothing on any screen here");
             return;
         }
-        assert!(shown.iter().all(|window| window.pid > 0 && window.frame[2] >= 0.0 && window.frame[3] >= 0.0), "{shown:?}");
+        assert!(
+            shown.iter().all(|window| window.pid > 0 && window.frame[2] >= 0.0 && window.frame[3] >= 0.0),
+            "{shown:?}"
+        );
     }
 }

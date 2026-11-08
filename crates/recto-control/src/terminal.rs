@@ -21,7 +21,8 @@ pub fn set_level(paths: &StatePaths, wanted: Level) -> Result<Value, AgentError>
     if wanted > was {
         confirm_at_terminal(wanted)?;
     }
-    levels::store(paths, wanted).map_err(|_| AgentError::new("write_failed", "The level couldn't be saved.", exit::FAILED).then("Check that the state folder can be written to."))?;
+    levels::store(paths, wanted)
+        .map_err(|_| AgentError::new("write_failed", "The level couldn't be saved.", exit::FAILED).then("Check that the state folder can be written to."))?;
     ActivityLog::new(paths).record("permission_set", wanted, "ok", &json!({ "by": "the user's terminal", "was": was.name() }));
     // Tell a running session, so anyone waiting finds out at once. It reads the file itself: this message carries no level.
     if let Ok(mut client) = Client::connect(paths) {
@@ -33,15 +34,24 @@ pub fn set_level(paths: &StatePaths, wanted: Level) -> Result<Value, AgentError>
 /// The refusal an agent gets. It says who can do this, and how.
 pub fn needs_terminal(wanted: Level) -> AgentError {
     let command = format!("recto permission set {}", wanted.name());
-    AgentError::new("needs_terminal", "Raising agent access needs the user, at a real terminal. Nothing else can do it.", exit::PERMISSION).then(format!("Ask the user to run `{command}` in their own terminal."))
+    AgentError::new(
+        "needs_terminal",
+        "Raising agent access needs the user, at a real terminal. Nothing else can do it.",
+        exit::PERMISSION,
+    )
+    .then(format!("Ask the user to run `{command}` in their own terminal."))
 }
 
 fn confirm_at_terminal(wanted: Level) -> Result<(), AgentError> {
-    let what = format!("Give agents {} access to RectoPDF? {}", wanted.label(), match wanted {
-        Level::Full => "They could write new pictures to disk and throw away unsaved edits.",
-        Level::Control => "They could open and close PDFs and change pages in memory.",
-        _ => "They could read and search PDFs that are open.",
-    });
+    let what = format!(
+        "Give agents {} access to RectoPDF? {}",
+        wanted.label(),
+        match wanted {
+            Level::Full => "They could write new pictures to disk and throw away unsaved edits.",
+            Level::Control => "They could open and close PDFs and change pages in memory.",
+            _ => "They could read and search PDFs that are open.",
+        }
+    );
     let command = format!("recto permission set {}", wanted.name());
     confirm(&what, &command, || needs_terminal(wanted))
 }
@@ -49,9 +59,14 @@ fn confirm_at_terminal(wanted: Level) -> Result<(), AgentError> {
 /// `recto skill install`: writes into the user's agent's own files, so it takes the user, the same way raising a level does. `recto skill show` needs nothing, so an agent can still read it.
 pub fn confirm_skill_install(folder: &Path, replace: bool) -> Result<(), AgentError> {
     let shown = recto_core::clean_line(&folder.display().to_string());
-    let what = if replace { format!("Write RectoPDF's skill to {shown}, replacing files there even if someone changed them?") } else { format!("Write RectoPDF's skill to {shown}?") };
+    let what = if replace {
+        format!("Write RectoPDF's skill to {shown}, replacing files there even if someone changed them?")
+    } else {
+        format!("Write RectoPDF's skill to {shown}?")
+    };
     confirm(&what, "recto skill install", || {
-        AgentError::new("needs_terminal", "Installing the skill needs the user, at a real terminal.", exit::PERMISSION).then("Ask the user to run `recto skill install` in their own terminal. `recto skill show` prints the skill for you to read.")
+        AgentError::new("needs_terminal", "Installing the skill needs the user, at a real terminal.", exit::PERMISSION)
+            .then("Ask the user to run `recto skill install` in their own terminal. `recto skill show` prints the skill for you to read.")
     })
 }
 
@@ -71,7 +86,8 @@ fn confirm(what: &str, command: &str, refused: impl Fn() -> AgentError) -> Resul
     BufReader::new(&terminal).read_line(&mut answer).map_err(|_| refused())?;
     if answer.trim() != word {
         let _ = writeln!(out, "That wasn't the word, so nothing changed.");
-        return Err(AgentError::new("not_confirmed", "That wasn't the word, so nothing changed.", exit::PERMISSION).then(format!("Run `{command}` again, and type the word it shows.")));
+        return Err(AgentError::new("not_confirmed", "That wasn't the word, so nothing changed.", exit::PERMISSION)
+            .then(format!("Run `{command}` again, and type the word it shows.")));
     }
     Ok(())
 }

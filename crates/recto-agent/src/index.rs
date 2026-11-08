@@ -60,10 +60,16 @@ impl Indexing for ReadOnlyCorpus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FileIndex {
     Ready(Summary),
-    Building { pages_done: u32 },
-    Queued { pages_done: u32 },
+    Building {
+        pages_done: u32,
+    },
+    Queued {
+        pages_done: u32,
+    },
     /// Nothing's been built, or a build stopped partway, and nothing is under way.
-    NotStarted { pages_done: u32 },
+    NotStarted {
+        pages_done: u32,
+    },
     /// It won't be indexed, for this code's reason, while it's this version of the file.
     Refused(String),
     Failed(String),
@@ -88,7 +94,9 @@ impl FileIndex {
     fn status_note(&self, starts_builds: bool) -> String {
         match self {
             Self::Ready(_) => "Searches of this tab answer from the index.".to_string(),
-            Self::Building { .. } | Self::Queued { .. } => "It's on its way, in the background. `recto wait indexing-done` waits for it, and searches read the pages one by one until then.".to_string(),
+            Self::Building { .. } | Self::Queued { .. } => {
+                "It's on its way, in the background. `recto wait indexing-done` waits for it, and searches read the pages one by one until then.".to_string()
+            }
             Self::NotStarted { .. } if starts_builds => "It isn't built yet. `recto index` or a search starts it.".to_string(),
             Self::NotStarted { .. } => "It isn't built, and this route doesn't build one. `recto index` in a session does.".to_string(),
             Self::Refused(code) => format!("This file isn't indexed: {}. Searches read the pages one by one.", refused_words(code)),
@@ -101,10 +109,19 @@ impl FileIndex {
     pub(crate) fn scan_note(&self, starts_builds: bool) -> String {
         match self {
             Self::Ready(_) => "Answered from the index.".to_string(),
-            Self::Building { pages_done } => format!("The index is being built ({pages_done} pages so far), so this read the pages one by one. `recto wait indexing-done` waits for it."),
-            Self::Queued { .. } => "The index is waiting its turn to be built, so this read the pages one by one. `recto wait indexing-done` waits for it.".to_string(),
-            Self::NotStarted { .. } if starts_builds => "The index will be built next, so this read the pages one by one. `recto wait indexing-done` waits for it.".to_string(),
-            Self::NotStarted { .. } => "There's no index for this file, and this route doesn't build one, so it read the pages one by one. `recto index` in a session builds one.".to_string(),
+            Self::Building { pages_done } => {
+                format!("The index is being built ({pages_done} pages so far), so this read the pages one by one. `recto wait indexing-done` waits for it.")
+            }
+            Self::Queued { .. } => {
+                "The index is waiting its turn to be built, so this read the pages one by one. `recto wait indexing-done` waits for it.".to_string()
+            }
+            Self::NotStarted { .. } if starts_builds => {
+                "The index will be built next, so this read the pages one by one. `recto wait indexing-done` waits for it.".to_string()
+            }
+            Self::NotStarted { .. } => {
+                "There's no index for this file, and this route doesn't build one, so it read the pages one by one. `recto index` in a session builds one."
+                    .to_string()
+            }
             Self::Refused(code) => format!("This file isn't indexed ({}), so this read the pages one by one.", refused_words(code)),
             Self::Failed(code) => format!("The index couldn't be built ({code}), so this read the pages one by one. It'll be tried again later."),
             Self::Unavailable => "This file can't be indexed as it is, so this read the pages one by one.".to_string(),
@@ -126,7 +143,9 @@ fn refused_words(code: &str) -> &'static str {
 /// Where a file's corpus stands, asking for it to be built if `want` says to.
 pub(crate) fn file_index(indexing: &dyn Indexing, path: &Path, want: bool) -> (Option<CorpusKey>, FileIndex) {
     indexing.note_asked();
-    let Ok(key) = CorpusKey::of_file(path) else { return (None, FileIndex::Unavailable) };
+    let Ok(key) = CorpusKey::of_file(path) else {
+        return (None, FileIndex::Unavailable);
+    };
     if !corpus::can_be_indexed(path) {
         return (Some(key), FileIndex::Refused("coarse_file_times".to_string()));
     }
@@ -167,11 +186,23 @@ struct TabFile {
 fn tab_files<A: SessionAccess>(access: &A, tab: &str) -> Result<(u32, Vec<TabFile>), AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
-        let path = s.path_of(id).ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
-        let mut files = vec![TabFile { path, expected: s.page_edits(id).and_then(|_| s.own_stamp(id)), added: false, pages_used: s.pages_in(id) }];
+        let path = s
+            .path_of(id)
+            .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
+        let mut files = vec![TabFile {
+            path,
+            expected: s.page_edits(id).and_then(|_| s.own_stamp(id)),
+            added: false,
+            pages_used: s.pages_in(id),
+        }];
         if let Some(edits) = s.page_edits(id) {
             files[0].pages_used = 0;
-            files.extend(edits.added_sources().iter().map(|added| TabFile { path: added.path.to_path_buf(), expected: added.stamp, added: true, pages_used: 0 }));
+            files.extend(edits.added_sources().iter().map(|added| TabFile {
+                path: added.path.to_path_buf(),
+                expected: added.stamp,
+                added: true,
+                pages_used: 0,
+            }));
             for slot in edits.slots() {
                 if let Some(file) = files.get_mut(usize::from(slot.source)) {
                     file.pages_used += 1;
@@ -183,7 +214,8 @@ fn tab_files<A: SessionAccess>(access: &A, tab: &str) -> Result<(u32, Vec<TabFil
 }
 
 fn no_indexing() -> AgentError {
-    AgentError::new("needs_server", "Building an index needs the long-running session.", exit::NOT_RUNNING).then("Start it with `recto serve --background`. `recto search` works without an index.")
+    AgentError::new("needs_server", "Building an index needs the long-running session.", exit::NOT_RUNNING)
+        .then("Start it with `recto serve --background`. `recto search` works without an index.")
 }
 
 /// Most files listed in an answer. A tab can hold many added PDFs, and all the rest get the same treatment.
@@ -203,15 +235,25 @@ pub(crate) fn index<A: SessionAccess>(access: &A, tab: &str, want: bool, agent: 
 /// Writes the tab's own file's folder for an agent, if its corpus is finished. If it isn't, there's nothing to make it from yet, and the answer says where that stands.
 fn make_agent_folder(indexing: &dyn Indexing, file: &TabFile) -> Result<(), AgentError> {
     let current = file.expected.is_none_or(|stamp| recto_platform::file_stamp(&file.path).ok() == Some(stamp));
-    let (Some(key), FileIndex::Ready(_), true) = (CorpusKey::of_file(&file.path).ok(), file_index(indexing, &file.path, true).1, current) else { return Ok(()) };
+    let (Some(key), FileIndex::Ready(_), true) = (CorpusKey::of_file(&file.path).ok(), file_index(indexing, &file.path, true).1, current) else {
+        return Ok(());
+    };
     match corpus::ensure_agent_folder(indexing.root(), key, &corpus::BuildLimits::default()) {
         Ok(_) | Err(corpus::AgentFolderError::NotReady) => Ok(()),
         Err(corpus::AgentFolderError::Busy) => Err(AgentError::new("busy", "This document's index is being written right now.", exit::BUSY)),
-        Err(corpus::AgentFolderError::TooLarge) => Err(AgentError::new("too_large", "This document has too many pages for a folder of one file each.", exit::FAILED).then("`recto search` works without it.")),
+        Err(corpus::AgentFolderError::TooLarge) => {
+            Err(
+                AgentError::new("too_large", "This document has too many pages for a folder of one file each.", exit::FAILED)
+                    .then("`recto search` works without it."),
+            )
+        }
         Err(corpus::AgentFolderError::Damaged) => {
             let _ = corpus::clear(indexing.root(), key);
             indexing.want(&file.path, key);
-            Err(AgentError::new("index_failed", "This document's index didn't add up, so it's being built again.", exit::FAILED).then("`recto wait indexing-done`, then ask again."))
+            Err(
+                AgentError::new("index_failed", "This document's index didn't add up, so it's being built again.", exit::FAILED)
+                    .then("`recto wait indexing-done`, then ask again."),
+            )
         }
         Err(corpus::AgentFolderError::Failed) => Err(AgentError::new("write_failed", "The folder couldn't be written.", exit::FAILED)),
     }
@@ -221,16 +263,27 @@ fn make_agent_folder(indexing: &dyn Indexing, file: &TabFile) -> Result<(), Agen
 fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (Value, Option<FileIndex>) {
     let mut listed = Vec::new();
     let mut first_unready = None;
-    let (mut pages, mut pages_done, mut ready, mut bytes, mut no_text, mut failed, mut flagged, mut unchecked) = (0u64, 0u64, 0u32, 0u64, 0u64, 0u64, 0u64, 0u64);
+    let (mut pages, mut pages_done, mut ready, mut bytes, mut no_text, mut failed, mut flagged, mut unchecked) =
+        (0u64, 0u64, 0u32, 0u64, 0u64, 0u64, 0u64, 0u64);
     let (mut folder, mut agent_bytes) = (None, 0);
     for file in files.iter().filter(|file| file.pages_used > 0) {
         let current = file.expected.is_none_or(|stamp| recto_platform::file_stamp(&file.path).ok() == Some(stamp));
-        let (key, state) = if current { file_index(indexing, &file.path, want) } else { (None, FileIndex::Unavailable) };
+        let (key, state) = if current {
+            file_index(indexing, &file.path, want)
+        } else {
+            (None, FileIndex::Unavailable)
+        };
         let mut row = json!({ "added": file.added, "state": state.word(), "pages_used": file.pages_used });
         match &state {
             FileIndex::Ready(summary) => {
                 ready += 1;
-                (bytes, no_text, failed, flagged, unchecked) = (bytes + summary.corpus_bytes, no_text + u64::from(summary.no_text_pages), failed + u64::from(summary.failed_pages), flagged + u64::from(summary.hidden_flagged_pages), unchecked + u64::from(summary.hidden_unchecked_pages));
+                (bytes, no_text, failed, flagged, unchecked) = (
+                    bytes + summary.corpus_bytes,
+                    no_text + u64::from(summary.no_text_pages),
+                    failed + u64::from(summary.failed_pages),
+                    flagged + u64::from(summary.hidden_flagged_pages),
+                    unchecked + u64::from(summary.hidden_unchecked_pages),
+                );
                 (pages, pages_done) = (pages + u64::from(summary.pages), pages_done + u64::from(summary.pages));
                 row["pages"] = json!(summary.pages);
                 if let (false, Some(key)) = (file.added, key)
@@ -258,7 +311,10 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
         }
     }
     let overall = first_unready.as_ref().map_or("ready", FileIndex::word);
-    let note = first_unready.as_ref().map_or_else(|| "Searches of this tab answer from the index.".to_string(), |state| state.status_note(indexing.starts_builds()));
+    let note = first_unready.as_ref().map_or_else(
+        || "Searches of this tab answer from the index.".to_string(),
+        |state| state.status_note(indexing.starts_builds()),
+    );
     let (running, waiting) = indexing.load();
     let value = json!({
         "tab": id,
@@ -284,7 +340,9 @@ fn report(indexing: &dyn Indexing, id: u32, files: &[TabFile], want: bool) -> (V
 
 /// `recto wait indexing-done`: asking counts as wanting it, or a wait could run out its time on something nobody started.
 pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
-    let Some(indexing) = access.indexing() else { return ConditionState::Failed(no_indexing()) };
+    let Some(indexing) = access.indexing() else {
+        return ConditionState::Failed(no_indexing());
+    };
     let (id, files) = match tab_files(access, tab) {
         Ok(found) => found,
         Err(error) if error.exit == exit::AMBIGUOUS => return ConditionState::Failed(error),
@@ -293,9 +351,26 @@ pub(crate) fn look<A: SessionAccess>(access: &A, tab: &str) -> ConditionState {
     let (value, unready) = report(indexing, id, &files, true);
     match unready {
         None => ConditionState::Met(value),
-        Some(FileIndex::Refused(code)) => ConditionState::Failed(AgentError::new("not_indexed", format!("This file won't be indexed: {}.", refused_words(&code)), if code == "needs_password" { exit::PROTECTED } else { exit::FAILED }).then("`recto search` still reads its pages one by one, if they can be read.")),
-        Some(FileIndex::Failed(code)) => ConditionState::Failed(AgentError::new("index_failed", format!("The index couldn't be built ({code})."), exit::FAILED).then("`recto search` still reads the pages one by one. It's tried again after a pause.")),
-        Some(FileIndex::Unavailable) => ConditionState::Failed(AgentError::new("index_failed", "A file behind this tab has changed or gone, so it can't be indexed as recorded.", exit::FAILED).then("`recto edits` shows what's unsaved. `recto search` lists those pages as failed.")),
+        Some(FileIndex::Refused(code)) => ConditionState::Failed(
+            AgentError::new(
+                "not_indexed",
+                format!("This file won't be indexed: {}.", refused_words(&code)),
+                if code == "needs_password" { exit::PROTECTED } else { exit::FAILED },
+            )
+            .then("`recto search` still reads its pages one by one, if they can be read."),
+        ),
+        Some(FileIndex::Failed(code)) => ConditionState::Failed(
+            AgentError::new("index_failed", format!("The index couldn't be built ({code})."), exit::FAILED)
+                .then("`recto search` still reads the pages one by one. It's tried again after a pause."),
+        ),
+        Some(FileIndex::Unavailable) => ConditionState::Failed(
+            AgentError::new(
+                "index_failed",
+                "A file behind this tab has changed or gone, so it can't be indexed as recorded.",
+                exit::FAILED,
+            )
+            .then("`recto edits` shows what's unsaved. `recto search` lists those pages as failed."),
+        ),
         Some(_) => ConditionState::Waiting,
     }
 }
@@ -338,7 +413,12 @@ pub(crate) fn clear<A: SessionAccess>(access: &A, tab: &str, all: bool) -> Resul
 /// Says how a clear went. Text that's still there is a failure: someone asked for it to be gone.
 fn said_cleared(report: corpus::Cleared) -> Result<Value, AgentError> {
     if report.failed > 0 {
-        return Err(AgentError::new("clear_incomplete", format!("{} couldn't be removed, so that text is still on disk. {} went.", report.failed, report.cleared), exit::FAILED).then("Tell the user. `recto index status` gives the folder, and they may need to remove it themselves."));
+        return Err(AgentError::new(
+            "clear_incomplete",
+            format!("{} couldn't be removed, so that text is still on disk. {} went.", report.failed, report.cleared),
+            exit::FAILED,
+        )
+        .then("Tell the user. `recto index status` gives the folder, and they may need to remove it themselves."));
     }
     Ok(json!({ "cleared": report.cleared, "being_built": report.being_built }))
 }

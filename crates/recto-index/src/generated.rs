@@ -77,7 +77,11 @@ pub struct Bad(pub &'static str);
 impl Generated {
     /// One line of JSON. Titles go through [`clean_line`] first, so nothing a file wrote can make a second line.
     pub fn encode(&self, key: CorpusKey) -> String {
-        let entries: Vec<Value> = self.entries.iter().map(|entry| json!([entry.depth, entry.page, entry.place, clean_line(&entry.title)])).collect();
+        let entries: Vec<Value> = self
+            .entries
+            .iter()
+            .map(|entry| json!([entry.depth, entry.page, entry.place, clean_line(&entry.title)]))
+            .collect();
         json!({
             "format": FORMAT,
             "version": VERSION,
@@ -112,14 +116,20 @@ impl Generated {
         if pages == 0 || pages > MAX_PAGES {
             return Err(Bad("bad_pages"));
         }
-        let Some(list) = value["entries"].as_array() else { return Err(Bad("no_entries")) };
+        let Some(list) = value["entries"].as_array() else {
+            return Err(Bad("no_entries"));
+        };
         if list.len() > MAX_ENTRIES {
             return Err(Bad("too_many_entries"));
         }
         let mut entries = Vec::with_capacity(list.len());
         for item in list {
-            let Some([depth, page, place, title]) = item.as_array().map(Vec::as_slice) else { return Err(Bad("bad_entry")) };
-            let (Some(depth), Some(page), Some(place), Some(title)) = (depth.as_u64(), page.as_u64(), place.as_u64(), title.as_str()) else { return Err(Bad("bad_entry")) };
+            let Some([depth, page, place, title]) = item.as_array().map(Vec::as_slice) else {
+                return Err(Bad("bad_entry"));
+            };
+            let (Some(depth), Some(page), Some(place), Some(title)) = (depth.as_u64(), page.as_u64(), place.as_u64(), title.as_str()) else {
+                return Err(Bad("bad_entry"));
+            };
             if depth > u64::from(MAX_DEPTH) || place > u64::from(PLACE_SCALE) {
                 return Err(Bad("bad_entry"));
             }
@@ -130,9 +140,21 @@ impl Generated {
             if title.is_empty() {
                 continue;
             }
-            entries.push(GeneratedEntry { depth: depth as u8, page: page as u32, place: place as u16, title });
+            entries.push(GeneratedEntry {
+                depth: depth as u8,
+                page: page as u32,
+                place: place as u16,
+                title,
+            });
         }
-        Ok(Self { pages, entries, truncated: value["truncated"] == true, hidden_dropped: count("hidden_dropped").unwrap_or(0), pages_not_checked: count("pages_not_checked").unwrap_or(0), pages_failed: count("pages_failed").unwrap_or(0) })
+        Ok(Self {
+            pages,
+            entries,
+            truncated: value["truncated"] == true,
+            hidden_dropped: count("hidden_dropped").unwrap_or(0),
+            pages_not_checked: count("pages_not_checked").unwrap_or(0),
+            pages_failed: count("pages_failed").unwrap_or(0),
+        })
     }
 
     /// As contents the sidebar and `recto contents` already know how to show. Depth never jumps by more than one below its parent, so the list nests the way it reads.
@@ -146,7 +168,12 @@ impl Generated {
             }
             let depth = open.last().map_or(0, |(_, shown, _)| shown + 1);
             let parent = open.last().map_or(NONE, |(.., at)| *at);
-            lines.push(TocLine { title: &entry.title, page: entry.page, parent, depth });
+            lines.push(TocLine {
+                title: &entry.title,
+                page: entry.page,
+                parent,
+                depth,
+            });
             open.push((entry.depth, depth, u32::try_from(index).unwrap_or(NONE)));
         }
         Toc::from_lines(&lines, self.truncated)
@@ -218,7 +245,9 @@ pub fn write(root: &Path, path: &Path, key: CorpusKey, generated: &Generated) ->
     local::write_private_file(&root.join(&name), line.as_bytes())?;
     let tag = path_tag(path);
     for entry in fs::read_dir(root)?.flatten() {
-        let Some(other) = entry.file_name().to_str().map(str::to_string) else { continue };
+        let Some(other) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
         if other != name && is_ours(&other) && other.starts_with(&format!("{tag}.")) {
             let _ = fs::remove_file(entry.path());
         }
@@ -243,12 +272,19 @@ pub fn evict(root: &Path, keep: Option<&str>) -> u32 {
     let Ok(listing) = fs::read_dir(root) else { return 0 };
     let mut files: Vec<(SystemTime, u64, PathBuf, bool)> = Vec::new();
     for entry in listing.flatten() {
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
         if !is_ours(&name) {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
-        files.push((meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len(), entry.path(), keep == Some(name.as_str())));
+        files.push((
+            meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            meta.len(),
+            entry.path(),
+            keep == Some(name.as_str()),
+        ));
         // A folder past any sane count is looked at no further: what's here is enough to go on.
         if files.len() > MAX_FILES * 8 {
             break;
@@ -285,10 +321,30 @@ mod tests {
         Generated {
             pages: 10,
             entries: vec![
-                GeneratedEntry { depth: 0, page: 0, place: 100, title: "Introduction".into() },
-                GeneratedEntry { depth: 1, page: 1, place: 0, title: "Background".into() },
-                GeneratedEntry { depth: 3, page: 2, place: 500, title: "A deep one".into() },
-                GeneratedEntry { depth: 0, page: 9, place: 1000, title: "Appendix".into() },
+                GeneratedEntry {
+                    depth: 0,
+                    page: 0,
+                    place: 100,
+                    title: "Introduction".into(),
+                },
+                GeneratedEntry {
+                    depth: 1,
+                    page: 1,
+                    place: 0,
+                    title: "Background".into(),
+                },
+                GeneratedEntry {
+                    depth: 3,
+                    page: 2,
+                    place: 500,
+                    title: "A deep one".into(),
+                },
+                GeneratedEntry {
+                    depth: 0,
+                    page: 9,
+                    place: 1000,
+                    title: "Appendix".into(),
+                },
             ],
             ..Generated::default()
         }
@@ -338,7 +394,24 @@ mod tests {
         let parents: Vec<u32> = toc.entries().iter().map(|entry| entry.parent).collect();
         assert_eq!(parents, [NONE, 0, 1, NONE]);
         // A list that starts deep starts at the top.
-        let deep = Generated { pages: 3, entries: vec![GeneratedEntry { depth: 4, page: 0, place: 0, title: "Deep".into() }, GeneratedEntry { depth: 2, page: 1, place: 0, title: "Less deep".into() }], ..Generated::default() };
+        let deep = Generated {
+            pages: 3,
+            entries: vec![
+                GeneratedEntry {
+                    depth: 4,
+                    page: 0,
+                    place: 0,
+                    title: "Deep".into(),
+                },
+                GeneratedEntry {
+                    depth: 2,
+                    page: 1,
+                    place: 0,
+                    title: "Less deep".into(),
+                },
+            ],
+            ..Generated::default()
+        };
         let depths: Vec<u8> = deep.toc().entries().iter().map(|entry| entry.depth).collect();
         assert_eq!(depths, [0, 0]);
     }
@@ -346,7 +419,10 @@ mod tests {
     /// Failure: a new version of a file leaves the old version's headings on disk, a forged file in the folder is used, or the folder grows past its limits, or something not ours is removed.
     #[test]
     fn a_new_version_replaces_the_old_and_the_folder_keeps_to_its_limits() {
-        let temp = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-generated-{}", std::process::id()));
+        let temp = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-generated-{}", std::process::id()));
         let _ = fs::remove_dir_all(&temp);
         local::ensure_private_dir(&temp).unwrap();
         let root = temp.join("contents.noindex");
@@ -369,7 +445,11 @@ mod tests {
             fs::write(&other, b"%PDF").unwrap();
             write(&root, &other, key((n % 250) as u8), &sample()).unwrap();
         }
-        let ours = fs::read_dir(&root).unwrap().flatten().filter(|entry| entry.file_name().to_str().is_some_and(is_ours)).count();
+        let ours = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_str().is_some_and(is_ours))
+            .count();
         assert!(ours <= MAX_FILES, "{ours} kept");
         assert!(root.join("notes.txt").exists());
         clear(&root, &temp.join(format!("{}.pdf", MAX_FILES + 4)));

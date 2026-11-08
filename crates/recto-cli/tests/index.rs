@@ -13,7 +13,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn doc(name: &str, count: usize) -> TempPdf {
-    let bodies: Vec<String> = (1..=count).map(|at| format!("This is page {at} of the alpha document\nand every page says the word common here\nalso common again on page {at}")).collect();
+    let bodies: Vec<String> = (1..=count)
+        .map(|at| format!("This is page {at} of the alpha document\nand every page says the word common here\nalso common again on page {at}"))
+        .collect();
     let list: Vec<Page> = bodies.iter().map(|body| Page::new(text_lines(&body.lines().collect::<Vec<_>>()))).collect();
     TempPdf::new(name, &pages(&list))
 }
@@ -53,10 +55,15 @@ fn totals_agree(indexed: &Value, scanned: &Value, args: &[&str]) {
     if scan["hits_total"].is_u64() {
         assert_eq!(index["hits_total"], scan["hits_total"], "{args:?}: {indexed}");
     } else {
-        assert!(index["hits_at_least"].as_u64() >= scan["hits_at_least"].as_u64(), "{args:?}: {indexed} {scanned}");
+        assert!(
+            index["hits_at_least"].as_u64() >= scan["hits_at_least"].as_u64(),
+            "{args:?}: {indexed} {scanned}"
+        );
     }
     for answer in [index, scan] {
-        if answer["failed_pages"].as_array().is_some_and(|failed| !failed.is_empty()) || answer["uncounted_pages"].as_u64().is_some_and(|uncounted| uncounted > 0) {
+        if answer["failed_pages"].as_array().is_some_and(|failed| !failed.is_empty())
+            || answer["uncounted_pages"].as_u64().is_some_and(|uncounted| uncounted > 0)
+        {
             assert_eq!(answer["hits_total"], Value::Null, "{args:?}: {answer}");
         }
     }
@@ -83,7 +90,9 @@ fn index_matches_scan(state: &State, args: &[&str]) -> Value {
 fn the_index_answers_as_reading_the_pages_does() {
     let state = State::at(Level::Control);
     let _serving = state.serve();
-    let mut list: Vec<Page> = (1..=12).map(|at| Page::new(text_lines(&[&format!("Page {at} says common and common"), "A second line"]))).collect();
+    let mut list: Vec<Page> = (1..=12)
+        .map(|at| Page::new(text_lines(&[&format!("Page {at} says common and common"), "A second line"])))
+        .collect();
     list.push(Page::new(hidden_text_page()));
     list.push(Page::new(Vec::new()));
     list.push(Page::new(text_lines(&["word broken at a line", "VISIBLE-SENTINEL again common"])));
@@ -107,7 +116,15 @@ fn the_index_answers_as_reading_the_pages_does() {
     }
     let hidden = index_matches_scan(&state, &["search", "HIDDEN-WHITE"]);
     let hit = &hidden["data"]["hits"][0];
-    assert_eq!((hit["hidden_text"]["checked"].as_bool(), hit["hidden_text"]["flagged"].as_bool(), hit["overlaps_hidden"].as_bool()), (Some(true), Some(true), Some(true)), "{hit}");
+    assert_eq!(
+        (
+            hit["hidden_text"]["checked"].as_bool(),
+            hit["hidden_text"]["flagged"].as_bool(),
+            hit["overlaps_hidden"].as_bool()
+        ),
+        (Some(true), Some(true), Some(true)),
+        "{hit}"
+    );
     let visible = index_matches_scan(&state, &["search", "VISIBLE-SENTINEL normal"]);
     assert_eq!(visible["data"]["hits"][0]["overlaps_hidden"], false, "{visible}");
     let (no_text, _) = state.json(&["search", "zzzqqqxx"]);
@@ -124,7 +141,11 @@ fn the_index_gives_a_whole_document_total() {
     let (first, code) = state.json(&["search", "common", "--limit", "3"]);
     assert_eq!(code, 0, "{first}");
     assert_eq!(first["data"]["route"], "scan", "there's no index yet: {first}");
-    assert_eq!(first["data"]["coverage"]["hits_total"], Value::Null, "it stopped at the limit, so it can't know: {first}");
+    assert_eq!(
+        first["data"]["coverage"]["hits_total"],
+        Value::Null,
+        "it stopped at the limit, so it can't know: {first}"
+    );
     assert!(first["data"]["coverage"]["hits_at_least"].as_u64().unwrap() >= 3);
     assert!(first["data"]["index"]["note"].as_str().unwrap().contains("wait indexing-done"), "{first}");
     wait_done(&state, "active");
@@ -132,7 +153,10 @@ fn the_index_gives_a_whole_document_total() {
     assert_eq!(limited["data"]["route"], "index", "{limited}");
     assert_eq!(limited["data"]["hits"].as_array().unwrap().len(), 3);
     assert_eq!(limited["data"]["coverage"]["hits_total"], 60, "{limited}");
-    assert_eq!(limited["data"]["coverage"]["next_page"], 3, "two a page, and the limit falls on the second: {limited}");
+    assert_eq!(
+        limited["data"]["coverage"]["next_page"], 3,
+        "two a page, and the limit falls on the second: {limited}"
+    );
     let (scoped, _) = state.json(&["search", "common", "--limit", "1", "--pages", "2-3"]);
     assert_eq!(scoped["data"]["coverage"]["hits_total"], 4, "the count is of what was asked about: {scoped}");
     let (whole, _) = state.json(&["search", "common", "--limit", "200"]);
@@ -147,7 +171,13 @@ fn an_edited_tab_keeps_its_page_numbers_and_marks_added_files() {
     let state = State::at(Level::Control);
     let _serving = state.serve();
     let file = doc("edited.pdf", 6);
-    let extra = TempPdf::new("added.pdf", &pages(&[Page::new(text_lines(&["A page from elsewhere with the word common"])), Page::new(text_lines(&["Second added page"]))]));
+    let extra = TempPdf::new(
+        "added.pdf",
+        &pages(&[
+            Page::new(text_lines(&["A page from elsewhere with the word common"])),
+            Page::new(text_lines(&["Second added page"])),
+        ]),
+    );
     state.json(&["open", path(&file)]);
     state.json(&["index"]);
     wait_done(&state, "active");
@@ -164,10 +194,21 @@ fn an_edited_tab_keeps_its_page_numbers_and_marks_added_files() {
     wait_done(&state, "active");
     let answer = index_matches_scan(&state, &["search", "elsewhere"]);
     let hit = &answer["data"]["hits"][0];
-    assert_eq!((hit["page"].as_u64(), hit["source_page"].as_u64(), hit["from_added_file"].as_bool()), (Some(2), Some(1), Some(true)), "{hit}");
+    assert_eq!(
+        (hit["page"].as_u64(), hit["source_page"].as_u64(), hit["from_added_file"].as_bool()),
+        (Some(2), Some(1), Some(true)),
+        "{hit}"
+    );
     assert_eq!(hit["untrusted"]["added_file"], "added.pdf", "{hit}");
     let moved_hit = index_matches_scan(&state, &["search", "page 6 of"]);
-    assert_eq!((moved_hit["data"]["hits"][0]["page"].as_u64(), moved_hit["data"]["hits"][0]["source_page"].as_u64()), (Some(1), Some(6)), "{moved_hit}");
+    assert_eq!(
+        (
+            moved_hit["data"]["hits"][0]["page"].as_u64(),
+            moved_hit["data"]["hits"][0]["source_page"].as_u64()
+        ),
+        (Some(1), Some(6)),
+        "{moved_hit}"
+    );
     let gone = index_matches_scan(&state, &["search", "page 2 of"]);
     assert_eq!(gone["data"]["hits"].as_array().unwrap().len(), 0, "a deleted page isn't searched: {gone}");
     index_matches_scan(&state, &["search", "common", "--limit", "2"]);
@@ -189,7 +230,11 @@ fn a_replaced_file_doesnt_answer_from_old_text() {
     state.json(&["index"]);
     wait_done(&state, "active");
     let (old, _) = state.json(&["search", "oldword"]);
-    assert_eq!((old["data"]["route"].as_str(), old["data"]["hits"].as_array().unwrap().len()), (Some("index"), 1), "{old}");
+    assert_eq!(
+        (old["data"]["route"].as_str(), old["data"]["hits"].as_array().unwrap().len()),
+        (Some("index"), 1),
+        "{old}"
+    );
 
     // In place, the same length, and the old time put back.
     let when = std::fs::metadata(&file.0).unwrap().modified().unwrap();
@@ -198,10 +243,18 @@ fn a_replaced_file_doesnt_answer_from_old_text() {
     let (stale, code) = state.json(&["search", "oldword"]);
     assert_eq!(code, 0, "{stale}");
     assert_eq!(stale["data"]["route"], "scan", "there's no corpus for this version yet: {stale}");
-    assert_eq!(stale["data"]["hits"].as_array().unwrap().len(), 0, "old text answered for a replaced file: {stale}");
+    assert_eq!(
+        stale["data"]["hits"].as_array().unwrap().len(),
+        0,
+        "old text answered for a replaced file: {stale}"
+    );
     wait_done(&state, "active");
     let (fresh, _) = state.json(&["search", "newword"]);
-    assert_eq!((fresh["data"]["route"].as_str(), fresh["data"]["hits"].as_array().unwrap().len()), (Some("index"), 1), "{fresh}");
+    assert_eq!(
+        (fresh["data"]["route"].as_str(), fresh["data"]["hits"].as_array().unwrap().len()),
+        (Some("index"), 1),
+        "{fresh}"
+    );
     let (stale, _) = state.json(&["search", "oldword"]);
     assert_eq!(stale["data"]["hits"].as_array().unwrap().len(), 0, "{stale}");
 
@@ -218,7 +271,12 @@ fn a_replaced_file_doesnt_answer_from_old_text() {
 fn start_helper(file: &Path, root: &Path, key: CorpusKey) -> std::process::Child {
     let exe = Path::new(common::bin()).with_file_name("recto-indexer");
     assert!(exe.is_file(), "{} isn't built. `tools/check.sh` builds it.", exe.display());
-    let mut child = Command::new(exe).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut child = Command::new(exe)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
     let line = serde_json::json!({ "file": file, "root": root, "key": key.hex(), "background": false }).to_string() + "\n";
     child.stdin.as_mut().unwrap().write_all(line.as_bytes()).unwrap();
     child
@@ -243,7 +301,10 @@ fn a_killed_indexer_leaves_a_usable_state() {
     let mut child = start_helper(&file.0, &root, key);
     let deadline = Instant::now() + Duration::from_secs(120);
     while pages_done(&root, key) < 20 {
-        assert!(Instant::now() < deadline && child.try_wait().unwrap().is_none(), "the helper ended before it was killed");
+        assert!(
+            Instant::now() < deadline && child.try_wait().unwrap().is_none(),
+            "the helper ended before it was killed"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
     child.kill().unwrap();
@@ -264,9 +325,17 @@ fn a_killed_indexer_leaves_a_usable_state() {
     assert!(matches!(asked["data"]["state"].as_str(), Some("queued" | "building" | "ready")), "{asked}");
     wait_done(&state, "active");
     let (found, _) = state.json(&["search", "page 390 of"]);
-    assert_eq!((found["data"]["route"].as_str(), found["data"]["hits"].as_array().unwrap().len()), (Some("index"), 1), "{found}");
+    assert_eq!(
+        (found["data"]["route"].as_str(), found["data"]["hits"].as_array().unwrap().len()),
+        (Some("index"), 1),
+        "{found}"
+    );
     let (found, _) = state.json(&["search", "page 1 of"]);
-    assert_eq!(found["data"]["hits"].as_array().unwrap().len(), 1, "pages from before the kill are there too: {found}");
+    assert_eq!(
+        found["data"]["hits"].as_array().unwrap().len(),
+        1,
+        "pages from before the kill are there too: {found}"
+    );
     let (all, _) = state.json(&["search", "common", "--limit", "1"]);
     assert_eq!(all["data"]["coverage"]["hits_total"], 800, "nothing doubled and nothing lost: {all}");
 }
@@ -309,12 +378,17 @@ fn an_adversarial_page_fails_alone_and_says_so() {
     println!("{done}");
     let (found, code) = state.json(&["search", "ordinary page"]);
     assert_eq!(code, 0, "{found}");
-    assert_eq!(found["data"]["route"], "mixed", "the bomb's page is read again, in case it was the moment: {found}");
+    assert_eq!(
+        found["data"]["route"], "mixed",
+        "the bomb's page is read again, in case it was the moment: {found}"
+    );
     assert_eq!(found["data"]["hits"].as_array().unwrap().len(), 1, "the page after the bomb: {found}");
     let hit = &found["data"]["hits"][0];
     assert_eq!(hit["page"], 2);
     // The bomb's page has no text, and it can't be drawn for the check. Which of those shows is the renderer's business: it must show one.
-    let said = done["data"]["failed_pages"].as_u64().unwrap() + done["data"]["hidden_unchecked_pages"].as_u64().unwrap() + done["data"]["no_text_pages"].as_u64().unwrap();
+    let said = done["data"]["failed_pages"].as_u64().unwrap()
+        + done["data"]["hidden_unchecked_pages"].as_u64().unwrap()
+        + done["data"]["no_text_pages"].as_u64().unwrap();
     assert!(said >= 1, "the bomb's page must show up in what's said: {done}");
     assert!(started.elapsed() < Duration::from_secs(120), "{:?}", started.elapsed());
 }
@@ -338,7 +412,11 @@ fn opening_tabs_indexes_nothing_and_asking_leaves_nothing_behind() {
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(process_counters(serving.pid()).unwrap().threads, 1, "200 open tabs hold a thread");
     let (status, _) = state.json(&["index", "status"]);
-    assert_eq!((status["data"]["indexers_running"].as_u64(), status["data"]["indexers_waiting"].as_u64()), (Some(0), Some(0)), "{status}");
+    assert_eq!(
+        (status["data"]["indexers_running"].as_u64(), status["data"]["indexers_waiting"].as_u64()),
+        (Some(0), Some(0)),
+        "{status}"
+    );
     assert_eq!(status["data"]["state"], "not_started", "{status}");
 
     // All 200 are one file, so asking for each is one build.
@@ -350,7 +428,11 @@ fn opening_tabs_indexes_nothing_and_asking_leaves_nothing_behind() {
         let done = wait_done(&state, &format!("#{tab}"));
         assert_eq!(done["data"]["pages"], 3, "{done}");
     }
-    let corpora = std::fs::read_dir(&state.paths.corpus).unwrap().flatten().filter(|entry| entry.file_name().to_str().and_then(CorpusKey::from_hex).is_some()).count();
+    let corpora = std::fs::read_dir(&state.paths.corpus)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_str().and_then(CorpusKey::from_hex).is_some())
+        .count();
     assert_eq!(corpora, 5, "only what was asked for, one for each file");
     let (status, _) = state.json(&["index", "status", "--tab", "#200"]);
     assert_eq!(status["data"]["state"], "ready", "{status}");
@@ -374,7 +456,12 @@ fn waiting_for_the_index_starts_it_and_hears_it_finish() {
     state.json(&["open", path(&file)]);
     let (watch_tx, watch_rx) = std::sync::mpsc::channel();
     let mut watch = state.command();
-    let output = watch.args(["watch", "--events", "indexing", "--count", "2", "--timeout", "60s", "--json"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let output = watch
+        .args(["watch", "--events", "indexing", "--count", "2", "--timeout", "60s", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
     std::thread::spawn(move || {
         let out = output.wait_with_output().unwrap();
         let _ = watch_tx.send(String::from_utf8(out.stdout).unwrap());
@@ -390,8 +477,16 @@ fn waiting_for_the_index_starts_it_and_hears_it_finish() {
     let folder = PathBuf::from(made["data"]["folder"].as_str().unwrap());
     assert!(made["data"]["agent_bytes"].as_u64().unwrap() > 0, "{made}");
     assert!(folder.join("manifest.json").is_file() && folder.join("pages/0005.md").is_file(), "{done}");
-    assert!(folder.starts_with(&state.paths.corpus), "QA state must keep it in the temp folder: {}", folder.display());
-    assert!(!folder.to_string_lossy().contains("waited"), "a document's name is in the folder's path: {}", folder.display());
+    assert!(
+        folder.starts_with(&state.paths.corpus),
+        "QA state must keep it in the temp folder: {}",
+        folder.display()
+    );
+    assert!(
+        !folder.to_string_lossy().contains("waited"),
+        "a document's name is in the folder's path: {}",
+        folder.display()
+    );
     let said = watch_rx.recv_timeout(Duration::from_secs(60)).unwrap();
     assert!(said.contains("indexing_started") && said.contains("indexing_finished"), "{said}");
     // Already finished: it's said at once.
@@ -406,7 +501,12 @@ fn levels_hold_on_the_index_commands() {
     let state = State::at(Level::Off);
     let _serving = state.serve();
     let file = doc("levels.pdf", 2);
-    for args in [&["index"][..], &["index", "status"][..], &["index", "clear"][..], &["wait", "indexing-done"][..]] {
+    for args in [
+        &["index"][..],
+        &["index", "status"][..],
+        &["index", "clear"][..],
+        &["wait", "indexing-done"][..],
+    ] {
         let (refused, code) = state.json(args);
         assert_eq!(code, exit::PERMISSION, "{args:?}: {refused}");
     }
@@ -449,7 +549,11 @@ fn a_damaged_corpus_answers_by_reading_the_pages() {
     assert_eq!(found["data"]["index"]["state"], "failed", "{found}");
     wait_done(&state, "active");
     let (found, _) = state.json(&["search", "page 1 of"]);
-    assert_eq!((found["data"]["route"].as_str(), found["data"]["hits"].as_array().unwrap().len()), (Some("index"), 1), "a good one takes its place: {found}");
+    assert_eq!(
+        (found["data"]["route"].as_str(), found["data"]["hits"].as_array().unwrap().len()),
+        (Some("index"), 1),
+        "a good one takes its place: {found}"
+    );
 }
 
 /// Failure: `recto local`, used by QA, starts a build it can't finish, or doesn't use what's built. Its route reads what's there and starts nothing.
@@ -481,22 +585,50 @@ fn the_budget_reports_and_cleans_up() {
     let state = State::at(Level::Control);
     state.paths.prepare().unwrap();
     let file = doc("budget.pdf", 5);
-    let (answer, code) = state.json(&["budget", "index", "--file", path(&file), "--runs", "2", "--foreground", "--queries", "common,zzzqqqxx"]);
+    let (answer, code) = state.json(&[
+        "budget",
+        "index",
+        "--file",
+        path(&file),
+        "--runs",
+        "2",
+        "--foreground",
+        "--queries",
+        "common,zzzqqqxx",
+    ]);
     assert_eq!(code, 0, "{answer}");
     let data = &answer["data"];
-    assert_eq!((data["build"]["state"].as_str(), data["build"]["pages"].as_u64()), (Some("ready"), Some(5)), "{answer}");
+    assert_eq!(
+        (data["build"]["state"].as_str(), data["build"]["pages"].as_u64()),
+        (Some("ready"), Some(5)),
+        "{answer}"
+    );
     assert!(data["build"]["worker_peak_bytes"].as_u64().unwrap() > 0, "{answer}");
     assert!(data["build"]["helper_peak_bytes"].as_u64().unwrap() > 0, "{answer}");
     assert!(data["build"]["corpus_bytes"].as_u64().unwrap() > 0, "{answer}");
     let searches = data["searches"].as_array().unwrap();
     assert_eq!(searches.len(), 2);
-    assert_eq!((searches[0]["index"]["route"].as_str(), searches[0]["scan"]["route"].as_str()), (Some("index"), Some("scan")), "{answer}");
+    assert_eq!(
+        (searches[0]["index"]["route"].as_str(), searches[0]["scan"]["route"].as_str()),
+        (Some("index"), Some("scan")),
+        "{answer}"
+    );
     assert_eq!(searches[0]["index"]["hits_total"], 10, "{answer}");
-    let left: Vec<String> = std::fs::read_dir(&state.root).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).filter(|name| name.contains("budget")).collect();
+    let left: Vec<String> = std::fs::read_dir(&state.root)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("budget"))
+        .collect();
     assert!(left.is_empty(), "{left:?}");
     // Failure: a run killed partway leaves a document's text under Application Support for good, where nothing looks: nothing clears it, and the table says it's temp. It's in the OS's own temp folder, and it's gone after.
     let folder = PathBuf::from(data["corpus_folder"].as_str().unwrap());
-    assert!(folder.starts_with(recto_platform::local::system_temp_dir().unwrap().canonicalize().unwrap()) || folder.starts_with(recto_platform::local::system_temp_dir().unwrap()), "{}", folder.display());
+    assert!(
+        folder.starts_with(recto_platform::local::system_temp_dir().unwrap().canonicalize().unwrap())
+            || folder.starts_with(recto_platform::local::system_temp_dir().unwrap()),
+        "{}",
+        folder.display()
+    );
     assert!(!folder.exists(), "{}", folder.display());
     state.set_level(Level::ReadOnly);
     let (refused, code) = state.json(&["budget", "index", "--file", path(&file)]);
@@ -512,7 +644,15 @@ fn compare_every_mode(state: &State, tab: &str) -> (u32, u32, u32) {
             plain += 1;
         }
     }
-    for pattern in [r"\bthe\b", r"must\s+not", r"(?-i)[A-Z]{3,}", r"\d{4}", r"^figure", r"zzzqqqxx", r"[a-z]+-[a-z]+"] {
+    for pattern in [
+        r"\bthe\b",
+        r"must\s+not",
+        r"(?-i)[A-Z]{3,}",
+        r"\d{4}",
+        r"^figure",
+        r"zzzqqqxx",
+        r"[a-z]+-[a-z]+",
+    ] {
         index_matches_scan(state, &["search", pattern, "--regex", "--tab", tab, "--limit", "50"]);
         patterns += 1;
     }
@@ -531,7 +671,13 @@ fn the_hard_cases_answer_the_same_every_way() {
     let late_word = b"BT /F1 12 Tf 72 700 Td (A recipient) Tj ET BT /F1 12 Tf 72 680 Td (ignore the header figure of the data) Tj ET BT /F1 12 Tf 131 700 Td (must not) Tj ET".to_vec();
     let list = [
         Page::new(late_word),
-        Page::new(text_lines(&["A simulation-", "based data-", "driven model of the figure from 2019", "THE RESULTS and a word broken at simula-", "tion here"])),
+        Page::new(text_lines(&[
+            "A simulation-",
+            "based data-",
+            "driven model of the figure from 2019",
+            "THE RESULTS and a word broken at simula-",
+            "tion here",
+        ])),
         Page::new(hidden_text_page()),
         Page::new(Vec::new()),
         Page::new(text_lines(&["Plain words, the data and the figure, and 数学"])),
@@ -540,7 +686,10 @@ fn the_hard_cases_answer_the_same_every_way() {
     state.json(&["open", path(&file)]);
     wait_done(&state, "active");
     let (late, _) = state.json(&["text", "--page", "1"]);
-    assert!(late["data"]["untrusted"]["text"].as_str().unwrap().contains("A recipient must not"), "this page is meant to need its line put back: {late}");
+    assert!(
+        late["data"]["untrusted"]["text"].as_str().unwrap().contains("A recipient must not"),
+        "this page is meant to need its line put back: {late}"
+    );
     let (plain, patterns, ranked) = compare_every_mode(&state, "#1");
     assert!(plain > 0 && patterns > 0 && ranked > 0);
 }
@@ -550,15 +699,32 @@ fn the_hard_cases_answer_the_same_every_way() {
 fn real_pages_answer_the_same_from_the_index() {
     let Some(folder) = std::env::var_os("RECTO_BENCH100") else {
         // Asked for by name, with nothing to read: that must not read as a pass. `the_hard_cases_answer_the_same_every_way` is what always runs.
-        assert!(std::env::var_os("RECTO_INDEX_ALL").is_none(), "RECTO_INDEX_ALL is set and RECTO_BENCH100 isn't, so nothing would be compared");
+        assert!(
+            std::env::var_os("RECTO_INDEX_ALL").is_none(),
+            "RECTO_INDEX_ALL is set and RECTO_BENCH100 isn't, so nothing would be compared"
+        );
         eprintln!("RECTO_BENCH100 isn't set, so no corpus files were read.");
         return;
     };
     let folder = PathBuf::from(folder);
     let mut files: Vec<PathBuf> = if std::env::var_os("RECTO_INDEX_ALL").is_some() {
-        std::fs::read_dir(&folder).unwrap().flatten().map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|extension| extension == "pdf")).collect()
+        std::fs::read_dir(&folder)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "pdf"))
+            .collect()
     } else {
-        ["standards_ietf_rfc9110.pdf", "policy_worldbank_wbD34442277.pdf", "math_AG_2607.28411.pdf", "gov_nasa_ntrs20240002628.pdf"].iter().map(|name| folder.join(name)).filter(|path| path.is_file()).collect()
+        [
+            "standards_ietf_rfc9110.pdf",
+            "policy_worldbank_wbD34442277.pdf",
+            "math_AG_2607.28411.pdf",
+            "gov_nasa_ntrs20240002628.pdf",
+        ]
+        .iter()
+        .map(|name| folder.join(name))
+        .filter(|path| path.is_file())
+        .collect()
     };
     files.sort();
     let state = State::at(Level::Full);
@@ -577,7 +743,10 @@ fn real_pages_answer_the_same_from_the_index() {
             eprintln!("{text} wasn't indexed: {done}");
             continue;
         }
-        eprintln!("{text}: {} pages, {} failed, {} flagged, {} bytes", done["data"]["pages"], done["data"]["failed_pages"], done["data"]["hidden_flagged_pages"], done["data"]["corpus_bytes"]);
+        eprintln!(
+            "{text}: {} pages, {} failed, {} flagged, {} bytes",
+            done["data"]["pages"], done["data"]["failed_pages"], done["data"]["hidden_flagged_pages"], done["data"]["corpus_bytes"]
+        );
         documents += 1;
         let (plain, patterns, ranked) = compare_every_mode(&state, &tab);
         compared += plain;
@@ -602,7 +771,10 @@ fn a_password_protected_file_leaves_no_text() {
     let key = CorpusKey::of_file(&file.0).unwrap();
     let paths = recto_index::corpus::CorpusPaths::new(&state.paths.corpus, key);
     assert!(!paths.app.join("text.pack").exists(), "there's text on disk");
-    assert!(!paths.pages.exists() || std::fs::read_dir(&paths.pages).is_ok_and(|mut pages| pages.next().is_none()), "there are page files on disk");
+    assert!(
+        !paths.pages.exists() || std::fs::read_dir(&paths.pages).is_ok_and(|mut pages| pages.next().is_none()),
+        "there are page files on disk"
+    );
     let (searched, code) = state.json(&["search", "anything"]);
     assert_eq!(code, exit::PROTECTED, "{searched}");
 }
@@ -624,7 +796,11 @@ impl recto_index::corpus::PageFeed for OnePageFails {
             return Err(recto_index::corpus::FeedError::Page(recto_index::corpus::FailReason::Stopped));
         }
         let read = self.doc.page_characters(page, true, true).unwrap();
-        Ok(recto_index::corpus::FedPage { chars: read.chars, boxes: read.boxes, hidden_checked: read.hidden_checked })
+        Ok(recto_index::corpus::FedPage {
+            chars: read.chars,
+            boxes: read.boxes,
+            hidden_checked: read.hidden_checked,
+        })
     }
     fn still_the_same_file(&mut self) -> bool {
         CorpusKey::of_file(&self.file).is_ok_and(|now| now == self.key)
@@ -634,10 +810,28 @@ impl recto_index::corpus::PageFeed for OnePageFails {
 /// Builds a file's corpus here, with one page recorded as failed.
 fn corpus_with_a_failed_page(state: &State, file: &TempPdf, page: u32) {
     let key = CorpusKey::of_file(&file.0).unwrap();
-    let doc = recto_render_service::DocRenderer::new(&file.0, None, recto_render_service::ServiceConfig::for_worker(Path::new(common::bin()).with_file_name("recto-render-service")).unwrap(), recto_render_service::Policy::default()).unwrap();
-    let mut feed = OnePageFails { doc, file: file.0.clone(), key, fails: page };
+    let doc = recto_render_service::DocRenderer::new(
+        &file.0,
+        None,
+        recto_render_service::ServiceConfig::for_worker(Path::new(common::bin()).with_file_name("recto-render-service")).unwrap(),
+        recto_render_service::Policy::default(),
+    )
+    .unwrap();
+    let mut feed = OnePageFails {
+        doc,
+        file: file.0.clone(),
+        key,
+        fails: page,
+    };
     state.paths.prepare().unwrap();
-    let built = recto_index::corpus::build(&state.paths.corpus, key, &mut feed, &recto_index::corpus::DocMeta::default(), &recto_index::corpus::BuildLimits::default()).unwrap();
+    let built = recto_index::corpus::build(
+        &state.paths.corpus,
+        key,
+        &mut feed,
+        &recto_index::corpus::DocMeta::default(),
+        &recto_index::corpus::BuildLimits::default(),
+    )
+    .unwrap();
     assert!(matches!(built, recto_index::corpus::BuildOutcome::Ready { .. }), "{built:?}");
 }
 
@@ -655,7 +849,10 @@ fn a_search_reads_a_page_the_build_couldnt() {
     assert_eq!(found["data"]["hits"].as_array().unwrap().len(), 1, "{found}");
     assert_eq!(found["data"]["hits"][0]["page"], 3, "{found}");
     assert_eq!(found["data"]["route"], "mixed", "{found}");
-    assert!(found["data"]["index"]["note"].as_str().unwrap().contains("read again just now"), "a page read live isn't said to have come from the index: {found}");
+    assert!(
+        found["data"]["index"]["note"].as_str().unwrap().contains("read again just now"),
+        "a page read live isn't said to have come from the index: {found}"
+    );
     let (scanned, code) = state.json(&["search", "page 3 of", "--scan"]);
     assert_eq!(code, 0, "{scanned}");
     assert_eq!(the_same_answer(found), the_same_answer(scanned));
@@ -697,7 +894,10 @@ fn all_text_under(folder: &Path) -> String {
 #[test]
 fn a_deleted_pdfs_text_goes_when_its_time_is_up_with_nothing_being_built() {
     let state = State::at(Level::Control);
-    let deleted = TempPdf::new("deleted.pdf", &pages(&[Page::new(text_lines(&["Words only the deleted file has: vanishingword"]))]));
+    let deleted = TempPdf::new(
+        "deleted.pdf",
+        &pages(&[Page::new(text_lines(&["Words only the deleted file has: vanishingword"]))]),
+    );
     let kept = doc("kept.pdf", 2);
     let (deleted_key, kept_key);
     {
@@ -750,7 +950,10 @@ fn an_old_versions_text_goes_when_a_new_version_is_indexed_or_the_index_is_clear
     wait_done(&state, "active");
     let text = all_text_under(&root);
     assert!(text.contains("secondword"), "{text}");
-    assert!(!text.contains("redactedword"), "the old version's text is still on disk after the new one was indexed");
+    assert!(
+        !text.contains("redactedword"),
+        "the old version's text is still on disk after the new one was indexed"
+    );
 
     // A new version moved into place, not indexed: clearing takes what's there.
     let other = file.0.with_extension("new");
@@ -758,7 +961,10 @@ fn an_old_versions_text_goes_when_a_new_version_is_indexed_or_the_index_is_clear
     std::fs::rename(&other, &file.0).unwrap();
     let (cleared, code) = state.json(&["index", "clear"]);
     assert_eq!(code, 0, "{cleared}");
-    assert!(!all_text_under(&root).contains("secondword"), "clearing left the text of the version before this one");
+    assert!(
+        !all_text_under(&root).contains("secondword"),
+        "clearing left the text of the version before this one"
+    );
 
     // Renamed, which the path can't connect but the file itself can.
     wait_done(&state, "active");
@@ -788,7 +994,10 @@ fn clearing_stops_what_is_on_its_way() {
     let state = State::at(Level::Control);
     let _serving = state.serve();
     let running = doc("running.pdf", 1200);
-    let waiting = TempPdf::new("waiting.pdf", &pages(&[Page::new(text_lines(&["Words only the waiting file has: queuedword"]))]));
+    let waiting = TempPdf::new(
+        "waiting.pdf",
+        &pages(&[Page::new(text_lines(&["Words only the waiting file has: queuedword"]))]),
+    );
     let root = state.paths.corpus.clone();
     let running_key = CorpusKey::of_file(&running.0).unwrap();
     state.json(&["open", path(&running)]);
@@ -808,9 +1017,17 @@ fn clearing_stops_what_is_on_its_way() {
 
     let (cleared, code) = state.json(&["index", "clear", "--tab", "running"]);
     assert_eq!(code, 0, "{cleared}");
-    assert_eq!((cleared["data"]["cleared"].as_u64(), cleared["data"]["being_built"].as_u64()), (Some(1), Some(0)), "{cleared}");
+    assert_eq!(
+        (cleared["data"]["cleared"].as_u64(), cleared["data"]["being_built"].as_u64()),
+        (Some(1), Some(0)),
+        "{cleared}"
+    );
     let (status, _) = state.json(&["index", "status", "--tab", "running"]);
-    assert_eq!((status["data"]["state"].as_str(), status["data"]["indexers_running"].as_u64()), (Some("not_started"), Some(0)), "{status}");
+    assert_eq!(
+        (status["data"]["state"].as_str(), status["data"]["indexers_running"].as_u64()),
+        (Some("not_started"), Some(0)),
+        "{status}"
+    );
     std::thread::sleep(Duration::from_millis(500));
     let text = all_text_under(&root);
     assert!(!text.contains("alpha document"), "the build that was cleared carried on writing");
@@ -823,7 +1040,10 @@ fn lowering_to_off_stops_indexing() {
     let state = State::at(Level::Control);
     let _serving = state.serve();
     let running = doc("off-running.pdf", 1200);
-    let waiting = TempPdf::new("off-waiting.pdf", &pages(&[Page::new(text_lines(&["Words only the waiting file has: offqueuedword"]))]));
+    let waiting = TempPdf::new(
+        "off-waiting.pdf",
+        &pages(&[Page::new(text_lines(&["Words only the waiting file has: offqueuedword"]))]),
+    );
     let root = state.paths.corpus.clone();
     let running_key = CorpusKey::of_file(&running.0).unwrap();
     state.json(&["open", path(&running)]);
@@ -846,7 +1066,15 @@ fn lowering_to_off_stops_indexing() {
     state.set_level(Level::Control);
     let (status, code) = state.json(&["index", "status", "--tab", "off-waiting"]);
     assert_eq!(code, 0, "{status}");
-    assert_eq!((status["data"]["state"].as_str(), status["data"]["indexers_running"].as_u64(), status["data"]["indexers_waiting"].as_u64()), (Some("not_started"), Some(0), Some(0)), "{status}");
+    assert_eq!(
+        (
+            status["data"]["state"].as_str(),
+            status["data"]["indexers_running"].as_u64(),
+            status["data"]["indexers_waiting"].as_u64()
+        ),
+        (Some("not_started"), Some(0), Some(0)),
+        "{status}"
+    );
 }
 
 /// Failure: a page couldn't be read, and the answer still says `hits_total` and "N hits in all", a claim about a page nobody read. `the_same_answer` left these fields out, so nothing saw it. It says how many it counted, and not that that's all, both for a failure in scope and for one reached only to count.
@@ -860,7 +1088,14 @@ fn no_total_is_given_over_a_page_that_couldnt_be_counted() {
     let (found, code) = state.json(&["search", "ordinary"]);
     assert_eq!(code, 0, "{found}");
     assert_eq!(found["data"]["coverage"]["failed_pages"], serde_json::json!([1]), "{found}");
-    assert_eq!((found["data"]["coverage"]["hits_total"].clone(), found["data"]["coverage"]["hits_at_least"].as_u64()), (Value::Null, Some(1)), "{found}");
+    assert_eq!(
+        (
+            found["data"]["coverage"]["hits_total"].clone(),
+            found["data"]["coverage"]["hits_at_least"].as_u64()
+        ),
+        (Value::Null, Some(1)),
+        "{found}"
+    );
     let (plain, _, _) = state.text(&["search", "ordinary"]);
     assert!(!plain.contains("in all"), "{plain}");
 
@@ -871,7 +1106,15 @@ fn no_total_is_given_over_a_page_that_couldnt_be_counted() {
     let (limited, code) = state.json(&["search", "common", "--limit", "1"]);
     assert_eq!(code, 0, "{limited}");
     let coverage = &limited["data"]["coverage"];
-    assert_eq!((coverage["hits_total"].clone(), coverage["uncounted_pages"].as_u64(), coverage["hits_at_least"].as_u64()), (Value::Null, Some(1), Some(8)), "{limited}");
+    assert_eq!(
+        (
+            coverage["hits_total"].clone(),
+            coverage["uncounted_pages"].as_u64(),
+            coverage["hits_at_least"].as_u64()
+        ),
+        (Value::Null, Some(1), Some(8)),
+        "{limited}"
+    );
     let (plain, _, _) = state.text(&["search", "common", "--limit", "1"]);
     assert!(plain.contains("At least 8") && !plain.contains("8 hits in all"), "{plain}");
 }
@@ -956,7 +1199,11 @@ fn the_agent_folder_comes_only_when_asked_for_and_goes_with_a_clear() {
     let paths = recto_index::corpus::CorpusPaths::new(&root, key);
     assert!(!paths.agent.exists(), "a search wrote the second copy");
     let (status, _) = state.json(&["index", "status"]);
-    assert_eq!((status["data"]["folder"].clone(), status["data"]["agent_bytes"].as_u64()), (Value::Null, Some(0)), "{status}");
+    assert_eq!(
+        (status["data"]["folder"].clone(), status["data"]["agent_bytes"].as_u64()),
+        (Value::Null, Some(0)),
+        "{status}"
+    );
 
     // With the PDF gone: a folder comes from the pack alone.
     let (made, code) = state.json(&["index", "--agent"]);
@@ -974,8 +1221,19 @@ fn the_agent_folder_comes_only_when_asked_for_and_goes_with_a_clear() {
 
 /// A document for telling searches apart: words on some pages and not others, one page about them far more than the rest, a hidden run, and a page with nothing on it.
 fn searchable(name: &str) -> TempPdf {
-    let mut list: Vec<Page> = (1..=8).map(|at| Page::new(text_lines(&[&format!("Page {at} is about nothing much at all"), "with an aside on liability", "and a date 2019-03 here"]))).collect();
-    list.push(Page::new(text_lines(&["Liability and insurance, liability and caps", "liability insurance covers liability for insurance"])));
+    let mut list: Vec<Page> = (1..=8)
+        .map(|at| {
+            Page::new(text_lines(&[
+                &format!("Page {at} is about nothing much at all"),
+                "with an aside on liability",
+                "and a date 2019-03 here",
+            ]))
+        })
+        .collect();
+    list.push(Page::new(text_lines(&[
+        "Liability and insurance, liability and caps",
+        "liability insurance covers liability for insurance",
+    ])));
     list.push(Page::new(hidden_text_page()));
     list.push(Page::new(Vec::new()));
     TempPdf::new(name, &pages(&list))
@@ -1018,7 +1276,16 @@ fn a_pattern_keeps_all_that_a_hit_says() {
     wait_done(&state, "active");
     let (hidden, _) = state.json(&["search", r"hidden-white\s+\w+", "--regex"]);
     let hit = &hidden["data"]["hits"][0];
-    assert_eq!((hit["hidden_text"]["checked"].as_bool(), hit["hidden_text"]["flagged"].as_bool(), hit["overlaps_hidden"].as_bool(), hit["page"].as_u64()), (Some(true), Some(true), Some(true), Some(10)), "{hit}");
+    assert_eq!(
+        (
+            hit["hidden_text"]["checked"].as_bool(),
+            hit["hidden_text"]["flagged"].as_bool(),
+            hit["overlaps_hidden"].as_bool(),
+            hit["page"].as_u64()
+        ),
+        (Some(true), Some(true), Some(true), Some(10)),
+        "{hit}"
+    );
     assert_eq!(hidden["data"]["mode"], "regex");
     let (no_text, _) = state.json(&["search", r"zzz", "--regex"]);
     assert_eq!(no_text["data"]["coverage"]["no_text_pages"], serde_json::json!([11]), "{no_text}");
@@ -1029,9 +1296,22 @@ fn a_pattern_keeps_all_that_a_hit_says() {
     let (found, code) = state.json(&["search", r"2024-\d+", "--regex"]);
     assert_eq!(code, 0, "{found}");
     let hit = &found["data"]["hits"][0];
-    assert_eq!((hit["page"].as_u64(), hit["source_page"].as_u64(), hit["from_added_file"].as_bool(), hit["untrusted"]["added_file"].as_str()), (Some(2), Some(1), Some(true), Some("shape-added.pdf")), "{hit}");
+    assert_eq!(
+        (
+            hit["page"].as_u64(),
+            hit["source_page"].as_u64(),
+            hit["from_added_file"].as_bool(),
+            hit["untrusted"]["added_file"].as_str()
+        ),
+        (Some(2), Some(1), Some(true), Some("shape-added.pdf")),
+        "{hit}"
+    );
     let (moved, _) = state.json(&["search", r"caps$", "--regex"]);
-    assert_eq!((moved["data"]["hits"][0]["page"].as_u64(), moved["data"]["hits"][0]["source_page"].as_u64()), (Some(1), Some(9)), "{moved}");
+    assert_eq!(
+        (moved["data"]["hits"][0]["page"].as_u64(), moved["data"]["hits"][0]["source_page"].as_u64()),
+        (Some(1), Some(9)),
+        "{moved}"
+    );
     let (context, _) = state.json(&["search", r"an aside", "--regex", "-C", "1", "--limit", "1"]);
     let around = &context["data"]["hits"][0]["untrusted"]["context"];
     assert!(around["before"][0].as_str().unwrap().contains("about nothing"), "{context}");
@@ -1047,7 +1327,11 @@ fn a_bad_pattern_is_refused_and_the_session_carries_on() {
     let serving = state.serve();
     let file = doc("patterns.pdf", 1);
     state.json(&["open", path(&file)]);
-    for (pattern, code) in [("(unclosed", "bad_pattern"), (r"(a)\1", "bad_pattern"), (r"(?:\w{1000}){1000}", "pattern_too_large")] {
+    for (pattern, code) in [
+        ("(unclosed", "bad_pattern"),
+        (r"(a)\1", "bad_pattern"),
+        (r"(?:\w{1000}){1000}", "pattern_too_large"),
+    ] {
         let (refused, exit_code) = state.json(&["search", pattern, "--regex"]);
         assert_eq!((refused["error"]["code"].as_str(), exit_code), (Some(code), exit::FAILED), "{refused}");
         assert!(!refused["error"]["next"].as_str().unwrap().is_empty(), "{refused}");
@@ -1074,24 +1358,42 @@ fn a_ranked_answer_says_what_it_is() {
     assert_eq!(data["mode"], "ranked");
     assert_eq!(data["terms"], serde_json::json!(["liability", "insurance"]), "{ranked}");
     let hits = data["hits"].as_array().unwrap();
-    assert_eq!((hits[0]["page"].as_u64(), hits[0]["terms"].clone()), (Some(9), serde_json::json!(["liability", "insurance"])), "the page with the most of them is first: {ranked}");
+    assert_eq!(
+        (hits[0]["page"].as_u64(), hits[0]["terms"].clone()),
+        (Some(9), serde_json::json!(["liability", "insurance"])),
+        "the page with the most of them is first: {ranked}"
+    );
     assert_eq!(hits[0]["term_counts"], serde_json::json!([4, 3]), "{ranked}");
     assert!(hits.windows(2).all(|pair| pair[0]["score"].as_f64() >= pair[1]["score"].as_f64()), "{ranked}");
     assert!(hits[0]["untrusted"]["snippet"].as_str().unwrap().contains("Liability"), "{ranked}");
     assert!(hits[0]["hidden_text"]["checked"].is_boolean(), "{ranked}");
     assert_eq!(hits[0]["line"], 1);
     assert_eq!(data["coverage"]["pages_with_these_words"], 9, "{ranked}");
-    assert_eq!(data["coverage"]["hits_total"], Value::Null, "a ranked answer isn't every hit, so it gives no total: {ranked}");
+    assert_eq!(
+        data["coverage"]["hits_total"],
+        Value::Null,
+        "a ranked answer isn't every hit, so it gives no total: {ranked}"
+    );
     assert!(data["coverage"].get("hits_at_least").is_none(), "a count of 0 beside real hits: {ranked}");
     assert_eq!(data["coverage"]["no_text_pages"], serde_json::json!([11]), "{ranked}");
     let note = data["ranked_note"].as_str().unwrap();
-    assert!(note.contains("isn't every hit") && note.contains("count") && !note.contains("relevan"), "{note}");
+    assert!(
+        note.contains("isn't every hit") && note.contains("count") && !note.contains("relevan"),
+        "{note}"
+    );
     let (plain, _, _) = state.text(&["search", "Liability, insurance", "--rank"]);
     assert!(plain.contains("isn't every hit") && plain.contains("score "), "{plain}");
     let (limited, _) = state.json(&["search", "liability", "--rank", "--limit", "1"]);
     assert_eq!(limited["data"]["hits"].as_array().unwrap().len(), 1, "{limited}");
     let (hidden, _) = state.json(&["search", "HIDDEN-WHITE", "--rank"]);
-    assert_eq!((hidden["data"]["hits"][0]["hidden_text"]["flagged"].as_bool(), hidden["data"]["hits"][0]["overlaps_hidden"].as_bool()), (Some(true), Some(true)), "{hidden}");
+    assert_eq!(
+        (
+            hidden["data"]["hits"][0]["hidden_text"]["flagged"].as_bool(),
+            hidden["data"]["hits"][0]["overlaps_hidden"].as_bool()
+        ),
+        (Some(true), Some(true)),
+        "{hidden}"
+    );
 }
 
 /// Failure: a hostile page that repeats a word reaches the top, which can't be stopped, and comes out reading as trustworthy rather than marked as the document's words. Or one word makes a page score without limit, so nothing else shows.
@@ -1100,7 +1402,10 @@ fn stuffing_a_page_gets_it_first_and_no_further() {
     let state = State::at(Level::Control);
     let _serving = state.serve();
     let stuffed = "keyword ".repeat(60);
-    let list = [Page::new(text_lines(&["a page that mentions keyword once and other words beside"])), Page::new(text_lines(&[&stuffed]))];
+    let list = [
+        Page::new(text_lines(&["a page that mentions keyword once and other words beside"])),
+        Page::new(text_lines(&[&stuffed])),
+    ];
     let file = TempPdf::new("stuffed.pdf", &pages(&list));
     state.json(&["open", path(&file)]);
     let (ranked, code) = state.json(&["search", "keyword", "--rank"]);
@@ -1120,14 +1425,25 @@ fn a_page_too_long_for_a_pattern_is_listed() {
     // Many short lines of the same words, past what a pattern is run over.
     let line = "long page words here that repeat and repeat and repeat and repeat and repeat";
     let lines: Vec<&str> = std::iter::repeat_n(line, 2000).collect();
-    let list = [Page::new(text_lines(&["A short page with a word like needleword"])), Page::new(text_lines(&lines))];
+    let list = [
+        Page::new(text_lines(&["A short page with a word like needleword"])),
+        Page::new(text_lines(&lines)),
+    ];
     let file = TempPdf::new("long-page.pdf", &pages(&list));
     state.json(&["open", path(&file)]);
     wait_done(&state, "active");
     let (found, code) = state.json(&["search", "needleword|repeat", "--regex", "--limit", "5"]);
     assert_eq!(code, 0, "{found}");
     let coverage = &found["data"]["coverage"];
-    assert_eq!((coverage["failed_pages"].clone(), coverage["pages_too_long_for_a_pattern"].as_u64(), coverage["hits_total"].clone()), (serde_json::json!([2]), Some(1), Value::Null), "{found}");
+    assert_eq!(
+        (
+            coverage["failed_pages"].clone(),
+            coverage["pages_too_long_for_a_pattern"].as_u64(),
+            coverage["hits_total"].clone()
+        ),
+        (serde_json::json!([2]), Some(1), Value::Null),
+        "{found}"
+    );
     assert_eq!(found["data"]["hits"].as_array().unwrap().len(), 1, "the short page is still searched: {found}");
     let (scanned, _) = state.json(&["search", "needleword|repeat", "--regex", "--limit", "5", "--scan"]);
     assert_eq!(the_same_answer(found), the_same_answer(scanned));
@@ -1159,7 +1475,11 @@ fn the_old_corpus_folder_goes_at_startup() {
     std::os::unix::fs::symlink(&nearly, &old).unwrap();
     let serving = state.serve();
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(recto_platform::local::process_counters(serving.pid()).unwrap().threads, 1, "a start with nothing to remove holds a thread");
+    assert_eq!(
+        recto_platform::local::process_counters(serving.pid()).unwrap().threads,
+        1,
+        "a start with nothing to remove holds a thread"
+    );
     assert!(std::fs::symlink_metadata(&old).unwrap().file_type().is_symlink());
     assert_eq!(std::fs::read_to_string(nearly.join("mine")).unwrap(), "someone's");
 }

@@ -30,7 +30,8 @@ pub const UTI_SVG: &str = "public.svg-image";
 pub const UTI_TEXT: &str = "public.utf8-plain-text";
 
 fn restricted() -> AgentError {
-    AgentError::new("copy_restricted", "This file's permissions ask that it isn't copied.", exit::PROTECTED).then("Tell the user. `--anyway` copies it, once they've said to. Each use goes in the activity log.")
+    AgentError::new("copy_restricted", "This file's permissions ask that it isn't copied.", exit::PROTECTED)
+        .then("Tell the user. `--anyway` copies it, once they've said to. Each use goes in the activity log.")
 }
 
 /// **Exports of a file that asks not to be copied ask "anyway", as Copy does** (owner, 2026-11-08: "Yes, same step" for SVG export, PNG render and print to PDF). Exit 8 and `copy_restricted` unless `anyway`. Read from the file's own flag, with no page, so a refusal costs no worker. `page` is from 0.
@@ -57,12 +58,16 @@ pub(crate) fn images(path: &Path, page: u32) -> Result<Value, AgentError> {
 
 /// `recto image`: one of a page's images to a new file, as itself. `.jpg` takes a JPEG's own bytes and refuses anything else, as that would be re-encoded; `.png` takes any image, losslessly.
 pub(crate) fn image_to_file(path: &Path, page: u32, number: u32, out: &Path, anyway: bool) -> Result<Value, AgentError> {
-    let index = page.checked_sub(1).ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))?;
+    let index = page
+        .checked_sub(1)
+        .ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))?;
     if number == 0 {
         return Err(bad_number());
     }
     crate::saving::check_export_path(out, &["png", "jpg", "jpeg"], "picture")?;
-    let as_jpeg = out.extension().is_some_and(|ending| ending.eq_ignore_ascii_case("jpg") || ending.eq_ignore_ascii_case("jpeg"));
+    let as_jpeg = out
+        .extension()
+        .is_some_and(|ending| ending.eq_ignore_ascii_case("jpg") || ending.eq_ignore_ascii_case("jpeg"));
     if std::fs::symlink_metadata(out).is_ok() {
         return Err(output_exists());
     }
@@ -75,7 +80,16 @@ pub(crate) fn image_to_file(path: &Path, page: u32, number: u32, out: &Path, any
     let (temp, file) = OwnTemp::create(out)?;
     // Held to the bytes any export may write, as `render` is: an image's own bytes are as large as the file says.
     let written = RefCell::new(LimitedOut::new(FileOut(file), caps.max_bytes));
-    let copied = image::copy_into(&mut doc, path, index, number, if as_jpeg { Want::JpegOnly } else { Want::Png }, DEFAULT_SCALE, &caps, &written)?;
+    let copied = image::copy_into(
+        &mut doc,
+        path,
+        index,
+        number,
+        if as_jpeg { Want::JpegOnly } else { Want::Png },
+        DEFAULT_SCALE,
+        &caps,
+        &written,
+    )?;
     if as_jpeg && !copied.coded.is_jpeg() {
         return Err(image::not_a_jpeg(index, number));
     }
@@ -120,13 +134,21 @@ pub(crate) fn snapshot_writes(format: &str) -> bool {
 
 /// `recto snapshot`: a box on a page, as a picture, an SVG or text.
 pub(crate) fn snapshot_command(asked: &SnapshotAsked<'_>) -> Result<Value, AgentError> {
-    let page = asked.page.checked_sub(1).ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))?;
+    let page = asked
+        .page
+        .checked_sub(1)
+        .ok_or_else(|| AgentError::new("no_such_page", "Pages are numbered from 1.", exit::NOT_FOUND))?;
     let format = format_of(asked.format)?;
     crate::render::check_scale_and_box(asked.scale, Some(asked.rect))?;
     let started = Instant::now();
     if format == Format::Text {
         if asked.out.is_some() {
-            return Err(AgentError::new("usage", "A snapshot as text comes back in the answer, as `copy` gives it, and writes no file.", exit::USAGE).then("Leave out `--out`, or choose `--as png`, `jpg` or `svg`."));
+            return Err(AgentError::new(
+                "usage",
+                "A snapshot as text comes back in the answer, as `copy` gives it, and writes no file.",
+                exit::USAGE,
+            )
+            .then("Leave out `--out`, or choose `--as png`, `jpg` or `svg`."));
         }
         refuse_if_restricted(asked.path, page, asked.anyway)?;
         let mut doc = open_for_text(asked.path)?;
@@ -145,7 +167,9 @@ pub(crate) fn snapshot_command(asked: &SnapshotAsked<'_>) -> Result<Value, Agent
             "untrusted": { "text": kept.text },
         }));
     }
-    let out = asked.out.ok_or_else(|| AgentError::new("usage", format!("A snapshot as {} needs `--out`, a new file.", format.name()), exit::USAGE))?;
+    let out = asked
+        .out
+        .ok_or_else(|| AgentError::new("usage", format!("A snapshot as {} needs `--out`, a new file.", format.name()), exit::USAGE))?;
     crate::saving::check_export_path(out, format.endings(), if format == Format::Svg { "SVG" } else { "picture" })?;
     if std::fs::symlink_metadata(out).is_ok() {
         return Err(output_exists());
@@ -157,7 +181,17 @@ pub(crate) fn snapshot_command(asked: &SnapshotAsked<'_>) -> Result<Value, Agent
     let mut data = json!({ "page": asked.page, "rect": asked.rect, "as": format.name(), "out": out, "anyway": asked.anyway });
     match format {
         Format::Svg => {
-            let svg = crate::render::write_svg_box(&mut doc, asked.path, page, asked.rect, asked.scale, TextMode::Both, &OutputCaps::default(), &written, started)?;
+            let svg = crate::render::write_svg_box(
+                &mut doc,
+                asked.path,
+                page,
+                asked.rect,
+                asked.scale,
+                TextMode::Both,
+                &OutputCaps::default(),
+                &written,
+                started,
+            )?;
             data["all_vector"] = json!(svg.all_vector());
             data["raster_scale"] = json!(svg.raster_scale);
         }
@@ -323,11 +357,16 @@ pub fn image_clip(path: &Path, page: u32, x: f32, y: f32, anyway: bool, stop: &C
         let Some(copied) = copied else { return Ok(ClipOutcome::NoImage) };
         let mut left_off = Vec::new();
         if copied.coded.is_jpeg() {
-            clip.items.push(ClipItem::Ready { uti: UTI_JPEG, bytes: jpeg_for_clipboard(first) });
+            clip.items.push(ClipItem::Ready {
+                uti: UTI_JPEG,
+                bytes: jpeg_for_clipboard(first),
+            });
             if stop.is_stopped() {
                 return Ok(ClipOutcome::Stopped);
             }
-            match in_memory(clip.room(), |out| image::copy_into(&mut doc, path, page, hit.number, Want::Png, DEFAULT_SCALE, &caps, out).map(drop)) {
+            match in_memory(clip.room(), |out| {
+                image::copy_into(&mut doc, path, page, hit.number, Want::Png, DEFAULT_SCALE, &caps, out).map(drop)
+            }) {
                 Ok(bytes) => clip.items.push(ClipItem::Ready { uti: UTI_PNG, bytes }),
                 Err(_) => left_off.push("PNG"),
             }
@@ -338,7 +377,11 @@ pub fn image_clip(path: &Path, page: u32, x: f32, y: f32, anyway: bool, stop: &C
         Ok(ClipOutcome::Ready(clip))
     };
     let outcome = run().unwrap_or_else(ClipOutcome::Failed);
-    if stop.is_stopped() && !matches!(outcome, ClipOutcome::Ready(_)) { ClipOutcome::Stopped } else { outcome }
+    if stop.is_stopped() && !matches!(outcome, ClipOutcome::Ready(_)) {
+        ClipOutcome::Stopped
+    } else {
+        outcome
+    }
 }
 
 fn image_note(copied: &CopiedImage, left_off: &[&str]) -> String {
@@ -378,13 +421,22 @@ pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], anyway: bool, stop:
         let (png, jpg) = (RefCell::new(MemoryOut::new(room)), RefCell::new(MemoryOut::new(room)));
         // The picture is what the box is, so a failure there is the snapshot's: the rest are extras.
         let (_, jpg_came) = snapshot::pictures_into(&mut doc, page, rect, DEFAULT_SCALE, Format::Png, &caps, &png, Some(&jpg), 0)?;
-        clip.items.push(ClipItem::Ready { uti: UTI_PNG, bytes: png.into_inner().bytes });
+        clip.items.push(ClipItem::Ready {
+            uti: UTI_PNG,
+            bytes: png.into_inner().bytes,
+        });
         match words {
-            Some(words) if words.len() <= clip.room() => clip.items.push(ClipItem::Ready { uti: UTI_TEXT, bytes: words.to_vec() }),
+            Some(words) if words.len() <= clip.room() => clip.items.push(ClipItem::Ready {
+                uti: UTI_TEXT,
+                bytes: words.to_vec(),
+            }),
             Some(_) => left_off.push("text"),
             None => {}
         }
-        clip.items.push(ClipItem::Promised { uti: UTI_SVG, cap: MAX_CLIP_ITEM });
+        clip.items.push(ClipItem::Promised {
+            uti: UTI_SVG,
+            cap: MAX_CLIP_ITEM,
+        });
         let jpg = jpg.into_inner().bytes;
         if jpg_came && jpg.len() <= clip.room() {
             clip.items.push(ClipItem::Ready { uti: UTI_JPEG, bytes: jpg });
@@ -395,14 +447,31 @@ pub fn snapshot_clip(path: &Path, page: u32, rect: [f32; 4], anyway: bool, stop:
         Ok(ClipOutcome::Ready(clip))
     };
     let outcome = run().unwrap_or_else(ClipOutcome::Failed);
-    if stop.is_stopped() && !matches!(outcome, ClipOutcome::Ready(_)) { ClipOutcome::Stopped } else { outcome }
+    if stop.is_stopped() && !matches!(outcome, ClipOutcome::Ready(_)) {
+        ClipOutcome::Stopped
+    } else {
+        outcome
+    }
 }
 
 /// **A snapshot's SVG, made when a paste asks for it**: `export svg --rect`'s drawing with text as outlines only, so hidden text stays out as it does from the text item, into at most `cap` bytes. Whether the file may be copied was settled when the snapshot was taken. Opens a worker of its own and waits for it, for as long as the paste is waiting. `page` is from 0.
 pub fn snapshot_svg(path: &Path, page: u32, rect: [f32; 4], cap: usize) -> Result<Vec<u8>, AgentError> {
     crate::render::check_scale_and_box(DEFAULT_SCALE, Some(rect))?;
     let mut doc = open_for_text(path)?;
-    in_memory(cap.min(MAX_CLIP_ITEM), |out| crate::render::write_svg_box(&mut doc, path, page, rect, DEFAULT_SCALE, TextMode::Paths, &OutputCaps::default(), out, Instant::now()).map(drop))
+    in_memory(cap.min(MAX_CLIP_ITEM), |out| {
+        crate::render::write_svg_box(
+            &mut doc,
+            path,
+            page,
+            rect,
+            DEFAULT_SCALE,
+            TextMode::Paths,
+            &OutputCaps::default(),
+            out,
+            Instant::now(),
+        )
+        .map(drop)
+    })
 }
 
 fn snapshot_note(clip: &Clip, text: Option<&recto_index::select::BoxText>, left_off: &[&str]) -> String {
@@ -430,7 +499,10 @@ mod tests {
     #[test]
     fn a_jpeg_for_the_clipboard_ends_where_its_picture_does() {
         // Start, a frame of one pixel, a scan and its data, and the end.
-        let whole = [0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0x12, 0x34, 0xFF, 0xD9];
+        let whole = [
+            0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F,
+            0x00, 0x12, 0x34, 0xFF, 0xD9,
+        ];
         let mut with_more = whole.to_vec();
         with_more.extend_from_slice(b"anything at all");
         assert_eq!(jpeg_for_clipboard(with_more), whole);
@@ -444,12 +516,20 @@ mod tests {
     fn each_item_is_held_to_the_room_left() {
         let mut clip = Clip::default();
         assert_eq!(clip.room(), MAX_CLIP_ITEM);
-        clip.items.push(ClipItem::Ready { uti: UTI_PNG, bytes: vec![0; MAX_CLIP_ITEM - 10] });
-        clip.items.push(ClipItem::Ready { uti: UTI_JPEG, bytes: vec![0; MAX_CLIP_ITEM - 10] });
+        clip.items.push(ClipItem::Ready {
+            uti: UTI_PNG,
+            bytes: vec![0; MAX_CLIP_ITEM - 10],
+        });
+        clip.items.push(ClipItem::Ready {
+            uti: UTI_JPEG,
+            bytes: vec![0; MAX_CLIP_ITEM - 10],
+        });
         assert_eq!(clip.room(), 20);
         clip.items.push(ClipItem::Promised { uti: UTI_SVG, cap: 1 });
         assert_eq!(clip.room(), 20, "a promise takes no room until it's made");
-        let over = in_memory(clip.room(), |out| std::io::Write::write_all(&mut *out.borrow_mut(), &[0; 21]).map_err(|_| AgentError::new("output_too_large", "", exit::FAILED)));
+        let over = in_memory(clip.room(), |out| {
+            std::io::Write::write_all(&mut *out.borrow_mut(), &[0; 21]).map_err(|_| AgentError::new("output_too_large", "", exit::FAILED))
+        });
         assert_eq!(over.unwrap_err().code, "output_too_large");
     }
 

@@ -23,7 +23,11 @@ pub fn sandbox_in_force() -> bool {
 }
 
 pub fn drop_mach_send_rights() -> MachDrop {
-    MachDrop { dropped: 0, dead_names: 0, kept: 0 }
+    MachDrop {
+        dropped: 0,
+        dead_names: 0,
+        kept: 0,
+    }
 }
 
 pub fn launchd_reachable() -> bool {

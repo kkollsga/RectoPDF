@@ -8,8 +8,8 @@ use recto_platform::isolate::{self, Channel, SharedMemory};
 use recto_proto::{self as proto, CharRecord, FailCode, Kind, PageSize, RegionReply, RenderJob, TextJob, TextReply, TileKind, TileRect, TileReply, TileStatus};
 use recto_render_service::transport::{FrameReader, send_all};
 use recto_render_service::{
-    DocRenderer, DrawStrategy, ExportRefusal, HeavySlot, KillReason, LowResWhy, OutputCaps, PageDrawState, PageEvent, Policy, RenderFailure, ServiceConfig, TileRequest, TileResult, ViewportOptions, control,
-    draw_whole_page, measure_viewport,
+    DocRenderer, DrawStrategy, ExportRefusal, HeavySlot, KillReason, LowResWhy, OutputCaps, PageDrawState, PageEvent, Policy, RenderFailure, ServiceConfig,
+    TileRequest, TileResult, ViewportOptions, control, draw_whole_page, measure_viewport,
 };
 use recto_testpdf::TempPdf;
 use std::ffi::OsString;
@@ -36,7 +36,15 @@ fn fake_worker() {
         // Starting as slowly as a loaded runner can, and longer than the idle rule the test gives it.
         std::thread::sleep(Duration::from_millis(300));
     }
-    send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled: false }), &[]).unwrap();
+    send_all(
+        &channel,
+        &proto::encode_hello(proto::Hello {
+            pid: std::process::id(),
+            walled: false,
+        }),
+        &[],
+    )
+    .unwrap();
     let mut reader = FrameReader::default();
     let mut cancel_word = None;
     loop {
@@ -53,15 +61,32 @@ fn fake_worker() {
             }
             Kind::SizeRequest => {
                 let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
-                PageSize { job_id, width: 612.0, height: 792.0 }.encode()
+                PageSize {
+                    job_id,
+                    width: 612.0,
+                    height: 792.0,
+                }
+                .encode()
             }
             Kind::TraitsRequest => {
                 let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
-                proto::PageTraits { job_id, largest_image_pixels: 0 }.encode()
+                proto::PageTraits {
+                    job_id,
+                    largest_image_pixels: 0,
+                }
+                .encode()
             }
             Kind::TextRequest => {
                 let job = TextJob::decode(&frame.payload).unwrap();
-                TextReply { job_id: job.job_id, page: job.page, hidden_checked: job.hidden_check, chars: vec![CharRecord::new('a' as u32, 0)], ..TextReply::default() }.encode().unwrap()
+                TextReply {
+                    job_id: job.job_id,
+                    page: job.page,
+                    hidden_checked: job.hidden_check,
+                    chars: vec![CharRecord::new('a' as u32, 0)],
+                    ..TextReply::default()
+                }
+                .encode()
+                .unwrap()
             }
             Kind::Render => {
                 let job = RenderJob::decode(&frame.payload).unwrap();
@@ -109,7 +134,11 @@ fn fake_worker() {
                 if job.tile_edge == 0 {
                     tile.encode()
                 } else {
-                    RegionReply { tile, kinds: vec![TileKind::Colour; proto::region_tiles(job.rect, job.tile_edge).count()] }.encode()
+                    RegionReply {
+                        tile,
+                        kinds: vec![TileKind::Colour; proto::region_tiles(job.rect, job.tile_edge).count()],
+                    }
+                    .encode()
                 }
             }
             _ => proto::encode_failed(0, FailCode::Internal),
@@ -124,13 +153,23 @@ fn config(mode: &str, slot: &HeavySlot) -> ServiceConfig {
         pdfium_lib: "/nonexistent".into(),
         heavy_slot: slot.clone(),
         extra_env: vec![("RECTO_FAKE".into(), mode.into())],
-        replace_args: Some(["--exact", "fake_worker", "--nocapture", "--test-threads=1"].into_iter().map(OsString::from).collect()),
+        replace_args: Some(
+            ["--exact", "fake_worker", "--nocapture", "--test-threads=1"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        ),
     }
 }
 
 /// Limits of the test's own, and memory always free unless a test says otherwise.
 fn policy() -> Policy {
-    Policy { memory_limit_bytes: NORMAL, heavy_limit_bytes: HEAVY, heavy_min_free_percent: 0, ..Policy::default() }
+    Policy {
+        memory_limit_bytes: NORMAL,
+        heavy_limit_bytes: HEAVY,
+        heavy_min_free_percent: 0,
+        ..Policy::default()
+    }
 }
 
 fn doc(mode: &str) -> (DocRenderer, TempPdf) {
@@ -143,7 +182,18 @@ fn doc_with(mode: &str, policy: Policy, slot: &HeavySlot) -> (DocRenderer, TempP
 }
 
 fn request(page: u32) -> TileRequest {
-    TileRequest { page, rect: TileRect { x: 512, y: 512, width: 512, height: 512 }, scale: 2.0, stride: 2048, generation: 1 }
+    TileRequest {
+        page,
+        rect: TileRect {
+            x: 512,
+            y: 512,
+            width: 512,
+            height: 512,
+        },
+        scale: 2.0,
+        stride: 2048,
+        generation: 1,
+    }
 }
 
 fn surface() -> SharedMemory {
@@ -170,7 +220,11 @@ fn a_heavy_worker_let_go_again_and_again_uses_up_nothing() {
         // The heavy slot is free when that process has really gone.
         common::wait_until("the heavy slot", || !slot.is_taken());
     }
-    assert!(doc.stats().heavy_retries > policy().max_heavy_retries, "this has to pass the old allowance: {:?}", doc.stats());
+    assert!(
+        doc.stats().heavy_retries > policy().max_heavy_retries,
+        "this has to pass the old allowance: {:?}",
+        doc.stats()
+    );
     assert_eq!(doc.stats().heavy_pages, 1, "one page");
     assert_eq!(doc.page_draw_state(0), PageDrawState::NeedsHeavy);
 }
@@ -218,7 +272,10 @@ fn step_2_the_heavy_worker_holds_that_page_alone() {
 #[test]
 fn step_2_needs_the_mac_to_have_memory_free() {
     // Above any possible reading, so this doesn't depend on what this Mac has free.
-    let tight = Policy { heavy_min_free_percent: 101, ..policy() };
+    let tight = Policy {
+        heavy_min_free_percent: 101,
+        ..policy()
+    };
     let (mut doc, _file) = doc_with("fits_heavy_or_low_res", tight, &HeavySlot::new());
     let tile = done(doc.render_tile(&request(0), &surface()));
     let low_res = tile.low_res.expect("it should say this is a lower resolution");
@@ -238,7 +295,16 @@ fn step_3_a_lower_resolution_version_is_drawn_and_reported() {
     assert_eq!(low_res.why, LowResWhy::TooHeavy);
     assert!(!low_res.why.may_clear());
     assert_eq!(low_res.scale, 0.5);
-    assert_eq!(low_res.rect, TileRect { x: 128, y: 128, width: 128, height: 128 }, "the same part of the page, a quarter the size");
+    assert_eq!(
+        low_res.rect,
+        TileRect {
+            x: 128,
+            y: 128,
+            width: 128,
+            height: 128
+        },
+        "the same part of the page, a quarter the size"
+    );
     assert_eq!(doc.page_draw_state(0), PageDrawState::LowResOnly);
     assert_eq!(doc.stats().memory_kills, 2);
     let spawns = doc.stats().spawns;
@@ -252,7 +318,15 @@ fn step_3_a_lower_resolution_version_is_drawn_and_reported() {
 fn step_3_stays_on_the_page_at_its_edges() {
     let (mut doc, _file) = doc("fits_low_res");
     // The page is 1224 x 1584 at this scale, and 306 x 396 at a quarter of it.
-    let corner = TileRequest { rect: TileRect { x: 1223, y: 1583, width: 1, height: 1 }, ..request(0) };
+    let corner = TileRequest {
+        rect: TileRect {
+            x: 1223,
+            y: 1583,
+            width: 1,
+            height: 1,
+        },
+        ..request(0)
+    };
     let low_res = done(doc.render_tile(&corner, &surface())).low_res.unwrap();
     assert!(low_res.rect.x < 306 && low_res.rect.y < 396, "{:?}", low_res.rect);
     assert!(low_res.rect.width >= 1 && low_res.rect.height >= 1);
@@ -263,7 +337,13 @@ fn step_3_stays_on_the_page_at_its_edges() {
 fn step_4_failing_all_the_way_down_is_said_plainly_and_remembered() {
     let (mut doc, _file) = doc("fits_nothing");
     let failure = doc.render_tile(&request(0), &surface()).unwrap_err();
-    assert_eq!(failure, RenderFailure::PageFailed { page: 0, reason: KillReason::MemoryLimit });
+    assert_eq!(
+        failure,
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::MemoryLimit
+        }
+    );
     assert_eq!(failure.code(), "page_too_large");
     assert!(failure.message().contains("lower resolution"), "{}", failure.message());
     assert_eq!(doc.stats().memory_kills, 3, "each step once");
@@ -297,7 +377,18 @@ fn only_one_heavy_worker_across_the_session_and_nobody_waits_for_it() {
 }
 
 fn region(page: u32) -> TileRequest {
-    TileRequest { page, rect: TileRect { x: 512, y: 512, width: 1024, height: 1024 }, scale: 2.0, stride: 4096, generation: 1 }
+    TileRequest {
+        page,
+        rect: TileRect {
+            x: 512,
+            y: 512,
+            width: 1024,
+            height: 1024,
+        },
+        scale: 2.0,
+        stride: 4096,
+        generation: 1,
+    }
 }
 
 fn region_surface() -> SharedMemory {
@@ -315,17 +406,36 @@ fn a_region_goes_down_the_same_sequence() {
     let (mut low, _b) = doc("fits_low_res");
     let tile = done(low.render_region(&region(0), 512, &region_surface()));
     let low_res = tile.low_res.expect("it should say this is a lower resolution");
-    assert_eq!(low_res.rect, TileRect { x: 128, y: 128, width: 178, height: 256 }, "this region runs past the page's right edge, and the smaller one stops there");
+    assert_eq!(
+        low_res.rect,
+        TileRect {
+            x: 128,
+            y: 128,
+            width: 178,
+            height: 256
+        },
+        "this region runs past the page's right edge, and the smaller one stops there"
+    );
     assert!(tile.region_kinds.is_empty(), "a lower-resolution pass isn't on the tile grid");
     let (mut none, _c) = doc("fits_nothing");
-    assert_eq!(none.render_region(&region(0), 512, &region_surface()).unwrap_err(), RenderFailure::PageFailed { page: 0, reason: KillReason::MemoryLimit });
+    assert_eq!(
+        none.render_region(&region(0), 512, &region_surface()).unwrap_err(),
+        RenderFailure::PageFailed {
+            page: 0,
+            reason: KillReason::MemoryLimit
+        }
+    );
 }
 
 /// Failure: a heavy worker that left by itself keeps the slot, so no other page can ever have it.
 #[test]
 fn a_heavy_worker_gone_idle_gives_the_slot_back() {
     let slot = HeavySlot::new();
-    let quick = Policy { idle_exit: Duration::from_millis(30), idle_grace: Duration::from_millis(30), ..policy() };
+    let quick = Policy {
+        idle_exit: Duration::from_millis(30),
+        idle_grace: Duration::from_millis(30),
+        ..policy()
+    };
     let (mut doc, _file) = doc_with("fits_heavy", quick, &slot);
     done(doc.render_tile(&request(0), &surface()));
     assert!(slot.is_taken());
@@ -339,7 +449,11 @@ fn a_heavy_worker_gone_idle_gives_the_slot_back() {
 /// the 10 s it may take to start. Starting isn't being idle: only `start_timeout` decides how long a start may take.
 #[test]
 fn a_worker_slow_to_start_isnt_killed_as_idle() {
-    let quick = Policy { idle_exit: Duration::from_millis(30), idle_grace: Duration::from_millis(30), ..policy() };
+    let quick = Policy {
+        idle_exit: Duration::from_millis(30),
+        idle_grace: Duration::from_millis(30),
+        ..policy()
+    };
     let (mut doc, _file) = doc_with("slow_hello", quick, &HeavySlot::new());
     let tile = done(doc.render_tile(&request(1), &surface()));
     assert_eq!(tile.low_res, None);
@@ -364,7 +478,13 @@ fn an_export_never_draws_a_lower_resolution() {
         Ok(())
     })
     .unwrap_err();
-    assert_eq!(failure, RenderFailure::ExportRefused { page: 0, why: ExportRefusal::TooHeavy });
+    assert_eq!(
+        failure,
+        RenderFailure::ExportRefused {
+            page: 0,
+            why: ExportRefusal::TooHeavy
+        }
+    );
     assert_eq!(failure.code(), "export_page_too_heavy");
     assert!(failure.message().contains("no file was written"), "{}", failure.message());
     assert_eq!(begins, vec![(1224, 1584)], "only ever the size asked for");
@@ -379,10 +499,19 @@ fn an_export_never_draws_a_lower_resolution() {
 fn an_export_refuses_when_the_mac_has_no_memory_to_spare() {
     let slot = HeavySlot::new();
     // Above any possible reading, so this doesn't depend on what this Mac has free.
-    let tight = Policy { heavy_min_free_percent: 101, ..policy() };
+    let tight = Policy {
+        heavy_min_free_percent: 101,
+        ..policy()
+    };
     let (mut doc, _file) = doc_with("fits_heavy_or_low_res", tight, &slot);
     let failure = export(&mut doc).unwrap_err();
-    assert_eq!(failure, RenderFailure::ExportRefused { page: 0, why: ExportRefusal::MemoryTight });
+    assert_eq!(
+        failure,
+        RenderFailure::ExportRefused {
+            page: 0,
+            why: ExportRefusal::MemoryTight
+        }
+    );
     assert_eq!(failure.code(), "export_memory_tight");
     assert_eq!(doc.stats().heavy_retries, 0);
     assert_eq!(slot.waiting(), 0, "there's no point waiting for a slot it couldn't use");
@@ -434,7 +563,11 @@ fn an_export_waits_for_the_slot_then_draws_sharp() {
 #[test]
 fn an_idle_heavy_worker_lets_a_waiting_export_through_with_nobody_touching_it() {
     let slot = HeavySlot::new();
-    let quick = Policy { idle_exit: Duration::from_millis(200), idle_grace: Duration::from_millis(50), ..policy() };
+    let quick = Policy {
+        idle_exit: Duration::from_millis(200),
+        idle_grace: Duration::from_millis(50),
+        ..policy()
+    };
     let (mut holder, _a) = doc_with("fits_heavy", quick, &slot);
     done(holder.render_tile(&request(0), &surface()));
     let (_cancel, thread, _b) = export_waiting_for(&slot, policy());
@@ -452,7 +585,13 @@ fn a_cancelled_wait_ends_at_once_and_gives_up_its_place() {
     let (mut holder, _a) = doc_with("fits_heavy", policy(), &slot);
     done(holder.render_tile(&request(0), &surface()));
     // A wait far longer than this test, so only the cancel can end it.
-    let (cancel, thread, _b) = export_waiting_for(&slot, Policy { export_slot_wait: Duration::from_secs(3600), ..policy() });
+    let (cancel, thread, _b) = export_waiting_for(
+        &slot,
+        Policy {
+            export_slot_wait: Duration::from_secs(3600),
+            ..policy()
+        },
+    );
     cancel.cancel_before(1);
     let (result, heavy_retries) = thread.join().unwrap();
     assert_eq!(result.unwrap_err(), RenderFailure::Cancelled);
@@ -461,7 +600,11 @@ fn a_cancelled_wait_ends_at_once_and_gives_up_its_place() {
     holder.kill_worker();
     common::wait_until("the holder's slot to free", || !slot.is_taken());
     let (mut viewer, _c) = doc_with("fits_heavy", policy(), &slot);
-    assert_eq!(done(viewer.render_tile(&request(0), &surface())).low_res, None, "a viewer should get the slot now");
+    assert_eq!(
+        done(viewer.render_tile(&request(0), &surface())).low_res,
+        None,
+        "a viewer should get the slot now"
+    );
 }
 
 /// Failure: an export waits for ever, or a timed-out wait keeps its place. It must refuse plainly when its limit runs out.
@@ -470,9 +613,22 @@ fn an_export_refuses_when_its_wait_runs_out() {
     let slot = HeavySlot::new();
     let (mut holder, _a) = doc_with("fits_heavy", policy(), &slot);
     done(holder.render_tile(&request(0), &surface()));
-    let (mut waiter, _b) = doc_with("fits_heavy", Policy { export_slot_wait: Duration::from_millis(10), ..policy() }, &slot);
+    let (mut waiter, _b) = doc_with(
+        "fits_heavy",
+        Policy {
+            export_slot_wait: Duration::from_millis(10),
+            ..policy()
+        },
+        &slot,
+    );
     let failure = export(&mut waiter).unwrap_err();
-    assert_eq!(failure, RenderFailure::ExportRefused { page: 0, why: ExportRefusal::WaitTimedOut });
+    assert_eq!(
+        failure,
+        RenderFailure::ExportRefused {
+            page: 0,
+            why: ExportRefusal::WaitTimedOut
+        }
+    );
     assert_eq!(failure.code(), "export_wait_timed_out");
     assert_eq!(slot.waiting(), 0);
 }
@@ -524,7 +680,13 @@ fn a_busy_slot_never_makes_a_page_fail_for_good() {
     // Fits the larger limit, but not the lower resolution in a normal worker.
     let (mut doc, _b) = doc_with("fits_heavy", policy(), &slot);
     let first = doc.render_tile(&request(0), &surface()).unwrap_err();
-    assert_eq!(first, RenderFailure::NotDrawableNow { page: 0, why: LowResWhy::HeavyBusy });
+    assert_eq!(
+        first,
+        RenderFailure::NotDrawableNow {
+            page: 0,
+            why: LowResWhy::HeavyBusy
+        }
+    );
     assert_eq!(first.code(), "page_not_drawable_now");
     assert_eq!(doc.page_draw_state(0), PageDrawState::NeedsHeavy, "not given up on");
     let kills = doc.stats().memory_kills;
@@ -532,14 +694,31 @@ fn a_busy_slot_never_makes_a_page_fail_for_good() {
     assert_eq!(doc.stats().memory_kills, kills, "it ran the kill again");
     holder.kill_worker();
     common::wait_until("the slot to free", || !slot.is_taken());
-    assert_eq!(done(doc.render_tile(&request(0), &surface())).low_res, None, "with the slot free it should go sharp");
+    assert_eq!(
+        done(doc.render_tile(&request(0), &surface())).low_res,
+        None,
+        "with the slot free it should go sharp"
+    );
 }
 
 /// Failure: tight memory does the same.
 #[test]
 fn tight_memory_never_makes_a_page_fail_for_good() {
-    let (mut doc, _file) = doc_with("fits_heavy", Policy { heavy_min_free_percent: 101, ..policy() }, &HeavySlot::new());
-    assert_eq!(doc.render_tile(&request(0), &surface()).unwrap_err(), RenderFailure::NotDrawableNow { page: 0, why: LowResWhy::MemoryTight });
+    let (mut doc, _file) = doc_with(
+        "fits_heavy",
+        Policy {
+            heavy_min_free_percent: 101,
+            ..policy()
+        },
+        &HeavySlot::new(),
+    );
+    assert_eq!(
+        doc.render_tile(&request(0), &surface()).unwrap_err(),
+        RenderFailure::NotDrawableNow {
+            page: 0,
+            why: LowResWhy::MemoryTight
+        }
+    );
     assert_eq!(doc.page_draw_state(0), PageDrawState::NeedsHeavy);
 }
 
@@ -547,8 +726,21 @@ fn tight_memory_never_makes_a_page_fail_for_good() {
 #[test]
 fn a_tiny_scale_doesnt_fail_the_page_at_other_zooms() {
     let (mut doc, _file) = doc("fits_low_res");
-    let tiny = TileRequest { scale: 1.0 / 32.0, rect: TileRect { x: 0, y: 0, width: 4, height: 4 }, stride: 16, ..request(0) };
-    assert!(done(doc.render_tile(&tiny, &surface())).low_res.is_none(), "this stand-in fits under scale 1, so this one simply draws");
+    let tiny = TileRequest {
+        scale: 1.0 / 32.0,
+        rect: TileRect {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        },
+        stride: 16,
+        ..request(0)
+    };
+    assert!(
+        done(doc.render_tile(&tiny, &surface())).low_res.is_none(),
+        "this stand-in fits under scale 1, so this one simply draws"
+    );
     let (mut none, _b) = self::doc("fits_nothing");
     assert_eq!(none.render_tile(&tiny, &surface()).unwrap_err(), RenderFailure::TooLargeAtThisScale);
     assert!(!matches!(none.page_draw_state(0), PageDrawState::Failed(_)), "{:?}", none.page_draw_state(0));
@@ -560,10 +752,27 @@ fn a_lower_zoom_gets_its_own_try() {
     let (mut doc, _file) = doc("fits_low_res");
     assert!(done(doc.render_tile(&request(0), &surface())).low_res.is_some());
     assert_eq!(doc.page_draw_state_at(0, 2.0), PageDrawState::LowResOnly);
-    assert_eq!(doc.page_draw_state_at(0, 8.0), PageDrawState::LowResOnly, "a higher zoom costs more, so it holds there too");
-    assert_eq!(doc.page_draw_state_at(0, 1.9), PageDrawState::LowResOnly, "a small change in zoom isn't a new try");
+    assert_eq!(
+        doc.page_draw_state_at(0, 8.0),
+        PageDrawState::LowResOnly,
+        "a higher zoom costs more, so it holds there too"
+    );
+    assert_eq!(
+        doc.page_draw_state_at(0, 1.9),
+        PageDrawState::LowResOnly,
+        "a small change in zoom isn't a new try"
+    );
     assert_eq!(doc.page_draw_state_at(0, 0.5), PageDrawState::Sharp, "a much lower zoom starts clean");
-    let lower = TileRequest { scale: 0.5, rect: TileRect { x: 0, y: 0, width: 256, height: 256 }, ..request(0) };
+    let lower = TileRequest {
+        scale: 0.5,
+        rect: TileRect {
+            x: 0,
+            y: 0,
+            width: 256,
+            height: 256,
+        },
+        ..request(0)
+    };
     assert_eq!(done(doc.render_tile(&lower, &surface())).low_res, None, "and this page fits at that zoom");
 }
 
@@ -587,7 +796,14 @@ fn a_busy_slot_costs_no_respawn() {
 /// Failure: a hostile file with a heavy page every few pages asks for a gigabyte as often as it likes. Past the cap, pages go to their lower resolution without it.
 #[test]
 fn a_document_has_a_cap_on_heavy_retries() {
-    let (mut doc, _file) = doc_with("every_page_fits_heavy", Policy { max_heavy_retries: 1, ..policy() }, &HeavySlot::new());
+    let (mut doc, _file) = doc_with(
+        "every_page_fits_heavy",
+        Policy {
+            max_heavy_retries: 1,
+            ..policy()
+        },
+        &HeavySlot::new(),
+    );
     assert_eq!(done(doc.render_tile(&request(0), &surface())).low_res, None);
     assert_eq!(doc.stats().heavy_retries, 1);
     // The second page's lower resolution doesn't fit this stand-in either, so it fails, and it never got a heavy worker.
@@ -600,7 +816,14 @@ fn a_document_has_a_cap_on_heavy_retries() {
 /// Failure: a file of more bad pages than can be remembered re-runs the kills on every pass, for ever. Past the cap the document stops drawing, with no process started and a plain reason.
 #[test]
 fn a_document_has_a_cap_on_kills() {
-    let (mut doc, _file) = doc_with("every_page_fits_nothing", Policy { max_kills_per_document: 2, ..policy() }, &HeavySlot::new());
+    let (mut doc, _file) = doc_with(
+        "every_page_fits_nothing",
+        Policy {
+            max_kills_per_document: 2,
+            ..policy()
+        },
+        &HeavySlot::new(),
+    );
     let _ = doc.render_tile(&request(0), &surface());
     assert!(doc.stats().memory_kills >= 2);
     let spawns = doc.stats().spawns;
@@ -616,7 +839,12 @@ fn a_document_has_a_cap_on_kills() {
 #[test]
 fn a_heavy_worker_lets_go_sooner_than_a_normal_one() {
     let slot = HeavySlot::new();
-    let quick = Policy { idle_exit: Duration::from_secs(3600), idle_grace: Duration::from_millis(30), heavy_idle_exit: Duration::from_millis(30), ..policy() };
+    let quick = Policy {
+        idle_exit: Duration::from_secs(3600),
+        idle_grace: Duration::from_millis(30),
+        heavy_idle_exit: Duration::from_millis(30),
+        ..policy()
+    };
     let (mut doc, _file) = doc_with("fits_heavy", quick, &slot);
     done(doc.render_tile(&request(0), &surface()));
     assert!(slot.is_taken());
@@ -632,7 +860,16 @@ fn a_cancel_between_steps_ends_the_sequence() {
     let mut config = config("stale_then_grows", &slot);
     config.extra_env.push(("RECTO_FAKE_MARK".into(), mark.to_str().unwrap().into()));
     // A long grace, so that the kill is memory's and not the cancel's.
-    let mut doc = DocRenderer::new(&file.0, None, config, Policy { cancel_grace: Duration::from_secs(600), ..policy() }).unwrap();
+    let mut doc = DocRenderer::new(
+        &file.0,
+        None,
+        config,
+        Policy {
+            cancel_grace: Duration::from_secs(600),
+            ..policy()
+        },
+    )
+    .unwrap();
     let cancel = doc.cancel_handle();
     let watched = mark.clone();
     let canceller = std::thread::spawn(move || {
@@ -651,13 +888,27 @@ fn a_cancel_between_steps_ends_the_sequence() {
 /// Failure: a file the worker refuses as unreadable isn't remembered, because that word is also for not getting as far as asking, so each page of a search starts a process to hear the same answer. Or it's remembered for the renderer's life, though it covers a failed read of the file's size and errors with no reason given, and may pass. It holds for a moment, and no more.
 #[test]
 fn a_temporary_open_failure_holds_only_for_a_moment() {
-    let (mut held, _file) = doc_with("open_unreadable", Policy { open_retry_pause: Duration::from_secs(60), ..policy() }, &HeavySlot::new());
+    let (mut held, _file) = doc_with(
+        "open_unreadable",
+        Policy {
+            open_retry_pause: Duration::from_secs(60),
+            ..policy()
+        },
+        &HeavySlot::new(),
+    );
     for _ in 0..5 {
         assert_eq!(held.page_characters(0, false, false).unwrap_err(), RenderFailure::Unavailable);
     }
     assert_eq!(held.stats().spawns, 1, "one process was enough to learn that");
     assert!(!held.has_worker());
-    let (mut passes, _file) = doc_with("open_unreadable", Policy { open_retry_pause: Duration::from_millis(50), ..policy() }, &HeavySlot::new());
+    let (mut passes, _file) = doc_with(
+        "open_unreadable",
+        Policy {
+            open_retry_pause: Duration::from_millis(50),
+            ..policy()
+        },
+        &HeavySlot::new(),
+    );
     assert_eq!(passes.page_count().unwrap_err(), RenderFailure::Unavailable);
     std::thread::sleep(Duration::from_millis(60));
     assert_eq!(passes.page_count().unwrap_err(), RenderFailure::Unavailable);
@@ -691,12 +942,19 @@ fn a_failure_about_the_bytes_holds_for_that_file_and_no_other() {
 fn what_one_zoom_learns_doesnt_take_away_what_another_learned() {
     let (mut doc, _file) = doc("heavy_below_3x");
     let at = |scale: f32| TileRequest { scale, ..request(0) };
-    assert!(done(doc.render_tile(&at(4.0), &surface())).low_res.is_some(), "too much even for the larger limit at 4x");
+    assert!(
+        done(doc.render_tile(&at(4.0), &surface())).low_res.is_some(),
+        "too much even for the larger limit at 4x"
+    );
     assert_eq!(doc.page_draw_state_at(0, 4.0), PageDrawState::LowResOnly);
     assert_eq!(doc.page_draw_state_at(0, 2.0), PageDrawState::Sharp, "a much lower zoom gets its own try");
     assert_eq!(done(doc.render_tile(&at(2.0), &surface())).low_res, None, "and fits the larger limit at 2x");
     assert_eq!(doc.page_draw_state_at(0, 2.0), PageDrawState::NeedsHeavy);
-    assert_eq!(doc.page_draw_state_at(0, 4.0), PageDrawState::LowResOnly, "what 2x learned mustn't take away what 4x did");
+    assert_eq!(
+        doc.page_draw_state_at(0, 4.0),
+        PageDrawState::LowResOnly,
+        "what 2x learned mustn't take away what 4x did"
+    );
     assert_eq!(doc.page_draw_state(0), PageDrawState::LowResOnly, "the worst that's known");
     let kills = doc.stats().memory_kills;
     for _ in 0..3 {
@@ -714,14 +972,28 @@ fn the_viewport_budget_stops_at_its_cap_within_a_page() {
     let cap = Duration::from_millis(250);
     // At 2x, one page is 3 x 4 tiles. At 12x it's too large for fewer than about 10 regions of 32 MiB.
     for (strategy, scale, window) in [(DrawStrategy::PerTile, 2.0, 2048), (DrawStrategy::Region, 12.0, 10_000)] {
-        let options = |max_time| ViewportOptions { first_page: 0, scale, width: window, height: window, margin_tiles: 0, strategy, max_time };
+        let options = |max_time| ViewportOptions {
+            first_page: 0,
+            scale,
+            width: window,
+            height: window,
+            margin_tiles: 0,
+            strategy,
+            max_time,
+        };
         let (mut no_time, _file) = doc("slow");
         let steps = measure_viewport(&mut no_time, options(Duration::ZERO)).unwrap();
-        assert!(steps.iter().all(|step| step.passes == 0 && step.tiles == 0 && step.failed > 0), "{strategy:?}, no time at all: {steps:?}");
+        assert!(
+            steps.iter().all(|step| step.passes == 0 && step.tiles == 0 && step.failed > 0),
+            "{strategy:?}, no time at all: {steps:?}"
+        );
         let (mut capped, _file) = doc("slow");
         let steps = measure_viewport(&mut capped, options(cap)).unwrap();
         let (passes, failed): (u32, u32) = (steps.iter().map(|step| step.passes).sum(), steps.iter().map(|step| step.failed).sum());
-        assert!(passes <= 4, "{strategy:?}: {passes} passes of at least 100 ms each started inside 250 ms: {steps:?}");
+        assert!(
+            passes <= 4,
+            "{strategy:?}: {passes} passes of at least 100 ms each started inside 250 ms: {steps:?}"
+        );
         assert!(failed > 0, "{strategy:?}: what wasn't drawn must say so: {steps:?}");
     }
 }
@@ -730,16 +1002,30 @@ fn the_viewport_budget_stops_at_its_cap_within_a_page() {
 #[test]
 fn the_viewport_budget_doesnt_count_low_res_tiles_as_done() {
     let (mut doc, _file) = doc("fits_low_res");
-    let options = ViewportOptions { first_page: 0, scale: 2.0, width: 1024, height: 1024, margin_tiles: 0, strategy: DrawStrategy::PerTile, max_time: recto_render_service::BUDGET_MAX_TIME };
+    let options = ViewportOptions {
+        first_page: 0,
+        scale: 2.0,
+        width: 1024,
+        height: 1024,
+        margin_tiles: 0,
+        strategy: DrawStrategy::PerTile,
+        max_time: recto_render_service::BUDGET_MAX_TIME,
+    };
     let steps = measure_viewport(&mut doc, options).unwrap();
     assert_eq!(steps[0].low_res, steps[0].tiles, "every tile of this page comes back low-res: {steps:?}");
-    assert!(steps[1].tiles >= steps[0].tiles, "they aren't done, so the scroll asks for them again: {steps:?}");
+    assert!(
+        steps[1].tiles >= steps[0].tiles,
+        "they aren't done, so the scroll asks for them again: {steps:?}"
+    );
 }
 
 /// Failure: the larger limit is smaller than the normal one, as when a measurement sets its own limit, and a page is retried at a smaller limit than it just failed.
 #[test]
 fn no_larger_limit_means_no_heavy_step() {
-    let none = Policy { heavy_limit_bytes: 0, ..policy() };
+    let none = Policy {
+        heavy_limit_bytes: 0,
+        ..policy()
+    };
     let (mut doc, _file) = doc_with("fits_low_res", none, &HeavySlot::new());
     assert_eq!(done(doc.render_tile(&request(0), &surface())).low_res.unwrap().why, LowResWhy::TooHeavy);
     assert_eq!(doc.stats().heavy_retries, 0);

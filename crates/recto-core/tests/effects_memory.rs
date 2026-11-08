@@ -10,8 +10,16 @@ fn shared_resources(forms: usize, pad_bytes: usize) -> Vec<u8> {
     let first = first_extra_object(1);
     let shared = first + forms;
     let names: String = (0..forms).map(|i| format!("/F{i} {} 0 R ", first + i)).collect();
-    let mut objects: Vec<Object> = (0..forms).map(|_| Object::Stream { dict: format!("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources {shared} 0 R"), data: Vec::new() }).collect();
-    objects.push(Object::Dict(format!("<< /Pad ({}) /ExtGState << /G << /BM /Multiply >> >> >>", "x".repeat(pad_bytes))));
+    let mut objects: Vec<Object> = (0..forms)
+        .map(|_| Object::Stream {
+            dict: format!("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources {shared} 0 R"),
+            data: Vec::new(),
+        })
+        .collect();
+    objects.push(Object::Dict(format!(
+        "<< /Pad ({}) /ExtGState << /G << /BM /Multiply >> >> >>",
+        "x".repeat(pad_bytes)
+    )));
     pages_with(&[Page::new(text_lines(&["Words"]))], &format!("/XObject << {names} >>"), objects)
 }
 

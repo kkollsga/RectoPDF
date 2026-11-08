@@ -12,7 +12,11 @@ impl PageFeed for EveryWord {
     }
     fn read(&mut self, _page: u32) -> Result<FedPage, FeedError> {
         let text: String = (0..16).map(|at| format!("w{at} ")).collect();
-        Ok(FedPage { chars: text.chars().map(|c| CharRecord::new(c as u32, 0)).collect(), boxes: Vec::new(), hidden_checked: true })
+        Ok(FedPage {
+            chars: text.chars().map(|c| CharRecord::new(c as u32, 0)).collect(),
+            boxes: Vec::new(),
+            hidden_checked: true,
+        })
     }
     fn still_the_same_file(&mut self) -> bool {
         true
@@ -26,6 +30,12 @@ fn main() {
         std::process::exit(2);
     };
     let key = CorpusKey::of_file(Path::new(pdf)).unwrap();
-    let outcome = corpus::build(Path::new(root), key, &mut EveryWord(pages.parse().unwrap()), &DocMeta::default(), &BuildLimits::default());
+    let outcome = corpus::build(
+        Path::new(root),
+        key,
+        &mut EveryWord(pages.parse().unwrap()),
+        &DocMeta::default(),
+        &BuildLimits::default(),
+    );
     println!("{outcome:?}");
 }

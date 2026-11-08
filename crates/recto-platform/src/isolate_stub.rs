@@ -112,7 +112,14 @@ impl ChildProcess {
     pub fn spawn(_exe: &Path, _args: &[&OsStr], _env: &[(&str, &str)], _channel: Channel, _rule: Option<IdleRule>) -> io::Result<Self> {
         unsupported()
     }
-    pub fn spawn_linked(_exe: &Path, _args: &[&OsStr], _env: &[(&str, &str)], _channel: Channel, _rule: Option<IdleRule>, _invite: Option<&crate::surface::LinkInvite>) -> io::Result<Self> {
+    pub fn spawn_linked(
+        _exe: &Path,
+        _args: &[&OsStr],
+        _env: &[(&str, &str)],
+        _channel: Channel,
+        _rule: Option<IdleRule>,
+        _invite: Option<&crate::surface::LinkInvite>,
+    ) -> io::Result<Self> {
         unsupported()
     }
     pub fn pid(&self) -> u32 {

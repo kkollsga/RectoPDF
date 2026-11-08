@@ -171,13 +171,25 @@ fn remember(known: &Mutex<Vec<(TabId, FileStamp, recto_core::save::SignatureFact
 
 impl SaveUi {
     pub(crate) fn new(step: Arc<AtomicU8>) -> Self {
-        Self { running: AtomicU32::new(0), problem: Mutex::new(None), signature: Arc::new(Mutex::new(Vec::new())), looking: Arc::new(Mutex::new(Vec::new())), step }
+        Self {
+            running: AtomicU32::new(0),
+            problem: Mutex::new(None),
+            signature: Arc::new(Mutex::new(Vec::new())),
+            looking: Arc::new(Mutex::new(Vec::new())),
+            step,
+        }
     }
 
     /// **What's known of this file's signatures,** as the save itself would find them (`signature_facts_of`, the fork's look through the bytes included), cached
     /// per version. Not known yet starts the look on a thread of its own, as it reads the whole file, and `done` is called when it has an answer; until then it's
     /// `None`. One look per file and version, and at most [`SIGNATURE_LOOKS`] at once: past that, `None` until one ends.
-    pub(crate) fn signature_facts(&self, id: TabId, path: &std::path::Path, stamp: FileStamp, done: impl FnOnce() + Send + 'static) -> Option<recto_core::save::SignatureFacts> {
+    pub(crate) fn signature_facts(
+        &self,
+        id: TabId,
+        path: &std::path::Path,
+        stamp: FileStamp,
+        done: impl FnOnce() + Send + 'static,
+    ) -> Option<recto_core::save::SignatureFacts> {
         self.signature_facts_by(id, path, stamp, recto_core::save::signature_facts_of, done)
     }
 
@@ -200,14 +212,21 @@ impl SaveUi {
         }
         looking.push(key);
         drop(looking);
-        let ends = LookEnds { key, known: Arc::clone(&self.signature), looking: Arc::clone(&self.looking) };
+        let ends = LookEnds {
+            key,
+            known: Arc::clone(&self.signature),
+            looking: Arc::clone(&self.looking),
+        };
         let path = path.to_path_buf();
-        let spawned = std::thread::Builder::new().name("recto-signatures".into()).stack_size(512 * 1024).spawn(move || {
-            let facts = look(&path).unwrap_or_default();
-            remember(&ends.known, ends.key, facts);
-            drop(ends);
-            done();
-        });
+        let spawned = std::thread::Builder::new()
+            .name("recto-signatures".into())
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                let facts = look(&path).unwrap_or_default();
+                remember(&ends.known, ends.key, facts);
+                drop(ends);
+                done();
+            });
         if spawned.is_err() {
             crate::lock(&self.looking).retain(|looked| *looked != key);
         }
@@ -237,15 +256,32 @@ impl SaveUi {
 /// The problem a failed save shows: what went wrong, in the save's own words, and Save As where a copy is the way on.
 pub(crate) fn problem_for(error: &recto_agent::AgentError) -> SaveProblem {
     // A signed document's copy is unsigned (SPEC decision 27), and the original keeps its signature: Save As is the way on for those too.
-    let copy_helps = matches!(error.code, "file_changed" | "read_only" | "hard_links" | "breaks_certification" | "locked_by_signature" | "signed_needs_copy" | "signed_original");
-    SaveProblem { title: "The document couldn't be saved.".into(), message: error.message.clone(), save_as_title: copy_helps.then(|| "Save As…".to_string()), ok_title: "OK".into() }
+    let copy_helps = matches!(
+        error.code,
+        "file_changed" | "read_only" | "hard_links" | "breaks_certification" | "locked_by_signature" | "signed_needs_copy" | "signed_original"
+    );
+    SaveProblem {
+        title: "The document couldn't be saved.".into(),
+        message: error.message.clone(),
+        save_as_title: copy_helps.then(|| "Save As…".to_string()),
+        ok_title: "OK".into(),
+    }
 }
 
 /// Save As's sheet for the tab showing.
 pub(crate) fn panel_for(tab: u32, name: &str, folder: &str, note: Option<String>) -> SavePanelModel {
-    let stem = std::path::Path::new(name).file_stem().map(|stem| recto_core::clean_line(&stem.to_string_lossy())).filter(|stem| !stem.is_empty());
+    let stem = std::path::Path::new(name)
+        .file_stem()
+        .map(|stem| recto_core::clean_line(&stem.to_string_lossy()))
+        .filter(|stem| !stem.is_empty());
     let suggested = stem.map_or_else(|| "Untitled.pdf".into(), |stem| format!("{stem} copy.pdf"));
-    SavePanelModel { tab, prompt: "Save".into(), suggested_name: suggested, directory: folder.to_string(), message: note }
+    SavePanelModel {
+        tab,
+        prompt: "Save".into(),
+        suggested_name: suggested,
+        directory: folder.to_string(),
+        message: note,
+    }
 }
 
 /// What closing asks, about this document.
@@ -253,14 +289,44 @@ pub(crate) fn panel_for(tab: u32, name: &str, folder: &str, note: Option<String>
 /// once the tab's closed, so it says so, and closing after either answer lets them go. With only undone steps, there's nothing to save: Close or Cancel.
 pub(crate) fn close_prompt(tab: u32, name: &str, edited: bool, undone: bool, save_off: bool) -> ClosePrompt {
     let name = recto_core::clean_line(name);
-    let button = |title: &str, choice, destructive| CloseButton { title: title.into(), choice, destructive };
+    let button = |title: &str, choice, destructive| CloseButton {
+        title: title.into(),
+        choice,
+        destructive,
+    };
     if edited {
-        let informative = if undone { "Your changes will be lost if you don't save them. Steps you undid can't be redone once it's closed." } else { "Your changes will be lost if you don't save them." };
-        let save = if save_off { button("Save As…", CloseChoice::SaveAs, false) } else { button("Save", CloseChoice::Save, false) };
-        let informative = if save_off { "This document is signed, so these changes can't be saved over it. Save As makes a new copy without the signature." } else { informative };
-        ClosePrompt { tab, message: format!("Do you want to save the changes you made to “{name}”?"), informative: informative.into(), buttons: vec![save, button("Cancel", CloseChoice::Cancel, false), button("Don't Save", CloseChoice::DontSave, true)] }
+        let informative = if undone {
+            "Your changes will be lost if you don't save them. Steps you undid can't be redone once it's closed."
+        } else {
+            "Your changes will be lost if you don't save them."
+        };
+        let save = if save_off {
+            button("Save As…", CloseChoice::SaveAs, false)
+        } else {
+            button("Save", CloseChoice::Save, false)
+        };
+        let informative = if save_off {
+            "This document is signed, so these changes can't be saved over it. Save As makes a new copy without the signature."
+        } else {
+            informative
+        };
+        ClosePrompt {
+            tab,
+            message: format!("Do you want to save the changes you made to “{name}”?"),
+            informative: informative.into(),
+            buttons: vec![
+                save,
+                button("Cancel", CloseChoice::Cancel, false),
+                button("Don't Save", CloseChoice::DontSave, true),
+            ],
+        }
     } else {
-        ClosePrompt { tab, message: format!("Close “{name}”?"), informative: "It has no unsaved changes, but steps you undid can't be redone once it's closed.".into(), buttons: vec![button("Close", CloseChoice::DontSave, true), button("Cancel", CloseChoice::Cancel, false)] }
+        ClosePrompt {
+            tab,
+            message: format!("Close “{name}”?"),
+            informative: "It has no unsaved changes, but steps you undid can't be redone once it's closed.".into(),
+            buttons: vec![button("Close", CloseChoice::DontSave, true), button("Cancel", CloseChoice::Cancel, false)],
+        }
     }
 }
 
@@ -281,7 +347,12 @@ pub(crate) fn start_save(inner: &Arc<crate::Inner>, tab: TabId, out: Option<std:
     });
     if spawned.is_err() {
         inner.save_ui.running.fetch_sub(1, Ordering::SeqCst);
-        inner.save_ui.set_problem(Some(SaveProblem { title: "The document couldn't be saved.".into(), message: "The save couldn't be started, so nothing was written.".into(), save_as_title: None, ok_title: "OK".into() }));
+        inner.save_ui.set_problem(Some(SaveProblem {
+            title: "The document couldn't be saved.".into(),
+            message: "The save couldn't be started, so nothing was written.".into(),
+            save_as_title: None,
+            ok_title: "OK".into(),
+        }));
         inner.core.push(crate::CoreCall::Reconcile);
     }
 }
@@ -292,17 +363,29 @@ fn run_save(inner: &crate::Inner, id: TabId, out: Option<std::path::PathBuf>, cl
     use recto_control::host::Host;
     let replace = match out.as_deref().map(|out| replace_answered(out, answered)) {
         Some(Err(())) => {
-            inner.save_ui.set_problem(Some(SaveProblem { title: "The document couldn't be saved.".into(), message: "A file appeared at that name after you chose it, so it wasn't replaced. Nothing was written.".into(), save_as_title: Some("Save As…".into()), ok_title: "OK".into() }));
+            inner.save_ui.set_problem(Some(SaveProblem {
+                title: "The document couldn't be saved.".into(),
+                message: "A file appeared at that name after you chose it, so it wasn't replaced. Nothing was written.".into(),
+                save_as_title: Some("Save As…".into()),
+                ok_title: "OK".into(),
+            }));
             return;
         }
         Some(Ok(replace)) => replace,
         None => false,
     };
-    let command = recto_agent::Command::Save { tab: format!("#{}", id.0), out, replace };
+    let command = recto_agent::Command::Save {
+        tab: format!("#{}", id.0),
+        out,
+        replace,
+    };
     let mut events = Vec::new();
     match inner.host.run(recto_agent::Level::Full, &command, &mut events) {
         Ok(data) => {
-            let notes: Vec<&str> = data["notes"].as_array().map(|notes| notes.iter().filter_map(|note| note.as_str()).collect()).unwrap_or_default();
+            let notes: Vec<&str> = data["notes"]
+                .as_array()
+                .map(|notes| notes.iter().filter_map(|note| note.as_str()).collect())
+                .unwrap_or_default();
             *crate::lock(&inner.action_notice) = (!notes.is_empty()).then(|| notes.join(" "));
             inner.save_ui.set_problem(None);
             // Watchers hear it was saved before they hear it closed.
@@ -324,7 +407,10 @@ mod tests {
     #[test]
     fn the_close_prompt_offers_what_works() {
         let off = close_prompt(1, "signed.pdf", true, false, true);
-        assert_eq!(off.buttons.iter().map(|button| button.choice).collect::<Vec<_>>(), [CloseChoice::SaveAs, CloseChoice::Cancel, CloseChoice::DontSave]);
+        assert_eq!(
+            off.buttons.iter().map(|button| button.choice).collect::<Vec<_>>(),
+            [CloseChoice::SaveAs, CloseChoice::Cancel, CloseChoice::DontSave]
+        );
         assert!(off.informative.contains("Save As makes a new copy"), "{}", off.informative);
         assert_eq!(close_prompt(1, "plain.pdf", true, false, false).buttons[0].choice, CloseChoice::Save);
     }
@@ -336,7 +422,10 @@ mod tests {
             let problem = problem_for(&recto_agent::AgentError::new(code, "refused", recto_agent::exit::FAILED));
             assert_eq!(problem.save_as_title.as_deref(), Some("Save As…"), "{code}");
         }
-        assert_eq!(problem_for(&recto_agent::AgentError::new("damaged", "refused", recto_agent::exit::FAILED)).save_as_title, None);
+        assert_eq!(
+            problem_for(&recto_agent::AgentError::new("damaged", "refused", recto_agent::exit::FAILED)).save_as_title,
+            None
+        );
     }
 
     /// Failure (review round 2): Save As decides "replace" from the disk at save time, so a file someone makes at the chosen name after the person answered "new" is replaced, though nobody agreed to that. A file there at the answer is replaced, as the sheet asked; one made after is refused; none is a new file.
@@ -365,7 +454,12 @@ mod tests {
         use std::sync::mpsc;
         use std::time::{Duration, Instant};
         let ui = SaveUi::new(Arc::new(AtomicU8::new(0)));
-        let stamp = |n: u64| FileStamp { size: n, mtime_ns: n as i64, device: 1, inode: n };
+        let stamp = |n: u64| FileStamp {
+            size: n,
+            mtime_ns: n as i64,
+            device: 1,
+            inode: n,
+        };
         let path = std::path::Path::new("/nowhere.pdf");
         let wait_for = |what: &dyn Fn() -> bool| {
             let started = Instant::now();
@@ -377,7 +471,10 @@ mod tests {
         // A look that panics: its place is given back, and its answer is "nothing found".
         assert_eq!(ui.signature_facts_by(TabId(1), path, stamp(1), |_| panic!("a hostile file"), || {}), None);
         wait_for(&|| crate::lock(&ui.looking).is_empty());
-        assert_eq!(ui.signature_facts_by(TabId(1), path, stamp(1), |_| unreachable!("answered already"), || {}), Some(Default::default()));
+        assert_eq!(
+            ui.signature_facts_by(TabId(1), path, stamp(1), |_| unreachable!("answered already"), || {}),
+            Some(Default::default())
+        );
         // Slow looks on other files: each has its own place, up to the cap.
         let mut release = Vec::new();
         for n in 0..SIGNATURE_LOOKS as u64 {
@@ -385,17 +482,31 @@ mod tests {
             release.push(go);
             let look = move |_: &std::path::Path| {
                 let _ = wait.recv();
-                Ok(recto_core::save::SignatureFacts { signed: true, ..Default::default() })
+                Ok(recto_core::save::SignatureFacts {
+                    signed: true,
+                    ..Default::default()
+                })
             };
             assert_eq!(ui.signature_facts_by(TabId(10 + n as u32), path, stamp(10 + n), look, || {}), None);
         }
         assert_eq!(crate::lock(&ui.looking).len(), SIGNATURE_LOOKS, "one per file");
-        assert_eq!(ui.signature_facts_by(TabId(99), path, stamp(99), |_| unreachable!("past the cap"), || {}), None, "past the cap, none starts");
-        assert_eq!(ui.signature_facts_by(TabId(10), path, stamp(10), |_| unreachable!("looked at already"), || {}), None, "and one file isn't looked at twice");
+        assert_eq!(
+            ui.signature_facts_by(TabId(99), path, stamp(99), |_| unreachable!("past the cap"), || {}),
+            None,
+            "past the cap, none starts"
+        );
+        assert_eq!(
+            ui.signature_facts_by(TabId(10), path, stamp(10), |_| unreachable!("looked at already"), || {}),
+            None,
+            "and one file isn't looked at twice"
+        );
         // Let them end: each answer is kept, and the places are free.
         release.remove(0).send(()).unwrap();
         drop(release);
         wait_for(&|| crate::lock(&ui.looking).is_empty());
-        assert!(ui.signature_facts_by(TabId(10), path, stamp(10), |_| unreachable!("answered already"), || {}).is_some_and(|facts| facts.signed));
+        assert!(
+            ui.signature_facts_by(TabId(10), path, stamp(10), |_| unreachable!("answered already"), || {})
+                .is_some_and(|facts| facts.signed)
+        );
     }
 }

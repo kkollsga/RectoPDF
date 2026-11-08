@@ -7,7 +7,7 @@
 //!
 //! Rectangles are in points on the page as it's shown, from its top left, y down: past the crop, turned by the page's own `/Rotate`, the same frame as a selection's. A file's turn the reader adds on top is the page view's to apply.
 
-use crate::{clean_text, deref, open_bytes, open_reader_cached, OpenError};
+use crate::{OpenError, clean_text, deref, open_bytes, open_reader_cached};
 use lopdf::{Dictionary, IndexedReader, Object, ObjectId};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -169,7 +169,10 @@ impl PageLinks {
         if !x.is_finite() || !y.is_finite() {
             return None;
         }
-        self.links.iter().rev().find(|link| x >= link.rect[0] && x <= link.rect[2] && y >= link.rect[1] && y <= link.rect[3])
+        self.links
+            .iter()
+            .rev()
+            .find(|link| x >= link.rect[0] && x <= link.rect[2] && y >= link.rect[1] && y <= link.rect[3])
     }
 }
 
@@ -192,7 +195,12 @@ impl Budget {
 
     /// A budget with a time of its own: a test of the caps on counts gives the time room, so a busy machine can't make it a test of the clock.
     fn lasting(time: Duration) -> Self {
-        Self { visits_left: Cell::new(MAX_TREE_VISITS), deadline: Instant::now() + time, cut_short: Cell::new(false), nodes: std::cell::RefCell::new(HashMap::new()) }
+        Self {
+            visits_left: Cell::new(MAX_TREE_VISITS),
+            deadline: Instant::now() + time,
+            cut_short: Cell::new(false),
+            nodes: std::cell::RefCell::new(HashMap::new()),
+        }
     }
 
     fn may_visit(&self) -> bool {
@@ -214,8 +222,15 @@ pub fn page_links(path: &Path, pages: &[u32]) -> Result<Vec<(u32, PageLinks)>, O
 /// [`page_links`] through a file already open, with the password it was opened with if it's protected: the file a page view is drawing, whatever is at its path now.
 pub fn page_links_in(file: std::fs::File, password: Option<&[u8]>, pages: &[u32]) -> Result<Vec<(u32, PageLinks)>, OpenError> {
     let source = lopdf::FileSource::from_file(file).map_err(|_| OpenError::NotAllowed)?;
-    let options = lopdf::IndexedReaderOptions { password: password.map(<[u8]>::to_vec), ..lopdf::IndexedReaderOptions::default() };
-    let reader = crate::checked_reader(IndexedReader::open_cached(source, options, lopdf::IndexedReaderCacheOptions::new(crate::READ_CACHE_BYTES, crate::READ_CACHE_ENTRIES)))?;
+    let options = lopdf::IndexedReaderOptions {
+        password: password.map(<[u8]>::to_vec),
+        ..lopdf::IndexedReaderOptions::default()
+    };
+    let reader = crate::checked_reader(IndexedReader::open_cached(
+        source,
+        options,
+        lopdf::IndexedReaderCacheOptions::new(crate::READ_CACHE_BYTES, crate::READ_CACHE_ENTRIES),
+    ))?;
     Ok(links_of(&reader, pages))
 }
 
@@ -230,10 +245,21 @@ fn links_of(reader: &IndexedReader, pages: &[u32]) -> Vec<(u32, PageLinks)> {
 
 fn links_within(reader: &IndexedReader, pages: &[u32], budget: Budget) -> Vec<(u32, PageLinks)> {
     let (old_dests, names_tree) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
-    let Ok(map) = reader.page_map() else { return pages.iter().take(MAX_PAGES_PER_READ).map(|page| (*page, PageLinks::default())).collect() };
-    let index: HashMap<ObjectId, u32> = map.iter().enumerate().filter_map(|(at, entry)| Some((entry.id(), u32::try_from(at).ok()?))).collect();
+    let Ok(map) = reader.page_map() else {
+        return pages.iter().take(MAX_PAGES_PER_READ).map(|page| (*page, PageLinks::default())).collect();
+    };
+    let index: HashMap<ObjectId, u32> = map
+        .iter()
+        .enumerate()
+        .filter_map(|(at, entry)| Some((entry.id(), u32::try_from(at).ok()?)))
+        .collect();
     let count = u32::try_from(map.len()).unwrap_or(u32::MAX);
-    let root = reader.trailer_entry_owned(b"Root").ok().flatten().and_then(|root| root.as_dict().ok().cloned()).unwrap_or_default();
+    let root = reader
+        .trailer_entry_owned(b"Root")
+        .ok()
+        .flatten()
+        .and_then(|root| root.as_dict().ok().cloned())
+        .unwrap_or_default();
     let mut out = Vec::new();
     for &page in pages.iter().take(MAX_PAGES_PER_READ) {
         let Some(entry) = map.get(page as usize) else {
@@ -241,7 +267,11 @@ fn links_within(reader: &IndexedReader, pages: &[u32], budget: Budget) -> Vec<(u
             continue;
         };
         let frame = frame_of(reader, entry);
-        let mut found = PageLinks { frame, links: Vec::new(), truncated: false };
+        let mut found = PageLinks {
+            frame,
+            links: Vec::new(),
+            truncated: false,
+        };
         let Some(dict) = dict_at(reader, entry.id()) else {
             out.push((page, found));
             continue;
@@ -250,7 +280,17 @@ fn links_within(reader: &IndexedReader, pages: &[u32], budget: Budget) -> Vec<(u
             Some(Object::Array(items)) => items,
             _ => Vec::new(),
         };
-        let context = Context { old_dests: &old_dests, names_tree: &names_tree, reader, map: &map, root: &root, index: &index, count, page, budget: &budget };
+        let context = Context {
+            old_dests: &old_dests,
+            names_tree: &names_tree,
+            reader,
+            map: &map,
+            root: &root,
+            index: &index,
+            count,
+            page,
+            budget: &budget,
+        };
         for item in annots.iter().take(MAX_PAGE_ANNOTS) {
             if found.links.len() >= MAX_PAGE_LINKS || Instant::now() >= budget.deadline {
                 found.truncated = true;
@@ -260,12 +300,17 @@ fn links_within(reader: &IndexedReader, pages: &[u32], budget: Budget) -> Vec<(u
             if !matches!(annot.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Link") {
                 continue;
             }
-            let Some(rect) = rect_of(reader, &annot).and_then(|rect| frame.to_shown(rect)) else { continue };
+            let Some(rect) = rect_of(reader, &annot).and_then(|rect| frame.to_shown(rect)) else {
+                continue;
+            };
             // A link of no area can't be pointed at.
             if rect[2] - rect[0] <= 0.0 || rect[3] - rect[1] <= 0.0 {
                 continue;
             }
-            found.links.push(Link { rect, target: context.target(&annot) });
+            found.links.push(Link {
+                rect,
+                target: context.target(&annot),
+            });
         }
         found.truncated |= annots.len() > MAX_PAGE_ANNOTS || budget.cut_short.get();
         out.push((page, found));
@@ -298,7 +343,9 @@ impl Context<'_> {
     }
 
     fn action(&self, action: &Dictionary) -> LinkTarget {
-        let Ok(Object::Name(kind)) = action.get(b"S") else { return LinkTarget::Nowhere };
+        let Ok(Object::Name(kind)) = action.get(b"S") else {
+            return LinkTarget::Nowhere;
+        };
         match kind.as_slice() {
             b"GoTo" => action.get(b"D").map_or(LinkTarget::Nowhere, |dest| self.dest(dest)),
             b"URI" => match action.get(b"URI").ok().and_then(|uri| deref(self.reader, uri)) {
@@ -327,7 +374,11 @@ impl Context<'_> {
             b"GoForward" => return LinkTarget::History { back: false },
             _ => return LinkTarget::Refused(Refused::Action),
         };
-        if self.count == 0 { LinkTarget::Nowhere } else { LinkTarget::Page { page, within: None } }
+        if self.count == 0 {
+            LinkTarget::Nowhere
+        } else {
+            LinkTarget::Page { page, within: None }
+        }
     }
 
     /// A destination: an array, a name in the old `/Dests` dictionary, a string in the `/Names` tree, or a dictionary holding one of those under `/D`.
@@ -342,9 +393,28 @@ impl Context<'_> {
                 Some(Object::Array(items)) => return self.explicit(&items),
                 Some(Object::Dictionary(dict)) => dict.get(b"D").ok().and_then(|inner| deref(self.reader, inner)),
                 // The old `/Dests` dictionary and the `/Names` tree's root are read once a read, as a page of links names into them over and over: RFC 9110's `/Dests` is one object of every name.
-                Some(Object::Name(name)) => self.old_dests.get_or_init(|| self.root.get(b"Dests").ok().and_then(|dests| deref(self.reader, dests)).and_then(|dests| dests.as_dict().ok().cloned())).as_ref().and_then(|dests| dests.get(&name).ok()).and_then(|found| deref(self.reader, found)),
+                Some(Object::Name(name)) => self
+                    .old_dests
+                    .get_or_init(|| {
+                        self.root
+                            .get(b"Dests")
+                            .ok()
+                            .and_then(|dests| deref(self.reader, dests))
+                            .and_then(|dests| dests.as_dict().ok().cloned())
+                    })
+                    .as_ref()
+                    .and_then(|dests| dests.get(&name).ok())
+                    .and_then(|found| deref(self.reader, found)),
                 Some(Object::String(name, _)) => {
-                    let tree = self.names_tree.get_or_init(|| self.root.get(b"Names").ok().and_then(|names| deref(self.reader, names)).and_then(|names| names.as_dict().ok().and_then(|names| names.get(b"Dests").ok()).and_then(|tree| deref(self.reader, tree))));
+                    let tree = self.names_tree.get_or_init(|| {
+                        self.root.get(b"Names").ok().and_then(|names| deref(self.reader, names)).and_then(|names| {
+                            names
+                                .as_dict()
+                                .ok()
+                                .and_then(|names| names.get(b"Dests").ok())
+                                .and_then(|tree| deref(self.reader, tree))
+                        })
+                    });
                     tree.as_ref().and_then(|tree| find_named(self.reader, tree, &name, self.budget))
                 }
                 _ => return LinkTarget::Nowhere,
@@ -395,7 +465,7 @@ pub fn judge_address(bytes: &[u8]) -> LinkTarget {
     if bytes.iter().any(|b| matches!(b, b'\\' | b'"' | b'<' | b'>' | b'^' | b'`' | b'{' | b'|' | b'}')) {
         return LinkTarget::Refused(Refused::BadAddress);
     }
-        let Some(scheme) = scheme_of(bytes) else {
+    let Some(scheme) = scheme_of(bytes) else {
         // A relative address would go against a base the file chooses, so it's another address than the one shown.
         return LinkTarget::Refused(Refused::BadAddress);
     };
@@ -416,7 +486,8 @@ fn scheme_of(bytes: &[u8]) -> Option<String> {
     let bytes = &bytes[start..];
     let colon = bytes.iter().take(32).position(|b| *b == b':')?;
     let scheme = &bytes[..colon];
-    (scheme.first().is_some_and(u8::is_ascii_alphabetic) && scheme.iter().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))).then(|| String::from_utf8_lossy(scheme).to_ascii_lowercase())
+    (scheme.first().is_some_and(u8::is_ascii_alphabetic) && scheme.iter().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')))
+        .then(|| String::from_utf8_lossy(scheme).to_ascii_lowercase())
 }
 
 fn find_named(reader: &IndexedReader, root: &Object, wanted: &[u8], budget: &Budget) -> Option<Object> {
@@ -446,7 +517,9 @@ fn find_named(reader: &IndexedReader, root: &Object, wanted: &[u8], budget: &Bud
         let dict = match kept {
             Some(dict) => dict,
             None => {
-                let Some(Object::Dictionary(dict)) = reader.resolve_object(id).ok() else { continue };
+                let Some(Object::Dictionary(dict)) = reader.resolve_object(id).ok() else {
+                    continue;
+                };
                 let dict = std::rc::Rc::new(dict);
                 let mut nodes = budget.nodes.borrow_mut();
                 if nodes.len() < MAX_NODES_KEPT {
@@ -525,7 +598,9 @@ fn frame_of(reader: &IndexedReader, entry: &lopdf::PageMapEntry) -> Frame {
         let rect = four(reader, dict.get(key).ok()?)?;
         Some([rect[0].min(rect[2]), rect[1].min(rect[3]), rect[0].max(rect[2]), rect[1].max(rect[3])])
     };
-    let media = boxed(inherited.media_box(), b"MediaBox").filter(|m| m[2] > m[0] && m[3] > m[1]).unwrap_or([0.0, 0.0, 612.0, 792.0]);
+    let media = boxed(inherited.media_box(), b"MediaBox")
+        .filter(|m| m[2] > m[0] && m[3] > m[1])
+        .unwrap_or([0.0, 0.0, 612.0, 792.0]);
     let shown = match boxed(inherited.crop_box(), b"CropBox") {
         Some(crop) => {
             let cut = [crop[0].max(media[0]), crop[1].max(media[1]), crop[2].min(media[2]), crop[3].min(media[3])];
@@ -540,7 +615,13 @@ fn frame_of(reader: &IndexedReader, entry: &lopdf::PageMapEntry) -> Frame {
         .and_then(|value| value.as_i64().ok())
         .filter(|degrees| degrees % 90 == 0)
         .map_or(0, |degrees| (degrees.rem_euclid(360) / 90) as u8);
-    Frame { turns, left: shown[0], bottom: shown[1], right: shown[2], top: shown[3] }
+    Frame {
+        turns,
+        left: shown[0],
+        bottom: shown[1],
+        right: shown[2],
+        top: shown[3],
+    }
 }
 
 /// How a range's numbers are written.
@@ -605,8 +686,19 @@ pub struct PageLabels {
 impl PageLabels {
     /// From ranges kept elsewhere, such as a sleep file, which can't be believed any more than the PDF: held to the same rules.
     pub fn from_ranges(ranges: Vec<LabelRange>, truncated: bool) -> Self {
-        let cleaned = ranges.into_iter().take(MAX_LABEL_RANGES).map(|range| LabelRange { prefix: clean_prefix(&range.prefix), first: range.first.clamp(1, MAX_LABEL_START), ..range }).collect();
-        Self { ranges: normalise(cleaned), truncated }
+        let cleaned = ranges
+            .into_iter()
+            .take(MAX_LABEL_RANGES)
+            .map(|range| LabelRange {
+                prefix: clean_prefix(&range.prefix),
+                first: range.first.clamp(1, MAX_LABEL_START),
+                ..range
+            })
+            .collect();
+        Self {
+            ranges: normalise(cleaned),
+            truncated,
+        }
     }
 
     pub fn ranges(&self) -> &[LabelRange] {
@@ -653,7 +745,10 @@ impl PageLabels {
                 continue;
             }
             let rest = if any_case {
-                (typed.len() >= range.prefix.len() && typed.is_char_boundary(range.prefix.len()) && typed[..range.prefix.len()].eq_ignore_ascii_case(&range.prefix)).then(|| &typed[range.prefix.len()..])
+                (typed.len() >= range.prefix.len()
+                    && typed.is_char_boundary(range.prefix.len())
+                    && typed[..range.prefix.len()].eq_ignore_ascii_case(&range.prefix))
+                .then(|| &typed[range.prefix.len()..])
             } else {
                 typed.strip_prefix(&*range.prefix)
             };
@@ -662,12 +757,17 @@ impl PageLabels {
                 LabelStyle::None => rest.is_empty().then_some(range.first),
                 style => parse_number(rest, style, any_case),
             };
-            let Some(number) = number.filter(|number| *number >= range.first) else { continue };
+            let Some(number) = number.filter(|number| *number >= range.first) else {
+                continue;
+            };
             let page = u64::from(range.start) + u64::from(number - range.first);
             if page < u64::from(end) {
                 // Written back the same, so `IV` doesn't find a page labelled `iiii`, nor `007` one labelled `7`.
                 let page = page as u32;
-                if self.label(page).is_some_and(|label| if any_case { label.eq_ignore_ascii_case(typed) } else { label == typed }) {
+                if self
+                    .label(page)
+                    .is_some_and(|label| if any_case { label.eq_ignore_ascii_case(typed) } else { label == typed })
+                {
                     return Some(page);
                 }
             }
@@ -690,7 +790,15 @@ fn normalise(mut ranges: Vec<LabelRange>) -> Box<[LabelRange]> {
     ranges.sort_by_key(|range| range.start);
     ranges.dedup_by_key(|range| range.start);
     if ranges.first().is_some_and(|range| range.start > 0) {
-        ranges.insert(0, LabelRange { start: 0, first: 1, style: LabelStyle::Decimal, prefix: "".into() });
+        ranges.insert(
+            0,
+            LabelRange {
+                start: 0,
+                first: 1,
+                style: LabelStyle::Decimal,
+                prefix: "".into(),
+            },
+        );
         ranges.truncate(MAX_LABEL_RANGES);
     }
     ranges.into_boxed_slice()
@@ -702,8 +810,12 @@ pub(crate) fn read_labels(reader: &IndexedReader, pages: u32) -> PageLabels {
 }
 
 fn labels_within(reader: &IndexedReader, pages: u32, budget: &Budget) -> PageLabels {
-    let Some(root) = reader.trailer_entry_owned(b"Root").ok().flatten() else { return PageLabels::default() };
-    let Some(tree) = root.as_dict().ok().and_then(|root| root.get(b"PageLabels").ok()).cloned() else { return PageLabels::default() };
+    let Some(root) = reader.trailer_entry_owned(b"Root").ok().flatten() else {
+        return PageLabels::default();
+    };
+    let Some(tree) = root.as_dict().ok().and_then(|root| root.get(b"PageLabels").ok()).cloned() else {
+        return PageLabels::default();
+    };
     let mut ranges = Vec::new();
     let mut truncated = false;
     let mut stack = vec![tree];
@@ -725,7 +837,13 @@ fn labels_within(reader: &IndexedReader, pages: u32, budget: &Budget) -> PageLab
                     truncated = true;
                     break;
                 }
-                let Some(start) = deref(reader, key).and_then(|key| key.as_i64().ok()).and_then(|key| u32::try_from(key).ok()).filter(|start| *start < pages.max(1)) else { continue };
+                let Some(start) = deref(reader, key)
+                    .and_then(|key| key.as_i64().ok())
+                    .and_then(|key| u32::try_from(key).ok())
+                    .filter(|start| *start < pages.max(1))
+                else {
+                    continue;
+                };
                 let Some(Object::Dictionary(style)) = deref(reader, value) else { continue };
                 ranges.push(range_of(reader, start, &style));
             }
@@ -737,7 +855,10 @@ fn labels_within(reader: &IndexedReader, pages: u32, budget: &Budget) -> PageLab
             stack.extend(kids.iter().take(room).rev().cloned());
         }
     }
-    PageLabels { ranges: normalise(ranges), truncated }
+    PageLabels {
+        ranges: normalise(ranges),
+        truncated,
+    }
 }
 
 fn range_of(reader: &IndexedReader, start: u32, dict: &Dictionary) -> LabelRange {
@@ -752,9 +873,24 @@ fn range_of(reader: &IndexedReader, start: u32, dict: &Dictionary) -> LabelRange
         },
         _ => LabelStyle::None,
     };
-    let prefix = dict.get(b"P").ok().and_then(|prefix| deref(reader, prefix)).and_then(|prefix| prefix.as_str().ok().map(clean_text)).unwrap_or_default();
-    let first = dict.get(b"St").ok().and_then(|first| deref(reader, first)).and_then(|first| first.as_i64().ok()).map_or(1, |first| first.clamp(1, i64::from(MAX_LABEL_START)) as u32);
-    LabelRange { start, first, style, prefix: clean_prefix(&prefix) }
+    let prefix = dict
+        .get(b"P")
+        .ok()
+        .and_then(|prefix| deref(reader, prefix))
+        .and_then(|prefix| prefix.as_str().ok().map(clean_text))
+        .unwrap_or_default();
+    let first = dict
+        .get(b"St")
+        .ok()
+        .and_then(|first| deref(reader, first))
+        .and_then(|first| first.as_i64().ok())
+        .map_or(1, |first| first.clamp(1, i64::from(MAX_LABEL_START)) as u32);
+    LabelRange {
+        start,
+        first,
+        style,
+        prefix: clean_prefix(&prefix),
+    }
 }
 
 /// A number as a style writes it. Roman past 3999, which has no standard form, and letters past 16 of them, are written as digits, so a label is short whatever a file asks.
@@ -769,7 +905,11 @@ fn format_number(number: u32, style: LabelStyle) -> String {
         LabelStyle::LettersUpper | LabelStyle::LettersLower if number >= 1 && (number - 1) / 26 < 16 => {
             // PDF's letters: A to Z, then AA to ZZ, then AAA, the same letter repeated.
             let letter = b'A' + ((number - 1) % 26) as u8;
-            let letter = if style == LabelStyle::LettersLower { letter.to_ascii_lowercase() } else { letter };
+            let letter = if style == LabelStyle::LettersLower {
+                letter.to_ascii_lowercase()
+            } else {
+                letter
+            };
             String::from(letter as char).repeat(((number - 1) / 26 + 1) as usize)
         }
         _ => number.to_string(),
@@ -777,7 +917,21 @@ fn format_number(number: u32, style: LabelStyle) -> String {
 }
 
 fn roman(mut number: u32) -> String {
-    const PARTS: [(u32, &str); 13] = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"), (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")];
+    const PARTS: [(u32, &str); 13] = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
     let mut out = String::new();
     for (value, part) in PARTS {
         while number >= value {
@@ -817,7 +971,11 @@ fn parse_number(text: &str, style: LabelStyle, any_case: bool) -> Option<u32> {
                     b'M' => 1000,
                     _ => return None,
                 };
-                if value < previous { total = total.checked_sub(value)? } else { total = total.checked_add(value)? }
+                if value < previous {
+                    total = total.checked_sub(value)?
+                } else {
+                    total = total.checked_add(value)?
+                }
                 previous = previous.max(value);
             }
             right_case.then_some(total)
@@ -844,14 +1002,24 @@ mod tests {
     /// Failure: a page of thousands of links, or a label tree of thousands of ranges, is read whole and held, as nothing counts them. The caps on counts, with the time cap given room, so a busy machine can't make this a test of the clock: `tests/nav.rs` holds the same files to their limits whatever stops them.
     #[test]
     fn counts_are_capped_whatever_the_time() {
-        let many = (0..MAX_PAGE_LINKS * 3).map(|at| format!("<< /Subtype /Link /Rect [{at} 0 {} 10] /Dest [3 0 R /Fit] >>", at + 1)).collect::<Vec<_>>().join(" ");
-        let bytes = recto_testpdf::pages(&[recto_testpdf::Page { content: Vec::new(), page_extra: format!("/Annots [{many}]"), media: (612.0, 792.0) }]);
+        let many = (0..MAX_PAGE_LINKS * 3)
+            .map(|at| format!("<< /Subtype /Link /Rect [{at} 0 {} 10] /Dest [3 0 R /Fit] >>", at + 1))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let bytes = recto_testpdf::pages(&[recto_testpdf::Page {
+            content: Vec::new(),
+            page_extra: format!("/Annots [{many}]"),
+            media: (612.0, 792.0),
+        }]);
         let reader = open_bytes(Arc::from(bytes)).unwrap();
         let read = links_within(&reader, &[0], Budget::lasting(Duration::from_secs(120)));
         assert_eq!(read[0].1.links.len(), MAX_PAGE_LINKS);
         assert!(read[0].1.truncated);
         let pages = MAX_LABEL_RANGES * 5;
-        let nums = (0..MAX_LABEL_RANGES * 4).map(|at| format!("{at} << /S /D /P (p{at}-) >>")).collect::<Vec<_>>().join(" ");
+        let nums = (0..MAX_LABEL_RANGES * 4)
+            .map(|at| format!("{at} << /S /D /P (p{at}-) >>"))
+            .collect::<Vec<_>>()
+            .join(" ");
         let bytes = recto_testpdf::pages(&(0..pages).map(|_| recto_testpdf::Page::new(Vec::new())).collect::<Vec<_>>());
         let at = bytes.windows(14).position(|window| window == b"/Type /Catalog").unwrap() + 14;
         let bytes = [&bytes[..at], format!(" /PageLabels << /Nums [{nums}] >>").as_bytes(), &bytes[at..]].concat();
@@ -873,7 +1041,10 @@ mod tests {
     fn only_web_and_email_addresses_are_offered() {
         assert_eq!(judge_address(b"https://example.com/a?b=c"), LinkTarget::Web("https://example.com/a?b=c".into()));
         assert_eq!(judge_address(b"HTTP://example.com"), LinkTarget::Web("HTTP://example.com".into()));
-        assert_eq!(judge_address(b"mailto:someone@example.com"), LinkTarget::Web("mailto:someone@example.com".into()));
+        assert_eq!(
+            judge_address(b"mailto:someone@example.com"),
+            LinkTarget::Web("mailto:someone@example.com".into())
+        );
         for (address, why) in [
             (&b"javascript:alert(1)"[..], Refused::Script),
             (b"JavaScript:void(0)", Refused::Script),
@@ -899,15 +1070,31 @@ mod tests {
             assert_eq!(judge_address(address), LinkTarget::Refused(why), "{}", String::from_utf8_lossy(address));
         }
         let long = format!("https://example.com/{}", "a".repeat(MAX_URI_BYTES));
-        assert_eq!(judge_address(long.as_bytes()), LinkTarget::Refused(Refused::BadAddress), "too long to show in full");
+        assert_eq!(
+            judge_address(long.as_bytes()),
+            LinkTarget::Refused(Refused::BadAddress),
+            "too long to show in full"
+        );
     }
 
     /// Failure: a link's box lands somewhere else than where it's drawn on a cropped or turned page, so the pointer finds it in the wrong place.
     #[test]
     fn a_links_box_is_where_the_page_shows_it() {
-        let upright = Frame { turns: 0, left: 0.0, bottom: 0.0, right: 612.0, top: 792.0 };
+        let upright = Frame {
+            turns: 0,
+            left: 0.0,
+            bottom: 0.0,
+            right: 612.0,
+            top: 792.0,
+        };
         assert_eq!(upright.to_shown([72.0, 700.0, 172.0, 712.0]), Some([72.0, 80.0, 172.0, 92.0]));
-        let cropped = Frame { turns: 0, left: 50.0, bottom: 100.0, right: 562.0, top: 692.0 };
+        let cropped = Frame {
+            turns: 0,
+            left: 50.0,
+            bottom: 100.0,
+            right: 562.0,
+            top: 692.0,
+        };
         assert_eq!(cropped.to_shown([72.0, 600.0, 172.0, 612.0]), Some([22.0, 80.0, 122.0, 92.0]));
         let turned = Frame { turns: 1, ..upright };
         assert_eq!(turned.shown_size(), Some((792.0, 612.0)));
@@ -919,15 +1106,35 @@ mod tests {
     }
 
     fn labels(ranges: &[(u32, u32, LabelStyle, &str)]) -> PageLabels {
-        PageLabels::from_ranges(ranges.iter().map(|(start, first, style, prefix)| LabelRange { start: *start, first: *first, style: *style, prefix: (*prefix).into() }).collect(), false)
+        PageLabels::from_ranges(
+            ranges
+                .iter()
+                .map(|(start, first, style, prefix)| LabelRange {
+                    start: *start,
+                    first: *first,
+                    style: *style,
+                    prefix: (*prefix).into(),
+                })
+                .collect(),
+            false,
+        )
     }
 
     /// Failure: roman front matter, prefixed appendices or letters read wrong, so the page number in the corner says something the book doesn't.
     #[test]
     fn labels_read_as_the_book_numbers_its_pages() {
-        let book = labels(&[(0, 1, LabelStyle::RomanLower, ""), (4, 1, LabelStyle::Decimal, ""), (10, 1, LabelStyle::Decimal, "A-"), (12, 1, LabelStyle::LettersUpper, ""), (14, 1, LabelStyle::None, "Cover")]);
+        let book = labels(&[
+            (0, 1, LabelStyle::RomanLower, ""),
+            (4, 1, LabelStyle::Decimal, ""),
+            (10, 1, LabelStyle::Decimal, "A-"),
+            (12, 1, LabelStyle::LettersUpper, ""),
+            (14, 1, LabelStyle::None, "Cover"),
+        ]);
         let shown: Vec<String> = (0..16).map(|page| book.label(page).unwrap()).collect();
-        assert_eq!(shown, ["i", "ii", "iii", "iv", "1", "2", "3", "4", "5", "6", "A-1", "A-2", "A", "B", "Cover", "Cover"]);
+        assert_eq!(
+            shown,
+            ["i", "ii", "iii", "iv", "1", "2", "3", "4", "5", "6", "A-1", "A-2", "A", "B", "Cover", "Cover"]
+        );
         assert_eq!(book.differs(4), Some("1".into()), "the fifth page, called 1");
         assert_eq!(book.differs(0), Some("i".into()));
         assert_eq!(labels(&[(0, 1, LabelStyle::Decimal, "")]).differs(7), None, "a plain number says nothing new");
@@ -935,13 +1142,21 @@ mod tests {
         assert_eq!(format_number(27, LabelStyle::LettersLower), "aa");
         assert_eq!(format_number(1999, LabelStyle::RomanUpper), "MCMXCIX");
         assert_eq!(format_number(4000, LabelStyle::RomanUpper), "4000", "no standard roman past 3999");
-        assert_eq!(format_number(u32::MAX, LabelStyle::LettersUpper), u32::MAX.to_string(), "letters past 16 go as digits");
+        assert_eq!(
+            format_number(u32::MAX, LabelStyle::LettersUpper),
+            u32::MAX.to_string(),
+            "letters past 16 go as digits"
+        );
     }
 
     /// Failure: typing `iv` or `A-2` in the go-to field doesn't find the page, or finds a page whose label only looks similar.
     #[test]
     fn a_typed_label_finds_its_page() {
-        let book = labels(&[(0, 1, LabelStyle::RomanLower, ""), (4, 1, LabelStyle::Decimal, ""), (10, 1, LabelStyle::Decimal, "A-")]);
+        let book = labels(&[
+            (0, 1, LabelStyle::RomanLower, ""),
+            (4, 1, LabelStyle::Decimal, ""),
+            (10, 1, LabelStyle::Decimal, "A-"),
+        ]);
         assert_eq!(book.find("iv", 12), Some(3));
         assert_eq!(book.find("IV", 12), Some(3), "case is a fallback");
         assert_eq!(book.find("1", 12), Some(4), "the page labelled 1, which is the fifth");
@@ -957,7 +1172,11 @@ mod tests {
     /// Failure: a file's ranges out of order, repeated, or starting past page 0 give pages two labels or none.
     #[test]
     fn ranges_are_sorted_and_start_at_the_first_page() {
-        let messy = labels(&[(5, 1, LabelStyle::Decimal, ""), (2, 1, LabelStyle::RomanLower, ""), (5, 9, LabelStyle::Decimal, "x")]);
+        let messy = labels(&[
+            (5, 1, LabelStyle::Decimal, ""),
+            (2, 1, LabelStyle::RomanLower, ""),
+            (5, 9, LabelStyle::Decimal, "x"),
+        ]);
         let starts: Vec<u32> = messy.ranges().iter().map(|range| range.start).collect();
         assert_eq!(starts, [0, 2, 5]);
         assert_eq!(messy.label(0).as_deref(), Some("1"));

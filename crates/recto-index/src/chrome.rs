@@ -86,14 +86,24 @@ pub struct InRow {
 
 /// Which of a page's edge pieces are chrome, given its neighbours' edge pieces and how many pages away each neighbour is, `-2` to `2`: the ones a copy of body text leaves out, as `[start, end)` in the page's text.
 pub fn chrome_spans(page: &[EdgeLine], neighbours: &[(i64, &[EdgeLine])]) -> Vec<(u32, u32)> {
-    let near = |line: &EdgeLine, seen: &EdgeLine| seen.top == line.top && (seen.from_edge - line.from_edge).abs() <= SAME_PLACE_POINTS.max(SAME_PLACE_SIZES * line.size);
-    let across = |line: &EdgeLine, seen: &EdgeLine| (seen.from_left - line.from_left).abs() <= SAME_ACROSS_POINTS || (seen.from_right - line.from_left).abs() <= SAME_ACROSS_POINTS;
+    let near = |line: &EdgeLine, seen: &EdgeLine| {
+        seen.top == line.top && (seen.from_edge - line.from_edge).abs() <= SAME_PLACE_POINTS.max(SAME_PLACE_SIZES * line.size)
+    };
+    let across = |line: &EdgeLine, seen: &EdgeLine| {
+        (seen.from_left - line.from_left).abs() <= SAME_ACROSS_POINTS || (seen.from_right - line.from_left).abs() <= SAME_ACROSS_POINTS
+    };
     let alone = neighbours.iter().all(|(_, other)| other.is_empty());
-    let found_on_neighbours = |line: &EdgeLine, same: &dyn Fn(&EdgeLine) -> bool| neighbours.iter().any(|(_, other)| other.iter().any(|seen| near(line, seen) && same(seen)));
+    let found_on_neighbours =
+        |line: &EdgeLine, same: &dyn Fn(&EdgeLine) -> bool| neighbours.iter().any(|(_, other)| other.iter().any(|seen| near(line, seen) && same(seen)));
     // A row set apart, with a letter in it and no bigger than the usual line, whose text, figures masked, is at its place on a page around: all of it goes, its figures too.
     let rows_repeated: Vec<u16> = page
         .iter()
-        .filter(|line| line.isolated && line.relative <= MOST_SIZE && page.iter().any(|other| other.place.row == line.place.row && other.words && !other.digits_only) && found_on_neighbours(line, &|seen| seen.row_key == line.row_key))
+        .filter(|line| {
+            line.isolated
+                && line.relative <= MOST_SIZE
+                && page.iter().any(|other| other.place.row == line.place.row && other.words && !other.digits_only)
+                && found_on_neighbours(line, &|seen| seen.row_key == line.row_key)
+        })
         .map(|line| line.place.row)
         .collect();
     page.iter()
@@ -104,12 +114,21 @@ pub fn chrome_spans(page: &[EdgeLine], neighbours: &[(i64, &[EdgeLine])]) -> Vec
             // A page number is alone in its row, ends it or is centred on the page, about the size page numbers are, and counted with its neighbours' numbers at its place. One that starts a row from the margin is a question's, a heading's or a footnote's.
             let number = line.number.is_some_and(|value| {
                 let centred = (line.from_left - line.from_right).abs() <= CENTRED * (line.from_left + line.from_right);
-                let shaped = (line.place.alone || line.place.last || centred) && line.relative >= NUMBER_LEAST_SIZE && (line.relative <= NUMBER_MOST_SIZE || line.size <= NUMBER_MOST_POINTS);
-                let stepped = neighbours.iter().any(|(away, other)| other.iter().any(|seen| near(line, seen) && across(line, seen) && seen.number.is_some_and(|theirs| i64::from(theirs) - i64::from(value) == *away)));
+                let shaped = (line.place.alone || line.place.last || centred)
+                    && line.relative >= NUMBER_LEAST_SIZE
+                    && (line.relative <= NUMBER_MOST_SIZE || line.size <= NUMBER_MOST_POINTS);
+                let stepped = neighbours.iter().any(|(away, other)| {
+                    other
+                        .iter()
+                        .any(|seen| near(line, seen) && across(line, seen) && seen.number.is_some_and(|theirs| i64::from(theirs) - i64::from(value) == *away))
+                });
                 shaped && (stepped || (alone && line.isolated && value < LONE_PAGE_NUMBER_BELOW))
             });
             // A piece long enough to say so by its own text, or a date or a version, at its place on a page around.
-            let piece_repeated = line.isolated && line.relative <= MOST_SIZE && (line.substantial || (line.dated && line.relative >= NUMBER_LEAST_SIZE)) && found_on_neighbours(line, &|seen| seen.key == line.key);
+            let piece_repeated = line.isolated
+                && line.relative <= MOST_SIZE
+                && (line.substantial || (line.dated && line.relative >= NUMBER_LEAST_SIZE))
+                && found_on_neighbours(line, &|seen| seen.key == line.key);
             line.words && (number || piece_repeated)
         })
         .map(|line| (line.start, line.end))
@@ -153,20 +172,42 @@ pub fn key(text: impl Iterator<Item = char>) -> u64 {
 
 /// The page number a piece is, if it's one and nothing else: `12`, `xii`, `Page 3`, `p. 3`, `3 of 40`, `3/40`, `- 3 -`, `| 3 |`. Roman numerals only alone or after a word for page, as a word like "mix" is one.
 pub fn page_number(text: &str) -> Option<u32> {
-    let decoration = |ch: char| matches!(ch, '-' | '–' | '—' | '|' | '·' | '•' | '[' | ']' | '(' | ')' | '<' | '>' | '«' | '»' | '/' | '.' | ':') || ch.is_whitespace();
+    let decoration = |ch: char| {
+        matches!(
+            ch,
+            '-' | '–' | '—' | '|' | '·' | '•' | '[' | ']' | '(' | ')' | '<' | '>' | '«' | '»' | '/' | '.' | ':'
+        ) || ch.is_whitespace()
+    };
     let lower = text.to_lowercase();
     // What's round it must be round it: `- 3 -` and `(3)` are page numbers, and `3)`, `3.` and `2011-` are a list's or a table's.
     let core = lower.trim_matches(decoration);
-    let (before, after) = (&lower[..lower.len() - lower.trim_start_matches(decoration).len()], &lower[lower.trim_end_matches(decoration).len()..]);
+    let (before, after) = (
+        &lower[..lower.len() - lower.trim_start_matches(decoration).len()],
+        &lower[lower.trim_end_matches(decoration).len()..],
+    );
     let has = |side: &str, set: &[char]| side.chars().any(|ch| set.contains(&ch));
     let dashes = ['-', '–', '—'];
-    let balanced = has(before, &dashes) == has(after, &dashes) && has(before, &['(', '[']) == has(after, &[')', ']']) && !(before.trim().is_empty() && has(after, &['.', ':']));
+    let balanced = has(before, &dashes) == has(after, &dashes)
+        && has(before, &['(', '[']) == has(after, &[')', ']'])
+        && !(before.trim().is_empty() && has(after, &['.', ':']));
     if !balanced {
         return None;
     }
-    let words: Vec<&str> = core.split(|ch: char| ch.is_whitespace() || ch == '/').map(|word| word.trim_matches(decoration)).filter(|word| !word.is_empty()).collect();
-    let digits = |word: &str| ((1..=5).contains(&word.len()) && word.bytes().all(|byte| byte.is_ascii_digit())).then(|| word.parse::<u32>().ok()).flatten();
-    let roman = |word: &str| ((1..=7).contains(&word.len()) && word.bytes().all(|byte| matches!(byte, b'i' | b'v' | b'x' | b'l' | b'c'))).then(|| roman_value(word)).flatten();
+    let words: Vec<&str> = core
+        .split(|ch: char| ch.is_whitespace() || ch == '/')
+        .map(|word| word.trim_matches(decoration))
+        .filter(|word| !word.is_empty())
+        .collect();
+    let digits = |word: &str| {
+        ((1..=5).contains(&word.len()) && word.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| word.parse::<u32>().ok())
+            .flatten()
+    };
+    let roman = |word: &str| {
+        ((1..=7).contains(&word.len()) && word.bytes().all(|byte| matches!(byte, b'i' | b'v' | b'x' | b'l' | b'c')))
+            .then(|| roman_value(word))
+            .flatten()
+    };
     let page_word = |word: &str| matches!(word, "page" | "p" | "pg" | "pp" | "side" | "seite" | "página" | "pagina" | "sida");
     let of_word = |word: &str| matches!(word, "of" | "av" | "de" | "von" | "sur" | "di");
     match words.as_slice() {
@@ -193,7 +234,11 @@ fn roman_value(word: &str) -> Option<u32> {
     let mut total = 0i64;
     for (at, &byte) in bytes.iter().enumerate() {
         let here = value(byte);
-        if bytes.get(at + 1).is_some_and(|&next| value(next) > here) { total -= here } else { total += here }
+        if bytes.get(at + 1).is_some_and(|&next| value(next) > here) {
+            total -= here
+        } else {
+            total += here
+        }
     }
     let total = u32::try_from(total).ok().filter(|total| *total > 0)?;
     // Only the canonical spelling counts, so random letters that happen to be numerals don't.
@@ -202,7 +247,17 @@ fn roman_value(word: &str) -> Option<u32> {
 
 fn to_roman(mut value: u32) -> String {
     let mut out = String::new();
-    for (step, letters) in [(100, "c"), (90, "xc"), (50, "l"), (40, "xl"), (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i")] {
+    for (step, letters) in [
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ] {
         while value >= step {
             out.push_str(letters);
             value -= step;
@@ -225,10 +280,45 @@ mod tests {
     /// Failure: a page number in one of the usual forms is copied with the body text, or read as another number, or a word, a list's number or a figure that isn't one is taken for it.
     #[test]
     fn page_numbers_are_told_from_other_lines() {
-        for (number, value) in [("12", 12), ("xii", 12), ("Page 3", 3), ("p. 3", 3), ("3 of 40", 3), ("3/40", 3), ("Page 3/40", 3), ("(3)", 3), ("-2-", 2), ("-- 2 --", 2), ("- 3 -", 3), ("– 7 –", 7), ("| 54 |", 54), ("Page 3 of 40", 3), ("PAGE 12", 12), ("08", 8), ("iv", 4)] {
+        for (number, value) in [
+            ("12", 12),
+            ("xii", 12),
+            ("Page 3", 3),
+            ("p. 3", 3),
+            ("3 of 40", 3),
+            ("3/40", 3),
+            ("Page 3/40", 3),
+            ("(3)", 3),
+            ("-2-", 2),
+            ("-- 2 --", 2),
+            ("- 3 -", 3),
+            ("– 7 –", 7),
+            ("| 54 |", 54),
+            ("Page 3 of 40", 3),
+            ("PAGE 12", 12),
+            ("08", 8),
+            ("iv", 4),
+        ] {
             assert_eq!(page_number(number), Some(value), "{number}");
         }
-        for not in ["mix", "2024 Annual Report", "Figure 3", "3.14 percent", "Table 1 of the survey", "", "Chapter 2", "123456", "1)", "i)", "3.", "2011-", "(", "- 3", "iiv", "civil"] {
+        for not in [
+            "mix",
+            "2024 Annual Report",
+            "Figure 3",
+            "3.14 percent",
+            "Table 1 of the survey",
+            "",
+            "Chapter 2",
+            "123456",
+            "1)",
+            "i)",
+            "3.",
+            "2011-",
+            "(",
+            "- 3",
+            "iiv",
+            "civil",
+        ] {
             assert_eq!(page_number(not), None, "{not}");
         }
     }
@@ -244,15 +334,44 @@ mod tests {
 
     fn line(top: bool, from_edge: f32, text: &str) -> EdgeLine {
         let digits_only = text.chars().any(|ch| ch.is_ascii_digit()) && !text.chars().any(char::is_alphabetic);
-        EdgeLine { top, from_edge, size: 9.0, key: key(text.chars()), row_key: key(text.chars()), start: 0, end: text.len() as u32, number: page_number(text), relative: 1.0, words: true, digits_only, isolated: true, dated: false, substantial: text.split_whitespace().count() >= 2 && text.chars().filter(|ch| ch.is_alphabetic()).count() >= 10, from_left: 300.0, from_right: 312.0, place: InRow { row: 0, alone: true, last: true } }
+        EdgeLine {
+            top,
+            from_edge,
+            size: 9.0,
+            key: key(text.chars()),
+            row_key: key(text.chars()),
+            start: 0,
+            end: text.len() as u32,
+            number: page_number(text),
+            relative: 1.0,
+            words: true,
+            digits_only,
+            isolated: true,
+            dated: false,
+            substantial: text.split_whitespace().count() >= 2 && text.chars().filter(|ch| ch.is_alphabetic()).count() >= 10,
+            from_left: 300.0,
+            from_right: 312.0,
+            place: InRow {
+                row: 0,
+                alone: true,
+                last: true,
+            },
+        }
     }
 
     /// Failure: a running head repeated on the next page isn't left out, or one at the other edge, or far from where it was, or a heading bigger than body text, is taken for one.
     #[test]
     fn a_line_is_chrome_where_it_repeats() {
         let head = [line(true, 40.0, "Annual report 2024")];
-        assert_eq!(chrome_spans(&head, &[(1, &[line(true, 41.0, "Annual report 2024")])]).len(), 1, "the same place on the next page");
-        assert!(chrome_spans(&head, &[(1, &[line(false, 40.0, "Annual report 2024")])]).is_empty(), "the other edge");
+        assert_eq!(
+            chrome_spans(&head, &[(1, &[line(true, 41.0, "Annual report 2024")])]).len(),
+            1,
+            "the same place on the next page"
+        );
+        assert!(
+            chrome_spans(&head, &[(1, &[line(false, 40.0, "Annual report 2024")])]).is_empty(),
+            "the other edge"
+        );
         assert!(chrome_spans(&head, &[(1, &[line(true, 80.0, "Annual report 2024")])]).is_empty(), "far from it");
         assert!(chrome_spans(&head, &[]).is_empty(), "nothing to compare with");
         let big = [EdgeLine { relative: 1.5, ..head[0] }];
@@ -262,23 +381,86 @@ mod tests {
     /// Failure: a page number on the last line of a page's text stays in a copy, as on 24 pages of the owner's part B, because it isn't set apart; or numbers that don't count pages, axis labels on two figure pages or a cover's year, are taken for page numbers; or a footnote's mark is.
     #[test]
     fn a_page_number_is_one_its_neighbours_count_with() {
-        let bottom = |text: &str, isolated: bool| EdgeLine { isolated, ..line(false, 30.0, text) };
-        assert_eq!(chrome_spans(&[bottom("82", false)], &[(-1, &[bottom("81", true)]), (2, &[bottom("84", false)])]).len(), 1, "counted with its neighbours, set apart or not");
-        assert!(chrome_spans(&[bottom("1012", true)], &[(1, &[bottom("1010", true)])]).is_empty(), "axis labels on two figure pages");
-        assert!(chrome_spans(&[bottom("1000", true)], &[(1, &[bottom("1000", true)])]).is_empty(), "the same figure twice");
-        assert!(chrome_spans(&[EdgeLine { relative: 2.5, ..line(true, 30.0, "2023") }], &[(1, &[bottom("2", true)])]).is_empty(), "a cover's year");
-        assert_eq!(chrome_spans(&[bottom("17", true)], &[]).len(), 1, "a page number, with no page around to compare");
+        let bottom = |text: &str, isolated: bool| EdgeLine {
+            isolated,
+            ..line(false, 30.0, text)
+        };
+        assert_eq!(
+            chrome_spans(&[bottom("82", false)], &[(-1, &[bottom("81", true)]), (2, &[bottom("84", false)])]).len(),
+            1,
+            "counted with its neighbours, set apart or not"
+        );
+        assert!(
+            chrome_spans(&[bottom("1012", true)], &[(1, &[bottom("1010", true)])]).is_empty(),
+            "axis labels on two figure pages"
+        );
+        assert!(
+            chrome_spans(&[bottom("1000", true)], &[(1, &[bottom("1000", true)])]).is_empty(),
+            "the same figure twice"
+        );
+        assert!(
+            chrome_spans(
+                &[EdgeLine {
+                    relative: 2.5,
+                    ..line(true, 30.0, "2023")
+                }],
+                &[(1, &[bottom("2", true)])]
+            )
+            .is_empty(),
+            "a cover's year"
+        );
+        assert_eq!(
+            chrome_spans(&[bottom("17", true)], &[]).len(),
+            1,
+            "a page number, with no page around to compare"
+        );
         assert!(chrome_spans(&[bottom("2024", true)], &[]).is_empty(), "a year at the foot of a one-page letter");
         assert!(chrome_spans(&[bottom("17", false)], &[]).is_empty(), "not set apart, and nothing to count with");
-        let mark = |page: u32| EdgeLine { relative: 0.43, ..bottom(&page.to_string(), true) };
+        let mark = |page: u32| EdgeLine {
+            relative: 0.43,
+            ..bottom(&page.to_string(), true)
+        };
         assert!(chrome_spans(&[mark(1)], &[(1, &[mark(2)])]).is_empty(), "footnote marks, though they count up");
-        assert!(chrome_spans(&[bottom("0 25 50 75 100", true)], &[(1, &[bottom("0 25 50 75 100", true)])]).is_empty(), "a slide's axis labels repeated");
-        let at = |text: &str, from_left: f32| EdgeLine { from_left, from_right: 612.0 - from_left, ..bottom(text, true) };
-        assert!(chrome_spans(&[at("1", 100.0)], &[(1, &[at("2", 140.0)])]).is_empty(), "a ruler's figures, one along from the other");
-        assert_eq!(chrome_spans(&[at("4", 80.0)], &[(1, &[at("5", 532.0)])]).len(), 1, "facing pages, the number mirrored");
-        let date = EdgeLine { dated: true, ..bottom("3/14/2019", true) };
+        assert!(
+            chrome_spans(&[bottom("0 25 50 75 100", true)], &[(1, &[bottom("0 25 50 75 100", true)])]).is_empty(),
+            "a slide's axis labels repeated"
+        );
+        let at = |text: &str, from_left: f32| EdgeLine {
+            from_left,
+            from_right: 612.0 - from_left,
+            ..bottom(text, true)
+        };
+        assert!(
+            chrome_spans(&[at("1", 100.0)], &[(1, &[at("2", 140.0)])]).is_empty(),
+            "a ruler's figures, one along from the other"
+        );
+        assert_eq!(
+            chrome_spans(&[at("4", 80.0)], &[(1, &[at("5", 532.0)])]).len(),
+            1,
+            "facing pages, the number mirrored"
+        );
+        let date = EdgeLine {
+            dated: true,
+            ..bottom("3/14/2019", true)
+        };
         assert_eq!(chrome_spans(&[date], &[(1, &[date])]).len(), 1, "a footer's date");
-        let caption = EdgeLine { row_key: 1, ..line(true, 30.0, "Table 3") };
-        assert!(chrome_spans(&[caption], &[(1, &[EdgeLine { row_key: 2, ..line(true, 30.0, "Table 4") }])]).is_empty(), "a short piece of rows that differ");
+        let caption = EdgeLine {
+            row_key: 1,
+            ..line(true, 30.0, "Table 3")
+        };
+        assert!(
+            chrome_spans(
+                &[caption],
+                &[(
+                    1,
+                    &[EdgeLine {
+                        row_key: 2,
+                        ..line(true, 30.0, "Table 4")
+                    }]
+                )]
+            )
+            .is_empty(),
+            "a short piece of rows that differ"
+        );
     }
 }

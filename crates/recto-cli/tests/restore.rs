@@ -94,7 +94,11 @@ fn known_paths() -> Vec<&'static str> {
 
 /// Each exception as `(path, why)`.
 fn exceptions() -> Vec<(&'static str, &'static str)> {
-    EXCEPTIONS.iter().flat_map(|(_, list)| list.lines()).map(|line| line.split_once(' ').unwrap_or((line, ""))).collect()
+    EXCEPTIONS
+        .iter()
+        .flat_map(|(_, list)| list.lines())
+        .map(|line| line.split_once(' ').unwrap_or((line, "")))
+        .collect()
 }
 
 /// Failure (review T3): the list of known paths was unsorted, with new ones added at its top, so every branch that added a `qa state` field conflicted there. Each area's file, of known paths and of exceptions, is sorted with no line twice, holds only its own area's paths, and every file in those folders is read. An exception says why. Needs no app.
@@ -106,15 +110,30 @@ fn the_known_paths_and_exceptions_are_sorted_with_no_duplicates() {
             let lines: Vec<(&str, &str)> = list.lines().map(|line| line.split_once(' ').unwrap_or((line, ""))).collect();
             assert!(!lines.is_empty(), "{file} is empty");
             for pair in lines.windows(2) {
-                assert!(pair[0].0 < pair[1].0, "{file}: `{}` then `{}`. Each path once, in sorted order (`LC_ALL=C sort`)", pair[0].0, pair[1].0);
+                assert!(
+                    pair[0].0 < pair[1].0,
+                    "{file}: `{}` then `{}`. Each path once, in sorted order (`LC_ALL=C sort`)",
+                    pair[0].0,
+                    pair[1].0
+                );
             }
             for (path, why) in &lines {
-                assert!(path.strip_prefix(area).is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '['])), "{file}: `{path}` belongs in another area's file");
-                assert_eq!(folder == "exceptions", !why.trim().is_empty(), "{file}: `{path}`: an exception says why, and a known path is a path alone");
+                assert!(
+                    path.strip_prefix(area).is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '['])),
+                    "{file}: `{path}` belongs in another area's file"
+                );
+                assert_eq!(
+                    folder == "exceptions",
+                    !why.trim().is_empty(),
+                    "{file}: `{path}`: an exception says why, and a known path is a path alone"
+                );
             }
         }
         let folder_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/restore").join(folder);
-        let mut on_disk: Vec<String> = std::fs::read_dir(&folder_path).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let mut on_disk: Vec<String> = std::fs::read_dir(&folder_path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
         on_disk.sort();
         let mut read: Vec<String> = lists.iter().map(|(area, _)| format!("{area}.txt")).collect();
         read.sort();
@@ -159,8 +178,18 @@ fn assert_same_but(before: &Value, after: &Value, known: &[&str], also: &[&str])
     }
     assert!(wrong.is_empty(), "these changed across the restart:\n{}", wrong.join("\n"));
     if !known.is_empty() {
-        let unknown: Vec<String> = one.keys().map(|path| general(path)).filter(|path| !known.contains(&path.as_str()) && !excepted(path)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-        assert!(unknown.is_empty(), "`qa state` has fields this test hasn't been told about. Carry each one over in the state record, or name it in restore/exceptions/ with why, then add it to its area's file in restore/known/, in sorted order:\n{}", unknown.join("\n"));
+        let unknown: Vec<String> = one
+            .keys()
+            .map(|path| general(path))
+            .filter(|path| !known.contains(&path.as_str()) && !excepted(path))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "`qa state` has fields this test hasn't been told about. Carry each one over in the state record, or name it in restore/exceptions/ with why, then add it to its area's file in restore/known/, in sorted order:\n{}",
+            unknown.join("\n")
+        );
     }
 }
 
@@ -302,11 +331,19 @@ fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
     let before = run.report();
     let find = &before["app"]["find"];
     // `findable page 1` on page 2, and `page 10` to `page 19` on pages 11 to 20: eleven, a page row and a hit each.
-    assert_eq!((find["rows"].as_u64(), find["status"].as_str()), (Some(22), Some("11 matches on 11 pages")), "{find}");
+    assert_eq!(
+        (find["rows"].as_u64(), find["status"].as_str()),
+        (Some(22), Some("11 matches on 11 pages")),
+        "{find}"
+    );
     assert_eq!(find["current_row"], 5, "the third hit's row: {find}");
     assert_eq!(before["session"]["find"]["current"], json!([11, 0]), "{}", before["session"]["find"]);
     assert_eq!(before["app"]["place"], "12 of 30");
-    assert!(before["app"]["pages"]["highlight_rects"].as_u64().unwrap_or(0) > 0, "the hit is selected on the page: {}", before["app"]["pages"]);
+    assert!(
+        before["app"]["pages"]["highlight_rects"].as_u64().unwrap_or(0) > 0,
+        "the hit is selected on the page: {}",
+        before["app"]["pages"]
+    );
     run.quit();
     let run = Run::on(&state).unwrap();
     run.settled();
@@ -315,14 +352,19 @@ fn find_comes_back_with_its_hits_and_the_hit_gone_to() {
         assert_eq!(after["app"]["find"][field], before["app"]["find"][field], "{field}: {}", after["app"]["find"]);
     }
     assert_eq!(after["app"]["place"], before["app"]["place"]);
-    assert_eq!(after["app"]["pages"]["highlight_rects"], before["app"]["pages"]["highlight_rects"], "the hit's still selected");
+    assert_eq!(
+        after["app"]["pages"]["highlight_rects"], before["app"]["pages"]["highlight_rects"],
+        "the hit's still selected"
+    );
     // And it goes on from there.
     run.ok(&["qa", "find-key", "return"]);
     run.settled();
     assert_eq!(run.report()["app"]["find"]["current_row"], 7);
     run.quit();
     // The file replaced while the app was away, with more pages: what's found is the new file's, not the old count or the old places (review, round 1).
-    let longer: Vec<Page> = (0..120).map(|index| Page::new(text_lines(&[&format!("findable page {index}"), "Words, so that the page isn't blank"]))).collect();
+    let longer: Vec<Page> = (0..120)
+        .map(|index| Page::new(text_lines(&[&format!("findable page {index}"), "Words, so that the page isn't blank"])))
+        .collect();
     std::fs::write(&file.0, pages(&longer)).unwrap();
     let run = Run::on(&state).unwrap();
     run.settled();
@@ -353,7 +395,11 @@ fn the_first_frame_is_the_right_one() {
     // Something on the page, from its sleep file if nothing else: a window doesn't wait for sharp tiles, which on a heavy page is most of a second.
     assert!(shown["tile_layers"].as_u64().unwrap() > 0, "{shown}");
     assert_eq!(shown["page"], before["reader"]["page"]);
-    assert!((shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 0.25, "{shown} {}", before["reader"]);
+    assert!(
+        (shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 0.25,
+        "{shown} {}",
+        before["reader"]
+    );
 }
 
 /// Failure: an update mid-work loses what the reader had going, or asks them something. It hands off in the middle of Find text typed and edit mode on, and the whole report comes back. It never prompts: there's nothing to answer in a quiet run, and it ends by itself.
@@ -435,12 +481,21 @@ fn a_tab_gone_cold_comes_back_where_it_was() {
 
 /// Waits until what's been edited has gone to its journal, which takes seconds, and says what the lists are.
 fn sleep_files(state: &State) -> Vec<PathBuf> {
-    std::fs::read_dir(state.root.join("session").join("journals")).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("sleep-")).map(|entry| entry.path()).collect()
+    std::fs::read_dir(state.root.join("session").join("journals"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("sleep-"))
+        .map(|entry| entry.path())
+        .collect()
 }
 
 fn text_document(folder: &Path, name: &str, count: usize) -> PathBuf {
     let path = folder.join(name);
-    std::fs::write(&path, pages(&(0..count).map(|at| Page::new(text_lines(&[&format!("{name} page {at}")]))).collect::<Vec<_>>())).unwrap();
+    std::fs::write(
+        &path,
+        pages(&(0..count).map(|at| Page::new(text_lines(&[&format!("{name} page {at}")]))).collect::<Vec<_>>()),
+    )
+    .unwrap();
     path
 }
 
@@ -463,14 +518,22 @@ fn a_tab_left_alone_goes_dormant_and_wakes_from_its_file() {
     run.ok(&["open", read.to_str().unwrap()]);
     run.settled();
     let tabs = tabs_of(&run.report());
-    let left_tab = tabs.iter().find(|tab| tab["path"].as_str().unwrap().ends_with("left.pdf")).unwrap()["id"].as_u64().unwrap();
+    let left_tab = tabs.iter().find(|tab| tab["path"].as_str().unwrap().ends_with("left.pdf")).unwrap()["id"]
+        .as_u64()
+        .unwrap();
     assert_eq!(run.report()["reader"]["documents_held"], 2, "it's warm for now");
     let workers_before = run.report()["reader_workers"].clone();
     // Left alone, a second counting as five minutes.
     run.ok(&["qa", "dormant-after", "1"]);
-    wait_until("it goes dormant", || run.report()["record"]["sleep"]["gone_dormant"]["left_alone"].as_u64().unwrap() >= 1 && run.report()["reader"]["documents_held"] == 1);
+    wait_until("it goes dormant", || {
+        run.report()["record"]["sleep"]["gone_dormant"]["left_alone"].as_u64().unwrap() >= 1 && run.report()["reader"]["documents_held"] == 1
+    });
     let after = run.report();
-    assert_eq!(after["session"]["edits_full"].as_object().unwrap().len(), 1, "its edits are still there, read from disk for this: {workers_before}");
+    assert_eq!(
+        after["session"]["edits_full"].as_object().unwrap().len(),
+        1,
+        "its edits are still there, read from disk for this: {workers_before}"
+    );
     assert_eq!(sleep_files(&state).len(), 1, "with a sleep file");
     assert!(tabs_of(&after).iter().any(|tab| tab["id"] == left_tab), "and the tab's there");
     // Nothing more's written with nothing happening, and there's nothing left to come due but what's on hand.
@@ -513,7 +576,12 @@ fn a_dormant_tabs_edits_survive_a_kill_and_a_hand_off() {
     run.settled();
     run.ok(&["open", showing.to_str().unwrap()]);
     run.settled();
-    let tab = tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with("asleep.pdf")).unwrap()["id"].as_u64().unwrap();
+    let tab = tabs_of(&run.report())
+        .iter()
+        .find(|tab| tab["path"].as_str().unwrap().ends_with("asleep.pdf"))
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
     let lists = run.report()["session"]["edits_full"].clone();
     let slept = run.ok(&["session", "sleep", "--tab", &format!("#{tab}")]);
     assert_eq!((&slept["dormant"], &slept["list_asleep"]), (&json!(true), &json!(true)), "{slept}");
@@ -553,7 +621,10 @@ const GREEN: &str = "0 1 0";
 #[allow(clippy::disallowed_methods)] // A test fixture built with lopdf's eager writer, which alone encrypts or rebuilds; never over a user's file.
 fn coloured_with_id(colours: &[&str], id: &str) -> Vec<u8> {
     let mut document = lopdf::Document::load_mem(&pages(&colours.iter().map(|colour| page_of(colour)).collect::<Vec<_>>())).unwrap();
-    document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal(id), lopdf::Object::string_literal(id)]));
+    document.trailer.set(
+        "ID",
+        lopdf::Object::Array(vec![lopdf::Object::string_literal(id), lopdf::Object::string_literal(id)]),
+    );
     let mut out = Vec::new();
     document.save_to(&mut out).unwrap();
     out
@@ -566,9 +637,19 @@ fn colours_in_sleep_files(state: &State) -> Vec<(String, Vec<&'static str>)> {
         .map(|file| {
             let sleep = recto_session::sleep::decode_sleep(&std::fs::read(file).unwrap(), recto_session::record::CURRENT_VERSION).unwrap();
             let colours = sleep.pictures.iter().map(|picture| {
-                let (blue, green, red) = picture.bgra.as_chunks::<4>().0.iter().fold((0u64, 0u64, 0u64), |sum, pixel| (sum.0 + u64::from(pixel[0]), sum.1 + u64::from(pixel[1]), sum.2 + u64::from(pixel[2])));
+                let (blue, green, red) = picture.bgra.as_chunks::<4>().0.iter().fold((0u64, 0u64, 0u64), |sum, pixel| {
+                    (sum.0 + u64::from(pixel[0]), sum.1 + u64::from(pixel[1]), sum.2 + u64::from(pixel[2]))
+                });
                 // Black on white paper, as another tab's is, is none of them.
-                if red > green.max(blue) { "red" } else if green > red.max(blue) { "green" } else if blue > red.max(green) { "blue" } else { "paper" }
+                if red > green.max(blue) {
+                    "red"
+                } else if green > red.max(blue) {
+                    "green"
+                } else if blue > red.max(green) {
+                    "blue"
+                } else {
+                    "paper"
+                }
             });
             (file.file_name().unwrap().to_string_lossy().to_string(), colours.collect())
         })
@@ -593,7 +674,14 @@ fn a_tab_put_to_sleep_has_its_picture_after_the_system_takes_its_tiles() {
     let on_tab = tab_on(&run, "colour.pdf");
     run.ok(&["qa", "memory-pressure", "discard"]);
     assert_eq!(run.ok(&["session", "sleep", "--tab", &on_tab])["dormant"], true);
-    assert_eq!(colours_in_sleep_files(&state).iter().flat_map(|(_, colours)| colours.clone()).collect::<Vec<_>>(), ["red"], "what it showed when it was left");
+    assert_eq!(
+        colours_in_sleep_files(&state)
+            .iter()
+            .flat_map(|(_, colours)| colours.clone())
+            .collect::<Vec<_>>(),
+        ["red"],
+        "what it showed when it was left"
+    );
 }
 
 /// Failure (review, blocks the merge): a sleep file keeps the old file's picture under the new file's name, for good: a red PDF replaced by a blue one, or saved over, has red in the next sleep file and every wake after it, restarts included. With a redaction, that picture would be what was removed. Everything drawn of a file goes with that version of it, on this route and on a save.
@@ -611,11 +699,31 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
     run.settled();
     run.ok(&["open", other.to_str().unwrap()]);
     run.settled();
-    let tab = tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with("colour.pdf")).unwrap()["id"].as_u64().unwrap();
+    let tab = tabs_of(&run.report())
+        .iter()
+        .find(|tab| tab["path"].as_str().unwrap().ends_with("colour.pdf"))
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
     let on_tab = format!("#{tab}");
-    let other_tab = format!("#{}", tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with("other.pdf")).unwrap()["id"].as_u64().unwrap());
+    let other_tab = format!(
+        "#{}",
+        tabs_of(&run.report())
+            .iter()
+            .find(|tab| tab["path"].as_str().unwrap().ends_with("other.pdf"))
+            .unwrap()["id"]
+            .as_u64()
+            .unwrap()
+    );
     run.ok(&["session", "sleep", "--tab", &on_tab]);
-    assert_eq!(colours_in_sleep_files(&state).iter().flat_map(|(_, colours)| colours.clone()).collect::<Vec<_>>(), ["red"], "the old one, red, as it should be");
+    assert_eq!(
+        colours_in_sleep_files(&state)
+            .iter()
+            .flat_map(|(_, colours)| colours.clone())
+            .collect::<Vec<_>>(),
+        ["red"],
+        "the old one, red, as it should be"
+    );
     // Another app puts blue there, and it's woken from what it had.
     std::thread::sleep(Duration::from_millis(20));
     std::fs::write(&file, pages(&[page_of(BLUE), page_of(BLUE)])).unwrap();
@@ -627,8 +735,14 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
     run.settled();
     run.ok(&["session", "sleep", "--tab", &on_tab]);
     let colours = colours_in_sleep_files(&state);
-    assert!(!colours.iter().any(|(_, colours)| colours.contains(&"red")), "nothing red, under any name: {colours:?}");
-    assert!(colours.iter().any(|(_, colours)| colours.contains(&"blue")), "and it's the new one that's there: {colours:?}");
+    assert!(
+        !colours.iter().any(|(_, colours)| colours.contains(&"red")),
+        "nothing red, under any name: {colours:?}"
+    );
+    assert!(
+        colours.iter().any(|(_, colours)| colours.contains(&"blue")),
+        "and it's the new one that's there: {colours:?}"
+    );
     // A save, with no sleep file in between to hide behind: the picture's still in memory at the moment it's saved.
     run.ok(&["tap", &on_tab]);
     run.settled();
@@ -639,8 +753,14 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
     run.ok(&["tap", &other_tab]);
     run.settled();
     run.ok(&["session", "sleep", "--tab", &on_tab]);
-    wait_until("the old version's goes", || !colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"blue")));
-    assert!(colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"green")), "{:?}", colours_in_sleep_files(&state));
+    wait_until("the old version's goes", || {
+        !colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"blue"))
+    });
+    assert!(
+        colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"green")),
+        "{:?}",
+        colours_in_sleep_files(&state)
+    );
     // And across a restart, what comes up isn't any of the old ones, and its next file isn't either.
     run.quit();
     let run = Run::on(&state).unwrap();
@@ -653,11 +773,17 @@ fn a_new_version_of_a_file_has_none_of_the_old_ones_pictures() {
     run.settled();
     run.ok(&["session", "sleep", "--tab", &on_tab]);
     let colours = colours_in_sleep_files(&state);
-    assert!(!colours.iter().any(|(_, colours)| colours.contains(&"red") || colours.contains(&"blue")), "{colours:?}");
+    assert!(
+        !colours.iter().any(|(_, colours)| colours.contains(&"red") || colours.contains(&"blue")),
+        "{colours:?}"
+    );
 }
 
 fn tab_on(run: &Run<'_>, name: &str) -> String {
-    format!("#{}", tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with(name)).unwrap()["id"])
+    format!(
+        "#{}",
+        tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with(name)).unwrap()["id"]
+    )
 }
 
 /// Failure (review follow-up 1, the red frames, reproduced here before the fix): a warm tab's file is replaced, by a save or another app, and tapping it shows the old pages from what's held and from a worker that still has the old file open, with nothing said. Its file's looked at before it's shown, and the old pages go.
@@ -681,12 +807,21 @@ fn a_warm_tab_shows_its_file_as_it_is_now() {
     std::fs::rename(&replacement, &file).unwrap();
     run.ok(&["tap", &tab_on(&run, "colour.pdf")]);
     run.settled();
-    assert_eq!(tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with("colour.pdf")).unwrap()["notice"], "changed");
+    assert_eq!(
+        tabs_of(&run.report())
+            .iter()
+            .find(|tab| tab["path"].as_str().unwrap().ends_with("colour.pdf"))
+            .unwrap()["notice"],
+        "changed"
+    );
     run.ok(&["tap", &tab_on(&run, "other.pdf")]);
     run.settled();
     run.ok(&["session", "sleep", "--tab", &tab_on(&run, "colour.pdf")]);
     let colours = colours_in_sleep_files(&state);
-    assert!(colours.iter().any(|(_, colours)| colours.contains(&"blue")) && !colours.iter().any(|(_, colours)| colours.contains(&"red")), "{colours:?}");
+    assert!(
+        colours.iter().any(|(_, colours)| colours.contains(&"blue")) && !colours.iter().any(|(_, colours)| colours.contains(&"red")),
+        "{colours:?}"
+    );
 }
 
 /// Failure (review follow-up 1): a file replaced while the app was closed, and its tab the one on screen: the window goes up with the old file's picture from its sleep file, before anything's looked at the file.
@@ -702,13 +837,20 @@ fn a_launch_doesnt_show_a_picture_of_a_file_thats_been_replaced() {
     run.ok(&["open", file.to_str().unwrap()]);
     run.settled();
     run.hand_off();
-    assert!(colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"red")), "there's a red picture to come up with");
+    assert!(
+        colours_in_sleep_files(&state).iter().any(|(_, colours)| colours.contains(&"red")),
+        "there's a red picture to come up with"
+    );
     std::thread::sleep(Duration::from_millis(20));
     std::fs::write(&file, pages(&[page_of(BLUE), page_of(BLUE)])).unwrap();
     let run = Run::on(&state).unwrap();
     run.settled();
     let report = run.report();
-    assert_eq!(report["reader"]["last_wake"]["from_sleep"], false, "no picture of the old one: {}", report["reader"]["last_wake"]);
+    assert_eq!(
+        report["reader"]["last_wake"]["from_sleep"], false,
+        "no picture of the old one: {}",
+        report["reader"]["last_wake"]
+    );
     assert_eq!(run.ok(&["where"])["pages"], 2);
 }
 
@@ -786,7 +928,12 @@ fn reading_a_page_says_when_its_edits_cant_be_read() {
     run.settled();
     let slept = run.ok(&["session", "sleep", "--tab", &tab_on(&run, "doc.pdf")]);
     assert_eq!(slept["list_asleep"], true);
-    let journal = std::fs::read_dir(state.root.join("session").join("journals")).unwrap().flatten().find(|entry| entry.file_name().to_string_lossy().starts_with("journal-")).unwrap().path();
+    let journal = std::fs::read_dir(state.root.join("session").join("journals"))
+        .unwrap()
+        .flatten()
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("journal-"))
+        .unwrap()
+        .path();
     std::fs::write(&journal, b"not a journal").unwrap();
     let (reply, _) = state.json(&["text", "--tab", &tab_on(&run, "doc.pdf"), "--page", "1"]);
     assert_eq!(reply["error"]["code"], "edits_unreadable", "{reply}");
@@ -806,8 +953,21 @@ fn a_protected_pdfs_pages_never_reach_a_sleep_file() {
     std::fs::write(&plain, pages(&[page_of(GREEN), page_of(GREEN)])).unwrap();
     let other = text_document(&folder, "other.pdf", 2);
     let mut document = lopdf::Document::load_mem(&pages(&[page_of(RED)])).unwrap();
-    document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));
-    let encryption = EncryptionState::try_from(EncryptionVersion::V2 { document: &document, owner_password: "owner", user_password: "", key_length: 128, permissions: Permissions::all() }).unwrap();
+    document.trailer.set(
+        "ID",
+        lopdf::Object::Array(vec![
+            lopdf::Object::string_literal("0123456789abcdef"),
+            lopdf::Object::string_literal("0123456789abcdef"),
+        ]),
+    );
+    let encryption = EncryptionState::try_from(EncryptionVersion::V2 {
+        document: &document,
+        owner_password: "owner",
+        user_password: "",
+        key_length: 128,
+        permissions: Permissions::all(),
+    })
+    .unwrap();
     document.encrypt(&encryption).unwrap();
     let locked = folder.join("locked.pdf");
     document.save(&locked).unwrap();
@@ -827,10 +987,20 @@ fn a_protected_pdfs_pages_never_reach_a_sleep_file() {
     run.settled();
     run.ok(&["open", other.to_str().unwrap()]);
     run.settled();
-    let on_locked = format!("#{}", tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with("locked.pdf")).unwrap()["id"]);
+    let on_locked = format!(
+        "#{}",
+        tabs_of(&run.report())
+            .iter()
+            .find(|tab| tab["path"].as_str().unwrap().ends_with("locked.pdf"))
+            .unwrap()["id"]
+    );
     run.ok(&["session", "sleep", "--tab", &on_locked]);
     run.hand_off();
-    assert!(colours_in_sleep_files(&state).iter().all(|(_, colours)| !colours.contains(&"red")), "{:?}", colours_in_sleep_files(&state));
+    assert!(
+        colours_in_sleep_files(&state).iter().all(|(_, colours)| !colours.contains(&"red")),
+        "{:?}",
+        colours_in_sleep_files(&state)
+    );
 }
 
 /// Failure (review): a forged sleep file says a 3-page PDF has 100 pages, and that goes on being believed through drawing and another sleep, and a rotation lands on a page that isn't there. The worker's word goes over it as soon as it has the file open: the sleep file goes, and the file's read.
@@ -861,7 +1031,11 @@ fn a_forged_length_lasts_only_till_the_worker_has_the_file() {
     run.ok(&["tap", "#2"]);
     run.settled();
     run.ok(&["session", "sleep", "--tab", &on_short]);
-    let again = recto_session::sleep::decode_sleep(&std::fs::read(sleep_files(&state).pop().unwrap()).unwrap(), recto_session::record::CURRENT_VERSION).unwrap();
+    let again = recto_session::sleep::decode_sleep(
+        &std::fs::read(sleep_files(&state).pop().unwrap()).unwrap(),
+        recto_session::record::CURRENT_VERSION,
+    )
+    .unwrap();
     assert_eq!(again.file_pages, 3, "what's written next is true");
 }
 
@@ -889,7 +1063,12 @@ fn a_kept_file_gone_while_asleep_doesnt_stop_a_save() {
     let shown = run.ok(&["session", "show"]);
     assert_eq!(shown["tabs"][0]["can_undo"], true, "asleep, and there's still a step: {shown}");
     let journals = state.root.join("session").join("journals");
-    let kept = std::fs::read_dir(&journals).unwrap().flatten().find(|entry| entry.file_name().to_string_lossy().starts_with("kept-")).unwrap().path();
+    let kept = std::fs::read_dir(&journals)
+        .unwrap()
+        .flatten()
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("kept-"))
+        .unwrap()
+        .path();
     std::fs::remove_file(kept).unwrap();
     run.ok(&["tap", &on_doc]);
     run.settled();
@@ -913,7 +1092,11 @@ fn a_sleep_file_thats_wrong_only_costs_the_quick_way() {
     run.settled();
     run.ok(&["open", two.to_str().unwrap()]);
     run.settled();
-    let on = |name: &str, run: &Run<'_>| tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with(name)).unwrap()["id"].as_u64().unwrap();
+    let on = |name: &str, run: &Run<'_>| {
+        tabs_of(&run.report()).iter().find(|tab| tab["path"].as_str().unwrap().ends_with(name)).unwrap()["id"]
+            .as_u64()
+            .unwrap()
+    };
     let first = on("one.pdf", &run);
     run.ok(&["session", "sleep", "--tab", &format!("#{first}")]);
     wait_until("the file's there", || sleep_files(&state).len() == 1);
@@ -934,11 +1117,20 @@ fn a_sleep_file_thats_wrong_only_costs_the_quick_way() {
     run.ok(&["session", "sleep", "--tab", &format!("#{first}")]);
     wait_until("the file's there again", || sleep_files(&state).len() == 1);
     std::thread::sleep(Duration::from_millis(20));
-    std::fs::write(&one, pages(&(0..9).map(|at| Page::new(text_lines(&[&format!("New {at}")]))).collect::<Vec<_>>())).unwrap();
+    std::fs::write(
+        &one,
+        pages(&(0..9).map(|at| Page::new(text_lines(&[&format!("New {at}")]))).collect::<Vec<_>>()),
+    )
+    .unwrap();
     run.ok(&["tap", &format!("#{first}")]);
     wait_until("it finds the new one", || run.ok(&["where"])["pages"] == 9);
     run.settled();
-    assert_eq!(tabs_of(&run.report()).iter().find(|tab| tab["id"] == first).unwrap()["notice"], "changed", "it says so, with no edits too (decision 23): {}", run.report()["session"]["tabs"]);
+    assert_eq!(
+        tabs_of(&run.report()).iter().find(|tab| tab["id"] == first).unwrap()["notice"],
+        "changed",
+        "it says so, with no edits too (decision 23): {}",
+        run.report()["session"]["tabs"]
+    );
     let mut gone = false;
     for _ in 0..200 {
         gone = sleep_files(&state).is_empty();
@@ -947,7 +1139,12 @@ fn a_sleep_file_thats_wrong_only_costs_the_quick_way() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(gone, "its old picture's still there: {:?} {}", sleep_files(&state), run.report()["record"]["sleep"]);
+    assert!(
+        gone,
+        "its old picture's still there: {:?} {}",
+        sleep_files(&state),
+        run.report()["record"]["sleep"]
+    );
 }
 
 /// Failure: the system says memory's short and tabs off screen stay, or the budget across documents isn't kept, or what's being read goes blank. Everything off screen goes dormant at once, oldest first, and what's on screen stays. And a window of many tabs can't go over its budget.
@@ -969,7 +1166,10 @@ fn pressure_and_the_budget_do_what_being_left_alone_does() {
     assert_eq!(after["record"]["sleep"]["pressure_events"], 1);
     assert_eq!(after["record"]["sleep"]["gone_dormant"]["pressure"], 2);
     run.settled();
-    assert!(run.report()["reader"]["tiles"]["attached"].as_u64().unwrap() > 0, "and what's on screen is still there");
+    assert!(
+        run.report()["reader"]["tiles"]["attached"].as_u64().unwrap() > 0,
+        "and what's on screen is still there"
+    );
     // Over the budget, however it's set: a document off screen holds its worker, so any at all is over nothing.
     run.ok(&["qa", "live-budget", "0"]);
     let tabs = tabs_of(&run.report());
@@ -977,7 +1177,9 @@ fn pressure_and_the_budget_do_what_being_left_alone_does() {
     run.settled();
     run.ok(&["tap", &format!("#{}", tabs[1]["id"])]);
     run.settled();
-    wait_until("the one with a worker goes", || run.report()["record"]["sleep"]["gone_dormant"]["budget"].as_u64().unwrap() >= 1);
+    wait_until("the one with a worker goes", || {
+        run.report()["record"]["sleep"]["gone_dormant"]["budget"].as_u64().unwrap() >= 1
+    });
 }
 
 /// Failure (decision 24): a launch or a hand-off waits for sharp pages before there's a window, which on a heavy page is most of a second; or its first frame's anything but the place with something on every page. It goes up from the sleep file with the picture on, and the file's not rewritten when nothing's changed.
@@ -1001,9 +1203,20 @@ fn a_launch_goes_up_from_the_sleep_file() {
     let after = run.report();
     let shown = &after["record"]["first_shown"];
     assert_eq!(shown["page"], before["reader"]["page"], "{shown}");
-    assert!((shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 1.0, "{shown}");
+    assert!(
+        (shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 1.0,
+        "{shown}"
+    );
     assert!(shown["tile_layers"].as_u64().unwrap() > 0, "something on it: {shown}");
-    assert_eq!(after["reader"]["last_wake"]["from_sleep"], true, "{} {} {} {}", after["reader"]["last_wake"], after["record"]["sleep"], after["reader"]["tiles"], written.len());
+    assert_eq!(
+        after["reader"]["last_wake"]["from_sleep"],
+        true,
+        "{} {} {} {}",
+        after["reader"]["last_wake"],
+        after["record"]["sleep"],
+        after["reader"]["tiles"],
+        written.len()
+    );
     assert_eq!(after["reader"]["last_wake"]["blank_frames"], 0);
     assert_eq!(after["record"]["sleep"]["woken_from_file"], 1);
     // Nothing's changed, so a quit writes nothing to it.
@@ -1030,7 +1243,11 @@ fn undo_goes_past_a_save_in_the_real_app() {
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join("doc.pdf");
-    std::fs::write(&file, pages(&["Alpha page", "Bravo page", "Charlie page"].map(|text| Page::new(text_lines(&[text]))))).unwrap();
+    std::fs::write(
+        &file,
+        pages(&["Alpha page", "Bravo page", "Charlie page"].map(|text| Page::new(text_lines(&[text])))),
+    )
+    .unwrap();
     let text_of = |run: &Run<'_>, page: &str| run.ok(&["text", "--page", page]).to_string();
     let edited = |run: &Run<'_>| run.ok(&["edits"])["edited"].as_bool().unwrap();
     run.ok(&["open", file.to_str().unwrap()]);
@@ -1047,9 +1264,22 @@ fn undo_goes_past_a_save_in_the_real_app() {
     let second = text_of(&run, "2");
     assert!(second.contains("Charlie"), "the file's second page now: {second:?} {}", run.ok(&["edits"]));
     let journals = state.root.join("session").join("journals");
-    let kept_files = || std::fs::read_dir(&journals).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("kept-")).count();
+    let kept_files = || {
+        std::fs::read_dir(&journals)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("kept-"))
+            .count()
+    };
     assert_eq!(kept_files(), 1, "the page it took out is kept");
-    let journal_bytes = || std::fs::read_dir(&journals).unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("journal-")).map(|entry| entry.metadata().unwrap().len()).sum::<u64>();
+    let journal_bytes = || {
+        std::fs::read_dir(&journals)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("journal-"))
+            .map(|entry| entry.metadata().unwrap().len())
+            .sum::<u64>()
+    };
     wait_until("the new journal goes at once", || journal_bytes() > 0);
     let before_undo = journal_bytes();
     // Past the saved point.
@@ -1080,7 +1310,13 @@ fn undo_goes_past_a_save_in_the_real_app() {
     let cleared = run.ok(&["clear-history"]);
     assert_eq!(cleared["can_undo"], false, "{cleared}");
     run.settled();
-    wait_until("its files go at once", || kept_files() == 0 && std::fs::read_dir(&journals).unwrap().flatten().all(|entry| !entry.file_name().to_string_lossy().starts_with("journal-")));
+    wait_until("its files go at once", || {
+        kept_files() == 0
+            && std::fs::read_dir(&journals)
+                .unwrap()
+                .flatten()
+                .all(|entry| !entry.file_name().to_string_lossy().starts_with("journal-"))
+    });
     let (nothing, _) = state.json(&["undo"]);
     assert_eq!(nothing["error"]["code"], "nothing_to_undo", "{nothing}");
     assert!(run.ok(&["clear-history"])["did"].as_str().unwrap().contains("no edit history"));
@@ -1144,7 +1380,10 @@ fn a_kill_before_any_record_keeps_the_edits() {
     run.settled();
     run.ok(&["qa", "owner-edit", "delete:3"]);
     let lists = wait_for_journal(&run);
-    assert!(!state.root.join("session/record.a.json").exists() && !state.root.join("session/record.b.json").exists(), "this is about having no record");
+    assert!(
+        !state.root.join("session/record.a.json").exists() && !state.root.join("session/record.b.json").exists(),
+        "this is about having no record"
+    );
     run.kill();
     let run = Run::on(&state).unwrap();
     run.settled();
@@ -1174,8 +1413,18 @@ fn closing_loses_no_operation_on_its_way_out() {
     // And the PDF opened again has its way forward.
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
-    let list = run.report()["session"]["edits_full"].as_object().unwrap().values().next().cloned().expect("its history");
-    assert_eq!((list["undo"].as_array().unwrap().len(), list["redo"].as_array().unwrap().len()), (0, 1), "{list}");
+    let list = run.report()["session"]["edits_full"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .cloned()
+        .expect("its history");
+    assert_eq!(
+        (list["undo"].as_array().unwrap().len(), list["redo"].as_array().unwrap().len()),
+        (0, 1),
+        "{list}"
+    );
 }
 
 /// Failure (review B4): owner history with nothing unsaved, as four quarter turns are, is what a close allows and keeps. It brought the tab back on every launch, under a new number each time, however many times it was closed. A closed tab stays closed, and its history waits for the PDF to be opened.
@@ -1202,7 +1451,13 @@ fn a_closed_tab_stays_closed_and_keeps_its_history() {
     // By the app's own route: a drop, the menu, a launch argument.
     run.ok(&["qa", "open-file", file.0.to_str().unwrap()]);
     run.settled();
-    let list = run.report()["session"]["edits_full"].as_object().unwrap().values().next().cloned().expect("its history");
+    let list = run.report()["session"]["edits_full"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .cloned()
+        .expect("its history");
     assert_eq!(list["undo"].as_array().unwrap().len(), 4, "{list}");
 }
 
@@ -1224,7 +1479,13 @@ fn opening_by_either_route_picks_up_the_history() {
     run.ok(&["open", file.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["qa", "owner-edit", "delete:5"]);
-    let list = run.report()["session"]["edits_full"].as_object().unwrap().values().next().cloned().expect("a list");
+    let list = run.report()["session"]["edits_full"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .cloned()
+        .expect("a list");
     assert_eq!(list["undo"].as_array().unwrap().len(), 5, "its 4 and the new one: {list}");
     run.ok(&["session", "save"]);
     let lists = run.report()["session"]["edits_full"].clone();
@@ -1289,7 +1550,11 @@ fn a_journal_doesnt_go_to_a_copy_of_its_pdf() {
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let (original, copy) = (folder.join("a.pdf"), folder.join("acopy.pdf"));
-    std::fs::write(&original, pages(&(0..6).map(|at| Page::new(text_lines(&[&format!("Page {at}")]))).collect::<Vec<_>>())).unwrap();
+    std::fs::write(
+        &original,
+        pages(&(0..6).map(|at| Page::new(text_lines(&[&format!("Page {at}")]))).collect::<Vec<_>>()),
+    )
+    .unwrap();
     assert!(Command::new("/bin/cp").arg("-p").arg(&original).arg(&copy).status().unwrap().success());
     run.ok(&["open", original.to_str().unwrap()]);
     run.ok(&["open", copy.to_str().unwrap()]);
@@ -1300,7 +1565,9 @@ fn a_journal_doesnt_go_to_a_copy_of_its_pdf() {
     run.settled();
     let tabs = tabs_of(&run.report());
     assert_eq!(tabs.len(), 2);
-    let on_copy = tabs.iter().find(|tab| tab["path"].as_str().unwrap().ends_with("acopy.pdf")).unwrap()["id"].as_u64().unwrap();
+    let on_copy = tabs.iter().find(|tab| tab["path"].as_str().unwrap().ends_with("acopy.pdf")).unwrap()["id"]
+        .as_u64()
+        .unwrap();
     run.ok(&["tap", &format!("#{on_copy}")]);
     run.settled();
     run.ok(&["qa", "owner-edit", "delete:3"]);
@@ -1311,7 +1578,12 @@ fn a_journal_doesnt_go_to_a_copy_of_its_pdf() {
     let after = run.report();
     assert_eq!(tabs_of(&after).len(), 2, "{}", after["session"]["tabs"]);
     let lists = after["session"]["edits_full"].as_object().unwrap();
-    assert_eq!(lists.keys().collect::<Vec<_>>(), [&on_copy.to_string()], "on the copy, where they were made: {}", after["session"]["tabs"]);
+    assert_eq!(
+        lists.keys().collect::<Vec<_>>(),
+        [&on_copy.to_string()],
+        "on the copy, where they were made: {}",
+        after["session"]["tabs"]
+    );
 }
 
 /// Failure (final review N7): a closed PDF's history is taken up when its file couldn't even be read, so it's marked as open with nothing holding it. Opening again and editing wrote over the end of the old journal, and every save and hand-off failed with what's written not reading back. It's only taken after a good read.
@@ -1323,7 +1595,11 @@ fn history_is_only_taken_up_after_a_good_read() {
     let folder = state.root.join("docs");
     std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join("a.pdf");
-    std::fs::write(&file, pages(&(0..6).map(|at| Page::new(text_lines(&[&format!("Page {at}")]))).collect::<Vec<_>>())).unwrap();
+    std::fs::write(
+        &file,
+        pages(&(0..6).map(|at| Page::new(text_lines(&[&format!("Page {at}")]))).collect::<Vec<_>>()),
+    )
+    .unwrap();
     run.ok(&["open", file.to_str().unwrap()]);
     run.settled();
     for _ in 0..4 {
@@ -1332,7 +1608,11 @@ fn history_is_only_taken_up_after_a_good_read() {
     run.ok(&["close"]);
     run.ok(&["session", "save"]);
     let began = Instant::now();
-    while !std::fs::read_dir(state.root.join("session/journals")).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().starts_with("closed-")) {
+    while !std::fs::read_dir(state.root.join("session/journals"))
+        .unwrap()
+        .flatten()
+        .any(|entry| entry.file_name().to_string_lossy().starts_with("closed-"))
+    {
         assert!(began.elapsed() < Duration::from_secs(10), "it was never closed");
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -1344,7 +1624,13 @@ fn history_is_only_taken_up_after_a_good_read() {
     run.ok(&["qa", "open-file", file.to_str().unwrap()]);
     run.settled();
     run.ok(&["qa", "owner-edit", "delete:3"]);
-    let list = run.report()["session"]["edits_full"].as_object().unwrap().values().next().cloned().expect("a list");
+    let list = run.report()["session"]["edits_full"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .cloned()
+        .expect("a list");
     assert_eq!(list["undo"].as_array().unwrap().len(), 5, "its 4 and the new one: {list}");
     run.ok(&["session", "save"]);
     run.hand_off();
@@ -1419,7 +1705,13 @@ fn a_hand_off_waits_for_a_command_and_a_read() {
     run.settled();
     // An agent's command, under way on a job thread.
     let out = state.root.join("bomb.png");
-    let mut waiting = state.command().args(["render", "1", "--tab", "#1", "--out", out.to_str().unwrap(), "--json"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let mut waiting = state
+        .command()
+        .args(["render", "1", "--tab", "#1", "--out", out.to_str().unwrap(), "--json"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
     let began = Instant::now();
     let check = loop {
         let check = run.ok(&["session", "check"]);
@@ -1483,7 +1775,16 @@ fn the_hidden_sidebar_and_each_tabs_layout_come_back() {
     let run = Run::on(&state).unwrap();
     run.settled();
     let after = run.report();
-    assert_eq!((&after["app"]["sidebar_hidden"], &after["app"]["sidebar_visible"], &after["app"]["sidebar_button"]["visible"]), (&json!(true), &json!(false), &json!(true)), "{}", after["app"]);
+    assert_eq!(
+        (
+            &after["app"]["sidebar_hidden"],
+            &after["app"]["sidebar_visible"],
+            &after["app"]["sidebar_button"]["visible"]
+        ),
+        (&json!(true), &json!(false), &json!(true)),
+        "{}",
+        after["app"]
+    );
     assert_eq!(after["app"]["layout"], "two-up");
     assert_eq!(after["reader"]["page"], 6);
     assert_eq!(after["app"]["pages"]["scroll_y"], before["app"]["pages"]["scroll_y"], "to the pixel");
@@ -1493,7 +1794,12 @@ fn the_hidden_sidebar_and_each_tabs_layout_come_back() {
     let run = Run::on(&state).unwrap();
     run.settled();
     let handed = run.report();
-    assert_eq!((&handed["app"]["sidebar_hidden"], &handed["app"]["layout"]), (&json!(true), &json!("two-up")), "{}", handed["app"]);
+    assert_eq!(
+        (&handed["app"]["sidebar_hidden"], &handed["app"]["layout"]),
+        (&json!(true), &json!("two-up")),
+        "{}",
+        handed["app"]
+    );
     run.ok(&["qa", "button", "sidebar"]);
     let shown = run.report();
     assert_eq!(shown["app"]["sidebar_visible"], true, "{}", shown["app"]);
@@ -1531,7 +1837,11 @@ fn a_moved_file_and_its_notice_come_back() {
     let folder = state.root.join("docs");
     std::fs::create_dir_all(folder.join("there")).unwrap();
     let path = folder.join("a.pdf");
-    std::fs::write(&path, pages(&(0..6).map(|at| Page::new(text_lines(&[&format!("Page {at}")]))).collect::<Vec<_>>())).unwrap();
+    std::fs::write(
+        &path,
+        pages(&(0..6).map(|at| Page::new(text_lines(&[&format!("Page {at}")]))).collect::<Vec<_>>()),
+    )
+    .unwrap();
     run.ok(&["open", path.to_str().unwrap()]);
     run.settled();
     run.ok(&["qa", "owner-edit", "rotate:2"]);
@@ -1542,7 +1852,12 @@ fn a_moved_file_and_its_notice_come_back() {
     run.ok(&["qa", "scroller-style", "overlay"]);
     run.settled();
     let before = run.report();
-    assert_eq!(before["session"]["tabs"][0]["notice"]["moved"]["from"], path.to_str().unwrap(), "{}", before["session"]["tabs"]);
+    assert_eq!(
+        before["session"]["tabs"][0]["notice"]["moved"]["from"],
+        path.to_str().unwrap(),
+        "{}",
+        before["session"]["tabs"]
+    );
     run.quit();
     let run = Run::on(&state).unwrap();
     run.ok(&["qa", "scroller-style", "overlay"]);
@@ -1573,7 +1888,11 @@ fn killed_outright_it_comes_back_with_what_was_written() {
     for (_, list) in after["session"]["edits_full"].as_object().unwrap() {
         lists_back.insert("one", list.clone());
     }
-    assert_eq!(lists_back.get("one"), lists.as_object().unwrap().values().next(), "the edits and whose they were");
+    assert_eq!(
+        lists_back.get("one"),
+        lists.as_object().unwrap().values().next(),
+        "the edits and whose they were"
+    );
     assert_eq!(after["app"]["note"], Value::Null, "it isn't reported as damaged");
     let lists = after["session"]["edits_full"].clone();
     // Killed again at once, with something on its way: still whole.
@@ -1647,7 +1966,10 @@ fn a_thousand_tabs_come_back_cold() {
     assert_eq!(back["session"]["active"], opened["session"]["active"]);
     let (threads_few, threads_back) = (few["memory"]["threads"].as_u64().unwrap(), back["memory"]["threads"].as_u64().unwrap());
     assert!(threads_back <= threads_few + 2, "{threads_few} then {threads_back} threads");
-    let (handles_few, handles_back) = (few["memory"]["open_handles"].as_u64().unwrap(), back["memory"]["open_handles"].as_u64().unwrap());
+    let (handles_few, handles_back) = (
+        few["memory"]["open_handles"].as_u64().unwrap(),
+        back["memory"]["open_handles"].as_u64().unwrap(),
+    );
     assert!(handles_back <= handles_few + 2, "{handles_few} then {handles_back} handles");
     eprintln!("1,000 tabs came back and settled in {took:?}");
 }
@@ -1671,7 +1993,10 @@ fn a_damaged_record_starts_empty_and_says_so() {
     let after = run.report();
     assert_eq!(after["app"]["home"], true);
     assert!(after["app"]["note"].as_str().unwrap().contains("couldn't be read"), "{}", after["app"]["note"]);
-    assert_eq!(std::fs::read(state.root.join("session.damaged/record.a.json")).unwrap(), b"{\"not\": \"a record\"}");
+    assert_eq!(
+        std::fs::read(state.root.join("session.damaged/record.a.json")).unwrap(),
+        b"{\"not\": \"a record\"}"
+    );
 }
 
 /// Failure: a record from a newer version gets overwritten, so the update that wrote it finds it gone when it comes back. Left untouched, byte for byte, an empty start, and a notice.
@@ -1681,7 +2006,12 @@ fn a_newer_record_is_left_alone() {
     state.paths.prepare().unwrap();
     let folder = state.root.join("session");
     recto_platform::local::ensure_private_dir(&folder).unwrap();
-    let newer = recto_session::record::seal_as(recto_session::record::MAIN_KIND, recto_session::record::CURRENT_VERSION + 1, 9, b"from the future");
+    let newer = recto_session::record::seal_as(
+        recto_session::record::MAIN_KIND,
+        recto_session::record::CURRENT_VERSION + 1,
+        9,
+        b"from the future",
+    );
     recto_platform::local::write_private_file(&folder.join("record.a.json"), &newer).unwrap();
     let Some(run) = Run::on(&state) else { return };
     let after = run.report();
@@ -1731,7 +2061,12 @@ fn what_became_of_a_file_is_said_and_its_edits_stay() {
         assert!(began.elapsed() < Duration::from_secs(10), "{show}");
         std::thread::sleep(Duration::from_millis(20));
     };
-    let codes: Vec<&str> = show["tabs"].as_array().unwrap().iter().map(|tab| tab["notice"]["code"].as_str().unwrap()).collect();
+    let codes: Vec<&str> = show["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tab| tab["notice"]["code"].as_str().unwrap())
+        .collect();
     assert_eq!(codes, ["file_moved", "file_changed", "file_missing"], "{show}");
     assert!(show["tabs"].as_array().unwrap().iter().all(|tab| tab["edited"] == true), "{show}");
     let session = run.report()["session"].clone();
@@ -1896,23 +2231,34 @@ fn a_notes_bubble_follows_the_margin_and_not_the_appearance() {
     run.ok(&["view", "--zoom", "40%"]);
     run.settled();
     let bubble = |state: &Value| state["app"]["note_box"].clone();
-    wait_until("the note comes", || run.report()["app"]["note"].as_str().is_some_and(|note| note.contains("changed")));
+    wait_until("the note comes", || {
+        run.report()["app"]["note"].as_str().is_some_and(|note| note.contains("changed"))
+    });
     let before = bubble(&run.report());
     let width = |shape: &Value| shape["width"].as_f64().unwrap_or_else(|| panic!("no bubble: {shape}"));
     run.ok(&["view", "--zoom", "300%"]);
     run.settled();
     let zoomed = bubble(&run.report());
-    assert!(width(&zoomed) < width(&before) - 20.0 && zoomed["lines"].as_u64() > before["lines"].as_u64(), "zoomed in, the margin is narrower, so the bubble is: {before} then {zoomed}");
+    assert!(
+        width(&zoomed) < width(&before) - 20.0 && zoomed["lines"].as_u64() > before["lines"].as_u64(),
+        "zoomed in, the margin is narrower, so the bubble is: {before} then {zoomed}"
+    );
     run.ok(&["view", "--zoom", "40%"]);
     run.settled();
     let light = bubble(&run.report());
-    assert!((width(&light) - width(&before)).abs() < 0.5 && light["lines"] == before["lines"], "back at the same zoom, the bubble is as it was: {before} then {light}");
+    assert!(
+        (width(&light) - width(&before)).abs() < 0.5 && light["lines"] == before["lines"],
+        "back at the same zoom, the bubble is as it was: {before} then {light}"
+    );
     run.ok(&["qa", "appearance", "dark"]);
     run.settled();
     let dark = run.report();
     assert_eq!(dark["app"]["appearance"], "dark");
     let dark = bubble(&dark);
-    assert!((width(&dark) - width(&light)).abs() < 0.5 && dark["lines"] == light["lines"], "the same note is the same shape in light and dark: {light} and {dark}");
+    assert!(
+        (width(&dark) - width(&light)).abs() < 0.5 && dark["lines"] == light["lines"],
+        "the same note is the same shape in light and dark: {light} and {dark}"
+    );
 }
 
 /// Failure: a protected tab comes back after a quit open, as though its password had been kept; or it comes back saying nothing, with no way to type it again; or Cancel leaves it asking at once.
@@ -1936,7 +2282,9 @@ fn a_protected_tab_asks_again_after_a_quit() {
     until(&run, &|state| state["app"]["sheet"]["kind"] == "password");
     let (reply, code) = state.json_with_stdin(&["qa", "password"], "open sesame");
     assert_eq!(code, 0, "{reply}");
-    until(&run, &|state| state["app"]["sheet"] == json!({}) && state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 1));
+    until(&run, &|state| {
+        state["app"]["sheet"] == json!({}) && state["session"]["tabs"].as_array().is_some_and(|tabs| tabs.len() == 1)
+    });
     run.settled();
     run.quit();
     let run = Run::on(&state).unwrap();
@@ -1944,6 +2292,9 @@ fn a_protected_tab_asks_again_after_a_quit() {
     assert!(asked["app"]["sheet"]["informative"].as_str().unwrap().contains("asked again"), "{asked}");
     run.ok(&["qa", "sheet-answer", "second"]);
     let declined = until(&run, &|state| state["app"]["sheet"] == json!({}));
-    assert!(declined["app"]["note"].as_str().is_some_and(|note| note.contains("password again")), "{declined}");
+    assert!(
+        declined["app"]["note"].as_str().is_some_and(|note| note.contains("password again")),
+        "{declined}"
+    );
     run.quit();
 }

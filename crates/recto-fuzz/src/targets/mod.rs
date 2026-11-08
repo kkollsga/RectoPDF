@@ -32,12 +32,24 @@ pub struct NamedLoader;
 
 /// The facts of a document of so many pages.
 pub fn facts_of(page_count: u32) -> DocFacts {
-    DocFacts { page_count, byte_len: 1024, encrypted: false, version: "1.7".into(), title: Some("A title".into()), toc: Toc::default(), renderer_only: false }
+    DocFacts {
+        page_count,
+        byte_len: 1024,
+        encrypted: false,
+        version: "1.7".into(),
+        title: Some("A title".into()),
+        toc: Toc::default(),
+        renderer_only: false,
+    }
 }
 
 impl DocLoader for NamedLoader {
     fn load(&self, path: &Path) -> Result<DocFacts, OpenError> {
-        let pages = path.to_str().and_then(|path| path.strip_prefix("/fuzz/p")).and_then(|rest| rest.strip_suffix(".pdf")).and_then(|count| count.parse::<u32>().ok());
+        let pages = path
+            .to_str()
+            .and_then(|path| path.strip_prefix("/fuzz/p"))
+            .and_then(|rest| rest.strip_suffix(".pdf"))
+            .and_then(|count| count.parse::<u32>().ok());
         match pages {
             Some(count) if count > 0 && count <= recto_session::edit::MAX_PAGES as u32 => Ok(facts_of(count)),
             _ => Err(OpenError::NotFound),

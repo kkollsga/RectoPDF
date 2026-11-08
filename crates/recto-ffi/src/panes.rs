@@ -38,12 +38,23 @@ pub(crate) struct Panes {
 
 impl Panes {
     pub(crate) fn new(hooks: Arc<dyn EngineEvents>, config: EngineConfig) -> Self {
-        Self { extra: Mutex::new(Vec::new()), reading: AtomicUsize::new(0), shown: Mutex::new(Vec::new()), plan: Mutex::new(Plan::default()), hooks, config }
+        Self {
+            extra: Mutex::new(Vec::new()),
+            reading: AtomicUsize::new(0),
+            shown: Mutex::new(Vec::new()),
+            plan: Mutex::new(Plan::default()),
+            hooks,
+            config,
+        }
     }
 
     /// The page view of a pane, if there's such a pane.
     pub(crate) fn engine(&self, primary: &Engine, pane: usize) -> Option<Engine> {
-        if pane == 0 { Some(primary.clone()) } else { lock(&self.extra).get(pane - 1).cloned() }
+        if pane == 0 {
+            Some(primary.clone())
+        } else {
+            lock(&self.extra).get(pane - 1).cloned()
+        }
     }
 
     /// Every page view there is, pane 0 first.
@@ -147,7 +158,9 @@ impl Panes {
 
     /// **A pane's view moved,** on the UI thread: a short lock on that pane, and for the reader's own scroll in a comparison, a short lock on each other pane to send it along. Says whether the pane being read changed, for the session to be told.
     pub(crate) fn viewport(&self, primary: &Engine, pane: usize, by_reader: bool, viewport: Viewport) -> (Vec<recto_reader::Op>, Option<TabId>) {
-        let Some(engine) = self.engine(primary, pane) else { return (Vec::new(), None) };
+        let Some(engine) = self.engine(primary, pane) else {
+            return (Vec::new(), None);
+        };
         let outcome = engine.set_viewport_scrolled(viewport);
         let (ops, scrolled) = (outcome.ops, outcome.scrolled);
         if self.count() < 2 {
@@ -190,16 +203,41 @@ impl Panes {
         let shown = lock(&self.shown).clone();
         let Some(leader) = shown.get(pane).copied() else { return };
         let plan = lock(&self.plan);
-        let Some(comparison) = plan.comparison.as_ref().filter(|comparison| comparison.synced) else { return };
-        let pages = |tab: TabId| comparison.tabs.iter().position(|one| *one == tab).and_then(|at| plan.pages.get(at).copied()).unwrap_or(1);
+        let Some(comparison) = plan.comparison.as_ref().filter(|comparison| comparison.synced) else {
+            return;
+        };
+        let pages = |tab: TabId| {
+            comparison
+                .tabs
+                .iter()
+                .position(|one| *one == tab)
+                .and_then(|at| plan.pages.get(at).copied())
+                .unwrap_or(1)
+        };
         let targets = comparison.sync_targets(leader, page, pages);
-        let from = comparison.tabs.iter().position(|tab| *tab == leader).and_then(|at| comparison.sync_from.get(at).copied()).unwrap_or(0);
+        let from = comparison
+            .tabs
+            .iter()
+            .position(|tab| *tab == leader)
+            .and_then(|at| comparison.sync_from.get(at).copied())
+            .unwrap_or(0);
         let wanted: Vec<(TabId, u32, f64)> = targets
             .into_iter()
             .map(|(tab, target)| {
-                let start = comparison.tabs.iter().position(|one| *one == tab).and_then(|at| comparison.sync_from.get(at).copied()).unwrap_or(0);
+                let start = comparison
+                    .tabs
+                    .iter()
+                    .position(|one| *one == tab)
+                    .and_then(|at| comparison.sync_from.get(at).copied())
+                    .unwrap_or(0);
                 let meant = i64::from(start) + i64::from(page) - i64::from(from);
-                let depth = if meant > i64::from(target) { 1.0 } else if meant < i64::from(target) { 0.0 } else { within };
+                let depth = if meant > i64::from(target) {
+                    1.0
+                } else if meant < i64::from(target) {
+                    0.0
+                } else {
+                    within
+                };
                 (tab, target, depth)
             })
             .collect();

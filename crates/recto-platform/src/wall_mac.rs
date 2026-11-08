@@ -119,10 +119,19 @@ pub fn drop_mach_send_rights() -> MachDrop {
     let (mut name_count, mut type_count) = (0u32, 0u32);
     // SAFETY: all four out-pointers are live. The arrays the kernel returns are read, then given back below.
     if unsafe { mach_port_names(task, &raw mut names, &raw mut name_count, &raw mut types, &raw mut type_count) } != 0 {
-        return MachDrop { dropped: 0, dead_names: 0, kept: 0 };
+        return MachDrop {
+            dropped: 0,
+            dead_names: 0,
+            kept: 0,
+        };
     }
     // SAFETY: the kernel returned that many of each.
-    let (name_list, type_list) = unsafe { (std::slice::from_raw_parts(names, name_count as usize), std::slice::from_raw_parts(types, type_count as usize)) };
+    let (name_list, type_list) = unsafe {
+        (
+            std::slice::from_raw_parts(names, name_count as usize),
+            std::slice::from_raw_parts(types, type_count as usize),
+        )
+    };
     // SAFETY: only this task's own ports, with null as the new value. Launchd's right, and the two others launchd leaves here.
     unsafe {
         for which in [TASK_BOOTSTRAP_PORT, TASK_ACCESS_PORT, TASK_DEBUG_CONTROL_PORT] {
@@ -131,7 +140,11 @@ pub fn drop_mach_send_rights() -> MachDrop {
         mach_ports_register(task, std::ptr::null_mut(), 0);
         task_set_exception_ports(task, EXC_MASK_ALL, 0, EXCEPTION_DEFAULT, 0);
     }
-    let mut outcome = MachDrop { dropped: 0, dead_names: 0, kept: 0 };
+    let mut outcome = MachDrop {
+        dropped: 0,
+        dead_names: 0,
+        kept: 0,
+    };
     for (name, kind) in name_list.iter().zip(type_list) {
         if kind & MACH_PORT_TYPE_SEND == 0 {
             continue;
@@ -227,6 +240,9 @@ mod tests {
     fn a_plain_process_is_not_read_as_sandboxed() {
         assert!(!in_a_sandbox());
         assert!(!sandbox_in_force());
-        assert!(launchd_reachable(), "a plain process reaches launchd, so the check after the drop can see a difference");
+        assert!(
+            launchd_reachable(),
+            "a plain process reaches launchd, so the check after the drop can see a difference"
+        );
     }
 }

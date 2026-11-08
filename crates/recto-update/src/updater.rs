@@ -107,11 +107,20 @@ pub enum Status {
     AvailableElsewhere(String),
     CheckFailed(String),
     Preparing(String),
-    Waiting { version: String, for_what: String },
+    Waiting {
+        version: String,
+        for_what: String,
+    },
     Installing(String),
-    Failed { version: String, why: String },
+    Failed {
+        version: String,
+        why: String,
+    },
     Updated(String),
-    WentBack { version: String, back_on: String },
+    WentBack {
+        version: String,
+        back_on: String,
+    },
 }
 
 impl Status {
@@ -235,8 +244,28 @@ fn ago(at_ms: u64, now_ms: u64) -> String {
 impl Updater {
     #[must_use]
     pub fn new(root: &Path, source: Source, host: Arc<dyn Host>) -> Arc<Self> {
-        let st = St { status: Status::Idle, saved: Saved::default(), launched_ms: crate::wall_ms(), facts: None, second_copy: false, notice: None, install_look_at: None, arrived: None, arrived_by_update: false, first_frame_done: false, first_frame_early: None };
-        Arc::new(Self { files: Files::in_state(root), source, host, st: Mutex::new(st), writing: Mutex::new(()), clock_ahead_ms: AtomicI64::new(0), stopping: AtomicBool::new(false) })
+        let st = St {
+            status: Status::Idle,
+            saved: Saved::default(),
+            launched_ms: crate::wall_ms(),
+            facts: None,
+            second_copy: false,
+            notice: None,
+            install_look_at: None,
+            arrived: None,
+            arrived_by_update: false,
+            first_frame_done: false,
+            first_frame_early: None,
+        };
+        Arc::new(Self {
+            files: Files::in_state(root),
+            source,
+            host,
+            st: Mutex::new(st),
+            writing: Mutex::new(()),
+            clock_ahead_ms: AtomicI64::new(0),
+            stopping: AtomicBool::new(false),
+        })
     }
 
     /// Now, by this updater's clock.
@@ -297,7 +326,10 @@ impl Updater {
             st.install_look_at = (on && self.offered_here(&st).is_some()).then(|| self.now_ms());
         }
         let me = Arc::clone(self);
-        let written = std::thread::Builder::new().name("recto-update-save".into()).stack_size(128 * 1024).spawn(move || me.save());
+        let written = std::thread::Builder::new()
+            .name("recto-update-save".into())
+            .stack_size(128 * 1024)
+            .spawn(move || me.save());
         if written.is_err() {
             self.save();
         }
@@ -321,7 +353,11 @@ impl Updater {
         let app = facts.app.clone();
         // What's in the state folder and beside the app is the first copy's. This one reads and leaves it.
         let second_copy = !self.host.keeps_the_record();
-        let settled = if second_copy { Settled::default() } else { self.settle_last_install(&mut saved, &current, &app, now) };
+        let settled = if second_copy {
+            Settled::default()
+        } else {
+            self.settle_last_install(&mut saved, &current, &app, now)
+        };
         let may_replace = self.source.may_replace_itself() && !second_copy;
         let offered = saved.offered.clone().filter(|offered| is_newer(offered, &current));
         // What's staged and no longer on offer is the size of the app, for nothing. Only with no installer at work.
@@ -395,7 +431,10 @@ impl Updater {
     /// What's kept of the record from before the last update goes once it's a week old. One look at one file's time.
     fn drop_an_old_record_copy(&self) {
         let whole = self.files.before().join(".whole");
-        let age = std::fs::metadata(&whole).ok().and_then(|meta| meta.modified().ok()).and_then(|at| at.elapsed().ok());
+        let age = std::fs::metadata(&whole)
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|at| at.elapsed().ok());
         if age.is_some_and(|age| age.as_millis() > u128::from(KEEP_RECORD_COPY_MS)) {
             let _ = std::fs::remove_dir_all(self.files.before());
         }
@@ -425,15 +464,27 @@ impl Updater {
                 OutcomeKind::WentBack => {
                     saved.note_failed_version(&outcome.to);
                     saved.install_failures = 0;
-                    settled.status = Some(Status::WentBack { version: outcome.to.clone(), back_on: current.to_owned() });
-                    settled.notice = Some(Notice { text: format!("{APP_NAME} {} didn't start, so {current} came back, just as you left it.", outcome.to), fades: true });
+                    settled.status = Some(Status::WentBack {
+                        version: outcome.to.clone(),
+                        back_on: current.to_owned(),
+                    });
+                    settled.notice = Some(Notice {
+                        text: format!("{APP_NAME} {} didn't start, so {current} came back, just as you left it.", outcome.to),
+                        fades: true,
+                    });
                     self.log(&format!("{} didn't start, and {current} came back", outcome.to));
                 }
                 OutcomeKind::CouldntGoBack => {
                     saved.note_failed_version(&outcome.to);
                     let why = "it didn't come up, and there was no earlier version to go back to";
-                    settled.status = Some(Status::Failed { version: outcome.to.clone(), why: why.to_owned() });
-                    settled.notice = Some(Notice { text: format!("{APP_NAME} {} is what's installed, and {why}.", outcome.to), fades: true });
+                    settled.status = Some(Status::Failed {
+                        version: outcome.to.clone(),
+                        why: why.to_owned(),
+                    });
+                    settled.notice = Some(Notice {
+                        text: format!("{APP_NAME} {} is what's installed, and {why}.", outcome.to),
+                        fades: true,
+                    });
                     self.log(&format!("{} didn't come up, and couldn't go back: {}", outcome.to, clean_code(&outcome.why)));
                 }
                 OutcomeKind::NotInstalled => {
@@ -445,8 +496,14 @@ impl Updater {
                     if lasting || saved.quits_for_nothing >= QUITS_FOR_NOTHING {
                         saved.note_failed_version(&outcome.to);
                     }
-                    settled.status = Some(Status::Failed { version: outcome.to.clone(), why: why.to_owned() });
-                    settled.notice = Some(Notice { text: format!("Couldn't update to {}: {why}. {APP_NAME} is unchanged.", outcome.to), fades: true });
+                    settled.status = Some(Status::Failed {
+                        version: outcome.to.clone(),
+                        why: why.to_owned(),
+                    });
+                    settled.notice = Some(Notice {
+                        text: format!("Couldn't update to {}: {why}. {APP_NAME} is unchanged.", outcome.to),
+                        fades: true,
+                    });
                     self.log(&format!("{} wasn't installed: {}", outcome.to, clean_code(&outcome.why)));
                 }
             }
@@ -460,7 +517,10 @@ impl Updater {
         let alive = helper_alive(&self.files);
         if plan.to == current {
             settled.status = Some(Status::Updated(plan.to.clone()));
-            settled.notice = Some(Notice { text: format!("Updated to {}.", plan.to), fades: true });
+            settled.notice = Some(Notice {
+                text: format!("Updated to {}.", plan.to),
+                fades: true,
+            });
             saved.offered = None;
             saved.install_failures = 0;
             saved.quits_for_nothing = 0;
@@ -480,8 +540,17 @@ impl Updater {
             if saved.quits_for_nothing >= QUITS_FOR_NOTHING {
                 saved.note_failed_version(&plan.to);
             }
-            settled.status = Some(Status::Failed { version: plan.to.clone(), why: "the installer stopped before it finished".to_owned() });
-            settled.notice = Some(Notice { text: format!("Couldn't update to {}: the installer stopped before it finished. {APP_NAME} is unchanged.", plan.to), fades: true });
+            settled.status = Some(Status::Failed {
+                version: plan.to.clone(),
+                why: "the installer stopped before it finished".to_owned(),
+            });
+            settled.notice = Some(Notice {
+                text: format!(
+                    "Couldn't update to {}: the installer stopped before it finished. {APP_NAME} is unchanged.",
+                    plan.to
+                ),
+                fades: true,
+            });
             self.log(&format!("the install of {} stopped before it finished, and {current} is unchanged", plan.to));
             let _ = std::fs::remove_file(self.files.plan());
             let _ = std::fs::remove_file(self.files.helper_pid());
@@ -513,8 +582,25 @@ impl Updater {
     /// This version keeps failing before its first frame and an older one's kept: starts the installer to go back to it.
     fn start_going_back(&self, saved: &mut Saved, current: &str, app: &Path, now: u64) -> bool {
         let Some(beside) = beside_app(app) else { return false };
-        let Some(previous) = stage::app_version(&previous_app_in(&beside)).filter(|previous| is_newer(current, previous)) else { return false };
-        let plan = Plan { id: crate::plan::new_id(), cdhash: String::new(), team_required: false, from: previous, to: current.to_owned(), pid: std::process::id(), app: app.to_path_buf(), beside, root: self.files.root.clone(), quit_at_ms: now, background: true, quit_limit_ms: crate::plan::QUIT_LIMIT_MS, start_limit_ms: crate::plan::START_LIMIT_MS, test: test_launch(&self.source, self.host.relaunch()) };
+        let Some(previous) = stage::app_version(&previous_app_in(&beside)).filter(|previous| is_newer(current, previous)) else {
+            return false;
+        };
+        let plan = Plan {
+            id: crate::plan::new_id(),
+            cdhash: String::new(),
+            team_required: false,
+            from: previous,
+            to: current.to_owned(),
+            pid: std::process::id(),
+            app: app.to_path_buf(),
+            beside,
+            root: self.files.root.clone(),
+            quit_at_ms: now,
+            background: true,
+            quit_limit_ms: crate::plan::QUIT_LIMIT_MS,
+            start_limit_ms: crate::plan::START_LIMIT_MS,
+            test: test_launch(&self.source, self.host.relaunch()),
+        };
         self.ready_folder();
         if plan.write(&self.files.plan()).is_err() {
             return false;
@@ -522,7 +608,13 @@ impl Updater {
         saved.unstarted = 0;
         saved.write(&self.files.saved);
         self.log(&format!("{current} didn't reach a first frame {UNSTARTED_LIMIT} times, going back"));
-        local::spawn_detached(&app.join(HELPER), &["back".to_owned(), self.files.plan().display().to_string()], &[], &self.files.log).is_ok()
+        local::spawn_detached(
+            &app.join(HELPER),
+            &["back".to_owned(), self.files.plan().display().to_string()],
+            &[],
+            &self.files.log,
+        )
+        .is_ok()
     }
 
     /// The first correct frame's on the screen. **What "come up" means, which is what the installer waits for and what can send a new version back:** the state's been read and a first frame shown, and this version has drawn a page through the real renderer: our own tiny PDF, not the user's. Not the user's, as one of theirs being moved, damaged or on a dead volume says nothing of this version. And not the first frame alone, which a timer can force and a preview from a sleep file can fill without the renderer ever running. So a version whose renderer can't load, which would otherwise look fine, shows no pages for everyone, and be the one nobody can get back from, goes back. It's asked only of a version that's new here, so a normal launch costs nothing, and this waits on a worker, so it has a thread of its own.
@@ -541,7 +633,12 @@ impl Updater {
             st.first_frame_done = true;
             let arrived = st.arrived.take();
             let new_here = self.source.may_replace_itself() && st.saved.proven.as_deref() != Some(version.as_str());
-            (version, arrived.clone(), new_here && (arrived.is_some() || previous_app_in(&beside).is_dir()), st.second_copy)
+            (
+                version,
+                arrived.clone(),
+                new_here && (arrived.is_some() || previous_app_in(&beside).is_dir()),
+                st.second_copy,
+            )
         };
         if second_copy {
             return;
@@ -567,7 +664,12 @@ impl Updater {
                 changed = true;
             }
             if let Some(plan) = &arrived {
-                st.saved.last_update = Some(LastUpdate { from: plan.from.clone(), to: plan.to.clone(), gap_ms: shown_at_ms.saturating_sub(plan.quit_at_ms), at_ms: shown_at_ms });
+                st.saved.last_update = Some(LastUpdate {
+                    from: plan.from.clone(),
+                    to: plan.to.clone(),
+                    gap_ms: shown_at_ms.saturating_sub(plan.quit_at_ms),
+                    at_ms: shown_at_ms,
+                });
                 changed = true;
             }
             changed
@@ -575,7 +677,12 @@ impl Updater {
         if let Some(plan) = arrived {
             self.ready_folder();
             let _ = local::write_private_file(&self.files.launch_ok(), format!("{version} {} {shown_at_ms}", std::process::id()).as_bytes());
-            self.log(&format!("updated from {} to {}: {} ms from quit to first frame", plan.from, plan.to, shown_at_ms.saturating_sub(plan.quit_at_ms)));
+            self.log(&format!(
+                "updated from {} to {}: {} ms from quit to first frame",
+                plan.from,
+                plan.to,
+                shown_at_ms.saturating_sub(plan.quit_at_ms)
+            ));
         }
         if changed {
             self.save();
@@ -587,13 +694,29 @@ impl Updater {
     pub fn menu_item(&self) -> MenuItem {
         let st = lock(&self.st);
         match &st.status {
-            Status::Preparing(version) | Status::Waiting { version, .. } | Status::Installing(version) => return MenuItem { title: format!("Updating to {version}…"), enabled: false },
-            Status::Checking => return MenuItem { title: "Check for Updates…".to_owned(), enabled: false },
+            Status::Preparing(version) | Status::Waiting { version, .. } | Status::Installing(version) => {
+                return MenuItem {
+                    title: format!("Updating to {version}…"),
+                    enabled: false,
+                };
+            }
+            Status::Checking => {
+                return MenuItem {
+                    title: "Check for Updates…".to_owned(),
+                    enabled: false,
+                };
+            }
             _ => {}
         }
         match self.offered_here(&st) {
-            Some(version) => MenuItem { title: format!("Update to {version}…"), enabled: true },
-            None => MenuItem { title: "Check for Updates…".to_owned(), enabled: true },
+            Some(version) => MenuItem {
+                title: format!("Update to {version}…"),
+                enabled: true,
+            },
+            None => MenuItem {
+                title: "Check for Updates…".to_owned(),
+                enabled: true,
+            },
         }
     }
 
@@ -617,7 +740,10 @@ impl Updater {
         if st.facts.is_none() || st.status.is_under_way() || st.second_copy {
             return None;
         }
-        let check = self.source.checks_by_itself().then(|| rules::next_check_at(&st.saved, st.launched_ms, self.now_ms()));
+        let check = self
+            .source
+            .checks_by_itself()
+            .then(|| rules::next_check_at(&st.saved, st.launched_ms, self.now_ms()));
         match (check, st.install_look_at) {
             (Some(check), Some(install)) => Some(check.min(install)),
             (check, install) => check.or(install),
@@ -651,7 +777,15 @@ impl Updater {
             let mut st = lock(&self.st);
             let offered = self.offered_here(&st);
             let on = st.saved.auto_update.unwrap_or_else(|| self.source.auto_default());
-            let step = rules::auto_step(AutoLook { build_may: self.source.may_replace_itself(), switch_on: on, offered: offered.is_some(), version_failed: offered.as_ref().is_some_and(|version| st.saved.failed.contains(version)), since_input_ms, busy: !look.busy.is_empty(), back_off_ms: st.saved.install_back_off(now) });
+            let step = rules::auto_step(AutoLook {
+                build_may: self.source.may_replace_itself(),
+                switch_on: on,
+                offered: offered.is_some(),
+                version_failed: offered.as_ref().is_some_and(|version| st.saved.failed.contains(version)),
+                since_input_ms,
+                busy: !look.busy.is_empty(),
+                back_off_ms: st.saved.install_back_off(now),
+            });
             st.install_look_at = match step {
                 AutoStep::Never | AutoStep::Go => None,
                 AutoStep::Wait(ms) => Some(now.saturating_add(ms)),
@@ -669,7 +803,10 @@ impl Updater {
             return;
         }
         let me = Arc::clone(self);
-        let started = std::thread::Builder::new().name("recto-update-check".into()).stack_size(CHECK_STACK).spawn(move || me.finish_check(asked));
+        let started = std::thread::Builder::new()
+            .name("recto-update-check".into())
+            .stack_size(CHECK_STACK)
+            .spawn(move || me.finish_check(asked));
         if started.is_err() {
             self.finish_check_with(asked, Err(FetchError::Failed("no thread could be started")));
         }
@@ -728,7 +865,10 @@ impl Updater {
                         format!("{APP_NAME} {0} is available. Choose Update to {0}… in the {APP_NAME} menu.", latest.version)
                     } else {
                         st.status = Status::AvailableElsewhere(latest.version.clone());
-                        format!("{APP_NAME} {} is available. This is a development build, so it won't replace itself.", latest.version)
+                        format!(
+                            "{APP_NAME} {} is available. This is a development build, so it won't replace itself.",
+                            latest.version
+                        )
                     }
                 } else {
                     st.saved.offered = None;
@@ -782,18 +922,26 @@ impl Updater {
             if st.second_copy {
                 return Err(InstallRefused::AnotherCopy);
             }
-            let Some(version) = self.offered_here(&st) else { return Err(InstallRefused::NothingOnOffer) };
+            let Some(version) = self.offered_here(&st) else {
+                return Err(InstallRefused::NothingOnOffer);
+            };
             st.status = Status::Preparing(version.clone());
             st.saved.last_install_ms = Some(self.now_ms());
             if asked == Asked::ByHand {
-                st.notice = Some(Notice { text: format!("Downloading {APP_NAME} {version}…"), fades: false });
+                st.notice = Some(Notice {
+                    text: format!("Downloading {APP_NAME} {version}…"),
+                    fades: false,
+                });
             }
             version
         };
         self.host.changed();
         let me = Arc::clone(self);
         let thread_version = version.clone();
-        let started = std::thread::Builder::new().name("recto-update-install".into()).stack_size(CHECK_STACK).spawn(move || me.run_install(asked, &thread_version));
+        let started = std::thread::Builder::new()
+            .name("recto-update-install".into())
+            .stack_size(CHECK_STACK)
+            .spawn(move || me.run_install(asked, &thread_version));
         if started.is_err() {
             self.failed(asked, &version, "no thread could be started", false);
         }
@@ -803,7 +951,10 @@ impl Updater {
     fn failed(&self, asked: Asked, version: &str, why: &str, lasting: bool) {
         let now = self.now_ms();
         let mut st = lock(&self.st);
-        st.status = Status::Failed { version: version.to_owned(), why: why.to_owned() };
+        st.status = Status::Failed {
+            version: version.to_owned(),
+            why: why.to_owned(),
+        };
         st.saved.install_failures = st.saved.install_failures.saturating_add(1);
         st.saved.last_install_ms = Some(now);
         if lasting {
@@ -811,7 +962,10 @@ impl Updater {
         }
         // A failure that may pass gets another chance after a while, by the back-off.
         st.install_look_at = (!lasting && self.offered_here(&st).is_some()).then(|| now.saturating_add(st.saved.install_back_off(now)));
-        st.notice = (asked == Asked::ByHand).then(|| Notice { text: format!("Couldn't update to {version}: {why}. {APP_NAME} is unchanged."), fades: true });
+        st.notice = (asked == Asked::ByHand).then(|| Notice {
+            text: format!("Couldn't update to {version}: {why}. {APP_NAME} is unchanged."),
+            fades: true,
+        });
         drop(st);
         self.save();
         self.log(&format!("the update to {version} failed: {why}"));
@@ -844,7 +998,10 @@ impl Updater {
                 st.saved.offered = None;
                 st.status = Status::UpToDate;
                 st.install_look_at = None;
-                st.notice = (asked == Asked::ByHand).then(|| Notice { text: format!("{version} isn't on offer any more. You're up to date: {APP_NAME} {}.", facts.version), fades: true });
+                st.notice = (asked == Asked::ByHand).then(|| Notice {
+                    text: format!("{version} isn't on offer any more. You're up to date: {APP_NAME} {}.", facts.version),
+                    fades: true,
+                });
                 drop(st);
                 self.save();
                 self.host.changed();
@@ -857,7 +1014,14 @@ impl Updater {
         };
         let version = latest.version.as_str();
         let user_agent = format!("{APP_NAME}/{}", facts.version);
-        let stage_in = Stage { source: &self.source, latest: &latest, current: &facts.version, app: &facts.app, files: &self.files, user_agent: &user_agent };
+        let stage_in = Stage {
+            source: &self.source,
+            latest: &latest,
+            current: &facts.version,
+            app: &facts.app,
+            files: &self.files,
+            user_agent: &user_agent,
+        };
         let log_file = self.files.log.clone();
         let staged = match stage::prepare(&stage_in, &mut |step| log(&log_file, &format!("{version}: {step}"))) {
             Ok(staged) => staged,
@@ -913,8 +1077,14 @@ impl Updater {
                 let mut st = lock(&self.st);
                 let changed = !matches!(&st.status, Status::Waiting { for_what: known, .. } if *known == for_what);
                 if changed {
-                    st.status = Status::Waiting { version: version.to_owned(), for_what: for_what.clone() };
-                    st.notice = Some(Notice { text: format!("Updating to {version} as soon as this is done: {for_what}"), fades: false });
+                    st.status = Status::Waiting {
+                        version: version.to_owned(),
+                        for_what: for_what.clone(),
+                    };
+                    st.notice = Some(Notice {
+                        text: format!("Updating to {version} as soon as this is done: {for_what}"),
+                        fades: false,
+                    });
                     drop(st);
                     self.host.changed();
                 }
@@ -952,8 +1122,27 @@ impl Updater {
             return;
         };
         let team_required = matches!(self.source.trust, crate::source::Trust::DeveloperId { .. });
-        let start_limit_ms = if self.source.mode == Mode::Test { TEST_START_LIMIT_MS } else { crate::plan::START_LIMIT_MS };
-        let plan = Plan { id: crate::plan::new_id(), cdhash: cdhash.to_owned(), team_required, from: facts.version.clone(), to: version.to_owned(), pid: std::process::id(), app: facts.app.clone(), beside, root: self.files.root.clone(), quit_at_ms: crate::wall_ms(), background: !self.host.frontmost(), quit_limit_ms: crate::plan::QUIT_LIMIT_MS, start_limit_ms, test: test_launch(&self.source, self.host.relaunch()) };
+        let start_limit_ms = if self.source.mode == Mode::Test {
+            TEST_START_LIMIT_MS
+        } else {
+            crate::plan::START_LIMIT_MS
+        };
+        let plan = Plan {
+            id: crate::plan::new_id(),
+            cdhash: cdhash.to_owned(),
+            team_required,
+            from: facts.version.clone(),
+            to: version.to_owned(),
+            pid: std::process::id(),
+            app: facts.app.clone(),
+            beside,
+            root: self.files.root.clone(),
+            quit_at_ms: crate::wall_ms(),
+            background: !self.host.frontmost(),
+            quit_limit_ms: crate::plan::QUIT_LIMIT_MS,
+            start_limit_ms,
+            test: test_launch(&self.source, self.host.relaunch()),
+        };
         let written = plan.write(&self.files.plan());
         if written.is_err() {
             give_up("the update's plan couldn't be written");
@@ -988,7 +1177,10 @@ impl Updater {
         match &st.status {
             Status::Idle => format!("{APP_NAME} {version} · not checked yet"),
             Status::Checking => "Checking for updates…".to_owned(),
-            Status::UpToDate | Status::NoReleases => st.saved.last_check_ms.map_or_else(|| format!("{APP_NAME} {version} is up to date"), |at| format!("{APP_NAME} {version} is up to date · checked {}", ago(at, now))),
+            Status::UpToDate | Status::NoReleases => st.saved.last_check_ms.map_or_else(
+                || format!("{APP_NAME} {version} is up to date"),
+                |at| format!("{APP_NAME} {version} is up to date · checked {}", ago(at, now)),
+            ),
             Status::Available(offered) => format!("{APP_NAME} {offered} is available"),
             Status::AvailableElsewhere(offered) => format!("{APP_NAME} {offered} is available · a development build doesn't replace itself"),
             Status::CheckFailed(why) => format!("Couldn't check for updates: {why}"),
@@ -1022,7 +1214,12 @@ impl Updater {
         let on = self.switch_on();
         // Runs a tool, so before the lock.
         let app = lock(&self.st).facts.as_ref().map(|facts| facts.app.clone());
-        let kept = app.as_deref().and_then(beside_app).map(|beside| previous_app_in(&beside)).filter(|previous| previous.is_dir()).and_then(|previous| stage::app_version(&previous));
+        let kept = app
+            .as_deref()
+            .and_then(beside_app)
+            .map(|beside| previous_app_in(&beside))
+            .filter(|previous| previous.is_dir())
+            .and_then(|previous| stage::app_version(&previous));
         let st = lock(&self.st);
         json!({
             "version": st.facts.as_ref().map(|facts| facts.version.clone()),
@@ -1125,7 +1322,10 @@ mod tests {
     impl Host for Fake {
         fn look(&self) -> Look {
             let scripted = lock(&self.looks).pop_front();
-            Look { busy: lock(&self.busy).clone(), since_input_ms: scripted.unwrap_or(*lock(&self.since_input_ms)) }
+            Look {
+                busy: lock(&self.busy).clone(),
+                since_input_ms: scripted.unwrap_or(*lock(&self.since_input_ms)),
+            }
         }
         fn hand_off(&self, _limit: Duration) -> Result<(), HandOffRefused> {
             self.hand_offs.fetch_add(1, Ordering::SeqCst);
@@ -1186,8 +1386,21 @@ mod tests {
             let server = Server::start();
             let fake = Arc::new(Fake::default());
             let updater = Updater::new(&root, server.source(), Arc::clone(&fake) as Arc<dyn Host>);
-            assert_eq!(updater.launched(Facts { version: "0.1.0".into(), app: app.clone(), system: "15.0".into() }), AtLaunch::GoOn);
-            Self { dir, server, fake, updater, app }
+            assert_eq!(
+                updater.launched(Facts {
+                    version: "0.1.0".into(),
+                    app: app.clone(),
+                    system: "15.0".into()
+                }),
+                AtLaunch::GoOn
+            );
+            Self {
+                dir,
+                server,
+                fake,
+                updater,
+                app,
+            }
         }
 
         fn publish(&self, version: &str) {
@@ -1195,8 +1408,10 @@ mod tests {
             std::fs::create_dir_all(&built).unwrap();
             let app = fake_app(&built, version);
             let (bytes, sha) = zip_of(&app, &built.join("r.zip"));
-            self.server.set(&format!("/releases/download/v{version}/RectoPDF-{version}.zip"), Answer::Body(bytes));
-            self.server.set("/releases/latest/download/latest.json", Answer::Body(latest_json(version, &sha)));
+            self.server
+                .set(&format!("/releases/download/v{version}/RectoPDF-{version}.zip"), Answer::Body(bytes));
+            self.server
+                .set("/releases/latest/download/latest.json", Answer::Body(latest_json(version, &sha)));
         }
 
         fn wait_for(&self, what: &str, done: impl Fn(&Self) -> bool) {
@@ -1227,7 +1442,13 @@ mod tests {
     #[test]
     fn the_menu_goes_from_check_to_update_and_a_check_by_hand_says_so() {
         let bed = Bed::new("menu");
-        assert_eq!(bed.updater.menu_item(), MenuItem { title: "Check for Updates…".into(), enabled: true });
+        assert_eq!(
+            bed.updater.menu_item(),
+            MenuItem {
+                title: "Check for Updates…".into(),
+                enabled: true
+            }
+        );
         assert_eq!(bed.updater.check_here(Asked::ByHand), Status::NoReleases);
         assert!(bed.updater.notice().unwrap().text.contains("up to date"), "{:?}", bed.updater.notice());
         assert_eq!(bed.updater.menu_item().title, "Check for Updates…");
@@ -1236,7 +1457,13 @@ mod tests {
         assert!(bed.updater.notice().unwrap().text.starts_with("You're up to date"));
         bed.publish("0.2.0");
         bed.found("0.2.0");
-        assert_eq!(bed.updater.menu_item(), MenuItem { title: "Update to 0.2.0…".into(), enabled: true });
+        assert_eq!(
+            bed.updater.menu_item(),
+            MenuItem {
+                title: "Update to 0.2.0…".into(),
+                enabled: true
+            }
+        );
         assert!(bed.updater.notice().unwrap().text.contains("0.2.0 is available"));
         // Withdrawn since: an install looks again before it does anything, and takes it off the menu.
         bed.server.set("/releases/latest/download/latest.json", Answer::Status(404));
@@ -1249,11 +1476,19 @@ mod tests {
         bed.found("0.2.0");
         // And again at the next launch, with no check.
         let again = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-        again.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+        again.launched(Facts {
+            version: "0.1.0".into(),
+            app: bed.app.clone(),
+            system: "15.0".into(),
+        });
         assert_eq!(again.menu_item().title, "Update to 0.2.0…");
         // An offer the same as this version, once it's installed, isn't one.
         let after = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-        after.launched(Facts { version: "0.2.0".into(), app: bed.app.clone(), system: "15.0".into() });
+        after.launched(Facts {
+            version: "0.2.0".into(),
+            app: bed.app.clone(),
+            system: "15.0".into(),
+        });
         assert_eq!(after.menu_item().title, "Check for Updates…");
     }
 
@@ -1274,7 +1509,11 @@ mod tests {
         bed.publish("0.0.9");
         assert_eq!(bed.updater.check_here(Asked::ByHand), Status::UpToDate);
         assert_eq!(lock(&bed.updater.st).saved.failures, 0);
-        assert_eq!(bed.updater.install(Asked::ByHand), Err(InstallRefused::NothingOnOffer), "a downgrade can't be asked for");
+        assert_eq!(
+            bed.updater.install(Asked::ByHand),
+            Err(InstallRefused::NothingOnOffer),
+            "a downgrade can't be asked for"
+        );
     }
 
     /// Failure: a development build replaces itself, or checks by itself. The owner's rule: development builds check only when asked and never replace themselves. It also answers a check by hand, against a server it's been told about only here.
@@ -1284,10 +1523,20 @@ mod tests {
         let root = dir.join("state");
         local::ensure_private_dir(&root).unwrap();
         let fake = Arc::new(Fake::default());
-        let source = Source { mode: Mode::Development, repo: "http://127.0.0.1:9".into(), trust: crate::source::Trust::AnySignature, network: false, test_env: Vec::new() };
+        let source = Source {
+            mode: Mode::Development,
+            repo: "http://127.0.0.1:9".into(),
+            trust: crate::source::Trust::AnySignature,
+            network: false,
+            test_env: Vec::new(),
+        };
         let updater = Updater::new(&root, source, Arc::clone(&fake) as Arc<dyn Host>);
         let app = fake_app(&dir, "0.1.0");
-        updater.launched(Facts { version: "0.1.0".into(), app, system: "15.0".into() });
+        updater.launched(Facts {
+            version: "0.1.0".into(),
+            app,
+            system: "15.0".into(),
+        });
         assert_eq!(updater.next_wake(), None, "no timer at all");
         assert!(!updater.switch_on(), "off to begin with");
         lock(&updater.st).saved.offered = Some("0.2.0".into());
@@ -1332,7 +1581,13 @@ mod tests {
         assert!(notice.text.contains("as soon as this is done") && notice.text.contains("sheet"), "{notice:?}");
         assert!(!notice.fades, "it stays while it's so");
         assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0);
-        assert_eq!(bed.updater.menu_item(), MenuItem { title: "Updating to 0.2.0…".into(), enabled: false });
+        assert_eq!(
+            bed.updater.menu_item(),
+            MenuItem {
+                title: "Updating to 0.2.0…".into(),
+                enabled: false
+            }
+        );
         lock(&bed.fake.busy).clear();
         bed.wait_for("the quit", |bed| bed.fake.quits.load(Ordering::SeqCst) == 1);
     }
@@ -1349,8 +1604,16 @@ mod tests {
         bed.wait_for("the failure", |bed| matches!(bed.status(), Status::Failed { .. }));
         assert_eq!(bed.fake.quits.load(Ordering::SeqCst), 0, "no quit, or the state would be lost");
         assert!(bed.updater.notice().unwrap().text.contains("is unchanged"));
-        assert_eq!(bed.updater.menu_item().title, "Update to 0.2.0…", "it can be asked again, and it's still on offer");
-        assert_eq!(lock(&bed.updater.st).saved.failed, Vec::<String>::new(), "this may pass, so it's not held against the version");
+        assert_eq!(
+            bed.updater.menu_item().title,
+            "Update to 0.2.0…",
+            "it can be asked again, and it's still on offer"
+        );
+        assert_eq!(
+            lock(&bed.updater.st).saved.failed,
+            Vec::<String>::new(),
+            "this may pass, so it's not held against the version"
+        );
         // A good hand-off and no installer: this one has to be undone.
         *lock(&bed.fake.refuse_with) = None;
         bed.fake.installer_fails.store(true, Ordering::SeqCst);
@@ -1367,7 +1630,8 @@ mod tests {
     fn a_bad_release_isnt_tried_again_by_itself() {
         let bed = Bed::new("bad");
         bed.publish("0.2.0");
-        bed.server.set("/releases/download/v0.2.0/RectoPDF-0.2.0.zip", Answer::Body(b"not the file".to_vec()));
+        bed.server
+            .set("/releases/download/v0.2.0/RectoPDF-0.2.0.zip", Answer::Body(b"not the file".to_vec()));
         bed.found("0.2.0");
         *lock(&bed.fake.since_input_ms) = rules::IDLE_BEFORE_INSTALL_MS;
         bed.updater.install(Asked::ByItself).unwrap();
@@ -1390,20 +1654,30 @@ mod tests {
         *lock(&bed.fake.since_input_ms) = 60_000;
         bed.updater.timer_fired();
         let wait = lock(&bed.updater.st).install_look_at.unwrap().saturating_sub(bed.updater.now_ms());
-        assert!((rules::IDLE_BEFORE_INSTALL_MS - 300_000..=rules::IDLE_BEFORE_INSTALL_MS - 59_000).contains(&wait), "{wait}");
+        assert!(
+            (rules::IDLE_BEFORE_INSTALL_MS - 300_000..=rules::IDLE_BEFORE_INSTALL_MS - 59_000).contains(&wait),
+            "{wait}"
+        );
         assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0);
         assert!(bed.updater.set_test_clock(i64::try_from(wait).unwrap() + 1_000), "a test's clock");
         // It's been touched again since, so the clock moving on doesn't count from the first touch: what counts is the time since the last.
         *lock(&bed.fake.since_input_ms) = 0;
         bed.updater.set_test_clock(i64::try_from(wait).unwrap() + 1_000);
         bed.updater.timer_fired();
-        assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0, "there was input, so it's not been thirty quiet minutes");
+        assert_eq!(
+            bed.fake.hand_offs.load(Ordering::SeqCst),
+            0,
+            "there was input, so it's not been thirty quiet minutes"
+        );
         // Now nobody's touched it for the whole half hour.
         *lock(&bed.fake.since_input_ms) = rules::IDLE_BEFORE_INSTALL_MS;
         bed.updater.set_test_clock(i64::try_from(rules::IDLE_BEFORE_INSTALL_MS).unwrap() * 2);
         bed.updater.timer_fired();
         bed.wait_for("the quit", |bed| bed.fake.quits.load(Ordering::SeqCst) == 1);
-        assert!(lock(&bed.fake.plan_at_quit).clone().unwrap().background, "it was not frontmost, so it does not take the focus");
+        assert!(
+            lock(&bed.fake.plan_at_quit).clone().unwrap().background,
+            "it was not frontmost, so it does not take the focus"
+        );
     }
 
     /// Failure: an automatic install stays waiting at the same place when the switch goes off, or carries on while the user's come back. The switch stops it at once, whichever way it's set for the daily check.
@@ -1456,10 +1730,17 @@ mod tests {
         std::fs::create_dir_all(new_app_in(&beside)).unwrap();
         std::fs::write(beside.join("staged.json"), "0.2.0 abc").unwrap();
         let again = |offered: Option<&str>| {
-            let saved = Saved { offered: offered.map(str::to_owned), ..Saved::default() };
+            let saved = Saved {
+                offered: offered.map(str::to_owned),
+                ..Saved::default()
+            };
             saved.write(&files.saved);
             let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-            updater.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+            updater.launched(Facts {
+                version: "0.1.0".into(),
+                app: bed.app.clone(),
+                system: "15.0".into(),
+            });
         };
         again(Some("0.2.0"));
         assert!(!files.zip("0.2.0").exists() && !beside.join("unpacking").exists());
@@ -1478,9 +1759,14 @@ mod tests {
         lock(&bed.fake.looks).extend([rules::IDLE_BEFORE_INSTALL_MS]);
         lock(&bed.updater.st).install_look_at = Some(bed.updater.now_ms());
         bed.updater.timer_fired();
-        bed.wait_for("standing down", |bed| matches!(bed.status(), Status::Available(_)) && lock(&bed.updater.st).install_look_at.is_some());
+        bed.wait_for("standing down", |bed| {
+            matches!(bed.status(), Status::Available(_)) && lock(&bed.updater.st).install_look_at.is_some()
+        });
         assert_eq!(bed.fake.hand_offs.load(Ordering::SeqCst), 0, "not even a hand-off");
-        assert!(lock(&bed.updater.st).install_look_at.unwrap() > bed.updater.now_ms() + 25 * 60_000, "and the next look is when it could be half an hour");
+        assert!(
+            lock(&bed.updater.st).install_look_at.unwrap() > bed.updater.now_ms() + 25 * 60_000,
+            "and the next look is when it could be half an hour"
+        );
         assert!(new_app_in(&beside_app(&bed.app).unwrap()).is_dir(), "it's all ready for then");
     }
 
@@ -1525,12 +1811,20 @@ mod tests {
         let saved = bed.dir.join("state/updates.json");
         bed.wait_for("the write", |_| Saved::read(&saved).auto_update == Some(false));
         let again = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-        again.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+        again.launched(Facts {
+            version: "0.1.0".into(),
+            app: bed.app.clone(),
+            system: "15.0".into(),
+        });
         assert!(!again.switch_on(), "a launch knows it, whatever's in the record");
         // And a damaged file errs towards not replacing anything.
         local::write_private_file(&saved, b"not json").unwrap();
         let damaged = Updater::new(&bed.dir.join("state"), bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-        damaged.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+        damaged.launched(Facts {
+            version: "0.1.0".into(),
+            app: bed.app.clone(),
+            system: "15.0".into(),
+        });
         assert!(!damaged.switch_on());
     }
 
@@ -1540,13 +1834,32 @@ mod tests {
         let bed = Bed::new("draw");
         let root = bed.dir.join("state");
         let files = Files::in_state(&root);
-        let plan = Plan { id: "1-1".into(), cdhash: "a".repeat(40), team_required: false, from: "0.1.0".into(), to: "0.2.0".into(), pid: 1, app: bed.app.clone(), beside: beside_app(&bed.app).unwrap(), root: root.clone(), quit_at_ms: 5, background: false, quit_limit_ms: 1, start_limit_ms: 1, test: None };
+        let plan = Plan {
+            id: "1-1".into(),
+            cdhash: "a".repeat(40),
+            team_required: false,
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            pid: 1,
+            app: bed.app.clone(),
+            beside: beside_app(&bed.app).unwrap(),
+            root: root.clone(),
+            quit_at_ms: 5,
+            background: false,
+            quit_limit_ms: 1,
+            start_limit_ms: 1,
+            test: None,
+        };
         local::ensure_private_dir(&files.work).unwrap();
         plan.write(&files.plan()).unwrap();
         bed.fake.cant_draw.store(true, Ordering::SeqCst);
         let launch = |version: &str| {
             let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-            updater.launched(Facts { version: version.into(), app: bed.app.clone(), system: "15.0".into() });
+            updater.launched(Facts {
+                version: version.into(),
+                app: bed.app.clone(),
+                system: "15.0".into(),
+            });
             updater
         };
         let updater = launch("0.2.0");
@@ -1581,10 +1894,17 @@ mod tests {
         let before = std::fs::read(root.join("updates.json")).unwrap();
         bed.fake.second_copy.store(true, Ordering::SeqCst);
         let second = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-        second.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+        second.launched(Facts {
+            version: "0.1.0".into(),
+            app: bed.app.clone(),
+            system: "15.0".into(),
+        });
         assert_eq!(second.next_wake(), None, "it wakes for nothing");
         assert_eq!(second.install(Asked::ByHand), Err(InstallRefused::AnotherCopy));
-        assert!(new_app_in(&beside).exists() && beside.join("staged.json").exists(), "the first copy's staging stays");
+        assert!(
+            new_app_in(&beside).exists() && beside.join("staged.json").exists(),
+            "the first copy's staging stays"
+        );
         second.first_frame(10);
         assert_eq!(std::fs::read(root.join("updates.json")).unwrap(), before, "it writes nothing of the first's");
         assert_eq!(second.menu_item().title, "Check for Updates…");
@@ -1598,9 +1918,20 @@ mod tests {
         let files = Files::in_state(&root);
         local::ensure_private_dir(&files.work).unwrap();
         let launch_with = |why: &str| {
-            Outcome { kind: OutcomeKind::NotInstalled, from: "0.1.0".into(), to: "0.2.0".into(), why: why.into() }.write(&files.outcome()).unwrap();
+            Outcome {
+                kind: OutcomeKind::NotInstalled,
+                from: "0.1.0".into(),
+                to: "0.2.0".into(),
+                why: why.into(),
+            }
+            .write(&files.outcome())
+            .unwrap();
             let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-            updater.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+            updater.launched(Facts {
+                version: "0.1.0".into(),
+                app: bed.app.clone(),
+                system: "15.0".into(),
+            });
             updater
         };
         let updater = launch_with("swap_failed");
@@ -1609,11 +1940,20 @@ mod tests {
         assert_eq!(lock(&updater.st).saved.failed, vec!["0.2.0".to_string()], "not by itself again");
         lock(&updater.st).saved.failed.clear();
         let cleared = lock(&updater.st).saved.clone();
-        Saved { install_failures: 0, quits_for_nothing: 0, ..cleared }.write(&files.saved);
+        Saved {
+            install_failures: 0,
+            quits_for_nothing: 0,
+            ..cleared
+        }
+        .write(&files.saved);
         for tries in 1..=QUITS_FOR_NOTHING {
             let updater = launch_with("old_app_stayed");
             assert!(updater.notice().is_some(), "said each time");
-            assert_eq!(lock(&updater.st).saved.failed.contains(&"0.2.0".to_string()), tries == QUITS_FOR_NOTHING, "{tries}");
+            assert_eq!(
+                lock(&updater.st).saved.failed.contains(&"0.2.0".to_string()),
+                tries == QUITS_FOR_NOTHING,
+                "{tries}"
+            );
         }
     }
 
@@ -1627,11 +1967,30 @@ mod tests {
         std::fs::create_dir_all(files.before()).unwrap();
         std::fs::write(files.before().join(".whole"), "").unwrap();
         std::fs::write(files.before().join("record.a.json"), "the state before").unwrap();
-        let plan = Plan { id: "1-1".into(), cdhash: "a".repeat(40), team_required: false, from: "0.1.0".into(), to: "0.2.0".into(), pid: 1, app: bed.app.clone(), beside: beside_app(&bed.app).unwrap(), root: root.clone(), quit_at_ms: 5, background: false, quit_limit_ms: 1, start_limit_ms: 1, test: None };
+        let plan = Plan {
+            id: "1-1".into(),
+            cdhash: "a".repeat(40),
+            team_required: false,
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            pid: 1,
+            app: bed.app.clone(),
+            beside: beside_app(&bed.app).unwrap(),
+            root: root.clone(),
+            quit_at_ms: 5,
+            background: false,
+            quit_limit_ms: 1,
+            start_limit_ms: 1,
+            test: None,
+        };
         plan.write(&files.plan()).unwrap();
         let launch = |version: &str| {
             let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-            updater.launched(Facts { version: version.into(), app: bed.app.clone(), system: "15.0".into() });
+            updater.launched(Facts {
+                version: version.into(),
+                app: bed.app.clone(),
+                system: "15.0".into(),
+            });
             updater
         };
         launch("0.2.0").first_frame(100);
@@ -1639,7 +1998,12 @@ mod tests {
         launch("0.2.0").first_frame(100);
         assert!(files.before().join("record.a.json").exists(), "and at the next launch");
         let week_and_more = std::time::SystemTime::now() - Duration::from_millis(KEEP_RECORD_COPY_MS + 60_000);
-        std::fs::File::options().write(true).open(files.before().join(".whole")).unwrap().set_modified(week_and_more).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(files.before().join(".whole"))
+            .unwrap()
+            .set_modified(week_and_more)
+            .unwrap();
         launch("0.2.0");
         assert!(!files.before().exists(), "a week on, it goes");
     }
@@ -1656,11 +2020,26 @@ mod tests {
         std::fs::create_dir_all(in_new.parent().unwrap()).unwrap();
         fake_app(in_new.parent().unwrap(), "0.0.5");
         let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-        updater.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+        updater.launched(Facts {
+            version: "0.1.0".into(),
+            app: bed.app.clone(),
+            system: "15.0".into(),
+        });
         assert_eq!(stage::app_version(&previous_app_in(&beside)).as_deref(), Some("0.0.5"), "moved to be kept");
-        Outcome { kind: OutcomeKind::CouldntGoBack, from: "0.0.5".into(), to: "0.1.0".into(), why: "nothing_to_go_back_to".into() }.write(&files.outcome()).unwrap();
+        Outcome {
+            kind: OutcomeKind::CouldntGoBack,
+            from: "0.0.5".into(),
+            to: "0.1.0".into(),
+            why: "nothing_to_go_back_to".into(),
+        }
+        .write(&files.outcome())
+        .unwrap();
         let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-        updater.launched(Facts { version: "0.1.0".into(), app: bed.app.clone(), system: "15.0".into() });
+        updater.launched(Facts {
+            version: "0.1.0".into(),
+            app: bed.app.clone(),
+            system: "15.0".into(),
+        });
         let notice = updater.notice().unwrap().text;
         assert!(notice.contains("no earlier version") && !notice.contains("came back"), "{notice}");
     }
@@ -1704,10 +2083,29 @@ mod tests {
     fn a_launch_puts_right_what_a_stopped_installer_left() {
         let bed = Bed::new("left");
         let root = bed.dir.join("state");
-        let plan = Plan { id: "1-1".into(), cdhash: "a".repeat(40), team_required: false, from: "0.1.0".into(), to: "0.2.0".into(), pid: 1, app: bed.app.clone(), beside: beside_app(&bed.app).unwrap(), root: root.clone(), quit_at_ms: 5, background: false, quit_limit_ms: 1, start_limit_ms: 1, test: None };
+        let plan = Plan {
+            id: "1-1".into(),
+            cdhash: "a".repeat(40),
+            team_required: false,
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            pid: 1,
+            app: bed.app.clone(),
+            beside: beside_app(&bed.app).unwrap(),
+            root: root.clone(),
+            quit_at_ms: 5,
+            background: false,
+            quit_limit_ms: 1,
+            start_limit_ms: 1,
+            test: None,
+        };
         let launch = |version: &str| {
             let updater = Updater::new(&root, bed.server.source(), Arc::clone(&bed.fake) as Arc<dyn Host>);
-            updater.launched(Facts { version: version.into(), app: bed.app.clone(), system: "15.0".into() });
+            updater.launched(Facts {
+                version: version.into(),
+                app: bed.app.clone(),
+                system: "15.0".into(),
+            });
             updater
         };
         let files = Files::in_state(&root);
@@ -1726,7 +2124,11 @@ mod tests {
         fake_app(plan.new_app().parent().unwrap(), "0.1.0");
         let updater = launch("0.2.0");
         assert_eq!(lock(&updater.st).status, Status::Updated("0.2.0".into()));
-        assert_eq!(stage::app_version(&plan.previous_app()).as_deref(), Some("0.1.0"), "kept, as the installer would have");
+        assert_eq!(
+            stage::app_version(&plan.previous_app()).as_deref(),
+            Some("0.1.0"),
+            "kept, as the installer would have"
+        );
         assert!(!plan.new_app().exists() && !files.plan().exists());
         updater.first_frame(1_005);
         assert_eq!(*lock(&bed.fake.draws), 1, "a version that's arrived has to show it can draw");
@@ -1735,9 +2137,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(files.launch_ok()).unwrap().split_whitespace().next(), Some("0.2.0"));
 
         // A version that didn't start: said once, remembered, and not tried by itself again.
-        Outcome { kind: OutcomeKind::WentBack, from: "0.1.0".into(), to: "0.3.0".into(), why: "didnt_start".into() }.write(&files.outcome()).unwrap();
+        Outcome {
+            kind: OutcomeKind::WentBack,
+            from: "0.1.0".into(),
+            to: "0.3.0".into(),
+            why: "didnt_start".into(),
+        }
+        .write(&files.outcome())
+        .unwrap();
         let updater = launch("0.1.0");
-        assert_eq!(lock(&updater.st).status, Status::WentBack { version: "0.3.0".into(), back_on: "0.1.0".into() });
+        assert_eq!(
+            lock(&updater.st).status,
+            Status::WentBack {
+                version: "0.3.0".into(),
+                back_on: "0.1.0".into()
+            }
+        );
         assert!(updater.notice().unwrap().text.contains("came back"));
         assert!(lock(&updater.st).saved.failed.contains(&"0.3.0".to_string()));
         assert!(!files.outcome().exists());

@@ -49,7 +49,10 @@ impl Drop for Password {
 
 /// Which file this is, wherever it's been moved to on its volume: its device and inode. What a password is kept by, so a file moved while it's open keeps its password, and a new file put in its place doesn't get it. `None` where a file can't be looked at, or has no such numbers.
 pub fn file_identity(path: &Path) -> Option<(u64, u64)> {
-    crate::file_stamp(path).ok().map(|stamp| (stamp.device, stamp.inode)).filter(|identity| *identity != (0, 0))
+    crate::file_stamp(path)
+        .ok()
+        .map(|stamp| (stamp.device, stamp.inode))
+        .filter(|identity| *identity != (0, 0))
 }
 
 /// The same for a file that's open: the file itself, not whatever's at its path now.

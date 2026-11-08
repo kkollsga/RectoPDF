@@ -74,7 +74,13 @@ impl Asks {
         }
         self.next_id += 1;
         let wrong = self.tries.iter().find(|(known, _)| known == path).map_or(0, |(_, wrong)| *wrong);
-        self.waiting.push_back(Ask { id: self.next_id, target, path: path.to_path_buf(), wrong, trying: false });
+        self.waiting.push_back(Ask {
+            id: self.next_id,
+            target,
+            path: path.to_path_buf(),
+            wrong,
+            trying: false,
+        });
         true
     }
 
@@ -106,7 +112,9 @@ impl Asks {
 
     /// A wrong password for this ask, or something no password could be: a try fewer, and after the last it stops asking about that file until it's opened again.
     pub fn wrong(&mut self, id: u64) -> Wrong {
-        let Some(at) = self.waiting.iter().position(|ask| ask.id == id) else { return Wrong::Gone };
+        let Some(at) = self.waiting.iter().position(|ask| ask.id == id) else {
+            return Wrong::Gone;
+        };
         let wrong = self.waiting[at].wrong + 1;
         let path = self.waiting[at].path.clone();
         self.remember_tries(&path, wrong);
@@ -150,7 +158,10 @@ impl Asks {
 
     /// The tabs being asked about, for the session to say which have closed.
     pub fn tabs_asked(&self) -> Vec<TabId> {
-        self.waiting.iter().filter_map(|ask| if let Target::Tab(tab) = ask.target { Some(tab) } else { None }).collect()
+        self.waiting
+            .iter()
+            .filter_map(|ask| if let Target::Tab(tab) = ask.target { Some(tab) } else { None })
+            .collect()
     }
 
     /// What's showing now, from the session: a Cancel lasts until the person goes to another tab, and asks for tabs that have closed go.
@@ -197,15 +208,33 @@ pub struct PasswordPrompt {
 
 /// What the sheet says, for this file and how many tries there have been.
 pub(crate) fn prompt_for(ask: &Ask) -> PasswordPrompt {
-    let name = ask.path.file_name().map(|name| recto_core::clean_line(&name.to_string_lossy())).unwrap_or_default();
-    let again = if matches!(ask.target, Target::Tab(_)) { " Passwords aren't kept, so it's asked again after RectoPDF quits." } else { " It's used to open the file and isn't kept." };
+    let name = ask
+        .path
+        .file_name()
+        .map(|name| recto_core::clean_line(&name.to_string_lossy()))
+        .unwrap_or_default();
+    let again = if matches!(ask.target, Target::Tab(_)) {
+        " Passwords aren't kept, so it's asked again after RectoPDF quits."
+    } else {
+        " It's used to open the file and isn't kept."
+    };
     let message = if ask.wrong == 0 {
         format!("Type the password for \u{201C}{name}\u{201D}.{again}")
     } else {
         let left = MAX_TRIES.saturating_sub(ask.wrong);
-        format!("That password didn't open \u{201C}{name}\u{201D}. {left} {} left.", if left == 1 { "try" } else { "tries" })
+        format!(
+            "That password didn't open \u{201C}{name}\u{201D}. {left} {} left.",
+            if left == 1 { "try" } else { "tries" }
+        )
     };
-    PasswordPrompt { id: ask.id, title: "This PDF needs a password".into(), message, placeholder: "Password".into(), open_title: "Open".into(), cancel_title: "Cancel".into() }
+    PasswordPrompt {
+        id: ask.id,
+        title: "This PDF needs a password".into(),
+        message,
+        placeholder: "Password".into(),
+        open_title: "Open".into(),
+        cancel_title: "Cancel".into(),
+    }
 }
 
 /// What's said when a file opened with its password can't be told apart from another at its path, so its password can't be kept for drawing it.
@@ -223,14 +252,30 @@ mod tests {
     /// Failure: the sheet doesn't say whose password it wants, doesn't say it isn't kept, or doesn't count down the tries that are left.
     #[test]
     fn the_prompt_names_the_file_and_counts_the_tries() {
-        let mut ask = Ask { id: 1, target: Target::File, path: PathBuf::from("/d/secret\u{202E}.pdf"), wrong: 0, trying: false };
+        let mut ask = Ask {
+            id: 1,
+            target: Target::File,
+            path: PathBuf::from("/d/secret\u{202E}.pdf"),
+            wrong: 0,
+            trying: false,
+        };
         let first = prompt_for(&ask);
-        assert!(first.message.contains("\u{201C}secret.pdf\u{201D}") && first.message.contains("isn't kept"), "{}", first.message);
+        assert!(
+            first.message.contains("\u{201C}secret.pdf\u{201D}") && first.message.contains("isn't kept"),
+            "{}",
+            first.message
+        );
         ask.wrong = 3;
         assert!(prompt_for(&ask).message.contains("2 tries left"));
         ask.wrong = 4;
         assert!(prompt_for(&ask).message.contains("1 try left"));
-        let tab = prompt_for(&Ask { id: 2, target: Target::Tab(TabId(1)), path: PathBuf::from("/d/a.pdf"), wrong: 0, trying: false });
+        let tab = prompt_for(&Ask {
+            id: 2,
+            target: Target::Tab(TabId(1)),
+            path: PathBuf::from("/d/a.pdf"),
+            wrong: 0,
+            trying: false,
+        });
         assert!(tab.message.contains("asked again after RectoPDF quits"));
         assert!(stopped_asking().contains(&MAX_TRIES.to_string()));
     }
@@ -278,7 +323,11 @@ mod tests {
         asks.showing_tab(Some(TabId(9)), &[]);
         assert!(!asks.declined(tab), "going elsewhere ends a Cancel");
         asks.ask(Target::Tab(tab), path);
-        assert!(asks.prompt().unwrap().message.contains("2 tries left"), "the tries are where they were: {:?}", asks.prompt());
+        assert!(
+            asks.prompt().unwrap().message.contains("2 tries left"),
+            "the tries are where they were: {:?}",
+            asks.prompt()
+        );
         for left in [1, 0] {
             let id = asks.prompt().unwrap().id;
             asks.start_trying(id);

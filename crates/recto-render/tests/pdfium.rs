@@ -3,8 +3,8 @@
 //! These need the library from `tools/pdfium.sh`. Missing it fails plainly rather than skipping, because a skipped renderer test looks
 //! like a passing one.
 
-use recto_render::{CharRecord, NeverCancel, Pdfium, PdfiumBackend, RenderBackend, TextOptions, TileKind, TileOutcome, TileRect};
 use recto_proto::device_size;
+use recto_render::{CharRecord, NeverCancel, Pdfium, PdfiumBackend, RenderBackend, TextOptions, TileKind, TileOutcome, TileRect};
 use recto_testpdf::{Page, TempPdf, busy_page, grey_page, hidden_text_page, pages, text_lines};
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -21,7 +21,11 @@ fn library_path() -> PathBuf {
     }
     let exe = std::env::current_exe().unwrap();
     let profile = exe.parent().unwrap().parent().unwrap();
-    profile.parent().unwrap().join("pdfium").join(recto_platform::isolate::library_file_name("pdfium"))
+    profile
+        .parent()
+        .unwrap()
+        .join("pdfium")
+        .join(recto_platform::isolate::library_file_name("pdfium"))
 }
 
 fn pdfium() -> Pdfium {
@@ -54,7 +58,12 @@ fn stitched(backend: &mut PdfiumBackend, page: u32, scale: f32, edge: u32, width
     let mut out = vec![0u8; (width * height * 4) as usize];
     for y in (0..height).step_by(edge as usize) {
         for x in (0..width).step_by(edge as usize) {
-            let rect = TileRect { x, y, width: edge.min(width - x), height: edge.min(height - y) };
+            let rect = TileRect {
+                x,
+                y,
+                width: edge.min(width - x),
+                height: edge.min(height - y),
+            };
             let (tile, _) = draw(backend, page, rect, scale);
             for row in 0..rect.height {
                 let from = (row * rect.width * 4) as usize;
@@ -121,11 +130,19 @@ fn tile_boundaries_themselves_match_the_page_drawn_whole() {
     let measured = share_differing_at_seams(&whole, &tiles, width, height, edge, 16);
     assert!(measured < 0.02, "{:.2}% of the pixels at tile boundaries differ", measured * 100.0);
     let seam = share_differing_at_seams(&whole, &with_a_seam_painted(&tiles, width, edge), width, height, edge, 16);
-    assert!(seam > measured * 3.0 && seam > 0.02, "a painted seam should show here: {seam} against {measured}");
+    assert!(
+        seam > measured * 3.0 && seam > 0.02,
+        "a painted seam should show here: {seam} against {measured}"
+    );
     // And in regions, which meet each other on the same grid.
     let mut pasted = vec![0u8; (width * height * 4) as usize];
     for y in (0..height).step_by(edge as usize * 2) {
-        let rect = TileRect { x: 0, y, width: width.min(1024), height: (edge * 2).min(height - y) };
+        let rect = TileRect {
+            x: 0,
+            y,
+            width: width.min(1024),
+            height: (edge * 2).min(height - y),
+        };
         let (pixels, _) = draw_region(&mut backend, 0, rect, scale, edge);
         for row in 0..rect.height {
             let (from, to) = ((row * rect.width * 4) as usize, (((y + row) * width) * 4) as usize);
@@ -165,7 +182,10 @@ fn a_page_drawn_as_tiles_equals_the_page_drawn_whole() {
         // Negative control: the same comparison, with the picture moved one pixel.
         let row = (width * 4) as usize;
         let shifted = share_differing(&whole[row..], &tiles[..tiles.len() - row], 16);
-        assert!(shifted > differing * 5.0 && shifted > 0.005, "a one-pixel shift should be visible: {shifted} against {differing}");
+        assert!(
+            shifted > differing * 5.0 && shifted > 0.005,
+            "a one-pixel shift should be visible: {shifted} against {differing}"
+        );
     }
 }
 
@@ -176,10 +196,33 @@ fn blank_tiles_are_reported_and_really_are_one_colour() {
     let file = TempPdf::new("blank.pdf", &pages(&[Page::new(text_lines(&["Only at the top of the page"]))]));
     let mut backend = open(&file);
     // Text sits near the top. The bottom of the page is empty.
-    let (pixels, kind) = draw(&mut backend, 0, TileRect { x: 0, y: 1000, width: 512, height: 512 }, 2.0);
+    let (pixels, kind) = draw(
+        &mut backend,
+        0,
+        TileRect {
+            x: 0,
+            y: 1000,
+            width: 512,
+            height: 512,
+        },
+        2.0,
+    );
     assert_eq!(kind, TileKind::Blank { rgb: 0xFF_FFFF });
-    assert!(pixels.as_chunks::<4>().0.iter().all(|px| px[..3] == [255, 255, 255]), "reported blank with ink on it");
-    let (pixels, kind) = draw(&mut backend, 0, TileRect { x: 0, y: 0, width: 1224, height: 300 }, 2.0);
+    assert!(
+        pixels.as_chunks::<4>().0.iter().all(|px| px[..3] == [255, 255, 255]),
+        "reported blank with ink on it"
+    );
+    let (pixels, kind) = draw(
+        &mut backend,
+        0,
+        TileRect {
+            x: 0,
+            y: 0,
+            width: 1224,
+            height: 300,
+        },
+        2.0,
+    );
     assert!(!matches!(kind, TileKind::Blank { .. }), "a tile with text was reported blank");
     assert!(pixels.as_chunks::<4>().0.iter().any(|px| px[0] < 128), "nothing drew");
 }
@@ -190,10 +233,33 @@ fn grey_and_colour_tiles_are_told_apart() {
     let _turn = turn();
     let file = TempPdf::new("grey.pdf", &pages(&[Page::new(grey_page()), Page::new(busy_page())]));
     let mut backend = open(&file);
-    let (pixels, kind) = draw(&mut backend, 0, TileRect { x: 0, y: 0, width: 1024, height: 1024 }, 2.0);
+    let (pixels, kind) = draw(
+        &mut backend,
+        0,
+        TileRect {
+            x: 0,
+            y: 0,
+            width: 1024,
+            height: 1024,
+        },
+        2.0,
+    );
     assert_eq!(kind, TileKind::Grey);
-    assert!(pixels.as_chunks::<4>().0.iter().all(|px| px[0] == px[1] && px[1] == px[2]), "reported grey with chroma in it");
-    let (_, kind) = draw(&mut backend, 1, TileRect { x: 0, y: 200, width: 1024, height: 1024 }, 2.0);
+    assert!(
+        pixels.as_chunks::<4>().0.iter().all(|px| px[0] == px[1] && px[1] == px[2]),
+        "reported grey with chroma in it"
+    );
+    let (_, kind) = draw(
+        &mut backend,
+        1,
+        TileRect {
+            x: 0,
+            y: 200,
+            width: 1024,
+            height: 1024,
+        },
+        2.0,
+    );
     assert_eq!(kind, TileKind::Colour);
 }
 
@@ -201,7 +267,11 @@ fn grey_and_colour_tiles_are_told_apart() {
 #[test]
 fn rotated_pages_have_rotated_sizes_and_tile_correctly() {
     let _turn = turn();
-    let page = Page { content: busy_page(), page_extra: "/Rotate 90".into(), media: (612.0, 792.0) };
+    let page = Page {
+        content: busy_page(),
+        page_extra: "/Rotate 90".into(),
+        media: (612.0, 792.0),
+    };
     let file = TempPdf::new("rotated.pdf", &pages(&[page]));
     let mut backend = open(&file);
     let size = backend.page_size(0).unwrap();
@@ -218,7 +288,12 @@ fn the_same_tile_draws_the_same_twice() {
     let _turn = turn();
     let file = TempPdf::new("determinism.pdf", &pages(&[Page::new(busy_page())]));
     let mut backend = open(&file);
-    let rect = TileRect { x: 100, y: 100, width: 512, height: 512 };
+    let rect = TileRect {
+        x: 100,
+        y: 100,
+        width: 512,
+        height: 512,
+    };
     let (first, _) = draw(&mut backend, 0, rect, 2.0);
     let (second, _) = draw(&mut backend, 0, rect, 2.0);
     assert!(first == second);
@@ -229,7 +304,9 @@ fn draw_region(backend: &mut PdfiumBackend, page: u32, rect: TileRect, scale: f3
     let stride = rect.width * 4;
     let mut out = vec![0x55u8; (stride * rect.height) as usize];
     let mut kinds = Vec::new();
-    let outcome = backend.render_region(page, rect, scale, edge, &mut out, stride, &NeverCancel, &mut kinds).unwrap();
+    let outcome = backend
+        .render_region(page, rect, scale, edge, &mut out, stride, &NeverCancel, &mut kinds)
+        .unwrap();
     assert!(matches!(outcome, TileOutcome::Done(_)));
     (out, kinds)
 }
@@ -246,7 +323,12 @@ fn a_page_drawn_as_regions_equals_the_page_drawn_whole() {
         let mut pasted = vec![0u8; (width * height * 4) as usize];
         for y in (0..height).step_by(block as usize) {
             for x in (0..width).step_by(block as usize) {
-                let rect = TileRect { x, y, width: block.min(width - x), height: block.min(height - y) };
+                let rect = TileRect {
+                    x,
+                    y,
+                    width: block.min(width - x),
+                    height: block.min(height - y),
+                };
                 let (pixels, _) = draw_region(&mut backend, 0, rect, scale, 512);
                 for row in 0..rect.height {
                     let from = (row * rect.width * 4) as usize;
@@ -259,7 +341,10 @@ fn a_page_drawn_as_regions_equals_the_page_drawn_whole() {
         assert!(differing < 0.002, "scale {scale}: {:.3}% of pixels differ", differing * 100.0);
         let row = (width * 4) as usize;
         let shifted = share_differing(&whole[row..], &pasted[..pasted.len() - row], 16);
-        assert!(shifted > differing * 5.0 && shifted > 0.005, "a one-pixel shift should be visible: {shifted} against {differing}");
+        assert!(
+            shifted > differing * 5.0 && shifted > 0.005,
+            "a one-pixel shift should be visible: {shifted} against {differing}"
+        );
     }
 }
 
@@ -269,7 +354,12 @@ fn a_tile_from_a_region_equals_the_tile_drawn_alone() {
     let _turn = turn();
     let file = TempPdf::new("region-tile.pdf", &pages(&[Page::new(busy_page())]));
     let mut backend = open(&file);
-    let region = TileRect { x: 0, y: 512, width: 1024, height: 1024 };
+    let region = TileRect {
+        x: 0,
+        y: 512,
+        width: 1024,
+        height: 1024,
+    };
     let (pixels, kinds) = draw_region(&mut backend, 0, region, 2.0, 512);
     for (tile, kind) in recto_proto::region_tiles(region, 512).zip(&kinds) {
         let (alone, alone_kind) = draw(&mut backend, 0, tile, 2.0);
@@ -291,11 +381,20 @@ fn each_tile_of_a_region_is_classified_by_itself() {
     let mut backend = open(&file);
     let size = backend.page_size(0).unwrap();
     let (width, height) = device_size(size.width, size.height, 2.0).unwrap();
-    let region = TileRect { x: 0, y: 0, width: width.min(1024), height };
+    let region = TileRect {
+        x: 0,
+        y: 0,
+        width: width.min(1024),
+        height,
+    };
     let (_, kinds) = draw_region(&mut backend, 0, region, 2.0, 512);
     assert_eq!(kinds.len(), recto_proto::region_tiles(region, 512).count());
     assert!(kinds.iter().any(|kind| matches!(kind, TileKind::Grey)), "the tile with text: {kinds:?}");
-    assert_eq!(kinds.iter().filter(|kind| matches!(kind, TileKind::Blank { rgb: 0xFF_FFFF })).count(), kinds.len() - 1, "the rest are empty: {kinds:?}");
+    assert_eq!(
+        kinds.iter().filter(|kind| matches!(kind, TileKind::Blank { rgb: 0xFF_FFFF })).count(),
+        kinds.len() - 1,
+        "the rest are empty: {kinds:?}"
+    );
 }
 
 /// Failure: a region cancelled up front still draws, or its tiles are reported.
@@ -306,9 +405,17 @@ fn a_region_cancelled_up_front_draws_nothing() {
     let mut backend = open(&file);
     let mut out = vec![0x55u8; 1024 * 1024 * 4];
     let mut kinds = Vec::new();
-    let rect = TileRect { x: 0, y: 0, width: 1024, height: 1024 };
+    let rect = TileRect {
+        x: 0,
+        y: 0,
+        width: 1024,
+        height: 1024,
+    };
     let cancelled = || true;
-    assert_eq!(backend.render_region(0, rect, 2.0, 512, &mut out, 4096, &cancelled, &mut kinds).unwrap(), TileOutcome::Cancelled);
+    assert_eq!(
+        backend.render_region(0, rect, 2.0, 512, &mut out, 4096, &cancelled, &mut kinds).unwrap(),
+        TileOutcome::Cancelled
+    );
     assert!(kinds.is_empty());
     assert!(out.iter().all(|&byte| byte == 0x55));
 }
@@ -320,11 +427,29 @@ fn impossible_requests_are_refused_before_pdfium_sees_them() {
     let file = TempPdf::new("bad.pdf", &pages(&[Page::new(text_lines(&["x"]))]));
     let mut backend = open(&file);
     let mut out = vec![0u8; 512 * 512 * 4];
-    let rect = TileRect { x: 0, y: 0, width: 512, height: 512 };
+    let rect = TileRect {
+        x: 0,
+        y: 0,
+        width: 512,
+        height: 512,
+    };
     assert!(backend.render_tile(1, rect, 2.0, &mut out, 2048, &NeverCancel).is_err(), "page past the end");
-    assert!(backend.render_tile(0, TileRect { x: 99_999, ..rect }, 2.0, &mut out, 2048, &NeverCancel).is_err(), "off the page");
-    assert!(backend.render_tile(0, TileRect { height: 513, ..rect }, 2.0, &mut out, 2048, &NeverCancel).is_err(), "buffer too small");
-    assert!(backend.render_tile(0, rect, 2.0, &mut out, 100, &NeverCancel).is_err(), "stride shorter than a row");
+    assert!(
+        backend
+            .render_tile(0, TileRect { x: 99_999, ..rect }, 2.0, &mut out, 2048, &NeverCancel)
+            .is_err(),
+        "off the page"
+    );
+    assert!(
+        backend
+            .render_tile(0, TileRect { height: 513, ..rect }, 2.0, &mut out, 2048, &NeverCancel)
+            .is_err(),
+        "buffer too small"
+    );
+    assert!(
+        backend.render_tile(0, rect, 2.0, &mut out, 100, &NeverCancel).is_err(),
+        "stride shorter than a row"
+    );
     assert!(backend.page_text(9, TextOptions::default()).is_err());
     assert!(backend.page_size(9).is_err());
 }
@@ -336,7 +461,12 @@ fn a_job_cancelled_up_front_draws_nothing() {
     let file = TempPdf::new("cancel.pdf", &pages(&[Page::new(busy_page())]));
     let mut backend = open(&file);
     let mut out = vec![0x55u8; 512 * 512 * 4];
-    let rect = TileRect { x: 0, y: 0, width: 512, height: 512 };
+    let rect = TileRect {
+        x: 0,
+        y: 0,
+        width: 512,
+        height: 512,
+    };
     let cancelled = || true;
     assert_eq!(backend.render_tile(0, rect, 2.0, &mut out, 2048, &cancelled).unwrap(), TileOutcome::Cancelled);
     assert!(out.iter().all(|&byte| byte == 0x55), "pixels were written for a cancelled job");
@@ -364,7 +494,15 @@ fn page_text_comes_with_a_box_per_character() {
     let _turn = turn();
     let file = TempPdf::new("text.pdf", &pages(&[Page::new(text_lines(&["First line here", "Second line here"]))]));
     let mut backend = open(&file);
-    let page = backend.page_text(0, TextOptions { boxes: true, hidden_check: false }).unwrap();
+    let page = backend
+        .page_text(
+            0,
+            TextOptions {
+                boxes: true,
+                hidden_check: false,
+            },
+        )
+        .unwrap();
     let text = text_of(&page.chars);
     assert!(text.contains("First line here") && text.contains("Second line here"), "{text:?}");
     assert!(text.find("First") < text.find("Second"));
@@ -385,7 +523,15 @@ fn hidden_text_is_marked_and_nothing_is_dropped() {
     let _turn = turn();
     let file = TempPdf::new("hidden.pdf", &pages(&[Page::new(hidden_text_page())]));
     let mut backend = open(&file);
-    let page = backend.page_text(0, TextOptions { boxes: false, hidden_check: true }).unwrap();
+    let page = backend
+        .page_text(
+            0,
+            TextOptions {
+                boxes: false,
+                hidden_check: true,
+            },
+        )
+        .unwrap();
     assert!(page.hidden_checked);
     let mut lines: Vec<(String, bool)> = Vec::new();
     let mut current = (String::new(), false);
@@ -401,12 +547,29 @@ fn hidden_text_is_marked_and_nothing_is_dropped() {
         current.1 |= record.has(CharRecord::NO_INK);
     }
     lines.push(current);
-    for technique in ["HIDDEN-WHITE", "HIDDEN-MODE3", "HIDDEN-TINY", "HIDDEN-TMSCALE", "HIDDEN-OFFPAGE-RIGHT", "HIDDEN-OFFPAGE-BELOW", "HIDDEN-CLIPPED", "HIDDEN-BEHINDRECT", "HIDDEN-MODE7", "HIDDEN-SAMEASBG"] {
-        let line = lines.iter().find(|(text, _)| text.contains(technique)).unwrap_or_else(|| panic!("{technique} was dropped: {lines:?}"));
+    for technique in [
+        "HIDDEN-WHITE",
+        "HIDDEN-MODE3",
+        "HIDDEN-TINY",
+        "HIDDEN-TMSCALE",
+        "HIDDEN-OFFPAGE-RIGHT",
+        "HIDDEN-OFFPAGE-BELOW",
+        "HIDDEN-CLIPPED",
+        "HIDDEN-BEHINDRECT",
+        "HIDDEN-MODE7",
+        "HIDDEN-SAMEASBG",
+    ] {
+        let line = lines
+            .iter()
+            .find(|(text, _)| text.contains(technique))
+            .unwrap_or_else(|| panic!("{technique} was dropped: {lines:?}"));
         assert!(line.1, "{technique} wasn't flagged");
     }
     for visible in ["VISIBLE-SENTINEL", "VISIBLE-AFTER"] {
-        let line = lines.iter().find(|(text, _)| text.contains(visible)).unwrap_or_else(|| panic!("{visible} is missing: {lines:?}"));
+        let line = lines
+            .iter()
+            .find(|(text, _)| text.contains(visible))
+            .unwrap_or_else(|| panic!("{visible} is missing: {lines:?}"));
         assert!(!line.1, "{visible} was flagged as hidden");
     }
 }
@@ -423,7 +586,15 @@ fn white_text_over_a_paragraph_is_marked_hidden() {
     content += "q 0 0 0 rg 60 90 400 30 re f Q q 1 1 1 rg BT /F1 20 Tf 72 100 Td (VISIBLEONDARK) Tj ET Q\n";
     let file = TempPdf::new("over.pdf", &pages(&[Page::new(content.into_bytes())]));
     let mut backend = open(&file);
-    let page = backend.page_text(0, TextOptions { boxes: false, hidden_check: true }).unwrap();
+    let page = backend
+        .page_text(
+            0,
+            TextOptions {
+                boxes: false,
+                hidden_check: true,
+            },
+        )
+        .unwrap();
     assert!(page.hidden_checked);
     let text: String = page.chars.iter().map(|record| record.ch()).collect();
     let marked = |word: &str| {
@@ -449,17 +620,35 @@ fn heavy_type_is_never_marked_hidden() {
     let objects = vec![
         recto_testpdf::Object::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
         recto_testpdf::Object::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
-        recto_testpdf::Object::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>".into()),
-        recto_testpdf::Object::Stream { dict: String::new(), data: content.as_bytes().to_vec() },
+        recto_testpdf::Object::Dict(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>".into(),
+        ),
+        recto_testpdf::Object::Stream {
+            dict: String::new(),
+            data: content.as_bytes().to_vec(),
+        },
         recto_testpdf::Object::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".into()),
         recto_testpdf::Object::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>".into()),
     ];
     let file = TempPdf::new("heavy.pdf", &recto_testpdf::build(&objects));
     let mut backend = open(&file);
-    let page = backend.page_text(0, TextOptions { boxes: false, hidden_check: true }).unwrap();
+    let page = backend
+        .page_text(
+            0,
+            TextOptions {
+                boxes: false,
+                hidden_check: true,
+            },
+        )
+        .unwrap();
     assert!(page.hidden_checked);
     let text: String = page.chars.iter().map(|record| record.ch()).collect();
-    let flagged: String = page.chars.iter().filter(|record| record.has(CharRecord::NO_INK)).map(|record| record.ch()).collect();
+    let flagged: String = page
+        .chars
+        .iter()
+        .filter(|record| record.has(CharRecord::NO_INK))
+        .map(|record| record.ch())
+        .collect();
     assert_eq!(flagged, "HIDDENWHITE", "only the white line is hidden, in {text:?}");
 }
 
@@ -469,7 +658,15 @@ fn an_ordinary_page_has_no_hidden_text() {
     let _turn = turn();
     let file = TempPdf::new("plain.pdf", &pages(&[Page::new(busy_page())]));
     let mut backend = open(&file);
-    let page = backend.page_text(0, TextOptions { boxes: false, hidden_check: true }).unwrap();
+    let page = backend
+        .page_text(
+            0,
+            TextOptions {
+                boxes: false,
+                hidden_check: true,
+            },
+        )
+        .unwrap();
     assert!(page.chars.len() > 1000);
     let flagged = page.chars.iter().filter(|c| c.has(CharRecord::NO_INK)).count();
     assert_eq!(flagged, 0);
@@ -481,7 +678,15 @@ fn a_page_with_no_text_counts_as_checked() {
     let _turn = turn();
     let file = TempPdf::new("empty-page.pdf", &pages(&[Page::new(b"0.5 g 10 10 100 100 re f".to_vec())]));
     let mut backend = open(&file);
-    let page = backend.page_text(0, TextOptions { boxes: false, hidden_check: true }).unwrap();
+    let page = backend
+        .page_text(
+            0,
+            TextOptions {
+                boxes: false,
+                hidden_check: true,
+            },
+        )
+        .unwrap();
     assert!(page.chars.is_empty());
     assert!(page.hidden_checked);
 }
@@ -491,10 +696,22 @@ fn a_page_with_no_text_counts_as_checked() {
 #[test]
 fn text_survives_a_page_the_check_cant_draw() {
     let _turn = turn();
-    let tiny = Page { content: text_lines(&["Text on a page too small to draw"]), page_extra: String::new(), media: (0.1, 0.1) };
+    let tiny = Page {
+        content: text_lines(&["Text on a page too small to draw"]),
+        page_extra: String::new(),
+        media: (0.1, 0.1),
+    };
     let file = TempPdf::new("tiny.pdf", &pages(&[tiny]));
     let mut backend = open(&file);
-    let page = backend.page_text(0, TextOptions { boxes: false, hidden_check: true }).unwrap();
+    let page = backend
+        .page_text(
+            0,
+            TextOptions {
+                boxes: false,
+                hidden_check: true,
+            },
+        )
+        .unwrap();
     assert!(!page.chars.is_empty(), "the text was lost");
     assert!(!page.hidden_checked, "it says it was checked when the drawing failed");
     assert!(page.chars.iter().all(|c| !c.has(CharRecord::NO_INK)), "nothing may be marked without a drawing");
@@ -531,5 +748,8 @@ fn open_failures_say_why() {
     let empty = TempPdf::new("empty.pdf", b"");
     assert!(PdfiumBackend::open(&pdfium(), std::fs::File::open(&empty.0).unwrap(), None).is_err());
     let nul = TempPdf::new("ok.pdf", &pages(&[Page::new(text_lines(&["x"]))]));
-    assert!(PdfiumBackend::open(&pdfium(), std::fs::File::open(&nul.0).unwrap(), Some(b"a\0b")).is_err(), "a password with a NUL");
+    assert!(
+        PdfiumBackend::open(&pdfium(), std::fs::File::open(&nul.0).unwrap(), Some(b"a\0b")).is_err(),
+        "a password with a NUL"
+    );
 }

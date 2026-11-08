@@ -63,7 +63,9 @@ impl PlanFile {
     }
 
     fn label(&self) -> String {
-        self.path.file_name().map_or_else(String::new, |name| recto_core::clean_line(&name.to_string_lossy()))
+        self.path
+            .file_name()
+            .map_or_else(String::new, |name| recto_core::clean_line(&name.to_string_lossy()))
     }
 }
 
@@ -84,18 +86,33 @@ pub(crate) fn search<A: SessionAccess>(access: &A, asked: &Asked<'_>) -> Result<
         return Err(AgentError::new("bad_query", "That search is too long.", exit::FAILED).then("Search for a few words."));
     }
     if asked.regex && asked.rank {
-        return Err(AgentError::new("bad_query", "`--regex` and `--rank` are two different searches, so it's one or the other.", exit::FAILED).then("`recto help search` says when to use which."));
+        return Err(AgentError::new(
+            "bad_query",
+            "`--regex` and `--rank` are two different searches, so it's one or the other.",
+            exit::FAILED,
+        )
+        .then("`recto help search` says when to use which."));
     }
     let context = asked.context.unwrap_or(0).min(MAX_CONTEXT) as usize;
     let default_limit = if asked.rank { DEFAULT_RANKED } else { DEFAULT_LIMIT };
     let settings = |limit| {
         let deadline = Instant::now() + MAX_TIME;
-        Settings { limit, context, deadline, draw_until: deadline, second_pass_until: deadline + SECOND_PASS_TIME, live_budget: LIVE_REREAD_BUDGET, indexing: access.indexing(), force_scan: asked.scan }
+        Settings {
+            limit,
+            context,
+            deadline,
+            draw_until: deadline,
+            second_pass_until: deadline + SECOND_PASS_TIME,
+            live_budget: LIVE_REREAD_BUDGET,
+            indexing: access.indexing(),
+            force_scan: asked.scan,
+        }
     };
     if asked.rank {
         let terms = terms_of(asked.query);
         if terms.terms.is_empty() {
-            return Err(AgentError::new("bad_query", "That search has no words to count.", exit::FAILED).then("Give some words. Ranking goes by words, so punctuation by itself counts for nothing."));
+            return Err(AgentError::new("bad_query", "That search has no words to count.", exit::FAILED)
+                .then("Give some words. Ranking goes by words, so punctuation by itself counts for nothing."));
         }
         let plan = plan(access, asked.tab, asked.pages)?;
         let limit = crate::positive_limit(asked.limit, default_limit, MAX_LIMIT)?;
@@ -127,7 +144,12 @@ fn plan<A: SessionAccess>(access: &A, tab: &str, pages: Option<&str>) -> Result<
 }
 
 /// The pages of one tab to look at, as its edits have them, under the session's lock: a few bytes a page.
-pub(crate) fn plan_of<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: recto_session::TabId, pages: Option<&str>, range: Option<(u32, u32)>) -> Result<Plan, AgentError> {
+pub(crate) fn plan_of<L: recto_session::DocLoader>(
+    s: &recto_session::Session<L>,
+    id: recto_session::TabId,
+    pages: Option<&str>,
+    range: Option<(u32, u32)>,
+) -> Result<Plan, AgentError> {
     {
         let total = s.pages_in(id);
         let (start, len) = range.unwrap_or((0, total));
@@ -137,16 +159,38 @@ pub(crate) fn plan_of<L: recto_session::DocLoader>(s: &recto_session::Session<L>
         if start >= total.max(1) || u64::from(start) + u64::from(len) > u64::from(total) {
             return Err(AgentError::new("no_such_page", "Those pages aren't in this document.", exit::NOT_FOUND));
         }
-        let path = s.path_of(id).ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
-        let mut files = vec![PlanFile { path, expected: s.page_edits(id).and_then(|_| s.own_stamp(id)), added: false }];
+        let path = s
+            .path_of(id)
+            .ok_or_else(|| AgentError::new("no_such_tab", "That tab isn't open.", exit::NOT_FOUND))?;
+        let mut files = vec![PlanFile {
+            path,
+            expected: s.page_edits(id).and_then(|_| s.own_stamp(id)),
+            added: false,
+        }];
         let list = match s.page_edits(id) {
             None => (start..start.saturating_add(len)).map(|page| (page, 0, page)).collect(),
             Some(edits) => {
-                files.extend(edits.added_sources().iter().map(|added| PlanFile { path: added.path.to_path_buf(), expected: added.stamp, added: true }));
-                edits.slots().iter().enumerate().skip(start as usize).take(len as usize).map(|(position, slot)| (u32::try_from(position).unwrap_or(u32::MAX), slot.source, slot.page)).collect()
+                files.extend(edits.added_sources().iter().map(|added| PlanFile {
+                    path: added.path.to_path_buf(),
+                    expected: added.stamp,
+                    added: true,
+                }));
+                edits
+                    .slots()
+                    .iter()
+                    .enumerate()
+                    .skip(start as usize)
+                    .take(len as usize)
+                    .map(|(position, slot)| (u32::try_from(position).unwrap_or(u32::MAX), slot.source, slot.page))
+                    .collect()
             }
         };
-        Ok(Plan { files, pages: list, tab: id.0, keys: None })
+        Ok(Plan {
+            files,
+            pages: list,
+            tab: id.0,
+            keys: None,
+        })
     }
 }
 
@@ -194,14 +238,21 @@ impl Query {
     /// A pattern, through ripgrep's own engine, run here: no program is started, so nothing like `rg --pre` can run anything. Ignores case like any other search, which `(?-i)` turns off. `^` and `$` go by lines, `.` stops at a line's end and `\s` doesn't, so `force\s+majeure` finds the phrase broken across two lines.
     fn regex(pattern: &str) -> Result<Self, AgentError> {
         let mut builder = RegexMatcherBuilder::new();
-        builder.case_insensitive(true).multi_line(true).size_limit(REGEX_SIZE_LIMIT).dfa_size_limit(REGEX_DFA_LIMIT).nest_limit(REGEX_NEST_LIMIT);
+        builder
+            .case_insensitive(true)
+            .multi_line(true)
+            .size_limit(REGEX_SIZE_LIMIT)
+            .dfa_size_limit(REGEX_DFA_LIMIT)
+            .nest_limit(REGEX_NEST_LIMIT);
         builder.build(pattern).map(Self::Regex).map_err(|error| {
             let said = recto_core::clean_line(&error.to_string());
             let said: String = said.chars().take(400).collect();
             if said.contains("size limit") {
-                AgentError::new("pattern_too_large", "That pattern compiles to more than a search may use.", exit::FAILED).then("Try a simpler one: fewer and smaller repeats.")
+                AgentError::new("pattern_too_large", "That pattern compiles to more than a search may use.", exit::FAILED)
+                    .then("Try a simpler one: fewer and smaller repeats.")
             } else {
-                AgentError::new("bad_pattern", format!("That pattern can't be read: {said}"), exit::FAILED).then("It's a Rust regex. There's no look-around or back-reference. For plain words, leave out `--regex`.")
+                AgentError::new("bad_pattern", format!("That pattern can't be read: {said}"), exit::FAILED)
+                    .then("It's a Rust regex. There's no look-around or back-reference. For plain words, leave out `--regex`.")
             }
         })
     }
@@ -289,7 +340,11 @@ fn far_future() -> Instant {
 
 /// What the pattern finds on a page, in the same shape as [`find_hits`]. A match of nothing at all isn't a hit: `x*` on a page of two million characters would otherwise be that many, each about nothing. Bytes it gives lie on character boundaries unless a pattern asks otherwise with `(?-u)`, and a snippet of those comes out empty rather than wrong.
 fn find_regex_hits(text: &str, matcher: &RegexMatcher, room: usize, deadline: Instant) -> PageHits {
-    let mut hits = PageHits { total: 0, shown: Vec::with_capacity(room.min(MAX_LIMIT as usize)), out_of_time: false };
+    let mut hits = PageHits {
+        total: 0,
+        shown: Vec::with_capacity(room.min(MAX_LIMIT as usize)),
+        out_of_time: false,
+    };
     let (mut line, mut counted_to) = (1u32, 0usize);
     let _ = matcher.find_iter(text.as_bytes(), |found| {
         // A pattern can restart a pass for every match, so this is where a page of them gets stopped.
@@ -368,7 +423,15 @@ impl Found {
     }
 
     /// Takes what's on a page. `hidden` is only asked for if the page has something to show, as finding out can mean drawing it.
-    fn take(&mut self, (position, page): (u32, u32), view: &PageView<'_>, query: &Query, settings: &Settings<'_>, source: &PlanFile, hidden: impl FnOnce() -> HiddenOnPage) {
+    fn take(
+        &mut self,
+        (position, page): (u32, u32),
+        view: &PageView<'_>,
+        query: &Query,
+        settings: &Settings<'_>,
+        source: &PlanFile,
+        hidden: impl FnOnce() -> HiddenOnPage,
+    ) {
         let room = settings.limit - self.hits.len();
         let found = query.find(view.text, room, settings.deadline);
         // What it found stands, and the page isn't said to have been searched.
@@ -385,7 +448,14 @@ impl Found {
         if view.has_tag_chars && found.total > 0 {
             self.note_tag_chars(position);
         }
-        let spelled = if found.total > 0 { None } else { view.also_spelled.iter().find(|spelled| query.spelled(spelled)).filter(|_| self.hits.len() < settings.limit) };
+        let spelled = if found.total > 0 {
+            None
+        } else {
+            view.also_spelled
+                .iter()
+                .find(|spelled| query.spelled(spelled))
+                .filter(|_| self.hits.len() < settings.limit)
+        };
         if found.shown.is_empty() && spelled.is_none() {
             return;
         }
@@ -491,7 +561,24 @@ pub(crate) struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     pub(crate) fn new(plan: &'a Plan, settings: &Settings<'a>) -> Self {
-        Self { plan, indexing: settings.indexing, force_scan: settings.force_scan, current: None, corpus_open: None, routes: vec![FileRoute::NotLookedAt; plan.files.len()], not_ready: Vec::new(), changed: Vec::new(), used_index: false, used_scan: false, draw_until: settings.draw_until, live_budget: settings.live_budget, live_spent: Duration::ZERO, not_read_again: 0, deadline: settings.deadline, file_keys: vec![None; plan.files.len()] }
+        Self {
+            plan,
+            indexing: settings.indexing,
+            force_scan: settings.force_scan,
+            current: None,
+            corpus_open: None,
+            routes: vec![FileRoute::NotLookedAt; plan.files.len()],
+            not_ready: Vec::new(),
+            changed: Vec::new(),
+            used_index: false,
+            used_scan: false,
+            draw_until: settings.draw_until,
+            live_budget: settings.live_budget,
+            live_spent: Duration::ZERO,
+            not_read_again: 0,
+            deadline: settings.deadline,
+            file_keys: vec![None; plan.files.len()],
+        }
     }
 
     /// Works out how a file's pages get read: from its corpus if there's a finished one for the file as it is now, or else page by page, asking for a corpus to be built for next time. A file reached only for the count doesn't change how the answer's hits were read, so it isn't said to have.
@@ -559,7 +646,12 @@ impl<'a> Reader<'a> {
             match read {
                 Ok(stored) if stored.kind == PageKind::Text => {
                     self.used_index = true;
-                    return Ok(Got::Page(PageView { text: stored.text, also_spelled: stored.also_spelled(), has_tag_chars: stored.has_tag_chars, stored: Some(stored) }));
+                    return Ok(Got::Page(PageView {
+                        text: stored.text,
+                        also_spelled: stored.also_spelled(),
+                        has_tag_chars: stored.has_tag_chars,
+                        stored: Some(stored),
+                    }));
                 }
                 Ok(stored) if stored.kind == PageKind::NoText => {
                     self.used_index = true;
@@ -609,29 +701,57 @@ impl<'a> Reader<'a> {
         let characters = match renderer.page_characters(page, true, false) {
             Ok(characters) => characters,
             Err(_) if read_again_live => return Ok(Got::Failed),
-            Err(failure @ (RenderFailure::NeedsPassword | RenderFailure::NotFound | RenderFailure::NotPdf | RenderFailure::Security | RenderFailure::OpenFailed { .. } | RenderFailure::WorkerMissing | RenderFailure::LibraryMissing | RenderFailure::WallsDown(_) | RenderFailure::StartRefused | RenderFailure::DocumentStopped)) => return Err(failure.into()),
+            Err(
+                failure @ (RenderFailure::NeedsPassword
+                | RenderFailure::NotFound
+                | RenderFailure::NotPdf
+                | RenderFailure::Security
+                | RenderFailure::OpenFailed { .. }
+                | RenderFailure::WorkerMissing
+                | RenderFailure::LibraryMissing
+                | RenderFailure::WallsDown(_)
+                | RenderFailure::StartRefused
+                | RenderFailure::DocumentStopped),
+            ) => return Err(failure.into()),
             Err(_) => return Ok(Got::Failed),
         };
         if characters.chars.is_empty() {
             return Ok(Got::NoText);
         }
         let normalized: &'s recto_index::Normalized = live.insert(read_page(&characters.chars, &characters.boxes, false).normalized);
-        Ok(Got::Page(PageView { text: &normalized.text, also_spelled: normalized.also_spelled.iter().map(String::as_str).collect(), has_tag_chars: normalized.tag_chars_removed > 0, stored: None }))
+        Ok(Got::Page(PageView {
+            text: &normalized.text,
+            also_spelled: normalized.also_spelled.iter().map(String::as_str).collect(),
+            has_tag_chars: normalized.tag_chars_removed > 0,
+            stored: None,
+        }))
     }
 
     /// What's known of hidden text on this page: what the build found, or if it couldn't look, what drawing it now says.
     pub(crate) fn hidden(&mut self, file: u16, page: u32, view: &PageView<'_>) -> HiddenOnPage {
         if let Some(stored) = view.stored.as_ref().filter(|stored| stored.hidden_checked) {
-            return HiddenOnPage { summary: json!({ "checked": true, "flagged": stored.hidden_flagged }), spans: byte_spans(view.text, &stored.hidden_spans()), partial: stored.spans_dropped };
+            return HiddenOnPage {
+                summary: json!({ "checked": true, "flagged": stored.hidden_flagged }),
+                spans: byte_spans(view.text, &stored.hidden_spans()),
+                partial: stored.spans_dropped,
+            };
         }
         // Drawing can cost a page's whole time, for each of up to 200 hits. Past the time it isn't done, which says so.
         if Instant::now() >= self.draw_until {
-            return HiddenOnPage { summary: json!({ "checked": false, "flagged": null }), spans: Vec::new(), partial: true };
+            return HiddenOnPage {
+                summary: json!({ "checked": false, "flagged": null }),
+                spans: Vec::new(),
+                partial: true,
+            };
         }
         let key = self.key_of(file);
         match worker_for(&mut self.current, file, &self.plan.files[usize::from(file)], key) {
             Ok(Some(renderer)) => hidden_on_page(renderer, page, view.text),
-            Ok(None) | Err(_) => HiddenOnPage { summary: json!({ "checked": false, "flagged": null }), spans: Vec::new(), partial: true },
+            Ok(None) | Err(_) => HiddenOnPage {
+                summary: json!({ "checked": false, "flagged": null }),
+                spans: Vec::new(),
+                partial: true,
+            },
         }
     }
 
@@ -651,7 +771,11 @@ impl<'a> Reader<'a> {
             Ok(stored) if stored.kind == PageKind::Text && query.too_long_for(stored.text) => found.uncounted += 1,
             Ok(stored) if stored.kind == PageKind::Text => {
                 let on_page = query.count(stored.text, folded, self.deadline)?;
-                found.total += if on_page > 0 { on_page } else { u64::from(stored.also_spelled().iter().any(|spelled| query.spelled(spelled))) };
+                found.total += if on_page > 0 {
+                    on_page
+                } else {
+                    u64::from(stored.also_spelled().iter().any(|spelled| query.spelled(spelled)))
+                };
             }
             Ok(stored) if stored.kind == PageKind::Failed => found.uncounted += 1,
             Ok(_) => {}
@@ -677,11 +801,20 @@ impl<'a> Reader<'a> {
         } else if let Some(indexing) = self.indexing {
             let note = match self.not_ready.first() {
                 Some(state) => state.scan_note(indexing.starts_builds()),
-                None if self.used_scan && self.used_index => "Answered from the index, apart from pages it couldn't read when it was built, which were read again just now.".to_string(),
+                None if self.used_scan && self.used_index => {
+                    "Answered from the index, apart from pages it couldn't read when it was built, which were read again just now.".to_string()
+                }
                 None if self.used_scan => "None of these pages could be read when the index was built, so they were read again just now.".to_string(),
                 None => "Answered from the index.".to_string(),
             };
-            let note = if self.not_read_again > 0 { format!("{note} {} that couldn't be read when it was built weren't read again, for time, and are listed as failed.", self.not_read_again) } else { note };
+            let note = if self.not_read_again > 0 {
+                format!(
+                    "{note} {} that couldn't be read when it was built weren't read again, for time, and are listed as failed.",
+                    self.not_read_again
+                )
+            } else {
+                note
+            };
             (self.not_ready.first().map_or("ready", FileIndex::word), note)
         } else {
             ("off", "This session has no index, so this read the pages one by one.".to_string())
@@ -692,7 +825,12 @@ impl<'a> Reader<'a> {
 }
 
 /// Opens this page's worker if it isn't the one already open. One at a time, whichever file it's for: a document with a thousand added files must not mean a thousand processes. `None` if the file isn't what its page numbers were recorded from, or can't be found.
-fn worker_for<'a>(current: &'a mut Option<(u16, DocRenderer)>, file: u16, source: &PlanFile, key: Option<std::sync::Arc<recto_core::Password>>) -> Result<Option<&'a mut DocRenderer>, RenderFailure> {
+fn worker_for<'a>(
+    current: &'a mut Option<(u16, DocRenderer)>,
+    file: u16,
+    source: &PlanFile,
+    key: Option<std::sync::Arc<recto_core::Password>>,
+) -> Result<Option<&'a mut DocRenderer>, RenderFailure> {
     if current.as_ref().is_none_or(|(open_file, _)| *open_file != file) {
         // The old one goes first, so there's never more than one.
         *current = None;
@@ -805,7 +943,11 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
             }
         }
     }
-    let mut scored: Vec<(f64, usize)> = matched.iter().enumerate().map(|(at, (_, length))| (score(collection, *length, &matched_counts[at * words..(at + 1) * words], &pages_with), at)).collect();
+    let mut scored: Vec<(f64, usize)> = matched
+        .iter()
+        .enumerate()
+        .map(|(at, (_, length))| (score(collection, *length, &matched_counts[at * words..(at + 1) * words], &pages_with), at))
+        .collect();
     // Highest first, and by page among equals, so the same search gives the same order every time.
     scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
     let mut left_out = 0;
@@ -818,7 +960,13 @@ fn run_ranked(plan: &Plan, terms: &Terms, settings: &Settings<'_>) -> Result<Val
         let (index, _) = matched[*at];
         let (position, file, page) = plan.pages[index as usize];
         let page_counts = &matched_counts[*at * words..(*at + 1) * words];
-        let matched_terms: Vec<&str> = terms.terms.iter().zip(page_counts).filter(|(_, count)| **count > 0).map(|(term, _)| term.as_str()).collect();
+        let matched_terms: Vec<&str> = terms
+            .terms
+            .iter()
+            .zip(page_counts)
+            .filter(|(_, count)| **count > 0)
+            .map(|(term, _)| term.as_str())
+            .collect();
         let term_counts: Vec<u32> = page_counts.iter().copied().filter(|count| *count > 0).collect();
         let Got::Page(view) = reader.read(file, page, &mut slot)? else {
             // It read a moment ago, and doesn't now, so there's nothing to show of it.
@@ -908,9 +1056,17 @@ fn hidden_on_page(renderer: &mut DocRenderer, page: u32, searched: &str) -> Hidd
             let same_text = reading.normalized.text == searched;
             let spans = if same_text { byte_spans(searched, &reading.hidden_spans) } else { Vec::new() };
             let summary = json!({ "checked": report.checked, "flagged": report.flagged || reading.hidden_flagged });
-            HiddenOnPage { summary, spans, partial: !report.checked || !same_text || reading.hidden_spans_dropped > 0 }
+            HiddenOnPage {
+                summary,
+                spans,
+                partial: !report.checked || !same_text || reading.hidden_spans_dropped > 0,
+            }
         }
-        Err(_) => HiddenOnPage { summary: json!({ "checked": false, "flagged": null }), spans: Vec::new(), partial: true },
+        Err(_) => HiddenOnPage {
+            summary: json!({ "checked": false, "flagged": null }),
+            spans: Vec::new(),
+            partial: true,
+        },
     }
 }
 
@@ -1009,7 +1165,11 @@ struct PageHits {
 /// Finds the folded needle in the text. Snippets are made only for the first `room`: a hostile page of two million characters searched for one letter would otherwise make two million strings before the limit was looked at.
 fn find_hits(text: &str, needle: &str, room: usize) -> PageHits {
     let (folded, sources) = fold(text);
-    let mut hits = PageHits { total: 0, shown: Vec::with_capacity(room.min(MAX_LIMIT as usize)), out_of_time: false };
+    let mut hits = PageHits {
+        total: 0,
+        shown: Vec::with_capacity(room.min(MAX_LIMIT as usize)),
+        out_of_time: false,
+    };
     let (mut line, mut counted_to) = (1u32, 0usize);
     for (at, found) in folded.match_indices(needle) {
         hits.total += 1;
@@ -1055,14 +1215,22 @@ mod tests {
         };
         let spans = byte_spans(text, &[span("ignore this")]);
         assert_eq!(&text[spans[0].clone()], "ignore this");
-        let hidden = HiddenOnPage { summary: Value::Null, spans, partial: false };
+        let hidden = HiddenOnPage {
+            summary: Value::Null,
+            spans,
+            partial: false,
+        };
         let hit = |word: &str| find_hits(text, word, 1).shown[0].2.clone();
         assert_eq!(hidden.overlaps(&hit("ignore")), Some(true));
         assert_eq!(hidden.overlaps(&hit("this but")), Some(true), "a phrase that starts in it");
         assert_eq!(hidden.overlaps(&hit("caffè ignore")), Some(true), "a phrase that ends in it");
         assert_eq!(hidden.overlaps(&hit("keep")), Some(false));
         assert_eq!(hidden.overlaps(&hit("caffè")), Some(false));
-        let not_known = HiddenOnPage { summary: Value::Null, spans: Vec::new(), partial: true };
+        let not_known = HiddenOnPage {
+            summary: Value::Null,
+            spans: Vec::new(),
+            partial: true,
+        };
         assert_eq!(not_known.overlaps(&hit("keep")), None, "not known isn't the same as no");
         assert_eq!(&text[byte_spans(text, &[(27, 31)])[0].clone()], "that", "a span running to the end of the text");
     }
@@ -1133,7 +1301,17 @@ mod tests {
     #[test]
     fn the_quick_fold_makes_what_the_full_one_does() {
         let mut quick = String::from("left over from the last page");
-        for page in ["", " ", "\n\n", "plain text\nON two LINES", "  leading\ttabs\x0Bvertical\x0Cfeed\r\nend  ", "\x1Cnot space\x1Fin unicode", "İİİ  Æbc\u{A0}non\u{2003}break\u{85}nel", "caffè ﬁnal ß Σίσυφος", "a\u{2028}b\u{2029}c"] {
+        for page in [
+            "",
+            " ",
+            "\n\n",
+            "plain text\nON two LINES",
+            "  leading\ttabs\x0Bvertical\x0Cfeed\r\nend  ",
+            "\x1Cnot space\x1Fin unicode",
+            "İİİ  Æbc\u{A0}non\u{2003}break\u{85}nel",
+            "caffè ﬁnal ß Σίσυφος",
+            "a\u{2028}b\u{2029}c",
+        ] {
             fold_into(page, &mut quick);
             assert_eq!(quick, fold(page).0, "{page:?}");
         }
@@ -1156,7 +1334,11 @@ mod tests {
         let found = find_regex(page, &pattern(r"force\s+majeure"), 10);
         assert_eq!(found.total, 2, "across a line break, in any case");
         assert_eq!((found.shown[0].0, found.shown[1].0), (2, 4));
-        assert_eq!(&page[found.shown[0].2.clone()], "Force\nMajeure", "and where it is, as hidden-text marks need it");
+        assert_eq!(
+            &page[found.shown[0].2.clone()],
+            "Force\nMajeure",
+            "and where it is, as hidden-text marks need it"
+        );
         assert_eq!(find_regex(page, &pattern(r"(?-i)force"), 10).total, 0, "case is one flag away");
         assert_eq!(find_regex(page, &pattern(r"^the"), 10).total, 1, "`^` goes by lines");
         assert_eq!(find_regex(page, &pattern(r"line.The"), 10).total, 0, "`.` stops at a line's end");
@@ -1174,7 +1356,11 @@ mod tests {
             let mut folded = String::new();
             let found = query.find(page, usize::MAX, far_future());
             assert_eq!(query.count(page, &mut folded, far_future()), Some(found.total as u64), "{page:?} {text}");
-            assert_eq!(matches!(query.on_page(page, &mut folded, far_future()), OnPage::Yes), found.total > 0, "{page:?} {text}");
+            assert_eq!(
+                matches!(query.on_page(page, &mut folded, far_future()), OnPage::Yes),
+                found.total > 0,
+                "{page:?} {text}"
+            );
         }
     }
 
@@ -1185,7 +1371,11 @@ mod tests {
         assert_eq!(code_of("(unclosed"), Some(("bad_pattern", exit::FAILED)));
         assert_eq!(code_of(r"(?<=look)behind"), Some(("bad_pattern", exit::FAILED)), "no look-around");
         assert_eq!(code_of(r"(a)\1"), Some(("bad_pattern", exit::FAILED)), "no back-references");
-        assert_eq!(code_of(&format!("{}x{}", "(".repeat(100), ")".repeat(100))), Some(("bad_pattern", exit::FAILED)), "nested past the limit");
+        assert_eq!(
+            code_of(&format!("{}x{}", "(".repeat(100), ")".repeat(100))),
+            Some(("bad_pattern", exit::FAILED)),
+            "nested past the limit"
+        );
         assert_eq!(code_of(r"(?:\w{1000}){1000}"), Some(("pattern_too_large", exit::FAILED)));
         assert_eq!(code_of(r"\w{1,100000}"), Some(("pattern_too_large", exit::FAILED)));
         let started = Instant::now();
@@ -1214,10 +1404,18 @@ mod tests {
             hit["untrusted"]["context"].clone()
         };
         assert_eq!(context(1, at..at + 5), json!({ "before": ["two"], "after": ["four"] }));
-        assert_eq!(context(9, at..at + 5), json!({ "before": ["one", "two"], "after": ["four", "five"] }), "past either end");
+        assert_eq!(
+            context(9, at..at + 5),
+            json!({ "before": ["one", "two"], "after": ["four", "five"] }),
+            "past either end"
+        );
         assert_eq!(context(1, 0..3), json!({ "before": [], "after": ["two"] }));
         assert_eq!(context(1, page.len() - 4..page.len()), json!({ "before": ["four"], "after": [] }));
-        assert_eq!(context(1, at..page.find("four").unwrap() + 4), json!({ "before": ["two"], "after": ["five"] }), "a hit over two lines has its context outside both");
+        assert_eq!(
+            context(1, at..page.find("four").unwrap() + 4),
+            json!({ "before": ["two"], "after": ["five"] }),
+            "a hit over two lines has its context outside both"
+        );
         let mut none = json!({ "untrusted": {} });
         add_context(&mut none, page, &(0..1), 0);
         assert_eq!(none["untrusted"].get("context"), None, "it costs nothing unless asked for");
@@ -1280,7 +1478,11 @@ mod tests {
         }
         fn read(&mut self, page: u32) -> Result<recto_index::corpus::FedPage, recto_index::corpus::FeedError> {
             match &self.0[page as usize] {
-                Some((text, checked)) => Ok(recto_index::corpus::FedPage { chars: text.chars().map(|c| recto_proto::CharRecord::new(c as u32, 0)).collect(), boxes: Vec::new(), hidden_checked: *checked }),
+                Some((text, checked)) => Ok(recto_index::corpus::FedPage {
+                    chars: text.chars().map(|c| recto_proto::CharRecord::new(c as u32, 0)).collect(),
+                    boxes: Vec::new(),
+                    hidden_checked: *checked,
+                }),
                 None => Err(recto_index::corpus::FeedError::Page(recto_index::corpus::FailReason::Stopped)),
             }
         }
@@ -1290,7 +1492,10 @@ mod tests {
     }
 
     fn fixture(name: &str, file: &[u8], pages: Vec<Option<(String, bool)>>) -> Fixture {
-        let folder = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-search-{name}-{}", std::process::id()));
+        let folder = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-search-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
         recto_platform::local::ensure_private_dir(&folder).unwrap();
         let path = folder.join("doc.pdf");
@@ -1298,23 +1503,63 @@ mod tests {
         let root = folder.join("corpus.noindex");
         let key = CorpusKey::of_file(&path).unwrap();
         let count = pages.len() as u32;
-        recto_index::corpus::build(&root, key, &mut Pages(pages), &recto_index::corpus::DocMeta::default(), &recto_index::corpus::BuildLimits::default()).unwrap();
-        Fixture { folder, plan: Plan { files: vec![PlanFile { path, expected: None, added: false }], pages: (0..count).map(|page| (page, 0, page)).collect(), tab: 1, keys: None }, indexing: crate::index::ReadOnlyCorpus(root) }
+        recto_index::corpus::build(
+            &root,
+            key,
+            &mut Pages(pages),
+            &recto_index::corpus::DocMeta::default(),
+            &recto_index::corpus::BuildLimits::default(),
+        )
+        .unwrap();
+        Fixture {
+            folder,
+            plan: Plan {
+                files: vec![PlanFile {
+                    path,
+                    expected: None,
+                    added: false,
+                }],
+                pages: (0..count).map(|page| (page, 0, page)).collect(),
+                tab: 1,
+                keys: None,
+            },
+            indexing: crate::index::ReadOnlyCorpus(root),
+        }
     }
 
     fn settings(fixture: &Fixture) -> Settings<'_> {
         let far = far_future();
-        Settings { limit: 20, context: 0, deadline: far, draw_until: far, second_pass_until: far, live_budget: Duration::from_secs(5), indexing: Some(&fixture.indexing), force_scan: false }
+        Settings {
+            limit: 20,
+            context: 0,
+            deadline: far,
+            draw_until: far,
+            second_pass_until: far,
+            live_budget: Duration::from_secs(5),
+            indexing: Some(&fixture.indexing),
+            force_scan: false,
+        }
     }
 
     /// Failure: a hostile pattern on one page uses up the search, and the answer reads as "nothing found" for it, or says a total, or never says where to go on from. The page is listed, and that's said to be why.
     #[test]
     fn a_page_a_pattern_ran_out_of_time_on_is_listed() {
         let page = "a".repeat(MAX_PATTERN_PAGE_BYTES);
-        let fixture = fixture("pattern-time", b"a file", vec![Some((page, true)), Some(("a clean page".to_string(), true)), Some(("another".to_string(), true))]);
+        let fixture = fixture(
+            "pattern-time",
+            b"a file",
+            vec![
+                Some((page, true)),
+                Some(("a clean page".to_string(), true)),
+                Some(("another".to_string(), true)),
+            ],
+        );
         let started = Instant::now();
         // Long enough to reach the page on a Mac under any load, and far short of the many seconds this page takes.
-        let settings = Settings { deadline: started + Duration::from_secs(3), ..settings(&fixture) };
+        let settings = Settings {
+            deadline: started + Duration::from_secs(3),
+            ..settings(&fixture)
+        };
         let answer = run(&fixture.plan, &Query::regex(r"\w+\d|\w").unwrap(), "regex", &settings).unwrap();
         assert!(started.elapsed() < Duration::from_secs(30), "{:?}", started.elapsed());
         let coverage = &answer["coverage"];
@@ -1331,7 +1576,10 @@ mod tests {
         let mut pages: Vec<Option<(String, bool)>> = vec![None; 300];
         pages.push(Some(("the clean page at the end says needleword".to_string(), true)));
         let fixture = fixture("budget", b"not a pdf at all", pages);
-        let settings = Settings { live_budget: Duration::ZERO, ..settings(&fixture) };
+        let settings = Settings {
+            live_budget: Duration::ZERO,
+            ..settings(&fixture)
+        };
         let started = Instant::now();
         let answer = run(&fixture.plan, &Query::Phrase("needleword".to_string()), "phrase", &settings).unwrap();
         assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
@@ -1341,12 +1589,18 @@ mod tests {
         assert_eq!(answer["hits"][0]["page"], 301, "the clean page behind them was reached: {answer}");
         assert!(answer["index"]["note"].as_str().unwrap().contains("weren't read again"), "{answer}");
         // With the budget it gets, the first goes live, and it runs out.
-        let settings = Settings { live_budget: Duration::from_nanos(1), ..settings };
+        let settings = Settings {
+            live_budget: Duration::from_nanos(1),
+            ..settings
+        };
         let answer = run(&fixture.plan, &Query::Phrase("needleword".to_string()), "phrase", &settings).unwrap();
         assert_eq!(answer["route"], "mixed", "{answer}");
         assert_eq!(answer["coverage"]["failed_pages_not_read_again"], 299, "{answer}");
         assert_eq!(answer["hits"][0]["page"], 301, "{answer}");
-        assert!(answer["index"]["note"].as_str().unwrap().contains("read again just now"), "the note says what happened, on any route that read one: {answer}");
+        assert!(
+            answer["index"]["note"].as_str().unwrap().contains("read again just now"),
+            "the note says what happened, on any route that read one: {answer}"
+        );
     }
 
     /// Failure: a ranked search's second pass, or any search with many hits, draws each page the build couldn't check, 5 s a page, up to 1,000 s past the 30 s cap with `--limit 200`. Past the time it says `checked: false`, and past a little more, a ranked search leaves out the pages it hasn't read and says how many.
@@ -1358,26 +1612,51 @@ mod tests {
         let drawn = run_ranked(&fixture.plan, &terms, &settings(&fixture)).unwrap();
         assert_eq!(drawn["hits"][0]["hidden_text"]["checked"], true, "with time to spare, it's drawn: {drawn}");
         let past = Instant::now() - Duration::from_millis(1);
-        let not = Settings { draw_until: past, ..settings(&fixture) };
+        let not = Settings {
+            draw_until: past,
+            ..settings(&fixture)
+        };
         let answer = run_ranked(&fixture.plan, &terms, &not).unwrap();
         assert_eq!(answer["hits"][0]["hidden_text"], json!({ "checked": false, "flagged": null }), "{answer}");
         let phrase = run(&fixture.plan, &Query::Phrase("word".to_string()), "phrase", &not).unwrap();
         assert_eq!(phrase["hits"][0]["hidden_text"]["checked"], false, "{phrase}");
-        let none = Settings { second_pass_until: past, ..settings(&fixture) };
+        let none = Settings {
+            second_pass_until: past,
+            ..settings(&fixture)
+        };
         let answer = run_ranked(&fixture.plan, &terms, &none).unwrap();
-        assert_eq!((answer["hits"].as_array().unwrap().len(), answer["coverage"]["top_pages_left_out_for_time"].as_u64()), (0, Some(1)), "{answer}");
+        assert_eq!(
+            (
+                answer["hits"].as_array().unwrap().len(),
+                answer["coverage"]["top_pages_left_out_for_time"].as_u64()
+            ),
+            (0, Some(1)),
+            "{answer}"
+        );
     }
 
     /// Failure: Greek's two lower-case sigmas and Turkish's dotted capital keep a plain search or a pattern from finding the word as printed in another case. A pattern goes by the engine's folding, which has both sigmas and not the dotted `İ`, and that's said in `docs/ENGINEERING.md`.
     #[test]
     fn every_search_finds_greek_and_turkish_in_either_case() {
-        for (query, page) in [("ΟΔΟΣ", "στην ΟΔΟΣ εδώ"), ("ΟΔΟΣ", "στην οδος εδώ"), ("οδος", "στην ΟΔΟΣ εδώ"), ("İstanbul", "in İSTANBUL here"), ("istanbul", "in İstanbul here"), ("İSTANBUL", "in istanbul here")] {
+        for (query, page) in [
+            ("ΟΔΟΣ", "στην ΟΔΟΣ εδώ"),
+            ("ΟΔΟΣ", "στην οδος εδώ"),
+            ("οδος", "στην ΟΔΟΣ εδώ"),
+            ("İstanbul", "in İSTANBUL here"),
+            ("istanbul", "in İstanbul here"),
+            ("İSTANBUL", "in istanbul here"),
+        ] {
             assert_eq!(find_hits(page, &fold(query).0, 5).total, 1, "{query} on {page}");
             let mut folded = String::new();
             fold_into(page, &mut folded);
             assert!(folded.contains(&fold(query).0), "{query} on {page}");
         }
-        for (text, page) in [("ΟΔΟΣ", "στην οδος εδώ"), ("οδος", "στην ΟΔΟΣ εδώ"), ("οδοσ", "στην οδος εδώ"), ("İSTANBUL", "in İstanbul")] {
+        for (text, page) in [
+            ("ΟΔΟΣ", "στην οδος εδώ"),
+            ("οδος", "στην ΟΔΟΣ εδώ"),
+            ("οδοσ", "στην οδος εδώ"),
+            ("İSTANBUL", "in İstanbul"),
+        ] {
             assert_eq!(find_regex(page, &pattern(text), 5).total, 1, "{text} on {page}");
         }
     }

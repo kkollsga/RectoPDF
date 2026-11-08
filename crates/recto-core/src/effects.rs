@@ -50,13 +50,23 @@ pub fn page_effects(path: &Path, page: u32) -> Option<PageEffects> {
     let owner = entry.inherited().resources().unwrap_or(entry.id());
     let page_dict = dict_at(&reader, owner)?;
     let resources = page_dict.get(b"Resources").ok()?;
-    let mut walk = Walk { reader: &reader, deadline: Instant::now() + MAX_TIME, visits: 0, effects: PageEffects::default(), waiting: Vec::new(), seen: HashSet::new(), listed: HashSet::new() };
+    let mut walk = Walk {
+        reader: &reader,
+        deadline: Instant::now() + MAX_TIME,
+        visits: 0,
+        effects: PageEffects::default(),
+        waiting: Vec::new(),
+        seen: HashSet::new(),
+        listed: HashSet::new(),
+    };
     walk.read_layers()?;
     walk.resources(resources)?;
     let mut drawings = page_contents(&reader, entry.id());
     while let Some(id) = walk.waiting.pop() {
         walk.tick()?;
-        let Some(inner) = stream_or_dict(&reader, &Object::Reference(id)) else { continue };
+        let Some(inner) = stream_or_dict(&reader, &Object::Reference(id)) else {
+            continue;
+        };
         if drawings.len() < MAX_VISITS && matches!(inner.get(b"Subtype"), Ok(Object::Name(kind)) if kind == b"Form") {
             drawings.push(id);
         }
@@ -139,7 +149,9 @@ fn mentions_dct(reader: &IndexedReader, id: ObjectId, deadline: Instant, budget:
             if descriptor.encoded_len()? > MAX_DECRYPTED_DRAWING {
                 return None;
             }
-            let Object::Stream(stream) = reader.resolve_object(id).ok()? else { return None };
+            let Object::Stream(stream) = reader.resolve_object(id).ok()? else {
+                return None;
+            };
             Stored::Decrypted { bytes: stream.content, at: 0 }
         }
     };
@@ -158,8 +170,14 @@ fn mentions_dct(reader: &IndexedReader, id: ObjectId, deadline: Instant, budget:
             let plain_bytes;
             let (made, used, finished) = if compressed {
                 let (before_in, before_out) = (inflate.total_in(), inflate.total_out());
-                let status = inflate.decompress(piece, &mut decoded, if got == 0 { FlushDecompress::Finish } else { FlushDecompress::None }).ok()?;
-                ((inflate.total_out() - before_out) as usize, (inflate.total_in() - before_in) as usize, matches!(status, Status::StreamEnd))
+                let status = inflate
+                    .decompress(piece, &mut decoded, if got == 0 { FlushDecompress::Finish } else { FlushDecompress::None })
+                    .ok()?;
+                (
+                    (inflate.total_out() - before_out) as usize,
+                    (inflate.total_in() - before_in) as usize,
+                    matches!(status, Status::StreamEnd),
+                )
             } else {
                 plain_bytes = piece.len();
                 decoded[..plain_bytes].copy_from_slice(piece);
@@ -235,7 +253,10 @@ impl Walk<'_> {
         for layer in &layers {
             self.tick()?;
             let name = match layer {
-                Object::Reference(id) => dict_at(self.reader, *id).filter(is_a_layer).and_then(|dict| plain_name(self.reader, &dict)).map(|name| (*id, name)),
+                Object::Reference(id) => dict_at(self.reader, *id)
+                    .filter(is_a_layer)
+                    .and_then(|dict| plain_name(self.reader, &dict))
+                    .map(|name| (*id, name)),
                 _ => None,
             };
             if let Some((id, name)) = name
@@ -333,7 +354,13 @@ impl Walk<'_> {
             None => dict.has(b"Decode"),
             Some(decode) => self.decode_changes(dict, &decode)?,
         };
-        let transform_of = |parms: &Dictionary| parms.get(b"ColorTransform").ok().and_then(|value| deref(self.reader, value)).is_some_and(|value| value.as_i64().ok() != Some(1));
+        let transform_of = |parms: &Dictionary| {
+            parms
+                .get(b"ColorTransform")
+                .ok()
+                .and_then(|value| deref(self.reader, value))
+                .is_some_and(|value| value.as_i64().ok() != Some(1))
+        };
         let transform_changes = match dict.get(b"DecodeParms").ok().and_then(|parms| deref(self.reader, parms)) {
             Some(Object::Dictionary(parms)) => transform_of(&parms),
             Some(Object::Array(list)) => {
@@ -473,7 +500,10 @@ mod tests {
     fn a_plain_page_uses_nothing() {
         let file = TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["Words"]))]));
         assert_eq!(page_effects(&file.0, 0), Some(PageEffects::default()));
-        assert_eq!(effects("/ExtGState << /G << /BM /Normal /SMask /None /ca 0.5 >> >>", vec![]), PageEffects::default());
+        assert_eq!(
+            effects("/ExtGState << /G << /BM /Normal /SMask /None /ca 0.5 >> >>", vec![]),
+            PageEffects::default()
+        );
     }
 
     /// Failure: what a page uses is missed, so a soft mask or a blend reaches the SVG as plain paint. Each is found on the page itself, and down through a form's own resources.
@@ -484,7 +514,10 @@ mod tests {
         assert!(effects("/ExtGState << /G << /BM [/Foo /Normal] >> >>", vec![]).blend, "a list of modes counts");
         assert!(effects("/Pattern << /P << /PatternType 2 /Shading << >> >> >>", vec![]).shading_pattern);
         let form = first_extra_object(1);
-        let inside = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /ExtGState << /G << /BM /Screen >> >> >>".into(), data: Vec::new() };
+        let inside = Object::Stream {
+            dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /ExtGState << /G << /BM /Screen >> >> >>".into(),
+            data: Vec::new(),
+        };
         assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![inside]).blend);
     }
 
@@ -493,7 +526,10 @@ mod tests {
     fn forms_that_loop_end() {
         let form = first_extra_object(1);
         let resources = format!("/XObject << /F {form} 0 R >>");
-        let looped = Object::Stream { dict: format!("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << {resources} >>"), data: Vec::new() };
+        let looped = Object::Stream {
+            dict: format!("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << {resources} >>"),
+            data: Vec::new(),
+        };
         assert_eq!(effects(&resources, vec![looped]), PageEffects::default());
     }
 
@@ -510,11 +546,25 @@ mod tests {
         let group = first_extra_object(1);
         let found = layered(&format!("{group} 0 R"), "", vec![Object::Dict("<< /Type /OCG /Name (L) >>".into())]);
         assert!(found.optional_content, "with nothing off and no rule");
-        assert!(!page_effects(&TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["Words"]))])).0, 0).unwrap().optional_content, "and none costs nothing");
-        for subtype in ["/Subtype /Form /BBox [0 0 1 1]", "/Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray"] {
+        assert!(
+            !page_effects(&TempPdf::new("doc.pdf", &pages(&[Page::new(text_lines(&["Words"]))])).0, 0)
+                .unwrap()
+                .optional_content,
+            "and none costs nothing"
+        );
+        for subtype in [
+            "/Subtype /Form /BBox [0 0 1 1]",
+            "/Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray",
+        ] {
             let object = first_extra_object(1);
-            let inside = Object::Stream { dict: format!("/Type /XObject {subtype} /OC << /Type /OCMD >>"), data: vec![0] };
-            assert!(effects(&format!("/XObject << /X {object} 0 R >>"), vec![inside]).optional_content, "{subtype}, in a document with no layers listed");
+            let inside = Object::Stream {
+                dict: format!("/Type /XObject {subtype} /OC << /Type /OCMD >>"),
+                data: vec![0],
+            };
+            assert!(
+                effects(&format!("/XObject << /X {object} 0 R >>"), vec![inside]).optional_content,
+                "{subtype}, in a document with no layers listed"
+            );
         }
     }
 
@@ -525,20 +575,67 @@ mod tests {
         let group = |name: &str| Object::Dict(format!("<< /Type /OCG /Name {name} >>"));
         let both = format!("{first} 0 R {second} 0 R");
         let named = format!("/A {first} 0 R /B {second} 0 R");
-        assert!(!layered(&both, &named, vec![group("(Roads)"), group("(Rivers)")]).layer_names_unsafe, "the plain case keeps its shortcut");
-        assert!(layered(&both, &named, vec![group("(Roads)"), group("(Roads)")]).layer_names_unsafe, "two with one name");
-        assert!(layered(&both, &named, vec![group("(Roads)"), group("<FFFE52006F00>")]).layer_names_unsafe, "a name in UTF-16");
-        assert!(layered(&both, &named, vec![group("(Roads)"), group("(R\\351gion)")]).layer_names_unsafe, "a name past ASCII");
-        assert!(layered(&format!("{first} 0 R"), &named, vec![group("(Roads)"), group("(Rivers)")]).layer_names_unsafe, "one a section names isn't listed");
-        assert!(layered(&format!("{first} 0 R"), &format!("/A {first} 0 R /B {second} 0 R"), vec![group("(Roads)"), Object::Dict(format!("<< /Type /OCMD /Name (Roads) /OCGs [{first} 0 R] /P /AllOff >>"))]).layer_names_unsafe, "a membership by the same name");
-        assert!(layered(&both, &format!("/A {first} 0 R /B {second} 0 R"), vec![group("(Roads)"), Object::Dict(format!("<< /Type /OCMD /Name (Rivers) /OCGs [{first} 0 R] >>"))]).layer_names_unsafe, "a membership listed as if it were a layer");
-        assert!(layered(&both, "/A << /Type /OCG /Name (Roads) >>", vec![group("(Roads)"), group("(Rivers)")]).layer_names_unsafe, "written in place, not by reference");
+        assert!(
+            !layered(&both, &named, vec![group("(Roads)"), group("(Rivers)")]).layer_names_unsafe,
+            "the plain case keeps its shortcut"
+        );
+        assert!(
+            layered(&both, &named, vec![group("(Roads)"), group("(Roads)")]).layer_names_unsafe,
+            "two with one name"
+        );
+        assert!(
+            layered(&both, &named, vec![group("(Roads)"), group("<FFFE52006F00>")]).layer_names_unsafe,
+            "a name in UTF-16"
+        );
+        assert!(
+            layered(&both, &named, vec![group("(Roads)"), group("(R\\351gion)")]).layer_names_unsafe,
+            "a name past ASCII"
+        );
+        assert!(
+            layered(&format!("{first} 0 R"), &named, vec![group("(Roads)"), group("(Rivers)")]).layer_names_unsafe,
+            "one a section names isn't listed"
+        );
+        assert!(
+            layered(
+                &format!("{first} 0 R"),
+                &format!("/A {first} 0 R /B {second} 0 R"),
+                vec![
+                    group("(Roads)"),
+                    Object::Dict(format!("<< /Type /OCMD /Name (Roads) /OCGs [{first} 0 R] /P /AllOff >>"))
+                ]
+            )
+            .layer_names_unsafe,
+            "a membership by the same name"
+        );
+        assert!(
+            layered(
+                &both,
+                &format!("/A {first} 0 R /B {second} 0 R"),
+                vec![group("(Roads)"), Object::Dict(format!("<< /Type /OCMD /Name (Rivers) /OCGs [{first} 0 R] >>"))]
+            )
+            .layer_names_unsafe,
+            "a membership listed as if it were a layer"
+        );
+        assert!(
+            layered(&both, "/A << /Type /OCG /Name (Roads) >>", vec![group("(Roads)"), group("(Rivers)")]).layer_names_unsafe,
+            "written in place, not by reference"
+        );
         let form = first_extra_object(1) + 2;
-        let inside = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /Properties << /C << /Type /OCMD >> >> >>".into(), data: Vec::new() };
+        let inside = Object::Stream {
+            dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /Properties << /C << /Type /OCMD >> >> >>".into(),
+            data: Vec::new(),
+        };
         let page_form = format!("/Properties << /A {first} 0 R /B {second} 0 R >> /XObject << /F {form} 0 R >>");
-        let bytes = pages_with(&[Page::new(text_lines(&["Words"]))], &page_form, vec![group("(Roads)"), group("(Rivers)"), inside]);
+        let bytes = pages_with(
+            &[Page::new(text_lines(&["Words"]))],
+            &page_form,
+            vec![group("(Roads)"), group("(Rivers)"), inside],
+        );
         let bytes = String::from_utf8_lossy(&bytes).replace("/Type /Catalog", &format!("/Type /Catalog /OCProperties << /OCGs [{both}] /D << >> >>"));
-        assert!(page_effects(&TempPdf::new("doc.pdf", bytes.as_bytes()).0, 0).unwrap().layer_names_unsafe, "inside a form");
+        assert!(
+            page_effects(&TempPdf::new("doc.pdf", bytes.as_bytes()).0, 0).unwrap().layer_names_unsafe,
+            "inside a form"
+        );
     }
 
     /// Failure: a JPEG's bytes pass through though the page reads them differently: inverted by `/Decode`, or in other colours by `/ColorTransform`. Neither shows through PDFium's calls. A `/Decode` that changes nothing, or a transform that's already the default, shouldn't cost a JPEG its original bytes.
@@ -546,7 +643,10 @@ mod tests {
     fn jpegs_the_page_reads_differently_are_noticed() {
         let with = |extra: &str| {
             let image = first_extra_object(1);
-            let stream = Object::Stream { dict: format!("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode {extra}"), data: vec![0xFF, 0xD8] };
+            let stream = Object::Stream {
+                dict: format!("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode {extra}"),
+                data: vec![0xFF, 0xD8],
+            };
             effects(&format!("/XObject << /I {image} 0 R >>"), vec![stream]).jpeg_read_differently
         };
         assert!(with("/Decode [1 0 1 0 1 0]"));
@@ -555,7 +655,10 @@ mod tests {
         assert!(!with(""));
         assert!(!with("/Decode [0 1 0 1 0 1]"));
         assert!(!with("/DecodeParms << /ColorTransform 1 >>"));
-        assert!(with("/Decode [0 1]"), "too short for its colours: a range that isn't there isn't one that does nothing");
+        assert!(
+            with("/Decode [0 1]"),
+            "too short for its colours: a range that isn't there isn't one that does nothing"
+        );
         assert!(with(&format!("/Decode [{}]", "0 1 ".repeat(40))), "far too long");
     }
 
@@ -564,8 +667,16 @@ mod tests {
     fn a_mask_blended_ahead_of_time_is_noticed() {
         let (image, mask) = (first_extra_object(1), first_extra_object(1) + 1);
         let with = |extra: &str| {
-            let picture = Object::Stream { dict: format!("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /SMask {mask} 0 R"), data: vec![0xFF, 0xD8] };
-            let its_mask = Object::Stream { dict: format!("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 {extra}"), data: vec![128] };
+            let picture = Object::Stream {
+                dict: format!(
+                    "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /SMask {mask} 0 R"
+                ),
+                data: vec![0xFF, 0xD8],
+            };
+            let its_mask = Object::Stream {
+                dict: format!("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 {extra}"),
+                data: vec![128],
+            };
             effects(&format!("/XObject << /I {image} 0 R >>"), vec![picture, its_mask]).mask_not_separable
         };
         assert!(!with(""));
@@ -577,7 +688,12 @@ mod tests {
     fn a_filter_named_by_reference_is_still_jpegs() {
         let filter = first_extra_object(1);
         let image = filter + 1;
-        let stream = Object::Stream { dict: format!("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter [{filter} 0 R] /Decode [1 0 1 0 1 0]"), data: vec![0xFF, 0xD8] };
+        let stream = Object::Stream {
+            dict: format!(
+                "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter [{filter} 0 R] /Decode [1 0 1 0 1 0]"
+            ),
+            data: vec![0xFF, 0xD8],
+        };
         assert!(effects(&format!("/XObject << /I {image} 0 R >>"), vec![Object::Dict("/DCTDecode".into()), stream]).jpeg_read_differently);
     }
 
@@ -589,19 +705,40 @@ mod tests {
         assert!(page_effects(&file.0, 0).unwrap().jpeg_read_differently, "plain");
         assert!(!effects("", vec![]).jpeg_read_differently, "a page without one");
         let form = first_extra_object(1);
-        let inside = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1]".into(), data: inline.clone() };
-        assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![inside]).jpeg_read_differently, "in a form");
+        let inside = Object::Stream {
+            dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1]".into(),
+            data: inline.clone(),
+        };
+        assert!(
+            effects(&format!("/XObject << /F {form} 0 R >>"), vec![inside]).jpeg_read_differently,
+            "in a form"
+        );
         // So that the word is cut across two of the pieces it's read in.
         let word_at = inline.windows(4).position(|word| word == b"/DCT").unwrap();
         let mut packed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
         std::io::Write::write_all(&mut packed, &[b" ".repeat(64 * 1024 - word_at - 2), inline].concat()).unwrap();
         let packed = packed.finish().unwrap();
-        let drawn = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode".into(), data: packed };
-        assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![drawn]).jpeg_read_differently, "compressed");
+        let drawn = Object::Stream {
+            dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode".into(),
+            data: packed,
+        };
+        assert!(
+            effects(&format!("/XObject << /F {form} 0 R >>"), vec![drawn]).jpeg_read_differently,
+            "compressed"
+        );
         let mentioned = pages(&[Page::new(text_lines(&["the DCT coefficients of a JPEG"]))]);
-        assert!(!page_effects(&TempPdf::new("doc.pdf", &mentioned).0, 0).unwrap().jpeg_read_differently, "a page that's only talking about it");
-        let unread = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /ASCII85Decode".into(), data: b"~>".to_vec() };
-        assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![unread]).jpeg_read_differently, "a filter this doesn't read counts");
+        assert!(
+            !page_effects(&TempPdf::new("doc.pdf", &mentioned).0, 0).unwrap().jpeg_read_differently,
+            "a page that's only talking about it"
+        );
+        let unread = Object::Stream {
+            dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /ASCII85Decode".into(),
+            data: b"~>".to_vec(),
+        };
+        assert!(
+            effects(&format!("/XObject << /F {form} 0 R >>"), vec![unread]).jpeg_read_differently,
+            "a filter this doesn't read counts"
+        );
     }
 
     /// Failure: compressed drawing that says it's huge is read to the end on a job's thread. It stops at the limit, and counts.
@@ -613,7 +750,10 @@ mod tests {
             std::io::Write::write_all(&mut packed, &zeros).unwrap();
         }
         let form = first_extra_object(1);
-        let bomb = Object::Stream { dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode".into(), data: packed.finish().unwrap() };
+        let bomb = Object::Stream {
+            dict: "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Filter /FlateDecode".into(),
+            data: packed.finish().unwrap(),
+        };
         assert!(effects(&format!("/XObject << /F {form} 0 R >>"), vec![bomb]).jpeg_read_differently);
     }
 

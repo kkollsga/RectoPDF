@@ -39,7 +39,10 @@ pub fn free_folder() -> PathBuf {
 
 /// The name [`free_folder`] tries next, for the test of what it does when that's taken.
 pub fn next_folder_name() -> PathBuf {
-    std::env::temp_dir().canonicalize().unwrap().join(format!("rc{}-{}", std::process::id(), NEXT.load(Ordering::Relaxed)))
+    std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("rc{}-{}", std::process::id(), NEXT.load(Ordering::Relaxed)))
 }
 
 impl State {
@@ -79,7 +82,15 @@ impl State {
     #[allow(dead_code)] // Not every test binary types a password.
     pub fn json_with_stdin(&self, args: &[&str], input: &str) -> (Value, i32) {
         use std::io::Write;
-        let mut child = self.command().args(args).arg("--json").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+        let mut child = self
+            .command()
+            .args(args)
+            .arg("--json")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
         child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
         let output = child.wait_with_output().unwrap();
         let text = String::from_utf8(output.stdout).unwrap();
@@ -90,12 +101,22 @@ impl State {
     /// Runs `recto` and returns what a person would see.
     pub fn text(&self, args: &[&str]) -> (String, String, i32) {
         let output = self.command().args(args).output().unwrap();
-        (String::from_utf8(output.stdout).unwrap(), String::from_utf8(output.stderr).unwrap(), output.status.code().unwrap())
+        (
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
+            output.status.code().unwrap(),
+        )
     }
 
     /// Starts a session and waits for its ready line.
     pub fn serve(&self) -> Serving {
-        let mut child = self.command().args(["serve", "--json"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        let mut child = self
+            .command()
+            .args(["serve", "--json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
         let stdout = child.stdout.take().unwrap();
         let mut line = String::new();
         std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line).unwrap();
@@ -109,7 +130,10 @@ impl State {
     }
 
     pub fn log_text(&self) -> String {
-        [&self.paths.log, &self.paths.old_log, &self.paths.other_log, &self.paths.old_other_log].iter().map(|path| std::fs::read_to_string(path).unwrap_or_default()).collect()
+        [&self.paths.log, &self.paths.old_log, &self.paths.other_log, &self.paths.old_other_log]
+            .iter()
+            .map(|path| std::fs::read_to_string(path).unwrap_or_default())
+            .collect()
     }
 }
 
@@ -184,7 +208,10 @@ impl Raw {
             match std::io::Read::read(&mut self.stream, &mut chunk) {
                 Ok(0) => return None,
                 Ok(count) => self.buffer.extend_from_slice(&chunk[..count]),
-                Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => panic!("no answer within {:?}: this client gave up, and the server hasn't closed the connection", self.stream.read_timeout().ok().flatten()),
+                Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => panic!(
+                    "no answer within {:?}: this client gave up, and the server hasn't closed the connection",
+                    self.stream.read_timeout().ok().flatten()
+                ),
                 Err(_) => return None,
             }
         }
@@ -213,7 +240,13 @@ pub enum Word {
 pub fn in_a_terminal(state: &State, args: &[&str], home: Option<&Path>, word: Word) -> (i32, String) {
     use std::io::{BufRead, BufReader, Read, Write};
     let mut script = Command::new("/usr/bin/script");
-    script.args(["-q", "/dev/null", bin()]).args(args).env(STATE_ENV, &state.root).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    script
+        .args(["-q", "/dev/null", bin()])
+        .args(args)
+        .env(STATE_ENV, &state.root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     if let Some(home) = home {
         script.env("HOME", home);
     }
@@ -245,7 +278,11 @@ pub fn in_a_terminal(state: &State, args: &[&str], home: Option<&Path>, word: Wo
 
 /// The JSON answer at the end of what a terminal showed.
 pub fn last_json(shown: &str) -> Value {
-    let line = shown.lines().rev().find(|line| line.trim_start().starts_with('{')).unwrap_or_else(|| panic!("no JSON in {shown:?}"));
+    let line = shown
+        .lines()
+        .rev()
+        .find(|line| line.trim_start().starts_with('{'))
+        .unwrap_or_else(|| panic!("no JSON in {shown:?}"));
     serde_json::from_str(line.trim()).unwrap_or_else(|_| panic!("not JSON: {line:?}"))
 }
 
@@ -257,7 +294,12 @@ pub fn open_cmd(path: &Path) -> Value {
 pub fn password_protected() -> Vec<u8> {
     let bytes = recto_testpdf::pages(&[recto_testpdf::Page::new(recto_testpdf::text_lines(&["Secret words"]))]);
     let key = "AB".repeat(32);
-    String::from_utf8_lossy(&bytes).replace("/Root 1 0 R", &format!("/Root 1 0 R /Encrypt << /Filter /Standard /V 1 /R 2 /O <{key}> /U <{key}> /P -4 >> /ID [<00> <00>]")).into_bytes()
+    String::from_utf8_lossy(&bytes)
+        .replace(
+            "/Root 1 0 R",
+            &format!("/Root 1 0 R /Encrypt << /Filter /Standard /V 1 /R 2 /O <{key}> /U <{key}> /P -4 >> /ID [<00> <00>]"),
+        )
+        .into_bytes()
 }
 
 /// The chapter title in [`locked_with`]'s contents, which only its password can read.
@@ -269,16 +311,35 @@ pub const LOCKED_CHAPTER: &str = "Secret chapter";
 pub fn locked_with(password: &str, pages: usize) -> Vec<u8> {
     use lopdf::encryption::{EncryptionState, EncryptionVersion, Permissions};
     use lopdf::{Object, dictionary};
-    let plain: Vec<recto_testpdf::Page> = (0..pages).map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Locked page {}", page + 1)]))).collect();
+    let plain: Vec<recto_testpdf::Page> = (0..pages)
+        .map(|page| recto_testpdf::Page::new(recto_testpdf::text_lines(&[&format!("Locked page {}", page + 1)])))
+        .collect();
     let mut document = lopdf::Document::load_mem(&recto_testpdf::pages(&plain)).unwrap();
     let first_page = *document.get_pages().values().next().unwrap();
     let outlines = document.new_object_id();
-    let chapter = document.add_object(dictionary! { "Title" => Object::string_literal(LOCKED_CHAPTER), "Parent" => outlines, "Dest" => vec![first_page.into(), "Fit".into()] });
-    document.objects.insert(outlines, Object::Dictionary(dictionary! { "Type" => "Outlines", "First" => chapter, "Last" => chapter, "Count" => 1 }));
+    let chapter = document
+        .add_object(dictionary! { "Title" => Object::string_literal(LOCKED_CHAPTER), "Parent" => outlines, "Dest" => vec![first_page.into(), "Fit".into()] });
+    document.objects.insert(
+        outlines,
+        Object::Dictionary(dictionary! { "Type" => "Outlines", "First" => chapter, "Last" => chapter, "Count" => 1 }),
+    );
     let root = document.trailer.get(b"Root").unwrap().as_reference().unwrap();
     document.get_object_mut(root).unwrap().as_dict_mut().unwrap().set("Outlines", outlines);
-    document.trailer.set("ID", lopdf::Object::Array(vec![lopdf::Object::string_literal("0123456789abcdef"), lopdf::Object::string_literal("0123456789abcdef")]));
-    let encryption = EncryptionState::try_from(EncryptionVersion::V2 { document: &document, owner_password: "owner", user_password: password, key_length: 128, permissions: Permissions::all() }).unwrap();
+    document.trailer.set(
+        "ID",
+        lopdf::Object::Array(vec![
+            lopdf::Object::string_literal("0123456789abcdef"),
+            lopdf::Object::string_literal("0123456789abcdef"),
+        ]),
+    );
+    let encryption = EncryptionState::try_from(EncryptionVersion::V2 {
+        document: &document,
+        owner_password: "owner",
+        user_password: password,
+        key_length: 128,
+        permissions: Permissions::all(),
+    })
+    .unwrap();
     document.encrypt(&encryption).unwrap();
     let mut bytes = Vec::new();
     document.save_to(&mut bytes).unwrap();

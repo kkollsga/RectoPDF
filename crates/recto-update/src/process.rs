@@ -30,33 +30,39 @@ pub(crate) fn run(mut command: Command, limit: Duration, mut sink: impl FnMut(&[
     let mut ran = Ran::default();
     std::thread::scope(|scope| {
         let stop = &stop;
-        let reader = std::thread::Builder::new().name("recto-update-out".into()).stack_size(128 * 1024).spawn_scoped(scope, move || {
-            let mut buffer = vec![0u8; 64 * 1024];
-            loop {
-                match out.read(&mut buffer) {
-                    Ok(0) | Err(_) => return,
-                    Ok(count) => {
-                        if !sink(&buffer[..count]) {
-                            stop.store(true, std::sync::atomic::Ordering::SeqCst);
-                            return;
+        let reader = std::thread::Builder::new()
+            .name("recto-update-out".into())
+            .stack_size(128 * 1024)
+            .spawn_scoped(scope, move || {
+                let mut buffer = vec![0u8; 64 * 1024];
+                loop {
+                    match out.read(&mut buffer) {
+                        Ok(0) | Err(_) => return,
+                        Ok(count) => {
+                            if !sink(&buffer[..count]) {
+                                stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                                return;
+                            }
                         }
                     }
                 }
-            }
-        });
-        let complaints = std::thread::Builder::new().name("recto-update-err".into()).stack_size(64 * 1024).spawn_scoped(scope, move || {
-            let mut kept = Vec::new();
-            let mut buffer = [0u8; 4096];
-            while let Ok(count) = err.read(&mut buffer) {
-                if count == 0 {
-                    break;
+            });
+        let complaints = std::thread::Builder::new()
+            .name("recto-update-err".into())
+            .stack_size(64 * 1024)
+            .spawn_scoped(scope, move || {
+                let mut kept = Vec::new();
+                let mut buffer = [0u8; 4096];
+                while let Ok(count) = err.read(&mut buffer) {
+                    if count == 0 {
+                        break;
+                    }
+                    if kept.len() < STDERR_KEPT {
+                        kept.extend_from_slice(&buffer[..count.min(STDERR_KEPT - kept.len())]);
+                    }
                 }
-                if kept.len() < STDERR_KEPT {
-                    kept.extend_from_slice(&buffer[..count.min(STDERR_KEPT - kept.len())]);
-                }
-            }
-            kept
-        });
+                kept
+            });
         let deadline = Instant::now() + limit;
         loop {
             match child.try_wait() {

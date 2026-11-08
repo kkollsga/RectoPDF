@@ -50,7 +50,12 @@ impl std::fmt::Debug for Finder {
 impl Finder {
     /// Reading pages from corpora this indexer keeps, and asking it for them, as a search does.
     pub fn new(indexer: Option<Indexer>) -> Self {
-        Self(Arc::new(Shared { indexer, inner: Mutex::new(Inner::default()), changed: Condvar::new(), notify: OnceLock::new() }))
+        Self(Arc::new(Shared {
+            indexer,
+            inner: Mutex::new(Inner::default()),
+            changed: Condvar::new(),
+            notify: OnceLock::new(),
+        }))
     }
 
     pub fn attach(&self, notify: Notifier) {
@@ -122,7 +127,12 @@ impl Shared {
                     }
                 })
             }));
-            let (end, progress) = outcome.unwrap_or_else(|_| (find::End::Failed("Find stopped on something it couldn't read. Try again.".to_string()), find::Progress::default()));
+            let (end, progress) = outcome.unwrap_or_else(|_| {
+                (
+                    find::End::Failed("Find stopped on something it couldn't read. Try again.".to_string()),
+                    find::Progress::default(),
+                )
+            });
             let current = {
                 let mut inner = self.lock();
                 inner.results.finish(generation, end, progress);
@@ -151,12 +161,19 @@ impl Finding for Finder {
         if !inner.working {
             let shared = Arc::clone(&self.0);
             // The same parser and normaliser path the server's job threads run, on the same 8 MiB they have, which is only address space until it's touched.
-            let spawned = std::thread::Builder::new().name("recto-find".into()).stack_size(8 * 1024 * 1024).spawn(move || shared.work());
+            let spawned = std::thread::Builder::new()
+                .name("recto-find".into())
+                .stack_size(8 * 1024 * 1024)
+                .spawn(move || shared.work());
             match spawned {
                 Ok(_) => inner.working = true,
                 Err(_) => {
                     inner.job = None;
-                    inner.results.finish(generation, find::End::Failed("Find couldn't start just now. Try again.".to_string()), find::Progress::default());
+                    inner.results.finish(
+                        generation,
+                        find::End::Failed("Find couldn't start just now. Try again.".to_string()),
+                        find::Progress::default(),
+                    );
                 }
             }
         }

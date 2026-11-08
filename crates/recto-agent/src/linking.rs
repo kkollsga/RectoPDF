@@ -65,7 +65,10 @@ pub fn links<A: SessionAccess>(access: &A, tab: &str, page: u32) -> Result<Value
 /// `recto follow`: what a click on a link does, within the document. A web address is the person's to open, and never an agent's.
 pub fn follow<A: SessionAccess>(access: &A, tab: &str, page: u32, link: u32, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     let (id, position, found) = read(access, tab, page)?;
-    let chosen = link.checked_sub(1).and_then(|at| found.links.get(at as usize)).ok_or_else(|| AgentError::new("no_such_link", format!("Page {page} has {} links.", found.links.len()), exit::NOT_FOUND).then("`recto links --page N` lists them, counted from 1."))?;
+    let chosen = link.checked_sub(1).and_then(|at| found.links.get(at as usize)).ok_or_else(|| {
+        AgentError::new("no_such_link", format!("Page {page} has {} links.", found.links.len()), exit::NOT_FOUND)
+            .then("`recto links --page N` lists them, counted from 1.")
+    })?;
     access.with(|s| {
         let id = select(s, &format!("#{}", id.0)).map_err(|_| AgentError::new("no_such_tab", "That tab closed.", exit::NOT_FOUND))?;
         let went = match &chosen.target {
@@ -99,9 +102,11 @@ pub fn follow<A: SessionAccess>(access: &A, tab: &str, page: u32, link: u32, eve
 
 fn nothing_that_way(back: bool) -> AgentError {
     if back {
-        AgentError::new("nothing_back", "There's nowhere to go back to in this tab.", exit::FAILED).then("`recto where` says `can_go_back`. Following a link, a contents entry or `recto goto` leaves somewhere to come back to.")
+        AgentError::new("nothing_back", "There's nowhere to go back to in this tab.", exit::FAILED)
+            .then("`recto where` says `can_go_back`. Following a link, a contents entry or `recto goto` leaves somewhere to come back to.")
     } else {
-        AgentError::new("nothing_forward", "There's nowhere to go forward to in this tab.", exit::FAILED).then("`recto where` says `can_go_forward`. Going back leaves somewhere to go forward to.")
+        AgentError::new("nothing_forward", "There's nowhere to go forward to in this tab.", exit::FAILED)
+            .then("`recto where` says `can_go_forward`. Going back leaves somewhere to go forward to.")
     }
 }
 
@@ -123,7 +128,10 @@ pub fn step<A: SessionAccess>(access: &A, tab: &str, back: bool, events: &mut Ve
 pub fn goto_label<A: SessionAccess>(access: &A, tab: &str, label: &str, events: &mut Vec<Event>) -> Result<Value, AgentError> {
     access.with(|s| {
         let id = select(s, tab)?;
-        let page = s.page_for_typed(id, label).ok_or_else(|| AgentError::new("no_such_label", "No page in this document is called that.", exit::NOT_FOUND).then("`recto where` gives the page's `label`. Labels are as the file writes them, such as `iv` or `A-3`, and a plain number is a page."))?;
+        let page = s.page_for_typed(id, label).ok_or_else(|| {
+            AgentError::new("no_such_label", "No page in this document is called that.", exit::NOT_FOUND)
+                .then("`recto where` gives the page's `label`. Labels are as the file writes them, such as `iv` or `A-3`, and a plain number is a page.")
+        })?;
         s.jump_as(id, page, 0.0, Author::Agent)?;
         events.push(Event::new("page_changed", json!({ "tab": id.0, "page": page + 1 })));
         Ok(where_json(s, id))

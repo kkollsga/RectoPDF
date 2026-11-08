@@ -21,16 +21,48 @@ impl EngineEvents for Quiet {
 }
 
 fn view(y: f64) -> Viewport {
-    Viewport { x: 0.0, y, width: 1168.0, height: 900.0, frame_width: 1168.0, magnification: 1.0, backing: 2.0, live: false, scrolled_to: u64::MAX }
+    Viewport {
+        x: 0.0,
+        y,
+        width: 1168.0,
+        height: 900.0,
+        frame_width: 1168.0,
+        magnification: 1.0,
+        backing: 2.0,
+        live: false,
+        scrolled_to: u64::MAX,
+    }
 }
 
 /// What's at the top left of the page, as red, green, blue, on dark paper: the colour of a tile with none of its own, or a surface's first pixel. And whether it came out at a lower resolution.
 #[allow(unsafe_code)]
 fn corner_on_dark_paper(file: &Path, pages: u32, page: u32, policy: Policy) -> (u32, bool) {
-    let engine = Engine::new(EngineConfig { service: None, policy: Some(policy), keys: None }, Arc::new(Quiet));
+    let engine = Engine::new(
+        EngineConfig {
+            service: None,
+            policy: Some(policy),
+            keys: None,
+        },
+        Arc::new(Quiet),
+    );
     engine.set_viewport(view(0.0));
     engine.set_paper(PaperKind::Dark);
-    engine.activate(1, pages, page, PageMap { files: vec![file.to_path_buf()], slots: None, own: None, turns: None, expected: Vec::new(), follows: None }, &[], None, recto_reader::layout::Spread::Single);
+    engine.activate(
+        1,
+        pages,
+        page,
+        PageMap {
+            files: vec![file.to_path_buf()],
+            slots: None,
+            own: None,
+            turns: None,
+            expected: Vec::new(),
+            follows: None,
+        },
+        &[],
+        None,
+        recto_reader::layout::Spread::Single,
+    );
     let mut corner = None;
     let started = Instant::now();
     let mut y = 0.0;
@@ -41,11 +73,22 @@ fn corner_on_dark_paper(file: &Path, pages: u32, page: u32, policy: Policy) -> (
         for op in ops {
             match op {
                 Op::ScrollTo { y: to, .. } => y = to,
-                Op::Attach { x, y: top, surface, rgb, page: on, .. } => {
+                Op::Attach {
+                    x,
+                    y: top,
+                    surface,
+                    rgb,
+                    page: on,
+                    ..
+                } => {
                     // SAFETY: each reference in an `Attach` is given up to whoever applies it, and this stand-in host applies it here, once.
                     let surface = unsafe { PixelSurface::from_host_reference(surface) };
                     if on == page && x == 0.0 && top == 0.0 {
-                        let colour = surface.and_then(|surface| surface.with_pixels(|pixels| (u32::from(pixels[2]) << 16) | (u32::from(pixels[1]) << 8) | u32::from(pixels[0])).ok());
+                        let colour = surface.and_then(|surface| {
+                            surface
+                                .with_pixels(|pixels| (u32::from(pixels[2]) << 16) | (u32::from(pixels[1]) << 8) | u32::from(pixels[0]))
+                                .ok()
+                        });
                         corner = colour.or(rgb).or(Some(DARK_PAPER));
                     }
                 }
@@ -74,7 +117,11 @@ fn a_real_scan_turns_over_and_a_real_map_is_dimmed() {
         eprintln!("skipped: the benchmark files aren't here");
         return;
     };
-    let low = |limit: u64| Policy { memory_limit_bytes: limit * 1024 * 1024, heavy_limit_bytes: limit * 1024 * 1024, ..Policy::default() };
+    let low = |limit: u64| Policy {
+        memory_limit_bytes: limit * 1024 * 1024,
+        heavy_limit_bytes: limit * 1024 * 1024,
+        ..Policy::default()
+    };
 
     let (corner, low_res) = corner_on_dark_paper(&scan, 8, 2, Policy::default());
     assert!(!low_res);

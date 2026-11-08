@@ -18,7 +18,15 @@ struct Fake;
 
 impl DocLoader for Fake {
     fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
-        Ok(DocFacts { page_count: 10, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+        Ok(DocFacts {
+            page_count: 10,
+            byte_len: 1,
+            encrypted: false,
+            version: "1.7".into(),
+            title: None,
+            toc: Toc::default(),
+            renderer_only: false,
+        })
     }
 }
 
@@ -40,7 +48,12 @@ impl Running {
         let host = Arc::new(SessionHost::new(Fake));
         let hosted = Arc::clone(&host);
         let thread = std::thread::spawn(move || server.run(hosted, Limits::default()));
-        Self { paths, host, thread: Some(thread), stopper }
+        Self {
+            paths,
+            host,
+            thread: Some(thread),
+            stopper,
+        }
     }
 
     fn call(&self, line: Value) -> Value {
@@ -50,12 +63,19 @@ impl Running {
     fn refusal(&self, line: Value) -> (String, i64, String) {
         let reply = self.call(line);
         assert_eq!(reply["ok"], false, "{reply}");
-        (reply["error"]["code"].as_str().unwrap().to_string(), reply["error"]["exit"].as_i64().unwrap(), reply["error"]["message"].as_str().unwrap().to_string())
+        (
+            reply["error"]["code"].as_str().unwrap().to_string(),
+            reply["error"]["exit"].as_i64().unwrap(),
+            reply["error"]["message"].as_str().unwrap().to_string(),
+        )
     }
 
     /// Each page's added turns, as they stand now.
     fn turns(&self) -> Vec<u8> {
-        self.host.with_session(|s| s.page_edits(TabId(1)).map_or_else(Vec::new, |edits| edits.slots().iter().map(|slot| slot.quarter_turns).collect()))
+        self.host.with_session(|s| {
+            s.page_edits(TabId(1))
+                .map_or_else(Vec::new, |edits| edits.slots().iter().map(|slot| slot.quarter_turns).collect())
+        })
     }
 
     fn tab_is_open(&self) -> bool {
@@ -83,7 +103,11 @@ fn over_the_socket_an_agent_cant_erase_the_owners_edits_at_any_step() {
         s.edit_pages(TabId(1), |edits| edits.rotate(1, 1, 2)).unwrap();
     });
     let owners = running.turns();
-    let holds_them = || running.host.with_session(|s| s.page_edits(TabId(1)).is_some_and(recto_session::edit::PageEdits::holds_owner_edits));
+    let holds_them = || {
+        running
+            .host
+            .with_session(|s| s.page_edits(TabId(1)).is_some_and(recto_session::edit::PageEdits::holds_owner_edits))
+    };
     let edit = || json!({ "cmd": "page_rotate", "pages": "9", "degrees": 90 });
 
     let (code, status, _) = running.refusal(json!({ "cmd": "discard" }));
@@ -94,20 +118,38 @@ fn over_the_socket_an_agent_cant_erase_the_owners_edits_at_any_step() {
     for undone in 1..=2 {
         assert_eq!(running.call(json!({ "cmd": "undo" }))["ok"], true);
         let turns_now = running.turns();
-        for attempt in [edit(), json!({ "cmd": "page_delete", "pages": "9" }), json!({ "cmd": "page_move", "pages": "9", "to": 10 }), json!({ "cmd": "page_insert", "path": "/d/b.pdf", "at": 1 }), json!({ "cmd": "close" })] {
+        for attempt in [
+            edit(),
+            json!({ "cmd": "page_delete", "pages": "9" }),
+            json!({ "cmd": "page_move", "pages": "9", "to": 10 }),
+            json!({ "cmd": "page_insert", "path": "/d/b.pdf", "at": 1 }),
+            json!({ "cmd": "close" }),
+        ] {
             let (code, status, message) = running.refusal(attempt.clone());
-            assert_eq!((code.as_str(), status), ("would_clear_redo", i64::from(exit::PERMISSION)), "{attempt} after {undone} undone");
+            assert_eq!(
+                (code.as_str(), status),
+                ("would_clear_redo", i64::from(exit::PERMISSION)),
+                "{attempt} after {undone} undone"
+            );
             assert!(message.contains("user's"), "{message}");
         }
         let (code, status, message) = running.refusal(json!({ "cmd": "discard" }));
-        assert_eq!((code.as_str(), status), ("would_discard_user_edits", i64::from(exit::PERMISSION)), "after {undone} undone");
+        assert_eq!(
+            (code.as_str(), status),
+            ("would_discard_user_edits", i64::from(exit::PERMISSION)),
+            "after {undone} undone"
+        );
         assert!(message.contains("user's"), "{message}");
         assert_eq!(running.turns(), turns_now, "nothing moved after {undone} undone");
         assert!(holds_them() && running.tab_is_open(), "after {undone} undone");
     }
     // Failure: with them all undone, the page matches the file, and the session's own close would have lost them.
     let undone = running.call(json!({ "cmd": "where" }));
-    assert_eq!((&undone["data"]["edited"], &undone["data"]["user_edits_undone"]), (&json!(false), &json!(true)), "{undone}");
+    assert_eq!(
+        (&undone["data"]["edited"], &undone["data"]["user_edits_undone"]),
+        (&json!(false), &json!(true)),
+        "{undone}"
+    );
     assert!(running.host.with_session(|s| s.close(TabId(1)).is_err()), "the app's route refuses too");
     // Stopping the session would end them too.
     assert_eq!(running.refusal(json!({ "cmd": "stop" })).0, "unsaved_changes");

@@ -46,7 +46,22 @@ fn millis(duration: Duration) -> u64 {
 
 impl Saver {
     pub(crate) fn new(store: RecordStore, core: Arc<CoreQueue>) -> Self {
-        Self { store: Arc::new(store), core, inner: OnceLock::new(), started: AtomicBool::new(false), clock: Instant::now(), writer_alive: AtomicBool::new(false), armed: AtomicBool::new(false), view_changed: AtomicBool::new(false), last_record_write: AtomicU64::new(0), urgent: AtomicBool::new(false), first_edit: AtomicU64::new(0), last_edit: AtomicU64::new(0), gate: Mutex::new(()), last_error: Mutex::new(None) }
+        Self {
+            store: Arc::new(store),
+            core,
+            inner: OnceLock::new(),
+            started: AtomicBool::new(false),
+            clock: Instant::now(),
+            writer_alive: AtomicBool::new(false),
+            armed: AtomicBool::new(false),
+            view_changed: AtomicBool::new(false),
+            last_record_write: AtomicU64::new(0),
+            urgent: AtomicBool::new(false),
+            first_edit: AtomicU64::new(0),
+            last_edit: AtomicU64::new(0),
+            gate: Mutex::new(()),
+            last_error: Mutex::new(None),
+        }
     }
 
     pub(crate) fn inner(&self) -> Option<Arc<Inner>> {
@@ -238,14 +253,25 @@ impl Saver {
 
     /// **Writes everything now, reads it back, and says whether it's all there.** What's waiting and what's in memory are taken in one look, so an edit made in between can't be in one and not the other. `force` makes the drive itself flush everything a launch would read, older writes included, which only a hand-off needs. Waits for the session thread and the disk, so it's for a thread that can.
     pub(crate) fn flush(&self, force: bool, limit: Duration) -> Result<FlushReport, StoreError> {
-        let Some(inner) = self.inner() else { return Err(StoreError { code: "not_ready", message: "The app is going away.".to_string() }) };
+        let Some(inner) = self.inner() else {
+            return Err(StoreError {
+                code: "not_ready",
+                message: "The app is going away.".to_string(),
+            });
+        };
         if !self.started.load(Ordering::SeqCst) {
-            return Err(StoreError { code: "not_ready", message: "The app hasn't finished starting.".to_string() });
+            return Err(StoreError {
+                code: "not_ready",
+                message: "The app hasn't finished starting.".to_string(),
+            });
         }
         let began = Instant::now();
         // A hand-off can wait, and an update mustn't go on something unfinished. A quit is going anyway, so it writes what there is.
         if !inner.core.flush(limit) && force {
-            return Err(StoreError { code: "still_busy", message: "Something the app was asked to do hasn't finished, so its state can't be said to be whole.".to_string() });
+            return Err(StoreError {
+                code: "still_busy",
+                message: "Something the app was asked to do hasn't finished, so its state can't be said to be whole.".to_string(),
+            });
         }
         // The tab on screen's sleep file, for the next launch's first frame. Nothing depends on it, so it's no part of what's read back or forced to the drive. If nothing's changed, nothing's written.
         if let Some(id) = inner.host.session.with_session(|session| session.active()) {
@@ -277,7 +303,11 @@ impl Saver {
         let write_us = micros(written);
         let verified = Instant::now();
         // Only if a name had to change is it asked again, as an edit since would differ from what was just written, and a hand-off has stopped those anyway.
-        let lists = if renamed { inner.host.session.with_session(|session| session.lists_by_journal()) } else { lists };
+        let lists = if renamed {
+            inner.host.session.with_session(|session| session.lists_by_journal())
+        } else {
+            lists
+        };
         let asleep: HashMap<String, EditsSummary> = inner.host.session.with_session(|session| session.asleep_by_journal());
         if let Err(first) = self.store.verify_with_asleep(&record, &lists, &asleep) {
             // A line that didn't say enough is mended by the whole record. Anything else fails.
@@ -289,7 +319,18 @@ impl Saver {
         let (record_bytes, journal_bytes) = self.store.sizes();
         self.last_record_write.store(self.now(), Ordering::SeqCst);
         *lock(&self.last_error) = None;
-        Ok(FlushReport { tabs: record.tabs.len(), edited_tabs: lists.len(), record_bytes, journal_bytes, wrote_bytes: self.store.wrote_bytes() - before, gather_us, write_us, force_us, verify_us, total_us: micros(began) })
+        Ok(FlushReport {
+            tabs: record.tabs.len(),
+            edited_tabs: lists.len(),
+            record_bytes,
+            journal_bytes,
+            wrote_bytes: self.store.wrote_bytes() - before,
+            gather_us,
+            write_us,
+            force_us,
+            verify_us,
+            total_us: micros(began),
+        })
     }
 }
 
@@ -309,10 +350,28 @@ impl Inner {
         let selection = self.panes.reading_engine(&self.engine).hot_selection();
         self.host.session.with_session(|session| {
             if let Some((tab, range)) = selection {
-                session.note_selection(recto_session::TabId(tab), range.map(|range| Selection { from_page: range.start.page, from_char: range.start.at, to_page: range.end.page, to_char: range.end.at }));
+                session.note_selection(
+                    recto_session::TabId(tab),
+                    range.map(|range| Selection {
+                        from_page: range.start.page,
+                        from_char: range.start.at,
+                        to_page: range.end.page,
+                        to_char: range.end.at,
+                    }),
+                );
             }
             for (tab, saved) in places {
-                let place = PlaceRecord { page: saved.page, anchor_page: saved.anchor.0, within: saved.anchor.1, x: saved.x, y: saved.y, document_height: saved.document_height, zoom: saved.magnification, page_width: saved.page_size.map_or(0.0, |size| size.width), page_height: saved.page_size.map_or(0.0, |size| size.height) };
+                let place = PlaceRecord {
+                    page: saved.page,
+                    anchor_page: saved.anchor.0,
+                    within: saved.anchor.1,
+                    x: saved.x,
+                    y: saved.y,
+                    document_height: saved.document_height,
+                    zoom: saved.magnification,
+                    page_width: saved.page_size.map_or(0.0, |size| size.width),
+                    page_height: saved.page_size.map_or(0.0, |size| size.height),
+                };
                 session.note_place(recto_session::TabId(tab), place);
             }
         });

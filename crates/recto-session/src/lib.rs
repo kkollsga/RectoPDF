@@ -13,7 +13,10 @@ pub mod trail;
 
 pub use edit::Author;
 use edit::{EditError, PageEdits};
-use record::{EditsSummary, FileNotice, FileStatus, FindRecord, JournalHeader, JournalOp, MAX_TAB_ID, PaperName, PathField, PlaceDelta, PlaceRecord, RecordError, Selection, SessionRecord, TabEntry, ViewRecord};
+use record::{
+    EditsSummary, FileNotice, FileStatus, FindRecord, JournalHeader, JournalOp, MAX_TAB_ID, PaperName, PathField, PlaceDelta, PlaceRecord, RecordError,
+    Selection, SessionRecord, TabEntry, ViewRecord,
+};
 use recto_core::verdict::ContentsVerdict;
 use recto_core::{DocFacts, NONE, OpenError, Toc};
 use recto_platform::{FileStamp, file_stamp};
@@ -225,7 +228,17 @@ pub struct ScrollThumb {
 }
 
 /// The one scroll thumb.
-pub const SCROLL_THUMB: ScrollThumb = ScrollThumb { width: 4.0, hover_width: 6.0, hit_width: 12.0, inset: 3.0, min_length: 24.0, light: (0x000000, 0.22), light_hover: (0x000000, 0.42), dark: (0xFFFFFF, 0.24), dark_hover: (0xFFFFFF, 0.45) };
+pub const SCROLL_THUMB: ScrollThumb = ScrollThumb {
+    width: 4.0,
+    hover_width: 6.0,
+    hit_width: 12.0,
+    inset: 3.0,
+    min_length: 24.0,
+    light: (0x000000, 0.22),
+    light_hover: (0x000000, 0.42),
+    dark: (0xFFFFFF, 0.24),
+    dark_hover: (0xFFFFFF, 0.45),
+};
 
 /// How much of the sidebar's list goes where, in points.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -251,7 +264,11 @@ pub fn sidebar_heights_with_note(room: f64, tabs: u32, contents_rows: u32, note:
     let natural = f64::from(contents_rows) * CONTENTS_ROW_HEIGHT;
     // With a window too short for the rest, the active tab's own row comes first.
     let contents = natural.min(room * CONTENTS_MAX_SHARE - note).min(room - tab_row - note).max(0.0);
-    SidebarHeights { contents, note, tabs_scroll: f64::from(tabs) * TAB_ROW_HEIGHT + note + contents > room }
+    SidebarHeights {
+        contents,
+        note,
+        tabs_scroll: f64::from(tabs) * TAB_ROW_HEIGHT + note + contents > room,
+    }
 }
 
 /// How long after the reader stops using the contents, with the pointer out of them, before they may follow again.
@@ -335,7 +352,15 @@ struct Motion {
 
 impl Default for ContentsFollow {
     fn default() -> Self {
-        Self { paused: false, pointer_inside: false, last_user_scroll: f64::NEG_INFINITY, current: None, placed: false, moving: None, resume: None }
+        Self {
+            paused: false,
+            pointer_inside: false,
+            last_user_scroll: f64::NEG_INFINITY,
+            current: None,
+            placed: false,
+            moving: None,
+            resume: None,
+        }
     }
 }
 
@@ -368,7 +393,10 @@ impl ContentsFollow {
     /// Another tab: its contents start fresh, in the right place.
     pub fn new_contents(&mut self) {
         let pointer_inside = self.pointer_inside;
-        *self = Self { pointer_inside, ..Self::default() };
+        *self = Self {
+            pointer_inside,
+            ..Self::default()
+        };
     }
 
     /// The first showing goes here, as it was left, and not to where the place would put it. Whether they were following or left by the reader comes back too.
@@ -473,7 +501,13 @@ impl ContentsFollow {
         if zone.contains(&place) || (target - view.scroll_y).abs() < 1.0 {
             return FollowMove::Stay;
         }
-        self.moving = Some(Motion { target, aim: view.scroll_y, at: Some(view.scroll_y), velocity: 0.0, rate: follow_rate(target - view.scroll_y, view.height) });
+        self.moving = Some(Motion {
+            target,
+            aim: view.scroll_y,
+            at: Some(view.scroll_y),
+            velocity: 0.0,
+            rate: follow_rate(target - view.scroll_y, view.height),
+        });
         FollowMove::Move
     }
 
@@ -564,7 +598,11 @@ pub fn contrast_ratio(one: u32, two: u32) -> f64 {
     fn luminance(rgb: u32) -> f64 {
         let channel = |shift: u32| {
             let value = f64::from((rgb >> shift) & 0xFF) / 255.0;
-            if value <= 0.039_28 { value / 12.92 } else { ((value + 0.055) / 1.055).powf(2.4) }
+            if value <= 0.039_28 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
         };
         0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
     }
@@ -820,27 +858,49 @@ impl ContentsAction {
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
-        [Self::Generate, Self::ShowGenerated, Self::ShowOwn, Self::Stop].into_iter().find(|action| action.id() == id)
+        [Self::Generate, Self::ShowGenerated, Self::ShowOwn, Self::Stop]
+            .into_iter()
+            .find(|action| action.id() == id)
     }
 }
 
 /// The note over a tab's contents: a short line at rest, and what it means on hover. `None` for contents that are fine and shown as they are. Owner, 2026-11-06: "the left sidebar menu is a bit too complicated (visually noisy)", so it's one quiet line, and the rest waits for the pointer.
-pub fn contents_note(verdict: ContentsVerdict, view: Option<&GeneratedView>, choose_generated: bool, own_entries: usize) -> Option<(&'static str, &'static str, Option<ContentsAction>)> {
-    const MADE: &str = "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.";
+pub fn contents_note(
+    verdict: ContentsVerdict,
+    view: Option<&GeneratedView>,
+    choose_generated: bool,
+    own_entries: usize,
+) -> Option<(&'static str, &'static str, Option<ContentsAction>)> {
+    const MADE: &str =
+        "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong.";
     match view {
         Some(GeneratedView::Ready(_)) if choose_generated => Some((
             "Generated contents",
-            if own_entries > 0 { "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own." } else { MADE },
+            if own_entries > 0 {
+                "Made by RectoPDF from the headings distillPDF found on the pages. They aren't part of the file, which isn't changed, and they can be wrong. Click to show the file's own."
+            } else {
+                MADE
+            },
             (own_entries > 0).then_some(ContentsAction::ShowOwn),
         )),
         Some(GeneratedView::Ready(_)) => Some(("Show generated contents", MADE, Some(ContentsAction::ShowGenerated))),
-        Some(GeneratedView::Making) => Some(("Generating contents\u{2026}", "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.", Some(ContentsAction::Stop))),
+        Some(GeneratedView::Making) => Some((
+            "Generating contents\u{2026}",
+            "Finding the headings on the pages, in the background. On a long document this can take a little while. Click to stop.",
+            Some(ContentsAction::Stop),
+        )),
         Some(GeneratedView::Failed(words)) => Some(("Couldn't generate contents", words, Some(ContentsAction::Generate))),
-        Some(GeneratedView::NoneFound) => Some(("No headings found", "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.", None)),
+        Some(GeneratedView::NoneFound) => Some((
+            "No headings found",
+            "RectoPDF looked for headings on the pages and found none to list. A scan with no text has none to find.",
+            None,
+        )),
         _ if verdict.offers() || choose_generated => Some((
             "Generate contents",
             match verdict {
-                ContentsVerdict::Missing => "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed.",
+                ContentsVerdict::Missing => {
+                    "This file has no contents of its own. RectoPDF can make some from the headings on its pages. The file isn't changed."
+                }
                 _ => "The file's own contents look incomplete. RectoPDF can make some from the headings on its pages, and the file's own stay as they are.",
             },
             Some(ContentsAction::Generate),
@@ -888,7 +948,44 @@ impl Default for Session<DiskLoader> {
 
 impl<L: DocLoader> Session<L> {
     pub fn new(loader: L) -> Self {
-        Self { loader, view: ViewSettings::default(), tabs: Vec::new(), active: None, next_id: 1, warm: VecDeque::new(), woken: Vec::new(), dirs: Vec::new(), dir_ids: HashMap::new(), edits: HashMap::new(), wake_failed: Vec::new(), asleep: HashMap::new(), started: std::time::Instant::now(), held: Vec::new(), sleep_files: false, just_read: None, woken_from_file: Vec::new(), left_warm: Vec::new(), draws: VecDeque::new(), place_lost: false, find: FindRecord::default(), edit_mode: false, journaling: false, journals: HashMap::new(), fresh_journals: Vec::new(), retired_journals: Vec::new(), departing: Vec::new(), history: None, agent_at_full: false, generated: Vec::new(), comparison: None, saving: Vec::new(), saved_over: Vec::new(), jumps: Vec::new(), recent: VecDeque::new(), recent_version: 0 }
+        Self {
+            loader,
+            view: ViewSettings::default(),
+            tabs: Vec::new(),
+            active: None,
+            next_id: 1,
+            warm: VecDeque::new(),
+            woken: Vec::new(),
+            dirs: Vec::new(),
+            dir_ids: HashMap::new(),
+            edits: HashMap::new(),
+            wake_failed: Vec::new(),
+            asleep: HashMap::new(),
+            started: std::time::Instant::now(),
+            held: Vec::new(),
+            sleep_files: false,
+            just_read: None,
+            woken_from_file: Vec::new(),
+            left_warm: Vec::new(),
+            draws: VecDeque::new(),
+            place_lost: false,
+            find: FindRecord::default(),
+            edit_mode: false,
+            journaling: false,
+            journals: HashMap::new(),
+            fresh_journals: Vec::new(),
+            retired_journals: Vec::new(),
+            departing: Vec::new(),
+            history: None,
+            agent_at_full: false,
+            generated: Vec::new(),
+            comparison: None,
+            saving: Vec::new(),
+            saved_over: Vec::new(),
+            jumps: Vec::new(),
+            recent: VecDeque::new(),
+            recent_version: 0,
+        }
     }
 
     pub fn view(&self) -> ViewSettings {
@@ -967,9 +1064,19 @@ impl<L: DocLoader> Session<L> {
         self.tab_for_path(path).or_else(|| {
             let stamp = stamp.filter(|stamp| stamp.inode != 0)?;
             let same_number = self.tabs.iter().find(|tab| {
-                tab.stamp.is_some_and(|known| known.inode == stamp.inode && known.device == stamp.device && (known.same_contents(stamp) || self.path_of(tab.id).and_then(|own| file_stamp(&own).ok()).is_some_and(|now| now.inode == stamp.inode && now.device == stamp.device)))
+                tab.stamp.is_some_and(|known| {
+                    known.inode == stamp.inode
+                        && known.device == stamp.device
+                        && (known.same_contents(stamp)
+                            || self
+                                .path_of(tab.id)
+                                .and_then(|own| file_stamp(&own).ok())
+                                .is_some_and(|now| now.inode == stamp.inode && now.device == stamp.device))
+                })
             });
-            same_number.map(|tab| tab.id).or_else(|| path.canonicalize().ok().and_then(|real| self.tab_for_path(&real)))
+            same_number
+                .map(|tab| tab.id)
+                .or_else(|| path.canonicalize().ok().and_then(|real| self.tab_for_path(&real)))
         })
     }
 
@@ -1001,7 +1108,14 @@ impl<L: DocLoader> Session<L> {
 
     /// Files opened lately, newest first, with the tab each is open in now. Never reads a file: one that's gone says so when it's opened.
     pub fn recent_files(&self) -> Vec<RecentFile> {
-        self.recent.iter().map(|path| RecentFile { path: path.clone(), name: tab_name(path), open: self.tab_for_path(path) }).collect()
+        self.recent
+            .iter()
+            .map(|path| RecentFile {
+                path: path.clone(),
+                name: tab_name(path),
+                open: self.tab_for_path(path),
+            })
+            .collect()
     }
 
     /// A number that moves whenever the list of files opened lately does. Which of them are open moves with the tabs.
@@ -1116,7 +1230,10 @@ impl<L: DocLoader> Session<L> {
             Some(pane) => pane,
             None => {
                 let index = self.tabs.iter().position(|tab| tab.id == id)?;
-                self.tabs.get(index + 1).or_else(|| index.checked_sub(1).and_then(|before| self.tabs.get(before)))?.id
+                self.tabs
+                    .get(index + 1)
+                    .or_else(|| index.checked_sub(1).and_then(|before| self.tabs.get(before)))?
+                    .id
             }
         };
         self.file_to_wake_now(next)
@@ -1125,7 +1242,10 @@ impl<L: DocLoader> Session<L> {
     /// The pane that's read next when the one being read leaves a comparison, by closing or a ⌘-click: the first of those left. `None` without a comparison, or one that ends with it.
     fn pane_after(&self, leaving: TabId) -> Option<TabId> {
         let comparison = self.comparison.as_ref()?;
-        comparison.contains(leaving).then(|| comparison.tabs.iter().copied().find(|tab| *tab != leaving)).flatten()
+        comparison
+            .contains(leaving)
+            .then(|| comparison.tabs.iter().copied().find(|tab| *tab != leaving))
+            .flatten()
     }
 
     /// A cold tab's file to read ahead, unless its sleep file says all a read would.
@@ -1200,7 +1320,9 @@ impl<L: DocLoader> Session<L> {
 
     /// **Nothing of this tab's file goes to an agent:** it was opened with a password the person typed, or it needs one, and what the record has of it (its length, its place) was read with one. Reading a protected document needs the person's consent for that document (agent report §5.5), which isn't built, so it's refused outright. `encrypted` alone isn't this: a file anyone may open can be encrypted too.
     pub fn withheld_from_agents(&self, id: TabId) -> bool {
-        self.tab(id).is_some_and(|tab| tab.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.notice.as_deref(), Some(FileNotice::NeedsPassword)))
+        self.tab(id).is_some_and(|tab| {
+            tab.password || tab.problem == Some(OpenError::PasswordNeeded) || matches!(tab.notice.as_deref(), Some(FileNotice::NeedsPassword))
+        })
     }
 
     /// **The sidebar's tap rule.** Tapping another PDF switches to it. Tapping the active PDF folds or opens its contents.
@@ -1238,7 +1360,10 @@ impl<L: DocLoader> Session<L> {
     /// **Where the reader is in a tab,** for a jump to mark: the page, and how far down it if the page view has said lately.
     pub fn here(&self, id: TabId) -> Option<trail::Stop> {
         let tab = self.tab(id)?;
-        let within = tab.place.filter(|place| place.page == tab.page && place.anchor_page == tab.page).map_or(0.0, |place| place.within);
+        let within = tab
+            .place
+            .filter(|place| place.page == tab.page && place.anchor_page == tab.page)
+            .map_or(0.0, |place| place.within);
         Some(trail::Stop::new(tab.page, within))
     }
 
@@ -1274,10 +1399,17 @@ impl<L: DocLoader> Session<L> {
     fn step_trail(&mut self, id: TabId, back: bool, by: Author) -> Result<bool, SessionError> {
         let here = self.here(id).ok_or(SessionError::NoSuchTab)?;
         let agent = by == Author::Agent;
-        let Some(trail) = self.tab_mut(id).and_then(|tab| tab.trail.as_deref_mut()) else { return Ok(false) };
-        let Some(to) = (if back { trail.go_back(here, agent) } else { trail.go_forward(here, agent) }) else { return Ok(false) };
+        let Some(trail) = self.tab_mut(id).and_then(|tab| tab.trail.as_deref_mut()) else {
+            return Ok(false);
+        };
+        let Some(to) = (if back { trail.go_back(here, agent) } else { trail.go_forward(here, agent) }) else {
+            return Ok(false);
+        };
         // Pages may have gone since it was marked.
-        let to = trail::Stop { page: to.page.min(self.pages_in(id).saturating_sub(1)), ..to };
+        let to = trail::Stop {
+            page: to.page.min(self.pages_in(id).saturating_sub(1)),
+            ..to
+        };
         self.land(id, to)?;
         Ok(true)
     }
@@ -1291,7 +1423,8 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether a tab can go back, and forward.
     pub fn can_go_back_and_forward(&self, id: TabId) -> (bool, bool) {
-        self.trail_of(id).map_or((false, false), |trail| (!trail.back().is_empty(), !trail.forward().is_empty()))
+        self.trail_of(id)
+            .map_or((false, false), |trail| (!trail.back().is_empty(), !trail.forward().is_empty()))
     }
 
     /// A warm tab's contents and labels, shared: what the host needs to say a page by its label without asking the session again.
@@ -1371,14 +1504,23 @@ impl<L: DocLoader> Session<L> {
             None => (file_page < self.pages_in(id)).then_some(file_page),
             Some(edits) => {
                 let source = edits.slots().get(from as usize)?.source;
-                edits.slots().iter().position(|slot| slot.source == source && slot.page == file_page).and_then(|at| u32::try_from(at).ok())
+                edits
+                    .slots()
+                    .iter()
+                    .position(|slot| slot.source == source && slot.page == file_page)
+                    .and_then(|at| u32::try_from(at).ok())
             }
         }
     }
 
     /// How many pages a tab has now, counting unsaved edits.
     pub fn pages_in(&self, id: TabId) -> u32 {
-        self.edits.get(&id).map(PageEdits::len).or_else(|| self.asleep.get(&id).map(|summary| summary.pages)).or_else(|| self.tab(id).map(|t| t.page_count)).unwrap_or(0)
+        self.edits
+            .get(&id)
+            .map(PageEdits::len)
+            .or_else(|| self.asleep.get(&id).map(|summary| summary.pages))
+            .or_else(|| self.tab(id).map(|t| t.page_count))
+            .unwrap_or(0)
     }
 
     /// Whether a tab has unsaved changes.
@@ -1460,7 +1602,14 @@ impl<L: DocLoader> Session<L> {
         };
         let place = self.tab(id).and_then(|tab| source_of(tab.page).map(|(source, page)| (source, page, tab.page)));
         // Where each stop of the trail's page comes from, so it can follow it through the edit.
-        let stops = self.trail_of(id).map(|trail| trail.back().iter().chain(trail.forward()).map(|stop| (stop.page, source_of(stop.page))).collect());
+        let stops = self.trail_of(id).map(|trail| {
+            trail
+                .back()
+                .iter()
+                .chain(trail.forward())
+                .map(|stop| (stop.page, source_of(stop.page)))
+                .collect()
+        });
         Before { place, stops }
     }
 
@@ -1474,7 +1623,11 @@ impl<L: DocLoader> Session<L> {
                 .into_iter()
                 .map(|(was, source)| {
                     let found = source.and_then(|(source, page)| match self.edits.get(&id) {
-                        Some(edits) => edits.slots().iter().position(|slot| slot.source == source && slot.page == page).and_then(|at| u32::try_from(at).ok()),
+                        Some(edits) => edits
+                            .slots()
+                            .iter()
+                            .position(|slot| slot.source == source && slot.page == page)
+                            .and_then(|at| u32::try_from(at).ok()),
                         None => (source == 0 && page < pages).then_some(page),
                     });
                     (was, found)
@@ -1511,7 +1664,11 @@ impl<L: DocLoader> Session<L> {
     fn let_go_of_list(&mut self, id: TabId) {
         if let Some(list) = self.edits.remove(&id) {
             // With one that a save said it kept and that hasn't been confirmed, which nothing else names.
-            let kept: Vec<Box<Path>> = list.kept_sources().map(|(_, added)| added.path.clone()).chain(list.keeping().filter(|kept| kept.kept).map(|kept| kept.path.clone())).collect();
+            let kept: Vec<Box<Path>> = list
+                .kept_sources()
+                .map(|(_, added)| added.path.clone())
+                .chain(list.keeping().filter(|kept| kept.kept).map(|kept| kept.path.clone()))
+                .collect();
             self.retire_kept(kept);
         }
         self.fresh_journals.retain(|(tab, _, replaces)| {
@@ -1578,7 +1735,11 @@ impl<L: DocLoader> Session<L> {
 
     /// The tabs that could go dormant, as they hold something: not the one on screen, and not one a save's under way on. Next to none however many tabs there are: the warm ones, and those with a list in memory.
     fn dormant_candidates(&self) -> impl Iterator<Item = TabId> + '_ {
-        self.warm.iter().map(|(id, _)| *id).chain(self.edits.keys().copied()).filter(move |id| !self.on_screen(*id) && !self.held.contains(id) && self.edits.get(id).is_none_or(|list| list.saving().is_none()))
+        self.warm
+            .iter()
+            .map(|(id, _)| *id)
+            .chain(self.edits.keys().copied())
+            .filter(move |id| !self.on_screen(*id) && !self.held.contains(id) && self.edits.get(id).is_none_or(|list| list.saving().is_none()))
     }
 
     /// Something's working on this tab, a command of an agent's or an export, so it doesn't go dormant, whatever's asking. As many holds as there are, each let go by [`Self::let_go`].
@@ -1595,12 +1756,18 @@ impl<L: DocLoader> Session<L> {
 
     /// When the next tab comes due to go dormant, in seconds of the session, this long after it was last touched. One deadline for all of them, kept by whoever's waiting anyway. There's no timer per tab.
     pub fn next_dormant_at(&self, after: u32) -> Option<u32> {
-        self.dormant_candidates().filter_map(|id| self.tab(id)).map(|tab| tab.touched.saturating_add(after)).min()
+        self.dormant_candidates()
+            .filter_map(|id| self.tab(id))
+            .map(|tab| tab.touched.saturating_add(after))
+            .min()
     }
 
     /// The tabs due to go dormant now.
     pub fn due_dormant(&self, now: u32, after: u32) -> Vec<TabId> {
-        let mut due: Vec<TabId> = self.dormant_candidates().filter(|id| self.tab(*id).is_some_and(|tab| tab.touched.saturating_add(after) <= now)).collect();
+        let mut due: Vec<TabId> = self
+            .dormant_candidates()
+            .filter(|id| self.tab(*id).is_some_and(|tab| tab.touched.saturating_add(after) <= now))
+            .collect();
         due.sort_unstable_by_key(|id| id.0);
         due.dedup();
         due
@@ -1699,7 +1866,11 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether there's a step to undo and one to redo, wherever its list is. With nothing read.
     pub fn undo_and_redo(&self, id: TabId) -> (bool, bool) {
-        self.edits.get(&id).map(|list| (list.can_undo(), list.can_redo())).or_else(|| self.asleep.get(&id).map(|summary| (summary.undo > 0, summary.redo > 0))).unwrap_or((false, false))
+        self.edits
+            .get(&id)
+            .map(|list| (list.can_undo(), list.can_redo()))
+            .or_else(|| self.asleep.get(&id).map(|summary| (summary.undo > 0, summary.redo > 0)))
+            .unwrap_or((false, false))
     }
 
     /// A tab's list whole, wherever it is, for QA and a look: one on disk is read for this and stays there.
@@ -1712,7 +1883,10 @@ impl<L: DocLoader> Session<L> {
 
     /// What's asleep, by journal, for reading back: each has to read as what's known of it here.
     pub fn asleep_by_journal(&self) -> HashMap<String, EditsSummary> {
-        self.asleep.iter().filter_map(|(id, summary)| Some((self.journals.get(id)?.to_string(), *summary))).collect()
+        self.asleep
+            .iter()
+            .filter_map(|(id, summary)| Some((self.journals.get(id)?.to_string(), *summary)))
+            .collect()
     }
 
     /// What a tab's sleep file would say of it, apart from what the page view knows, if it can have one: its file's been read this session, so its contents are here, and it isn't protected, as this would be those in the clear.
@@ -1725,14 +1899,37 @@ impl<L: DocLoader> Session<L> {
         let tab = self.tab(id)?;
         let stamp = tab.stamp?;
         // What's come from a sleep file and hasn't been checked against the PDF isn't written again as if it had. Nor anything of a file that's not what it was.
-        if tab.encrypted || tab.from_sleep.is_some() || self.asleep.contains_key(&id) || matches!(tab.notice.as_deref(), Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword)) {
+        if tab.encrypted
+            || tab.from_sleep.is_some()
+            || self.asleep.contains_key(&id)
+            || matches!(
+                tab.notice.as_deref(),
+                Some(FileNotice::Changed | FileNotice::Missing | FileNotice::NeedsPassword)
+            )
+        {
             return None;
         }
         let list = self.edits.get(&id);
         let (pages, list_seq) = list.map_or((tab.page_count, 0), |list| (list.len(), list.order_mark()));
-        let sleep = sleep::SleepFile { file: stamp, file_pages: tab.page_count, pages, list_seq, renderer_only: tab.renderer_only, version: None, toc: toc.clone(), usual: None, sizes: Vec::new(), pictures: Vec::new() };
+        let sleep = sleep::SleepFile {
+            file: stamp,
+            file_pages: tab.page_count,
+            pages,
+            list_seq,
+            renderer_only: tab.renderer_only,
+            version: None,
+            toc: toc.clone(),
+            usual: None,
+            sizes: Vec::new(),
+            pictures: Vec::new(),
+        };
         // A page from a protected file on any page means pictures of none, and it's the same for each of them.
-        Some(SleepFacts { id, path: self.path_of(id)?, sleep, pictures_allowed: !list.is_some_and(PageEdits::has_protected_pages) })
+        Some(SleepFacts {
+            id,
+            path: self.path_of(id)?,
+            sleep,
+            pictures_allowed: !list.is_some_and(PageEdits::has_protected_pages),
+        })
     }
 
     /// What a tab's pictures are about, as the session has it, for telling if a sleep file's are.
@@ -1772,7 +1969,9 @@ impl<L: DocLoader> Session<L> {
             return false;
         }
         let Some((stamp, path)) = self.sleep_to_read(id) else { return false };
-        let Some(sleep) = self.history.as_ref().and_then(|source| source.read_sleep(stamp, &path)) else { return false };
+        let Some(sleep) = self.history.as_ref().and_then(|source| source.read_sleep(stamp, &path)) else {
+            return false;
+        };
         self.wake_from_sleep(id, &sleep);
         self.just_read = Some((id, sleep));
         self.woken_from_file.push(id);
@@ -1790,7 +1989,15 @@ impl<L: DocLoader> Session<L> {
     }
 
     pub(crate) fn wake_from_sleep(&mut self, id: TabId, sleep: &sleep::SleepFile) {
-        let facts = DocFacts { page_count: sleep.file_pages, byte_len: sleep.file.size, encrypted: false, version: "".into(), title: None, toc: sleep.toc.clone(), renderer_only: sleep.renderer_only };
+        let facts = DocFacts {
+            page_count: sleep.file_pages,
+            byte_len: sleep.file.size,
+            encrypted: false,
+            version: "".into(),
+            title: None,
+            toc: sleep.toc.clone(),
+            renderer_only: sleep.renderer_only,
+        };
         self.give_woken(id, Ok(facts), Some(sleep.file));
         if let Some(tab) = self.tab_mut(id) {
             tab.from_sleep = Some(sleep.version.unwrap_or(0));
@@ -1832,14 +2039,22 @@ impl<L: DocLoader> Session<L> {
 
     /// What's waiting to go in journals: which to remove, and what to append to which. Copied, not taken: operations stay until [`Self::journal_outcome`] says they're in the file, so nothing's lost if the disk refuses, and nothing goes twice if one journal fails and another doesn't. A list's first time here gets its journal's name.
     pub fn journal_work(&mut self) -> JournalWork {
-        let ids: Vec<TabId> = self.edits.iter().filter(|(id, edits)| edits.journal_waiting().is_some_and(|(_, ops)| !ops.is_empty()) || self.fresh_journals.iter().any(|(tab, _, _)| tab == *id)).map(|(id, _)| *id).collect();
+        let ids: Vec<TabId> = self
+            .edits
+            .iter()
+            .filter(|(id, edits)| edits.journal_waiting().is_some_and(|(_, ops)| !ops.is_empty()) || self.fresh_journals.iter().any(|(tab, _, _)| tab == *id))
+            .map(|(id, _)| *id)
+            .collect();
         let mut appends = self.departing.clone();
         for id in ids {
             if let Some(append) = self.append_for(id) {
                 appends.push(append);
             }
         }
-        JournalWork { retired: std::mem::take(&mut self.retired_journals).into_iter().map(String::from).collect(), appends }
+        JournalWork {
+            retired: std::mem::take(&mut self.retired_journals).into_iter().map(String::from).collect(),
+            appends,
+        }
     }
 
     fn append_for(&mut self, id: TabId) -> Option<JournalAppend> {
@@ -1851,9 +2066,27 @@ impl<L: DocLoader> Session<L> {
         // A journal starting again has all of it in its first line, whatever's come since.
         if let Some((_, _, replaces)) = self.fresh_journals.iter().find(|(tab, _, _)| *tab == id) {
             header.keeping = edits.keeping().map(edit::AddedSource::to_record);
-            return Some(JournalAppend { tab: id, name, header, through, ops: Vec::new(), closing: false, base: Some(edits.to_record()), replaces: replaces.clone() });
+            return Some(JournalAppend {
+                tab: id,
+                name,
+                header,
+                through,
+                ops: Vec::new(),
+                closing: false,
+                base: Some(edits.to_record()),
+                replaces: replaces.clone(),
+            });
         }
-        Some(JournalAppend { tab: id, name, header, through, ops: ops.to_vec(), closing: false, base: None, replaces: None })
+        Some(JournalAppend {
+            tab: id,
+            name,
+            header,
+            through,
+            ops: ops.to_vec(),
+            closing: false,
+            base: None,
+            replaces: None,
+        })
     }
 
     /// What came of [`Self::journal_work`]: what's in the file can go from here.
@@ -1890,7 +2123,9 @@ impl<L: DocLoader> Session<L> {
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
             let name = self.journal_name_for(id);
-            let (Some(tab), Some(path), Some(list)) = (self.tab(id), self.path_of(id), self.edits_record(id)) else { continue };
+            let (Some(tab), Some(path), Some(list)) = (self.tab(id), self.path_of(id), self.edits_record(id)) else {
+                continue;
+            };
             out.push((name, JournalHeader::new(id.0, &path, tab.stamp, tab.page_count, 0), list));
         }
         out
@@ -1898,12 +2133,18 @@ impl<L: DocLoader> Session<L> {
 
     /// Every list in full by its journal's name, for reading back.
     pub fn lists_by_journal(&self) -> HashMap<String, record::EditsRecord> {
-        self.journals.iter().filter_map(|(id, name)| Some((name.to_string(), self.edits.get(id)?.to_record()))).collect()
+        self.journals
+            .iter()
+            .filter_map(|(id, name)| Some((name.to_string(), self.edits.get(id)?.to_record())))
+            .collect()
     }
 
     /// Whether there's anything for [`Self::journal_work`], which is asked often and costs a look per edited tab.
     pub fn has_journal_work(&self) -> bool {
-        !self.retired_journals.is_empty() || !self.departing.is_empty() || !self.fresh_journals.is_empty() || self.edits.values().any(|edits| edits.journal_waiting().is_some_and(|(_, ops)| !ops.is_empty()))
+        !self.retired_journals.is_empty()
+            || !self.departing.is_empty()
+            || !self.fresh_journals.is_empty()
+            || self.edits.values().any(|edits| edits.journal_waiting().is_some_and(|(_, ops)| !ops.is_empty()))
     }
 
     /// Whether a journal has been retired, or a tab with one has closed, which wants writing at once.
@@ -1966,7 +2207,14 @@ impl<L: DocLoader> Session<L> {
         let kept = kept.or_else(|| {
             saved_as?;
             let tab = self.tab(id)?;
-            Some(edit::AddedSource { path: self.path_of(id)?.into_boxed_path(), page_count: tab.page_count, stamp: tab.stamp, kept: false, protected: tab.encrypted, holds: None })
+            Some(edit::AddedSource {
+                path: self.path_of(id)?.into_boxed_path(),
+                page_count: tab.page_count,
+                stamp: tab.stamp,
+                kept: false,
+                protected: tab.encrypted,
+                holds: None,
+            })
         });
         self.retire_sleep_file(id);
         let rebased = self.edits.get_mut(&id).map(|list| list.rebase_on_saved(pages, kept.clone()));
@@ -1976,7 +2224,10 @@ impl<L: DocLoader> Session<L> {
             None => self.retire_kept(kept.filter(|kept| kept.kept).map(|kept| kept.path).into_iter().collect()),
             // Something else was written, so nothing in the history's about that file.
             Some(None) => {
-                rolled_off = self.edits.get(&id).map_or(0, |list| list.summary().undo as usize + list.summary().redo as usize);
+                rolled_off = self
+                    .edits
+                    .get(&id)
+                    .map_or(0, |list| list.summary().undo as usize + list.summary().redo as usize);
                 self.retire_kept(kept.filter(|kept| kept.kept).map(|kept| kept.path).into_iter().collect());
                 self.let_go_of_list(id);
             }
@@ -2037,11 +2288,33 @@ impl<L: DocLoader> Session<L> {
         let tab = self.tab(id).ok_or(SessionError::NoSuchTab)?;
         let path = self.path_of(id).ok_or(SessionError::NoSuchTab)?;
         let snapshot = match self.edits.get(&id).filter(|list| list.is_edited()) {
-            Some(list) => SaveSnapshot { path, stamp: tab.stamp, file_pages: list.file_pages(), slots: list.slots().to_vec(), added: list.added_sources().to_vec(), holds_owner_edits: list.holds_owner_edits(), needs_own_pages: list.needs_own_pages() },
+            Some(list) => SaveSnapshot {
+                path,
+                stamp: tab.stamp,
+                file_pages: list.file_pages(),
+                slots: list.slots().to_vec(),
+                added: list.added_sources().to_vec(),
+                holds_owner_edits: list.holds_owner_edits(),
+                needs_own_pages: list.needs_own_pages(),
+            },
             // A Save As of the document as it is: every page in its place.
             None if even_unedited => {
                 let pages = tab.page_count;
-                SaveSnapshot { path, stamp: tab.stamp, file_pages: pages, slots: (0..pages).map(|page| edit::PageSlot { source: 0, page, quarter_turns: 0 }).collect(), added: Vec::new(), holds_owner_edits: false, needs_own_pages: false }
+                SaveSnapshot {
+                    path,
+                    stamp: tab.stamp,
+                    file_pages: pages,
+                    slots: (0..pages)
+                        .map(|page| edit::PageSlot {
+                            source: 0,
+                            page,
+                            quarter_turns: 0,
+                        })
+                        .collect(),
+                    added: Vec::new(),
+                    holds_owner_edits: false,
+                    needs_own_pages: false,
+                }
             }
             None => return Ok(None),
         };
@@ -2132,7 +2405,10 @@ impl<L: DocLoader> Session<L> {
         let place = self.place_of(id);
         self.let_go_of_list(id);
         if let Some(tab) = self.tab_mut(id)
-            && matches!(tab.notice.as_deref(), Some(FileNotice::Changed | FileNotice::EditsUnreadable | FileNotice::HistoryRolledOff))
+            && matches!(
+                tab.notice.as_deref(),
+                Some(FileNotice::Changed | FileNotice::EditsUnreadable | FileNotice::HistoryRolledOff)
+            )
         {
             tab.notice = None;
         }
@@ -2164,8 +2440,18 @@ impl<L: DocLoader> Session<L> {
             }
             text[..end].to_string()
         };
-        let (current, current_tab) = if query == self.find.query { (self.find.current, self.find.current_tab) } else { (None, None) };
-        self.find = FindRecord { open, query: cut(query), draft: cut(draft), current, current_tab };
+        let (current, current_tab) = if query == self.find.query {
+            (self.find.current, self.find.current_tab)
+        } else {
+            (None, None)
+        };
+        self.find = FindRecord {
+            open,
+            query: cut(query),
+            draft: cut(draft),
+            current,
+            current_tab,
+        };
     }
 
     /// The hit Find went to last, by its place, for the record.
@@ -2319,12 +2605,78 @@ impl<L: DocLoader> Session<L> {
 
     /// The whole session as a record, with the host's own part at its defaults for the host to fill in. Every field is named here, with no `..`, so one added to a tab or to the view doesn't compile until it's carried or said not to be. A tab's edits go by journal, and [`Self::edits_record`] gives them whole.
     pub fn to_record(&self) -> SessionRecord {
-        let Self { loader: _, view, tabs, active, next_id, warm: _, dirs: _, dir_ids: _, edits, wake_failed: _, asleep, started: _, held: _, sleep_files: _, just_read: _, woken_from_file: _, left_warm: _, draws: _, woken: _, place_lost: _, find, edit_mode, journaling: _, journals, fresh_journals: _, retired_journals: _, departing: _, history: _, agent_at_full: _, generated: _, comparison , saving: _, saved_over: _, jumps: _, recent, recent_version: _ } = self;
-        let ViewSettings { paper, sidebar_hidden, agent_icon_hidden } = *view;
+        let Self {
+            loader: _,
+            view,
+            tabs,
+            active,
+            next_id,
+            warm: _,
+            dirs: _,
+            dir_ids: _,
+            edits,
+            wake_failed: _,
+            asleep,
+            started: _,
+            held: _,
+            sleep_files: _,
+            just_read: _,
+            woken_from_file: _,
+            left_warm: _,
+            draws: _,
+            woken: _,
+            place_lost: _,
+            find,
+            edit_mode,
+            journaling: _,
+            journals,
+            fresh_journals: _,
+            retired_journals: _,
+            departing: _,
+            history: _,
+            agent_at_full: _,
+            generated: _,
+            comparison,
+            saving: _,
+            saved_over: _,
+            jumps: _,
+            recent,
+            recent_version: _,
+        } = self;
+        let ViewSettings {
+            paper,
+            sidebar_hidden,
+            agent_icon_hidden,
+        } = *view;
         let tabs = tabs
             .iter()
             .map(|tab| {
-                let TabRecord { from_sleep: _, encrypted: _, password, touched: _, id, dir: _, file_name: _, name: _, page, page_count, toc_open, problem: _, renderer_only, stamp, place, view_rotation, spread, selection, notice, place_dirty: _, contents_verdict: _, generated_contents, folds, trail } = tab;
+                let TabRecord {
+                    from_sleep: _,
+                    encrypted: _,
+                    password,
+                    touched: _,
+                    id,
+                    dir: _,
+                    file_name: _,
+                    name: _,
+                    page,
+                    page_count,
+                    toc_open,
+                    problem: _,
+                    renderer_only,
+                    stamp,
+                    place,
+                    view_rotation,
+                    spread,
+                    selection,
+                    notice,
+                    place_dirty: _,
+                    contents_verdict: _,
+                    generated_contents,
+                    folds,
+                    trail,
+                } = tab;
                 TabEntry {
                     id: id.0,
                     path: PathField::from_path(&self.path_of(*id).unwrap_or_default()),
@@ -2348,9 +2700,28 @@ impl<L: DocLoader> Session<L> {
                 }
             })
             .collect();
-        let comparison = comparison.as_ref().map(|comparison| record::ComparisonRecord { tabs: comparison.tabs.iter().map(|tab| tab.0).collect(), synced: comparison.synced, sync_from: comparison.sync_from.clone() });
+        let comparison = comparison.as_ref().map(|comparison| record::ComparisonRecord {
+            tabs: comparison.tabs.iter().map(|tab| tab.0).collect(),
+            synced: comparison.synced,
+            sync_from: comparison.sync_from.clone(),
+        });
         let recent = recent.iter().map(|path| PathField::from_path(path)).collect();
-        SessionRecord { app: record::AppRecord::default(), view: ViewRecord { paper: paper.map(Paper::to_record), focus: false, sidebar_hidden, agent_icon_hidden }, find: find.clone(), edit_mode: *edit_mode, active: active.map(|id| id.0), next_id: *next_id, tabs, comparison, recent }
+        SessionRecord {
+            app: record::AppRecord::default(),
+            view: ViewRecord {
+                paper: paper.map(Paper::to_record),
+                focus: false,
+                sidebar_hidden,
+                agent_icon_hidden,
+            },
+            find: find.clone(),
+            edit_mode: *edit_mode,
+            active: active.map(|id| id.0),
+            next_id: *next_id,
+            tabs,
+            comparison,
+            recent,
+        }
     }
 
     /// A tab's edits whole, as QA reads them and for a journal's checkpoint.
@@ -2366,7 +2737,13 @@ impl<L: DocLoader> Session<L> {
                 places.push((tab.id.0, tab.page, tab.place));
             }
         }
-        PlaceDelta { seq, active: self.active.map(|id| id.0), places, contents_scroll: None, focus: None }
+        PlaceDelta {
+            seq,
+            active: self.active.map(|id| id.0),
+            places,
+            contents_scroll: None,
+            focus: None,
+        }
     }
 
     /// **Puts the session back as a record has it.** No file is opened: every tab comes back cold, and its name and place are all it costs. Replaces what's here. The caller reads journals, and gets the active tab's file read, and checks what's become of the rest, each off this lock.
@@ -2390,12 +2767,28 @@ impl<L: DocLoader> Session<L> {
         self.comparison = None;
         self.next_id = record.next_id;
         self.find = record.find.clone();
-        self.recent = record.recent.iter().filter(|path| path.fits()).filter_map(PathField::to_path).filter(|path| path.is_absolute()).take(MAX_RECENT).collect();
+        self.recent = record
+            .recent
+            .iter()
+            .filter(|path| path.fits())
+            .filter_map(PathField::to_path)
+            .filter(|path| path.is_absolute())
+            .take(MAX_RECENT)
+            .collect();
         self.recent_version += 1;
         self.edit_mode = record.edit_mode;
         let sidebar_hidden = record.view.sidebar_comes_back_hidden();
-        let ViewRecord { paper, focus: _, sidebar_hidden: _, agent_icon_hidden } = record.view;
-        self.view = ViewSettings { paper: paper.map(Paper::from_record), sidebar_hidden, agent_icon_hidden };
+        let ViewRecord {
+            paper,
+            focus: _,
+            sidebar_hidden: _,
+            agent_icon_hidden,
+        } = record.view;
+        self.view = ViewSettings {
+            paper: paper.map(Paper::from_record),
+            sidebar_hidden,
+            agent_icon_hidden,
+        };
         self.tabs.reserve_exact(record.tabs.len());
         for entry in &record.tabs {
             let Some(path) = entry.path.to_path() else { continue };
@@ -2459,7 +2852,13 @@ impl<L: DocLoader> Session<L> {
             let mut comparison = compare::Comparison::new(saved.tabs.iter().copied().map(TabId).filter(|id| self.tab(*id).is_some()).collect()).ok()?;
             if saved.synced && saved.sync_from.len() == saved.tabs.len() {
                 comparison.synced = true;
-                comparison.sync_from = saved.tabs.iter().zip(&saved.sync_from).filter(|(id, _)| comparison.contains(TabId(**id))).map(|(_, page)| *page).collect();
+                comparison.sync_from = saved
+                    .tabs
+                    .iter()
+                    .zip(&saved.sync_from)
+                    .filter(|(id, _)| comparison.contains(TabId(**id)))
+                    .map(|(_, page)| *page)
+                    .collect();
             }
             Some(comparison)
         });
@@ -2503,7 +2902,15 @@ impl<L: DocLoader> Session<L> {
     }
 
     /// Adds another PDF's pages from facts already read, for a caller that reads the file without holding the session. A file only the renderer can read can't be added: Save couldn't write it.
-    pub fn insert_pdf_with_facts(&mut self, id: TabId, by: Author, at: u32, path: &Path, facts: &DocFacts, stamp: Option<FileStamp>) -> Result<(), SessionError> {
+    pub fn insert_pdf_with_facts(
+        &mut self,
+        id: TabId,
+        by: Author,
+        at: u32,
+        path: &Path,
+        facts: &DocFacts,
+        stamp: Option<FileStamp>,
+    ) -> Result<(), SessionError> {
         if facts.renderer_only {
             return Err(SessionError::RendererOnly);
         }
@@ -2520,14 +2927,36 @@ impl<L: DocLoader> Session<L> {
             return None;
         }
         let Some(edits) = self.edits.get(&id) else {
-            return (position < tab.page_count).then(|| Some(PageSource { path: self.path_of(id)?, page: position, quarter_turns: 0, added: false, expected: None })).flatten();
+            return (position < tab.page_count)
+                .then(|| {
+                    Some(PageSource {
+                        path: self.path_of(id)?,
+                        page: position,
+                        quarter_turns: 0,
+                        added: false,
+                        expected: None,
+                    })
+                })
+                .flatten();
         };
         let slot = *edits.slots().get(position as usize)?;
         match slot.source {
-            0 => Some(PageSource { path: self.path_of(id)?, page: slot.page, quarter_turns: slot.quarter_turns, added: false, expected: Some(tab.stamp) }),
+            0 => Some(PageSource {
+                path: self.path_of(id)?,
+                page: slot.page,
+                quarter_turns: slot.quarter_turns,
+                added: false,
+                expected: Some(tab.stamp),
+            }),
             source => {
                 let added = edits.added_sources().get(usize::from(source) - 1)?;
-                Some(PageSource { path: added.path.to_path_buf(), page: slot.page, quarter_turns: slot.quarter_turns, added: true, expected: Some(added.stamp) })
+                Some(PageSource {
+                    path: added.path.to_path_buf(),
+                    page: slot.page,
+                    quarter_turns: slot.quarter_turns,
+                    added: true,
+                    expected: Some(added.stamp),
+                })
             }
         }
     }
@@ -2549,7 +2978,11 @@ impl<L: DocLoader> Session<L> {
     /// **The version of its file a save moved this tab on from,** while it's still on the version that save wrote: every page of that is a page that was shown before, as it was shown, in the same place. `None` once anything else has happened to the file.
     pub fn saved_from(&self, id: TabId) -> Option<FileStamp> {
         let now = self.own_stamp(id)?;
-        self.saved_over.iter().rev().find(|(tab, _, after)| *tab == id && *after == now).map(|(_, before, _)| *before)
+        self.saved_over
+            .iter()
+            .rev()
+            .find(|(tab, _, after)| *tab == id && *after == now)
+            .map(|(_, before, _)| *before)
     }
 
     /// Notes that a page finished drawing, or couldn't be.
@@ -2587,14 +3020,21 @@ impl<L: DocLoader> Session<L> {
 
     /// Whether a tab's pages can be edited now: it's there, more than the renderer can read its file, and its edits can be read. What greys out the panel's Rotate. Cheap: no list is woken for it.
     pub fn can_edit_pages(&self, id: TabId) -> bool {
-        self.tab(id).is_some_and(|tab| !tab.renderer_only && !matches!(tab.notice.as_deref(), Some(FileNotice::EditsUnreadable)))
+        self.tab(id)
+            .is_some_and(|tab| !tab.renderer_only && !matches!(tab.notice.as_deref(), Some(FileNotice::EditsUnreadable)))
     }
 
     /// The panel's Rotate, by the owner. Outside edit mode it turns every page together, as one step that one undo takes back; in edit mode, the page being read. Owner, 2026-11-07: "When not in edit mode rotate page will rotate all pages together (it still enables save to commit the adjustment). Usefull when there is a scan issue or similar, for a quick fix."
     pub fn rotate_from_panel(&mut self, id: TabId, quarter_turns: i32) -> Result<(), SessionError> {
         let page = self.tab(id).ok_or(SessionError::NoSuchTab)?.page;
         let one_page = self.edit_mode;
-        self.edit_pages_as(id, Author::Owner, |edits| if one_page { edits.rotate(page, 1, quarter_turns) } else { edits.rotate(0, edits.len(), quarter_turns) })
+        self.edit_pages_as(id, Author::Owner, |edits| {
+            if one_page {
+                edits.rotate(page, 1, quarter_turns)
+            } else {
+                edits.rotate(0, edits.len(), quarter_turns)
+            }
+        })
     }
 
     /// [`Self::redo_edit`] for whoever's asking.
@@ -2698,7 +3138,11 @@ impl<L: DocLoader> Session<L> {
         }
         if self.active == Some(id) {
             self.active = None;
-            let next = self.tabs.get(index).or_else(|| index.checked_sub(1).and_then(|i| self.tabs.get(i))).map(|t| t.id);
+            let next = self
+                .tabs
+                .get(index)
+                .or_else(|| index.checked_sub(1).and_then(|i| self.tabs.get(i)))
+                .map(|t| t.id);
             if let Some(next) = next {
                 self.activate(next);
             }
@@ -2714,7 +3158,19 @@ impl<L: DocLoader> Session<L> {
         let mut toc_open = false;
         for tab in &self.tabs {
             let is_active = self.active == Some(tab.id);
-            rows.push(SidebarRow { kind: RowKind::Tab, tab: tab.id, text: &tab.name, page: None, depth: 0, current: is_active, notice: tab_notice_words(tab, self.has_list(tab.id)), action: None, entry: NONE, expandable: false, expanded: false });
+            rows.push(SidebarRow {
+                kind: RowKind::Tab,
+                tab: tab.id,
+                text: &tab.name,
+                page: None,
+                depth: 0,
+                current: is_active,
+                notice: tab_notice_words(tab, self.has_list(tab.id)),
+                action: None,
+                entry: NONE,
+                expandable: false,
+                expanded: false,
+            });
             if !is_active {
                 continue;
             }
@@ -2726,7 +3182,19 @@ impl<L: DocLoader> Session<L> {
                 let view = self.generated_view(tab.id);
                 let note = contents_note(tab.contents_verdict, view, tab.generated_contents, toc.entries().len());
                 if let Some((text, hover, action)) = note {
-                    rows.push(SidebarRow { kind: RowKind::Note, tab: tab.id, text, page: None, depth: 0, current: false, notice: Some(hover), action, entry: NONE, expandable: false, expanded: false });
+                    rows.push(SidebarRow {
+                        kind: RowKind::Note,
+                        tab: tab.id,
+                        text,
+                        page: None,
+                        depth: 0,
+                        current: false,
+                        notice: Some(hover),
+                        action,
+                        entry: NONE,
+                        expandable: false,
+                        expanded: false,
+                    });
                 }
                 let shown = match view {
                     Some(GeneratedView::Ready(generated)) if tab.generated_contents => generated,
@@ -2738,7 +3206,14 @@ impl<L: DocLoader> Session<L> {
         }
         let edited = self.active.is_some_and(|id| self.is_edited(id));
         let undone_owner_steps = self.active.is_some_and(|id| self.has_undone_owner_steps(id));
-        SidebarModel { rows, rail_filled, toc_open, place, edited, undone_owner_steps }
+        SidebarModel {
+            rows,
+            rail_filled,
+            toc_open,
+            place,
+            edited,
+            undone_owner_steps,
+        }
     }
 
     /// Where this tab's generated contents stand, if anyone's asked.
@@ -2754,7 +3229,9 @@ impl<L: DocLoader> Session<L> {
         self.generated.retain(|(tab, _)| *tab != id);
         self.generated.push((id, view));
         while self.generated.len() > MAX_GENERATED_VIEWS {
-            let Some(oldest) = self.generated.iter().position(|(tab, _)| Some(*tab) != self.active) else { break };
+            let Some(oldest) = self.generated.iter().position(|(tab, _)| Some(*tab) != self.active) else {
+                break;
+            };
             self.generated.remove(oldest);
         }
     }
@@ -2773,7 +3250,11 @@ impl<L: DocLoader> Session<L> {
 
     /// Tabs whose generated contents are being made.
     pub fn generated_making(&self) -> Vec<TabId> {
-        self.generated.iter().filter(|(_, view)| *view == GeneratedView::Making).map(|(tab, _)| *tab).collect()
+        self.generated
+            .iter()
+            .filter(|(_, view)| *view == GeneratedView::Making)
+            .map(|(tab, _)| *tab)
+            .collect()
     }
 
     /// Shows a tab's generated contents, or its own. The choice is kept in the record, and the file is never changed. What's folded goes, as it was about the other list's entries.
@@ -2851,7 +3332,10 @@ impl<L: DocLoader> Session<L> {
         for id in tabs {
             self.wake_list(*id);
         }
-        let reading = reading.filter(|id| tabs.contains(id)).or(self.active.filter(|id| tabs.contains(id))).unwrap_or(tabs[0]);
+        let reading = reading
+            .filter(|id| tabs.contains(id))
+            .or(self.active.filter(|id| tabs.contains(id)))
+            .unwrap_or(tabs[0]);
         // Synced scroll stays on through a change of tabs, starting again from where each is now.
         let synced = self.comparison.as_ref().is_some_and(|was| was.synced);
         self.comparison = Some(comparison);
@@ -2872,7 +3356,13 @@ impl<L: DocLoader> Session<L> {
     /// What a ⌘-click on this tab would wake from cold, and its file, to read with the session free: the tab joining, or the pane read next if the one being read leaves. `None` if nothing needs reading.
     pub fn wake_for_compare_click(&mut self, id: TabId) -> Option<(TabId, PathBuf)> {
         let joining = !self.comparison.as_ref().is_some_and(|comparison| comparison.contains(id));
-        let next = if joining { id } else if self.active == Some(id) { self.pane_after(id)? } else { return None };
+        let next = if joining {
+            id
+        } else if self.active == Some(id) {
+            self.pane_after(id)?
+        } else {
+            return None;
+        };
         if self.active == Some(next) {
             return None;
         }
@@ -2882,7 +3372,10 @@ impl<L: DocLoader> Session<L> {
     /// The panes a comparison of these tabs would wake from cold, with their files, to read with the session free before [`Self::compare`].
     pub fn wake_for_compare(&mut self, tabs: &[TabId]) -> Vec<(TabId, PathBuf)> {
         let active = self.active;
-        tabs.iter().filter(|id| active != Some(**id)).filter_map(|id| self.file_to_wake_now(*id)).collect()
+        tabs.iter()
+            .filter(|id| active != Some(**id))
+            .filter_map(|id| self.file_to_wake_now(*id))
+            .collect()
     }
 
     /// **⌘-click and ⌃-click on a tab** (owner, 2026-11-08: "Ctrl clicking more then one pdf should enable comparison view"). A tab not in it joins at the right and is the one read; one in it leaves; down to one, that one's alone. On the only tab showing, nothing.
@@ -2891,7 +3384,9 @@ impl<L: DocLoader> Session<L> {
             return Err(compare::CompareError::NoSuchTab);
         }
         let Some(mut comparison) = self.comparison.clone() else {
-            let Some(active) = self.active.filter(|active| *active != id) else { return Ok(compare::CompareChange::Nothing) };
+            let Some(active) = self.active.filter(|active| *active != id) else {
+                return Ok(compare::CompareChange::Nothing);
+            };
             self.compare(&[active, id], Some(id))?;
             return Ok(compare::CompareChange::Added);
         };
@@ -2950,7 +3445,10 @@ impl<L: DocLoader> Session<L> {
 
     /// Where synced scroll sends the other panes when `leader` is on `page`: see [`compare::Comparison::sync_targets`].
     pub fn sync_targets(&self, leader: TabId, page: u32) -> Vec<(TabId, u32)> {
-        self.comparison.as_ref().map(|comparison| comparison.sync_targets(leader, page, |id| self.pages_in(id))).unwrap_or_default()
+        self.comparison
+            .as_ref()
+            .map(|comparison| comparison.sync_targets(leader, page, |id| self.pages_in(id)))
+            .unwrap_or_default()
     }
 
     /// What's said about the panes' lengths, if anything.
@@ -2971,7 +3469,8 @@ impl<L: DocLoader> Session<L> {
             let clean = !self.has_list(left);
             self.touch(left);
             if let Some(tab) = self.tab_mut(left)
-                && ((clean && matches!(tab.notice.as_deref(), Some(FileNotice::Moved { .. } | FileNotice::Changed))) || matches!(tab.notice.as_deref(), Some(FileNotice::HistoryRolledOff)))
+                && ((clean && matches!(tab.notice.as_deref(), Some(FileNotice::Moved { .. } | FileNotice::Changed)))
+                    || matches!(tab.notice.as_deref(), Some(FileNotice::HistoryRolledOff)))
             {
                 tab.notice = None;
             }
@@ -3159,7 +3658,9 @@ fn following_chain(toc: &Toc, tab: &TabRecord, edits: Option<&PageEdits>) -> Has
 
 /// Whether a section's children show: as the reader folded it, or else as following the place has it.
 fn section_open(folds: Option<&[(u32, bool)]>, chain: &HashSet<u32>, entry: u32) -> bool {
-    folds.and_then(|folds| folds.iter().rev().find(|(at, _)| *at == entry)).map_or_else(|| chain.contains(&entry), |(_, open)| *open)
+    folds
+        .and_then(|folds| folds.iter().rev().find(|(at, _)| *at == entry))
+        .map_or_else(|| chain.contains(&entry), |(_, open)| *open)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3196,7 +3697,9 @@ impl SessionError {
             Self::Open(error) => error.message(),
             Self::NoSuchTab => "That tab isn't open.",
             Self::TooManyTabs => "Too many PDFs are open. Close some and try again.",
-            Self::EditsUnreadable => "This tab's edits can't be read back just now, so nothing more was done to them. They're kept, and it tries again each time. Discarding them is what gives up on them.",
+            Self::EditsUnreadable => {
+                "This tab's edits can't be read back just now, so nothing more was done to them. They're kept, and it tries again each time. Discarding them is what gives up on them."
+            }
             Self::UnsavedChanges => "This PDF has unsaved changes.",
             Self::Edit(error) => error.message(),
             Self::RendererOnly => "RectoPDF can draw this file but can't read its structure, so its pages can't be changed.",
@@ -3222,7 +3725,15 @@ mod tests {
             if path.to_string_lossy().contains("missing") {
                 return Err(OpenError::NotFound);
             }
-            Ok(DocFacts { page_count: self.pages, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+            Ok(DocFacts {
+                page_count: self.pages,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::default(),
+                renderer_only: false,
+            })
         }
     }
 
@@ -3236,7 +3747,18 @@ mod tests {
         let mut s = session(3);
         let id = s.open(Path::new("/d/a.pdf")).unwrap();
         s.edit_pages(id, |edits| edits.rotate(0, 1, 1)).unwrap();
-        s.saved(id, FileStamp { size: 2, mtime_ns: 2, device: 2, inode: 2 }, 3, None, None);
+        s.saved(
+            id,
+            FileStamp {
+                size: 2,
+                mtime_ns: 2,
+                device: 2,
+                inode: 2,
+            },
+            3,
+            None,
+            None,
+        );
         s.edit_pages(id, |edits| edits.rotate(1, 1, 1)).unwrap();
         assert_eq!(s.close_after_save(id), Ok(false), "an edit since: it stays");
         assert!(s.tab(id).is_some() && s.is_edited(id), "and the edit stands");
@@ -3253,7 +3775,12 @@ mod tests {
     /// Failure (the owner's bench file, 2026-11-08): after a save the page view can't tell the new version of the file from any other, so it lays the pages out afresh and the zoom shown and the place change. The session says which version a save moved the tab on from while the tab's still on what that save wrote, and stops saying it once the file is anything else: a carry-over onto someone else's file would show it at the wrong size.
     #[test]
     fn a_save_says_which_version_it_moved_on_from_and_only_while_it_holds() {
-        let stamp = |n: u64| FileStamp { size: n, mtime_ns: n as i64, device: 1, inode: 1 };
+        let stamp = |n: u64| FileStamp {
+            size: n,
+            mtime_ns: n as i64,
+            device: 1,
+            inode: 1,
+        };
         let mut s = session(3);
         let id = s.open(Path::new("/d/a.pdf")).unwrap();
         s.apply_file_status(id, FileStatus::Same(stamp(1)));
@@ -3295,7 +3822,16 @@ mod tests {
         assert_eq!(s.close(id), Err(SessionError::Saving));
         assert_eq!(s.begin_save(id, true).err(), Some(SessionError::Saving), "one save at a time");
         assert!(s.any_saving() && !s.can_go_dormant(id), "and it's held, so it can't go dormant");
-        s.save_prepared(id, FileStamp { size: 9, mtime_ns: 9, device: 9, inode: 9 }, None);
+        s.save_prepared(
+            id,
+            FileStamp {
+                size: 9,
+                mtime_ns: 9,
+                device: 9,
+                inode: 9,
+            },
+            None,
+        );
         assert!(s.page_edits(id).unwrap().saving().is_some());
         s.end_save(id);
         assert!(!s.is_saving(id) && !s.any_saving());
@@ -3324,7 +3860,15 @@ mod tests {
 
     impl DocLoader for NameLoader {
         fn load(&self, _path: &Path) -> Result<recto_core::DocFacts, recto_core::OpenError> {
-            Ok(recto_core::DocFacts { page_count: 1, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: recto_core::Toc::default(), renderer_only: false })
+            Ok(recto_core::DocFacts {
+                page_count: 1,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: recto_core::Toc::default(),
+                renderer_only: false,
+            })
         }
     }
 
@@ -3332,7 +3876,11 @@ mod tests {
     #[test]
     fn warm_paper_keeps_body_text_readable_and_reads_as_warm() {
         for ink in [0x00_00_00, 0x22_22_22, 0x44_44_44, 0x59_59_59] {
-            assert!(contrast_ratio(ink, WARM_PAPER) >= 4.5, "{ink:06x} on {WARM_PAPER:06x}: {}", contrast_ratio(ink, WARM_PAPER));
+            assert!(
+                contrast_ratio(ink, WARM_PAPER) >= 4.5,
+                "{ink:06x} on {WARM_PAPER:06x}: {}",
+                contrast_ratio(ink, WARM_PAPER)
+            );
         }
         let (red, green, blue) = ((WARM_PAPER >> 16) & 0xFF, (WARM_PAPER >> 8) & 0xFF, WARM_PAPER & 0xFF);
         assert!(red >= green && green >= blue, "warm means red over green over blue");
@@ -3381,7 +3929,10 @@ mod tests {
                     assert!(heights.contents >= 0.0 && heights.contents <= f64::from(rows) * CONTENTS_ROW_HEIGHT);
                     assert!(heights.contents <= room * CONTENTS_MAX_SHARE + 1e-9, "{room} {tabs} {rows}: {heights:?}");
                     if f64::from(tabs) * TAB_ROW_HEIGHT + heights.contents <= room {
-                        assert!(!heights.tabs_scroll, "{room} {tabs} {rows}: all of it fits, so nothing scrolls but the contents");
+                        assert!(
+                            !heights.tabs_scroll,
+                            "{room} {tabs} {rows}: all of it fits, so nothing scrolls but the contents"
+                        );
                     }
                 }
             }
@@ -3397,14 +3948,21 @@ mod tests {
         assert_eq!(sidebar_heights(700.0, 2, 3).contents, 3.0 * CONTENTS_ROW_HEIGHT, "only what it needs");
         assert!(!sidebar_heights(700.0, 5, 1000).tabs_scroll, "what's left holds these");
         assert!(sidebar_heights(700.0, 40, 1000).tabs_scroll, "and these scroll in it");
-        assert!(sidebar_heights(100.0, 1, 1000).contents <= 100.0 - TAB_ROW_HEIGHT, "a short window keeps the tab's own row");
+        assert!(
+            sidebar_heights(100.0, 1, 1000).contents <= 100.0 - TAB_ROW_HEIGHT,
+            "a short window keeps the tab's own row"
+        );
         assert_eq!(sidebar_heights(f64::NAN, 2, 1000).contents, 0.0);
         assert_eq!(sidebar_heights(10.0, 1, 1000).contents, 0.0);
         // A note over them comes out of the same share, so the tabs keep what they had.
         let noted = sidebar_heights_with_note(700.0, 1, 1000, true);
         assert_eq!(noted.note, NOTE_ROW_HEIGHT);
         assert!((noted.contents + noted.note - most).abs() < 1e-9, "{noted:?}");
-        assert_eq!(sidebar_heights_with_note(700.0, 1, 0, true).contents, 0.0, "a note alone, for a file with no contents");
+        assert_eq!(
+            sidebar_heights_with_note(700.0, 1, 0, true).contents,
+            0.0,
+            "a note alone, for a file with no contents"
+        );
         assert_eq!(sidebar_heights_with_note(40.0, 1, 10, true).note, 0.0, "no room for it");
     }
 
@@ -3421,7 +3979,10 @@ mod tests {
             // The same section again, and the next: nothing moves until the place has really left.
             assert_eq!(follow.reached(Some(500), view(landed), 2.0, false), FollowMove::Stay, "height {height}");
             let place = 500.5 * CONTENTS_ROW_HEIGHT;
-            assert!(place >= landed + height * FOLLOW_DEAD_ZONE.0 && place <= landed + height * FOLLOW_DEAD_ZONE.1, "height {height}: {place} from {landed}");
+            assert!(
+                place >= landed + height * FOLLOW_DEAD_ZONE.0 && place <= landed + height * FOLLOW_DEAD_ZONE.1,
+                "height {height}: {place} from {landed}"
+            );
         }
     }
 
@@ -3429,7 +3990,11 @@ mod tests {
     const ROWS: u32 = 1000;
 
     fn contents_view(scroll_y: f64) -> ContentsView {
-        ContentsView { scroll_y, height: HEIGHT, rows: ROWS }
+        ContentsView {
+            scroll_y,
+            height: HEIGHT,
+            rows: ROWS,
+        }
     }
 
     fn anchor_y(row: u32) -> f64 {
@@ -3441,12 +4006,24 @@ mod tests {
     #[test]
     fn a_resize_leaves_a_list_the_reader_scrolled_alone() {
         let mut follow = ContentsFollow::default();
-        let view = ContentsView { scroll_y: 0.0, height: 400.0, rows: 200 };
+        let view = ContentsView {
+            scroll_y: 0.0,
+            height: 400.0,
+            rows: 200,
+        };
         follow.reached(Some(50), view, 0.0, false);
         follow.user_scrolled(1.0);
         follow.view_changed();
-        let later = ContentsView { scroll_y: 2000.0, height: 300.0, rows: 200 };
-        assert_eq!(follow.reached(Some(50), later, 10.0, false), FollowMove::Stay, "the same section, and it's been left alone");
+        let later = ContentsView {
+            scroll_y: 2000.0,
+            height: 300.0,
+            rows: 200,
+        };
+        assert_eq!(
+            follow.reached(Some(50), later, 10.0, false),
+            FollowMove::Stay,
+            "the same section, and it's been left alone"
+        );
         assert!(!follow.is_following(), "still theirs until the section changes");
     }
 
@@ -3454,7 +4031,11 @@ mod tests {
     #[test]
     fn folding_ends_a_move_and_opening_goes_straight_there() {
         let mut follow = ContentsFollow::default();
-        let view = |scroll_y: f64| ContentsView { scroll_y, height: 400.0, rows: 200 };
+        let view = |scroll_y: f64| ContentsView {
+            scroll_y,
+            height: 400.0,
+            rows: 200,
+        };
         follow.reached(Some(0), view(0.0), 0.0, false);
         assert_eq!(follow.reached(Some(100), view(0.0), 1.0, false), FollowMove::Move);
         assert_eq!(follow.reached(None, view(0.0), 1.1, false), FollowMove::Stay);
@@ -3470,13 +4051,31 @@ mod tests {
         let mut follow = ContentsFollow::default();
         let (height, rows) = (680.0, 100_000);
         let mut position = 0.0;
-        follow.reached(Some(0), ContentsView { scroll_y: position, height, rows }, 0.0, false);
+        follow.reached(
+            Some(0),
+            ContentsView {
+                scroll_y: position,
+                height,
+                rows,
+            },
+            0.0,
+            false,
+        );
         let steps = (seconds / DT) as u32;
         let mut shown = 0;
         for step in 0..steps {
             let now = f64::from(step) * DT;
             let row = (now * rows_per_second) as u32;
-            follow.reached(Some(row), ContentsView { scroll_y: position, height, rows }, now, false);
+            follow.reached(
+                Some(row),
+                ContentsView {
+                    scroll_y: position,
+                    height,
+                    rows,
+                },
+                now,
+                false,
+            );
             if let Some(next) = follow.step(position, DT) {
                 position = next;
             }
@@ -3504,13 +4103,31 @@ mod tests {
         impl DocLoader for Counted {
             fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
                 self.0.set(self.0.get() + 1);
-                Ok(DocFacts { page_count: 5, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+                Ok(DocFacts {
+                    page_count: 5,
+                    byte_len: 1,
+                    encrypted: false,
+                    version: "1.7".into(),
+                    title: None,
+                    toc: Toc::default(),
+                    renderer_only: false,
+                })
             }
         }
         let loads = std::rc::Rc::new(std::cell::Cell::new(0));
         let mut s = Session::new(Counted(loads.clone()));
         let ids: Vec<TabId> = (0..6).map(|index| s.open(Path::new(&format!("/d/{index}.pdf"))).unwrap()).collect();
-        let facts = |pages| Ok(DocFacts { page_count: pages, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false });
+        let facts = |pages| {
+            Ok(DocFacts {
+                page_count: pages,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::default(),
+                renderer_only: false,
+            })
+        };
         let base = loads.get();
         // Two wakes done together: both kept, each for its own tab.
         s.give_woken(ids[0], facts(11), None);
@@ -3542,22 +4159,49 @@ mod tests {
         assert_eq!(follow.reached(Some(25), view(0.0, rows), 1.0, false), FollowMove::Move);
         let landed = *run_frames(&mut follow, 0.0).last().unwrap();
         // Chapter at row 14 closes its 11 sections, and the next chapter, row 26, becomes row 15.
-        let change = ContentsRowChange { from: 15, removed: 12, inserted: 1, place_shift: -11 };
+        let change = ContentsRowChange {
+            from: 15,
+            removed: 12,
+            inserted: 1,
+            place_shift: -11,
+        };
         let by = follow.row_change(change, landed).expect("the scroll takes it up, with no slide to see");
         assert!(by < 0.0);
         follow.shifted(by);
-        assert_eq!(follow.reached(Some(15), view(landed + by, rows - 11), 2.0, false), FollowMove::Stay, "the place is where it was on screen");
+        assert_eq!(
+            follow.reached(Some(15), view(landed + by, rows - 11), 2.0, false),
+            FollowMove::Stay,
+            "the place is where it was on screen"
+        );
     }
 
     /// Failure: rows change under a reader who has scrolled the contents themselves, and what they're looking at is taken from them. Only rows above the view move the scroll then, and only by what went.
     #[test]
     fn a_reader_in_the_contents_keeps_what_they_are_looking_at() {
         let mut follow = ContentsFollow::default();
-        follow.reached(Some(0), ContentsView { scroll_y: 0.0, height: 680.0, rows: 40 }, 0.0, false);
+        follow.reached(
+            Some(0),
+            ContentsView {
+                scroll_y: 0.0,
+                height: 680.0,
+                rows: 40,
+            },
+            0.0,
+            false,
+        );
         follow.user_scrolled(1.0);
-        let closes_in_view = ContentsRowChange { from: 15, removed: 12, inserted: 1, place_shift: -11 };
+        let closes_in_view = ContentsRowChange {
+            from: 15,
+            removed: 12,
+            inserted: 1,
+            place_shift: -11,
+        };
         assert_eq!(follow.row_change(closes_in_view, 280.0), None, "in the view, they slide");
-        assert_eq!(follow.row_change(closes_in_view, 28.0 * 30.0), Some(-11.0 * 28.0), "above the view, it can't be seen");
+        assert_eq!(
+            follow.row_change(closes_in_view, 28.0 * 30.0),
+            Some(-11.0 * 28.0),
+            "above the view, it can't be seen"
+        );
     }
 
     fn run_frames(follow: &mut ContentsFollow, mut position: f64) -> Vec<f64> {
@@ -3572,7 +4216,9 @@ mod tests {
 
     fn placed_at(row: u32) -> (ContentsFollow, f64) {
         let mut follow = ContentsFollow::default();
-        let FollowMove::SetTo(y) = follow.reached(Some(row), contents_view(0.0), 100.0, false) else { panic!("the first showing goes straight there") };
+        let FollowMove::SetTo(y) = follow.reached(Some(row), contents_view(0.0), 100.0, false) else {
+            panic!("the first showing goes straight there")
+        };
         (follow, y)
     }
 
@@ -3630,7 +4276,10 @@ mod tests {
             }
             assert!(speeds.iter().all(|speed| *speed >= -peak * 0.01), "row {row}: it went backwards");
             let seconds = path.len() as f64 / 60.0;
-            assert!(seconds >= FOLLOW_SECONDS.0 * 0.7 && seconds <= FOLLOW_SECONDS.1 * 1.25, "row {row}: {seconds} s");
+            assert!(
+                seconds >= FOLLOW_SECONDS.0 * 0.7 && seconds <= FOLLOW_SECONDS.1 * 1.25,
+                "row {row}: {seconds} s"
+            );
         }
     }
 
@@ -3692,7 +4341,11 @@ mod tests {
         let path = run_frames(&mut follow, y);
         assert_eq!(*path.last().unwrap(), furthest);
         assert!(path.iter().all(|at| *at <= furthest + 0.5), "it ran past the end");
-        assert_eq!(follow.reached(Some(998), contents_view(furthest), 100.0, false), FollowMove::Stay, "and it's done");
+        assert_eq!(
+            follow.reached(Some(998), contents_view(furthest), 100.0, false),
+            FollowMove::Stay,
+            "and it's done"
+        );
     }
 
     /// Failure: a slow end never arrives, because a scroll view rounds each position to a whole device pixel, and the small step from there rounds back to the same place. Frames ran for ever, seen in the first build. Given only rounded positions, it must still end, in place.
@@ -3729,13 +4382,25 @@ mod tests {
         follow.pointer(true);
         follow.user_scrolled(100.0);
         let later = 100.0 + FOLLOW_RESUME_AFTER + 5.0;
-        assert_eq!(follow.reached(Some(120), contents_view(y), later, false), FollowMove::Stay, "the pointer's on it");
+        assert_eq!(
+            follow.reached(Some(120), contents_view(y), later, false),
+            FollowMove::Stay,
+            "the pointer's on it"
+        );
         follow.pointer(false);
         assert!(!follow.is_following(), "not until the section changes");
-        assert_eq!(follow.reached(Some(120), contents_view(y), later, false), FollowMove::Stay, "the same section, so nothing's changed");
+        assert_eq!(
+            follow.reached(Some(120), contents_view(y), later, false),
+            FollowMove::Stay,
+            "the same section, so nothing's changed"
+        );
         let (mut soon, y) = placed_at(100);
         soon.user_scrolled(100.0);
-        assert_eq!(soon.reached(Some(120), contents_view(y), 100.0 + FOLLOW_RESUME_AFTER - 0.5, false), FollowMove::Stay, "too soon");
+        assert_eq!(
+            soon.reached(Some(120), contents_view(y), 100.0 + FOLLOW_RESUME_AFTER - 0.5, false),
+            FollowMove::Stay,
+            "too soon"
+        );
         assert_eq!(follow.reached(Some(125), contents_view(y), later, false), FollowMove::Move);
         assert!(follow.is_following());
     }
@@ -3749,14 +4414,22 @@ mod tests {
         assert!(!follow.is_moving(), "what was moving stops");
         assert_eq!(follow.reached(Some(130), contents_view(y), 100.0, false), FollowMove::Stay);
         follow.pointer(false);
-        assert_eq!(follow.reached(Some(135), contents_view(y), 100.0, false), FollowMove::Move, "and picks up on the next section");
+        assert_eq!(
+            follow.reached(Some(135), contents_view(y), 100.0, false),
+            FollowMove::Move,
+            "and picks up on the next section"
+        );
     }
 
     /// Failure: Reduce Motion gets an animation anyway, or the place is lost. No frames at all, nothing moves while the place shows, and it goes straight there when it doesn't.
     #[test]
     fn reduce_motion_never_animates() {
         let (mut follow, y) = placed_at(100);
-        assert_eq!(follow.reached(Some(112), contents_view(y), 100.0, true), FollowMove::Stay, "past the dead zone, but still showing");
+        assert_eq!(
+            follow.reached(Some(112), contents_view(y), 100.0, true),
+            FollowMove::Stay,
+            "past the dead zone, but still showing"
+        );
         assert!(matches!(follow.reached(Some(400), contents_view(y), 100.0, true), FollowMove::SetTo(_)));
         assert!(!follow.is_moving());
     }
@@ -3789,7 +4462,19 @@ mod tests {
     fn a_change_of_height_brings_the_place_back() {
         let (mut follow, y) = placed_at(100);
         follow.view_changed();
-        assert!(matches!(follow.reached(Some(100), ContentsView { scroll_y: y, height: 120.0, rows: 1000 }, 100.0, false), FollowMove::SetTo(_)));
+        assert!(matches!(
+            follow.reached(
+                Some(100),
+                ContentsView {
+                    scroll_y: y,
+                    height: 120.0,
+                    rows: 1000
+                },
+                100.0,
+                false
+            ),
+            FollowMove::SetTo(_)
+        ));
     }
 
     /// Failure: rows opening above the place throw a move off, by the number of rows the host just moved past.
@@ -3843,7 +4528,11 @@ mod tests {
     fn draw_notes_go_when_the_pages_move() {
         let mut s = session(5);
         let id = s.open(Path::new("/d/a.pdf")).unwrap();
-        let note = DrawNote { tab: id, page: 0, failure: None };
+        let note = DrawNote {
+            tab: id,
+            page: 0,
+            failure: None,
+        };
         s.note_drawn(note);
         s.edit_pages(id, |e| e.move_pages(0, 1, 2)).unwrap();
         assert_eq!(s.draw_note(id, 0), None, "after an edit");
@@ -3915,7 +4604,11 @@ mod tests {
         std::fs::write(&added, b"two, longer").unwrap();
         assert!(!s.page_source(id, 0).unwrap().is_current(), "the added file changed");
         assert!(s.page_source(id, 3).unwrap().is_current(), "the tab's own file hasn't");
-        assert_eq!(s.insert_pdf(id, 0, &added), Err(SessionError::Edit(EditError::SourceChanged)), "two versions can't share page numbers");
+        assert_eq!(
+            s.insert_pdf(id, 0, &added),
+            Err(SessionError::Edit(EditError::SourceChanged)),
+            "two versions can't share page numbers"
+        );
         std::fs::remove_file(&added).unwrap();
         assert!(!s.page_source(id, 0).unwrap().is_current(), "the added file's gone");
         std::fs::write(&own, b"one, longer").unwrap();
@@ -3945,12 +4638,18 @@ mod tests {
         let mut s = session(3);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
         let three = s.page_source(a, 2).unwrap();
-        assert_eq!((three.path.as_path(), three.page, three.quarter_turns, three.added), (Path::new("/d/a.pdf"), 2, 0, false));
+        assert_eq!(
+            (three.path.as_path(), three.page, three.quarter_turns, three.added),
+            (Path::new("/d/a.pdf"), 2, 0, false)
+        );
         assert_eq!(s.page_source(a, 3), None);
         s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
         s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
         let first = s.page_source(a, 0).unwrap();
-        assert_eq!((first.path.as_path(), first.page, first.quarter_turns, first.added), (Path::new("/d/a.pdf"), 1, 1, false));
+        assert_eq!(
+            (first.path.as_path(), first.page, first.quarter_turns, first.added),
+            (Path::new("/d/a.pdf"), 1, 1, false)
+        );
         s.insert_pdf(a, 0, Path::new("/d/b.pdf")).unwrap();
         let second = s.page_source(a, 1).unwrap();
         assert_eq!((second.path.as_path(), second.page, second.added), (Path::new("/d/b.pdf"), 1, true));
@@ -3960,7 +4659,15 @@ mod tests {
 
     impl DocLoader for RendererOnlyLoader {
         fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
-            Ok(DocFacts { page_count: 4, byte_len: 1, encrypted: false, version: "".into(), title: None, toc: Toc::default(), renderer_only: true })
+            Ok(DocFacts {
+                page_count: 4,
+                byte_len: 1,
+                encrypted: false,
+                version: "".into(),
+                title: None,
+                toc: Toc::default(),
+                renderer_only: true,
+            })
         }
     }
 
@@ -3976,7 +4683,10 @@ mod tests {
         let mut other = session(3);
         let target = other.open(Path::new("/d/fine.pdf")).unwrap();
         let facts = RendererOnlyLoader.load(Path::new("/d/damaged.pdf")).unwrap();
-        assert_eq!(other.insert_pdf_with_facts(target, Author::Owner, 0, Path::new("/d/damaged.pdf"), &facts, None), Err(SessionError::RendererOnly));
+        assert_eq!(
+            other.insert_pdf_with_facts(target, Author::Owner, 0, Path::new("/d/damaged.pdf"), &facts, None),
+            Err(SessionError::RendererOnly)
+        );
         assert!(!other.is_edited(target));
     }
 
@@ -4003,29 +4713,77 @@ mod tests {
         let id = s.open(Path::new("/d/a.pdf")).unwrap();
         assert_eq!(s.contents_verdict(id), Some(ContentsVerdict::Missing));
         fn note(s: &Session<FakeLoader>) -> Option<(String, Option<ContentsAction>)> {
-            s.sidebar().rows.iter().find(|row| row.kind == RowKind::Note).map(|row| (row.text.to_string(), row.action))
+            s.sidebar()
+                .rows
+                .iter()
+                .find(|row| row.kind == RowKind::Note)
+                .map(|row| (row.text.to_string(), row.action))
         }
         assert_eq!(note(&s), Some(("Generate contents".into(), Some(ContentsAction::Generate))));
         s.choose_generated(id, true);
         s.set_generated_view(id, GeneratedView::Making);
         assert_eq!(note(&s).map(|(_, action)| action), Some(Some(ContentsAction::Stop)), "the reader can stop them");
-        let lines = [TocLine { title: "1 Introduction", page: 0, parent: NONE, depth: 0 }, TocLine { title: "2 Method", page: 5, parent: NONE, depth: 0 }];
+        let lines = [
+            TocLine {
+                title: "1 Introduction",
+                page: 0,
+                parent: NONE,
+                depth: 0,
+            },
+            TocLine {
+                title: "2 Method",
+                page: 5,
+                parent: NONE,
+                depth: 0,
+            },
+        ];
         s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
         let model = s.sidebar();
-        assert_eq!(model.rows.iter().filter(|row| row.kind == RowKind::Contents).map(|row| row.text).collect::<Vec<_>>(), ["1 Introduction", "2 Method"]);
-        assert_eq!(note(&s), Some(("Generated contents".into(), None)), "labelled, and with no contents of its own there's nothing to go back to");
+        assert_eq!(
+            model
+                .rows
+                .iter()
+                .filter(|row| row.kind == RowKind::Contents)
+                .map(|row| row.text)
+                .collect::<Vec<_>>(),
+            ["1 Introduction", "2 Method"]
+        );
+        assert_eq!(
+            note(&s),
+            Some(("Generated contents".into(), None)),
+            "labelled, and with no contents of its own there's nothing to go back to"
+        );
         assert_eq!(model.rail_filled, 1, "the rail counts entries, not the note");
         assert!(s.to_record().tabs[0].generated_contents, "the choice is kept");
         s.choose_generated(id, false);
         assert_eq!(note(&s), Some(("Show generated contents".into(), Some(ContentsAction::ShowGenerated))));
-        assert!(s.sidebar().rows.iter().all(|row| row.kind != RowKind::Contents), "the file's own, which are none");
+        assert!(
+            s.sidebar().rows.iter().all(|row| row.kind != RowKind::Contents),
+            "the file's own, which are none"
+        );
         // A file changed underneath: the old version's list goes, as an agent's `contents --generated` would find none for the new one.
         s.choose_generated(id, true);
         s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
-        s.apply_file_status(id, FileStatus::Changed(FileStamp { size: 8, mtime_ns: 8, device: 1, inode: 2 }));
+        s.apply_file_status(
+            id,
+            FileStatus::Changed(FileStamp {
+                size: 8,
+                mtime_ns: 8,
+                device: 1,
+                inode: 2,
+            }),
+        );
         let before = s.own_stamp(id);
         s.set_generated_view(id, GeneratedView::Ready(Arc::new(Toc::from_lines(&lines, false))));
-        s.apply_file_status(id, FileStatus::Changed(FileStamp { size: 9, mtime_ns: 9, device: 1, inode: 2 }));
+        s.apply_file_status(
+            id,
+            FileStatus::Changed(FileStamp {
+                size: 9,
+                mtime_ns: 9,
+                device: 1,
+                inode: 2,
+            }),
+        );
         assert!(s.generated_view(id).is_none(), "an old version's list stayed");
         // A look that started before the change comes back after it: about the old version, so it's dropped.
         assert!(before.is_some() && s.own_stamp(id) != before);
@@ -4052,20 +4810,64 @@ mod tests {
         struct Outlined;
         impl DocLoader for Outlined {
             fn load(&self, _path: &Path) -> Result<DocFacts, OpenError> {
-                let lines = [TocLine { title: "One", page: 0, parent: NONE, depth: 0 }, TocLine { title: "One a", page: 1, parent: 0, depth: 1 }, TocLine { title: "Two", page: 5, parent: NONE, depth: 0 }, TocLine { title: "Two a", page: 6, parent: 2, depth: 1 }];
-                Ok(DocFacts { page_count: 10, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::from_lines(&lines, false), renderer_only: false })
+                let lines = [
+                    TocLine {
+                        title: "One",
+                        page: 0,
+                        parent: NONE,
+                        depth: 0,
+                    },
+                    TocLine {
+                        title: "One a",
+                        page: 1,
+                        parent: 0,
+                        depth: 1,
+                    },
+                    TocLine {
+                        title: "Two",
+                        page: 5,
+                        parent: NONE,
+                        depth: 0,
+                    },
+                    TocLine {
+                        title: "Two a",
+                        page: 6,
+                        parent: 2,
+                        depth: 1,
+                    },
+                ];
+                Ok(DocFacts {
+                    page_count: 10,
+                    byte_len: 1,
+                    encrypted: false,
+                    version: "1.7".into(),
+                    title: None,
+                    toc: Toc::from_lines(&lines, false),
+                    renderer_only: false,
+                })
             }
         }
         fn shown(s: &Session<Outlined>) -> Vec<(String, bool, bool)> {
-            s.sidebar().rows.iter().filter(|row| row.kind == RowKind::Contents).map(|row| (row.text.to_string(), row.expandable, row.expanded)).collect()
+            s.sidebar()
+                .rows
+                .iter()
+                .filter(|row| row.kind == RowKind::Contents)
+                .map(|row| (row.text.to_string(), row.expandable, row.expanded))
+                .collect()
         }
         let mut s = Session::new(Outlined);
         let id = s.open(Path::new("/d/a.pdf")).unwrap();
         // On page 1, in "One": it's open by following, and "Two" isn't.
-        assert_eq!(shown(&s), [("One".into(), true, true), ("One a".into(), false, false), ("Two".into(), true, false)]);
+        assert_eq!(
+            shown(&s),
+            [("One".into(), true, true), ("One a".into(), false, false), ("Two".into(), true, false)]
+        );
         s.toggle_contents_section(id, 0);
         s.toggle_contents_section(id, 2);
-        assert_eq!(shown(&s), [("One".into(), true, false), ("Two".into(), true, true), ("Two a".into(), false, false)]);
+        assert_eq!(
+            shown(&s),
+            [("One".into(), true, false), ("Two".into(), true, true), ("Two a".into(), false, false)]
+        );
         s.toggle_contents_section(id, 1);
         assert_eq!(shown(&s).len(), 3, "an entry with nothing under it doesn't fold");
         let record = s.to_record();
@@ -4075,8 +4877,19 @@ mod tests {
         again.wake_active();
         assert_eq!(shown(&again), shown(&s), "the folds come back");
         // Another version of the file: its entries aren't these, so the folds go.
-        again.apply_file_status(again.active().unwrap(), FileStatus::Changed(FileStamp { size: 9, mtime_ns: 9, device: 1, inode: 2 }));
-        assert!(again.to_record().tabs[0].contents_folds.is_empty(), "folds by entry number stayed for another version");
+        again.apply_file_status(
+            again.active().unwrap(),
+            FileStatus::Changed(FileStamp {
+                size: 9,
+                mtime_ns: 9,
+                device: 1,
+                inode: 2,
+            }),
+        );
+        assert!(
+            again.to_record().tabs[0].contents_folds.is_empty(),
+            "folds by entry number stayed for another version"
+        );
         // Back to what following does is no fold at all.
         s.toggle_contents_section(id, 0);
         s.toggle_contents_section(id, 2);
@@ -4211,7 +5024,11 @@ mod tests {
         assert!(!s.sidebar().edited);
         // Failure: an agent's `undo` takes the owner's edit off the page, so the dot goes and this close goes through with no prompt, and the edit is gone for good.
         assert!(s.sidebar().undone_owner_steps, "the app must be able to show it");
-        assert_eq!(s.close(id), Err(SessionError::UnsavedChanges), "the owner's edit can still be redone, so closing would lose it");
+        assert_eq!(
+            s.close(id),
+            Err(SessionError::UnsavedChanges),
+            "the owner's edit can still be redone, so closing would lose it"
+        );
         s.discard_edits(id);
         assert!(!s.sidebar().undone_owner_steps);
         assert!(s.close(id).is_ok());
@@ -4292,7 +5109,10 @@ mod tests {
         let mut outcome = JournalOutcome::default();
         for append in work.appends {
             if let Some(base) = &append.base {
-                let header = JournalHeader { base_seq: append.through, ..append.header.clone() };
+                let header = JournalHeader {
+                    base_seq: append.through,
+                    ..append.header.clone()
+                };
                 files.insert(append.name.clone(), record::journal_start(&header, Some(base)));
                 if let Some(old) = append.replaces.as_ref().filter(|old| **old != append.name) {
                     files.remove(old);
@@ -4313,7 +5133,15 @@ mod tests {
                 let parsed = record::parse_journal(bytes, record::CURRENT_VERSION).unwrap();
                 let (edits, applied) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
                 assert_eq!(applied, parsed.ops.len());
-                (name.clone(), RestoredEdits { edits, seq: parsed.header.base_seq + applied as u64, rolled_off: false, lost_lines: parsed.lost_lines })
+                (
+                    name.clone(),
+                    RestoredEdits {
+                        edits,
+                        seq: parsed.header.base_seq + applied as u64,
+                        rolled_off: false,
+                        lost_lines: parsed.lost_lines,
+                    },
+                )
             })
             .collect()
     }
@@ -4343,7 +5171,10 @@ mod tests {
         assert!(s.page_edits(a).unwrap().slots().iter().all(|slot| slot.quarter_turns == 1), "every page");
         assert!(s.is_edited(a), "it's an unsaved edit, for Save to commit");
         assert!(s.undo_edit_as(a, Author::Owner).unwrap());
-        assert!(s.page_edits(a).unwrap().slots().iter().all(|slot| slot.quarter_turns == 0), "one undo takes it all back");
+        assert!(
+            s.page_edits(a).unwrap().slots().iter().all(|slot| slot.quarter_turns == 0),
+            "one undo takes it all back"
+        );
         assert!(!s.undo_and_redo(a).0, "it was one step");
         s.set_edit_mode(true);
         s.go_to(a, 3).unwrap();
@@ -4363,7 +5194,10 @@ mod tests {
         assert!(back.view().sidebar_hidden);
         let written = serde_json::to_string(&back.to_record().view).unwrap();
         assert!(!written.contains("focus") && written.contains("\"sidebar_hidden\":true"), "{written}");
-        back.set_view(ViewSettings { sidebar_hidden: false, ..back.view() });
+        back.set_view(ViewSettings {
+            sidebar_hidden: false,
+            ..back.view()
+        });
         let mut again = journaled(1);
         again.restore(&back.to_record(), HashMap::new()).unwrap();
         assert!(!again.view().sidebar_hidden, "shown again stays shown");
@@ -4374,14 +5208,39 @@ mod tests {
     fn a_session_comes_back_whole_from_its_record_and_journals() {
         let mut s = journaled(5);
         let (a, _b) = with_owner_and_agent_edits(&mut s);
-        s.note_place(a, PlaceRecord { page: 2, anchor_page: 2, within: 0.25, x: 3.5, y: 1234.5, document_height: 9000.0, zoom: 1.5625, page_width: 612.0, page_height: 792.0 });
+        s.note_place(
+            a,
+            PlaceRecord {
+                page: 2,
+                anchor_page: 2,
+                within: 0.25,
+                x: 3.5,
+                y: 1234.5,
+                document_height: 9000.0,
+                zoom: 1.5625,
+                page_width: 612.0,
+                page_height: 792.0,
+            },
+        );
         s.set_find(true, "ran", "typed but not run");
         s.set_edit_mode(true);
         s.set_view_rotation(a, 1);
         assert!(s.set_spread(a, record::Spread::TwoUpCover));
         assert!(!s.set_spread(a, record::Spread::TwoUpCover), "the same again changes nothing");
-        s.set_selection(a, Some(Selection { from_page: 1, from_char: 2, to_page: 2, to_char: 9 }));
-        s.set_view(ViewSettings { paper: Some(Paper::Warm), sidebar_hidden: true, agent_icon_hidden: true });
+        s.set_selection(
+            a,
+            Some(Selection {
+                from_page: 1,
+                from_char: 2,
+                to_page: 2,
+                to_char: 9,
+            }),
+        );
+        s.set_view(ViewSettings {
+            paper: Some(Paper::Warm),
+            sidebar_hidden: true,
+            agent_icon_hidden: true,
+        });
         let mut files = HashMap::new();
         write_journal(&mut s, &mut files);
         let bytes = record::encode_record(&s.to_record(), 7);
@@ -4419,7 +5278,15 @@ mod tests {
         const STEPS: u32 = 3000;
         let mut s = journaled(40);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
-        let mut seen: Vec<Vec<edit::PageSlot>> = vec![(0..40).map(|page| edit::PageSlot { source: 0, page, quarter_turns: 0 }).collect()];
+        let mut seen: Vec<Vec<edit::PageSlot>> = vec![
+            (0..40)
+                .map(|page| edit::PageSlot {
+                    source: 0,
+                    page,
+                    quarter_turns: 0,
+                })
+                .collect(),
+        ];
         for step in 0..STEPS {
             let at = step % 39;
             match step % 3 {
@@ -4514,7 +5381,19 @@ mod tests {
     }
 
     fn kept(name: &str, size: u64) -> edit::AddedSource {
-        edit::AddedSource { path: PathBuf::from(format!("/state/journals/{name}")).into_boxed_path(), page_count: 5, stamp: Some(FileStamp { size, mtime_ns: 1, device: 1, inode: 7 }), kept: true, protected: false, holds: None }
+        edit::AddedSource {
+            path: PathBuf::from(format!("/state/journals/{name}")).into_boxed_path(),
+            page_count: 5,
+            stamp: Some(FileStamp {
+                size,
+                mtime_ns: 1,
+                device: 1,
+                inode: 7,
+            }),
+            kept: true,
+            protected: false,
+            holds: None,
+        }
     }
 
     const KEPT_A: &str = "kept-00000000000000aa.pdf";
@@ -4528,14 +5407,22 @@ mod tests {
         s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
         s.edit_pages_as(a, Author::Agent, |e| e.rotate(0, 1, 1)).unwrap();
         let mut files = HashMap::new();
-        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        let target = FileStamp {
+            size: 9,
+            mtime_ns: 1,
+            device: 1,
+            inode: 2,
+        };
         let keeping = kept(KEPT_A, 100);
         assert!(s.page_edits(a).unwrap().needs_own_pages(), "the delete's way back names a page of this file");
         s.save_prepared(a, target, Some(&keeping));
         write_journal(&mut s, &mut files);
         let parsed = record::parse_journal(files.values().next().unwrap(), record::CURRENT_VERSION).unwrap();
         assert_eq!(parsed.ops.last(), Some(&JournalOp::Saving(target.into())), "said ahead of it, in the journal");
-        assert!(matches!(parsed.ops.iter().rev().nth(1), Some(JournalOp::Keeping(said)) if said.kept), "and what's kept for it");
+        assert!(
+            matches!(parsed.ops.iter().rev().nth(1), Some(JournalOp::Keeping(said)) if said.kept),
+            "and what's kept for it"
+        );
         // A failed save: nothing's called, and all of it is as it was.
         assert!(s.is_edited(a) && s.page_edits(a).unwrap().can_undo());
         let before: Vec<_> = (0..4).map(|at| s.page_source(a, at).unwrap().page).collect();
@@ -4546,17 +5433,33 @@ mod tests {
         assert_eq!(s.own_stamp(a), Some(target));
         assert_eq!(s.tab(a).unwrap().page_count, 4);
         assert_eq!(before, [1, 2, 3, 4], "those were pages of the old file");
-        assert_eq!((0..4).map(|at| s.page_source(a, at).unwrap().page).collect::<Vec<_>>(), [0, 1, 2, 3], "and the new file has them in order");
+        assert_eq!(
+            (0..4).map(|at| s.page_source(a, at).unwrap().page).collect::<Vec<_>>(),
+            [0, 1, 2, 3],
+            "and the new file has them in order"
+        );
         assert!(s.page_edits(a).unwrap().can_undo(), "the history's still there");
         // Past it, one step at a time, and back.
         assert!(s.undo_edit(a));
         assert!(s.is_edited(a), "undone past the saved point, it's unsaved again");
-        assert_eq!(s.page_source(a, 0).unwrap().quarter_turns, 3, "the turn's in the file now, and undoing it is a turn back");
+        assert_eq!(
+            s.page_source(a, 0).unwrap().quarter_turns,
+            3,
+            "the turn's in the file now, and undoing it is a turn back"
+        );
         assert!(s.undo_edit(a));
         assert_eq!(s.pages_in(a), 5);
         let back = s.page_source(a, 0).unwrap();
-        assert_eq!((back.path.as_path(), back.page, back.added), (Path::new("/state/journals/kept-00000000000000aa.pdf"), 0, true), "the page the save took out comes from what was kept, not the new file");
-        assert_eq!((s.page_source(a, 1).unwrap().path.as_path(), s.page_source(a, 1).unwrap().page), (Path::new("/d/a.pdf"), 0), "and the rest from the file");
+        assert_eq!(
+            (back.path.as_path(), back.page, back.added),
+            (Path::new("/state/journals/kept-00000000000000aa.pdf"), 0, true),
+            "the page the save took out comes from what was kept, not the new file"
+        );
+        assert_eq!(
+            (s.page_source(a, 1).unwrap().path.as_path(), s.page_source(a, 1).unwrap().page),
+            (Path::new("/d/a.pdf"), 0),
+            "and the rest from the file"
+        );
         assert!(s.is_edited(a));
         assert!(!s.undo_edit(a));
         assert!(s.redo_edit(a));
@@ -4576,9 +5479,17 @@ mod tests {
         let mut files = HashMap::new();
         write_journal(&mut s, &mut files);
         let old = files.keys().next().unwrap().clone();
-        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        let target = FileStamp {
+            size: 9,
+            mtime_ns: 1,
+            device: 1,
+            inode: 2,
+        };
         s.saved(a, target, 3, None, Some(kept(KEPT_A, 100)));
-        assert!(s.has_retired_journals(), "it wants writing at once, as a crash would otherwise find the old one");
+        assert!(
+            s.has_retired_journals(),
+            "it wants writing at once, as a crash would otherwise find the old one"
+        );
         // Not written yet: the old one's still the only one, and still there.
         assert!(files.contains_key(&old));
         write_journal(&mut s, &mut files);
@@ -4604,7 +5515,12 @@ mod tests {
         s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
         s.edit_pages(a, |e| e.delete(5, 1)).unwrap();
         s.edit_pages(a, |e| e.rotate(1, 1, 1)).unwrap();
-        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        let target = FileStamp {
+            size: 9,
+            mtime_ns: 1,
+            device: 1,
+            inode: 2,
+        };
         assert_eq!(s.saved(a, target, 5, None, None), 2, "the delete, and the older rotation with it");
         assert!(!s.is_edited(a));
         assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("history_rolled_off"));
@@ -4639,14 +5555,28 @@ mod tests {
         let mut s = journaled(10);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
         let big = edit::MAX_HISTORY_BYTES as u64 / 2 + 1;
-        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        let target = FileStamp {
+            size: 9,
+            mtime_ns: 1,
+            device: 1,
+            inode: 2,
+        };
         s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
         assert_eq!(s.saved(a, target, 9, None, Some(kept(KEPT_A, big))), 0);
         s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
         assert_eq!(s.page_edits(a).unwrap().kept_sources().count(), 1);
-        assert_eq!(s.saved(a, target, 8, None, Some(kept(KEPT_B, big))), 1, "two wouldn't fit, so the first's step goes");
+        assert_eq!(
+            s.saved(a, target, 8, None, Some(kept(KEPT_B, big))),
+            1,
+            "two wouldn't fit, so the first's step goes"
+        );
         let list = s.page_edits(a).unwrap();
-        assert_eq!(list.kept_sources().map(|(_, added)| added.path.file_name().unwrap().to_str().unwrap().to_string()).collect::<Vec<_>>(), [KEPT_B]);
+        assert_eq!(
+            list.kept_sources()
+                .map(|(_, added)| added.path.file_name().unwrap().to_str().unwrap().to_string())
+                .collect::<Vec<_>>(),
+            [KEPT_B]
+        );
         assert_eq!(list.summary().undo, 1);
         assert!(s.journal_work().retired.iter().any(|name| name == KEPT_A), "and its file goes");
     }
@@ -4657,14 +5587,25 @@ mod tests {
         let mut s = journaled(5);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
         s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
-        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        let target = FileStamp {
+            size: 9,
+            mtime_ns: 1,
+            device: 1,
+            inode: 2,
+        };
         assert_eq!(s.saved(a, target, 4, Some(Path::new("/e/copy.pdf")), None), 0);
         assert_eq!(s.path_of(a).unwrap(), Path::new("/e/copy.pdf"));
         assert_eq!(&*s.tab(a).unwrap().name, "copy");
         assert!(!s.is_edited(a));
         assert!(s.undo_edit(a));
-        assert_eq!((s.page_source(a, 0).unwrap().path.as_path(), s.page_source(a, 0).unwrap().page), (Path::new("/d/a.pdf"), 0));
-        assert_eq!((s.page_source(a, 1).unwrap().path.as_path(), s.page_source(a, 1).unwrap().page), (Path::new("/e/copy.pdf"), 0));
+        assert_eq!(
+            (s.page_source(a, 0).unwrap().path.as_path(), s.page_source(a, 0).unwrap().page),
+            (Path::new("/d/a.pdf"), 0)
+        );
+        assert_eq!(
+            (s.page_source(a, 1).unwrap().path.as_path(), s.page_source(a, 1).unwrap().page),
+            (Path::new("/e/copy.pdf"), 0)
+        );
         assert_eq!(s.page_edits(a).unwrap().kept_sources().count(), 0, "the old file isn't the history's to remove");
     }
 
@@ -4674,7 +5615,12 @@ mod tests {
         let mut s = journaled(5);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
         s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
-        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        let target = FileStamp {
+            size: 9,
+            mtime_ns: 1,
+            device: 1,
+            inode: 2,
+        };
         assert_eq!(s.saved(a, target, 3, None, Some(kept(KEPT_A, 100))), 1);
         assert!(s.page_edits(a).is_none());
         assert_eq!(s.pages_in(a), 3);
@@ -4689,9 +5635,19 @@ mod tests {
     /// Failure (decision 25): clearing only forgets a history, so its file stays on disk and what was removed can be got back; or unsaved work goes with it; or an agent or a changed file takes what shouldn't go. Each reason does what it's for, and the files go.
     #[test]
     fn clearing_a_history_removes_its_files_and_keeps_unsaved_work() {
-        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        let target = FileStamp {
+            size: 9,
+            mtime_ns: 1,
+            device: 1,
+            inode: 2,
+        };
         // After a confirmed redaction, at the saved point: nothing's left.
-        for reason in [ClearReason::Redaction, ClearReason::HiddenDataRemoval, ClearReason::UserAsked, ClearReason::Discard] {
+        for reason in [
+            ClearReason::Redaction,
+            ClearReason::HiddenDataRemoval,
+            ClearReason::UserAsked,
+            ClearReason::Discard,
+        ] {
             let mut s = journaled(5);
             let a = s.open(Path::new("/d/a.pdf")).unwrap();
             s.edit_pages(a, |e| e.delete(0, 1)).unwrap();
@@ -4705,9 +5661,17 @@ mod tests {
             assert!(s.page_edits(a).is_none(), "{reason:?}");
             assert!(s.has_retired_journals());
             let work = s.journal_work();
-            assert_eq!(work.retired.iter().filter(|name| !record::is_sleep_name(name)).count(), 2, "the journal and the kept file: {reason:?}");
+            assert_eq!(
+                work.retired.iter().filter(|name| !record::is_sleep_name(name)).count(),
+                2,
+                "the journal and the kept file: {reason:?}"
+            );
             assert!(work.retired.iter().any(|name| name == KEPT_A));
-            assert_eq!(work.retired.iter().any(|name| record::is_sleep_name(name)), matches!(reason, ClearReason::Redaction | ClearReason::HiddenDataRemoval), "a picture of what's removed goes with it: {reason:?}");
+            assert_eq!(
+                work.retired.iter().any(|name| record::is_sleep_name(name)),
+                matches!(reason, ClearReason::Redaction | ClearReason::HiddenDataRemoval),
+                "a picture of what's removed goes with it: {reason:?}"
+            );
             assert_eq!(s.to_record().tabs[0].journal, None);
         }
         // Unsaved edits and Clear Edit History: the page order stays, and the way back goes. The journal starts again in one step, with nothing in it that was only history.
@@ -4719,7 +5683,10 @@ mod tests {
         s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
         let mut files = HashMap::new();
         write_journal(&mut s, &mut files);
-        assert!(files.values().next().unwrap().windows(10).any(|bytes| bytes == b"secret.pdf"), "it was in the journal");
+        assert!(
+            files.values().next().unwrap().windows(10).any(|bytes| bytes == b"secret.pdf"),
+            "it was in the journal"
+        );
         assert!(s.clear_history(a, ClearReason::UserAsked));
         assert!(s.is_edited(a), "unsaved work stays");
         assert_eq!(s.pages_in(a), 4);
@@ -4728,14 +5695,22 @@ mod tests {
         write_journal(&mut s, &mut files);
         assert_eq!(files.len(), 1, "the same name, replaced");
         let bytes = files.values().next().unwrap();
-        assert!(!bytes.windows(10).any(|bytes| bytes == b"secret.pdf"), "it's gone from the file, not only from memory");
+        assert!(
+            !bytes.windows(10).any(|bytes| bytes == b"secret.pdf"),
+            "it's gone from the file, not only from memory"
+        );
         let parsed = record::parse_journal(bytes, record::CURRENT_VERSION).unwrap();
         let (replayed, _) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).unwrap();
         assert_eq!(replayed.to_record(), s.edits_record(a).unwrap());
         let none = s.open(Path::new("/d/none.pdf")).unwrap();
         assert!(!s.clear_history(none, ClearReason::UserAsked), "nothing to clear");
         // A file changed outside: with only history, its steps don't apply, and they go, whichever way it was noticed.
-        let now = FileStamp { size: 1, mtime_ns: 2, device: 1, inode: 3 };
+        let now = FileStamp {
+            size: 1,
+            mtime_ns: 2,
+            device: 1,
+            inode: 3,
+        };
         let mut s = journaled(5);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
         s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
@@ -4755,7 +5730,10 @@ mod tests {
     /// Failure (decision 25): a history stays on a file changed outside the app, when a tab's woken with nothing else having looked, and its steps get laid on the wrong pages.
     #[test]
     fn a_file_changed_under_a_history_clears_it_on_waking() {
-        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-changed-history-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-changed-history-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.pdf");
@@ -4772,7 +5750,11 @@ mod tests {
         s.tap(a).unwrap();
         assert!(s.page_edits(a).is_none());
         assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("file_changed"));
-        assert_eq!(s.journal_work().retired.iter().filter(|name| record::is_journal_name(name)).count(), 1, "and its file goes");
+        assert_eq!(
+            s.journal_work().retired.iter().filter(|name| record::is_journal_name(name)).count(),
+            1,
+            "and its file goes"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -4787,7 +5769,12 @@ mod tests {
             let files = self.0.lock().unwrap();
             let parsed = record::parse_journal(files.get(name)?, record::CURRENT_VERSION).ok()?;
             let (edits, applied) = PageEdits::replay(parsed.header.file_pages, parsed.base.as_ref(), &parsed.ops).ok()?;
-            Some(RestoredEdits { edits, seq: parsed.header.base_seq + applied as u64, lost_lines: false, rolled_off: false })
+            Some(RestoredEdits {
+                edits,
+                seq: parsed.header.base_seq + applied as u64,
+                lost_lines: false,
+                rolled_off: false,
+            })
         }
     }
 
@@ -4822,7 +5809,11 @@ mod tests {
         assert_eq!(s.to_record().tabs[0].edits.unwrap().pages, 4);
         assert_eq!(s.undo_and_redo(a), (true, true), "and what can be undone, with nothing read");
         assert!(s.to_record().tabs[0].journal.is_some());
-        assert_eq!(s.close(a), Err(SessionError::UnsavedChanges), "and a close is refused as it would be: it wakes it to see");
+        assert_eq!(
+            s.close(a),
+            Err(SessionError::UnsavedChanges),
+            "and a close is refused as it would be: it wakes it to see"
+        );
         assert_eq!(s.list_record_anywhere(a), Some(as_it_was.clone()));
         // Each way in.
         type Route = fn(&mut Session<FakeLoader>, TabId);
@@ -4834,7 +5825,23 @@ mod tests {
             ("agent's undo", |s, a| assert!(s.undo_edit_as(a, Author::Agent).unwrap())),
             ("discard", |s, a| s.discard_edits(a)),
             ("clear", |s, a| assert!(s.clear_history(a, ClearReason::UserAsked))),
-            ("save", |s, a| assert_eq!(s.saved(a, FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 }, 4, None, None), 1)),
+            ("save", |s, a| {
+                assert_eq!(
+                    s.saved(
+                        a,
+                        FileStamp {
+                            size: 9,
+                            mtime_ns: 1,
+                            device: 1,
+                            inode: 2
+                        },
+                        4,
+                        None,
+                        None
+                    ),
+                    1
+                )
+            }),
             ("wake", |s, a| assert!(s.wake_list(a))),
         ];
         for (route, go) in routes {
@@ -4883,11 +5890,18 @@ mod tests {
         assert!(s.list_is_asleep(a));
         assert_eq!(s.tab(a).unwrap().notice.as_ref().map(|notice| notice.code()), Some("edits_unreadable"));
         assert!(s.is_edited(a), "what's known of it stands");
-        assert_eq!(s.edit_pages(a, |e| e.rotate(0, 1, 1)), Err(SessionError::EditsUnreadable), "a new edit isn't taken");
+        assert_eq!(
+            s.edit_pages(a, |e| e.rotate(0, 1, 1)),
+            Err(SessionError::EditsUnreadable),
+            "a new edit isn't taken"
+        );
         assert!(!s.undo_edit(a));
         assert_eq!(s.undo_edit_as(a, Author::Owner), Err(SessionError::EditsUnreadable));
         assert_eq!(s.close(a), Err(SessionError::UnsavedChanges));
-        assert!(s.to_record().tabs[0].journal.as_deref() == Some(name.as_str()), "and its name's kept, so nothing else takes it");
+        assert!(
+            s.to_record().tabs[0].journal.as_deref() == Some(name.as_str()),
+            "and its name's kept, so nothing else takes it"
+        );
         // It's back.
         files.lock().unwrap().insert(name.clone(), bytes);
         assert!(s.wake_list(a));
@@ -4943,14 +5957,26 @@ mod tests {
         assert!(s.warm.iter().any(|(id, _)| *id == a), "its contents stay too");
         s.let_go(a);
         assert!(!s.go_dormant(b), "nor the one on screen");
-        s.save_prepared(a, FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 }, None);
+        s.save_prepared(
+            a,
+            FileStamp {
+                size: 9,
+                mtime_ns: 1,
+                device: 1,
+                inode: 2,
+            },
+            None,
+        );
         assert!(!s.go_dormant(a), "nor one being saved");
     }
 
     /// Failure (review): a sleep file's word on a file's length goes on being believed once the worker has said otherwise, so a phantom page takes a rotation, or it's written into the next sleep file as if it had been checked. And a file read the usual way is left alone, as two readers of a damaged file can differ.
     #[test]
     fn the_workers_word_on_a_files_length_goes_over_a_sleep_files() {
-        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-file-length-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-file-length-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("a.pdf");
@@ -4962,18 +5988,48 @@ mod tests {
         s.open(Path::new("/d/b.pdf")).unwrap();
         s.warm.retain(|(id, _)| *id != a);
         // Forged: a hundred pages.
-        let forged = |file_pages: u32| sleep::SleepFile { file: stamp, file_pages, pages: file_pages, list_seq: 0, renderer_only: false, version: Some(5), toc: Toc::default(), usual: None, sizes: Vec::new(), pictures: Vec::new() };
+        let forged = |file_pages: u32| sleep::SleepFile {
+            file: stamp,
+            file_pages,
+            pages: file_pages,
+            list_seq: 0,
+            renderer_only: false,
+            version: Some(5),
+            toc: Toc::default(),
+            usual: None,
+            sizes: Vec::new(),
+            pictures: Vec::new(),
+        };
         s.wake_from_sleep(a, &forged(100));
         s.tap(a).unwrap();
         assert_eq!(s.pages_in(a), 100, "believed for now");
         assert!(s.sleep_facts(a).is_none(), "and not written on, unchecked");
         assert!(s.file_length_is(a, 3, 5), "it says to read the file");
         assert!(!s.warm.iter().any(|(id, _)| *id == a));
-        assert!(s.journal_work().retired.iter().any(|name| *name == record::sleep_file_name(stamp, &path)), "and the file's gone");
-        s.give_woken(a, Ok(DocFacts { page_count: 3, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false }), Some(stamp));
+        assert!(
+            s.journal_work().retired.iter().any(|name| *name == record::sleep_file_name(stamp, &path)),
+            "and the file's gone"
+        );
+        s.give_woken(
+            a,
+            Ok(DocFacts {
+                page_count: 3,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::default(),
+                renderer_only: false,
+            }),
+            Some(stamp),
+        );
         s.wake_active();
         assert_eq!(s.pages_in(a), 3);
-        assert_eq!(s.edit_pages(a, |e| e.rotate(50, 1, 1)), Err(SessionError::Edit(EditError::OutOfRange)), "no phantom page takes a rotation");
+        assert_eq!(
+            s.edit_pages(a, |e| e.rotate(50, 1, 1)),
+            Err(SessionError::Edit(EditError::OutOfRange)),
+            "no phantom page takes a rotation"
+        );
         // Right about it: nothing to do, and from here it's been checked.
         s.discard_edits(a);
         s.open(Path::new("/d/c.pdf")).unwrap();
@@ -4994,13 +6050,22 @@ mod tests {
     /// Failure (review, against decision 23): a changed file with no edits stops saying so as soon as it's been read, as the stamp's moved on and being the same says nothing. With edits, it's about what they were made on, so being back at that is news.
     #[test]
     fn a_changed_file_goes_on_saying_so_when_its_read() {
-        let now = FileStamp { size: 2, mtime_ns: 2, device: 1, inode: 3 };
+        let now = FileStamp {
+            size: 2,
+            mtime_ns: 2,
+            device: 1,
+            inode: 3,
+        };
         let mut s = session(5);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
         s.apply_file_status(a, FileStatus::Changed(now));
         assert_eq!(s.tab_notice(a).map(FileNotice::code), Some("file_changed"));
         s.apply_file_status(a, FileStatus::Same(now));
-        assert_eq!(s.tab_notice(a).map(FileNotice::code), Some("file_changed"), "it's the new one, and that's what it's saying");
+        assert_eq!(
+            s.tab_notice(a).map(FileNotice::code),
+            Some("file_changed"),
+            "it's the new one, and that's what it's saying"
+        );
         // Left, it's been said.
         s.open(Path::new("/d/b.pdf")).unwrap();
         s.tap(a).unwrap();
@@ -5036,7 +6101,16 @@ mod tests {
         s.let_go(a);
         assert_eq!(s.due_dormant(10_000, AFTER), [a]);
         // A save under way.
-        s.save_prepared(a, FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 }, None);
+        s.save_prepared(
+            a,
+            FileStamp {
+                size: 9,
+                mtime_ns: 1,
+                device: 1,
+                inode: 2,
+            },
+            None,
+        );
         assert!(s.due_dormant(10_000, AFTER).is_empty());
         // Cold tabs aren't candidates, however many there are.
         let mut s = session(5);
@@ -5050,7 +6124,12 @@ mod tests {
     /// Failure (review R2): a copy kept for a save that was never confirmed is named only by the note of that save, so clearing the history leaves it. It holds the whole old file for up to 30 days, and a later redaction wouldn't touch it.
     #[test]
     fn clearing_takes_a_copy_kept_for_an_unconfirmed_save() {
-        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        let target = FileStamp {
+            size: 9,
+            mtime_ns: 1,
+            device: 1,
+            inode: 2,
+        };
         // With unsaved edits, so the list stays and its history goes; and with none, so the list goes too.
         for unsaved in [true, false] {
             let mut s = journaled(5);
@@ -5077,10 +6156,21 @@ mod tests {
         struct Protected;
         impl DocLoader for Protected {
             fn load(&self, path: &Path) -> Result<DocFacts, OpenError> {
-                Ok(DocFacts { page_count: 3, byte_len: 1, encrypted: path.ends_with("locked.pdf"), version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+                Ok(DocFacts {
+                    page_count: 3,
+                    byte_len: 1,
+                    encrypted: path.ends_with("locked.pdf"),
+                    version: "1.7".into(),
+                    title: None,
+                    toc: Toc::default(),
+                    renderer_only: false,
+                })
             }
         }
-        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-sleep-facts-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-sleep-facts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = |name: &str| {
@@ -5099,7 +6189,11 @@ mod tests {
             s.open(&file(&format!("{at}.pdf"))).unwrap();
         }
         let left = s.take_left_warm();
-        assert_eq!(left.iter().map(|facts| facts.id).collect::<Vec<_>>(), [open], "the unprotected one that left: {left:?}");
+        assert_eq!(
+            left.iter().map(|facts| facts.id).collect::<Vec<_>>(),
+            [open],
+            "the unprotected one that left: {left:?}"
+        );
         assert_eq!(left[0].sleep.file_pages, 3);
         assert!(s.take_left_warm().is_empty());
         // A protected file's pages in a plain document: its facts are fine, and no picture is.
@@ -5107,22 +6201,32 @@ mod tests {
         assert!(s.sleep_facts(plain).unwrap().pictures_allowed);
         let locked_file = file("locked.pdf");
         let facts = s.loader().load(&locked_file).unwrap();
-        s.insert_pdf_with_facts(plain, Author::Owner, 0, &locked_file, &facts, file_stamp(&locked_file).ok()).unwrap();
-        assert!(!s.sleep_facts(plain).unwrap().pictures_allowed, "a page from a protected file means no pictures");
+        s.insert_pdf_with_facts(plain, Author::Owner, 0, &locked_file, &facts, file_stamp(&locked_file).ok())
+            .unwrap();
+        assert!(
+            !s.sleep_facts(plain).unwrap().pictures_allowed,
+            "a page from a protected file means no pictures"
+        );
         assert!(s.page_edits(plain).unwrap().added_sources()[0].protected);
         // Carried through its journal, so it's known after a restart.
         let record = s.edits_record(plain).unwrap();
         assert!(record.added[0].protected);
         assert!(PageEdits::from_record(&record).unwrap().has_protected_pages());
         assert!(s.undo_edit(plain));
-        assert!(s.sleep_facts(plain).unwrap().pictures_allowed, "with those pages gone from the document, it's fine again");
+        assert!(
+            s.sleep_facts(plain).unwrap().pictures_allowed,
+            "with those pages gone from the document, it's fine again"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Failure: a list naming a file of a length it's not about is believed, as a forged journal can say a save happened, and pages past the end are drawn or written. A file read at its own stamp and another length than the list says shows the list isn't about it.
     #[test]
     fn a_list_of_another_length_than_its_file_isnt_believed() {
-        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-forged-list-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-forged-list-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.pdf");
@@ -5150,7 +6254,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("recto-once-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let (file, link, hard, copy, moved) = (dir.join("a.pdf"), dir.join("link.pdf"), dir.join("hard.pdf"), dir.join("copy.pdf"), dir.join("moved.pdf"));
+        let (file, link, hard, copy, moved) = (
+            dir.join("a.pdf"),
+            dir.join("link.pdf"),
+            dir.join("hard.pdf"),
+            dir.join("copy.pdf"),
+            dir.join("moved.pdf"),
+        );
         std::fs::write(&file, b"one").unwrap();
         std::os::unix::fs::symlink(&file, &link).unwrap();
         std::fs::hard_link(&file, &hard).unwrap();
@@ -5189,7 +6299,10 @@ mod tests {
     /// Failure (final review N2): a different PDF with the inode a tab remembers took the tab over: after a move and a rewrite in place, or on another volume under the same device number. The tab's path became the other file, with edits for 6 pages on one of 3 and no notice. The number alone isn't the file: it's a different one, and gets its own tab, and the edits stay. A file changed in place at the tab's own path is still that tab. And (final review) a file replaced under a tab, with a new inode, is reached through a link all the same.
     #[test]
     fn the_same_inode_isnt_enough_to_be_the_same_pdf() {
-        let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-hijack-{}", std::process::id()));
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-hijack-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let (y, z) = (dir.join("y.pdf"), dir.join("z.pdf"));
@@ -5252,7 +6365,10 @@ mod tests {
         s.journal_outcome(JournalOutcome::default());
         let again = s.journal_work();
         assert_eq!(again.appends.len(), 1, "not lost");
-        s.journal_outcome(JournalOutcome { written: vec![(a, again.appends[0].through, again.appends[0].name.clone())], ..JournalOutcome::default() });
+        s.journal_outcome(JournalOutcome {
+            written: vec![(a, again.appends[0].through, again.appends[0].name.clone())],
+            ..JournalOutcome::default()
+        });
         assert!(!s.has_journal_work());
     }
 
@@ -5266,7 +6382,10 @@ mod tests {
         s.edit_pages(b, |e| e.rotate(0, 1, 1)).unwrap();
         let work = s.journal_work();
         let done = work.appends.iter().find(|append| append.tab == a).unwrap();
-        s.journal_outcome(JournalOutcome { written: vec![(a, done.through, done.name.clone())], not_retired: Vec::new() });
+        s.journal_outcome(JournalOutcome {
+            written: vec![(a, done.through, done.name.clone())],
+            not_retired: Vec::new(),
+        });
         let next = s.journal_work();
         assert_eq!(next.appends.len(), 1);
         assert_eq!(next.appends[0].tab, b);
@@ -5278,7 +6397,12 @@ mod tests {
         let mut s = journaled(5);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
         s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
-        let target = FileStamp { size: 9, mtime_ns: 1, device: 1, inode: 2 };
+        let target = FileStamp {
+            size: 9,
+            mtime_ns: 1,
+            device: 1,
+            inode: 2,
+        };
         let keeping = kept(KEPT_A, 100);
         s.save_prepared(a, target, Some(&keeping));
         let mut files = HashMap::new();
@@ -5321,7 +6445,17 @@ mod tests {
         let mut s = session(9);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
         s.take_place_delta(1);
-        let place = PlaceRecord { page: 0, anchor_page: 0, within: 0.5, x: 0.0, y: 10.0, document_height: 900.0, zoom: 1.0, page_width: 0.0, page_height: 0.0 };
+        let place = PlaceRecord {
+            page: 0,
+            anchor_page: 0,
+            within: 0.5,
+            x: 0.0,
+            y: 10.0,
+            document_height: 900.0,
+            zoom: 1.0,
+            page_width: 0.0,
+            page_height: 0.0,
+        };
         s.note_place(a, place);
         assert_eq!(s.take_place_delta(2).places.len(), 1);
         s.note_place(a, place);
@@ -5333,7 +6467,15 @@ mod tests {
     }
 
     fn at(path: &str) -> FileStatus {
-        FileStatus::Moved(PathBuf::from(path), FileStamp { size: 1, mtime_ns: 1, device: 1, inode: 1 })
+        FileStatus::Moved(
+            PathBuf::from(path),
+            FileStamp {
+                size: 1,
+                mtime_ns: 1,
+                device: 1,
+                inode: 1,
+            },
+        )
     }
 
     /// Failure: what became of a file isn't said, or its edits go, or the tab's still pointing at where the file isn't. Each case, with the words a reader sees and the edits kept. A moved file with edits keeps its journal's name, as that's by its identity.
@@ -5342,7 +6484,12 @@ mod tests {
         let mut s = journaled(5);
         let a = s.open(Path::new("/d/a.pdf")).unwrap();
         s.edit_pages(a, |e| e.rotate(0, 1, 1)).unwrap();
-        let now = FileStamp { size: 9, mtime_ns: 9, device: 9, inode: 9 };
+        let now = FileStamp {
+            size: 9,
+            mtime_ns: 9,
+            device: 9,
+            inode: 9,
+        };
         s.apply_file_status(a, at("/e/moved.pdf"));
         assert_eq!(s.path_of(a).unwrap(), Path::new("/e/moved.pdf"));
         assert_eq!(&*s.tab(a).unwrap().name, "moved");
@@ -5436,7 +6583,10 @@ mod tests {
     #[test]
     fn command_click_builds_a_comparison_and_a_plain_click_ends_it() {
         let mut s = session(10);
-        let ids: Vec<TabId> = ["a", "b", "c", "d"].iter().map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap()).collect();
+        let ids: Vec<TabId> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap())
+            .collect();
         s.tap(ids[0]).unwrap();
         assert_eq!(s.toggle_compare(ids[0]), Ok(compare::CompareChange::Nothing), "the only tab showing");
         assert_eq!(s.panes(), vec![ids[0]]);
@@ -5470,7 +6620,10 @@ mod tests {
     #[test]
     fn panes_on_screen_dont_go_dormant() {
         let mut s = session(10);
-        let ids: Vec<TabId> = ["a", "b", "c"].iter().map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap()).collect();
+        let ids: Vec<TabId> = ["a", "b", "c"]
+            .iter()
+            .map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap())
+            .collect();
         s.compare(&[ids[0], ids[1]], Some(ids[0])).unwrap();
         assert!(!s.can_go_dormant(ids[1]), "a pane not being read is still on screen");
         assert!(!s.dormant_oldest_first().contains(&ids[1]));
@@ -5482,7 +6635,10 @@ mod tests {
     #[test]
     fn closing_a_panes_tab_takes_its_pane() {
         let mut s = session(10);
-        let ids: Vec<TabId> = ["a", "b", "c", "d"].iter().map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap()).collect();
+        let ids: Vec<TabId> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap())
+            .collect();
         s.compare(&[ids[1], ids[2], ids[3]], Some(ids[2])).unwrap();
         s.close(ids[2]).unwrap();
         assert_eq!(s.panes(), vec![ids[1], ids[3]]);
@@ -5499,7 +6655,10 @@ mod tests {
     #[test]
     fn a_comparison_comes_back_from_the_record_exactly() {
         let mut s = session(40);
-        let ids: Vec<TabId> = ["a", "b", "c"].iter().map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap()).collect();
+        let ids: Vec<TabId> = ["a", "b", "c"]
+            .iter()
+            .map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap())
+            .collect();
         s.go_to(ids[2], 7).unwrap();
         s.go_to(ids[0], 3).unwrap();
         s.compare(&[ids[2], ids[0]], Some(ids[0])).unwrap();
@@ -5514,7 +6673,11 @@ mod tests {
         assert_eq!(back.to_record(), s.to_record());
         for tabs in [vec![ids[0].0], vec![ids[0].0, 99], vec![ids[0].0, ids[0].0], vec![1, 2, 3, 3]] {
             let mut bad = s.to_record();
-            bad.comparison = Some(record::ComparisonRecord { tabs, synced: false, sync_from: Vec::new() });
+            bad.comparison = Some(record::ComparisonRecord {
+                tabs,
+                synced: false,
+                sync_from: Vec::new(),
+            });
             assert!(record::validate_record(&bad).is_err(), "{:?}", bad.comparison);
         }
         let mut uneven = s.to_record();
@@ -5531,11 +6694,18 @@ mod tests {
     #[test]
     fn a_comparison_of_cold_tabs_is_the_live_documents_and_reads_nothing_held() {
         let mut s = session(10);
-        let ids: Vec<TabId> = ["a", "b", "c", "d", "e"].iter().map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap()).collect();
+        let ids: Vec<TabId> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap())
+            .collect();
         assert_eq!(s.active(), Some(ids[4]));
         let panes = [ids[0], ids[1], ids[2]];
         let cold = s.wake_for_compare(&panes);
-        assert_eq!(cold.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![ids[0], ids[1]], "the warm one needs no read");
+        assert_eq!(
+            cold.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![ids[0], ids[1]],
+            "the warm one needs no read"
+        );
         for (id, _) in cold {
             let facts = s.loader().load(Path::new("/d/x.pdf"));
             s.give_woken(id, facts, None);
@@ -5553,7 +6723,10 @@ mod tests {
     #[test]
     fn the_pane_read_next_is_read_ahead() {
         let mut s = session(10);
-        let ids: Vec<TabId> = ["a", "b", "c"].iter().map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap()).collect();
+        let ids: Vec<TabId> = ["a", "b", "c"]
+            .iter()
+            .map(|name| s.open(&PathBuf::from(format!("/d/{name}.pdf"))).unwrap())
+            .collect();
         s.compare(&[ids[0], ids[1], ids[2]], Some(ids[1])).unwrap();
         // Come back from a record, every pane cold.
         let record = s.to_record();
@@ -5561,8 +6734,16 @@ mod tests {
         back.restore(&record, HashMap::new()).unwrap();
         assert_eq!(back.active(), Some(ids[1]));
         back.wake_active();
-        assert_eq!(back.wake_for_close(ids[1]).map(|(id, _)| id), Some(ids[0]), "closing the read pane wakes the first left, not the next tab along");
-        assert_eq!(back.wake_for_compare_click(ids[1]).map(|(id, _)| id), Some(ids[0]), "and so does ⌘-clicking it out");
+        assert_eq!(
+            back.wake_for_close(ids[1]).map(|(id, _)| id),
+            Some(ids[0]),
+            "closing the read pane wakes the first left, not the next tab along"
+        );
+        assert_eq!(
+            back.wake_for_compare_click(ids[1]).map(|(id, _)| id),
+            Some(ids[0]),
+            "and so does ⌘-clicking it out"
+        );
         assert_eq!(back.wake_for_compare_click(ids[2]), None, "a pane that isn't read leaving wakes nothing");
         let loads = back.loader().loads.get();
         let (next, _) = back.wake_for_compare_click(ids[1]).unwrap();
@@ -5584,7 +6765,15 @@ mod recent_tests {
 
     impl DocLoader for Any {
         fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
-            Ok(DocFacts { page_count: 3, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+            Ok(DocFacts {
+                page_count: 3,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::default(),
+                renderer_only: false,
+            })
         }
     }
 
@@ -5604,7 +6793,10 @@ mod recent_tests {
         let record = s.to_record();
         let mut again = Session::new(Any);
         again.restore(&record, HashMap::new()).unwrap();
-        assert_eq!(again.recent_files().iter().map(|file| file.path.clone()).collect::<Vec<_>>(), recent.iter().map(|file| file.path.clone()).collect::<Vec<_>>());
+        assert_eq!(
+            again.recent_files().iter().map(|file| file.path.clone()).collect::<Vec<_>>(),
+            recent.iter().map(|file| file.path.clone()).collect::<Vec<_>>()
+        );
         let mut forged = record.clone();
         forged.recent = vec![PathField::Text("relative.pdf".into()), PathField::Text("/d/ok.pdf".into())];
         again.restore(&forged, HashMap::new()).unwrap();
@@ -5622,7 +6814,15 @@ mod password_tests {
 
     impl DocLoader for Locked {
         fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
-            Ok(DocFacts { page_count: 3, byte_len: 1, encrypted: true, version: "1.7".into(), title: None, toc: Toc::default(), renderer_only: false })
+            Ok(DocFacts {
+                page_count: 3,
+                byte_len: 1,
+                encrypted: true,
+                version: "1.7".into(),
+                title: None,
+                toc: Toc::default(),
+                renderer_only: false,
+            })
         }
     }
 
@@ -5632,13 +6832,18 @@ mod password_tests {
         let mut s = Session::new(Locked);
         let anyone = s.open(Path::new("/d/anyone.pdf")).unwrap();
         assert!(!s.withheld_from_agents(anyone), "encrypted alone isn't protected from agents");
-        let locked = s.open_unlocked(Path::new("/d/locked.pdf"), Locked.load(Path::new("/d/locked.pdf")).unwrap(), None).unwrap();
+        let locked = s
+            .open_unlocked(Path::new("/d/locked.pdf"), Locked.load(Path::new("/d/locked.pdf")).unwrap(), None)
+            .unwrap();
         assert!(s.withheld_from_agents(locked));
         let record = s.to_record();
         assert_eq!(record.tabs.iter().map(|tab| tab.password).collect::<Vec<_>>(), [false, true]);
         let mut again = Session::new(Locked);
         again.restore(&record, HashMap::new()).unwrap();
-        assert!(again.withheld_from_agents(TabId(locked.0)) && !again.withheld_from_agents(TabId(anyone.0)), "kept across a quit");
+        assert!(
+            again.withheld_from_agents(TabId(locked.0)) && !again.withheld_from_agents(TabId(anyone.0)),
+            "kept across a quit"
+        );
         assert!(!s.needs_password(locked));
         s.needs_password_again(locked);
         assert!(s.needs_password(locked) && s.withheld_from_agents(locked));
@@ -5657,8 +6862,32 @@ mod trail_tests {
     impl DocLoader for Labelled {
         fn load(&self, _: &Path) -> Result<DocFacts, OpenError> {
             let mut toc = Toc::default();
-            toc.labels = PageLabels::from_ranges(vec![LabelRange { start: 0, first: 1, style: LabelStyle::RomanLower, prefix: "".into() }, LabelRange { start: 4, first: 1, style: LabelStyle::Decimal, prefix: "".into() }], false);
-            Ok(DocFacts { page_count: 12, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc, renderer_only: false })
+            toc.labels = PageLabels::from_ranges(
+                vec![
+                    LabelRange {
+                        start: 0,
+                        first: 1,
+                        style: LabelStyle::RomanLower,
+                        prefix: "".into(),
+                    },
+                    LabelRange {
+                        start: 4,
+                        first: 1,
+                        style: LabelStyle::Decimal,
+                        prefix: "".into(),
+                    },
+                ],
+                false,
+            );
+            Ok(DocFacts {
+                page_count: 12,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc,
+                renderer_only: false,
+            })
         }
     }
 
@@ -5668,7 +6897,20 @@ mod trail_tests {
         let mut s = Session::new(Labelled);
         let id = s.open(Path::new("/d/book.pdf")).unwrap();
         s.go_to(id, 2).unwrap();
-        s.note_place(id, PlaceRecord { page: 2, anchor_page: 2, within: 0.4, x: 0.0, y: 0.0, document_height: 1.0, zoom: 1.0, page_width: 0.0, page_height: 0.0 });
+        s.note_place(
+            id,
+            PlaceRecord {
+                page: 2,
+                anchor_page: 2,
+                within: 0.4,
+                x: 0.0,
+                y: 0.0,
+                document_height: 1.0,
+                zoom: 1.0,
+                page_width: 0.0,
+                page_height: 0.0,
+            },
+        );
         s.jump(id, 9, 0.25).unwrap();
         assert_eq!(s.tab(id).unwrap().page, 9);
         assert_eq!(s.take_jump(id), Some(trail::Stop::new(9, 0.25)), "the page view's told where to land");
@@ -5679,7 +6921,11 @@ mod trail_tests {
         again.restore(&record, HashMap::new()).unwrap();
         assert_eq!(again.trail_of(id), s.trail_of(id), "the trail comes back as it was");
         assert!(again.go_back(id).unwrap());
-        assert_eq!(again.take_jump(id), Some(trail::Stop::new(2, 0.4)), "back to the page and the depth it was left at");
+        assert_eq!(
+            again.take_jump(id),
+            Some(trail::Stop::new(2, 0.4)),
+            "back to the page and the depth it was left at"
+        );
         assert_eq!(again.tab(id).unwrap().page, 2);
         assert_eq!(again.can_go_back_and_forward(id), (false, true));
         assert!(again.go_forward(id).unwrap());
@@ -5722,7 +6968,10 @@ mod trail_tests {
             s.go_back(id).unwrap();
         }
         let tab = s.tab(id).unwrap();
-        let cost = std::mem::size_of::<TabRecord>() + tab.name.len() + tab.file_name.len() + tab.trail.as_ref().map_or(0, |trail| std::mem::size_of::<trail::Trail>() + trail.heap_bytes());
+        let cost = std::mem::size_of::<TabRecord>()
+            + tab.name.len()
+            + tab.file_name.len()
+            + tab.trail.as_ref().map_or(0, |trail| std::mem::size_of::<trail::Trail>() + trail.heap_bytes());
         assert!(cost <= 4096, "{cost} bytes");
         assert!(tab.trail.as_ref().is_some_and(|trail| !trail.back().is_empty() || !trail.forward().is_empty()));
     }

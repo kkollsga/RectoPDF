@@ -5,8 +5,8 @@
 //! **What runs.** [`run`] is one pass, a page at a time, looking at `stop` between pages, so a new query ends the old one within a page. Whoever holds the session runs it off every thread that mustn't wait: `recto_control::finding`. It's bounded by [`MAX_TIME`], after which it says how far it got.
 
 use crate::index::Indexing;
-use crate::search::{self, Got, Plan, Reader, Settings, Slot};
 pub use crate::search::KeyLookup;
+use crate::search::{self, Got, Plan, Reader, Settings, Slot};
 use crate::{AgentError, exit};
 use recto_session::{DocLoader, Session, TabId};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,7 +54,12 @@ pub struct Basis {
 
 /// A tab's basis now, under the session's lock: a few numbers.
 pub fn basis<L: DocLoader>(session: &Session<L>, id: TabId) -> Basis {
-    Basis { tab: id.0, pages: session.pages_in(id), stamp: session.own_stamp(id), changes: session.page_edits(id).map_or(0, recto_session::edit::PageEdits::changes) }
+    Basis {
+        tab: id.0,
+        pages: session.pages_in(id),
+        stamp: session.own_stamp(id),
+        changes: session.page_edits(id).map_or(0, recto_session::edit::PageEdits::changes),
+    }
 }
 
 /// What one query's pages are: an opaque list of which file and page each position is.
@@ -79,7 +84,10 @@ impl FindPlan {
 
 /// A tab's pages to look through, as its edits have them, under the session's lock. A few bytes a page.
 pub fn plan<L: DocLoader>(session: &Session<L>, id: TabId) -> Result<FindPlan, AgentError> {
-    search::plan_of(session, id, None, None).map(|plan| FindPlan { plan, basis: basis(session, id) })
+    search::plan_of(session, id, None, None).map(|plan| FindPlan {
+        plan,
+        basis: basis(session, id),
+    })
 }
 
 impl FindPlan {
@@ -131,12 +139,24 @@ pub fn run(plan: &FindPlan, needle: &str, indexing: Option<&dyn Indexing>, stop:
     let deadline = Instant::now() + MAX_TIME;
     // Drawing a page read live, to check a hit's words aren't hidden, stops after this, as `search`'s does: past it, hits are listed as not hidden, unchecked.
     let draw_until = Instant::now() + HIDDEN_CHECK_TIME;
-    let settings = Settings { limit: MAX_HITS, context: 0, deadline, draw_until, second_pass_until: deadline, live_budget: search::LIVE_REREAD_BUDGET, indexing, force_scan: false };
+    let settings = Settings {
+        limit: MAX_HITS,
+        context: 0,
+        deadline,
+        draw_until,
+        second_pass_until: deadline,
+        live_budget: search::LIVE_REREAD_BUDGET,
+        indexing,
+        force_scan: false,
+    };
     let plan = &plan.plan;
     let mut reader = Reader::new(plan, &settings);
     let mut slot = Slot::default();
     let mut folded = String::new();
-    let mut progress = Progress { pages: u32::try_from(plan.pages.len()).unwrap_or(u32::MAX), ..Progress::default() };
+    let mut progress = Progress {
+        pages: u32::try_from(plan.pages.len()).unwrap_or(u32::MAX),
+        ..Progress::default()
+    };
     let mut kept = 0usize;
     for &(position, file, page) in &plan.pages {
         if stop.load(Ordering::Relaxed) {
@@ -203,7 +223,15 @@ pub(crate) fn page_hits(text: &str, needle: &str, page: u32, room: usize, is_hid
             continue;
         }
         let (start_char, end_char) = (chars_to(start), chars_to(end));
-        hits.push(Hit { page, start: start_char, end: end_char, before: piece_before(&text[..start]), matched: piece(&text[start..end], MATCHED), after: piece(&text[end..], AFTER), hidden: is_hidden(&(start..end)) });
+        hits.push(Hit {
+            page,
+            start: start_char,
+            end: end_char,
+            before: piece_before(&text[..start]),
+            matched: piece(&text[start..end], MATCHED),
+            after: piece(&text[end..], AFTER),
+            hidden: is_hidden(&(start..end)),
+        });
     }
     (total, hits)
 }
@@ -214,7 +242,11 @@ fn piece_before(text: &str) -> Box<str> {
     let cut = taken.len() > BEFORE;
     let kept: String = taken.into_iter().take(BEFORE).collect::<Vec<_>>().into_iter().rev().collect();
     let joined = one_line(&kept, true);
-    if cut && !joined.is_empty() { format!("{CUT}{}", joined.trim_start()).into() } else { joined.into() }
+    if cut && !joined.is_empty() {
+        format!("{CUT}{}", joined.trim_start()).into()
+    } else {
+        joined.into()
+    }
 }
 
 /// The first `most` characters, on one line, with a mark if there was more.
@@ -223,7 +255,11 @@ fn piece(text: &str, most: usize) -> Box<str> {
     let cut = kept.chars().count() > most;
     let kept: String = kept.chars().take(most).collect();
     let joined = one_line(&kept, false);
-    if cut && !joined.is_empty() { format!("{}{CUT}", joined.trim_end()).into() } else { joined.into() }
+    if cut && !joined.is_empty() {
+        format!("{}{CUT}", joined.trim_end()).into()
+    } else {
+        joined.into()
+    }
 }
 
 /// Any run of whitespace as one space, keeping one at the edge that touches the hit, so words stay apart. Control characters go: a document's text is only drawn, and never as a command.
@@ -350,8 +386,17 @@ impl Results {
         let next = match (self.current, forward) {
             (Some(at), true) => shown.iter().copied().find(|other| *other > at).or_else(|| round(first)),
             (Some(at), false) => shown.iter().rev().copied().find(|other| *other < at).or_else(|| round(last)),
-            (None, true) => shown.iter().copied().find(|at| (self.hits[*at].page, self.hits[*at].start) >= place).or_else(|| round(first)),
-            (None, false) => shown.iter().rev().copied().find(|at| (self.hits[*at].page, self.hits[*at].start) < place).or_else(|| round(last)),
+            (None, true) => shown
+                .iter()
+                .copied()
+                .find(|at| (self.hits[*at].page, self.hits[*at].start) >= place)
+                .or_else(|| round(first)),
+            (None, false) => shown
+                .iter()
+                .rev()
+                .copied()
+                .find(|at| (self.hits[*at].page, self.hits[*at].start) < place)
+                .or_else(|| round(last)),
         }?;
         self.current = Some(next);
         self.version += 1;
@@ -387,14 +432,30 @@ impl Results {
         }
         let p = &self.progress;
         let hits = |n: u64| if n == 1 { "1 match".to_string() } else { format!("{} matches", group(n)) };
-        let pages = |n: u32| if n == 1 { "1 page".to_string() } else { format!("{} pages", group(u64::from(n))) };
-        let shown = if p.total > self.hits.len() as u64 { format!(", first {} listed", group(self.hits.len() as u64)) } else { String::new() };
+        let pages = |n: u32| {
+            if n == 1 {
+                "1 page".to_string()
+            } else {
+                format!("{} pages", group(u64::from(n)))
+            }
+        };
+        let shown = if p.total > self.hits.len() as u64 {
+            format!(", first {} listed", group(self.hits.len() as u64))
+        } else {
+            String::new()
+        };
         let found = format!("{} on {}{shown}", hits(p.total), pages(p.pages_with_hits));
-        let unread = if p.failed > 0 { format!(". {} couldn't be read", pages(p.failed)) } else { String::new() };
+        let unread = if p.failed > 0 {
+            format!(". {} couldn't be read", pages(p.failed))
+        } else {
+            String::new()
+        };
         match &self.end {
             None if p.total == 0 => format!("Searching… page {} of {}", group(u64::from(p.pages_done)), group(u64::from(p.pages))),
             None => format!("{found}, searching…"),
-            Some(End::Finished) if p.total == 0 && p.pages_done == p.no_text && p.pages > 0 => "No text to search. A scan has none until it's made searchable".to_string(),
+            Some(End::Finished) if p.total == 0 && p.pages_done == p.no_text && p.pages > 0 => {
+                "No text to search. A scan has none until it's made searchable".to_string()
+            }
             Some(End::Finished) if p.total == 0 => format!("Not found{unread}"),
             Some(End::Finished) => format!("{found}{unread}"),
             Some(End::Stopped) => format!("Stopped at page {}", group(u64::from(p.pages_done))),
@@ -505,12 +566,23 @@ pub fn begin<A: crate::SessionAccess>(access: &A, query: &str) -> Result<u64, Ag
 
 /// [`begin`], for the person's own Find, with their passwords: see [`FindPlan::with_keys`].
 pub fn begin_keyed<A: crate::SessionAccess>(access: &A, query: &str, keys: Option<search::KeyLookup>) -> Result<u64, AgentError> {
-    let needle = needle(query).ok_or_else(|| if query.len() > MAX_QUERY_BYTES { too_long() } else { AgentError::new("bad_query", "That has nothing to find.", exit::FAILED).then("Find a word or a phrase.") })?;
+    let needle = needle(query).ok_or_else(|| {
+        if query.len() > MAX_QUERY_BYTES {
+            too_long()
+        } else {
+            AgentError::new("bad_query", "That has nothing to find.", exit::FAILED).then("Find a word or a phrase.")
+        }
+    })?;
     let plan = access.with(|s| {
-        let id = s.active().ok_or_else(|| AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first."))?;
+        let id = s.active().ok_or_else(|| {
+            AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND).then("`recto open` or `recto tap` one first.")
+        })?;
         let plan = plan(s, id)?;
         s.set_find(true, query, query);
-        Ok::<_, AgentError>(match keys { Some(keys) => plan.with_keys(keys), None => plan })
+        Ok::<_, AgentError>(match keys {
+            Some(keys) => plan.with_keys(keys),
+            None => plan,
+        })
     })?;
     match access.finding() {
         Some(finding) => Ok(finding.start(plan, query, needle)),
@@ -605,8 +677,17 @@ pub fn close<A: crate::SessionAccess>(access: &A) {
 /// `recto find`: the app's Find, for an agent. With a query, finds it in the document being read and waits for it; `--next` and `--previous` go to a hit, from where the reader is; `--close` closes Find. Always says where Find stands.
 pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, events: &mut Vec<crate::Event>) -> Result<serde_json::Value, AgentError> {
     let listed = crate::positive_limit(asked.limit, DEFAULT_LISTED, MAX_LISTED)?;
-    if [asked.query.is_some(), asked.next || asked.previous, asked.close].iter().filter(|said| **said).count() > 1 || (asked.next && asked.previous) {
-        return Err(AgentError::new("usage", "That's more than one thing at once: a query, a step, or closing.", exit::USAGE).then("Find first, then `recto find --next`."));
+    if [asked.query.is_some(), asked.next || asked.previous, asked.close]
+        .iter()
+        .filter(|said| **said)
+        .count()
+        > 1
+        || (asked.next && asked.previous)
+    {
+        return Err(
+            AgentError::new("usage", "That's more than one thing at once: a query, a step, or closing.", exit::USAGE)
+                .then("Find first, then `recto find --next`."),
+        );
     }
     let here = Here(std::sync::Mutex::new(Results::default()));
     let finding: &dyn Finding = access.finding().unwrap_or(&here);
@@ -628,11 +709,22 @@ pub(crate) fn command<A: crate::SessionAccess>(access: &A, asked: &Asked<'_>, ev
         if access.finding().is_some() {
             finding.wait(generation, deadline.saturating_duration_since(Instant::now()));
         } else {
-            let (plan, needle) = access.with(|s| Ok::<_, AgentError>((plan(s, s.active().ok_or_else(|| AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND))?)?, needle(query).unwrap_or_default())))?;
+            let (plan, needle) = access.with(|s| {
+                Ok::<_, AgentError>((
+                    plan(
+                        s,
+                        s.active()
+                            .ok_or_else(|| AgentError::new("no_active_tab", "There's no document being read to find in.", exit::NOT_FOUND))?,
+                    )?,
+                    needle(query).unwrap_or_default(),
+                ))
+            })?;
             let mut results = Results::default();
             let generation = results.begin_on(&plan, query);
             let stop = AtomicBool::new(false);
-            let (end, progress) = run(&plan, &needle, access.indexing(), &stop, &mut |hits, progress| results.add(generation, hits, progress));
+            let (end, progress) = run(&plan, &needle, access.indexing(), &stop, &mut |hits, progress| {
+                results.add(generation, hits, progress)
+            });
             results.finish(generation, end, progress);
             here.with_results(&mut |kept| *kept = std::mem::take(&mut results));
         }
@@ -740,12 +832,28 @@ mod tests {
 
     impl DocLoader for TenPages {
         fn load(&self, _path: &std::path::Path) -> Result<recto_core::DocFacts, recto_core::OpenError> {
-            Ok(recto_core::DocFacts { page_count: 10, byte_len: 1, encrypted: false, version: "1.7".into(), title: None, toc: recto_core::Toc::default(), renderer_only: false })
+            Ok(recto_core::DocFacts {
+                page_count: 10,
+                byte_len: 1,
+                encrypted: false,
+                version: "1.7".into(),
+                title: None,
+                toc: recto_core::Toc::default(),
+                renderer_only: false,
+            })
         }
     }
 
     fn found_on(page: u32) -> Hit {
-        Hit { page, start: 0, end: 4, before: "".into(), matched: "word".into(), after: "".into(), hidden: false }
+        Hit {
+            page,
+            start: 0,
+            end: 4,
+            before: "".into(),
+            matched: "word".into(),
+            after: "".into(),
+            hidden: false,
+        }
     }
 
     /// Failure: an agent's `recto find --next` (and ⌘K's `--run` of it), asked while the query runs and before the hit it wants is known, answers that there's nothing to go to, where the app's own step waits for it (the palette's test, after the sandbox merge changed the timing). It waits, bounded, for a hit or the query's end, and only then says there's none.
@@ -766,7 +874,13 @@ mod tests {
                     std::thread::yield_now();
                 }
                 let mut results = driver.results.lock().unwrap();
-                let progress = Progress { pages_done: 10, pages: 10, pages_with_hits: u32::try_from(hits.len()).unwrap(), total: hits.len() as u64, ..Progress::default() };
+                let progress = Progress {
+                    pages_done: 10,
+                    pages: 10,
+                    pages_with_hits: u32::try_from(hits.len()).unwrap(),
+                    total: hits.len() as u64,
+                    ..Progress::default()
+                };
                 results.add(generation, hits, &progress);
                 results.finish(generation, End::Finished, progress);
                 driver.changed.notify_all();
@@ -824,7 +938,10 @@ mod tests {
     fn pieces_and_hits_are_bounded() {
         let long = "x".repeat(100_000) + "needle" + &"y".repeat(100_000);
         let found = hits(&long, "needle");
-        assert!(found[0].before.chars().count() <= BEFORE + 1 && found[0].after.chars().count() <= AFTER + 1, "{found:?}");
+        assert!(
+            found[0].before.chars().count() <= BEFORE + 1 && found[0].after.chars().count() <= AFTER + 1,
+            "{found:?}"
+        );
         assert!(found[0].before.starts_with(CUT) && found[0].after.ends_with(CUT));
         let (total, kept) = page_hits(&"a".repeat(200_000), "a", 0, 5, &|_| false);
         assert_eq!((total, kept.len()), (200_000, 5));
@@ -838,7 +955,15 @@ mod tests {
     }
 
     fn hit(page: u32, start: u32) -> Hit {
-        Hit { page, start, end: start + 1, before: "".into(), matched: "x".into(), after: "".into(), hidden: false }
+        Hit {
+            page,
+            start,
+            end: start + 1,
+            before: "".into(),
+            matched: "x".into(),
+            after: "".into(),
+            hidden: false,
+        }
     }
 
     /// Failure: a hit held in the list grows, so 1,000 of them cost more than ENGINEERING's table says.
@@ -852,14 +977,32 @@ mod tests {
     fn stepping_starts_where_the_reader_is_and_goes_round() {
         let mut results = Results::default();
         let generation = results.begin(1, "x", 10);
-        results.add(generation, vec![hit(1, 5), hit(4, 0), hit(4, 9), hit(8, 2)], &Progress { total: 4, ..Progress::default() });
-        results.finish(generation, End::Finished, Progress { total: 4, ..Progress::default() });
+        results.add(
+            generation,
+            vec![hit(1, 5), hit(4, 0), hit(4, 9), hit(8, 2)],
+            &Progress {
+                total: 4,
+                ..Progress::default()
+            },
+        );
+        results.finish(
+            generation,
+            End::Finished,
+            Progress {
+                total: 4,
+                ..Progress::default()
+            },
+        );
         assert_eq!(results.step(true, (4, 3)).map(|hit| (hit.page, hit.start)), Some((4, 9)));
         assert_eq!(results.step(true, (0, 0)).map(|hit| hit.page), Some(8));
         assert_eq!(results.step(true, (0, 0)).map(|hit| hit.page), Some(1), "round to the first");
         assert_eq!(results.step(false, (0, 0)).map(|hit| hit.page), Some(8), "and back round to the last");
         results.current = None;
-        assert_eq!(results.step(false, (4, 3)).map(|hit| (hit.page, hit.start)), Some((4, 0)), "back from where they are");
+        assert_eq!(
+            results.step(false, (4, 3)).map(|hit| (hit.page, hit.start)),
+            Some((4, 0)),
+            "back from where they are"
+        );
     }
 
     /// Failure: ⌘G pressed while a query is still reading goes to the first hit there is, behind the reader, as the hit at their place isn't found yet; or it never goes once the query ends.
@@ -867,13 +1010,34 @@ mod tests {
     fn a_step_while_it_runs_waits_for_a_hit_past_the_reader() {
         let mut results = Results::default();
         let generation = results.begin(1, "x", 10);
-        results.add(generation, vec![hit(1, 0)], &Progress { total: 1, ..Progress::default() });
+        results.add(
+            generation,
+            vec![hit(1, 0)],
+            &Progress {
+                total: 1,
+                ..Progress::default()
+            },
+        );
         assert!(results.step(true, (5, 0)).is_none(), "nothing past page 6 yet: wait");
         assert!(results.step(false, (0, 0)).is_none(), "the last hit isn't known yet either");
-        results.add(generation, vec![hit(7, 3)], &Progress { total: 2, ..Progress::default() });
+        results.add(
+            generation,
+            vec![hit(7, 3)],
+            &Progress {
+                total: 2,
+                ..Progress::default()
+            },
+        );
         assert_eq!(results.step(true, (5, 0)).map(|hit| hit.page), Some(7));
         assert!(results.step(true, (0, 0)).is_none(), "going round waits for the end");
-        results.finish(generation, End::Finished, Progress { total: 2, ..Progress::default() });
+        results.finish(
+            generation,
+            End::Finished,
+            Progress {
+                total: 2,
+                ..Progress::default()
+            },
+        );
         assert_eq!(results.step(true, (0, 0)).map(|hit| hit.page), Some(1), "then it goes round");
     }
 
@@ -883,8 +1047,22 @@ mod tests {
         let mut results = Results::default();
         let generation = results.begin(1, "x", 10);
         let hidden = Hit { hidden: true, ..hit(2, 0) };
-        results.add(generation, vec![hit(1, 0), hidden, hit(3, 0)], &Progress { total: 3, ..Progress::default() });
-        results.finish(generation, End::Finished, Progress { total: 3, ..Progress::default() });
+        results.add(
+            generation,
+            vec![hit(1, 0), hidden, hit(3, 0)],
+            &Progress {
+                total: 3,
+                ..Progress::default()
+            },
+        );
+        results.finish(
+            generation,
+            End::Finished,
+            Progress {
+                total: 3,
+                ..Progress::default()
+            },
+        );
         assert_eq!(results.step(true, (2, 0)).map(|hit| hit.page), Some(3), "past the hidden one");
         assert_eq!(results.step(false, (0, 0)).map(|hit| hit.page), Some(1));
         assert!(results.choose(1).is_none(), "a click on it goes nowhere");
@@ -901,7 +1079,17 @@ mod tests {
         results.add(old, vec![hit(0, 0)], &Progress::default());
         results.finish(old, End::Finished, Progress::default());
         assert!(results.hits.is_empty() && results.running());
-        results.add(new, vec![hit(2, 0)], &Progress { total: 1, pages_with_hits: 1, pages_done: 3, pages: 10, ..Progress::default() });
+        results.add(
+            new,
+            vec![hit(2, 0)],
+            &Progress {
+                total: 1,
+                pages_with_hits: 1,
+                pages_done: 3,
+                pages: 10,
+                ..Progress::default()
+            },
+        );
         assert_eq!(results.hits.len(), 1);
         assert_eq!(results.rows(), vec![Row::Page(2), Row::Hit(0)]);
     }
@@ -912,9 +1100,27 @@ mod tests {
         let mut results = Results::default();
         let generation = results.begin(1, "a", 10);
         for page in 0..3 {
-            results.add(generation, (0..600).map(|at| hit(page, at)).collect(), &Progress { total: 600 * u64::from(page + 1), pages_with_hits: page + 1, ..Progress::default() });
+            results.add(
+                generation,
+                (0..600).map(|at| hit(page, at)).collect(),
+                &Progress {
+                    total: 600 * u64::from(page + 1),
+                    pages_with_hits: page + 1,
+                    ..Progress::default()
+                },
+            );
         }
-        results.finish(generation, End::Finished, Progress { total: 1800, pages_with_hits: 3, pages_done: 10, pages: 10, ..Progress::default() });
+        results.finish(
+            generation,
+            End::Finished,
+            Progress {
+                total: 1800,
+                pages_with_hits: 3,
+                pages_done: 10,
+                pages: 10,
+                ..Progress::default()
+            },
+        );
         assert_eq!(results.hits.len(), MAX_HITS);
         assert_eq!(results.status(), "1,800 matches on 3 pages, first 1,000 listed");
     }
@@ -925,9 +1131,27 @@ mod tests {
         let mut results = Results::default();
         let generation = results.begin(1, "x", 10);
         assert_eq!(results.status(), "Searching… page 0 of 10");
-        results.finish(generation, End::Finished, Progress { pages: 10, pages_done: 10, failed: 2, ..Progress::default() });
+        results.finish(
+            generation,
+            End::Finished,
+            Progress {
+                pages: 10,
+                pages_done: 10,
+                failed: 2,
+                ..Progress::default()
+            },
+        );
         assert_eq!(results.status(), "Not found. 2 pages couldn't be read");
-        results.finish(generation, End::Finished, Progress { pages: 4, pages_done: 4, no_text: 4, ..Progress::default() });
+        results.finish(
+            generation,
+            End::Finished,
+            Progress {
+                pages: 4,
+                pages_done: 4,
+                no_text: 4,
+                ..Progress::default()
+            },
+        );
         assert!(results.status().starts_with("No text to search"));
         assert_eq!(page_label(1203), "Page 1,204");
     }

@@ -41,8 +41,14 @@ impl PaperKind {
     /// How a highlight goes over this paper. Warm paper is white paper, with its tint laid over everything, the highlight included.
     pub fn highlight(self) -> HighlightLook {
         match self {
-            Self::White => HighlightLook { dark_colour: false, lighten: false },
-            Self::Dark => HighlightLook { dark_colour: true, lighten: true },
+            Self::White => HighlightLook {
+                dark_colour: false,
+                lighten: false,
+            },
+            Self::Dark => HighlightLook {
+                dark_colour: true,
+                lighten: true,
+            },
         }
     }
 
@@ -55,7 +61,11 @@ impl PaperKind {
 }
 
 const fn paper_channels() -> [i32; 3] {
-    [((DARK_PAPER >> 16) & 0xFF) as i32, ((DARK_PAPER >> 8) & 0xFF) as i32, (DARK_PAPER & 0xFF) as i32]
+    [
+        ((DARK_PAPER >> 16) & 0xFF) as i32,
+        ((DARK_PAPER >> 8) & 0xFF) as i32,
+        (DARK_PAPER & 0xFF) as i32,
+    ]
 }
 
 /// **How turned-over text keeps its weight** (owner, 2026-11-07: "The font in the future competitiveness is not super readible. I think its a bit to skinny"). On white paper the renderer's text is what Preview draws: PDFium draws glyphs through Core Graphics on a Mac, and at the same scale their ink is the same to four places. Turned over in sRGB's encoding, though, a letter's anti-aliased edge gives off much less light above dark paper than it took from white, so light text came out thinner than black, and thinner than macOS draws its own light text: in three system fonts at the reader's scale, 0.70 to 0.78 of the light per letter against 0.84 to 0.88 for Core Text's own light-on-dark. Paper-ness goes through this power first, so an edge gives off more: at 1.8 the turned-over text gives off 0.98 to 1.00 of what Core Text's own does. White and black stay where they were, so paper and ink are unchanged.
@@ -70,14 +80,21 @@ const CURVE_WEIGHT: [i32; 256] = {
     let mut spread = 0;
     while spread < 256 {
         let weight = (CURVE_COLOUR_SPREAD - spread as i32) * 256 / (CURVE_COLOUR_SPREAD - CURVE_GREY_SPREAD);
-        table[spread] = if weight < 0 { 0 } else if weight > 256 { 256 } else { weight };
+        table[spread] = if weight < 0 {
+            0
+        } else if weight > 256 {
+            256
+        } else {
+            weight
+        };
         spread += 1;
     }
     table
 };
 
 /// Paper-ness after [`TURNED_LIGHTNESS_POWER`], for each value of it. Made once.
-static TURNED_LIGHTNESS: std::sync::LazyLock<[u8; 256]> = std::sync::LazyLock::new(|| std::array::from_fn(|value| (255.0 * (value as f64 / 255.0).powf(TURNED_LIGHTNESS_POWER)).round().clamp(0.0, 255.0) as u8));
+static TURNED_LIGHTNESS: std::sync::LazyLock<[u8; 256]> =
+    std::sync::LazyLock::new(|| std::array::from_fn(|value| (255.0 * (value as f64 / 255.0).powf(TURNED_LIGHTNESS_POWER)).round().clamp(0.0, 255.0) as u8));
 
 /// Turns one colour over, as a blank tile's single colour needs.
 pub fn dark_rgb(rgb: u32) -> u32 {
@@ -94,7 +111,11 @@ fn turn_pixel(pixel: &mut [u8; 4], lightness: &[u8; 256]) {
     let luma = (77 * r + 150 * g + 29 * b) >> 8;
     // Text and lines are near grey and take the curve; colour, as a chart's fills, turns straight, with the curve fading out between.
     let spread = r.max(g).max(b) - r.min(g).min(b);
-    let paperness = if spread >= CURVE_COLOUR_SPREAD { luma } else { luma + (((i32::from(lightness[(luma as usize) & 0xFF]) - luma) * CURVE_WEIGHT[(spread as usize) & 0xFF]) >> 8) };
+    let paperness = if spread >= CURVE_COLOUR_SPREAD {
+        luma
+    } else {
+        luma + (((i32::from(lightness[(luma as usize) & 0xFF]) - luma) * CURVE_WEIGHT[(spread as usize) & 0xFF]) >> 8)
+    };
     let over = |paper: i32, ink: i32, value: i32| (((paper * paperness + ink * (255 - paperness)) / 255) + value - luma).clamp(0, 255) as u8;
     pixel[0] = over(paper_b, DARK_INK[2], b);
     pixel[1] = over(paper_g, DARK_INK[1], g);
@@ -169,7 +190,16 @@ pub fn sample_pixels(pixels: &[u8], stride: usize, left: usize, top: usize, righ
     let mut sums = [0u64; 3];
     let mut bins = [0u32; COLOUR_BINS];
     // At most a picture's height of slices, so a second pass needn't work out the rows again.
-    let inside: Vec<&[u8]> = if stride == 0 { Vec::new() } else { pixels.chunks(stride).skip(top).take(bottom.saturating_sub(top)).filter_map(|row| row.get(left.saturating_mul(4)..right.saturating_mul(4).min(row.len()))).collect() };
+    let inside: Vec<&[u8]> = if stride == 0 {
+        Vec::new()
+    } else {
+        pixels
+            .chunks(stride)
+            .skip(top)
+            .take(bottom.saturating_sub(top))
+            .filter_map(|row| row.get(left.saturating_mul(4)..right.saturating_mul(4).min(row.len())))
+            .collect()
+    };
     for row in &inside {
         for pixel in row.as_chunks::<4>().0 {
             let (b, g, r) = (pixel[0], pixel[1], pixel[2]);
@@ -200,12 +230,39 @@ pub fn sample_pixels(pixels: &[u8], stride: usize, left: usize, top: usize, righ
             fullest.sort_unstable_by_key(|(count, _)| std::cmp::Reverse(*count));
         }
     }
-    let clustered = if colour == 0 { 1.0 } else { fullest.iter().map(|(bin, _)| f64::from(*bin)).sum::<f64>() / colour as f64 };
+    let clustered = if colour == 0 {
+        1.0
+    } else {
+        fullest.iter().map(|(bin, _)| f64::from(*bin)).sum::<f64>() / colour as f64
+    };
     let shaded = colour > 0 && is_shading(&fullest, colour);
-    let mut found = ImageSample { paper: share(paper), colour: share(colour), white: share(white), background, pixels: count, clustered, plain: 0.0, shaded };
-    if found.white < WHITE_LEAST && found.paper >= SCAN_LEAST_PAPER && found.colour > SCAN_MOST_COLOUR && found.colour <= FLAT_MOST_COLOUR && found.clustered >= FLAT_LEAST_CLUSTERED {
+    let mut found = ImageSample {
+        paper: share(paper),
+        colour: share(colour),
+        white: share(white),
+        background,
+        pixels: count,
+        clustered,
+        plain: 0.0,
+        shaded,
+    };
+    if found.white < WHITE_LEAST
+        && found.paper >= SCAN_LEAST_PAPER
+        && found.colour > SCAN_MOST_COLOUR
+        && found.colour <= FLAT_MOST_COLOUR
+        && found.clustered >= FLAT_LEAST_CLUSTERED
+    {
         let near = |value: u8, to: u8| value.abs_diff(to) <= PLAIN_NEAR;
-        let plain: usize = inside.iter().map(|row| row.as_chunks::<4>().0.iter().filter(|pixel| near(pixel[2], background[0]) && near(pixel[1], background[1]) && near(pixel[0], background[2])).count()).sum();
+        let plain: usize = inside
+            .iter()
+            .map(|row| {
+                row.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .filter(|pixel| near(pixel[2], background[0]) && near(pixel[1], background[1]) && near(pixel[0], background[2]))
+                    .count()
+            })
+            .sum();
         found.plain = share(plain);
     }
     found
@@ -214,7 +271,11 @@ pub fn sample_pixels(pixels: &[u8], stride: usize, left: usize, top: usize, righ
 /// Whether an image's fullest colour bins are one colour shaded, as a ball or a product photographed on white is: of the bins that hold at least [`SHADE_LEAST_SHARE`] of its colour, the ones joined to the fullest through neighbours run through [`SHADE_LEAST_LEVELS`] lightnesses or more. A chart's flat fill has its edges' and noise's in a bin or two beside it: of the 41 images the chart rule added in bench100 and part B, 40 span at most 3, and the 41st is a gradient strip, rightly dimmed; shaded balls in red, blue and green span 4.
 fn is_shading(fullest: &[(u32, usize); FLAT_TOP_BINS], colour: usize) -> bool {
     let cell = |bin: usize| [(bin >> 6) as i32, ((bin >> 3) & 7) as i32, (bin & 7) as i32];
-    let counted: Vec<usize> = fullest.iter().filter(|(count, _)| f64::from(*count) >= SHADE_LEAST_SHARE * colour as f64).map(|(_, bin)| *bin).collect();
+    let counted: Vec<usize> = fullest
+        .iter()
+        .filter(|(count, _)| f64::from(*count) >= SHADE_LEAST_SHARE * colour as f64)
+        .map(|(_, bin)| *bin)
+        .collect();
     let Some(&first) = counted.first() else { return false };
     // The bins joined to the fullest through neighbours, and the lightnesses they span.
     let mut joined = vec![first];
@@ -238,8 +299,12 @@ fn is_shading(fullest: &[(u32, usize); FLAT_TOP_BINS], colour: usize) -> bool {
 impl ImageSample {
     /// Whether it's an image with a white background, that turns over with the page. Uncertain is no.
     pub fn has_white_background(self) -> bool {
-        let flat = self.colour <= FLAT_MOST_COLOUR && self.clustered >= FLAT_LEAST_CLUSTERED && !self.shaded && (self.white >= WHITE_LEAST || (self.paper >= SCAN_LEAST_PAPER && self.plain >= PLAIN_LEAST));
-        self.pixels >= LEAST_PIXELS_TO_JUDGE && ((self.white >= WHITE_LEAST && self.colour <= WHITE_MOST_COLOUR) || (self.paper >= SCAN_LEAST_PAPER && self.colour <= SCAN_MOST_COLOUR) || flat)
+        let flat = self.colour <= FLAT_MOST_COLOUR
+            && self.clustered >= FLAT_LEAST_CLUSTERED
+            && !self.shaded
+            && (self.white >= WHITE_LEAST || (self.paper >= SCAN_LEAST_PAPER && self.plain >= PLAIN_LEAST));
+        self.pixels >= LEAST_PIXELS_TO_JUDGE
+            && ((self.white >= WHITE_LEAST && self.colour <= WHITE_MOST_COLOUR) || (self.paper >= SCAN_LEAST_PAPER && self.colour <= SCAN_MOST_COLOUR) || flat)
     }
 
     /// The same, for a whole page with nothing known of its images. Stricter, and uncertain is still no.
@@ -249,7 +314,8 @@ impl ImageSample {
 
     /// What brings its paper to true white, in 256ths of each channel.
     fn gains(self) -> [u16; 3] {
-        self.background.map(|channel| u16::try_from(255 * 256 / u32::from(channel.max(1))).unwrap_or(256))
+        self.background
+            .map(|channel| u16::try_from(255 * 256 / u32::from(channel.max(1))).unwrap_or(256))
     }
 }
 
@@ -275,7 +341,10 @@ const WHOLE_PAGE: [u16; 4] = [0, 0, u16::MAX, u16::MAX];
 
 /// The parts of a page these cover. Added up, so images that overlap count twice, and a page can't come to more than all of it.
 fn share_of_page(boxes: impl Iterator<Item = [u16; 4]>) -> f64 {
-    boxes.map(|sides| f64::from(sides[2].saturating_sub(sides[0])) * f64::from(sides[3].saturating_sub(sides[1])) / (65_535.0 * 65_535.0)).sum::<f64>().min(1.0)
+    boxes
+        .map(|sides| f64::from(sides[2].saturating_sub(sides[0])) * f64::from(sides[3].saturating_sub(sides[1])) / (65_535.0 * 65_535.0))
+        .sum::<f64>()
+        .min(1.0)
 }
 
 impl PageLook {
@@ -293,11 +362,29 @@ impl PageLook {
     pub fn decide(boxes: Option<&[[u16; 4]]>, pixels: &[u8], stride: usize, width: u32, height: u32) -> Self {
         let sample = |sides: [u16; 4]| {
             let place = |part: u16, whole: u32| (u64::from(part) * u64::from(whole) / 65_535) as usize;
-            sample_pixels(pixels, stride, place(sides[0], width), place(sides[1], height), place(sides[2], width).min(width as usize), place(sides[3], height).min(height as usize))
+            sample_pixels(
+                pixels,
+                stride,
+                place(sides[0], width),
+                place(sides[1], height),
+                place(sides[2], width).min(width as usize),
+                place(sides[3], height).min(height as usize),
+            )
         };
         let Some(boxes) = boxes else {
             let whole = sample(WHOLE_PAGE);
-            return if whole.whole_page_is_white_backed() { Self { dim: false, keep: Vec::new(), whiten: vec![Whitened { sides: WHOLE_PAGE, gains: whole.gains() }] } } else { Self::unknown() };
+            return if whole.whole_page_is_white_backed() {
+                Self {
+                    dim: false,
+                    keep: Vec::new(),
+                    whiten: vec![Whitened {
+                        sides: WHOLE_PAGE,
+                        gains: whole.gains(),
+                    }],
+                }
+            } else {
+                Self::unknown()
+            };
         };
         let (mut keep, mut whiten) = (Vec::new(), Vec::new());
         for &sides in boxes {
@@ -320,7 +407,11 @@ impl PageLook {
         if self.dim {
             return DarkTile::Dim;
         }
-        let whiten = self.whiten.iter().filter_map(|image| Some((keep_in(image.sides, page, rect)?, image.gains))).collect();
+        let whiten = self
+            .whiten
+            .iter()
+            .filter_map(|image| Some((keep_in(image.sides, page, rect)?, image.gains)))
+            .collect();
         DarkTile::TurnOver(self.keep.iter().filter_map(|sides| keep_in(*sides, page, rect)).collect(), whiten)
     }
 }
@@ -351,7 +442,12 @@ fn keep_in(sides: [u16; 4], page: (u32, u32), rect: recto_proto::TileRect) -> Op
     };
     let (left, top) = (place(sides[0], page.0, false), place(sides[1], page.1, false));
     let (right, bottom) = (place(sides[2], page.0, true), place(sides[3], page.1, true));
-    let keep = Keep { left: left.max(rect.x) - rect.x, top: top.max(rect.y) - rect.y, right: right.min(rect.x + rect.width).saturating_sub(rect.x), bottom: bottom.min(rect.y + rect.height).saturating_sub(rect.y) };
+    let keep = Keep {
+        left: left.max(rect.x) - rect.x,
+        top: top.max(rect.y) - rect.y,
+        right: right.min(rect.x + rect.width).saturating_sub(rect.x),
+        bottom: bottom.min(rect.y + rect.height).saturating_sub(rect.y),
+    };
     (keep.right > keep.left && keep.bottom > keep.top).then_some(keep)
 }
 
@@ -436,8 +532,16 @@ pub fn turn_over(pixels: &mut [u8], width: u32, height: u32, stride: u32, grey: 
     });
     for (y, row) in pixels.chunks_mut(stride).take(height as usize).enumerate() {
         let Some(row) = row.get_mut(..row_bytes) else { continue };
-        let here: Vec<Keep> = keeps.iter().filter(|keep| (keep.top as usize..keep.bottom as usize).contains(&y)).copied().collect();
-        let to_whiten: Vec<(Keep, [u16; 3])> = whiten.iter().filter(|(place, _)| (place.top as usize..place.bottom as usize).contains(&y)).copied().collect();
+        let here: Vec<Keep> = keeps
+            .iter()
+            .filter(|keep| (keep.top as usize..keep.bottom as usize).contains(&y))
+            .copied()
+            .collect();
+        let to_whiten: Vec<(Keep, [u16; 3])> = whiten
+            .iter()
+            .filter(|(place, _)| (place.top as usize..place.bottom as usize).contains(&y))
+            .copied()
+            .collect();
         for (x, pixel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             if here.iter().any(|keep| (keep.left as usize..keep.right as usize).contains(&x)) {
                 dim_pixel(pixel);
@@ -476,24 +580,50 @@ mod tests {
     /// Failure: on some paper, text under a highlight can't be read, or the highlight doesn't show against the page. The system's own colours as macOS has them by default in each appearance, blue and graphite, on what each paper shows: white paper, warm paper, which is white under a tint, and dark.
     #[test]
     fn a_highlight_shows_and_leaves_text_readable_on_every_paper() {
-        let rgb = |value: u32| [f64::from((value >> 16) & 0xFF) / 255.0, f64::from((value >> 8) & 0xFF) / 255.0, f64::from(value & 0xFF) / 255.0];
+        let rgb = |value: u32| {
+            [
+                f64::from((value >> 16) & 0xFF) / 255.0,
+                f64::from((value >> 8) & 0xFF) / 255.0,
+                f64::from(value & 0xFF) / 255.0,
+            ]
+        };
         let warm_tint = [0.96, 0.93, 0.86];
         type Case = (&'static str, PaperKind, u32, [u32; 2], Option<[f64; 3]>);
-        let cases: [Case; 3] = [("white", PaperKind::White, 0xFF_FF_FF, [0xB3_D7_FF, 0xD9_D9_D9], None), ("warm", PaperKind::White, 0xFF_FF_FF, [0xB3_D7_FF, 0xD9_D9_D9], Some(warm_tint)), ("dark", PaperKind::Dark, DARK_PAPER, [0x3F_63_8B, 0x46_46_46], None)];
+        let cases: [Case; 3] = [
+            ("white", PaperKind::White, 0xFF_FF_FF, [0xB3_D7_FF, 0xD9_D9_D9], None),
+            ("warm", PaperKind::White, 0xFF_FF_FF, [0xB3_D7_FF, 0xD9_D9_D9], Some(warm_tint)),
+            ("dark", PaperKind::Dark, DARK_PAPER, [0x3F_63_8B, 0x46_46_46], None),
+        ];
         for (name, kind, paper, colours, tint) in cases {
             let look = kind.highlight();
             assert_eq!(look.dark_colour, kind == PaperKind::Dark);
-            let ink = if kind == PaperKind::Dark { [f64::from(DARK_INK[0]) / 255.0, f64::from(DARK_INK[1]) / 255.0, f64::from(DARK_INK[2]) / 255.0] } else { [0.0; 3] };
+            let ink = if kind == PaperKind::Dark {
+                [f64::from(DARK_INK[0]) / 255.0, f64::from(DARK_INK[1]) / 255.0, f64::from(DARK_INK[2]) / 255.0]
+            } else {
+                [0.0; 3]
+            };
             let paper = rgb(paper);
             for colour in colours {
                 let over = rgb(colour);
                 let with = |under: [f64; 3]| {
-                    let mixed = [blended(look, under[0], over[0]), blended(look, under[1], over[1]), blended(look, under[2], over[2])];
+                    let mixed = [
+                        blended(look, under[0], over[0]),
+                        blended(look, under[1], over[1]),
+                        blended(look, under[2], over[2]),
+                    ];
                     tint.map_or(mixed, |tint| [mixed[0] * tint[0], mixed[1] * tint[1], mixed[2] * tint[2]])
                 };
                 let shown_paper = tint.map_or(paper, |tint| [paper[0] * tint[0], paper[1] * tint[1], paper[2] * tint[2]]);
-                assert!(contrast(with(ink), with(paper)) >= 4.5, "{name}, {colour:06x}: text is {:.1}:1 under it", contrast(with(ink), with(paper)));
-                assert!(contrast(with(paper), shown_paper) >= 1.2, "{name}, {colour:06x}: it barely shows, {:.2}:1", contrast(with(paper), shown_paper));
+                assert!(
+                    contrast(with(ink), with(paper)) >= 4.5,
+                    "{name}, {colour:06x}: text is {:.1}:1 under it",
+                    contrast(with(ink), with(paper))
+                );
+                assert!(
+                    contrast(with(paper), shown_paper) >= 1.2,
+                    "{name}, {colour:06x}: it barely shows, {:.2}:1",
+                    contrast(with(paper), shown_paper)
+                );
             }
         }
     }
@@ -505,7 +635,11 @@ mod tests {
     /// Failure: dark paper isn't dark, or text on it isn't readable. Asserts the property, which is contrast, and not the exact colours.
     #[test]
     fn paper_goes_dark_and_ink_goes_light() {
-        assert_eq!(dark_rgb(0xFF_FF_FF), DARK_PAPER, "white paper becomes the paper the page sits on, or tiles would show");
+        assert_eq!(
+            dark_rgb(0xFF_FF_FF),
+            DARK_PAPER,
+            "white paper becomes the paper the page sits on, or tiles would show"
+        );
         let ink = luma(dark_rgb(0));
         assert!(ink > luma(DARK_PAPER) * 4, "{ink}");
     }
@@ -530,7 +664,11 @@ mod tests {
     fn text_keeps_its_weight_on_dark_paper() {
         let linear = |value: u32| {
             let channel = f64::from(value) / 255.0;
-            if channel <= 0.04045 { channel / 12.92 } else { ((channel + 0.055) / 1.055).powf(2.4) }
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
         };
         let light = |rgb: u32| 0.2126 * linear((rgb >> 16) & 0xFF) + 0.7152 * linear((rgb >> 8) & 0xFF) + 0.0722 * linear(rgb & 0xFF);
         let (paper, ink) = (light(DARK_PAPER), light(dark_rgb(0)));
@@ -539,7 +677,11 @@ mod tests {
             taken += 1.0 - linear(grey);
             given += (light(dark_rgb(grey * 0x01_01_01)) - paper) / (ink - paper);
         }
-        assert!(given / taken >= 0.7, "turned-over edges give off {:.2} of what they took from white", given / taken);
+        assert!(
+            given / taken >= 0.7,
+            "turned-over edges give off {:.2} of what they took from white",
+            given / taken
+        );
     }
 
     /// Failure: a chart's colours fade on dark paper, as figure 8's deep blue bars went pale lavender once lightness was curved for text (owner, 2026-11-08: the curve is for text and lines; coloured areas keep the gentler one). A colour turns over as it did before the curve, a grey takes the curve, and between them the curve fades in, so an anti-aliased edge has no step.
@@ -569,7 +711,20 @@ mod tests {
     #[test]
     fn what_is_kept_stays_a_picture() {
         let mut pixels = vec![0xFFu8; 4 * 4 * 2];
-        turn_over(&mut pixels, 4, 2, 16, true, &[Keep { left: 1, top: 0, right: 3, bottom: 1 }], &[]);
+        turn_over(
+            &mut pixels,
+            4,
+            2,
+            16,
+            true,
+            &[Keep {
+                left: 1,
+                top: 0,
+                right: 3,
+                bottom: 1,
+            }],
+            &[],
+        );
         let at = |x: usize, y: usize| pixels[(y * 16) + x * 4];
         assert!(at(1, 0) > 200 && at(2, 0) > 200, "inside: {}", at(1, 0));
         assert_eq!(u32::from(at(0, 0)), DARK_PAPER & 0xFF, "beside it");
@@ -579,9 +734,23 @@ mod tests {
     /// Failure: an image's place misses the tile it's in, or a box from a hostile worker writes outside the tile. Holds the parts of a page to its pixels, at the tile's own origin.
     #[test]
     fn a_box_lands_where_it_should_in_a_tile() {
-        let rect = recto_proto::TileRect { x: 512, y: 0, width: 512, height: 512 };
+        let rect = recto_proto::TileRect {
+            x: 512,
+            y: 0,
+            width: 512,
+            height: 512,
+        };
         let half = keep_in([0, 0, 32_768, 32_768], (2048, 2048), rect);
-        assert_eq!(half, Some(Keep { left: 0, top: 0, right: 512, bottom: 512 }), "to the middle of the page, past this tile");
+        assert_eq!(
+            half,
+            Some(Keep {
+                left: 0,
+                top: 0,
+                right: 512,
+                bottom: 512
+            }),
+            "to the middle of the page, past this tile"
+        );
         assert_eq!(keep_in([60_000, 60_000, 65_535, 65_535], (2048, 2048), rect), None, "elsewhere on the page");
         assert_eq!(keep_in([65_535, 65_535, 0, 0], (2048, 2048), rect), None, "inside out");
         let edge_to_edge = keep_in([0, 0, 40_000, 40_000], (u32::MAX, u32::MAX), rect).unwrap();
@@ -612,12 +781,32 @@ mod tests {
             let look = PageLook::decide(whole, &scan(paper), 400, 100, 100);
             assert!(!look.dim && look.keep.is_empty() && look.whiten.len() == 1, "{paper:?}: {look:?}");
         }
-        let stamped = picture(100, 100, |x, y| if x > 85 && y > 85 { [200, 30, 30] } else if y % 5 == 0 { [40, 40, 40] } else { [250, 250, 250] });
-        assert!(!PageLook::decide(whole, &stamped, 400, 100, 100).dim, "a red stamp in the corner is still a scan");
+        let stamped = picture(100, 100, |x, y| {
+            if x > 85 && y > 85 {
+                [200, 30, 30]
+            } else if y % 5 == 0 {
+                [40, 40, 40]
+            } else {
+                [250, 250, 250]
+            }
+        });
+        assert!(
+            !PageLook::decide(whole, &stamped, 400, 100, 100).dim,
+            "a red stamp in the corner is still a scan"
+        );
         let photo = picture(100, 100, |x, y| [(x * 2) as u8 + 40, (y * 2) as u8 + 20, 90]);
         assert!(PageLook::decide(whole, &photo, 400, 100, 100).dim, "a photo");
-        let map_with_margins = picture(100, 100, |x, y| if !(15..=85).contains(&x) || !(10..=90).contains(&y) { [255, 255, 255] } else { [90 + (x as u8), 140, 70] });
-        assert!(PageLook::decide(None, &map_with_margins, 400, 100, 100).dim, "white margins don't make a map a scan");
+        let map_with_margins = picture(100, 100, |x, y| {
+            if !(15..=85).contains(&x) || !(10..=90).contains(&y) {
+                [255, 255, 255]
+            } else {
+                [90 + (x as u8), 140, 70]
+            }
+        });
+        assert!(
+            PageLook::decide(None, &map_with_margins, 400, 100, 100).dim,
+            "white margins don't make a map a scan"
+        );
         let many = picture(100, 100, |x, y| if (x / 10 + y / 10) % 2 == 0 { [200, 40, 40] } else { [255, 255, 255] });
         assert!(PageLook::decide(whole, &many, 400, 100, 100).dim, "a coloured image half of it white");
     }
@@ -630,7 +819,11 @@ mod tests {
         let look = PageLook::decide(Some(&boxes), &page, 400, 100, 100);
         assert!(!look.dim, "{look:?}");
         assert_eq!(look.keep, vec![boxes[0]], "the coloured one stays");
-        assert_eq!(look.whiten.iter().map(|image| image.sides).collect::<Vec<_>>(), vec![boxes[1]], "the white one turns over");
+        assert_eq!(
+            look.whiten.iter().map(|image| image.sides).collect::<Vec<_>>(),
+            vec![boxes[1]],
+            "the white one turns over"
+        );
         assert_eq!(PageLook::decide(Some(&[]), &page, 400, 100, 100), PageLook::text());
         let tiny = PageLook::decide(Some(&[[0, 0, 300, 300]]), &page, 400, 100, 100);
         assert_eq!(tiny.keep.len(), 1, "too small to say, so it's left alone: {tiny:?}");
@@ -651,16 +844,34 @@ mod tests {
         };
         let chart = bars([255, 255, 255], 60);
         let found = sample_pixels(&chart, 400, 0, 0, 100, 100);
-        assert!(found.colour > WHITE_MOST_COLOUR, "more colour than the first kind allows, as figure 8 has: {found:?}");
+        assert!(
+            found.colour > WHITE_MOST_COLOUR,
+            "more colour than the first kind allows, as figure 8 has: {found:?}"
+        );
         let look = PageLook::decide(whole, &chart, 400, 100, 100);
         assert!(!look.dim && look.whiten.len() == 1, "a chart on white: {look:?}");
         let look = PageLook::decide(whole, &bars([234, 232, 227], 45), 400, 100, 100);
         assert!(!look.dim && look.whiten.len() == 1, "a chart on beige: {look:?}");
-        let photo = picture(100, 100, |x, y| if x < 50 { [255, 255, 255] } else { [((x - 50) * 4) as u8 + 40, (y * 2) as u8 + 20, 90] });
+        let photo = picture(100, 100, |x, y| {
+            if x < 50 {
+                [255, 255, 255]
+            } else {
+                [((x - 50) * 4) as u8 + 40, (y * 2) as u8 + 20, 90]
+            }
+        });
         let found = sample_pixels(&photo, 400, 0, 0, 100, 100);
-        assert!(found.white >= WHITE_LEAST && found.colour <= FLAT_MOST_COLOUR, "as white as a chart, and no more colour: {found:?}");
+        assert!(
+            found.white >= WHITE_LEAST && found.colour <= FLAT_MOST_COLOUR,
+            "as white as a chart, and no more colour: {found:?}"
+        );
         assert!(PageLook::decide(whole, &photo, 400, 100, 100).dim, "a photo beside white");
-        let tan_map = picture(100, 100, |x, y| if (x + y) % 9 == 0 { [40, 90, 200] } else { [200 + ((x * 7 + y * 3) % 50) as u8, 190 + ((x * 3 + y * 5) % 40) as u8, 160] });
+        let tan_map = picture(100, 100, |x, y| {
+            if (x + y) % 9 == 0 {
+                [40, 90, 200]
+            } else {
+                [200 + ((x * 7 + y * 3) % 50) as u8, 190 + ((x * 3 + y * 5) % 40) as u8, 160]
+            }
+        });
         assert!(PageLook::decide(whole, &tan_map, 400, 100, 100).dim, "a map on shaded tan");
     }
 
@@ -680,7 +891,10 @@ mod tests {
                 colour.map(|channel| (channel as f32 * light + noise).clamp(0.0, 255.0) as u8)
             });
             let found = sample_pixels(&ball, 560, 0, 0, 140, 140);
-            assert!(found.white >= WHITE_LEAST && found.colour > WHITE_MOST_COLOUR && found.colour <= FLAT_MOST_COLOUR, "as white as a chart, with more colour than the first kind allows: {found:?}");
+            assert!(
+                found.white >= WHITE_LEAST && found.colour > WHITE_MOST_COLOUR && found.colour <= FLAT_MOST_COLOUR,
+                "as white as a chart, with more colour than the first kind allows: {found:?}"
+            );
             assert!(PageLook::decide(whole, &ball, 560, 140, 140).dim, "{colour:?}: {found:?}");
         }
     }
@@ -689,8 +903,15 @@ mod tests {
     #[test]
     fn a_scans_paper_lands_on_the_papers_tone() {
         let look = PageLook::decide(Some(&[[0, 0, 65_535, 65_535]]), &scan([236, 226, 196]), 400, 100, 100);
-        let rect = recto_proto::TileRect { x: 0, y: 0, width: 3, height: 1 };
-        let DarkTile::TurnOver(keeps, whiten) = look.in_tile(Some((100, 100)), rect) else { panic!("{look:?}") };
+        let rect = recto_proto::TileRect {
+            x: 0,
+            y: 0,
+            width: 3,
+            height: 1,
+        };
+        let DarkTile::TurnOver(keeps, whiten) = look.in_tile(Some((100, 100)), rect) else {
+            panic!("{look:?}")
+        };
         // Its paper, a little noisier than the average, and its ink, as blue-green-red.
         let mut pixels = [196, 226, 236, 0xFF, 190, 222, 233, 0xFF, 40, 40, 40, 0xFF];
         turn_over(&mut pixels, 3, 1, 12, false, &keeps, &whiten);
@@ -703,7 +924,12 @@ mod tests {
     /// Failure: where the images are isn't known, for a page whose renderer can't be asked or an answer that failed, and "unknown" reads as "none", so a photo comes out as a negative and stays cached as one. With no picture to judge it's dimmed, and with one it's judged whole, the same as a sharp page.
     #[test]
     fn what_isnt_known_is_never_turned_over() {
-        let rect = recto_proto::TileRect { x: 0, y: 0, width: 2, height: 1 };
+        let rect = recto_proto::TileRect {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 1,
+        };
         assert_eq!(PageLook::unknown().in_tile(Some((2048, 2048)), rect), DarkTile::Dim);
         assert_eq!(PageLook::text().in_tile(None, rect), DarkTile::Dim, "the page's size wasn't known");
         let whole = PageLook::decide(None, &scan([250, 250, 250]), 400, 100, 100);
@@ -782,7 +1008,14 @@ mod tests {
         let page_like: Vec<u8> = (0..512 * 512)
             .flat_map(|at: usize| {
                 let (x, y) = (at % 512, at / 512);
-                if x > 300 && y > 300 { [240u8, 32, 21, 255] } else if (x / 3 + y / 7) % 5 == 0 { let v = ((x * 37 + y * 11) % 256) as u8; [v, v, v, 255] } else { [255, 255, 255, 255] }
+                if x > 300 && y > 300 {
+                    [240u8, 32, 21, 255]
+                } else if (x / 3 + y / 7) % 5 == 0 {
+                    let v = ((x * 37 + y * 11) % 256) as u8;
+                    [v, v, v, 255]
+                } else {
+                    [255, 255, 255, 255]
+                }
             })
             .collect();
         let mut samples: Vec<u128> = (0..200)
@@ -795,7 +1028,25 @@ mod tests {
             .collect();
         samples.sort_unstable();
         println!("turn over a page-like colour tile: p50 {} us, p95 {} us", samples[100], samples[190]);
-        time("whiten and turn over", &|pixels| turn_over(pixels, 512, 512, 2048, false, &[], &[(Keep { left: 0, top: 0, right: 512, bottom: 512 }, [270, 280, 300])]));
+        time("whiten and turn over", &|pixels| {
+            turn_over(
+                pixels,
+                512,
+                512,
+                2048,
+                false,
+                &[],
+                &[(
+                    Keep {
+                        left: 0,
+                        top: 0,
+                        right: 512,
+                        bottom: 512,
+                    },
+                    [270, 280, 300],
+                )],
+            )
+        });
         let page = tile(31);
         time("judge a page picture", &|_| {
             let _ = PageLook::decide(Some(&[[0, 0, 65_535, 65_535]]), &page, 2048, 512, 512);

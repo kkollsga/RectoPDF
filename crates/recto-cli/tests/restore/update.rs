@@ -79,7 +79,9 @@ impl Server {
     /// A release of this version, with this zip, saying this checksum.
     fn release(&self, version: &str, zip: Vec<u8>, sha: &str) {
         self.put(&format!("/releases/download/v{version}/RectoPDF-{version}.zip"), zip);
-        self.latest(format!(r#"{{"version":"{version}","tag":"v{version}","minimum_macos":"15.0","zip":"RectoPDF-{version}.zip","sha256":"{sha}"}}"#).into_bytes());
+        self.latest(
+            format!(r#"{{"version":"{version}","tag":"v{version}","minimum_macos":"15.0","zip":"RectoPDF-{version}.zip","sha256":"{sha}"}}"#).into_bytes(),
+        );
     }
 }
 
@@ -91,8 +93,19 @@ fn copy_app(to_folder: &Path, version: &str) -> PathBuf {
     assert!(Command::new("/bin/cp").arg("-cR").arg(&built).arg(&app).status().unwrap().success());
     let plist = app.join("Contents/Info.plist");
     // Its own bundle id, so the system never mistakes this for the real app, as it would on being opened by `open`. And never in the Dock, even for a moment.
-    for edit in [format!("Set :CFBundleShortVersionString {version}"), "Set :CFBundleIdentifier io.github.kkollsga.RectoPDF.e2e".to_owned(), "Add :LSUIElement bool true".to_owned()] {
-        assert!(Command::new("/usr/libexec/PlistBuddy").args(["-c", &edit]).arg(&plist).status().unwrap().success());
+    for edit in [
+        format!("Set :CFBundleShortVersionString {version}"),
+        "Set :CFBundleIdentifier io.github.kkollsga.RectoPDF.e2e".to_owned(),
+        "Add :LSUIElement bool true".to_owned(),
+    ] {
+        assert!(
+            Command::new("/usr/libexec/PlistBuddy")
+                .args(["-c", &edit])
+                .arg(&plist)
+                .status()
+                .unwrap()
+                .success()
+        );
     }
     sign(&app);
     app
@@ -106,7 +119,15 @@ fn sign(app: &Path) {
 
 fn zip_of(app: &Path) -> (Vec<u8>, String) {
     let zip = app.with_extension("zip");
-    assert!(Command::new("/usr/bin/ditto").args(["-c", "-k", "--keepParent"]).arg(app).arg(&zip).status().unwrap().success());
+    assert!(
+        Command::new("/usr/bin/ditto")
+            .args(["-c", "-k", "--keepParent"])
+            .arg(app)
+            .arg(&zip)
+            .status()
+            .unwrap()
+            .success()
+    );
     let bytes = std::fs::read(&zip).unwrap();
     let _ = std::fs::remove_file(&zip);
     let sha = Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect();
@@ -134,10 +155,18 @@ struct Bed {
 impl Bed {
     fn new() -> Option<Self> {
         super::app_path()?;
-        let folder = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-update-e2e-{}-{}", std::process::id(), wall_ms()));
+        let folder = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-update-e2e-{}-{}", std::process::id(), wall_ms()));
         std::fs::create_dir_all(&folder).unwrap();
         let app = copy_app(&folder.join("install"), OLD);
-        Some(Self { folder, state: State::new(), server: Server::start(), app })
+        Some(Self {
+            folder,
+            state: State::new(),
+            server: Server::start(),
+            app,
+        })
     }
 
     fn release_of(&self, version: &str, broken: Broken) {
@@ -155,7 +184,15 @@ impl Bed {
                 std::fs::copy("/usr/bin/true", contents.join("Helpers/RectoRender.app/Contents/MacOS/recto-render-service")).unwrap();
                 let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/render-helper.sh");
                 // Ad hoc, whatever this shell has set: a test never signs with the owner's identity.
-                assert!(Command::new(helper).arg("--sign").arg(&contents).env_remove("RECTO_SIGN_IDENTITY").status().unwrap().success());
+                assert!(
+                    Command::new(helper)
+                        .arg("--sign")
+                        .arg(&contents)
+                        .env_remove("RECTO_SIGN_IDENTITY")
+                        .status()
+                        .unwrap()
+                        .success()
+                );
                 sign(&app);
             }
         }
@@ -175,7 +212,19 @@ impl Bed {
         for (name, value) in env {
             command.env(name, value);
         }
-        let output = command.args(["qa", "start", "--app", self.app.join("Contents/MacOS/RectoPDF").to_str().unwrap(), "--time-limit", "3m", "--json"]).stderr(std::process::Stdio::inherit()).output().unwrap();
+        let output = command
+            .args([
+                "qa",
+                "start",
+                "--app",
+                self.app.join("Contents/MacOS/RectoPDF").to_str().unwrap(),
+                "--time-limit",
+                "3m",
+                "--json",
+            ])
+            .stderr(std::process::Stdio::inherit())
+            .output()
+            .unwrap();
         let reply: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&output.stdout)));
         assert_eq!(reply["ok"], true, "{reply}");
         let run = Run::attach(&self.state, reply["data"]["pid"].as_u64().unwrap() as u32);
@@ -243,7 +292,8 @@ impl Bed {
         loop {
             let (status, code) = self.state.json(&["update", "status"]);
             let (pid, _) = self.state.json(&["status"]);
-            if code == 0 && status["ok"] == true && status["data"]["version"] == version && pid["data"]["pid"].as_u64().is_some_and(|pid| pid as u32 != old_pid) {
+            if code == 0 && status["ok"] == true && status["data"]["version"] == version && pid["data"]["pid"].as_u64().is_some_and(|pid| pid as u32 != old_pid)
+            {
                 return Run::attach(&self.state, pid["data"]["pid"].as_u64().unwrap() as u32);
             }
             assert!(began.elapsed() < Duration::from_secs(90), "{status}\n{}", self.log());
@@ -267,7 +317,10 @@ impl Drop for Bed {
             local::signal_process(pid, true);
         }
         // `open` told the system about these. It forgets them again here, rather than at some later tidying.
-        let _ = Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister").arg("-u").arg(&self.app).status();
+        let _ = Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
+            .arg("-u")
+            .arg(&self.app)
+            .status();
         let _ = std::fs::remove_dir_all(&self.folder);
     }
 }
@@ -285,7 +338,11 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
     let before = run.report();
     // Rich, by what it holds.
     assert_eq!(before["session"]["tabs"].as_array().unwrap().len(), 3);
-    assert!(before["session"]["tabs"][0]["edits"]["undo"].as_u64().unwrap() > 0, "{}", before["session"]["tabs"][0]);
+    assert!(
+        before["session"]["tabs"][0]["edits"]["undo"].as_u64().unwrap() > 0,
+        "{}",
+        before["session"]["tabs"][0]
+    );
     assert_eq!(before["app"]["settings"]["open"], true);
 
     bed.release_of(NEW, Broken::Not);
@@ -315,7 +372,10 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
     assert_eq!(shown["home"], false, "{shown}");
     assert!(shown["tile_layers"].as_u64().unwrap() > 0, "something's on it: {shown}");
     assert_eq!(shown["page"], before["reader"]["page"]);
-    assert!((shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 0.25, "{shown}");
+    assert!(
+        (shown["scroll_y"].as_f64().unwrap() - before["reader"]["scroll_y"].as_f64().unwrap()).abs() < 0.25,
+        "{shown}"
+    );
     assert_eq!(after["session"]["app"]["focus"]["view"], "find");
     run.ok(&["qa", "owner-edit", "redo"]);
 
@@ -335,7 +395,10 @@ fn an_update_in_the_middle_of_things_changes_nothing() {
     for line in log.lines().filter(|line| line.contains("first frame") || line.contains(" started.")) {
         eprintln!("{line}");
     }
-    assert!(log.contains("in the background"), "`frontmost off` means it reopens without taking the focus: {log}");
+    assert!(
+        log.contains("in the background"),
+        "`frontmost off` means it reopens without taking the focus: {log}"
+    );
     assert!(!log.contains("alpha") && !log.contains("gamma"), "no document's name in the log");
     run.quit();
 }
@@ -370,7 +433,13 @@ fn a_new_app_that_wont_start_goes_back_with_the_same_state() {
     assert!(status["words"].as_str().unwrap().contains("came back"), "{status}");
     // The one thing that's different, and on purpose: it's still on offer, as by hand it can always be tried again.
     let menu = run.ok(&["qa", "state"])["app"]["menu_bar"][0]["items"].clone();
-    assert!(menu.as_array().unwrap().iter().any(|item| item["id"] == "app.update" && item["title"] == format!("Update to {NEW}…")), "{menu}");
+    assert!(
+        menu.as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == "app.update" && item["title"] == format!("Update to {NEW}…")),
+        "{menu}"
+    );
     assert_same_but(&before, &run.report(), &[], &["app.settings.status", "app.menu_bar[0].items[1].title"]);
     let log = bed.log();
     assert!(log.contains("ended before it came up") && log.contains("went back to"), "{log}");
@@ -430,16 +499,37 @@ fn the_launch_guard_goes_back_by_itself() {
     std::fs::rename(&bed.app, &keep).unwrap();
     copy_app(bed.app.parent().unwrap(), NEW);
     let files = recto_update::plan::Files::in_state(&bed.state.root);
-    let saved = recto_update::saved::Saved { unstarted: 3, proven: Some(OLD.to_owned()), ..recto_update::saved::Saved::default() };
+    let saved = recto_update::saved::Saved {
+        unstarted: 3,
+        proven: Some(OLD.to_owned()),
+        ..recto_update::saved::Saved::default()
+    };
     saved.write(&files.saved);
 
     // It ends by itself, without saying it's ready.
     let mut command = bed.state.command();
     command.env(REPO_ENV, &bed.server.url);
-    let reply = command.args(["qa", "start", "--app", bed.app.join("Contents/MacOS/RectoPDF").to_str().unwrap(), "--time-limit", "3m", "--json"]).stderr(std::process::Stdio::null()).output().unwrap();
+    let reply = command
+        .args([
+            "qa",
+            "start",
+            "--app",
+            bed.app.join("Contents/MacOS/RectoPDF").to_str().unwrap(),
+            "--time-limit",
+            "3m",
+            "--json",
+        ])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .unwrap();
     let began = Instant::now();
     while bed.version() != OLD {
-        assert!(began.elapsed() < Duration::from_secs(60), "{}\n{}", String::from_utf8_lossy(&reply.stdout), bed.log());
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "{}\n{}",
+            String::from_utf8_lossy(&reply.stdout),
+            bed.log()
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     let run = loop {
@@ -465,7 +555,12 @@ fn the_launch_guard_goes_back_by_itself() {
 fn a_quick_reopen_isnt_a_second_copy() {
     let Some(bed) = Bed::new() else { return };
     bed.state.paths.prepare().unwrap();
-    let lock = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(bed.state.root.join("run/session.lock")).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(bed.state.root.join("run/session.lock"))
+        .unwrap();
     lock.try_lock().unwrap();
     let releaser = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(300));
@@ -582,7 +677,13 @@ fn a_bad_release_never_touches_the_running_app() {
     assert_eq!(status["status"], "check_failed", "{status}");
     assert_eq!(status["menu"]["title"], "Check for Updates…");
 
-    bed.server.latest(format!(r#"{{"version":"0.0.9","tag":"v0.0.9","minimum_macos":"15.0","zip":"RectoPDF-0.0.9.zip","sha256":"{}"}}"#, "a".repeat(64)).into_bytes());
+    bed.server.latest(
+        format!(
+            r#"{{"version":"0.0.9","tag":"v0.0.9","minimum_macos":"15.0","zip":"RectoPDF-0.0.9.zip","sha256":"{}"}}"#,
+            "a".repeat(64)
+        )
+        .into_bytes(),
+    );
     assert_eq!(run.ok(&["update", "check"])["status"], "up_to_date", "a downgrade's no offer");
     let (reply, code) = bed.state.json(&["update", "install"]);
     assert_ne!(code, 0, "{reply}");
@@ -707,7 +808,11 @@ fn an_automatic_update_waits_for_thirty_quiet_minutes() {
     run.settled();
     run.ok(&["qa", "frontmost", "off"]);
     run.settled();
-    assert_eq!(run.ok(&["settings"])["auto_update"], true, "on by default in anything that behaves as a release");
+    assert_eq!(
+        run.ok(&["settings"])["auto_update"],
+        true,
+        "on by default in anything that behaves as a release"
+    );
     bed.release_of(NEW, Broken::Not);
     run.ok(&["qa", "note-input", "now"]);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
@@ -729,7 +834,11 @@ fn an_automatic_update_waits_for_thirty_quiet_minutes() {
     run.settled();
     assert_eq!(bed.version(), NEW);
     assert_eq!(run.report()["session"]["tabs"][0]["page"], 10);
-    assert_eq!(run.report()["session"]["app"]["focus"]["app_frontmost"], false, "and it's still in the background");
+    assert_eq!(
+        run.report()["session"]["app"]["focus"]["app_frontmost"],
+        false,
+        "and it's still in the background"
+    );
     assert!(bed.log().contains("in the background"), "{}", bed.log());
     run.quit();
 }
@@ -749,8 +858,16 @@ fn what_an_agent_changes_about_updates_goes_in_the_changes_log() {
     let changes = std::fs::read_to_string(&bed.state.paths.log).unwrap();
     let lines: Vec<Value> = changes.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
     assert!(lines.iter().any(|line| line["cmd"] == "update_install" && line["outcome"] == "ok"), "{changes}");
-    assert!(lines.iter().any(|line| line["cmd"] == "settings" && line["outcome"] == "ok" && line["details"]["auto_update"] == "off"), "{changes}");
-    assert!(!lines.iter().any(|line| line["cmd"] == "settings" && line["details"]["auto_update"].is_null()), "asking changes nothing: {changes}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["cmd"] == "settings" && line["outcome"] == "ok" && line["details"]["auto_update"] == "off"),
+        "{changes}"
+    );
+    assert!(
+        !lines.iter().any(|line| line["cmd"] == "settings" && line["details"]["auto_update"].is_null()),
+        "asking changes nothing: {changes}"
+    );
     run.quit();
 }
 
@@ -770,7 +887,13 @@ fn a_development_build_only_asks_and_installing_needs_full() {
     assert_eq!(reply["error"]["code"], "development_build", "{reply}");
     let shown = run.ok(&["qa", "state"]);
     let row = &shown["app"]["menu_bar"][0]["items"];
-    assert!(row.as_array().unwrap().iter().any(|item| item["id"] == "app.update" && item["title"] == "Check for Updates…"), "{row}");
+    assert!(
+        row.as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == "app.update" && item["title"] == "Check for Updates…"),
+        "{row}"
+    );
     assert_eq!(run.ok(&["settings"])["auto_update"], false);
 
     state.set_level(recto_agent::Level::Control);
@@ -786,7 +909,10 @@ fn a_development_build_only_asks_and_installing_needs_full() {
     assert_eq!(reply["error"]["code"], "permission_denied", "{reply}");
     state.set_level(recto_agent::Level::Full);
     let log = std::fs::read_to_string(&state.paths.other_log).unwrap();
-    assert!(log.contains("update_install") && log.contains("update_check") && log.contains("settings") && log.contains("update_status"), "each is logged: {log}");
+    assert!(
+        log.contains("update_install") && log.contains("update_check") && log.contains("settings") && log.contains("update_status"),
+        "each is logged: {log}"
+    );
     run.quit();
 }
 
@@ -810,7 +936,11 @@ fn settings_and_the_menu_say_how_things_stand() {
     let item = |items: &Value, id: &str| items.as_array().unwrap().iter().find(|item| item["id"] == id).unwrap().clone();
 
     run.ok(&["qa", "menu", "file.settings"]);
-    assert_eq!(run.ok(&["qa", "state"])["app"]["settings"]["open"], true, "File > Settings… opens it, by the owner's word");
+    assert_eq!(
+        run.ok(&["qa", "state"])["app"]["settings"]["open"],
+        true,
+        "File > Settings… opens it, by the owner's word"
+    );
     run.ok(&["qa", "settings", "close"]);
     run.ok(&["qa", "menu", "app.settings"]);
     assert_eq!(run.ok(&["qa", "state"])["app"]["settings"]["open"], true, "the menu item opens it");
@@ -822,7 +952,13 @@ fn settings_and_the_menu_say_how_things_stand() {
     assert_eq!(item(&menu(&run), "app.settings")["key"], ",");
     assert_eq!(item(&menu(&run), "app.update")["title"], "Check for Updates…");
     // A check from the menu, by the item itself, on its own thread: it says how it went, quietly.
-    bed.server.latest(format!(r#"{{"version":"{OLD}","tag":"v{OLD}","minimum_macos":"15.0","zip":"RectoPDF-{OLD}.zip","sha256":"{}"}}"#, "a".repeat(64)).into_bytes());
+    bed.server.latest(
+        format!(
+            r#"{{"version":"{OLD}","tag":"v{OLD}","minimum_macos":"15.0","zip":"RectoPDF-{OLD}.zip","sha256":"{}"}}"#,
+            "a".repeat(64)
+        )
+        .into_bytes(),
+    );
     run.ok(&["qa", "menu", "app.update"]);
     bed.wait_status(&run, "up_to_date");
     let began = Instant::now();
@@ -841,7 +977,11 @@ fn settings_and_the_menu_say_how_things_stand() {
     // The status is the updater's at once, and the menu is the window's once it's been told, on its own thread: a moment later, which the menu is waited for.
     let began = Instant::now();
     while item(&menu(&run), "app.update")["title"] != format!("Update to {NEW}…") {
-        assert!(began.elapsed() < Duration::from_secs(10), "the menu offers the update: {}", item(&menu(&run), "app.update"));
+        assert!(
+            began.elapsed() < Duration::from_secs(10),
+            "the menu offers the update: {}",
+            item(&menu(&run), "app.update")
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(item(&menu(&run), "app.update")["enabled"], true);
@@ -888,7 +1028,13 @@ fn measure_what_the_updater_costs_at_rest() {
         std::thread::sleep(Duration::from_secs(20));
         let after = local::process_counters(run.pid).unwrap();
         let report = run.report();
-        (after.wakeups - before.wakeups, (after.cpu_ns - before.cpu_ns) / 1_000_000, report["memory"]["threads"].as_u64().unwrap(), report["memory"]["footprint_bytes"].as_u64().unwrap(), report["update"]["next_wake_in_ms"].clone())
+        (
+            after.wakeups - before.wakeups,
+            (after.cpu_ns - before.cpu_ns) / 1_000_000,
+            report["memory"]["threads"].as_u64().unwrap(),
+            report["memory"]["footprint_bytes"].as_u64().unwrap(),
+            report["update"]["next_wake_in_ms"].clone(),
+        )
     };
     let Some(bed) = Bed::new() else { return };
     let dev_state = State::new();
@@ -901,7 +1047,9 @@ fn measure_what_the_updater_costs_at_rest() {
     let armed_before_a_check = watch(&run);
     assert_eq!(run.ok(&["update", "check"])["status"], "available");
     let armed_numbers = watch(&run);
-    eprintln!("over 20 s at rest, wake-ups, CPU ms, threads, footprint bytes, next wake in ms:\n  nothing armed: {dev_numbers:?}\n  timer armed, before any check: {armed_before_a_check:?}\n  an offer waiting and a check done: {armed_numbers:?}");
+    eprintln!(
+        "over 20 s at rest, wake-ups, CPU ms, threads, footprint bytes, next wake in ms:\n  nothing armed: {dev_numbers:?}\n  timer armed, before any check: {armed_before_a_check:?}\n  an offer waiting and a check done: {armed_numbers:?}"
+    );
     assert!(armed_numbers.4.as_u64().is_some(), "and there's a timer armed");
     assert_eq!(dev_numbers.4, Value::Null, "with none for a development build");
     run.quit();

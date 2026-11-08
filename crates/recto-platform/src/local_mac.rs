@@ -149,7 +149,15 @@ impl Write for &Stream {
 fn set_no_sigpipe(fd: RawFd) -> io::Result<()> {
     let on: libc::c_int = 1;
     // SAFETY: `fd` is a live socket, and the option's pointer and length describe `on`.
-    let rc = unsafe { libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_NOSIGPIPE, (&raw const on).cast(), size_of::<libc::c_int>() as libc::socklen_t) };
+    let rc = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_NOSIGPIPE,
+            (&raw const on).cast(),
+            size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
     if rc == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
@@ -176,7 +184,14 @@ pub struct PollEntry {
 
 impl PollEntry {
     pub fn new(token: Token, want_read: bool, want_write: bool) -> Self {
-        Self { token, want_read, want_write, readable: false, writable: false, gone: false }
+        Self {
+            token,
+            want_read,
+            want_write,
+            readable: false,
+            writable: false,
+            gone: false,
+        }
     }
 }
 
@@ -192,7 +207,11 @@ pub fn poll(entries: &mut [PollEntry], timeout: Option<Duration>) -> io::Result<
             if entry.want_write {
                 events |= libc::POLLOUT;
             }
-            libc::pollfd { fd: entry.token.0, events, revents: 0 }
+            libc::pollfd {
+                fd: entry.token.0,
+                events,
+                revents: 0,
+            }
         })
         .collect();
     let millis = timeout.map_or(-1, |t| libc::c_int::try_from(t.as_millis().saturating_add(1)).unwrap_or(libc::c_int::MAX));
@@ -286,7 +305,13 @@ pub fn read_private_file(path: &Path, max_bytes: u64) -> io::Result<Option<Vec<u
 pub fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temp = path.with_extension(format!("tmp{}", std::process::id()));
     let _ = std::fs::remove_file(&temp);
-    let written = OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&temp).and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()));
+    let written = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&temp)
+        .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()));
     match written.and_then(|()| std::fs::rename(&temp, path)) {
         Ok(()) => Ok(()),
         Err(error) => {
@@ -317,7 +342,11 @@ pub fn open_private_for_writing(path: &Path, append: bool) -> io::Result<File> {
 /// Hands a file's bytes to the drive, with a plain `fsync`, and doesn't make the drive flush its own cache, which `File::sync_all` does on this OS and which is what costs time and wear.
 pub fn hand_to_drive(file: &File) -> io::Result<()> {
     // SAFETY: the descriptor is valid for as long as the file, and fsync takes nothing else.
-    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 /// Makes a file readable and writable by this user alone.
@@ -334,7 +363,11 @@ pub fn hand_folder_to_drive(folder: &Path) -> io::Result<()> {
 pub fn clone_file(from: &Path, to: &Path) -> io::Result<()> {
     let (from_c, to_c) = (c_path(from)?, c_path(to)?);
     // SAFETY: both are NUL-terminated, valid for the call, and clonefile writes nothing through them.
-    if unsafe { libc::clonefile(from_c.as_ptr(), to_c.as_ptr(), 0) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    if unsafe { libc::clonefile(from_c.as_ptr(), to_c.as_ptr(), 0) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 /// Where to clone a file from into this folder: the file itself if a clone works from there, or else one copy of it in the folder, once, on the volume the clones will be on.
@@ -355,7 +388,11 @@ pub fn clone_source_in(file: &Path, folder: &Path) -> io::Result<PathBuf> {
 pub fn swap_paths(a: &Path, b: &Path) -> io::Result<()> {
     let (a_c, b_c) = (c_path(a)?, c_path(b)?);
     // SAFETY: both are NUL-terminated and valid for the call, and renamex_np writes nothing through them.
-    if unsafe { libc::renamex_np(a_c.as_ptr(), b_c.as_ptr(), libc::RENAME_SWAP) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    if unsafe { libc::renamex_np(a_c.as_ptr(), b_c.as_ptr(), libc::RENAME_SWAP) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 /// Whether this process can move this path to another folder: it needs to be able to write to it, and it can't be locked. What a swap of an app needs, of the bundle and of its folder. A real answer for this user, with whatever ACLs there are.
@@ -386,7 +423,9 @@ pub fn processes_running(executable: &Path) -> Vec<u32> {
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
     let Ok(count) = usize::try_from(count) else { return Vec::new() };
     let mut pids = vec![0 as libc::c_int; count + 64];
-    let Ok(bytes) = libc::c_int::try_from(pids.len() * size_of::<libc::c_int>()) else { return Vec::new() };
+    let Ok(bytes) = libc::c_int::try_from(pids.len() * size_of::<libc::c_int>()) else {
+        return Vec::new();
+    };
     // SAFETY: the buffer and its size in bytes describe `pids`.
     let found = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
     let Ok(found) = usize::try_from(found) else { return Vec::new() };
@@ -436,7 +475,12 @@ pub fn spawn_detached(program: &Path, args: &[String], envs: &[(String, String)]
     use std::process::{Command, Stdio};
     let out = OpenOptions::new().create(true).append(true).mode(0o600).open(log)?;
     let mut command = Command::new(program);
-    command.args(args).envs(envs.iter().map(|(key, value)| (key, value))).stdin(Stdio::null()).stdout(out.try_clone()?).stderr(out);
+    command
+        .args(args)
+        .envs(envs.iter().map(|(key, value)| (key, value)))
+        .stdin(Stdio::null())
+        .stdout(out.try_clone()?)
+        .stderr(out);
     // SAFETY: setsid is async-signal-safe, and touches nothing of this process.
     unsafe {
         command.pre_exec(|| {
@@ -469,7 +513,9 @@ pub fn path_of_file_number(device: u64, inode: u64) -> Option<PathBuf> {
         // sys/fsgetpath.h, public since macOS 10.13. `libc` keeps `fsid_t`'s field private.
         fn fsgetpath(buf: *mut libc::c_char, buflen: libc::size_t, fsid: *mut Fsid, obj_id: u64) -> libc::ssize_t;
     }
-    let mut fsid = Fsid { val: [i32::try_from(device).ok()?, 0] };
+    let mut fsid = Fsid {
+        val: [i32::try_from(device).ok()?, 0],
+    };
     let mut buffer = vec![0u8; 4096];
     // SAFETY: the buffer is its stated length and lives for the call, and `fsid` is a valid struct for it. The kernel writes at most that length.
     let written = unsafe { fsgetpath(buffer.as_mut_ptr().cast(), buffer.len(), &raw mut fsid, inode) };
@@ -497,7 +543,12 @@ pub fn write_private_file_unsynced(path: &Path, bytes: &[u8]) -> io::Result<()> 
 
 /// Makes a new file, mode 0600, for writing. Refuses if anything's already at that name, and a planted link isn't followed.
 pub fn create_private_file(path: &Path) -> io::Result<File> {
-    OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
 }
 
 /// The attribute `tmutil addexclusion` sets, which goes with the item wherever it's moved. Its value is the binary property list for the string `com.apple.backupd`.
@@ -512,7 +563,16 @@ fn c_path(path: &Path) -> io::Result<std::ffi::CString> {
 pub fn exclude_from_backups(path: &Path) -> io::Result<()> {
     let path = c_path(path)?;
     // SAFETY: both strings are NUL-terminated and live for the call, and the value is its given length. XATTR_NOFOLLOW so a link isn't what gets marked.
-    let rc = unsafe { libc::setxattr(path.as_ptr(), BACKUP_EXCLUDE_NAME.as_ptr(), BACKUP_EXCLUDE_VALUE.as_ptr().cast(), BACKUP_EXCLUDE_VALUE.len(), 0, libc::XATTR_NOFOLLOW) };
+    let rc = unsafe {
+        libc::setxattr(
+            path.as_ptr(),
+            BACKUP_EXCLUDE_NAME.as_ptr(),
+            BACKUP_EXCLUDE_VALUE.as_ptr().cast(),
+            BACKUP_EXCLUDE_VALUE.len(),
+            0,
+            libc::XATTR_NOFOLLOW,
+        )
+    };
     if rc == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
@@ -527,7 +587,12 @@ pub fn is_excluded_from_backups(path: &Path) -> bool {
 /// Opens a file for appending, made with mode 0600 if new. A link isn't followed.
 pub fn append_private_file(path: &Path) -> io::Result<File> {
     // Not blocking: opening a pipe to write would otherwise wait for a reader for ever.
-    OpenOptions::new().append(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
+    OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
 }
 
 /// What's at a socket's path.
@@ -565,7 +630,11 @@ pub(crate) fn ticks_to_ns(ticks: u64) -> u64 {
     let mut timebase = Timebase { numer: 0, denom: 0 };
     // SAFETY: the pointer is valid for writes, and the struct matches the C one.
     let rc = unsafe { mach_timebase_info(&raw mut timebase) };
-    let ns = if rc == 0 && timebase.denom != 0 { u128::from(ticks) * u128::from(timebase.numer) / u128::from(timebase.denom) } else { u128::from(ticks) };
+    let ns = if rc == 0 && timebase.denom != 0 {
+        u128::from(ticks) * u128::from(timebase.numer) / u128::from(timebase.denom)
+    } else {
+        u128::from(ticks)
+    };
     u64::try_from(ns).unwrap_or(u64::MAX)
 }
 
@@ -662,7 +731,11 @@ fn attribute_names(path: &std::ffi::CStr) -> io::Result<Vec<std::ffi::CString>> 
         return Err(io::Error::last_os_error());
     }
     names.truncate(usize::try_from(read).unwrap_or(0));
-    Ok(names.split(|byte| *byte == 0).filter(|name| !name.is_empty()).filter_map(|name| std::ffi::CString::new(name).ok()).collect())
+    Ok(names
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+        .filter_map(|name| std::ffi::CString::new(name).ok())
+        .collect())
 }
 
 /// **Gives a replacement file what the one it replaces had,** for a save that writes a new file and moves it into place: every extended attribute it can,
@@ -711,7 +784,10 @@ pub fn attribute(path: &Path, name: &str) -> Option<Vec<u8>> {
 
 /// Sets one extended attribute, for tests.
 pub fn set_attribute(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
-    let (path, name) = (c_path(path)?, std::ffi::CString::new(name).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?);
+    let (path, name) = (
+        c_path(path)?,
+        std::ffi::CString::new(name).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
+    );
     // SAFETY: both strings are NUL-terminated, the value is its own length, and all live for the call.
     let rc = unsafe { libc::setxattr(path.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0) };
     if rc == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
@@ -858,7 +934,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         let me = std::env::current_exe().unwrap();
         assert!(processes_running(&me).contains(&std::process::id()));
-        assert_eq!(process_path(std::process::id()).map(|path| path.canonicalize().unwrap()), Some(me.canonicalize().unwrap()));
+        assert_eq!(
+            process_path(std::process::id()).map(|path| path.canonicalize().unwrap()),
+            Some(me.canonicalize().unwrap())
+        );
         assert!(processes_running(Path::new("/no/such/program")).is_empty());
     }
 
@@ -868,7 +947,13 @@ mod tests {
         let dir = temp("detached");
         ensure_private_dir(&dir).unwrap();
         let log = dir.join("log");
-        let pid = spawn_detached(Path::new("/bin/sh"), &["-c".into(), "echo hello \"$X\"; [ -t 0 ] && echo tty || echo no-tty".into()], &[("X".into(), "there".into())], &log).unwrap();
+        let pid = spawn_detached(
+            Path::new("/bin/sh"),
+            &["-c".into(), "echo hello \"$X\"; [ -t 0 ] && echo tty || echo no-tty".into()],
+            &[("X".into(), "there".into())],
+            &log,
+        )
+        .unwrap();
         assert!(pid > 0);
         for _ in 0..200 {
             if std::fs::read_to_string(&log).is_ok_and(|text| text.contains("tty")) {
@@ -880,4 +965,3 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
-

@@ -15,10 +15,20 @@ fn main() {
     let mib = |doc: &mut DocRenderer| doc.worker_footprint().map_or(f64::NAN, |bytes| bytes as f64 / 1024.0 / 1024.0);
     let started = Instant::now();
     doc.page_characters(page - 1, true, false).expect("the page");
-    println!("page {page}: {:.1} ms, worker {:.1} MiB", started.elapsed().as_secs_f64() * 1000.0, mib(&mut doc));
+    println!(
+        "page {page}: {:.1} ms, worker {:.1} MiB",
+        started.elapsed().as_secs_f64() * 1000.0,
+        mib(&mut doc)
+    );
     for other in recto_index::select::neighbour_pages(page - 1, count) {
         let started = Instant::now();
         let read = doc.page_characters(other, true, false).map(|read| read.chars.len());
-        println!("neighbour {}: {:?} characters, {:.1} ms, worker {:.1} MiB", other + 1, read.ok(), started.elapsed().as_secs_f64() * 1000.0, mib(&mut doc));
+        println!(
+            "neighbour {}: {:?} characters, {:.1} ms, worker {:.1} MiB",
+            other + 1,
+            read.ok(),
+            started.elapsed().as_secs_f64() * 1000.0,
+            mib(&mut doc)
+        );
     }
 }

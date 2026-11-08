@@ -43,7 +43,12 @@ fn find_app(given: Option<&Path>) -> Result<PathBuf, AgentError> {
 fn quiet_paths() -> Result<StatePaths, AgentError> {
     let paths = StatePaths::from_env()?;
     if !paths.overridden {
-        return Err(AgentError::new("needs_temp_state", "A QA run needs its own state folder, and won't use the real one.", exit::PERMISSION).then(format!("Set {STATE_ENV} to a new folder in a temp folder.")));
+        return Err(AgentError::new(
+            "needs_temp_state",
+            "A QA run needs its own state folder, and won't use the real one.",
+            exit::PERMISSION,
+        )
+        .then(format!("Set {STATE_ENV} to a new folder in a temp folder.")));
     }
     Ok(paths)
 }
@@ -60,7 +65,12 @@ struct Launch {
 fn launch(app: &Path, paths: &StatePaths, options: &Launch) -> Result<(Child, Value), AgentError> {
     paths.prepare()?;
     levels::store(paths, Level::Full).map_err(|_| failed("write_failed", "The state folder couldn't be written to."))?;
-    let messages = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&paths.server_messages).map_err(|_| failed("write_failed", "The state folder couldn't be written to."))?;
+    let messages = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&paths.server_messages)
+        .map_err(|_| failed("write_failed", "The state folder couldn't be written to."))?;
     let mut command = Command::new(app);
     command.arg("--qa");
     if let Some(limit) = options.memory_limit_mib {
@@ -70,10 +80,19 @@ fn launch(app: &Path, paths: &StatePaths, options: &Launch) -> Result<(Child, Va
         command.arg("--qa-time-limit-ms").arg(limit.as_millis().to_string());
     }
     command.args(&options.open);
-    command.env(STATE_ENV, &paths.root).env("MallocSpaceEfficient", "1").env("MallocMaxMagazines", "1").current_dir(&paths.root).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(messages);
+    command
+        .env(STATE_ENV, &paths.root)
+        .env("MallocSpaceEfficient", "1")
+        .env("MallocMaxMagazines", "1")
+        .current_dir(&paths.root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(messages);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    let mut child = command.spawn().map_err(|_| failed("app_missing", format!("The app at {} couldn't be started.", app.display())))?;
+    let mut child = command
+        .spawn()
+        .map_err(|_| failed("app_missing", format!("The app at {} couldn't be started.", app.display())))?;
     let stdout = child.stdout.take().ok_or_else(|| failed("app_refused", "The app couldn't be started."))?;
     let (send, receive) = mpsc::channel();
     let _ = std::thread::Builder::new().name("qa-ready".into()).spawn(move || {
@@ -87,16 +106,30 @@ fn launch(app: &Path, paths: &StatePaths, options: &Launch) -> Result<(Child, Va
         Ok(_) => {
             let _ = child.wait();
             let message = std::fs::read_to_string(&paths.server_messages).unwrap_or_default();
-            return Err(failed("app_refused", if message.trim().is_empty() { "The app ended before it was ready.".to_string() } else { message.trim().to_string() }));
+            return Err(failed(
+                "app_refused",
+                if message.trim().is_empty() {
+                    "The app ended before it was ready.".to_string()
+                } else {
+                    message.trim().to_string()
+                },
+            ));
         }
         Err(_) => {
             let _ = child.kill();
-            return Err(AgentError::new("timed_out", "The app wasn't ready in time, so it was stopped.", exit::TIMED_OUT));
+            return Err(AgentError::new(
+                "timed_out",
+                "The app wasn't ready in time, so it was stopped.",
+                exit::TIMED_OUT,
+            ));
         }
     };
     let value: Value = serde_json::from_str(line.trim()).map_err(|_| failed("app_refused", "The app said something that isn't its ready line."))?;
     if value["ok"] != true {
-        return Err(failed("app_refused", value["error"]["message"].as_str().unwrap_or("The app refused to start.").to_string()));
+        return Err(failed(
+            "app_refused",
+            value["error"]["message"].as_str().unwrap_or("The app refused to start.").to_string(),
+        ));
     }
     Ok((child, value["data"].clone()))
 }
@@ -167,7 +200,9 @@ fn at_path<'a>(value: &'a Value, path: &str) -> &'a Value {
 
 /// What one `expect` line says about the last answer. `None` if it holds.
 fn check(last: &Value, words: &[String]) -> Option<String> {
-    let [kind, path, wanted] = words else { return Some("An expect line is `expect PATH VALUE`.".to_string()) };
+    let [kind, path, wanted] = words else {
+        return Some("An expect line is `expect PATH VALUE`.".to_string());
+    };
     let found = at_path(last, path);
     let number = |value: &Value| value.as_f64();
     let wanted_value: Value = serde_json::from_str(wanted).unwrap_or_else(|_| Value::String(wanted.clone()));
@@ -185,7 +220,11 @@ fn check(last: &Value, words: &[String]) -> Option<String> {
 /// `recto qa run`: PASS or FAIL for the script, and a line for each thing that failed.
 pub fn run_script(invocation: &Invocation) -> Result<Value, AgentError> {
     let script = PathBuf::from(invocation.fields.get("script").and_then(Value::as_str).unwrap_or_default());
-    let limit = invocation.fields.get("time_limit_ms").and_then(Value::as_u64).map_or(DEFAULT_SCRIPT_LIMIT, Duration::from_millis);
+    let limit = invocation
+        .fields
+        .get("time_limit_ms")
+        .and_then(Value::as_u64)
+        .map_or(DEFAULT_SCRIPT_LIMIT, Duration::from_millis);
     let text = std::fs::read_to_string(&script).map_err(|_| failed("not_found", format!("The script {} couldn't be read.", script.display())))?;
     let paths = quiet_paths()?;
     let started = Instant::now();
@@ -250,7 +289,18 @@ pub fn run_script(invocation: &Invocation) -> Result<Value, AgentError> {
     if passed {
         Ok(result)
     } else {
-        let mut error = failed("qa_failed", format!("FAIL {}: {}", script.display(), failures.iter().map(|failure| format!("line {}: {}", failure["line"], failure["why"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("; ")));
+        let mut error = failed(
+            "qa_failed",
+            format!(
+                "FAIL {}: {}",
+                script.display(),
+                failures
+                    .iter()
+                    .map(|failure| format!("line {}: {}", failure["line"], failure["why"].as_str().unwrap_or("")))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        );
         error.next = "Fix what it names and run it again.".to_string();
         Err(error)
     }
@@ -268,7 +318,9 @@ impl Measured {
     fn start(app: &Path, options: &Launch) -> Result<Self, AgentError> {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root = recto_platform::local::system_temp_dir().ok_or_else(|| failed("no_temp", "There's no temp folder."))?.join(format!("rqb{}-{number}", std::process::id()));
+        let root = recto_platform::local::system_temp_dir()
+            .ok_or_else(|| failed("no_temp", "There's no temp folder."))?
+            .join(format!("rqb{}-{number}", std::process::id()));
         let paths = StatePaths::overridden(&root)?;
         let (child, ready) = launch(app, &paths, options)?;
         let pid = ready["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok()).unwrap_or_else(|| child.id());
@@ -353,7 +405,10 @@ fn mib(bytes: u64) -> f64 {
 }
 
 fn percentile(sorted: &[f64], share: f64) -> f64 {
-    sorted.get(((sorted.len().saturating_sub(1)) as f64 * share).round() as usize).copied().unwrap_or(0.0)
+    sorted
+        .get(((sorted.len().saturating_sub(1)) as f64 * share).round() as usize)
+        .copied()
+        .unwrap_or(0.0)
 }
 
 fn round(value: f64) -> f64 {
@@ -364,7 +419,13 @@ fn round(value: f64) -> f64 {
 pub fn select_budget(invocation: &Invocation) -> Result<Value, AgentError> {
     let app = find_app(invocation.fields.get("app").and_then(Value::as_str).map(Path::new))?;
     let file = PathBuf::from(invocation.fields.get("file").and_then(Value::as_str).unwrap_or_default());
-    let run = Measured::start(&app, &Launch { open: vec![file.clone()], ..Launch::default() })?;
+    let run = Measured::start(
+        &app,
+        &Launch {
+            open: vec![file.clone()],
+            ..Launch::default()
+        },
+    )?;
     run.settled()?;
     let memory = |state: &Value, key: &str| state["memory"][key].as_u64().unwrap_or(0);
     let before = run.state()?;
@@ -373,7 +434,12 @@ pub fn select_budget(invocation: &Invocation) -> Result<Value, AgentError> {
     let (mut page, mut place) = (1, None);
     while page <= pages.min(32) && place.is_none() {
         let found = run.call(json!({ "cmd": "select", "page": page }))?;
-        place = found["pages"][0]["rects"].as_array().and_then(|rects| rects.get(rects.len() / 2)).map(|rect| (rect[0].as_f64().unwrap_or(0.0) + rect[2].as_f64().unwrap_or(0.0) / 2.0, rect[1].as_f64().unwrap_or(0.0) + rect[3].as_f64().unwrap_or(0.0) / 2.0));
+        place = found["pages"][0]["rects"].as_array().and_then(|rects| rects.get(rects.len() / 2)).map(|rect| {
+            (
+                rect[0].as_f64().unwrap_or(0.0) + rect[2].as_f64().unwrap_or(0.0) / 2.0,
+                rect[1].as_f64().unwrap_or(0.0) + rect[3].as_f64().unwrap_or(0.0) / 2.0,
+            )
+        });
         if place.is_none() {
             page += 1;
         }
@@ -462,7 +528,16 @@ pub fn select_budget(invocation: &Invocation) -> Result<Value, AgentError> {
 /// `recto qa compare-budget`: a comparison of `panes` of these files against the budgets, on its own quiet runs. With one pane it opens them all and shows one, which is the same files before comparison view, and works on a build without it. Memory, idle, a sweep in the first pane (which leads the others with `--sync on`), and starts from the record with the comparison in it.
 pub fn compare_budget(invocation: &Invocation) -> Result<Value, AgentError> {
     let app = find_app(invocation.fields.get("app").and_then(Value::as_str).map(Path::new))?;
-    let files: Vec<PathBuf> = invocation.fields.get("files").and_then(Value::as_str).unwrap_or_default().split(',').map(str::trim).filter(|file| !file.is_empty()).map(PathBuf::from).collect();
+    let files: Vec<PathBuf> = invocation
+        .fields
+        .get("files")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|file| !file.is_empty())
+        .map(PathBuf::from)
+        .collect();
     if files.is_empty() || files.iter().any(|file| !file.is_absolute()) {
         return Err(failed("usage", "`--files` takes whole paths, with commas between."));
     }
@@ -532,7 +607,13 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     let mut ready_ms = Vec::new();
     for _ in 0..runs {
         let started = Instant::now();
-        let run = Measured::start(&app, &Launch { open: vec![file.clone()], ..Launch::default() })?;
+        let run = Measured::start(
+            &app,
+            &Launch {
+                open: vec![file.clone()],
+                ..Launch::default()
+            },
+        )?;
         ready_ms.push(started.elapsed().as_secs_f64() * 1000.0);
         run.settled()?;
         colds.push(started.elapsed().as_secs_f64() * 1000.0);
@@ -542,7 +623,13 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     report["cold_start_ms"] = json!({ "runs": runs, "p50": round(percentile(&colds, 0.5)), "p95": round(percentile(&colds, 0.95)), "max": round(percentile(&colds, 1.0)), "budget_p50": 300, "budget_p95": 500, "ready_p50": round(percentile(&ready_ms, 0.5)) });
 
     // One document, at rest on a page, then what idling costs, scrolling, and a closed window.
-    let run = Measured::start(&app, &Launch { open: vec![file.clone()], ..Launch::default() })?;
+    let run = Measured::start(
+        &app,
+        &Launch {
+            open: vec![file.clone()],
+            ..Launch::default()
+        },
+    )?;
     run.settled()?;
     let state = run.state()?;
     report["empty_tiles"] = state["reader"]["tiles"].clone();
@@ -631,7 +718,10 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
         // Numbers for 1,000 tabs from fewer than that would be worse than none.
         let got = state["session"]["tabs"].as_array().map_or(0, Vec::len);
         if got != count as usize {
-            return Err(failed("qa_failed", format!("Asked for {count} tabs and got {got}, so these numbers wouldn't mean what they say.")));
+            return Err(failed(
+                "qa_failed",
+                format!("Asked for {count} tabs and got {got}, so these numbers wouldn't mean what they say."),
+            ));
         }
         measures.push(json!({ "tabs": count, "tree_mib": mib(state["memory"]["tree_bytes"].as_u64().unwrap_or(0)), "app_mib": mib(state["memory"]["footprint_bytes"].as_u64().unwrap_or(0)), "worker_mib": mib(state["memory"]["worker_bytes"].as_u64().unwrap_or(0)), "threads": state["memory"]["threads"], "handles": state["memory"]["open_handles"], "documents_held": state["reader"]["documents_held"], "tile_layers": state["app"]["pages"]["tile_layers"] }));
     }
@@ -669,7 +759,13 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     drop(run);
 
     // The gap an update makes, in the middle of reading and editing: from the old app being told, to the new one's first correct frame with the active page drawn.
-    let mut run = Measured::start(&app, &Launch { open: vec![file.clone()], ..Launch::default() })?;
+    let mut run = Measured::start(
+        &app,
+        &Launch {
+            open: vec![file.clone()],
+            ..Launch::default()
+        },
+    )?;
     run.settled()?;
     let pages = run.state()?["reader"]["pages"].as_u64().unwrap_or(1);
     run.call(json!({ "cmd": "goto", "page": (pages / 2).max(1) }))?;
@@ -714,7 +810,13 @@ pub fn budget(invocation: &Invocation) -> Result<Value, AgentError> {
     if let Some(heavy) = heavy {
         // The heavy page: first view, scroll and zoom, as `budget viewport` draws them, now on the real path.
         let started = Instant::now();
-        let run = Measured::start(&app, &Launch { open: vec![heavy.clone()], ..Launch::default() })?;
+        let run = Measured::start(
+            &app,
+            &Launch {
+                open: vec![heavy.clone()],
+                ..Launch::default()
+            },
+        )?;
         run.settled()?;
         let first_view = started.elapsed().as_secs_f64() * 1000.0;
         let first = run.state()?;

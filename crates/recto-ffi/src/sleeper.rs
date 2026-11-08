@@ -5,14 +5,14 @@
 //! **Going dormant, once:** the tab's sleep file's written if there's anything new to say, its journal's compacted and read back, and its contents, list, worker and tiles go. A byte budget across the documents off screen and memory pressure make that happen sooner, oldest first. A tab being worked on by an agent or saved doesn't go, whatever's asking: `Session::hold` and `saving` see to that.
 
 use crate::{CoreCall, Inner, lock};
-use recto_reader::{SleepMaterial, SleepShot, SleepView};
+use recto_platform::FileStamp;
 use recto_platform::surface::PixelSurface;
 use recto_reader::layout::PageBox;
 use recto_reader::paper::PaperKind;
-use recto_platform::FileStamp;
-use recto_session::{SleepFacts, TabId};
+use recto_reader::{SleepMaterial, SleepShot, SleepView};
 use recto_session::record::{FileStatus, look_at_file};
 use recto_session::sleep::{SleepFile, SleepPicture};
+use recto_session::{SleepFacts, TabId};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -113,7 +113,19 @@ impl LookSlots {
 
 impl Sleeper {
     pub(crate) fn new() -> Self {
-        Self { clock: Instant::now(), after_seconds: AtomicU32::new(DORMANT_AFTER_SECONDS), budget_bytes: AtomicU64::new(LIVE_BUDGET_BYTES), due: AtomicU64::new(0), last_budget_look: Mutex::new(None), write_gap_seconds: AtomicU32::new(SLEEP_WRITE_EVERY_SECONDS), last_written: Mutex::new(HashMap::new()), this_hour: Mutex::new((Instant::now(), 0)), writing: Mutex::new(()), counts: Counts::default(), looks: std::sync::Arc::new(LookSlots::default()) }
+        Self {
+            clock: Instant::now(),
+            after_seconds: AtomicU32::new(DORMANT_AFTER_SECONDS),
+            budget_bytes: AtomicU64::new(LIVE_BUDGET_BYTES),
+            due: AtomicU64::new(0),
+            last_budget_look: Mutex::new(None),
+            write_gap_seconds: AtomicU32::new(SLEEP_WRITE_EVERY_SECONDS),
+            last_written: Mutex::new(HashMap::new()),
+            this_hour: Mutex::new((Instant::now(), 0)),
+            writing: Mutex::new(()),
+            counts: Counts::default(),
+            looks: std::sync::Arc::new(LookSlots::default()),
+        }
     }
 
     fn millis(&self) -> u64 {
@@ -143,7 +155,9 @@ impl Sleeper {
         if gap == 0 {
             return true;
         }
-        let soon = lock(&self.last_written).get(&id).is_some_and(|last| last.elapsed() < Duration::from_secs(u64::from(gap)));
+        let soon = lock(&self.last_written)
+            .get(&id)
+            .is_some_and(|last| last.elapsed() < Duration::from_secs(u64::from(gap)));
         let mut hour = lock(&self.this_hour);
         if hour.0.elapsed() >= Duration::from_secs(3600) {
             *hour = (Instant::now(), 0);
@@ -184,7 +198,10 @@ impl Inner {
     /// Works out the next deadline, after anything that can have changed it. A look at the few tabs that hold anything.
     pub(crate) fn rearm_dormancy(&self) {
         let after = self.sleeper.after_seconds.load(Ordering::SeqCst);
-        let wait = self.host.session.with_session(|session| session.next_dormant_at(after).map(|at| at.saturating_sub(session.seconds_now())));
+        let wait = self
+            .host
+            .session
+            .with_session(|session| session.next_dormant_at(after).map(|at| at.saturating_sub(session.seconds_now())));
         let due = wait.map_or(0, |seconds| self.sleeper.millis() + u64::from(seconds) * 1000);
         self.sleeper.due.store(due, Ordering::SeqCst);
     }
@@ -192,7 +209,9 @@ impl Inner {
     /// It's come due, on the session thread. Whatever's due goes dormant, unless a file's being read, when it looks again shortly.
     pub(crate) fn dormancy_due(&self) -> Option<Vec<TabId>> {
         if self.reads_running.load(Ordering::SeqCst) > 0 || self.core.frozen.load(Ordering::SeqCst) {
-            self.sleeper.due.store(self.sleeper.millis() + u64::try_from(BUSY_RETRY.as_millis()).unwrap_or(5000), Ordering::SeqCst);
+            self.sleeper
+                .due
+                .store(self.sleeper.millis() + u64::try_from(BUSY_RETRY.as_millis()).unwrap_or(5000), Ordering::SeqCst);
             return None;
         }
         let after = self.sleeper.after_seconds.load(Ordering::SeqCst);
@@ -201,7 +220,10 @@ impl Inner {
 
     /// **Those tabs go dormant,** on the session thread, those that may: whatever's asking, not the one on screen or one being worked on or saved. Whatever hasn't gone to its journal goes first, or a list couldn't.
     pub(crate) fn go_dormant(&self, tabs: &[TabId], why: Why) -> usize {
-        let tabs: Vec<TabId> = self.host.session.with_session(|session| tabs.iter().copied().filter(|id| session.can_go_dormant(*id)).collect());
+        let tabs: Vec<TabId> = self
+            .host
+            .session
+            .with_session(|session| tabs.iter().copied().filter(|id| session.can_go_dormant(*id)).collect());
         if tabs.is_empty() || self.core.frozen.load(Ordering::SeqCst) {
             return 0;
         }
@@ -236,15 +258,24 @@ impl Inner {
 
     /// Writes a tab's sleep file from what's known of it now, if that's anything new. `now` is a quit, a hand-off or being asked, which don't wait for the limits.
     pub(crate) fn write_sleep_for(&self, id: TabId, now: bool) {
-        let Some(facts) = self.host.session.with_session(|session| session.sleep_facts(id)) else { return };
+        let Some(facts) = self.host.session.with_session(|session| session.sleep_facts(id)) else {
+            return;
+        };
         let own = Some(version_of(facts.sleep.file));
-        let Some(material) = self.panes.engine_for_tab(&self.engine, id).sleep_material(id.0, own) else { return };
+        let Some(material) = self.panes.engine_for_tab(&self.engine, id).sleep_material(id.0, own) else {
+            return;
+        };
         self.write_with_material(facts, material, now);
     }
 
     /// A sleep file from what's known and what's on hand. With no pictures to hand, as with a closed window or what the system's taken, what's there already stands, if it's about the same list. Past the limits, a tab that's only moving about keeps what it has, and one with nothing yet has its facts, which is small and says what the PDF would.
     fn write_with_material(&self, facts: SleepFacts, material: SleepMaterial, now: bool) {
-        let SleepFacts { id, path, sleep, pictures_allowed } = facts;
+        let SleepFacts {
+            id,
+            path,
+            sleep,
+            pictures_allowed,
+        } = facts;
         let _one_at_a_time = lock(&self.sleeper.writing);
         let there = self.saver.store.read_sleep(sleep.file, &path);
         let may = now || self.sleeper.may_write_pictures(id);
@@ -256,7 +287,8 @@ impl Inner {
         if !pictures_allowed || !may {
             sleep.pictures.clear();
         } else if sleep.pictures.is_empty()
-            && let Some(there) = there.filter(|there| there.list_seq == sleep.list_seq && there.pages == sleep.pages && there.version.is_some() && there.version == sleep.version)
+            && let Some(there) = there
+                .filter(|there| there.list_seq == sleep.list_seq && there.pages == sleep.pages && there.version.is_some() && there.version == sleep.version)
         {
             sleep.pictures = there.pictures;
         }
@@ -269,11 +301,13 @@ impl Inner {
     /// Tabs pushed out of the warm ones, with their pictures, just before the page view lets go of them. A quick copy, of those whose time's come.
     pub(crate) fn pictures_of_those_leaving(&self) -> Vec<(SleepFacts, SleepMaterial)> {
         let left = self.host.session.with_session(|session| session.take_left_warm());
-        left.into_iter().filter_map(|facts| {
-            let own = Some(version_of(facts.sleep.file));
-            let material = self.panes.engine_for_tab(&self.engine, facts.id).sleep_material(facts.id.0, own)?;
-            Some((facts, material))
-        }).collect()
+        left.into_iter()
+            .filter_map(|facts| {
+                let own = Some(version_of(facts.sleep.file));
+                let material = self.panes.engine_for_tab(&self.engine, facts.id).sleep_material(facts.id.0, own)?;
+                Some((facts, material))
+            })
+            .collect()
     }
 
     /// And their sleep files, on a one-shot thread: packing a photograph takes long enough to hold up whatever's asked for next. A flush waits for it.
@@ -312,7 +346,12 @@ impl Inner {
         });
         let Some(sleep) = sleep else { return };
         // Read for a file that's since been found to be another: nothing in it's about this one.
-        if self.host.session.with_session(|session| session.own_stamp(id)).is_none_or(|now| !(now.same_contents(sleep.file) && now.inode == sleep.file.inode)) {
+        if self
+            .host
+            .session
+            .with_session(|session| session.own_stamp(id))
+            .is_none_or(|now| !(now.same_contents(sleep.file) && now.inode == sleep.file.inode))
+        {
             return;
         }
         let (pages, mark) = self.host.session.with_session(|session| (session.pages_in(id), session.list_mark(id)));
@@ -323,10 +362,23 @@ impl Inner {
         let mut pictures = Vec::with_capacity(sleep.pictures.len());
         for picture in &sleep.pictures {
             if let Some(surface) = surface_of(picture) {
-                pictures.push(SleepShot { page: picture.page, scale: picture.scale, paper: if picture.dark { PaperKind::Dark } else { PaperKind::White }, surface });
+                pictures.push(SleepShot {
+                    page: picture.page,
+                    scale: picture.scale,
+                    paper: if picture.dark { PaperKind::Dark } else { PaperKind::White },
+                    surface,
+                });
             }
         }
-        engine.give_sleep(id.0, SleepView { version: sleep.version, usual: sleep.usual.map(page_box), sizes: sleep.sizes.iter().map(|(page, width, height)| (*page, page_box((*width, *height)))).collect(), pictures });
+        engine.give_sleep(
+            id.0,
+            SleepView {
+                version: sleep.version,
+                usual: sleep.usual.map(page_box),
+                sizes: sleep.sizes.iter().map(|(page, width, height)| (*page, page_box((*width, *height)))).collect(),
+                pictures,
+            },
+        );
     }
 
     /// The documents off screen against their budget. At most once a second, and only with something off screen, which most of the time there's little of.
@@ -344,7 +396,19 @@ impl Inner {
             *last = Some((Instant::now(), active));
         }
         let budget = self.sleeper.budget_bytes.load(Ordering::SeqCst);
-        let costs: Vec<(TabId, u64)> = warm.iter().map(|id| (*id, self.panes.engine_for_tab(&self.engine, *id).worker_bytes(id.0) + self.host.session.with_session(|session| session.page_edits(*id).map_or(0, |list| list.history_bytes() as u64)))).collect();
+        let costs: Vec<(TabId, u64)> = warm
+            .iter()
+            .map(|id| {
+                (
+                    *id,
+                    self.panes.engine_for_tab(&self.engine, *id).worker_bytes(id.0)
+                        + self
+                            .host
+                            .session
+                            .with_session(|session| session.page_edits(*id).map_or(0, |list| list.history_bytes() as u64)),
+                )
+            })
+            .collect();
         let mut total: u64 = costs.iter().map(|(_, cost)| cost).sum();
         let mut over = Vec::new();
         for (id, cost) in costs {
@@ -374,7 +438,18 @@ fn with_material(mut sleep: SleepFile, material: SleepMaterial) -> SleepFile {
     sleep.version = material.version;
     sleep.usual = material.usual.map(|size| (size.width, size.height));
     sleep.sizes = material.sizes.into_iter().map(|(page, size)| (page, size.width, size.height)).collect();
-    sleep.pictures = material.pictures.into_iter().map(|picture| SleepPicture { page: picture.page, scale: picture.scale, width: picture.width, height: picture.height, dark: picture.paper == PaperKind::Dark, bgra: picture.bgra }).collect();
+    sleep.pictures = material
+        .pictures
+        .into_iter()
+        .map(|picture| SleepPicture {
+            page: picture.page,
+            scale: picture.scale,
+            width: picture.width,
+            height: picture.height,
+            dark: picture.paper == PaperKind::Dark,
+            bgra: picture.bgra,
+        })
+        .collect();
     sleep
 }
 
@@ -400,7 +475,9 @@ pub(crate) fn version_of(stamp: FileStamp) -> FileStamp {
 
 /// **Looks at a tab's file before it's shown, for as long as a frame can wait for it.** Another file there means what's held of it is of something else, so the tab's read again, and nothing drawn of the old one is shown: the page view's told its version's changed. Past the time, which is a disk that's gone away, it's shown as it was, and the look goes on on its own thread. A stat, which is microseconds.
 pub(crate) fn look_before_showing(inner: &Inner, id: TabId) {
-    let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else { return };
+    let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else {
+        return;
+    };
     // One look per tab, and so many in all: with a disk that's stopped answering, showing tab after tab adds no threads past them.
     if !inner.sleeper.looks.start(id) {
         return;
@@ -438,7 +515,9 @@ const LOOK_PATIENCE: Duration = Duration::from_millis(30);
 
 /// One thread looks at the one file a tab was woken from its sleep file on, or that's showing when the app comes to the front, and ends. If it's something else now, the session's told, and it's read after all. A tab with a look under way already, or past [`MAX_LOOKS`] in all, isn't looked at now: see [`LookSlots`].
 pub(crate) fn check_woken_file(inner: &std::sync::Arc<Inner>, id: TabId) {
-    let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else { return };
+    let Some((path, stamp)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.own_stamp(id)))) else {
+        return;
+    };
     if !inner.sleeper.looks.start(id) {
         return;
     }

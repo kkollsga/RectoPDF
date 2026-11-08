@@ -87,7 +87,16 @@ impl Indexer {
     }
 
     fn with_limits(root: &Path, runner: Box<dyn Runner>, limits: BuildLimits) -> Self {
-        Self(Arc::new(Shared { root: root.to_path_buf(), limits, runner, inner: Mutex::new(Inner { sweep_due: true, ..Inner::default() }), notify: OnceLock::new() }))
+        Self(Arc::new(Shared {
+            root: root.to_path_buf(),
+            limits,
+            runner,
+            inner: Mutex::new(Inner {
+                sweep_due: true,
+                ..Inner::default()
+            }),
+            notify: OnceLock::new(),
+        }))
     }
 
     pub fn attach(&self, notify: Notifier) {
@@ -121,7 +130,10 @@ impl Indexer {
         }
         let shared = Arc::clone(&self.0);
         // It does no work of its own but a walk over a folder, so a small stack will do.
-        let spawned = std::thread::Builder::new().name("recto-indexer".into()).stack_size(256 * 1024).spawn(move || shared.work());
+        let spawned = std::thread::Builder::new()
+            .name("recto-indexer".into())
+            .stack_size(256 * 1024)
+            .spawn(move || shared.work());
         match spawned {
             Ok(_) => inner.working = true,
             // Asked again next time. A failed search would be worse than a late index.
@@ -182,12 +194,17 @@ impl Shared {
                         inner.failures.pop_front();
                     }
                     inner.failures.retain(|(key, ..)| *key != job.key);
-                    inner.failures.push_back((job.key, report["code"].as_str().unwrap_or("unknown").to_string(), Instant::now()));
+                    inner
+                        .failures
+                        .push_back((job.key, report["code"].as_str().unwrap_or("unknown").to_string(), Instant::now()));
                 }
             }
             // However it ended. A helper that stopped before it got as far as a build, cancelled or finding its file changed, made nothing room for.
             let _ = corpus::evict(&self.root, &self.limits, Some(job.key));
-            self.tell(Event::new("indexing_finished", json!({ "corpus": job.key.short(), "state": state, "code": report["code"], "pages": report["pages"] })));
+            self.tell(Event::new(
+                "indexing_finished",
+                json!({ "corpus": job.key.short(), "state": state, "code": report["code"], "pages": report["pages"] }),
+            ));
         }
     }
 
@@ -260,7 +277,9 @@ impl Runner for HelperProcess {
     fn run(&self, job: &IndexJob, root: &Path, started: &mut dyn FnMut(Box<dyn Any + Send>)) -> Value {
         let failed = |code: &str| json!({ "state": "failed", "code": code });
         let Some(exe) = helper_exe() else { return failed("indexer_missing") };
-        let (Some(file), Some(root)) = (job.path.to_str(), root.to_str()) else { return failed("path_not_text") };
+        let (Some(file), Some(root)) = (job.path.to_str(), root.to_str()) else {
+            return failed("path_not_text");
+        };
         let mut command = Command::new(exe);
         // It inherits nothing it doesn't need. These two only ever mean anything in a development build, as the worker's own rules say.
         command.env_clear().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
@@ -269,7 +288,9 @@ impl Runner for HelperProcess {
                 command.env(name, value);
             }
         }
-        let Ok(mut child) = command.spawn() else { return failed("indexer_wouldnt_start") };
+        let Ok(mut child) = command.spawn() else {
+            return failed("indexer_wouldnt_start");
+        };
         let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             let _ = child.kill();
             let _ = child.wait();
@@ -337,7 +358,10 @@ mod tests {
     }
 
     fn job(number: u8) -> IndexJob {
-        IndexJob { path: PathBuf::from(format!("/nowhere/{number}.pdf")), key: key(number) }
+        IndexJob {
+            path: PathBuf::from(format!("/nowhere/{number}.pdf")),
+            key: key(number),
+        }
     }
 
     /// Failure: 200 open tabs that all get searched start 200 indexers, each with a worker that can take a gigabyte. One runs, whoever asks and however fast. Asking never blocks, and what's waiting is capped, with the newest ask first.
@@ -349,7 +373,11 @@ mod tests {
         for number in 0..200u8 {
             indexer.ask(job(number));
         }
-        assert!(started.elapsed() < Duration::from_secs(5), "asking must not wait for building: {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "asking must not wait for building: {:?}",
+            started.elapsed()
+        );
         let (running, waiting) = indexer.load();
         assert!(running <= 1);
         assert!(waiting as usize <= MAX_WAITING, "{waiting}");
@@ -460,7 +488,10 @@ mod tests {
             assert_eq!(indexer.job(key(number)), JobState::Idle, "{number}");
         }
         indexer.ask(job(1));
-        assert!(indexer.load().0 + indexer.load().1 >= 1 || stand.finished.load(Ordering::SeqCst) >= 2, "turned away, as if it had failed");
+        assert!(
+            indexer.load().0 + indexer.load().1 >= 1 || stand.finished.load(Ordering::SeqCst) >= 2,
+            "turned away, as if it had failed"
+        );
     }
 
     /// A corpus of one page, with nothing to read but what's given.
@@ -472,7 +503,11 @@ mod tests {
         }
         fn read(&mut self, _page: u32) -> Result<corpus::FedPage, corpus::FeedError> {
             let chars = "A page of text".chars().map(|c| recto_proto::CharRecord::new(c as u32, 0)).collect();
-            Ok(corpus::FedPage { chars, boxes: Vec::new(), hidden_checked: true })
+            Ok(corpus::FedPage {
+                chars,
+                boxes: Vec::new(),
+                hidden_checked: true,
+            })
         }
         fn still_the_same_file(&mut self) -> bool {
             true
@@ -482,7 +517,10 @@ mod tests {
     /// Failure: the owner's rule of 90 days and a maximum size only holds when a build succeeds, so a session that only reads what's there, or whose builds all fail, keeps text past both for good. The first ask of a session must apply each, with nothing being built.
     #[test]
     fn the_first_ask_of_a_session_applies_both_limits() {
-        let temp = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-limits-{}", std::process::id()));
+        let temp = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-limits-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         recto_platform::local::ensure_private_dir(&temp).unwrap();
         let (root, generous) = (temp.join("corpus.noindex"), BuildLimits::default());
@@ -492,7 +530,12 @@ mod tests {
         build(recent);
         let age = |key: CorpusKey, days: u64| {
             let used = corpus::CorpusPaths::new(&root, key).app.join("used");
-            std::fs::File::options().write(true).open(used).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(days * 24 * 3600)).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(used)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(days * 24 * 3600))
+                .unwrap();
         };
         let wait_until_gone = |key: CorpusKey| {
             let deadline = Instant::now() + Duration::from_secs(30);
@@ -521,7 +564,10 @@ mod tests {
         assert!(root.join(old.hex()).exists());
 
         // Past the size, within 90 days: the least recently used goes.
-        let tight = BuildLimits { max_total_bytes: corpus::folder_bytes(&root.join(recent.hex())) + 1, ..BuildLimits::default() };
+        let tight = BuildLimits {
+            max_total_bytes: corpus::folder_bytes(&root.join(recent.hex())) + 1,
+            ..BuildLimits::default()
+        };
         let by_size = Indexer::with_limits(&root, Box::new(Fails), tight);
         by_size.note_asked();
         wait_until_gone(old);
@@ -538,7 +584,10 @@ mod tests {
                 json!({ "state": "changed" })
             }
         }
-        let temp = std::env::temp_dir().canonicalize().unwrap().join(format!("recto-any-way-{}", std::process::id()));
+        let temp = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("recto-any-way-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
         recto_platform::local::ensure_private_dir(&temp).unwrap();
         let root = temp.join("corpus.noindex");
@@ -551,7 +600,14 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(root.join(key(1).hex()).exists());
-        let tight = Indexer::with_limits(&root, Box::new(Changed), BuildLimits { max_total_bytes: 1, ..BuildLimits::default() });
+        let tight = Indexer::with_limits(
+            &root,
+            Box::new(Changed),
+            BuildLimits {
+                max_total_bytes: 1,
+                ..BuildLimits::default()
+            },
+        );
         tight.0.lock().sweep_due = false;
         tight.ask(job(2));
         let deadline = Instant::now() + Duration::from_secs(10);

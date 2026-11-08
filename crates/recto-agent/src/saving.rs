@@ -67,7 +67,9 @@ fn from_save(error: &SaveError) -> AgentError {
     let next = match error {
         SaveError::FileChanged => "Tell the user the file changed on disk. `recto save-as --out <new.pdf>` keeps both versions.",
         SaveError::ReadOnly | SaveError::HardLinks => "`recto save-as --out <new.pdf>` saves a separate copy.",
-        SaveError::BreaksCertification | SaveError::LockedBySignature | SaveError::SignedNeedsCopy => "Tell the user. The edits stay unsaved, and the signed file is untouched. `recto save-as --out <new.pdf>` makes an unsigned copy, if the user wants one.",
+        SaveError::BreaksCertification | SaveError::LockedBySignature | SaveError::SignedNeedsCopy => {
+            "Tell the user. The edits stay unsaved, and the signed file is untouched. `recto save-as --out <new.pdf>` makes an unsigned copy, if the user wants one."
+        }
         SaveError::TargetExists => "Choose a new name, or ask the user whether to replace that file: `--replace` does, at Full.",
         SaveError::NoPagesLeft => "Keep at least one of the file's own pages, or tell the user. The edits stay unsaved, and nothing is lost.",
         _ => "Tell the user what failed. The edits are still here, unsaved, and the file is as it was.",
@@ -97,7 +99,10 @@ pub(crate) enum PathProblem {
 
 /// Which of the rules a path breaks, if any. `endings` are without their dot, and any of them will do.
 pub(crate) fn path_problem(out: &Path, endings: &[&str]) -> Option<PathProblem> {
-    let ends_right = |path: &Path| path.extension().is_some_and(|extension| endings.iter().any(|ending| extension.eq_ignore_ascii_case(ending)));
+    let ends_right = |path: &Path| {
+        path.extension()
+            .is_some_and(|extension| endings.iter().any(|ending| extension.eq_ignore_ascii_case(ending)))
+    };
     if !ends_right(out) {
         return Some(PathProblem::Ending);
     }
@@ -105,12 +110,17 @@ pub(crate) fn path_problem(out: &Path, endings: &[&str]) -> Option<PathProblem> 
     let real = if std::fs::symlink_metadata(out).is_ok() {
         out.canonicalize().ok()
     } else {
-        out.parent().and_then(|folder| folder.canonicalize().ok()).map(|folder| folder.join(out.file_name().unwrap_or_default()))
+        out.parent()
+            .and_then(|folder| folder.canonicalize().ok())
+            .map(|folder| folder.join(out.file_name().unwrap_or_default()))
     };
     if real.as_deref().is_some_and(|real| !ends_right(real)) {
         return Some(PathProblem::LeadsToAnotherKind);
     }
-    let hidden = |path: &Path| path.components().any(|part| matches!(part, std::path::Component::Normal(name) if name.to_string_lossy().starts_with('.')));
+    let hidden = |path: &Path| {
+        path.components()
+            .any(|part| matches!(part, std::path::Component::Normal(name) if name.to_string_lossy().starts_with('.')))
+    };
     if hidden(out) || real.as_deref().is_some_and(hidden) {
         return Some(PathProblem::Hidden);
     }
@@ -131,21 +141,30 @@ pub fn check_save_path(out: &Path) -> Result<(), AgentError> {
         Some(PathProblem::Ending) => Err(bad_path("A saved PDF's name has to end in .pdf.")),
         Some(PathProblem::LeadsToAnotherKind) => Err(bad_path("That name leads to a file that isn't a .pdf, which a PDF isn't saved over.")),
         Some(PathProblem::Hidden) => Err(bad_path("That's a hidden file or folder, which a PDF isn't saved to.")),
-        Some(PathProblem::Library) => Err(bad_path("That's inside ~/Library, where the system and apps keep files of their own, so a PDF isn't saved there.")),
+        Some(PathProblem::Library) => Err(bad_path(
+            "That's inside ~/Library, where the system and apps keep files of their own, so a PDF isn't saved there.",
+        )),
     }
 }
 
 /// **Where an export may write**: a picture, an SVG or a snapshot carries a hostile file's content too, so it keeps the same rules as a Save As, with its own endings (review of Save: every write path needs them). `kind` names it, as "picture" or "SVG"; `endings` are what it may end in, the first being what's suggested.
 pub fn check_export_path(out: &Path, endings: &[&str], kind: &str) -> Result<(), AgentError> {
     let suggested = endings.first().copied().unwrap_or("");
-    let bad = |message: String| AgentError::new("bad_output", message, exit::FAILED).then(format!("Choose a name ending in .{suggested}, in a folder that isn't hidden or in ~/Library."));
+    let bad = |message: String| {
+        AgentError::new("bad_output", message, exit::FAILED)
+            .then(format!("Choose a name ending in .{suggested}, in a folder that isn't hidden or in ~/Library."))
+    };
     let listed = endings.iter().map(|ending| format!(".{ending}")).collect::<Vec<_>>().join(" or ");
     match path_problem(out, endings) {
         None => Ok(()),
         Some(PathProblem::Ending) => Err(bad(format!("The output file must end in {listed}."))),
-        Some(PathProblem::LeadsToAnotherKind) => Err(bad(format!("That name leads to a file that doesn't end in {listed}, which a {kind} isn't written to."))),
+        Some(PathProblem::LeadsToAnotherKind) => Err(bad(format!(
+            "That name leads to a file that doesn't end in {listed}, which a {kind} isn't written to."
+        ))),
         Some(PathProblem::Hidden) => Err(bad(format!("That's a hidden file or folder, which a {kind} isn't written to."))),
-        Some(PathProblem::Library) => Err(bad(format!("That's inside ~/Library, where the system and apps keep files of their own, so a {kind} isn't written there."))),
+        Some(PathProblem::Library) => Err(bad(format!(
+            "That's inside ~/Library, where the system and apps keep files of their own, so a {kind} isn't written there."
+        ))),
     }
 }
 
@@ -167,12 +186,20 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         let there = recto_platform::file_stamp(out).ok();
         let (own, elsewhere) = access.with(|s| {
             let id = select(s, tab)?;
-            let own = s.own_stamp(id).zip(there).is_some_and(|(mine, theirs)| mine.inode == theirs.inode && mine.device == theirs.device);
+            let own = s
+                .own_stamp(id)
+                .zip(there)
+                .is_some_and(|(mine, theirs)| mine.inode == theirs.inode && mine.device == theirs.device);
             let elsewhere = there.is_some() && s.tab_for_file(out, there).is_some_and(|other| other != id);
             Ok::<_, AgentError>((own, elsewhere))
         })?;
         if elsewhere {
-            return Err(AgentError::new("open_in_another_tab", "That file is open in another tab, so it isn't replaced. A PDF can only be open once.", exit::FAILED).then("Close that tab first, or choose another name."));
+            return Err(AgentError::new(
+                "open_in_another_tab",
+                "That file is open in another tab, so it isn't replaced. A PDF can only be open once.",
+                exit::FAILED,
+            )
+            .then("Close that tab first, or choose another name."));
         }
         if own {
             to = SaveTo::Same;
@@ -189,14 +216,36 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         return Ok(access.with(|s| nothing_to_save(s, id)));
     };
     let ending = Ending { access, id };
-    let pages: Vec<PageRef> = snapshot.slots.iter().map(|slot| PageRef { source: slot.source, page: slot.page, quarter_turns: slot.quarter_turns }).collect();
+    let pages: Vec<PageRef> = snapshot
+        .slots
+        .iter()
+        .map(|slot| PageRef {
+            source: slot.source,
+            page: slot.page,
+            quarter_turns: slot.quarter_turns,
+        })
+        .collect();
     let writer = recto_core::save::writer_for(snapshot.file_pages, &pages);
     if writer == Writer::Rewrite && level < Level::Full && level >= Level::Control {
         drop(ending);
         return Err(needs_full("A save that removes pages for good"));
     }
-    let added: Vec<AddedFile<'_>> = snapshot.added.iter().map(|added| AddedFile { path: &added.path, page_count: added.page_count, stamp: added.stamp }).collect();
-    let request = SaveRequest { path: &snapshot.path, stamp: snapshot.stamp, file_pages: snapshot.file_pages, pages: &pages, added: &added };
+    let added: Vec<AddedFile<'_>> = snapshot
+        .added
+        .iter()
+        .map(|added| AddedFile {
+            path: &added.path,
+            page_count: added.page_count,
+            stamp: added.stamp,
+        })
+        .collect();
+    let request = SaveRequest {
+        path: &snapshot.path,
+        stamp: snapshot.stamp,
+        file_pages: snapshot.file_pages,
+        pages: &pages,
+        added: &added,
+    };
     let target = match to {
         SaveTo::Same => Target::Same,
         SaveTo::As { out, replace: false } => Target::NewFile(out),
@@ -205,8 +254,20 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
     let support = access.saving();
     let backups = support.and_then(SaveSupport::backups);
     // A Save As leaves the old file where it is, so the history needs no copy of its pages.
-    let needed = if snapshot.needs_own_pages && matches!(to, SaveTo::Same) { access.with(|s| s.own_pages_needed(id)) } else { Vec::new() };
-    let mut hooks = Hooks { access, id, support, original: &snapshot.path, needed, kept: None, level };
+    let needed = if snapshot.needs_own_pages && matches!(to, SaveTo::Same) {
+        access.with(|s| s.own_pages_needed(id))
+    } else {
+        Vec::new()
+    };
+    let mut hooks = Hooks {
+        access,
+        id,
+        support,
+        original: &snapshot.path,
+        needed,
+        kept: None,
+        level,
+    };
     let saved = recto_core::save::save(&request, target, backups.as_deref(), &mut hooks);
     let kept = hooks.kept.take();
     let outcome = match saved {
@@ -229,7 +290,9 @@ pub fn save<A: SessionAccess>(access: &A, level: Level, tab: &str, to: &SaveTo, 
         SaveTo::As { out, .. } => Some(out.clone()),
     };
     let data = access.with(|s| {
-        let stamp = outcome.stamp.or_else(|| recto_platform::file_stamp(saved_as.as_deref().unwrap_or(&snapshot.path)).ok());
+        let stamp = outcome
+            .stamp
+            .or_else(|| recto_platform::file_stamp(saved_as.as_deref().unwrap_or(&snapshot.path)).ok());
         let rolled_off = match stamp {
             Some(now) => s.saved(id, now, outcome.pages, saved_as.as_deref(), kept),
             None => 0,
@@ -274,7 +337,11 @@ impl<A: SessionAccess> SaveHooks for Hooks<'_, A> {
     fn prepared(&mut self, _written: &Path, stamp: FileStamp) -> std::io::Result<()> {
         // Only the pages the history can put back are kept, from the file while it's still there, and noted with the save, so a crash after the move carries them over.
         // A redaction's save will keep nothing, as a copy would hold what it removes: there's no redaction step yet.
-        self.kept = if self.needed.is_empty() { None } else { self.support.and_then(|support| support.keep_pages(self.id, self.original, stamp, &self.needed)) };
+        self.kept = if self.needed.is_empty() {
+            None
+        } else {
+            self.support.and_then(|support| support.keep_pages(self.id, self.original, stamp, &self.needed))
+        };
         self.access.with(|s| s.save_prepared(self.id, stamp, self.kept.as_ref()));
         match self.support {
             Some(support) => support.note_on_disk(self.id, stamp).map_err(std::io::Error::other),
@@ -303,7 +370,14 @@ fn nothing_to_save<L: recto_session::DocLoader>(s: &recto_session::Session<L>, i
 }
 
 /// What a save answers: what it did in plain words, and the facts behind them.
-fn answer<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: TabId, outcome: &SaveOutcome, rolled_off: usize, saved_as: Option<&Path>, level: Level) -> Value {
+fn answer<L: recto_session::DocLoader>(
+    s: &recto_session::Session<L>,
+    id: TabId,
+    outcome: &SaveOutcome,
+    rolled_off: usize,
+    saved_as: Option<&Path>,
+    level: Level,
+) -> Value {
     let mut data = crate::edit_state_json(s, id);
     let name = s.path_of(id).map(|path| file_label(&path)).unwrap_or_default();
     let how = match outcome.writer {
@@ -334,11 +408,22 @@ fn answer<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: TabId,
     let kept_words = outcome.document_data_kept.map(|kept| kept.kinds()).unwrap_or_default();
     let one = outcome.pages_removed == 1;
     let kept_note = (outcome.pages_removed > 0 && !kept_words.is_empty()).then(|| {
-        let (gone, them) = if one { ("The deleted page is gone", "it") } else { ("The deleted pages are gone", "them") };
-        format!("{gone} from the file, but it still has things that belong to the whole document, which can repeat what was on {them}: {}.", list_words(&kept_words))
+        let (gone, them) = if one {
+            ("The deleted page is gone", "it")
+        } else {
+            ("The deleted pages are gone", "them")
+        };
+        format!(
+            "{gone} from the file, but it still has things that belong to the whole document, which can repeat what was on {them}: {}.",
+            list_words(&kept_words)
+        )
     });
     if outcome.pages_removed > 0 && outcome.resources_left_whole > 0 {
-        notes.push(if one { "Some of what the deleted page drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file." } else { "Some of what the deleted pages drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file." });
+        notes.push(if one {
+            "Some of what the deleted page drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file."
+        } else {
+            "Some of what the deleted pages drew with is shared with pages that stayed, in a way that couldn't be checked, so it was left in the file."
+        });
     }
     if outcome.form_fields_left_out {
         notes.push("This document's own form couldn't be read, so the form fields on the added pages weren't joined to it: they show, and can't be filled in.");
@@ -359,7 +444,9 @@ fn answer<L: recto_session::DocLoader>(s: &recto_session::Session<L>, id: TabId,
     data["signatures_removed"] = json!(outcome.signatures_removed);
     data["objects_missing"] = json!(outcome.objects_missing);
     data["document_data_kept"] = match outcome.document_data_kept {
-        Some(kept) => json!({ "embedded_files": kept.embedded_files, "metadata_streams": kept.metadata_streams, "info_entries": kept.info_entries, "javascript": kept.javascript, "piece_info": kept.piece_info, "document_parts": kept.document_parts, "xfa": kept.xfa, "hidden_layers": kept.hidden_layers }),
+        Some(kept) => {
+            json!({ "embedded_files": kept.embedded_files, "metadata_streams": kept.metadata_streams, "info_entries": kept.info_entries, "javascript": kept.javascript, "piece_info": kept.piece_info, "document_parts": kept.document_parts, "xfa": kept.xfa, "hidden_layers": kept.hidden_layers })
+        }
         None => Value::Null,
     };
     // Where the backup is says something about the user's disk, so only at Full.

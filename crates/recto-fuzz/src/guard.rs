@@ -24,7 +24,10 @@ fn note_grown(by: usize) {
     // Writing to stderr can itself allocate, the first time, and that mustn't come back here.
     if live > HARD_LIMIT && !DYING.swap(true, Ordering::Relaxed) {
         // Not a panic: this can be inside the allocator, on any thread, in a job that catches panics.
-        let _ = writeln!(std::io::stderr(), "recto-fuzz: {live} bytes live, past the {HARD_LIMIT} limit (this allocation: {by})");
+        let _ = writeln!(
+            std::io::stderr(),
+            "recto-fuzz: {live} bytes live, past the {HARD_LIMIT} limit (this allocation: {by})"
+        );
         std::process::abort();
     }
 }

@@ -66,7 +66,11 @@ impl Run<'static> {
         let mut args = vec!["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "2m"];
         args.extend_from_slice(extra);
         let pid = launch(&state, &args);
-        Some(Self { state: Held::Own(Box::new(state)), pid, done: false })
+        Some(Self {
+            state: Held::Own(Box::new(state)),
+            pid,
+            done: false,
+        })
     }
 }
 
@@ -75,12 +79,20 @@ impl<'a> Run<'a> {
     pub fn on(state: &'a State) -> Option<Self> {
         let app = app_path()?;
         let pid = launch(state, &["qa", "start", "--app", app.to_str().unwrap(), "--time-limit", "3m"]);
-        Some(Self { state: Held::Lent(state), pid, done: false })
+        Some(Self {
+            state: Held::Lent(state),
+            pid,
+            done: false,
+        })
     }
 
     /// A run some other way started on that state folder, such as the app an update put in place, by its process.
     pub fn attach(state: &'a State, pid: u32) -> Self {
-        Self { state: Held::Lent(state), pid, done: false }
+        Self {
+            state: Held::Lent(state),
+            pid,
+            done: false,
+        }
     }
 
     /// It ended by itself, as an update ends the app it replaces: nothing's left to stop when it's dropped.
@@ -173,13 +185,17 @@ pub fn wait_for(run: &Run<'_>, holds: impl Fn(&Value) -> bool) -> Value {
 
 /// `long.pdf`: each page says "Page number N", from 0, and a line of words.
 pub fn numbered(count: usize) -> TempPdf {
-    let list: Vec<Page> = (0..count).map(|index| Page::new(text_lines(&[&format!("Page number {index}"), "Words, so that the page isn't blank"]))).collect();
+    let list: Vec<Page> = (0..count)
+        .map(|index| Page::new(text_lines(&[&format!("Page number {index}"), "Words, so that the page isn't blank"])))
+        .collect();
     TempPdf::new("long.pdf", &pages(&list))
 }
 
 /// `<name>.pdf`: each page says "<name> page N", from 0, and a line of words, so two documents' pages are told apart.
 pub fn long_document(name: &str, count: usize) -> TempPdf {
-    let list: Vec<Page> = (0..count).map(|index| Page::new(text_lines(&[&format!("{name} page {index}"), "Words, so that the page isn't blank"]))).collect();
+    let list: Vec<Page> = (0..count)
+        .map(|index| Page::new(text_lines(&[&format!("{name} page {index}"), "Words, so that the page isn't blank"])))
+        .collect();
     TempPdf::new(&format!("{name}.pdf"), &pages(&list))
 }
 
@@ -191,25 +207,66 @@ pub fn chaptered(name: &str, chapters: usize, sections: usize) -> TempPdf {
     let item = |chapter: usize, section: usize| 4 + chapter * each + section;
     let mut objects = vec![
         Object::Dict("<< /Type /Catalog /Pages 2 0 R /Outlines 3 0 R >>".into()),
-        Object::Dict(format!("<< /Type /Pages /Kids [{}] /Count {total} >>", (0..total).map(|index| format!("{} 0 R", first_page + index)).collect::<Vec<_>>().join(" "))),
-        Object::Dict(format!("<< /Type /Outlines /First 4 0 R /Last {} 0 R /Count {chapters} >>", item(chapters - 1, 0))),
+        Object::Dict(format!(
+            "<< /Type /Pages /Kids [{}] /Count {total} >>",
+            (0..total).map(|index| format!("{} 0 R", first_page + index)).collect::<Vec<_>>().join(" ")
+        )),
+        Object::Dict(format!(
+            "<< /Type /Outlines /First 4 0 R /Last {} 0 R /Count {chapters} >>",
+            item(chapters - 1, 0)
+        )),
     ];
     for chapter in 0..chapters {
-        let prev = if chapter > 0 { format!("/Prev {} 0 R", item(chapter - 1, 0)) } else { String::new() };
-        let next = if chapter + 1 < chapters { format!("/Next {} 0 R", item(chapter + 1, 0)) } else { String::new() };
-        objects.push(Object::Dict(format!("<< /Title (Chapter {chapter}) /Parent 3 0 R {prev} {next} /First {} 0 R /Last {} 0 R /Count -{sections} /Dest [{} 0 R /Fit] >>", item(chapter, 1), item(chapter, sections), first_page + chapter * each)));
+        let prev = if chapter > 0 {
+            format!("/Prev {} 0 R", item(chapter - 1, 0))
+        } else {
+            String::new()
+        };
+        let next = if chapter + 1 < chapters {
+            format!("/Next {} 0 R", item(chapter + 1, 0))
+        } else {
+            String::new()
+        };
+        objects.push(Object::Dict(format!(
+            "<< /Title (Chapter {chapter}) /Parent 3 0 R {prev} {next} /First {} 0 R /Last {} 0 R /Count -{sections} /Dest [{} 0 R /Fit] >>",
+            item(chapter, 1),
+            item(chapter, sections),
+            first_page + chapter * each
+        )));
         for section in 1..=sections {
-            let prev = if section > 1 { format!("/Prev {} 0 R", item(chapter, section - 1)) } else { String::new() };
-            let next = if section < sections { format!("/Next {} 0 R", item(chapter, section + 1)) } else { String::new() };
-            objects.push(Object::Dict(format!("<< /Title (Section {chapter}.{section}) /Parent {} 0 R {prev} {next} /Dest [{} 0 R /Fit] >>", item(chapter, 0), first_page + chapter * each + section)));
+            let prev = if section > 1 {
+                format!("/Prev {} 0 R", item(chapter, section - 1))
+            } else {
+                String::new()
+            };
+            let next = if section < sections {
+                format!("/Next {} 0 R", item(chapter, section + 1))
+            } else {
+                String::new()
+            };
+            objects.push(Object::Dict(format!(
+                "<< /Title (Section {chapter}.{section}) /Parent {} 0 R {prev} {next} /Dest [{} 0 R /Fit] >>",
+                item(chapter, 0),
+                first_page + chapter * each + section
+            )));
         }
     }
     let contents = first_page + total;
     for index in 0..total {
-        objects.push(Object::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {} 0 R >>", contents + index)));
+        objects.push(Object::Dict(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {} 0 R >>",
+            contents + index
+        )));
     }
     for index in 0..total {
-        objects.push(Object::Stream { dict: String::new(), data: format!("0.2 0.3 0.7 rg 72 640 {} 60 re f 0 g 72 560 460 14 re f 72 530 460 14 re f 72 500 300 14 re f", 40 + index * 2).into_bytes() });
+        objects.push(Object::Stream {
+            dict: String::new(),
+            data: format!(
+                "0.2 0.3 0.7 rg 72 640 {} 60 re f 0 g 72 560 460 14 re f 72 530 460 14 re f 72 500 300 14 re f",
+                40 + index * 2
+            )
+            .into_bytes(),
+        });
     }
     TempPdf::new(&format!("{name}.pdf"), &build(&objects))
 }

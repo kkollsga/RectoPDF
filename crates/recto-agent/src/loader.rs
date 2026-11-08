@@ -39,5 +39,13 @@ fn renderer_facts(path: &Path) -> Result<DocFacts, OpenError> {
         Err(RenderFailure::NeedsPassword) => return Err(OpenError::PasswordNeeded),
         _ => return Err(OpenError::NotPdf),
     };
-    Ok(DocFacts { page_count, byte_len: meta.len(), encrypted: false, version: "".into(), title: None, toc: Toc::default(), renderer_only: true })
+    Ok(DocFacts {
+        page_count,
+        byte_len: meta.len(),
+        encrypted: false,
+        version: "".into(),
+        title: None,
+        toc: Toc::default(),
+        renderer_only: true,
+    })
 }

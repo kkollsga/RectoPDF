@@ -15,7 +15,12 @@ fn main() {
         eprintln!("usage: save_corpus <corpus folder> <work folder>");
         std::process::exit(2);
     };
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&corpus).unwrap().filter_map(Result::ok).map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))).collect();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&corpus)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf")))
+        .collect();
     files.sort();
     std::fs::create_dir_all(&work).unwrap();
     let (mut saved, mut refused) = (0, 0);
@@ -43,27 +48,67 @@ fn main() {
 
 fn save_one(copy: &Path, other: &Path) -> Result<String, String> {
     let pages = recto_core::inspect(copy).map_err(|error| format!("doesn't open: {}", error.code()))?.page_count;
-    let other_pages = recto_core::inspect(other).map_err(|error| format!("added file doesn't open: {}", error.code()))?.page_count;
+    let other_pages = recto_core::inspect(other)
+        .map_err(|error| format!("added file doesn't open: {}", error.code()))?
+        .page_count;
     // `SAVE_ONLY` measures the save alone: no whole-file reads around it, which would cost the harness twice the file.
     let save_only = std::env::var_os("SAVE_ONLY").is_some();
-    let before = if save_only { Vec::new() } else { std::fs::read(copy).map_err(|_| "unreadable")? };
+    let before = if save_only {
+        Vec::new()
+    } else {
+        std::fs::read(copy).map_err(|_| "unreadable")?
+    };
     let mut order: Vec<PageRef> = Vec::with_capacity(pages as usize + 1);
-    order.push(PageRef { source: 0, page: pages - 1, quarter_turns: 0 });
-    order.extend((0..pages - 1).map(|page| PageRef { source: 0, page, quarter_turns: u8::from(page == 0) }));
-    order.push(PageRef { source: 1, page: 0, quarter_turns: 0 });
+    order.push(PageRef {
+        source: 0,
+        page: pages - 1,
+        quarter_turns: 0,
+    });
+    order.extend((0..pages - 1).map(|page| PageRef {
+        source: 0,
+        page,
+        quarter_turns: u8::from(page == 0),
+    }));
+    order.push(PageRef {
+        source: 1,
+        page: 0,
+        quarter_turns: 0,
+    });
     let _ = other_pages;
-    let added = [AddedFile { path: other, page_count: other_pages, stamp: recto_platform::file_stamp(other).ok() }];
-    let request = SaveRequest { path: copy, stamp: recto_platform::file_stamp(copy).ok(), file_pages: pages, pages: &order, added: &added };
+    let added = [AddedFile {
+        path: other,
+        page_count: other_pages,
+        stamp: recto_platform::file_stamp(other).ok(),
+    }];
+    let request = SaveRequest {
+        path: copy,
+        stamp: recto_platform::file_stamp(copy).ok(),
+        file_pages: pages,
+        pages: &order,
+        added: &added,
+    };
     let started = Instant::now();
     let outcome = recto_core::save::save(&request, Target::Same, None, &mut recto_core::save::NoHooks).map_err(|error| error.code().to_string())?;
     let took = started.elapsed();
-    let after = if save_only { Vec::new() } else { std::fs::read(copy).map_err(|_| "unreadable after")? };
+    let after = if save_only {
+        Vec::new()
+    } else {
+        std::fs::read(copy).map_err(|_| "unreadable after")?
+    };
     if !after.starts_with(&before) {
         return Err("ORIGINAL BYTES CHANGED".into());
     }
-    let again = recto_core::inspect(copy).map_err(|error| format!("SAVED FILE DOESN'T OPEN: {}", error.code()))?.page_count;
+    let again = recto_core::inspect(copy)
+        .map_err(|error| format!("SAVED FILE DOESN'T OPEN: {}", error.code()))?
+        .page_count;
     if again != pages + 1 {
         return Err(format!("SAVED FILE HAS {again} PAGES, NOT {}", pages + 1));
     }
-    Ok(format!("{pages}+1 pages\t{} -> {} bytes\t{:.1} ms\tmissing {}", outcome.previous_len, outcome.new_len, took.as_secs_f64() * 1000.0, outcome.objects_missing))
+    Ok(format!(
+        "{pages}+1 pages\t{} -> {} bytes\t{:.1} ms\tmissing {}",
+        outcome.previous_len,
+        outcome.new_len,
+        took.as_secs_f64() * 1000.0,
+        outcome.objects_missing
+    ))
 }

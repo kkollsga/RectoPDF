@@ -44,11 +44,24 @@ fn stamp(path: &Path) -> FileStamp {
 }
 
 fn own(order: &[(u32, u8)]) -> Vec<PageRef> {
-    order.iter().map(|(page, turns)| PageRef { source: 0, page: *page, quarter_turns: *turns }).collect()
+    order
+        .iter()
+        .map(|(page, turns)| PageRef {
+            source: 0,
+            page: *page,
+            quarter_turns: *turns,
+        })
+        .collect()
 }
 
 fn request<'a>(path: &'a Path, file_pages: u32, pages: &'a [PageRef], added: &'a [AddedFile<'a>]) -> SaveRequest<'a> {
-    SaveRequest { path, stamp: Some(stamp(path)), file_pages, pages, added }
+    SaveRequest {
+        path,
+        stamp: Some(stamp(path)),
+        file_pages,
+        pages,
+        added,
+    }
 }
 
 /// Each page of a file, in order: its marker and its turn, read with the fork's own reader.
@@ -57,7 +70,9 @@ fn read_pages(path: &Path) -> Vec<(String, i64)> {
     let map = reader.page_map().unwrap();
     map.iter()
         .map(|entry| {
-            let Object::Dictionary(page) = reader.resolve_object(entry.id()).unwrap() else { panic!("a page that isn't a dictionary") };
+            let Object::Dictionary(page) = reader.resolve_object(entry.id()).unwrap() else {
+                panic!("a page that isn't a dictionary")
+            };
             let rotate = match entry.inherited().rotate() {
                 Some(owner) => match reader.resolve_object(owner).unwrap() {
                     Object::Dictionary(dict) => dict.get(b"Rotate").and_then(Object::as_i64).unwrap_or(0),
@@ -66,7 +81,9 @@ fn read_pages(path: &Path) -> Vec<(String, i64)> {
                 None => 0,
             };
             let contents = page.get(b"Contents").and_then(Object::as_reference).unwrap();
-            let Object::Stream(stream) = reader.resolve_object(contents).unwrap() else { panic!("contents that aren't a stream") };
+            let Object::Stream(stream) = reader.resolve_object(contents).unwrap() else {
+                panic!("contents that aren't a stream")
+            };
             let text = String::from_utf8_lossy(&stream.content).into_owned();
             let marker = text.split('(').nth(1).and_then(|rest| rest.split(')').next()).unwrap_or("").to_string();
             (marker, rotate)
@@ -108,7 +125,11 @@ fn a_turn_is_appended_and_every_original_byte_stays() {
     assert!(after.starts_with(&before) && after.len() > before.len(), "the original bytes are a prefix");
     assert_eq!(read_pages(&path), [("ONE".into(), 0), ("TWO".into(), 90), ("THREE".into(), 270)]);
     assert_eq!(noted.steps, [SaveStep::Checking, SaveStep::Writing, SaveStep::Prepared, SaveStep::Committing]);
-    assert_eq!(noted.prepared, Some(stamp(&path)), "what the hook was told is what the file is once it's in place");
+    assert_eq!(
+        noted.prepared,
+        Some(stamp(&path)),
+        "what the hook was told is what the file is once it's in place"
+    );
     assert_eq!(outcome.stamp, Some(stamp(&path)));
 }
 
@@ -133,18 +154,30 @@ fn moved_pages_come_out_in_their_new_order() {
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 300 400] /Resources << /Font << /F1 7 0 R >> >> /Rotate 90 >>".into()),
         Raw::Dict("<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&["FIRST"]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["FIRST"]),
+        },
         Raw::Dict("<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&["SECOND"]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["SECOND"]),
+        },
         Raw::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into()),
     ]);
     let path = dir.write("doc.pdf", &bytes);
     let order = own(&[(1, 0), (0, 1)]);
     save::save(&request(&path, 2, &order, &[]), Target::Same, None, &mut save::NoHooks).unwrap();
-    assert_eq!(read_pages(&path), [("SECOND".into(), 90), ("FIRST".into(), 180)], "the tree's own turn is kept, and added to");
+    assert_eq!(
+        read_pages(&path),
+        [("SECOND".into(), 90), ("FIRST".into(), 180)],
+        "the tree's own turn is kept, and added to"
+    );
     let reader = IndexedReader::open(FileSource::open(&path).unwrap()).unwrap();
     for entry in reader.page_map().unwrap().iter() {
-        let Object::Dictionary(page) = reader.resolve_object(entry.id()).unwrap() else { panic!() };
+        let Object::Dictionary(page) = reader.resolve_object(entry.id()).unwrap() else {
+            panic!()
+        };
         assert!(page.has(b"MediaBox") || entry.inherited().media_box().is_some(), "each page still has its size");
         assert!(page.has(b"Resources") || entry.inherited().resources().is_some(), "and its fonts");
     }
@@ -167,13 +200,31 @@ fn added_pages_are_copied_in_without_the_rest_of_their_file() {
         Raw::Dict("<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /P 3 0 R /Dest [5 0 R /Fit] >>".into()),
     ]);
     let other_path = dir.write("other.pdf", &other);
-    let added = [AddedFile { path: &other_path, page_count: 2, stamp: Some(stamp(&other_path)) }];
-    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 1 }];
+    let added = [AddedFile {
+        path: &other_path,
+        page_count: 2,
+        stamp: Some(stamp(&other_path)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 1,
+        },
+    ];
     save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
     assert_eq!(read_pages(&path), [("MINE".into(), 0), ("ADDED".into(), 90)]);
     let bytes = std::fs::read(&path).unwrap();
     assert!(!contains(&bytes, "NOTADDED"), "the page that wasn't added isn't in the file");
-    assert!(!contains(&bytes, "PIECEINFOMARK"), "nor another app's private data, which can be a whole second copy of the artwork");
+    assert!(
+        !contains(&bytes, "PIECEINFOMARK"),
+        "nor another app's private data, which can be a whole second copy of the artwork"
+    );
     assert!(contains(&bytes, "/Helvetica"), "the font the added page draws with is");
 }
 
@@ -190,13 +241,21 @@ fn a_delete_is_a_rewrite_and_the_page_is_gone() {
     assert_eq!((outcome.writer, outcome.pages_removed, outcome.pages), (Writer::Rewrite, 1, 2));
     let bytes = std::fs::read(&path).unwrap();
     assert!(!contains(&bytes, "DELETEDMARK"), "the deleted page's words are gone");
-    assert_eq!(bytes.windows(9).filter(|window| window == b"startxref").count(), 1, "one section: no old revision holds it");
+    assert_eq!(
+        bytes.windows(9).filter(|window| window == b"startxref").count(),
+        1,
+        "one section: no old revision holds it"
+    );
     assert_eq!(read_pages(&path), [("KEEPONE".into(), 0), ("KEEPTWO".into(), 90)]);
     assert_eq!(noted.steps, [SaveStep::Checking, SaveStep::Writing, SaveStep::Prepared, SaveStep::Committing]);
     assert_eq!(outcome.stamp, Some(stamp(&path)));
     assert!(outcome.document_data_kept.is_some(), "a rewrite says what it kept of the document's own");
     assert_eq!(save::writer_for(2, &order), Writer::Rewrite);
-    assert_eq!(save::writer_for(2, &own(&[(0, 0), (0, 0)])), Writer::Rewrite, "a page twice and another gone is still a page gone");
+    assert_eq!(
+        save::writer_for(2, &own(&[(0, 0), (0, 0)])),
+        Writer::Rewrite,
+        "a page twice and another gone is still a page gone"
+    );
     assert_eq!(save::writer_for(2, &own(&[(1, 2), (0, 0)])), Writer::Append);
 }
 
@@ -207,13 +266,43 @@ fn a_journals_claims_are_checked_against_the_real_file() {
     let path = dir.write("doc.pdf", &marked(&["A", "B"]));
     let before = std::fs::read(&path).unwrap();
     let past_the_end = own(&[(0, 0), (1, 0), (2, 0)]);
-    assert_eq!(save::save(&request(&path, 3, &past_the_end, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::EditsDontMatch { file_pages: 2 }), "a length the file isn't");
+    assert_eq!(
+        save::save(&request(&path, 3, &past_the_end, &[]), Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::EditsDontMatch { file_pages: 2 }),
+        "a length the file isn't"
+    );
     let beyond = own(&[(0, 0), (7, 0)]);
-    assert_eq!(save::save(&request(&path, 2, &beyond, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::EditsDontMatch { file_pages: 2 }), "a page the file hasn't got");
+    assert_eq!(
+        save::save(&request(&path, 2, &beyond, &[]), Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::EditsDontMatch { file_pages: 2 }),
+        "a page the file hasn't got"
+    );
     let wild_turn = own(&[(0, 9), (1, 0)]);
-    assert!(save::save(&request(&path, 2, &wild_turn, &[]), Target::Same, None, &mut save::NoHooks).is_err(), "a turn no edit makes");
-    let no_source = [PageRef { source: 4, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 1, quarter_turns: 0 }];
-    assert!(save::save(&request(&path, 2, &no_source, &[]), Target::Same, None, &mut save::NoHooks).is_err(), "a PDF that was never added");
+    assert!(
+        save::save(&request(&path, 2, &wild_turn, &[]), Target::Same, None, &mut save::NoHooks).is_err(),
+        "a turn no edit makes"
+    );
+    let no_source = [
+        PageRef {
+            source: 4,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 0,
+            page: 1,
+            quarter_turns: 0,
+        },
+    ];
+    assert!(
+        save::save(&request(&path, 2, &no_source, &[]), Target::Same, None, &mut save::NoHooks).is_err(),
+        "a PDF that was never added"
+    );
     assert_eq!(std::fs::read(&path).unwrap(), before, "and none of it wrote anything");
 }
 
@@ -226,11 +315,36 @@ fn an_added_pdf_that_changed_isnt_saved_from() {
     let known = stamp(&other_path);
     std::thread::sleep(std::time::Duration::from_millis(20));
     std::fs::write(&other_path, marked(&["NEW", "LONGER"])).unwrap();
-    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
-    let changed = [AddedFile { path: &other_path, page_count: 1, stamp: Some(known) }];
-    assert!(matches!(save::save(&request(&path, 1, &order, &changed), Target::Same, None, &mut save::NoHooks), Err(SaveError::AddedFileChanged { .. })));
-    let unstamped = [AddedFile { path: &other_path, page_count: 2, stamp: None }];
-    assert!(matches!(save::save(&request(&path, 1, &order, &unstamped), Target::Same, None, &mut save::NoHooks), Err(SaveError::AddedFileChanged { .. })));
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
+    let changed = [AddedFile {
+        path: &other_path,
+        page_count: 1,
+        stamp: Some(known),
+    }];
+    assert!(matches!(
+        save::save(&request(&path, 1, &order, &changed), Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::AddedFileChanged { .. })
+    ));
+    let unstamped = [AddedFile {
+        path: &other_path,
+        page_count: 2,
+        stamp: None,
+    }];
+    assert!(matches!(
+        save::save(&request(&path, 1, &order, &unstamped), Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::AddedFileChanged { .. })
+    ));
 }
 
 /// Failure: a file changed on disk since it was opened is saved over, losing the other app's change. Both before writing, and in the moment between writing and the move.
@@ -242,8 +356,18 @@ fn a_file_changed_meanwhile_isnt_saved_over() {
     std::thread::sleep(std::time::Duration::from_millis(20));
     std::fs::write(&path, marked(&["B"])).unwrap();
     let order = own(&[(0, 1)]);
-    let stale = SaveRequest { path: &path, stamp: Some(known), file_pages: 1, pages: &order, added: &[] };
-    assert_eq!(save::save(&stale, Target::Same, None, &mut save::NoHooks), Err(SaveError::FileChanged), "changed before");
+    let stale = SaveRequest {
+        path: &path,
+        stamp: Some(known),
+        file_pages: 1,
+        pages: &order,
+        added: &[],
+    };
+    assert_eq!(
+        save::save(&stale, Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::FileChanged),
+        "changed before"
+    );
 
     /// Replaces the file while the save has it written beside it.
     struct Replacer(PathBuf);
@@ -271,9 +395,16 @@ fn a_failed_note_leaves_the_file_as_it_was() {
     let path = dir.write("doc.pdf", &marked(&["A"]));
     let before = std::fs::read(&path).unwrap();
     let order = own(&[(0, 1)]);
-    assert_eq!(save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut Refuse), Err(SaveError::PrepareFailed));
+    assert_eq!(
+        save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut Refuse),
+        Err(SaveError::PrepareFailed)
+    );
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    let left: Vec<_> = std::fs::read_dir(&dir.0).unwrap().filter_map(Result::ok).map(|entry| entry.file_name()).collect();
+    let left: Vec<_> = std::fs::read_dir(&dir.0)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect();
     assert_eq!(left.len(), 1, "no temporary file left: {left:?}");
 }
 
@@ -284,7 +415,11 @@ fn signed(certified: bool, usage_rights_only: bool) -> Vec<u8> {
         (false, true) => "/Perms << /UR3 6 0 R >>",
         _ => "",
     };
-    let form = if usage_rights_only { String::new() } else { "/AcroForm << /Fields [5 0 R] /SigFlags 3 >>".to_string() };
+    let form = if usage_rights_only {
+        String::new()
+    } else {
+        "/AcroForm << /Fields [5 0 R] /SigFlags 3 >>".to_string()
+    };
     build(&[
         Raw::Dict(format!("<< /Type /Catalog /Pages 2 0 R {form} {perms} >>")),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
@@ -314,7 +449,10 @@ fn a_certified_files_pages_arent_changed() {
     let path = dir.write("certified.pdf", &signed(true, false));
     let before = std::fs::read(&path).unwrap();
     let order = own(&[(0, 1)]);
-    assert_eq!(save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::BreaksCertification));
+    assert_eq!(
+        save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::BreaksCertification)
+    );
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert!(save::signature_facts_of(&path).unwrap().certified);
     // Save As makes a new copy with every signature removed (SPEC decision 27), and the original is untouched.
@@ -349,16 +487,25 @@ fn a_delete_on_a_signed_file_is_an_unsigned_copy() {
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>".into()),
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R] >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&["SIGNEDPAGE"]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["SIGNEDPAGE"]),
+        },
         Raw::Dict("<< /FT /Sig /T (Signature1) /V 6 0 R /Rect [0 0 50 20] /Subtype /Widget /P 3 0 R >>".into()),
         Raw::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 10 20 30] /Contents <00> >>".into()),
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 8 0 R >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&["GOESMARK"]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["GOESMARK"]),
+        },
     ]);
     let path = dir.write("signed.pdf", &bytes);
     assert!(save::signature_facts_of(&path).unwrap().signed);
     let order = own(&[(0, 0)]);
-    assert_eq!(save::save(&request(&path, 2, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::SignedNeedsCopy));
+    assert_eq!(
+        save::save(&request(&path, 2, &order, &[]), Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::SignedNeedsCopy)
+    );
     assert_eq!(std::fs::read(&path).unwrap(), bytes, "the signed original never changes");
     let copy = dir.0.join("copy.pdf");
     let outcome = save::save(&request(&path, 2, &order, &[]), Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
@@ -369,7 +516,12 @@ fn a_delete_on_a_signed_file_is_an_unsigned_copy() {
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     // A turn is still an addition, which keeps the signature: appended, with every byte it signs.
     let turned = own(&[(0, 1), (1, 0)]);
-    assert_eq!(save::save(&request(&path, 2, &turned, &[]), Target::Same, None, &mut save::NoHooks).unwrap().writer, Writer::Append);
+    assert_eq!(
+        save::save(&request(&path, 2, &turned, &[]), Target::Same, None, &mut save::NoHooks)
+            .unwrap()
+            .writer,
+        Writer::Append
+    );
     assert!(std::fs::read(&path).unwrap().starts_with(&bytes));
 }
 
@@ -389,7 +541,10 @@ fn usage_rights_alone_allow_a_rewrite_in_place() {
     let path = dir.write("irs.pdf", &bytes);
     let order = own(&[(0, 0)]);
     let outcome = save::save(&request(&path, 2, &order, &[]), Target::Same, None, &mut save::NoHooks).unwrap();
-    assert_eq!((outcome.writer, outcome.usage_rights_removed, outcome.signatures_removed), (Writer::Rewrite, true, 0));
+    assert_eq!(
+        (outcome.writer, outcome.usage_rights_removed, outcome.signatures_removed),
+        (Writer::Rewrite, true, 0)
+    );
     assert_unsigned(&path);
     assert!(!contains(&std::fs::read(&path).unwrap(), "INSTRUCTIONSMARK"));
 }
@@ -400,8 +555,28 @@ fn a_delete_with_moves_turns_and_added_pages_is_one_rewrite() {
     let dir = Dir::new();
     let path = dir.write("doc.pdf", &marked(&["AAA", "DELETEDMARK", "CCC"]));
     let other = dir.write("other.pdf", &marked(&["ADDEDPAGE"]));
-    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
-    let order = [PageRef { source: 0, page: 2, quarter_turns: 1 }, PageRef { source: 1, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 0, quarter_turns: 0 }];
+    let added = [AddedFile {
+        path: &other,
+        page_count: 1,
+        stamp: Some(stamp(&other)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 2,
+            quarter_turns: 1,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
     let outcome = save::save(&request(&path, 3, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
     assert_eq!((outcome.writer, outcome.pages_removed), (Writer::Rewrite, 1));
     assert_eq!(read_pages(&path), [("CCC".into(), 90), ("ADDEDPAGE".into(), 0), ("AAA".into(), 0)]);
@@ -450,12 +625,30 @@ fn a_saved_file_keeps_its_attributes() {
     let order = own(&[(0, 1)]);
     let copy = dir.0.join("copy.pdf");
     save::save(&request(&path, 1, &order, &[]), Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
-    assert_eq!(recto_platform::local::attribute(&copy, "com.apple.quarantine").as_deref(), Some(&b"0083;5f000000;Safari;"[..]), "a copy of a download is still one");
-    assert_eq!(recto_platform::local::attribute(&copy, "com.apple.metadata:_kMDItemUserTags"), None, "the original's tags are its own");
+    assert_eq!(
+        recto_platform::local::attribute(&copy, "com.apple.quarantine").as_deref(),
+        Some(&b"0083;5f000000;Safari;"[..]),
+        "a copy of a download is still one"
+    );
+    assert_eq!(
+        recto_platform::local::attribute(&copy, "com.apple.metadata:_kMDItemUserTags"),
+        None,
+        "the original's tags are its own"
+    );
     save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut save::NoHooks).unwrap();
-    assert_eq!(recto_platform::local::attribute(&path, "com.apple.quarantine").as_deref(), Some(&b"0083;5f000000;Safari;"[..]));
-    assert_eq!(recto_platform::local::attribute(&path, "com.apple.metadata:_kMDItemUserTags").as_deref(), Some(&b"red-tag"[..]));
-    assert_eq!(recto_platform::local::attribute(&path, "com.example.long"), Some(long), "one longer than the 4 KiB the first version read is carried whole (review)");
+    assert_eq!(
+        recto_platform::local::attribute(&path, "com.apple.quarantine").as_deref(),
+        Some(&b"0083;5f000000;Safari;"[..])
+    );
+    assert_eq!(
+        recto_platform::local::attribute(&path, "com.apple.metadata:_kMDItemUserTags").as_deref(),
+        Some(&b"red-tag"[..])
+    );
+    assert_eq!(
+        recto_platform::local::attribute(&path, "com.example.long"),
+        Some(long),
+        "one longer than the 4 KiB the first version read is carried whole (review)"
+    );
 }
 
 /// Failure: a save over a file with other hard links leaves those names with the old version, silently; a read-only file is replaced as readily as any other; Save As replaces a file that's there. Each is refused, with nothing written.
@@ -465,15 +658,24 @@ fn what_cant_be_saved_over_is_refused() {
     let order = own(&[(0, 1)]);
     let linked = dir.write("linked.pdf", &marked(&["A"]));
     std::fs::hard_link(&linked, dir.0.join("other-name.pdf")).unwrap();
-    assert_eq!(save::save(&request(&linked, 1, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::HardLinks));
+    assert_eq!(
+        save::save(&request(&linked, 1, &order, &[]), Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::HardLinks)
+    );
     let locked = dir.write("locked.pdf", &marked(&["A"]));
     let mut permissions = std::fs::metadata(&locked).unwrap().permissions();
     permissions.set_readonly(true);
     std::fs::set_permissions(&locked, permissions).unwrap();
-    assert_eq!(save::save(&request(&locked, 1, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::ReadOnly));
+    assert_eq!(
+        save::save(&request(&locked, 1, &order, &[]), Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::ReadOnly)
+    );
     let there = dir.write("there.pdf", b"someone's file");
     let path = dir.write("doc.pdf", &marked(&["A"]));
-    assert_eq!(save::save(&request(&path, 1, &order, &[]), Target::NewFile(&there), None, &mut save::NoHooks), Err(SaveError::TargetExists));
+    assert_eq!(
+        save::save(&request(&path, 1, &order, &[]), Target::NewFile(&there), None, &mut save::NoHooks),
+        Err(SaveError::TargetExists)
+    );
     assert_eq!(std::fs::read(&there).unwrap(), b"someone's file");
 }
 
@@ -506,13 +708,22 @@ fn the_first_save_keeps_one_backup_of_the_original() {
     let first = save::save(&request(&path, 2, &order, &[]), Target::Same, Some(&backups), &mut save::NoHooks).unwrap();
     let kept = first.backup.expect("the first save keeps one");
     assert_eq!(std::fs::read(&kept).unwrap(), original);
-    assert!(recto_platform::local::is_excluded_from_backups(&backups), "it's out of Time Machine, as the history is");
+    assert!(
+        recto_platform::local::is_excluded_from_backups(&backups),
+        "it's out of Time Machine, as the history is"
+    );
     let second = save::save(&request(&path, 2, &order, &[]), Target::Same, Some(&backups), &mut save::NoHooks).unwrap();
     assert_eq!(second.backup, None, "and only one");
     assert_eq!(std::fs::read(&kept).unwrap(), original, "still the original");
     assert_eq!(save::backup_of(&path, &backups), Some(kept));
     let copy = dir.0.join("copy.pdf");
-    assert_eq!(save::save(&request(&path, 2, &order, &[]), Target::NewFile(&copy), Some(&backups), &mut save::NoHooks).unwrap().backup, None, "a Save As changes no original");
+    assert_eq!(
+        save::save(&request(&path, 2, &order, &[]), Target::NewFile(&copy), Some(&backups), &mut save::NoHooks)
+            .unwrap()
+            .backup,
+        None,
+        "a Save As changes no original"
+    );
 }
 
 /// Failure: backups grow for ever. Past 30 days they go, and past 1 GiB the oldest go first.
@@ -544,12 +755,30 @@ fn a_huge_object_in_an_added_file_is_refused() {
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Big 5 0 R >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&["ADDED"]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["ADDED"]),
+        },
         Raw::Dict(huge),
     ]);
     let other_path = dir.write("other.pdf", &other);
-    let added = [AddedFile { path: &other_path, page_count: 1, stamp: Some(stamp(&other_path)) }];
-    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    let added = [AddedFile {
+        path: &other_path,
+        page_count: 1,
+        stamp: Some(stamp(&other_path)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
     let result = save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks);
     assert!(matches!(result, Err(SaveError::AddedFileUnreadable { .. })), "{result:?}");
     assert_eq!(std::fs::read(&path).unwrap(), before);
@@ -563,12 +792,18 @@ fn an_inherited_value_written_in_place_goes_in_once() {
     let padding = format!("/Pad ({})", "x".repeat(50_000));
     let mut objects = vec![
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
-        Raw::Dict(format!("<< /Type /Pages /Kids [{}] /Count {pages} /MediaBox [0 0 100 100] /Resources << /Font << /F1 3 0 R >> {padding} >> >>", (0..pages).map(|at| format!("{} 0 R", 4 + at * 2)).collect::<Vec<_>>().join(" "))),
+        Raw::Dict(format!(
+            "<< /Type /Pages /Kids [{}] /Count {pages} /MediaBox [0 0 100 100] /Resources << /Font << /F1 3 0 R >> {padding} >> >>",
+            (0..pages).map(|at| format!("{} 0 R", 4 + at * 2)).collect::<Vec<_>>().join(" ")
+        )),
         Raw::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into()),
     ];
     for at in 0..pages {
         objects.push(Raw::Dict(format!("<< /Type /Page /Parent 2 0 R /Contents {} 0 R >>", 5 + at * 2)));
-        objects.push(Raw::Stream { dict: String::new(), data: text_lines(&["P"]) });
+        objects.push(Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["P"]),
+        });
     }
     let path = dir.write("doc.pdf", &build(&objects));
     let before = std::fs::metadata(&path).unwrap().len();
@@ -576,7 +811,10 @@ fn an_inherited_value_written_in_place_goes_in_once() {
     order.swap(0, 1);
     save::save(&request(&path, pages as u32, &order, &[]), Target::Same, None, &mut save::NoHooks).unwrap();
     let appended = std::fs::metadata(&path).unwrap().len() - before;
-    assert!(appended < 2 * 50_000 + pages as u64 * 300, "{appended} bytes appended for one move: the inherited dictionary went in more than once");
+    assert!(
+        appended < 2 * 50_000 + pages as u64 * 300,
+        "{appended} bytes appended for one move: the inherited dictionary went in more than once"
+    );
 }
 
 /// Failure: a signed field with a `/Lock` that allows no changes has its document's pages changed, as a certification would forbid. Refused, untouched.
@@ -587,13 +825,19 @@ fn a_signature_fields_lock_is_kept() {
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".into()),
-        Raw::Stream { dict: String::new(), data: b"BT ET".to_vec() },
+        Raw::Stream {
+            dict: String::new(),
+            data: b"BT ET".to_vec(),
+        },
         Raw::Dict("<< /FT /Sig /T (Locked) /V 6 0 R /Lock << /Type /SigFieldLock /Action /All /P 1 >> >>".into()),
         Raw::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 10 20 30] /Contents <00> >>".into()),
     ]);
     let path = dir.write("locked.pdf", &bytes);
     let order = own(&[(0, 1)]);
-    assert_eq!(save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut save::NoHooks), Err(SaveError::LockedBySignature));
+    assert_eq!(
+        save::save(&request(&path, 1, &order, &[]), Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::LockedBySignature)
+    );
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
 
@@ -617,7 +861,13 @@ fn no_stamp_is_no_save() {
     let dir = Dir::new();
     let path = dir.write("doc.pdf", &marked(&["A"]));
     let order = own(&[(0, 1)]);
-    let unstamped = SaveRequest { path: &path, stamp: None, file_pages: 1, pages: &order, added: &[] };
+    let unstamped = SaveRequest {
+        path: &path,
+        stamp: None,
+        file_pages: 1,
+        pages: &order,
+        added: &[],
+    };
     assert_eq!(save::save(&unstamped, Target::Same, None, &mut save::NoHooks), Err(SaveError::FileChanged));
 }
 
@@ -636,8 +886,16 @@ fn a_hostile_added_page_is_refused_within_its_bounds() {
     }
     let hostile = build(&objects);
     let target = marked(&["MINE"]);
-    assert_eq!(save::plan_in_memory_within(&target, &hostile, 100_000), Err(SaveError::TooLarge), "100 objects naming 2,000 references each is past a bound of 100,000");
-    assert_eq!(save::plan_in_memory_within(&target, &hostile, 1_000_000), Ok(2), "and within a larger one it copies");
+    assert_eq!(
+        save::plan_in_memory_within(&target, &hostile, 100_000),
+        Err(SaveError::TooLarge),
+        "100 objects naming 2,000 references each is past a bound of 100,000"
+    );
+    assert_eq!(
+        save::plan_in_memory_within(&target, &hostile, 1_000_000),
+        Ok(2),
+        "and within a larger one it copies"
+    );
     assert_eq!(save::plan_in_memory(&target, &marked(&["ADDED", "TOO"])), Ok(3), "and an ordinary one copies");
 }
 
@@ -650,25 +908,53 @@ fn an_added_pages_hidden_layers_stay_hidden() {
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [5 0 R 6 0 R] /D << /OFF [5 0 R] >> >> >>".into()),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /Properties << /H 5 0 R /S 6 0 R >> >> >>".into()),
-        Raw::Stream { dict: String::new(), data: b"/OC /H BDC (HIDDENLAYER) Tj EMC /OC /S BDC (SHOWNLAYER) Tj EMC".to_vec() },
+        Raw::Stream {
+            dict: String::new(),
+            data: b"/OC /H BDC (HIDDENLAYER) Tj EMC /OC /S BDC (SHOWNLAYER) Tj EMC".to_vec(),
+        },
         Raw::Dict("<< /Type /OCG /Name (Hidden) >>".into()),
         Raw::Dict("<< /Type /OCG /Name (Shown) >>".into()),
     ]);
     let other_path = dir.write("other.pdf", &other);
-    let added = [AddedFile { path: &other_path, page_count: 1, stamp: Some(stamp(&other_path)) }];
-    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    let added = [AddedFile {
+        path: &other_path,
+        page_count: 1,
+        stamp: Some(stamp(&other_path)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
     save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
     let reader = IndexedReader::open(FileSource::open(&path).unwrap()).unwrap();
-    let Some(Object::Dictionary(root)) = reader.trailer_entry_owned(b"Root").unwrap() else { panic!() };
+    let Some(Object::Dictionary(root)) = reader.trailer_entry_owned(b"Root").unwrap() else {
+        panic!()
+    };
     let properties = root.get(b"OCProperties").and_then(Object::as_dict).expect("the layers came along");
     let named = |list: &Object| -> Vec<String> {
-        list.as_array().unwrap().iter().map(|item| match reader.resolve_object(item.as_reference().unwrap()).unwrap() {
-            Object::Dictionary(group) => String::from_utf8_lossy(group.get(b"Name").unwrap().as_str().unwrap()).into_owned(),
-            _ => String::new(),
-        }).collect()
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|item| match reader.resolve_object(item.as_reference().unwrap()).unwrap() {
+                Object::Dictionary(group) => String::from_utf8_lossy(group.get(b"Name").unwrap().as_str().unwrap()).into_owned(),
+                _ => String::new(),
+            })
+            .collect()
     };
     assert_eq!(named(properties.get(b"OCGs").unwrap()), ["Hidden", "Shown"]);
-    assert_eq!(named(properties.get(b"D").and_then(Object::as_dict).unwrap().get(b"OFF").unwrap()), ["Hidden"], "hidden there, hidden here");
+    assert_eq!(
+        named(properties.get(b"D").and_then(Object::as_dict).unwrap().get(b"OFF").unwrap()),
+        ["Hidden"],
+        "hidden there, hidden here"
+    );
 }
 
 /// Failure (review round 2): a reference to an object number the file's cross-reference data doesn't have, as real files carry, refuses the save, though ISO 32000 and every viewer read it as null. It goes as nothing, and the save says it left something out.
@@ -680,11 +966,29 @@ fn a_dangling_reference_in_an_added_page_is_null() {
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /XObject << /Gone 99 0 R >> >> >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&["ADDED"]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["ADDED"]),
+        },
     ]);
     let other_path = dir.write("other.pdf", &other);
-    let added = [AddedFile { path: &other_path, page_count: 1, stamp: Some(stamp(&other_path)) }];
-    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    let added = [AddedFile {
+        path: &other_path,
+        page_count: 1,
+        stamp: Some(stamp(&other_path)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
     let outcome = save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
     assert_eq!(outcome.objects_missing, 1);
     assert_eq!(read_pages(&path)[1].0, "ADDED");
@@ -696,9 +1000,15 @@ fn irs_like(marker: &str, value: &str) -> Vec<u8> {
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [8 0 R] /DR << /Font << /HeBo 11 0 R >> >> /DA (/HeBo 9 Tf 0 g) >> >>".into()),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".into()),
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Annots [9 0 R] >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&[marker]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&[marker]),
+        },
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 6 0 R /Annots [10 0 R] >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&["SECONDPAGE"]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["SECONDPAGE"]),
+        },
         Raw::Dict("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into()),
         Raw::Dict("<< /T (topmostSubform[0]) /Kids [12 0 R] >>".into()),
         Raw::Dict("<< /Type /Annot /Subtype /Widget /Rect [10 10 100 30] /P 3 0 R /Parent 12 0 R /F 4 >>".into()),
@@ -714,11 +1024,33 @@ fn an_added_pages_form_fields_can_be_filled() {
     let dir = Dir::new();
     let path = dir.write("f1040.pdf", &irs_like("TARGETFORM", "mine"));
     let other = dir.write("f1040s1.pdf", &irs_like("ADDEDFORM", "theirs"));
-    let added = [AddedFile { path: &other, page_count: 2, stamp: Some(stamp(&other)) }];
-    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 1, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    let added = [AddedFile {
+        path: &other,
+        page_count: 2,
+        stamp: Some(stamp(&other)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 0,
+            page: 1,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
     save::save(&request(&path, 2, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
     let reader = IndexedReader::open(FileSource::open(&path).unwrap()).unwrap();
-    let Some(Object::Dictionary(catalog)) = reader.trailer_entry_owned(b"Root").unwrap() else { panic!() };
+    let Some(Object::Dictionary(catalog)) = reader.trailer_entry_owned(b"Root").unwrap() else {
+        panic!()
+    };
     let form = match catalog.get(b"AcroForm").unwrap() {
         Object::Dictionary(form) => form.clone(),
         Object::Reference(id) => reader.resolve_object(*id).unwrap().as_dict().unwrap().clone(),
@@ -726,18 +1058,46 @@ fn an_added_pages_form_fields_can_be_filled() {
     };
     let fields = form.get(b"Fields").unwrap().as_array().unwrap();
     assert_eq!(fields.len(), 2, "the added page's top field joins the form");
-    let names: Vec<Vec<u8>> = fields.iter().map(|field| reader.resolve_object(field.as_reference().unwrap()).unwrap().as_dict().unwrap().get(b"T").unwrap().as_str().unwrap().to_vec()).collect();
-    assert_eq!(names, [b"topmostSubform[0]".to_vec(), b"topmostSubform[0]_2".to_vec()], "renamed, so the two forms' values stay apart");
+    let names: Vec<Vec<u8>> = fields
+        .iter()
+        .map(|field| {
+            reader
+                .resolve_object(field.as_reference().unwrap())
+                .unwrap()
+                .as_dict()
+                .unwrap()
+                .get(b"T")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_vec()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [b"topmostSubform[0]".to_vec(), b"topmostSubform[0]_2".to_vec()],
+        "renamed, so the two forms' values stay apart"
+    );
     // The added widget reaches its field, which reaches the new top field.
     let page = reader.page_map().unwrap().get(2).unwrap().id();
     let page = reader.resolve_object(page).unwrap();
     let widget = page.as_dict().unwrap().get(b"Annots").unwrap().as_array().unwrap()[0].as_reference().unwrap();
     let widget = reader.resolve_object(widget).unwrap();
-    let field = reader.resolve_object(widget.as_dict().unwrap().get(b"Parent").unwrap().as_reference().unwrap()).unwrap();
+    let field = reader
+        .resolve_object(widget.as_dict().unwrap().get(b"Parent").unwrap().as_reference().unwrap())
+        .unwrap();
     assert_eq!(field.as_dict().unwrap().get(b"V").unwrap().as_str().unwrap(), b"theirs");
-    assert_eq!(field.as_dict().unwrap().get(b"Kids").unwrap().as_array().unwrap().len(), 1, "its widget on the page that wasn't added stays behind");
+    assert_eq!(
+        field.as_dict().unwrap().get(b"Kids").unwrap().as_array().unwrap().len(),
+        1,
+        "its widget on the page that wasn't added stays behind"
+    );
     let bytes = std::fs::read(&path).unwrap();
-    assert_eq!(bytes.windows(15).filter(|window| window == b"OTHERPAGEWIDGET").count(), 1, "the document's own, and not the added file's");
+    assert_eq!(
+        bytes.windows(15).filter(|window| window == b"OTHERPAGEWIDGET").count(),
+        1,
+        "the document's own, and not the added file's"
+    );
     let fonts = match form.get(b"DR").unwrap() {
         Object::Dictionary(dr) => dr.get(b"Font").unwrap().as_dict().unwrap().clone(),
         _ => panic!(),
@@ -757,7 +1117,12 @@ fn irs_forms_added_to_irs_forms_stay_fillable() {
     if std::process::Command::new("qpdf").arg("--version").output().is_err() {
         return;
     }
-    let mut forms: Vec<PathBuf> = std::fs::read_dir(&folder).unwrap().flatten().map(|entry| entry.path()).filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("forms_irs_"))).collect();
+    let mut forms: Vec<PathBuf> = std::fs::read_dir(&folder)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("forms_irs_")))
+        .collect();
     forms.sort();
     assert!(forms.len() >= 2, "the corpus has its IRS forms");
     let dir = Dir::new();
@@ -765,17 +1130,41 @@ fn irs_forms_added_to_irs_forms_stay_fillable() {
         let (target, other) = (&pair[0], &pair[1]);
         let pages_of = |path: &Path| IndexedReader::open(FileSource::open(path).unwrap()).unwrap().page_map().unwrap().len() as u32;
         let (mine, theirs) = (pages_of(target), pages_of(other));
-        let added = [AddedFile { path: other, page_count: theirs, stamp: Some(stamp(other)) }];
-        let mut order: Vec<PageRef> = (0..mine).map(|page| PageRef { source: 0, page, quarter_turns: 0 }).collect();
-        order.extend((0..theirs).map(|page| PageRef { source: 1, page, quarter_turns: 0 }));
+        let added = [AddedFile {
+            path: other,
+            page_count: theirs,
+            stamp: Some(stamp(other)),
+        }];
+        let mut order: Vec<PageRef> = (0..mine)
+            .map(|page| PageRef {
+                source: 0,
+                page,
+                quarter_turns: 0,
+            })
+            .collect();
+        order.extend((0..theirs).map(|page| PageRef {
+            source: 1,
+            page,
+            quarter_turns: 0,
+        }));
         let copy = dir.0.join(format!("{}-plus.pdf", target.file_stem().unwrap().to_string_lossy()));
         let outcome = save::save(&request(target, mine, &order, &added), Target::NewFile(&copy), None, &mut save::NoHooks);
         let outcome = outcome.unwrap_or_else(|error| panic!("{}: {error:?}", target.display()));
         assert_eq!(outcome.pages, mine + theirs);
         let out = std::process::Command::new("qpdf").arg("--check").arg(&copy).output().unwrap();
         let said = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
-        assert!(!said.contains("not reachable from /AcroForm"), "{} + {}: {said}", target.display(), other.display());
-        eprintln!("{} + {}: qpdf exit {:?}", target.file_name().unwrap().to_string_lossy(), other.file_name().unwrap().to_string_lossy(), out.status.code());
+        assert!(
+            !said.contains("not reachable from /AcroForm"),
+            "{} + {}: {said}",
+            target.display(),
+            other.display()
+        );
+        eprintln!(
+            "{} + {}: qpdf exit {:?}",
+            target.file_name().unwrap().to_string_lossy(),
+            other.file_name().unwrap().to_string_lossy(),
+            out.status.code()
+        );
     }
 }
 
@@ -798,23 +1187,54 @@ fn an_added_pages_signature_stays_behind() {
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /SigFlags 3 >> >>".into()),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R 7 0 R] >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&["SIGNEDPAGEDRAWING"]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["SIGNEDPAGEDRAWING"]),
+        },
         Raw::Dict("<< /FT /Sig /T (Signature1) /V 6 0 R /Rect [0 0 50 20] /Subtype /Widget /P 3 0 R >>".into()),
         Raw::Dict("<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 10 20 30] /Contents <00> >>".into()),
         Raw::Dict("<< /Type /Annot /Subtype /Text /Rect [0 0 10 10] /Contents (A NOTE THAT STAYS) >>".into()),
     ]);
     let other = dir.write("signed.pdf", &signed);
-    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
-    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 1, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    let added = [AddedFile {
+        path: &other,
+        page_count: 1,
+        stamp: Some(stamp(&other)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 0,
+            page: 1,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
     save::save(&request(&path, 2, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
     let bytes = std::fs::read(&path).unwrap();
     assert!(!contains(&bytes, "/ByteRange") && !contains(&bytes, "Signature1"), "no signature came along");
-    assert!(contains(&bytes, "SIGNEDPAGEDRAWING") && contains(&bytes, "A NOTE THAT STAYS"), "the page and its other annotations did");
+    assert!(
+        contains(&bytes, "SIGNEDPAGEDRAWING") && contains(&bytes, "A NOTE THAT STAYS"),
+        "the page and its other annotations did"
+    );
     let reader = IndexedReader::open(FileSource::open(&path).unwrap()).unwrap();
     assert!(!save::persons_signature(&reader), "the fork finds no signature in it");
     // A delete saves over it, as for any unsigned file, and a Save As copy has no signature either.
     let delete = own(&[(0, 0), (2, 0)]);
-    assert_eq!(save::save(&request(&path, 3, &delete, &[]), Target::Same, None, &mut save::NoHooks).unwrap().writer, Writer::Rewrite);
+    assert_eq!(
+        save::save(&request(&path, 3, &delete, &[]), Target::Same, None, &mut save::NoHooks)
+            .unwrap()
+            .writer,
+        Writer::Rewrite
+    );
     let copy = dir.0.join("copy.pdf");
     save::save(&request(&path, 2, &own(&[(0, 0)]), &[]), Target::NewFile(&copy), None, &mut save::NoHooks).unwrap();
     assert!(!contains(&std::fs::read(&copy).unwrap(), "/ByteRange"));
@@ -825,12 +1245,17 @@ fn an_added_pages_signature_stays_behind() {
 fn hostile_forms_are_bounded() {
     let dir = Dir::new();
     // The target's form already has `F` and `F_2` to `F_1000`.
-    let taken: String = (1..=1000).map(|n| if n == 1 { "<< /T (F) >> ".to_string() } else { format!("<< /T (F_{n}) >> ") }).collect();
+    let taken: String = (1..=1000)
+        .map(|n| if n == 1 { "<< /T (F) >> ".to_string() } else { format!("<< /T (F_{n}) >> ") })
+        .collect();
     let target = build(&[
         Raw::Dict(format!("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [{taken}] >> >>")),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&["TARGET"]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["TARGET"]),
+        },
     ]);
     let path = dir.write("target.pdf", &target);
     let before = std::fs::read(&path).unwrap();
@@ -839,18 +1264,41 @@ fn hostile_forms_are_bounded() {
     let mut objects = vec![
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] >> >>".into()),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
-        Raw::Dict(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{widgets}] >>")),
-        Raw::Stream { dict: String::new(), data: text_lines(&["ADDED"]) },
+        Raw::Dict(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{widgets}] >>"
+        )),
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["ADDED"]),
+        },
         Raw::Dict(format!("<< /T (F) /FT /Tx /Kids [{widgets}] >>")),
     ];
     for _ in 0..2000 {
         objects.push(Raw::Dict("<< /Type /Annot /Subtype /Widget /Rect [0 0 5 5] /Parent 5 0 R >>".into()));
     }
     let other = dir.write("added.pdf", &build(&objects));
-    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
-    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    let added = [AddedFile {
+        path: &other,
+        page_count: 1,
+        stamp: Some(stamp(&other)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
     let started = std::time::Instant::now();
-    assert_eq!(save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks), Err(SaveError::FieldNamesTaken));
+    assert_eq!(
+        save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::FieldNamesTaken)
+    );
     assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
     assert_eq!(std::fs::read(&path).unwrap(), before, "nothing was written");
     // With one name free, it goes in, its 2,000 widgets under one field.
@@ -868,7 +1316,10 @@ fn hostile_forms_are_bounded() {
     let huge_path = dir.write("huge.pdf", &huge);
     // Refused before it's walked: through a save the signature look's own bound (16,384 field visits) refuses it first, as possibly locked, on the side of
     // refusing. The name look's own refusal past 100,000 is `save::tests::a_form_past_the_field_bound_is_refused_by_the_name_look`.
-    assert_eq!(save::save(&request(&huge_path, 1, &order, &added), Target::Same, None, &mut save::NoHooks), Err(SaveError::LockedBySignature));
+    assert_eq!(
+        save::save(&request(&huge_path, 1, &order, &added), Target::Same, None, &mut save::NoHooks),
+        Err(SaveError::LockedBySignature)
+    );
 }
 
 /// Failure (review round 1 of stage 2): a page object the tree lists twice is one page to the rewrite, so a copy kept for "pages 0 and 1" holds one page, and undo past the save puts the wrong pages back. A copy with fewer pages than asked for isn't used, and one estimated past the limit isn't written.
@@ -879,16 +1330,26 @@ fn a_kept_copy_that_isnt_what_was_asked_isnt_used() {
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R >>".into()),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R 3 0 R 5 0 R] /Count 3 >>".into()),
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&["TWICE"]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["TWICE"]),
+        },
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&["ONCE"]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["ONCE"]),
+        },
     ]);
     let path = dir.write("twice.pdf", &twice);
     let kept = dir.0.join("kept.keptpages");
     // Page 1 is page 0's object again: keeping page 0 alone removes page 1, which takes that object from both places.
     assert!(save::keep_pages(&path, &[0], &kept, u64::MAX).is_err());
     assert!(!kept.exists(), "and it isn't left there");
-    assert_eq!(save::keep_pages(&path, &[0, 1], &kept, 1), Err(SaveError::TooLarge), "past the limit, refused before writing");
+    assert_eq!(
+        save::keep_pages(&path, &[0, 1], &kept, 1),
+        Err(SaveError::TooLarge),
+        "past the limit, refused before writing"
+    );
     assert!(!kept.exists());
 }
 
@@ -909,19 +1370,41 @@ fn a_blank_signature_field_stays_through_a_rewrite() {
     let outcome = save::save(&request(&path, 2, &own(&[(0, 0)]), &[]), Target::Same, None, &mut save::NoHooks).unwrap();
     assert!(outcome.usage_rights_removed);
     let after = std::fs::read(&path).unwrap();
-    assert!(contains(&after, "SIGNHERE") && contains(&after, "/SigFlags 1") && !contains(&after, "/UR3"), "the blank field stays");
+    assert!(
+        contains(&after, "SIGNHERE") && contains(&after, "/SigFlags 1") && !contains(&after, "/UR3"),
+        "the blank field stays"
+    );
 }
 
 /// The names of the top fields in a saved file's form, as written.
 fn form_field_names(path: &Path) -> Vec<Vec<u8>> {
     let reader = IndexedReader::open(FileSource::open(path).unwrap()).unwrap();
-    let Some(Object::Dictionary(catalog)) = reader.trailer_entry_owned(b"Root").unwrap() else { panic!("no catalog") };
+    let Some(Object::Dictionary(catalog)) = reader.trailer_entry_owned(b"Root").unwrap() else {
+        panic!("no catalog")
+    };
     let form = match catalog.get(b"AcroForm") {
         Ok(Object::Dictionary(form)) => form.clone(),
         Ok(Object::Reference(id)) => reader.resolve_object(*id).unwrap().as_dict().unwrap().clone(),
         _ => return Vec::new(),
     };
-    form.get(b"Fields").unwrap().as_array().unwrap().iter().map(|field| reader.resolve_object(field.as_reference().unwrap()).unwrap().as_dict().unwrap().get(b"T").unwrap().as_str().unwrap().to_vec()).collect()
+    form.get(b"Fields")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| {
+            reader
+                .resolve_object(field.as_reference().unwrap())
+                .unwrap()
+                .as_dict()
+                .unwrap()
+                .get(b"T")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_vec()
+        })
+        .collect()
 }
 
 /// A one-page PDF whose page has the one widget `widget`, object 5, which is its form's one field, and object 6, `extra`.
@@ -930,7 +1413,10 @@ fn one_widget(widget: &str, extra: &str) -> Vec<u8> {
         Raw::Dict("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] >> >>".into()),
         Raw::Dict("<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
         Raw::Dict("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [5 0 R] >>".into()),
-        Raw::Stream { dict: String::new(), data: text_lines(&["WIDGETPAGE"]) },
+        Raw::Stream {
+            dict: String::new(),
+            data: text_lines(&["WIDGETPAGE"]),
+        },
         Raw::Dict(widget.into()),
         Raw::Dict(extra.into()),
     ])
@@ -941,14 +1427,45 @@ fn one_widget(widget: &str, extra: &str) -> Vec<u8> {
 fn an_added_pages_blank_signature_field_comes_along() {
     let dir = Dir::new();
     let path = dir.write("doc.pdf", &marked(&["MINE", "ALSO"]));
-    let other = dir.write("blank.pdf", &one_widget("<< /Type /Annot /Subtype /Widget /FT /Sig /T (SIGNHERE) /Rect [0 0 90 20] /P 3 0 R >>", "<< /Unused true >>"));
-    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
-    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 0, page: 1, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    let other = dir.write(
+        "blank.pdf",
+        &one_widget(
+            "<< /Type /Annot /Subtype /Widget /FT /Sig /T (SIGNHERE) /Rect [0 0 90 20] /P 3 0 R >>",
+            "<< /Unused true >>",
+        ),
+    );
+    let added = [AddedFile {
+        path: &other,
+        page_count: 1,
+        stamp: Some(stamp(&other)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 0,
+            page: 1,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
     save::save(&request(&path, 2, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
     assert_eq!(form_field_names(&path), [b"SIGNHERE".to_vec()], "the place to sign joins the form");
     assert!(!save::signature_facts_of(&path).unwrap().has_persons_signature(), "and nobody has signed it");
     let delete = own(&[(0, 0), (2, 0)]);
-    assert_eq!(save::save(&request(&path, 3, &delete, &[]), Target::Same, None, &mut save::NoHooks).unwrap().writer, Writer::Rewrite);
+    assert_eq!(
+        save::save(&request(&path, 3, &delete, &[]), Target::Same, None, &mut save::NoHooks)
+            .unwrap()
+            .writer,
+        Writer::Rewrite
+    );
     assert!(contains(&std::fs::read(&path).unwrap(), "SIGNHERE"), "and it stays through the rewrite");
 }
 
@@ -956,13 +1473,31 @@ fn an_added_pages_blank_signature_field_comes_along() {
 #[test]
 fn a_value_with_a_byte_range_is_a_signature_whatever_the_field_says() {
     let dir = Dir::new();
-    let disguised = one_widget("<< /Type /Annot /Subtype /Widget /FT /Tx /T (NOTASIG) /V 6 0 R /Rect [0 0 90 20] /P 3 0 R >>", "<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 10 20 30] /Contents <00> >>");
+    let disguised = one_widget(
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (NOTASIG) /V 6 0 R /Rect [0 0 90 20] /P 3 0 R >>",
+        "<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 10 20 30] /Contents <00> >>",
+    );
     let other = dir.write("disguised.pdf", &disguised);
     let reader = IndexedReader::open(FileSource::open(&other).unwrap()).unwrap();
     assert!(save::signature_facts(&reader).signed, "its own form reads as signed");
     let path = dir.write("doc.pdf", &marked(&["MINE"]));
-    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
-    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    let added = [AddedFile {
+        path: &other,
+        page_count: 1,
+        stamp: Some(stamp(&other)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
     save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
     let bytes = std::fs::read(&path).unwrap();
     assert!(!contains(&bytes, "/ByteRange") && !contains(&bytes, "NOTASIG"), "the value stays behind");
@@ -980,11 +1515,35 @@ fn field_names_are_compared_as_text() {
         Raw::Dict("<< /T (Name) /FT /Tx >>".into()),
     ]);
     let path = dir.write("target.pdf", &target);
-    let other = dir.write("utf16.pdf", &one_widget("<< /Type /Annot /Subtype /Widget /FT /Tx /T <FEFF004E0061006D0065> /Rect [0 0 90 20] /P 3 0 R >>", "<< /Unused true >>"));
-    let added = [AddedFile { path: &other, page_count: 1, stamp: Some(stamp(&other)) }];
-    let order = [PageRef { source: 0, page: 0, quarter_turns: 0 }, PageRef { source: 1, page: 0, quarter_turns: 0 }];
+    let other = dir.write(
+        "utf16.pdf",
+        &one_widget(
+            "<< /Type /Annot /Subtype /Widget /FT /Tx /T <FEFF004E0061006D0065> /Rect [0 0 90 20] /P 3 0 R >>",
+            "<< /Unused true >>",
+        ),
+    );
+    let added = [AddedFile {
+        path: &other,
+        page_count: 1,
+        stamp: Some(stamp(&other)),
+    }];
+    let order = [
+        PageRef {
+            source: 0,
+            page: 0,
+            quarter_turns: 0,
+        },
+        PageRef {
+            source: 1,
+            page: 0,
+            quarter_turns: 0,
+        },
+    ];
     save::save(&request(&path, 1, &order, &added), Target::Same, None, &mut save::NoHooks).unwrap();
-    let names: Vec<String> = form_field_names(&path).iter().map(|name| lopdf::decode_text_string(&Object::String(name.clone(), lopdf::StringFormat::Literal)).unwrap()).collect();
+    let names: Vec<String> = form_field_names(&path)
+        .iter()
+        .map(|name| lopdf::decode_text_string(&Object::String(name.clone(), lopdf::StringFormat::Literal)).unwrap())
+        .collect();
     assert_eq!(names, ["Name", "Name_2"], "renamed, so the two values stay apart");
     assert!(form_field_names(&path)[1].starts_with(&[0xFE, 0xFF]), "in its own encoding");
 }

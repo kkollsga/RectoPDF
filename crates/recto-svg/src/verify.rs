@@ -1,10 +1,69 @@
 //! A strict little reader of what this crate writes, for tests here and in the crates that use it: one well-formed document, with nothing in it that can run or reach outside. A failed check is a panic, because it's only for tests and QA. It isn't an XML parser, and it doesn't need to be: anything it doesn't know is a failure.
 
 /// The tags and attributes this crate may write. Anything else in the output is a way out that was missed.
-const TAGS: &[&str] = &["svg", "g", "path", "defs", "clipPath", "use", "text", "image", "title", "linearGradient", "radialGradient", "stop", "mask"];
+const TAGS: &[&str] = &[
+    "svg",
+    "g",
+    "path",
+    "defs",
+    "clipPath",
+    "use",
+    "text",
+    "image",
+    "title",
+    "linearGradient",
+    "radialGradient",
+    "stop",
+    "mask",
+];
 const ATTRIBUTES: &[&str] = &[
-    "xmlns", "xmlns:xlink", "version", "width", "height", "viewBox", "transform", "d", "fill", "fill-opacity", "fill-rule", "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset",
-    "stroke-miterlimit", "opacity", "pointer-events", "vector-effect", "clip-path", "id", "xlink:href", "x", "y", "font-size", "font-family", "font-weight", "font-style", "xml:space", "preserveAspectRatio", "mask", "maskUnits", "maskContentUnits", "gradientUnits", "x1", "y1", "x2", "y2", "cx", "cy", "r", "offset", "stop-color", "stop-opacity",
+    "xmlns",
+    "xmlns:xlink",
+    "version",
+    "width",
+    "height",
+    "viewBox",
+    "transform",
+    "d",
+    "fill",
+    "fill-opacity",
+    "fill-rule",
+    "stroke",
+    "stroke-opacity",
+    "stroke-width",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-dasharray",
+    "stroke-dashoffset",
+    "stroke-miterlimit",
+    "opacity",
+    "pointer-events",
+    "vector-effect",
+    "clip-path",
+    "id",
+    "xlink:href",
+    "x",
+    "y",
+    "font-size",
+    "font-family",
+    "font-weight",
+    "font-style",
+    "xml:space",
+    "preserveAspectRatio",
+    "mask",
+    "maskUnits",
+    "maskContentUnits",
+    "gradientUnits",
+    "x1",
+    "y1",
+    "x2",
+    "y2",
+    "cx",
+    "cy",
+    "r",
+    "offset",
+    "stop-color",
+    "stop-opacity",
 ];
 
 /// Reads a whole document, and panics on anything that isn't well formed or isn't on the lists above.
@@ -21,7 +80,11 @@ pub fn check_document(bytes: &[u8]) {
                 rest = &after[end + 1..];
                 continue;
             }
-            assert!(!after.starts_with('!') && !after.starts_with('?'), "no comment, DOCTYPE, CDATA or instruction may be written: {}", &after[..after.len().min(40)]);
+            assert!(
+                !after.starts_with('!') && !after.starts_with('?'),
+                "no comment, DOCTYPE, CDATA or instruction may be written: {}",
+                &after[..after.len().min(40)]
+            );
             let name_end = after.find(|c: char| c.is_whitespace() || c == '>' || c == '/').expect("a tag's name");
             let name = &after[..name_end];
             assert!(TAGS.contains(&name), "the tag {name:?}");
@@ -49,20 +112,29 @@ pub fn check_document(bytes: &[u8]) {
                 assert!(!value.contains('<'), "a raw < in an attribute");
                 check_entities(value);
                 if key == "mask" {
-                    let id = value.strip_prefix("url(#m").and_then(|rest| rest.strip_suffix(')')).expect("a mask that's a reference to one here");
+                    let id = value
+                        .strip_prefix("url(#m")
+                        .and_then(|rest| rest.strip_suffix(')'))
+                        .expect("a mask that's a reference to one here");
                     assert!(!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()), "{value}");
                 }
                 if key == "maskUnits" || key == "maskContentUnits" {
                     assert_eq!(value, "userSpaceOnUse", "{key}");
                 }
                 if key == "xlink:href" {
-                    assert!(value.starts_with('#') || value.starts_with("data:image/png;base64,") || value.starts_with("data:image/jpeg;base64,"), "an href that leads out: {value}");
+                    assert!(
+                        value.starts_with('#') || value.starts_with("data:image/png;base64,") || value.starts_with("data:image/jpeg;base64,"),
+                        "an href that leads out: {value}"
+                    );
                 }
                 if key != "font-family" && key != "xlink:href" && !["d", "transform", "x", "y", "stroke-dasharray"].contains(&key) {
                     assert!(!value.to_ascii_lowercase().contains("javascript"), "{value}");
                 }
                 if key != "xlink:href" && key != "font-family" && key != "xmlns" && key != "xmlns:xlink" {
-                    assert!(!value.contains("e+") && !value.contains("NaN") && !value.contains("inf"), "a number written wrongly: {key}={value}");
+                    assert!(
+                        !value.contains("e+") && !value.contains("NaN") && !value.contains("inf"),
+                        "a number written wrongly: {key}={value}"
+                    );
                 }
                 at = &value_start[close + 1..];
             }
@@ -99,7 +171,12 @@ pub enum Embedded {
     /// Raw JPEG bytes.
     Jpeg(Vec<u8>),
     /// Pixels, by rows: 1 grey, 3 RGB, 4 RGBA.
-    Png { width: u32, height: u32, channels: usize, pixels: Vec<u8> },
+    Png {
+        width: u32,
+        height: u32,
+        channels: usize,
+        pixels: Vec<u8>,
+    },
 }
 
 /// Every image in a document, decoded byte for byte. For tests that an image really is lossless.
@@ -142,7 +219,11 @@ fn from_base64(text: &str) -> Vec<u8> {
 
 fn paeth(left: u8, up: u8, corner: u8) -> u8 {
     let estimate = i32::from(left) + i32::from(up) - i32::from(corner);
-    let (a, b, c) = ((estimate - i32::from(left)).abs(), (estimate - i32::from(up)).abs(), (estimate - i32::from(corner)).abs());
+    let (a, b, c) = (
+        (estimate - i32::from(left)).abs(),
+        (estimate - i32::from(up)).abs(),
+        (estimate - i32::from(corner)).abs(),
+    );
     if a <= b && a <= c {
         left
     } else if b <= c {
@@ -215,5 +296,10 @@ fn read_with(file: &[u8], only_up: bool) -> Embedded {
         above = now;
     }
     assert_eq!(pixels.len(), row_len * height as usize, "rows missing");
-    Embedded::Png { width, height, channels, pixels }
+    Embedded::Png {
+        width,
+        height,
+        channels,
+        pixels,
+    }
 }

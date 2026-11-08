@@ -72,10 +72,48 @@ pub const MIN_FLAGGED_RUN: usize = 3;
 
 /// Words that usually end a hyphenated compound. Small and closed, chosen from words the corpus breaks at a line end.
 pub const COMPOUND_ENDINGS: &[&str] = &[
-    "agnostic", "aware", "based", "centered", "centric", "class", "consistent", "controlled", "dependent", "dimensional", "driven",
-    "efficient", "enabled", "free", "friendly", "generated", "grained", "guided", "independent", "intensive", "invariant", "layer", "level",
-    "like", "oriented", "powered", "related", "resistant", "scale", "sensitive", "shaped", "side", "sized", "specific", "supervised", "term",
-    "time", "tolerant", "trained", "wide", "wise", "world",
+    "agnostic",
+    "aware",
+    "based",
+    "centered",
+    "centric",
+    "class",
+    "consistent",
+    "controlled",
+    "dependent",
+    "dimensional",
+    "driven",
+    "efficient",
+    "enabled",
+    "free",
+    "friendly",
+    "generated",
+    "grained",
+    "guided",
+    "independent",
+    "intensive",
+    "invariant",
+    "layer",
+    "level",
+    "like",
+    "oriented",
+    "powered",
+    "related",
+    "resistant",
+    "scale",
+    "sensitive",
+    "shaped",
+    "side",
+    "sized",
+    "specific",
+    "supervised",
+    "term",
+    "time",
+    "tolerant",
+    "trained",
+    "wide",
+    "wise",
+    "world",
 ];
 /// Short words that usually start a hyphenated compound, kept when at least four letters follow.
 const COMPOUND_STARTS: &[&str] = &["cross", "high", "low", "self", "well"];
@@ -133,7 +171,10 @@ fn is_marker(record: CharRecord) -> bool {
 
 /// Makes page text searchable. `want_source` also builds the map back to `chars`, which selection and highlights need and an agent doesn't.
 pub fn normalize(chars: &[CharRecord], want_source: bool) -> Normalized {
-    let mut out = Normalized { text: String::with_capacity(chars.len()), ..Normalized::default() };
+    let mut out = Normalized {
+        text: String::with_capacity(chars.len()),
+        ..Normalized::default()
+    };
     let mut evidence = PageEvidence::new(chars);
     let mut checks = 0usize;
     let mut i = 0;
@@ -164,7 +205,11 @@ pub fn normalize(chars: &[CharRecord], want_source: bool) -> Normalized {
             }
             // A marker carries its line break away only if there's a token to join it to, and a page number isn't half of one. Otherwise the line really did end here. A hyphen that was joined away has already counted as a join, and has to be one: only a hyphen that's kept can belong to a page number.
             let page_mark = keep && looked && ends_in_a_page_mark(&out.text, chars.get(right_start).map(|c| c.ch()));
-            i = if chars.get(right_start).is_some_and(|c| c.ch().is_alphanumeric()) && !page_mark { right_start } else { i + 1 };
+            i = if chars.get(right_start).is_some_and(|c| c.ch().is_alphanumeric()) && !page_mark {
+                right_start
+            } else {
+                i + 1
+            };
             continue;
         }
         if is_break(ch) {
@@ -414,11 +459,22 @@ pub const MAX_HIDDEN_SPANS: usize = 256;
 pub fn read_page(chars: &[CharRecord], boxes: &[CharBox], want_hidden_spans: bool) -> PageReading {
     let repaired = order::repair_line_order(chars, boxes);
     let reading = repaired.as_ref().map_or(chars, |repaired| &repaired.chars);
-    let flagged = if want_hidden_spans { hidden_in_either_order(chars, repaired.as_ref()) } else { Vec::new() };
-    let mut page = PageReading { normalized: normalize(reading, !flagged.is_empty()), runs_moved: repaired.as_ref().map_or(0, |repaired| repaired.runs_moved), hidden_flagged: !flagged.is_empty(), ..PageReading::default() };
+    let flagged = if want_hidden_spans {
+        hidden_in_either_order(chars, repaired.as_ref())
+    } else {
+        Vec::new()
+    };
+    let mut page = PageReading {
+        normalized: normalize(reading, !flagged.is_empty()),
+        runs_moved: repaired.as_ref().map_or(0, |repaired| repaired.runs_moved),
+        hidden_flagged: !flagged.is_empty(),
+        ..PageReading::default()
+    };
     if !flagged.is_empty() {
         let is_hidden = |index: u32| {
-            let from = repaired.as_ref().map_or(index, |repaired| repaired.origin.get(index as usize).copied().unwrap_or(order::GENERATED));
+            let from = repaired
+                .as_ref()
+                .map_or(index, |repaired| repaired.origin.get(index as usize).copied().unwrap_or(order::GENERATED));
             flagged.get(from as usize).copied().unwrap_or(false)
         };
         (page.hidden_spans, page.hidden_spans_dropped) = hidden_spans(&page.normalized, is_hidden);
@@ -539,7 +595,10 @@ pub struct HiddenReport {
 
 /// Groups characters flagged by the pixel check into runs. Spaces inside a run don't end it; a visible character does.
 pub fn hidden_report(chars: &[CharRecord], checked: bool) -> HiddenReport {
-    let mut report = HiddenReport { checked, ..HiddenReport::default() };
+    let mut report = HiddenReport {
+        checked,
+        ..HiddenReport::default()
+    };
     let mut run = String::new();
     let mut run_len = 0usize;
     let finish = |report: &mut HiddenReport, run: &mut String, run_len: &mut usize| {
@@ -584,12 +643,19 @@ mod tests {
     /// Failure: every character of a page carries the hyphen flag, so each looks at the words on both sides of it and the rest of the page besides, and one hostile page of 2,000,000 characters holds a read for over 5 s on a release build, and many times that on a debug one. Found by the `index` fuzz target, as a page of a few characters repeated.
     #[test]
     fn a_page_of_nothing_but_markers_stays_quick() {
-        let unit: Vec<CharRecord> = ['a', 'I', '数', 'ﬁ', 'I'].iter().map(|c| CharRecord::new(*c as u32, CharRecord::HYPHEN)).collect();
+        let unit: Vec<CharRecord> = ['a', 'I', '数', 'ﬁ', 'I']
+            .iter()
+            .map(|c| CharRecord::new(*c as u32, CharRecord::HYPHEN))
+            .collect();
         let chars: Vec<CharRecord> = unit.iter().cycle().take(recto_proto::MAX_PAGE_CHARS as usize).copied().collect();
         let started = std::time::Instant::now();
         let page = normalize(&chars, false);
         assert!(!page.text.is_empty());
-        assert!(page.hyphens_kept as usize >= chars.len() - MAX_MARKERS_READ, "past the cap, every hyphen stays: {} kept", page.hyphens_kept);
+        assert!(
+            page.hyphens_kept as usize >= chars.len() - MAX_MARKERS_READ,
+            "past the cap, every hyphen stays: {} kept",
+            page.hyphens_kept
+        );
         assert!(started.elapsed() < std::time::Duration::from_secs(30), "took {:?}", started.elapsed());
     }
 
@@ -603,7 +669,10 @@ mod tests {
         assert!(text.chars().count() > 20_000);
         let chars: Vec<CharRecord> = text.chars().map(|c| CharRecord::new(c as u32, 0)).collect();
         let page = normalize(&chars, false);
-        assert_eq!(page.hyphens_kept as usize, MAX_EVIDENCE_CHECKS, "evidence decides each of the first markers, and none past them");
+        assert_eq!(
+            page.hyphens_kept as usize, MAX_EVIDENCE_CHECKS,
+            "evidence decides each of the first markers, and none past them"
+        );
         assert_eq!(page.hyphens_joined, 40, "past them, the rule for a word with no evidence");
     }
 
@@ -667,7 +736,11 @@ mod tests {
     #[test]
     fn evidence_must_be_a_whole_word_elsewhere() {
         assert_eq!(text("a foo~bar"), "a foobar", "the marker itself isn't evidence for a hyphen");
-        assert_eq!(text("xfoo-barx and foo~bar"), "xfoo-barx and foobar", "foo-bar inside a longer word isn't evidence");
+        assert_eq!(
+            text("xfoo-barx and foo~bar"),
+            "xfoo-barx and foobar",
+            "foo-bar inside a longer word isn't evidence"
+        );
     }
 
     /// Failure: whichever form is guessed wrong can't be found at all. The other form must stay searchable.
@@ -681,7 +754,10 @@ mod tests {
         assert_eq!(kept.text, "simulation-based");
         assert_eq!(kept.also_spelled, vec!["simulationbased"]);
         assert_eq!((kept.hyphens_joined, kept.hyphens_kept), (0, 1));
-        assert!(normalize(&chars("a~bcd 21~cm"), false).also_spelled.is_empty(), "fragments and numbers aren't words");
+        assert!(
+            normalize(&chars("a~bcd 21~cm"), false).also_spelled.is_empty(),
+            "fragments and numbers aren't words"
+        );
     }
 
     /// Failure: NBSP, thin spaces, soft hyphens and CRLF stay in the text, so plain `rg` misses ordinary words.
@@ -729,8 +805,16 @@ mod tests {
         assert_eq!(text("COVID~^19"), "COVID-19");
         assert_eq!(text("anti-^inflammatory"), "anti-inflammatory", "a word alone on its line still joins");
         assert_eq!(text("cell^2015-^2019"), "cell\n2015-2019", "and so does a range of numbers in a table's cell");
-        assert_eq!(text("-3-^2. The Recipient"), "-3-\n2. The Recipient", "but not a page number above a numbered line");
-        assert_eq!(text("-2-^be delivered"), "-2-\nbe delivered", "nor above a line that starts small: between hyphens, it's a page number");
+        assert_eq!(
+            text("-3-^2. The Recipient"),
+            "-3-\n2. The Recipient",
+            "but not a page number above a numbered line"
+        );
+        assert_eq!(
+            text("-2-^be delivered"),
+            "-2-\nbe delivered",
+            "nor above a line that starts small: between hyphens, it's a page number"
+        );
     }
 
     /// Failure: the rule for page numbers takes in real tokens. `10-^year` stays in two pieces, and a search for `10-year` misses it, and `X-^ray`, `-civil-^ian` and `-Mid-^night` read as markers, because any word made of the letters of roman numerals counted as one and anything alone on its line did.
@@ -772,7 +856,10 @@ mod tests {
             let same = ch == original || (ch == '\n' && original == '\r') || (ch == ' ' && original == '\u{A0}') || (ch == '-' && original == '\u{FFFE}');
             assert!(same, "{ch:?} maps to {original:?}");
         }
-        assert!(normalize(&input, false).source.is_empty(), "the map costs memory, so it's built only when asked");
+        assert!(
+            normalize(&input, false).source.is_empty(),
+            "the map costs memory, so it's built only when asked"
+        );
     }
 
     /// Failure: invisible characters reach an agent, the plainest prompt injection there is: tag characters spell a whole instruction no eye can see, and bidi
@@ -784,7 +871,23 @@ mod tests {
         assert_eq!(result.text, "safetext");
         assert_eq!(result.tag_chars_removed, 15);
         assert_eq!(result.invisible_removed, 15);
-        let controls = ['\u{202A}', '\u{202E}', '\u{2066}', '\u{2069}', '\u{200E}', '\u{200F}', '\u{61C}', '\u{FE0F}', '\u{E0100}', '\u{FFF9}', '\u{180E}', '\u{3164}', '\u{115F}', '\u{2064}', '\u{1D173}'];
+        let controls = [
+            '\u{202A}',
+            '\u{202E}',
+            '\u{2066}',
+            '\u{2069}',
+            '\u{200E}',
+            '\u{200F}',
+            '\u{61C}',
+            '\u{FE0F}',
+            '\u{E0100}',
+            '\u{FFF9}',
+            '\u{180E}',
+            '\u{3164}',
+            '\u{115F}',
+            '\u{2064}',
+            '\u{1D173}',
+        ];
         for control in controls {
             let result = normalize(&chars(&format!("a{control}b")), false);
             assert_eq!(result.text, "ab", "U+{:04X} stayed in the text", control as u32);
@@ -807,7 +910,11 @@ mod tests {
     #[test]
     fn evidence_reads_the_page_as_it_will_be_normalised() {
         assert_eq!(text("foo\u{2010}bar here and foo~bar there"), "foo-bar here and foo-bar there");
-        assert_eq!(text("foo\u{200B}bar here and foo~bar there"), "foobar here and foobar there", "an invisible character can't hide a word");
+        assert_eq!(
+            text("foo\u{200B}bar here and foo~bar there"),
+            "foobar here and foobar there",
+            "an invisible character can't hide a word"
+        );
     }
 
     /// Failure: rarer spaces and line separators are dropped as control characters, or left as they are, so words run together or a search misses them.
@@ -833,7 +940,10 @@ mod tests {
     #[test]
     fn other_spellings_are_whole_and_their_cap_is_stated() {
         let long = "a".repeat(MAX_WORD_PART + 10);
-        assert!(normalize(&chars(&format!("{long}~bcd")), false).also_spelled.is_empty(), "half a word isn't a spelling");
+        assert!(
+            normalize(&chars(&format!("{long}~bcd")), false).also_spelled.is_empty(),
+            "half a word isn't a spelling"
+        );
         let mut many = String::new();
         for i in 0..(MAX_ALSO_SPELLED + 5) {
             let letter = |n: usize| char::from(b'a' + (n % 26) as u8);
@@ -926,7 +1036,11 @@ mod tests {
 
     fn boxed(text: &str, y: f32, start_x: f32) -> (Vec<CharRecord>, Vec<CharBox>) {
         let chars = hidden(text);
-        let boxes = chars.iter().enumerate().map(|(at, _)| [start_x + at as f32 * 5.0, y, start_x + at as f32 * 5.0 + 4.0, y + 7.0]).collect();
+        let boxes = chars
+            .iter()
+            .enumerate()
+            .map(|(at, _)| [start_x + at as f32 * 5.0, y, start_x + at as f32 * 5.0 + 4.0, y + 7.0])
+            .collect();
         (chars, boxes)
     }
 
@@ -1006,11 +1120,22 @@ mod tests {
     #[test]
     fn hidden_letters_assembled_by_a_move_are_flagged() {
         let (chars, boxes) = assembling_page();
-        assert!(!hidden_report(&chars, true).flagged, "in the file's order, each run is too short, or this tests nothing");
+        assert!(
+            !hidden_report(&chars, true).flagged,
+            "in the file's order, each run is too short, or this tests nothing"
+        );
         let page = read_page(&chars, &boxes, true);
-        assert!(page.normalized.text.contains("A recipient ignore this"), "the page is meant to assemble: {}", page.normalized.text);
+        assert!(
+            page.normalized.text.contains("A recipient ignore this"),
+            "the page is meant to assemble: {}",
+            page.normalized.text
+        );
         assert!(page.hidden_flagged, "{}", page.normalized.text);
-        let shown: Vec<String> = page.hidden_spans.iter().map(|span| page.normalized.text.chars().skip(span.0 as usize).take((span.1 - span.0) as usize).collect()).collect();
+        let shown: Vec<String> = page
+            .hidden_spans
+            .iter()
+            .map(|span| page.normalized.text.chars().skip(span.0 as usize).take((span.1 - span.0) as usize).collect())
+            .collect();
         assert!(shown.iter().any(|one| one.contains("ignore")), "{shown:?}");
     }
 

@@ -35,7 +35,12 @@ pub fn file_stamp(path: &Path) -> std::io::Result<FileStamp> {
     };
     #[cfg(not(unix))]
     let (device, inode) = (0, 0);
-    Ok(FileStamp { size: meta.len(), mtime_ns, device, inode })
+    Ok(FileStamp {
+        size: meta.len(),
+        mtime_ns,
+        device,
+        inode,
+    })
 }
 
 /// What tells one version of a file from another, stronger than [`FileStamp`]: a file put in its place has another inode, and writing to it or setting its modification time moves its change time, which can't be set back without moving the clock.
@@ -54,15 +59,31 @@ pub fn file_identity(file: &std::fs::File) -> std::io::Result<FileIdentity> {
     use std::os::unix::fs::MetadataExt;
     let meta = file.metadata()?;
     let nanos = |seconds: i64, nanos: i64| seconds.saturating_mul(1_000_000_000).saturating_add(nanos);
-    Ok(FileIdentity { device: meta.dev(), inode: meta.ino(), size: meta.size(), mtime_ns: nanos(meta.mtime(), meta.mtime_nsec()), ctime_ns: nanos(meta.ctime(), meta.ctime_nsec()) })
+    Ok(FileIdentity {
+        device: meta.dev(),
+        inode: meta.ino(),
+        size: meta.size(),
+        mtime_ns: nanos(meta.mtime(), meta.mtime_nsec()),
+        ctime_ns: nanos(meta.ctime(), meta.ctime_nsec()),
+    })
 }
 
 /// An open file's identity. Windows has no inode or change time through the standard library, so its contents' samples carry more of the weight there. Not used at run time yet.
 #[cfg(not(unix))]
 pub fn file_identity(file: &std::fs::File) -> std::io::Result<FileIdentity> {
     let meta = file.metadata()?;
-    let nanos = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX));
-    Ok(FileIdentity { device: 0, inode: 0, size: meta.len(), mtime_ns: nanos, ctime_ns: nanos })
+    let nanos = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX));
+    Ok(FileIdentity {
+        device: 0,
+        inode: 0,
+        size: meta.len(),
+        mtime_ns: nanos,
+        ctime_ns: nanos,
+    })
 }
 
 /// A file's device and inode, with no opening of it: opening a pipe would wait for a writer for ever. `None` where there's no such thing, or it can't be looked at.

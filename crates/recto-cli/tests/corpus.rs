@@ -41,5 +41,8 @@ fn a_real_tables_cells_stay_whole() {
     assert_eq!(code, 0, "{read}");
     let text = read["data"]["untrusted"]["text"].as_str().unwrap();
     assert!(text.contains("utilizing at least"), "{text}");
-    assert!(!text.contains("utilizing at least utilizing at") && !text.contains("Learning Grants Learning"), "{text}");
+    assert!(
+        !text.contains("utilizing at least utilizing at") && !text.contains("Learning Grants Learning"),
+        "{text}"
+    );
 }

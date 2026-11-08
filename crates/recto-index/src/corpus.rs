@@ -114,7 +114,13 @@ impl CorpusKey {
         hash.update([0]);
         hash.update(NORMALISER.as_bytes());
         hash.update([0]);
-        for part in [identity.device, identity.inode, identity.size, identity.mtime_ns as u64, identity.ctime_ns as u64] {
+        for part in [
+            identity.device,
+            identity.inode,
+            identity.size,
+            identity.mtime_ns as u64,
+            identity.ctime_ns as u64,
+        ] {
             hash.update(part.to_le_bytes());
         }
         hash.update(head);
@@ -161,7 +167,9 @@ pub fn times_tell_versions_apart(file_system: &str) -> bool {
 
 /// Whether this file's on a file system where a key can be trusted.
 pub fn can_be_indexed(path: &Path) -> bool {
-    File::open(path).and_then(|file| local::file_system_name(&file)).is_ok_and(|name| times_tell_versions_apart(&name))
+    File::open(path)
+        .and_then(|file| local::file_system_name(&file))
+        .is_ok_and(|name| times_tell_versions_apart(&name))
 }
 
 /// Where everything for one key lives.
@@ -212,7 +220,9 @@ impl CorpusPaths {
         local::ensure_private_dir(root)?;
         // Plain text of the user's documents has no place in their backups, and it can all be built again. Not being able to say so isn't a reason to stop.
         let _ = local::exclude_from_backups(root);
-        let Some(by_key) = self.dir.parent() else { return Err(io::ErrorKind::InvalidInput.into()) };
+        let Some(by_key) = self.dir.parent() else {
+            return Err(io::ErrorKind::InvalidInput.into());
+        };
         for dir in [by_key, &self.dir, &self.app] {
             local::ensure_private_dir(dir)?;
         }
@@ -222,7 +232,9 @@ impl CorpusPaths {
     /// Whether every folder on the way here is really this user's alone, so nothing read through them can have been put there by a link. It's four looks at a folder, per search of a file, which is nothing beside the search.
     fn folders_are_private(&self, root: &Path) -> bool {
         let Some(by_key) = self.dir.parent() else { return false };
-        [root, by_key, &self.dir, &self.app].iter().all(|folder| local::check_private_dir(folder).is_ok())
+        [root, by_key, &self.dir, &self.app]
+            .iter()
+            .all(|folder| local::check_private_dir(folder).is_ok())
     }
 
     pub fn page_file(&self, page: u32, width: usize) -> PathBuf {
@@ -337,7 +349,16 @@ impl PageRecord {
             3 => PageKind::Failed,
             _ => return None,
         };
-        Some(Self { offset: u64::from_le_bytes(bytes.get(..8)?.try_into().ok()?), text_len: word(8)?, aux_len: word(12)?, chars: word(16)?, kind, flags: *bytes.get(21)?, reason: *bytes.get(22)?, check: word(24)? })
+        Some(Self {
+            offset: u64::from_le_bytes(bytes.get(..8)?.try_into().ok()?),
+            text_len: word(8)?,
+            aux_len: word(12)?,
+            chars: word(16)?,
+            kind,
+            flags: *bytes.get(21)?,
+            reason: *bytes.get(22)?,
+            check: word(24)?,
+        })
     }
 
     fn end(&self) -> u64 {
@@ -417,7 +438,9 @@ pub enum DiskState {
     /// Nothing's been built.
     Nothing,
     /// A build got this far. It's building now, or it was stopped and can go on.
-    Partial { pages_done: u32 },
+    Partial {
+        pages_done: u32,
+    },
     Ready(Summary),
     /// It won't be indexed, for this reason's code.
     Refused(String),
@@ -435,7 +458,9 @@ pub fn disk_state(root: &Path, key: CorpusKey) -> DiskState {
         return DiskState::Refused(code);
     }
     match fs::symlink_metadata(&paths.table) {
-        Ok(meta) => DiskState::Partial { pages_done: u32::try_from(meta.len() / RECORD_LEN as u64).unwrap_or(u32::MAX) },
+        Ok(meta) => DiskState::Partial {
+            pages_done: u32::try_from(meta.len() / RECORD_LEN as u64).unwrap_or(u32::MAX),
+        },
         Err(_) => DiskState::Nothing,
     }
 }
@@ -521,7 +546,12 @@ impl<'a> Aux<'a> {
         if bytes.len() != count.checked_mul(8)? {
             return None;
         }
-        aux.spans = bytes.as_chunks::<8>().0.iter().filter_map(|pair| Some((u32::from_le_bytes(pair[..4].try_into().ok()?), u32::from_le_bytes(pair[4..].try_into().ok()?)))).collect();
+        aux.spans = bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .filter_map(|pair| Some((u32::from_le_bytes(pair[..4].try_into().ok()?), u32::from_le_bytes(pair[4..].try_into().ok()?))))
+            .collect();
         Some(aux)
     }
 }
@@ -553,7 +583,9 @@ impl ReadyCorpus {
             return Err(Damaged);
         }
         // In this order: a retry of failed pages adds to the pack before it changes the table, so this table only points at text in this pack. The pack can be longer than said, and never shorter.
-        let table = local::read_private_file(&paths.table, summary.table_bytes).map_err(|_| Damaged)?.ok_or(Damaged)?;
+        let table = local::read_private_file(&paths.table, summary.table_bytes)
+            .map_err(|_| Damaged)?
+            .ok_or(Damaged)?;
         if table.len() as u64 != summary.table_bytes {
             return Err(Damaged);
         }
@@ -563,7 +595,13 @@ impl ReadyCorpus {
             return Err(Damaged);
         }
         note_used(&paths);
-        Ok(Some(Self { table, pack, pack_len, summary, paths }))
+        Ok(Some(Self {
+            table,
+            pack,
+            pack_len,
+            summary,
+            paths,
+        }))
     }
 
     pub fn pages(&self) -> u32 {
@@ -599,7 +637,11 @@ impl ReadyCorpus {
 
 /// Notes that a corpus has been used, for eviction, at most once an hour so a search needn't write.
 fn note_used(paths: &CorpusPaths) {
-    let fresh = fs::metadata(&paths.used).and_then(|meta| meta.modified()).ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age < USED_RESOLUTION);
+    let fresh = fs::metadata(&paths.used)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|at| at.elapsed().ok())
+        .is_some_and(|age| age < USED_RESOLUTION);
     if !fresh {
         let _ = local::write_private_file_unsynced(&paths.used, b"");
     }
@@ -662,7 +704,12 @@ pub struct BuildLimits {
 
 impl Default for BuildLimits {
     fn default() -> Self {
-        Self { max_doc_bytes: MAX_DOC_BYTES, max_total_bytes: MAX_TOTAL_BYTES, max_age: MAX_AGE, max_time: MAX_BUILD_TIME }
+        Self {
+            max_doc_bytes: MAX_DOC_BYTES,
+            max_total_bytes: MAX_TOTAL_BYTES,
+            max_age: MAX_AGE,
+            max_time: MAX_BUILD_TIME,
+        }
     }
 }
 
@@ -678,7 +725,10 @@ pub struct BuildStats {
 /// How a build ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BuildOutcome {
-    Ready { summary: Summary, stats: BuildStats },
+    Ready {
+        summary: Summary,
+        stats: BuildStats,
+    },
     /// Nothing to do: it had already been finished by someone.
     AlreadyReady(Summary),
     Refused(String),
@@ -752,8 +802,14 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
         blob.clear();
         blob.extend_from_slice(text.as_bytes());
         Aux::write(&also_spelled, &spans, &mut blob);
-        let record = PageRecord { aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX), ..record };
-        let record = PageRecord { check: page_check(page, &record, &blob), ..record };
+        let record = PageRecord {
+            aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX),
+            ..record
+        };
+        let record = PageRecord {
+            check: page_check(page, &record, &blob),
+            ..record
+        };
         bytes += blob.len() as u64 + RECORD_LEN as u64;
         if bytes > limits.max_doc_bytes {
             return refuse(&paths, "too_large");
@@ -769,7 +825,11 @@ fn build_with_lock(root: &Path, key: CorpusKey, feed: &mut impl PageFeed, meta: 
     pack.sync_all()?;
     table.sync_all()?;
     let summary = finish(&paths, pages, width, offset, bytes, meta, 0)?;
-    let stats = BuildStats { pages_built: pages - resumed.pages, pages_resumed: resumed.pages, elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX) };
+    let stats = BuildStats {
+        pages_built: pages - resumed.pages,
+        pages_resumed: resumed.pages,
+        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    };
     // What failed only because of the moment gets one more try at once, now that the rest of the document isn't in its way.
     if summary.retry_pages > 0 {
         return match retry_failed_pages(&paths, feed, meta, summary, limits)? {
@@ -793,7 +853,9 @@ fn retry_failed_pages(paths: &CorpusPaths, feed: &mut impl PageFeed, meta: &DocM
     let mut blob = Vec::new();
     for page in 0..summary.pages {
         let at = page as usize * RECORD_LEN;
-        let Some(old) = table.get(at..at + RECORD_LEN).and_then(PageRecord::decode) else { return Err(io::ErrorKind::InvalidData.into()) };
+        let Some(old) = table.get(at..at + RECORD_LEN).and_then(PageRecord::decode) else {
+            return Err(io::ErrorKind::InvalidData.into());
+        };
         if old.kind != PageKind::Failed || !FailReason::from_byte(old.reason).is_temporary() {
             continue;
         }
@@ -816,8 +878,14 @@ fn retry_failed_pages(paths: &CorpusPaths, feed: &mut impl PageFeed, meta: &DocM
         blob.clear();
         blob.extend_from_slice(text.as_bytes());
         Aux::write(&also_spelled, &spans, &mut blob);
-        let record = PageRecord { aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX), ..record };
-        let record = PageRecord { check: page_check(page, &record, &blob), ..record };
+        let record = PageRecord {
+            aux_len: u32::try_from(blob.len() - text.len()).unwrap_or(u32::MAX),
+            ..record
+        };
+        let record = PageRecord {
+            check: page_check(page, &record, &blob),
+            ..record
+        };
         // Past the cap it stays failed: a search still reads it live, and what's here doesn't push other documents out.
         if bytes + blob.len() as u64 > limits.max_doc_bytes {
             break;
@@ -843,7 +911,9 @@ fn digest_safely(read: Result<FedPage, FailReason>, offset: u64) -> (PageRecord,
     // A panic here would be a bug of ours, on text a hostile file chose.
     catch_unwind(AssertUnwindSafe(|| digest(read, offset)))
         .ok()
-        .filter(|(_, also_spelled, spans, text)| text.len() + also_spelled.iter().map(|word| word.len() + 2).sum::<usize>() + spans.len() * 8 + 6 <= MAX_BLOB_BYTES)
+        .filter(|(_, also_spelled, spans, text)| {
+            text.len() + also_spelled.iter().map(|word| word.len() + 2).sum::<usize>() + spans.len() * 8 + 6 <= MAX_BLOB_BYTES
+        })
         .unwrap_or_else(|| (failed_record(offset, FailReason::Internal), Vec::new(), Vec::new(), String::new()))
 }
 
@@ -865,7 +935,10 @@ pub fn build_for_file(file: &Path, root: &Path, key: CorpusKey, feed: &mut impl 
     local::ensure_private_dir(root)?;
     note_starting(root, file, key)?;
     let outcome = build(root, key, feed, meta, limits);
-    if matches!(outcome, Ok(BuildOutcome::Ready { .. } | BuildOutcome::AlreadyReady(_) | BuildOutcome::Refused(_))) {
+    if matches!(
+        outcome,
+        Ok(BuildOutcome::Ready { .. } | BuildOutcome::AlreadyReady(_) | BuildOutcome::Refused(_))
+    ) {
         let _ = note_finished(root, file, key);
     }
     outcome
@@ -895,7 +968,9 @@ fn file_aliases(path: &Path) -> Vec<String> {
 
 /// The keys a file has had that may still have text on disk, oldest first. Anything that isn't a key is left out.
 fn read_alias(path: &Path) -> Vec<CorpusKey> {
-    let Ok(Some(bytes)) = local::read_private_file(path, MAX_KEYS_PER_ALIAS as u64 * 65) else { return Vec::new() };
+    let Ok(Some(bytes)) = local::read_private_file(path, MAX_KEYS_PER_ALIAS as u64 * 65) else {
+        return Vec::new();
+    };
     String::from_utf8_lossy(&bytes).lines().filter_map(CorpusKey::from_hex).collect()
 }
 
@@ -1004,7 +1079,16 @@ fn digest(read: Result<FedPage, FailReason>, offset: u64) -> (PageRecord, Vec<St
         Err(reason) => return (failed_record(offset, reason), Vec::new(), Vec::new(), String::new()),
     };
     if page.chars.is_empty() {
-        let record = PageRecord { offset, text_len: 0, aux_len: 0, chars: 0, kind: PageKind::NoText, flags: FLAG_HIDDEN_CHECKED, reason: 0, check: 0 };
+        let record = PageRecord {
+            offset,
+            text_len: 0,
+            aux_len: 0,
+            chars: 0,
+            kind: PageKind::NoText,
+            flags: FLAG_HIDDEN_CHECKED,
+            reason: 0,
+            check: 0,
+        };
         return (record, Vec::new(), Vec::new(), String::new());
     }
     let report = hidden_report(&page.chars, page.hidden_checked);
@@ -1024,12 +1108,30 @@ fn digest(read: Result<FedPage, FailReason>, offset: u64) -> (PageRecord, Vec<St
         flags |= FLAG_SPANS_DROPPED;
     }
     let text_len = u32::try_from(normalized.text.len()).unwrap_or(u32::MAX);
-    let record = PageRecord { offset, text_len, aux_len: 0, chars: u32::try_from(page.chars.len()).unwrap_or(u32::MAX), kind: PageKind::Text, flags, reason: 0, check: 0 };
+    let record = PageRecord {
+        offset,
+        text_len,
+        aux_len: 0,
+        chars: u32::try_from(page.chars.len()).unwrap_or(u32::MAX),
+        kind: PageKind::Text,
+        flags,
+        reason: 0,
+        check: 0,
+    };
     (record, normalized.also_spelled, reading.hidden_spans, normalized.text)
 }
 
 fn failed_record(offset: u64, reason: FailReason) -> PageRecord {
-    PageRecord { offset, text_len: 0, aux_len: 0, chars: 0, kind: PageKind::Failed, flags: 0, reason: reason as u8, check: 0 }
+    PageRecord {
+        offset,
+        text_len: 0,
+        aux_len: 0,
+        chars: 0,
+        kind: PageKind::Failed,
+        flags: 0,
+        reason: reason as u8,
+        check: 0,
+    }
 }
 
 /// How wide a page file's number is: at least four digits, and the same for the whole document.
@@ -1109,7 +1211,12 @@ fn page_holds_up(pack: Option<&File>, page: u32, record: &PageRecord, pack_len: 
 /// One page's file: a first line that can't come from the page, then the page's lines, one for one, so line `n` of the page is line `n + 1` here.
 fn write_page_file_text(out: &mut String, page: u32, stored: &StoredPage<'_>) {
     let number = page + 1;
-    let _ = write!(out, "<!-- recto page={number} cite=\"PDF p. {number}\" text={} hidden={}", text_word(stored.kind), hidden_word(stored.hidden_checked, stored.hidden_flagged));
+    let _ = write!(
+        out,
+        "<!-- recto page={number} cite=\"PDF p. {number}\" text={} hidden={}",
+        text_word(stored.kind),
+        hidden_word(stored.hidden_checked, stored.hidden_flagged)
+    );
     if stored.has_tag_chars {
         out.push_str(" tag_chars=removed");
     }
@@ -1165,7 +1272,11 @@ pub enum LineStyle {
 /// Whether a page's own line could be taken for one of the file's marks, even with space in front of it, as a reader or a grep with loose rules would take it.
 fn reads_as_a_mark(line: &str) -> bool {
     let line = line.trim_start();
-    line.starts_with('!') || line.starts_with('\\') || line.starts_with("<!-- recto") || line.starts_with(NO_TEXT_LINE_START) || line.starts_with(FAILED_LINE_START)
+    line.starts_with('!')
+        || line.starts_with('\\')
+        || line.starts_with("<!-- recto")
+        || line.starts_with(NO_TEXT_LINE_START)
+        || line.starts_with(FAILED_LINE_START)
 }
 
 /// The words a page file uses for itself, where a page has nothing else to say.
@@ -1229,7 +1340,15 @@ fn write_page_file(paths: &CorpusPaths, page: u32, width: usize, text: &str) -> 
 /// Adds up the table, writes what the manifest will want to know about the file, then the mark that makes it all usable.
 fn finish(paths: &CorpusPaths, pages: u32, width: usize, pack_bytes: u64, bytes: u64, meta: &DocMeta, retries: u32) -> io::Result<Summary> {
     let table = read_table(paths, pages)?;
-    let mut summary = Summary { pages, width: width as u32, table_bytes: table.len() as u64, pack_bytes, retries, retried_at: now_seconds(), ..Summary::default() };
+    let mut summary = Summary {
+        pages,
+        width: width as u32,
+        table_bytes: table.len() as u64,
+        pack_bytes,
+        retries,
+        retried_at: now_seconds(),
+        ..Summary::default()
+    };
     for bytes in table.as_chunks::<RECORD_LEN>().0 {
         let record = PageRecord::decode(bytes).ok_or(io::ErrorKind::InvalidData)?;
         match record.kind {
@@ -1333,7 +1452,10 @@ fn make_agent_folder(paths: &CorpusPaths, limits: &BuildLimits) -> Result<AgentF
     if pages_written > 0 || !paths.manifest.is_file() {
         write_manifest(paths, &corpus, width).map_err(|_| AgentFolderError::Failed)?;
     }
-    Ok(AgentFolder { path: paths.agent.clone(), pages_written })
+    Ok(AgentFolder {
+        path: paths.agent.clone(),
+        pages_written,
+    })
 }
 
 /// Writes the manifest from the table, a line per page. Last, so a folder with one is finished.
@@ -1341,7 +1463,8 @@ fn write_manifest(paths: &CorpusPaths, corpus: &ReadyCorpus, width: usize) -> io
     let pages = corpus.pages();
     let meta = read_json(&paths.meta).unwrap_or(Value::Null);
     let mut index = String::with_capacity(corpus.table.len() * 3);
-    let (mut no_text, mut failed, mut flagged, mut unchecked, mut tag_chars, mut partial) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut no_text, mut failed, mut flagged, mut unchecked, mut tag_chars, mut partial) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for (page, bytes) in corpus.table.as_chunks::<RECORD_LEN>().0.iter().enumerate() {
         let record = PageRecord::decode(bytes).ok_or(io::ErrorKind::InvalidData)?;
         let number = page as u32 + 1;
@@ -1363,7 +1486,13 @@ fn write_manifest(paths: &CorpusPaths, corpus: &ReadyCorpus, width: usize) -> io
         }
         // One line each, so a search for `"p": 88,` finds a page's entry without reading the rest.
         let comma = if number == pages { "" } else { "," };
-        let _ = write!(index, "\n    {{\"p\": {number}, \"cite\": \"PDF p. {number}\", \"chars\": {}, \"text\": \"{}\", \"hidden\": \"{}\"}}{comma}", record.chars, text_word(record.kind), hidden_word(record.flags & FLAG_HIDDEN_CHECKED != 0, record.flags & FLAG_HIDDEN_FLAGGED != 0));
+        let _ = write!(
+            index,
+            "\n    {{\"p\": {number}, \"cite\": \"PDF p. {number}\", \"chars\": {}, \"text\": \"{}\", \"hidden\": \"{}\"}}{comma}",
+            record.chars,
+            text_word(record.kind),
+            hidden_word(record.flags & FLAG_HIDDEN_CHECKED != 0, record.flags & FLAG_HIDDEN_FLAGGED != 0)
+        );
     }
     let head = json!({
         "v": 1,
@@ -1385,7 +1514,9 @@ fn write_manifest(paths: &CorpusPaths, corpus: &ReadyCorpus, width: usize) -> io
         "untrusted": { "title": meta["title"], "outline": meta["outline"] },
     });
     let head = serde_json::to_string_pretty(&head).map_err(|_| io::ErrorKind::InvalidData)?;
-    let Some(without_end) = head.strip_suffix("\n}") else { return Err(io::ErrorKind::InvalidData.into()) };
+    let Some(without_end) = head.strip_suffix("\n}") else {
+        return Err(io::ErrorKind::InvalidData.into());
+    };
     let manifest = format!("{without_end},\n  \"page_index\": [{index}\n  ]\n}}\n");
     local::write_private_file_unsynced(&paths.manifest, manifest.as_bytes())
 }
@@ -1425,7 +1556,10 @@ pub fn evict(root: &Path, limits: &BuildLimits, keep: Option<CorpusKey>) -> io::
             continue;
         }
         let dir = entry.path();
-        let used = fs::metadata(CorpusPaths::new(root, key).used).or_else(|_| fs::metadata(&dir)).and_then(|meta| meta.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+        let used = fs::metadata(CorpusPaths::new(root, key).used)
+            .or_else(|_| fs::metadata(&dir))
+            .and_then(|meta| meta.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
         found.push((used, folder_bytes(&dir), key));
     }
     found.sort_by_key(|entry| entry.0);
@@ -1453,7 +1587,10 @@ pub fn make_room(root: &Path, limits: &BuildLimits, keep: CorpusKey) -> io::Resu
             total += folder_bytes(&entry.path());
         }
     }
-    let tighter = BuildLimits { max_total_bytes: total.saturating_sub(ROOM_ON_A_FULL_DISK.max(total / 4)), ..*limits };
+    let tighter = BuildLimits {
+        max_total_bytes: total.saturating_sub(ROOM_ON_A_FULL_DISK.max(total / 4)),
+        ..*limits
+    };
     evict(root, &tighter, Some(keep))
 }
 
@@ -1492,7 +1629,9 @@ pub fn clear_all(root: &Path) -> io::Result<Cleared> {
     };
     for entry in entries {
         let entry = entry?;
-        let Some(key) = entry.file_name().to_str().and_then(CorpusKey::from_hex) else { continue };
+        let Some(key) = entry.file_name().to_str().and_then(CorpusKey::from_hex) else {
+            continue;
+        };
         if !entry.file_type()?.is_dir() {
             continue;
         }

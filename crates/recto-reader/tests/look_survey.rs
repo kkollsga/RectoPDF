@@ -19,7 +19,9 @@ fn survey() {
     let out = std::env::var("RECTO_LOOK_OUT").unwrap();
     for line in list.lines() {
         let Some((path, pages)) = line.rsplit_once(' ') else { continue };
-        let Ok(mut doc) = DocRenderer::new(Path::new(path), None, ServiceConfig::discover().unwrap(), Policy::default()) else { continue };
+        let Ok(mut doc) = DocRenderer::new(Path::new(path), None, ServiceConfig::discover().unwrap(), Policy::default()) else {
+            continue;
+        };
         let name = Path::new(path).file_stem().unwrap().to_string_lossy().to_string();
         for page in pages.split(',').filter_map(|page| page.parse::<u32>().ok()) {
             let page = page - 1;
@@ -28,7 +30,18 @@ fn survey() {
             let Ok((w, h)) = device_size(width, height, scale) else { continue };
             let surface = PixelSurface::create(w, h).unwrap();
             let started = Instant::now();
-            let request = TileRequest { page, rect: TileRect { x: 0, y: 0, width: w, height: h }, scale, stride: surface.stride(), generation: 1 };
+            let request = TileRequest {
+                page,
+                rect: TileRect {
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h,
+                },
+                scale,
+                stride: surface.stride(),
+                generation: 1,
+            };
             let done = matches!(doc.render_tile(&request, &surface), Ok(TileResult::Done(_)));
             let draw_ms = started.elapsed().as_secs_f64() * 1000.0;
             if !done {

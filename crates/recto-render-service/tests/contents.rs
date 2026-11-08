@@ -47,7 +47,16 @@ fn frame_for(mode: &str, job: &ContentsJob, in_heavy: bool) -> Vec<u8> {
         }
         // A row the host would have to hold 8 GiB of, three times over, filled from the next frames, with nothing reaching the file's cap until the row ends.
         ("row_too_long", 1) => {
-            put::image_begin(&mut out, ImageCoding::Pixels { channels: 4 }, Why::Image, 255, i32::MAX as u32, 1, u64::from(i32::MAX as u32) * 4, &IDENTITY);
+            put::image_begin(
+                &mut out,
+                ImageCoding::Pixels { channels: 4 },
+                Why::Image,
+                255,
+                i32::MAX as u32,
+                1,
+                u64::from(i32::MAX as u32) * 4,
+                &IDENTITY,
+            );
             done = false;
         }
         ("size_overflows", 1) => put::image_begin(&mut out, ImageCoding::Pixels { channels: 4 }, Why::Image, 255, u32::MAX, u32::MAX, 0, &IDENTITY),
@@ -92,7 +101,15 @@ fn fake_worker() {
     let Ok(mode) = std::env::var("RECTO_FAKE") else { return };
     let limit: u64 = std::env::var("RECTO_WORKER_LIMIT").unwrap().parse().unwrap();
     let channel = Channel::inherited().unwrap();
-    send_all(&channel, &proto::encode_hello(proto::Hello { pid: std::process::id(), walled: false }), &[]).unwrap();
+    send_all(
+        &channel,
+        &proto::encode_hello(proto::Hello {
+            pid: std::process::id(),
+            walled: false,
+        }),
+        &[],
+    )
+    .unwrap();
     let mut reader = FrameReader::default();
     let mut started = false;
     loop {
@@ -101,7 +118,12 @@ fn fake_worker() {
             Kind::Open => proto::encode_opened(1, 1),
             Kind::SizeRequest => {
                 let (job_id, _) = proto::decode_size_request(&frame.payload).unwrap();
-                PageSize { job_id, width: 100.0, height: 100.0 }.encode()
+                PageSize {
+                    job_id,
+                    width: 100.0,
+                    height: 100.0,
+                }
+                .encode()
             }
             Kind::ContentsRequest => {
                 let job = ContentsJob::decode(&frame.payload).unwrap();
@@ -124,14 +146,34 @@ fn renderer(mode: &str, file: &TempPdf) -> DocRenderer {
         pdfium_lib: "/nonexistent".into(),
         heavy_slot: HeavySlot::new(),
         extra_env: vec![("RECTO_FAKE".into(), mode.into())],
-        replace_args: Some(["--exact", "fake_worker", "--nocapture", "--test-threads=1"].into_iter().map(OsString::from).collect()),
+        replace_args: Some(
+            ["--exact", "fake_worker", "--nocapture", "--test-threads=1"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+        ),
     };
-    let policy = Policy { memory_limit_bytes: NORMAL, heavy_limit_bytes: HEAVY, heavy_min_free_percent: 0, page_deadline: Duration::from_secs(10), ..Policy::default() };
+    let policy = Policy {
+        memory_limit_bytes: NORMAL,
+        heavy_limit_bytes: HEAVY,
+        heavy_min_free_percent: 0,
+        page_deadline: Duration::from_secs(10),
+        ..Policy::default()
+    };
     DocRenderer::new(&file.0, None, config, policy).unwrap()
 }
 
 fn request() -> ContentsRequest {
-    ContentsRequest { page: 0, generation: 0, scale: 2.0, rect: None, text: TextMode::Both, hints: 0, images: 0, max_time: Duration::from_secs(20) }
+    ContentsRequest {
+        page: 0,
+        generation: 0,
+        scale: 2.0,
+        rect: None,
+        text: TextMode::Both,
+        hints: 0,
+        images: 0,
+        max_time: Duration::from_secs(20),
+    }
 }
 
 fn file() -> TempPdf {
@@ -175,15 +217,46 @@ fn a_page_that_outgrows_its_worker_starts_again_in_a_larger_one() {
 #[test]
 fn a_page_past_every_limit_is_refused() {
     let (result, _) = run("always_grows");
-    assert_eq!(result, Err(RenderFailure::ExportRefused { page: 0, why: ExportRefusal::TooHeavy }));
+    assert_eq!(
+        result,
+        Err(RenderFailure::ExportRefused {
+            page: 0,
+            why: ExportRefusal::TooHeavy
+        })
+    );
 }
 
 /// Failure: a compromised worker's records reach the writer, among them an image whose rows would fill the host's memory before any cap on the file sees a byte, or one whose size overflows the sum that checks it. Each of these breaks a rule, kills the worker, and ends in a failure, so nothing is published.
 #[test]
 fn a_stream_that_breaks_the_rules_is_stopped() {
-    for mode in ["jpeg_thats_not_an_image", "jpeg_with_no_mask", "mask_of_colour", "mask_with_no_jpeg", "not_really_a_jpeg", "row_too_long", "size_overflows", "page_twice", "clip_too_deep", "image_short", "image_left_open", "group_left_open", "garbage", "not_finite", "wrong_seq"] {
+    for mode in [
+        "jpeg_thats_not_an_image",
+        "jpeg_with_no_mask",
+        "mask_of_colour",
+        "mask_with_no_jpeg",
+        "not_really_a_jpeg",
+        "row_too_long",
+        "size_overflows",
+        "page_twice",
+        "clip_too_deep",
+        "image_short",
+        "image_left_open",
+        "group_left_open",
+        "garbage",
+        "not_finite",
+        "wrong_seq",
+    ] {
         let (result, _) = run(mode);
-        assert!(matches!(result, Err(RenderFailure::PageFailed { reason: KillReason::Rejected(_), .. })), "{mode}: {result:?}");
+        assert!(
+            matches!(
+                result,
+                Err(RenderFailure::PageFailed {
+                    reason: KillReason::Rejected(_),
+                    ..
+                })
+            ),
+            "{mode}: {result:?}"
+        );
     }
 }
 
@@ -194,7 +267,16 @@ fn a_job_for_images_refuses_what_it_didnt_ask_for() {
         let file = file();
         let mut doc = renderer("honest", &file);
         let result = doc.read_contents(&ContentsRequest { images, ..request() }, |_| Ok(()));
-        assert!(matches!(result, Err(RenderFailure::PageFailed { reason: KillReason::Rejected("something the job didn't ask for"), .. })), "{images}: {result:?}");
+        assert!(
+            matches!(
+                result,
+                Err(RenderFailure::PageFailed {
+                    reason: KillReason::Rejected("something the job didn't ask for"),
+                    ..
+                })
+            ),
+            "{images}: {result:?}"
+        );
     }
 }
 
@@ -202,7 +284,16 @@ fn a_job_for_images_refuses_what_it_didnt_ask_for() {
 #[test]
 fn a_worker_that_keeps_losing_its_place_is_stopped() {
     let (result, seen) = run("forgets_place");
-    assert!(matches!(result, Err(RenderFailure::PageFailed { reason: KillReason::Rejected(_), .. })), "{result:?}: {seen:?}");
+    assert!(
+        matches!(
+            result,
+            Err(RenderFailure::PageFailed {
+                reason: KillReason::Rejected(_),
+                ..
+            })
+        ),
+        "{result:?}: {seen:?}"
+    );
     assert!(seen.iter().filter(|tag| **tag == "restart").count() <= 2, "{seen:?}");
 }
 
@@ -212,7 +303,10 @@ fn a_worker_that_never_finishes_runs_out_of_time() {
     let file = file();
     let mut doc = renderer("endless", &file);
     let started = Instant::now();
-    let request = ContentsRequest { max_time: Duration::from_millis(300), ..request() };
+    let request = ContentsRequest {
+        max_time: Duration::from_millis(300),
+        ..request()
+    };
     let result = doc.read_contents(&request, |_| Ok(()));
     assert_eq!(result, Err(RenderFailure::TookTooLong));
     assert!(started.elapsed() < Duration::from_secs(10));

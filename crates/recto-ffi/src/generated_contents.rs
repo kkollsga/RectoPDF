@@ -60,25 +60,44 @@ pub(crate) fn look_if_chosen(inner: &Inner) {
 /// Looks at where one tab's generated contents stand, on a thread of its own, and asks for them to be made if `ask`.
 fn look(inner: &Inner, id: TabId, ask: bool) {
     let Some(generator) = inner.host.session.generator().cloned() else {
-        inner.core.push(CoreCall::GeneratedView(id, GeneratedView::Failed("Generated contents aren't available here."), None));
+        inner.core.push(CoreCall::GeneratedView(
+            id,
+            GeneratedView::Failed("Generated contents aren't available here."),
+            None,
+        ));
         return;
     };
     // Which version of the file this look is about: an answer that comes back after the file changed is about the old one, and is dropped.
-    let Some((path, pages, version)) = inner.host.session.with_session(|session| Some((session.path_of(id)?, session.tab(id)?.page_count, session.own_stamp(id)))) else { return };
+    let Some((path, pages, version)) = inner
+        .host
+        .session
+        .with_session(|session| Some((session.path_of(id)?, session.tab(id)?.page_count, session.own_stamp(id))))
+    else {
+        return;
+    };
     let core = Arc::clone(&inner.core);
-    let spawned = std::thread::Builder::new().name("recto-contents-look".into()).stack_size(256 * 1024).spawn(move || {
-        if let Some(view) = where_they_stand(&generator, &path, pages, ask) {
-            core.push(CoreCall::GeneratedView(id, view, version));
-        }
-    });
+    let spawned = std::thread::Builder::new()
+        .name("recto-contents-look".into())
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            if let Some(view) = where_they_stand(&generator, &path, pages, ask) {
+                core.push(CoreCall::GeneratedView(id, view, version));
+            }
+        });
     if spawned.is_err() {
-        inner.core.push(CoreCall::GeneratedView(id, GeneratedView::Failed("They couldn't be asked for just now. Try again."), None));
+        inner.core.push(CoreCall::GeneratedView(
+            id,
+            GeneratedView::Failed("They couldn't be asked for just now. Try again."),
+            None,
+        ));
     }
 }
 
 /// What the sidebar should show for a file's generated contents now, or `None` if it's still what it was.
 fn where_they_stand(generator: &Generator, path: &Path, pages: u32, ask: bool) -> Option<GeneratedView> {
-    let Ok(key) = CorpusKey::of_file(path) else { return Some(GeneratedView::Failed("The file can't be looked at just now.")) };
+    let Ok(key) = CorpusKey::of_file(path) else {
+        return Some(GeneratedView::Failed("The file can't be looked at just now."));
+    };
     if let Some(made) = generated::find(generator, path, key) {
         // A scan with no text layer, or a document set all in one size, has nothing to list: said, rather than shown as an empty list.
         if made.entries.is_empty() {

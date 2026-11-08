@@ -12,7 +12,12 @@ use std::time::{Duration, Instant};
 
 /// A document whose every page says which document and page it is, at a page size of its own.
 fn document(name: &str, count: usize, media: (f32, f32)) -> TempPdf {
-    let list: Vec<Page> = (0..count).map(|index| Page { media, ..Page::new(text_lines(&[&format!("{name}word page {index}"), "Words, so that the page isn't blank"])) }).collect();
+    let list: Vec<Page> = (0..count)
+        .map(|index| Page {
+            media,
+            ..Page::new(text_lines(&[&format!("{name}word page {index}"), "Words, so that the page isn't blank"]))
+        })
+        .collect();
     TempPdf::new(&format!("{name}.pdf"), &pages(&list))
 }
 
@@ -21,7 +26,11 @@ fn panes(report: &Value) -> Vec<Value> {
 }
 
 fn page_of(report: &Value, tab: u64) -> i64 {
-    panes(report).iter().find(|pane| pane["tab"] == tab).map(|pane| pane["page"].as_i64().unwrap()).unwrap_or(-1)
+    panes(report)
+        .iter()
+        .find(|pane| pane["tab"] == tab)
+        .map(|pane| pane["page"].as_i64().unwrap())
+        .unwrap_or(-1)
 }
 
 /// Failure: ⌘-click doesn't put PDFs side by side, a pane runs into the next or has no name on it, the right-click menu has no scroll choice, synced scroll doesn't keep the panes page for page from where it went on or says nothing of different lengths, zoom differs between panes, a selection or a copy isn't the pane being read's, closing a pane's tab leaves its page view behind with its thread and worker, or a plain click doesn't return to one. Mixed page sizes and lengths, and side by side inside a pane, as the brief asks.
@@ -29,7 +38,11 @@ fn page_of(report: &Value, tab: u64) -> i64 {
 fn comparison_view_from_command_click_to_one_again() {
     let state = State::new();
     let Some(run) = Run::on(&state) else { return };
-    let (a, b, c) = (document("alpha", 40, (612.0, 792.0)), document("beta", 12, (842.0, 595.0)), document("gamma", 25, (595.0, 842.0)));
+    let (a, b, c) = (
+        document("alpha", 40, (612.0, 792.0)),
+        document("beta", 12, (842.0, 595.0)),
+        document("gamma", 25, (595.0, 842.0)),
+    );
     run.ok(&["open", a.0.to_str().unwrap()]);
     run.settled();
     run.ok(&["goto", "10"]);
@@ -41,7 +54,15 @@ fn comparison_view_from_command_click_to_one_again() {
     let one = run.report();
     let threads_alone = one["memory"]["threads"].as_u64().unwrap();
     assert_eq!(panes(&one).len(), 1);
-    assert!(one["context_menu"].is_null() && one["app"]["context_menu"].as_array().unwrap().iter().all(|item| !item["id"].as_str().unwrap().starts_with("compare.")), "no scroll choice with one tab");
+    assert!(
+        one["context_menu"].is_null()
+            && one["app"]["context_menu"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| !item["id"].as_str().unwrap().starts_with("compare.")),
+        "no scroll choice with one tab"
+    );
 
     // ⌘-click on the first tab's row, with gamma showing: side by side, alpha read.
     run.ok(&["qa", "compare-click", "0"]);
@@ -62,10 +83,23 @@ fn comparison_view_from_command_click_to_one_again() {
     assert!(app_panes[0]["x"].as_f64().unwrap() + app_panes[0]["width"].as_f64().unwrap() <= app_panes[1]["x"].as_f64().unwrap());
     let magnifications: Vec<f64> = panes(&two).iter().map(|pane| pane["magnification"].as_f64().unwrap()).collect();
     assert!((magnifications[0] - magnifications[1]).abs() < 1e-9, "one zoom: {magnifications:?}");
-    assert_eq!(two["app"]["zoom_level"]["clear_of_pages"], true, "the corner stays clear in the pane at the right");
+    assert_eq!(
+        two["app"]["zoom_level"]["clear_of_pages"], true,
+        "the corner stays clear in the pane at the right"
+    );
     assert_eq!(two["app"]["agent_icon_margins"]["clear_of_pages"], true);
-    let menu: Vec<(String, bool)> = two["app"]["context_menu"].as_array().unwrap().iter().filter(|item| item["id"].as_str().unwrap().starts_with("compare.")).map(|item| (item["id"].as_str().unwrap().to_string(), item["checked"].as_bool().unwrap())).collect();
-    assert_eq!(menu, [("compare.separate".to_string(), true), ("compare.synced".to_string(), false)], "separate by default");
+    let menu: Vec<(String, bool)> = two["app"]["context_menu"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["id"].as_str().unwrap().starts_with("compare."))
+        .map(|item| (item["id"].as_str().unwrap().to_string(), item["checked"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(
+        menu,
+        [("compare.separate".to_string(), true), ("compare.synced".to_string(), false)],
+        "separate by default"
+    );
 
     // Separate: a scroll in one leaves the other.
     let gamma_was = page_of(&two, 3);
@@ -78,21 +112,32 @@ fn comparison_view_from_command_click_to_one_again() {
     run.settled();
     let synced = run.report();
     assert_eq!(synced["session"]["comparison"]["synced"], true);
-    assert!(synced["app"]["note"].as_str().is_some_and(|note| note.contains("25 and 40")), "different lengths are said: {}", synced["app"]["note"]);
+    assert!(
+        synced["app"]["note"].as_str().is_some_and(|note| note.contains("25 and 40")),
+        "different lengths are said: {}",
+        synced["app"]["note"]
+    );
     let (gamma_start, alpha_start) = (page_of(&synced, 3), page_of(&synced, 1));
     run.ok(&["qa", "pane-scroll", "0:4000"]);
     run.settled();
     let led = run.report();
     let (gamma_now, alpha_now) = (page_of(&led, 3), page_of(&led, 1));
     assert!(gamma_now > gamma_start, "the pane scrolled: {gamma_start} to {gamma_now}");
-    assert!(((alpha_now - alpha_start) - (gamma_now - gamma_start)).abs() <= 1, "page for page: gamma {gamma_start}→{gamma_now}, alpha {alpha_start}→{alpha_now}");
+    assert!(
+        ((alpha_now - alpha_start) - (gamma_now - gamma_start)).abs() <= 1,
+        "page for page: gamma {gamma_start}→{gamma_now}, alpha {alpha_start}→{alpha_now}"
+    );
     assert_eq!(led["session"]["active"], 3, "scrolling a pane makes it the one read");
 
     // Zoom in the pane being read is zoom in each.
     run.ok(&["qa", "zoom", "1.5"]);
     run.settled();
     let zoomed = run.report();
-    assert!(panes(&zoomed).iter().all(|pane| (pane["magnification"].as_f64().unwrap() - 1.5).abs() < 1e-6), "{}", zoomed["panes"]);
+    assert!(
+        panes(&zoomed).iter().all(|pane| (pane["magnification"].as_f64().unwrap() - 1.5).abs() < 1e-6),
+        "{}",
+        zoomed["panes"]
+    );
     run.ok(&["view", "--zoom", "fit"]);
     run.settled();
 
@@ -101,7 +146,11 @@ fn comparison_view_from_command_click_to_one_again() {
     run.settled();
     assert_eq!(panes(&run.report()).len(), 3);
     let three = run.report();
-    assert!(three["app"]["panes"].as_array().unwrap().iter().all(|pane| pane["pages_inside"] == true), "{}", three["app"]["panes"]);
+    assert!(
+        three["app"]["panes"].as_array().unwrap().iter().all(|pane| pane["pages_inside"] == true),
+        "{}",
+        three["app"]["panes"]
+    );
     run.ok(&["qa", "compare-click", "1"]);
     run.settled();
     assert_eq!(panes(&run.report()).len(), 2);
@@ -177,7 +226,11 @@ fn a_fourth_pane_is_refused_with_words() {
     run.settled();
     let report = run.report();
     assert_eq!(panes(&report).len(), 3);
-    assert!(report["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("three")), "{}", report["app"]["copy_notice"]);
+    assert!(
+        report["app"]["copy_notice"]["text"].as_str().is_some_and(|text| text.contains("three")),
+        "{}",
+        report["app"]["copy_notice"]
+    );
 }
 
 /// Failure: a tab gone dormant, with its sleep file, comes into a comparison blank or by reading its PDF with the session held; a pane's file gone missing or replaced under it hangs the app or takes the other pane with it; or a pane's tab can be put to sleep while it's on screen.
@@ -185,7 +238,11 @@ fn a_fourth_pane_is_refused_with_words() {
 fn a_dormant_tab_and_a_missing_file_in_a_comparison() {
     let state = State::new();
     let Some(run) = Run::on(&state) else { return };
-    let (a, b, c) = (document("alpha", 20, (612.0, 792.0)), document("beta", 8, (612.0, 792.0)), document("gamma", 5, (612.0, 792.0)));
+    let (a, b, c) = (
+        document("alpha", 20, (612.0, 792.0)),
+        document("beta", 8, (612.0, 792.0)),
+        document("gamma", 5, (612.0, 792.0)),
+    );
     for file in [&a, &b, &c] {
         run.ok(&["open", file.0.to_str().unwrap()]);
         run.settled();
@@ -197,9 +254,17 @@ fn a_dormant_tab_and_a_missing_file_in_a_comparison() {
     run.settled();
     let compared = run.report();
     assert_eq!(panes(&compared).len(), 2);
-    assert!(compared["record"]["sleep"]["woken_from_file"].as_u64().unwrap_or(0) > woken_before, "from its sleep file: {}", compared["record"]["sleep"]);
+    assert!(
+        compared["record"]["sleep"]["woken_from_file"].as_u64().unwrap_or(0) > woken_before,
+        "from its sleep file: {}",
+        compared["record"]["sleep"]
+    );
     assert!(panes(&compared).iter().all(|pane| pane["settled"] == true), "{}", compared["panes"]);
-    assert_eq!(run.ok(&["session", "sleep", "--tab", "#3"])["dormant"], false, "a pane on screen doesn't go dormant");
+    assert_eq!(
+        run.ok(&["session", "sleep", "--tab", "#3"])["dormant"],
+        false,
+        "a pane on screen doesn't go dormant"
+    );
 
     // The other pane's file goes away and another comes in its place, under it.
     std::fs::remove_file(&c.0).unwrap();
@@ -294,7 +359,11 @@ fn a_right_click_on_a_pane_is_about_that_pane() {
 fn restoring_a_comparison_with_a_small_page_keeps_the_reader_and_the_places() {
     let state = State::new();
     let Some(run) = Run::on(&state) else { return };
-    let (a, b, small) = (document("first", 30, (612.0, 792.0)), document("second", 30, (612.0, 792.0)), document("card", 1, (300.0, 200.0)));
+    let (a, b, small) = (
+        document("first", 30, (612.0, 792.0)),
+        document("second", 30, (612.0, 792.0)),
+        document("card", 1, (300.0, 200.0)),
+    );
     for file in [&a, &b, &small] {
         run.ok(&["open", file.0.to_str().unwrap()]);
         run.settled();
