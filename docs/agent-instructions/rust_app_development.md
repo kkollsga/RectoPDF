@@ -50,6 +50,10 @@ Read it whole once. Then keep the short version (§0) in mind while working. A n
     on it. Only memory, disk and a shared build folder put work in line.
 14. **Protect the machine and the repo.** One heavy Rust build at a time on a 16 GB Mac; clean worktrees and temp
     folders as you go; never `git switch --orphan`; check every commit's size before pushing.
+15. **Every feature in its own compartment (§2.8).** A feature's state, commands, events, QA verbs and tests live
+    in its own module and register themselves; shared files get one line. No god objects, registries instead of
+    switches, `rustfmt` from day one, and structure measured at every process review. Under parallel agents,
+    correct small additions to shared files pile up into hubs nobody notices until every merge conflicts.
 
 ---
 
@@ -426,6 +430,69 @@ hacking". NordVPN has no partner/OAuth API; the official route is SOCKS5 with se
 once. Undocumented endpoints were rejected. Simplify the manual step instead: a guided window with the steps, a link
 to the right page, and paste-fill that recognises what the user copied.
 
+
+### 2.8 Every feature in its own compartment: hubs collapse under parallel work
+
+**What happened.** A reader app got about 30 features in about 30 hours: 26 branches and three to five workers at once.
+Each branch was reviewed for correctness, security, memory and tests, and passed. The first structural review came after
+all of that, using a code graph, and found the crates cleanly layered with no cycles. Inside them, though, 11 hub files
+took every feature:
+- each of the last 8 features touched 7 to 11 of those files, and one feature put half of its 3,100 lines into about 20
+  shared files;
+- the session was one object with 34 fields and 180 methods, covering about 10 concerns;
+- adding one agent command took 7 to 9 edits across 3 files, through a 59-variant enum and a 262-line, 120-branch
+  `match`;
+- the UI bridge held policy its own contract forbade, with 10 unit tests for 2,100 lines, so only the slow app tests
+  reached the code every merge changed.
+
+Merges conflicted every time in the same files. Fixing it was estimated at 20 to 35 worker-days, with the first
+release waiting.
+
+**Why it happened.** Every addition was small and correct. Each worker put its piece in the nearest existing place:
+one more field, one more enum variant, one more `match` arm, one more menu entry, one more line in a list of every
+state field. No brief said otherwise. No review asked whether the code was getting harder to change, and no process
+review measured structure. The early design (one session object on one thread, one command enum, one bridge object)
+was right for 5 features, and nobody revisited it at 15. Two tooling gaps multiplied the conflicts: no `rustfmt`, so
+whole-struct literals and long signatures sat on one 200-to-1,000-character line each, and a whole-state test that
+needs every field registered in one unsorted list.
+
+**Rules, from the first feature:**
+- **A feature lives in its own module (or crate) and registers itself.** Its state, commands, events, QA verbs,
+  wording and tests sit together. Shared files get at most a one-line registration: a variant that delegates to the
+  feature's own enum, an entry in a table, a `mod` line. If a feature needs to edit the logic of a shared file, the
+  shared file is missing an extension point. Add the extension point first, as its own commit.
+- **No god objects.** A struct past about 12 fields or 40 methods, or a `match` past about 60 lines, gets split
+  by concern before the next feature touches it. The session is a set of components (tabs, warm and sleep, edits and
+  history, find, comparison, saving, trails…), each with its own tests. The bridge's calls are per-feature
+  sub-enums handled by per-feature functions.
+- **Registries, not switches, for things every feature adds:**
+  - commands are declared once in a macro list or table that generates the enum, the dispatch, the help table and the
+    required properties (level, whether it draws, which tab it holds), with no default arms to forget;
+  - QA verbs and events work the same way;
+  - menus come from per-feature declarations.
+- **Logic that decides is testable without the host.** The bridge only translates: policy, wording and enabling
+  rules live in a toolkit-free crate with unit tests, run by the fast check. If the only test that reaches a rule
+  starts the app, the rule is in the wrong place.
+- **Whole-state tests are generated from the types,** not hand-kept lists every branch edits. A test that must
+  name every field is a merge-conflict machine.
+- **`rustfmt` from day one, in the fast check,** with a line width a diff can read. One line per field in struct
+  literals and long signatures means two branches adding a field merge without a conflict.
+- **Name the hub cost in the plan.** Before a feature starts, the brief lists which shared files it may touch and
+  how: registration only. A diff that edits more shared logic than that is sent back, or the extension point is
+  made first.
+
+**Measure it, because nobody notices structure decaying one correct change at a time.** At every process review,
+and before each phase ends, run the code graph and record:
+- the largest files and functions;
+- structs by field count and enums by variant count;
+- which files the last few features each touched, and how many;
+- the fan-in of each module;
+- the files where merges conflicted.
+
+Set budgets the same way as memory budgets: a file past about 1,500 lines, a function past about 150 lines, or a hub
+that a third of all features touch is a finding, and it gets a split before more features land. Merge conflicts in
+the same file twice in a week are the earliest alarm: treat them as a structure bug, not bad luck.
+
 ---
 
 ## 3. Performance and memory: as small and fast as possible
@@ -714,6 +781,8 @@ The brief is the only context the worker has. It must include:
   tool calls only, heavy builds through the lock, clean up as you go;
 - where to look (files, docs, renders) and what was already ruled out;
 - what "done" means: which checks pass (`check.sh --base master`), which renders to produce, where to put them;
+- where the feature lives: its own module or crate, and the shared files it may touch, for registration only (§2.8).
+  "Put it where it fits" gets put in the nearest hub;
 - "commit with this trailer, don't merge";
 - what to report back: commits, test results, render paths, deviations from the brief.
 
@@ -743,6 +812,10 @@ scratchpad, and one run's `check.log` overwrote another's.
   columns it had merged; reading the worst pages found it, and a tighter rule took "worse" pages from 207 to 51.
 - **Remove a worktree only after its review is done and its branch is merged.** One was removed before review, so its
   worker couldn't be resumed and the whole brief had to be given again.
+- **Reviews check structure, not only correctness.** For each branch: which shared files it changed and whether those
+  changes are registrations or new logic, any struct or `match` it grew past budget, and whether its rules are
+  testable without the host. 26 branches passed correctness reviews while the hubs grew to 34-field objects and
+  262-line `match`es (§2.8).
 - Merge with `--no-ff` and a message that says what users get.
 
 ### 5.4 Parallel work

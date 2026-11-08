@@ -129,3 +129,13 @@ The fifth was a whole-state restore test that hadn't been told about new fields,
 - A fresh worker for each stage of a large feature.
 
 **Check next time.** Failed full runs that were tests' timing assumptions: still the main cause? Conflicts per merge of main in the hub files: worth splitting `recto-ffi/src/lib.rs`?
+
+## 2026-11-08, why the code needs restructuring, and what changes
+
+**Numbers** (architecture review through the code-review graph, `main` at `74cf8ec`): 19 crates, cleanly layered, no cycles. 11 hub files took every feature: each of the last 8 features touched 7 to 11 of them; links put half its 3,100 lines into about 20 shared files. `Session` has 34 fields and 180 methods; `Command` 59 variants (7 to 9 edits per new command); `execute_held` 262 lines; the bridge holds policy with 10 unit tests for 2,100 lines. Find, links and Save conflicted in the same files on one afternoon, and Find had to come back off main once.
+
+**Why.** Speed with parallel workers, briefs that never said where a feature lives, reviews that checked correctness and never structure, process reviews that measured tests and queues but not code shape, and an early design that suited 5 features left alone at 30. No `rustfmt` and a hand-kept whole-state field list turned every pair of branches into a conflict. The coordinator owns this.
+
+**Changing.** Guide §2.8 and AGENTS.md rule 7: a feature in its own module with registration-only edits to shared files, named in the brief; reviews check structure; budgets for file, function, struct and enum size; a structure check through the code graph at every process review. The refactor plan itself is in `docs/reviews/2026-11-08-architecture.md`, waiting on the owner's timing.
+
+**Check next time.** Files the last features touched, the hub sizes against the numbers above, and merge conflicts per merge.
